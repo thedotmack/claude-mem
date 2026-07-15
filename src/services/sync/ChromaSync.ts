@@ -331,24 +331,28 @@ export class ChromaSync {
         const errMsg = error instanceof Error ? error.message : String(error);
         if (errMsg.includes('already exist')) {
           try {
-            await chromaMcp.callTool('chroma_delete_documents', {
-              collection_name: this.collectionName,
-              ids: batch.map(d => d.id)
-            });
-            await chromaMcp.callTool('chroma_add_documents', {
+            // Reconcile in place via update — NOT delete+add. Document IDs are
+            // deterministic (e.g. obs_<sqlite_id>_narrative), so every resync,
+            // backfill, retry, or interruption collides on the same IDs. HNSW
+            // deletions are soft-deletes: a delete+add cycle leaves the old
+            // graph nodes in link_lists.bin while appending new ones, so the
+            // on-disk index grows without bound and can exhaust disk/RAM.
+            // chroma_update_documents overwrites in place (same tool used for
+            // the merged_into_project metadata patch below).
+            await chromaMcp.callTool('chroma_update_documents', {
               collection_name: this.collectionName,
               ids: batch.map(d => d.id),
               documents: batch.map(d => d.document),
               metadatas: cleanMetadatas
             });
             written += batch.length;
-            logger.info('CHROMA_SYNC', 'Batch reconciled via delete+add after duplicate conflict', {
+            logger.info('CHROMA_SYNC', 'Batch reconciled via in-place update after duplicate conflict', {
               collection: this.collectionName,
               batchStart: i,
               batchSize: batch.length
             });
           } catch (reconcileError) {
-            logger.error('CHROMA_SYNC', 'Batch reconcile (delete+add) failed — watermark will not advance for this batch', {
+            logger.error('CHROMA_SYNC', 'Batch reconcile (update) failed — watermark will not advance for this batch', {
               collection: this.collectionName,
               batchStart: i,
               batchSize: batch.length
