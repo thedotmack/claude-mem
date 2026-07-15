@@ -94,6 +94,35 @@ describe('supervisor ProcessRegistry', () => {
       expect(existsSync(registryPath)).toBe(true);
     });
 
+    it('does not crash when the registry file cannot be written', () => {
+      const tempDir = makeTempDir();
+      tempDirs.push(tempDir);
+      mkdirSync(tempDir, { recursive: true });
+
+      // Point the registry at a path that is itself a directory, so the write
+      // fails (rename-over-directory) the way a bad-permissions data dir would
+      // fail with EPERM. initialize() tolerates the unreadable "file"; persist()
+      // must tolerate the failed write.
+      const registryPath = path.join(tempDir, 'supervisor.json');
+      mkdirSync(registryPath, { recursive: true });
+
+      const registry = createProcessRegistry(registryPath);
+
+      // register() -> persist() must swallow the write error instead of throwing.
+      expect(() => {
+        registry.register('worker:1', {
+          pid: process.pid,
+          type: 'worker',
+          startedAt: '2026-03-15T00:00:00.000Z'
+        });
+      }).not.toThrow();
+
+      // The entry is still tracked in memory even though it never hit disk.
+      const records = registry.getAll();
+      expect(records).toHaveLength(1);
+      expect(records[0]?.id).toBe('worker:1');
+    });
+
     it('handles corrupted registry file gracefully', () => {
       const tempDir = makeTempDir();
       tempDirs.push(tempDir);
