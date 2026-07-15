@@ -37,7 +37,11 @@ const positiveIntegerLike = z.preprocess((value) => {
 }, z.number().int().positive().optional());
 
 const buildCorpusSchema = z.object({
-  name: z.string().trim().min(1).regex(CORPUS_NAME_PATTERN, CORPUS_NAME_ERROR),
+  // Validate the raw name — do NOT .trim() first, or a padded name like
+  // " bad " would be silently normalized to "bad" and accepted instead of
+  // rejected. CORPUS_NAME_PATTERN already disallows whitespace, so surrounding
+  // spaces correctly fail here and return a 400.
+  name: z.string().min(1).regex(CORPUS_NAME_PATTERN, CORPUS_NAME_ERROR),
   description: z.string().optional(),
   project: z.string().optional(),
   types: stringArrayLike.refine(
