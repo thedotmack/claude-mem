@@ -193,5 +193,36 @@
     "tree-sitter-ruby",
     "tree-sitter-rust",
     "tree-sitter-typescript"
-  ]
+  ],
+  "//allowScripts-note": "npm 11.16+/v12 made dependency install scripts opt-in; a bare `--allow-scripts` is rejected in project-scoped installs with EALLOWSCRIPTS. This field is npm's prescribed remedy and is what Claude Code's marketplace install reads at ~/.claude/plugins/marketplaces/thedotmack (this manifest is copied there by copyPluginToMarketplace). Without it a fresh install on Node 26+/npm 12 aborts before the tree-sitter grammars / esbuild can build their native bindings. Keep in sync with scripts/postinstall-allowlist.js (enforced by scripts/check-postinstall-allowlist.js) and with the npm complement to bun's trustedDependencies above.",
+  "allowScripts": {
+    "tree-sitter-cli": true,
+    "tree-sitter": true,
+    "tree-sitter-c": true,
+    "tree-sitter-cpp": true,
+    "tree-sitter-go": true,
+    "tree-sitter-java": true,
+    "tree-sitter-javascript": true,
+    "tree-sitter-python": true,
+    "tree-sitter-ruby": true,
+    "tree-sitter-rust": true,
+    "tree-sitter-typescript": true,
+    "tree-sitter-kotlin": true,
+    "tree-sitter-swift": true,
+    "tree-sitter-php": true,
+    "tree-sitter-scala": true,
+    "tree-sitter-bash": true,
+    "tree-sitter-haskell": true,
+    "tree-sitter-css": true,
+    "tree-sitter-scss": true,
+    "@tree-sitter-grammars/tree-sitter-lua": true,
+    "@tree-sitter-grammars/tree-sitter-zig": true,
+    "@tree-sitter-grammars/tree-sitter-toml": true,
+    "@tree-sitter-grammars/tree-sitter-yaml": true,
+    "@tree-sitter-grammars/tree-sitter-markdown": true,
+    "@derekstride/tree-sitter-sql": true,
+    "esbuild": true,
+    "@biomejs/biome": true,
+    "better-sqlite3": true
+  }
 }

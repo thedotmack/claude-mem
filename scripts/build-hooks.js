@@ -4,6 +4,7 @@ import { build } from 'esbuild';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { allowScriptsMap } from './postinstall-allowlist.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -278,6 +279,12 @@ async function buildHooks() {
       trustedDependencies: [
         'tree-sitter-cli'
       ],
+      // npm 11.16+/v12 made install scripts opt-in: without this field a fresh
+      // marketplace install on Node 26+/npm 12 aborts before the tree-sitter
+      // native bindings can build. `allowScripts` is npm's prescribed remedy and
+      // the complement to bun's `trustedDependencies` above. Sourced from
+      // scripts/postinstall-allowlist.js so it can never drift from the CI guard.
+      allowScripts: allowScriptsMap(),
       engines: {
         node: '>=20.12.0',
         bun: '>=1.0.0'
