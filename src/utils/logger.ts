@@ -123,6 +123,49 @@ class Logger {
     return this.level;
   }
 
+  /**
+   * Serialize a value to JSON without ever overflowing the stack.
+   *
+   * `JSON.stringify` recurses through the whole object graph, so a deeply
+   * nested or self-referential payload throws `RangeError: Maximum call stack
+   * size exceeded` — and logging must never crash its caller. This walks the
+   * value to a fixed depth (cheap, bounded stack), replacing anything deeper,
+   * any cycle, or any BigInt with a marker, then stringifies the pruned,
+   * guaranteed-finite result.
+   */
+  private safeStringify(data: unknown, indent?: number, maxDepth = 6): string {
+    const seen = new WeakSet<object>();
+    const prune = (value: unknown, depth: number): unknown => {
+      if (typeof value === 'bigint') return `${value}n`;
+      if (value === null || typeof value !== 'object') return value;
+      if (seen.has(value)) return '[Circular]';
+      if (depth >= maxDepth) return Array.isArray(value) ? '[Array]' : '[Object]';
+      seen.add(value);
+      try {
+        if (Array.isArray(value)) {
+          return value.map(item => prune(item, depth + 1));
+        }
+        const out: Record<string, unknown> = {};
+        for (const key of Object.keys(value as Record<string, unknown>)) {
+          try {
+            out[key] = prune((value as Record<string, unknown>)[key], depth + 1);
+          } catch {
+            // A throwing getter must not sink the whole log line.
+            out[key] = '[unreadable]';
+          }
+        }
+        return out;
+      } finally {
+        seen.delete(value);
+      }
+    };
+    try {
+      return JSON.stringify(prune(data, 0), null, indent) ?? String(data);
+    } catch {
+      return Array.isArray(data) ? `[${(data as unknown[]).length} items]` : '[unserializable]';
+    }
+  }
+
   private formatData(data: any): string {
     if (data === null || data === undefined) return '';
     if (typeof data === 'string') return data;
@@ -143,7 +186,7 @@ class Logger {
       const keys = Object.keys(data);
       if (keys.length === 0) return '{}';
       if (keys.length <= 3) {
-        return JSON.stringify(data);
+        return this.safeStringify(data);
       }
       return `{${keys.length} keys: ${keys.slice(0, 3).join(', ')}...}`;
     }
@@ -252,12 +295,11 @@ class Logger {
           ? `\n${data.message}\n${data.stack}`
           : ` ${data.message}`;
       } else if (this.getLevel() === LogLevel.DEBUG && typeof data === 'object') {
-        try {
-          dataStr = '\n' + JSON.stringify(data, null, 2);
-        } catch {
-          // [ANTI-PATTERN IGNORED]: JSON.stringify fails on circular/BigInt payloads, an expected data shape inside the logger's own log() path; recovery is the formatData fallback, and self-logging here would recurse.
-          dataStr = ' ' + this.formatData(data);
-        }
+        // Depth-guarded: a deeply nested or self-referential payload would make
+        // a plain JSON.stringify overflow the stack (RangeError), crashing the
+        // caller through the logger. safeStringify prunes to a finite depth and
+        // handles cycles/BigInt, so debug logging can never blow up here.
+        dataStr = '\n' + this.safeStringify(data, 2);
       } else {
         dataStr = ' ' + this.formatData(data);
       }
