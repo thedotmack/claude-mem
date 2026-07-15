@@ -8,9 +8,13 @@ import { PassThrough } from 'node:stream';
 import * as realSettingsDefaultsManager from '../../../src/shared/SettingsDefaultsManager.js';
 import * as realPaths from '../../../src/shared/paths.js';
 import * as realLogger from '../../../src/utils/logger.js';
+import * as realMcpStdio from '@modelcontextprotocol/sdk/client/stdio.js';
+import * as realMcpClient from '@modelcontextprotocol/sdk/client/index.js';
 const realSettingsSnapshot = { ...realSettingsDefaultsManager };
 const realPathsSnapshot = { ...realPaths };
 const realLoggerSnapshot = { ...realLogger };
+const realMcpStdioSnapshot = { ...realMcpStdio };
+const realMcpClientSnapshot = { ...realMcpClient };
 const realChildProcess = require('node:child_process');
 
 let currentSettings: Record<string, string> = {};
@@ -104,6 +108,8 @@ afterAll(() => {
   mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
   mock.module('../../../src/shared/paths.js', () => realPathsSnapshot);
   mock.module('../../../src/utils/logger.js', () => realLoggerSnapshot);
+  mock.module('@modelcontextprotocol/sdk/client/stdio.js', () => realMcpStdioSnapshot);
+  mock.module('@modelcontextprotocol/sdk/client/index.js', () => realMcpClientSnapshot);
   mock.module('child_process', () => realChildProcess);
 });
 

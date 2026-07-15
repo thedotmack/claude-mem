@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
@@ -7,11 +7,23 @@ import {
 } from '../../src/shared/dependency-health.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 
+// Snapshot the real module BEFORE mock.module mutates the live namespace, then
+// re-register it in afterAll. bun's mock.module is process-global and
+// mock.restore() does NOT undo it, so this partial stub (only findClaudeExecutable,
+// missing resetClaudeExecutableCache / _internals / CAPABILITY_PROBE_ARGS) would
+// otherwise leak into find-claude-executable.test.ts and break its whole suite.
+import * as realFindClaudeExecutable from '../../src/shared/find-claude-executable.js';
+const realFindClaudeExecutableSnapshot = { ...realFindClaudeExecutable };
+
 let findClaudeExecutableImpl: () => string = () => '/mock/claude';
 
 mock.module('../../src/shared/find-claude-executable.js', () => ({
   findClaudeExecutable: () => findClaudeExecutableImpl(),
 }));
+
+afterAll(() => {
+  mock.module('../../src/shared/find-claude-executable.js', () => realFindClaudeExecutableSnapshot);
+});
 
 const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
 const { ClaudeProvider } = await import('../../src/services/worker/ClaudeProvider.js');
