@@ -1,5 +1,48 @@
-import { describe, it, expect } from 'bun:test';
-import { buildNoOpResult, isNonBlockingHookInputError, isWorkerUnavailableError } from '../src/cli/hook-command.js';
+import { describe, it, expect, mock, spyOn } from 'bun:test';
+import { buildNoOpResult, hookCommand, isNonBlockingHookInputError, isWorkerUnavailableError } from '../src/cli/hook-command.js';
+
+describe('worker-unavailable hook preflight', () => {
+  it('emits the worker-unavailable no-op for a real context hook without touching stdin or worker APIs', async () => {
+    const originalWrite = process.stderr.write;
+    const originalFetch = global.fetch;
+    const hadOwnIsTTY = Object.prototype.hasOwnProperty.call(process.stdin, 'isTTY');
+    const originalOwnIsTTY = hadOwnIsTTY ? (process.stdin as NodeJS.ReadStream & { isTTY?: boolean }).isTTY : undefined;
+    const writes: string[] = [];
+    const stdout: string[] = [];
+    const consoleLogSpy = spyOn(console, 'log').mockImplementation((line?: unknown) => {
+      stdout.push(String(line));
+    });
+    const stdinOnSpy = spyOn(process.stdin, 'on').mockImplementation(((event: string, listener: (...args: any[]) => void) => {
+      if (event === 'end') queueMicrotask(listener);
+      return process.stdin;
+    }) as typeof process.stdin.on);
+    const fetchMock = mock(() => Promise.reject(new Error('unexpected worker API call')));
+    global.fetch = fetchMock as typeof global.fetch;
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+      return true;
+    }) as typeof process.stderr.write;
+    Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: false });
+    try {
+      expect(await hookCommand('raw', 'context', { skipExit: true, workerUnavailable: true })).toBe(0);
+      expect(stdout).toEqual([JSON.stringify(buildNoOpResult('context'))]);
+      expect(stdinOnSpy.mock.calls).toHaveLength(0);
+      expect(fetchMock.mock.calls).toHaveLength(0);
+      process.stderr.write('after-hook\n');
+      expect(writes).toEqual(['after-hook\n']);
+    } finally {
+      if (hadOwnIsTTY) {
+        Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: originalOwnIsTTY });
+      } else {
+        delete (process.stdin as NodeJS.ReadStream & { isTTY?: boolean }).isTTY;
+      }
+      global.fetch = originalFetch;
+      process.stderr.write = originalWrite;
+      stdinOnSpy.mockRestore();
+      consoleLogSpy.mockRestore();
+    }
+  });
+});
 
 describe('buildNoOpResult', () => {
   it('attaches a valid SessionStart hookSpecificOutput for the context event (#2972)', () => {

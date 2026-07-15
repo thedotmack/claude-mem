@@ -3,6 +3,7 @@ import net from 'net';
 import {
   isPortInUse,
   waitForHealth,
+  waitForReadiness,
   waitForPortFree,
   getInstalledPluginVersion,
   getRunningWorkerVersion,
@@ -198,6 +199,31 @@ describe('HealthMonitor', () => {
       const result = await waitForHealth(37777);
 
       expect(result).toBe(true);
+    });
+
+    it('bounds a connected listener that never sends HTTP', async () => {
+      const sockets = new Set<net.Socket>();
+      const server = net.createServer((socket) => {
+        sockets.add(socket);
+        socket.on('close', () => sockets.delete(socket));
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('listener did not expose a port');
+
+      const start = Date.now();
+      const result = await waitForHealth(address.port, 200);
+
+      expect(result).toBe(false);
+      expect(Date.now() - start).toBeLessThan(1000);
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    });
+
+    it('uses the same bounded request path for readiness', async () => {
+      global.fetch = mock(() => Promise.reject(new Error('ECONNREFUSED')));
+
+      expect(await waitForReadiness(39998, 100)).toBe(false);
     });
   });
 

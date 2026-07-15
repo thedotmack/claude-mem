@@ -154,9 +154,9 @@ export async function ensureWorkerStarted(
     const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
     if (!healthy) {
       logger.warn('SYSTEM', spawnLockHeld
-        ? 'Worker spawned but health endpoint not responding within window — likely still starting in background'
-        : 'Spawn-lock holder\'s worker not healthy within window — likely still starting in background');
-      return 'warming';
+        ? 'Worker spawned but health endpoint did not respond within window'
+        : 'Spawn-lock holder\'s worker did not become healthy within window');
+      return 'dead';
     }
   } finally {
     if (spawnLockHeld) releaseSpawnLock();

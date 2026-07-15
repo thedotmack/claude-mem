@@ -5,6 +5,7 @@ import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { MARKETPLACE_ROOT, USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 
 function getWorkerHost(): string {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
@@ -20,9 +21,13 @@ function formatHostForUrl(host: string): string {
 async function httpRequestToWorker(
   port: number,
   endpointPath: string,
-  method: string = 'GET'
+  method: string = 'GET',
+  timeoutMs: number = HOOK_TIMEOUTS.HEALTH_CHECK
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
-  const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, { method });
+  const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, {
+    method,
+    signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
+  });
   let body = '';
   try {
     body = await response.text();
@@ -33,20 +38,6 @@ async function httpRequestToWorker(
 }
 
 export async function isPortInUse(port: number): Promise<boolean> {
-  if (process.platform === 'win32') {
-    try {
-      const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`);
-      return response.ok;
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', {}, error);
-      } else {
-        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', { error: String(error) });
-      }
-      return false;
-    }
-  }
-
   return new Promise((resolve) => {
     const server = net.createServer();
     const workerHost = getWorkerHost();
@@ -72,8 +63,9 @@ async function pollEndpointUntilOk(
 ): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
+    const remainingMs = timeoutMs - (Date.now() - start);
     try {
-      const result = await httpRequestToWorker(port, endpointPath);
+      const result = await httpRequestToWorker(port, endpointPath, 'GET', Math.min(remainingMs, HOOK_TIMEOUTS.HEALTH_CHECK));
       if (result.ok) return true;
     } catch (error) {
       if (error instanceof Error) {
@@ -82,7 +74,8 @@ async function pollEndpointUntilOk(
         logger.debug('SYSTEM', retryLogMessage, { error: String(error) });
       }
     }
-    await new Promise(r => setTimeout(r, 500));
+    const delayMs = Math.min(500, timeoutMs - (Date.now() - start));
+    if (delayMs > 0) await new Promise(r => setTimeout(r, delayMs));
   }
   return false;
 }
@@ -104,13 +97,17 @@ export async function waitForPortFree(port: number, timeoutMs: number = 10000): 
   return false;
 }
 
-export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 'stop'): Promise<boolean> {
+export async function httpShutdown(
+  port: number,
+  reason: 'stop' | 'restart' = 'stop',
+  timeoutMs: number = HOOK_TIMEOUTS.HEALTH_CHECK
+): Promise<boolean> {
   try {
     // The CLI restart path stops the worker through this same endpoint; the
     // reason tag lets the worker report shutdown_reason: 'restart' on its
     // worker_stopped telemetry instead of a generic 'stop'.
     const endpointPath = reason === 'restart' ? '/api/admin/shutdown?reason=restart' : '/api/admin/shutdown';
-    const result = await httpRequestToWorker(port, endpointPath, 'POST');
+    const result = await httpRequestToWorker(port, endpointPath, 'POST', timeoutMs);
     if (!result.ok) {
       logger.warn('SYSTEM', 'Shutdown request returned error', { status: result.statusCode });
       return false;
@@ -144,9 +141,9 @@ export function getInstalledPluginVersion(): string {
   }
 }
 
-export async function getRunningWorkerVersion(port: number): Promise<string | null> {
+export async function getRunningWorkerVersion(port: number, timeoutMs: number = HOOK_TIMEOUTS.HEALTH_CHECK): Promise<string | null> {
   try {
-    const result = await httpRequestToWorker(port, '/api/health');
+    const result = await httpRequestToWorker(port, '/api/health', 'GET', timeoutMs);
     if (!result.ok) return null;
     const data = JSON.parse(result.body) as { version: string };
     return data.version;
@@ -162,9 +159,9 @@ export interface VersionCheckResult {
   workerVersion: string | null;
 }
 
-export async function checkVersionMatch(port: number): Promise<VersionCheckResult> {
+export async function checkVersionMatch(port: number, timeoutMs: number = HOOK_TIMEOUTS.HEALTH_CHECK): Promise<VersionCheckResult> {
   const pluginVersion = getInstalledPluginVersion();
-  const workerVersion = await getRunningWorkerVersion(port);
+  const workerVersion = await getRunningWorkerVersion(port, timeoutMs);
 
   if (!workerVersion || pluginVersion === 'unknown') {
     return { matches: true, pluginVersion, workerVersion };

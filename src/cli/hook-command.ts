@@ -21,6 +21,7 @@ import { logger } from '../utils/logger.js';
 
 export interface HookCommandOptions {
   skipExit?: boolean;
+  workerUnavailable?: boolean;
 }
 
 /**
@@ -119,6 +120,13 @@ export async function hookCommand(platform: string, event: string, options: Hook
   const stderrBuffer = installHookStderrBuffer();
 
   const adapter = getPlatformAdapter(platform);
+  if (options.workerUnavailable) {
+    await recordWorkerUnreachable();
+    emitModelContext(adapter, buildNoOpResult(event));
+    exitGraceful(options);
+    stderrBuffer.restore();
+    return HOOK_EXIT_CODES.SUCCESS;
+  }
   const handler = getEventHandler(event);
 
   try {

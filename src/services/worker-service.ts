@@ -1268,12 +1268,10 @@ async function main() {
       }
 
       const workerStartResult = await ensureWorkerStarted(port);
-      if (workerStartResult === 'dead') {
-        logger.warn('SYSTEM', 'Worker failed to start before hook, handler will proceed gracefully');
-      }
+      if (workerStartResult === 'dead') logger.warn('SYSTEM', 'Worker failed to start before hook, emitting no-op result');
 
       const { hookCommand } = await import('../cli/hook-command.js');
-      await hookCommand(platform, event);
+      await hookCommand(platform, event, { workerUnavailable: workerStartResult === 'dead' });
       break;
     }
 
