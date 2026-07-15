@@ -1,0 +1,7 @@
+# Harness runtime artifacts
+runs/
+data/*.jsonl
+!data/example.jsonl
+repos/
+node_modules/
+*.log

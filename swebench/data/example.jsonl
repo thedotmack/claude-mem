@@ -1,0 +1,1 @@
+{"instance_id":"example__demo-1","repo":"example/demo","base_commit":"0000000000000000000000000000000000000000","problem_statement":"add() returns the wrong result: add(2, 2) yields 5 instead of 4. Fix the bug in calculator.py so the arithmetic is correct.","FAIL_TO_PASS":"[\"tests/test_calc.py::test_add\"]","PASS_TO_PASS":"[]","version":"0.1"}
