@@ -9,6 +9,7 @@ import fs from 'fs';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
+import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { captureProcessStartToken, isPidAlive } from '../../supervisor/process-registry.js';
@@ -1167,25 +1168,22 @@ export class ChromaMcpManager {
    * worker inherited (the worker is spawned by the host with a minimal env that
    * predates the user adding uv to PATH). Without it, `uvx`/`cmd /c uvx` dies
    * with "not recognized" in ~25ms and semantic search silently falls back to
-   * keyword (#2790). Prepend uv's known bin dirs (and an explicit override) so
-   * the chroma child can always resolve uvx. Additive and cross-platform — only
-   * dirs that exist are added.
+   * keyword (#2790). Prepend uv's known bin dirs and the macOS Homebrew bins so
+   * the chroma child can always resolve uvx. Only dirs that exist are added.
    */
   private static uvBinDirs(): string[] {
-    const home = os.homedir();
-    const dirs = [
-      process.env.CLAUDE_MEM_CHROMA_UVX_PATH,           // explicit override (dir or uvx path)
-      path.join(home, '.local', 'bin'),                 // uv default (Windows + Unix)
-      path.join(home, '.cargo', 'bin'),                 // cargo-installed uv
-    ].filter((d): d is string => Boolean(d));
-    // If the override points at the uvx binary itself, use its directory.
-    return dirs.map(d => {
-      try {
-        return fs.existsSync(d) && fs.statSync(d).isFile() ? path.dirname(d) : d;
-      } catch (error) {
-        logger.debug('CHROMA_MCP', 'Failed to stat uv bin dir candidate, using as-is', { dir: d }, error instanceof Error ? error : new Error(String(error)));
-        return d;
-      }
+    return getUvxBinDirs({
+      homedir: os.homedir,
+      override: process.env.CLAUDE_MEM_CHROMA_UVX_PATH,
+      platform: process.platform,
+      isFile: dir => {
+        try {
+          return fs.existsSync(dir) && fs.statSync(dir).isFile();
+        } catch (error) {
+          logger.debug('CHROMA_MCP', 'Failed to stat uv bin dir candidate, using as-is', { dir }, error instanceof Error ? error : new Error(String(error)));
+          return false;
+        }
+      },
     });
   }
 
