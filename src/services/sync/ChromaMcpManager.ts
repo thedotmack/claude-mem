@@ -14,6 +14,7 @@ import { getSupervisor } from '../../supervisor/index.js';
 import { captureProcessStartToken, isPidAlive } from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
+import { assignPidToWorkerJob, assignProcessTreeToWorkerJob } from '../infrastructure/WindowsJobObject.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -604,6 +605,17 @@ export class ChromaMcpManager {
       windowsHide: process.platform === 'win32',
     });
     this.activePrewarmChild = child;
+
+    // OS backstop for abnormal worker death (crash/taskkill/sleep-wake). The
+    // in-process tree-kills (#2313) only run while the worker is alive; if it
+    // dies abnormally the orphaned uvx/uv/python chain survives holding the
+    // inherited listen-socket handle and bricks port 37777 for future workers.
+    // Bind the prewarm child into the worker's kill-on-close Job Object so the
+    // kernel reaps it (and anything it later spawns, which inherits membership)
+    // the instant the worker terminates. Best-effort no-op off-Windows.
+    if (child.pid) {
+      assignPidToWorkerJob(child.pid, 'chroma-prewarm');
+    }
 
     const stdoutTail = ChromaMcpManager.captureOutputTail(child.stdout);
     const stderrTail = ChromaMcpManager.captureOutputTail(child.stderr);
@@ -1346,6 +1358,16 @@ export class ChromaMcpManager {
     if (!chromaProcess?.pid) {
       return;
     }
+
+    // OS backstop (see prewarm site): bind the connected chroma-mcp process
+    // AND its already-spawned descendants into the worker's kill-on-close Job
+    // Object. A TREE sweep is required here (not a single-PID assign) because
+    // job membership is only inherited by processes spawned AFTER their parent
+    // joined — by connect time uvx has already spawned its uv/python
+    // descendants, so they must be swept in explicitly. Guards the orphaned
+    // chain / port-37777 brick that #2313's in-process-only tree-kill can't
+    // cover when the worker dies abnormally. Best-effort no-op off-Windows.
+    assignProcessTreeToWorkerJob(chromaProcess.pid, 'chroma-mcp');
 
     // Register with pgid so the supervisor's shutdown cascade can use
     // process-group signaling (kill(-pgid, signal)) to tear down the
