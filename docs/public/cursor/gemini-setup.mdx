@@ -8,7 +8,7 @@ description: "Use Claude-Mem in Cursor with Google's free Gemini API"
 This guide walks you through setting up Claude-Mem in Cursor using Google's Gemini API. Gemini offers a generous free tier that handles typical individual usage.
 
 <Info>
-**Free Tier:** 1,500 requests per day with `gemini-2.5-flash-lite`. No credit card required.
+**Free Tier:** generous daily quota with `gemini-flash-latest`. No credit card required.
 </Info>
 
 ## Step 1: Get a Gemini API Key
@@ -101,9 +101,11 @@ Open the worker URL printed on startup to see the memory viewer.
 
 | Model | Free Tier RPM | Notes |
 |-------|---------------|-------|
-| `gemini-2.5-flash-lite` | 10 (4,000 with billing) | **Default.** Fastest, highest free tier RPM |
-| `gemini-2.5-flash` | 5 (1,000 with billing) | Higher capability |
-| `gemini-3-flash-preview` | 5 (1,000 with billing) | Latest model |
+| `gemini-flash-latest` | 10 (1,000 with billing) | **Default.** Google alias tracking the current GA Flash model |
+| `gemini-flash-lite-latest` | 15 (4,000 with billing) | Google alias tracking the current GA Flash-Lite model |
+| `gemini-3.5-flash` | 10 (1,000 with billing) | Pinned GA Flash model |
+| `gemini-3.1-flash-lite` | 15 (4,000 with billing) | Pinned GA Flash-Lite model |
+| `gemini-3-flash-preview` | 5 (1,000 with billing) | Preview model |
 
 To change the model, update your settings:
 
@@ -111,7 +113,7 @@ To change the model, update your settings:
 {
   "CLAUDE_MEM_PROVIDER": "gemini",
   "CLAUDE_MEM_GEMINI_API_KEY": "your-key",
-  "CLAUDE_MEM_GEMINI_MODEL": "gemini-2.5-flash"
+  "CLAUDE_MEM_GEMINI_MODEL": "gemini-3.5-flash"
 }
 ```
 
