@@ -47,6 +47,7 @@ import {
   touchPidFile
 } from './infrastructure/ProcessManager.js';
 import { runOneTimeV12_4_3Cleanup } from './infrastructure/CleanupV12_4_3.js';
+import { runPeriodicFtsOptimize } from './infrastructure/FtsMaintenance.js';
 import {
   isPortInUse,
   waitForHealth,
@@ -503,6 +504,15 @@ export class WorkerService implements WorkerRef {
       await this.dbManager.initialize();
 
       runOneTimeV12_4_3Cleanup();
+
+      // Reclaim FTS5 delete-marker bloat that VACUUM/auto_vacuum can't touch
+      // (refs #2793). Throttled to once/day via a marker file and wrapped so a
+      // maintenance failure never blocks worker startup.
+      try {
+        runPeriodicFtsOptimize(this.dbManager.getConnection());
+      } catch (error) {
+        logger.warn('WORKER', 'Periodic FTS optimize failed', {}, error instanceof Error ? error : undefined);
+      }
 
       logger.info('WORKER', 'Initializing search services...');
       const formattingService = new FormattingService();
