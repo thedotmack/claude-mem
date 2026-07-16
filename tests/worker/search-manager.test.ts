@@ -423,3 +423,73 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
     }));
   });
 });
+
+describe('SearchManager type= observation-type filtering (#3279)', () => {
+  // Build a Chroma-less manager (FTS path) with recording mocks so we can
+  // assert exactly which corpus the search hit and with which filters.
+  const makeManager = (obs: any[]) => {
+    const searchObservations = mock(() => obs);
+    const searchSessions = mock(() => []);
+    const searchUserPrompts = mock(() => []);
+    const manager = new SearchManager(
+      { searchObservations, searchSessions, searchUserPrompts } as any,
+      {
+        getObservationsByIds: mock(() => []),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+      } as any,
+      null as any, // no Chroma -> FTS keyword path
+      {} as any,
+      {} as any,
+    );
+    return { manager, searchObservations, searchSessions, searchUserPrompts };
+  };
+
+  it('treats a custom type as an observation-type filter, not a doc-type selector', async () => {
+    const observation = {
+      id: 42,
+      type: 'correction',
+      title: 'a captured correction',
+      created_at: new Date().toISOString(),
+      created_at_epoch: Date.now(),
+    };
+    const { manager, searchObservations, searchSessions, searchUserPrompts } = makeManager([observation]);
+
+    const result = await manager.search({
+      query: 'captured',
+      type: 'correction', // custom mode type, not observations/sessions/prompts
+      format: 'json',
+      limit: 10,
+    });
+
+    // Before the fix, `type='correction'` failed all three doc-type selector
+    // checks, so no corpus was searched and zero results came back.
+    expect(searchObservations).toHaveBeenCalledTimes(1);
+    expect(searchObservations).toHaveBeenCalledWith('captured', expect.objectContaining({
+      type: 'correction',
+    }));
+    expect(searchSessions).not.toHaveBeenCalled();
+    expect(searchUserPrompts).not.toHaveBeenCalled();
+    expect(result.observations).toEqual([observation]);
+    expect(result.totalResults).toBe(1);
+  });
+
+  it('still treats reserved doc-type selectors (observations) as selectors', async () => {
+    const { manager, searchObservations, searchSessions, searchUserPrompts } = makeManager([]);
+
+    await manager.search({
+      query: 'anything',
+      type: 'observations',
+      format: 'json',
+    });
+
+    // 'observations' is a selector: observations searched, but the obs-type
+    // filter must NOT be set to the literal string 'observations'.
+    expect(searchObservations).toHaveBeenCalledTimes(1);
+    expect(searchObservations).toHaveBeenCalledWith('anything', expect.objectContaining({
+      type: undefined,
+    }));
+    expect(searchSessions).not.toHaveBeenCalled();
+    expect(searchUserPrompts).not.toHaveBeenCalled();
+  });
+});
