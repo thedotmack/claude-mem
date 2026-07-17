@@ -82,10 +82,13 @@ describe('worker-spawn-gate — cross-launcher spawn lockfile', () => {
   it('honors a lock just inside the 90s staleness boundary', async () => {
     const { acquireSpawnLock } = await importGateFresh();
 
-    // The readiness deadline is 60s on Windows. A lock still inside the
-    // boundary must remain fresh so a readiness poll cannot lose ownership.
+    // The readiness deadline is 60s on Windows; staleness window is 90s.
+    // A lock still inside the boundary must remain fresh so a readiness poll
+    // cannot lose ownership. Use THIS process's pid so the holder is
+    // positively alive - a dead foreign pid is broken even inside the mtime
+    // window (#3300).
     const foreignPayload = JSON.stringify({
-      pid: 999_999_999,
+      pid: process.pid,
       startedAt: new Date(Date.now() - 89_000).toISOString(),
     });
     writeFileSync(lockPath, foreignPayload);
@@ -96,6 +99,25 @@ describe('worker-spawn-gate — cross-launcher spawn lockfile', () => {
 
     // The holder's lock survives untouched.
     expect(readFileSync(lockPath, 'utf-8')).toBe(foreignPayload);
+  });
+
+  it('breaks a fresh-mtime lock whose holder PID is dead (#3300)', async () => {
+    const { acquireSpawnLock } = await importGateFresh();
+
+    // Dead holder + fresh mtime: the old mtime-only breaker would wait out
+    // the cold-boot timeout (and forever if something keeps touching the
+    // file). PID liveness must reclaim it immediately.
+    writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: 999_999_999, startedAt: new Date().toISOString() })
+    );
+    const recent = new Date();
+    utimesSync(lockPath, recent, recent);
+
+    expect(acquireSpawnLock()).toBe(true);
+
+    const lock = JSON.parse(readFileSync(lockPath, 'utf-8'));
+    expect(lock.pid).toBe(process.pid);
   });
 
   it('release is owner-only: a foreign lock survives releaseSpawnLock', async () => {

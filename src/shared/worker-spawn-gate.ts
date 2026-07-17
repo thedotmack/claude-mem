@@ -21,7 +21,10 @@ import { logger } from '../utils/logger.js';
  * - The lock gates SPAWNING only — never health/readiness checks. A held lock
  *   must never make a hook FAIL, only wait for the holder's worker.
  * - Staleness is judged by the lock file's mtime (statSync().mtimeMs), never
- *   by clock values stored in the file content.
+ *   by clock values stored in the file content. A lock whose holder PID is
+ *   dead is also broken even when mtime is still fresh (claude-mem#3300) —
+ *   a dead holder can never open the port, and Windows file indexers can
+ *   keep refreshing mtime so the 60s breaker alone never fires.
  * - The dying worker's restart handoff (src/services/worker-shutdown.ts) is
  *   deliberately NOT gated: it is the PRIMARY spawner on restart, and hooks
  *   wait for its successor instead of competing with it.
@@ -43,6 +46,31 @@ const SPAWN_LOCK_STALE_MS = 90_000;
  */
 function getSpawnLockPath(): string {
   return join(resolveDataDir(), 'spawn.lock');
+}
+
+/**
+ * True when the lock's recorded pid is still a live process. False when the
+ * pid is positively dead. Null when the lock is missing/unreadable/has no
+ * usable pid — callers must fall back to mtime-only staleness in that case.
+ */
+function isLockHolderAlive(lockPath: string): boolean | null {
+  try {
+    const lock = JSON.parse(readFileSync(lockPath, 'utf-8')) as { pid?: unknown };
+    if (typeof lock.pid !== 'number' || !Number.isInteger(lock.pid) || lock.pid <= 0) {
+      return null;
+    }
+    try {
+      process.kill(lock.pid, 0);
+      return true;
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      // EPERM: process exists but we cannot signal it — treat as alive.
+      if (code === 'EPERM') return true;
+      return false;
+    }
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -95,18 +123,20 @@ export function acquireSpawnLock(): boolean {
         continue;
       }
 
-      if (Date.now() - mtimeMs <= SPAWN_LOCK_STALE_MS) {
-        // Fresh lock: another launcher is mid-spawn. Caller waits for its
-        // worker instead of spawning a competitor.
+      const mtimeFresh = Date.now() - mtimeMs <= SPAWN_LOCK_STALE_MS;
+      if (mtimeFresh && isLockHolderAlive(lockPath) !== false) {
+        // Fresh lock with a live (or unknown) holder: another launcher is
+        // mid-spawn. Caller waits for its worker instead of spawning a
+        // competitor. Only a positively dead holder falls through to break.
         return false;
       }
 
-      // Stale lock: the holder died mid-spawn. Re-stat immediately before
-      // breaking it — if the mtime changed since we judged it stale, another
-      // launcher already broke it and re-took the lock; unlinking now would
-      // delete THEIR fresh lock and mint two winners. The re-stat narrows
-      // that TOCTOU window from the whole staleness evaluation to a few
-      // microseconds.
+      // Stale by mtime, or holder PID is dead while mtime still looks fresh
+      // (#3300). Re-stat immediately before breaking it — if the mtime
+      // changed since we judged it breakable, another launcher already broke
+      // it and re-took the lock; unlinking now would delete THEIR fresh lock
+      // and mint two winners. The re-stat narrows that TOCTOU window from the
+      // whole staleness evaluation to a few microseconds.
       let recheckedMtimeMs: number;
       try {
         recheckedMtimeMs = statSync(lockPath).mtimeMs;
