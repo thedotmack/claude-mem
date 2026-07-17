@@ -28,9 +28,16 @@ import {
   isDependencyStatusInCooldown,
   recordClaudeCliSetupRequired,
 } from '../../../../shared/dependency-health.js';
-import { findClaudeExecutable } from '../../../../shared/find-claude-executable.js';
-import { isClassified } from '../../provider-errors.js';
+import { findClaudeExecutable, isClaudeExecutableUnspawnable } from '../../../../shared/find-claude-executable.js';
+import { isClassified, ClassifiedProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
+import {
+  canAttemptClaudeCliSelfHeal,
+  recordClaudeCliSelfHealAttempt,
+  clearClaudeCliSelfHealAttempts,
+  claudeCliSelfHealAttemptsInWindow,
+  SELF_HEAL_MAX_ATTEMPTS,
+} from '../../stale-spawn-recovery.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
@@ -66,11 +73,57 @@ export class SessionRoutes extends BaseRouteHandler {
     super();
   }
 
+  /**
+   * A worker process self-heals the stale-Claude-spawn wedge at most once: the
+   * restart replaces this process, so concurrent sessions hitting the same wedge
+   * must not each burn a slot in the per-generation persistent budget.
+   */
+  private claudeSelfHealTriggered = false;
+
   private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return 'openrouter';
     }
     return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
+  }
+
+  /**
+   * When the Claude CLI is present on disk but this worker process can no longer
+   * spawn it (ENOENT after a CLI auto-update swapped the binary underneath a
+   * long-running process), an in-process re-probe can never recover — only a
+   * fresh process can. Self-restart the worker via the successor-handoff path,
+   * bounded by a cross-process-persistent budget so a genuinely broken install
+   * cannot thrash. Returns true when a restart was triggered.
+   */
+  private maybeSelfHealStaleClaudeSpawn(error: unknown, source: string, sessionDbId: number): boolean {
+    const cause = isClassified(error) ? (error as ClassifiedProviderError).cause : undefined;
+    const unspawnable = isClaudeExecutableUnspawnable(error) || isClaudeExecutableUnspawnable(cause);
+    if (!unspawnable) return false;
+
+    // Restart already scheduled by an earlier session in this process — the
+    // successor will re-resolve the CLI; do not record another attempt.
+    if (this.claudeSelfHealTriggered) return true;
+
+    if (!canAttemptClaudeCliSelfHeal()) {
+      logger.warn('SESSION', 'Claude CLI present but unspawnable; self-heal restart budget exhausted — leaving in setup_required (restart claude-mem manually / verify the CLI)', {
+        sessionId: sessionDbId,
+        source,
+        attemptsInWindow: claudeCliSelfHealAttemptsInWindow(),
+        maxAttempts: SELF_HEAL_MAX_ATTEMPTS,
+      });
+      return false;
+    }
+
+    const attempt = recordClaudeCliSelfHealAttempt();
+    logger.warn('SESSION', 'Claude CLI present on disk but unspawnable from this worker (stale process after CLI auto-update) — self-restarting to recover', {
+      sessionId: sessionDbId,
+      source,
+      selfHealAttempt: attempt,
+      maxAttempts: SELF_HEAL_MAX_ATTEMPTS,
+    });
+    this.claudeSelfHealTriggered = true;
+    void this.workerService.shutdown('restart');
+    return true;
   }
 
   public async ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
@@ -97,11 +150,13 @@ export class SessionRoutes extends BaseRouteHandler {
           try {
             findClaudeExecutable('SDK');
             clearDependencyStatus('claude_cli');
+            clearClaudeCliSelfHealAttempts();
             logger.info('SESSION', 'Claude setup dependency repaired; resuming generator start', {
               sessionId: sessionDbId,
               source,
             });
           } catch (error) {
+            if (this.maybeSelfHealStaleClaudeSpawn(error, source, sessionDbId)) return;
             const err = error instanceof Error ? error : new Error(String(error));
             const classified = classifyClaudeError(error);
             if (classified.kind === 'setup_required') {
@@ -180,6 +235,7 @@ export class SessionRoutes extends BaseRouteHandler {
         if (provider === 'claude' && isClassified(error) && error.kind === 'setup_required') {
           skipGeneratorExitFinalization = true;
           recordClaudeCliSetupRequired(error.message);
+          this.maybeSelfHealStaleClaudeSpawn(error, source, session.sessionDbId);
           logger.warn('SESSION', 'Claude generator start requires setup; future Claude starts will be skipped until repaired', {
             sessionId: session.sessionDbId,
             provider,
