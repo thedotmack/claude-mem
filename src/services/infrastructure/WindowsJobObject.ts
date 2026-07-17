@@ -261,6 +261,20 @@ export function assignProcessTreeToWorkerJob(rootPid: number, label: string): { 
   try {
     if (!rootPid || rootPid <= 0) return null;
 
+    const assigned: number[] = [];
+
+    // Assign the ROOT into the job BEFORE snapshotting descendants. This closes
+    // the snapshot->root-join race: a `.cmd` wrapper (the root) can fork the
+    // real child between the snapshot and the root's assignment; that child
+    // would be neither in a pre-assignment snapshot nor an inheritor (the root
+    // wasn't a job member when it spawned), so it would orphan on abnormal
+    // death. Once the root is a member first, any child it spawns AFTER this
+    // point inherits membership automatically, and the snapshot below catches
+    // any descendants that already existed. Root-first ordering makes the tree
+    // capture deterministic instead of racing the wrapper's fork.
+    const rootAssigned = assignPidToWorkerJob(rootPid, label);
+    if (rootAssigned) assigned.push(rootPid);
+
     const childrenByParent = new Map<number, number[]>();
 
     const snapshot = k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -298,10 +312,10 @@ export function assignProcessTreeToWorkerJob(rootPid: number, label: string): { 
       k32.CloseHandle(snapshot);
     }
 
-    // BFS from the root, assigning root first then each descendant.
-    const assigned: number[] = [];
-    const visited = new Set<number>();
-    const queue: number[] = [rootPid];
+    // BFS over the descendants from the snapshot. The root was already assigned
+    // above (root-first), so seed it as visited and start from its children.
+    const visited = new Set<number>([rootPid]);
+    const queue: number[] = [...(childrenByParent.get(rootPid) ?? [])];
     while (queue.length > 0) {
       const pid = queue.shift() as number;
       if (visited.has(pid)) continue;
