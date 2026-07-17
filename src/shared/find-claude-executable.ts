@@ -427,11 +427,20 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
     // that ran but exited non-zero, timed out, or printed no version is a
     // different problem — do not claim it "could not be executed".
     if (probe.launchFailed) {
-      throw new Error(
-        `CLAUDE_CODE_PATH is set to ${describedPath} — the file exists but could not be executed (${probe.detail}). ` +
-        `A launcher script whose interpreter (shebang) is missing, or a native-installer stub pointing at a deleted version directory, fails this way. ` +
-        `Reinstall the Claude Code CLI or point CLAUDE_CODE_PATH at a working binary.`
-      );
+      // Present on disk (existsSync guard above) but the OS could not launch
+      // it — the same stale-worker signature as the discovered-candidate path
+      // (#3290). Pinned installs must surface the self-heal discriminator too,
+      // or a wedged CLAUDE_CODE_PATH parks the worker in setup_required
+      // forever; the launch-failure guidance rides in the candidate detail.
+      throw new ClaudeExecutableUnspawnableError([
+        {
+          path: configuredPath,
+          detail:
+            `CLAUDE_CODE_PATH is set to ${describedPath} — the file exists but could not be executed (${probe.detail}). ` +
+            `A launcher script whose interpreter (shebang) is missing, or a native-installer stub pointing at a deleted version directory, fails this way. ` +
+            `Reinstall the Claude Code CLI or point CLAUDE_CODE_PATH at a working binary.`,
+        },
+      ]);
     }
     throw new Error(
       `CLAUDE_CODE_PATH is set to ${describedPath} — the file ran but failed its version probe (${probe.detail}). ` +

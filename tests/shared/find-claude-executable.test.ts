@@ -295,10 +295,19 @@ describe('findClaudeExecutable broken candidates', () => {
     fakeClis.set('/custom/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
 
     // The file exists (existsSync passes) and the OS could not launch it (no
-    // exit status), so it is reported as "exists but could not be executed" —
-    // not "file does not exist" and not the old dead-end "--version check".
-    expect(() => findClaudeExecutable('SDK')).toThrow(/exists but could not be executed/);
-    expect(() => findClaudeExecutable('SDK')).toThrow(/shebang|native-installer/);
+    // exit status): the stale-worker signature, so it surfaces as the
+    // ClaudeExecutableUnspawnableError self-heal discriminator (type contract
+    // covered in its own describe block) while still carrying the
+    // launch-failure guidance (shebang / native-installer stub).
+    let caught: unknown;
+    try {
+      findClaudeExecutable('SDK');
+    } catch (error) {
+      caught = error;
+    }
+    expect(isClaudeExecutableUnspawnable(caught)).toBe(true);
+    expect((caught as Error).message).toMatch(/exists but could not be executed/);
+    expect((caught as Error).message).toMatch(/shebang|native-installer/);
   });
 
   it('reports a configured CLAUDE_CODE_PATH that ran but failed its version probe without claiming it could not launch', () => {
@@ -306,9 +315,18 @@ describe('findClaudeExecutable broken candidates', () => {
     fakeClis.set('/custom/claude', { version: '0.0.0', supportsDontAsk: false, ranButFailed: true });
 
     // The process started and exited non-zero, so the launch-failure guidance
-    // (shebang / native-installer stub) must NOT appear.
-    expect(() => findClaudeExecutable('SDK')).toThrow(/ran but failed its version probe/);
-    expect(() => findClaudeExecutable('SDK')).not.toThrow(/could not be executed|shebang|native-installer/);
+    // (shebang / native-installer stub) must NOT appear — and since the probe
+    // actually ran, this is NOT the stale-worker signature: a plain Error, no
+    // self-heal discriminator.
+    let caught: unknown;
+    try {
+      findClaudeExecutable('SDK');
+    } catch (error) {
+      caught = error;
+    }
+    expect(isClaudeExecutableUnspawnable(caught)).toBe(false);
+    expect((caught as Error).message).toMatch(/ran but failed its version probe/);
+    expect((caught as Error).message).not.toMatch(/could not be executed|shebang|native-installer/);
   });
 
   it('reports a desktop-app CLAUDE_CODE_PATH with CLI install guidance', () => {
@@ -471,6 +489,29 @@ describe('findClaudeExecutable present-but-unspawnable detection', () => {
     }
     // Existing per-candidate warn still fires.
     expect(warnings.some((m) => m.includes('/stale/claude') && m.includes('failed --version check'))).toBe(true);
+  });
+
+  it('throws ClaudeExecutableUnspawnableError when the configured CLAUDE_CODE_PATH exists but cannot be spawned', () => {
+    // Same wedge, pinned install: CLAUDE_CODE_PATH points at a binary that is
+    // on disk but fails every probe. Without the discriminator the routes
+    // layer sees a generic setup failure and never self-heals.
+    installFakes({ settingsPath: '/pinned/claude' });
+    fakeClis.set('/pinned/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
+
+    let caught: unknown;
+    try {
+      findClaudeExecutable('SDK');
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeDefined();
+    expect(isClaudeExecutableUnspawnable(caught)).toBe(true);
+    if (isClaudeExecutableUnspawnable(caught)) {
+      expect(caught.candidates).toEqual([
+        { path: '/pinned/claude', detail: expect.any(String) },
+      ]);
+      expect(caught.message).toContain('/pinned/claude');
+    }
   });
 
   it('throws the generic not-found Error (NOT ClaudeExecutableUnspawnableError) when nothing exists on disk', () => {
