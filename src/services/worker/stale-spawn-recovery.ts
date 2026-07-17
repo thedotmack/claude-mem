@@ -15,6 +15,12 @@
  *
  * All IO here is best-effort: every read/write swallows errors and degrades
  * to an empty budget. Persisting self-heal state must never break the worker.
+ *
+ * The budget clears on every successful CLI resolution — including the
+ * successor worker's own boot — so each distinct wedge (at most one per CLI
+ * auto-update) gets a fresh budget. The cap therefore only bites when a fresh
+ * process cannot resolve the CLI either (genuinely broken install), which is
+ * exactly the case that must not thrash.
  */
 
 import fs from 'fs';
@@ -31,13 +37,17 @@ interface SelfHealState { attempts: number[]; }
 function readAttempts(): number[] {
   try {
     const parsed = JSON.parse(fs.readFileSync(SELF_HEAL_STATE_PATH, 'utf8')) as SelfHealState;
-    return Array.isArray(parsed?.attempts) ? parsed.attempts.filter(n => typeof n === 'number') : [];
+    return Array.isArray(parsed?.attempts)
+      ? parsed.attempts.filter(n => typeof n === 'number' && Number.isFinite(n))
+      : [];
   } catch { return []; }
 }
 function writeAttempts(attempts: number[]): void {
+  const tmp = `${SELF_HEAL_STATE_PATH}.tmp`;
   try {
     fs.mkdirSync(path.dirname(SELF_HEAL_STATE_PATH), { recursive: true });
-    fs.writeFileSync(SELF_HEAL_STATE_PATH, JSON.stringify({ attempts }));
+    fs.writeFileSync(tmp, JSON.stringify({ attempts }), 'utf-8');
+    fs.renameSync(tmp, SELF_HEAL_STATE_PATH);
   } catch (e) {
     logger.warn('WORKER', 'Failed to persist Claude CLI self-heal state', {}, e instanceof Error ? e : new Error(String(e)));
   }

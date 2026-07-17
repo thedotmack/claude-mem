@@ -343,10 +343,13 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
         `Install Claude Code CLI: npm install -g @anthropic-ai/claude-code`
       );
     }
-    throw new Error(
-      `CLAUDE_CODE_PATH is set to "${settings.CLAUDE_CODE_PATH}" but it failed the --version check (${probe.detail}). ` +
-      `Ensure this is a working Claude Code CLI binary.`
-    );
+    // Present on disk (existsSync guard above) but every probe failed — the
+    // same stale-worker signature as the discovered-candidate path (#3290).
+    // Pinned installs must surface the self-heal discriminator too, or a
+    // wedged CLAUDE_CODE_PATH parks the worker in setup_required forever.
+    throw new ClaudeExecutableUnspawnableError([
+      { path: settings.CLAUDE_CODE_PATH, detail: probe.detail },
+    ]);
   }
 
   // --- 2. Probe every discovered candidate ---------------------------------

@@ -216,7 +216,10 @@ describe('findClaudeExecutable broken candidates', () => {
     installFakes({ settingsPath: '/custom/claude' });
     fakeClis.set('/custom/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
 
-    expect(() => findClaudeExecutable('SDK')).toThrow(/failed the --version check/);
+    // A configured path that exists but fails every probe now surfaces as
+    // present-but-unspawnable (type contract covered in its own describe
+    // block); the probe detail must still be carried in the message.
+    expect(() => findClaudeExecutable('SDK')).toThrow(/cannot execute binary file/);
   });
 
   it('reports a desktop-app CLAUDE_CODE_PATH with CLI install guidance', () => {
@@ -351,6 +354,29 @@ describe('findClaudeExecutable present-but-unspawnable detection', () => {
     }
     // Existing per-candidate warn still fires.
     expect(warnings.some((m) => m.includes('/stale/claude') && m.includes('failed --version check'))).toBe(true);
+  });
+
+  it('throws ClaudeExecutableUnspawnableError when the configured CLAUDE_CODE_PATH exists but cannot be spawned', () => {
+    // Same wedge, pinned install: CLAUDE_CODE_PATH points at a binary that is
+    // on disk but fails every probe. Without the discriminator the routes
+    // layer sees a generic setup failure and never self-heals.
+    installFakes({ settingsPath: '/pinned/claude' });
+    fakeClis.set('/pinned/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
+
+    let caught: unknown;
+    try {
+      findClaudeExecutable('SDK');
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeDefined();
+    expect(isClaudeExecutableUnspawnable(caught)).toBe(true);
+    if (isClaudeExecutableUnspawnable(caught)) {
+      expect(caught.candidates).toEqual([
+        { path: '/pinned/claude', detail: expect.any(String) },
+      ]);
+      expect(caught.message).toContain('/pinned/claude');
+    }
   });
 
   it('throws the generic not-found Error (NOT ClaudeExecutableUnspawnableError) when nothing exists on disk', () => {
