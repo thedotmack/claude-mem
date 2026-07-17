@@ -3,7 +3,7 @@ import { getPlatformAdapter } from './adapters/index.js';
 import { AdapterRejectedInput } from './adapters/errors.js';
 import { getEventHandler } from './handlers/index.js';
 import type { HookResult } from './types.js';
-import { HOOK_EXIT_CODES } from '../shared/hook-constants.js';
+import { HOOK_EXIT_CODES, isToolHookDisabledByEnv } from '../shared/hook-constants.js';
 import {
   installHookStderrBuffer,
   emitModelContext,
@@ -105,6 +105,15 @@ export async function hookCommand(platform: string, event: string, options: Hook
   // Register the hook event for the threshold-gated hook_failed telemetry
   // (closed enum enforced inside; non-enum events just omit hook_type).
   setActiveHookType(event);
+
+  // #3106: defense in depth if hookCommand is invoked without the worker-service
+  // pre-gate (tests / alternate entry points). Skip stdin + handler work.
+  if (isToolHookDisabledByEnv(event)) {
+    const adapter = getPlatformAdapter(platform);
+    emitModelContext(adapter, buildNoOpResult(event));
+    exitGraceful(options);
+    return HOOK_EXIT_CODES.SUCCESS;
+  }
 
   // Hook IO Discipline (issue #2292):
   // We BUFFER stderr during handler execution so that unsolicited writes from

@@ -22,6 +22,11 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_WORKER_HOST`      | `127.0.0.1`                     | Worker service host address           |
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data root — every other path (database, chroma, logs, settings.json, worker.pid) derives from this |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
+| `CLAUDE_MEM_DISABLE_TOOL_HOOKS` | _(unset)_                         | Set to `1` to no-op PreToolUse (`file-context`) and PostToolUse (`observation`) hooks while keeping SessionStart / UserPromptSubmit / Stop active (useful on Windows when bash hook consoles steal focus) |
+| `CLAUDE_MEM_DISABLE_OBSERVATION` | _(unset)_                      | Set to `1` to no-op only the PostToolUse `observation` hook |
+| `CLAUDE_MEM_DISABLE_FILE_CONTEXT` | _(unset)_                     | Set to `1` to no-op only the PreToolUse `file-context` hook |
+
+These disable flags can also be set under the `env` block in `~/.claude/settings.json` so Claude Code inherits them for every hook spawn.
 
 ### Gemini Provider Settings
 

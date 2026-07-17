@@ -10,7 +10,7 @@ import { getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../shared/paths.js';
-import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
+import { HOOK_EXIT_CODES, HOOK_TIMEOUTS, isToolHookDisabledByEnv } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { getAuthMethodDescription } from '../shared/EnvManager.js';
@@ -1320,6 +1320,12 @@ async function main() {
         console.error('Platforms: claude-code, codex, cursor, antigravity-cli, raw');
         console.error('Events: context, session-init, observation, summarize, user-message');
         process.exit(1);
+      }
+
+      // #3106: exit before ensureWorkerStarted so disabled tool hooks do no
+      // stdin / worker / handler work (Windows console focus opt-out).
+      if (isToolHookDisabledByEnv(event)) {
+        process.exit(HOOK_EXIT_CODES.SUCCESS);
       }
 
       const workerStartResult = await ensureWorkerStarted(port);
