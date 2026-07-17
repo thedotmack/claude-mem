@@ -6,6 +6,8 @@ import {
   queryObservationsMulti,
   querySummariesMulti,
 } from '../../src/services/context/ObservationCompiler.js';
+import { loadContextConfig } from '../../src/services/context/ContextConfigLoader.js';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import type { ContextConfig, Observation, SummaryTimelineItem } from '../../src/services/context/types.js';
 
 function createTestObservation(overrides: Partial<Observation> = {}): Observation {
@@ -290,6 +292,132 @@ describe('context compiler platform scoping', () => {
       ]);
     } finally {
       store.close();
+    }
+  });
+});
+
+describe('context compiler main-agent-only injection filtering', () => {
+  const baseConfig: ContextConfig = {
+    totalObservationCount: 20,
+    fullObservationCount: 3,
+    sessionCount: 20,
+    showReadTokens: true,
+    showWorkTokens: true,
+    showSavingsAmount: true,
+    showSavingsPercent: true,
+    observationTypes: new Set(['discovery']),
+    observationConcepts: new Set(['agent-scope']),
+    fullObservationField: 'narrative',
+    showLastSummary: true,
+    showLastMessage: false,
+    mainAgentOnly: true,
+  };
+
+  function seedObs(
+    store: SessionStore,
+    input: {
+      project: string;
+      contentSessionId: string;
+      memorySessionId: string;
+      title: string;
+      agentId: string | null;
+      createdAtEpoch: number;
+    },
+  ): void {
+    const sessionDbId = store.createSDKSession(
+      input.contentSessionId,
+      input.project,
+      'prompt',
+      undefined,
+      'claude',
+    );
+    store.ensureMemorySessionIdRegistered(sessionDbId, input.memorySessionId);
+    store.storeObservation(
+      input.memorySessionId,
+      input.project,
+      {
+        type: 'discovery',
+        title: input.title,
+        subtitle: null,
+        facts: [],
+        narrative: 'agent scope narrative',
+        concepts: ['agent-scope'],
+        files_read: [],
+        files_modified: [],
+        agent_id: input.agentId,
+      },
+      1,
+      0,
+      input.createdAtEpoch,
+    );
+  }
+
+  function seedMix(store: SessionStore, project: string): void {
+    seedObs(store, {
+      project,
+      contentSessionId: 'main-session',
+      memorySessionId: 'main-memory',
+      title: 'MAIN_OBS',
+      agentId: null,
+      createdAtEpoch: 1_700_000_000_000,
+    });
+    seedObs(store, {
+      project,
+      contentSessionId: 'sub-session',
+      memorySessionId: 'sub-memory',
+      title: 'SUB_OBS',
+      agentId: 'agent-42',
+      createdAtEpoch: 1_700_000_001_000,
+    });
+  }
+
+  it('excludes subagent observations from the injection window when mainAgentOnly is true (default)', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      seedMix(store, 'agent-scope-project');
+
+      const observations = queryObservationsMulti(store, ['agent-scope-project'], baseConfig);
+      expect(observations.map(obs => obs.title)).toEqual(['MAIN_OBS']);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('includes subagent observations when mainAgentOnly is false (backward compat) and leaves the count query unfiltered', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      seedMix(store, 'agent-scope-project');
+
+      const observations = queryObservationsMulti(
+        store,
+        ['agent-scope-project'],
+        { ...baseConfig, mainAgentOnly: false },
+      );
+      expect(observations.map(obs => obs.title).sort()).toEqual(['MAIN_OBS', 'SUB_OBS']);
+
+      // Guard the "don't over-filter" constraint: the count query has no
+      // agent_id filter, so it still sees both main and subagent rows.
+      expect(countObservationsByProjects(store, ['agent-scope-project'])).toBe(2);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('maps CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY to the mainAgentOnly flag', () => {
+    ModeManager.getInstance().loadMode('code');
+    const original = process.env.CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY;
+    try {
+      process.env.CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY = 'false';
+      expect(loadContextConfig().mainAgentOnly).toBe(false);
+
+      delete process.env.CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY;
+      expect(loadContextConfig().mainAgentOnly).toBe(true);
+    } finally {
+      if (original === undefined) {
+        delete process.env.CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY;
+      } else {
+        process.env.CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY = original;
+      }
     }
   });
 });
