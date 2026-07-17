@@ -338,7 +338,14 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: s
 
 export function buildWindowsDaemonStartCommand(runtimePath: string, scriptPath: string): string {
   const psSingleQuote = (value: string) => value.replace(/'/g, "''");
-  return `Start-Process -FilePath '${psSingleQuote(runtimePath)}' -ArgumentList @('${psSingleQuote(scriptPath)}','--daemon') -WindowStyle Hidden`;
+  // Windows PowerShell 5.1 joins -ArgumentList elements with spaces WITHOUT
+  // quoting them when it builds the child's native command line, so a script
+  // path under a spaced %USERPROFILE% splits into multiple argv entries and
+  // bun exits instantly with "Module not found" (#3195). Embedding literal
+  // double quotes inside the single-quoted PS string keeps the path a single
+  // argument. -FilePath is safe as-is: it is a single-string parameter and
+  // never goes through that join.
+  return `Start-Process -FilePath '${psSingleQuote(runtimePath)}' -ArgumentList @('"${psSingleQuote(scriptPath)}"','--daemon') -WindowStyle Hidden`;
 }
 
 export function spawnDaemon(
