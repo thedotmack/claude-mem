@@ -55,6 +55,7 @@ import {
   httpShutdown
 } from './infrastructure/HealthMonitor.js';
 import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
+import { recoverUnhealthyWorker } from './infrastructure/WorkerRecovery.js';
 import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos } from './infrastructure/WorktreeAdoption.js';
 
 import { Server } from './server/Server.js';
@@ -1090,7 +1091,7 @@ async function main() {
       // health responder, a worker (just not a verifiable successor) holds
       // the port — waiting for it to free would burn the full timeout for
       // nothing, so skip straight to verifying the current owner.
-      const restartFreed = handoffSawLiveWorker
+      let restartFreed = handoffSawLiveWorker
         ? false
         : await waitForPortFree(port, getPlatformTimeout(15000));
       // Prefer the marketplace-installed script so restart boots the
@@ -1099,6 +1100,21 @@ async function main() {
       const restartScript = resolveWorkerScriptPath() ?? __filename;
       let spawnedScript = 'none (port still bound — nothing spawned)';
       let spawnLockHeld = false;
+
+      // A dead or hung Windows worker can leave its Chroma descendants alive.
+      // With Bun, those descendants may retain an inherited listener handle,
+      // so the port remains bound even after worker.pid goes stale. Reclaim
+      // only the verified worker/claude-mem Chroma trees, then prove the port
+      // is reusable before entering the normal restart spawn path.
+      if (!restartFreed && !handoffSawLiveWorker) {
+        spawnLockHeld = acquireSpawnLock();
+        if (spawnLockHeld) {
+          restartFreed = await recoverUnhealthyWorker(port, restartScript);
+        } else {
+          logger.info('SYSTEM', 'Another launcher holds the spawn lock during restart recovery — deferring to it');
+        }
+      }
+
       if (restartFreed) {
         // Owner-or-dead guarded (Phase 5): delete only the old worker's PID
         // file (oldPid) or a dead pid's leftover. If a successor we failed to
@@ -1107,7 +1123,9 @@ async function main() {
         // Spawn gate (src/shared/worker-spawn-gate.ts): if another launcher
         // (a hook or the MCP server) is already mid-spawn, skip our own spawn
         // and just verify its worker below.
-        spawnLockHeld = acquireSpawnLock();
+        if (!spawnLockHeld) {
+          spawnLockHeld = acquireSpawnLock();
+        }
       } else {
         // The port never freed: either the old worker refuses to die (the
         // verification below fails and reports its health payload) or a

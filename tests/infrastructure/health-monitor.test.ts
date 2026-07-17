@@ -112,6 +112,18 @@ describe('HealthMonitor', () => {
   });
 
   describe('waitForHealth', () => {
+    it('bounds a health probe even when the TCP peer never sends a response', async () => {
+      global.fetch = mock((_url: string | URL | Request, init?: RequestInit) => new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+      })) as unknown as typeof fetch;
+
+      const startedAt = Date.now();
+      const result = await waitForHealth(37777, 200);
+
+      expect(result).toBe(false);
+      expect(Date.now() - startedAt).toBeLessThan(1000);
+    });
+
     it('should succeed immediately when server responds', async () => {
       global.fetch = mock(() => Promise.resolve({
         ok: true,

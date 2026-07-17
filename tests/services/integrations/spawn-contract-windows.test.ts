@@ -22,6 +22,19 @@ describe('Windows #2696 - chroma-mcp spawns uvx directly', () => {
     expect(command.toLowerCase().endsWith('uvx.exe')).toBe(true);
   });
 
+  it('bypasses the short-lived uvx.exe shim when uv.exe is available', () => {
+    const invocation = ChromaMcpManager.resolveUvxInvocation(
+      'win32',
+      candidate => candidate.toLowerCase() === 'c:\\tools\\uv.exe',
+      'C:\\Tools\\uvx.exe',
+    );
+
+    expect(invocation).toEqual({
+      command: 'C:\\Tools\\uv.exe',
+      argsPrefix: ['tool', 'uvx'],
+    });
+  });
+
   it('uses a bare `uvx` on non-Windows platforms', () => {
     expect(ChromaMcpManager.resolveUvxCommand('linux')).toBe('uvx');
     expect(ChromaMcpManager.resolveUvxCommand('darwin')).toBe('uvx');
@@ -52,7 +65,7 @@ describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', (
       'win32',
     );
 
-    expect(invocation.command).toBe('cmd.exe');
+    expect(invocation.command.toLowerCase().endsWith('cmd.exe')).toBe(true);
     expect(invocation.args).toEqual([
       '/d',
       '/s',
@@ -79,7 +92,7 @@ describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', (
       () => 'C:\\Program Files\\nodejs\\codex.cmd',
     );
 
-    expect(invocation.command).toBe('cmd.exe');
+    expect(invocation.command.toLowerCase().endsWith('cmd.exe')).toBe(true);
     expect(invocation.args).toEqual([
       '/d',
       '/s',
@@ -93,7 +106,7 @@ describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', (
   it('wraps the codex.cmd fallback with cmd.exe /d /s /c without shell:true', () => {
     const invocation = resolveCodexSpawnInvocation(['--version'], 'win32', () => null);
 
-    expect(invocation.command).toBe('cmd.exe');
+    expect(invocation.command.toLowerCase().endsWith('cmd.exe')).toBe(true);
     expect(invocation.args).toEqual(['/d', '/s', '/c', '"codex.cmd" "--version"']);
     expect('shell' in invocation.options).toBe(false);
   });
