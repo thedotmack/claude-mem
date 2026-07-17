@@ -83,21 +83,22 @@ function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): stri
   const homeDirectory = options.homeDirectory ?? homedir();
   const pathExists = options.pathExists ?? existsSync;
   const lookupInPath = options.lookupInPath ?? lookupBinaryInPath;
+  const platformPath = platform === 'win32' ? path.win32 : path.posix;
 
   const candidatePaths: (string | undefined)[] = platform === 'win32'
     ? [
         env.BUN,
         env.BUN_PATH,
-        path.join(homeDirectory, '.bun', 'bin', 'bun.exe'),
-        path.join(homeDirectory, '.bun', 'bin', 'bun'),
-        env.USERPROFILE ? path.join(env.USERPROFILE, '.bun', 'bin', 'bun.exe') : undefined,
-        env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'bun', 'bun.exe') : undefined,
-        env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'bun', 'bin', 'bun.exe') : undefined,
+        platformPath.join(homeDirectory, '.bun', 'bin', 'bun.exe'),
+        platformPath.join(homeDirectory, '.bun', 'bin', 'bun'),
+        env.USERPROFILE ? platformPath.join(env.USERPROFILE, '.bun', 'bin', 'bun.exe') : undefined,
+        env.LOCALAPPDATA ? platformPath.join(env.LOCALAPPDATA, 'bun', 'bun.exe') : undefined,
+        env.LOCALAPPDATA ? platformPath.join(env.LOCALAPPDATA, 'bun', 'bin', 'bun.exe') : undefined,
       ]
     : [
         env.BUN,
         env.BUN_PATH,
-        path.join(homeDirectory, '.bun', 'bin', 'bun'),
+        platformPath.join(homeDirectory, '.bun', 'bin', 'bun'),
         '/usr/local/bin/bun',
         '/opt/homebrew/bin/bun',
         '/home/linuxbrew/.linuxbrew/bin/bun',
@@ -336,6 +337,17 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: s
   }
 }
 
+export function buildWindowsDaemonStartScript(runtimePath: string, scriptPath: string): string {
+  const escapedRuntimePath = runtimePath.replace(/'/g, "''");
+  const escapedScriptPath = scriptPath.replace(/'/g, "''");
+  return `$worker = Start-Process -FilePath '${escapedRuntimePath}' -ArgumentList @('${escapedScriptPath}','--daemon') -WindowStyle Hidden -PassThru; $worker.Id`;
+}
+
+export function parseWindowsDaemonPid(output: string): number | undefined {
+  const pid = Number.parseInt(output.trim(), 10);
+  return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+}
+
 export function spawnDaemon(
   scriptPath: string,
   port: number,
@@ -359,16 +371,21 @@ export function spawnDaemon(
   }
 
   if (process.platform === 'win32') {
-    const psScript = `Start-Process -FilePath '${runtimePath.replace(/'/g, "''")}' -ArgumentList @('${scriptPath.replace(/'/g, "''")}','--daemon') -WindowStyle Hidden`;
+    const psScript = buildWindowsDaemonStartScript(runtimePath, scriptPath);
     const encodedCommand = Buffer.from(psScript, 'utf16le').toString('base64');
 
     try {
-      execSync(`powershell -NoProfile -EncodedCommand ${encodedCommand}`, {
-        stdio: 'ignore',
+      const output = execSync(`powershell -NoProfile -EncodedCommand ${encodedCommand}`, {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        encoding: 'utf-8',
         windowsHide: true,
         env
       });
-      return 0;
+      const pid = parseWindowsDaemonPid(output);
+      if (pid === undefined) {
+        logger.error('SYSTEM', 'Windows daemon launch returned no usable PID', { runtimePath });
+      }
+      return pid;
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new Error(String(error));
       logger.error(

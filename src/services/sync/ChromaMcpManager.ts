@@ -51,8 +51,8 @@ const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
   'protobuf<7',
 ];
 
-// Issue #2696 (revised): chroma-mcp is now spawned by invoking uvx DIRECTLY on
-// every platform — see ChromaMcpManager.resolveUvxCommand(). The previous
+// Issue #2696 (revised): chroma-mcp is now spawned without a shell wrapper on
+// every platform — see ChromaMcpManager.resolveUvxInvocation(). The previous
 // `cmd.exe` shell-wrapper path, and the cmd.exe metacharacter-quoting helper that
 // went with it, were removed: even with the dep-override specs wrapped in double
 // quotes, Node's child_process arg-quoting for cmd.exe re-mangled the `>`/`<` in
@@ -153,13 +153,14 @@ export class ChromaMcpManager {
     const uvxPreflightEnv = ChromaMcpManager.getUvxPreflightEnv();
     getSupervisor().assertCanSpawn('chroma mcp');
 
-    // Spawn uvx DIRECTLY (no `cmd.exe` shell wrapper). On Windows, routing through
+    // Spawn uv/uvx directly (no `cmd.exe` shell wrapper). On Windows, routing through
     // cmd.exe makes it parse the `>`/`<` in the dep-override specs as shell
     // redirection before uvx sees them; a shell-less spawn passes them literally.
-    // resolveUvxCommand returns the absolute uvx.exe path on Windows (Node won't
-    // PATHEXT-resolve a bare `uvx`) and bare `uvx` elsewhere (#2696).
-    const uvxSpawnCommand = ChromaMcpManager.resolveUvxCommand();
-    const uvxSpawnArgs = commandArgs;
+    // resolveUvxInvocation prefers sibling uv.exe on Windows so the supervisor
+    // tracks a stable process-tree root, and uses bare `uvx` elsewhere (#2696).
+    const uvxInvocation = ChromaMcpManager.resolveUvxInvocation();
+    const uvxSpawnCommand = uvxInvocation.command;
+    const uvxSpawnArgs = [...uvxInvocation.argsPrefix, ...commandArgs];
 
     if (!ChromaMcpManager.isUvxAvailable(uvxSpawnCommand, uvxPreflightEnv, process.platform)) {
       const message = `uvx executable not found for chroma-mcp (${uvxSpawnCommand})`;
@@ -1230,6 +1231,43 @@ export class ChromaMcpManager {
       }
     }
     return 'uvx.exe';
+  }
+
+  /**
+   * Resolve the actual uvx process invocation.
+   *
+   * Windows' uvx.exe is a small launcher that starts `uv.exe tool uvx` and
+   * then exits. Tracking that short-lived PID makes process-tree cleanup lose
+   * the long-lived uv/python/chroma descendants. When the sibling uv.exe is
+   * available, invoke it directly so the supervisor owns a stable tree root.
+   */
+  static resolveUvxInvocation(
+    platform: NodeJS.Platform = process.platform,
+    pathExists: (candidate: string) => boolean = fs.existsSync,
+    resolvedUvxCommand?: string,
+  ): { command: string; argsPrefix: string[] } {
+    const uvxCommand = resolvedUvxCommand ?? ChromaMcpManager.resolveUvxCommand(platform);
+    if (platform !== 'win32') {
+      return { command: uvxCommand, argsPrefix: [] };
+    }
+
+    const windowsPath = path.win32;
+    const basename = windowsPath.basename(uvxCommand).toLowerCase();
+    if (basename === 'uv.exe') {
+      return { command: uvxCommand, argsPrefix: ['tool', 'uvx'] };
+    }
+    if (basename === 'uvx.exe') {
+      const uvCommand = windowsPath.join(windowsPath.dirname(uvxCommand), 'uv.exe');
+      try {
+        if (pathExists(uvCommand)) {
+          return { command: uvCommand, argsPrefix: ['tool', 'uvx'] };
+        }
+      } catch {
+        // Fall back to the uvx launcher below.
+      }
+    }
+
+    return { command: uvxCommand, argsPrefix: [] };
   }
 
   private static isUvxAvailable(

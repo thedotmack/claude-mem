@@ -26,6 +26,8 @@ const {
   isPidFileRecent,
   touchPidFile,
   spawnDaemon,
+  buildWindowsDaemonStartScript,
+  parseWindowsDaemonPid,
   resolveWorkerRuntimePath,
   captureProcessStartToken,
   verifyPidFileOwnership,
@@ -630,6 +632,23 @@ describe('ProcessManager', () => {
   });
 
   describe('spawnDaemon', () => {
+    it('builds a hidden PowerShell launch that returns the real daemon PID', () => {
+      const script = buildWindowsDaemonStartScript(
+        'C:\\Program Files\\Bun\\bun.exe',
+        "C:\\Plugin's Files\\worker-service.cjs"
+      );
+
+      expect(script).toContain('-PassThru');
+      expect(script).toContain('$worker.Id');
+      expect(script).toContain("C:\\Plugin''s Files\\worker-service.cjs");
+    });
+
+    it('parses a PowerShell Start-Process PID and rejects the old zero sentinel', () => {
+      expect(parseWindowsDaemonPid('4242\r\n')).toBe(4242);
+      expect(parseWindowsDaemonPid('0')).toBeUndefined();
+      expect(parseWindowsDaemonPid('not-a-pid')).toBeUndefined();
+    });
+
     it('should use setsid on Linux when available', () => {
       if (process.platform === 'win32') return; 
 
@@ -657,19 +676,13 @@ describe('ProcessManager', () => {
       }
     });
 
-    it('Windows 0 PID success sentinel must NOT be detected via falsy check', () => {
-      const windowsSuccessSentinel: number | undefined = 0;
+    it('Windows daemon success is represented by its real positive PID', () => {
+      const windowsSuccessPid: number | undefined = 4242;
       const failureSentinel: number | undefined = undefined;
 
-      expect(windowsSuccessSentinel === undefined).toBe(false);
+      expect(windowsSuccessPid === undefined).toBe(false);
       expect(failureSentinel === undefined).toBe(true);
-
-      expect(!windowsSuccessSentinel).toBe(true); 
-      expect(!failureSentinel).toBe(true);
-
-      const isFailure = (pid: number | undefined) => pid === undefined;
-      expect(isFailure(windowsSuccessSentinel)).toBe(false);
-      expect(isFailure(failureSentinel)).toBe(true);
+      expect(windowsSuccessPid).toBeGreaterThan(0);
     });
   });
 

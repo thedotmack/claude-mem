@@ -3,6 +3,7 @@ import path from 'path';
 import net from 'net';
 import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
+import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { MARKETPLACE_ROOT, USER_SETTINGS_PATH } from '../../shared/paths.js';
 
@@ -20,9 +21,29 @@ function formatHostForUrl(host: string): string {
 async function httpRequestToWorker(
   port: number,
   endpointPath: string,
-  method: string = 'GET'
+  method: string = 'GET',
+  timeoutMs: number = HOOK_TIMEOUTS.HEALTH_CHECK,
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
-  const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, { method });
+  const controller = new AbortController();
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`Worker request timed out after ${timeoutMs}ms`));
+    }, Math.max(1, timeoutMs));
+  });
+  let response: Response;
+  try {
+    response = await Promise.race([
+      fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, {
+        method,
+        signal: controller.signal,
+      }),
+      timeoutPromise,
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
   let body = '';
   try {
     body = await response.text();
@@ -33,20 +54,6 @@ async function httpRequestToWorker(
 }
 
 export async function isPortInUse(port: number): Promise<boolean> {
-  if (process.platform === 'win32') {
-    try {
-      const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`);
-      return response.ok;
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', {}, error);
-      } else {
-        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', { error: String(error) });
-      }
-      return false;
-    }
-  }
-
   return new Promise((resolve) => {
     const server = net.createServer();
     const workerHost = getWorkerHost();
@@ -73,7 +80,13 @@ async function pollEndpointUntilOk(
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
-      const result = await httpRequestToWorker(port, endpointPath);
+      const remainingMs = timeoutMs - (Date.now() - start);
+      const result = await httpRequestToWorker(
+        port,
+        endpointPath,
+        'GET',
+        Math.min(HOOK_TIMEOUTS.HEALTH_CHECK, Math.max(1, remainingMs)),
+      );
       if (result.ok) return true;
     } catch (error) {
       if (error instanceof Error) {
@@ -82,7 +95,9 @@ async function pollEndpointUntilOk(
         logger.debug('SYSTEM', retryLogMessage, { error: String(error) });
       }
     }
-    await new Promise(r => setTimeout(r, 500));
+    const remainingMs = timeoutMs - (Date.now() - start);
+    if (remainingMs <= 0) break;
+    await new Promise(r => setTimeout(r, Math.min(500, remainingMs)));
   }
   return false;
 }

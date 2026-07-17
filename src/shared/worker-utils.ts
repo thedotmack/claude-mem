@@ -14,6 +14,8 @@ import { checkVersionMatch } from "../services/infrastructure/index.js";
 // tests mock the barrel module wholesale, and the resolver must stay real.
 // ProcessManager imports nothing from worker-utils, so no cycle.
 import { resolveWorkerRuntimePath } from "../services/infrastructure/ProcessManager.js";
+import { isPortInUse } from "../services/infrastructure/HealthMonitor.js";
+import { recoverUnhealthyWorker } from "../services/infrastructure/WorkerRecovery.js";
 import { acquireSpawnLock, releaseSpawnLock } from "./worker-spawn-gate.js";
 
 function readTimeoutEnv(
@@ -475,6 +477,17 @@ export async function ensureWorkerRunning(): Promise<boolean> {
   const spawnLockHeld = acquireSpawnLock();
   try {
     if (spawnLockHeld) {
+      const workerPort = getWorkerPort();
+      if (await isPortInUse(workerPort)) {
+        const recovered = await recoverUnhealthyWorker(workerPort, scriptPath);
+        if (!recovered) {
+          logger.error('SYSTEM', 'Lazy-spawn recovery could not release the worker port', {
+            port: workerPort,
+          });
+          return false;
+        }
+      }
+
       logger.info('SYSTEM', 'Worker not running — lazy-spawning', { runtimePath, scriptPath });
 
       try {

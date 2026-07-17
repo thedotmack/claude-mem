@@ -17,6 +17,7 @@ export interface ManagedProcessInfo {
   sessionId?: string | number;
   startedAt: string;
   pgid?: number;
+  startToken?: string;
 }
 
 export interface ManagedProcessRecord extends ManagedProcessInfo {
@@ -183,6 +184,16 @@ export function verifyPidFileOwnership(info: PidInfo | null): info is PidInfo {
   return match;
 }
 
+function isManagedProcessRecordAlive(info: ManagedProcessInfo): boolean {
+  if (!isPidAlive(info.pid)) return false;
+  if (!info.startToken) return true;
+
+  const currentToken = captureProcessStartToken(info.pid);
+  // A failed token lookup must not make the registry forget a live process;
+  // strict token proof is required only before destructive recovery.
+  return currentToken === null || currentToken === info.startToken;
+}
+
 export class ProcessRegistry {
   private readonly registryPath: string;
   private readonly entries = new Map<string, ManagedProcessInfo>();
@@ -233,7 +244,8 @@ export class ProcessRegistry {
 
   register(id: string, processInfo: ManagedProcessInfo, processRef?: ChildProcess): void {
     this.initialize();
-    this.entries.set(id, processInfo);
+    const startToken = processInfo.startToken ?? captureProcessStartToken(processInfo.pid);
+    this.entries.set(id, startToken ? { ...processInfo, startToken } : processInfo);
     if (processRef) {
       this.runtimeProcesses.set(id, processRef);
     }
@@ -281,7 +293,7 @@ export class ProcessRegistry {
     let removed = 0;
     let removedSdk = 0;
     for (const [id, info] of this.entries) {
-      if (isPidAlive(info.pid)) continue;
+      if (isManagedProcessRecordAlive(info)) continue;
       this.entries.delete(id);
       this.runtimeProcesses.delete(id);
       removed += 1;
