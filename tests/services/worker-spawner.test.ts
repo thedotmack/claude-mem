@@ -1,11 +1,12 @@
 
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock } from 'bun:test';\nimport { readFileSync } from 'fs';\nimport { join } from 'path';
 import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
 
 const processManager = {
   cleanStalePidFile: mock(() => 'dead' as 'alive' | 'dead'),
   getPlatformTimeout: mock((timeout: number) => timeout),
   spawnDaemon: mock(() => 2147483647),
+  removePidFile: mock(() => {}),
   touchPidFile: mock(() => {}),
 };
 
@@ -56,6 +57,7 @@ function resetMocks(): void {
   processManager.getPlatformTimeout.mockClear();
   processManager.spawnDaemon.mockReset();
   processManager.spawnDaemon.mockReturnValue(2147483647);
+  processManager.removePidFile.mockClear();
   processManager.touchPidFile.mockClear();
   healthMonitor.isPortInUse.mockReset();
   healthMonitor.isPortInUse.mockResolvedValue(false);
@@ -119,20 +121,17 @@ describe('ensureWorkerStarted startup readiness', () => {
     expect(processManager.touchPidFile).toHaveBeenCalledTimes(1);
   });
 
-  it('returns dead when a live PID disappears before readiness comes up', async () => {
+  it('self-heals when a live PID never becomes ready before timeout (#3224)', async () => {
     resetMocks();
-    let cleanChecks = 0;
-    processManager.cleanStalePidFile.mockImplementation(() => {
-      cleanChecks += 1;
-      return cleanChecks === 1 ? 'alive' : 'dead';
-    });
+    processManager.cleanStalePidFile.mockReturnValue('alive');
 
     const result = await ensureWorkerStarted(39003, import.meta.filename);
 
-    expect(result).toBe('dead');
+    expect(processManager.removePidFile).toHaveBeenCalled();
     expect(healthMonitor.waitForReadiness).toHaveBeenCalledWith(39003, HOOK_TIMEOUTS.READINESS_WAIT);
-    expect(processManager.spawnDaemon).not.toHaveBeenCalled();
-    expect(processManager.touchPidFile).not.toHaveBeenCalled();
+    // After clearing the stale PID claim, spawn proceeds instead of stuck warming.
+    expect(processManager.spawnDaemon).toHaveBeenCalled();
+    expect(result).toBe('dead');
   });
 
   it('returns dead when the spawned worker never becomes ready and no live worker remains', async () => {
@@ -193,5 +192,22 @@ describe('ensureWorkerStarted validation guards', () => {
     const bogusPath = '/tmp/__claude-mem-test-nonexistent-worker-script.cjs';
     const result = await ensureWorkerStarted(39002, bogusPath);
     expect(result).toBe('dead');
+  });
+});
+
+const WORKER_SPAWNER_PATH = join(import.meta.dir, '../../src/services/worker-spawner.ts');
+const workerSpawnerSource = readFileSync(WORKER_SPAWNER_PATH, 'utf-8');
+
+describe('ensureWorkerStarted stale PID self-heal (#3224)', () => {
+  it('clears the PID file and continues spawn when a live PID never becomes healthy', () => {
+    expect(workerSpawnerSource).toContain('removePidFile()');
+    expect(workerSpawnerSource).toContain(
+      'PID file claims a live process but worker port never became healthy'
+    );
+    // Regression: the old branch returned warming and permanently blocked
+    // lazy-spawn / self-heal when worker.pid was stale or PID-reused.
+    expect(workerSpawnerSource).not.toContain(
+      'Live PID detected but worker did not become ready before timeout'
+    );
   });
 });

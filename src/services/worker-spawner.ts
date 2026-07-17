@@ -7,6 +7,7 @@ import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import {
   cleanStalePidFile,
   getPlatformTimeout,
+  removePidFile,
   spawnDaemon,
   touchPidFile,
 } from './infrastructure/ProcessManager.js';
@@ -50,7 +51,7 @@ function markWorkerSpawnAttempted(): void {
   } catch {
     // APPROVED OVERRIDE: best-effort cooldown marker. If we can't even create
     // the data dir or write the marker, the worker spawn itself is almost
-    // certainly going to fail too — surfacing that downstream gives the user
+    // certainly going to fail too ??surfacing that downstream gives the user
     // a far more useful error than a noisy log line about a lock file.
   }
 }
@@ -62,7 +63,7 @@ function clearWorkerSpawnAttempted(): void {
     if (existsSync(lockPath)) unlinkSync(lockPath);
   } catch {
     // APPROVED OVERRIDE: best-effort cleanup of the cooldown marker after a
-    // successful spawn. A stale marker on disk is harmless — the worst case
+    // successful spawn. A stale marker on disk is harmless ??the worst case
     // is one suppressed retry within the cooldown window, then it self-heals.
   }
 }
@@ -74,13 +75,13 @@ export async function ensureWorkerStarted(
   workerScriptPath: string
 ): Promise<WorkerStartResult> {
   if (!workerScriptPath) {
-    logger.error('SYSTEM', 'ensureWorkerStarted called with empty workerScriptPath — caller bug');
+    logger.error('SYSTEM', 'ensureWorkerStarted called with empty workerScriptPath ??caller bug');
     return 'dead';
   }
   if (!existsSync(workerScriptPath)) {
     logger.error(
       'SYSTEM',
-      'ensureWorkerStarted: worker script not found at expected path — likely a partial install or build artifact missing',
+      'ensureWorkerStarted: worker script not found at expected path ??likely a partial install or build artifact missing',
       { workerScriptPath }
     );
     return 'dead';
@@ -95,21 +96,22 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker became ready while waiting on live PID');
       return 'ready';
     }
-    const workerStillHealthy = await waitForHealth(port, 1000);
-    const workerPidStillAlive = cleanStalePidFile() === 'alive';
-    if (!workerStillHealthy && !workerPidStillAlive) {
-      logger.error('SYSTEM', 'Live PID disappeared before readiness endpoint became available');
-      return 'dead';
-    }
-    logger.warn('SYSTEM', 'Live PID detected but worker did not become ready before timeout');
-    return 'warming';
+    // Port health is the source of truth (#3224): a "live" PID that never
+    // answers /api/health is stale (dead process, PID reuse, or a non-worker).
+    // Returning 'warming' here permanently blocks self-heal on Windows when the
+    // PID file is wrong. Clear it and continue to the spawn path below.
+    logger.warn(
+      'SYSTEM',
+      'PID file claims a live process but worker port never became healthy ??clearing PID and continuing spawn'
+    );
+    removePidFile();
   }
 
   if (await waitForHealth(port, 1000)) {
     clearWorkerSpawnAttempted();
     const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
     if (!ready) {
-      logger.warn('SYSTEM', 'Worker is alive but readiness timed out — proceeding anyway');
+      logger.warn('SYSTEM', 'Worker is alive but readiness timed out ??proceeding anyway');
     }
     logger.info('SYSTEM', 'Worker already running and healthy');
     return ready ? 'ready' : 'warming';
@@ -130,12 +132,11 @@ export async function ensureWorkerStarted(
   }
 
   if (shouldSkipSpawnOnWindows()) {
-    logger.warn('SYSTEM', 'Worker unavailable on Windows — skipping spawn (recent attempt failed within cooldown)');
+    logger.warn('SYSTEM', 'Worker unavailable on Windows ??skipping spawn (recent attempt failed within cooldown)');
     return 'dead';
   }
 
-  // Spawn gate (src/shared/worker-spawn-gate.ts): only ONE gated launcher —
-  // hook, MCP server, or the CLI restart fallback — may spawn at a time. (The
+  // Spawn gate (src/shared/worker-spawn-gate.ts): only ONE gated launcher ??  // hook, MCP server, or the CLI restart fallback ??may spawn at a time. (The
   // dying worker's restart handoff in worker-shutdown.ts is deliberately NOT
   // gated: it is the primary spawner on restart, and hooks wait for its
   // successor.) Losing the lock never fails this path; the loser skips its
@@ -153,7 +154,7 @@ export async function ensureWorkerStarted(
         return 'dead';
       }
     } else {
-      logger.info('SYSTEM', 'Another launcher holds the spawn lock — skipping duplicate spawn and waiting for its worker');
+      logger.info('SYSTEM', 'Another launcher holds the spawn lock ??skipping duplicate spawn and waiting for its worker');
     }
 
     const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
@@ -174,7 +175,7 @@ export async function ensureWorkerStarted(
     }
     clearWorkerSpawnAttempted();
     // touchPidFile is existsSync-guarded and merely refreshes the live worker's
-    // pid-file mtime — correct for lock losers too, since the worker IS up.
+    // pid-file mtime ??correct for lock losers too, since the worker IS up.
     touchPidFile();
     logger.info('SYSTEM', spawnLockHeld
       ? 'Worker started successfully'
