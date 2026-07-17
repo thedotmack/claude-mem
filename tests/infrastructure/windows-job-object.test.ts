@@ -185,6 +185,53 @@ describe('WindowsJobObject', () => {
       }
     }, 10000);
 
+    // Models the SDK spawn topology from process-registry.ts:spawnSdkProcess:
+    // on Windows a `.cmd` command is launched through `cmd.exe /d /c <cmd>`, so
+    // the real long-lived process is a GRANDCHILD of the pid we hold. This is
+    // exactly why spawnSdkProcess uses the TREE sweep, not a single-PID assign:
+    // the grandchild spawned by the cmd wrapper must be captured retroactively
+    // or it survives an abnormal worker death and orphans.
+    test('tree sweep captures a cmd.exe-wrapped grandchild (SDK topology) and kills it on close', async () => {
+      // cmd.exe /d /c <long-lived program> — the program is the grandchild,
+      // mirroring how the real Claude CLI sits under the cmd wrapper. Pipe
+      // stdio (as spawnSdkProcess uses) keeps the cmd wrapper alive; `ping`
+      // is a metacharacter-free long-runner so cmd waits on it and doesn't
+      // abort at its own command parse.
+      const child = Bun.spawn(
+        ['cmd.exe', '/d', '/c', 'ping', '-n', '60', '127.0.0.1'],
+        { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
+      );
+
+      let grandchildPid: number | undefined;
+
+      try {
+        // Let cmd.exe launch the ping grandchild before we sweep.
+        await new Promise(r => setTimeout(r, 800));
+
+        const result = assignProcessTreeToWorkerJob(child.pid, 'sdk:test');
+        expect(result).not.toBeNull();
+        // At minimum the cmd wrapper; on a healthy spawn the ping grandchild too.
+        expect(result!.assigned).toContain(child.pid);
+        expect(result!.assigned.length).toBeGreaterThanOrEqual(2);
+
+        grandchildPid = result!.assigned.find(pid => pid !== child.pid);
+        expect(grandchildPid).toBeDefined();
+
+        // Close the job handle: the abnormal-death backstop. Both the cmd
+        // wrapper and the ping grandchild must die.
+        __resetWorkerJobObjectForTesting();
+
+        const childDied = await waitUntil(() => !isPidAlive(child.pid), 3000);
+        const grandchildDied = await waitUntil(() => !isPidAlive(grandchildPid as number), 3000);
+
+        expect(childDied).toBe(true);
+        expect(grandchildDied).toBe(true);
+      } finally {
+        killIfAlive(child.pid);
+        if (grandchildPid !== undefined) killIfAlive(grandchildPid);
+      }
+    }, 10000);
+
     test('assigning the same PID twice is idempotent and does not throw', () => {
       const child = Bun.spawn(['bun', '-e', 'setTimeout(()=>{},60000)'], {
         stdio: ['ignore', 'ignore', 'ignore'],
