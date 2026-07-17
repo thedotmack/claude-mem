@@ -88,6 +88,7 @@ export class ChromaMcpManager {
   private chromaWriterLock: { path: string; dataDir: string; ownerId: string } | null = null;
   private unexpectedCloseCleanup: Promise<void> | null = null;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
+  private static chromaLauncherIdentityProbe: ((pid: number) => Promise<boolean>) | null = null;
 
   private constructor() {}
 
@@ -146,6 +147,7 @@ export class ChromaMcpManager {
     // tree-kill primitive used by stop() so reconnect can never leave
     // orphans behind.
     await this.disposeCurrentSubprocess();
+    await this.reapRegisteredChromaFromPriorGeneration();
     this.assertConnectionNotCancelled(connectionGeneration);
 
     const localChromaDataDir = this.getLocalPersistentChromaDataDir();
@@ -871,6 +873,85 @@ export class ChromaMcpManager {
     this.connected = false;
   }
 
+  /**
+   * Cross-generation orphan reap (#3270): when a previous worker process died
+   * without running stop() (SIGKILL, crash, OOM), its chroma-mcp subprocess
+   * tree survives — the descendants re-parent to init/launchd while the
+   * persisted supervisor registry still records their root PID. A fresh
+   * worker cannot reach that subprocess through this.transport (the in-memory
+   * handle died with the old worker), and registerManagedProcess() later
+   * overwrites the registry entry — the only record of the orphan's PID —
+   * without killing it. Net effect: every ungraceful worker death leaks one
+   * uvx→uv→python chroma-mcp tree, unbounded across restarts.
+   *
+   * Before spawning a replacement, consult the persisted entry and tree-kill
+   * the prior subprocess if it is still alive and verifiably a chroma-mcp
+   * launcher (command-line check guards against PID reuse).
+   */
+  private async reapRegisteredChromaFromPriorGeneration(): Promise<void> {
+    if (process.platform === 'win32') {
+      // No command-line identity probe wired up for Windows yet — leave the
+      // registry entry untouched so behavior there is unchanged.
+      return;
+    }
+
+    // Best-effort by design: a failure here must never block the connect
+    // path — worst case we fall back to the pre-fix behavior (orphan
+    // survives) instead of losing semantic search entirely.
+    try {
+      const record = getSupervisor().getRegistry().getAll()
+        .find(entry => entry.id === CHROMA_SUPERVISOR_ID);
+      if (!record) {
+        return;
+      }
+
+      if (!isPidAlive(record.pid)) {
+        getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+        return;
+      }
+
+      if (!(await ChromaMcpManager.isChromaMcpLauncherPid(record.pid))) {
+        // PID recycled by an unrelated process — drop the stale entry without
+        // signaling anything.
+        getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+        return;
+      }
+
+      logger.warn('CHROMA_MCP', 'Reaping orphaned chroma-mcp left by a previous worker generation', {
+        pid: record.pid,
+        startedAt: record.startedAt
+      });
+      await ChromaMcpManager.killProcessTree(record.pid);
+      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+    } catch (error) {
+      logger.debug('CHROMA_MCP', 'Cross-generation chroma-mcp reap skipped (best-effort)', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  /**
+   * POSIX identity probe for the cross-generation reap: true only when the
+   * process's command line looks like the uvx/chroma-mcp launcher chain we
+   * spawn. Best-effort — a failed `ps` reads as "not ours".
+   */
+  private static async isChromaMcpLauncherPid(pid: number): Promise<boolean> {
+    if (ChromaMcpManager.chromaLauncherIdentityProbe) {
+      return ChromaMcpManager.chromaLauncherIdentityProbe(pid);
+    }
+    try {
+      const { stdout } = await execFileAsync('ps', ['-p', String(pid), '-o', 'command='], {
+        timeout: 5_000,
+        // Uniform spawn-env discipline: sanitize even for read-only system
+        // binaries so the spawn-env CI check stays a single rule (#2357/#2375).
+        env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
+      });
+      return stdout.includes('chroma-mcp');
+    } catch {
+      return false;
+    }
+  }
+
   private async disposeActivePrewarm(): Promise<void> {
     const prewarmChild = this.activePrewarmChild;
     if (!prewarmChild) {
@@ -1279,6 +1360,12 @@ export class ChromaMcpManager {
     probe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null,
   ): void {
     ChromaMcpManager.uvxAvailabilityProbe = probe;
+  }
+
+  static setChromaLauncherIdentityProbeForTesting(
+    probe: ((pid: number) => Promise<boolean>) | null,
+  ): void {
+    ChromaMcpManager.chromaLauncherIdentityProbe = probe;
   }
 
   private static ensureUvOnPath(env: Record<string, string>): void {
