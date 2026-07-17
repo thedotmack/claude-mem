@@ -35,17 +35,17 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
     logger.info('SYSTEM', 'HTTP server closed');
   }
 
+  if (config.chromaMcpManager) {
+    logger.info('SHUTDOWN', 'Stopping Chroma MCP connection...');
+    await config.chromaMcpManager.stop();
+    logger.info('SHUTDOWN', 'Chroma MCP connection stopped');
+  }
+
   await config.sessionManager.shutdownAll();
 
   if (config.mcpClient) {
     await config.mcpClient.close();
     logger.info('SYSTEM', 'MCP client closed');
-  }
-
-  if (config.chromaMcpManager) {
-    logger.info('SHUTDOWN', 'Stopping Chroma MCP connection...');
-    await config.chromaMcpManager.stop();
-    logger.info('SHUTDOWN', 'Chroma MCP connection stopped');
   }
 
   if (config.dbManager) {
@@ -65,7 +65,13 @@ async function closeHttpServer(server: http.Server): Promise<void> {
   }
 
   await new Promise<void>((resolve, reject) => {
-    server.close(err => err ? reject(err) : resolve());
+    server.close(err => {
+      if (!err || (err as NodeJS.ErrnoException).code === 'ERR_SERVER_NOT_RUNNING') {
+        resolve();
+        return;
+      }
+      reject(err);
+    });
   });
 
   if (process.platform === 'win32') {
