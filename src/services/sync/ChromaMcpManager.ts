@@ -1406,11 +1406,21 @@ export class ChromaMcpManager {
 
   /**
    * Close the connect-window orphan gap: poll for the transport child's pid and
-   * assign it into the worker Job Object as soon as it appears, rather than
-   * waiting for the post-connect tree sweep in registerManagedProcess(). The
-   * MCP client.connect() spawns uvx synchronously but only resolves after the
-   * MCP handshake (up to 30s); a worker killed in that window would orphan the
-   * child. Fire-and-forget, best-effort, never throws.
+   * assign its whole tree into the worker Job Object as soon as it appears,
+   * rather than waiting for the post-connect tree sweep in
+   * registerManagedProcess(). The MCP client.connect() spawns uvx synchronously
+   * but only resolves after the MCP handshake (up to 30s); a worker killed in
+   * that window would orphan the child. Fire-and-forget, best-effort, never
+   * throws.
+   *
+   * A TREE sweep (not a single-PID assign) is required here for the same reason
+   * as the post-connect site: job membership is inherited only by processes
+   * created AFTER their parent joined. The transport root is uvx, which forks
+   * its uv/python descendants within milliseconds of spawn — often before this
+   * poll lands. Assigning only the root PID would leave those already-spawned
+   * descendants outside the job, so they'd survive an abnormal worker death.
+   * The Toolhelp32 snapshot walk retroactively captures them; anything spawned
+   * after the sweep inherits membership from its in-job parent.
    */
   private async assignTransportChildToJobEarly(
     transport: StdioClientTransport,
@@ -1436,7 +1446,7 @@ export class ChromaMcpManager {
 
         const pid = (transport as unknown as { _process?: ChildProcess })._process?.pid;
         if (pid) {
-          assignPidToWorkerJob(pid, 'chroma-mcp-early');
+          assignProcessTreeToWorkerJob(pid, 'chroma-mcp-early');
           return;
         }
 
