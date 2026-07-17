@@ -30,6 +30,7 @@ import { ClassifiedProviderError } from './provider-errors.js';
 import { resolveTierAlias } from './model-aliases.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
 import { clearDependencyStatus, recordClaudeCliSetupRequired } from '../../shared/dependency-health.js';
+import { clearClaudeCliSelfHealAttempts } from './stale-spawn-recovery.js';
 
 /**
  * Module-scoped guard so the "effort parameter" hint only fires once per
@@ -180,6 +181,7 @@ export class ClaudeProvider {
     try {
       claudePath = findClaudeExecutable('SDK');
       clearDependencyStatus('claude_cli');
+      clearClaudeCliSelfHealAttempts();
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       const classified = classifyClaudeError(err);

@@ -3,6 +3,7 @@ import {
   findClaudeExecutable,
   resetClaudeExecutableCache,
   CAPABILITY_PROBE_ARGS,
+  isClaudeExecutableUnspawnable,
   _internals,
 } from '../../src/shared/find-claude-executable.js';
 import { logger } from '../../src/utils/logger.js';
@@ -198,10 +199,15 @@ describe('findClaudeExecutable broken candidates', () => {
     expect(warnings.some((m) => m.includes('desktop app') && m.includes('AnthropicClaude'))).toBe(true);
   });
 
-  it('falls through to not-found when the only candidate is broken', () => {
+  it('falls through to not-found when the only candidate is broken and not present on disk', () => {
+    // A candidate that is broken AND missing from disk (e.g. a dangling PATH
+    // entry left by an uninstall) is the genuine not-found case — distinct
+    // from a present-but-unspawnable binary, which would surface as
+    // ClaudeExecutableUnspawnableError (covered in its own describe block).
     installFakes();
     whichOutput = '/broken/claude\n';
-    fakeClis.set('/broken/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
+    // Deliberately NOT added to fakeClis: existsSync returns false, so the
+    // broken probe is not collected as present-but-unspawnable.
 
     expect(() => findClaudeExecutable('SDK')).toThrow(/Claude executable not found/);
   });
@@ -299,6 +305,70 @@ describe('findClaudeExecutable on Windows', () => {
     fakeClis.set('C:\\new\\claude.exe', { version: '2.1.176', supportsDontAsk: true });
 
     expect(findClaudeExecutable('SDK')).toBe('C:\\new\\claude.exe');
+  });
+});
+
+describe('findClaudeExecutable present-but-unspawnable detection', () => {
+  // The #3290 incident shape: a candidate that exists on disk but every probe
+  // fails (broken/ENOENT — a stale worker after the Claude Code native
+  // auto-updater swapped the binary). When no capable CLI is found, the
+  // resolver surfaces ClaudeExecutableUnspawnableError so SessionRoutes can
+  // self-heal restart instead of looping forever in setup_required cooldown.
+  const ORIGINAL_WARN = logger.warn;
+  let warnings: string[];
+
+  beforeEach(() => {
+    warnings = [];
+    logger.warn = ((_component: unknown, message: string) => {
+      warnings.push(message);
+    }) as typeof logger.warn;
+  });
+
+  afterEach(() => {
+    logger.warn = ORIGINAL_WARN;
+  });
+
+  it('throws ClaudeExecutableUnspawnableError when a broken candidate exists on disk', () => {
+    installFakes();
+    whichOutput = '/stale/claude\n';
+    fakeClis.set('/stale/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
+
+    let caught: unknown;
+    try {
+      findClaudeExecutable('SDK');
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeDefined();
+    expect(isClaudeExecutableUnspawnable(caught)).toBe(true);
+    if (isClaudeExecutableUnspawnable(caught)) {
+      expect(caught.candidates).toEqual([
+        { path: '/stale/claude', detail: expect.any(String) },
+      ]);
+      // The literal ENOENT token keeps classifyClaudeError on setup_required.
+      expect(caught.message).toContain('ENOENT');
+      expect(caught.message).toContain('/stale/claude');
+    }
+    // Existing per-candidate warn still fires.
+    expect(warnings.some((m) => m.includes('/stale/claude') && m.includes('failed --version check'))).toBe(true);
+  });
+
+  it('throws the generic not-found Error (NOT ClaudeExecutableUnspawnableError) when nothing exists on disk', () => {
+    installFakes();
+    // PATH returns a candidate that does not exist on disk → broken probe,
+    // but it is NOT collected as present-but-unspawnable.
+    whichOutput = '/missing/claude\n';
+
+    let caught: unknown;
+    try {
+      findClaudeExecutable('SDK');
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeDefined();
+    expect(isClaudeExecutableUnspawnable(caught)).toBe(false);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain('Claude executable not found');
   });
 });
 
