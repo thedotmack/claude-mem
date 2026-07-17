@@ -13,9 +13,13 @@ Antigravity CLI (`agy`) is Google's standalone successor to Gemini CLI — it re
 **How it works:** Claude-mem installs lifecycle hooks into Antigravity CLI's shared `~/.gemini/settings.json` that capture tool usage, agent responses, and session events. A local worker service extracts semantic observations and injects relevant history at session start — via `GEMINI.md`, an MCP server, and a rules file.
 </Info>
 
-<Note>
-Antigravity CLI is a different product from the Antigravity **desktop IDE** (`antigravity` binary) — both share the same `~/.gemini/antigravity` namespace, but the CLI's own binary is `agy`. Detection checks for `agy` in your `PATH` (or an existing `~/.gemini/antigravity` directory).
-</Note>
+<Warning>
+**`--ide antigravity` covers the Antigravity CLI (`agy`) only.** The installer writes lifecycle hooks into `~/.gemini/settings.json`, which the `agy` CLI runs. The Antigravity **GUI IDE** (the VS Code-based app) does **not** execute those hooks, so it gets **no automatic transcript capture**.
+
+A green `npx claude-mem antigravity-cli status` means CLI hooks and MCP config are installed. It does **not** mean the GUI IDE is capturing sessions. In the GUI, MCP tools may still be reachable for manual search, but `platform_source` will not record passive `antigravity` observations until a native GUI integration exists (not implemented).
+
+Antigravity CLI and the desktop IDE share the `~/.gemini/antigravity` namespace, but the CLI binary is `agy`. Detection checks for `agy` in your `PATH` (or an existing `~/.gemini/antigravity` directory).
+</Warning>
 
 ## Prerequisites
 
@@ -154,17 +158,23 @@ Antigravity CLI ships a first-class plugin-marketplace subcommand system: `agy p
 
 ## Troubleshooting
 
+### Using the Antigravity GUI IDE (no automatic capture)
+
+If you installed with `--ide antigravity` and opened the Antigravity desktop IDE, automatic capture will not run. Those hooks only fire inside `agy`. Use the Antigravity CLI for passive transcript capture, or call claude-mem MCP tools manually from the GUI. A native GUI integration is not available yet (see [#3239](https://github.com/thedotmack/claude-mem/issues/3239)).
+
 ### Hooks not firing
 
-1. Verify hooks exist in settings:
+1. Confirm you are running **Antigravity CLI** (`agy`), not only the GUI IDE.
+
+2. Verify hooks exist in settings:
    ```bash
    cat ~/.gemini/settings.json
    ```
    You should see entries like `"SessionStart"`, `"AfterTool"`, etc. with claude-mem commands.
 
-2. Restart Antigravity CLI after installation.
+3. Restart Antigravity CLI after installation.
 
-3. Re-run the installer:
+4. Re-run the installer:
    ```bash
    npx claude-mem install --ide antigravity
    ```
