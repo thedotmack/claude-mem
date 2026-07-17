@@ -135,6 +135,56 @@ describe('WindowsJobObject', () => {
       }
     }, 10000);
 
+    // Guards the root-first ordering in assignProcessTreeToWorkerJob: because
+    // the root is assigned to the job BEFORE the descendant snapshot is taken,
+    // a child the root spawns AFTER assignment must inherit membership and die
+    // on handle close — even though it never appeared in any snapshot. This is
+    // exactly the snapshot->root-join race the ordering closes (a `.cmd`
+    // wrapper forking its real child after the sweep would otherwise orphan).
+    test('a child spawned AFTER the root is assigned inherits membership and is killed', async () => {
+      // Parent has NO children at spawn; it forks one 700ms later — after we
+      // assign the parent. Spawned directly (no cmd), so inline-script
+      // metacharacters are safe.
+      const parent = Bun.spawn([
+        'bun',
+        '-e',
+        "setTimeout(()=>{Bun.spawn(['bun','-e','setTimeout(()=>{},60000)']);},700); setTimeout(()=>{},60000)",
+      ], {
+        stdio: ['ignore', 'ignore', 'ignore'],
+      });
+
+      let lateChildPid: number | undefined;
+
+      try {
+        // Assign the parent immediately, while it still has no children.
+        const result = assignProcessTreeToWorkerJob(parent.pid, 'test-inherit');
+        expect(result).not.toBeNull();
+        expect(result!.assigned).toContain(parent.pid);
+        // Nothing to sweep yet — the child does not exist at assignment time.
+        expect(result!.assigned).toEqual([parent.pid]);
+
+        // Let the parent fork its child; it must inherit the job.
+        await new Promise(r => setTimeout(r, 1200));
+
+        // Discover the inherited child via a fresh sweep (idempotent) purely to
+        // learn its pid for the death assertion.
+        const probe = assignProcessTreeToWorkerJob(parent.pid, 'test-inherit');
+        lateChildPid = probe!.assigned.find(pid => pid !== parent.pid);
+        expect(lateChildPid).toBeDefined();
+
+        __resetWorkerJobObjectForTesting();
+
+        const parentDied = await waitUntil(() => !isPidAlive(parent.pid), 3000);
+        const lateChildDied = await waitUntil(() => !isPidAlive(lateChildPid as number), 3000);
+
+        expect(parentDied).toBe(true);
+        expect(lateChildDied).toBe(true);
+      } finally {
+        killIfAlive(parent.pid);
+        if (lateChildPid !== undefined) killIfAlive(lateChildPid);
+      }
+    }, 10000);
+
     test('assigning the same PID twice is idempotent and does not throw', () => {
       const child = Bun.spawn(['bun', '-e', 'setTimeout(()=>{},60000)'], {
         stdio: ['ignore', 'ignore', 'ignore'],
