@@ -194,11 +194,22 @@ let prewarmSpawnBehavior: 'success' | 'timeout' | 'failure' = 'success';
 let prewarmStdout = '';
 let prewarmStderr = '';
 
+// Cross-generation reap fixtures (#3270): entries the mocked supervisor
+// registry reports, plus a recorder for unregister calls.
+let mockSupervisorRegistryEntries: Array<Record<string, unknown>> = [];
+let supervisorUnregisterCalls: string[] = [];
+
 mock.module('../../../src/supervisor/index.ts', () => ({
   getSupervisor: () => ({
     assertCanSpawn: () => {},
     registerProcess: () => {},
-    unregisterProcess: () => {},
+    unregisterProcess: (id: string) => {
+      supervisorUnregisterCalls.push(id);
+      mockSupervisorRegistryEntries = mockSupervisorRegistryEntries.filter(entry => entry.id !== id);
+    },
+    getRegistry: () => ({
+      getAll: () => [...mockSupervisorRegistryEntries],
+    }),
   }),
 }));
 
@@ -305,6 +316,9 @@ function resetState(): void {
   prewarmSpawnCalls.length = 0;
   killTreeCalls.length = 0;
   deadPids.clear();
+  mockSupervisorRegistryEntries = [];
+  supervisorUnregisterCalls = [];
+  ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(null);
   logEntries.length = 0;
   execSyncCalls = 0;
   nextFakePid = 100_000;
@@ -376,6 +390,71 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     expect(transportCount).toBe(1);
     expect(prewarmSpawnCalls.length).toBe(1);
+  });
+
+  it('reaps an orphaned chroma-mcp registry entry left by a prior worker generation (#3270)', async () => {
+    const orphanPid = 99_777;
+    mockSupervisorRegistryEntries = [{
+      id: 'chroma-mcp',
+      pid: orphanPid,
+      type: 'chroma',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      pgid: orphanPid,
+    }];
+    // The identity probe shells out to `ps` against a synthetic PID that does
+    // not exist on the test host, so stub it the same way the uvx probe is
+    // stubbed in resetState().
+    const probedPids: number[] = [];
+    ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(async (pid) => {
+      probedPids.push(pid);
+      return true;
+    });
+
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    // The orphan from the previous generation was tree-killed, its registry
+    // entry dropped, and the fresh spawn still proceeded normally.
+    expect(probedPids).toContain(orphanPid);
+    expect(killTreeCalls).toContain(orphanPid);
+    expect(supervisorUnregisterCalls).toContain('chroma-mcp');
+    expect(transportCount).toBe(1);
+  });
+
+  it('drops a recycled-PID registry entry without signaling the impostor process', async () => {
+    const recycledPid = 99_778;
+    mockSupervisorRegistryEntries = [{
+      id: 'chroma-mcp',
+      pid: recycledPid,
+      type: 'chroma',
+      startedAt: '2026-01-01T00:00:00.000Z',
+    }];
+    ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(async () => false);
+
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(killTreeCalls).not.toContain(recycledPid);
+    expect(supervisorUnregisterCalls).toContain('chroma-mcp');
+    expect(transportCount).toBe(1);
+  });
+
+  it('clears a dead-PID chroma registry entry without probing or signaling it', async () => {
+    const deadPid = 99_779;
+    deadPids.add(deadPid);
+    mockSupervisorRegistryEntries = [{
+      id: 'chroma-mcp',
+      pid: deadPid,
+      type: 'chroma',
+      startedAt: '2026-01-01T00:00:00.000Z',
+    }];
+
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(killTreeCalls).not.toContain(deadPid);
+    expect(supervisorUnregisterCalls).toContain('chroma-mcp');
+    expect(transportCount).toBe(1);
   });
 
   it('kills the prior subprocess tree before a reconnect spawn', async () => {
