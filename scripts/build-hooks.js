@@ -339,6 +339,8 @@ async function buildHooks() {
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
         'bun:sqlite',
+        // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
+        'bun:ffi',
         'zod',
         'cohere-ai',
         'ollama',
@@ -447,6 +449,8 @@ async function buildHooks() {
       logLevel: 'error',
       external: [
         'bun:sqlite',
+        // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
+        'bun:ffi',
         'zod',
       ],
       define: {
