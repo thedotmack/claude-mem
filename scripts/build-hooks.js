@@ -311,6 +311,7 @@ async function buildHooks() {
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
         'bun:sqlite',
+        'bun:ffi',
         'zod',
         'cohere-ai',
         'ollama',
@@ -386,6 +387,7 @@ async function buildHooks() {
         logLevel: 'error',
         external: [
           'bun:sqlite',
+          'bun:ffi',
           'zod',
           'cohere-ai',
           'ollama',
@@ -419,6 +421,7 @@ async function buildHooks() {
       logLevel: 'error',
       external: [
         'bun:sqlite',
+        'bun:ffi',
         'zod',
       ],
       define: {
@@ -451,6 +454,7 @@ async function buildHooks() {
       logLevel: 'error',
       external: [
         'bun:sqlite',
+        'bun:ffi',
         'tree-sitter-cli',
         'tree-sitter-javascript',
         'tree-sitter-typescript',
@@ -523,7 +527,7 @@ async function buildHooks() {
       outfile: `${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`,
       minify: true,
       logLevel: 'error',
-      external: ['bun:sqlite', 'zod'],
+      external: ['bun:sqlite', 'bun:ffi', 'zod'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
@@ -549,7 +553,7 @@ async function buildHooks() {
       // any zod usage in the processor.ts import chain should resolve at runtime
       // against plugin/node_modules instead of being inlined (avoids duplicate-
       // instance hazards and keeps the bundle slim).
-      external: ['bun:sqlite', 'zod'],
+      external: ['bun:sqlite', 'bun:ffi', 'zod'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
@@ -592,6 +596,7 @@ async function buildHooks() {
         'crypto', 'http', 'https', 'net', 'stream', 'util', 'events',
         'buffer', 'querystring', 'readline', 'tty', 'assert',
         'bun:sqlite',
+        'bun:ffi',
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`

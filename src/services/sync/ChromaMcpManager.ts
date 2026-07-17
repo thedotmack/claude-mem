@@ -14,6 +14,7 @@ import { getSupervisor } from '../../supervisor/index.js';
 import { captureProcessStartToken, isPidAlive } from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
+import { assignPidToWorkerJob, assignProcessTreeToWorkerJob, isWorkerJobObjectAvailable } from '../infrastructure/WindowsJobObject.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -204,6 +205,15 @@ export class ChromaMcpManager {
         { capabilities: {} }
       );
       mcpConnectionPromise = this.client.connect(this.transport);
+      // client.connect() starts the transport, which spawns the uvx child, but
+      // registerManagedProcess()'s tree sweep only runs AFTER connect resolves.
+      // MCP connect can take up to MCP_CONNECTION_TIMEOUT_MS (30s); a worker
+      // killed inside that window would leave the freshly spawned uvx/uv/python
+      // chain outside the Job Object and orphaned. Fire-and-forget an early
+      // single-PID assign so the transport child joins the kill-on-close job the
+      // instant its pid exists — the post-connect tree sweep still catches any
+      // descendants that spawned before this landed. Best-effort no-op off-Windows.
+      void this.assignTransportChildToJobEarly(this.transport, connectionGeneration);
     } catch (error) {
       await this.disposeCurrentSubprocess();
       throw error;
@@ -604,6 +614,17 @@ export class ChromaMcpManager {
       windowsHide: process.platform === 'win32',
     });
     this.activePrewarmChild = child;
+
+    // OS backstop for abnormal worker death (crash/taskkill/sleep-wake). The
+    // in-process tree-kills (#2313) only run while the worker is alive; if it
+    // dies abnormally the orphaned uvx/uv/python chain survives holding the
+    // inherited listen-socket handle and bricks port 37777 for future workers.
+    // Bind the prewarm child into the worker's kill-on-close Job Object so the
+    // kernel reaps it (and anything it later spawns, which inherits membership)
+    // the instant the worker terminates. Best-effort no-op off-Windows.
+    if (child.pid) {
+      assignPidToWorkerJob(child.pid, 'chroma-prewarm');
+    }
 
     const stdoutTail = ChromaMcpManager.captureOutputTail(child.stdout);
     const stderrTail = ChromaMcpManager.captureOutputTail(child.stderr);
@@ -1347,6 +1368,16 @@ export class ChromaMcpManager {
       return;
     }
 
+    // OS backstop (see prewarm site): bind the connected chroma-mcp process
+    // AND its already-spawned descendants into the worker's kill-on-close Job
+    // Object. A TREE sweep is required here (not a single-PID assign) because
+    // job membership is only inherited by processes spawned AFTER their parent
+    // joined — by connect time uvx has already spawned its uv/python
+    // descendants, so they must be swept in explicitly. Guards the orphaned
+    // chain / port-37777 brick that #2313's in-process-only tree-kill can't
+    // cover when the worker dies abnormally. Best-effort no-op off-Windows.
+    assignProcessTreeToWorkerJob(chromaProcess.pid, 'chroma-mcp');
+
     // Register with pgid so the supervisor's shutdown cascade can use
     // process-group signaling (kill(-pgid, signal)) to tear down the
     // entire spawn chain (uvx -> uv -> python -> chroma-mcp) in one
@@ -1371,5 +1402,61 @@ export class ChromaMcpManager {
     chromaProcess.once('exit', () => {
       getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
     });
+  }
+
+  /**
+   * Close the connect-window orphan gap: poll for the transport child's pid and
+   * assign its whole tree into the worker Job Object as soon as it appears,
+   * rather than waiting for the post-connect tree sweep in
+   * registerManagedProcess(). The MCP client.connect() spawns uvx synchronously
+   * but only resolves after the MCP handshake (up to 30s); a worker killed in
+   * that window would orphan the child. Fire-and-forget, best-effort, never
+   * throws.
+   *
+   * A TREE sweep (not a single-PID assign) is required here for the same reason
+   * as the post-connect site: job membership is inherited only by processes
+   * created AFTER their parent joined. The transport root is uvx, which forks
+   * its uv/python descendants within milliseconds of spawn — often before this
+   * poll lands. Assigning only the root PID would leave those already-spawned
+   * descendants outside the job, so they'd survive an abnormal worker death.
+   * The Toolhelp32 snapshot walk retroactively captures them; anything spawned
+   * after the sweep inherits membership from its in-job parent.
+   */
+  private async assignTransportChildToJobEarly(
+    transport: StdioClientTransport,
+    connectionGeneration: number,
+  ): Promise<void> {
+    // Cheap no-op on unsupported platforms (non-win32 / non-Bun): skip polling
+    // entirely rather than spinning for a pid we'll never hand to a live job.
+    if (!isWorkerJobObjectAvailable()) {
+      return;
+    }
+
+    const pollIntervalMs = 25;
+    const maxWaitMs = 1_000;
+    const deadline = Date.now() + maxWaitMs;
+
+    try {
+      while (Date.now() < deadline) {
+        // Bail if this connect attempt was superseded/cancelled — a newer
+        // generation owns any child it spawned.
+        if (this.connectionGeneration !== connectionGeneration) {
+          return;
+        }
+
+        const pid = (transport as unknown as { _process?: ChildProcess })._process?.pid;
+        if (pid) {
+          assignProcessTreeToWorkerJob(pid, 'chroma-mcp-early');
+          return;
+        }
+
+        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+      }
+    } catch (error) {
+      // Never let the fire-and-forget poll surface an unhandled rejection.
+      logger.debug('CHROMA_MCP', 'early chroma-mcp Job Object assign poll failed (best-effort)', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }
