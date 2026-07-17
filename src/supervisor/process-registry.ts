@@ -5,6 +5,7 @@ import path from 'path';
 import { logger } from '../utils/logger.js';
 import { sanitizeEnv } from './env-sanitizer.js';
 import { paths } from '../shared/paths.js';
+import { assignProcessTreeToWorkerJob } from '../services/infrastructure/WindowsJobObject.js';
 
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;
 const REAP_SESSION_SIGKILL_TIMEOUT_MS = 1_000;
@@ -642,7 +643,22 @@ export function spawnSdkProcess(
   }
 
   const pid = child.pid;
-  const pgid = pid; 
+  const pgid = pid;
+
+  // OS backstop: bind this SDK subprocess tree into the worker's kill-on-close
+  // Job Object so an abnormal worker death (crash / taskkill /F / OOM) can't
+  // orphan it. Up to TOTAL_PROCESS_HARD_CAP of these run concurrently and each
+  // may itself have forked — extends #3286's chroma-mcp backstop to the SDK
+  // pool with the same mechanism.
+  //
+  // A TREE sweep (not a single-PID assign) is required: on Windows the .cmd
+  // command is launched through a `cmd.exe /d /c` wrapper (useCmdWrapper), so
+  // the interesting process (the real Claude CLI) is a GRANDCHILD of `child`.
+  // Job membership is inherited only by processes created AFTER their parent
+  // joined, so the grandchild — already spawned by the time we get here — must
+  // be swept in explicitly via the Toolhelp32 snapshot walk. Best-effort,
+  // no-op off win32/Bun, never throws.
+  assignProcessTreeToWorkerJob(pid, `sdk:${sessionDbId}`);
 
   // Keep the tail of stderr so a non-zero exit can say WHY at WARN level.
   // Without this, a CLI that dies at flag parsing ("error: unknown option…")
