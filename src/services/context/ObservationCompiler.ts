@@ -85,6 +85,12 @@ export function queryObservationsNewest(
     ? `substr(o.memory_session_id, 1, 7) = 'manual-' OR`
     : '';
 
+  // #3274: only the project-scoped injection window filters subagent rows.
+  // House-wide newest feeds omit `projects` and stay unfiltered.
+  const agentFilter = config.mainAgentOnly && projects.length > 0
+    ? 'AND o.agent_id IS NULL'
+    : '';
+
   return db.db.prepare(`
     SELECT
       ${OBSERVATION_SELECT}
@@ -92,6 +98,7 @@ export function queryObservationsNewest(
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     WHERE (? IS NULL OR s.platform_source = ?)
       ${projectClause}
+      ${agentFilter}
       AND (${manualClause} (
         type IN (${typePlaceholders})
         AND EXISTS (
