@@ -134,6 +134,18 @@ describe('sanitizeEnv', () => {
     expect(result.HOME).toBe('/home/user');
   });
 
+  it('preserves Azure AI Foundry auth vars through sanitization', () => {
+    const result = sanitizeEnv({
+      CLAUDE_CODE_USE_FOUNDRY: '1',
+      CLAUDE_CODE_SKIP_FOUNDRY_AUTH: '1',
+      PATH: '/usr/bin'
+    });
+
+    expect(result.CLAUDE_CODE_USE_FOUNDRY).toBe('1');
+    expect(result.CLAUDE_CODE_SKIP_FOUNDRY_AUTH).toBe('1');
+    expect(result.PATH).toBe('/usr/bin');
+  });
+
   it('preserves proxy env vars (uppercase, lowercase, and npm config) for SDK subprocess network access', () => {
     const result = sanitizeEnv({
       HTTP_PROXY: 'http://corp-proxy:1234',
@@ -170,8 +182,10 @@ describe('sanitizeEnv', () => {
       CLAUDE_CODE_GIT_BASH_PATH: '/usr/bin/bash',
       CLAUDE_CODE_USE_BEDROCK: '1',
       CLAUDE_CODE_USE_VERTEX: '1',
+      CLAUDE_CODE_USE_FOUNDRY: '1',
       CLAUDE_CODE_SKIP_BEDROCK_AUTH: '1',
       CLAUDE_CODE_SKIP_VERTEX_AUTH: '1',
+      CLAUDE_CODE_SKIP_FOUNDRY_AUTH: '1',
       CLAUDE_CODE_EFFORT_LEVEL: 'high',
       CLAUDE_CODE_ALWAYS_ENABLE_EFFORT: '1',
       CLAUDE_CODE_RANDOM_OTHER: 'should-be-stripped',
@@ -183,8 +197,10 @@ describe('sanitizeEnv', () => {
     expect(result.CLAUDE_CODE_GIT_BASH_PATH).toBe('/usr/bin/bash');
     expect(result.CLAUDE_CODE_USE_BEDROCK).toBe('1');
     expect(result.CLAUDE_CODE_USE_VERTEX).toBe('1');
+    expect(result.CLAUDE_CODE_USE_FOUNDRY).toBe('1');
     expect(result.CLAUDE_CODE_SKIP_BEDROCK_AUTH).toBe('1');
     expect(result.CLAUDE_CODE_SKIP_VERTEX_AUTH).toBe('1');
+    expect(result.CLAUDE_CODE_SKIP_FOUNDRY_AUTH).toBe('1');
 
     expect(result.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
     expect(result.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT).toBeUndefined();
