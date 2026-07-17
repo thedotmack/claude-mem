@@ -150,6 +150,24 @@ PORT=${CLAUDE_MEM_WORKER_PORT:-$(jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/set
 
 5. If Chroma continues to fail, hybrid search will gracefully degrade to SQLite FTS5 only
 
+### Windows: console windows steal focus on every tool call
+
+**Symptoms**: On Windows, Claude Code flashes a console window (and steals focus) on nearly every Read / tool call while claude-mem is enabled.
+
+**Cause**: High-frequency `PreToolUse` (`file-context`) and `PostToolUse` (`observation`) hooks run as bash commands. Renaming those keys in `hooks.json` is no longer a valid workaround; Claude Code rejects unknown hook keys and drops the entire plugin hook set.
+
+**Opt-out** (keeps SessionStart / UserPromptSubmit / Stop memory capture):
+
+```json
+{
+  "env": {
+    "CLAUDE_MEM_DISABLE_TOOL_HOOKS": "1"
+  }
+}
+```
+
+Add that under `~/.claude/settings.json` (or export the variable in your shell). Granular flags: `CLAUDE_MEM_DISABLE_OBSERVATION=1` and `CLAUDE_MEM_DISABLE_FILE_CONTEXT=1`. See [Configuration](configuration).
+
 ### Smart Install Caching Issues (v5.0.3+)
 
 **Symptoms**: Dependencies not updating after plugin update, stale version marker.
