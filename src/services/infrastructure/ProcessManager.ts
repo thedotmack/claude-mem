@@ -336,6 +336,11 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: s
   }
 }
 
+export function buildWindowsDaemonStartCommand(runtimePath: string, scriptPath: string): string {
+  const psSingleQuote = (value: string) => value.replace(/'/g, "''");
+  return `Start-Process -FilePath '${psSingleQuote(runtimePath)}' -ArgumentList @('${psSingleQuote(scriptPath)}','--daemon') -WindowStyle Hidden`;
+}
+
 export function spawnDaemon(
   scriptPath: string,
   port: number,
@@ -359,7 +364,7 @@ export function spawnDaemon(
   }
 
   if (process.platform === 'win32') {
-    const psScript = `Start-Process -FilePath '${runtimePath.replace(/'/g, "''")}' -ArgumentList @('${scriptPath.replace(/'/g, "''")}','--daemon') -WindowStyle Hidden`;
+    const psScript = buildWindowsDaemonStartCommand(runtimePath, scriptPath);
     const encodedCommand = Buffer.from(psScript, 'utf16le').toString('base64');
 
     try {
