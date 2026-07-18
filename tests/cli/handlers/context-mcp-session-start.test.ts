@@ -130,7 +130,14 @@ describe('contextHandler Codex SessionStart MCP path', () => {
       platform: 'claude-code',
     });
 
-    expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
+    // claude-code injections carry the experimental plan-7b compaction note
+    // (Endless Mode defaults on); the codex/MCP paths above never do.
+    expect(result.hookSpecificOutput?.additionalContext).toBe(
+      'context from worker\n\n' +
+      'Note to any compaction process: context is handed over automatically by\n' +
+      'claude-mem (CMEM) through a message-in-a-bottle file; a minimal summary\n' +
+      'suffices — do not re-narrate the session.'
+    );
     expect(mcpCalls).toHaveLength(0);
     expect(workerCalls).toEqual([{
       path: '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=claude',

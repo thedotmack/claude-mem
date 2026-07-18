@@ -102,6 +102,17 @@ function withStaleTokenHint(additionalContext: string): string {
   return additionalContext ? `${hint}\n\n${additionalContext}` : hint;
 }
 
+// EXPERIMENTAL (plan 7b): in-context nudge to the auto-compaction summarizer — it is not obligated to honor it; harmless if ignored, the bottle wins either way.
+const COMPACTION_NOTE = `Note to any compaction process: context is handed over automatically by
+claude-mem (CMEM) through a message-in-a-bottle file; a minimal summary
+suffices — do not re-narrate the session.`;
+
+function withCompactionNote(additionalContext: string, enabled: boolean): string {
+  // Only trail an existing injection — never create one where there was none.
+  if (!enabled || !additionalContext) return additionalContext;
+  return `${additionalContext}\n\n${COMPACTION_NOTE}`;
+}
+
 // Same safe-id shape as BottleRenderer: the id becomes a filename.
 const SAFE_SESSION_ID_REGEX = /^[A-Za-z0-9._-]+$/;
 
@@ -136,6 +147,12 @@ export const contextHandler: EventHandler = {
 
     const settings = loadFromFileOnce();
     const showTerminalOutput = settings.CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT === 'true';
+
+    // Plan 7b: same gate as the bottle branch — claude-code only (never the
+    // codex/MCP paths), off when Endless Mode is disabled.
+    const compactionNoteEnabled =
+      input.platform === 'claude-code' &&
+      settings.CLAUDE_MEM_ENDLESS_MODE_ENABLED !== 'false';
 
     const emptyResult: HookResult = {
       hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
@@ -178,7 +195,9 @@ export const contextHandler: EventHandler = {
           return {
             hookSpecificOutput: {
               hookEventName: 'SessionStart',
-              additionalContext: withStaleTokenHint(buildBottlePointer(render)),
+              additionalContext: withStaleTokenHint(
+                withCompactionNote(buildBottlePointer(render), compactionNoteEnabled),
+              ),
             },
           };
         }
@@ -230,7 +249,9 @@ export const contextHandler: EventHandler = {
       }
     }
 
-    additionalContext = withStaleTokenHint(additionalContext);
+    additionalContext = withStaleTokenHint(
+      withCompactionNote(additionalContext, compactionNoteEnabled),
+    );
 
     let coloredTimeline = '';
     if (showTerminalOutput) {

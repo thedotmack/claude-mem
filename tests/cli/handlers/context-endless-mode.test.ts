@@ -29,6 +29,7 @@ type RenderBehavior = 'full' | 'reconstructed' | 'fallback' | 'throw' | 'nothing
 let renderBehavior: RenderBehavior = 'full';
 let mockCurrentTask = 'Fix the failing tests';
 let mockStaleMarker: string | null = null;
+let mockTimelineResult = 'timeline context';
 let settingsOverrides: Record<string, string> = {};
 const workerCalls: Array<{ path: string; method: string; body?: unknown; options?: { timeoutMs?: number } }> = [];
 
@@ -75,7 +76,7 @@ mock.module('../../../src/shared/worker-utils.js', () => ({
         currentTask: mockCurrentTask,
       };
     }
-    return 'timeline context';
+    return mockTimelineResult;
   },
   getWorkerPort: () => 37777,
   isWorkerFallback: (result: unknown) => result === FALLBACK,
@@ -90,6 +91,7 @@ beforeEach(() => {
   renderBehavior = 'full';
   mockCurrentTask = 'Fix the failing tests';
   mockStaleMarker = null;
+  mockTimelineResult = 'timeline context';
   settingsOverrides = {};
   rmSync(BOTTLES_DIR, { recursive: true, force: true });
   loggerSpies.forEach(spy => spy.mockRestore());
@@ -130,6 +132,13 @@ function timelineCalls() {
   return workerCalls.filter(c => c.method === 'GET');
 }
 
+// Plan 7b: experimental trailing note to the auto-compaction summarizer.
+const COMPACTION_NOTE = `Note to any compaction process: context is handed over automatically by
+claude-mem (CMEM) through a message-in-a-bottle file; a minimal summary
+suffices — do not re-narrate the session.`;
+
+const TIMELINE_WITH_NOTE = `timeline context\n\n${COMPACTION_NOTE}`;
+
 const EXPECTED_FULL_POINTER = `# [claude-mem] Endless Mode — session continuation
 
 Before doing anything else, Read this file and continue the session from
@@ -146,7 +155,9 @@ where it ends:
 - The newest tool activity may still be settling into observations;
   check the timeline if the last few minutes look thin.
 
-Current task: Fix the failing tests`;
+Current task: Fix the failing tests
+
+${COMPACTION_NOTE}`;
 
 describe('contextHandler Endless Mode — compact/resume bottle pointer', () => {
   it('emits the complete full-mode pointer verbatim (whole-string snapshot)', async () => {
@@ -213,7 +224,7 @@ describe('contextHandler Endless Mode — compact/resume bottle pointer', () => 
     renderBehavior = 'fallback';
     const result = await runHandler({ sessionSource: 'compact' });
 
-    expect(result.hookSpecificOutput?.additionalContext).toBe('timeline context');
+    expect(result.hookSpecificOutput?.additionalContext).toBe(TIMELINE_WITH_NOTE);
     expect(renderCalls()).toHaveLength(1);
     expect(timelineCalls()).toHaveLength(1);
   });
@@ -222,7 +233,7 @@ describe('contextHandler Endless Mode — compact/resume bottle pointer', () => 
     renderBehavior = 'throw';
     const result = await runHandler({ sessionSource: 'compact' });
 
-    expect(result.hookSpecificOutput?.additionalContext).toBe('timeline context');
+    expect(result.hookSpecificOutput?.additionalContext).toBe(TIMELINE_WITH_NOTE);
     expect(renderCalls()).toHaveLength(1);
     expect(timelineCalls()).toHaveLength(1);
   });
@@ -231,7 +242,7 @@ describe('contextHandler Endless Mode — compact/resume bottle pointer', () => 
     renderBehavior = 'nothing_to_render';
     const result = await runHandler({ sessionSource: 'compact' });
 
-    expect(result.hookSpecificOutput?.additionalContext).toBe('timeline context');
+    expect(result.hookSpecificOutput?.additionalContext).toBe(TIMELINE_WITH_NOTE);
     expect(renderCalls()).toHaveLength(1);
     expect(timelineCalls()).toHaveLength(1);
   });
@@ -248,7 +259,7 @@ describe('contextHandler Endless Mode — compact/resume bottle pointer', () => 
   it('does not take the bottle branch on startup', async () => {
     const result = await runHandler({ sessionSource: 'startup' });
 
-    expect(result.hookSpecificOutput?.additionalContext).toBe('timeline context');
+    expect(result.hookSpecificOutput?.additionalContext).toBe(TIMELINE_WITH_NOTE);
     expect(renderCalls()).toHaveLength(0);
     expect(timelineCalls()).toHaveLength(1);
   });
@@ -279,7 +290,10 @@ describe('contextHandler Endless Mode — compact/resume bottle pointer', () => 
     const result = await runHandler({ sessionSource: 'compact' });
 
     const context = result.hookSpecificOutput?.additionalContext ?? '';
-    expect(context.split('\n').pop()).toBe(`Current task: ${'A'.repeat(300)}`);
+    // The compaction note now trails the pointer, so the Current task line is
+    // the last line of the pointer body rather than of the whole injection.
+    expect(context.split('\n')).toContain(`Current task: ${'A'.repeat(300)}`);
+    expect(context).not.toContain(`Current task: ${'A'.repeat(301)}`);
     expect(context).not.toContain('second line that must not appear');
   });
 });
@@ -317,7 +331,7 @@ describe('contextHandler Endless Mode — resume failure floor & platform gate',
     renderBehavior = 'fallback';
     const result = await runHandler({ sessionSource: 'compact' });
 
-    expect(result.hookSpecificOutput?.additionalContext).toBe('timeline context');
+    expect(result.hookSpecificOutput?.additionalContext).toBe(TIMELINE_WITH_NOTE);
     expect(timelineCalls()).toHaveLength(1);
   });
 
@@ -346,7 +360,7 @@ describe('contextHandler Endless Mode — /clear archives the bottle', () => {
       .toBe('# Session bottle — sess-endless\n');
 
     // Existing clear behavior unchanged: timeline injected, no bottle pointer.
-    expect(result.hookSpecificOutput?.additionalContext).toBe('timeline context');
+    expect(result.hookSpecificOutput?.additionalContext).toBe(TIMELINE_WITH_NOTE);
     expect(renderCalls()).toHaveLength(0);
   });
 
@@ -354,7 +368,7 @@ describe('contextHandler Endless Mode — /clear archives the bottle', () => {
     const result = await runHandler({ sessionSource: 'clear' });
 
     expect(existsSync(BOTTLES_ARCHIVE_DIR)).toBe(false);
-    expect(result.hookSpecificOutput?.additionalContext).toBe('timeline context');
+    expect(result.hookSpecificOutput?.additionalContext).toBe(TIMELINE_WITH_NOTE);
   });
 
   it('refuses unsafe session ids — no archive attempt, no path traversal', async () => {
@@ -367,9 +381,41 @@ describe('contextHandler Endless Mode — /clear archives the bottle', () => {
 
       expect(readFileSync(outsideFile, 'utf-8')).toBe('must not move');
       expect(existsSync(BOTTLES_ARCHIVE_DIR)).toBe(false);
-      expect(result.hookSpecificOutput?.additionalContext).toBe('timeline context');
+      expect(result.hookSpecificOutput?.additionalContext).toBe(TIMELINE_WITH_NOTE);
     } finally {
       unlinkSync(outsideFile);
     }
+  });
+});
+
+describe('contextHandler Endless Mode — experimental compaction note (plan 7b)', () => {
+  it('appends the note as the final block of the bottle pointer', async () => {
+    const result = await runHandler({ sessionSource: 'compact' });
+
+    const context = result.hookSpecificOutput?.additionalContext ?? '';
+    expect(context.endsWith(`\n\n${COMPACTION_NOTE}`)).toBe(true);
+  });
+
+  it('appends the note to the startup timeline injection when the flag is on', async () => {
+    const result = await runHandler({ sessionSource: 'startup' });
+
+    expect(result.hookSpecificOutput?.additionalContext).toBe(TIMELINE_WITH_NOTE);
+  });
+
+  it('emits no note anywhere when the flag is false', async () => {
+    settingsOverrides = { CLAUDE_MEM_ENDLESS_MODE_ENABLED: 'false' };
+
+    const startup = await runHandler({ sessionSource: 'startup' });
+    expect(startup.hookSpecificOutput?.additionalContext).toBe('timeline context');
+
+    const compact = await runHandler({ sessionSource: 'compact' });
+    expect(compact.hookSpecificOutput?.additionalContext).toBe('timeline context');
+  });
+
+  it('never creates an injection where there was none (empty timeline stays empty)', async () => {
+    mockTimelineResult = '';
+    const result = await runHandler({ sessionSource: 'startup' });
+
+    expect(result.hookSpecificOutput?.additionalContext).toBe('');
   });
 });
