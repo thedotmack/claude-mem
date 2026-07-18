@@ -19,11 +19,18 @@ export class DatabaseManager {
 
   async initialize(): Promise<void> {
     this.db = openConfiguredSqliteDatabase(DB_PATH);
-    
-    this.sessionStore = new SessionStore(this.db);
-    this.sessionSearch = new SessionSearch(this.db);
 
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+
+    // cloudSyncHubUrl gates the one-shot v43 hub-cutover requeue inside the
+    // migration chain (SessionStore.requeueAllForHubCutover) — it must run
+    // BEFORE the first drain so the whole corpus is queued when the hub URL
+    // first appears.
+    this.sessionStore = new SessionStore(this.db, {
+      cloudSyncHubUrl: settings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL,
+    });
+    this.sessionSearch = new SessionSearch(this.db);
+
     const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
     if (chromaEnabled) {
       this.chromaSync = new ChromaSync('claude-mem');
@@ -31,10 +38,15 @@ export class DatabaseManager {
       logger.info('DB', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, using SQLite-only search');
     }
 
-    // Cloud sync is active ⇔ token AND user id are both non-empty (no
-    // separate enabled flag). Inactive installs get null so the write-site
+    // Cloud sync is active ⇔ token AND user id AND hub URL are all non-empty
+    // (no separate enabled flag; empty hub URL = sync OFF — the hard cutover,
+    // plan Phase 3 task 5). Inactive installs get null so the write-site
     // `getCloudSync()?.notify()` nudges are free no-ops.
-    if (settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN !== '' && settings.CLAUDE_MEM_CLOUD_SYNC_USER_ID !== '') {
+    if (
+      settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN !== '' &&
+      settings.CLAUDE_MEM_CLOUD_SYNC_USER_ID !== '' &&
+      settings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL.trim() !== ''
+    ) {
       this.cloudSync = new CloudSync(this.db, settings);
     }
 

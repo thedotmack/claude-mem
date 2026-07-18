@@ -1,18 +1,52 @@
-// Worker-native cloud sync (cmem.ai Pro) — the database is the queue.
+// Worker-native cloud sync push drain — the database is the queue.
 //
-// Every memory row carries a `synced_at` column (NULL = not in the cloud;
-// migration v36). Write sites nudge `notify()` after each local write; a
+// Every memory row carries a `synced_at` column (NULL = not in the hub's log;
+// migration v36/v39). Write sites nudge `notify()` after each local write; a
 // trailing debounce coalesces bursts into one `flush()`, which drains
-// `WHERE synced_at IS NULL` in batches, POSTs to cmem.ai, and stamps rows on
-// success. That single mechanism IS live sync, backfill, offline catch-up,
-// and retry — no second process, no cursor files.
+// `WHERE synced_at IS NULL AND origin_device_id IS NULL` in batches, POSTs to
+// the per-user sync hub (workers/sync-hub), and stamps rows on ack. That
+// single mechanism IS live sync, backfill, offline catch-up, and retry — no
+// second process, no cursor files. Mutation ops (custom title, prompt→session
+// repair, project remaps) ride the same flush from the `sync_outbox` table
+// (migration v42), drained FIRST so the hub log carries them before the row
+// ops they relate to (SyncApply's title parking relies on that order).
 //
-// WIRE CONTRACT (fixed — the cmem.ai server is already deployed): the
-// `toCloud` mappers, the prompts SQL-side clamp, and the body-size batching
-// below are ported verbatim in behavior from the vetted standalone client at
-// ~/.claude-mem/cloud-sync.mjs (source-reviewed 2026-07-08). Do not redesign
-// field names, clamps, or batch semantics. Line references in comments cite
-// that file.
+// WIRE CONTRACT (Phase 3 retarget — the old per-kind cmem.ai endpoints, their
+// `toCloud` mappers, the stampGuard machinery, and the live|backfill lane are
+// DELETED): one endpoint, POST {hubUrl}/v1/sync/ops with
+// `{ops: [{kind, origin_id, rev, body}]}` → `{acked: [{kind, origin_id, rev,
+// seq}], head_seq}` (workers/sync-hub/src/index.ts). Row op bodies follow the
+// BODY FIELD MAPPING in SyncApply.ts verbatim: field names are the local
+// column names, values exactly as stored (JSON-string columns stay JSON
+// strings), exclusions as listed there. origin_id = String(local rowid) for
+// rows, the queued op UUID for mutations; rev = the row's sync_rev / the
+// queued op's rev.
+//
+// STAMPING (replaces stampGuardSql): acks are matched by (kind, origin_id,
+// rev) — the hub may return them in any order, and duplicate-in-batch keys
+// share a seq. A row is stamped ONLY where its CURRENT sync_rev still equals
+// the acked rev, so a mutation site bumping sync_rev while a POST is in
+// flight (e.g. requeuePromptSync registering a memory id) leaves the row
+// unsynced and the same flush loop re-pushes it corrected at the higher rev.
+// Acked mutation ops are DELETEd from sync_outbox (queue entries, not data).
+//
+// SIZE CLAMPS: real-world user_prompts carry multi-MB text (observed single
+// 7.4MB prompts from pasted logs), so prompt_text is clamped IN SQL (200KB +
+// marker), every string field is clamped to 200KB — INCLUDING mutation
+// envelope fields (custom_title enters via an unbounded z.string(); a
+// size-refused mutation would 400 the whole batch and wedge the push lane
+// forever, since drainMutations runs first) — request bodies are packed
+// under 2MB (hub cap: 8MB/request, ≤500 ops), and any op whose serialized
+// form would still exceed the hub's per-op limit (1,990,000 bytes) gets a
+// hard 60KB-per-field re-clamp. The invariant holds for ALL kinds: an op
+// that leaves here cannot be refused for size.
+//
+// LIVELOCK GUARD: the drain loops make forward progress ONLY via acks
+// (stamp/DELETE). A 200 response that fails to ack every pushed op would
+// otherwise re-SELECT and re-POST the same rows at network RTT forever with
+// no error surfaced — so sendOps treats any un-acked pushed op as a push
+// failure (after stamping the acks that DID arrive) and throws into the
+// normal backoff path.
 
 import type { Database } from 'bun:sqlite';
 import { existsSync, readFileSync } from 'fs';
@@ -23,159 +57,203 @@ import { parseJsonWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 
-// Page size for the drain SELECT (cloud-sync.mjs:45).
+// Page size for the drain SELECTs.
 const BATCH = 200;
-// Real-world user_prompts tables carry multi-GB text (observed: single 7.4MB
-// prompts from pasted logs), so upload bodies must be size-bounded (Vercel
-// rejects bodies over ~4.5MB) and pathological single fields get clamped with
-// a marker (cloud-sync.mjs:263-271).
-const MAX_BODY_BYTES = 2_000_000;   // cloud-sync.mjs:269
-const MAX_FIELD_BYTES = 200_000;    // cloud-sync.mjs:270
-export const TRUNC_MARK = '\n…[truncated by cloud-sync: field exceeded 200KB]'; // cloud-sync.mjs:271
+// Request-body packing budget — well under the hub's 8,000,000-byte cap.
+const MAX_BODY_BYTES = 2_000_000;
+// Hub cap: ≤500 ops per POST /v1/sync/ops request.
+const MAX_OPS_PER_PUSH = 500;
+// Hub per-op body backstop is 1,990,000 bytes (SyncHub MAX_BODY_BYTES); the
+// client clamp sits below it so a locally built op can never be refused.
+const MAX_OP_BYTES = 1_900_000;
+export const MAX_FIELD_BYTES = 200_000;
+// Emergency per-field bound when a clamped op would STILL exceed MAX_OP_BYTES
+// (only reachable with ~10 maxed 200KB fields in one row — pathological).
+const HARD_FIELD_BYTES = 60_000;
+export const TRUNC_MARK = '\n…[truncated by cloud-sync: field exceeded 200KB]';
 
-// Local stores facts/concepts/file lists as JSON strings; the cloud
-// re-stringifies, so send the PARSED value to avoid double-encoding
-// (cloud-sync.mjs:120-125).
-const parseJson = (v: unknown): unknown => {
-  if (v == null) return null;
-  try { return JSON.parse(String(v)); } catch { return v; }
-};
+type LocalRow = Record<string, unknown> & { id: number; sync_rev: number };
+type OpBody = Record<string, unknown>;
 
-type LocalRow = Record<string, unknown> & { id: number };
-type CloudRow = Record<string, unknown>;
+type RowKind = 'observation' | 'summary' | 'prompt';
 
-interface KindSpec {
-  name: 'observations' | 'summaries' | 'prompts';
-  localTable: string;
-  endpoint: string;
-  bodyKey: string;
-  selectCols: string;
-  /** FROM clause override when the select needs a JOIN (default: localTable). */
-  fromSql?: string;
-  /** Alias qualifying synced_at/id in WHERE/ORDER BY when fromSql joins. */
-  rowAlias?: string;
-  /**
-   * Stamp-time guard for kinds whose pushed shape depends on a JOIN: a
-   * predicate on localTable (one `?` bound per row via stampGuard) that must
-   * still hold when the POST returns. A row whose mapping changed while the
-   * POST was in flight is NOT stamped — it stays unsynced and the next flush
-   * re-pushes it with the current mapping (the server upserts on
-   * (user_id, device_id, local_id), so the corrected row overwrites in place).
-   * Without this, a memory id registered mid-POST is lost: the requeue hook
-   * no-ops (synced_at is still NULL) and the stamp then marks the stale
-   * fallback upload as synced.
-   */
-  stampGuardSql?: string;
-  /** Captures the per-row guard value as it was SELECTed (bound to the `?`). */
-  stampGuard?: (r: LocalRow) => string | null;
-  toCloud: (r: LocalRow) => CloudRow;
+interface WireOp {
+  kind: RowKind | 'mutation';
+  origin_id: string;
+  rev: number;
+  body: OpBody;
 }
 
-// The three synced kinds; endpoints, body keys, and mappers ported from
-// cloud-sync.mjs:132-262 (push lane only — pull is Phase 5).
+interface AckedOp {
+  kind: string;
+  origin_id: string;
+  rev: number;
+  seq: number;
+}
+
+interface PushResponse {
+  acked: AckedOp[];
+  head_seq: number;
+}
+
+const TABLE_BY_KIND: Record<RowKind, string> = {
+  observation: 'observations',
+  summary: 'session_summaries',
+  prompt: 'user_prompts',
+};
+
+interface KindSpec {
+  kind: RowKind;
+  localTable: string;
+  /**
+   * Drain SELECT: unsynced NATIVE rows only. Replica rows (origin_device_id
+   * NOT NULL) are another device's corpus — pushing them under this device's
+   * identity would fork origin attribution, so they are excluded here even
+   * if something re-nulls their synced_at.
+   */
+  selectSql: string;
+  /** Op body per the SyncApply BODY FIELD MAPPING — values exactly as stored. */
+  toBody: (r: LocalRow) => OpBody;
+}
+
 const KINDS: KindSpec[] = [
   {
-    name: 'observations',
+    kind: 'observation',
     localTable: 'observations',
-    endpoint: 'observations/batch',   // cloud-sync.mjs:136
-    bodyKey: 'observations',          // cloud-sync.mjs:137
-    selectCols: `id, memory_session_id, project, type, title, subtitle, facts,
-      narrative, concepts, files_read, files_modified, prompt_number,
-      discovery_tokens, created_at_epoch`,
-    // cloud-sync.mjs:141-156
-    toCloud: (r) => ({
-      localId: String(r.id),
-      memorySessionId: r.memory_session_id ?? null,
+    selectSql: `
+      SELECT id, sync_rev, memory_session_id, project, text, type, title, subtitle,
+        facts, narrative, concepts, files_read, files_modified, prompt_number,
+        discovery_tokens, content_hash, generated_by_model, agent_type, agent_id,
+        metadata, merged_into_project, created_at, created_at_epoch
+      FROM observations
+      WHERE synced_at IS NULL AND origin_device_id IS NULL
+      ORDER BY id LIMIT ${BATCH}`,
+    toBody: (r) => ({
+      memory_session_id: r.memory_session_id ?? null,
       project: r.project ?? null,
+      text: r.text ?? null,
       type: r.type ?? null,
       title: r.title ?? null,
       subtitle: r.subtitle ?? null,
-      facts: parseJson(r.facts),
+      facts: r.facts ?? null,
       narrative: r.narrative ?? null,
-      concepts: parseJson(r.concepts),
-      filesRead: parseJson(r.files_read),
-      filesModified: parseJson(r.files_modified),
-      promptNumber: r.prompt_number ?? null,
-      discoveryTokens: r.discovery_tokens ?? 0,
-      createdAtEpoch: r.created_at_epoch ?? null,
+      concepts: r.concepts ?? null,
+      files_read: r.files_read ?? null,
+      files_modified: r.files_modified ?? null,
+      prompt_number: r.prompt_number ?? null,
+      discovery_tokens: r.discovery_tokens ?? 0,
+      content_hash: r.content_hash ?? null,
+      generated_by_model: r.generated_by_model ?? null,
+      agent_type: r.agent_type ?? null,
+      agent_id: r.agent_id ?? null,
+      metadata: r.metadata ?? null,
+      merged_into_project: r.merged_into_project ?? null,
+      created_at: r.created_at ?? null,
+      created_at_epoch: r.created_at_epoch ?? null,
     }),
   },
   {
-    name: 'summaries',
+    kind: 'summary',
     localTable: 'session_summaries',
-    endpoint: 'summaries/batch',      // cloud-sync.mjs:183
-    bodyKey: 'summaries',             // cloud-sync.mjs:184
-    selectCols: `id, memory_session_id, project, request, investigated, learned,
-      completed, next_steps, notes, prompt_number, discovery_tokens,
-      created_at_epoch`,
-    // cloud-sync.mjs:188-201
-    toCloud: (r) => ({
-      localId: String(r.id),
-      memorySessionId: r.memory_session_id ?? null,
+    selectSql: `
+      SELECT id, sync_rev, memory_session_id, project, request, investigated, learned,
+        completed, next_steps, files_read, files_edited, notes, prompt_number,
+        discovery_tokens, merged_into_project, created_at, created_at_epoch
+      FROM session_summaries
+      WHERE synced_at IS NULL AND origin_device_id IS NULL
+      ORDER BY id LIMIT ${BATCH}`,
+    toBody: (r) => ({
+      memory_session_id: r.memory_session_id ?? null,
       project: r.project ?? null,
       request: r.request ?? null,
       investigated: r.investigated ?? null,
       learned: r.learned ?? null,
       completed: r.completed ?? null,
-      nextSteps: r.next_steps ?? null,
+      next_steps: r.next_steps ?? null,
+      files_read: r.files_read ?? null,
+      files_edited: r.files_edited ?? null,
       notes: r.notes ?? null,
-      promptNumber: r.prompt_number ?? null,
-      discoveryTokens: r.discovery_tokens ?? 0,
-      createdAtEpoch: r.created_at_epoch ?? null,
+      prompt_number: r.prompt_number ?? null,
+      discovery_tokens: r.discovery_tokens ?? 0,
+      merged_into_project: r.merged_into_project ?? null,
+      created_at: r.created_at ?? null,
+      created_at_epoch: r.created_at_epoch ?? null,
     }),
   },
   {
-    name: 'prompts',
+    kind: 'prompt',
     localTable: 'user_prompts',
-    endpoint: 'prompts/batch',        // cloud-sync.mjs:224
-    bodyKey: 'prompts',               // cloud-sync.mjs:225
     // prompt_text is clamped IN SQL (observed single prompts of 7.4MB from
     // pasted logs): truncating after .all() still materializes the giant
-    // strings and OOMs the process, so never let them cross the FFI boundary
-    // at all (cloud-sync.mjs:230-237).
-    // Resolve the memory session id + project through sdk_sessions — the same
-    // join the local viewer uses (prompts/get.ts). Without it the cloud viewer
-    // can never attach a prompt to its session: observations are keyed by
-    // memory_session_id while content_session_id is a different UUID, so the
-    // old "reuse the session id" fallback produced rows that join nothing
-    // (verified in prod 2026-07-12: 0 of the 50 newest sessions had a prompt).
-    // LEFT JOIN, not INNER: the prompt is captured before the SDK session
-    // registers its memory id, so first push may still fall back — the
-    // updateMemorySessionId/ensureMemorySessionIdRegistered re-push hook
-    // re-nulls synced_at once the mapping lands and the upsert repairs it.
-    selectCols: `up.id AS id, up.content_session_id AS content_session_id,
-      up.prompt_number AS prompt_number,
-      substr(up.prompt_text, 1, ${200_000}) AS prompt_text,
-      length(up.prompt_text) AS prompt_text_len,
-      up.created_at AS created_at, up.created_at_epoch AS created_at_epoch,
-      s.memory_session_id AS memory_session_id, s.project AS project`,
-    fromSql: 'user_prompts up LEFT JOIN sdk_sessions s ON up.session_db_id = s.id',
-    rowAlias: 'up',
-    // `IS` (not `=`) so two NULLs match: an orphan row (no session_db_id) and
-    // a linked-but-unregistered session both SELECT and re-check as NULL.
-    stampGuardSql: '(SELECT s.memory_session_id FROM sdk_sessions s WHERE s.id = user_prompts.session_db_id) IS ?',
-    stampGuard: (r) => (r.memory_session_id as string | null) ?? null,
-    // cloud-sync.mjs:238-250
-    toCloud: (r) => ({
-      localId: String(r.id),
-      contentSessionId: r.content_session_id ?? null,
-      memorySessionId: r.memory_session_id ?? r.content_session_id ?? 'unknown',
-      project: r.project ?? 'unknown',
-      promptText: r.prompt_text != null && (r.prompt_text_len as number) > 200_000
+    // strings and OOMs the process, so never let them cross the FFI boundary.
+    // memory_session_id/project/platform_source resolve through the same
+    // sdk_sessions LEFT JOIN the local viewer uses (SyncApply BODY FIELD
+    // MAPPING, kind 'prompt'); they are nullable — the apply side links
+    // orphans later via set_prompt_session. session_db_id NEVER travels (a
+    // device-local rowid, re-resolved on apply).
+    //
+    // ACCEPTED LIMITATION (join-field drift): the body embeds JOINED session
+    // fields, but the op's rev covers only the prompt row itself — a later
+    // change to the owning session (e.g. a project remap) does not bump
+    // prompt revs or re-push prompts, so replicas' embedded copies can lag.
+    // Divergence is corrected by the mutation lane (remap_project /
+    // set_prompt_session predicates), not the prompt row lane.
+    selectSql: `
+      SELECT up.id AS id, up.sync_rev AS sync_rev,
+        up.content_session_id AS content_session_id,
+        up.prompt_number AS prompt_number,
+        substr(up.prompt_text, 1, ${MAX_FIELD_BYTES}) AS prompt_text,
+        length(up.prompt_text) AS prompt_text_len,
+        up.created_at AS created_at, up.created_at_epoch AS created_at_epoch,
+        s.memory_session_id AS memory_session_id, s.project AS project,
+        s.platform_source AS platform_source
+      FROM user_prompts up LEFT JOIN sdk_sessions s ON up.session_db_id = s.id
+      WHERE up.synced_at IS NULL AND up.origin_device_id IS NULL
+      ORDER BY up.id LIMIT ${BATCH}`,
+    toBody: (r) => ({
+      content_session_id: r.content_session_id ?? null,
+      prompt_number: r.prompt_number ?? null,
+      prompt_text: r.prompt_text != null && (r.prompt_text_len as number) > MAX_FIELD_BYTES
         ? String(r.prompt_text) + TRUNC_MARK
         : r.prompt_text ?? null,
-      promptNumber: r.prompt_number ?? null,
-      createdAtEpoch: r.created_at_epoch ?? null,
+      created_at: r.created_at ?? null,
+      created_at_epoch: r.created_at_epoch ?? null,
+      memory_session_id: r.memory_session_id ?? null,
+      project: r.project ?? null,
+      platform_source: r.platform_source ?? null,
     }),
   },
 ];
 
-// cloud-sync.mjs:273-281
-function clampRow(mapped: CloudRow): CloudRow {
-  const out = { ...mapped };
+/** Clamp every string field of an op body to `maxField` bytes-ish (chars). */
+function clampFields(body: OpBody, maxField: number): OpBody {
+  const out = { ...body };
   for (const [k, v] of Object.entries(out)) {
-    if (typeof v === 'string' && v.length > MAX_FIELD_BYTES) {
-      out[k] = v.slice(0, MAX_FIELD_BYTES) + TRUNC_MARK;
+    if (typeof v === 'string' && v.length > maxField) {
+      out[k] = v.slice(0, maxField) + TRUNC_MARK;
+    }
+  }
+  return out;
+}
+
+/**
+ * Clamp a mutation envelope ({op, target|where, fields} — one level of
+ * nesting, flat string values inside). custom_title enters via an unbounded
+ * z.string() (SessionRoutes), and a single size-refused mutation 400s the
+ * WHOLE push request, wedging the lane forever (drainMutations runs first).
+ * Identity fields (target/where) are clamped too: a >200KB "identity" could
+ * never match a real row anyway, and leaving it unclamped would keep the
+ * refusal alive.
+ */
+function clampMutationBody(body: OpBody, maxField: number): OpBody {
+  const out: OpBody = {};
+  for (const [k, v] of Object.entries(body)) {
+    if (typeof v === 'string' && v.length > maxField) {
+      out[k] = v.slice(0, maxField) + TRUNC_MARK;
+    } else if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+      out[k] = clampFields(v as OpBody, maxField);
+    } else {
+      out[k] = v;
     }
   }
   return out;
@@ -184,7 +262,7 @@ function clampRow(mapped: CloudRow): CloudRow {
 export type CloudSyncSettingKeys = Pick<SettingsDefaults,
   | 'CLAUDE_MEM_CLOUD_SYNC_TOKEN'
   | 'CLAUDE_MEM_CLOUD_SYNC_USER_ID'
-  | 'CLAUDE_MEM_CLOUD_SYNC_URL'
+  | 'CLAUDE_MEM_CLOUD_SYNC_HUB_URL'
   | 'CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID'
   | 'CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME'
 >;
@@ -201,14 +279,14 @@ export interface CloudSyncOptions {
   /** First retry delay after a failed flush; doubles up to backoffMaxMs. */
   backoffInitialMs?: number;
   backoffMaxMs?: number;
-  /** Per-request timeout — deliberately fixes the standalone client's no-timeout hang. */
+  /** Per-request timeout — a hub POST can never hang the drain. */
   requestTimeoutMs?: number;
 }
 
 export interface CloudSyncStatus {
   configured: boolean;
   deviceId: string;
-  pending: { observations: number; summaries: number; prompts: number };
+  pending: { observations: number; summaries: number; prompts: number; mutations: number };
   lastFlushAt: number | null;
   lastError: string | null;
 }
@@ -217,7 +295,7 @@ export class CloudSync {
   private readonly db: Database;
   private readonly token: string;
   private readonly userId: string;
-  private readonly url: string;
+  private readonly hubUrl: string;
   private readonly deviceName: string;
   private readonly fetchImpl: typeof fetch;
   private readonly settingsPath: string;
@@ -237,13 +315,22 @@ export class CloudSync {
   private stopped = false;
   private lastFlushAt: number | null = null;
   private lastError: string | null = null;
+  /**
+   * head_seq piggyback (plan Phase 3 task 3): every push response carries the
+   * hub's head_seq; SyncClient registers here so a push that reveals unseen
+   * remote ops triggers a pull without waiting for the poll timer.
+   */
+  private headSeqListener: ((headSeq: number) => void) | null = null;
 
   constructor(db: Database, settings: CloudSyncSettingKeys, options: CloudSyncOptions = {}) {
     this.db = db;
     this.token = settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN ?? '';
     this.userId = settings.CLAUDE_MEM_CLOUD_SYNC_USER_ID ?? '';
-    this.url = (settings.CLAUDE_MEM_CLOUD_SYNC_URL || 'https://cmem.ai/api/pro/sync').replace(/\/+$/, ''); // cloud-sync.mjs:41
-    // Human-readable device label for the dashboard's Devices panel (cloud-sync.mjs:285).
+    // Hard cutover (plan Phase 3 task 5, open decision 2): the hub URL has NO
+    // default. Empty ⇒ sync is OFF entirely — there is no legacy per-kind
+    // fallback lane.
+    this.hubUrl = (settings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL ?? '').trim().replace(/\/+$/, '');
+    // Human-readable device label for the dashboard's Devices panel.
     this.deviceName = (settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME || hostname() || '').slice(0, 80);
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.settingsPath = options.settingsPath ?? USER_SETTINGS_PATH;
@@ -259,14 +346,19 @@ export class CloudSync {
     }
   }
 
-  /** Active ⇔ token AND user id are both non-empty. No separate enabled flag. */
+  /** Active ⇔ token AND user id AND hub URL are all non-empty. */
   isConfigured(): boolean {
-    return this.token !== '' && this.userId !== '';
+    return this.token !== '' && this.userId !== '' && this.hubUrl !== '';
   }
 
   /** Configured AND holding a usable device id (resolution can fail closed). */
   private isActive(): boolean {
     return this.isConfigured() && this.deviceId !== '';
+  }
+
+  /** SyncClient wiring: called with head_seq after every successful push. */
+  setHeadSeqListener(listener: ((headSeq: number) => void) | null): void {
+    this.headSeqListener = listener;
   }
 
   /**
@@ -282,7 +374,7 @@ export class CloudSync {
       return;
     }
     logger.info('CLOUD_SYNC', 'Cloud sync active — kicking startup drain', {
-      url: this.url,
+      hubUrl: this.hubUrl,
       deviceId: this.deviceId,
       deviceName: this.deviceName,
       tokenLength: this.token.length, // never the token itself
@@ -313,9 +405,11 @@ export class CloudSync {
   }
 
   /**
-   * Drain everything unsynced. Single-flight: a flush arriving while one is
-   * running marks a re-run instead of overlapping, so rows written mid-flush
-   * are still picked up. Never rejects.
+   * Drain everything unsynced — mutation ops first (hub-log ordering: a
+   * set_title enqueued at session creation must precede that session's row
+   * ops), then the three row kinds. Single-flight: a flush arriving while
+   * one is running marks a re-run instead of overlapping, so rows written
+   * mid-flush are still picked up. Never rejects.
    */
   async flush(): Promise<void> {
     if (this.stopped || !this.isActive()) return;
@@ -327,6 +421,7 @@ export class CloudSync {
     try {
       do {
         this.flushAgainRequested = false;
+        await this.drainMutations();
         for (const kind of KINDS) {
           await this.drainKind(kind);
         }
@@ -356,6 +451,7 @@ export class CloudSync {
         observations: this.countPending('observations'),
         summaries: this.countPending('session_summaries'),
         prompts: this.countPending('user_prompts'),
+        mutations: this.countPendingMutations(),
       },
       lastFlushAt: this.lastFlushAt,
       lastError: this.lastError,
@@ -383,59 +479,111 @@ export class CloudSync {
   // Drain internals
   // -------------------------------------------------------------------------
 
+  /**
+   * Drain the sync_outbox (migration v42). Acked ops are DELETEd — the
+   * outbox is a queue, not data — so the page SELECT naturally advances.
+   * set_prompt_session bodies store target.origin_device_id = NULL ("this
+   * device"); the resolved id is substituted here, at push time, keeping
+   * device identity single-sourced (SyncApply DEVICE IDENTITY note).
+   */
+  private async drainMutations(): Promise<void> {
+    for (;;) {
+      if (this.stopped) return;
+      const rows = this.db.prepare(
+        `SELECT id, op_uuid, rev, body FROM sync_outbox ORDER BY id LIMIT ${BATCH}`
+      ).all() as Array<{ id: number; op_uuid: string; rev: number; body: string }>;
+      if (rows.length === 0) break;
+
+      // Same size-bounded packing as drainKind: mutation bodies are usually
+      // tiny, but a page of clamped 200KB titles must still never exceed the
+      // request budget.
+      let buf: WireOp[] = [];
+      let bufBytes = 0;
+      const send = async (): Promise<void> => {
+        if (this.stopped || buf.length === 0) return;
+        await this.sendOps(buf);
+        buf = [];
+        bufBytes = 0;
+      };
+      for (const row of rows) {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(row.body);
+        } catch {
+          parsed = null;
+        }
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          // An unparseable envelope can never become valid, and the hub would
+          // refuse the WHOLE batch for it (HTTP 400) — wedging the drain
+          // forever. Drop it loudly instead.
+          logger.error('CLOUD_SYNC', 'Dropping unparseable mutation op from sync_outbox', {
+            opUuid: row.op_uuid,
+          });
+          this.db.prepare('DELETE FROM sync_outbox WHERE id = ?').run(row.id);
+          continue;
+        }
+        let body = parsed as OpBody;
+        if (body.op === 'set_prompt_session' && typeof body.target === 'object' && body.target !== null) {
+          const target = body.target as Record<string, unknown>;
+          if (target.origin_device_id == null) target.origin_device_id = this.deviceId;
+        }
+        // Size invariant for ALL kinds (see module header): clamp envelope
+        // fields to 200KB, then hard re-clamp if the serialized op would
+        // still exceed the hub's per-op backstop. Belt over the enqueue-side
+        // clamp — it also covers ops queued by remap-outbox or older builds.
+        body = clampMutationBody(body, MAX_FIELD_BYTES);
+        let op: WireOp = { kind: 'mutation', origin_id: row.op_uuid, rev: row.rev, body };
+        let size = JSON.stringify(op).length;
+        if (size > MAX_OP_BYTES) {
+          op = { ...op, body: clampMutationBody(body, HARD_FIELD_BYTES) };
+          size = JSON.stringify(op).length;
+        }
+        if (buf.length > 0 && (bufBytes + size > MAX_BODY_BYTES || buf.length >= MAX_OPS_PER_PUSH)) {
+          await send();
+          if (this.stopped) return;
+        }
+        buf.push(op);
+        bufBytes += size;
+      }
+      await send();
+      if (this.stopped) return;
+      // Loop re-SELECTs: acked ops were DELETEd (and a page of nothing but
+      // dropped-unparseable rows made progress via those DELETEs).
+    }
+  }
+
   private async drainKind(kind: KindSpec): Promise<void> {
-    // Lane pick: a backlog deeper than one page is a bulk drain (fresh
-    // install, offline catch-up, or a repair requeue like schema v40) — ride
-    // the backfill lane so the server suppresses its per-row realtime
-    // broadcasts and can admission-gate the burst. Small increments stay on
-    // the live lane so open dashboards see them instantly.
-    const lane: 'live' | 'backfill' =
-      this.countPending(kind.localTable) > BATCH ? 'backfill' : 'live';
     // Loop until drained: every successful sub-batch stamps its rows, so the
     // next page naturally excludes them; a failed POST throws out of the loop.
     // `stopped` is re-checked after every await so a stop() during an
     // in-flight POST bails before the next DB touch (SELECT or stamp).
     for (;;) {
       if (this.stopped) return;
-      const q = kind.rowAlias ? `${kind.rowAlias}.` : '';
-      const rows = this.db.prepare(
-        `SELECT ${kind.selectCols} FROM ${kind.fromSql ?? kind.localTable} WHERE ${q}synced_at IS NULL ORDER BY ${q}id LIMIT ${BATCH}`
-      ).all() as LocalRow[];
+      const rows = this.db.prepare(kind.selectSql).all() as LocalRow[];
       if (rows.length === 0) break;
 
-      // Flush in size-bounded sub-batches so one page of fat rows can't
-      // exceed the request-body cap (cloud-sync.mjs:337-358).
-      let buf: CloudRow[] = [];
-      let bufIds: number[] = [];
-      let bufGuards: Array<string | null> = [];
+      // Pack ops into size-bounded requests so one page of fat rows can't
+      // exceed the request-body cap.
+      let buf: WireOp[] = [];
       let bufBytes = 0;
       const send = async (): Promise<void> => {
         if (this.stopped || buf.length === 0) return;
-        await this.pushBatch(kind, buf, lane);
-        // stop() while the POST was in flight: the DB may already be closing,
-        // so skip the stamp. The server upserts on (user_id, device_id,
-        // local_id), so re-uploading these rows on next start is harmless.
-        if (this.stopped) return;
-        this.stampSynced(kind, bufIds, bufGuards);
+        await this.sendOps(buf);
         buf = [];
-        bufIds = [];
-        bufGuards = [];
         bufBytes = 0;
       };
       for (const r of rows) {
-        let mapped = kind.toCloud(r);
-        let size = JSON.stringify(mapped).length;
-        if (size > MAX_FIELD_BYTES) { // cloud-sync.mjs:350 — ported as-is
-          mapped = clampRow(mapped);
-          size = JSON.stringify(mapped).length;
+        let body = clampFields(kind.toBody(r), MAX_FIELD_BYTES);
+        let size = JSON.stringify(body).length;
+        if (size > MAX_OP_BYTES) {
+          body = clampFields(body, HARD_FIELD_BYTES);
+          size = JSON.stringify(body).length;
         }
-        if (bufBytes + size > MAX_BODY_BYTES) {
+        if (buf.length > 0 && (bufBytes + size > MAX_BODY_BYTES || buf.length >= MAX_OPS_PER_PUSH)) {
           await send();
           if (this.stopped) return;
         }
-        buf.push(mapped);
-        bufIds.push(Number(r.id));
-        bufGuards.push(kind.stampGuard ? kind.stampGuard(r) : null);
+        buf.push({ kind: kind.kind, origin_id: String(r.id), rev: Number(r.sync_rev) || 1, body });
         bufBytes += size;
       }
       await send();
@@ -443,10 +591,39 @@ export class CloudSync {
     }
   }
 
-  // cloud-sync.mjs:287-303, plus AbortSignal.timeout — deliberately fixing the
-  // standalone client's no-timeout hang.
-  private async pushBatch(kind: KindSpec, rows: CloudRow[], lane: 'live' | 'backfill' = 'live'): Promise<void> {
-    const res = await this.fetchImpl(`${this.url}/${kind.endpoint}`, {
+  /** POST one batch to the hub and stamp/delete on ack. */
+  private async sendOps(ops: WireOp[]): Promise<void> {
+    const response = await this.pushOps(ops);
+    // stop() while the POST was in flight: the DB may already be closing, so
+    // skip the stamp. The hub dedupes on (origin_device, kind, origin_id,
+    // rev), so re-pushing these ops on next start is harmless.
+    if (this.stopped) return;
+    this.stampAcked(response.acked);
+
+    // LIVELOCK GUARD (see module header): the drain loops advance ONLY via
+    // acks. A 200 whose acked array misses pushed ops (hub regression,
+    // middlebox truncation that still parses) would re-SELECT and re-POST
+    // the same rows at line rate forever — no error, no backoff, no
+    // lastError. Treat any un-acked pushed op as a push failure: the acks
+    // that DID arrive are already stamped above (partial progress kept), and
+    // this throw rides the normal flush catch into backoff + lastError.
+    const ackedKeys = new Set(
+      response.acked.map(a => `${a.kind} ${a.origin_id} ${a.rev}`)
+    );
+    const unacked = ops.filter(
+      op => !ackedKeys.has(`${op.kind} ${op.origin_id} ${op.rev}`)
+    );
+    if (unacked.length > 0) {
+      throw new Error(
+        `sync hub push: 200 response did not ack ${unacked.length} of ${ops.length} pushed ops — failing into backoff instead of retrying at line rate`
+      );
+    }
+
+    this.emitHeadSeq(response.head_seq);
+  }
+
+  private async pushOps(ops: WireOp[]): Promise<PushResponse> {
+    const res = await this.fetchImpl(`${this.hubUrl}/v1/sync/ops`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -454,40 +631,80 @@ export class CloudSync {
         'X-User-Id': this.userId,
         'X-Device-Id': this.deviceId,
         ...(this.deviceName ? { 'X-Device-Name': this.deviceName } : {}),
-        ...(lane === 'backfill' ? { 'X-Sync-Lane': 'backfill' } : {}),
       },
-      body: JSON.stringify({ [kind.bodyKey]: rows }),
+      body: JSON.stringify({ ops }),
       signal: AbortSignal.timeout(this.requestTimeoutMs),
     });
     if (!res.ok) {
       const body = (await res.text().catch(() => '')).slice(0, 200);
-      throw new Error(`cloud sync ${res.status} (${kind.name}): ${body}`);
+      throw new Error(`sync hub push ${res.status}: ${body}`);
+    }
+    let parsed: unknown;
+    try {
+      parsed = await res.json();
+    } catch {
+      throw new Error('sync hub push: response is not JSON');
+    }
+    const acked = (parsed as { acked?: unknown } | null)?.acked;
+    if (!Array.isArray(acked)) {
+      throw new Error('sync hub push: response missing acked array');
+    }
+    const headSeq = (parsed as { head_seq?: unknown }).head_seq;
+    return {
+      acked: acked as AckedOp[],
+      head_seq: typeof headSeq === 'number' ? headSeq : 0,
+    };
+  }
+
+  /**
+   * Stamp rows / delete outbox entries for acked ops. Acks are matched by
+   * (kind, origin_id, rev); the hub may return them in any order.
+   */
+  private stampAcked(acked: AckedOp[]): void {
+    const now = Date.now();
+    for (const ack of acked) {
+      if (ack.kind === 'mutation') {
+        this.db.prepare('DELETE FROM sync_outbox WHERE op_uuid = ?').run(ack.origin_id);
+        continue;
+      }
+      const table = TABLE_BY_KIND[ack.kind as RowKind];
+      if (!table) continue; // unknown kind in an ack — ignore rather than guess
+      const id = Number.parseInt(ack.origin_id, 10);
+      if (!Number.isFinite(id)) continue;
+      // Rev-matched stamp (replaces the old stampGuard): a row whose sync_rev
+      // was bumped while this POST was in flight keeps synced_at NULL and the
+      // drain loop re-pushes it at the new rev.
+      this.db.prepare(
+        `UPDATE ${table} SET synced_at = ? WHERE id = ? AND sync_rev = ? AND origin_device_id IS NULL`
+      ).run(now, id, ack.rev);
     }
   }
 
-  private stampSynced(kind: KindSpec, ids: number[], guards: Array<string | null>): void {
-    if (ids.length === 0) return;
-    const now = Date.now();
-    if (kind.stampGuardSql) {
-      // Per-row guarded stamp: a row whose mapping changed while the POST was
-      // in flight keeps synced_at NULL and re-pushes corrected next flush.
-      const stmt = this.db.prepare(
-        `UPDATE ${kind.localTable} SET synced_at = ? WHERE id = ? AND ${kind.stampGuardSql}`
-      );
-      for (let i = 0; i < ids.length; i++) {
-        stmt.run(now, ids[i], guards[i]);
-      }
-      return;
+  /** Never let a listener failure fail the flush. */
+  private emitHeadSeq(headSeq: number): void {
+    if (!this.headSeqListener) return;
+    try {
+      this.headSeqListener(headSeq);
+    } catch (error) {
+      logger.debug('CLOUD_SYNC', 'head_seq listener threw (ignored)', {},
+        error instanceof Error ? error : new Error(String(error)));
     }
-    const placeholders = ids.map(() => '?').join(', ');
-    this.db.prepare(`UPDATE ${kind.localTable} SET synced_at = ? WHERE id IN (${placeholders})`)
-      .run(now, ...ids);
   }
 
   private countPending(table: string): number {
-    const row = this.db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE synced_at IS NULL`)
-      .get() as { n: number };
+    const row = this.db.prepare(
+      `SELECT COUNT(*) AS n FROM ${table} WHERE synced_at IS NULL AND origin_device_id IS NULL`
+    ).get() as { n: number };
     return row.n;
+  }
+
+  private countPendingMutations(): number {
+    try {
+      const row = this.db.prepare('SELECT COUNT(*) AS n FROM sync_outbox').get() as { n: number };
+      return row.n;
+    } catch {
+      return 0; // pre-v42 DB (possible only for out-of-band callers)
+    }
   }
 
   private scheduleRetry(): void {
@@ -520,11 +737,10 @@ export class CloudSync {
    *   2. the legacy standalone client's cloud-sync-state.json deviceId;
    *   3. a freshly minted randomUUID().
    *
-   * CRITICAL: never mint a new id while a legacy state file exists — the
-   * server upserts on (user_id, device_id, local_id), so a new id forks every
-   * previously uploaded row into a duplicate cloud row. If the legacy file is
-   * unreadable, fail closed (sync disabled) rather than guess
-   * (cloud-sync.mjs:60-81 fails closed for the same reason).
+   * CRITICAL: never mint a new id while a legacy state file exists — the hub
+   * keys ops on (origin_device, kind, origin_id, rev), so a new id forks
+   * every previously pushed row into a duplicate entity. If the legacy file
+   * is unreadable, fail closed (sync disabled) rather than guess.
    */
   private resolveDeviceId(configuredId: string): string {
     if (configuredId) return configuredId;
@@ -560,8 +776,7 @@ export class CloudSync {
     }
 
     // First run on a fresh install: mint and persist immediately, so a later
-    // transient failure can't mint a different one and fork device identity
-    // (cloud-sync.mjs:106-117).
+    // transient failure can't mint a different one and fork device identity.
     const minted = randomUUID();
     try {
       this.persistDeviceId(minted);

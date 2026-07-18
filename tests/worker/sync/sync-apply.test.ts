@@ -123,7 +123,7 @@ describe('SyncApply', () => {
     return {
       CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'test-token-1234',
       CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'user-42',
-      CLAUDE_MEM_CLOUD_SYNC_URL: 'https://cmem.test/api/pro/sync',
+      CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://hub.test',
       CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: SELF,
       CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: 'test-host',
     };
@@ -364,9 +364,14 @@ describe('SyncApply', () => {
     `).run(ISO);
 
     const calls: Array<{ url: string; parsed: any }> = [];
+    let seq = 0;
     const fetchImpl = (async (input: any, init?: any) => {
-      calls.push({ url: String(input), parsed: JSON.parse(String(init?.body)) });
-      return new Response('{}', { status: 200 });
+      const parsed = JSON.parse(String(init?.body));
+      calls.push({ url: String(input), parsed });
+      const acked = (parsed.ops as any[]).map((op) => ({
+        kind: op.kind, origin_id: op.origin_id, rev: op.rev ?? 1, seq: ++seq,
+      }));
+      return new Response(JSON.stringify({ acked, head_seq: seq }), { status: 200 });
     }) as typeof fetch;
 
     const sync = new CloudSync(db, makeSettings(), {
@@ -380,12 +385,14 @@ describe('SyncApply', () => {
     await sync.flush();
 
     // Exactly one POST: the native observation. The applied remote
-    // observation/summary/prompt are pre-stamped synced_at and structurally
-    // invisible to WHERE synced_at IS NULL.
+    // observation/summary/prompt are pre-stamped synced_at (and carry origin
+    // columns) — structurally invisible to the drain's
+    // WHERE synced_at IS NULL AND origin_device_id IS NULL.
     expect(calls.length).toBe(1);
-    expect(calls[0].url).toEndWith('/observations/batch');
-    expect(calls[0].parsed.observations.length).toBe(1);
-    expect(calls[0].parsed.observations[0].title).toBe('Native title');
+    expect(calls[0].url).toEndWith('/v1/sync/ops');
+    expect(calls[0].parsed.ops.length).toBe(1);
+    expect(calls[0].parsed.ops[0].kind).toBe('observation');
+    expect(calls[0].parsed.ops[0].body.title).toBe('Native title');
   });
 
   it('skips ops originated by this device (echo of our own pushes) while advancing the cursor', () => {
@@ -706,5 +713,61 @@ describe('SyncApply', () => {
     expect(count('observations')).toBe(1);
     expect(count('user_prompts')).toBe(1);
     expect(apply.getCursor()).toBe(3);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Epoch rebuild requeue: a MISMATCH means the hub's log was lost/rebuilt —
+  // this device's corpus is not in the new log, so native rows must re-enter
+  // the push queue. Pull-side self-healing alone would leave every counter
+  // healthy while other devices converge on empty history.
+  // ---------------------------------------------------------------------------
+  describe('epoch rebuild requeue', () => {
+    function seedNativeAndReplica(apply: SyncApply): void {
+      // Replica rows arrive via apply (pre-stamped synced_at) under epoch-1.
+      apply.applyOps(remoteBatch(), { epoch: 'epoch-1' });
+      // A native row already pushed and stamped.
+      db.prepare(`
+        INSERT INTO observations (memory_session_id, project, type, title, created_at, created_at_epoch, synced_at)
+        VALUES ('mem-remote-1', 'proj-remote', 'discovery', 'native-row', ?, 1751234567890, 111)
+      `).run(REMOTE_ISO);
+    }
+
+    it('epoch MISMATCH re-nulls native rows (re-push) and leaves replicas stamped', () => {
+      const apply = makeApply();
+      seedNativeAndReplica(apply);
+
+      const result = apply.applyOps([], { epoch: 'epoch-2' });
+      expect(result.epochReset).toBe(true);
+      expect(apply.getCursor()).toBe(0);
+
+      const native = db.prepare(`SELECT synced_at FROM observations WHERE title = 'native-row'`).get() as any;
+      expect(native.synced_at).toBeNull(); // corpus re-enters the rebuilt log
+      const replicas = db.prepare(`
+        SELECT COUNT(*) AS n FROM observations WHERE origin_device_id IS NOT NULL AND synced_at IS NULL
+      `).get() as any;
+      expect(replicas.n).toBe(0); // replicas must never re-push under our identity
+      const replicaPrompt = db.prepare(`
+        SELECT synced_at FROM user_prompts WHERE origin_device_id IS NOT NULL
+      `).get() as any;
+      expect(replicaPrompt.synced_at).not.toBeNull();
+    });
+
+    it('first-epoch ADOPTION does not requeue anything', () => {
+      const apply = makeApply();
+      db.prepare(`
+        INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+        VALUES ('sess-n', 'mem-n', 'proj-n', ?, 1751234567000, 'active')
+      `).run(ISO);
+      db.prepare(`
+        INSERT INTO observations (memory_session_id, project, type, title, created_at, created_at_epoch, synced_at)
+        VALUES ('mem-n', 'proj-n', 'discovery', 'native-row', ?, 1751234567890, 111)
+      `).run(REMOTE_ISO);
+
+      const result = apply.applyOps([], { epoch: 'epoch-1' }); // first epoch ever
+      expect(result.epochReset).toBe(false);
+
+      const native = db.prepare(`SELECT synced_at FROM observations WHERE title = 'native-row'`).get() as any;
+      expect(native.synced_at).toBe(111); // adoption is not a rebuild
+    });
   });
 });

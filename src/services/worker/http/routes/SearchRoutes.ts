@@ -72,7 +72,11 @@ export class SearchRoutes extends BaseRouteHandler {
   private readonly projectsKnownNonEmpty = new Set<string>();
 
   constructor(
-    private searchManager: SearchManager
+    private searchManager: SearchManager,
+    // Structural type (not the SyncClient class) so tests can pass a stub and
+    // route construction stays decoupled from sync wiring. Null when sync is
+    // unconfigured — context injection then skips the session-start pull.
+    private syncClient: { pullOnce(options?: { timeoutMs?: number }): Promise<void> } | null = null
   ) {
     super();
   }
@@ -315,6 +319,14 @@ export class SearchRoutes extends BaseRouteHandler {
     }
 
     const { generateContextWithStats } = await import('../../../context-generator.js');
+
+    // Immediate session-start pull (plan Phase 3 task 4, prime directive #3):
+    // catch up on other devices' ops before compiling context. Hard-bounded so
+    // a dead network can't stall injection; pullOnce never throws — failure
+    // simply proceeds with local data.
+    if (this.syncClient) {
+      await this.syncClient.pullOnce({ timeoutMs: 1500 });
+    }
 
     const primaryProject = projects[projects.length - 1];
     const cwd = `/context/${primaryProject}`;

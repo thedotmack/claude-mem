@@ -1,5 +1,6 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite';
 import { existsSync, readFileSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT, paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
@@ -18,6 +19,7 @@ import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources }
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
 import { applySqliteConnectionPragmas } from './connection.js';
+import { MAX_FIELD_BYTES, TRUNC_MARK } from '../sync/CloudSync.js';
 
 interface IndexColumnInfo {
   seqno: number;
@@ -68,7 +70,7 @@ interface SdkSessionDetailRow {
 export class SessionStore {
   public db: Database;
 
-  constructor(dbPathOrDb: string | Database = DB_PATH, options: { cloudSyncStatePath?: string } = {}) {
+  constructor(dbPathOrDb: string | Database = DB_PATH, options: { cloudSyncStatePath?: string; cloudSyncHubUrl?: string } = {}) {
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
     } else {
@@ -110,6 +112,8 @@ export class SessionStore {
     this.ensureSyncedAtColumns(options.cloudSyncStatePath ?? paths.cloudSyncState());
     this.requeuePromptCloudSyncAfterMapperFix();
     this.ensureSyncOriginColumns();
+    this.ensureSyncOutbox();
+    this.requeueAllForHubCutover(options.cloudSyncHubUrl);
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -548,6 +552,94 @@ export class SessionStore {
     `);
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(41, new Date().toISOString());
+  }
+
+  /**
+   * Mutation outbox (version 42): durable queue for the four mutation sites
+   * (custom title, prompt→session repair, the two project remaps). Each row
+   * is one `kind='mutation'` op for the sync hub: `op_uuid` is the op's
+   * origin_id — minted ONCE at enqueue time and reused on every push retry
+   * (the hub dedupes on (origin_device, kind, origin_id, rev)); `rev` follows
+   * the REV MINTING RULES in SyncApply.ts; `body` is the mutation envelope
+   * JSON. The push drain (CloudSync.drainMutations) DELETEs rows on ack —
+   * unlike the row tables, outbox rows are pure queue entries, not data.
+   *
+   * Same shape as ensureSyncOriginColumns: CREATE IF NOT EXISTS is the real
+   * guard; version 42 is recorded for bookkeeping only.
+   */
+  private ensureSyncOutbox(): void {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS sync_outbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        op_uuid TEXT NOT NULL UNIQUE,
+        rev INTEGER NOT NULL DEFAULT 1,
+        body TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL
+      )
+    `);
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(42, new Date().toISOString());
+  }
+
+  /**
+   * Hub cutover one-shot (plan Phase 3 task 5): when settings point at a
+   * sync hub (CLAUDE_MEM_CLOUD_SYNC_HUB_URL non-empty) that this DB has not
+   * cut over to yet, re-null `synced_at` on every NATIVE row once so this
+   * device re-pushes its whole corpus into that hub's log; the hub's
+   * (origin_device, kind, origin_id, rev) unique index dedupes replays.
+   * Replica rows (origin_device_id NOT NULL) are excluded — they are another
+   * device's corpus and must never be pushed under this device's identity.
+   *
+   * GATING — keyed on HUB IDENTITY, not a version number: the hub URL the
+   * cutover last ran against is stored in sync_state ('cutover_hub_url'),
+   * written in the SAME transaction as the requeue. The one-shot fires
+   * whenever a non-empty hub URL differs from the stored value — so it is
+   * exactly-once per (DB, hub URL): the first configuration fires it, every
+   * later boot with the same URL is a no-op, and pointing at a DIFFERENT hub
+   * later fires it again (a burned version row would leave the corpus
+   * permanently un-pushed into the new hub's empty log — silent fleet-wide
+   * data loss). A schema_versions row 43 is still recorded as a legacy
+   * bookkeeping marker but is NOT consulted, so pre-fix DBs that burned v43
+   * (and have no stored cutover_hub_url) self-heal with one extra re-push —
+   * hub dedupe makes over-firing safe. Callers that don't know the settings
+   * (tests, CLI utilities) pass no URL and stay inert — the worker, which
+   * owns the push drain, passes the URL via DatabaseManager.
+   *
+   * The other leg of hub-identity change — the SAME URL whose DO log was
+   * lost/rebuilt (new epoch) — is handled by SyncApply.handleEpoch, which
+   * re-nulls native rows on an epoch MISMATCH.
+   */
+  private requeueAllForHubCutover(hubUrl: string | undefined): void {
+    // Normalize like CloudSync does, so "https://hub" and "https://hub/"
+    // are one hub identity, not a spurious re-fire.
+    const normalized = (hubUrl ?? '').trim().replace(/\/+$/, '');
+    if (normalized === '') return;
+
+    const stored = this.db.prepare(`SELECT v FROM sync_state WHERE k = 'cutover_hub_url'`).get() as { v: string } | undefined;
+    if (stored?.v === normalized) return;
+
+    let requeued = 0;
+    const tx = this.db.transaction(() => {
+      for (const table of ['observations', 'session_summaries', 'user_prompts']) {
+        const res = this.db.prepare(`
+          UPDATE ${table} SET synced_at = NULL
+          WHERE synced_at IS NOT NULL AND origin_device_id IS NULL
+        `).run();
+        requeued += res.changes;
+      }
+      this.db.prepare(`
+        INSERT INTO sync_state (k, v) VALUES ('cutover_hub_url', ?)
+        ON CONFLICT(k) DO UPDATE SET v = excluded.v
+      `).run(normalized);
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(43, new Date().toISOString());
+    });
+    tx();
+
+    logger.info('DB', 'Requeued full corpus for sync hub cutover', {
+      hubUrl: normalized,
+      previousHubUrl: stored?.v ?? null,
+      requeued,
+    });
   }
 
   // Rows the standalone cloud-sync client already uploaded (its cursors live in
@@ -1539,18 +1631,81 @@ export class SessionStore {
   }
 
   /**
-   * Cloud-sync repair: prompts are captured (and pushed) before the SDK
-   * session registers its memory_session_id, so their first cloud upsert
-   * carries the content-session fallback. Re-nulling synced_at once the
-   * mapping lands makes the next flush re-push them with the resolved id —
-   * the server upserts on (user_id, device_id, local_id), so the corrected
-   * row overwrites in place rather than duplicating.
+   * Enqueue one mutation op for the sync hub (kind='mutation'). The op UUID
+   * is minted HERE, once, and stored with the queued op — CloudSync's drain
+   * reuses it on every push retry so the hub's
+   * (origin_device, kind, origin_id, rev) index dedupes replays (REV MINTING
+   * RULES, SyncApply.ts). Pure SQL, no notify(): callers on the worker
+   * connection nudge CloudSync themselves; the startup drain catches the
+   * rest.
+   */
+  private enqueueMutationOp(rev: number, body: Record<string, unknown>): void {
+    this.db.prepare(`
+      INSERT INTO sync_outbox (op_uuid, rev, body, created_at_epoch)
+      VALUES (?, ?, ?, ?)
+    `).run(randomUUID(), rev, JSON.stringify(body), Date.now());
+  }
+
+  /**
+   * Prompt→session repair as an ordered sync op (plan Phase 3 task 2):
+   * prompts are captured (and pushed) before the SDK session registers its
+   * memory_session_id, so their first push carries NULL join fields. Once
+   * the mapping lands, each affected NATIVE prompt row gets sync_rev bumped
+   * by 1 with synced_at re-nulled — the next flush re-pushes the corrected
+   * row body at the higher rev (replicas apply it via the row-op rev guard),
+   * and a set_prompt_session mutation op is enqueued at that same post-bump
+   * rev (SyncApply REV MINTING RULES) so replicas that already hold the
+   * rev-1 row link it to the session even before the corrected row op lands.
+   * target.origin_device_id is stored as NULL ("this device") — CloudSync's
+   * drain substitutes its resolved device id at push time, keeping device
+   * identity single-sourced (see DEVICE IDENTITY in SyncApply.ts).
+   *
+   * Replica prompt rows (origin_device_id NOT NULL) are untouched: their
+   * repair travels through the log from THEIR origin device.
+   *
+   * This bump-then-repush ordering is also what made CloudSync's old
+   * stampGuard unnecessary: the drain stamps synced_at only where the acked
+   * rev still equals the row's sync_rev, so a registration landing while a
+   * POST is in flight leaves the row unsynced and it re-pushes corrected.
    */
   private requeuePromptSync(sessionDbId: number): void {
-    this.db.prepare(`
-      UPDATE user_prompts SET synced_at = NULL
-      WHERE session_db_id = ? AND synced_at IS NOT NULL
-    `).run(sessionDbId);
+    const session = this.db.prepare(`
+      SELECT memory_session_id, project, content_session_id, platform_source
+      FROM sdk_sessions WHERE id = ?
+    `).get(sessionDbId) as {
+      memory_session_id: string | null;
+      project: string | null;
+      content_session_id: string | null;
+      platform_source: string | null;
+    } | undefined;
+    if (!session?.memory_session_id) return;
+
+    const tx = this.db.transaction(() => {
+      const prompts = this.db.prepare(`
+        SELECT id, sync_rev FROM user_prompts
+        WHERE session_db_id = ? AND origin_device_id IS NULL
+      `).all(sessionDbId) as Array<{ id: number; sync_rev: number }>;
+      if (prompts.length === 0) return;
+
+      this.db.prepare(`
+        UPDATE user_prompts SET sync_rev = sync_rev + 1, synced_at = NULL
+        WHERE session_db_id = ? AND origin_device_id IS NULL
+      `).run(sessionDbId);
+
+      for (const prompt of prompts) {
+        this.enqueueMutationOp(prompt.sync_rev + 1, {
+          op: 'set_prompt_session',
+          target: { origin_device_id: null, origin_local_id: String(prompt.id) },
+          fields: {
+            memory_session_id: session.memory_session_id,
+            project: session.project,
+            content_session_id: session.content_session_id,
+            platform_source: session.platform_source,
+          },
+        });
+      }
+    });
+    tx();
   }
 
   markSessionCompleted(sessionDbId: number): void {
@@ -1977,10 +2132,21 @@ export class SessionStore {
         `).run(project, existing.id);
       }
       if (customTitle) {
-        this.db.prepare(`
-          UPDATE sdk_sessions SET custom_title = ?
-          WHERE id = ? AND custom_title IS NULL
-        `).run(customTitle, existing.id);
+        // SELECT-then-UPDATE, never a decision on `.run().changes`
+        // (bun:sqlite reports unreliable `changes` after RETURNING statements
+        // on this connection — see the note in SyncApply.applySetTitle). The
+        // set_title op is emitted only when the NULL-guarded fill actually
+        // landed, mirroring what replicas will apply.
+        const current = this.db.prepare(
+          'SELECT custom_title FROM sdk_sessions WHERE id = ?'
+        ).get(existing.id) as { custom_title: string | null } | undefined;
+        if (current && current.custom_title === null) {
+          this.db.prepare(`
+            UPDATE sdk_sessions SET custom_title = ?
+            WHERE id = ? AND custom_title IS NULL
+          `).run(customTitle, existing.id);
+          this.enqueueSetTitleOp(contentSessionId, normalizedPlatformSource, customTitle);
+        }
       }
       return existing.id;
     }
@@ -1991,7 +2157,35 @@ export class SessionStore {
       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'active')
     `).run(contentSessionId, project, normalizedPlatformSource, storedUserPrompt, customTitle || null, now.toISOString(), nowEpoch);
 
+    if (customTitle) {
+      this.enqueueSetTitleOp(contentSessionId, normalizedPlatformSource, customTitle);
+    }
+
     return Number(result.lastInsertRowid);
+  }
+
+  /**
+   * Custom-title mutation op (plan Phase 3 task 2). sdk_sessions rows do not
+   * sync, so there is no sync_rev to bump and no synced_at to null — the
+   * title travels ONLY as a set_title mutation op. Per the SyncApply REV
+   * MINTING RULES, set_title always emits rev 1 (rev is not consulted on
+   * apply; titles converge by hub-log order plus parking), and the target is
+   * the (platform_source, content_session_id) identity because no
+   * memory_session_id is registered at session-creation time.
+   */
+  private enqueueSetTitleOp(contentSessionId: string, platformSource: string, customTitle: string): void {
+    // custom_title enters via an unbounded z.string() (SessionRoutes) — clamp
+    // at enqueue so the outbox never holds an op the hub could size-refuse
+    // (a refused mutation 400s the WHOLE push batch and wedges the lane;
+    // CloudSync.drainMutations re-clamps as a belt).
+    const clampedTitle = customTitle.length > MAX_FIELD_BYTES
+      ? customTitle.slice(0, MAX_FIELD_BYTES) + TRUNC_MARK
+      : customTitle;
+    this.enqueueMutationOp(1, {
+      op: 'set_title',
+      target: { content_session_id: contentSessionId, platform_source: platformSource },
+      fields: { custom_title: clampedTitle },
+    });
   }
 
   saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sessionDbId?: number): number {

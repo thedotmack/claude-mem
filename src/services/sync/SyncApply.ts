@@ -345,19 +345,39 @@ export class SyncApply {
    * Epoch guard (plan Phase 2 task 3). Returns true when the epoch changed
    * and the cursor was reset to 0 — the caller must discard the current page
    * and re-pull from 0. First-ever epoch is adopted without a reset.
+   *
+   * An epoch MISMATCH means the hub's log was lost/rebuilt: everything this
+   * device previously pushed is gone from the new log, so in the same
+   * transaction every NATIVE row's synced_at is re-nulled — the push drain
+   * re-uploads the corpus into the rebuilt log (hub dedupe makes over-firing
+   * safe). Replica rows are untouched: they are another device's corpus and
+   * must never be pushed under this identity; THEIR origin devices re-push
+   * them the same way. Without this, the pull side would self-heal while
+   * this device's history silently never re-entered the log — every counter
+   * healthy, other devices converging on empty history.
    */
   handleEpoch(epoch: string): boolean {
     const stored = this.getEpoch();
     if (stored === epoch) return false;
+    let requeued = 0;
     const tx = this.db.transaction(() => {
       this.setState('epoch', epoch);
-      if (stored !== null) this.setState('cursor', '0');
+      if (stored !== null) {
+        this.setState('cursor', '0');
+        for (const table of ['observations', 'session_summaries', 'user_prompts']) {
+          requeued += this.db.prepare(`
+            UPDATE ${table} SET synced_at = NULL
+            WHERE synced_at IS NOT NULL AND origin_device_id IS NULL
+          `).run().changes;
+        }
+      }
     });
     tx();
     if (stored !== null) {
-      logger.warn('SYNC_APPLY', 'Sync hub epoch changed — cursor reset, full re-pull required', {
+      logger.warn('SYNC_APPLY', 'Sync hub epoch changed — cursor reset, full re-pull required, native corpus requeued for re-push', {
         oldEpoch: stored,
         newEpoch: epoch,
+        requeued,
       });
       return true;
     }

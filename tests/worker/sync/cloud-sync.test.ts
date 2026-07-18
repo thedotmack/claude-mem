@@ -1,3 +1,11 @@
+// Phase 3 verification (plan 2026-07-17): the push drain retargeted at the
+// sync hub. One endpoint (POST /v1/sync/ops), op bodies per the SyncApply
+// BODY FIELD MAPPING, rev-matched stamping on ack (which replaced the old
+// stampGuard machinery — see the mid-flight-bump test), and the sync_outbox
+// mutation lane drained ahead of row kinds. Harness style unchanged:
+// in-temp-dir SessionStore over an in-memory DB, injected fetchImpl, fast
+// debounce/backoff.
+
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
@@ -18,23 +26,35 @@ interface RecordedRequest {
 }
 
 /**
- * Mock fetch: records every request; `handler(callNumber)` may return a
- * Response to send or an Error to throw (network failure). Defaults to 200.
+ * Mock hub: records every request and, by default, acks every pushed op with
+ * sequential seqs — the real hub acks all-or-refuses. `handler(callNumber)`
+ * may return a Response to send instead, or an Error to throw (network
+ * failure).
  */
 function makeFetchMock(handler?: (call: number) => Response | Error | undefined) {
   const calls: RecordedRequest[] = [];
+  let seq = 0;
   const impl = (async (input: any, init?: any) => {
     const body = String(init?.body ?? '');
+    const parsed = body ? JSON.parse(body) : null;
     calls.push({
       url: String(input),
       headers: { ...(init?.headers ?? {}) },
       hasSignal: init?.signal != null,
       body,
-      parsed: body ? JSON.parse(body) : null,
+      parsed,
     });
     const result = handler?.(calls.length);
     if (result instanceof Error) throw result;
-    return result ?? new Response('{}', { status: 200 });
+    if (result) return result;
+    const ops: any[] = parsed?.ops ?? [];
+    const acked = ops.map((op) => ({
+      kind: op.kind,
+      origin_id: op.origin_id,
+      rev: op.rev ?? 1,
+      seq: ++seq,
+    }));
+    return new Response(JSON.stringify({ acked, head_seq: seq }), { status: 200 });
   }) as typeof fetch;
   return { impl, calls };
 }
@@ -42,6 +62,7 @@ function makeFetchMock(handler?: (call: number) => Response | Error | undefined)
 describe('CloudSync', () => {
   let tempDir: string;
   let db: Database;
+  let store: SessionStore;
   let settingsPath: string;
   let missingLegacyPath: string;
 
@@ -49,7 +70,7 @@ describe('CloudSync', () => {
     return {
       CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'test-token-1234',
       CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'user-42',
-      CLAUDE_MEM_CLOUD_SYNC_URL: 'https://cmem.test/api/pro/sync',
+      CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://hub.test',
       CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: 'device-fixture',
       CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: 'test-host',
       ...overrides,
@@ -122,12 +143,17 @@ describe('CloudSync', () => {
     return (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE synced_at IS NULL`).get() as { n: number }).n;
   }
 
+  function outboxRows(): Array<{ op_uuid: string; rev: number; body: any }> {
+    return (db.prepare('SELECT op_uuid, rev, body FROM sync_outbox ORDER BY id').all() as Array<{ op_uuid: string; rev: number; body: string }>)
+      .map(r => ({ op_uuid: r.op_uuid, rev: r.rev, body: JSON.parse(r.body) }));
+  }
+
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-cloud-sync-'));
     settingsPath = join(tempDir, 'settings.json');
     missingLegacyPath = join(tempDir, 'no-such-cloud-sync-state.json');
     db = new Database(':memory:');
-    new SessionStore(db, { cloudSyncStatePath: missingLegacyPath });
+    store = new SessionStore(db, { cloudSyncStatePath: missingLegacyPath });
     db.prepare(`
       INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
       VALUES ('sess-abc', 'mem-1', 'proj-x', ?, 1751234567000, 'active')
@@ -140,90 +166,114 @@ describe('CloudSync', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Golden wire-contract: mapper output must deep-equal the standalone client's
-  // toCloud output for the same rows. Expected literals hand-ported from
-  // ~/.claude-mem/cloud-sync.mjs — observations toCloud at :141-156, summaries
-  // at :188-201, prompts at :238-250, endpoints/bodyKeys at :136-137/:183-184/
-  // :224-225, headers at :288-296. Guards the fixed cmem.ai wire format.
+  // Wire contract: ops POST bodies must follow the SyncApply BODY FIELD
+  // MAPPING verbatim — field names are the local column names, values exactly
+  // as stored (JSON-string columns stay strings), exclusions as listed there.
   // ---------------------------------------------------------------------------
-  it('sends the exact wire format of the standalone client (golden contract)', async () => {
+  it('pushes {kind, origin_id, rev, body} ops per the SyncApply body contract', async () => {
     seedObservation();
     seedSummary();
-    seedPrompt('hello world');
+    seedPrompt('hello world', 5, 1);
 
     const { impl, calls } = makeFetchMock();
     const sync = makeCloudSync(impl);
     await sync.flush();
 
+    // One page per kind (outbox empty): observations, summaries, prompts.
     expect(calls.length).toBe(3);
-    expect(calls.map(c => c.url)).toEqual([
-      'https://cmem.test/api/pro/sync/observations/batch',
-      'https://cmem.test/api/pro/sync/summaries/batch',
-      'https://cmem.test/api/pro/sync/prompts/batch',
-    ]);
     for (const call of calls) {
+      expect(call.url).toBe('https://hub.test/v1/sync/ops');
       expect(call.headers['Content-Type']).toBe('application/json');
       expect(call.headers['Authorization']).toBe('Bearer test-token-1234');
       expect(call.headers['X-User-Id']).toBe('user-42');
       expect(call.headers['X-Device-Id']).toBe('device-fixture');
       expect(call.headers['X-Device-Name']).toBe('test-host');
-      expect(call.hasSignal).toBe(true); // AbortSignal.timeout — fixes the standalone client's no-timeout hang
+      expect(call.hasSignal).toBe(true); // AbortSignal.timeout on every POST
     }
 
-    // cloud-sync.mjs:141-156 (facts/concepts/files are PARSED — mjs:120-125)
     expect(calls[0].parsed).toEqual({
-      observations: [{
-        localId: '1',
-        memorySessionId: 'mem-1',
-        project: 'proj-x',
-        type: 'discovery',
-        title: 'Title A',
-        subtitle: 'Sub A',
-        facts: ['fact one', 'fact two'],
-        narrative: 'The narrative',
-        concepts: ['concept-a'],
-        filesRead: ['/a.ts'],
-        filesModified: [],
-        promptNumber: 3,
-        discoveryTokens: 42,
-        createdAtEpoch: 1751234567890,
+      ops: [{
+        kind: 'observation',
+        origin_id: '1',
+        rev: 1,
+        body: {
+          memory_session_id: 'mem-1',
+          project: 'proj-x',
+          text: null,
+          type: 'discovery',
+          title: 'Title A',
+          subtitle: 'Sub A',
+          facts: '["fact one","fact two"]',   // JSON-string columns stay JSON strings
+          narrative: 'The narrative',
+          concepts: '["concept-a"]',
+          files_read: '["/a.ts"]',
+          files_modified: '[]',
+          prompt_number: 3,
+          discovery_tokens: 42,
+          content_hash: null,
+          generated_by_model: null,
+          agent_type: null,
+          agent_id: null,
+          metadata: null,
+          merged_into_project: null,
+          created_at: ISO,
+          created_at_epoch: 1751234567890,
+        },
       }],
     });
 
-    // cloud-sync.mjs:188-201
     expect(calls[1].parsed).toEqual({
-      summaries: [{
-        localId: '1',
-        memorySessionId: 'mem-1',
-        project: 'proj-x',
-        request: 'Req',
-        investigated: 'Inv',
-        learned: 'Lrn',
-        completed: 'Done',
-        nextSteps: 'Next',
-        notes: null,
-        promptNumber: 2,
-        discoveryTokens: 0,
-        createdAtEpoch: 1751234567891,
+      ops: [{
+        kind: 'summary',
+        origin_id: '1',
+        rev: 1,
+        body: {
+          memory_session_id: 'mem-1',
+          project: 'proj-x',
+          request: 'Req',
+          investigated: 'Inv',
+          learned: 'Lrn',
+          completed: 'Done',
+          next_steps: 'Next',
+          files_read: null,
+          files_edited: null,
+          notes: null,
+          prompt_number: 2,
+          discovery_tokens: 0,
+          merged_into_project: null,
+          created_at: ISO,
+          created_at_epoch: 1751234567891,
+        },
       }],
     });
 
-    // cloud-sync.mjs:238-250 (memorySessionId reuses the content session id,
-    // project is the fixed 'unknown' bucket — mjs:241-244)
+    // Prompt join fields resolve through sdk_sessions; session_db_id NEVER
+    // travels (device-local rowid, re-resolved on apply).
     expect(calls[2].parsed).toEqual({
-      prompts: [{
-        localId: '1',
-        contentSessionId: 'sess-abc',
-        memorySessionId: 'sess-abc',
-        project: 'unknown',
-        promptText: 'hello world',
-        promptNumber: 5,
-        createdAtEpoch: 1751234567892,
+      ops: [{
+        kind: 'prompt',
+        origin_id: '1',
+        rev: 1,
+        body: {
+          content_session_id: 'sess-abc',
+          prompt_number: 5,
+          prompt_text: 'hello world',
+          created_at: ISO,
+          created_at_epoch: 1751234567892,
+          memory_session_id: 'mem-1',
+          project: 'proj-x',
+          platform_source: 'claude', // sdk_sessions column default
+        },
       }],
     });
+
+    // Everything stamped on ack.
+    expect(pendingCount('observations')).toBe(0);
+    expect(pendingCount('session_summaries')).toBe(0);
+    expect(pendingCount('user_prompts')).toBe(0);
   });
 
-  it('maps SQL NULLs to JSON nulls like the standalone client', async () => {
+  it('keeps SQL NULLs as JSON nulls and never re-parses stored JSON strings', async () => {
     seedObservation({
       title: null, subtitle: null, facts: null, narrative: null,
       concepts: null, files_read: null, files_modified: null,
@@ -232,23 +282,39 @@ describe('CloudSync', () => {
     const { impl, calls } = makeFetchMock();
     await makeCloudSync(impl).flush();
 
-    // cloud-sync.mjs:141-156 — `?? null` fallbacks and parseJson(null) → null
-    expect(calls[0].parsed.observations[0]).toEqual({
-      localId: '1',
-      memorySessionId: 'mem-1',
-      project: 'proj-x',
-      type: 'discovery',
-      title: null,
-      subtitle: null,
-      facts: null,
-      narrative: null,
-      concepts: null,
-      filesRead: null,
-      filesModified: null,
-      promptNumber: 3,
-      discoveryTokens: 42,
-      createdAtEpoch: 1751234567890,
-    });
+    const body = calls[0].parsed.ops[0].body;
+    expect(body.title).toBeNull();
+    expect(body.facts).toBeNull();
+    expect(body.files_modified).toBeNull();
+    expect(body.memory_session_id).toBe('mem-1');
+  });
+
+  it('leaves join fields null for unlinked prompts (no legacy fallbacks)', async () => {
+    seedPrompt('orphan prompt', 3, null);
+
+    const { impl, calls } = makeFetchMock();
+    await makeCloudSync(impl).flush();
+
+    const body = calls[0].parsed.ops[0].body;
+    // The old lane substituted content_session_id/'unknown'; the hub contract
+    // sends nulls and lets set_prompt_session repair the link later.
+    expect(body.memory_session_id).toBeNull();
+    expect(body.project).toBeNull();
+    expect(body.platform_source).toBeNull();
+    expect(pendingCount('user_prompts')).toBe(0);
+  });
+
+  it('never pushes replica rows (origin_device_id set), even when unsynced', async () => {
+    seedObservation();
+    db.prepare(`
+      UPDATE observations SET origin_device_id = 'device-other', origin_local_id = '99', synced_at = NULL
+      WHERE id = 1
+    `).run();
+
+    const { impl, calls } = makeFetchMock();
+    await makeCloudSync(impl).flush();
+
+    expect(calls.length).toBe(0); // nothing native to push
   });
 
   it('coalesces a burst of notify() calls into exactly one flush', async () => {
@@ -272,29 +338,29 @@ describe('CloudSync', () => {
     await sync.flush();
 
     expect(calls.length).toBe(3);
-    expect(calls.map(c => c.parsed.observations.length)).toEqual([200, 200, 50]);
+    expect(calls.map(c => c.parsed.ops.length)).toEqual([200, 200, 50]);
     expect(pendingCount('observations')).toBe(0);
 
     const status = sync.status();
-    expect(status.pending).toEqual({ observations: 0, summaries: 0, prompts: 0 });
+    expect(status.pending).toEqual({ observations: 0, summaries: 0, prompts: 0, mutations: 0 });
     expect(status.lastFlushAt).not.toBeNull();
     expect(status.lastError).toBeNull();
   });
 
-  it('packs oversized pages into multiple bodies, each under 2MB', async () => {
-    // 12 rows × ~190KB narrative: each mapped row stays under the 200KB field
-    // clamp, but one 2MB body only fits 10 of them → two POSTs.
+  it('packs oversized pages into multiple bodies, each under the request cap', async () => {
+    // 12 rows × ~190KB narrative: each op stays under the 200KB field clamp,
+    // but one 2MB request only fits 10 of them → two POSTs.
     for (let i = 0; i < 12; i++) seedObservation({ narrative: 'n'.repeat(190_000) });
 
     const { impl, calls } = makeFetchMock();
     await makeCloudSync(impl).flush();
 
     expect(calls.length).toBe(2);
-    const batchSizes = calls.map(c => c.parsed.observations.length);
+    const batchSizes = calls.map(c => c.parsed.ops.length);
     expect(batchSizes.reduce((a, b) => a + b, 0)).toBe(12);
     expect(batchSizes[0]).toBeLessThan(12);
     for (const call of calls) {
-      expect(call.body.length).toBeLessThanOrEqual(2_000_000);
+      expect(call.body.length).toBeLessThanOrEqual(2_100_000); // body budget + envelope
     }
     expect(pendingCount('observations')).toBe(0);
   });
@@ -306,143 +372,291 @@ describe('CloudSync', () => {
     await makeCloudSync(impl).flush();
 
     expect(calls.length).toBe(1);
-    const sent = calls[0].parsed.prompts[0];
-    // Identical to the standalone client: substr(prompt_text,1,200000) in SQL
-    // (cloud-sync.mjs:234-237), marker appended because prompt_text_len >
-    // 200000 (mjs:245-247), then clampRow re-clamps the marked string back to
-    // 200000 chars + marker (mjs:273-281). Net: original 200KB prefix + marker.
-    expect(sent.promptText).toBe('x'.repeat(200_000) + TRUNC_MARK);
-    expect(sent.promptText.length).toBe(200_000 + TRUNC_MARK.length);
+    const body = calls[0].parsed.ops[0].body;
+    // substr(prompt_text,1,200000) in SQL, marker appended because
+    // prompt_text_len > 200000; clampFields re-clamps the marked string back
+    // to 200000 chars + marker. Net: original 200KB prefix + marker.
+    expect(body.prompt_text).toBe('x'.repeat(200_000) + TRUNC_MARK);
     // The SQL-side helper column must not leak onto the wire.
-    expect(Object.keys(sent).sort()).toEqual([
-      'contentSessionId', 'createdAtEpoch', 'localId', 'memorySessionId',
-      'project', 'promptNumber', 'promptText',
+    expect(Object.keys(body).sort()).toEqual([
+      'content_session_id', 'created_at', 'created_at_epoch', 'memory_session_id',
+      'platform_source', 'project', 'prompt_number', 'prompt_text',
     ]);
     expect(pendingCount('user_prompts')).toBe(0);
   });
 
-  describe('prompt session mapping (joined drain)', () => {
-    it('pushes the real memory_session_id and project when the sdk_sessions mapping exists', async () => {
-      seedPrompt('mapped prompt', 7, 1); // session_db_id 1 = sess-abc → mem-1/proj-x (beforeEach)
+  // ---------------------------------------------------------------------------
+  // Mutation lane: sync_outbox drains FIRST (hub-log ordering — SyncApply's
+  // title parking relies on set_title preceding the session's row ops), acks
+  // DELETE outbox rows, and set_prompt_session ops get the resolved device id
+  // substituted at push time.
+  // ---------------------------------------------------------------------------
+  describe('mutation outbox drain', () => {
+    it('drains mutation ops before row kinds and deletes them on ack', async () => {
+      store.createSDKSession('sess-title', 'proj-x', 'prompt', 'My Custom Title', 'claude');
+      seedObservation();
+      expect(outboxRows().length).toBe(1);
 
       const { impl, calls } = makeFetchMock();
       await makeCloudSync(impl).flush();
 
-      expect(calls.length).toBe(1);
-      expect(calls[0].parsed.prompts[0]).toEqual({
-        localId: '1',
-        contentSessionId: 'sess-abc',
-        memorySessionId: 'mem-1',
-        project: 'proj-x',
-        promptText: 'mapped prompt',
-        promptNumber: 7,
-        createdAtEpoch: 1751234567892,
+      expect(calls.length).toBe(2);
+      const first = calls[0].parsed.ops[0];
+      expect(first.kind).toBe('mutation');
+      expect(first.rev).toBe(1);
+      expect(first.body).toEqual({
+        op: 'set_title',
+        target: { content_session_id: 'sess-title', platform_source: 'claude' },
+        fields: { custom_title: 'My Custom Title' },
       });
-      // rowAlias qualifies synced_at/id in the joined SELECT while stampSynced
-      // targets bare user_prompts — the drained row must still come back stamped.
-      expect(pendingCount('user_prompts')).toBe(0);
+      expect(calls[1].parsed.ops[0].kind).toBe('observation');
+
+      // Acked mutations are DELETEd (queue entries, not data).
+      expect(outboxRows().length).toBe(0);
+      expect(pendingCount('observations')).toBe(0);
     });
 
-    it('falls back per row within one batch when the mapping is missing or unregistered', async () => {
-      // A session that exists but never registered a memory id.
-      db.prepare(`
-        INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
-        VALUES ('sess-no-mem', NULL, 'proj-y', ?, 1751234568000, 'active')
-      `).run(ISO);
+    it('reuses the enqueue-time op UUID across push retries (stable origin_id)', async () => {
+      store.createSDKSession('sess-title', 'proj-x', 'prompt', 'Title', 'claude');
+      const queuedUuid = outboxRows()[0].op_uuid;
 
-      seedPrompt('mapped', 1, 1);           // joins mem-1/proj-x
-      seedPrompt('never-registered', 2, 2); // joins a NULL memory_session_id session
-      seedPrompt('orphan', 3, null);        // no session_db_id at all
+      const { impl, calls } = makeFetchMock(call =>
+        call === 1 ? new Response('hub sad', { status: 500 }) : undefined
+      );
+      const sync = makeCloudSync(impl, {}, { backoffInitialMs: 600_000 });
+
+      await sync.flush();
+      expect(outboxRows().length).toBe(1); // still queued after failure
+
+      await sync.flush();
+      expect(outboxRows().length).toBe(0);
+
+      expect(calls.length).toBe(2);
+      expect(calls[0].parsed.ops[0].origin_id).toBe(queuedUuid);
+      expect(calls[1].parsed.ops[0].origin_id).toBe(queuedUuid);
+      sync.stop();
+    });
+
+    it('substitutes the resolved device id into set_prompt_session targets at push time', async () => {
+      seedPrompt('early prompt', 1, 1);
+      // Stamp it synced so only the repair lane runs in this test.
+      db.prepare('UPDATE user_prompts SET synced_at = 1 WHERE id = 1').run();
+      store.updateMemorySessionId(1, 'mem-repaired');
+
+      const queued = outboxRows();
+      expect(queued.length).toBe(1);
+      expect(queued[0].body.target.origin_device_id).toBeNull(); // NULL = "this device" at rest
 
       const { impl, calls } = makeFetchMock();
       await makeCloudSync(impl).flush();
 
-      expect(calls.length).toBe(1);
-      const sent = calls[0].parsed.prompts.map((p: any) => [p.memorySessionId, p.project]);
-      expect(sent).toEqual([
-        ['mem-1', 'proj-x'],   // resolved through the join
-        ['sess-abc', 'proj-y'], // memory id falls back to the content session; project still real
-        ['sess-abc', 'unknown'], // LEFT JOIN miss → full legacy fallback
-      ]);
-      expect(pendingCount('user_prompts')).toBe(0);
-    });
-
-    it('re-pushes instead of stamping a prompt whose memory id registered while its POST was in flight', async () => {
-      // A session that has not yet registered a memory id at SELECT time.
-      db.prepare(`
-        INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
-        VALUES ('sess-late', NULL, 'proj-late', ?, 1751234568000, 'active')
-      `).run(ISO);
-      seedPrompt('racy prompt', 1, 2);
-
-      // Hold the first POST in flight so the registration can land mid-push.
-      let release!: () => void;
-      const gate = new Promise<void>(resolve => { release = resolve; });
-      const bodies: any[] = [];
-      const impl = (async (_input: any, init?: any) => {
-        bodies.push(JSON.parse(String(init?.body)));
-        if (bodies.length === 1) await gate;
-        return new Response('{}', { status: 200 });
-      }) as typeof fetch;
-
-      const sync = makeCloudSync(impl);
-      const flushPromise = sync.flush();
-      for (let i = 0; i < 100 && bodies.length === 0; i++) await sleep(2);
-      expect(bodies.length).toBe(1);
-      expect(bodies[0].prompts[0].memorySessionId).toBe('sess-abc'); // fallback shape in flight
-
-      // The memory id lands now — exactly what ensureMemorySessionIdRegistered
-      // does: sdk_sessions gains the id, and its requeue is a NO-OP because
-      // synced_at is still NULL on the in-flight row.
-      db.prepare(`UPDATE sdk_sessions SET memory_session_id = 'mem-late' WHERE id = 2`).run();
-      db.prepare(`UPDATE user_prompts SET synced_at = NULL WHERE session_db_id = 2 AND synced_at IS NOT NULL`).run();
-
-      release();
-      await flushPromise;
-
-      // The stamp guard must reject the stale upload and the SAME flush loop
-      // re-pushes it with the registered mapping before stamping.
-      expect(bodies.length).toBe(2);
-      expect(bodies[1].prompts[0].memorySessionId).toBe('mem-late');
-      expect(bodies[1].prompts[0].project).toBe('proj-late');
-      expect(pendingCount('user_prompts')).toBe(0);
+      const mutationOps = calls.flatMap(c => c.parsed.ops).filter((o: any) => o.kind === 'mutation');
+      expect(mutationOps.length).toBe(1);
+      expect(mutationOps[0].body.op).toBe('set_prompt_session');
+      expect(mutationOps[0].body.target).toEqual({
+        origin_device_id: 'device-fixture',
+        origin_local_id: '1',
+      });
+      expect(mutationOps[0].rev).toBe(2); // post-bump sync_rev per the REV MINTING RULES
+      expect(outboxRows().length).toBe(0);
     });
   });
 
-  describe('sync lane selection', () => {
-    it('sends X-Sync-Lane: backfill on every page when a kind has more than 200 pending', async () => {
-      seedObservation(); // 1 pending observation stays on the live lane
-      for (let i = 0; i < 201; i++) seedPrompt(`p${i}`, i + 1);
+  // ---------------------------------------------------------------------------
+  // Size invariant for ALL kinds: no op that leaves the client can be
+  // size-refused by the hub — a refused mutation would 400 the whole batch
+  // and (mutations draining first) wedge the entire push lane at backoff
+  // forever.
+  // ---------------------------------------------------------------------------
+  describe('mutation body size clamping', () => {
+    it('clamps an oversized custom title at enqueue (outbox never holds a refusable op)', () => {
+      store.createSDKSession('sess-big', 'proj-x', 'p', 'T'.repeat(2_100_000), 'claude');
 
-      const { impl, calls } = makeFetchMock();
-      await makeCloudSync(impl).flush();
-
-      const obsCalls = calls.filter(c => c.url.endsWith('/observations/batch'));
-      const promptCalls = calls.filter(c => c.url.endsWith('/prompts/batch'));
-      expect(obsCalls.length).toBe(1);
-      expect(promptCalls.length).toBe(2); // 200 + 1
-
-      // Lane is picked per kind-drain: the small observation increment must
-      // broadcast live while the prompt backlog rides the suppressed lane —
-      // including its final sub-200 page.
-      expect(obsCalls[0].headers['X-Sync-Lane']).toBeUndefined();
-      for (const call of promptCalls) {
-        expect(call.headers['X-Sync-Lane']).toBe('backfill');
-      }
-      expect(pendingCount('user_prompts')).toBe(0);
+      const queued = outboxRows();
+      expect(queued.length).toBe(1);
+      const title = queued[0].body.fields.custom_title as string;
+      expect(title.length).toBe(200_000 + TRUNC_MARK.length);
+      expect(title.endsWith(TRUNC_MARK)).toBe(true);
     });
 
-    it('keeps exactly 200 pending rows on the live lane (threshold is strictly greater-than)', async () => {
-      for (let i = 0; i < 200; i++) seedPrompt(`p${i}`, i + 1);
+    it('re-clamps at the wire as a belt (covers remap-outbox and pre-clamp rows) and drains without wedging', async () => {
+      // Bypass the enqueue-side clamp entirely — simulate an op queued by an
+      // older build or another producer.
+      db.prepare(`
+        INSERT INTO sync_outbox (op_uuid, rev, body, created_at_epoch)
+        VALUES ('raw-uuid-1', 1, ?, 1)
+      `).run(JSON.stringify({
+        op: 'set_title',
+        target: { content_session_id: 'sess-raw', platform_source: 'claude' },
+        fields: { custom_title: 'X'.repeat(2_100_000) },
+      }));
 
       const { impl, calls } = makeFetchMock();
-      await makeCloudSync(impl).flush();
+      const sync = makeCloudSync(impl);
+      await sync.flush();
 
       expect(calls.length).toBe(1);
-      expect(calls[0].parsed.prompts.length).toBe(200);
-      expect(calls[0].headers['X-Sync-Lane']).toBeUndefined();
-      expect(pendingCount('user_prompts')).toBe(0);
+      const op = calls[0].parsed.ops[0];
+      expect(op.kind).toBe('mutation');
+      const title = op.body.fields.custom_title as string;
+      expect(title.length).toBe(200_000 + TRUNC_MARK.length);
+      // The serialized op sits under the hub's 1,990,000-byte per-op backstop.
+      expect(JSON.stringify(op).length).toBeLessThan(1_990_000);
+      // Acked and deleted — the lane did not wedge.
+      expect(outboxRows().length).toBe(0);
+      expect(sync.status().lastError).toBeNull();
     });
+  });
+
+  // ---------------------------------------------------------------------------
+  // stampAcked contract + the ack-driven-progress livelock guard.
+  // ---------------------------------------------------------------------------
+  describe('ack handling', () => {
+    it('fails into backoff when a 200 response does not ack every pushed op (no line-rate livelock)', async () => {
+      seedObservation({ title: 'first' });
+      seedObservation({ title: 'second' });
+
+      let seq = 0;
+      const calls: any[] = [];
+      const impl = (async (_input: any, init?: any) => {
+        const parsed = JSON.parse(String(init?.body));
+        calls.push(parsed);
+        // Hub regression: acks only the FIRST pushed op of each request.
+        const first = parsed.ops[0];
+        return new Response(JSON.stringify({
+          acked: [{ kind: first.kind, origin_id: first.origin_id, rev: first.rev, seq: ++seq }],
+          head_seq: seq,
+        }), { status: 200 });
+      }) as typeof fetch;
+
+      const sync = makeCloudSync(impl, {}, { backoffInitialMs: 600_000 });
+      await sync.flush();
+
+      // Exactly one POST — the un-acked op threw into backoff instead of
+      // re-SELECTing and re-POSTing the same row forever.
+      expect(calls.length).toBe(1);
+      expect(sync.status().lastError).toContain('did not ack');
+      // Partial progress kept: the acked row IS stamped, the other is not.
+      expect(pendingCount('observations')).toBe(1);
+
+      await sleep(150); // no spin while backing off
+      expect(calls.length).toBe(1);
+      sync.stop();
+    });
+
+    it('stamps correctly when acks come back reordered', async () => {
+      seedObservation({ title: 'a' });
+      seedObservation({ title: 'b' });
+      seedObservation({ title: 'c' });
+
+      let seq = 0;
+      const impl = (async (_input: any, init?: any) => {
+        const parsed = JSON.parse(String(init?.body));
+        const acked = (parsed.ops as any[]).map((op) => ({
+          kind: op.kind, origin_id: op.origin_id, rev: op.rev ?? 1, seq: ++seq,
+        })).reverse(); // the hub may return acks in any order
+        return new Response(JSON.stringify({ acked, head_seq: seq }), { status: 200 });
+      }) as typeof fetch;
+
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(pendingCount('observations')).toBe(0);
+      expect(sync.status().lastError).toBeNull();
+    });
+
+    it('ignores unknown-kind acks (forward compat) as long as every pushed op is acked', async () => {
+      seedObservation();
+
+      let seq = 0;
+      const impl = (async (_input: any, init?: any) => {
+        const parsed = JSON.parse(String(init?.body));
+        const acked = (parsed.ops as any[]).map((op) => ({
+          kind: op.kind, origin_id: op.origin_id, rev: op.rev ?? 1, seq: ++seq,
+        }));
+        // A future hub speaking a newer protocol appends an ack kind we
+        // don't know — ignored, never guessed at, never a crash.
+        acked.push({ kind: 'wormhole', origin_id: '999', rev: 1, seq: ++seq });
+        return new Response(JSON.stringify({ acked, head_seq: seq }), { status: 200 });
+      }) as typeof fetch;
+
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(pendingCount('observations')).toBe(0);
+      expect(sync.status().lastError).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Rev-matched stamping — the ordering that replaced stampGuard: a mutation
+  // site bumping sync_rev while a POST is in flight makes the (kind,
+  // origin_id, rev) ack miss, so the row stays unsynced and the SAME flush
+  // loop re-pushes it corrected at the higher rev.
+  // ---------------------------------------------------------------------------
+  it('does not stamp a prompt whose sync_rev was bumped mid-flight; re-pushes corrected', async () => {
+    // A session that has not yet registered a memory id at SELECT time.
+    db.prepare(`
+      INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+      VALUES ('sess-late', NULL, 'proj-late', ?, 1751234568000, 'active')
+    `).run(ISO);
+    db.prepare(`
+      INSERT INTO user_prompts (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
+      VALUES (2, 'sess-late', 1, 'racy prompt', ?, 1751234567892)
+    `).run(ISO);
+
+    // Hold the first POST in flight so the registration can land mid-push.
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const bodies: any[] = [];
+    let seq = 0;
+    const impl = (async (_input: any, init?: any) => {
+      const parsed = JSON.parse(String(init?.body));
+      bodies.push(parsed);
+      if (bodies.length === 1) await gate;
+      const acked = (parsed.ops as any[]).map((op) => ({
+        kind: op.kind, origin_id: op.origin_id, rev: op.rev ?? 1, seq: ++seq,
+      }));
+      return new Response(JSON.stringify({ acked, head_seq: seq }), { status: 200 });
+    }) as typeof fetch;
+
+    const sync = makeCloudSync(impl);
+    const flushPromise = sync.flush();
+    for (let i = 0; i < 100 && bodies.length === 0; i++) await sleep(2);
+    expect(bodies.length).toBe(1);
+    expect(bodies[0].ops[0].rev).toBe(1);
+    expect(bodies[0].ops[0].body.memory_session_id).toBeNull(); // unregistered at SELECT time
+
+    // The memory id lands now — the REAL mutation site: bumps sync_rev to 2,
+    // re-nulls synced_at (already NULL), and enqueues set_prompt_session@2.
+    store.updateMemorySessionId(2, 'mem-late');
+
+    release();
+    await flushPromise;
+
+    // The rev-1 ack must NOT stamp the now-rev-2 row; the same flush loop
+    // re-pushes it with the registered mapping at rev 2 and stamps that.
+    const rowPushes = bodies.filter(b => b.ops.some((o: any) => o.kind === 'prompt'));
+    expect(rowPushes.length).toBe(2);
+    const second = rowPushes[1].ops.find((o: any) => o.kind === 'prompt');
+    expect(second.rev).toBe(2);
+    expect(second.body.memory_session_id).toBe('mem-late');
+    expect(second.body.project).toBe('proj-late');
+    expect(pendingCount('user_prompts')).toBe(0);
+  });
+
+  it('reports head_seq to the registered listener after every successful push', async () => {
+    seedObservation();
+    seedSummary();
+
+    const { impl } = makeFetchMock();
+    const sync = makeCloudSync(impl);
+    const seen: number[] = [];
+    sync.setHeadSeqListener(seq => seen.push(seq));
+
+    await sync.flush();
+    expect(seen.length).toBe(2); // one per POST (observation page, summary page)
+    expect(seen[seen.length - 1]).toBe(2);
   });
 
   it('leaves rows unsynced and records lastError on HTTP failure, then retries via backoff', async () => {
@@ -455,7 +669,7 @@ describe('CloudSync', () => {
 
     await sync.flush();
     expect(pendingCount('observations')).toBe(1);
-    expect(sync.status().lastError).toContain('cloud sync 500');
+    expect(sync.status().lastError).toContain('sync hub push 500');
     expect(sync.status().lastFlushAt).toBeNull();
 
     // backoffInitialMs is 20ms — the retry timer must re-flush and drain.
@@ -502,7 +716,7 @@ describe('CloudSync', () => {
     const impl = (async (input: any) => {
       calls.push(String(input));
       await gate;
-      return new Response('{}', { status: 200 });
+      return new Response(JSON.stringify({ acked: [], head_seq: 0 }), { status: 200 });
     }) as typeof fetch;
 
     const sync = makeCloudSync(impl, {}, { backoffInitialMs: 20 });
@@ -542,6 +756,22 @@ describe('CloudSync', () => {
     expect(status.configured).toBe(false);
     expect(status.deviceId).toBe('');
     expect(status.pending.observations).toBe(1);
+    expect(pendingCount('observations')).toBe(1);
+  });
+
+  it('sync is OFF entirely when the hub URL is empty (hard cutover — no legacy lane)', async () => {
+    seedObservation();
+
+    const { impl, calls } = makeFetchMock();
+    const sync = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_HUB_URL: '' });
+
+    sync.start();
+    sync.notify();
+    await sync.flush();
+    await sleep(120);
+
+    expect(calls.length).toBe(0);
+    expect(sync.status().configured).toBe(false);
     expect(pendingCount('observations')).toBe(1);
   });
 
