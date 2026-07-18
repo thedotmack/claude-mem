@@ -74,7 +74,12 @@ export class BottleRenderer {
     const storedPrompts = store.getUserPromptsForSession(contentSessionId);
     const summaries = memorySessionId ? store.getSummariesForSession(memorySessionId) : [];
 
-    if (transcriptTurns === null && storedPrompts.length === 0 && observations.length === 0) {
+    // An existing-but-pruned transcript can parse to zero renderable turns;
+    // treat it like a missing transcript so stored prompts/summaries still
+    // make it into the bottle via reconstructed mode.
+    const hasRenderableTranscript = transcriptTurns !== null && transcriptTurns.length > 0;
+
+    if (!hasRenderableTranscript && storedPrompts.length === 0 && observations.length === 0) {
       logger.debug('WORKER', 'BottleRenderer: nothing to render', {
         contentSessionId,
         transcriptPath: transcriptPath ?? null,
@@ -83,7 +88,7 @@ export class BottleRenderer {
       return null;
     }
 
-    const mode: BottleRenderResult['mode'] = transcriptTurns !== null ? 'full' : 'reconstructed';
+    const mode: BottleRenderResult['mode'] = hasRenderableTranscript ? 'full' : 'reconstructed';
     const project = cwd || dbSession?.project || 'unknown';
 
     logger.debug('WORKER', 'BottleRenderer: rendering bottle', {
@@ -95,7 +100,7 @@ export class BottleRenderer {
       summaryCount: summaries.length,
     });
 
-    const markdown = transcriptTurns !== null
+    const markdown = hasRenderableTranscript
       ? this.renderFullBottle(contentSessionId, project, transcriptTurns, observations)
       : this.renderReconstructedBottle(contentSessionId, project, storedPrompts, observations, summaries);
 

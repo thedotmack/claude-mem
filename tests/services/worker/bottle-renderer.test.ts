@@ -337,6 +337,27 @@ describe('BottleRenderer', () => {
       expect(bottle).toContain('First prompt: build the feature');
     });
 
+    it('falls back to reconstructed mode when the transcript exists but parses to zero renderable turns', async () => {
+      const contentSessionId = 'bottle-pruned-transcript';
+      registerSession(contentSessionId, 'mem-pruned');
+      store.saveUserPrompt(contentSessionId, 1, 'Preserved prompt from a pruned session');
+      store.storeSummary('mem-pruned', 'test-project', summary({ next_steps: 'Resume from the pruned transcript' }), 1, 0, 2000000000000);
+
+      const prunedDir = mkdtempSync(path.join(tmpdir(), 'bottle-pruned-'));
+      const prunedTranscriptPath = path.join(prunedDir, 'session.jsonl');
+      writeFileSync(prunedTranscriptPath, '{"type":"user","isMeta":true}\n');
+
+      const result = await renderer.renderBottle(contentSessionId, prunedTranscriptPath);
+
+      expect(result).not.toBeNull();
+      expect(result!.mode).toBe('reconstructed');
+
+      const bottle = readFileSync(result!.bottlePath, 'utf-8');
+      expect(bottle).toContain('mode: reconstructed — assistant messages not preserved');
+      expect(bottle).toContain('Preserved prompt from a pruned session');
+      expect(bottle).toContain('> Next steps: Resume from the pruned transcript');
+    });
+
     it('renders null-prompt_number observations in the trailing bucket', async () => {
       const contentSessionId = 'bottle-degraded-unanchored';
       registerSession(contentSessionId, 'mem-degraded-unanchored');
@@ -455,6 +476,19 @@ describe('BottleRenderer', () => {
       const contentSessionId = 'bottle-nothing';
 
       const result = await renderer.renderBottle(contentSessionId);
+
+      expect(result).toBeNull();
+      expect(existsSync(path.join(BOTTLES_DIR, `${contentSessionId}.md`))).toBe(false);
+    });
+
+    it('returns null when the transcript parses to zero turns and no stored rows exist', async () => {
+      const contentSessionId = 'bottle-nothing-empty-transcript';
+
+      const emptyDir = mkdtempSync(path.join(tmpdir(), 'bottle-empty-'));
+      const emptyTranscriptPath = path.join(emptyDir, 'session.jsonl');
+      writeFileSync(emptyTranscriptPath, '');
+
+      const result = await renderer.renderBottle(contentSessionId, emptyTranscriptPath);
 
       expect(result).toBeNull();
       expect(existsSync(path.join(BOTTLES_DIR, `${contentSessionId}.md`))).toBe(false);
