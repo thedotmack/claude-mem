@@ -1,0 +1,49 @@
+/**
+ * Sync Hub — per-user ordered op log (Phase 1 of the two-lane sync plan).
+ *
+ * Stateless front Worker (src/index.ts) + one SQLite-backed Durable Object per
+ * user (src/do/SyncHub.ts). Config uses the newer `exports` flow (the declared
+ * successor to `migrations`) — see plan Phase 0.1 / open decision 3.
+ */
+{
+	"name": "sync-hub",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-07-14",
+	"exports": {
+		"SyncHub": {
+			"type": "durable-object",
+			"storage": "sqlite"
+		}
+	},
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "SYNC_HUB",
+				"class_name": "SyncHub"
+			}
+		]
+	},
+	"kv_namespaces": [
+		{
+			"binding": "AUTH_CACHE",
+			// PLACEHOLDER — create the real namespace before deploying:
+			//   wrangler kv namespace create AUTH_CACHE
+			// Local dev and vitest use a local simulator and ignore this id.
+			"id": "00000000000000000000000000000000"
+		}
+	],
+	"vars": {
+		// PLACEHOLDER — cmem.ai token-verify endpoint. The repo documents the
+		// sync base URL (https://cmem.ai/api/pro/sync) but no verify path;
+		// confirm the exact path with the maintainer before deploying.
+		"TOKEN_VERIFY_URL": "https://cmem.ai/api/pro/sync/verify",
+		// Positive-verdict cache TTL for AUTH_CACHE (seconds, min 60).
+		"AUTH_CACHE_TTL_SECONDS": "300",
+		// Dev-only escape hatch: set to "true" (e.g. in .dev.vars) to skip
+		// upstream token verification. MUST stay empty in production.
+		"DEV_ALLOW_ANY_TOKEN": ""
+	},
+	"observability": {
+		"enabled": true
+	}
+}

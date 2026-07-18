@@ -1,0 +1,5 @@
+# Local development overrides for `wrangler dev` (copy to .dev.vars — gitignored).
+#
+# Skip upstream token verification locally (any bearer token accepted).
+# NEVER set this in production — wrangler.jsonc ships it empty.
+DEV_ALLOW_ANY_TOKEN=true
