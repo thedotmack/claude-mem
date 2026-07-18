@@ -12,6 +12,11 @@ export const claudeCodeAdapter: PlatformAdapter = {
     if (!isValidCwd(cwd)) {
       throw new AdapterRejectedInput('invalid_cwd');
     }
+    const source = r.source;
+    const sessionSource =
+      source === 'startup' || source === 'resume' || source === 'clear' || source === 'compact'
+        ? source
+        : undefined;
     return {
       sessionId: r.session_id ?? r.id ?? r.sessionId,
       cwd,
@@ -20,6 +25,7 @@ export const claudeCodeAdapter: PlatformAdapter = {
       toolInput: r.tool_input,
       toolResponse: r.tool_response,
       transcriptPath: r.transcript_path,
+      sessionSource,
       agentId: pickAgentField(r.agent_id),
       agentType: pickAgentField(r.agent_type),
     };
