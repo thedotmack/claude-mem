@@ -38,7 +38,7 @@ export function ensureDirectoryExists(directoryPath: string): void {
 }
 
 /**
- * Write JSON to disk with crash-safe atomic-rename semantics.
+ * Write a payload to disk with crash-safe atomic-rename semantics.
  *
  * Sequence: resolve symlinks at the destination, write payload to a uniquely
  * named temp file in the same directory as the resolved target, loop writeSync
@@ -47,7 +47,7 @@ export function ensureDirectoryExists(directoryPath: string): void {
  * crash mid-write leaves either the old contents or the new contents, never a
  * truncated file.
  */
-export function writeJsonFileAtomic(filepath: string, data: any): void {
+function writeBufferAtomic(filepath: string, payload: Buffer): void {
   let resolved = filepath;
   try {
     if (lstatSync(filepath).isSymbolicLink()) {
@@ -72,7 +72,6 @@ export function writeJsonFileAtomic(filepath: string, data: any): void {
   const dir = dirname(resolved);
   const base = basename(resolved);
   const tmpPath = join(dir, `.${base}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
-  const payload = Buffer.from(JSON.stringify(data, null, 2) + '\n', 'utf-8');
 
   let mode: number | undefined;
   try {
@@ -120,4 +119,12 @@ export function writeJsonFileAtomic(filepath: string, data: any): void {
     try { unlinkSync(tmpPath); } catch { /* tempfile may not exist */ }
     throw err;
   }
+}
+
+export function writeJsonFileAtomic(filepath: string, data: any): void {
+  writeBufferAtomic(filepath, Buffer.from(JSON.stringify(data, null, 2) + '\n', 'utf-8'));
+}
+
+export function writeTextFileAtomic(filepath: string, text: string): void {
+  writeBufferAtomic(filepath, Buffer.from(text, 'utf-8'));
 }

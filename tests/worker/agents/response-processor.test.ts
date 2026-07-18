@@ -1,5 +1,16 @@
-import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import { logger } from '../../../src/utils/logger.js';
+
+// Capture real exports before mock.module mutates the live namespace, then
+// re-register the snapshots in afterAll so these mocks do not leak into later
+// test files (bun's mock.module is process-global; mock.restore() does NOT
+// undo it). worker-service.js is deliberately NOT snapshotted: importing the
+// real module here would evaluate the worker entrypoint (its main-guard can
+// fire under bun test), so its mock stays registered for the process lifetime.
+import * as realWorkerUtilsModule from '../../../src/shared/worker-utils.js';
+import * as realModeManagerModule from '../../../src/services/domain/ModeManager.js';
+const realWorkerUtilsSnapshot = { ...realWorkerUtilsModule };
+const realModeManagerSnapshot = { ...realModeManagerModule };
 
 mock.module('../../../src/services/worker-service.js', () => ({
   updateCursorContextForProject: () => Promise.resolve(),
@@ -25,6 +36,11 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
     }),
   },
 }));
+
+afterAll(() => {
+  mock.module('../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
+  mock.module('../../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
+});
 
 import { processAgentResponse } from '../../../src/services/worker/agents/ResponseProcessor.js';
 import type { WorkerRef, StorageResult } from '../../../src/services/worker/agents/types.js';

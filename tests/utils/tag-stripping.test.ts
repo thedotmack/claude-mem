@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
-import { stripMemoryTags, isInternalProtocolPayload } from '../../src/utils/tag-stripping.js';
+import { stripMemoryTags, isInternalProtocolPayload, isInjectedUserEnvelope } from '../../src/utils/tag-stripping.js';
 import { logger } from '../../src/utils/logger.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -445,6 +445,84 @@ after`;
     it('returns false for two adjacent protocol blocks (deliberate: deny-list per single block, not concatenations)', () => {
       const text = '<task-notification>a</task-notification><task-notification>b</task-notification>';
       expect(isInternalProtocolPayload(text)).toBe(false);
+    });
+  });
+
+  describe('isInjectedUserEnvelope', () => {
+    it('returns false for empty input', () => {
+      expect(isInjectedUserEnvelope('')).toBe(false);
+    });
+
+    it('returns false for a genuine user message', () => {
+      expect(isInjectedUserEnvelope('please list the files in src/')).toBe(false);
+    });
+
+    it('delegates task-notification detection to isInternalProtocolPayload', () => {
+      expect(isInjectedUserEnvelope('<task-notification>agent done</task-notification>')).toBe(true);
+    });
+
+    it('returns true for a whole-string system-reminder block', () => {
+      expect(isInjectedUserEnvelope('<system-reminder>CLAUDE.md contents here</system-reminder>')).toBe(true);
+    });
+
+    it('returns true for a whole-string system-reminder block with attributes and surrounding whitespace', () => {
+      expect(isInjectedUserEnvelope('\n  <system-reminder data-kind="context">x</system-reminder>\n')).toBe(true);
+    });
+
+    it('returns true for a multi-line system-reminder block', () => {
+      expect(isInjectedUserEnvelope('<system-reminder>\nline1\nline2\n</system-reminder>')).toBe(true);
+    });
+
+    it('returns true for a command wrapper of stacked command blocks', () => {
+      const text = '<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>';
+      expect(isInjectedUserEnvelope(text)).toBe(true);
+    });
+
+    it('returns true for a lone command-name block', () => {
+      expect(isInjectedUserEnvelope('<command-name>/clear</command-name>')).toBe(true);
+    });
+
+    it('returns true for a local-command-stdout block', () => {
+      expect(isInjectedUserEnvelope('<local-command-stdout>Set model to sonnet</local-command-stdout>')).toBe(true);
+    });
+
+    it('returns true for a local-command-caveat block', () => {
+      expect(isInjectedUserEnvelope('<local-command-caveat>Caveat: the messages below were generated while running local commands</local-command-caveat>')).toBe(true);
+    });
+
+    it('returns true for two stacked task-notification blocks (unlike isInternalProtocolPayload)', () => {
+      const text = '<task-notification>a</task-notification><task-notification>b</task-notification>';
+      expect(isInternalProtocolPayload(text)).toBe(false);
+      expect(isInjectedUserEnvelope(text)).toBe(true);
+    });
+
+    it('returns true for a task-notification stacked with other envelope blocks', () => {
+      const text = '<task-notification>agent done</task-notification>\n<system-reminder>reminder</system-reminder>';
+      expect(isInjectedUserEnvelope(text)).toBe(true);
+    });
+
+    it('returns false when a system-reminder is surrounded by user text', () => {
+      const text = 'hi <system-reminder>x</system-reminder> more';
+      expect(isInjectedUserEnvelope(text)).toBe(false);
+    });
+
+    it('returns false when a command wrapper is followed by user text', () => {
+      const text = '<command-name>/model</command-name> please also do this';
+      expect(isInjectedUserEnvelope(text)).toBe(false);
+    });
+
+    it('returns false for a partial / unclosed envelope tag', () => {
+      expect(isInjectedUserEnvelope('<system-reminder>oops')).toBe(false);
+    });
+
+    it('returns false for non-envelope tags', () => {
+      expect(isInjectedUserEnvelope('<private>secret</private>')).toBe(false);
+      expect(isInjectedUserEnvelope('<persisted-output>x</persisted-output>')).toBe(false);
+    });
+
+    it('returns false for over-large input', () => {
+      const huge = '<system-reminder>' + 'a'.repeat(300 * 1024) + '</system-reminder>';
+      expect(isInjectedUserEnvelope(huge)).toBe(false);
     });
   });
 });

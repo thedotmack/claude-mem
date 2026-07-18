@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
@@ -7,11 +7,24 @@ import {
 } from '../../src/shared/dependency-health.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 
+// Capture real exports before mock.module mutates the live namespace, then
+// re-register the snapshot in afterAll so this mock does not leak into later
+// test files (bun's mock.module is process-global; mock.restore() does NOT
+// undo it). The leaked stub dropped `_internals`/`resetClaudeExecutableCache`
+// and left findClaudeExecutable throwing, breaking find-claude-executable.test.ts
+// whenever it ran after this file.
+import * as realFindClaudeExecutableModule from '../../src/shared/find-claude-executable.js';
+const realFindClaudeExecutableSnapshot = { ...realFindClaudeExecutableModule };
+
 let findClaudeExecutableImpl: () => string = () => '/mock/claude';
 
 mock.module('../../src/shared/find-claude-executable.js', () => ({
   findClaudeExecutable: () => findClaudeExecutableImpl(),
 }));
+
+afterAll(() => {
+  mock.module('../../src/shared/find-claude-executable.js', () => realFindClaudeExecutableSnapshot);
+});
 
 const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
 const { ClaudeProvider } = await import('../../src/services/worker/ClaudeProvider.js');
@@ -102,6 +115,7 @@ describe('Claude setup-required generator gate', () => {
           finalizerCalls += 1;
         },
       } as any,
+      {} as any,
     );
 
     await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');

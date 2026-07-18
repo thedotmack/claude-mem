@@ -20,6 +20,7 @@ import { getProjectContext } from '../../../../utils/project-name.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
+import { BottleRenderer } from '../../BottleRenderer.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
@@ -62,6 +63,7 @@ export class SessionRoutes extends BaseRouteHandler {
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService,
     private completionHandler: SessionCompletionHandler,
+    private bottleRenderer: BottleRenderer,
   ) {
     super();
   }
@@ -275,6 +277,11 @@ export class SessionRoutes extends BaseRouteHandler {
       validateBody(SessionRoutes.summarizeByClaudeIdSchema),
       this.handleSummarizeByClaudeId.bind(this)
     );
+    app.post(
+      '/api/sessions/render-bottle',
+      validateBody(SessionRoutes.renderBottleSchema),
+      this.handleRenderBottle.bind(this)
+    );
   }
 
   private static readonly sessionInitByClaudeIdSchema = z.object({
@@ -303,6 +310,13 @@ export class SessionRoutes extends BaseRouteHandler {
     last_assistant_message: z.string().optional(),
     agentId: z.string().optional(),
     platformSource: z.string().optional(),
+  }).passthrough();
+
+  private static readonly renderBottleSchema = z.object({
+    contentSessionId: z.string().min(1),
+    transcript_path: z.string().optional(),
+    cwd: z.string().optional(),
+    wait: z.boolean().optional(),
   }).passthrough();
 
   private handleObservationsByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
@@ -378,6 +392,37 @@ export class SessionRoutes extends BaseRouteHandler {
     await this.ensureGeneratorRunning(sessionDbId, 'summarize');
 
     this.eventBroadcaster.broadcastSummarizeQueued();
+
+    res.json({ status: 'queued' });
+  });
+
+  private handleRenderBottle = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { contentSessionId, transcript_path, cwd, wait } = req.body;
+
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    if (settings.CLAUDE_MEM_ENDLESS_MODE_ENABLED === 'false') {
+      res.json({ status: 'disabled' });
+      return;
+    }
+
+    if (wait === true) {
+      const result = await this.bottleRenderer.renderBottle(contentSessionId, transcript_path, cwd);
+      if (result === null) {
+        res.json({ status: 'nothing_to_render' });
+        return;
+      }
+      res.json(result);
+      return;
+    }
+
+    void (async () => {
+      // renderBottle is synchronous end-to-end; yield first so the queued
+      // response flushes before the render occupies the event loop.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await this.bottleRenderer.renderBottle(contentSessionId, transcript_path, cwd);
+    })().catch((error) => {
+      logger.error('HTTP', 'Background bottle render failed, continuing', { contentSessionId }, error);
+    });
 
     res.json({ status: 'queued' });
   });

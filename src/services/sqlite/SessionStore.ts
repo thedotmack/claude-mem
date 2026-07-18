@@ -40,6 +40,22 @@ interface SessionObservationRow {
   prompt_number: number | null;
 }
 
+interface BottleObservationRow {
+  id: number;
+  title: string | null;
+  subtitle: string | null;
+  narrative: string | null;
+  type: string;
+  prompt_number: number | null;
+  created_at_epoch: number;
+}
+
+interface BottlePromptRow {
+  prompt_number: number;
+  prompt_text: string;
+  created_at_epoch: number;
+}
+
 interface SummaryDetailRow {
   request: string | null;
   investigated: string | null;
@@ -1633,6 +1649,21 @@ export class SessionStore {
     return stmt.get(param) as LatestPromptResult | undefined;
   }
 
+  getUserPromptsForSession(contentSessionId: string): BottlePromptRow[] {
+    const resolvedSessionDbId = this.resolvePromptSessionDbId(contentSessionId);
+    const whereClause = resolvedSessionDbId !== null ? 'up.session_db_id = ?' : 'up.content_session_id = ?';
+    const param = resolvedSessionDbId !== null ? resolvedSessionDbId : contentSessionId;
+    const stmt = this.db.prepare(`
+      SELECT up.prompt_number, up.prompt_text, up.created_at_epoch
+      FROM user_prompts up
+      JOIN sdk_sessions s ON up.session_db_id = s.id
+      WHERE ${whereClause}
+      ORDER BY up.prompt_number ASC
+    `);
+
+    return stmt.all(param) as BottlePromptRow[];
+  }
+
   findRecentDuplicateUserPrompt(
     contentSessionId: string,
     promptText: string,
@@ -1704,6 +1735,17 @@ export class SessionStore {
     `);
 
     return stmt.all(...params) as SessionObservationRow[];
+  }
+
+  getObservationsForBottle(memorySessionId: string): BottleObservationRow[] {
+    const stmt = this.db.prepare(`
+      SELECT id, title, subtitle, narrative, type, prompt_number, created_at_epoch
+      FROM observations
+      WHERE memory_session_id = ?
+      ORDER BY created_at_epoch ASC, id ASC
+    `);
+
+    return stmt.all(memorySessionId) as BottleObservationRow[];
   }
 
   getObservationById(id: number, platformSource?: string): ObservationRecord | null {
@@ -1833,6 +1875,20 @@ export class SessionStore {
     `);
 
     return (stmt.get(...params) as SummaryDetailRow | null) || null;
+  }
+
+  getSummariesForSession(memorySessionId: string): SummaryDetailRow[] {
+    const stmt = this.db.prepare(`
+      SELECT
+        request, investigated, learned, completed, next_steps,
+        files_read, files_edited, notes, prompt_number, created_at,
+        created_at_epoch
+      FROM session_summaries
+      WHERE memory_session_id = ?
+      ORDER BY created_at_epoch ASC
+    `);
+
+    return stmt.all(memorySessionId) as SummaryDetailRow[];
   }
 
   getSessionById(id: number): SdkSessionDetailRow | null {

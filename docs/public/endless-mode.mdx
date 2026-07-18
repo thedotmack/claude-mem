@@ -1,0 +1,68 @@
+---
+title: "Endless Mode"
+description: "Session continuity across auto-compact via a message-in-a-bottle handover"
+---
+
+# Endless Mode
+
+Endless Mode lets a Claude Code session survive auto-compaction. Instead of relying on the harness compaction summary alone, claude-mem writes the session's full record to a file — a "message in a bottle" — and points the fresh context at it, so work continues from exactly where it stopped.
+
+## How It Works
+
+When Claude Code fires `SessionStart` with source `compact` or `resume`, claude-mem:
+
+1. **Renders a bottle** — a markdown file at `~/.claude-mem/bottles/<session-id>.md` containing the session's conversation verbatim, with one-line observation references in place of tool activity. Rendering merges the session transcript with claude-mem's observation database.
+2. **Injects a pointer** — a ~20-line block telling the model to `Read` the bottle and continue from its end state. The pointer includes an explicit "do not repeat the final message or redo finished work" instruction and a one-line `Current task` reminder.
+
+The injection is a pointer, not a payload: the bottle lands in context as a `Read` tool result, which is exactly what the *next* compaction evicts first — so bottles never accumulate across compactions.
+
+If the bottle render fails for any reason (worker down, nothing to render), the hook falls back to the normal timeline context injection. Endless Mode never leaves a session worse off than before.
+
+### Degraded Mode
+
+If the session transcript is no longer on disk, the bottle is reconstructed from stored data instead: your prompts verbatim (from the `user_prompts` table), observations by prompt number, and session summaries as clearly-marked generated blocks. The bottle header reads `mode: reconstructed — assistant messages not preserved`, and the pointer tells the model not to assume its prior phrasings.
+
+### Privacy
+
+`<private>` content is stripped from every rendered message, in both full and reconstructed bottles. See [Private Tags](/usage/private-tags).
+
+### `/clear`
+
+`/clear` means "forget": the session's bottle is moved to `~/.claude-mem/bottles/archive/` and no pointer is injected. Normal session-start context behavior is unchanged.
+
+## Configuration
+
+Endless Mode is on by default. Disable it in `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_ENDLESS_MODE_ENABLED": "false"
+}
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_ENDLESS_MODE_ENABLED` | `true` | Bottle handover on compact/resume. Set to `"false"` to disable. |
+
+The harness compaction summary is still generated either way — it remains the safety net at every handover. Where the summary and the bottle conflict, the pointer instructs the model that the bottle wins.
+
+## Endless Throttle (Optional)
+
+By default, auto-compact fires near the end of the context window, so each "leg" of the session is long and the handover happens late. You can make legs shorter and handovers earlier by lowering the auto-compact trigger point — a Claude Code setting, not a claude-mem one.
+
+Add both variables to the `env` block of `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "30",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "200000"
+  }
+}
+```
+
+- `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` (1–100) triggers auto-compact at that percentage of the window. It is **lower-only**: it can only make compaction fire earlier, never later.
+- `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is the context window size in tokens (e.g. `200000` for a 200k model). For local sessions the percentage override only takes effect when this is also set explicitly — **both must be set together**.
+- claude-mem never writes these values for you. Editing host-level Claude Code behavior is a deliberate, manual opt-in.
+
+The bottle mechanism is threshold-agnostic: Endless Mode works identically at any trigger point. A lower threshold just means shorter legs and faster, more frequent handovers.

@@ -62,3 +62,28 @@ export function isInternalProtocolPayload(text: string): boolean {
   if (text.length > MAX_PROTOCOL_PAYLOAD_BYTES) return false;
   return PROTOCOL_ONLY_REGEX.test(text);
 }
+
+const INJECTED_ENVELOPE_TAGS = [
+  'system-reminder',
+  'task-notification',
+  'command-name',
+  'command-message',
+  'command-args',
+  'local-command-stdout',
+  'local-command-stderr',
+  'local-command-caveat',
+] as const;
+
+// A transcript user entry that is nothing but host-injected envelope blocks
+// (whole-string, one or more blocks, whitespace between) — never a genuine
+// user message.
+const INJECTED_ENVELOPE_ONLY_REGEX = new RegExp(
+  `^\\s*(?:<(${INJECTED_ENVELOPE_TAGS.join('|')})\\b[^>]*>(?:(?!<\\1\\b|</\\1\\b)[\\s\\S])*</\\1>\\s*)+$`,
+);
+
+export function isInjectedUserEnvelope(text: string): boolean {
+  if (!text) return false;
+  if (isInternalProtocolPayload(text)) return true;
+  if (text.length > MAX_PROTOCOL_PAYLOAD_BYTES) return false;
+  return INJECTED_ENVELOPE_ONLY_REGEX.test(text);
+}
