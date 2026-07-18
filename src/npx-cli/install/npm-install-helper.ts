@@ -56,7 +56,9 @@ export function runNpmStrict(cwd: string, flags: string[]): Promise<NpmResult> {
     const child = spawn('npm', flags, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
-      ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
+      ...(IS_WINDOWS
+        ? { shell: process.env.ComSpec ?? 'cmd.exe', windowsHide: true }
+        : {}),
     });
 
     let stdout = '';

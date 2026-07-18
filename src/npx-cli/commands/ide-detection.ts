@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -13,8 +13,14 @@ export interface IDEInfo {
 
 function isCommandInPath(command: string): boolean {
   try {
-    const whichCommand = IS_WINDOWS ? 'where' : 'which';
-    execSync(`${whichCommand} ${command}`, { stdio: 'pipe' });
+    if (IS_WINDOWS) {
+      execFileSync('where.exe', [command], {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+    } else {
+      execFileSync('which', [command], { stdio: 'ignore' });
+    }
     return true;
   } catch (error: unknown) {
     if (process.env.DEBUG) {
