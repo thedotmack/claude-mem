@@ -276,6 +276,13 @@ export interface CloudSyncOptions {
   legacyStatePath?: string;
   /** Trailing debounce for notify() bursts. */
   debounceMs?: number;
+  /**
+   * Debounce while the advisory socket is live (plan Phase 4 task 3): with
+   * WS fan-out the hub push IS delivery, so the debounce dominates
+   * cross-device latency — 1500 ms drops to 250 ms. Toggled via
+   * setFastDebounce() by SyncClient's socket-liveness callback.
+   */
+  fastDebounceMs?: number;
   /** First retry delay after a failed flush; doubles up to backoffMaxMs. */
   backoffInitialMs?: number;
   backoffMaxMs?: number;
@@ -301,6 +308,7 @@ export class CloudSync {
   private readonly settingsPath: string;
   private readonly legacyStatePath: string;
   private readonly debounceMs: number;
+  private readonly fastDebounceMs: number;
   private readonly backoffInitialMs: number;
   private readonly backoffMaxMs: number;
   private readonly requestTimeoutMs: number;
@@ -315,6 +323,8 @@ export class CloudSync {
   private stopped = false;
   private lastFlushAt: number | null = null;
   private lastError: string | null = null;
+  /** True while SyncClient's advisory socket is live (setFastDebounce). */
+  private fastDebounce = false;
   /**
    * head_seq piggyback (plan Phase 3 task 3): every push response carries the
    * hub's head_seq; SyncClient registers here so a push that reveals unseen
@@ -336,6 +346,7 @@ export class CloudSync {
     this.settingsPath = options.settingsPath ?? USER_SETTINGS_PATH;
     this.legacyStatePath = options.legacyStatePath ?? paths.cloudSyncState();
     this.debounceMs = options.debounceMs ?? 1_500;
+    this.fastDebounceMs = options.fastDebounceMs ?? 250;
     this.backoffInitialMs = options.backoffInitialMs ?? 30_000;
     this.backoffMaxMs = options.backoffMaxMs ?? 600_000;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
@@ -359,6 +370,16 @@ export class CloudSync {
   /** SyncClient wiring: called with head_seq after every successful push. */
   setHeadSeqListener(listener: ((headSeq: number) => void) | null): void {
     this.headSeqListener = listener;
+  }
+
+  /**
+   * SyncClient wiring (plan Phase 4 task 3): while the advisory socket is
+   * live the push debounce drops to fastDebounceMs (250 ms) — fan-out makes
+   * the push itself the delivery, so the debounce dominates latency. Wrong
+   * in either direction is harmless: it only changes WHEN a flush runs.
+   */
+  setFastDebounce(fast: boolean): void {
+    this.fastDebounce = fast === true;
   }
 
   /**
@@ -393,7 +414,7 @@ export class CloudSync {
       const timer = setTimeout(() => {
         this.debounceTimer = null;
         void this.flush();
-      }, this.debounceMs);
+      }, this.fastDebounce ? this.fastDebounceMs : this.debounceMs);
       (timer as { unref?: () => void }).unref?.();
       this.debounceTimer = timer;
     } catch (error) {

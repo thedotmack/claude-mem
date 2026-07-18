@@ -17,6 +17,24 @@
 // onHeadSeq): head_seq > cursor triggers an immediate pull without waiting
 // for the timer — the free poll for the active device.
 //
+// ADVISORY WEBSOCKET (plan Phase 4 task 2 — the speed layer): when enabled
+// (CLAUDE_MEM_CLOUD_SYNC_WS, default on) the client also holds one Bun-native
+// WebSocket to {hub}/v1/sync/ws (Bun extension: auth headers ride the
+// constructor — no ws npm package). The socket is STRICTLY advisory (prime
+// directive #2): nothing durable rides it. A {type:'op'} frame whose ops are
+// contiguous with the cursor feeds the SAME SyncApply.applyOps path as HTTP
+// pulls (cursor advances transactionally as usual); ANY anomaly — gap, parse
+// error, unknown frame, epoch mismatch, apply throw — closes the socket and
+// runs one HTTP pullOnce() (the lane-2 self-heal). {type:'advance'} frames
+// just trigger pullOnce(). The cursor is NEVER written outside SyncApply.
+// Keepalive is a protocol-level ws.ping() every ~40 s (the hub runtime
+// auto-pongs without waking the DO); reconnects use full-jitter backoff
+// (1 s base, 60 s cap). While the socket is CONNECTED the active poll tier
+// stretches to the idle tier (the socket is the fast path; polling is the
+// safety net); a disconnect restores normal cadence. Total failure of every
+// socket code path leaves Phase 3 (HTTP-only) behavior intact — delete the
+// socket and this class still converges.
+//
 // FAILURE CONTRACT (same swallow-and-log posture as CloudSync.notify()):
 // nothing here ever throws into a caller, blocks a write, or crashes the
 // worker. Failures back off (30 s doubling to 10 min, dominating the poll
@@ -27,6 +45,28 @@
 
 import { logger } from '../../utils/logger.js';
 import type { SyncApply, SyncOp } from './SyncApply.js';
+
+/**
+ * Structural WebSocket surface the client needs — satisfied by Bun's global
+ * WebSocket (including its ping()/terminate() extensions) and by test mocks.
+ * Injectable via SyncClientOptions.webSocketImpl (the fetchImpl idiom).
+ */
+export interface SyncSocketLike {
+  onopen: (() => void) | null;
+  onmessage: ((event: { data: unknown }) => void) | null;
+  onclose: (() => void) | null;
+  onerror: (() => void) | null;
+  close(code?: number, reason?: string): void;
+  /** Bun extension: protocol-level ping (auto-ponged by the hub runtime). */
+  ping?(): void;
+  /** Bun extension: hard-drop without a close handshake. */
+  terminate?(): void;
+}
+
+export type SyncWebSocketConstructor = new (
+  url: string,
+  options?: { headers?: Record<string, string> }
+) => SyncSocketLike;
 
 export interface SyncClientOptions {
   /** Sync hub base URL (CLAUDE_MEM_CLOUD_SYNC_HUB_URL). */
@@ -62,6 +102,28 @@ export interface SyncClientOptions {
   isSessionActive?: () => boolean;
   /** Injectable clock (tests). */
   now?: () => number;
+  /**
+   * Advisory WebSocket gate (CLAUDE_MEM_CLOUD_SYNC_WS ≠ 'false'). Defaults to
+   * enabled; forced off when no WebSocket implementation is available. The
+   * socket is strictly optional — disabled ⇒ exact Phase 3 behavior.
+   */
+  wsEnabled?: boolean;
+  /** Injectable WebSocket constructor (tests). Defaults to Bun's global. */
+  webSocketImpl?: SyncWebSocketConstructor;
+  /** Protocol-level keepalive ping cadence (~40 s). */
+  wsPingIntervalMs?: number;
+  /** Reconnect full-jitter backoff: random(0, min(cap, base·2^attempt)). */
+  wsBackoffBaseMs?: number;
+  wsBackoffMaxMs?: number;
+  /**
+   * Socket-liveness listener — the thin coupling that lets CloudSync drop its
+   * push debounce to the fast tier while the socket is live (Phase 4 task 3).
+   * Called with true on open, false on close/self-heal/stop. Never trusted:
+   * a throwing listener is swallowed.
+   */
+  onSocketLiveChange?: (live: boolean) => void;
+  /** Injectable RNG for the reconnect jitter (tests). */
+  random?: () => number;
 }
 
 interface ChangesPage {
@@ -90,6 +152,15 @@ export class SyncClient {
   private readonly isSessionActive: (() => boolean) | null;
   private readonly now: () => number;
 
+  private readonly wsEnabled: boolean;
+  private readonly webSocketImpl: SyncWebSocketConstructor | null;
+  private readonly wsUrl: string;
+  private readonly wsPingIntervalMs: number;
+  private readonly wsBackoffBaseMs: number;
+  private readonly wsBackoffMaxMs: number;
+  private readonly onSocketLiveChange: ((live: boolean) => void) | null;
+  private readonly random: () => number;
+
   private timer: ReturnType<typeof setTimeout> | null = null;
   private started = false;
   private stopped = false;
@@ -100,6 +171,13 @@ export class SyncClient {
   private backoffMs = 0;
   private failStreak = 0;
   private failCursor = -1;
+
+  // Advisory socket state (all of it disposable — prime directive #2).
+  private socket: SyncSocketLike | null = null;
+  private socketLive = false;
+  private wsAttempts = 0;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(apply: SyncApply, options: SyncClientOptions) {
     const hubUrl = (options.hubUrl ?? '').trim().replace(/\/+$/, '');
@@ -128,6 +206,21 @@ export class SyncClient {
     this.minPullGapMs = options.minPullGapMs ?? 2_000;
     this.isSessionActive = options.isSessionActive ?? null;
     this.now = options.now ?? Date.now;
+
+    // Advisory socket config. The gate: setting-enabled AND an implementation
+    // exists (Bun's global WebSocket, or an injected test double). No
+    // implementation ⇒ silently HTTP-only — never a construction failure.
+    this.webSocketImpl = options.webSocketImpl
+      ?? ((globalThis as { WebSocket?: unknown }).WebSocket as SyncWebSocketConstructor | undefined)
+      ?? null;
+    this.wsEnabled = (options.wsEnabled ?? true) && this.webSocketImpl !== null;
+    // http→ws / https→wss, same host and port as the HTTP lanes.
+    this.wsUrl = `${this.hubUrl.replace(/^http/i, 'ws')}/v1/sync/ws`;
+    this.wsPingIntervalMs = options.wsPingIntervalMs ?? 40_000;
+    this.wsBackoffBaseMs = options.wsBackoffBaseMs ?? 1_000;
+    this.wsBackoffMaxMs = options.wsBackoffMaxMs ?? 60_000;
+    this.onSocketLiveChange = options.onSocketLiveChange ?? null;
+    this.random = options.random ?? Math.random;
   }
 
   /** Kick an immediate catch-up pull, then run the cadence loop. */
@@ -136,6 +229,16 @@ export class SyncClient {
     this.started = true;
     this.lastActiveAt = this.now(); // boot grace: idle tier, not insta-suspend
     this.schedule(0);
+    // Advisory socket, fully firewalled: a throwing connect path must never
+    // take the pull loop down with it.
+    try {
+      this.connectSocket();
+    } catch (error) {
+      try {
+        logger.debug('SYNC_CLIENT', 'Socket startup failed (advisory; HTTP polling unaffected)', {},
+          error instanceof Error ? error : new Error(String(error)));
+      } catch { /* never propagate */ }
+    }
   }
 
   stop(): void {
@@ -144,6 +247,12 @@ export class SyncClient {
       clearTimeout(this.timer);
       this.timer = null;
     }
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.setSocketLive(false);
+    this.teardownSocket();
   }
 
   /**
@@ -171,15 +280,21 @@ export class SyncClient {
    * Hard deadline — a dead network cannot stall context injection past
    * timeoutMs. Never throws; failure = the caller proceeds with local data.
    * Counts as session activity and resumes a suspended loop.
+   *
+   * `force` (socket paths only — self-heal, reconnect catch-up, advance
+   * frames) bypasses the min-gap skip: those pulls are the correctness net
+   * for a lane that just failed or reconnected, and with the socket live the
+   * poll tier is stretched, so "wait for the next poll" could mean minutes.
+   * Single-flight still holds either way.
    */
-  async pullOnce(options: { timeoutMs?: number } = {}): Promise<void> {
+  async pullOnce(options: { timeoutMs?: number; force?: boolean } = {}): Promise<void> {
     try {
       if (this.stopped) return;
       this.lastActiveAt = this.now();
       const timeoutMs = options.timeoutMs ?? this.requestTimeoutMs;
       const skip =
         this.pulling || // a cycle is already fetching — don't stack a second
-        this.now() - this.lastPullFinishedAt < this.minPullGapMs;
+        (!options.force && this.now() - this.lastPullFinishedAt < this.minPullGapMs);
       if (!skip) {
         await this.pullCycle(this.now() + timeoutMs);
       }
@@ -244,7 +359,9 @@ export class SyncClient {
     if (active) this.lastActiveAt = now;
     let tier: number;
     if (active) {
-      tier = this.activePollMs;
+      // Socket connected ⇒ stretch to the idle tier (plan Phase 4 task 2):
+      // fan-out is the fast path now; polling is only the safety net.
+      tier = this.socketLive ? this.idlePollMs : this.activePollMs;
     } else if (now - this.lastActiveAt < this.suspendAfterMs) {
       tier = this.idlePollMs;
     } else {
@@ -319,6 +436,244 @@ export class SyncClient {
     } finally {
       this.pulling = false;
       this.lastPullFinishedAt = this.now();
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Advisory WebSocket (plan Phase 4 task 2)
+  //
+  // Everything below is disposable: any failure tears the socket down, runs
+  // at most one HTTP pullOnce(), and schedules a jittered reconnect. The HTTP
+  // lanes never depend on any of it.
+  // -------------------------------------------------------------------------
+
+  /** True while the advisory socket is open (test/status introspection). */
+  isSocketLive(): boolean {
+    return this.socketLive;
+  }
+
+  private connectSocket(): void {
+    if (!this.wsEnabled || this.stopped || this.socket || !this.webSocketImpl) return;
+    try {
+      const ws = new this.webSocketImpl(this.wsUrl, {
+        // Bun extension: headers on the constructor (plan Phase 0.3) — the
+        // exact credential trio the HTTP lanes send.
+        headers: {
+          'Authorization': `Bearer ${this.token}`,
+          'X-User-Id': this.userId,
+          'X-Device-Id': this.deviceId,
+        },
+      });
+      this.socket = ws;
+      // Handlers compare against this.socket so events from a torn-down
+      // socket (nulled first in teardownSocket) are inert.
+      ws.onopen = () => this.handleSocketOpen(ws);
+      ws.onmessage = (event) => this.handleSocketMessage(ws, event?.data);
+      ws.onerror = () => { /* the close event always follows; handled there */ };
+      ws.onclose = () => this.handleSocketClose(ws);
+    } catch (error) {
+      // Connect failures are silent-but-logged (advisory — polling continues).
+      this.socket = null;
+      try {
+        logger.debug('SYNC_CLIENT', 'Socket connect failed (advisory; will retry with backoff)', {},
+          error instanceof Error ? error : new Error(String(error)));
+      } catch { /* never propagate */ }
+      this.scheduleReconnect();
+    }
+  }
+
+  private handleSocketOpen(ws: SyncSocketLike): void {
+    if (ws !== this.socket || this.stopped) return;
+    this.wsAttempts = 0;
+    this.setSocketLive(true);
+    // Keepalive: protocol-level ping (Bun ws.ping()); the hub runtime
+    // auto-pongs without waking the DO. Guarded — a ping on a dying socket
+    // must never throw into the timer.
+    const pingTimer = setInterval(() => {
+      try {
+        this.socket?.ping?.();
+      } catch { /* the close handler owns recovery */ }
+    }, this.wsPingIntervalMs);
+    (pingTimer as unknown as { unref?: () => void }).unref?.();
+    this.pingTimer = pingTimer;
+    // Catch up over HTTP once: frames sent while we were disconnected are
+    // gone (advisory lane), so close the gap the moment the fast path is up.
+    void this.pullOnce({ force: true });
+  }
+
+  private handleSocketClose(ws: SyncSocketLike): void {
+    if (ws !== this.socket) return;
+    this.teardownSocket();
+    this.setSocketLive(false); // restores normal poll cadence
+    if (!this.stopped) this.scheduleReconnect();
+  }
+
+  /**
+   * Advisory protocol (plan Phase 4 task 2). op frames contiguous with the
+   * cursor apply through SyncApply (the SAME path as HTTP pulls — the cursor
+   * is never written here); advance frames trigger a pull; EVERYTHING else —
+   * gap, parse error, unknown type, epoch mismatch, apply throw — is an
+   * anomaly: close the socket and run one HTTP pullOnce() (lane-2 self-heal).
+   */
+  private handleSocketMessage(ws: SyncSocketLike, data: unknown): void {
+    if (ws !== this.socket || this.stopped) return;
+    try {
+      if (typeof data !== 'string') {
+        throw new Error('non-text socket frame');
+      }
+      const frame = JSON.parse(data) as {
+        type?: unknown; epoch?: unknown; ops?: unknown; head_seq?: unknown;
+      };
+      // Epoch check FIRST, before any stale/caught-up short-circuit: a
+      // rebuilt hub restarts seqs low, so its frames would otherwise look
+      // "fully stale" here and detection would defer to the (stretched)
+      // poll. A mismatch is an anomaly — the self-heal's HTTP pull runs
+      // handleEpoch, which owns the cursor reset + native-corpus requeue.
+      if (typeof frame.epoch === 'string') {
+        const storedEpoch = this.apply.getEpoch();
+        if (storedEpoch !== null && storedEpoch !== frame.epoch) {
+          throw new Error(`hub epoch changed on the socket (${storedEpoch} -> ${frame.epoch})`);
+        }
+      }
+      if (frame.type === 'op') {
+        this.handleOpFrame(frame);
+        return;
+      }
+      if (frame.type === 'advance') {
+        const head = frame.head_seq;
+        if (typeof head === 'number' && Number.isFinite(head) && head <= this.apply.getCursor()) {
+          return; // already caught up (an HTTP pull raced the frame)
+        }
+        void this.pullOnce({ force: true });
+        return;
+      }
+      throw new Error(`unknown socket frame type: ${String(frame.type)}`);
+    } catch (error) {
+      this.socketSelfHeal('socket frame anomaly', error);
+    }
+  }
+
+  /** Throws on any anomaly — the caller routes that into socketSelfHeal. */
+  private handleOpFrame(frame: { epoch?: unknown; ops?: unknown }): void {
+    const ops = frame.ops;
+    if (!Array.isArray(ops)) {
+      throw new Error('op frame without an ops array');
+    }
+    if (ops.length === 0) return; // vacuous frame — nothing to do
+    const seqs = ops.map((op) => (op as { seq?: unknown }).seq);
+    for (const seq of seqs) {
+      if (typeof seq !== 'number' || !Number.isFinite(seq)) {
+        throw new Error('op frame with a malformed seq');
+      }
+    }
+    for (let i = 1; i < seqs.length; i++) {
+      if ((seqs[i] as number) !== (seqs[i - 1] as number) + 1) {
+        throw new Error('op frame is not internally contiguous');
+      }
+    }
+    const cursor = this.apply.getCursor();
+    const first = seqs[0] as number;
+    const last = seqs[seqs.length - 1] as number;
+    if (last <= cursor) {
+      // Fully-stale frame: an HTTP pull already applied all of it. This is
+      // the normal pull/fan-out race, not an anomaly — applying would be a
+      // pure no-op, so skip without churning the socket.
+      return;
+    }
+    if (first > cursor + 1) {
+      throw new Error(`op frame gap: frame starts at seq ${first}, cursor is ${cursor}`);
+    }
+    // first <= cursor+1 <= last: contiguous with the cursor (any stale prefix
+    // is skipped inside applyOps via its own cursor guard). A rebuilt hub was
+    // already caught by the frame-level epoch check in handleSocketMessage;
+    // passing the epoch through applyOps keeps first-contact adoption and a
+    // last-resort reset identical to the HTTP lane.
+    const result = this.apply.applyOps(ops as SyncOp[], {
+      epoch: typeof frame.epoch === 'string' ? frame.epoch : undefined,
+    });
+    if (result.epochReset) {
+      // Backstop (frame carried no epoch string, or a race): cursor is back
+      // at 0 and the frame was discarded — re-bootstrap over HTTP.
+      throw new Error('hub epoch changed mid-socket');
+    }
+  }
+
+  /** Close the socket, pull once over HTTP, reconnect with backoff. */
+  private socketSelfHeal(context: string, error: unknown): void {
+    try {
+      try {
+        logger.debug('SYNC_CLIENT', `Advisory socket self-heal (${context}): closing socket, catching up over HTTP`, {},
+          error instanceof Error ? error : new Error(String(error)));
+      } catch { /* logging must never block the heal */ }
+      this.teardownSocket();
+      this.setSocketLive(false);
+      if (!this.stopped) {
+        void this.pullOnce({ force: true }); // the lane-2 self-heal — HTTP is the truth
+        this.scheduleReconnect();
+      }
+    } catch { /* advisory: never propagate */ }
+  }
+
+  /** Full-jitter backoff: delay = random(0, min(cap, base·2^attempt)). */
+  private scheduleReconnect(): void {
+    if (!this.wsEnabled || this.stopped || this.reconnectTimer || this.socket) return;
+    const exp = Math.min(this.wsAttempts, 30); // clamp 2^n against overflow
+    const ceiling = Math.min(this.wsBackoffMaxMs, this.wsBackoffBaseMs * 2 ** exp);
+    const delay = this.random() * ceiling;
+    this.wsAttempts++;
+    const timer = setTimeout(() => {
+      this.reconnectTimer = null;
+      try {
+        this.connectSocket();
+      } catch { /* connectSocket guards itself; belt only */ }
+    }, delay);
+    (timer as unknown as { unref?: () => void }).unref?.();
+    this.reconnectTimer = timer;
+  }
+
+  private teardownSocket(): void {
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+    const ws = this.socket;
+    this.socket = null; // null FIRST: our own close() event must be inert
+    if (!ws) return;
+    ws.onopen = null;
+    ws.onmessage = null;
+    ws.onclose = null;
+    ws.onerror = null;
+    try {
+      ws.close();
+    } catch {
+      try {
+        ws.terminate?.();
+      } catch { /* already dead — exactly what we wanted */ }
+    }
+  }
+
+  /**
+   * Liveness transitions: notify CloudSync (fast-debounce coupling) and
+   * re-schedule a pending poll timer onto the new cadence — connect stretches
+   * an active 30 s tick out to the idle tier; disconnect restores it.
+   */
+  private setSocketLive(live: boolean): void {
+    if (this.socketLive === live) return;
+    this.socketLive = live;
+    if (this.onSocketLiveChange) {
+      try {
+        this.onSocketLiveChange(live);
+      } catch (error) {
+        try {
+          logger.debug('SYNC_CLIENT', 'onSocketLiveChange listener threw (ignored)', {},
+            error instanceof Error ? error : new Error(String(error)));
+        } catch { /* never propagate */ }
+      }
+    }
+    if (this.started && !this.stopped && this.timer !== null) {
+      const delay = this.currentDelay();
+      if (delay !== null) this.schedule(delay);
+      // delay === null ⇒ suspended; leave suspension to its existing owners.
     }
   }
 

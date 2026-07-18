@@ -7,7 +7,8 @@
 		"deploy": "wrangler deploy",
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
-		"test": "vitest run",
+		"test": "vitest run --exclude \"test/ws.test.ts\"",
+		"test:ws": "vitest run --maxWorkers=1 --no-isolate test/ws.test.ts",
 		"lint": "eslint .",
 		"cf-typegen": "wrangler types --strict-vars=false"
 	},

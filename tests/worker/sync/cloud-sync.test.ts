@@ -330,6 +330,35 @@ describe('CloudSync', () => {
     expect(pendingCount('observations')).toBe(0);
   });
 
+  it('setFastDebounce(true) drops notify() to the fast tier; false restores the slow one (plan Phase 4 task 3)', async () => {
+    seedObservation();
+
+    const { impl, calls } = makeFetchMock();
+    // Slow tier deliberately huge so ONLY the fast tier can flush in-test.
+    const sync = makeCloudSync(impl, {}, { debounceMs: 60_000, fastDebounceMs: 10 });
+
+    // Slow tier: a notify() burst must NOT flush within the test window.
+    sync.notify();
+    await sleep(120);
+    expect(calls.length).toBe(0);
+
+    // Socket goes live → fast tier: the same nudge flushes almost at once.
+    sync.setFastDebounce(true);
+    sync.notify();
+    await sleep(120);
+    expect(calls.length).toBe(1);
+    expect(pendingCount('observations')).toBe(0);
+
+    // Socket drops → slow tier again.
+    sync.setFastDebounce(false);
+    seedObservation({ title: 'second row' });
+    sync.notify();
+    await sleep(120);
+    expect(calls.length).toBe(1); // still pending — back on the 60 s debounce
+    expect(pendingCount('observations')).toBe(1);
+    sync.stop();
+  });
+
   it('loops 200-row pages until fully drained and stamps every batch', async () => {
     for (let i = 0; i < 450; i++) seedObservation({ title: `obs ${i}` });
 

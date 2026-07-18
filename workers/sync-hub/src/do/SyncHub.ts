@@ -2,12 +2,22 @@
  * SyncHub — one SQLite-backed Durable Object per user, holding that user's
  * ordered op log (Phase 1 of the two-lane sync plan).
  *
- * Contract (plan Phase 1, tasks 3-7):
+ * Contract (plan Phase 1, tasks 3-7; Phase 4 task 1):
  *   - ops table: append-only log with a monotonic `seq` cursor; the
  *     `ops_entity` unique index makes pushes idempotent (duplicate push of the
  *     same (origin_device, kind, origin_id, rev) returns the existing seq).
- *   - RPC only — the front Worker calls pushOps/getChanges/getStatus on the
- *     stub. No HTTP handler here; nothing durable rides anything else.
+ *   - RPC for everything durable — the front Worker calls
+ *     pushOps/getChanges/getStatus on the stub. The ONE non-RPC path is the
+ *     WebSocket upgrade (Phase 4): the HTTP handler below serves ONLY valid
+ *     upgrade requests and answers 426 to anything else. Nothing durable
+ *     rides the socket (prime directive #2) — frames are advisory hints; the
+ *     HTTP cursor lanes remain the sole source of truth, and deleting the
+ *     socket path entirely leaves Phase 3 behavior intact.
+ *   - Hibernating WS API only (anti-pattern #1): ctx.acceptWebSocket + the
+ *     class handler methods below — never the legacy per-socket API.
+ *     ctx.getWebSockets() IS the socket registry (anti-pattern #5: no
+ *     in-memory maps — they die on hibernation); attachments carry keys only
+ *     (device_id, 16 KB max), never state.
  *   - NO outbound I/O of any kind from this class (anti-pattern #3): token
  *     verification and every upstream call live in the stateless front Worker.
  *   - No JS timers (anti-pattern #2): the only scheduling primitive is the
@@ -35,6 +45,17 @@ const MAX_BODY_BYTES = 1_990_000;
 
 /** Page cap for getChanges (plan Phase 1 task 4). */
 const MAX_PAGE = 500;
+
+/**
+ * Advisory fan-out thresholds (plan Phase 4 task 1). A committed push whose
+ * new ops exceed either bound is announced as a bare
+ * `{type:'advance', head_seq}` instead of an op frame — replicas then pull
+ * the pages over HTTP (frame size discipline: never serialize unbounded data
+ * onto a socket; per-op bodies are already capped at MAX_BODY_BYTES but a
+ * multi-op frame needs a total budget too).
+ */
+const ADVANCE_MAX_OPS = 100;
+const ADVANCE_MAX_FRAME_BYTES = 262_144; // 256 KiB serialized frame budget
 
 /**
  * SQLite in Durable Objects allows at most 100 bound parameters per statement.
@@ -224,6 +245,11 @@ function validateMutationBody(body: string, index: number): void {
 export class SyncHub extends DurableObject<Env> {
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
+		// App-level keepalive for future browser clients (browsers cannot send
+		// protocol-level pings): answered by the runtime without waking a
+		// hibernated DO. Protocol-level pings (what the Bun client sends) are
+		// auto-ponged by the runtime with no configuration at all.
+		ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
 		// Schema init before any request is delivered (plan Phase 0.1 SQL row).
 		ctx.blockConcurrencyWhile(async () => {
 			// NOTE: no content may trail the final semicolon (workerd's
@@ -262,6 +288,153 @@ export class SyncHub extends DurableObject<Env> {
 		});
 	}
 
+	// -----------------------------------------------------------------------
+	// Advisory WebSocket (plan Phase 4 task 1) — the ONE non-RPC path
+	// -----------------------------------------------------------------------
+
+	/**
+	 * WebSocket upgrade handler (hibernation example shape, Phase 0.1 WS row).
+	 * Accepts ONLY valid upgrade requests — anything else is 426. The front
+	 * Worker has already authenticated the request and bound the canonical
+	 * user id to this DO; the device id rides the same X-Device-Id header the
+	 * HTTP lanes use and is stored as the socket's attachment (keys only —
+	 * 16 KB max — never state).
+	 */
+	async fetch(request: Request): Promise<Response> {
+		const upgradeHeader = request.headers.get("Upgrade");
+		if (!upgradeHeader || upgradeHeader !== "websocket") {
+			return new Response("SyncHub expected Upgrade: websocket", { status: 426 });
+		}
+		// Same trim semantics as the front Worker: "dev-a " and "dev-a" are one
+		// device (a forked spelling would defeat the origin-exclusion below).
+		const deviceId = (request.headers.get("X-Device-Id") ?? "").trim();
+		if (deviceId.length === 0) {
+			return new Response("missing X-Device-Id header", { status: 400 });
+		}
+
+		const webSocketPair = new WebSocketPair();
+		const [client, server] = Object.values(webSocketPair);
+
+		// acceptWebSocket (NOT the legacy per-socket API) marks the socket
+		// hibernatable: the runtime may evict this DO while the connection
+		// stays open, recreating it (constructor + attachment) on activity.
+		this.ctx.acceptWebSocket(server);
+		server.serializeAttachment({ device_id: deviceId });
+
+		return new Response(null, { status: 101, webSocket: client });
+	}
+
+	/**
+	 * The advisory lane is downstream-only: incoming messages are ignored
+	 * (app-level "ping" never reaches here — setWebSocketAutoResponse answers
+	 * it without waking the DO; anything else a client sends is a no-op —
+	 * remember incoming messages bill 20:1 while outgoing frames are free).
+	 */
+	webSocketMessage(_ws: WebSocket, _message: ArrayBuffer | string): void {
+		// Deliberately empty — nothing durable ever rides the socket.
+	}
+
+	webSocketClose(_ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): void {
+		// Nothing to clean up: getWebSockets() is the registry and drops closed
+		// sockets itself, and the runtime auto-replies to Close frames on this
+		// compatibility date. Attachments die with the socket.
+	}
+
+	webSocketError(_ws: WebSocket, _error: unknown): void {
+		// Advisory socket: an errored peer simply stops receiving hints; the
+		// HTTP lanes are unaffected.
+	}
+
+	/**
+	 * Fan out a committed push to every hibernating/live socket EXCEPT the
+	 * origin device (plan Phase 4 task 1). One frame per socket per push —
+	 * this per-push-call batching IS the coalescing (timers are banned in the
+	 * DO, and a push already batches the burst client-side). Big pushes fall
+	 * back to a bare advance frame (thresholds above). Every send is guarded:
+	 * a dead socket must NEVER fail the push — the push is durable, the
+	 * socket is advisory, and this method swallows everything.
+	 */
+	private fanOutCommitted(originDeviceId: string, headBefore: number): void {
+		try {
+			const sockets = this.ctx.getWebSockets();
+			if (sockets.length === 0) return;
+
+			const sql = this.ctx.storage.sql;
+			// Gate BEFORE materializing anything (anti-pattern #6: never buffer
+			// unbounded data in the 128 MB isolate). A push can legally carry
+			// multiple ~2 MB bodies; pulling those into JS just to discover the
+			// frame is oversized would be a remotely triggerable OOM — so count
+			// and size the range in SQL first, and only SELECT the rows when
+			// both gates pass.
+			const stats = sql
+				.exec<{ n: number; body_len: number }>(
+					"SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(body)), 0) AS body_len FROM ops WHERE seq > ?",
+					headBefore,
+				)
+				.one();
+			if (stats.n === 0) return; // pure replay — replicas already have it
+
+			const epoch = sql
+				.exec<{ v: string }>("SELECT v FROM meta WHERE k = 'epoch'")
+				.one().v;
+			const head = this.headSeq();
+
+			let frame: string;
+			if (stats.n > ADVANCE_MAX_OPS || stats.body_len > ADVANCE_MAX_FRAME_BYTES) {
+				frame = JSON.stringify({ type: "advance", epoch, head_seq: head });
+			} else {
+				const ops = sql
+					.exec<{
+						seq: number;
+						kind: string;
+						origin_device: string;
+						origin_id: string;
+						rev: number;
+						body: string;
+						server_ts: number;
+					}>(
+						`SELECT seq, kind, origin_device, origin_id, rev, body, server_ts
+						 FROM ops WHERE seq > ? ORDER BY seq`,
+						headBefore,
+					)
+					.toArray() as ChangeOp[]; // consumed synchronously — never across an await
+				frame = JSON.stringify({ type: "op", epoch, ops });
+				if (frame.length > ADVANCE_MAX_FRAME_BYTES) {
+					// Backstop: per-op envelope overhead / JSON escaping pushed a
+					// bodies-under-budget range over the line.
+					frame = JSON.stringify({ type: "advance", epoch, head_seq: head });
+				}
+			}
+
+			for (const ws of sockets) {
+				let deviceId: string | null = null;
+				try {
+					const attachment = ws.deserializeAttachment() as
+						| { device_id?: unknown }
+						| null;
+					deviceId =
+						attachment && typeof attachment.device_id === "string"
+							? attachment.device_id
+							: null;
+				} catch {
+					deviceId = null; // unreadable attachment — still worth a hint
+				}
+				if (deviceId !== null && deviceId === originDeviceId) continue;
+				try {
+					ws.send(frame);
+				} catch {
+					// Dead/half-closed socket: the hint is lost, the log is not —
+					// the replica's HTTP poll (lane 1) still converges it.
+				}
+			}
+		} catch (e) {
+			// The advisory lane must never surface a failure into pushOps — but
+			// a systemic fan-out bug silently disabling the whole speed layer
+			// must at least be visible in the DO logs.
+			console.error("sync-hub fan-out failed (advisory; push unaffected):", e);
+		}
+	}
+
 	/**
 	 * Append a batch of ops for one device. Idempotent: re-pushing an op whose
 	 * (origin_device, kind, origin_id, rev) already exists returns the
@@ -292,6 +465,10 @@ export class SyncHub extends DurableObject<Env> {
 		const sql = this.ctx.storage.sql;
 		const now = Date.now();
 		const acked: AckedOp[] = [];
+		// Fan-out baseline: everything with seq beyond this is what THIS push
+		// committed (the DO is single-threaded and this method never awaits,
+		// so no other push can interleave between here and the send below).
+		const headBefore = this.headSeq();
 
 		this.ctx.storage.transactionSync(() => {
 			sql.exec(
@@ -328,6 +505,10 @@ export class SyncHub extends DurableObject<Env> {
 				}
 			}
 		});
+
+		// Advisory speed layer, AFTER the commit (a frame must never describe
+		// uncommitted state) and fully non-fatal (guarded inside).
+		this.fanOutCommitted(deviceId, headBefore);
 
 		return { acked, head_seq: this.headSeq() };
 	}

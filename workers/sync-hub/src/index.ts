@@ -17,6 +17,11 @@
  *   POST /v1/sync/ops      — push a batch of ops
  *   GET  /v1/sync/changes  — cursor read (?since=<seq>&limit=<n≤500>)
  *   GET  /v1/sync/status   — hub status for this user
+ *   GET  /v1/sync/ws       — advisory WebSocket upgrade (Phase 4): the ONE
+ *                            path forwarded via stub.fetch(request). Same
+ *                            authentication (canonical-userId binding) as
+ *                            every other route; the socket itself carries
+ *                            nothing durable — it is a downstream hint lane.
  */
 
 import type { PushOp } from "./do/SyncHub";
@@ -304,13 +309,29 @@ export default {
 		if (
 			pathname !== "/v1/sync/ops" &&
 			pathname !== "/v1/sync/changes" &&
-			pathname !== "/v1/sync/status"
+			pathname !== "/v1/sync/status" &&
+			pathname !== "/v1/sync/ws"
 		) {
 			return errorResponse(404, "not found");
 		}
 
 		const auth = await authenticate(request, env);
 		if (!auth.ok) return auth.response;
+
+		if (pathname === "/v1/sync/ws") {
+			// Advisory WebSocket upgrade (plan Phase 4 task 1) — the ONE path
+			// that reaches the DO via stub.fetch(). Shape copied from the
+			// hibernation example (Phase 0.1 WS row): Upgrade-header check in
+			// front, 426 otherwise; the DO re-checks and performs the accept.
+			if (request.method !== "GET") return errorResponse(405, "use GET");
+			if (!auth.deviceId) return errorResponse(400, "missing X-Device-Id header");
+			const upgradeHeader = request.headers.get("Upgrade");
+			if (!upgradeHeader || upgradeHeader !== "websocket") {
+				return errorResponse(426, "expected Upgrade: websocket");
+			}
+			const stub = env.SYNC_HUB.getByName(auth.userId);
+			return stub.fetch(request);
+		}
 
 		if (pathname === "/v1/sync/ops") {
 			if (request.method !== "POST") return errorResponse(405, "use POST");
