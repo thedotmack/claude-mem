@@ -1,4 +1,10 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
+
+// Capture real exports before mock.module mutates the live namespace, then
+// re-register the snapshot in afterAll so this mock does not leak into later
+// test files (bun's mock.module is process-global; mock.restore() does NOT undo it).
+import * as realModeManagerModule from '../../../src/services/domain/ModeManager.js';
+const realModeManagerSnapshot = { ...realModeManagerModule };
 
 mock.module('../../../src/services/domain/ModeManager.js', () => ({
   ModeManager: {
@@ -25,6 +31,10 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
     }),
   },
 }));
+
+afterAll(() => {
+  mock.module('../../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
+});
 
 import {
   renderAgentHeader,

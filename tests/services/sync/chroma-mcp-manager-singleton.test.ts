@@ -13,11 +13,15 @@ import * as realPaths from '../../../src/shared/paths.js';
 import * as realLogger from '../../../src/utils/logger.js';
 import * as realSupervisor from '../../../src/supervisor/index.ts';
 import * as realEnvSanitizer from '../../../src/supervisor/env-sanitizer.js';
+import * as realMcpStdio from '@modelcontextprotocol/sdk/client/stdio.js';
+import * as realMcpClient from '@modelcontextprotocol/sdk/client/index.js';
 const realSettingsSnapshot = { ...realSettingsDefaultsManager };
 const realPathsSnapshot = { ...realPaths };
 const realLoggerSnapshot = { ...realLogger };
 const realSupervisorSnapshot = { ...realSupervisor };
 const realEnvSanitizerSnapshot = { ...realEnvSanitizer };
+const realMcpStdioSnapshot = { ...realMcpStdio };
+const realMcpClientSnapshot = { ...realMcpClient };
 const realChildProcess = require('node:child_process');
 const realProcessPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 const originalPrewarmTimeout = process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS;
@@ -293,6 +297,8 @@ afterAll(() => {
   mock.module('../../../src/utils/logger.js', () => realLoggerSnapshot);
   mock.module('../../../src/supervisor/index.ts', () => realSupervisorSnapshot);
   mock.module('../../../src/supervisor/env-sanitizer.js', () => realEnvSanitizerSnapshot);
+  mock.module('@modelcontextprotocol/sdk/client/stdio.js', () => realMcpStdioSnapshot);
+  mock.module('@modelcontextprotocol/sdk/client/index.js', () => realMcpClientSnapshot);
   mock.module('child_process', () => realChildProcess);
   for (const root of tempRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
