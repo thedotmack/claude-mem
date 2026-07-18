@@ -109,6 +109,7 @@ export class SessionStore {
     this.ensurePendingMessagesSessionToolUniqueIndex();
     this.ensureSyncedAtColumns(options.cloudSyncStatePath ?? paths.cloudSyncState());
     this.requeuePromptCloudSyncAfterMapperFix();
+    this.ensureSyncOriginColumns();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -499,6 +500,56 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(40, new Date().toISOString());
   }
 
+  /**
+   * Two-lane sync origins (version 41): every synced table learns where a row
+   * came from. Native rows keep the origin columns NULL (NULL = this device);
+   * rows applied from the sync hub carry the origin device's id and that
+   * device's local rowid, and the partial unique index makes re-applying the
+   * same remote op an upsert instead of a duplicate (kind is implicit per
+   * table, so the index needs only the device/local pair). `sync_rev` is the
+   * entity revision used by the mutation-op rev guard (SyncApply); it starts
+   * at 1 for every existing and native row. `sync_state` is the pull cursor
+   * store (`cursor`, `epoch`) — advanced inside the same transaction as row
+   * application for crash-safe exactly-once (see SyncApply.applyOps).
+   *
+   * Same shape as ensureSyncedAtColumns: the PRAGMA checks are the real
+   * guard; version 41 is recorded for bookkeeping only.
+   */
+  private ensureSyncOriginColumns(): void {
+    for (const table of ['observations', 'session_summaries', 'user_prompts']) {
+      const tableInfo = this.db.query(`PRAGMA table_info(${table})`).all() as TableColumnInfo[];
+      const columnNames = new Set(tableInfo.map(col => col.name));
+
+      if (!columnNames.has('origin_device_id')) {
+        this.db.run(`ALTER TABLE ${table} ADD COLUMN origin_device_id TEXT`);
+        logger.debug('DB', `Added origin_device_id column to ${table} table`);
+      }
+      if (!columnNames.has('origin_local_id')) {
+        this.db.run(`ALTER TABLE ${table} ADD COLUMN origin_local_id TEXT`);
+        logger.debug('DB', `Added origin_local_id column to ${table} table`);
+      }
+      if (!columnNames.has('sync_rev')) {
+        this.db.run(`ALTER TABLE ${table} ADD COLUMN sync_rev INTEGER NOT NULL DEFAULT 1`);
+        logger.debug('DB', `Added sync_rev column to ${table} table`);
+      }
+
+      this.db.run(`
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_${table}_origin
+        ON ${table}(origin_device_id, origin_local_id)
+        WHERE origin_device_id IS NOT NULL
+      `);
+    }
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS sync_state (
+        k TEXT PRIMARY KEY,
+        v TEXT
+      )
+    `);
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(41, new Date().toISOString());
+  }
+
   // Rows the standalone cloud-sync client already uploaded (its cursors live in
   // cloud-sync-state.json) are stamped so they are not re-uploaded. The state
   // file is left in place — device-id adoption still reads it.
@@ -678,7 +729,13 @@ export class SessionStore {
 
   private removeSessionSummariesUniqueConstraint(): void {
     const summariesIndexes = this.db.query('PRAGMA index_list(session_summaries)').all() as IndexInfo[];
-    const hasUniqueConstraint = summariesIndexes.some(idx => idx.unique === 1 && idx.origin !== 'pk');
+    // Only table-level UNIQUE constraints (PRAGMA origin 'u' — the v7 target,
+    // `memory_session_id TEXT UNIQUE`) require the rebuild; they cannot be
+    // dropped any other way. Explicitly created unique indexes (origin 'c',
+    // e.g. v41's ux_session_summaries_origin) were never this migration's
+    // concern — matching them here would retrigger the rebuild on every boot
+    // and silently drop every post-v7 column.
+    const hasUniqueConstraint = summariesIndexes.some(idx => idx.unique === 1 && idx.origin === 'u');
 
     if (!hasUniqueConstraint) {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(7, new Date().toISOString());

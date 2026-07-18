@@ -460,6 +460,53 @@ describe('SessionStore migrations', () => {
     }
   });
 
+  it('v41 unique origin index does not retrigger the v7 session_summaries rebuild (which would destroy sync metadata)', () => {
+    // Regression guard for the v7 predicate (removeSessionSummariesUniqueConstraint):
+    // it must only match table-level UNIQUE constraints (PRAGMA origin 'u'),
+    // never explicitly created unique indexes (origin 'c') like v41's
+    // ux_session_summaries_origin. With the old `origin !== 'pk'` predicate,
+    // every constructor run after v41 rebuilt session_summaries with the
+    // v7-era column list, silently NULLing synced_at / origin_device_id /
+    // origin_local_id and resetting sync_rev — this test fails loudly if
+    // anyone reverts the predicate.
+    const db = new Database(':memory:');
+    try {
+      const missingStatePath = '/nonexistent/claude-mem-cloud-sync-state.json';
+      new SessionStore(db, { cloudSyncStatePath: missingStatePath });
+
+      db.prepare(`
+        INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+        VALUES ('content-v7', 'mem-v7', 'proj-v7', ?, 1751234567000, 'active')
+      `).run(new Date().toISOString());
+      db.prepare(`
+        INSERT INTO session_summaries
+          (memory_session_id, project, request, created_at, created_at_epoch,
+           synced_at, origin_device_id, origin_local_id, sync_rev)
+        VALUES ('mem-v7', 'proj-v7', 'req', ?, 1751234567890, 123456, 'device-a', '7', 2)
+      `).run(new Date().toISOString());
+
+      // A second construction over the fully migrated DB must be a no-op for
+      // session_summaries.
+      new SessionStore(db, { cloudSyncStatePath: missingStatePath });
+
+      const row = db.prepare(`
+        SELECT synced_at, origin_device_id, origin_local_id, sync_rev
+        FROM session_summaries WHERE memory_session_id = 'mem-v7'
+      `).get() as { synced_at: number | null; origin_device_id: string | null; origin_local_id: string | null; sync_rev: number };
+      expect(row.synced_at).toBe(123456);
+      expect(row.origin_device_id).toBe('device-a');
+      expect(row.origin_local_id).toBe('7');
+      expect(row.sync_rev).toBe(2);
+
+      const index = db.prepare(`
+        SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'ux_session_summaries_origin'
+      `).get() as { name: string } | undefined;
+      expect(index?.name).toBe('ux_session_summaries_origin');
+    } finally {
+      db.close();
+    }
+  });
+
   it('is idempotent: constructing twice over the same db does not throw and leaves data unchanged', () => {
     const db = new Database(':memory:');
     try {
