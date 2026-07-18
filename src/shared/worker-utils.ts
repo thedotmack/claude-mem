@@ -143,6 +143,21 @@ export function getWorkerHost(): string {
   return cachedHost;
 }
 
+/**
+ * Base URL for the live-view UI as printed to users. Prefers an explicit public
+ * URL (env `CLAUDE_MEM_PUBLIC_URL`, else the settings value) — the
+ * browser-reachable alias when the worker runs in a remote sandbox behind a
+ * port-forward — and falls back to loopback on the given port. Empty/unset
+ * preserves the historical `http://localhost:<port>` output for local users.
+ */
+export function getViewerBaseUrl(port: number | string): string {
+  const pub = process.env.CLAUDE_MEM_PUBLIC_URL ?? getWorkerSettings().CLAUDE_MEM_PUBLIC_URL;
+  if (pub && pub.trim()) {
+    return pub.trim().replace(/\/+$/, '');
+  }
+  return `http://localhost:${port}`;
+}
+
 export function getWorkerApiRequestTimeoutMs(): number {
   if (cachedApiRequestTimeoutMs !== null) {
     return cachedApiRequestTimeoutMs;

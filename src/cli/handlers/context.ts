@@ -9,6 +9,7 @@ import {
   executeWithWorkerFallback,
   isWorkerFallback,
   getWorkerPort,
+  getViewerBaseUrl,
 } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
@@ -141,7 +142,7 @@ export const contextHandler: EventHandler = {
     const displayContent = coloredTimeline || (platform === 'antigravity-cli' ? additionalContext : '');
 
     const systemMessage = showTerminalOutput && displayContent
-      ? `${displayContent}\n\nView Observations Live @ http://localhost:${port}`
+      ? `${displayContent}\n\nView Observations Live @ ${getViewerBaseUrl(port)}`
       : undefined;
 
     return {
