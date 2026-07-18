@@ -26,7 +26,12 @@ mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
 }));
 
 mock.module('../../../src/shared/hook-settings.js', () => ({
-  loadFromFileOnce: () => ({ CLAUDE_MEM_EXCLUDED_PROJECTS: '' }),
+  // ENDLESS_MODE pinned off so workerCallLog sees only the summarize POST;
+  // render-on-Stop coverage lives in summarize-render-on-stop.test.ts.
+  loadFromFileOnce: () => ({
+    CLAUDE_MEM_EXCLUDED_PROJECTS: '',
+    CLAUDE_MEM_ENDLESS_MODE_ENABLED: 'false',
+  }),
 }));
 
 let mockExtractedMessage: string = '';

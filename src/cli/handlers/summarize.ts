@@ -8,6 +8,7 @@ import { logger } from '../../utils/logger.js';
 import { extractLastMessage } from '../../shared/transcript-parser.js';
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
@@ -146,6 +147,30 @@ export const summarizeHandler: EventHandler = {
     );
     if (isWorkerFallback(queueResult)) {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
+    // Endless Mode render-on-Stop (spec §5.4): refresh the bottle after each
+    // summarize. Queue-and-return (no `wait`) — the worker renders async; the
+    // result is deliberately unused and a fallback is fine. Awaited because
+    // un-awaited POSTs die at process.exit (hook contract).
+    if (
+      input.platform === 'claude-code' &&
+      loadFromFileOnce().CLAUDE_MEM_ENDLESS_MODE_ENABLED !== 'false'
+    ) {
+      try {
+        await executeWithWorkerFallback(
+          '/api/sessions/render-bottle',
+          'POST',
+          { contentSessionId: sessionId, transcript_path: transcriptPath, cwd: input.cwd },
+          { timeoutMs: 5000 },
+        );
+      } catch (error: unknown) {
+        // fetch timeouts THROW (executeWithWorkerFallback only brands 429/5xx);
+        // best-effort render must never affect the Stop hook's result.
+        logger.warn('HOOK', 'render-bottle call failed; ignoring', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
 
     logger.debug('HOOK', 'Summary request queued, exiting hook');
