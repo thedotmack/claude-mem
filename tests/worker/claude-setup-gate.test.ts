@@ -102,6 +102,7 @@ describe('Claude setup-required generator gate', () => {
           finalizerCalls += 1;
         },
       } as any,
+      {} as any,
     );
 
     await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
