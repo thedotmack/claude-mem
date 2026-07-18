@@ -55,6 +55,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_TIER_SUMMARY_MODEL: string;
   CLAUDE_MEM_TIER_FAST_MODEL: string;        // #2289 — resolved by $TIER:fast in CLAUDE_MEM_MODEL
   CLAUDE_MEM_TIER_SMART_MODEL: string;       // #2289 — resolved by $TIER:smart in CLAUDE_MEM_MODEL
+  CLAUDE_MEM_ENDLESS_MODE_ENABLED: string;
   CLAUDE_MEM_CHROMA_ENABLED: string;   
   CLAUDE_MEM_CHROMA_MODE: string;      
   CLAUDE_MEM_CHROMA_HOST: string;
@@ -146,6 +147,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TIER_SUMMARY_MODEL: '',                // Empty = use default model for summaries
     CLAUDE_MEM_TIER_FAST_MODEL: 'haiku',              // #2289 — $TIER:fast resolves here (portable alias)
     CLAUDE_MEM_TIER_SMART_MODEL: 'sonnet',            // #2289 — $TIER:smart resolves here (portable alias)
+    CLAUDE_MEM_ENDLESS_MODE_ENABLED: 'true',          // Endless Mode — bottle handover on compact/resume ('false' disables)
     CLAUDE_MEM_CHROMA_ENABLED: 'true',         // Set to 'false' to disable Chroma and use SQLite-only search
     CLAUDE_MEM_CHROMA_MODE: 'local',           // 'local' uses persistent chroma-mcp via uvx, 'remote' connects to existing server
     CLAUDE_MEM_CHROMA_HOST: '127.0.0.1',

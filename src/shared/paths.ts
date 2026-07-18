@@ -49,6 +49,9 @@ export const OBSERVER_SESSIONS_DIR = join(DATA_DIR, 'observer-sessions');
 
 export const OBSERVER_SESSIONS_PROJECT = basename(OBSERVER_SESSIONS_DIR);
 
+export const BOTTLES_DIR = join(DATA_DIR, 'bottles');
+export const BOTTLES_ARCHIVE_DIR = join(BOTTLES_DIR, 'archive');
+
 export function ensureDir(dirPath: string): void {
   mkdirSync(dirPath, { recursive: true });
 }
