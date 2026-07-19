@@ -331,6 +331,15 @@ export class CloudSync {
    * remote ops triggers a pull without waiting for the poll timer.
    */
   private headSeqListener: ((headSeq: number) => void) | null = null;
+  /**
+   * X-Sync-Mode piggyback (plan Phase 5 task 2 — the kill switch): while the
+   * hub's kill switch is tripped, EVERY HTTP sync response carries
+   * `X-Sync-Mode: poll`. Pushes are CloudSync's fetches, so this listener
+   * (wired to SyncClient.onSyncModeHint, same thin-callback shape as
+   * head_seq) is how the push surface reports the mode — 'poll' drops the
+   * advisory socket; the header disappearing restores it.
+   */
+  private syncModeListener: ((mode: string | null) => void) | null = null;
 
   constructor(db: Database, settings: CloudSyncSettingKeys, options: CloudSyncOptions = {}) {
     this.db = db;
@@ -370,6 +379,18 @@ export class CloudSync {
   /** SyncClient wiring: called with head_seq after every successful push. */
   setHeadSeqListener(listener: ((headSeq: number) => void) | null): void {
     this.headSeqListener = listener;
+  }
+
+  /**
+   * SyncClient wiring (plan Phase 5 task 2): called with the raw
+   * `X-Sync-Mode` header value. A present header is reported from ANY
+   * response status; null ("cleared") is reported only from OK responses —
+   * header absence on an error response is ambiguous and suppressed at
+   * this source (SyncClient.onSyncModeHint contract). Never called on
+   * network failure (no response, no signal).
+   */
+  setSyncModeListener(listener: ((mode: string | null) => void) | null): void {
+    this.syncModeListener = listener;
   }
 
   /**
@@ -656,6 +677,18 @@ export class CloudSync {
       body: JSON.stringify({ ops }),
       signal: AbortSignal.timeout(this.requestTimeoutMs),
     });
+    // Mode hint BEFORE the ok-check: the kill-switch header rides error
+    // responses too, and a client that only learned the mode from happy
+    // paths would keep hammering the socket through an incident.
+    // Asymmetric on purpose (SyncClient.onSyncModeHint contract): header
+    // PRESENCE is emitted regardless of status; header ABSENCE is only
+    // emitted (as null = "cleared") from an OK response — absence on an
+    // error response is ambiguous (a degraded auth upstream 503s without
+    // the funnel) and must not read as "switch cleared".
+    const syncMode = res.headers.get('X-Sync-Mode');
+    if (syncMode !== null || res.ok) {
+      this.emitSyncMode(syncMode);
+    }
     if (!res.ok) {
       const body = (await res.text().catch(() => '')).slice(0, 200);
       throw new Error(`sync hub push ${res.status}: ${body}`);
@@ -708,6 +741,17 @@ export class CloudSync {
       this.headSeqListener(headSeq);
     } catch (error) {
       logger.debug('CLOUD_SYNC', 'head_seq listener threw (ignored)', {},
+        error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  /** Never let a listener failure fail the push. */
+  private emitSyncMode(mode: string | null): void {
+    if (!this.syncModeListener) return;
+    try {
+      this.syncModeListener(mode);
+    } catch (error) {
+      logger.debug('CLOUD_SYNC', 'sync-mode listener threw (ignored)', {},
         error instanceof Error ? error : new Error(String(error)));
     }
   }

@@ -3,3 +3,8 @@
 # Skip upstream token verification locally (any bearer token accepted).
 # NEVER set this in production — wrangler.jsonc ships it empty.
 DEV_ALLOW_ANY_TOKEN=true
+
+# Per-request kill-switch reads so local flag flips (wrangler kv key
+# put/delete --local) are visible immediately — required by
+# scripts/sync-kill-switch-e2e.ts. Production uses the 30 s default.
+KILL_SWITCH_CACHE_MS=0

@@ -869,4 +869,100 @@ describe('CloudSync', () => {
       expect(existsSync(settingsPath)).toBe(false);
     });
   });
+
+  describe('sync-mode piggyback (kill switch, plan Phase 5 task 2)', () => {
+    /** Hub that acks properly AND stamps X-Sync-Mode when `mode` is set. */
+    function makeModeFetch(mode: string | null) {
+      let seq = 0;
+      const impl = (async (_input: any, init?: any) => {
+        const parsed = JSON.parse(String(init?.body ?? '{}'));
+        const acked = (parsed.ops ?? []).map((op: any) => ({
+          kind: op.kind,
+          origin_id: op.origin_id,
+          rev: op.rev ?? 1,
+          seq: ++seq,
+        }));
+        const headers: Record<string, string> = {};
+        if (mode !== null) headers['X-Sync-Mode'] = mode;
+        return new Response(JSON.stringify({ acked, head_seq: seq }), { status: 200, headers });
+      }) as typeof fetch;
+      return impl;
+    }
+
+    it("surfaces 'poll' to the sync-mode listener when the hub stamps the header (push still fully works)", async () => {
+      seedObservation();
+      const modes: Array<string | null> = [];
+      const sync = makeCloudSync(makeModeFetch('poll'));
+      sync.setSyncModeListener((mode) => modes.push(mode));
+
+      await sync.flush();
+
+      expect(modes).toEqual(['poll']);
+      // The structural guarantee: a tripped kill switch never blocks the
+      // durable push lane — the row was acked and stamped as usual.
+      expect(pendingCount('observations')).toBe(0);
+    });
+
+    it('surfaces null when the header is absent (mode cleared)', async () => {
+      seedObservation();
+      const modes: Array<string | null> = [];
+      const sync = makeCloudSync(makeModeFetch(null));
+      sync.setSyncModeListener((mode) => modes.push(mode));
+
+      await sync.flush();
+
+      expect(modes).toEqual([null]);
+      expect(pendingCount('observations')).toBe(0);
+    });
+
+    it('a throwing sync-mode listener never fails the flush', async () => {
+      seedObservation();
+      const sync = makeCloudSync(makeModeFetch('poll'));
+      sync.setSyncModeListener(() => {
+        throw new Error('listener bug');
+      });
+
+      await sync.flush();
+
+      expect(pendingCount('observations')).toBe(0);
+      expect(sync.status().lastError).toBeNull();
+    });
+
+    /** Hub that only ever errors, with or without the mode header. */
+    function makeErrorFetch(mode: string | null, status = 503) {
+      const impl = (async () => {
+        const headers: Record<string, string> = {};
+        if (mode !== null) headers['X-Sync-Mode'] = mode;
+        return new Response('hub down', { status, headers });
+      }) as typeof fetch;
+      return impl;
+    }
+
+    it("emits 'poll' from an ERROR response that carries the header", async () => {
+      seedObservation();
+      const modes: Array<string | null> = [];
+      const sync = makeCloudSync(makeErrorFetch('poll'));
+      sync.setSyncModeListener((mode) => modes.push(mode));
+
+      await sync.flush(); // push fails into backoff; the hint still lands
+
+      expect(modes).toEqual(['poll']);
+      expect(pendingCount('observations')).toBe(1); // queued for retry
+    });
+
+    it('emits NOTHING from an ERROR response without the header (absence is only authoritative on OK)', async () => {
+      // Correlated incident: a 503ing auth upstream produces unstamped
+      // errors — reporting null here would flap a poll-moded client back
+      // into socket churn for the whole outage.
+      seedObservation();
+      const modes: Array<string | null> = [];
+      const sync = makeCloudSync(makeErrorFetch(null));
+      sync.setSyncModeListener((mode) => modes.push(mode));
+
+      await sync.flush();
+
+      expect(modes).toEqual([]);
+      expect(pendingCount('observations')).toBe(1);
+    });
+  });
 });

@@ -15,6 +15,10 @@
 //     disconnect
 //   - onSocketLiveChange (the CloudSync fast-debounce coupling) flips
 //   - keepalive pings on the configured cadence; stop() tears everything down
+//   - kill-switch poll mode (plan Phase 5 task 2): X-Sync-Mode: poll on a
+//     pull (or via onSyncModeHint from CloudSync's push surface) closes the
+//     socket + suppresses reconnects while HTTP polling continues; the
+//     header disappearing resumes the socket
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -80,22 +84,33 @@ function makeHub(initial: { epoch: string; ops?: HubOp[] }) {
     epoch: initial.epoch,
     ops: initial.ops ?? [],
     requests: [] as Array<{ since: number; limit: number }>,
+    /** Kill switch: when set, every response carries X-Sync-Mode (Phase 5). */
+    mode: null as string | null,
+    /** When set, every response is this error status (header rules still apply). */
+    failStatus: null as number | null,
   };
   const impl = (async (input: any, init?: any) => {
     const url = new URL(String(input));
     const since = Number(url.searchParams.get('since') ?? '0');
     const limit = Number(url.searchParams.get('limit') ?? '500');
     state.requests.push({ since, limit });
+    if (state.failStatus !== null) {
+      const headers: Record<string, string> = {};
+      if (state.mode !== null) headers['X-Sync-Mode'] = state.mode;
+      return new Response('hub error', { status: state.failStatus, headers });
+    }
     const matching = state.ops.filter(op => op.seq > since).sort((a, b) => a.seq - b.seq);
     const page = matching.slice(0, limit);
     const head = state.ops.reduce((m, op) => Math.max(m, op.seq), 0);
     const lastSeq = page.length > 0 ? page[page.length - 1].seq : since;
+    const headers: Record<string, string> = {};
+    if (state.mode !== null) headers['X-Sync-Mode'] = state.mode;
     return new Response(JSON.stringify({
       epoch: state.epoch,
       ops: page,
       head_seq: head,
       more: page.length === limit && lastSeq < head,
-    }), { status: 200 });
+    }), { status: 200, headers });
   }) as typeof fetch;
   return { state, impl };
 }
@@ -553,5 +568,182 @@ describe('SyncClient advisory WebSocket', () => {
     const attemptsAtStop = attempts.length;
     await sleep(100);
     expect(attempts.length).toBe(attemptsAtStop); // no zombie reconnect
+  });
+
+  // -------------------------------------------------------------------------
+  // Kill-switch poll mode (plan Phase 5 task 2)
+  // -------------------------------------------------------------------------
+
+  it('X-Sync-Mode: poll on a pull closes the socket, suppresses reconnects, keeps polling; header gone resumes the socket', async () => {
+    const { state, impl } = makeHub({ epoch: 'e1' });
+    const { ctor, sockets, attempts } = makeWsFactory();
+    const client = makeClient(impl, ctor, {
+      activePollMs: 20,
+      idlePollMs: 20,
+      isSessionActive: () => true,
+    });
+    client.start();
+    await sleep(20);
+    sockets[0].open();
+    await sleep(20);
+    expect(client.isSocketLive()).toBe(true);
+
+    // Kill switch trips: the hub stamps every response.
+    state.mode = 'poll';
+    state.ops = [hubOp(1, '11')];
+    await sleep(80); // next poll carries the header
+    expect(client.isPollModeOnly()).toBe(true);
+    expect(client.isSocketLive()).toBe(false);
+    expect(sockets[0].closeCalls).toBeGreaterThanOrEqual(1);
+    expect(attempts.length).toBe(1); // no reconnect attempts while tripped
+
+    // The structural guarantee: HTTP sync is untouched — the pull loop
+    // keeps running (which IS the re-probe) and data still converges.
+    expect(apply.getCursor()).toBe(1);
+    const requestsInPollMode = state.requests.length;
+    await sleep(80);
+    expect(state.requests.length).toBeGreaterThan(requestsInPollMode);
+    expect(attempts.length).toBe(1);
+
+    // Kill switch cleared: the header disappears from the next response
+    // and the socket resumes with a fresh backoff ladder.
+    state.mode = null;
+    await sleep(80);
+    expect(client.isPollModeOnly()).toBe(false);
+    expect(attempts.length).toBe(2); // one fresh connect, not a stampede
+    sockets[1].open();
+    expect(client.isSocketLive()).toBe(true);
+  });
+
+  it('poll mode present from the very first pull suppresses the initial socket before it ever opens', async () => {
+    const { state, impl } = makeHub({ epoch: 'e1', ops: [hubOp(1, '11')] });
+    state.mode = 'poll';
+    const { ctor, sockets, attempts } = makeWsFactory();
+    const client = makeClient(impl, ctor, {
+      activePollMs: 20,
+      idlePollMs: 20,
+      isSessionActive: () => true,
+    });
+    client.start(); // constructs the socket, then the catch-up pull sees poll
+    await sleep(60);
+
+    expect(client.isPollModeOnly()).toBe(true);
+    expect(sockets[0].closeCalls).toBeGreaterThanOrEqual(1); // torn down unopened
+    expect(apply.getCursor()).toBe(1); // pull path unaffected
+    const attemptsInPollMode = attempts.length;
+    await sleep(100);
+    expect(attempts.length).toBe(attemptsInPollMode); // no reconnect churn
+    expect(attemptsInPollMode).toBe(1);
+  });
+
+  it('onSyncModeHint (the CloudSync push-surface wiring) drops and resumes the socket without any pull', async () => {
+    const { impl } = makeHub({ epoch: 'e1' });
+    const { ctor, sockets, attempts } = makeWsFactory();
+    const events: boolean[] = [];
+    const client = makeClient(impl, ctor, {
+      onSocketLiveChange: (live) => events.push(live),
+    });
+    client.start();
+    await sleep(20);
+    sockets[0].open();
+    expect(events).toEqual([true]);
+    // Let the socket-open forced pull settle first: a response from a
+    // request that was ALREADY in flight when the switch trips carries no
+    // header and would briefly flap the mode back (self-correcting — the
+    // next stamped response re-enters poll mode — but not what this test
+    // is about).
+    await sleep(30);
+
+    client.onSyncModeHint('poll'); // a push response carried the header
+    expect(client.isPollModeOnly()).toBe(true);
+    expect(client.isSocketLive()).toBe(false);
+    expect(sockets[0].closeCalls).toBeGreaterThanOrEqual(1);
+    expect(events).toEqual([true, false]); // fast-debounce coupling restored
+
+    // A dropped-socket event during poll mode schedules nothing.
+    await sleep(60);
+    expect(attempts.length).toBe(1);
+
+    client.onSyncModeHint(null); // header disappeared from a push response
+    expect(client.isPollModeOnly()).toBe(false);
+    await sleep(10);
+    expect(attempts.length).toBe(2); // socket resumed
+    sockets[1].open();
+    expect(client.isSocketLive()).toBe(true);
+    expect(events).toEqual([true, false, true]);
+  });
+
+  it('an ERROR response without the header does NOT exit poll mode; a later OK response does', async () => {
+    const { state, impl } = makeHub({ epoch: 'e1' });
+    const { ctor, sockets, attempts } = makeWsFactory();
+    const client = makeClient(impl, ctor, {
+      activePollMs: 20,
+      idlePollMs: 20,
+      isSessionActive: () => true,
+    });
+    client.start();
+    await sleep(20);
+    sockets[0].open();
+    await sleep(20);
+
+    state.mode = 'poll';
+    await sleep(60);
+    expect(client.isPollModeOnly()).toBe(true);
+    expect(attempts.length).toBe(1);
+
+    // Correlated incident: the hub starts erroring WITHOUT the header (a
+    // degraded auth upstream during the same incident that tripped the
+    // switch). Header absence on an error response is ambiguous — the
+    // client must stay in poll mode instead of resuming socket churn for
+    // the whole outage.
+    state.mode = null;
+    state.failStatus = 503;
+    await sleep(120);
+    expect(client.isPollModeOnly()).toBe(true);
+    expect(attempts.length).toBe(1); // reconnects still suppressed
+
+    // Recovery: an OK response without the header is authoritative.
+    state.failStatus = null;
+    await sleep(120);
+    expect(client.isPollModeOnly()).toBe(false);
+    expect(attempts.length).toBe(2);
+    sockets[1].open();
+    expect(client.isSocketLive()).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // Suspension × socket (plan Phase 5 review: an idle client must not hold
+  // the advisory socket — a held socket pins the hub DO while never seeing
+  // a stamped HTTP response, the exact hibernation-defeat case)
+  // -------------------------------------------------------------------------
+
+  it('suspension tears the advisory socket down (pings stop); pullOnce resume reconnects it', async () => {
+    const { impl } = makeHub({ epoch: 'e1' });
+    const { ctor, sockets, attempts } = makeWsFactory();
+    const client = makeClient(impl, ctor, {
+      activePollMs: 20,
+      idlePollMs: 20,
+      suspendAfterMs: 50, // no isSessionActive callback ⇒ idles, then suspends
+      wsPingIntervalMs: 15,
+    });
+    client.start();
+    await sleep(20);
+    sockets[0].open();
+    expect(client.isSocketLive()).toBe(true);
+
+    // 50 ms with no activity ⇒ the loop suspends AND the socket goes with it.
+    await sleep(200);
+    expect(client.isSocketLive()).toBe(false);
+    expect(sockets[0].closeCalls).toBeGreaterThanOrEqual(1);
+    const pingsAtSuspend = sockets[0].pings;
+    await sleep(60);
+    expect(sockets[0].pings).toBe(pingsAtSuspend); // keepalive stopped too
+    expect(attempts.length).toBe(1); // and no reconnect churn while suspended
+
+    // Session activity (the session-start pull) resumes loop AND socket.
+    await client.pullOnce({ force: true });
+    expect(attempts.length).toBe(2);
+    sockets[1].open();
+    expect(client.isSocketLive()).toBe(true);
   });
 });

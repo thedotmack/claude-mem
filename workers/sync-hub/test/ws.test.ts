@@ -16,11 +16,14 @@
  *   - a dead socket never fails pushOps (the push is durable, the socket is
  *     advisory)
  *   - app-level ping → pong auto-response
+ *   - kill switch (Phase 5): tripped ⇒ upgrade refused 503/poll at the
+ *     front Worker; cleared ⇒ upgrades succeed again (recovery)
  */
 
 import { env, evictDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import type { PushOp, PushOutcome, PushResult } from "../src/do/SyncHub";
+import { KILL_SWITCH_KEY } from "../src/kill-switch";
 
 const base = "https://sync-hub.test";
 
@@ -325,5 +328,29 @@ describe("fan-out", () => {
 		// The durable lane is untouched: a fresh reader sees the op.
 		const changes = await stub.getChanges("dev-c", 0, 500);
 		expect(changes.ops.map((op) => op.origin_id)).toEqual(["d1"]);
+	});
+});
+
+describe("kill switch × upgrade (plan Phase 5 task 2)", () => {
+	it("refuses upgrades 503/poll while tripped, then upgrades again after clear (recovery)", async () => {
+		// This suite runs --no-isolate, so the flag MUST be cleaned up even on
+		// assertion failure — the finally guards every later test.
+		await env.AUTH_CACHE.put(KILL_SWITCH_KEY, JSON.stringify({ source: "ws-test" }));
+		try {
+			const refused = await SELF.fetch(`${base}/v1/sync/ws`, {
+				headers: { ...headers("user-ws-kill", "dev-a"), Upgrade: "websocket" },
+			});
+			expect(refused.status).toBe(503);
+			expect(refused.headers.get("X-Sync-Mode")).toBe("poll");
+			const body = (await refused.json()) as { mode: string };
+			expect(body.mode).toBe("poll");
+		} finally {
+			await env.AUTH_CACHE.delete(KILL_SWITCH_KEY);
+		}
+
+		// Cleared ⇒ the very next upgrade succeeds (KILL_SWITCH_CACHE_MS=0
+		// in the test bindings) and fan-out works as usual.
+		const { ws } = await connect("user-ws-kill", "dev-a");
+		ws.close();
 	});
 });

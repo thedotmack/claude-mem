@@ -1,0 +1,280 @@
+# sync-hub — Deploy Runbook
+
+Production deployment steps for the two-lane sync hub (plan
+`plans/2026-07-17-phase5-two-lane-sync.md`). Everything below is a
+**production-only** action: local dev, vitest, and the e2e scripts need none
+of it (they run against `wrangler dev` with `.dev.vars`).
+
+Prime directive for every knob in this file: **cost guardrails are
+structural — watchdog trips → poll mode, never "stop working."** A tripped
+kill switch degrades sync latency to the Phase 3 poll path (~$0.03/user/mo
+indefinitely); it never loses data and never stops the product.
+
+---
+
+## 1. Prerequisites (Phase 1)
+
+### 1.1 KV namespace (`AUTH_CACHE`)
+
+```sh
+cd workers/sync-hub
+wrangler kv namespace create AUTH_CACHE
+```
+
+Paste the returned id into `wrangler.jsonc` → `kv_namespaces[0].id`
+(replacing the `00000000…` placeholder). This one namespace serves two
+purposes, separated by key prefix:
+
+- `verdict:<sha256>` — positive token-verification verdicts (short TTL).
+- `control:kill-switch` — the kill-switch flag (no TTL; see §3).
+
+A dedicated `SYNC_CONTROL` namespace was considered and rejected: the
+switch must exist in every environment the Worker deploys to, and a second
+namespace is one more thing whose absence fails the whole deploy — the
+wrong failure mode for an emergency brake (full rationale in
+`src/kill-switch.ts`).
+
+### 1.2 Token verification (`TOKEN_VERIFY_URL`)
+
+`wrangler.jsonc` ships a placeholder (`https://cmem.ai/api/pro/sync/verify`).
+Confirm the real path with the cmem.ai side before first deploy. HARD
+CONTRACT (enforced by `src/index.ts:authenticate`): on 2xx the endpoint MUST
+return the canonical user id the token belongs to, as JSON `{userId}` or
+`{user_id}`. Without that binding any valid subscriber token could act as
+any claimed user id.
+
+`DEV_ALLOW_ANY_TOKEN` MUST stay `""` in production (it is only set in
+`.dev.vars` for local work).
+
+---
+
+## 2. Watchdog (Phase 5 task 1)
+
+Hourly cron (`triggers.crons = ["7 * * * *"]`, already in `wrangler.jsonc`)
+runs the `scheduled` handler → `src/watchdog.ts`. It queries the GraphQL
+Analytics API for the last hour of DO metrics and escalates per the ladder
+in §2.4.
+
+### 2.1 Vars (`wrangler.jsonc` or dash)
+
+| Var | Value |
+|---|---|
+| `ACCOUNT_ID` | Cloudflare account tag — the 32-hex id from the dash URL or the Workers overview sidebar. Empty ⇒ watchdog logs `{"status":"skipped"}` every hour and does nothing else. |
+| `WATCHDOG_DO_NAMESPACE_ID` | The SyncHub DO namespace id — narrows the `durableObjectsPeriodicGroups` query (that dataset has no `scriptName` dimension). Optional while sync-hub is the account's only DO namespace. Fetch it: `curl -s -H "Authorization: Bearer <API_TOKEN>" https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/workers/durable_objects/namespaces` (or dash → Durable Objects). |
+| `WATCHDOG_SCRIPT_NAME` | Only if the Worker is renamed; defaults to `sync-hub`. |
+| `WATCHDOG_*_ALERT` / `WATCHDOG_*_KILL` | Threshold overrides; empty ⇒ code defaults (derivations in `src/watchdog.ts`). |
+
+### 2.2 Secrets
+
+```sh
+cd workers/sync-hub
+wrangler secret put ANALYTICS_API_TOKEN
+wrangler secret put DISCORD_WEBHOOK_URL
+```
+
+- `ANALYTICS_API_TOKEN`: create at dash → My Profile → API Tokens with the
+  scope **Account → Account Analytics → Read** (nothing else). Reference:
+  developers.cloudflare.com/analytics/graphql-api/getting-started/authentication/api-token-auth/
+- `DISCORD_WEBHOOK_URL`: the runtime credential lives in
+  `~/Scripts/claude-mem/.env` as `DISCORD_UPDATES_WEBHOOK` — paste that
+  value into the secret prompt. **Never hardcode or commit a webhook URL.**
+  (Payload shape matches `scripts/discord-release-notify.js`.)
+
+Secrets are deliberately NOT vars: a same-named var would shadow/conflict
+with the secret at deploy time (typing lives in `src/secrets.d.ts`).
+
+### 2.3 Datasets and thresholds (reference)
+
+Datasets/fields (verified 2026-07-18 against
+developers.cloudflare.com/durable-objects/observability/metrics-and-analytics/
+and the published GraphQL schema): `durableObjectsInvocationsAdaptiveGroups`
+`sum{requests errors}` (filter `scriptName`, `datetime_geq/leq`);
+`durableObjectsPeriodicGroups` `sum{duration rowsRead rowsWritten activeTime
+inboundWebsocketMsgCount}` (filter `namespaceId`, `datetime_geq/leq`).
+`sum.duration` is already in GB-s.
+
+Hourly fleet-wide thresholds (defaults; derivations as comments in
+`src/watchdog.ts`, anchored to the validated ~$5/mo @ 100-user model):
+
+| Metric | Alert | Kill | Auto-trips switch? |
+|---|---|---|---|
+| requests/hour | 60,000 | 600,000 | **No** — poll mode is still HTTP; a human decides |
+| duration GB-s/hour | 50 | 450 (= one DO pinned a full hour = the $4.11/device/mo trap) | Yes — causal remediation (closing sockets un-pins) |
+| rows written/hour | 150,000 | 1,500,000 | Yes |
+| rows read/hour | 5,000,000 | 50,000,000 | Yes |
+
+### 2.4 Escalation ladder
+
+1. Healthy → one `{"status":"healthy"}` log line (observability), nothing else.
+2. Any metric ≥ alert → Discord alert (amber embed, all breaches listed).
+3. duration / rows-written / rows-read ≥ kill → **kill switch auto-tripped
+   first**, then Discord (red embed, "AUTO-TRIPPED"). A Discord failure
+   never blocks the KV write.
+4. requests ≥ kill → red Discord alert, **no auto-trip** (see table).
+5. GraphQL query failure → `{"status":"query_failed"}` log line; NO alert,
+   NO trip (a broken analytics pipe must not fabricate an incident).
+
+### 2.5 Cron activation + smoke
+
+The cron ships in `wrangler.jsonc`; `wrangler deploy` activates it (verify:
+dash → Workers → sync-hub → Settings → Triggers → Cron Triggers). Local
+smoke (verified in this repo):
+
+```sh
+wrangler dev --test-scheduled
+curl "http://localhost:8787/__scheduled?cron=7+*+*+*+*"
+# log: sync-hub watchdog: {"status":"skipped",...} (unconfigured = safe skip)
+```
+
+---
+
+## 3. Kill switch operations (Phase 5 task 2)
+
+State = presence of KV key `control:kill-switch` in `AUTH_CACHE`. Tripped ⇒
+WS upgrades answer `503 {"error":…,"mode":"poll"}` and every HTTP sync
+response carries `X-Sync-Mode: poll`; clients close their sockets, suppress
+reconnects, and keep polling (their polls are also the re-probe).
+
+```sh
+cd workers/sync-hub
+# Trip manually (any value works — presence is the contract):
+wrangler kv key put --binding AUTH_CACHE "control:kill-switch" \
+  '{"source":"manual","tripped_at":"'"$(date -u +%FT%TZ)"'","reason":"<why>"}' --remote
+# Inspect:
+wrangler kv key get --binding AUTH_CACHE "control:kill-switch" --remote
+# Clear (recovery — the ONLY way; the watchdog never auto-clears, to avoid flapping):
+wrangler kv key delete --binding AUTH_CACHE "control:kill-switch" --remote
+```
+
+Propagation bound: KV edge propagation (≤ ~60 s) + per-isolate cache
+(`KILL_SWITCH_CACHE_MS`, default 30 s) + one client poll interval (≤ 30 s
+active / 5 min idle — the stretched-to-idle tier while a socket is live is
+the worst case). Existing hibernating sockets are not force-closed
+server-side; clients drop them on their next stamped HTTP response, which
+the bound above covers for EVERY held socket: a client holding a socket is
+by definition polling at ≤ the idle tier, because a client whose pull loop
+suspends (1 h with no sessions) tears its socket down with the loop and
+only reconnects when activity resumes it.
+
+---
+
+## 4. Canary deployment (Phase 5 task 3)
+
+`canary/canary.ts` — standalone Bun script, two fake devices, one tiny op
+per cycle, convergence asserted, one JSON line per event on stdout. Its DO's
+duration metric being a known constant is what keeps the watchdog's
+hibernation detector sensitive.
+
+```sh
+CANARY_HUB_URL=https://sync-hub.<account>.workers.dev \
+CANARY_USER_ID=canary-user \
+CANARY_TOKEN=<a real cmem.ai token provisioned for the canary user> \
+bun workers/sync-hub/canary/canary.ts >> ~/.claude-mem/logs/sync-canary.jsonl
+```
+
+Note: production auth is real — provision a dedicated cmem.ai account/token
+for the canary user (the hub binds tokens to canonical user ids, §1.2).
+
+24/7 via launchd (macOS box; `~/Library/LaunchAgents/ai.cmem.sync-canary.plist`):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>ai.cmem.sync-canary</string>
+  <key>ProgramArguments</key><array>
+    <string>/opt/homebrew/bin/bun</string>
+    <string>/path/to/claude-mem/workers/sync-hub/canary/canary.ts</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>CANARY_HUB_URL</key><string>https://sync-hub.ACCOUNT.workers.dev</string>
+    <key>CANARY_USER_ID</key><string>canary-user</string>
+    <key>CANARY_TOKEN</key><string>REDACTED</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/USER/.claude-mem/logs/sync-canary.jsonl</string>
+  <key>StandardErrorPath</key><string>/Users/USER/.claude-mem/logs/sync-canary.err</string>
+</dict></plist>
+```
+
+`launchctl load ~/Library/LaunchAgents/ai.cmem.sync-canary.plist`
+
+systemd equivalent: a simple `[Service] ExecStart=bun …/canary.ts
+Restart=always` unit; cron equivalent: `@reboot` + the script's own loop.
+Log growth: one line per 5 min ≈ 30 MB/year — rotate yearly or via
+`newsyslog`/`logrotate`.
+
+---
+
+## 5. Threshold-trip verification (the alert chain, end to end)
+
+Rehearse after first deploy and after any watchdog change. Uses the canary's
+`--flood` mode plus a temporarily lowered threshold so the rehearsal costs
+~5,000 requests instead of 60,000+.
+
+1. Lower the trip point (vars are cheap to change; secrets stay put):
+   `wrangler deploy` after setting `"WATCHDOG_REQUESTS_ALERT": "1000",
+   "WATCHDOG_REQUESTS_KILL": "4000"` — requests are used here precisely
+   because they never auto-trip in real operation; add
+   `"WATCHDOG_ROWS_READ_ALERT": "10000", "WATCHDOG_ROWS_READ_KILL": "20000"`
+   to rehearse the auto-trip path too (5k floods read ≥ 1 device row each
+   plus meta). Lower BOTH values of a pair so the alert/severe tiers keep
+   their meaning during the rehearsal; a kill set below alert also engages
+   on its own (the breach gate is `min(alert, kill)`), but the mixed config
+   is harder to read back in an incident.
+2. Flood: `bun workers/sync-hub/canary/canary.ts --flood --flood-requests 5000
+   --hub https://sync-hub.<account>.workers.dev --user canary-user --token <t>`
+3. Wait for the next cron run (≤ 1 hour, minute 7). Expect, in order:
+   - **Discord alert** in the updates channel (amber or red embed listing
+     the breached metrics — same channel as release notifications).
+   - If a `*_KILL` threshold was lowered: **kill switch tripped** —
+     `wrangler kv key get --binding AUTH_CACHE "control:kill-switch" --remote`
+     shows `{"source":"watchdog",...}`.
+   - **Clients in poll mode**: the canary's next cycles log
+     `"sync_mode":"poll"` (and still `"converged":true` — the structural
+     guarantee); worker logs show `SYNC_CLIENT` "Hub is in poll mode".
+4. Recover: clear the flag (§3), restore the threshold vars, `wrangler
+   deploy`. Expect canary `"sync_mode":"live"` and worker logs "Hub left
+   poll mode — resuming the advisory socket" within the §3 propagation
+   bound.
+
+(The same chain is covered hermetically by `test/watchdog.test.ts` +
+`test/kill-switch.test.ts` + `scripts/sync-kill-switch-e2e.ts`; this
+procedure proves the PRODUCTION wiring — real GraphQL, real Discord, real
+KV.)
+
+---
+
+## 6. Weekly invoice glance (maintainer action — do NOT automate away)
+
+Schedule a weekly cloud agent (claude.ai routines / `/schedule`) — it is
+deliberately a human-owned scheduled agent, not part of this Worker.
+Suggested prompt to schedule, verbatim:
+
+> Check the Cloudflare billing page for the account running the sync-hub
+> Worker (Workers Paid). Compare month-to-date spend against the model:
+> ~$5/mo at 100 users, ~$15/mo at 1k. Look specifically at Durable Objects
+> duration GB-s (should be near zero — hibernation), requests, and SQLite
+> rows read/written. If the delta vs last week is more than 20% or any
+> line item is new, post a short summary to the Discord updates webhook
+> (credentials in ~/Scripts/claude-mem/.env, DISCORD_UPDATES_WEBHOOK).
+> Otherwise post nothing.
+
+Cadence: weekly (e.g. Monday 09:00). Discord ping **only on delta** — a
+silent week is the success case.
+
+---
+
+## 7. Deploy + verify checklist
+
+```sh
+cd workers/sync-hub
+bun install --frozen-lockfile
+bun run test && bun run test:ws && bun run lint && bunx tsc --noEmit
+wrangler deploy --dry-run     # config sanity (bindings listed; the cron is not printed by dry-run — verify in dash post-deploy, §2.5)
+wrangler deploy
+```
+
+Post-deploy: §2.5 cron visible in dash; §5 rehearsal once; canary running
+(§4) and logging `"converged":true,"sync_mode":"live"`.

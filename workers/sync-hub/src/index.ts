@@ -26,6 +26,8 @@
 
 import type { PushOp } from "./do/SyncHub";
 import { INVALID_OPS_PREFIX, SyncHub } from "./do/SyncHub";
+import { readKillSwitch, SYNC_MODE_HEADER, SYNC_MODE_POLL } from "./kill-switch";
+import { runWatchdog } from "./watchdog";
 
 // The DO class must be exported from the Worker entrypoint.
 export { SyncHub };
@@ -315,8 +317,24 @@ export default {
 			return errorResponse(404, "not found");
 		}
 
+		// Kill switch (plan Phase 5 task 2): one KV read per request, through
+		// the per-isolate cache (KILL_SWITCH_CACHE_MS). Tripped ⇒ WS upgrades
+		// refused below and every HTTP sync response is stamped
+		// `X-Sync-Mode: poll` — the pushes and pulls themselves KEEP WORKING
+		// (poll mode degrades latency, never correctness). Read BEFORE
+		// authenticate so auth-FAILURE responses are stamped too: incidents
+		// correlate, and a tripped switch during a degraded verify upstream
+		// (everything 401/503ing) must still tell clients "poll" — an
+		// unstamped error response must never read as "switch cleared".
+		const killSwitch = await readKillSwitch(env);
+
 		const auth = await authenticate(request, env);
-		if (!auth.ok) return auth.response;
+		if (!auth.ok) {
+			if (killSwitch.tripped) {
+				auth.response.headers.set(SYNC_MODE_HEADER, SYNC_MODE_POLL);
+			}
+			return auth.response;
+		}
 
 		if (pathname === "/v1/sync/ws") {
 			// Advisory WebSocket upgrade (plan Phase 4 task 1) — the ONE path
@@ -329,24 +347,59 @@ export default {
 			if (!upgradeHeader || upgradeHeader !== "websocket") {
 				return errorResponse(426, "expected Upgrade: websocket");
 			}
+			if (killSwitch.tripped) {
+				// Refused HERE, before the DO is ever woken: the whole point of
+				// the switch is un-pinning DOs. 503 + a JSON body clients
+				// recognize ({mode: "poll"}); clients suppress reconnects until
+				// the header disappears from their HTTP responses.
+				const refusal = json(503, {
+					error: "sync websocket disabled — hub is in poll mode",
+					mode: SYNC_MODE_POLL,
+				});
+				refusal.headers.set(SYNC_MODE_HEADER, SYNC_MODE_POLL);
+				return refusal;
+			}
 			const stub = env.SYNC_HUB.getByName(auth.userId);
 			return stub.fetch(request);
 		}
 
-		if (pathname === "/v1/sync/ops") {
-			if (request.method !== "POST") return errorResponse(405, "use POST");
-			if (!auth.deviceId) return errorResponse(400, "missing X-Device-Id header");
-			return handlePushOps(request, env, auth.userId, auth.deviceId);
-		}
+		// All non-WS routes funnel through one point so the poll-mode header
+		// rides EVERY HTTP sync response (success and error alike) while the
+		// switch is tripped — the header is the clients' only mode signal.
+		const response = await (async (): Promise<Response> => {
+			if (pathname === "/v1/sync/ops") {
+				if (request.method !== "POST") return errorResponse(405, "use POST");
+				if (!auth.deviceId) return errorResponse(400, "missing X-Device-Id header");
+				return handlePushOps(request, env, auth.userId, auth.deviceId);
+			}
 
-		if (pathname === "/v1/sync/changes") {
+			if (pathname === "/v1/sync/changes") {
+				if (request.method !== "GET") return errorResponse(405, "use GET");
+				if (!auth.deviceId) return errorResponse(400, "missing X-Device-Id header");
+				return handleGetChanges(url, env, auth.userId, auth.deviceId);
+			}
+
+			// /v1/sync/status
 			if (request.method !== "GET") return errorResponse(405, "use GET");
-			if (!auth.deviceId) return errorResponse(400, "missing X-Device-Id header");
-			return handleGetChanges(url, env, auth.userId, auth.deviceId);
+			return handleGetStatus(env, auth.userId);
+		})();
+		if (killSwitch.tripped) {
+			response.headers.set(SYNC_MODE_HEADER, SYNC_MODE_POLL);
 		}
+		return response;
+	},
 
-		// /v1/sync/status
-		if (request.method !== "GET") return errorResponse(405, "use GET");
-		return handleGetStatus(env, auth.userId);
+	/**
+	 * Hourly watchdog (plan Phase 5 task 1; cron in wrangler.jsonc). Lives in
+	 * the stateless Worker — the DO stays I/O-free. runWatchdog never throws;
+	 * its structured result is logged as one JSON line for observability.
+	 * The metrics window is anchored to controller.scheduledTime (not
+	 * Date.now()) so a delayed invocation still measures the exact trailing
+	 * hour it was scheduled for. A persisting breach re-alerts on every
+	 * hourly run — intended (silence would hide an ongoing incident).
+	 */
+	async scheduled(controller, env, _ctx): Promise<void> {
+		const result = await runWatchdog(env, { now: () => controller.scheduledTime });
+		console.log("sync-hub watchdog:", JSON.stringify(result));
 	},
 } satisfies ExportedHandler<Env>;

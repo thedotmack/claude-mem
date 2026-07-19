@@ -23,7 +23,7 @@ export default [
 		ignores: ["node_modules/**", ".wrangler/**", "worker-configuration.d.ts"],
 	},
 	{
-		files: ["src/**/*.ts", "test/**/*.ts"],
+		files: ["src/**/*.ts", "test/**/*.ts", "canary/**/*.ts"],
 		languageOptions: {
 			parser: tseslint.parser,
 		},

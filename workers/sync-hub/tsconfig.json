@@ -18,6 +18,7 @@
 	"include": [
 		"src/**/*.ts",
 		"test/**/*.ts",
+		"canary/**/*.ts",
 		"vitest.config.ts",
 		"worker-configuration.d.ts"
 	]

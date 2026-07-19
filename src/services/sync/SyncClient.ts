@@ -10,8 +10,11 @@
 //     SessionManager.getActiveSessionCount() > 0, an existing signal);
 //   - 5 min when idle;
 //   - suspended entirely after 1 h with no session activity — no timer at
-//     all. pullOnce() (the session-start pull) and onHeadSeq() (the push
-//     piggyback) both resume the loop, so a suspended worker wakes the
+//     all, and the advisory socket is torn down with it (an idle client
+//     needs no speed layer, and a held socket would both pin the hub DO
+//     and be unreachable by kill-switch headers). pullOnce() (the
+//     session-start pull) and onHeadSeq() (the push piggyback) both resume
+//     the loop AND reconnect the socket, so a suspended worker wakes the
 //     moment anything happens.
 // Every push response piggybacks head_seq (CloudSync.setHeadSeqListener →
 // onHeadSeq): head_seq > cursor triggers an immediate pull without waiting
@@ -34,6 +37,16 @@
 // safety net); a disconnect restores normal cadence. Total failure of every
 // socket code path leaves Phase 3 (HTTP-only) behavior intact — delete the
 // socket and this class still converges.
+//
+// KILL-SWITCH POLL MODE (plan Phase 5 task 2): while the hub's kill switch
+// is tripped, every HTTP sync response carries `X-Sync-Mode: poll`. This
+// client reads the header on its own pull responses (pullCycle) and receives
+// the push-surface hints from CloudSync via onSyncModeHint (the head_seq
+// piggyback shape). On 'poll': close the socket, suppress reconnects, keep
+// polling — which is ALSO the re-probe: the mode holds exactly until the
+// header disappears from a subsequent response, then the socket resumes.
+// No extra endpoint, no extra timer; poll mode is plain Phase 3 behavior,
+// which is the structural guarantee (the product stays complete).
 //
 // FAILURE CONTRACT (same swallow-and-log posture as CloudSync.notify()):
 // nothing here ever throws into a caller, blocks a write, or crashes the
@@ -178,6 +191,10 @@ export class SyncClient {
   private wsAttempts = 0;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** True while the hub says X-Sync-Mode: poll (kill switch tripped). */
+  private pollModeOnly = false;
+  /** True while the pull loop is suspended (socket torn down with it). */
+  private suspended = false;
 
   constructor(apply: SyncApply, options: SyncClientOptions) {
     const hubUrl = (options.hubUrl ?? '').trim().replace(/\/+$/, '');
@@ -256,6 +273,38 @@ export class SyncClient {
   }
 
   /**
+   * Sync-mode hint (plan Phase 5 task 2). Sources: this class's own pull
+   * responses (pullCycle) and CloudSync's push responses
+   * (setSyncModeListener wiring in the worker). 'poll' ⇒ enter poll-only
+   * mode (socket closed, reconnects suppressed, HTTP polling untouched);
+   * anything else — including null for a missing header — ⇒ leave it and
+   * resume the socket. CONTRACT for callers: only report null (header
+   * absent) from an OK response — absence on an error response is
+   * ambiguous and must be suppressed at the source (both call sites do).
+   * Idempotent per state, and never throws (called from the flush path).
+   */
+  onSyncModeHint(mode: string | null): void {
+    try {
+      if (this.stopped) return;
+      if (mode === 'poll') {
+        this.enterPollMode();
+      } else {
+        this.exitPollMode();
+      }
+    } catch (error) {
+      try {
+        logger.debug('SYNC_CLIENT', 'onSyncModeHint failed (non-blocking)', {},
+          error instanceof Error ? error : new Error(String(error)));
+      } catch { /* never propagate */ }
+    }
+  }
+
+  /** True while honoring X-Sync-Mode: poll (test/status introspection). */
+  isPollModeOnly(): boolean {
+    return this.pollModeOnly;
+  }
+
+  /**
    * Push piggyback (CloudSync.setHeadSeqListener): a push response revealed
    * the hub's head_seq — if it is beyond our cursor there are unseen remote
    * ops, so pull now instead of waiting out the poll timer. Never throws
@@ -266,6 +315,7 @@ export class SyncClient {
       if (this.stopped || !this.started) return;
       if (typeof headSeq !== 'number' || !Number.isFinite(headSeq)) return;
       if (headSeq <= this.apply.getCursor()) return;
+      this.resumeIfSuspended(); // socket back up alongside the loop
       this.schedule(0); // also resumes a suspended loop
     } catch (error) {
       try {
@@ -291,6 +341,7 @@ export class SyncClient {
     try {
       if (this.stopped) return;
       this.lastActiveAt = this.now();
+      this.resumeIfSuspended(); // session activity: socket back up too
       const timeoutMs = options.timeoutMs ?? this.requestTimeoutMs;
       const skip =
         this.pulling || // a cycle is already fetching — don't stack a second
@@ -336,11 +387,36 @@ export class SyncClient {
     if (this.stopped) return;
     const delay = this.currentDelay();
     if (delay === null) {
-      // Suspended: no timer at all. pullOnce()/onHeadSeq() re-arm the loop.
-      logger.debug('SYNC_CLIENT', 'Pull loop suspended (no session activity for over an hour)');
+      // Suspended: no timer AND no socket. An idle client needs no speed
+      // layer, and a held socket would be the one thing keeping the hub DO
+      // from hibernating — while ALSO never seeing a stamped HTTP response,
+      // so a kill-switch trip could never reach it (the exact
+      // hibernation-defeat case the watchdog's auto-trip exists for).
+      // pullOnce()/onHeadSeq() re-arm the loop and reconnect the socket.
+      this.suspended = true;
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      this.teardownSocket();
+      this.setSocketLive(false);
+      logger.debug('SYNC_CLIENT', 'Pull loop suspended (no session activity for over an hour) — advisory socket closed');
       return;
     }
     this.schedule(delay);
+  }
+
+  /**
+   * Leaving suspension (session activity, a session-start pull, or a push
+   * piggyback): re-open the advisory socket the suspend branch tore down.
+   * All connectSocket gates (stopped, poll mode, existing socket, wsEnabled)
+   * still apply; the backoff ladder restarts fresh.
+   */
+  private resumeIfSuspended(): void {
+    if (!this.suspended) return;
+    this.suspended = false;
+    this.wsAttempts = 0;
+    this.connectSocket();
   }
 
   /** null ⇒ suspend. Failure backoff dominates the poll tier while failing. */
@@ -401,6 +477,18 @@ export class SyncClient {
             signal: AbortSignal.timeout(Math.max(1, Math.min(this.requestTimeoutMs, remaining))),
           }
         );
+        // Kill-switch mode hint (plan Phase 5 task 2), read BEFORE the
+        // ok-check — the header rides error responses too. Asymmetric on
+        // purpose: header PRESENCE means poll regardless of status, but
+        // header ABSENCE only means "cleared" on an OK response. An error
+        // response without the header (a degraded auth upstream 503ing
+        // everything mid-incident — incidents correlate) is ambiguous and
+        // must not exit poll mode, or the client would resume socket
+        // churn for the whole outage.
+        const syncMode = res.headers.get('X-Sync-Mode');
+        if (syncMode !== null || res.ok) {
+          this.onSyncModeHint(syncMode);
+        }
         if (!res.ok) {
           const body = (await res.text().catch(() => '')).slice(0, 200);
           throw new Error(`sync hub pull ${res.status}: ${body}`);
@@ -453,7 +541,9 @@ export class SyncClient {
   }
 
   private connectSocket(): void {
-    if (!this.wsEnabled || this.stopped || this.socket || !this.webSocketImpl) return;
+    // pollModeOnly gate: while the hub says poll, the socket lane stays
+    // down — that is the kill switch doing its job (un-pinning hub DOs).
+    if (!this.wsEnabled || this.stopped || this.socket || !this.webSocketImpl || this.pollModeOnly) return;
     try {
       const ws = new this.webSocketImpl(this.wsUrl, {
         // Bun extension: headers on the constructor (plan Phase 0.3) — the
@@ -598,6 +688,41 @@ export class SyncClient {
     }
   }
 
+  /**
+   * Enter kill-switch poll mode: close the socket, cancel and suppress
+   * reconnects. HTTP polling is deliberately untouched — it both keeps the
+   * product complete AND acts as the re-probe (every pull response
+   * re-evaluates the header). Idempotent.
+   */
+  private enterPollMode(): void {
+    if (this.pollModeOnly) return;
+    this.pollModeOnly = true;
+    const hadSocket = this.socket !== null;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.teardownSocket();
+    this.setSocketLive(false); // restores normal poll cadence + slow debounce
+    logger.info('SYNC_CLIENT', 'Hub is in poll mode (X-Sync-Mode: poll) — socket closed, reconnects suppressed, HTTP sync continues', {
+      hadSocket,
+    });
+  }
+
+  /**
+   * The header disappeared: hub left poll mode. Resume the socket with a
+   * fresh backoff ladder. Idempotent.
+   */
+  private exitPollMode(): void {
+    if (!this.pollModeOnly) return;
+    this.pollModeOnly = false;
+    this.wsAttempts = 0;
+    logger.info('SYNC_CLIENT', 'Hub left poll mode — resuming the advisory socket');
+    if (this.started && !this.stopped) {
+      this.connectSocket();
+    }
+  }
+
   /** Close the socket, pull once over HTTP, reconnect with backoff. */
   private socketSelfHeal(context: string, error: unknown): void {
     try {
@@ -616,7 +741,7 @@ export class SyncClient {
 
   /** Full-jitter backoff: delay = random(0, min(cap, base·2^attempt)). */
   private scheduleReconnect(): void {
-    if (!this.wsEnabled || this.stopped || this.reconnectTimer || this.socket) return;
+    if (!this.wsEnabled || this.stopped || this.reconnectTimer || this.socket || this.pollModeOnly) return;
     const exp = Math.min(this.wsAttempts, 30); // clamp 2^n against overflow
     const ceiling = Math.min(this.wsBackoffMaxMs, this.wsBackoffBaseMs * 2 ** exp);
     const delay = this.random() * ceiling;

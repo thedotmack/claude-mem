@@ -22,6 +22,15 @@
  *   denied-401/403   → 401 / 403
  *   upstream-500     → 500
  *   network-error    → throws (unreachable endpoint)
+ *
+ * Phase 5 adds two more outbound targets, dispatched by hostname:
+ *   - api.cloudflare.com/client/v4/graphql → mock GraphQL Analytics API,
+ *     scripted by the `accountTag` variable in the request body (see
+ *     mockGraphQLEndpoint's table). Serves the scheduled-handler wiring
+ *     tests; watchdog unit tests use an injected fetchImpl instead.
+ *   - discord.test → mock Discord webhook (/webhooks/ok → 204,
+ *     /webhooks/fail → 500).
+ * Everything else falls through to the verify-endpoint mock.
  */
 
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
@@ -60,6 +69,104 @@ function mockVerifyEndpoint(request: Request): Response {
 	return new Response("unknown test token", { status: 401 });
 }
 
+/**
+ * Mock GraphQL Analytics API, scripted by accountTag (single-group response
+ * in the exact shape the watchdog parses — aliases `invocations`/`periodic`):
+ *
+ *   acct-healthy             → typical 100-user metrics, all under alert
+ *   acct-duration-alert      → duration 120 GB-s (alert, below kill 450)
+ *   acct-duration-severe     → duration 4000 GB-s (kill — auto-trip)
+ *   acct-rows-written-severe → rowsWritten 5,000,000 (kill — auto-trip)
+ *   acct-requests-severe     → requests 5,000,000 (severe but NEVER auto-trip)
+ *   acct-graphql-errors      → 200 with a GraphQL errors array
+ *   acct-no-accounts         → 200 with an empty accounts array
+ *   acct-http-500            → HTTP 500
+ *   acct-network-error       → throws (unreachable endpoint)
+ *   (anything else)          → all-zero metrics
+ */
+async function mockGraphQLEndpoint(request: Request): Promise<Response> {
+	let accountTag = "";
+	try {
+		const body = (await request.json()) as {
+			variables?: { accountTag?: unknown };
+		} | null;
+		if (typeof body?.variables?.accountTag === "string") {
+			accountTag = body.variables.accountTag;
+		}
+	} catch {
+		// fall through to the all-zero default
+	}
+
+	if (accountTag === "acct-network-error") {
+		throw new Error("simulated network failure reaching the GraphQL API");
+	}
+	if (accountTag === "acct-http-500") {
+		return new Response("graphql down", { status: 500 });
+	}
+	if (accountTag === "acct-graphql-errors") {
+		return Response.json({ data: null, errors: [{ message: "whoops" }] });
+	}
+	if (accountTag === "acct-no-accounts") {
+		return Response.json({ data: { viewer: { accounts: [] } }, errors: null });
+	}
+
+	const metrics = {
+		requests: 1_200,
+		errors: 0,
+		duration: 2.5,
+		rowsRead: 12_000,
+		rowsWritten: 1_300,
+		activeTime: 9_000_000,
+		inboundWebsocketMsgCount: 40,
+	};
+	if (accountTag === "acct-duration-alert") metrics.duration = 120;
+	if (accountTag === "acct-duration-severe") metrics.duration = 4_000;
+	if (accountTag === "acct-rows-written-severe") metrics.rowsWritten = 5_000_000;
+	if (accountTag === "acct-requests-severe") metrics.requests = 5_000_000;
+
+	return Response.json({
+		data: {
+			viewer: {
+				accounts: [
+					{
+						invocations: [{ sum: { requests: metrics.requests, errors: metrics.errors } }],
+						periodic: [
+							{
+								sum: {
+									duration: metrics.duration,
+									rowsRead: metrics.rowsRead,
+									rowsWritten: metrics.rowsWritten,
+									activeTime: metrics.activeTime,
+									inboundWebsocketMsgCount: metrics.inboundWebsocketMsgCount,
+								},
+							},
+						],
+					},
+				],
+			},
+		},
+		errors: null,
+	});
+}
+
+function mockDiscordWebhook(url: URL): Response {
+	if (url.pathname === "/webhooks/fail") {
+		return new Response("discord down", { status: 500 });
+	}
+	return new Response(null, { status: 204 });
+}
+
+async function mockOutbound(request: Request): Promise<Response> {
+	const url = new URL(request.url);
+	if (url.hostname === "api.cloudflare.com" && url.pathname === "/client/v4/graphql") {
+		return mockGraphQLEndpoint(request);
+	}
+	if (url.hostname === "discord.test") {
+		return mockDiscordWebhook(url);
+	}
+	return mockVerifyEndpoint(request);
+}
+
 export default defineConfig({
 	plugins: [
 		cloudflareTest({
@@ -67,11 +174,16 @@ export default defineConfig({
 			main: "./src/index.ts",
 			wrangler: { configPath: "./wrangler.jsonc" },
 			miniflare: {
-				// Force the REAL auth path in tests: explicitly override any
-				// local .dev.vars (which sets DEV_ALLOW_ANY_TOKEN=true for
-				// `wrangler dev`) so CI and local runs behave identically.
-				bindings: { DEV_ALLOW_ANY_TOKEN: "" },
-				outboundService: mockVerifyEndpoint,
+				bindings: {
+					// Force the REAL auth path in tests: explicitly override any
+					// local .dev.vars (which sets DEV_ALLOW_ANY_TOKEN=true for
+					// `wrangler dev`) so CI and local runs behave identically.
+					DEV_ALLOW_ANY_TOKEN: "",
+					// Per-request kill-switch reads: SELF tests flip the KV flag
+					// and must observe it on the very next request.
+					KILL_SWITCH_CACHE_MS: "0",
+				},
+				outboundService: mockOutbound,
 			},
 		}),
 	],

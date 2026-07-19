@@ -536,6 +536,12 @@ export class WorkerService implements WorkerRef {
         // Push piggyback: a flush that reveals unseen hub ops pulls without
         // waiting for the poll timer (free poll for the active device).
         cloudSyncForPull.setHeadSeqListener((headSeq) => this.syncClient?.onHeadSeq(headSeq));
+        // Kill-switch piggyback (plan Phase 5 task 2): push responses carry
+        // X-Sync-Mode while the hub's kill switch is tripped — 'poll' drops
+        // the advisory socket and suppresses reconnects; SyncClient's own
+        // pulls carry the same header, and its disappearance resumes the
+        // socket. Product stays complete on the Phase 3 poll path.
+        cloudSyncForPull.setSyncModeListener((mode) => this.syncClient?.onSyncModeHint(mode));
       }
 
       logger.info('WORKER', 'Initializing search services...');
