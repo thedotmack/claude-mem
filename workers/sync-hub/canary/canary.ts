@@ -7,9 +7,11 @@
  *
  * WHY IT EXISTS: the canary user's DO has a KNOWN, CONSTANT workload, so
  * its duration metric is a known constant — which is what makes the
- * watchdog's hibernation-defeat detector (duration GB-s ≈ 0) sensitive. A
- * hibernation regression shows up in the canary's DO within hours, not on
- * the invoice. It runs 24/7 on any box (launchd/systemd/cron examples in
+ * watchdog's hibernation-defeat detector (duration GB-s ≈ 0) sensitive.
+ * Scope: the canary exercises the HTTP lanes only (it holds no WebSocket),
+ * so its DO catches HTTP-path regressions; WS-lane hibernation defeats are
+ * covered by the watchdog's fleet-wide duration alerting, not the canary.
+ * It runs 24/7 on any box (launchd/systemd/cron examples in
  * ../DEPLOY.md) and prints one structured JSON line per event to stdout —
  * redirect to a file for history.
  *
