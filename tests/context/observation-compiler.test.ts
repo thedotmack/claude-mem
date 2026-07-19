@@ -158,6 +158,7 @@ describe('context compiler platform scoping', () => {
     fullObservationField: 'narrative',
     showLastSummary: true,
     showLastMessage: false,
+    mainAgentOnly: true,
   };
 
   function seed(
