@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import * as fs from 'fs';
 import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -118,6 +119,52 @@ describe('worker-spawn-gate — cross-launcher spawn lockfile', () => {
 
     const lock = JSON.parse(readFileSync(lockPath, 'utf-8'));
     expect(lock.pid).toBe(process.pid);
+  });
+
+  it('does not unlink a same-mtimeMs replacement lock (ownership recheck)', async () => {
+    const { acquireSpawnLock } = await importGateFresh();
+
+    // Contender A sees a dead lock, then contender B breaks and recreates
+    // spawn.lock with the SAME mtimeMs tick before A's recheck. An mtime-only
+    // recheck would treat B's fresh lock as still stale and mint two winners.
+    const staleMtime = new Date(Date.now() - 1_000);
+    writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: 999_999_999, startedAt: staleMtime.toISOString() })
+    );
+    utimesSync(lockPath, staleMtime, staleMtime);
+
+    const replacementPayload = JSON.stringify({
+      pid: process.pid + 1,
+      startedAt: new Date().toISOString(),
+    });
+
+    // Capture the real statSync before spying so the mock can call through.
+    // Inject B's replacement on the SECOND lockPath stat (the recheck), after
+    // A has already captured the dead holder pid and judged it breakable.
+    // Forcing the same mtimeMs reproduces the T-Rex collision race.
+    const realStatSync = fs.statSync.bind(fs);
+    let lockStatCalls = 0;
+    const wrapped = spyOn(fs, 'statSync').mockImplementation(((path, options) => {
+      if (String(path) === lockPath) {
+        lockStatCalls += 1;
+        if (lockStatCalls === 2) {
+          writeFileSync(lockPath, replacementPayload);
+          utimesSync(lockPath, staleMtime, staleMtime);
+        }
+      }
+      return options === undefined
+        ? realStatSync(path)
+        : realStatSync(path, options as never);
+    }) as typeof fs.statSync);
+
+    try {
+      expect(acquireSpawnLock()).toBe(false);
+      expect(readFileSync(lockPath, 'utf-8')).toBe(replacementPayload);
+      expect(lockStatCalls).toBeGreaterThanOrEqual(1);
+    } finally {
+      wrapped.mockRestore();
+    }
   });
 
   it('release is owner-only: a foreign lock survives releaseSpawnLock', async () => {
