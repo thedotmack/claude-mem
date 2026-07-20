@@ -1,4 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
+
+import * as realModeManager from '../../src/services/domain/ModeManager.js';
+
+const realModeManagerSnapshot = { ...realModeManager };
 
 mock.module('../../src/services/domain/ModeManager.js', () => ({
   ModeManager: {
@@ -110,6 +114,10 @@ describe('SearchManager.timeline() anchor dispatch', () => {
 
   afterEach(() => {
     db.close();
+  });
+
+  afterAll(() => {
+    mock.module('../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
   });
 
   it('(a) numeric anchor passed as JS number returns the 7-id window around the anchor', async () => {
