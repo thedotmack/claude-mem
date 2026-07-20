@@ -36,15 +36,24 @@ wrong failure mode for an emergency brake (full rationale in
 
 ### 1.2 Token verification (`TOKEN_VERIFY_URL`)
 
-`wrangler.jsonc` ships a placeholder (`https://cmem.ai/api/pro/sync/verify`).
-Confirm the real path with the cmem.ai side before first deploy. HARD
-CONTRACT (enforced by `src/index.ts:authenticate`): on 2xx the endpoint MUST
+The Pro route exists at `https://cmem.ai/api/pro/sync/verify`. Deployment order
+is load-bearing: deploy the Pro route first, canary it with a test-account token
+and exact `X-User-Id` binding, then configure this URL and activate SyncHub.
+Never activate the Hub while the route is absent or uncanaried. HARD CONTRACT
+(enforced by `src/index.ts:authenticateRequest`): on 2xx the endpoint MUST
 return the canonical user id the token belongs to, as JSON `{userId}` or
-`{user_id}`. Without that binding any valid subscriber token could act as
-any claimed user id.
+`{user_id}`. Without that binding any valid subscriber token could act as any
+claimed user id.
 
-`DEV_ALLOW_ANY_TOKEN` MUST stay `""` in production (it is only set in
-`.dev.vars` for local work).
+SyncHub is the sole positive cache in this composed verification path. The Pro
+route performs a fresh identity lookup, while `AUTH_CACHE` positives are fixed
+at 60 seconds (Cloudflare KV's minimum). This preserves the dashboard promise
+that rotating a setup token stops uploads within 60 seconds and bounds any
+time-limited entitlement overrun to the same interval.
+
+There is no local or production authentication bypass. Vitest intercepts the
+verify request with Miniflare's mocked outbound service; manual `wrangler dev`
+sessions require a reachable verifier and a test-account token.
 
 ---
 

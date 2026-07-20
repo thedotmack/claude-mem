@@ -42,15 +42,12 @@
 		"crons": ["7 * * * *"]
 	},
 	"vars": {
-		// PLACEHOLDER — cmem.ai token-verify endpoint. The repo documents the
-		// sync base URL (https://cmem.ai/api/pro/sync) but no verify path;
-		// confirm the exact path with the maintainer before deploying.
+		// Implemented Pro verifier dependency. Deploy and canary this route first;
+		// activate SyncHub only after the production route passes token/user binding.
 		"TOKEN_VERIFY_URL": "https://cmem.ai/api/pro/sync/verify",
-		// Positive-verdict cache TTL for AUTH_CACHE (seconds, min 60).
-		"AUTH_CACHE_TTL_SECONDS": "300",
-		// Dev-only escape hatch: set to "true" (e.g. in .dev.vars) to skip
-		// upstream token verification. MUST stay empty in production.
-		"DEV_ALLOW_ANY_TOKEN": "",
+		// Positive-verdict cache TTL. Runtime clamps this to exactly 60 seconds:
+		// Cloudflare KV's minimum and the public token-rotation bound coincide.
+		"AUTH_CACHE_TTL_SECONDS": "60",
 
 		// --- Kill switch (src/kill-switch.ts) ---------------------------------
 		// Per-isolate cache TTL (ms) for the kill-switch KV read. Empty ⇒ the

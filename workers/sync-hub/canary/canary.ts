@@ -33,8 +33,8 @@
  *                 [--cycles N=0 (0 = forever)]
  *                 [--flood] [--flood-requests N=5000]
  *   Env fallbacks: CANARY_HUB_URL, CANARY_USER_ID, CANARY_TOKEN.
- *   Defaults target `wrangler dev` (http://localhost:8787) with
- *   DEV_ALLOW_ANY_TOKEN=true (.dev.vars), where any token passes.
+ *   The URL defaults to `wrangler dev` (http://localhost:8787). Supply a
+ *   verifier-backed test user's CANARY_USER_ID and CANARY_TOKEN.
  *
  * OUTPUT (one JSON object per line)
  *   {"event":"cycle","cycle":3,"origin":"canary-dev-a","converged":true,

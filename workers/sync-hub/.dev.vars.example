@@ -1,8 +1,6 @@
 # Local development overrides for `wrangler dev` (copy to .dev.vars — gitignored).
-#
-# Skip upstream token verification locally (any bearer token accepted).
-# NEVER set this in production — wrangler.jsonc ships it empty.
-DEV_ALLOW_ANY_TOKEN=true
+# Authentication always uses TOKEN_VERIFY_URL. Vitest supplies a mocked verifier;
+# manual wrangler-dev sessions need a reachable verifier and a test-account token.
 
 # Per-request kill-switch reads so local flag flips (wrangler kv key
 # put/delete --local) are visible immediately — required by

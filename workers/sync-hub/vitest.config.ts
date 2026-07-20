@@ -175,10 +175,10 @@ export default defineConfig({
 			wrangler: { configPath: "./wrangler.jsonc" },
 			miniflare: {
 				bindings: {
-					// Force the REAL auth path in tests: explicitly override any
-					// local .dev.vars (which sets DEV_ALLOW_ANY_TOKEN=true for
-					// `wrangler dev`) so CI and local runs behave identically.
-					DEV_ALLOW_ANY_TOKEN: "",
+					// A removed pre-launch build accepted this legacy binding as an
+					// auth bypass. Supplying it only in Miniflare proves production
+					// code ignores it; outbound verification remains mocked below.
+					DEV_ALLOW_ANY_TOKEN: "true",
 					// Per-request kill-switch reads: SELF tests flip the KV flag
 					// and must observe it on the very next request.
 					KILL_SWITCH_CACHE_MS: "0",

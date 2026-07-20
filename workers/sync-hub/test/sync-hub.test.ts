@@ -6,7 +6,7 @@
  *   - chunked-insert correctness at the 100-bound-param boundary
  *   - compaction alarm via runDurableObjectAlarm
  *   - mutation-op validation (refuse unparseable remap_project)
- *   - front-Worker HTTP round-trip via SELF (DEV_ALLOW_ANY_TOKEN binding)
+ *   - front-Worker HTTP round-trip via SELF with a mocked verifier
  *
  * Each test targets its own user (getByName isolation) so state never bleeds.
  */
@@ -386,8 +386,7 @@ describe("compaction alarm", () => {
 
 describe("front Worker (SELF)", () => {
 	const base = "https://sync-hub.test";
-	// The real auth path runs in tests (DEV_ALLOW_ANY_TOKEN forced off in
-	// vitest.config.ts); the mocked verify endpoint binds this token to
+	// The real auth path runs in tests; the mocked verify endpoint binds this token to
 	// user-http. Dedicated auth-branch coverage lives in test/auth.test.ts.
 	const headers = {
 		Authorization: "Bearer valid-for:user-http",

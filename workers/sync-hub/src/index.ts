@@ -32,9 +32,10 @@ import { runWatchdog } from "./watchdog";
 // The DO class must be exported from the Worker entrypoint.
 export { SyncHub };
 
-/** KV minimum expirationTtl is 60 seconds. */
+/** KV minimum expirationTtl and the public token-rotation bound are both 60s. */
 const MIN_CACHE_TTL_SECONDS = 60;
-const DEFAULT_CACHE_TTL_SECONDS = 300;
+const MAX_CACHE_TTL_SECONDS = 60;
+const DEFAULT_CACHE_TTL_SECONDS = 60;
 
 /**
  * Batch caps for POST /v1/sync/ops, sized against live Cloudflare docs
@@ -83,6 +84,30 @@ interface AuthFail {
 	response: Response;
 }
 
+/** Narrow I/O seam for auth failure-path tests; production uses closed defaults. */
+export interface AuthDependencies {
+	readCachedVerdict(cacheKey: string): Promise<string | null>;
+	cacheVerifiedVerdict(cacheKey: string, ttlSeconds: number): Promise<void>;
+	verifyToken(request: Request): Promise<Response>;
+	logCacheFailure(operation: "get" | "put", error: unknown): void;
+}
+
+function defaultAuthDependencies(env: Env): AuthDependencies {
+	return {
+		readCachedVerdict: (cacheKey) => env.AUTH_CACHE.get(cacheKey),
+		cacheVerifiedVerdict: (cacheKey, ttlSeconds) =>
+			env.AUTH_CACHE.put(cacheKey, "1", { expirationTtl: ttlSeconds }),
+		verifyToken: (request) => fetch(request),
+		logCacheFailure(operation, error) {
+			// Never log the cache key: it is derived from a bearer credential.
+			console.warn("sync-hub auth cache unavailable:", {
+				operation,
+				errorName: error instanceof Error ? error.name : "unknown",
+			});
+		},
+	};
+}
+
 /** SHA-256 the (userId, token) pair so raw tokens never appear as KV keys. */
 async function verdictCacheKey(userId: string, token: string): Promise<string> {
 	const digest = await crypto.subtle.digest(
@@ -115,7 +140,10 @@ async function canonicalUserId(res: Response): Promise<string | null> {
 function cacheTtlSeconds(env: Env): number {
 	const parsed = Number.parseInt(env.AUTH_CACHE_TTL_SECONDS ?? "", 10);
 	if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_CACHE_TTL_SECONDS;
-	return Math.max(MIN_CACHE_TTL_SECONDS, parsed);
+	return Math.min(
+		MAX_CACHE_TTL_SECONDS,
+		Math.max(MIN_CACHE_TTL_SECONDS, parsed),
+	);
 }
 
 /**
@@ -123,8 +151,8 @@ function cacheTtlSeconds(env: Env): number {
  * token that does not belong to the claimed X-User-Id is 403, and an
  * unreachable verify endpoint is 503 (never silently allowed through).
  *
- * HARD CONTRACT for the verify endpoint (TOKEN_VERIFY_URL) — a deploy
- * prerequisite alongside the placeholder URL itself:
+ * HARD CONTRACT for the implemented verify endpoint (TOKEN_VERIFY_URL), which
+ * must be deployed and canaried before this Worker is activated:
  *
  *   The endpoint MUST return, on a 2xx response, the canonical user id the
  *   token belongs to, as JSON `{userId}` or `{user_id}` (and/or answer
@@ -136,7 +164,11 @@ function cacheTtlSeconds(env: Env): number {
  *   the forged pair. A verdict is therefore never cached unless it was
  *   bound to the canonical id.
  */
-async function authenticate(request: Request, env: Env): Promise<AuthOk | AuthFail> {
+export async function authenticateRequest(
+	request: Request,
+	env: Env,
+	dependencies: AuthDependencies = defaultAuthDependencies(env),
+): Promise<AuthOk | AuthFail> {
 	const authHeader = request.headers.get("Authorization") ?? "";
 	const userId = (request.headers.get("X-User-Id") ?? "").trim();
 	// Trim device ids: "dev-a " and "dev-a" must be the same device — a stray
@@ -156,26 +188,30 @@ async function authenticate(request: Request, env: Env): Promise<AuthOk | AuthFa
 		return { ok: false, response: errorResponse(401, "missing X-User-Id header") };
 	}
 
-	// Dev-only bypass for local `wrangler dev` / tests. Empty in production.
-	if (env.DEV_ALLOW_ANY_TOKEN === "true") {
-		return { ok: true, userId, deviceId };
-	}
-
 	const cacheKey = await verdictCacheKey(userId, token);
-	const cached = await env.AUTH_CACHE.get(cacheKey);
+	let cached: string | null = null;
+	try {
+		cached = await dependencies.readCachedVerdict(cacheKey);
+	} catch (error) {
+		// KV is an optimization, not an authentication authority. A read outage
+		// becomes a cache miss and still requires the upstream verifier to pass.
+		dependencies.logCacheFailure("get", error);
+	}
 	if (cached === "1") {
 		return { ok: true, userId, deviceId };
 	}
 
 	let verifyRes: Response;
 	try {
-		verifyRes = await fetch(env.TOKEN_VERIFY_URL, {
-			method: "GET",
-			headers: {
-				Authorization: `Bearer ${token}`,
-				"X-User-Id": userId,
-			},
-		});
+		verifyRes = await dependencies.verifyToken(
+			new Request(env.TOKEN_VERIFY_URL, {
+				method: "GET",
+				headers: {
+					Authorization: `Bearer ${token}`,
+					"X-User-Id": userId,
+				},
+			}),
+		);
 	} catch {
 		return { ok: false, response: errorResponse(503, "token verification unreachable") };
 	}
@@ -197,9 +233,15 @@ async function authenticate(request: Request, env: Env): Promise<AuthOk | AuthFa
 			};
 		}
 		// Cache positive verdicts only, and only after the user binding above —
-		// a newly-revoked token lingers at most TTL seconds; a newly-issued
+		// a newly-revoked token lingers at most 60 seconds; a newly-issued
 		// token is never wrongly rejected; a forged pair is never pinned.
-		await env.AUTH_CACHE.put(cacheKey, "1", { expirationTtl: cacheTtlSeconds(env) });
+		try {
+			await dependencies.cacheVerifiedVerdict(cacheKey, cacheTtlSeconds(env));
+		} catch (error) {
+			// A verified request must not fail because the positive-verdict cache
+			// could not be populated. The next request will verify upstream again.
+			dependencies.logCacheFailure("put", error);
+		}
 		return { ok: true, userId, deviceId };
 	}
 	if (verifyRes.status === 401 || verifyRes.status === 403) {
@@ -328,7 +370,7 @@ export default {
 		// unstamped error response must never read as "switch cleared".
 		const killSwitch = await readKillSwitch(env);
 
-		const auth = await authenticate(request, env);
+		const auth = await authenticateRequest(request, env);
 		if (!auth.ok) {
 			if (killSwitch.tripped) {
 				auth.response.headers.set(SYNC_MODE_HEADER, SYNC_MODE_POLL);

@@ -4,8 +4,9 @@
 //
 // REQUIRES a running local hub:
 //   cd workers/sync-hub && bunx wrangler dev --var KILL_SWITCH_CACHE_MS:0
-// (.dev.vars sets DEV_ALLOW_ANY_TOKEN=true so any token authenticates;
-// KILL_SWITCH_CACHE_MS:0 makes flag flips visible per-request.)
+// Authentication always uses TOKEN_VERIFY_URL; supply CANARY_USER_ID and
+// CANARY_TOKEN for a verifier-backed test account. KILL_SWITCH_CACHE_MS:0 makes
+// flag flips visible per request.
 //
 // Flow (all assertions fatal):
 //   1. Device A = CloudSync (push drain), device B = SyncClient (pull loop +
@@ -34,8 +35,8 @@ import { CloudSync } from '../src/services/sync/CloudSync.js';
 
 const HUB = process.env.CANARY_HUB_URL ?? 'http://localhost:8787';
 const SYNC_HUB_DIR = resolve(import.meta.dir, '../workers/sync-hub');
-const USER = `e2e-kill-${Date.now().toString(36)}`;
-const TOKEN = 'e2e-token';
+const USER = process.env.CANARY_USER_ID ?? '';
+const TOKEN = process.env.CANARY_TOKEN ?? '';
 const DEV_A = 'e2e-dev-a';
 const DEV_B = 'e2e-dev-b';
 const KILL_KEY = 'control:kill-switch';
@@ -85,6 +86,9 @@ function seedObservation(db: Database, title: string): void {
 }
 
 async function main(): Promise<void> {
+	if (!USER || !TOKEN) {
+		fail('CANARY_USER_ID and CANARY_TOKEN are required');
+	}
   // 0. Hub reachable?
   const probe = await fetch(`${HUB}/v1/sync/status`, {
     headers: { 'Authorization': `Bearer ${TOKEN}`, 'X-User-Id': USER, 'X-Device-Id': DEV_A },
