@@ -139,6 +139,11 @@ function formatFileTimeline(
 export const fileContextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     if (input.agentId) {
+      logger.debug('HOOK', 'Skipping file context: subagent context detected', {
+        sessionId: input.sessionId,
+        agentId: input.agentId,
+        agentType: input.agentType
+      });
       return { continue: true, suppressOutput: true };
     }
 
