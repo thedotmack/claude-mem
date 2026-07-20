@@ -4,6 +4,8 @@ import { PassThrough } from 'node:stream';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import * as realMcpClient from '@modelcontextprotocol/sdk/client/index.js';
+import * as realStdioClient from '@modelcontextprotocol/sdk/client/stdio.js';
 
 // Capture real exports before mock.module mutates the live namespace, then
 // re-register the snapshots in afterAll so these mocks do not leak into later
@@ -13,6 +15,8 @@ import * as realPaths from '../../../src/shared/paths.js';
 import * as realLogger from '../../../src/utils/logger.js';
 import * as realSupervisor from '../../../src/supervisor/index.ts';
 import * as realEnvSanitizer from '../../../src/supervisor/env-sanitizer.js';
+const realMcpClientSnapshot = { ...realMcpClient };
+const realStdioClientSnapshot = { ...realStdioClient };
 const realSettingsSnapshot = { ...realSettingsDefaultsManager };
 const realPathsSnapshot = { ...realPaths };
 const realLoggerSnapshot = { ...realLogger };
@@ -288,6 +292,8 @@ afterAll(() => {
   if (realProcessPlatform) {
     Object.defineProperty(process, 'platform', realProcessPlatform);
   }
+  mock.module('@modelcontextprotocol/sdk/client/index.js', () => realMcpClientSnapshot);
+  mock.module('@modelcontextprotocol/sdk/client/stdio.js', () => realStdioClientSnapshot);
   mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
   mock.module('../../../src/shared/paths.js', () => realPathsSnapshot);
   mock.module('../../../src/utils/logger.js', () => realLoggerSnapshot);
