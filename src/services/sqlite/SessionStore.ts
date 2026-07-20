@@ -2295,13 +2295,18 @@ export class SessionStore {
     prompts: any[];
   } {
     const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : undefined;
-    const buildScope = (rowAlias: string, sessionAlias: string): { clause: string; params: any[] } => {
+    const buildScope = (rowAlias: string, sessionAlias: string, includeMergedProject: boolean = false): { clause: string; params: any[] } => {
       const conditions: string[] = [];
       const params: any[] = [];
 
       if (project) {
-        conditions.push(`${rowAlias}.project = ?`);
-        params.push(project);
+        if (includeMergedProject) {
+          conditions.push(`(${rowAlias}.project = ? OR ${rowAlias}.merged_into_project = ?)`);
+          params.push(project, project);
+        } else {
+          conditions.push(`${rowAlias}.project = ?`);
+          params.push(project);
+        }
       }
 
       if (normalizedPlatformSource) {
@@ -2314,8 +2319,8 @@ export class SessionStore {
         params
       };
     };
-    const observationScope = buildScope('o', 'src');
-    const summaryScope = buildScope('ss', 'src');
+    const observationScope = buildScope('o', 'src', true);
+    const summaryScope = buildScope('ss', 'src', true);
     const promptScope = buildScope('s', 's');
 
     let startEpoch: number;

@@ -79,6 +79,25 @@ describe('merged project ID hydration', () => {
       .toEqual([nativeSummaryId]);
   });
 
+  it('keeps redirected timeline context under the merged parent project', () => {
+    const observationId = seedObservation('timeline-observation', 'parent/worktree', 'redirected observation');
+    const summaryId = seedSummary('timeline-summary', 'parent/worktree', 'redirected summary');
+    store.db.prepare('UPDATE observations SET merged_into_project = ? WHERE id = ?').run('parent', observationId);
+    store.db.prepare('UPDATE session_summaries SET merged_into_project = ? WHERE id = ?').run('parent', summaryId);
+
+    const timeline = store.getTimelineAroundObservation(
+      observationId,
+      1_700_000_000_000,
+      0,
+      0,
+      'parent'
+    );
+
+    expect(timeline.observations.map(result => result.id)).toEqual([observationId]);
+    expect(timeline.sessions.map(result => result.id)).toEqual([summaryId]);
+    expect(timeline.prompts).toEqual([]);
+  });
+
   it('keeps prompt hydration native-session scoped on this target', () => {
     const parentSessionId = store.createSDKSession('parent-prompt-session', 'parent', 'prompt');
     const foreignSessionId = store.createSDKSession('foreign-prompt-session', 'other', 'prompt');
