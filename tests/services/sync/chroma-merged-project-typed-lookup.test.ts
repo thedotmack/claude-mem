@@ -12,6 +12,12 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
         if (name === 'chroma_get_documents') {
           const where = args.where as { $and?: Array<Record<string, unknown>> };
           const docType = where.$and?.find(condition => condition.doc_type)?.doc_type;
+          if (docType === 'observation') {
+            return {
+              ids: ['obs_9_narrative'],
+              metadatas: [{ sqlite_id: 9, doc_type: 'observation' }]
+            };
+          }
           if (docType === 'session_summary') {
             return {
               ids: ['summary_7_request'],
@@ -69,5 +75,28 @@ describe('ChromaSync merged project hydration', () => {
     expect(calls.filter(call => call.name === 'chroma_update_documents')).toHaveLength(1);
     expect(calls.find(call => call.name === 'chroma_update_documents')?.args.ids)
       .toEqual(['summary_7_request']);
+  });
+
+  it('patches observation documents with an observation-typed lookup', async () => {
+    await new ChromaSync('claude-mem').updateMergedIntoProject(
+      [{ docType: 'observation', sqliteId: 9 }],
+      'parent'
+    );
+
+    const getCall = calls.find(call => call.name === 'chroma_get_documents');
+    expect(getCall?.args.where).toEqual({
+      $and: [
+        { doc_type: 'observation' },
+        { sqlite_id: { $in: [9] } }
+      ]
+    });
+
+    const updateCall = calls.find(call => call.name === 'chroma_update_documents');
+    expect(updateCall?.args.ids).toEqual(['obs_9_narrative']);
+    expect(updateCall?.args.metadatas).toEqual([{
+      sqlite_id: 9,
+      doc_type: 'observation',
+      merged_into_project: 'parent'
+    }]);
   });
 });
