@@ -1744,8 +1744,8 @@ export class SessionStore {
     const additionalConditions: string[] = [];
 
     if (project) {
-      additionalConditions.push('o.project = ?');
-      params.push(project);
+      additionalConditions.push('(o.project = ? OR o.merged_into_project = ?)');
+      params.push(project, project);
     }
 
     if (platformSource) {
@@ -2190,8 +2190,8 @@ export class SessionStore {
     const additionalConditions: string[] = [];
 
     if (project) {
-      additionalConditions.push('ss.project = ?');
-      params.push(project);
+      additionalConditions.push('(ss.project = ? OR ss.merged_into_project = ?)');
+      params.push(project, project);
     }
 
     if (platformSource) {
