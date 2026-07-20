@@ -1,4 +1,8 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
+
+import * as realModeManager from '../../../src/services/domain/ModeManager.js';
+
+const realModeManagerSnapshot = { ...realModeManager };
 
 mock.module('../../../src/services/domain/ModeManager.js', () => ({
   ModeManager: {
@@ -89,6 +93,10 @@ function createTestConfig(overrides: Partial<ContextConfig> = {}): ContextConfig
     ...overrides,
   };
 }
+
+afterAll(() => {
+  mock.module('../../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
+});
 
 describe('AgentFormatter', () => {
   describe('renderAgentHeader', () => {

@@ -1,7 +1,13 @@
 
-import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import type { Request, Response } from 'express';
 import { logger } from '../../../../src/utils/logger.js';
+
+import * as realPaths from '../../../../src/shared/paths.js';
+import * as realWorkerUtils from '../../../../src/shared/worker-utils.js';
+
+const realPathsSnapshot = { ...realPaths };
+const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 
 mock.module('../../../../src/shared/paths.js', () => ({
   getPackageRoot: () => '/tmp/test',
@@ -87,6 +93,11 @@ describe('DataRoutes Type Coercion', () => {
   afterEach(() => {
     loggerSpies.forEach(spy => spy.mockRestore());
     mock.restore();
+  });
+
+  afterAll(() => {
+    mock.module('../../../../src/shared/paths.js', () => realPathsSnapshot);
+    mock.module('../../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
   });
 
   describe('handleGetObservationsByIds — ids coercion', () => {
