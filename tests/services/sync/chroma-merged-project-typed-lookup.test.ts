@@ -1,6 +1,8 @@
-import { afterEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, afterEach, describe, expect, it, mock } from 'bun:test';
+import * as realChromaMcpManager from '../../../src/services/sync/ChromaMcpManager.js';
 
 const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+const realChromaMcpManagerSnapshot = { ...realChromaMcpManager };
 
 mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
   ChromaMcpManager: {
@@ -40,6 +42,10 @@ import { ChromaSync } from '../../../src/services/sync/ChromaSync.js';
 
 afterEach(() => {
   calls.length = 0;
+});
+
+afterAll(() => {
+  mock.module('../../../src/services/sync/ChromaMcpManager.js', () => realChromaMcpManagerSnapshot);
 });
 
 describe('ChromaSync merged project hydration', () => {

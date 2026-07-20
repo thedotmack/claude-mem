@@ -1,10 +1,12 @@
-import { afterEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, afterEach, describe, expect, it, mock } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
+import * as realChromaMcpManager from '../../../src/services/sync/ChromaMcpManager.js';
 
 const chromaCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+const realChromaMcpManagerSnapshot = { ...realChromaMcpManager };
 
 mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
   ChromaMcpManager: {
@@ -40,6 +42,10 @@ afterEach(() => {
   }
   tempRoot = undefined;
   mainRepoForCleanup = undefined;
+});
+
+afterAll(() => {
+  mock.module('../../../src/services/sync/ChromaMcpManager.js', () => realChromaMcpManagerSnapshot);
 });
 
 function git(cwd: string, ...args: string[]): void {
