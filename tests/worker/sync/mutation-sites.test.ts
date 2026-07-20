@@ -37,12 +37,12 @@ function git(cwd: string, ...args: string[]): void {
 
 interface OutboxRow {
   op_uuid: string;
-  rev: number;
+  rev: string;
   body: any;
 }
 
 function outboxRows(db: Database): OutboxRow[] {
-  return (db.prepare('SELECT op_uuid, rev, body FROM sync_outbox ORDER BY id').all() as Array<{ op_uuid: string; rev: number; body: string }>)
+  return (db.prepare('SELECT op_uuid, CAST(rev AS TEXT) AS rev, body FROM sync_outbox ORDER BY id').all() as Array<{ op_uuid: string; rev: string; body: string }>)
     .map(r => ({ op_uuid: r.op_uuid, rev: r.rev, body: JSON.parse(r.body) }));
 }
 
@@ -76,7 +76,7 @@ describe('mutation sites', () => {
 
       const ops = outboxRows(db);
       expect(ops.length).toBe(1);
-      expect(ops[0].rev).toBe(1); // rev 1 always — REV MINTING RULES
+      expect(ops[0].rev).toBe('1'); // rev 1 always — REV MINTING RULES
       expect(ops[0].op_uuid).toMatch(/^[0-9a-f-]{36}$/); // minted at enqueue, stable across retries
       expect(ops[0].body).toEqual({
         op: 'set_title',
@@ -136,7 +136,7 @@ describe('mutation sites', () => {
 
     afterEach(() => db.close());
 
-    function promptRows(): Array<{ id: number; sync_rev: number; synced_at: number | null }> {
+    function promptRows(): Array<{ id: number; sync_rev: string; synced_at: number | null }> {
       return db.prepare('SELECT id, sync_rev, synced_at FROM user_prompts ORDER BY id').all() as any;
     }
 
@@ -145,7 +145,7 @@ describe('mutation sites', () => {
 
       // Both prompts: sync_rev 1 → 2, synced_at NULL (row lane re-push at rev 2).
       for (const row of promptRows()) {
-        expect(row.sync_rev).toBe(2);
+        expect(row.sync_rev).toBe('2');
         expect(row.synced_at).toBeNull();
       }
 
@@ -154,7 +154,7 @@ describe('mutation sites', () => {
       const byTarget = new Map(ops.map(o => [o.body.target.origin_local_id, o]));
       for (const promptId of ['1', '2']) {
         const op = byTarget.get(promptId)!;
-        expect(op.rev).toBe(2); // rev = post-bump sync_rev — REV MINTING RULES
+        expect(op.rev).toBe('2'); // rev = post-bump sync_rev — REV MINTING RULES
         expect(op.body.op).toBe('set_prompt_session');
         // NULL = "this device"; CloudSync substitutes its resolved id at push
         // time (single identity source).
@@ -175,13 +175,13 @@ describe('mutation sites', () => {
       // Same id again: no change, no bump, no new ops.
       store.ensureMemorySessionIdRegistered(1, 'mem-late');
       expect(outboxRows(db).length).toBe(2);
-      for (const row of promptRows()) expect(row.sync_rev).toBe(2);
+      for (const row of promptRows()) expect(row.sync_rev).toBe('2');
     });
 
     it('clearing the memory id emits nothing', () => {
       store.updateMemorySessionId(1, null);
       expect(outboxRows(db).length).toBe(0);
-      for (const row of promptRows()) expect(row.sync_rev).toBe(1);
+      for (const row of promptRows()) expect(row.sync_rev).toBe('1');
     });
 
     it('leaves replica prompt rows untouched (their repair travels from their origin device)', () => {
@@ -193,7 +193,7 @@ describe('mutation sites', () => {
       store.updateMemorySessionId(1, 'mem-late');
 
       const replica = db.prepare(`SELECT sync_rev, synced_at FROM user_prompts WHERE origin_local_id = '55'`).get() as any;
-      expect(replica.sync_rev).toBe(1);
+      expect(replica.sync_rev).toBe('1');
       expect(replica.synced_at).toBe(999);
       // Ops only for the two native prompts.
       expect(outboxRows(db).length).toBe(2);
@@ -244,23 +244,23 @@ describe('mutation sites', () => {
         { merged_into_project: 'parent' }
       );
 
-      expect(result).toEqual({ observations: 2, summaries: 1, rev: 4 }); // 1 + MAX(1,3,2)
+      expect(result).toEqual({ observations: 2, summaries: 1, rev: '4' }); // 1 + MAX(1,3,2)
 
       const remapped = db.prepare(`
         SELECT merged_into_project, sync_rev, synced_at FROM observations WHERE project = 'parent/wt' ORDER BY id
       `).all() as any[];
       for (const row of remapped) {
         expect(row.merged_into_project).toBe('parent');
-        expect(row.sync_rev).toBe(4);
+        expect(row.sync_rev).toBe('4');
         expect(row.synced_at).toBeNull(); // native rows re-push at rev R
       }
       const untouched = db.prepare(`SELECT sync_rev, merged_into_project FROM observations WHERE project = 'other-project'`).get() as any;
-      expect(untouched.sync_rev).toBe(9);
+      expect(untouched.sync_rev).toBe('9');
       expect(untouched.merged_into_project).toBeNull();
 
       const ops = outboxRows(db);
       expect(ops.length).toBe(1);
-      expect(ops[0].rev).toBe(4);
+      expect(ops[0].rev).toBe('4');
       expect(ops[0].body).toEqual({
         op: 'remap_project',
         where: { project: 'parent/wt', merged_into_project_is_null: true },
@@ -277,11 +277,11 @@ describe('mutation sites', () => {
         { project: 'parent/wt', merged_into_project_is_null: true },
         { merged_into_project: 'parent' }
       );
-      expect(result.rev).toBe(3);
+      expect(result.rev).toBe('3');
 
       const replica = db.prepare(`SELECT sync_rev, synced_at, merged_into_project FROM observations WHERE origin_local_id = '77'`).get() as any;
       expect(replica.merged_into_project).toBe('parent'); // remapped locally
-      expect(replica.sync_rev).toBe(3);
+      expect(replica.sync_rev).toBe('3');
       expect(replica.synced_at).toBe(555); // never queued for push under OUR identity
     });
 
@@ -289,11 +289,11 @@ describe('mutation sites', () => {
       seedObs('parent/wt', 2, 100);
 
       const miss = emitRemapProject(db, { memory_session_id: 'mem-none' }, { project: 'newproj' });
-      expect(miss).toEqual({ observations: 0, summaries: 0, rev: 0 });
+      expect(miss).toEqual({ observations: 0, summaries: 0, rev: '0' });
       expect(outboxRows(db).length).toBe(0);
 
       const hit = emitRemapProject(db, { memory_session_id: 'mem-1' }, { project: 'newproj' });
-      expect(hit).toEqual({ observations: 1, summaries: 0, rev: 3 });
+      expect(hit).toEqual({ observations: 1, summaries: 0, rev: '3' });
       const ops = outboxRows(db);
       expect(ops.length).toBe(1);
       expect(ops[0].body).toEqual({
@@ -303,7 +303,7 @@ describe('mutation sites', () => {
       });
       const row = db.prepare(`SELECT project, sync_rev, synced_at FROM observations WHERE id = 1`).get() as any;
       expect(row.project).toBe('newproj');
-      expect(row.sync_rev).toBe(3);
+      expect(row.sync_rev).toBe('3');
       expect(row.synced_at).toBeNull();
     });
 
@@ -352,12 +352,12 @@ describe('mutation sites', () => {
     try {
       const summary = db.prepare('SELECT merged_into_project, sync_rev, synced_at FROM session_summaries WHERE id = 1').get() as any;
       expect(summary.merged_into_project).toBe('mainrepo');
-      expect(summary.sync_rev).toBe(3); // R = 1 + MAX(2)
+      expect(summary.sync_rev).toBe('3'); // R = 1 + MAX(2)
       expect(summary.synced_at).toBeNull();
 
       const ops = outboxRows(db);
       expect(ops.length).toBe(1);
-      expect(ops[0].rev).toBe(3);
+      expect(ops[0].rev).toBe('3');
       expect(ops[0].body).toEqual({
         op: 'remap_project',
         where: { project: 'mainrepo/wt', merged_into_project_is_null: true },
@@ -408,12 +408,12 @@ describe('mutation sites', () => {
 
       const obs = db.prepare('SELECT project, sync_rev, synced_at FROM observations WHERE id = 1').get() as any;
       expect(obs.project).toBe('realproj');
-      expect(obs.sync_rev).toBe(2); // R = 1 + MAX(1)
+      expect(obs.sync_rev).toBe('2'); // R = 1 + MAX(1)
       expect(obs.synced_at).toBeNull();
 
       const ops = outboxRows(db);
       expect(ops.length).toBe(1);
-      expect(ops[0].rev).toBe(2);
+      expect(ops[0].rev).toBe('2');
       expect(ops[0].body).toEqual({
         op: 'remap_project',
         where: { memory_session_id: 'mem-1' },

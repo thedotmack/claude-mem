@@ -88,20 +88,20 @@ function promptBody(overrides: Record<string, unknown> = {}): Record<string, unk
 }
 
 function op(
-  seq: number,
+  seq: number | string,
   kind: SyncOp['kind'],
   originId: string,
   body: Record<string, unknown> | string,
-  opts: { device?: string; rev?: number } = {}
+  opts: { device?: string; rev?: number | string } = {}
 ): SyncOp {
   return {
-    seq,
+    seq: String(seq),
     kind,
     origin_device: opts.device ?? REMOTE,
     origin_id: originId,
-    rev: opts.rev ?? 1,
+    rev: String(opts.rev ?? 1),
     body: typeof body === 'string' ? body : JSON.stringify(body),
-    server_ts: REMOTE_EPOCH + seq,
+    server_ts: REMOTE_EPOCH + (typeof seq === 'number' ? seq : 0),
   };
 }
 
@@ -180,13 +180,14 @@ describe('SyncApply', () => {
   describe('migration v41', () => {
     it('adds origin columns, sync_rev, the partial unique index, and sync_state', () => {
       for (const table of ['observations', 'session_summaries', 'user_prompts']) {
-        const cols = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string; notnull: number; dflt_value: string | null }>;
+        const cols = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string; type: string; notnull: number; dflt_value: string | null }>;
         const names = new Set(cols.map(c => c.name));
         expect(names.has('origin_device_id')).toBe(true);
         expect(names.has('origin_local_id')).toBe(true);
         const syncRev = cols.find(c => c.name === 'sync_rev')!;
+        expect(syncRev.type).toBe('TEXT');
         expect(syncRev.notnull).toBe(1);
-        expect(syncRev.dflt_value).toBe('1');
+        expect(syncRev.dflt_value).toBe("'1'");
 
         const indexes = db.query(`PRAGMA index_list(${table})`).all() as Array<{ name: string; unique: number; partial: number }>;
         const originIndex = indexes.find(i => i.name === `ux_${table}_origin`)!;
@@ -220,10 +221,10 @@ describe('SyncApply', () => {
       skippedOwn: 0,
       skippedStale: 0,
       skippedCursor: 0,
-      cursor: 3,
+      cursor: '3',
       epochReset: false,
     });
-    expect(apply.getCursor()).toBe(3);
+    expect(apply.getCursor()).toBe('3');
     expect(apply.getEpoch()).toBe('epoch-1');
 
     const obs = db.prepare(`SELECT * FROM observations WHERE origin_device_id = ? AND origin_local_id = '11'`).get(REMOTE) as any;
@@ -231,7 +232,7 @@ describe('SyncApply', () => {
     expect(obs.created_at_epoch).toBe(REMOTE_EPOCH);   // remote timestamp preserved
     expect(obs.created_at).toBe(REMOTE_ISO);
     expect(obs.synced_at).toBe(FIXED_NOW);             // NEVER NULL on an applied row
-    expect(obs.sync_rev).toBe(1);
+    expect(obs.sync_rev).toBe('1');
 
     const sum = db.prepare(`SELECT * FROM session_summaries WHERE origin_device_id = ? AND origin_local_id = '21'`).get(REMOTE) as any;
     expect(sum.request).toBe('Remote request');
@@ -283,15 +284,15 @@ describe('SyncApply', () => {
     // from seq 0 over rows that already exist.
     const reset = apply.applyOps(batch, { epoch: 'epoch-2' });
     expect(reset.epochReset).toBe(true);
-    expect(apply.getCursor()).toBe(0);
+    expect(apply.getCursor()).toBe('0');
 
     const replay = apply.applyOps(batch, { epoch: 'epoch-2' });
     expect(replay.epochReset).toBe(false);
     expect(replay.applied).toBe(0);
     expect(replay.skippedStale).toBe(3); // same rev = same content = skip
-    expect(replay.cursor).toBe(3);
+    expect(replay.cursor).toBe('3');
     expect(tables.map(snapshot)).toEqual(first);
-    expect(apply.getCursor()).toBe(3);
+    expect(apply.getCursor()).toBe('3');
     expect(apply.getEpoch()).toBe('epoch-2');
   });
 
@@ -314,12 +315,120 @@ describe('SyncApply', () => {
     expect(count('session_summaries')).toBe(0);
     expect(count('user_prompts')).toBe(0);
     expect(count('sdk_sessions')).toBe(1); // stub session rolled back too
-    expect(apply.getCursor()).toBe(0);
+    expect(apply.getCursor()).toBe('0');
 
     // The same page can be retried after the poison op is fixed.
     const result = apply.applyOps(remoteBatch());
     expect(result.applied).toBe(3);
-    expect(apply.getCursor()).toBe(3);
+    expect(apply.getCursor()).toBe('3');
+  });
+
+  it('rolls back rows and cursor when an HTTP page has a first-seq or internal gap', () => {
+    const apply = makeApply();
+    expect(() => apply.applyOps([
+      op(1, 'observation', 'gap-1', obsBody()),
+      op(3, 'observation', 'gap-3', obsBody({ title: 'must roll back' })),
+    ], { requireContiguous: true })).toThrow(/sequence gap.*expected 2, got 3/);
+    expect(apply.getCursor()).toBe('0');
+    expect(db.prepare("SELECT COUNT(*) AS n FROM observations WHERE origin_local_id IN ('gap-1','gap-3')").get())
+      .toEqual({ n: 0 });
+
+    expect(() => apply.applyOps([
+      op(2, 'observation', 'first-gap', obsBody()),
+    ], { requireContiguous: true })).toThrow(/sequence gap.*expected 1, got 2/);
+    expect(apply.getCursor()).toBe('0');
+  });
+
+  it('rejects stale-prefixed HTTP pages before cursor skipping and preserves the transaction', () => {
+    const apply = makeApply();
+    apply.applyOps([
+      op(1, 'observation', 'seed-1', obsBody({ content_hash: 'seed-1' })),
+      op(2, 'observation', 'seed-2', obsBody({ content_hash: 'seed-2' })),
+    ]);
+    expect(apply.getCursor()).toBe('2');
+
+    // Exact [cursor, cursor+1] regression: strict pages must begin at 3,
+    // rather than skipping 2 and accepting the fresh suffix.
+    expect(() => apply.applyOps([
+      op(2, 'observation', 'cursor-prefix', obsBody({ content_hash: 'cursor-prefix' })),
+      op(3, 'observation', 'fresh-after-cursor', obsBody({ content_hash: 'fresh-after-cursor' })),
+    ], { requireContiguous: true })).toThrow(/sequence gap.*expected 3, got 2/);
+    expect(apply.getCursor()).toBe('2');
+    expect(db.prepare(`
+      SELECT COUNT(*) AS n FROM observations
+      WHERE origin_local_id IN ('cursor-prefix', 'fresh-after-cursor')
+    `).get()).toEqual({ n: 0 });
+
+    // An out-of-order stale prefix was also previously skipped wholesale,
+    // allowing seq 3 to commit. The raw supplied order is now rejected.
+    expect(() => apply.applyOps([
+      op(2, 'observation', 'stale-prefix-2', obsBody({ content_hash: 'stale-prefix-2' })),
+      op(1, 'observation', 'stale-prefix-1', obsBody({ content_hash: 'stale-prefix-1' })),
+      op(3, 'observation', 'fresh-after-disorder', obsBody({ content_hash: 'fresh-after-disorder' })),
+    ], { requireContiguous: true })).toThrow(/sequence gap.*expected 3, got 2/);
+    expect(apply.getCursor()).toBe('2');
+    expect(db.prepare(`
+      SELECT COUNT(*) AS n FROM observations
+      WHERE origin_local_id IN ('stale-prefix-2', 'stale-prefix-1', 'fresh-after-disorder')
+    `).get()).toEqual({ n: 0 });
+    expect(count('observations')).toBe(2);
+  });
+
+  it('keeps uint64 cursors and entity revisions as exact decimal TEXT beyond Number.MAX_SAFE_INTEGER', () => {
+    const apply = makeApply();
+    db.prepare("INSERT INTO sync_state (k, v) VALUES ('cursor', '9007199254740992')").run();
+    apply.applyOps([
+      op('9007199254740993', 'observation', '18446744073709551615', obsBody(), {
+        rev: '9007199254740993',
+      }),
+    ], { requireContiguous: true });
+
+    expect(apply.getCursor()).toBe('9007199254740993');
+    const row = db.prepare(`
+      SELECT origin_local_id, CAST(sync_rev AS TEXT) AS sync_rev
+      FROM observations WHERE origin_local_id = '18446744073709551615'
+    `).get();
+    expect(row).toEqual({
+      origin_local_id: '18446744073709551615',
+      sync_rev: '9007199254740993',
+    });
+  });
+
+  it('round-trips uint64-max entity revisions as TEXT and rejects a later stale revision exactly', () => {
+    const apply = makeApply();
+    const uint64Max = '18446744073709551615';
+    const oneBelow = '18446744073709551614';
+
+    apply.applyOps([
+      op(1, 'observation', '41', obsBody({
+        title: 'uint64 max',
+        content_hash: 'hash-uint64-max',
+      }), { rev: uint64Max }),
+    ]);
+    expect(db.prepare(`
+      SELECT sync_rev, typeof(sync_rev) AS storage_type, title
+      FROM observations WHERE origin_local_id = '41'
+    `).get()).toEqual({
+      sync_rev: uint64Max,
+      storage_type: 'text',
+      title: 'uint64 max',
+    });
+
+    const stale = apply.applyOps([
+      op(2, 'observation', '41', obsBody({
+        title: 'must remain stale',
+        content_hash: 'hash-uint64-max-stale',
+      }), { rev: oneBelow }),
+    ]);
+    expect(stale.skippedStale).toBe(1);
+    expect(db.prepare(`
+      SELECT sync_rev, typeof(sync_rev) AS storage_type, title
+      FROM observations WHERE origin_local_id = '41'
+    `).get()).toEqual({
+      sync_rev: uint64Max,
+      storage_type: 'text',
+      title: 'uint64 max',
+    });
   });
 
   it('throws (loud, not lossy) when a present field has the wrong type; missing optional fields stay tolerated', () => {
@@ -333,7 +442,7 @@ describe('SyncApply', () => {
       op(1, 'observation', '11', obsBody({ prompt_number: 'three' })),
     ])).toThrow(/field prompt_number must be a finite number/);
     expect(count('observations')).toBe(0);
-    expect(apply.getCursor()).toBe(0);
+    expect(apply.getCursor()).toBe('0');
 
     // MISSING (or null) optional fields are fine — null lands in the column.
     const body = obsBody();
@@ -368,10 +477,21 @@ describe('SyncApply', () => {
     const fetchImpl = (async (input: any, init?: any) => {
       const parsed = JSON.parse(String(init?.body));
       calls.push({ url: String(input), parsed });
-      const acked = (parsed.ops as any[]).map((op) => ({
-        kind: op.kind, origin_id: op.origin_id, rev: op.rev ?? 1, seq: ++seq,
-      }));
-      return new Response(JSON.stringify({ acked, head_seq: seq }), { status: 200 });
+      const acked = (parsed.ops as any[]).map((op) => {
+        const body = JSON.parse(op.body);
+        return {
+          id: body.id,
+          kind: body.kind,
+          origin_local_id: body.origin_local_id,
+          entity_rev: body.entity_rev,
+          seq: String(++seq),
+        };
+      });
+      return new Response(JSON.stringify({
+        acked,
+        head_seq: String(seq),
+        projected_seq: String(seq),
+      }), { status: 200 });
     }) as typeof fetch;
 
     const sync = new CloudSync(db, makeSettings(), {
@@ -391,8 +511,9 @@ describe('SyncApply', () => {
     expect(calls.length).toBe(1);
     expect(calls[0].url).toEndWith('/v1/sync/ops');
     expect(calls[0].parsed.ops.length).toBe(1);
-    expect(calls[0].parsed.ops[0].kind).toBe('observation');
-    expect(calls[0].parsed.ops[0].body.title).toBe('Native title');
+    const envelope = JSON.parse(calls[0].parsed.ops[0].body);
+    expect(envelope.kind).toBe('observation');
+    expect(envelope.payload.title).toBe('Native title');
   });
 
   it('skips ops originated by this device (echo of our own pushes) while advancing the cursor', () => {
@@ -404,7 +525,7 @@ describe('SyncApply', () => {
 
     expect(result.skippedOwn).toBe(1);
     expect(result.applied).toBe(1);
-    expect(result.cursor).toBe(2);
+    expect(result.cursor).toBe('2');
     expect(count('observations')).toBe(1);
     const row = db.prepare('SELECT origin_device_id FROM observations').get() as any;
     expect(row.origin_device_id).toBe(REMOTE);
@@ -422,7 +543,7 @@ describe('SyncApply', () => {
     apply.applyOps([op(2, 'observation', '11', obsBody({ title: 'Rev two', content_hash: 'hash-r1v2' }), { rev: 2 })]);
     let row = db.prepare(`SELECT title, sync_rev FROM observations WHERE origin_local_id = '11'`).get() as any;
     expect(row.title).toBe('Rev two');
-    expect(row.sync_rev).toBe(2);
+    expect(row.sync_rev).toBe('2');
     expect(count('observations')).toBe(1); // updated, not duplicated
 
     // A stale rev-1 body arriving later is silently ignored.
@@ -430,7 +551,7 @@ describe('SyncApply', () => {
     expect(stale.skippedStale).toBe(1);
     row = db.prepare(`SELECT title, sync_rev FROM observations WHERE origin_local_id = '11'`).get() as any;
     expect(row.title).toBe('Rev two');
-    expect(row.sync_rev).toBe(2);
+    expect(row.sync_rev).toBe('2');
   });
 
   it('mutations: rev >= sync_rev applies, stale mutation is silently skipped', () => {
@@ -449,7 +570,7 @@ describe('SyncApply', () => {
     prompt = db.prepare(`SELECT session_db_id, sync_rev FROM user_prompts WHERE origin_local_id = '31'`).get() as any;
     const stub = db.prepare(`SELECT id FROM sdk_sessions WHERE memory_session_id = 'mem-remote-1'`).get() as any;
     expect(prompt.session_db_id).toBe(stub.id);
-    expect(prompt.sync_rev).toBe(2);
+    expect(prompt.sync_rev).toBe('2');
 
     // A stale rev-1 mutation pointing somewhere else is ignored.
     const stale = apply.applyOps([op(3, 'mutation', 'uuid-repair-0', {
@@ -460,7 +581,7 @@ describe('SyncApply', () => {
     expect(stale.skippedStale).toBe(1);
     prompt = db.prepare(`SELECT session_db_id, sync_rev FROM user_prompts WHERE origin_local_id = '31'`).get() as any;
     expect(prompt.session_db_id).toBe(stub.id); // unchanged
-    expect(prompt.sync_rev).toBe(2);
+    expect(prompt.sync_rev).toBe('2');
   });
 
   it('mutations from another device apply to NATIVE rows via the self-origin identity', () => {
@@ -480,7 +601,7 @@ describe('SyncApply', () => {
 
     const row = db.prepare('SELECT session_db_id, sync_rev, synced_at FROM user_prompts WHERE id = ?').get(nativeId) as any;
     expect(row.session_db_id).toBe(1); // linked to the native session mem-1
-    expect(row.sync_rev).toBe(2);
+    expect(row.sync_rev).toBe('2');
     expect(row.synced_at).toBeNull(); // apply never flips push state on native rows
   });
 
@@ -598,7 +719,7 @@ describe('SyncApply', () => {
     // A genuine epoch-reset replay of the same remap is a no-op: the
     // merged_into_project IS NULL predicate no longer matches anything.
     apply.handleEpoch('epoch-replay');
-    expect(apply.getCursor()).toBe(0);
+    expect(apply.getCursor()).toBe('0');
     const beforeReplay = snapshot('observations');
     const replay = apply.applyOps([op(4, 'mutation', 'uuid-m1', {
       op: 'remap_project',
@@ -627,12 +748,12 @@ describe('SyncApply', () => {
   it('resets the cursor (and applies nothing) when the pull epoch changes', () => {
     const apply = makeApply();
     apply.applyOps(remoteBatch(), { epoch: 'epoch-1' });
-    expect(apply.getCursor()).toBe(3);
+    expect(apply.getCursor()).toBe('3');
 
     const result = apply.applyOps([op(4, 'observation', '99', obsBody({ content_hash: 'hash-99' }))], { epoch: 'epoch-2' });
     expect(result.epochReset).toBe(true);
     expect(result.applied).toBe(0);
-    expect(apply.getCursor()).toBe(0);
+    expect(apply.getCursor()).toBe('0');
     expect(apply.getEpoch()).toBe('epoch-2');
     // Nothing from the stale-cursor page was applied.
     expect(db.prepare(`SELECT COUNT(*) AS n FROM observations WHERE origin_local_id = '99'`).get() as any).toEqual({ n: 0 });
@@ -712,7 +833,7 @@ describe('SyncApply', () => {
     expect(result.applied).toBe(3);
     expect(count('observations')).toBe(1);
     expect(count('user_prompts')).toBe(1);
-    expect(apply.getCursor()).toBe(3);
+    expect(apply.getCursor()).toBe('3');
   });
 
   // ---------------------------------------------------------------------------
@@ -738,7 +859,7 @@ describe('SyncApply', () => {
 
       const result = apply.applyOps([], { epoch: 'epoch-2' });
       expect(result.epochReset).toBe(true);
-      expect(apply.getCursor()).toBe(0);
+      expect(apply.getCursor()).toBe('0');
 
       const native = db.prepare(`SELECT synced_at FROM observations WHERE title = 'native-row'`).get() as any;
       expect(native.synced_at).toBeNull(); // corpus re-enters the rebuilt log

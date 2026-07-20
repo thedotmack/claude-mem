@@ -110,7 +110,7 @@ export const WATCHDOG_ROWS_WRITTEN_KILL = 1_500_000;
  * reads ~10 rows → ≈400k/h ceiling; a fresh-device bootstrap legitimately
  * reads an entire log (100k+) in one burst.
  * ALERT 5,000,000 ≈ 12x the ceiling — clears any legitimate bootstrap
- * burst; sustained it means a hot scan loop (e.g. compaction gone
+ * burst; sustained it means a hot scan loop (e.g. a repair scan gone
  * quadratic). KILL 50,000,000 = 10x alert: still only ≈$36/mo but
  * unambiguously a runaway query pattern.
  */

@@ -17,6 +17,7 @@ import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
+import { assertCanonicalDecimal, type ContentKind } from '../../../sync/CanonicalContent.js';
 
 const integerArrayLike = z.preprocess((value) => {
   if (Array.isArray(value)) return value;
@@ -89,6 +90,9 @@ export class DataRoutes extends BaseRouteHandler {
     app.get('/api/session/:id', this.handleGetSessionById.bind(this));
     app.post('/api/sdk-sessions/batch', validateBody(sdkSessionsBatchSchema), this.handleGetSdkSessionsByIds.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
+    app.delete('/api/observation/:id', this.handleDeleteObservation.bind(this));
+    app.delete('/api/summary/:id', this.handleDeleteSummary.bind(this));
+    app.delete('/api/prompt/:id', this.handleDeletePrompt.bind(this));
 
     app.get('/api/stats', this.handleGetStats.bind(this));
     app.get('/api/projects', this.handleGetProjects.bind(this));
@@ -213,6 +217,70 @@ export class DataRoutes extends BaseRouteHandler {
 
     res.json(prompts[0]);
   });
+
+  private handleDeleteObservation = this.wrapHandler((req: Request, res: Response): void => {
+    this.deleteSyncedContent(req, res, 'observation', 'observations');
+  });
+
+  private handleDeleteSummary = this.wrapHandler((req: Request, res: Response): void => {
+    this.deleteSyncedContent(req, res, 'summary', 'session_summaries');
+  });
+
+  private handleDeletePrompt = this.wrapHandler((req: Request, res: Response): void => {
+    this.deleteSyncedContent(req, res, 'prompt', 'user_prompts');
+  });
+
+  /** Production deletion surface: tombstone enqueue and row delete are one transaction. */
+  private deleteSyncedContent(
+    req: Request,
+    res: Response,
+    kind: ContentKind,
+    table: 'observations' | 'session_summaries' | 'user_prompts',
+  ): void {
+    let originLocalId: string;
+    try {
+      originLocalId = assertCanonicalDecimal(req.params.id, { positive: true });
+    } catch {
+      this.badRequest(res, 'id must be a positive canonical decimal string');
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const row = store.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id FROM ${table}
+      WHERE id = ? AND origin_device_id IS NULL
+    `).get(originLocalId) as { id: string } | undefined;
+    if (!row) {
+      this.notFound(res, `${kind} #${originLocalId} not found`);
+      return;
+    }
+
+    const cloudSync = this.dbManager.getCloudSync();
+    let entityRev: string | null = null;
+    if (cloudSync?.isConfigured()) {
+      if (!cloudSync.status().deviceId) {
+        res.status(503).json({ error: 'cloud sync identity unavailable; refusing an unreplicated delete' });
+        return;
+      }
+      entityRev = cloudSync.queueDelete(kind, originLocalId);
+    } else {
+      // A row with an acknowledged entity head must never be silently deleted
+      // while its sync identity is unavailable: that would strand replicas.
+      const acknowledged = store.db.prepare(`
+        SELECT 1 AS found FROM sync_entity_heads
+        WHERE kind = ? AND origin_local_id = ? LIMIT 1
+      `).get(kind, originLocalId) as { found: number } | undefined;
+      if (acknowledged) {
+        res.status(503).json({ error: 'cloud sync unavailable; refusing an unreplicated delete' });
+        return;
+      }
+      store.db.prepare(
+        `DELETE FROM ${table} WHERE id = ? AND origin_device_id IS NULL`
+      ).run(originLocalId);
+    }
+
+    res.json({ success: true, id: originLocalId, kind, entity_rev: entityRev });
+  }
 
   private handleGetStats = this.wrapHandler((req: Request, res: Response): void => {
     const db = this.dbManager.getSessionStore().db;

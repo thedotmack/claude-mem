@@ -1,0 +1,540 @@
+{
+  "contract_version": 1,
+  "namespace_template": "cmem-{userId}-v2",
+  "limits": {
+    "operation_body_utf8_bytes": 256000,
+    "projection_page_utf8_bytes": 4000000,
+    "projection_page_ops": 100
+  },
+  "stable_id_vectors": [
+    {
+      "name": "zero-control-unicode",
+      "kind": "observation",
+      "origin_device_id": "device-α\u0000west",
+      "origin_local_id": "0",
+      "canonical_input": "[\"cmem-doc-id-v1\",\"device\",\"observation\",\"device-α\\u0000west\",\"0\"]",
+      "id": "observation:hwnTynBEb8YvLx2TpuOCpq-feZIGlvrdlA-Ndb0XqUw"
+    },
+    {
+      "name": "unsafe-js-boundary",
+      "kind": "summary",
+      "origin_device_id": "device:a:b",
+      "origin_local_id": "9007199254740993",
+      "canonical_input": "[\"cmem-doc-id-v1\",\"device\",\"summary\",\"device:a:b\",\"9007199254740993\"]",
+      "id": "summary:yMFTvo-t8ppHS_vya5-7nTE11Rs6TtH61vebJN2s4oE"
+    },
+    {
+      "name": "uint64-max",
+      "kind": "prompt",
+      "origin_device_id": "雪/🐡",
+      "origin_local_id": "18446744073709551615",
+      "canonical_input": "[\"cmem-doc-id-v1\",\"device\",\"prompt\",\"雪/🐡\",\"18446744073709551615\"]",
+      "id": "prompt:3lJvX1AJ-CQL-7VcBA0iTOBC90cEUH00-RGFe2xhZxs"
+    }
+  ],
+  "canonical_json_vectors": [
+    {
+      "name": "sorted-null-array-unicode-control",
+      "input": {
+        "z": null,
+        "a": ["Ω", "line\nnext", "nul\u0000"],
+        "m": { "two": 2, "one": 1 }
+      },
+      "canonical": "{\"a\":[\"Ω\",\"line\\nnext\",\"nul\\u0000\"],\"m\":{\"one\":1,\"two\":2},\"z\":null}"
+    },
+    {
+      "name": "negative-zero",
+      "input": { "value": 0 },
+      "canonical": "{\"value\":0}"
+    }
+  ],
+  "payload_hash_vectors": [
+    {
+      "name": "observation",
+      "payload": {
+        "agent_id": null,
+        "agent_type": "research",
+        "concepts": ["Unicode 🐡", "control\u0000value"],
+        "content_hash": "abc",
+        "created_at": "2026-07-20T12:34:56.789Z",
+        "created_at_epoch": "1784550896789",
+        "discovery_tokens": "42",
+        "facts": ["sorted keys stay sorted", "arrays stay ordered"],
+        "files_modified": ["src/b.ts"],
+        "files_read": ["src/a.ts"],
+        "generated_by_model": "gpt-5",
+        "memory_session_id": "mem-α",
+        "merged_into_project": null,
+        "metadata": { "z": 1, "a": null },
+        "narrative": "Deployed the projector.",
+        "project": "/repo/雪",
+        "prompt_number": "7",
+        "subtitle": "Projection result",
+        "text": "A control follows:\u0001",
+        "title": "Turbopuffer cutover",
+        "type": "discovery"
+      },
+      "payload_json": "{\"agent_id\":null,\"agent_type\":\"research\",\"concepts\":[\"Unicode 🐡\",\"control\\u0000value\"],\"content_hash\":\"abc\",\"created_at\":\"2026-07-20T12:34:56.789Z\",\"created_at_epoch\":\"1784550896789\",\"discovery_tokens\":\"42\",\"facts\":[\"sorted keys stay sorted\",\"arrays stay ordered\"],\"files_modified\":[\"src/b.ts\"],\"files_read\":[\"src/a.ts\"],\"generated_by_model\":\"gpt-5\",\"memory_session_id\":\"mem-α\",\"merged_into_project\":null,\"metadata\":{\"a\":null,\"z\":1},\"narrative\":\"Deployed the projector.\",\"project\":\"/repo/雪\",\"prompt_number\":\"7\",\"subtitle\":\"Projection result\",\"text\":\"A control follows:\\u0001\",\"title\":\"Turbopuffer cutover\",\"type\":\"discovery\"}",
+      "payload_sha256": "pFvoyY4xm5gfknrFTvQ6bImLGC-DbnavFOz_uwgCu9Q"
+    },
+    {
+      "name": "summary",
+      "payload": {
+        "completed": "Projection contract",
+        "created_at": "2026-07-20T12:35:00.000Z",
+        "created_at_epoch": "1784550900000",
+        "discovery_tokens": "11",
+        "files_edited": ["src/b.ts"],
+        "files_read": ["src/a.ts"],
+        "investigated": "Retries",
+        "learned": "CAS converges",
+        "memory_session_id": "mem-α",
+        "merged_into_project": null,
+        "next_steps": "Ship",
+        "notes": null,
+        "project": "/repo/雪",
+        "prompt_number": "8",
+        "request": "Build v2"
+      },
+      "payload_json": "{\"completed\":\"Projection contract\",\"created_at\":\"2026-07-20T12:35:00.000Z\",\"created_at_epoch\":\"1784550900000\",\"discovery_tokens\":\"11\",\"files_edited\":[\"src/b.ts\"],\"files_read\":[\"src/a.ts\"],\"investigated\":\"Retries\",\"learned\":\"CAS converges\",\"memory_session_id\":\"mem-α\",\"merged_into_project\":null,\"next_steps\":\"Ship\",\"notes\":null,\"project\":\"/repo/雪\",\"prompt_number\":\"8\",\"request\":\"Build v2\"}",
+      "payload_sha256": "-_8csMHPRKvUetC9wFpzweHFHIBN3dOMihQEXk57rns"
+    },
+    {
+      "name": "prompt",
+      "payload": {
+        "content_session_id": "content-1",
+        "created_at": "2026-07-20T12:35:01.000Z",
+        "created_at_epoch": "1784550901000",
+        "memory_session_id": "mem-α",
+        "platform_source": "claude-code",
+        "project": "/repo/雪",
+        "prompt_number": "9",
+        "prompt_text": "Why did \"x\" become Ω?\nExplain."
+      },
+      "payload_json": "{\"content_session_id\":\"content-1\",\"created_at\":\"2026-07-20T12:35:01.000Z\",\"created_at_epoch\":\"1784550901000\",\"memory_session_id\":\"mem-α\",\"platform_source\":\"claude-code\",\"project\":\"/repo/雪\",\"prompt_number\":\"9\",\"prompt_text\":\"Why did \\\"x\\\" become Ω?\\nExplain.\"}",
+      "payload_sha256": "A3TqPM3nJFyX3bgiTJ_4u7uxeZOccyour9X5FwF8XDk"
+    }
+  ],
+  "operation_hash_vectors": [
+    {
+      "name": "observation",
+      "body": "{\"body_schema_version\":1,\"deleted\":false,\"deleted_at\":null,\"entity_rev\":\"1\",\"id\":\"observation:hwnTynBEb8YvLx2TpuOCpq-feZIGlvrdlA-Ndb0XqUw\",\"kind\":\"observation\",\"mutation\":null,\"origin_device_id\":\"device-α\\u0000west\",\"origin_local_id\":\"0\",\"payload\":{\"agent_id\":null,\"agent_type\":\"research\",\"concepts\":[\"Unicode 🐡\",\"control\\u0000value\"],\"content_hash\":\"abc\",\"created_at\":\"2026-07-20T12:34:56.789Z\",\"created_at_epoch\":\"1784550896789\",\"discovery_tokens\":\"42\",\"facts\":[\"sorted keys stay sorted\",\"arrays stay ordered\"],\"files_modified\":[\"src/b.ts\"],\"files_read\":[\"src/a.ts\"],\"generated_by_model\":\"gpt-5\",\"memory_session_id\":\"mem-α\",\"merged_into_project\":null,\"metadata\":{\"a\":null,\"z\":1},\"narrative\":\"Deployed the projector.\",\"project\":\"/repo/雪\",\"prompt_number\":\"7\",\"subtitle\":\"Projection result\",\"text\":\"A control follows:\\u0001\",\"title\":\"Turbopuffer cutover\",\"type\":\"discovery\"},\"payload_schema_version\":2,\"payload_sha256\":\"pFvoyY4xm5gfknrFTvQ6bImLGC-DbnavFOz_uwgCu9Q\"}",
+      "operation_sha256": "PjZxlL4AOvqHhUh8L7TRJs1CkMrdNYy3zTQ-3OD5zfs"
+    },
+    {
+      "name": "summary",
+      "body": "{\"body_schema_version\":1,\"deleted\":false,\"deleted_at\":null,\"entity_rev\":\"1\",\"id\":\"summary:vQtE6ovPsF6aQznhqoFP9DLthV2VA8zd_4dZd-DyVi8\",\"kind\":\"summary\",\"mutation\":null,\"origin_device_id\":\"device-α\\u0000west\",\"origin_local_id\":\"9007199254740993\",\"payload\":{\"completed\":\"Projection contract\",\"created_at\":\"2026-07-20T12:35:00.000Z\",\"created_at_epoch\":\"1784550900000\",\"discovery_tokens\":\"11\",\"files_edited\":[\"src/b.ts\"],\"files_read\":[\"src/a.ts\"],\"investigated\":\"Retries\",\"learned\":\"CAS converges\",\"memory_session_id\":\"mem-α\",\"merged_into_project\":null,\"next_steps\":\"Ship\",\"notes\":null,\"project\":\"/repo/雪\",\"prompt_number\":\"8\",\"request\":\"Build v2\"},\"payload_schema_version\":2,\"payload_sha256\":\"-_8csMHPRKvUetC9wFpzweHFHIBN3dOMihQEXk57rns\"}",
+      "operation_sha256": "AD8xLUY77AQDlBwfG2L54kS1PzmOLoe8jSEsbRqEhC8"
+    },
+    {
+      "name": "prompt",
+      "body": "{\"body_schema_version\":1,\"deleted\":false,\"deleted_at\":null,\"entity_rev\":\"1\",\"id\":\"prompt:AhfNpVKcX985fCW-dxsHZ8-qQGM9o4MGrHsg9swQf94\",\"kind\":\"prompt\",\"mutation\":null,\"origin_device_id\":\"device-α\\u0000west\",\"origin_local_id\":\"18446744073709551615\",\"payload\":{\"content_session_id\":\"content-1\",\"created_at\":\"2026-07-20T12:35:01.000Z\",\"created_at_epoch\":\"1784550901000\",\"memory_session_id\":\"mem-α\",\"platform_source\":\"claude-code\",\"project\":\"/repo/雪\",\"prompt_number\":\"9\",\"prompt_text\":\"Why did \\\"x\\\" become Ω?\\nExplain.\"},\"payload_schema_version\":2,\"payload_sha256\":\"A3TqPM3nJFyX3bgiTJ_4u7uxeZOccyour9X5FwF8XDk\"}",
+      "operation_sha256": "G72JzGxNZAI-YNSgW_WilonbHa8fXuYpP2PZqD2hjZw"
+    },
+    {
+      "name": "observation_tombstone",
+      "body": "{\"body_schema_version\":1,\"deleted\":true,\"deleted_at\":\"2026-07-20T13:00:00.000Z\",\"entity_rev\":\"2\",\"id\":\"observation:hwnTynBEb8YvLx2TpuOCpq-feZIGlvrdlA-Ndb0XqUw\",\"kind\":\"observation\",\"mutation\":null,\"origin_device_id\":\"device-α\\u0000west\",\"origin_local_id\":\"0\",\"payload\":null,\"payload_schema_version\":2,\"payload_sha256\":\"dCNOmK_nSY-12vHzasLXiswzlGT5UHA7jAGYkvmCuQs\"}",
+      "operation_sha256": "0RrVVzo7LVlR9yrSaApCzg5DH9unFkZFb_4dcRLznAM"
+    },
+    {
+      "name": "observation_revive",
+      "body": "{\"body_schema_version\":1,\"deleted\":false,\"deleted_at\":null,\"entity_rev\":\"3\",\"id\":\"observation:hwnTynBEb8YvLx2TpuOCpq-feZIGlvrdlA-Ndb0XqUw\",\"kind\":\"observation\",\"mutation\":null,\"origin_device_id\":\"device-α\\u0000west\",\"origin_local_id\":\"0\",\"payload\":{\"agent_id\":null,\"agent_type\":\"research\",\"concepts\":[\"Unicode 🐡\",\"control\\u0000value\"],\"content_hash\":\"abc\",\"created_at\":\"2026-07-20T12:34:56.789Z\",\"created_at_epoch\":\"1784550896789\",\"discovery_tokens\":\"42\",\"facts\":[\"sorted keys stay sorted\",\"arrays stay ordered\"],\"files_modified\":[\"src/b.ts\"],\"files_read\":[\"src/a.ts\"],\"generated_by_model\":\"gpt-5\",\"memory_session_id\":\"mem-α\",\"merged_into_project\":null,\"metadata\":{\"a\":null,\"z\":1},\"narrative\":\"Deployed the projector.\",\"project\":\"/repo/雪\",\"prompt_number\":\"7\",\"subtitle\":\"Projection result\",\"text\":\"A control follows:\\u0001\",\"title\":\"Turbopuffer cutover\",\"type\":\"discovery\"},\"payload_schema_version\":2,\"payload_sha256\":\"pFvoyY4xm5gfknrFTvQ6bImLGC-DbnavFOz_uwgCu9Q\"}",
+      "operation_sha256": "G4e6Tj49dRDTgO32jJksbsLrVVQdBmaCvBUD-5QLLY0"
+    },
+    {
+      "name": "observation_conflict_rev1",
+      "body": "{\"body_schema_version\":1,\"deleted\":false,\"deleted_at\":null,\"entity_rev\":\"1\",\"id\":\"observation:hwnTynBEb8YvLx2TpuOCpq-feZIGlvrdlA-Ndb0XqUw\",\"kind\":\"observation\",\"mutation\":null,\"origin_device_id\":\"device-α\\u0000west\",\"origin_local_id\":\"0\",\"payload\":{\"agent_id\":null,\"agent_type\":\"research\",\"concepts\":[\"Unicode 🐡\",\"control\\u0000value\"],\"content_hash\":\"abc\",\"created_at\":\"2026-07-20T12:34:56.789Z\",\"created_at_epoch\":\"1784550896789\",\"discovery_tokens\":\"42\",\"facts\":[\"sorted keys stay sorted\",\"arrays stay ordered\"],\"files_modified\":[\"src/b.ts\"],\"files_read\":[\"src/a.ts\"],\"generated_by_model\":\"gpt-5\",\"memory_session_id\":\"mem-α\",\"merged_into_project\":null,\"metadata\":{\"a\":null,\"z\":1},\"narrative\":\"Deployed the projector.\",\"project\":\"/repo/雪\",\"prompt_number\":\"7\",\"subtitle\":\"Projection result\",\"text\":\"A control follows:\\u0001\",\"title\":\"Conflicting title\",\"type\":\"discovery\"},\"payload_schema_version\":2,\"payload_sha256\":\"UnoKEabrsGwatVkW3HbWAgOEqIPVX56cEAyKMiWu2Bo\"}",
+      "operation_sha256": "--qRtBL4ZWbLHT_btpY-vGdsOD3cbG1t5_Owf8q6bU0"
+    },
+    {
+      "name": "set_prompt_session",
+      "body": "{\"body_schema_version\":1,\"deleted\":false,\"deleted_at\":null,\"entity_rev\":\"3\",\"id\":\"mutation:22222222-2222-4222-8222-222222222222\",\"kind\":\"mutation\",\"mutation\":{\"fields\":{\"content_session_id\":\"content-1\",\"memory_session_id\":\"mem-β\",\"platform_source\":\"claude-code\",\"project\":\"/repo/雪\"},\"op\":\"set_prompt_session\",\"target\":{\"origin_device_id\":\"device-α\\u0000west\",\"origin_local_id\":\"18446744073709551615\"}},\"origin_device_id\":\"device-α\\u0000west\",\"origin_local_id\":null,\"payload\":null,\"payload_schema_version\":2,\"payload_sha256\":\"dCNOmK_nSY-12vHzasLXiswzlGT5UHA7jAGYkvmCuQs\"}",
+      "operation_sha256": "s5z9qFLLUEFJ9M4zjJDQppup-DO5k44Ch5zzYV5SV0k"
+    },
+    {
+      "name": "set_title_noop",
+      "body": "{\"body_schema_version\":1,\"deleted\":false,\"deleted_at\":null,\"entity_rev\":\"1\",\"id\":\"mutation:33333333-3333-4333-8333-333333333333\",\"kind\":\"mutation\",\"mutation\":{\"fields\":{\"custom_title\":\"Session title\"},\"op\":\"set_title\",\"target\":{\"content_session_id\":\"content-1\",\"platform_source\":\"claude-code\"}},\"origin_device_id\":\"device-α\\u0000west\",\"origin_local_id\":null,\"payload\":null,\"payload_schema_version\":2,\"payload_sha256\":\"dCNOmK_nSY-12vHzasLXiswzlGT5UHA7jAGYkvmCuQs\"}",
+      "operation_sha256": "KmbFlMpkoFLq_BqUSwsefWbB1rh65AGFnyFs0VYB3dw"
+    },
+    {
+      "name": "remap_project",
+      "body": "{\"body_schema_version\":1,\"deleted\":false,\"deleted_at\":null,\"entity_rev\":\"4\",\"id\":\"mutation:44444444-4444-4444-8444-444444444444\",\"kind\":\"mutation\",\"mutation\":{\"fields\":{\"merged_into_project\":\"/repo/main\"},\"op\":\"remap_project\",\"where\":{\"merged_into_project_is_null\":true,\"project\":\"/repo/雪\"}},\"origin_device_id\":\"device-α\\u0000west\",\"origin_local_id\":null,\"payload\":null,\"payload_schema_version\":2,\"payload_sha256\":\"dCNOmK_nSY-12vHzasLXiswzlGT5UHA7jAGYkvmCuQs\"}",
+      "operation_sha256": "y8NquTtniJee_tySWm1MCZhaVIJeFp9IDzo5LI03rqs"
+    }
+  ],
+  "projection_page_vectors": [
+    {
+      "name": "contiguous-live-then-tombstone",
+      "request": {
+        "protocol_version": 1,
+        "user_id": "11111111-1111-4111-8111-111111111111",
+        "epoch": "7",
+        "from_seq_exclusive": "40",
+        "through_seq": "42",
+        "op_names": ["observation", "observation_tombstone"]
+      },
+      "response": {
+        "protocol_version": 1,
+        "epoch": "7",
+        "projected_through_seq": "42"
+      }
+    }
+  ],
+  "reducer_vectors": [
+    {
+      "name": "retry-conflict-delete-revive",
+      "steps": [
+        { "operation": "observation", "expected": "written" },
+        { "operation": "observation", "expected": "replayed" },
+        { "operation": "observation_conflict_rev1", "expected_error": "revision_conflict" },
+        { "operation": "observation_tombstone", "expected": "written" },
+        { "operation": "observation", "expected": "stale" },
+        { "operation": "observation_revive", "expected": "written" }
+      ],
+      "final": { "deleted": false, "entity_rev": "3" }
+    },
+    {
+      "name": "delete-before-create",
+      "steps": [
+        { "operation": "observation_tombstone", "expected": "written" },
+        { "operation": "observation", "expected": "stale" },
+        { "operation": "observation_revive", "expected": "written" }
+      ],
+      "final": { "deleted": false, "entity_rev": "3" }
+    },
+    {
+      "name": "mutations",
+      "steps": [
+        { "operation": "prompt", "expected": "written" },
+        { "operation": "set_prompt_session", "expected": "mutation_applied" },
+        { "operation": "set_title_noop", "expected": "mutation_noop" },
+        { "operation": "summary", "expected": "written" },
+        { "operation": "observation_revive", "expected": "written" },
+        { "operation": "remap_project", "expected": "mutation_applied" }
+      ]
+    }
+  ],
+  "filterable_non_blank_vectors": [
+    {
+      "name": "observation-filterables-empty",
+      "operation": "observation",
+      "paths": [
+        "payload.project",
+        "payload.memory_session_id",
+        "payload.merged_into_project"
+      ],
+      "value": "",
+      "accepted": false
+    },
+    {
+      "name": "observation-filterables-whitespace",
+      "operation": "observation",
+      "paths": [
+        "payload.project",
+        "payload.memory_session_id",
+        "payload.merged_into_project"
+      ],
+      "value": " \t\n",
+      "accepted": false
+    },
+    {
+      "name": "summary-filterables-empty",
+      "operation": "summary",
+      "paths": [
+        "payload.project",
+        "payload.memory_session_id",
+        "payload.merged_into_project"
+      ],
+      "value": "",
+      "accepted": false
+    },
+    {
+      "name": "summary-filterables-whitespace",
+      "operation": "summary",
+      "paths": [
+        "payload.project",
+        "payload.memory_session_id",
+        "payload.merged_into_project"
+      ],
+      "value": " \t\n",
+      "accepted": false
+    },
+    {
+      "name": "prompt-filterables-empty",
+      "operation": "prompt",
+      "paths": [
+        "payload.project",
+        "payload.memory_session_id",
+        "payload.content_session_id",
+        "payload.platform_source"
+      ],
+      "value": "",
+      "accepted": false
+    },
+    {
+      "name": "prompt-filterables-whitespace",
+      "operation": "prompt",
+      "paths": [
+        "payload.project",
+        "payload.memory_session_id",
+        "payload.content_session_id",
+        "payload.platform_source"
+      ],
+      "value": " \t\n",
+      "accepted": false
+    },
+    {
+      "name": "set-title-fields-empty",
+      "operation": "set_title_noop",
+      "paths": [
+        "mutation.target.memory_session_id",
+        "mutation.target.content_session_id",
+        "mutation.target.platform_source",
+        "mutation.fields.custom_title"
+      ],
+      "value": "",
+      "accepted": false
+    },
+    {
+      "name": "set-title-fields-whitespace",
+      "operation": "set_title_noop",
+      "paths": [
+        "mutation.target.memory_session_id",
+        "mutation.target.content_session_id",
+        "mutation.target.platform_source",
+        "mutation.fields.custom_title"
+      ],
+      "value": " \t\n",
+      "accepted": false
+    },
+    {
+      "name": "set-prompt-session-fields-empty",
+      "operation": "set_prompt_session",
+      "paths": [
+        "mutation.fields.memory_session_id",
+        "mutation.fields.project",
+        "mutation.fields.content_session_id",
+        "mutation.fields.platform_source"
+      ],
+      "value": "",
+      "accepted": false
+    },
+    {
+      "name": "set-prompt-session-fields-whitespace",
+      "operation": "set_prompt_session",
+      "paths": [
+        "mutation.fields.memory_session_id",
+        "mutation.fields.project",
+        "mutation.fields.content_session_id",
+        "mutation.fields.platform_source"
+      ],
+      "value": " \t\n",
+      "accepted": false
+    },
+    {
+      "name": "remap-project-fields-empty",
+      "operation": "remap_project",
+      "paths": [
+        "mutation.where.project",
+        "mutation.where.memory_session_id",
+        "mutation.fields.project",
+        "mutation.fields.merged_into_project"
+      ],
+      "value": "",
+      "accepted": false
+    },
+    {
+      "name": "remap-project-fields-whitespace",
+      "operation": "remap_project",
+      "paths": [
+        "mutation.where.project",
+        "mutation.where.memory_session_id",
+        "mutation.fields.project",
+        "mutation.fields.merged_into_project"
+      ],
+      "value": " \t\n",
+      "accepted": false
+    }
+  ],
+  "mutation_utf8_boundary_vectors": [
+    {
+      "name": "set-title-ascii-at-limit",
+      "operation": "set_title_noop",
+      "paths": [
+        "mutation.target.memory_session_id",
+        "mutation.target.content_session_id",
+        "mutation.target.platform_source",
+        "mutation.fields.custom_title"
+      ],
+      "segments": [{ "value": "a", "count": 4096 }],
+      "utf8_bytes": 4096,
+      "accepted": true
+    },
+    {
+      "name": "set-title-ascii-over-limit",
+      "operation": "set_title_noop",
+      "paths": [
+        "mutation.target.memory_session_id",
+        "mutation.target.content_session_id",
+        "mutation.target.platform_source",
+        "mutation.fields.custom_title"
+      ],
+      "segments": [{ "value": "a", "count": 4097 }],
+      "utf8_bytes": 4097,
+      "accepted": false
+    },
+    {
+      "name": "set-title-multibyte-at-limit",
+      "operation": "set_title_noop",
+      "paths": [
+        "mutation.target.memory_session_id",
+        "mutation.target.content_session_id",
+        "mutation.target.platform_source",
+        "mutation.fields.custom_title"
+      ],
+      "segments": [
+        { "value": "🐡", "count": 1023 },
+        { "value": "a", "count": 4 }
+      ],
+      "utf8_bytes": 4096,
+      "accepted": true
+    },
+    {
+      "name": "set-title-multibyte-over-limit",
+      "operation": "set_title_noop",
+      "paths": [
+        "mutation.target.memory_session_id",
+        "mutation.target.content_session_id",
+        "mutation.target.platform_source",
+        "mutation.fields.custom_title"
+      ],
+      "segments": [
+        { "value": "🐡", "count": 1023 },
+        { "value": "a", "count": 5 }
+      ],
+      "utf8_bytes": 4097,
+      "accepted": false
+    },
+    {
+      "name": "set-prompt-session-ascii-at-limit",
+      "operation": "set_prompt_session",
+      "paths": [
+        "mutation.fields.memory_session_id",
+        "mutation.fields.project",
+        "mutation.fields.content_session_id",
+        "mutation.fields.platform_source"
+      ],
+      "segments": [{ "value": "a", "count": 4096 }],
+      "utf8_bytes": 4096,
+      "accepted": true
+    },
+    {
+      "name": "set-prompt-session-ascii-over-limit",
+      "operation": "set_prompt_session",
+      "paths": [
+        "mutation.fields.memory_session_id",
+        "mutation.fields.project",
+        "mutation.fields.content_session_id",
+        "mutation.fields.platform_source"
+      ],
+      "segments": [{ "value": "a", "count": 4097 }],
+      "utf8_bytes": 4097,
+      "accepted": false
+    },
+    {
+      "name": "set-prompt-session-multibyte-at-limit",
+      "operation": "set_prompt_session",
+      "paths": [
+        "mutation.fields.memory_session_id",
+        "mutation.fields.project",
+        "mutation.fields.content_session_id",
+        "mutation.fields.platform_source"
+      ],
+      "segments": [
+        { "value": "🐡", "count": 1023 },
+        { "value": "a", "count": 4 }
+      ],
+      "utf8_bytes": 4096,
+      "accepted": true
+    },
+    {
+      "name": "set-prompt-session-multibyte-over-limit",
+      "operation": "set_prompt_session",
+      "paths": [
+        "mutation.fields.memory_session_id",
+        "mutation.fields.project",
+        "mutation.fields.content_session_id",
+        "mutation.fields.platform_source"
+      ],
+      "segments": [
+        { "value": "🐡", "count": 1023 },
+        { "value": "a", "count": 5 }
+      ],
+      "utf8_bytes": 4097,
+      "accepted": false
+    },
+    {
+      "name": "remap-project-ascii-at-limit",
+      "operation": "remap_project",
+      "paths": [
+        "mutation.where.project",
+        "mutation.where.memory_session_id",
+        "mutation.fields.project",
+        "mutation.fields.merged_into_project"
+      ],
+      "segments": [{ "value": "a", "count": 4096 }],
+      "utf8_bytes": 4096,
+      "accepted": true
+    },
+    {
+      "name": "remap-project-ascii-over-limit",
+      "operation": "remap_project",
+      "paths": [
+        "mutation.where.project",
+        "mutation.where.memory_session_id",
+        "mutation.fields.project",
+        "mutation.fields.merged_into_project"
+      ],
+      "segments": [{ "value": "a", "count": 4097 }],
+      "utf8_bytes": 4097,
+      "accepted": false
+    },
+    {
+      "name": "remap-project-multibyte-at-limit",
+      "operation": "remap_project",
+      "paths": [
+        "mutation.where.project",
+        "mutation.where.memory_session_id",
+        "mutation.fields.project",
+        "mutation.fields.merged_into_project"
+      ],
+      "segments": [
+        { "value": "🐡", "count": 1023 },
+        { "value": "a", "count": 4 }
+      ],
+      "utf8_bytes": 4096,
+      "accepted": true
+    },
+    {
+      "name": "remap-project-multibyte-over-limit",
+      "operation": "remap_project",
+      "paths": [
+        "mutation.where.project",
+        "mutation.where.memory_session_id",
+        "mutation.fields.project",
+        "mutation.fields.merged_into_project"
+      ],
+      "segments": [
+        { "value": "🐡", "count": 1023 },
+        { "value": "a", "count": 5 }
+      ],
+      "utf8_bytes": 4097,
+      "accepted": false
+    }
+  ],
+  "byte_boundary_vectors": [
+    { "name": "ascii-at-limit", "utf8_bytes": 256000, "accepted": true },
+    { "name": "ascii-over-limit", "utf8_bytes": 256001, "accepted": false },
+    { "name": "unicode-byte-not-code-unit", "value": "🐡", "utf8_bytes": 4 }
+  ]
+}

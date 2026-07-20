@@ -33,50 +33,13 @@ import {
   type SyncSocketLike,
   type SyncWebSocketConstructor,
 } from '../../../src/services/sync/SyncClient.js';
+import { observationChange, type TestHubChange } from './content-v2-helpers.js';
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 const SELF = 'device-fixture';
 const REMOTE = 'device-a';
-const REMOTE_EPOCH = 1751328000000;
-const REMOTE_ISO = new Date(REMOTE_EPOCH).toISOString();
-
-interface HubOp {
-  seq: number;
-  kind: 'observation' | 'summary' | 'prompt' | 'mutation';
-  origin_device: string;
-  origin_id: string;
-  rev: number;
-  body: string;
-  server_ts: number;
-}
-
-function obsBody(overrides: Record<string, unknown> = {}): string {
-  return JSON.stringify({
-    memory_session_id: 'mem-remote-1',
-    project: 'proj-remote',
-    text: null,
-    type: 'discovery',
-    title: 'Remote observation',
-    subtitle: null,
-    facts: '["remote fact"]',
-    narrative: 'remote narrative',
-    concepts: null,
-    files_read: null,
-    files_modified: null,
-    prompt_number: 1,
-    discovery_tokens: 0,
-    content_hash: null,
-    generated_by_model: null,
-    agent_type: null,
-    agent_id: null,
-    metadata: null,
-    merged_into_project: null,
-    created_at: REMOTE_ISO,
-    created_at_epoch: REMOTE_EPOCH,
-    ...overrides,
-  });
-}
+type HubOp = TestHubChange;
 
 /** Scripted HTTP hub (same wire shape as the Phase 3 suite). */
 function makeHub(initial: { epoch: string; ops?: HubOp[] }) {
@@ -99,16 +62,19 @@ function makeHub(initial: { epoch: string; ops?: HubOp[] }) {
       if (state.mode !== null) headers['X-Sync-Mode'] = state.mode;
       return new Response('hub error', { status: state.failStatus, headers });
     }
-    const matching = state.ops.filter(op => op.seq > since).sort((a, b) => a.seq - b.seq);
+    const matching = state.ops
+      .filter(op => Number(op.seq) > since)
+      .sort((a, b) => Number(a.seq) - Number(b.seq));
     const page = matching.slice(0, limit);
-    const head = state.ops.reduce((m, op) => Math.max(m, op.seq), 0);
-    const lastSeq = page.length > 0 ? page[page.length - 1].seq : since;
+    const head = state.ops.reduce((m, op) => Math.max(m, Number(op.seq)), 0);
+    const lastSeq = page.length > 0 ? Number(page[page.length - 1].seq) : since;
     const headers: Record<string, string> = {};
     if (state.mode !== null) headers['X-Sync-Mode'] = state.mode;
     return new Response(JSON.stringify({
+      protocol_version: 2,
       epoch: state.epoch,
       ops: page,
-      head_seq: head,
+      head_seq: String(head),
       more: page.length === limit && lastSeq < head,
     }), { status: 200, headers });
   }) as typeof fetch;
@@ -162,7 +128,7 @@ function opFrame(epoch: string, ops: HubOp[]): string {
 }
 
 function advanceFrame(epoch: string, headSeq: number): string {
-  return JSON.stringify({ type: 'advance', epoch, head_seq: headSeq });
+  return JSON.stringify({ type: 'advance', epoch, head_seq: String(headSeq) });
 }
 
 describe('SyncClient advisory WebSocket', () => {
@@ -199,17 +165,8 @@ describe('SyncClient advisory WebSocket', () => {
     return client;
   }
 
-  function hubOp(seq: number, originId: string, overrides: Record<string, unknown> = {}): HubOp {
-    return {
-      seq,
-      kind: 'observation',
-      origin_device: REMOTE,
-      origin_id: originId,
-      rev: 1,
-      body: obsBody({ content_hash: `hash-${originId}`, title: `obs ${originId}` }),
-      server_ts: REMOTE_EPOCH + seq,
-      ...overrides,
-    } as HubOp;
+  function hubOp(seq: number, originId: string): HubOp {
+    return observationChange(seq, originId, REMOTE);
   }
 
   function count(table: string): number {
@@ -231,7 +188,7 @@ describe('SyncClient advisory WebSocket', () => {
   });
 
   it('connects to the ws URL with the exact auth header trio', async () => {
-    const { impl } = makeHub({ epoch: 'e1' });
+    const { impl } = makeHub({ epoch: '1' });
     const { ctor, sockets } = makeWsFactory();
     makeClient(impl, ctor).start();
     await sleep(20);
@@ -246,7 +203,7 @@ describe('SyncClient advisory WebSocket', () => {
   });
 
   it('wsEnabled=false never touches the socket implementation (Phase 3 behavior intact)', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1', ops: [hubOp(1, '11')] });
+    const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11')] });
     const { ctor, attempts } = makeWsFactory();
     const client = makeClient(impl, ctor, { wsEnabled: false });
     client.start();
@@ -256,11 +213,11 @@ describe('SyncClient advisory WebSocket', () => {
     expect(client.isSocketLive()).toBe(false);
     // HTTP lane fully functional without it.
     expect(state.requests.length).toBeGreaterThanOrEqual(1);
-    expect(apply.getCursor()).toBe(1);
+    expect(apply.getCursor()).toBe('1');
   });
 
   it('applies a contiguous op frame through SyncApply with NO extra HTTP request', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1' });
+    const { state, impl } = makeHub({ epoch: '1' });
     const { ctor, sockets } = makeWsFactory();
     const client = makeClient(impl, ctor);
     client.start();
@@ -271,53 +228,53 @@ describe('SyncClient advisory WebSocket', () => {
 
     // The hub committed 1..2 and fanned them out.
     state.ops = [hubOp(1, '11'), hubOp(2, '12')];
-    sockets[0].message(opFrame('e1', state.ops));
+    sockets[0].message(opFrame('1', state.ops));
 
     expect(count('observations')).toBe(2);
-    expect(apply.getCursor()).toBe(2);
-    expect(apply.getEpoch()).toBe('e1');
+    expect(apply.getCursor()).toBe('2');
+    expect(apply.getEpoch()).toBe('1');
     expect(state.requests.length).toBe(baseline); // pure socket application
     expect(sockets[0].closeCalls).toBe(0);
     expect(client.isSocketLive()).toBe(true);
   });
 
   it('ignores a fully-stale frame (pull/fan-out race) without closing the socket', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1', ops: [hubOp(1, '11')] });
+    const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11')] });
     const { ctor, sockets } = makeWsFactory();
     makeClient(impl, ctor).start();
     await sleep(30); // HTTP catch-up already applied seq 1
-    expect(apply.getCursor()).toBe(1);
+    expect(apply.getCursor()).toBe('1');
     sockets[0].open();
     await sleep(30);
     const baseline = state.requests.length;
 
-    sockets[0].message(opFrame('e1', [hubOp(1, '11')])); // late echo of seq 1
+    sockets[0].message(opFrame('1', [hubOp(1, '11')])); // late echo of seq 1
 
-    expect(apply.getCursor()).toBe(1);
+    expect(apply.getCursor()).toBe('1');
     expect(count('observations')).toBe(1);
     expect(sockets[0].closeCalls).toBe(0);
     expect(state.requests.length).toBe(baseline);
   });
 
   it('applies the new suffix of an overlapping frame', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1', ops: [hubOp(1, '11')] });
+    const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11')] });
     const { ctor, sockets } = makeWsFactory();
     makeClient(impl, ctor).start();
     await sleep(30);
-    expect(apply.getCursor()).toBe(1);
+    expect(apply.getCursor()).toBe('1');
     sockets[0].open();
     await sleep(30);
 
     state.ops = [hubOp(1, '11'), hubOp(2, '12')];
-    sockets[0].message(opFrame('e1', state.ops)); // [1,2] with cursor at 1
+    sockets[0].message(opFrame('1', state.ops)); // [1,2] with cursor at 1
 
-    expect(apply.getCursor()).toBe(2);
+    expect(apply.getCursor()).toBe('2');
     expect(count('observations')).toBe(2);
     expect(sockets[0].closeCalls).toBe(0);
   });
 
   it('self-heals on a gap frame: closes the socket and converges via one HTTP pull', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1' });
+    const { state, impl } = makeHub({ epoch: '1' });
     const { ctor, sockets } = makeWsFactory();
     const client = makeClient(impl, ctor);
     client.start();
@@ -327,18 +284,18 @@ describe('SyncClient advisory WebSocket', () => {
 
     // The hub is at seq 3 but the frame skips 1-2 (e.g. dropped frames).
     state.ops = [hubOp(1, '11'), hubOp(2, '12'), hubOp(3, '13')];
-    sockets[0].message(opFrame('e1', [hubOp(3, '13')]));
+    sockets[0].message(opFrame('1', [hubOp(3, '13')]));
     await sleep(50);
 
     expect(sockets[0].closeCalls).toBeGreaterThanOrEqual(1);
     expect(client.isSocketLive()).toBe(false);
     // The lane-2 self-heal pulled everything over HTTP.
-    expect(apply.getCursor()).toBe(3);
+    expect(apply.getCursor()).toBe('3');
     expect(count('observations')).toBe(3);
   });
 
   it('self-heals on an unparseable frame', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1' });
+    const { state, impl } = makeHub({ epoch: '1' });
     const { ctor, sockets } = makeWsFactory();
     const client = makeClient(impl, ctor);
     client.start();
@@ -352,11 +309,11 @@ describe('SyncClient advisory WebSocket', () => {
 
     expect(sockets[0].closeCalls).toBeGreaterThanOrEqual(1);
     expect(client.isSocketLive()).toBe(false);
-    expect(apply.getCursor()).toBe(1); // healed over HTTP
+    expect(apply.getCursor()).toBe('1'); // healed over HTTP
   });
 
   it('self-heals on an unknown frame type', async () => {
-    const { impl } = makeHub({ epoch: 'e1' });
+    const { impl } = makeHub({ epoch: '1' });
     const { ctor, sockets } = makeWsFactory();
     const client = makeClient(impl, ctor);
     client.start();
@@ -372,74 +329,74 @@ describe('SyncClient advisory WebSocket', () => {
   });
 
   it('self-heals on an epoch mismatch and re-bootstraps from 0', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1', ops: [hubOp(1, '11'), hubOp(2, '12')] });
+    const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11'), hubOp(2, '12')] });
     const { ctor, sockets } = makeWsFactory();
     const client = makeClient(impl, ctor);
     client.start();
     await sleep(30);
-    expect(apply.getCursor()).toBe(2);
+    expect(apply.getCursor()).toBe('2');
     sockets[0].open();
     await sleep(30);
 
     // Hub rebuilt: new epoch, re-logged history + one new op.
-    state.epoch = 'e2';
+    state.epoch = '2';
     state.ops = [hubOp(1, '11'), hubOp(2, '12'), hubOp(3, '13')];
-    sockets[0].message(opFrame('e2', [hubOp(3, '13')]));
+    sockets[0].message(opFrame('2', [hubOp(3, '13')]));
     await sleep(80);
 
     expect(sockets[0].closeCalls).toBeGreaterThanOrEqual(1);
-    expect(apply.getEpoch()).toBe('e2');
-    expect(apply.getCursor()).toBe(3); // full re-pull converged
+    expect(apply.getEpoch()).toBe('2');
+    expect(apply.getCursor()).toBe('3'); // full re-pull converged
   });
 
   it('detects a rebuilt hub even when the new-epoch frame LOOKS fully stale (epoch checked before the stale skip)', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1', ops: [hubOp(1, '11'), hubOp(2, '12')] });
+    const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11'), hubOp(2, '12')] });
     const { ctor, sockets } = makeWsFactory();
     const client = makeClient(impl, ctor);
     client.start();
     await sleep(30);
-    expect(apply.getCursor()).toBe(2); // caught up under e1
+    expect(apply.getCursor()).toBe('2'); // caught up under e1
     sockets[0].open();
     await sleep(30);
 
     // Hub rebuilt: seqs restart LOW — under the old ordering this frame
     // (last seq 1 <= cursor 2) would be silently stale-skipped and detection
     // would wait for the stretched poll tier.
-    state.epoch = 'e2';
+    state.epoch = '2';
     state.ops = [hubOp(1, '31')];
-    sockets[0].message(opFrame('e2', [hubOp(1, '31')]));
+    sockets[0].message(opFrame('2', [hubOp(1, '31')]));
     await sleep(80);
 
     expect(sockets[0].closeCalls).toBeGreaterThanOrEqual(1); // self-heal, not skip
     expect(client.isSocketLive()).toBe(false);
-    expect(apply.getEpoch()).toBe('e2');
-    expect(apply.getCursor()).toBe(1); // re-bootstrapped from 0 under e2
+    expect(apply.getEpoch()).toBe('2');
+    expect(apply.getCursor()).toBe('1'); // re-bootstrapped from 0 under e2
   });
 
   it('detects a rebuilt hub on an advance frame below the cursor too', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1', ops: [hubOp(1, '11'), hubOp(2, '12')] });
+    const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11'), hubOp(2, '12')] });
     const { ctor, sockets } = makeWsFactory();
     const client = makeClient(impl, ctor);
     client.start();
     await sleep(30);
-    expect(apply.getCursor()).toBe(2);
+    expect(apply.getCursor()).toBe('2');
     sockets[0].open();
     await sleep(30);
 
     // Rebuilt hub announcing a head BELOW our stale cursor: the old
     // head<=cursor short-circuit would have ignored it.
-    state.epoch = 'e2';
+    state.epoch = '2';
     state.ops = [hubOp(1, '31')];
-    sockets[0].message(advanceFrame('e2', 1));
+    sockets[0].message(advanceFrame('2', 1));
     await sleep(80);
 
     expect(sockets[0].closeCalls).toBeGreaterThanOrEqual(1);
-    expect(apply.getEpoch()).toBe('e2');
-    expect(apply.getCursor()).toBe(1);
+    expect(apply.getEpoch()).toBe('2');
+    expect(apply.getCursor()).toBe('1');
   });
 
   it('an advance frame triggers an HTTP pull; at/below the cursor it is a no-op', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1' });
+    const { state, impl } = makeHub({ epoch: '1' });
     const { ctor, sockets } = makeWsFactory();
     makeClient(impl, ctor).start();
     await sleep(30);
@@ -447,20 +404,20 @@ describe('SyncClient advisory WebSocket', () => {
     await sleep(30);
 
     state.ops = [1, 2, 3, 4, 5].map(i => hubOp(i, String(10 + i)));
-    sockets[0].message(advanceFrame('e1', 5));
+    sockets[0].message(advanceFrame('1', 5));
     await sleep(50);
-    expect(apply.getCursor()).toBe(5);
+    expect(apply.getCursor()).toBe('5');
     expect(count('observations')).toBe(5);
     expect(sockets[0].closeCalls).toBe(0); // advance is not an anomaly
 
     const baseline = state.requests.length;
-    sockets[0].message(advanceFrame('e1', 5)); // nothing new
+    sockets[0].message(advanceFrame('1', 5)); // nothing new
     await sleep(50);
     expect(state.requests.length).toBe(baseline);
   });
 
   it('reconnects with bounded full-jitter backoff and keeps HTTP polling alive', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1', ops: [hubOp(1, '11')] });
+    const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11')] });
     const { ctor, attempts } = makeWsFactory({ failConstruct: () => true });
     // random()=1 pins each delay at the ceiling: 10, 20, 40, 40 (cap)...
     makeClient(impl, ctor, { random: () => 1 }).start();
@@ -472,11 +429,11 @@ describe('SyncClient advisory WebSocket', () => {
     expect(attempts.length).toBeLessThanOrEqual(6);
     // The advisory lane failing did not touch lane 1.
     expect(state.requests.length).toBeGreaterThanOrEqual(1);
-    expect(apply.getCursor()).toBe(1);
+    expect(apply.getCursor()).toBe('1');
   });
 
   it('stretches the active poll tier to idle while connected; restores it on disconnect', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1' });
+    const { state, impl } = makeHub({ epoch: '1' });
     const { ctor, sockets } = makeWsFactory();
     makeClient(impl, ctor, {
       activePollMs: 20,
@@ -497,7 +454,7 @@ describe('SyncClient advisory WebSocket', () => {
   });
 
   it('flips onSocketLiveChange true on open, false on disconnect (CloudSync fast-debounce coupling)', async () => {
-    const { impl } = makeHub({ epoch: 'e1' });
+    const { impl } = makeHub({ epoch: '1' });
     const { ctor, sockets } = makeWsFactory();
     const events: boolean[] = [];
     makeClient(impl, ctor, { onSocketLiveChange: (live) => events.push(live) }).start();
@@ -510,7 +467,7 @@ describe('SyncClient advisory WebSocket', () => {
   });
 
   it('flips the liveness flag off on self-heal too', async () => {
-    const { impl } = makeHub({ epoch: 'e1' });
+    const { impl } = makeHub({ epoch: '1' });
     const { ctor, sockets } = makeWsFactory();
     const events: boolean[] = [];
     makeClient(impl, ctor, { onSocketLiveChange: (live) => events.push(live) }).start();
@@ -522,7 +479,7 @@ describe('SyncClient advisory WebSocket', () => {
   });
 
   it('a throwing liveness listener is swallowed (socket stays functional)', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1' });
+    const { state, impl } = makeHub({ epoch: '1' });
     const { ctor, sockets } = makeWsFactory();
     makeClient(impl, ctor, {
       onSocketLiveChange: () => { throw new Error('listener bug'); },
@@ -532,13 +489,13 @@ describe('SyncClient advisory WebSocket', () => {
     await sleep(30);
 
     state.ops = [hubOp(1, '11')];
-    sockets[0].message(opFrame('e1', state.ops));
-    expect(apply.getCursor()).toBe(1);
+    sockets[0].message(opFrame('1', state.ops));
+    expect(apply.getCursor()).toBe('1');
     expect(sockets[0].closeCalls).toBe(0);
   });
 
   it('sends protocol pings on the configured cadence and stops them on stop()', async () => {
-    const { impl } = makeHub({ epoch: 'e1' });
+    const { impl } = makeHub({ epoch: '1' });
     const { ctor, sockets } = makeWsFactory();
     const client = makeClient(impl, ctor, { wsPingIntervalMs: 15 });
     client.start();
@@ -554,7 +511,7 @@ describe('SyncClient advisory WebSocket', () => {
   });
 
   it('stop() closes the socket and prevents reconnects', async () => {
-    const { impl } = makeHub({ epoch: 'e1' });
+    const { impl } = makeHub({ epoch: '1' });
     const { ctor, sockets, attempts } = makeWsFactory();
     const client = makeClient(impl, ctor);
     client.start();
@@ -575,7 +532,7 @@ describe('SyncClient advisory WebSocket', () => {
   // -------------------------------------------------------------------------
 
   it('X-Sync-Mode: poll on a pull closes the socket, suppresses reconnects, keeps polling; header gone resumes the socket', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1' });
+    const { state, impl } = makeHub({ epoch: '1' });
     const { ctor, sockets, attempts } = makeWsFactory();
     const client = makeClient(impl, ctor, {
       activePollMs: 20,
@@ -599,7 +556,7 @@ describe('SyncClient advisory WebSocket', () => {
 
     // The structural guarantee: HTTP sync is untouched — the pull loop
     // keeps running (which IS the re-probe) and data still converges.
-    expect(apply.getCursor()).toBe(1);
+    expect(apply.getCursor()).toBe('1');
     const requestsInPollMode = state.requests.length;
     await sleep(80);
     expect(state.requests.length).toBeGreaterThan(requestsInPollMode);
@@ -616,7 +573,7 @@ describe('SyncClient advisory WebSocket', () => {
   });
 
   it('poll mode present from the very first pull suppresses the initial socket before it ever opens', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1', ops: [hubOp(1, '11')] });
+    const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11')] });
     state.mode = 'poll';
     const { ctor, sockets, attempts } = makeWsFactory();
     const client = makeClient(impl, ctor, {
@@ -629,7 +586,7 @@ describe('SyncClient advisory WebSocket', () => {
 
     expect(client.isPollModeOnly()).toBe(true);
     expect(sockets[0].closeCalls).toBeGreaterThanOrEqual(1); // torn down unopened
-    expect(apply.getCursor()).toBe(1); // pull path unaffected
+    expect(apply.getCursor()).toBe('1'); // pull path unaffected
     const attemptsInPollMode = attempts.length;
     await sleep(100);
     expect(attempts.length).toBe(attemptsInPollMode); // no reconnect churn
@@ -637,7 +594,7 @@ describe('SyncClient advisory WebSocket', () => {
   });
 
   it('onSyncModeHint (the CloudSync push-surface wiring) drops and resumes the socket without any pull', async () => {
-    const { impl } = makeHub({ epoch: 'e1' });
+    const { impl } = makeHub({ epoch: '1' });
     const { ctor, sockets, attempts } = makeWsFactory();
     const events: boolean[] = [];
     const client = makeClient(impl, ctor, {
@@ -674,7 +631,7 @@ describe('SyncClient advisory WebSocket', () => {
   });
 
   it('an ERROR response without the header does NOT exit poll mode; a later OK response does', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1' });
+    const { state, impl } = makeHub({ epoch: '1' });
     const { ctor, sockets, attempts } = makeWsFactory();
     const client = makeClient(impl, ctor, {
       activePollMs: 20,
@@ -718,7 +675,7 @@ describe('SyncClient advisory WebSocket', () => {
   // -------------------------------------------------------------------------
 
   it('suspension tears the advisory socket down (pings stop); pullOnce resume reconnects it', async () => {
-    const { impl } = makeHub({ epoch: 'e1' });
+    const { impl } = makeHub({ epoch: '1' });
     const { ctor, sockets, attempts } = makeWsFactory();
     const client = makeClient(impl, ctor, {
       activePollMs: 20,

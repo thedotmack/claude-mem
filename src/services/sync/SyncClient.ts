@@ -58,6 +58,56 @@
 
 import { logger } from '../../utils/logger.js';
 import type { SyncApply, SyncOp } from './SyncApply.js';
+import {
+  assertCanonicalDecimal,
+  canonicalDecimalToSafeInteger,
+  canonicalJson,
+  compareCanonicalDecimals,
+  decodeHubChange,
+  incrementCanonicalDecimal,
+  type CanonicalHubChange,
+} from './CanonicalContent.js';
+
+const LOCAL_DECIMAL_FIELDS = new Set(['created_at_epoch', 'discovery_tokens', 'prompt_number']);
+const LOCAL_JSON_FIELDS = new Set(['concepts', 'facts', 'files_edited', 'files_modified', 'files_read']);
+
+/** Convert lossless wire types back to the native SQLite column shapes. */
+function localPayload(payload: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (payload === null) return null;
+  const result: Record<string, unknown> = { ...payload };
+  for (const [key, value] of Object.entries(result)) {
+    if (value === null) continue;
+    if (LOCAL_DECIMAL_FIELDS.has(key)) {
+      result[key] = canonicalDecimalToSafeInteger(value, key);
+    } else if (LOCAL_JSON_FIELDS.has(key)) {
+      result[key] = canonicalJson(value);
+    } else if (key === 'metadata') {
+      result[key] = canonicalJson(value);
+    }
+  }
+  return result;
+}
+
+function decodeChanges(values: unknown[]): SyncOp[] {
+  return values.map(value => {
+    const decoded = decodeHubChange(value as CanonicalHubChange);
+    const body = decoded.body;
+    return {
+      seq: decoded.seq,
+      kind: body.kind,
+      origin_device: body.origin_device_id,
+      origin_id: body.origin_local_id ?? body.id.slice('mutation:'.length),
+      rev: body.entity_rev,
+      body: canonicalJson(body.kind === 'mutation' ? body.mutation : localPayload(body.payload)),
+      server_ts: decoded.server_ts,
+      entity_id: body.id,
+      entity_rev: body.entity_rev,
+      operation_sha256: decoded.operation_sha256,
+      deleted: body.deleted,
+      deleted_at: body.deleted_at,
+    };
+  });
+}
 
 /**
  * Structural WebSocket surface the client needs — satisfied by Bun's global
@@ -140,6 +190,7 @@ export interface SyncClientOptions {
 }
 
 interface ChangesPage {
+  protocol_version?: unknown;
   epoch?: unknown;
   ops?: unknown;
   head_seq?: unknown;
@@ -183,7 +234,7 @@ export class SyncClient {
   /** 0 = healthy; doubles per consecutive failed cycle. */
   private backoffMs = 0;
   private failStreak = 0;
-  private failCursor = -1;
+  private failCursor: string | null = null;
 
   // Advisory socket state (all of it disposable — prime directive #2).
   private socket: SyncSocketLike | null = null;
@@ -310,11 +361,11 @@ export class SyncClient {
    * ops, so pull now instead of waiting out the poll timer. Never throws
    * (called from the flush path).
    */
-  onHeadSeq(headSeq: number): void {
+  onHeadSeq(headSeq: string): void {
     try {
       if (this.stopped || !this.started) return;
-      if (typeof headSeq !== 'number' || !Number.isFinite(headSeq)) return;
-      if (headSeq <= this.apply.getCursor()) return;
+      const head = assertCanonicalDecimal(headSeq);
+      if (compareCanonicalDecimals(head, this.apply.getCursor()) <= 0) return;
       this.resumeIfSuspended(); // socket back up alongside the loop
       this.schedule(0); // also resumes a suspended loop
     } catch (error) {
@@ -494,13 +545,18 @@ export class SyncClient {
           throw new Error(`sync hub pull ${res.status}: ${body}`);
         }
         const page = await res.json() as ChangesPage | null;
-        if (!page || !Array.isArray(page.ops)) {
+        if (!page || page.protocol_version !== 2 || !Array.isArray(page.ops)) {
           throw new Error('sync hub pull: malformed /changes response');
         }
+        const epoch = assertCanonicalDecimal(page.epoch);
+        assertCanonicalDecimal(page.head_seq);
+        if (typeof page.more !== 'boolean') throw new Error('sync hub pull: more must be boolean');
         if (this.stopped) return;
 
-        const result = this.apply.applyOps(page.ops as SyncOp[], {
-          epoch: typeof page.epoch === 'string' ? page.epoch : undefined,
+        const decodedOps = decodeChanges(page.ops);
+        const result = this.apply.applyOps(decodedOps, {
+          epoch,
+          requireContiguous: true,
         });
         pages++;
 
@@ -513,10 +569,10 @@ export class SyncClient {
 
         // A page applied — the pipeline is healthy.
         this.failStreak = 0;
-        this.failCursor = -1;
+        this.failCursor = null;
         this.backoffMs = 0;
 
-        if (page.more !== true || page.ops.length === 0) return;
+        if (page.more !== true || decodedOps.length === 0) return;
         if (pages >= this.maxPagesPerCycle) return;
       }
     } catch (error) {
@@ -620,6 +676,7 @@ export class SyncClient {
       // poll. A mismatch is an anomaly — the self-heal's HTTP pull runs
       // handleEpoch, which owns the cursor reset + native-corpus requeue.
       if (typeof frame.epoch === 'string') {
+        assertCanonicalDecimal(frame.epoch);
         const storedEpoch = this.apply.getEpoch();
         if (storedEpoch !== null && storedEpoch !== frame.epoch) {
           throw new Error(`hub epoch changed on the socket (${storedEpoch} -> ${frame.epoch})`);
@@ -630,8 +687,11 @@ export class SyncClient {
         return;
       }
       if (frame.type === 'advance') {
-        const head = frame.head_seq;
-        if (typeof head === 'number' && Number.isFinite(head) && head <= this.apply.getCursor()) {
+        if (typeof frame.head_seq !== 'string') {
+          throw new Error('advance frame requires decimal-string head_seq');
+        }
+        const head = assertCanonicalDecimal(frame.head_seq);
+        if (compareCanonicalDecimals(head, this.apply.getCursor()) <= 0) {
           return; // already caught up (an HTTP pull raced the frame)
         }
         void this.pullOnce({ force: true });
@@ -650,27 +710,23 @@ export class SyncClient {
       throw new Error('op frame without an ops array');
     }
     if (ops.length === 0) return; // vacuous frame — nothing to do
-    const seqs = ops.map((op) => (op as { seq?: unknown }).seq);
-    for (const seq of seqs) {
-      if (typeof seq !== 'number' || !Number.isFinite(seq)) {
-        throw new Error('op frame with a malformed seq');
-      }
-    }
+    const decodedOps = decodeChanges(ops);
+    const seqs = decodedOps.map(op => op.seq);
     for (let i = 1; i < seqs.length; i++) {
-      if ((seqs[i] as number) !== (seqs[i - 1] as number) + 1) {
+      if (seqs[i] !== incrementCanonicalDecimal(seqs[i - 1]!)) {
         throw new Error('op frame is not internally contiguous');
       }
     }
     const cursor = this.apply.getCursor();
-    const first = seqs[0] as number;
-    const last = seqs[seqs.length - 1] as number;
-    if (last <= cursor) {
+    const first = seqs[0]!;
+    const last = seqs[seqs.length - 1]!;
+    if (compareCanonicalDecimals(last, cursor) <= 0) {
       // Fully-stale frame: an HTTP pull already applied all of it. This is
       // the normal pull/fan-out race, not an anomaly — applying would be a
       // pure no-op, so skip without churning the socket.
       return;
     }
-    if (first > cursor + 1) {
+    if (compareCanonicalDecimals(first, incrementCanonicalDecimal(cursor)) > 0) {
       throw new Error(`op frame gap: frame starts at seq ${first}, cursor is ${cursor}`);
     }
     // first <= cursor+1 <= last: contiguous with the cursor (any stale prefix
@@ -678,7 +734,7 @@ export class SyncClient {
     // already caught by the frame-level epoch check in handleSocketMessage;
     // passing the epoch through applyOps keeps first-contact adoption and a
     // last-resort reset identical to the HTTP lane.
-    const result = this.apply.applyOps(ops as SyncOp[], {
+    const result = this.apply.applyOps(decodedOps, {
       epoch: typeof frame.epoch === 'string' ? frame.epoch : undefined,
     });
     if (result.epochReset) {
@@ -809,10 +865,10 @@ export class SyncClient {
    */
   private recordFailure(error: unknown): void {
     const err = error instanceof Error ? error : new Error(String(error));
-    let cursor = -1;
+    let cursor: string | null = null;
     try {
       cursor = this.apply.getCursor();
-    } catch { /* DB may be closing — cursor stays -1 */ }
+    } catch { /* DB may be closing — cursor stays null */ }
     if (cursor === this.failCursor) {
       this.failStreak++;
     } else {

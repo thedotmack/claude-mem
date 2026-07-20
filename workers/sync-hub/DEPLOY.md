@@ -55,6 +55,105 @@ There is no local or production authentication bypass. Vitest intercepts the
 verify request with Miniflare's mocked outbound service; manual `wrangler dev`
 sessions require a reachable verifier and a test-account token.
 
+### 1.3 Canonical projection and repair
+
+Deploy Pro's `POST /api/internal/sync/project` route before this Worker. Set one
+random shared credential in both deployments (never a normal user token):
+
+```sh
+cd workers/sync-hub
+wrangler secret put CMEM_INTERNAL_PROJECTOR_SECRET
+```
+
+The Worker posts at most 100 canonical operations / 4,000,000 encoded bytes to
+`INTERNAL_PROJECTOR_URL`. The byte cap covers the complete JSON request,
+including the envelope, brackets, and commas. Timing is deliberately fenced:
+
+```text
+Hub response-body abort (45s) < Pro maxDuration (60s) < Hub lease (90s)
+```
+
+The Hub heartbeats immediately before the bounded fetch and performs the token
+check plus checkpoint compare-and-set in one synchronous transaction. A stale
+request cannot checkpoint after a successor acquires a new token.
+
+If a fetch times out/aborts, fails at the network, returns a retryable status,
+or yields a truncated, invalid, or ambiguous response, the Hub deliberately
+keeps the 90-second lease until its natural expiry. The upstream handler may
+have ignored cancellation and may still be applying the request. Early lease
+release is allowed only after a valid response has been checkpointed, an
+authoritative checkpoint already proves the target complete, or Pro returns
+its deterministic nonretryable 409 outcome.
+
+A public push returns 200 only after the Hub's authoritative `projected_seq`
+covers the committed `head_seq`. Retryable projection failures after a durable
+append return 503 with `durable:true` and `retryable:true`; retrying the
+identical operation reuses its sequence and resumes projection. Pro's
+deterministic document/revision rejection returns nonretryable 409 and never
+advances the Hub checkpoint.
+
+Pro's scheduled repair job calls the secret-authenticated endpoint once per
+user whose projection may lag:
+
+```sh
+curl -fsS https://<sync-hub>/internal/v1/projection/drain \
+  -H "Authorization: Bearer $CMEM_INTERNAL_PROJECTOR_SECRET" \
+  -H 'Content-Type: application/json' \
+  --data '{"protocol_version":1,"user_id":"<canonical-lowercase-uuid>"}'
+```
+
+An optional decimal-string `through_seq` caps the repair. Success returns the
+Hub epoch, head, and `projected_through_seq`; 503 is durable/retryable and a
+deterministic Pro document rejection is 409/nonretryable. Never
+infer projection success from Pro alone: only the Hub checkpoint is
+authoritative.
+
+Physical `canonical_ops` compaction is unconditionally disabled for launch.
+The Durable Object alarm remains scheduled for deployment compatibility but is
+a no-op that deletes zero rows; there is no environment variable, threshold,
+or endpoint that can enable deletion. Keep the full ordered log until a
+snapshot/reset bootstrap protocol exists, so a newly first-seen device at
+cursor `0` can always replay contiguous history.
+
+### 1.4 Local Pro/Hub Miniflare E2E hook
+
+`test/miniflare-pro-e2e.ts` exports
+`createSyncHubMiniflareE2EOptions(...)`. A sibling Pro Vitest config passes its
+relative Hub checkout path as `workerRoot`, plus explicit loopback projection
+and verification URLs. The returned options run the real
+`src/index.ts`/`SyncHub` Durable Object with `wrangler.jsonc`; they intentionally
+contain no outbound-service mock. For example, an orchestrator may use:
+
+```sh
+CMEM_PRO_REPO_PATH=../../../../claude-mem-pro \
+INTERNAL_PROJECTOR_URL=http://127.0.0.1:3005/api/internal/sync/project \
+TOKEN_VERIFY_URL=http://127.0.0.1:3005/api/pro/sync/verify \
+CMEM_INTERNAL_PROJECTOR_SECRET=local-e2e-projector-secret-32-chars \
+npm run test:pro-sync-e2e --prefix "$CMEM_PRO_REPO_PATH"
+```
+
+The Pro-side command owns server lifecycle and supplies its relative Hub path
+to the helper. No production URL or workstation-specific absolute path belongs
+in the E2E config.
+
+For a Bun- or process-isolated Pro client, start the actual Hub in its own Node
+process instead of importing workerd into Bun:
+
+```sh
+INTERNAL_PROJECTOR_URL=http://127.0.0.1:3005/api/internal/sync/project \
+TOKEN_VERIFY_URL=http://127.0.0.1:3005/api/pro/sync/verify \
+CMEM_INTERNAL_PROJECTOR_SECRET=local-e2e-projector-secret-32-chars \
+npm run e2e:serve -- --host 127.0.0.1 --port 0
+```
+
+`test/run-miniflare-pro-e2e.mjs` prints one machine-readable ready line such as
+`{"event":"ready","url":"http://127.0.0.1:58471/","pid":12345}`. The
+caller sends requests to that URL and terminates the process with SIGTERM or
+SIGINT. The wrapper disposes Miniflare, prints an `event:"stopped"` line, and
+exits zero. Its runtime dependencies resolve from this package's
+`workers/sync-hub/node_modules`; both `miniflare` and `esbuild` are direct
+development dependencies.
+
 ---
 
 ## 2. Watchdog (Phase 5 task 1)
@@ -281,6 +380,7 @@ silent week is the success case.
 cd workers/sync-hub
 bun install --frozen-lockfile
 bun run test && bun run test:ws && bun run lint && bunx tsc --noEmit
+wrangler secret put CMEM_INTERNAL_PROJECTOR_SECRET  # first deploy / rotation only
 wrangler deploy --dry-run     # config sanity (bindings listed; the cron is not printed by dry-run — verify in dash post-deploy, §2.5)
 wrangler deploy
 ```

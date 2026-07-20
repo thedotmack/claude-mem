@@ -28,6 +28,12 @@
 import type { Database } from 'bun:sqlite';
 import { randomUUID } from 'crypto';
 import { logger } from '../../utils/logger.js';
+import {
+  compareCanonicalDecimals,
+  incrementCanonicalDecimal,
+  validateCanonicalMutation,
+  type CanonicalMutation,
+} from './CanonicalContent.js';
 
 export interface RemapWhere {
   /** Match rows by project (the worktree-adoption shape). */
@@ -49,7 +55,7 @@ export interface RemapResult {
   /** Rows the predicate matched (and stamped) in session_summaries. */
   summaries: number;
   /** The rev R the op was emitted at (0 when nothing matched — no op). */
-  rev: number;
+  rev: string;
 }
 
 const REMAP_TABLES = ['observations', 'session_summaries'] as const;
@@ -139,17 +145,28 @@ export function emitRemapProject(
   }
   const matched = counts.observations + counts.session_summaries;
   if (matched === 0) {
-    return { observations: 0, summaries: 0, rev: 0 };
+    return { observations: 0, summaries: 0, rev: '0' };
   }
 
-  // R = 1 + MAX(sync_rev) over the matched rows across both tables.
-  const rev = (db.prepare(`
-    SELECT 1 + COALESCE(MAX(sync_rev), 0) AS r FROM (
-      SELECT sync_rev FROM observations WHERE ${whereSql}
-      UNION ALL
-      SELECT sync_rev FROM session_summaries WHERE ${whereSql}
-    )
-  `).get(...whereParams, ...whereParams) as { r: number }).r;
+  // R = 1 + MAX(sync_rev) over the matched rows across both tables. Keep the
+  // comparison in canonical decimal TEXT so uint64 revisions never pass
+  // through SQLite INTEGER affinity or a JavaScript Number.
+  let maxRev = '0';
+  for (const table of REMAP_TABLES) {
+    const revisions = db.prepare(
+      `SELECT CAST(sync_rev AS TEXT) AS sync_rev FROM ${table} WHERE ${whereSql}`
+    ).all(...whereParams) as Array<{ sync_rev: string }>;
+    for (const row of revisions) {
+      if (compareCanonicalDecimals(row.sync_rev, maxRev) > 0) maxRev = row.sync_rev;
+    }
+  }
+  const rev = incrementCanonicalDecimal(maxRev);
+  const mutation: CanonicalMutation = {
+    op: 'remap_project',
+    where: { ...where },
+    fields: { ...fields },
+  };
+  validateCanonicalMutation(mutation);
 
   for (const table of REMAP_TABLES) {
     if (counts[table] === 0) continue;
@@ -169,7 +186,7 @@ export function emitRemapProject(
   `).run(
     opUuid,
     rev,
-    JSON.stringify({ op: 'remap_project', where, fields }),
+    JSON.stringify(mutation),
     Date.now()
   );
 

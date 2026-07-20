@@ -13,50 +13,13 @@ import { join } from 'path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SyncApply } from '../../../src/services/sync/SyncApply.js';
 import { SyncClient, type SyncClientOptions } from '../../../src/services/sync/SyncClient.js';
+import { observationChange, type TestHubChange } from './content-v2-helpers.js';
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 const SELF = 'device-fixture';
 const REMOTE = 'device-a';
-const REMOTE_EPOCH = 1751328000000;
-const REMOTE_ISO = new Date(REMOTE_EPOCH).toISOString();
-
-interface HubOp {
-  seq: number;
-  kind: 'observation' | 'summary' | 'prompt' | 'mutation';
-  origin_device: string;
-  origin_id: string;
-  rev: number;
-  body: string;
-  server_ts: number;
-}
-
-function obsBody(overrides: Record<string, unknown> = {}): string {
-  return JSON.stringify({
-    memory_session_id: 'mem-remote-1',
-    project: 'proj-remote',
-    text: null,
-    type: 'discovery',
-    title: 'Remote observation',
-    subtitle: null,
-    facts: '["remote fact"]',
-    narrative: 'remote narrative',
-    concepts: null,
-    files_read: null,
-    files_modified: null,
-    prompt_number: 1,
-    discovery_tokens: 0,
-    content_hash: null,
-    generated_by_model: null,
-    agent_type: null,
-    agent_id: null,
-    metadata: null,
-    merged_into_project: null,
-    created_at: REMOTE_ISO,
-    created_at_epoch: REMOTE_EPOCH,
-    ...overrides,
-  });
-}
+type HubOp = TestHubChange;
 
 /**
  * Scripted hub: serves GET /v1/sync/changes from a mutable log with a
@@ -87,14 +50,17 @@ function makeHub(initial: { epoch: string; ops?: HubOp[] }) {
       state.failNext--;
       throw new Error('connect ECONNREFUSED');
     }
-    const matching = state.ops.filter(op => op.seq > since).sort((a, b) => a.seq - b.seq);
+    const matching = state.ops
+      .filter(op => Number(op.seq) > since)
+      .sort((a, b) => Number(a.seq) - Number(b.seq));
     const page = matching.slice(0, limit);
-    const head = state.ops.reduce((m, op) => Math.max(m, op.seq), 0);
-    const lastSeq = page.length > 0 ? page[page.length - 1].seq : since;
+    const head = state.ops.reduce((m, op) => Math.max(m, Number(op.seq)), 0);
+    const lastSeq = page.length > 0 ? Number(page[page.length - 1].seq) : since;
     return new Response(JSON.stringify({
+      protocol_version: 2,
       epoch: state.epoch,
       ops: page,
-      head_seq: head,
+      head_seq: String(head),
       more: page.length === limit && lastSeq < head,
     }), { status: 200 });
   }) as typeof fetch;
@@ -131,17 +97,8 @@ describe('SyncClient', () => {
     return client;
   }
 
-  function hubOp(seq: number, originId: string, overrides: Record<string, unknown> = {}): HubOp {
-    return {
-      seq,
-      kind: 'observation',
-      origin_device: REMOTE,
-      origin_id: originId,
-      rev: 1,
-      body: obsBody({ content_hash: `hash-${originId}`, title: `obs ${originId}` }),
-      server_ts: REMOTE_EPOCH + seq,
-      ...overrides,
-    } as HubOp;
+  function hubOp(seq: number, originId: string): HubOp {
+    return observationChange(seq, originId, REMOTE);
   }
 
   function count(table: string): number {
@@ -163,14 +120,14 @@ describe('SyncClient', () => {
   });
 
   it('pulls a page, applies it through SyncApply, and advances the cursor (auth headers included)', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1', ops: [hubOp(1, '11'), hubOp(2, '12')] });
+    const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11'), hubOp(2, '12')] });
     const client = makeClient(impl);
 
     await client.pullOnce({ timeoutMs: 5_000 });
 
     expect(count('observations')).toBe(2);
-    expect(apply.getCursor()).toBe(2);
-    expect(apply.getEpoch()).toBe('e1');
+    expect(apply.getCursor()).toBe('2');
+    expect(apply.getEpoch()).toBe('1');
     expect(state.requests.length).toBe(1);
     expect(state.requests[0].since).toBe(0);
     expect(state.requests[0].headers['Authorization']).toBe('Bearer test-token-1234');
@@ -181,7 +138,7 @@ describe('SyncClient', () => {
   it('loops while more=true, presenting the advanced cursor each page', async () => {
     const ops: HubOp[] = [];
     for (let i = 1; i <= 5; i++) ops.push(hubOp(i, String(10 + i)));
-    const { state, impl } = makeHub({ epoch: 'e1', ops });
+    const { state, impl } = makeHub({ epoch: '1', ops });
     const client = makeClient(impl, { pageLimit: 2 });
 
     await client.pullOnce({ timeoutMs: 5_000 });
@@ -189,18 +146,18 @@ describe('SyncClient', () => {
     // 2 + 2 + 1: the third page is the final partial one (more=false).
     expect(state.requests.map(r => r.since)).toEqual([0, 2, 4]);
     expect(count('observations')).toBe(5);
-    expect(apply.getCursor()).toBe(5);
+    expect(apply.getCursor()).toBe('5');
   });
 
   it('handles an epoch reset by re-pulling from 0 in the same cycle', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1', ops: [hubOp(1, '11')] });
+    const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11')] });
     const client = makeClient(impl);
 
     await client.pullOnce({ timeoutMs: 5_000 });
-    expect(apply.getCursor()).toBe(1);
+    expect(apply.getCursor()).toBe('1');
 
     // The hub is rebuilt: new epoch, re-logged history plus a new op.
-    state.epoch = 'e2';
+    state.epoch = '2';
     state.ops = [
       hubOp(1, '11'),
       hubOp(2, '12'),
@@ -212,14 +169,14 @@ describe('SyncClient', () => {
     // discarded, cursor reset), then re-pulled from 0 in the same cycle.
     const sinces = state.requests.map(r => r.since);
     expect(sinces).toEqual([0, 1, 0]);
-    expect(apply.getEpoch()).toBe('e2');
-    expect(apply.getCursor()).toBe(2);
+    expect(apply.getEpoch()).toBe('2');
+    expect(apply.getCursor()).toBe('2');
     // Re-applying op 11 was an idempotent skip; op 12 landed.
     expect(count('observations')).toBe(2);
   });
 
   it('onHeadSeq triggers an immediate pull when head_seq is beyond the cursor', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1', ops: [] });
+    const { state, impl } = makeHub({ epoch: '1', ops: [] });
     // Idle cadence so only the piggyback can plausibly trigger the 2nd pull.
     const client = makeClient(impl, { activePollMs: 60_000, idlePollMs: 60_000 });
     client.start();
@@ -228,28 +185,28 @@ describe('SyncClient', () => {
     expect(baseline).toBeGreaterThanOrEqual(1);
 
     state.ops = [hubOp(1, '11')];
-    client.onHeadSeq(1); // push response piggyback: head beyond cursor
+    client.onHeadSeq('1'); // push response piggyback: head beyond cursor
     await sleep(50);
 
     expect(state.requests.length).toBeGreaterThan(baseline);
     expect(count('observations')).toBe(1);
-    expect(apply.getCursor()).toBe(1);
+    expect(apply.getCursor()).toBe('1');
   });
 
   it('onHeadSeq is a no-op when head_seq is not beyond the cursor', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1', ops: [hubOp(1, '11')] });
+    const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11')] });
     const client = makeClient(impl, { activePollMs: 60_000, idlePollMs: 60_000 });
     client.start();
     await sleep(50);
     const baseline = state.requests.length;
 
-    client.onHeadSeq(1); // cursor is already 1
+    client.onHeadSeq('1'); // cursor is already 1
     await sleep(50);
     expect(state.requests.length).toBe(baseline);
   });
 
   it('pullOnce is hard-bounded by timeoutMs even against a hanging network', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1', ops: [] });
+    const { state, impl } = makeHub({ epoch: '1', ops: [] });
     state.hang = true;
     const client = makeClient(impl);
 
@@ -258,41 +215,83 @@ describe('SyncClient', () => {
     const elapsed = Date.now() - startedAt;
 
     expect(elapsed).toBeLessThan(1_000); // 100ms bound + scheduling slack
-    expect(apply.getCursor()).toBe(0);   // nothing applied, nothing corrupted
+    expect(apply.getCursor()).toBe('0');   // nothing applied, nothing corrupted
   });
 
   it('swallows failures (pull never throws, cursor unmoved) and recovers on the next pull', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1', ops: [hubOp(1, '11')] });
+    const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11')] });
     state.failNext = 1;
     const client = makeClient(impl);
 
     await client.pullOnce({ timeoutMs: 5_000 }); // fails internally, resolves
-    expect(apply.getCursor()).toBe(0);
+    expect(apply.getCursor()).toBe('0');
     expect(count('observations')).toBe(0);
 
     await client.pullOnce({ timeoutMs: 5_000 });
-    expect(apply.getCursor()).toBe(1);
+    expect(apply.getCursor()).toBe('1');
     expect(count('observations')).toBe(1);
   });
 
   it('a malformed page fails the batch without moving the cursor, then applies once fixed', async () => {
     const bad = hubOp(1, '11');
     bad.body = 'not json{';
-    const { state, impl } = makeHub({ epoch: 'e1', ops: [bad] });
+    const { state, impl } = makeHub({ epoch: '1', ops: [bad] });
     const client = makeClient(impl);
 
     await client.pullOnce({ timeoutMs: 5_000 });
-    expect(apply.getCursor()).toBe(0); // applyOps threw, batch rolled back
+    expect(apply.getCursor()).toBe('0'); // applyOps threw, batch rolled back
 
     state.ops = [hubOp(1, '11')];
     await client.pullOnce({ timeoutMs: 5_000 });
-    expect(apply.getCursor()).toBe(1);
+    expect(apply.getCursor()).toBe('1');
     expect(count('observations')).toBe(1);
+  });
+
+  it('rejects HTTP pages that do not start at cursor+1 or contain an internal sequence gap', async () => {
+    const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(2, '12')] });
+    const client = makeClient(impl);
+    await client.pullOnce({ timeoutMs: 5_000 });
+    expect(apply.getCursor()).toBe('0');
+    expect(count('observations')).toBe(0);
+
+    state.ops = [hubOp(1, '11'), hubOp(3, '13')];
+    await client.pullOnce({ timeoutMs: 5_000 });
+    expect(apply.getCursor()).toBe('0');
+    expect(count('observations')).toBe(0); // seq 1 insert rolled back with the gap
+
+    state.ops = [hubOp(1, '11'), hubOp(2, '12'), hubOp(3, '13')];
+    await client.pullOnce({ timeoutMs: 5_000 });
+    expect(apply.getCursor()).toBe('3');
+    expect(count('observations')).toBe(3);
+  });
+
+  it('preserves a uint64 HTTP since/head/seq value without Number rounding', async () => {
+    db.prepare("INSERT INTO sync_state (k, v) VALUES ('cursor', '9007199254740992')").run();
+    const change = hubOp(1, '18446744073709551615');
+    change.seq = '9007199254740993';
+    const requests: string[] = [];
+    const impl = (async (input: any) => {
+      const url = new URL(String(input));
+      requests.push(url.searchParams.get('since')!);
+      return new Response(JSON.stringify({
+        protocol_version: 2,
+        epoch: '1',
+        ops: [change],
+        head_seq: '9007199254740993',
+        more: false,
+      }), { status: 200 });
+    }) as typeof fetch;
+    await makeClient(impl).pullOnce({ timeoutMs: 5_000 });
+
+    expect(requests).toEqual(['9007199254740992']);
+    expect(apply.getCursor()).toBe('9007199254740993');
+    expect(db.prepare('SELECT origin_local_id FROM observations').get())
+      .toEqual({ origin_local_id: '18446744073709551615' });
   });
 
   describe('cadence tiers (config-injected intervals)', () => {
     it('polls on the active tier while a session is active', async () => {
-      const { state, impl } = makeHub({ epoch: 'e1', ops: [] });
+      const { state, impl } = makeHub({ epoch: '1', ops: [] });
       const client = makeClient(impl, {
         activePollMs: 20,
         idlePollMs: 60_000,
@@ -307,7 +306,7 @@ describe('SyncClient', () => {
     });
 
     it('drops to the idle tier when no session is active', async () => {
-      const { state, impl } = makeHub({ epoch: 'e1', ops: [] });
+      const { state, impl } = makeHub({ epoch: '1', ops: [] });
       const client = makeClient(impl, {
         activePollMs: 20,
         idlePollMs: 60_000,
@@ -321,7 +320,7 @@ describe('SyncClient', () => {
     });
 
     it('suspends entirely after the no-session window, and pullOnce resumes the loop', async () => {
-      const { state, impl } = makeHub({ epoch: 'e1', ops: [] });
+      const { state, impl } = makeHub({ epoch: '1', ops: [] });
       let now = 1_000_000;
       const client = makeClient(impl, {
         activePollMs: 10,
@@ -349,7 +348,7 @@ describe('SyncClient', () => {
     });
 
     it('onHeadSeq also resumes a suspended loop', async () => {
-      const { state, impl } = makeHub({ epoch: 'e1', ops: [] });
+      const { state, impl } = makeHub({ epoch: '1', ops: [] });
       let now = 1_000_000;
       const client = makeClient(impl, {
         activePollMs: 10,
@@ -367,7 +366,7 @@ describe('SyncClient', () => {
       expect(state.requests.length).toBe(suspendedAt);
 
       state.ops = [hubOp(1, '11')];
-      client.onHeadSeq(1);
+      client.onHeadSeq('1');
       await sleep(50);
       expect(state.requests.length).toBeGreaterThan(suspendedAt);
       expect(count('observations')).toBe(1);
@@ -375,21 +374,21 @@ describe('SyncClient', () => {
   });
 
   it('stop() halts the loop and makes pullOnce/onHeadSeq inert', async () => {
-    const { state, impl } = makeHub({ epoch: 'e1', ops: [hubOp(1, '11')] });
+    const { state, impl } = makeHub({ epoch: '1', ops: [hubOp(1, '11')] });
     const client = makeClient(impl, { isSessionActive: () => true, activePollMs: 10 });
     client.start();
     await sleep(30);
     client.stop();
     const atStop = state.requests.length;
 
-    client.onHeadSeq(99);
+    client.onHeadSeq('99');
     await client.pullOnce({ timeoutMs: 1_000 });
     await sleep(60);
     expect(state.requests.length).toBe(atStop);
   });
 
   it('fails closed on construction without a device id or hub URL', () => {
-    const { impl } = makeHub({ epoch: 'e1' });
+    const { impl } = makeHub({ epoch: '1' });
     expect(() => makeClient(impl, { deviceId: '' })).toThrow(/deviceId/);
     expect(() => makeClient(impl, { hubUrl: '' })).toThrow(/hubUrl/);
   });

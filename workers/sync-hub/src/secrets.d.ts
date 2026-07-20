@@ -8,6 +8,8 @@
  * watchdog treats absence as "unconfigured" and skips instead of crashing.
  */
 interface Env {
+	/** Shared Hub/Pro internal projector credential. */
+	CMEM_INTERNAL_PROJECTOR_SECRET?: string;
 	/**
 	 * Cloudflare API token for the GraphQL Analytics API.
 	 * Scope: Account → Account Analytics → Read.

@@ -5,6 +5,7 @@ interface __BaseEnv_Env {
 	AUTH_CACHE: KVNamespace;
 	TOKEN_VERIFY_URL: string;
 	AUTH_CACHE_TTL_SECONDS: string;
+	INTERNAL_PROJECTOR_URL: string;
 	KILL_SWITCH_CACHE_MS: string;
 	ACCOUNT_ID: string;
 	WATCHDOG_DO_NAMESPACE_ID: string;

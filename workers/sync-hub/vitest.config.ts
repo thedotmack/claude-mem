@@ -38,6 +38,8 @@ import { defineConfig } from "vitest/config";
 
 /** Once-tokens already consumed by the mock verify endpoint. */
 const consumedOnceTokens = new Set<string>();
+const failedProjectorUsers = new Set<string>();
+const delayedProjectorCompletions = new Map<string, number>();
 
 function mockVerifyEndpoint(request: Request): Response {
 	const auth = request.headers.get("Authorization") ?? "";
@@ -158,6 +160,66 @@ function mockDiscordWebhook(url: URL): Response {
 
 async function mockOutbound(request: Request): Promise<Response> {
 	const url = new URL(request.url);
+	if (url.hostname === "projection-cases.test") {
+		if (url.pathname === "/test/completion") {
+			const userId = url.searchParams.get("user_id") ?? "";
+			return Response.json({ completions: delayedProjectorCompletions.get(userId) ?? 0 });
+		}
+		const mode = url.searchParams.get("mode");
+		if (mode === "network") throw new Error("simulated projection network failure");
+		if (mode === "retryable") return new Response("retry later", { status: 503 });
+		if (mode === "truncated") return new Response('{"protocol_version":1', { status: 200 });
+		const body = await request.json() as { epoch?: unknown; through_seq?: unknown; user_id?: unknown };
+		if (mode === "mismatch") {
+			return Response.json({
+				protocol_version: 1,
+				epoch: body.epoch,
+				projected_through_seq: "0",
+			});
+		}
+		if (mode === "nonretryable") {
+			return Response.json({ error: "document rejected", retryable: false }, { status: 409 });
+		}
+		if (mode === "delayed") {
+			// Deliberately ignore request.signal. This emulates a Pro handler that
+			// keeps applying after its Hub caller has reached the response deadline.
+			await new Promise((resolve) => setTimeout(resolve, 75));
+			const userId = typeof body.user_id === "string" ? body.user_id : "";
+			delayedProjectorCompletions.set(
+				userId,
+				(delayedProjectorCompletions.get(userId) ?? 0) + 1,
+			);
+		}
+		return Response.json({
+			protocol_version: 1,
+			epoch: body.epoch,
+			projected_through_seq: body.through_seq,
+		});
+	}
+	if (url.hostname === "projector.test" && url.pathname === "/api/internal/sync/project") {
+		const body = await request.json() as { epoch?: unknown; through_seq?: unknown; user_id?: unknown };
+		if (request.headers.get("Authorization") !== "Bearer test-projector-secret") {
+			return new Response("denied", { status: 401 });
+		}
+		if (body.user_id === "77777777-7777-4777-8777-777777777777") {
+			return Response.json(
+				{ error: "projection document rejected", retryable: false },
+				{ status: 409 },
+			);
+		}
+		if (
+			body.user_id === "55555555-5555-4555-8555-555555555555"
+			&& !failedProjectorUsers.has(body.user_id)
+		) {
+			failedProjectorUsers.add(body.user_id);
+			return new Response("simulated first projection failure", { status: 503 });
+		}
+		return Response.json({
+			protocol_version: 1,
+			epoch: body.epoch,
+			projected_through_seq: body.through_seq,
+		});
+	}
 	if (url.hostname === "api.cloudflare.com" && url.pathname === "/client/v4/graphql") {
 		return mockGraphQLEndpoint(request);
 	}
@@ -182,6 +244,8 @@ export default defineConfig({
 					// Per-request kill-switch reads: SELF tests flip the KV flag
 					// and must observe it on the very next request.
 					KILL_SWITCH_CACHE_MS: "0",
+					INTERNAL_PROJECTOR_URL: "https://projector.test/api/internal/sync/project",
+					CMEM_INTERNAL_PROJECTOR_SECRET: "test-projector-secret",
 				},
 				outboundService: mockOutbound,
 			},

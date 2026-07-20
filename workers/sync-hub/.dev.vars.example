@@ -6,3 +6,7 @@
 # put/delete --local) are visible immediately — required by
 # scripts/sync-kill-switch-e2e.ts. Production uses the 30 s default.
 KILL_SWITCH_CACHE_MS=0
+
+# Shared only with the Pro projection route. Use a throwaway local value;
+# production is set with `wrangler secret put CMEM_INTERNAL_PROJECTOR_SECRET`.
+CMEM_INTERNAL_PROJECTOR_SECRET=local-projector-secret-change-me-32chars

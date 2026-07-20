@@ -159,16 +159,27 @@
 import type { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
+import {
+  assertCanonicalDecimal,
+  compareCanonicalDecimals,
+  incrementCanonicalDecimal,
+} from './CanonicalContent.js';
 
 /** One op as returned by the hub's getChanges (SyncHub.ts ChangeOp). */
 export interface SyncOp {
-  seq: number;
+  seq: string;
   kind: 'observation' | 'summary' | 'prompt' | 'mutation';
   origin_device: string;
   origin_id: string;
-  rev: number;
+  rev: string;
   body: string;
   server_ts: number;
+  /** Canonical-v2 identity/head metadata (present on Hub wire decoding). */
+  entity_id?: string;
+  entity_rev?: string;
+  operation_sha256?: string;
+  deleted?: boolean;
+  deleted_at?: string | null;
 }
 
 /**
@@ -242,6 +253,8 @@ export interface ApplyOpsOptions {
    * the re-pull converges.
    */
   epoch?: string;
+  /** HTTP pages must begin at cursor+1 and contain no gaps. */
+  requireContiguous?: boolean;
 }
 
 export interface ApplyResult {
@@ -254,14 +267,14 @@ export interface ApplyResult {
   /** Ops skipped because seq <= stored cursor (already applied earlier). */
   skippedCursor: number;
   /** Cursor after this call. */
-  cursor: number;
+  cursor: string;
   /** True when the epoch guard reset the cursor; batch was NOT applied. */
   epochReset: boolean;
 }
 
 interface RowIdRev {
   id: number;
-  sync_rev: number;
+  sync_rev: string;
 }
 
 type ChromaJob = () => Promise<void>;
@@ -323,10 +336,9 @@ export class SyncApply {
   // sync_state (cursor + epoch)
   // -------------------------------------------------------------------------
 
-  getCursor(): number {
+  getCursor(): string {
     const row = this.db.prepare(`SELECT v FROM sync_state WHERE k = 'cursor'`).get() as { v: string } | undefined;
-    const parsed = row ? Number.parseInt(row.v, 10) : 0;
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+    return assertCanonicalDecimal(row?.v ?? '0');
   }
 
   getEpoch(): string | null {
@@ -403,7 +415,7 @@ export class SyncApply {
         skippedOwn: 0,
         skippedStale: 0,
         skippedCursor: 0,
-        cursor: 0,
+        cursor: '0',
         epochReset: true,
       };
     }
@@ -425,14 +437,23 @@ export class SyncApply {
       let lastSeq = cursor;
 
       for (const op of ops) {
-        if (op.seq <= cursor) {
+        const seq = assertCanonicalDecimal(op.seq, { positive: true });
+        assertCanonicalDecimal(op.rev, { positive: true });
+        // Strict HTTP pages describe the exact raw suffix after our cursor.
+        // Validate every supplied sequence before the ordinary replay skip;
+        // otherwise a stale prefix (even an out-of-order one) is silently
+        // discarded and a malformed page can look contiguous.
+        if (options.requireContiguous === true && seq !== incrementCanonicalDecimal(lastSeq)) {
+          throw new Error(`SyncApply: sequence gap (expected ${incrementCanonicalDecimal(lastSeq)}, got ${seq})`);
+        }
+        if (compareCanonicalDecimals(seq, cursor) <= 0) {
           result.skippedCursor++;
           continue;
         }
-        if (op.seq <= lastSeq) {
+        if (compareCanonicalDecimals(seq, lastSeq) <= 0) {
           throw new Error(`SyncApply: ops out of order (seq ${op.seq} after ${lastSeq})`);
         }
-        lastSeq = op.seq;
+        lastSeq = seq;
 
         if (op.origin_device === this.deviceId) {
           result.skippedOwn++;
@@ -443,7 +464,7 @@ export class SyncApply {
         if (op.kind === 'mutation') {
           outcome = this.applyMutation(op);
         } else {
-          outcome = this.applyRowOp(op, chromaJobs);
+          outcome = this.applyCanonicalRowOp(op, chromaJobs);
         }
         if (outcome === 'applied') result.applied++;
         else result.skippedStale++;
@@ -451,8 +472,8 @@ export class SyncApply {
 
       // Cursor advance IN THE SAME TRANSACTION as the rows (crash-safe
       // exactly-once): a crash before COMMIT leaves both unmoved.
-      if (lastSeq > cursor) {
-        this.setState('cursor', String(lastSeq));
+      if (compareCanonicalDecimals(lastSeq, cursor) > 0) {
+        this.setState('cursor', lastSeq);
       }
       result.cursor = lastSeq;
     });
@@ -491,8 +512,64 @@ export class SyncApply {
 
   private findByOrigin(table: string, originDevice: string, originId: string): RowIdRev | undefined {
     return this.db.prepare(
-      `SELECT id, sync_rev FROM ${table} WHERE origin_device_id = ? AND origin_local_id = ?`
+      `SELECT id, CAST(sync_rev AS TEXT) AS sync_rev
+       FROM ${table} WHERE origin_device_id = ? AND origin_local_id = ?`
     ).get(originDevice, originId) as RowIdRev | undefined;
+  }
+
+  /**
+   * Canonical-v2 head ledger. It survives local row deletion and epoch replay,
+   * so a stale live op cannot resurrect a tombstoned entity.
+   */
+  private applyCanonicalRowOp(op: SyncOp, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
+    if (!op.entity_id || !op.entity_rev || !op.operation_sha256) {
+      return this.applyRowOp(op, chromaJobs); // internal legacy fixtures only
+    }
+    const head = this.db.prepare(`
+      SELECT entity_rev, operation_sha256
+      FROM sync_entity_heads WHERE entity_id = ?
+    `).get(op.entity_id) as { entity_rev: string; operation_sha256: string } | undefined;
+    if (head) {
+      const order = compareCanonicalDecimals(op.entity_rev, head.entity_rev);
+      if (order < 0) return 'stale';
+      if (order === 0) {
+        if (op.operation_sha256 !== head.operation_sha256) {
+          throw invalidOp(op, 'same entity revision has a different canonical operation hash');
+        }
+        return 'stale';
+      }
+    }
+
+    let outcome: 'applied' | 'stale';
+    if (op.deleted === true) {
+      const table = op.kind === 'observation'
+        ? 'observations'
+        : op.kind === 'summary'
+          ? 'session_summaries'
+          : 'user_prompts';
+      this.db.prepare(
+        `DELETE FROM ${table} WHERE origin_device_id = ? AND origin_local_id = ?`
+      ).run(op.origin_device, op.origin_id);
+      outcome = 'applied';
+    } else {
+      outcome = this.applyRowOp(op, chromaJobs);
+    }
+
+    this.db.prepare(`
+      INSERT INTO sync_entity_heads
+        (entity_id, kind, origin_device_id, origin_local_id, entity_rev,
+         operation_sha256, deleted, updated_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(entity_id) DO UPDATE SET
+        entity_rev=excluded.entity_rev,
+        operation_sha256=excluded.operation_sha256,
+        deleted=excluded.deleted,
+        updated_at_epoch=excluded.updated_at_epoch
+    `).run(
+      op.entity_id, op.kind, op.origin_device, op.origin_id, op.entity_rev,
+      op.operation_sha256, op.deleted === true ? 1 : 0, this.now(),
+    );
+    return outcome;
   }
 
   private applyRowOp(op: SyncOp, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
@@ -622,7 +699,7 @@ export class SyncApply {
 
     const existing = this.findByOrigin('observations', op.origin_device, op.origin_id);
     if (existing) {
-      if (op.rev <= existing.sync_rev) return 'stale';
+      if (compareCanonicalDecimals(op.rev, existing.sync_rev) <= 0) return 'stale';
       this.ensureSessionForMemoryId(memorySessionId, project, createdAtEpoch); // FK holds even if the body re-homed the row
       this.db.prepare(`
         UPDATE observations SET
@@ -709,7 +786,7 @@ export class SyncApply {
 
     const existing = this.findByOrigin('session_summaries', op.origin_device, op.origin_id);
     if (existing) {
-      if (op.rev <= existing.sync_rev) return 'stale';
+      if (compareCanonicalDecimals(op.rev, existing.sync_rev) <= 0) return 'stale';
       this.ensureSessionForMemoryId(memorySessionId, project, createdAtEpoch); // FK holds even if the body re-homed the row
       this.db.prepare(`
         UPDATE session_summaries SET
@@ -804,7 +881,7 @@ export class SyncApply {
 
     const existing = this.findByOrigin('user_prompts', op.origin_device, op.origin_id);
     if (existing) {
-      if (op.rev <= existing.sync_rev) return 'stale';
+      if (compareCanonicalDecimals(op.rev, existing.sync_rev) <= 0) return 'stale';
       const sessionDbId = this.resolvePromptSession(op, body, createdAtEpoch);
       this.db.prepare(`
         UPDATE user_prompts SET
@@ -961,13 +1038,15 @@ export class SyncApply {
     // is a replica keyed by the origin pair.
     const row = (targetDevice === this.deviceId
       ? this.db.prepare(
-          'SELECT id, sync_rev FROM user_prompts WHERE origin_device_id IS NULL AND id = CAST(? AS INTEGER)'
+          `SELECT id, CAST(sync_rev AS TEXT) AS sync_rev
+           FROM user_prompts WHERE origin_device_id IS NULL AND id = ?`
         ).get(targetLocalId)
       : this.db.prepare(
-          'SELECT id, sync_rev FROM user_prompts WHERE origin_device_id = ? AND origin_local_id = ?'
+          `SELECT id, CAST(sync_rev AS TEXT) AS sync_rev
+           FROM user_prompts WHERE origin_device_id = ? AND origin_local_id = ?`
         ).get(targetDevice, targetLocalId)) as RowIdRev | undefined;
     if (!row) return 'stale'; // row not replicated here (yet) — nothing to repair
-    if (op.rev < row.sync_rev) return 'stale'; // stale mutation, silently skipped
+    if (compareCanonicalDecimals(op.rev, row.sync_rev) < 0) return 'stale'; // stale mutation
 
     const sessionDbId = this.ensureSessionForMemoryId(
       memorySessionId,
@@ -980,7 +1059,7 @@ export class SyncApply {
     // itself, so applying it must not queue a re-push (echo guard).
     this.db.prepare(
       'UPDATE user_prompts SET session_db_id = ?, sync_rev = ? WHERE id = ?'
-    ).run(sessionDbId, Math.max(op.rev, row.sync_rev), row.id);
+    ).run(sessionDbId, op.rev, row.id);
     return 'applied';
   }
 
@@ -1038,16 +1117,17 @@ export class SyncApply {
     // transaction). Both statements see identical in-transaction state.
     let matched = 0;
     for (const table of ['observations', 'session_summaries']) {
-      const n = (this.db.prepare(`
-        SELECT COUNT(*) AS n FROM ${table}
-        WHERE ${whereClauses.join(' AND ')} AND ? >= sync_rev
-      `).get(...whereParams, op.rev) as { n: number }).n;
-      if (n === 0) continue;
-      this.db.prepare(`
-        UPDATE ${table} SET ${setClauses.join(', ')}, sync_rev = ?
-        WHERE ${whereClauses.join(' AND ')} AND ? >= sync_rev
-      `).run(...setParams, op.rev, ...whereParams, op.rev);
-      matched += n;
+      const rows = this.db.prepare(`
+        SELECT CAST(id AS TEXT) AS id, CAST(sync_rev AS TEXT) AS sync_rev
+        FROM ${table} WHERE ${whereClauses.join(' AND ')}
+      `).all(...whereParams) as Array<{ id: string; sync_rev: string }>;
+      for (const row of rows) {
+        if (compareCanonicalDecimals(op.rev, row.sync_rev) < 0) continue;
+        this.db.prepare(`
+          UPDATE ${table} SET ${setClauses.join(', ')}, sync_rev = ? WHERE id = ?
+        `).run(...setParams, op.rev, row.id);
+        matched++;
+      }
     }
     // The cwd-remap shape (ProcessManager.ts:312-314) also retargets the
     // owning session row; sdk_sessions has no sync_rev — log order wins.

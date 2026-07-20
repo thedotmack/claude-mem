@@ -26,6 +26,7 @@ import {
 	SYNC_MODE_POLL,
 	tripKillSwitch,
 } from "../src/kill-switch";
+import { observationOp } from "./content-v2-helpers";
 
 const base = "https://sync-hub.test";
 
@@ -53,11 +54,13 @@ afterEach(async () => {
 describe("kill switch: front Worker behavior", () => {
 	it("tripped ⇒ pushes still succeed AND carry X-Sync-Mode: poll", async () => {
 		await trip();
+		const op = await observationOp("1", "1", "dev-ks");
 		const res = await SELF.fetch(`${base}/v1/sync/ops`, {
 			method: "POST",
 			headers: { ...headers("user-ks-push"), "Content-Type": "application/json" },
 			body: JSON.stringify({
-				ops: [{ kind: "observation", origin_id: "1", body: JSON.stringify({ t: "x" }) }],
+				protocol_version: 2,
+				ops: [op],
 			}),
 		});
 		expect(res.status).toBe(200);
@@ -70,11 +73,13 @@ describe("kill switch: front Worker behavior", () => {
 		const user = "user-ks-pull";
 		// Seed one op while tripped — write path must be unaffected.
 		await trip();
+		const op = await observationOp("10", "1", "dev-a");
 		const push = await SELF.fetch(`${base}/v1/sync/ops`, {
 			method: "POST",
 			headers: { ...headers(user, "dev-a"), "Content-Type": "application/json" },
 			body: JSON.stringify({
-				ops: [{ kind: "observation", origin_id: "10", body: JSON.stringify({ t: "y" }) }],
+				protocol_version: 2,
+				ops: [op],
 			}),
 		});
 		expect(push.status).toBe(200);
@@ -84,8 +89,8 @@ describe("kill switch: front Worker behavior", () => {
 		});
 		expect(pull.status).toBe(200);
 		expect(pull.headers.get(SYNC_MODE_HEADER)).toBe(SYNC_MODE_POLL);
-		const page = (await pull.json()) as { ops: Array<{ origin_id: string }> };
-		expect(page.ops.map((op) => op.origin_id)).toEqual(["10"]);
+		const page = (await pull.json()) as { ops: Array<{ body: string }> };
+		expect(page.ops.map((change) => JSON.parse(change.body).origin_local_id)).toEqual(["10"]);
 	});
 
 	it("tripped ⇒ /v1/sync/status carries the header too", async () => {

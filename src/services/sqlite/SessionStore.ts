@@ -19,7 +19,12 @@ import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources }
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
 import { applySqliteConnectionPragmas } from './connection.js';
-import { MAX_FIELD_BYTES, TRUNC_MARK } from '../sync/CloudSync.js';
+import {
+  assertCanonicalDecimal,
+  incrementCanonicalDecimal,
+  validateCanonicalMutation,
+  type CanonicalMutation,
+} from '../sync/CanonicalContent.js';
 
 interface IndexColumnInfo {
   seqno: number;
@@ -113,6 +118,8 @@ export class SessionStore {
     this.requeuePromptCloudSyncAfterMapperFix();
     this.ensureSyncOriginColumns();
     this.ensureSyncOutbox();
+    this.ensureSyncEntityLedger();
+    this.ensureSyncRevisionTextAffinity();
     this.requeueAllForHubCutover(options.cloudSyncHubUrl);
   }
 
@@ -533,7 +540,7 @@ export class SessionStore {
         logger.debug('DB', `Added origin_local_id column to ${table} table`);
       }
       if (!columnNames.has('sync_rev')) {
-        this.db.run(`ALTER TABLE ${table} ADD COLUMN sync_rev INTEGER NOT NULL DEFAULT 1`);
+        this.db.run(`ALTER TABLE ${table} ADD COLUMN sync_rev TEXT NOT NULL DEFAULT '1'`);
         logger.debug('DB', `Added sync_rev column to ${table} table`);
       }
 
@@ -572,13 +579,193 @@ export class SessionStore {
       CREATE TABLE IF NOT EXISTS sync_outbox (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         op_uuid TEXT NOT NULL UNIQUE,
-        rev INTEGER NOT NULL DEFAULT 1,
+        rev TEXT NOT NULL DEFAULT '1',
         body TEXT NOT NULL,
+        canonical_body TEXT,
+        operation_sha256 TEXT,
         created_at_epoch INTEGER NOT NULL
       )
     `);
 
+    const columns = new Set(
+      (this.db.query('PRAGMA table_info(sync_outbox)').all() as TableColumnInfo[]).map(column => column.name)
+    );
+    if (!columns.has('canonical_body')) {
+      this.db.run('ALTER TABLE sync_outbox ADD COLUMN canonical_body TEXT');
+    }
+    if (!columns.has('operation_sha256')) {
+      this.db.run('ALTER TABLE sync_outbox ADD COLUMN operation_sha256 TEXT');
+    }
+
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(42, new Date().toISOString());
+  }
+
+  /**
+   * Canonical uint64 revision storage (version 46). SQLite INTEGER tops out
+   * at signed int64, so INTEGER affinity silently converts larger decimal
+   * strings to REAL and destroys their exact value. Keep every row/content
+   * revision as canonical decimal TEXT instead.
+   *
+   * v41 and the original v42 created INTEGER-affinity columns. SQLite cannot
+   * alter a column's declared type in place, so each affected column is
+   * replaced transactionally with ADD/COPY/DROP/RENAME. This leaves the
+   * tables themselves (and therefore their indexes, triggers, and foreign
+   * keys) intact. The PRAGMA affinity checks are the real idempotency guard;
+   * the version row is bookkeeping only.
+   *
+   * A legacy REAL value is already rounded and cannot be recovered. Refuse
+   * the upgrade loudly instead of freezing scientific notation as a fake
+   * revision. Every copied INTEGER/TEXT value is also validated as a
+   * positive canonical uint64 before any schema change commits.
+   */
+  private ensureSyncRevisionTextAffinity(): void {
+    const targets = [
+      { table: 'observations', column: 'sync_rev', temporary: 'sync_rev_text_v46' },
+      { table: 'session_summaries', column: 'sync_rev', temporary: 'sync_rev_text_v46' },
+      { table: 'user_prompts', column: 'sync_rev', temporary: 'sync_rev_text_v46' },
+      { table: 'sync_outbox', column: 'rev', temporary: 'rev_text_v46' },
+    ] as const;
+
+    const columnInfo = (table: string, column: string): TableColumnInfo | undefined =>
+      (this.db.query(`PRAGMA table_info(${table})`).all() as TableColumnInfo[])
+        .find(info => info.name === column);
+    const isText = (info: TableColumnInfo | undefined): boolean =>
+      info?.type.trim().toUpperCase() === 'TEXT';
+    const applied = this.db.prepare(
+      'SELECT version FROM schema_versions WHERE version = ?'
+    ).get(46) as SchemaVersion | undefined;
+
+    if (applied && targets.every(target => isText(columnInfo(target.table, target.column)))) {
+      return;
+    }
+
+    const tx = this.db.transaction(() => {
+      for (const target of targets) {
+        const columns = this.db.query(`PRAGMA table_info(${target.table})`).all() as TableColumnInfo[];
+        const source = columns.find(info => info.name === target.column);
+        if (!source) {
+          throw new Error(`schema v46: missing ${target.table}.${target.column}`);
+        }
+
+        for (const raw of this.db.query(`
+          SELECT CAST(id AS TEXT) AS row_id,
+                 typeof(${target.column}) AS storage_type,
+                 CAST(${target.column} AS TEXT) AS revision
+          FROM ${target.table}
+        `).iterate()) {
+          const row = raw as { row_id: string; storage_type: string; revision: string | null };
+          if (row.storage_type === 'real') {
+            throw new Error(
+              `schema v46: ${target.table}.${target.column} row ${row.row_id} is REAL and unrecoverably rounded`
+            );
+          }
+          if (row.storage_type !== 'integer' && row.storage_type !== 'text') {
+            throw new Error(
+              `schema v46: ${target.table}.${target.column} row ${row.row_id} has unsupported ${row.storage_type} storage`
+            );
+          }
+          try {
+            assertCanonicalDecimal(row.revision, { positive: true });
+          } catch {
+            throw new Error(
+              `schema v46: ${target.table}.${target.column} row ${row.row_id} is not a positive canonical uint64 revision`
+            );
+          }
+        }
+
+        if (isText(source)) continue;
+        if (columns.some(info => info.name === target.temporary)) {
+          throw new Error(`schema v46: unexpected temporary column ${target.table}.${target.temporary}`);
+        }
+
+        this.db.run(
+          `ALTER TABLE ${target.table} ADD COLUMN ${target.temporary} TEXT NOT NULL DEFAULT '1'`
+        );
+        this.db.run(
+          `UPDATE ${target.table} SET ${target.temporary} = CAST(${target.column} AS TEXT)`
+        );
+        const mismatch = this.db.prepare(`
+          SELECT CAST(id AS TEXT) AS row_id
+          FROM ${target.table}
+          WHERE ${target.temporary} <> CAST(${target.column} AS TEXT)
+          LIMIT 1
+        `).get() as { row_id: string } | undefined;
+        if (mismatch) {
+          throw new Error(
+            `schema v46: failed to copy ${target.table}.${target.column} row ${mismatch.row_id} exactly`
+          );
+        }
+        this.db.run(`ALTER TABLE ${target.table} DROP COLUMN ${target.column}`);
+        this.db.run(
+          `ALTER TABLE ${target.table} RENAME COLUMN ${target.temporary} TO ${target.column}`
+        );
+      }
+
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)')
+        .run(46, new Date().toISOString());
+    });
+    tx();
+  }
+
+  /**
+   * Canonical-v2 entity heads and durable tombstone queue. Revisions remain
+   * decimal TEXT so a remote value is never rounded through a JS number.
+   */
+  private ensureSyncEntityLedger(): void {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS sync_entity_heads (
+        entity_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('observation', 'summary', 'prompt')),
+        origin_device_id TEXT NOT NULL,
+        origin_local_id TEXT NOT NULL,
+        entity_rev TEXT NOT NULL,
+        operation_sha256 TEXT NOT NULL,
+        deleted INTEGER NOT NULL CHECK (deleted IN (0, 1)),
+        updated_at_epoch INTEGER NOT NULL
+      )
+    `);
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS sync_content_outbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('observation', 'summary', 'prompt')),
+        origin_local_id TEXT NOT NULL,
+        entity_rev TEXT NOT NULL,
+        body TEXT NOT NULL,
+        operation_sha256 TEXT NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
+        created_at_epoch INTEGER NOT NULL,
+        UNIQUE(entity_id, entity_rev)
+      )
+    `);
+    const contentColumns = new Set(
+      (this.db.query('PRAGMA table_info(sync_content_outbox)').all() as TableColumnInfo[]).map(column => column.name)
+    );
+    if (!contentColumns.has('deleted')) {
+      this.db.run('ALTER TABLE sync_content_outbox ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0');
+      this.db.run(`
+        UPDATE sync_content_outbox
+        SET deleted = CASE WHEN json_extract(body, '$.deleted') = 1 THEN 1 ELSE 0 END
+      `);
+    }
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS sync_dead_letter (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        lane TEXT NOT NULL CHECK (lane IN ('content', 'mutation')),
+        queue_key TEXT NOT NULL,
+        kind TEXT,
+        origin_local_id TEXT,
+        entity_rev TEXT,
+        reason TEXT NOT NULL,
+        raw_body TEXT,
+        created_at_epoch INTEGER NOT NULL,
+        UNIQUE(lane, queue_key, entity_rev, reason)
+      )
+    `);
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)')
+      .run(44, new Date().toISOString());
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)')
+      .run(45, new Date().toISOString());
   }
 
   /**
@@ -1639,11 +1826,21 @@ export class SessionStore {
    * connection nudge CloudSync themselves; the startup drain catches the
    * rest.
    */
-  private enqueueMutationOp(rev: number, body: Record<string, unknown>): void {
+  private enqueueMutationOp(rev: string | number, body: CanonicalMutation): void {
+    // set_prompt_session records NULL as the durable "this device" marker;
+    // validate the exact mutation shape/UTF-8 bounds with a temporary valid
+    // device id before appending. CloudSync substitutes the resolved device
+    // id exactly once when it snapshots the canonical wire operation.
+    const candidate = JSON.parse(JSON.stringify(body)) as Record<string, unknown>;
+    if (candidate.op === 'set_prompt_session') {
+      const target = candidate.target as Record<string, unknown> | undefined;
+      if (target?.origin_device_id === null) target.origin_device_id = 'self';
+    }
+    validateCanonicalMutation(candidate);
     this.db.prepare(`
       INSERT INTO sync_outbox (op_uuid, rev, body, created_at_epoch)
       VALUES (?, ?, ?, ?)
-    `).run(randomUUID(), rev, JSON.stringify(body), Date.now());
+    `).run(randomUUID(), String(rev), JSON.stringify(body), Date.now());
   }
 
   /**
@@ -1682,20 +1879,20 @@ export class SessionStore {
 
     const tx = this.db.transaction(() => {
       const prompts = this.db.prepare(`
-        SELECT id, sync_rev FROM user_prompts
+        SELECT CAST(id AS TEXT) AS id, CAST(sync_rev AS TEXT) AS sync_rev FROM user_prompts
         WHERE session_db_id = ? AND origin_device_id IS NULL
-      `).all(sessionDbId) as Array<{ id: number; sync_rev: number }>;
+      `).all(sessionDbId) as Array<{ id: string; sync_rev: string }>;
       if (prompts.length === 0) return;
 
-      this.db.prepare(`
-        UPDATE user_prompts SET sync_rev = sync_rev + 1, synced_at = NULL
-        WHERE session_db_id = ? AND origin_device_id IS NULL
-      `).run(sessionDbId);
-
       for (const prompt of prompts) {
-        this.enqueueMutationOp(prompt.sync_rev + 1, {
+        const nextRev = incrementCanonicalDecimal(prompt.sync_rev);
+        this.db.prepare(`
+          UPDATE user_prompts SET sync_rev = ?, synced_at = NULL
+          WHERE id = ? AND origin_device_id IS NULL
+        `).run(nextRev, prompt.id);
+        this.enqueueMutationOp(nextRev, {
           op: 'set_prompt_session',
-          target: { origin_device_id: null, origin_local_id: String(prompt.id) },
+          target: { origin_device_id: null, origin_local_id: prompt.id },
           fields: {
             memory_session_id: session.memory_session_id,
             project: session.project,
@@ -2116,6 +2313,9 @@ export class SessionStore {
     const nowEpoch = now.getTime();
     const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : DEFAULT_PLATFORM_SOURCE;
     const storedUserPrompt = normalizeStoredPromptText(userPrompt);
+    if (customTitle) {
+      this.validateSetTitleMutation(contentSessionId, normalizedPlatformSource, customTitle);
+    }
 
     const existing = this.db.prepare(`
       SELECT id, platform_source
@@ -2174,18 +2374,22 @@ export class SessionStore {
    * memory_session_id is registered at session-creation time.
    */
   private enqueueSetTitleOp(contentSessionId: string, platformSource: string, customTitle: string): void {
-    // custom_title enters via an unbounded z.string() (SessionRoutes) — clamp
-    // at enqueue so the outbox never holds an op the hub could size-refuse
-    // (a refused mutation 400s the WHOLE push batch and wedges the lane;
-    // CloudSync.drainMutations re-clamps as a belt).
-    const clampedTitle = customTitle.length > MAX_FIELD_BYTES
-      ? customTitle.slice(0, MAX_FIELD_BYTES) + TRUNC_MARK
-      : customTitle;
-    this.enqueueMutationOp(1, {
+    const mutation = this.validateSetTitleMutation(contentSessionId, platformSource, customTitle);
+    this.enqueueMutationOp('1', mutation);
+  }
+
+  private validateSetTitleMutation(
+    contentSessionId: string,
+    platformSource: string,
+    customTitle: string,
+  ): CanonicalMutation {
+    const mutation: CanonicalMutation = {
       op: 'set_title',
       target: { content_session_id: contentSessionId, platform_source: platformSource },
-      fields: { custom_title: clampedTitle },
-    });
+      fields: { custom_title: customTitle },
+    };
+    validateCanonicalMutation(mutation);
+    return mutation;
   }
 
   saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sessionDbId?: number): number {

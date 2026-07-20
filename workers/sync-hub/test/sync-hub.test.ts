@@ -1,16 +1,3 @@
-/**
- * SyncHub Durable Object tests (plan Phase 1 verification):
- *   - push idempotency (same op twice → same seq)
- *   - cursor pagination (600 ops → 2 pages with `more` flag)
- *   - rev supersession
- *   - chunked-insert correctness at the 100-bound-param boundary
- *   - compaction alarm via runDurableObjectAlarm
- *   - mutation-op validation (refuse unparseable remap_project)
- *   - front-Worker HTTP round-trip via SELF with a mocked verifier
- *
- * Each test targets its own user (getByName isolation) so state never bleeds.
- */
-
 import {
 	env,
 	runDurableObjectAlarm,
@@ -18,498 +5,815 @@ import {
 	SELF,
 } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import type { PushOp, PushOutcome, PushResult, SyncHub } from "../src/do/SyncHub";
+import {
+	canonicalJson,
+	incrementCanonicalDecimal,
+	parseCanonicalOperation,
+	sha256Base64Url,
+	stableDocumentId,
+	wrapCanonicalBody,
+	type CanonicalContentBody,
+} from "../src/canonical-content";
+import {
+	PROJECTION_LEASE_MS,
+	type PushOutcome,
+	type PushResult,
+	type SyncHub,
+} from "../src/do/SyncHub";
+import {
+	PROJECTION_FETCH_TIMEOUT_MS,
+	PROJECTION_PAGE_MAX_BYTES,
+	projectionRequestBytes,
+} from "../src/projection-protocol";
+import { drainProjection, fetchProjectionWithTimeout } from "../src/index";
+import {
+	contractFixture,
+	fixtureOp,
+	observationOp,
+	tombstoneOp,
+} from "./content-v2-helpers";
 
-function hub(userId: string) {
-	return env.SYNC_HUB.getByName(userId);
+function hub(name: string) {
+	return env.SYNC_HUB.getByName(name);
 }
 
-/** Unwrap a successful push; fails the test on an unexpected refusal. */
+function projectionEnv(mode: string): Env {
+	return {
+		...env,
+		INTERNAL_PROJECTOR_URL: `https://projection-cases.test/api/internal/sync/project?mode=${mode}`,
+		CMEM_INTERNAL_PROJECTOR_SECRET: "test-projector-secret",
+	} as Env;
+}
+
 function ok(outcome: PushOutcome): PushResult {
-	if ("refused" in outcome) {
-		throw new Error(`unexpected refusal: ${outcome.error}`);
-	}
+	if ("refused" in outcome) throw new Error(`unexpected refusal: ${outcome.error}`);
 	return outcome;
 }
 
-/** Assert a push was refused with a message matching `pattern`. */
-function expectRefusal(outcome: PushOutcome, pattern: RegExp): void {
+function refused(outcome: PushOutcome, pattern: RegExp): void {
 	expect(outcome).toHaveProperty("refused", true);
 	expect((outcome as { error: string }).error).toMatch(pattern);
 }
 
-function rowOp(originId: string, rev = 1, extra: Record<string, unknown> = {}): PushOp {
+function setBodyPath(body: CanonicalContentBody, path: string, value: string): void {
+	const segments = path.split(".");
+	let parent = body as unknown as Record<string, unknown>;
+	for (const segment of segments.slice(0, -1)) {
+		parent = parent[segment] as Record<string, unknown>;
+	}
+	parent[segments.at(-1)!] = value;
+}
+
+function getBodyPath(body: CanonicalContentBody, path: string): unknown {
+	let value: unknown = body;
+	for (const segment of path.split(".")) {
+		value = (value as Record<string, unknown>)[segment];
+	}
+	return value;
+}
+
+async function uncheckedCanonicalWrapper(body: CanonicalContentBody): Promise<{
+	body: string;
+	operation_sha256: string;
+}> {
+	const serialized = canonicalJson(body);
 	return {
-		kind: "observation",
-		origin_id: originId,
-		rev,
-		body: JSON.stringify({ title: `obs ${originId}`, rev, ...extra }),
+		body: serialized,
+		operation_sha256: await sha256Base64Url(serialized),
 	};
 }
 
-describe("pushOps", () => {
-	it("is idempotent: pushing the same op twice returns the same seq", async () => {
-		const stub = hub("user-idempotency");
-		const ops = [rowOp("1")];
-
-		const first = ok(await stub.pushOps("dev-a", ops));
-		expect(first.acked).toHaveLength(1);
-		const seq = first.acked[0].seq;
-		expect(seq).toBeGreaterThan(0);
-
-		const second = ok(await stub.pushOps("dev-a", ops));
-		expect(second.acked).toHaveLength(1);
-		expect(second.acked[0].seq).toBe(seq);
-		expect(second.head_seq).toBe(first.head_seq);
-
-		await runInDurableObject(stub, (_instance: SyncHub, state) => {
-			const rows = state.storage.sql
-				.exec("SELECT COUNT(*) AS n FROM ops")
-				.toArray();
-			expect(rows[0].n).toBe(1);
-		});
+describe("shared canonical content-v2 contract", () => {
+	it("matches every stable-id, JSON, payload-hash, and operation-hash vector", async () => {
+		for (const vector of contractFixture.stable_id_vectors) {
+			expect(canonicalJson([
+				"cmem-doc-id-v1",
+				"device",
+				vector.kind,
+				vector.origin_device_id,
+				vector.origin_local_id,
+			])).toBe(vector.canonical_input);
+			expect(await stableDocumentId(
+				vector.kind as "observation" | "summary" | "prompt",
+				vector.origin_device_id,
+				vector.origin_local_id,
+			)).toBe(vector.id);
+		}
+		for (const vector of contractFixture.canonical_json_vectors) {
+			expect(canonicalJson(vector.input)).toBe(vector.canonical);
+		}
+		for (const vector of contractFixture.payload_hash_vectors) {
+			expect(canonicalJson(vector.payload)).toBe(vector.payload_json);
+			expect(await sha256Base64Url(vector.payload_json)).toBe(vector.payload_sha256);
+		}
+		for (const vector of contractFixture.operation_hash_vectors) {
+			expect(await sha256Base64Url(vector.body)).toBe(vector.operation_sha256);
+			const parsed = await parseCanonicalOperation({
+				body: vector.body,
+				operation_sha256: vector.operation_sha256,
+			});
+			expect(canonicalJson(parsed.body)).toBe(vector.body);
+		}
 	});
 
-	it("keeps the first write on duplicate push (body is not overwritten)", async () => {
-		const stub = hub("user-first-write-wins");
-		ok(
-			await stub.pushOps("dev-a", [
-				{ kind: "observation", origin_id: "9", rev: 1, body: '{"v":"original"}' },
-			]),
-		);
-		ok(
-			await stub.pushOps("dev-a", [
-				{ kind: "observation", origin_id: "9", rev: 1, body: '{"v":"replayed"}' },
-			]),
-		);
-		await runInDurableObject(stub, (_instance: SyncHub, state) => {
-			const rows = state.storage.sql
-				.exec("SELECT body FROM ops WHERE origin_id = '9'")
-				.toArray();
-			expect(rows).toHaveLength(1);
-			expect(rows[0].body).toBe('{"v":"original"}');
-		});
+	it("rejects unsafe numbers, uint64 overflow, and UTF-8 body overflow", async () => {
+		expect(() => canonicalJson({ n: 9_007_199_254_740_992 })).toThrow(/safe/);
+		await expect(stableDocumentId("observation", "dev", "18446744073709551616"))
+			.rejects.toThrow(/uint64/);
+		const valid = await observationOp("1", "1", "dev", { text: "x".repeat(255_000) });
+		expect(new TextEncoder().encode(valid.body).length).toBeLessThanOrEqual(256_000);
+		await expect(observationOp("2", "1", "dev", { text: "x".repeat(256_000) }))
+			.rejects.toThrow(/exceeds 256000/);
+		expect(new TextEncoder().encode(contractFixture.byte_boundary_vectors[2].value).length).toBe(4);
 	});
 
-	it("chunks multi-row inserts correctly at the 100-bound-param boundary", async () => {
-		const stub = hub("user-chunking");
-		// 6 params per row → 16 rows fit one statement; 17 forces a second
-		// chunk; 100 exercises several. All must ack with distinct seqs.
-		for (const [device, count] of [
-			["dev-16", 16],
-			["dev-17", 17],
-			["dev-100", 100],
-		] as const) {
-			const ops = Array.from({ length: count }, (_, i) => rowOp(`${device}-${i}`));
-			const result = ok(await stub.pushOps(device, ops));
-			expect(result.acked).toHaveLength(count);
-			const seqs = new Set(result.acked.map((a) => a.seq));
-			expect(seqs.size).toBe(count);
-			for (const op of ops) {
-				expect(result.acked.some((a) => a.origin_id === op.origin_id)).toBe(true);
+	it("increments the full uint64 decimal range without JS-number coercion", () => {
+		expect(incrementCanonicalDecimal("9007199254740991")).toBe("9007199254740992");
+		expect(incrementCanonicalDecimal("9223372036854775807")).toBe("9223372036854775808");
+		expect(incrementCanonicalDecimal("18446744073709551614")).toBe("18446744073709551615");
+		expect(() => incrementCanonicalDecimal("18446744073709551615")).toThrow(/uint64/);
+	});
+
+	it("enforces every shared mutation string boundary in UTF-8 bytes", async () => {
+		for (const vector of contractFixture.mutation_utf8_boundary_vectors) {
+			const value = vector.segments.map((segment) => segment.value.repeat(segment.count)).join("");
+			expect(new TextEncoder().encode(value).length, vector.name).toBe(vector.utf8_bytes);
+			for (const path of vector.paths) {
+				const fixture = fixtureOp(vector.operation);
+				const body = JSON.parse(fixture.body) as CanonicalContentBody;
+				setBodyPath(body, path, value);
+				if (vector.accepted) {
+					await expect(wrapCanonicalBody(body), `${vector.name}: ${path}`).resolves.toBeDefined();
+				} else {
+					await expect(wrapCanonicalBody(body), `${vector.name}: ${path}`).rejects.toThrow(/bounded/);
+				}
 			}
 		}
-		await runInDurableObject(stub, (_instance: SyncHub, state) => {
-			const rows = state.storage.sql
-				.exec("SELECT COUNT(*) AS n FROM ops")
-				.toArray();
-			expect(rows[0].n).toBe(16 + 17 + 100);
-		});
 	});
 
-	it("a duplicate inside a larger batch acks the original seq", async () => {
-		const stub = hub("user-partial-dup");
-		const first = ok(await stub.pushOps("dev-a", [rowOp("1"), rowOp("2")]));
-		const seqOf = (r: PushResult, id: string) =>
-			r.acked.find((a) => a.origin_id === id)!.seq;
+	it("rejects all shared empty/whitespace filterable vectors without trimming accepted bytes", async () => {
+		for (const vector of contractFixture.filterable_non_blank_vectors) {
+			for (const path of vector.paths) {
+				const fixture = fixtureOp(vector.operation);
+				const body = JSON.parse(fixture.body) as CanonicalContentBody;
+				setBodyPath(body, path, vector.value);
+				if (body.payload !== null) {
+					body.payload_sha256 = await sha256Base64Url(canonicalJson(body.payload));
+				}
+				if (vector.accepted) {
+					await expect(wrapCanonicalBody(body), `${vector.name}: ${path}`).resolves.toBeDefined();
+				} else {
+					await expect(wrapCanonicalBody(body), `${vector.name}: ${path}`).rejects.toThrow(
+						/non-whitespace|non-empty bounded|non-empty string/,
+					);
+				}
 
-		const second = ok(await stub.pushOps("dev-a", [rowOp("2"), rowOp("3")]));
-		expect(seqOf(second, "2")).toBe(seqOf(first, "2"));
-		expect(seqOf(second, "3")).toBeGreaterThan(first.head_seq);
+				const padded = ` \tkept exactly for ${path}\n `;
+				const paddedBody = JSON.parse(fixture.body) as CanonicalContentBody;
+				setBodyPath(paddedBody, path, padded);
+				if (paddedBody.payload !== null) {
+					paddedBody.payload_sha256 = await sha256Base64Url(canonicalJson(paddedBody.payload));
+				}
+				const wrapped = await wrapCanonicalBody(paddedBody);
+				const reparsed = JSON.parse(wrapped.body) as CanonicalContentBody;
+				expect(getBodyPath(reparsed, path), `${vector.name}: ${path}`).toBe(padded);
+			}
+		}
 	});
 
-	it("stores distinct revs of the same entity as distinct log entries", async () => {
-		const stub = hub("user-revs");
-		const r1 = ok(await stub.pushOps("dev-a", [rowOp("42", 1)]));
-		const r2 = ok(await stub.pushOps("dev-a", [rowOp("42", 2)]));
-		expect(r2.acked[0].seq).toBeGreaterThan(r1.acked[0].seq);
+	it("refuses every valid-hash blank wrapper before seq allocation and durably preserves padded bodies", async () => {
+		let caseIndex = 0;
+		for (const vector of contractFixture.filterable_non_blank_vectors) {
+			for (const path of vector.paths) {
+				caseIndex++;
+				const fixture = fixtureOp(vector.operation);
+				const invalidBody = JSON.parse(fixture.body) as CanonicalContentBody;
+				setBodyPath(invalidBody, path, vector.value);
+				if (invalidBody.payload !== null) {
+					invalidBody.payload_sha256 = await sha256Base64Url(canonicalJson(invalidBody.payload));
+				}
+				const invalidWrapper = await uncheckedCanonicalWrapper(invalidBody);
+				const stub = hub(`filterable-integration-${caseIndex}`);
+				refused(
+					await stub.pushOps(invalidBody.origin_device_id, [invalidWrapper]),
+					/non-whitespace|non-empty bounded|non-empty string/,
+				);
+				expect(await stub.getStatus(), `${vector.name}: ${path}`).toMatchObject({
+					head_seq: "0",
+					op_count: 0,
+				});
 
-		// Replaying the superseded rev still acks its original seq.
-		const replay = ok(await stub.pushOps("dev-a", [rowOp("42", 1)]));
-		expect(replay.acked[0].seq).toBe(r1.acked[0].seq);
+				const padded = ` \tstored exactly for ${vector.name}:${path}\n `;
+				const paddedBody = JSON.parse(fixture.body) as CanonicalContentBody;
+				setBodyPath(paddedBody, path, padded);
+				if (paddedBody.payload !== null) {
+					paddedBody.payload_sha256 = await sha256Base64Url(canonicalJson(paddedBody.payload));
+				}
+				const paddedWrapper = await wrapCanonicalBody(paddedBody);
+				const appended = ok(await stub.pushOps(paddedBody.origin_device_id, [paddedWrapper]));
+				expect(appended.acked[0].seq, `${vector.name}: ${path}`).toBe("1");
+				expect(appended.acked[0].operation_sha256).toBe(paddedWrapper.operation_sha256);
 
-		await runInDurableObject(stub, (_instance: SyncHub, state) => {
-			const rows = state.storage.sql
-				.exec("SELECT rev FROM ops WHERE origin_id = '42' ORDER BY rev")
-				.toArray();
-			expect(rows.map((r) => r.rev)).toEqual([1, 2]);
-		});
-	});
-
-	it("enforces the per-op body backstop at 1,990,000 bytes (docs: 2 MB row = 2,000,000 bytes, minus sibling-column headroom)", async () => {
-		const stub = hub("user-body-cap");
-		expectRefusal(
-			await stub.pushOps("dev-a", [
-				{ kind: "observation", origin_id: "1", body: "x".repeat(1_990_001) },
-			]),
-			/invalid_ops/,
-		);
-		// Exactly at the cap is accepted — and being under the SQLite row
-		// limit, it must store rather than explode.
-		const atCap = ok(
-			await stub.pushOps("dev-a", [
-				{ kind: "observation", origin_id: "2", body: "x".repeat(1_990_000) },
-			]),
-		);
-		expect(atCap.acked).toHaveLength(1);
-	});
-
-	it("refuses the whole batch when any op is invalid", async () => {
-		const stub = hub("user-batch-refusal");
-		expectRefusal(
-			await stub.pushOps("dev-a", [
-				rowOp("1"),
-				{ kind: "bogus" as never, origin_id: "2", body: "{}" },
-			]),
-			/invalid_ops/,
-		);
-		await runInDurableObject(stub, (_instance: SyncHub, state) => {
-			const rows = state.storage.sql
-				.exec("SELECT COUNT(*) AS n FROM ops")
-				.toArray();
-			expect(rows[0].n).toBe(0);
-		});
-	});
+				const stored = await stub.getChanges("first-reader", "0", 500);
+				expect(stored.ops).toHaveLength(1);
+				expect(stored.ops[0].seq).toBe("1");
+				expect(stored.ops[0].body).toBe(paddedWrapper.body);
+				expect(stored.ops[0].operation_sha256).toBe(paddedWrapper.operation_sha256);
+				const reparsed = JSON.parse(stored.ops[0].body) as CanonicalContentBody;
+				expect(getBodyPath(reparsed, path), `${vector.name}: ${path}`).toBe(padded);
+			}
+		}
+	}, 15_000);
 });
 
-describe("mutation ops", () => {
-	it("accepts parseable mutation envelopes (storage only)", async () => {
-		const stub = hub("user-mutations");
-		const result = ok(
-			await stub.pushOps("dev-a", [
-				{
-					kind: "mutation",
-					origin_id: "b3b9d7b0-0000-4000-8000-000000000001",
-					body: JSON.stringify({
-						op: "set_title",
-						target: { table: "sdk_sessions", origin_id: "12" },
-						fields: { custom_title: "renamed" },
-					}),
-				},
-				{
-					kind: "mutation",
-					origin_id: "b3b9d7b0-0000-4000-8000-000000000002",
-					body: JSON.stringify({
-						op: "remap_project",
-						where: { project: "old-name" },
-						fields: { project: "new-name" },
-					}),
-				},
-			]),
-		);
-		expect(result.acked).toHaveLength(2);
+describe("canonical reducer and entity-head ledger", () => {
+	it("replays the same revision/hash, conflicts on a different hash, and rejects stale revisions", async () => {
+		const stub = hub("reducer-retry-conflict");
+		const firstOp = await observationOp("1");
+		const first = ok(await stub.pushOps("dev-a", [firstOp]));
+		const replay = ok(await stub.pushOps("dev-a", [firstOp]));
+		expect(replay.acked[0].seq).toBe(first.acked[0].seq);
+		expect(first.acked[0].operation_sha256).toBe(firstOp.operation_sha256);
+		expect(replay.acked[0].operation_sha256).toBe(firstOp.operation_sha256);
+		expect(replay.head_seq).toBe(first.head_seq);
+
+		const conflicting = await observationOp("1", "1", "dev-a", { text: "different" });
+		refused(await stub.pushOps("dev-a", [conflicting]), /revision_hash_conflict/);
+		const second = ok(await stub.pushOps("dev-a", [await observationOp("1", "2")]));
+		refused(await stub.pushOps("dev-a", [firstOp]), /stale_revision/);
+		expect((await stub.getStatus()).head_seq).toBe(second.head_seq);
 	});
 
-	it("refuses unparseable mutation bodies", async () => {
-		const stub = hub("user-bad-mutation");
-		expectRefusal(
-			await stub.pushOps("dev-a", [
-				{
-					kind: "mutation",
-					origin_id: "b3b9d7b0-0000-4000-8000-000000000003",
-					body: "this is not json",
-				},
-			]),
-			/not parseable JSON/,
-		);
+	it("supports tombstone-before-create and a higher-revision revive", async () => {
+		const stub = hub("reducer-delete-before-create");
+		const deletion = ok(await stub.pushOps("dev-a", [await tombstoneOp("9", "2")]));
+		refused(await stub.pushOps("dev-a", [await observationOp("9", "1")]), /stale_revision/);
+		const revived = ok(await stub.pushOps("dev-a", [await observationOp("9", "3")]));
+		expect(BigInt(revived.acked[0].seq)).toBeGreaterThan(BigInt(deletion.acked[0].seq));
+		await runInDurableObject(stub, (_instance: SyncHub, state) => {
+			const head = state.storage.sql.exec<{ entity_rev: string; deleted: number }>(
+				"SELECT entity_rev, deleted FROM entity_heads",
+			).one();
+			expect(head).toEqual({ entity_rev: "3", deleted: 0 });
+		});
 	});
 
-	it("refuses remap_project ops without a parseable where predicate", async () => {
-		const stub = hub("user-bad-remap");
-		expectRefusal(
-			await stub.pushOps("dev-a", [
-				{
-					kind: "mutation",
-					origin_id: "b3b9d7b0-0000-4000-8000-000000000004",
-					body: JSON.stringify({
-						op: "remap_project",
-						where: "project = old", // string, not a structured predicate
-						fields: { project: "new" },
-					}),
-				},
-			]),
-			/remap_project requires a parseable where predicate/,
-		);
+	it("validates the whole batch before allocating a sequence", async () => {
+		const stub = hub("validate-before-seq");
+		const valid = await observationOp("1");
+		refused(await stub.pushOps("dev-a", [valid, { body: "{}", operation_sha256: "x" }]), /ops\[1\]/);
+		const result = ok(await stub.pushOps("dev-a", [valid]));
+		expect(result.acked[0].seq).toBe("1");
 	});
-});
 
-describe("getChanges", () => {
-	it("paginates 600 ops into two pages with the more flag", async () => {
-		const stub = hub("user-pagination");
-		// Push 600 ops in a few batches (also exercises chunked inserts).
-		for (let batch = 0; batch < 3; batch++) {
-			const ops = Array.from({ length: 200 }, (_, i) =>
-				rowOp(`${batch * 200 + i}`),
+	it("accepts all guarded mutation fixture envelopes without changing their bytes", async () => {
+		const stub = hub("mutation-fixtures");
+		const names = ["set_prompt_session", "set_title_noop", "remap_project"];
+		const result = ok(await stub.pushOps("device-α\u0000west", names.map(fixtureOp)));
+		expect(result.acked.map((item) => item.kind)).toEqual(["mutation", "mutation", "mutation"]);
+	});
+
+	it("stores and pages seq, entity_rev, cursors, and origin IDs above signed/safe integer limits", async () => {
+		const stub = hub("uint64-decimal-storage");
+		await runInDurableObject(stub, (_instance: SyncHub, state) => {
+			state.storage.sql.exec(
+				"UPDATE meta SET v = ? WHERE k = 'head_seq'",
+				"9223372036854775808",
 			);
-			ok(await stub.pushOps("dev-writer", ops));
-		}
-
-		const page1 = await stub.getChanges("dev-reader", 0, 500);
-		expect(page1.ops).toHaveLength(500);
-		expect(page1.more).toBe(true);
-		expect(page1.epoch).toBeTruthy();
-		// Strictly increasing seq within the page.
-		for (let i = 1; i < page1.ops.length; i++) {
-			expect(page1.ops[i].seq).toBeGreaterThan(page1.ops[i - 1].seq);
-		}
-
-		const cursor = page1.ops[page1.ops.length - 1].seq;
-		const page2 = await stub.getChanges("dev-reader", cursor, 500);
-		expect(page2.ops).toHaveLength(100);
-		expect(page2.more).toBe(false);
-		expect(page2.head_seq).toBe(page2.ops[page2.ops.length - 1].seq);
-		expect(page2.epoch).toBe(page1.epoch);
-
-		// No overlap, no gap.
-		expect(page2.ops[0].seq).toBeGreaterThan(cursor);
-		const total = new Set([...page1.ops, ...page2.ops].map((op) => op.seq));
-		expect(total.size).toBe(600);
-	});
-
-	it("clamps limit to 500", async () => {
-		const stub = hub("user-limit-clamp");
-		const ops = Array.from({ length: 501 }, (_, i) => rowOp(`${i}`));
-		ok(await stub.pushOps("dev-writer", ops));
-		const page = await stub.getChanges("dev-reader", 0, 10_000);
-		expect(page.ops).toHaveLength(500);
-		expect(page.more).toBe(true);
-	});
-
-	it("records the presented cursor as the device ack watermark", async () => {
-		const stub = hub("user-ack-tracking");
-		const push = ok(await stub.pushOps("dev-writer", [rowOp("1"), rowOp("2")]));
-		await stub.getChanges("dev-reader", push.head_seq, 500);
-		await runInDurableObject(stub, (_instance: SyncHub, state) => {
-			const rows = state.storage.sql
-				.exec(
-					"SELECT last_ack_seq FROM devices WHERE device_id = 'dev-reader'",
-				)
-				.toArray();
-			expect(rows[0].last_ack_seq).toBe(push.head_seq);
 		});
+		const result = ok(await stub.pushOps("dev-a", [
+			await observationOp("18446744073709551615", "18446744073709551615"),
+		]));
+		expect(result.acked[0]).toMatchObject({
+			origin_local_id: "18446744073709551615",
+			entity_rev: "18446744073709551615",
+			seq: "9223372036854775809",
+		});
+		const page = await stub.getChanges("dev-reader", "9223372036854775808", 500);
+		expect(page.ops.map((op) => op.seq)).toEqual(["9223372036854775809"]);
+		expect(page.head_seq).toBe("9223372036854775809");
 	});
 });
 
-describe("compaction alarm", () => {
-	it("is scheduled by the constructor and reschedules itself after running", async () => {
-		const stub = hub("user-alarm-scheduling");
-		await stub.getStatus(); // wake the DO so the constructor runs
-		await runInDurableObject(stub, async (_instance: SyncHub, state) => {
-			expect(await state.storage.getAlarm()).not.toBeNull();
-		});
-
-		const ran = await runDurableObjectAlarm(stub);
-		expect(ran).toBe(true);
-
-		await runInDurableObject(stub, async (_instance: SyncHub, state) => {
-			expect(await state.storage.getAlarm()).not.toBeNull();
-		});
+describe("projection checkpoint, lease fencing, and launch log retention", () => {
+	it("does not advance on a crash before checkpoint and resumes from the authoritative Hub checkpoint", async () => {
+		const stub = hub("projection-crash");
+		const pushed = ok(await stub.pushOps("dev-a", [await observationOp("1"), await observationOp("2")]));
+		const lease1 = await stub.acquireProjectionLease(pushed.head_seq, 1_000);
+		expect(lease1.acquired).toBe(true);
+		const page1 = await stub.getProjectionPage(lease1.lease_token!, pushed.head_seq, "projection-crash", 100, 4_000_000, 1_001);
+		expect(page1.from_seq_exclusive).toBe("0");
+		expect(page1.through_seq).toBe("2");
+		// Simulate a Worker crash: Pro may have accepted page1, but Hub never CAS-advanced.
+		const lease2 = await stub.acquireProjectionLease(pushed.head_seq, PROJECTION_LEASE_MS + 1_001);
+		expect(lease2.acquired).toBe(true);
+		const page2 = await stub.getProjectionPage(
+			lease2.lease_token!,
+			pushed.head_seq,
+			"projection-crash",
+			100,
+			4_000_000,
+			PROJECTION_LEASE_MS + 1_002,
+		);
+		expect(page2.from_seq_exclusive).toBe("0");
+		await stub.advanceProjectionCheckpoint(
+			lease2.lease_token!,
+			page2.epoch,
+			page2.from_seq_exclusive,
+			page2.through_seq,
+			PROJECTION_LEASE_MS + 1_003,
+		);
+		expect((await stub.getProjectionState()).projected_seq).toBe(pushed.head_seq);
 	});
 
-	it("deletes superseded revs below the fleet ack watermark", async () => {
-		const stub = hub("user-compaction");
-		ok(await stub.pushOps("dev-a", [rowOp("7", 1)]));
-		const r2 = ok(await stub.pushOps("dev-a", [rowOp("7", 2)]));
-		ok(await stub.pushOps("dev-a", [rowOp("8", 1)])); // not superseded — must survive
+	it("keeps cursor-0 history after every launch-era compaction alarm path", async () => {
+		const stub = hub("compaction-launch-disabled");
+		ok(await stub.pushOps("dev-a", [await observationOp("7", "1")]));
+		const second = ok(await stub.pushOps("dev-a", [await observationOp("7", "2")]));
+		// Satisfy every watermark condition the retired compactor used: the
+		// existing fleet has acknowledged head and Pro has checkpointed head.
+		await stub.getChanges("dev-a", second.head_seq, 500);
+		const lease = await stub.acquireProjectionLease(second.head_seq);
+		const page = await stub.getProjectionPage(lease.lease_token!, second.head_seq, "compaction-launch-disabled");
+		await stub.advanceProjectionCheckpoint(lease.lease_token!, page.epoch, "0", page.through_seq);
+		await stub.releaseProjectionLease(lease.lease_token!);
 
-		// Both devices ack the full log.
-		const head = (await stub.getStatus()).head_seq;
-		await stub.getChanges("dev-a", head, 500);
-		await stub.getChanges("dev-b", head, 500);
-
-		const ran = await runDurableObjectAlarm(stub);
-		expect(ran).toBe(true);
-
+		await runDurableObjectAlarm(stub);
+		await runDurableObjectAlarm(stub);
 		await runInDurableObject(stub, (_instance: SyncHub, state) => {
-			const rows = state.storage.sql
-				.exec("SELECT origin_id, rev FROM ops ORDER BY seq")
-				.toArray();
+			const rows = state.storage.sql.exec<{ seq: string; entity_rev: string }>(
+				"SELECT seq, entity_rev FROM canonical_ops ORDER BY LENGTH(seq), seq",
+			).toArray();
 			expect(rows).toEqual([
-				{ origin_id: "7", rev: 2 },
-				{ origin_id: "8", rev: 1 },
+				{ seq: "1", entity_rev: "1" },
+				{ seq: "2", entity_rev: "2" },
 			]);
 		});
-		// The superseding rev still reaches fresh readers.
-		const changes = await stub.getChanges("dev-fresh", 0, 500);
-		expect(changes.ops.map((op) => [op.origin_id, op.rev])).toEqual([
-			["7", 2],
-			["8", 1],
-		]);
-		expect(r2.acked[0].seq).toBe(changes.ops[0].seq);
+
+		const firstSeen = await stub.getChanges("brand-new-device", "0", 500);
+		expect(firstSeen.ops.map((op) => op.seq)).toEqual(["1", "2"]);
+		expect(firstSeen.ops.every((op, index) => BigInt(op.seq) === BigInt(index + 1))).toBe(true);
+		expect(firstSeen.head_seq).toBe("2");
+		expect(firstSeen.more).toBe(false);
 	});
 
-	it("deletes nothing while any device has not acked past the old rev", async () => {
-		const stub = hub("user-compaction-holdback");
-		ok(await stub.pushOps("dev-a", [rowOp("7", 1), rowOp("7", 2)]));
-		// dev-b registers with cursor 0 (never acked anything).
-		await stub.getChanges("dev-b", 0, 500);
-		const head = (await stub.getStatus()).head_seq;
-		await stub.getChanges("dev-a", head, 500);
-
-		await runDurableObjectAlarm(stub);
-
-		await runInDurableObject(stub, (_instance: SyncHub, state) => {
-			const rows = state.storage.sql
-				.exec("SELECT COUNT(*) AS n FROM ops")
-				.toArray();
-			expect(rows[0].n).toBe(2); // both revs survive
-		});
+	it("enforces 100-op projection pages", async () => {
+		const stub = hub("projection-page-bounds");
+		const ops = await Promise.all(Array.from({ length: 101 }, (_, index) => observationOp(String(index + 1))));
+		const pushed = ok(await stub.pushOps("dev-a", ops));
+		const lease = await stub.acquireProjectionLease(pushed.head_seq);
+		const page = await stub.getProjectionPage(lease.lease_token!, pushed.head_seq, "projection-page-bounds", 500, 9_000_000);
+		expect(page.ops).toHaveLength(100);
+		expect(projectionRequestBytes({
+			userId: "projection-page-bounds",
+			epoch: page.epoch,
+			fromSeqExclusive: page.from_seq_exclusive,
+			throughSeq: page.through_seq,
+			ops: page.ops,
+		})).toBeLessThanOrEqual(PROJECTION_PAGE_MAX_BYTES);
 	});
 
-	it("running the alarm twice is idempotent", async () => {
-		const stub = hub("user-compaction-idempotent");
-		ok(await stub.pushOps("dev-a", [rowOp("7", 1), rowOp("7", 2)]));
-		const head = (await stub.getStatus()).head_seq;
-		await stub.getChanges("dev-a", head, 500);
-
-		await runDurableObjectAlarm(stub);
-		await runDurableObjectAlarm(stub);
-
-		await runInDurableObject(stub, (_instance: SyncHub, state) => {
-			const rows = state.storage.sql
-				.exec("SELECT rev FROM ops WHERE origin_id = '7'")
-				.toArray();
-			expect(rows.map((r) => r.rev)).toEqual([2]);
+	it("accounts for the exact complete projection JSON envelope at the byte boundary", async () => {
+		const userId = "projection-byte-boundary-α";
+		const stub = hub(userId);
+		const pushed = ok(await stub.pushOps("dev-a", [
+			await observationOp("1"),
+			await observationOp("2"),
+			await observationOp("3"),
+		]));
+		const lease = await stub.acquireProjectionLease(pushed.head_seq);
+		const full = await stub.getProjectionPage(lease.lease_token!, pushed.head_seq, userId);
+		const exactBytes = projectionRequestBytes({
+			userId,
+			epoch: full.epoch,
+			fromSeqExclusive: full.from_seq_exclusive,
+			throughSeq: full.through_seq,
+			ops: full.ops,
 		});
+		const exact = await stub.getProjectionPage(
+			lease.lease_token!, pushed.head_seq, userId, 100, exactBytes,
+		);
+		expect(exact.ops).toHaveLength(3);
+		const oneByteShort = await stub.getProjectionPage(
+			lease.lease_token!, pushed.head_seq, userId, 100, exactBytes - 1,
+		);
+		expect(oneByteShort.ops).toHaveLength(2);
+	});
+
+	it("never emits a complete projection request above 4,000,000 bytes", async () => {
+		const userId = "projection-four-million-boundary";
+		const stub = hub(userId);
+		const ops = await Promise.all(Array.from(
+			{ length: 17 },
+			(_, index) => observationOp(String(index + 1), "1", "dev-a", { text: "x".repeat(248_000) }),
+		));
+		const pushed = ok(await stub.pushOps("dev-a", ops));
+		const lease = await stub.acquireProjectionLease(pushed.head_seq);
+		const page = await stub.getProjectionPage(lease.lease_token!, pushed.head_seq, userId);
+		const pageBytes = projectionRequestBytes({
+			userId,
+			epoch: page.epoch,
+			fromSeqExclusive: page.from_seq_exclusive,
+			throughSeq: page.through_seq,
+			ops: page.ops,
+		});
+		expect(pageBytes).toBeLessThanOrEqual(PROJECTION_PAGE_MAX_BYTES);
+		expect(page.ops.length).toBeLessThan(ops.length);
+		const next = ok(await stub.pushOps("dev-a", []));
+		expect(next.head_seq).toBe(pushed.head_seq);
+		const allChanges = await stub.getChanges("boundary-reader", "0", 500);
+		const nextOp = allChanges.ops[page.ops.length];
+		expect(projectionRequestBytes({
+			userId,
+			epoch: page.epoch,
+			fromSeqExclusive: page.from_seq_exclusive,
+			throughSeq: nextOp.seq,
+			ops: [...page.ops, nextOp],
+		})).toBeGreaterThan(PROJECTION_PAGE_MAX_BYTES);
+	});
+
+	it("heartbeats a lease, refuses concurrent acquire, and fences stale replay", async () => {
+		const userId = "projection-fencing";
+		const stub = hub(userId);
+		const pushed = ok(await stub.pushOps("dev-a", [await observationOp("1")]));
+		const first = await stub.acquireProjectionLease(pushed.head_seq, 1_000);
+		expect(first.acquired).toBe(true);
+		expect((await stub.acquireProjectionLease(pushed.head_seq, 2_000)).acquired).toBe(false);
+		await stub.heartbeatProjectionLease(first.lease_token!, 50_000);
+		expect((await stub.acquireProjectionLease(pushed.head_seq, 91_001)).acquired).toBe(false);
+		const successor = await stub.acquireProjectionLease(pushed.head_seq, 140_001);
+		expect(successor.acquired).toBe(true);
+		await runInDurableObject(stub, (instance: SyncHub) => {
+			expect(() => instance.advanceProjectionCheckpoint(
+				first.lease_token!, first.epoch, "0", pushed.head_seq, 140_002,
+			)).toThrow(/projection lease is not held/);
+		});
+		const page = await stub.getProjectionPage(
+			successor.lease_token!, pushed.head_seq, userId, 100, 4_000_000, 140_002,
+		);
+		await stub.advanceProjectionCheckpoint(
+			successor.lease_token!, page.epoch, page.from_seq_exclusive, page.through_seq, 140_003,
+		);
+		expect((await stub.getProjectionState()).projected_seq).toBe(pushed.head_seq);
+	});
+
+	it("aborts a stalled projection response body before its lease can expire", async () => {
+		const stalledFetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			return new Promise((_resolve, reject) => {
+				init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+			});
+		};
+		await expect(fetchProjectionWithTimeout(
+			"https://projector.test/api/internal/sync/project",
+			"{}",
+			"test-secret",
+			5,
+			stalledFetch,
+		)).rejects.toThrow("projection_upstream_timeout");
+		await expect(fetchProjectionWithTimeout(
+			"https://projector.test/api/internal/sync/project",
+			"{}",
+			"test-secret",
+			PROJECTION_LEASE_MS,
+			stalledFetch,
+		)).rejects.toThrow(/strictly shorter/);
+	});
+
+	it.each([
+		["network", "projection_upstream_unreachable"],
+		["retryable", "projection_upstream_503"],
+		["truncated", "projection_response_not_json"],
+		["mismatch", "projection_response_mismatch"],
+	])("retains the full lease after ambiguous/retryable projection mode %s", async (mode, expectedError) => {
+		const userId = `projection-retain-${mode}`;
+		const stub = hub(userId);
+		const pushed = ok(await stub.pushOps("dev-a", [await observationOp("1")]));
+		const startedAt = 10_000;
+		const result = await drainProjection(projectionEnv(mode), userId, pushed.head_seq, {
+			now: () => startedAt,
+			fetchTimeoutMs: 100,
+			...(mode === "network" ? {
+				fetchImpl: async () => { throw new Error("simulated network disconnect"); },
+			} : {}),
+		});
+		expect(result).toMatchObject({ ok: false, error: expectedError, retryable: true });
+		expect((await stub.getProjectionState()).projected_seq).toBe("0");
+		expect((await stub.acquireProjectionLease(
+			pushed.head_seq,
+			startedAt + PROJECTION_LEASE_MS - 1,
+		)).acquired).toBe(false);
+		const successor = await stub.acquireProjectionLease(
+			pushed.head_seq,
+			startedAt + PROJECTION_LEASE_MS,
+		);
+		expect(successor.acquired).toBe(true);
+		await stub.releaseProjectionLease(successor.lease_token!);
+	});
+
+	it("keeps an AbortSignal-ignoring delayed HTTP predecessor fenced through 90s, then safely replays", async () => {
+		const userId = "projection-delayed-after-abort";
+		const stub = hub(userId);
+		const pushed = ok(await stub.pushOps("dev-a", [await observationOp("1")]));
+		const startedAt = 1_000;
+
+		// The real Miniflare fetch/outbound-service path is wall-clock scaled to
+		// 10ms, while the lease assertions retain the production 45s/90s ratio.
+		const timedOut = await drainProjection(projectionEnv("delayed"), userId, pushed.head_seq, {
+			now: () => startedAt,
+			fetchTimeoutMs: 10,
+		});
+		expect(timedOut).toMatchObject({
+			ok: false,
+			error: "projection_upstream_timeout",
+			retryable: true,
+		});
+		expect(PROJECTION_FETCH_TIMEOUT_MS).toBe(45_000);
+		expect((await stub.acquireProjectionLease(
+			pushed.head_seq,
+			startedAt + PROJECTION_FETCH_TIMEOUT_MS,
+		)).acquired).toBe(false);
+
+		// The delayed Pro-style handler ignores the aborted Request signal and
+		// finishes later. Its valid late response must never checkpoint the Hub.
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		const completion = await fetch(
+			`https://projection-cases.test/test/completion?user_id=${encodeURIComponent(userId)}`,
+		);
+		expect(await completion.json()).toEqual({ completions: 1 });
+		expect((await stub.getProjectionState()).projected_seq).toBe("0");
+		expect((await stub.acquireProjectionLease(
+			pushed.head_seq,
+			startedAt + PROJECTION_LEASE_MS - 1,
+		)).acquired).toBe(false);
+
+		// At expiry the successor safely replays from the unchanged checkpoint.
+		const replay = await drainProjection(projectionEnv("success"), userId, pushed.head_seq, {
+			now: () => startedAt + PROJECTION_LEASE_MS,
+			fetchTimeoutMs: 100,
+		});
+		expect(replay).toEqual({ ok: true, projectedSeq: pushed.head_seq });
+		expect((await stub.getProjectionState()).projected_seq).toBe(pushed.head_seq);
+	});
+
+	it("releases early only for confirmed checkpoint success or deterministic rejection", async () => {
+		for (const mode of ["success", "nonretryable"]) {
+			const userId = `projection-release-${mode}`;
+			const stub = hub(userId);
+			const pushed = ok(await stub.pushOps("dev-a", [await observationOp("1")]));
+			const startedAt = 20_000;
+			const result = await drainProjection(projectionEnv(mode), userId, pushed.head_seq, {
+				now: () => startedAt,
+				fetchTimeoutMs: 100,
+			});
+			if (mode === "success") expect(result).toEqual({ ok: true, projectedSeq: pushed.head_seq });
+			else expect(result).toMatchObject({ ok: false, httpStatus: 409, retryable: false });
+			const immediate = await stub.acquireProjectionLease(pushed.head_seq, startedAt + 1);
+			expect(immediate.acquired).toBe(true);
+			await stub.releaseProjectionLease(immediate.lease_token!);
+		}
+	});
+
+	it("releases a redundant lease when a predecessor checkpoints during acquire", async () => {
+		let stateReads = 0;
+		let releasedToken: string | null = null;
+		const stub = {
+			getProjectionState: async () => ({
+				protocol_version: 1 as const,
+				epoch: "race-epoch",
+				head_seq: "1",
+				projected_seq: stateReads++ === 0 ? "0" : "1",
+			}),
+			acquireProjectionLease: async () => ({
+				acquired: true,
+				lease_token: "redundant-token",
+				epoch: "race-epoch",
+				head_seq: "1",
+				projected_seq: "1",
+				target_seq: "1",
+			}),
+			releaseProjectionLease: async (token: string) => { releasedToken = token; },
+		};
+		const raceEnv = {
+			SYNC_HUB: { getByName: () => stub },
+			INTERNAL_PROJECTOR_URL: "https://projection-cases.test/api/internal/sync/project?mode=success",
+			CMEM_INTERNAL_PROJECTOR_SECRET: "test-projector-secret",
+		} as unknown as Env;
+
+		await expect(drainProjection(raceEnv, "projection-acquire-race", "1")).resolves.toEqual({
+			ok: true,
+			projectedSeq: "1",
+		});
+		expect(releasedToken).toBe("redundant-token");
+	});
+
+	it("retains the lease when a matching 2xx is followed by an ambiguous checkpoint reply", async () => {
+		const startedAt = 30_000;
+		const userId = "checkpoint-ambiguity";
+		const realStub = hub(userId);
+		const pushed = ok(await realStub.pushOps("dev-a", [await observationOp("1")]));
+		let releaseCalls = 0;
+		const proxyStub = {
+			getProjectionState: () => realStub.getProjectionState(),
+			acquireProjectionLease: (targetSeq: string, now?: number) => (
+				now === undefined
+					? realStub.acquireProjectionLease(targetSeq)
+					: realStub.acquireProjectionLease(targetSeq, now)
+			),
+			getProjectionPage: (
+				leaseToken: string,
+				targetSeq: string,
+				projectionUserId: string,
+				maxOps: number,
+				maxBytes: number,
+				now?: number,
+			) => (
+				now === undefined
+					? realStub.getProjectionPage(leaseToken, targetSeq, projectionUserId, maxOps, maxBytes)
+					: realStub.getProjectionPage(leaseToken, targetSeq, projectionUserId, maxOps, maxBytes, now)
+			),
+			heartbeatProjectionLease: (leaseToken: string, now?: number) => (
+				now === undefined
+					? realStub.heartbeatProjectionLease(leaseToken)
+					: realStub.heartbeatProjectionLease(leaseToken, now)
+			),
+			advanceProjectionCheckpoint: async (
+				leaseToken: string,
+				epoch: string,
+				fromSeqExclusive: string,
+				throughSeq: string,
+				now?: number,
+			) => {
+				if (now === undefined) {
+					await realStub.advanceProjectionCheckpoint(leaseToken, epoch, fromSeqExclusive, throughSeq);
+				} else {
+					await realStub.advanceProjectionCheckpoint(leaseToken, epoch, fromSeqExclusive, throughSeq, now);
+				}
+				// Simulate an RPC reply disappearing after the real fenced CAS commits.
+				throw new Error("checkpoint reply lost after commit");
+			},
+			releaseProjectionLease: async (leaseToken: string) => {
+				releaseCalls++;
+				await realStub.releaseProjectionLease(leaseToken);
+			},
+		};
+		const ambiguousEnv = {
+			SYNC_HUB: { getByName: () => proxyStub },
+			INTERNAL_PROJECTOR_URL: "https://projection-cases.test/api/internal/sync/project?mode=success",
+			CMEM_INTERNAL_PROJECTOR_SECRET: "test-projector-secret",
+		} as unknown as Env;
+		const result = await drainProjection(ambiguousEnv, userId, pushed.head_seq, {
+			now: () => startedAt,
+			fetchTimeoutMs: 100,
+			fetchImpl: async (_input, init) => {
+				const request = JSON.parse(String(init?.body)) as { epoch: string; through_seq: string };
+				return Response.json({
+					protocol_version: 1,
+					epoch: request.epoch,
+					projected_through_seq: request.through_seq,
+				});
+			},
+		});
+
+		expect(result).toMatchObject({
+			ok: false,
+			error: "checkpoint reply lost after commit",
+			projectedSeq: pushed.head_seq,
+			retryable: true,
+		});
+		expect(releaseCalls).toBe(0);
+		expect((await realStub.getProjectionState()).projected_seq).toBe(pushed.head_seq);
+		expect((await realStub.acquireProjectionLease(
+			pushed.head_seq,
+			startedAt + PROJECTION_LEASE_MS - 1,
+		)).acquired).toBe(false);
+		expect((await realStub.acquireProjectionLease(
+			pushed.head_seq,
+			startedAt + PROJECTION_LEASE_MS,
+		)).acquired).toBe(true);
+		expect(releaseCalls).toBe(0);
 	});
 });
 
-describe("front Worker (SELF)", () => {
+describe("large cursor pagination", () => {
+	it("reads 10,001 canonical operations without overlap or gaps", async () => {
+		const stub = hub("pagination-10001");
+		for (let start = 1; start <= 10_001; start += 500) {
+			const count = Math.min(500, 10_002 - start);
+			const batch = await Promise.all(
+				Array.from({ length: count }, (_, index) => observationOp(String(start + index))),
+			);
+			ok(await stub.pushOps("dev-a", batch));
+		}
+		let cursor = "0";
+		let count = 0;
+		for (;;) {
+			const page = await stub.getChanges("dev-reader", cursor, 500);
+			for (const op of page.ops) {
+				expect(BigInt(op.seq)).toBe(BigInt(cursor) + 1n);
+				cursor = op.seq;
+				count++;
+			}
+			if (!page.more) {
+				expect(cursor).toBe(page.head_seq);
+				break;
+			}
+		}
+		expect(count).toBe(10_001);
+	});
+});
+
+describe("front Worker durability and repair", () => {
 	const base = "https://sync-hub.test";
-	// The real auth path runs in tests; the mocked verify endpoint binds this token to
-	// user-http. Dedicated auth-branch coverage lives in test/auth.test.ts.
+	const userId = "55555555-5555-4555-8555-555555555555";
 	const headers = {
-		Authorization: "Bearer valid-for:user-http",
-		"X-User-Id": "user-http",
+		Authorization: `Bearer valid-for:${userId}`,
+		"X-User-Id": userId,
 		"X-Device-Id": "dev-http",
 		"Content-Type": "application/json",
 	};
 
-	it("round-trips ops through POST /v1/sync/ops and GET /v1/sync/changes", async () => {
-		const push = await SELF.fetch(`${base}/v1/sync/ops`, {
-			method: "POST",
-			headers,
-			body: JSON.stringify({ ops: [rowOp("http-1")] }),
-		});
-		expect(push.status).toBe(200);
-		const pushBody = (await push.json()) as {
-			acked: { origin_id: string; seq: number }[];
-			head_seq: number;
-		};
-		expect(pushBody.acked).toHaveLength(1);
-		expect(pushBody.acked[0].origin_id).toBe("http-1");
+	it("keeps a retryable provider failure fenced, then duplicate replay projects after lease expiry", async () => {
+		const op = await observationOp("1", "1", "dev-http");
+		const requestBody = JSON.stringify({ protocol_version: 2, ops: [op] });
+		const first = await SELF.fetch(`${base}/v1/sync/ops`, { method: "POST", headers, body: requestBody });
+		expect(first.status).toBe(503);
+		const failure = await first.json() as { durable: boolean; head_seq: string; projected_seq: string };
+		expect(failure).toMatchObject({ durable: true, head_seq: "1", projected_seq: "0" });
 
-		const changes = await SELF.fetch(
-			`${base}/v1/sync/changes?since=0&limit=500`,
-			{ headers },
+		const busy = await SELF.fetch(`${base}/v1/sync/ops`, { method: "POST", headers, body: requestBody });
+		expect(busy.status).toBe(503);
+		expect(await busy.json()).toMatchObject({ error: "projection_busy", durable: true, retryable: true });
+
+		const stub = hub(userId);
+		const expired = await stub.acquireProjectionLease(
+			failure.head_seq,
+			Date.now() + PROJECTION_LEASE_MS + 1_000,
 		);
-		expect(changes.status).toBe(200);
-		const changesBody = (await changes.json()) as {
-			epoch: string;
-			ops: { origin_id: string; seq: number }[];
-			head_seq: number;
-			more: boolean;
+		expect(expired.acquired).toBe(true);
+		await stub.releaseProjectionLease(expired.lease_token!);
+		const retry = await SELF.fetch(`${base}/v1/sync/ops`, { method: "POST", headers, body: requestBody });
+		expect(retry.status).toBe(200);
+		const success = await retry.json() as {
+			acked: Array<{ operation_sha256: string; seq: string }>;
+			head_seq: string;
+			projected_seq: string;
 		};
-		expect(changesBody.ops).toHaveLength(1);
-		expect(changesBody.ops[0].origin_id).toBe("http-1");
-		expect(changesBody.ops[0].seq).toBe(pushBody.acked[0].seq);
-		expect(changesBody.more).toBe(false);
-
-		const status = await SELF.fetch(`${base}/v1/sync/status`, { headers });
-		expect(status.status).toBe(200);
-		const statusBody = (await status.json()) as { head_seq: number };
-		expect(statusBody.head_seq).toBe(pushBody.head_seq);
+		expect(success.acked[0].seq).toBe(failure.head_seq);
+		expect(success.acked[0].operation_sha256).toBe(op.operation_sha256);
+		expect(success.projected_seq).toBe(success.head_seq);
 	});
 
-	it("rejects requests without credentials", async () => {
-		const res = await SELF.fetch(`${base}/v1/sync/status`);
-		expect(res.status).toBe(401);
-	});
-
-	it("maps invalid ops to HTTP 400", async () => {
-		const res = await SELF.fetch(`${base}/v1/sync/ops`, {
+	it("drains the scheduled repair endpoint to the authoritative head", async () => {
+		const repairUser = "66666666-6666-4666-8666-666666666666";
+		const stub = hub(repairUser);
+		ok(await stub.pushOps("dev-a", [await observationOp("1")]));
+		const response = await SELF.fetch(`${base}/internal/v1/projection/drain`, {
 			method: "POST",
-			headers,
+			headers: { Authorization: "Bearer test-projector-secret", "Content-Type": "application/json" },
+			body: JSON.stringify({ protocol_version: 1, user_id: repairUser }),
+		});
+		expect(response.status).toBe(200);
+		const body = await response.json() as { head_seq: string; projected_through_seq: string };
+		expect(body.projected_through_seq).toBe(body.head_seq);
+	});
+
+	it("surfaces deterministic Pro document rejection as nonretryable 409", async () => {
+		const rejectedUser = "77777777-7777-4777-8777-777777777777";
+		const response = await SELF.fetch(`${base}/v1/sync/ops`, {
+			method: "POST",
+			headers: {
+				...headers,
+				Authorization: `Bearer valid-for:${rejectedUser}`,
+				"X-User-Id": rejectedUser,
+			},
 			body: JSON.stringify({
-				ops: [{ kind: "mutation", origin_id: "m1", body: "not json" }],
+				protocol_version: 2,
+				ops: [await observationOp("1", "1", "dev-http")],
 			}),
 		});
-		expect(res.status).toBe(400);
-		const body = (await res.json()) as { error: string };
-		expect(body.error).toContain("invalid_ops");
+		expect(response.status).toBe(409);
+		const body = await response.json() as {
+			durable: boolean;
+			retryable: boolean;
+			head_seq: string;
+			projected_seq: string;
+		};
+		expect(body).toMatchObject({ durable: true, retryable: false, head_seq: "1", projected_seq: "0" });
 	});
 
-	it("404s unknown paths", async () => {
-		const res = await SELF.fetch(`${base}/v1/other`, { headers });
-		expect(res.status).toBe(404);
-	});
-
-	it("413s a batch with more than 500 ops", async () => {
-		const ops = Array.from({ length: 501 }, (_, i) => rowOp(`cap-${i}`));
-		const res = await SELF.fetch(`${base}/v1/sync/ops`, {
+	it("requires protocol_version 2 and exact canonical wrappers", async () => {
+		const noVersion = await SELF.fetch(`${base}/v1/sync/ops`, {
 			method: "POST",
 			headers,
-			body: JSON.stringify({ ops }),
+			body: JSON.stringify({ ops: [await observationOp("2", "1", "dev-http")] }),
 		});
-		expect(res.status).toBe(413);
-		const body = (await res.json()) as { error: string };
-		expect(body.error).toContain("too many ops");
-	});
-
-	it("413s a request body over 8,000,000 bytes", async () => {
-		const fat = "x".repeat(8_000_001);
-		const res = await SELF.fetch(`${base}/v1/sync/ops`, {
+		expect(noVersion.status).toBe(400);
+		const extraWrapperField = { ...(await observationOp("3", "1", "dev-http")), extra: true };
+		const invalid = await SELF.fetch(`${base}/v1/sync/ops`, {
 			method: "POST",
 			headers,
-			body: JSON.stringify({
-				ops: [{ kind: "observation", origin_id: "fat", body: fat }],
-			}),
+			body: JSON.stringify({ protocol_version: 2, ops: [extraWrapperField] }),
 		});
-		expect(res.status).toBe(413);
-		const body = (await res.json()) as { error: string };
-		expect(body.error).toContain("body exceeds");
-	});
-
-	it("400s a whitespace-only X-Device-Id", async () => {
-		const res = await SELF.fetch(`${base}/v1/sync/ops`, {
-			method: "POST",
-			headers: { ...headers, "X-Device-Id": "   " },
-			body: JSON.stringify({ ops: [rowOp("ws-device")] }),
-		});
-		expect(res.status).toBe(400);
-		const body = (await res.json()) as { error: string };
-		expect(body.error).toContain("X-Device-Id");
-	});
-
-	it("trims X-Device-Id so 'dev-x ' and 'dev-x' are the same device", async () => {
-		const op = rowOp("trim-1");
-		const first = await SELF.fetch(`${base}/v1/sync/ops`, {
-			method: "POST",
-			headers: { ...headers, "X-Device-Id": "dev-http-trim " },
-			body: JSON.stringify({ ops: [op] }),
-		});
-		expect(first.status).toBe(200);
-		const firstBody = (await first.json()) as { acked: { seq: number }[] };
-
-		// Same op from the trimmed spelling must dedupe to the same seq —
-		// proof both spellings resolved to one origin_device.
-		const second = await SELF.fetch(`${base}/v1/sync/ops`, {
-			method: "POST",
-			headers: { ...headers, "X-Device-Id": "dev-http-trim" },
-			body: JSON.stringify({ ops: [op] }),
-		});
-		expect(second.status).toBe(200);
-		const secondBody = (await second.json()) as { acked: { seq: number }[] };
-		expect(secondBody.acked[0].seq).toBe(firstBody.acked[0].seq);
+		expect(invalid.status).toBe(400);
 	});
 });

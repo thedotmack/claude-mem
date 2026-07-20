@@ -53,7 +53,8 @@ describe('CloudSyncRoutes — GET /api/sync/status', () => {
     const status: CloudSyncStatus = {
       configured: true,
       deviceId: 'device-fixture',
-      pending: { observations: 3, summaries: 2, prompts: 1 },
+      pending: { observations: 3, summaries: 2, prompts: 1, mutations: 0, tombstones: 0 },
+      quarantine: { count: 0, latestReason: null },
       lastFlushAt: 1751990400000,
       lastError: null,
     };
