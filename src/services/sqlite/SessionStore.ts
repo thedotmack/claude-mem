@@ -1,7 +1,6 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite';
-import { existsSync, readFileSync } from 'fs';
 import { randomUUID } from 'crypto';
-import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT, paths } from '../../shared/paths.js';
+import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
   TableColumnInfo,
@@ -75,7 +74,7 @@ interface SdkSessionDetailRow {
 export class SessionStore {
   public db: Database;
 
-  constructor(dbPathOrDb: string | Database = DB_PATH, options: { cloudSyncStatePath?: string; cloudSyncHubUrl?: string } = {}) {
+  constructor(dbPathOrDb: string | Database = DB_PATH) {
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
     } else {
@@ -114,13 +113,12 @@ export class SessionStore {
     this.ensureSDKSessionsPlatformContentIdentity();
     this.ensureUserPromptsSessionDbId();
     this.ensurePendingMessagesSessionToolUniqueIndex();
-    this.ensureSyncedAtColumns(options.cloudSyncStatePath ?? paths.cloudSyncState());
-    this.requeuePromptCloudSyncAfterMapperFix();
+    this.ensureSyncedAtColumns();
     this.ensureSyncOriginColumns();
     this.ensureSyncOutbox();
     this.ensureSyncEntityLedger();
     this.ensureSyncRevisionTextAffinity();
-    this.requeueAllForHubCutover(options.cloudSyncHubUrl);
+    this.initializeSyncHubLaunchBaseline();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -456,13 +454,11 @@ export class SessionStore {
     }
   }
 
-  private ensureSyncedAtColumns(cloudSyncStatePath: string): void {
+  private ensureSyncedAtColumns(): void {
     // Not gated on a schema_versions row: the community-edge line already
     // consumed versions 36-38 without adding synced_at, so affected DBs have
     // those version rows but not the columns. The PRAGMA checks are the real
     // guard; version 39 is recorded for bookkeeping only.
-    let columnsAdded = false;
-
     for (const table of ['observations', 'session_summaries', 'user_prompts']) {
       const tableInfo = this.db.query(`PRAGMA table_info(${table})`).all() as TableColumnInfo[];
       const hasSyncedAt = tableInfo.some(col => col.name === 'synced_at');
@@ -470,45 +466,12 @@ export class SessionStore {
       if (!hasSyncedAt) {
         this.db.run(`ALTER TABLE ${table} ADD COLUMN synced_at INTEGER`);
         logger.debug('DB', `Added synced_at column to ${table} table`);
-        columnsAdded = true;
       }
 
       this.db.run(`CREATE INDEX IF NOT EXISTS idx_${table}_unsynced ON ${table}(id) WHERE synced_at IS NULL`);
     }
 
-    // Legacy cursor adoption is once-only: it runs only in the call that
-    // created the columns.
-    if (columnsAdded) {
-      this.stampRowsSyncedByLegacyClient(cloudSyncStatePath);
-    }
-
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(39, new Date().toISOString());
-  }
-
-  /**
-   * One-time cloud repair (version 40): every prompt synced before the
-   * CloudSync mapper fix went to the cloud with memory_session_id =
-   * content_session_id and project = 'unknown', so the cloud viewer could
-   * never attach a prompt to its session. Re-nulling synced_at makes the
-   * next flush re-push the full prompt history through the fixed mapper
-   * (sdk_sessions join); the server upserts on (user_id, device_id,
-   * local_id) with a change guard, so corrected rows overwrite in place and
-   * still-identical rows (no local mapping) cost nothing. Runs after
-   * ensureSyncedAtColumns — the column must exist. Harmless when cloud sync
-   * is unconfigured: rows simply sit unsynced, which is their natural state.
-   */
-  private requeuePromptCloudSyncAfterMapperFix(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(40) as SchemaVersion | undefined;
-    if (applied) return;
-
-    const res = this.db.prepare(`
-      UPDATE user_prompts SET synced_at = NULL WHERE synced_at IS NOT NULL
-    `).run();
-    logger.info('DB', 'Requeued prompt cloud sync after mapper fix (v40)', {
-      requeued: res.changes
-    });
-
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(40, new Date().toISOString());
   }
 
   /**
@@ -768,97 +731,101 @@ export class SessionStore {
       .run(45, new Date().toISOString());
   }
 
+
   /**
-   * Hub cutover one-shot (plan Phase 3 task 5): when settings point at a
-   * sync hub (CLAUDE_MEM_CLOUD_SYNC_HUB_URL non-empty) that this DB has not
-   * cut over to yet, re-null `synced_at` on every NATIVE row once so this
-   * device re-pushes its whole corpus into that hub's log; the hub's
-   * (origin_device, kind, origin_id, rev) unique index dedupes replays.
-   * Replica rows (origin_device_id NOT NULL) are excluded — they are another
-   * device's corpus and must never be pushed under this device's identity.
-   *
-   * GATING — keyed on HUB IDENTITY, not a version number: the hub URL the
-   * cutover last ran against is stored in sync_state ('cutover_hub_url'),
-   * written in the SAME transaction as the requeue. The one-shot fires
-   * whenever a non-empty hub URL differs from the stored value — so it is
-   * exactly-once per (DB, hub URL): the first configuration fires it, every
-   * later boot with the same URL is a no-op, and pointing at a DIFFERENT hub
-   * later fires it again (a burned version row would leave the corpus
-   * permanently un-pushed into the new hub's empty log — silent fleet-wide
-   * data loss). A schema_versions row 43 is still recorded as a legacy
-   * bookkeeping marker but is NOT consulted, so pre-fix DBs that burned v43
-   * (and have no stored cutover_hub_url) self-heal with one extra re-push —
-   * hub dedupe makes over-firing safe. Callers that don't know the settings
-   * (tests, CLI utilities) pass no URL and stay inert — the worker, which
-   * owns the push drain, passes the URL via DatabaseManager.
-   *
-   * The other leg of hub-identity change — the SAME URL whose DO log was
-   * lost/rebuilt (new epoch) — is handled by SyncApply.handleEpoch, which
-   * re-nulls native rows on an epoch MISMATCH.
+   * One-time launch boundary (v47) plus its durable revision exclusions
+   * (v48). This product line has no released cloud corpus to migrate, so the
+   * exact native revisions present at launch are a local-only baseline. The
+   * exclusion ledger survives Hub epoch changes; if one of those rows is
+   * edited later, its higher revision is eligible for ordinary sync/rebuild.
+   * Fresh databases run this while empty.
    */
-  private requeueAllForHubCutover(hubUrl: string | undefined): void {
-    // Normalize like CloudSync does, so "https://hub" and "https://hub/"
-    // are one hub identity, not a spurious re-fire.
-    const normalized = (hubUrl ?? '').trim().replace(/\/+$/, '');
-    if (normalized === '') return;
+  private initializeSyncHubLaunchBaseline(): void {
+    const tables = [
+      { table: 'observations', kind: 'observation' },
+      { table: 'session_summaries', kind: 'summary' },
+      { table: 'user_prompts', kind: 'prompt' },
+    ] as const;
+    const exclusionTableExisted = this.db.prepare(`
+      SELECT 1 AS present FROM sqlite_master
+      WHERE type = 'table' AND name = 'sync_launch_exclusions'
+    `).get() !== undefined;
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS sync_launch_exclusions (
+        kind TEXT NOT NULL CHECK (kind IN ('observation', 'summary', 'prompt')),
+        origin_local_id TEXT NOT NULL,
+        through_rev TEXT NOT NULL,
+        PRIMARY KEY (kind, origin_local_id)
+      )
+    `);
 
-    const stored = this.db.prepare(`SELECT v FROM sync_state WHERE k = 'cutover_hub_url'`).get() as { v: string } | undefined;
-    if (stored?.v === normalized) return;
+    const applied = this.db.prepare(
+      'SELECT version, applied_at FROM schema_versions WHERE version = ?'
+    ).get(47) as { version: number; applied_at: string } | undefined;
 
-    let requeued = 0;
-    const tx = this.db.transaction(() => {
-      for (const table of ['observations', 'session_summaries', 'user_prompts']) {
-        const res = this.db.prepare(`
-          UPDATE ${table} SET synced_at = NULL
-          WHERE synced_at IS NOT NULL AND origin_device_id IS NULL
-        `).run();
-        requeued += res.changes;
+    if (!applied) {
+      const now = Date.now();
+      const tx = this.db.transaction(() => {
+        // Recompute if a migration fixture deliberately removes v47. In a
+        // real pre-v47 database this table is newly created and already empty.
+        this.db.run('DELETE FROM sync_launch_exclusions');
+        for (const { table, kind } of tables) {
+          this.db.prepare(`
+            INSERT INTO sync_launch_exclusions (kind, origin_local_id, through_rev)
+            SELECT ?, CAST(id AS TEXT), CAST(sync_rev AS TEXT)
+            FROM ${table}
+            WHERE origin_device_id IS NULL
+          `).run(kind);
+          this.db.prepare(`
+            UPDATE ${table} SET synced_at = ?
+            WHERE synced_at IS NULL AND origin_device_id IS NULL
+          `).run(now);
+        }
+        this.db.run('DELETE FROM sync_outbox');
+        this.db.run('DELETE FROM sync_content_outbox');
+        this.db.run('DELETE FROM sync_dead_letter');
+        // Adopt the launch Hub as a genuinely first epoch. Retaining a cursor
+        // or epoch from a pre-launch test Hub would make SyncApply interpret
+        // the first connection as a rebuild. Parked mutations belong to that
+        // discarded test log, so pre-launch sync_state is stale control-plane
+        // state; the exclusion ledger above is the only boundary state kept.
+        this.db.run('DELETE FROM sync_state');
+        const appliedAt = new Date(now).toISOString();
+        this.db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)').run(47, appliedAt);
+        this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(48, appliedAt);
+      });
+      tx();
+      return;
+    }
+
+    // Repair databases that ran the earlier v47 implementation before the
+    // explicit exclusion ledger existed. v47 stamped the launch baseline at
+    // its applied_at millisecond. Rows still stamped at/before that boundary
+    // are the excluded launch revisions; NULL or later stamps are post-launch
+    // writes/acks and must remain eligible for an epoch rebuild.
+    const exclusionsApplied = this.db.prepare(
+      'SELECT version FROM schema_versions WHERE version = ?'
+    ).get(48) as SchemaVersion | undefined;
+    if (exclusionsApplied && exclusionTableExisted) return;
+    const boundaryMs = Date.parse(applied.applied_at);
+    if (!Number.isSafeInteger(boundaryMs) || boundaryMs < 0) {
+      throw new Error(`schema v48: invalid v47 applied_at ${applied.applied_at}`);
+    }
+    const repair = this.db.transaction(() => {
+      for (const { table, kind } of tables) {
+        this.db.prepare(`
+          INSERT OR IGNORE INTO sync_launch_exclusions (kind, origin_local_id, through_rev)
+          SELECT ?, CAST(id AS TEXT), CAST(sync_rev AS TEXT)
+          FROM ${table}
+          WHERE origin_device_id IS NULL
+            AND synced_at > 0
+            AND synced_at <= ?
+        `).run(kind, boundaryMs);
       }
-      this.db.prepare(`
-        INSERT INTO sync_state (k, v) VALUES ('cutover_hub_url', ?)
-        ON CONFLICT(k) DO UPDATE SET v = excluded.v
-      `).run(normalized);
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(43, new Date().toISOString());
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)')
+        .run(48, new Date().toISOString());
     });
-    tx();
-
-    logger.info('DB', 'Requeued full corpus for sync hub cutover', {
-      hubUrl: normalized,
-      previousHubUrl: stored?.v ?? null,
-      requeued,
-    });
-  }
-
-  // Rows the standalone cloud-sync client already uploaded (its cursors live in
-  // cloud-sync-state.json) are stamped so they are not re-uploaded. The state
-  // file is left in place — device-id adoption still reads it.
-  private stampRowsSyncedByLegacyClient(statePath: string): void {
-    if (!existsSync(statePath)) return;
-
-    let state: { lastId?: number; lastSummaryId?: number; lastPromptId?: number };
-    try {
-      state = JSON.parse(readFileSync(statePath, 'utf-8'));
-    } catch (error) {
-      logger.warn('DB', 'Failed to read legacy cloud-sync state, skipping synced_at adoption', { statePath }, error instanceof Error ? error : new Error(String(error)));
-      return;
-    }
-    if (state === null || typeof state !== 'object') {
-      logger.warn('DB', 'Legacy cloud-sync state is not an object, skipping synced_at adoption', { statePath });
-      return;
-    }
-
-    const now = Date.now();
-    const cursors: Array<[table: string, lastSyncedId: unknown]> = [
-      ['observations', state.lastId],
-      ['session_summaries', state.lastSummaryId],
-      ['user_prompts', state.lastPromptId],
-    ];
-
-    for (const [table, lastSyncedId] of cursors) {
-      if (!(typeof lastSyncedId === 'number' && lastSyncedId > 0)) continue;
-      this.db.prepare(`UPDATE ${table} SET synced_at = ? WHERE id <= ? AND synced_at IS NULL`).run(now, lastSyncedId);
-      logger.debug('DB', `Stamped synced_at on ${table} rows already uploaded by the legacy cloud-sync client`, { lastSyncedId });
-    }
+    repair();
   }
 
   private dropDeadPendingMessagesColumns(): void {

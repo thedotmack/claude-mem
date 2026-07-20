@@ -2,8 +2,9 @@
 
 Production deployment steps for the two-lane sync hub (plan
 `plans/2026-07-17-phase5-two-lane-sync.md`). Everything below is a
-**production-only** action: local dev, vitest, and the e2e scripts need none
-of it (they run against `wrangler dev` with `.dev.vars`).
+**production-only** action: local Vitest and the canonical matrix E2E need none
+of it. The matrix starts an ephemeral local Miniflare Worker/SQLite Durable
+Object plus loopback-only verifier/projector sidecars.
 
 Prime directive for every knob in this file: **cost guardrails are
 structural — watchdog trips → poll mode, never "stop working."** A tripped
@@ -115,7 +116,33 @@ or endpoint that can enable deletion. Keep the full ordered log until a
 snapshot/reset bootstrap protocol exists, so a newly first-seen device at
 cursor `0` can always replay contiguous history.
 
-### 1.4 Local Pro/Hub Miniflare E2E hook
+### 1.4 Device admission ceiling
+
+The Durable Object admits at most 64 distinct device ids per user, atomically,
+across push, pull, and WebSocket touch paths. A 65th id on an admitting path
+returns `409 {"error":"device_limit_exceeded"}`; already-registered devices
+continue normally. Public status and internal metadata are read-only for an
+unknown id, so connectivity probes cannot consume or exhaust device slots;
+status may refresh last-seen/name only for an already-registered device.
+Unknown-device renames also create nothing. Treat the stable 409 from an
+admitting path as an account/device-management condition, not a retriable
+transport failure.
+
+### 1.5 Local Pro/Hub Miniflare E2E hook
+
+The canonical client matrix is the safe default from the repository root:
+
+```sh
+npm run e2e:sync-matrix
+```
+
+It drives exactly two file-backed client stacks against the actual bundled
+Worker and SQLite Durable Object. The Hub, token verifier, and projector all
+bind ephemeral `127.0.0.1` ports; runtime guards reject any non-loopback URL.
+It covers WebSocket hints plus HTTP authority, concurrent writes, offline
+retry, restart, delete/revive, all three mutation types, decimal cursors, and
+the projection checkpoint reaching the head. The runner owns clean shutdown
+and leaves no persistent Hub or client state.
 
 `test/miniflare-pro-e2e.ts` exports
 `createSyncHubMiniflareE2EOptions(...)`. A sibling Pro Vitest config passes its

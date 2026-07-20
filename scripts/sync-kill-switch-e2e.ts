@@ -103,8 +103,8 @@ async function main(): Promise<void> {
   const tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-kill-e2e-'));
   const dbA = new Database(':memory:');
   const dbB = new Database(':memory:');
-  new SessionStore(dbA, { cloudSyncStatePath: join(tempDir, 'no-legacy-a.json') });
-  new SessionStore(dbB, { cloudSyncStatePath: join(tempDir, 'no-legacy-b.json') });
+  new SessionStore(dbA);
+  new SessionStore(dbB);
   seedSession(dbA);
 
   // Device A: the push drain.
@@ -116,7 +116,6 @@ async function main(): Promise<void> {
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: 'e2e-a',
   }, {
     settingsPath: join(tempDir, 'settings-a.json'),
-    legacyStatePath: join(tempDir, 'no-legacy-a.json'),
     debounceMs: 100,
   });
 
@@ -127,6 +126,7 @@ async function main(): Promise<void> {
     token: TOKEN,
     userId: USER,
     deviceId: DEV_B,
+    deviceName: 'e2e-b',
     activePollMs: 1_000,
     idlePollMs: 1_000, // fast re-probe while the socket is live
     minPullGapMs: 0,

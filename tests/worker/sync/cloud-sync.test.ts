@@ -8,7 +8,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
@@ -127,7 +127,6 @@ describe('CloudSync', () => {
   let db: Database;
   let store: SessionStore;
   let settingsPath: string;
-  let missingLegacyPath: string;
 
   function makeSettings(overrides: Partial<CloudSyncSettingKeys> = {}): CloudSyncSettingKeys {
     return {
@@ -148,7 +147,6 @@ describe('CloudSync', () => {
     return new CloudSync(db, makeSettings(settingsOverrides), {
       fetchImpl,
       settingsPath,
-      legacyStatePath: missingLegacyPath,
       debounceMs: 25,
       backoffInitialMs: 20,
       backoffMaxMs: 200,
@@ -305,9 +303,8 @@ describe('CloudSync', () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-cloud-sync-'));
     settingsPath = join(tempDir, 'settings.json');
-    missingLegacyPath = join(tempDir, 'no-such-cloud-sync-state.json');
     db = new Database(':memory:');
-    store = new SessionStore(db, { cloudSyncStatePath: missingLegacyPath });
+    store = new SessionStore(db);
     db.prepare(`
       INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
       VALUES ('sess-abc', 'mem-1', 'proj-x', ?, 1751234567000, 'active')
@@ -528,6 +525,85 @@ describe('CloudSync', () => {
     expect(status.pending).toEqual({ observations: 0, summaries: 0, prompts: 0, mutations: 0, tombstones: 0 });
     expect(status.lastFlushAt).not.toBeNull();
     expect(status.lastError).toBeNull();
+  });
+
+  it('authenticates a read-only Hub status probe even when the local queue is empty', async () => {
+    const calls: Array<{ url: string; method: string; headers: Headers; body: unknown; hasSignal: boolean }> = [];
+    const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({
+        url: String(input),
+        method: init?.method ?? 'GET',
+        headers: new Headers(init?.headers),
+        body: init?.body,
+        hasSignal: init?.signal != null,
+      });
+      return Response.json({
+        protocol_version: 2,
+        epoch: '18446744073709551615',
+        head_seq: '9007199254740993',
+        projected_seq: '9007199254740993',
+        op_count: 7,
+        device_count: 2,
+      });
+    }) as typeof fetch;
+    const sync = makeCloudSync(impl);
+
+    // An empty drain performs no write request and therefore proves nothing
+    // about connectivity. The status route's probe must still hit the Hub.
+    await sync.flush();
+    expect(calls).toHaveLength(0);
+    const status = await sync.statusWithHubProbe();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://hub.test/v1/sync/status');
+    expect(calls[0].method).toBe('GET');
+    expect(calls[0].body).toBeUndefined();
+    expect(calls[0].hasSignal).toBe(true);
+    expect(calls[0].headers.get('Authorization')).toBe('Bearer test-token-1234');
+    expect(calls[0].headers.get('X-User-Id')).toBe('user-42');
+    expect(calls[0].headers.get('X-Device-Id')).toBe('device-fixture');
+    expect(calls[0].headers.get('X-Device-Name')).toBe('test-host');
+    expect(status.pending).toEqual({ observations: 0, summaries: 0, prompts: 0, mutations: 0, tombstones: 0 });
+    expect(status.hub).toMatchObject({
+      reachable: true,
+      epoch: '18446744073709551615',
+      headSeq: '9007199254740993',
+      projectedSeq: '9007199254740993',
+      error: null,
+    });
+    expect(status.hub.checkedAt).toBeNumber();
+  });
+
+  it('surfaces Hub authentication, network, and malformed-status failures without leaking the token', async () => {
+    const scenarios: Array<{ response: Response | Error; error: RegExp }> = [
+      {
+        response: new Response('denied test-token-1234', { status: 401 }),
+        error: /sync hub status 401: denied \[REDACTED\]/,
+      },
+      { response: new Error('connect ECONNREFUSED'), error: /ECONNREFUSED/ },
+      {
+        response: Response.json({ protocol_version: 2, epoch: '1', head_seq: '2', projected_seq: '3' }),
+        error: /projected_seq exceeds head_seq/,
+      },
+    ];
+    for (const scenario of scenarios) {
+      const impl = (async () => {
+        if (scenario.response instanceof Error) throw scenario.response;
+        return scenario.response.clone();
+      }) as typeof fetch;
+      const sync = makeCloudSync(impl);
+      const status = await sync.statusWithHubProbe();
+      expect(status.hub).toMatchObject({
+        reachable: false,
+        epoch: null,
+        headSeq: null,
+        projectedSeq: null,
+      });
+      expect(status.hub.error).toMatch(scenario.error);
+      expect(JSON.stringify(status)).not.toContain('test-token-1234');
+      expect(status.lastError).toBeNull();
+      sync.stop();
+    }
   });
 
   it('packs oversized pages into multiple bodies, each under the request cap', async () => {
@@ -1323,40 +1399,14 @@ describe('CloudSync', () => {
   });
 
   describe('device id resolution', () => {
-    it('adopts the legacy cloud-sync-state.json deviceId and never mints a new one', () => {
-      const legacyPath = join(tempDir, 'cloud-sync-state.json');
-      writeFileSync(legacyPath, JSON.stringify({
-        deviceId: 'legacy-dev-123',
-        lastId: 10,
-        lastSummaryId: 2,
-        lastPromptId: 3,
-      }));
-
+    it('uses the settings-configured device id without rewriting settings', () => {
       const { impl } = makeFetchMock();
-      const sync = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '' }, { legacyStatePath: legacyPath });
-      expect(sync.status().deviceId).toBe('legacy-dev-123');
-
-      // Persisted back to settings so future starts skip legacy resolution.
-      const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-      expect(persisted.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID).toBe('legacy-dev-123');
-
-      // A second instance resolving from scratch adopts the SAME id.
-      const again = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '' }, { legacyStatePath: legacyPath });
-      expect(again.status().deviceId).toBe('legacy-dev-123');
-    });
-
-    it('prefers the settings-configured device id over the legacy file', () => {
-      const legacyPath = join(tempDir, 'cloud-sync-state.json');
-      writeFileSync(legacyPath, JSON.stringify({ deviceId: 'legacy-dev-123' }));
-
-      const { impl } = makeFetchMock();
-      const sync = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: 'settings-dev-9' }, { legacyStatePath: legacyPath });
+      const sync = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: 'settings-dev-9' });
       expect(sync.status().deviceId).toBe('settings-dev-9');
-      // No resolution ran, so nothing was persisted.
       expect(existsSync(settingsPath)).toBe(false);
     });
 
-    it('mints a UUID and persists it when neither settings nor legacy state exist', () => {
+    it('mints a UUID and persists it when settings have no device id', () => {
       const { impl } = makeFetchMock();
       const sync = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '' });
 
@@ -1365,26 +1415,6 @@ describe('CloudSync', () => {
 
       const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
       expect(persisted.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID).toBe(deviceId);
-    });
-
-    it('fails closed (no uploads, no minting) when the legacy state file is corrupt', async () => {
-      seedObservation();
-      const legacyPath = join(tempDir, 'cloud-sync-state.json');
-      writeFileSync(legacyPath, 'not json{');
-
-      const { impl, calls } = makeFetchMock();
-      const sync = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '' }, { legacyStatePath: legacyPath });
-
-      sync.start();
-      sync.notify();
-      await sleep(120);
-
-      expect(calls.length).toBe(0);
-      expect(sync.status().deviceId).toBe('');
-      expect(sync.status().lastError).toContain('legacy cloud-sync state unreadable');
-      expect(pendingCount('observations')).toBe(1);
-      // Nothing persisted — a new id here would fork every cloud row.
-      expect(existsSync(settingsPath)).toBe(false);
     });
   });
 

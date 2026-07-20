@@ -109,7 +109,6 @@ describe('SyncApply', () => {
   let tempDir: string;
   let db: Database;
   let settingsPath: string;
-  let missingLegacyPath: string;
 
   function makeApply(options: { deviceId?: string; chromaSync?: ChromaSyncLike | null } = {}): SyncApply {
     return new SyncApply(db, {
@@ -159,9 +158,8 @@ describe('SyncApply', () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-sync-apply-'));
     settingsPath = join(tempDir, 'settings.json');
-    missingLegacyPath = join(tempDir, 'no-such-cloud-sync-state.json');
     db = new Database(':memory:');
-    new SessionStore(db, { cloudSyncStatePath: missingLegacyPath });
+    new SessionStore(db);
     db.prepare(`
       INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
       VALUES ('sess-abc', 'mem-1', 'proj-x', ?, 1751234567000, 'active')
@@ -202,7 +200,7 @@ describe('SyncApply', () => {
     });
 
     it('is idempotent — re-running the constructor changes nothing', () => {
-      new SessionStore(db, { cloudSyncStatePath: missingLegacyPath });
+      new SessionStore(db);
       const cols = db.query('PRAGMA table_info(observations)').all() as Array<{ name: string }>;
       expect(cols.filter(c => c.name === 'origin_device_id').length).toBe(1);
     });
@@ -497,7 +495,6 @@ describe('SyncApply', () => {
     const sync = new CloudSync(db, makeSettings(), {
       fetchImpl,
       settingsPath,
-      legacyStatePath: missingLegacyPath,
       debounceMs: 25,
       backoffInitialMs: 20,
       backoffMaxMs: 200,

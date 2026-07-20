@@ -15,9 +15,15 @@ import {
 	type CanonicalContentBody,
 } from "../src/canonical-content";
 import {
+	DEVICE_LIMIT_ERROR,
+	MAX_DEVICES_PER_USER,
 	PROJECTION_LEASE_MS,
+	type ChangesOutcome,
+	type ChangesResult,
 	type PushOutcome,
 	type PushResult,
+	type StatusOutcome,
+	type StatusResult,
 	type SyncHub,
 } from "../src/do/SyncHub";
 import {
@@ -46,6 +52,16 @@ function projectionEnv(mode: string): Env {
 }
 
 function ok(outcome: PushOutcome): PushResult {
+	if ("refused" in outcome) throw new Error(`unexpected refusal: ${outcome.error}`);
+	return outcome;
+}
+
+function changes(outcome: ChangesOutcome): ChangesResult {
+	if ("refused" in outcome) throw new Error(`unexpected refusal: ${outcome.error}`);
+	return outcome;
+}
+
+function status(outcome: StatusOutcome): StatusResult {
 	if ("refused" in outcome) throw new Error(`unexpected refusal: ${outcome.error}`);
 	return outcome;
 }
@@ -214,7 +230,7 @@ describe("shared canonical content-v2 contract", () => {
 				expect(appended.acked[0].seq, `${vector.name}: ${path}`).toBe("1");
 				expect(appended.acked[0].operation_sha256).toBe(paddedWrapper.operation_sha256);
 
-				const stored = await stub.getChanges("first-reader", "0", 500);
+				const stored = changes(await stub.getChanges("first-reader", "0", 500));
 				expect(stored.ops).toHaveLength(1);
 				expect(stored.ops[0].seq).toBe("1");
 				expect(stored.ops[0].body).toBe(paddedWrapper.body);
@@ -241,7 +257,7 @@ describe("canonical reducer and entity-head ledger", () => {
 		refused(await stub.pushOps("dev-a", [conflicting]), /revision_hash_conflict/);
 		const second = ok(await stub.pushOps("dev-a", [await observationOp("1", "2")]));
 		refused(await stub.pushOps("dev-a", [firstOp]), /stale_revision/);
-		expect((await stub.getStatus()).head_seq).toBe(second.head_seq);
+		expect(status(await stub.getStatus()).head_seq).toBe(second.head_seq);
 	});
 
 	it("supports tombstone-before-create and a higher-revision revive", async () => {
@@ -289,7 +305,7 @@ describe("canonical reducer and entity-head ledger", () => {
 			entity_rev: "18446744073709551615",
 			seq: "9223372036854775809",
 		});
-		const page = await stub.getChanges("dev-reader", "9223372036854775808", 500);
+		const page = changes(await stub.getChanges("dev-reader", "9223372036854775808", 500));
 		expect(page.ops.map((op) => op.seq)).toEqual(["9223372036854775809"]);
 		expect(page.head_seq).toBe("9223372036854775809");
 	});
@@ -350,7 +366,7 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 			]);
 		});
 
-		const firstSeen = await stub.getChanges("brand-new-device", "0", 500);
+		const firstSeen = changes(await stub.getChanges("brand-new-device", "0", 500));
 		expect(firstSeen.ops.map((op) => op.seq)).toEqual(["1", "2"]);
 		expect(firstSeen.ops.every((op, index) => BigInt(op.seq) === BigInt(index + 1))).toBe(true);
 		expect(firstSeen.head_seq).toBe("2");
@@ -421,7 +437,7 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 		expect(page.ops.length).toBeLessThan(ops.length);
 		const next = ok(await stub.pushOps("dev-a", []));
 		expect(next.head_seq).toBe(pushed.head_seq);
-		const allChanges = await stub.getChanges("boundary-reader", "0", 500);
+		const allChanges = changes(await stub.getChanges("boundary-reader", "0", 500));
 		const nextOp = allChanges.ops[page.ops.length];
 		expect(projectionRequestBytes({
 			userId,
@@ -707,7 +723,7 @@ describe("large cursor pagination", () => {
 		let cursor = "0";
 		let count = 0;
 		for (;;) {
-			const page = await stub.getChanges("dev-reader", cursor, 500);
+			const page = changes(await stub.getChanges("dev-reader", cursor, 500));
 			for (const op of page.ops) {
 				expect(BigInt(op.seq)).toBe(BigInt(cursor) + 1n);
 				cursor = op.seq;
@@ -815,5 +831,289 @@ describe("front Worker durability and repair", () => {
 			body: JSON.stringify({ protocol_version: 2, ops: [extraWrapperField] }),
 		});
 		expect(invalid.status).toBe(400);
+	});
+});
+
+describe("internal payload-free Hub metadata", () => {
+	const base = "https://sync-hub.test";
+	const internalHeaders = {
+		Authorization: "Bearer test-projector-secret",
+		"Content-Type": "application/json",
+	};
+
+	it("reports device names, last seen, decimal cursors, projection lag, and health", async () => {
+		const userId = "88888888-8888-4888-8888-888888888888";
+		const stub = hub(userId);
+		changes(await stub.getChanges("dev-dashboard", "0", 500));
+		const clientStatus = await SELF.fetch(`${base}/v1/sync/status`, {
+			headers: {
+				Authorization: `Bearer valid-for:${userId}`,
+				"X-User-Id": userId,
+				"X-Device-Id": "dev-dashboard",
+				"X-Device-Name": "  Alex's Laptop  ",
+			},
+		});
+		expect(clientStatus.status).toBe(200);
+
+		ok(await stub.pushOps("dev-writer", [
+			await observationOp("1", "1", "dev-writer"),
+			await observationOp("2", "1", "dev-writer"),
+		], "Writer"));
+		await stub.getChanges("dev-reader", "1", 500, "Reader");
+
+		const response = await SELF.fetch(`${base}/internal/v1/sync/metadata`, {
+			method: "POST",
+			headers: internalHeaders,
+			body: JSON.stringify({ protocol_version: 1, user_id: userId }),
+		});
+		expect(response.status).toBe(200);
+		const body = await response.json() as {
+			protocol_version: number;
+			user_id: string;
+			epoch: string;
+			head_seq: string;
+			projected_seq: string;
+			projection_lag_ops: string;
+			sync_health: string;
+			devices: Array<Record<string, unknown>>;
+		};
+		expect(body).toMatchObject({
+			protocol_version: 1,
+			user_id: userId,
+			head_seq: "2",
+			projected_seq: "0",
+			projection_lag_ops: "2",
+			sync_health: "projector_lagging",
+		});
+		expect(body.epoch).toMatch(/^(?:0|[1-9][0-9]*)$/);
+		expect(body).not.toHaveProperty("op_count");
+		expect(body.devices).toHaveLength(3);
+		const byId = new Map(body.devices.map((device) => [device.device_id, device]));
+		expect(byId.get("dev-dashboard")).toMatchObject({
+			name: "Alex's Laptop",
+			last_ack_seq: "0",
+			cursor_lag_ops: "2",
+			connection_state: "disconnected",
+		});
+		expect(byId.get("dev-reader")).toMatchObject({
+			name: "Reader",
+			last_ack_seq: "1",
+			cursor_lag_ops: "1",
+		});
+		for (const device of body.devices) {
+			expect(device.last_seen_epoch_ms).toMatch(/^[1-9][0-9]*$/);
+			expect(device.last_seen_at).toMatch(/Z$/);
+		}
+	});
+
+	it("renames only registered devices and preserves dashboard names over client headers", async () => {
+		const userId = "99999999-9999-4999-8999-999999999999";
+		const stub = hub(userId);
+		changes(await stub.getChanges("dev-a", "0", 500, "Initial hostname"));
+
+		const rename = await SELF.fetch(`${base}/internal/v1/sync/device-name`, {
+			method: "POST",
+			headers: internalHeaders,
+			body: JSON.stringify({ protocol_version: 1, user_id: userId, device_id: "dev-a", name: "Desk Mac" }),
+		});
+		expect(rename.status).toBe(200);
+		expect(await rename.json()).toEqual({
+			protocol_version: 1,
+			user_id: userId,
+			device_id: "dev-a",
+			name: "Desk Mac",
+		});
+
+		await stub.getStatus("dev-a", "Changed hostname");
+		const metadata = await SELF.fetch(`${base}/internal/v1/sync/metadata`, {
+			method: "POST",
+			headers: internalHeaders,
+			body: JSON.stringify({ protocol_version: 1, user_id: userId }),
+		});
+		const body = await metadata.json() as { sync_health: string; projection_lag_ops: string; devices: Array<{ name: string }> };
+		expect(body.sync_health).toBe("healthy");
+		expect(body.projection_lag_ops).toBe("0");
+		expect(body.devices[0].name).toBe("Desk Mac");
+
+		const missing = await SELF.fetch(`${base}/internal/v1/sync/device-name`, {
+			method: "POST",
+			headers: internalHeaders,
+			body: JSON.stringify({ protocol_version: 1, user_id: userId, device_id: "missing", name: "Nope" }),
+		});
+		expect(missing.status).toBe(404);
+	});
+
+	it("fails closed on internal auth and rejects contract extensions", async () => {
+		const denied = await SELF.fetch(`${base}/internal/v1/sync/metadata`, {
+			method: "POST",
+			headers: { Authorization: "Bearer wrong", "Content-Type": "application/json" },
+			body: JSON.stringify({ protocol_version: 1, user_id: "user" }),
+		});
+		expect(denied.status).toBe(401);
+
+		const extended = await SELF.fetch(`${base}/internal/v1/sync/metadata`, {
+			method: "POST",
+			headers: internalHeaders,
+			body: JSON.stringify({ protocol_version: 1, user_id: "user", include_content_counts: true }),
+		});
+		expect(extended.status).toBe(400);
+	});
+});
+
+describe("per-user device admission bound", () => {
+	const base = "https://sync-hub.test";
+	const internalHeaders = {
+		Authorization: "Bearer test-projector-secret",
+		"Content-Type": "application/json",
+	};
+
+	function clientHeaders(userId: string, deviceId?: string, deviceName?: string): Record<string, string> {
+		return {
+			Authorization: `Bearer valid-for:${userId}`,
+			"X-User-Id": userId,
+			...(deviceId === undefined ? {} : { "X-Device-Id": deviceId }),
+			...(deviceName === undefined ? {} : { "X-Device-Name": deviceName }),
+		};
+	}
+
+	async function metadata(userId: string): Promise<{
+		devices: Array<{ device_id: string; name: string | null }>;
+		head_seq: string;
+	}> {
+		const response = await SELF.fetch(`${base}/internal/v1/sync/metadata`, {
+			method: "POST",
+			headers: internalHeaders,
+			body: JSON.stringify({ protocol_version: 1, user_id: userId }),
+		});
+		expect(response.status).toBe(200);
+		return response.json();
+	}
+
+	it("direct status refreshes known devices but never admits an unknown probe", async () => {
+		const userId = "device-status-direct-read-only";
+		const stub = hub(userId);
+
+		expect(status(await stub.getStatus("probe-only", "Must Not Persist")).device_count).toBe(0);
+		expect((await metadata(userId)).devices).toEqual([]);
+
+		changes(await stub.getChanges("known-device", "0", 500));
+		expect(status(await stub.getStatus("known-device", "Known Name")).device_count).toBe(1);
+		expect(await metadata(userId)).toMatchObject({
+			devices: [{ device_id: "known-device", name: "Known Name" }],
+		});
+
+		expect(status(await stub.getStatus("another-probe", "Still Not Persisted")).device_count).toBe(1);
+		expect((await metadata(userId)).devices.map((device) => device.device_id)).toEqual(["known-device"]);
+	});
+
+	it("concurrent status probes create zero devices and cannot exhaust admission", async () => {
+		const userId = "device-cap-concurrent";
+		const probes = await Promise.all(Array.from({ length: 80 }, (_, index) => {
+			const device = `device-${String(index).padStart(2, "0")}`;
+			return SELF.fetch(`${base}/v1/sync/status`, {
+				headers: clientHeaders(userId, device, `Test ${index}`),
+			});
+		}));
+		expect(probes.every((response) => response.status === 200)).toBe(true);
+		expect((await metadata(userId)).devices).toEqual([]);
+
+		const admissions = await Promise.all(Array.from({ length: 80 }, (_, index) => {
+			const device = `admitted-${String(index).padStart(2, "0")}`;
+			return SELF.fetch(`${base}/v1/sync/changes?since=0`, {
+				headers: clientHeaders(userId, device, `Admitted ${index}`),
+			});
+		}));
+		const accepted = admissions.filter((response) => response.status === 200);
+		const rejected = admissions.filter((response) => response.status === 409);
+		expect(accepted).toHaveLength(MAX_DEVICES_PER_USER);
+		expect(rejected).toHaveLength(80 - MAX_DEVICES_PER_USER);
+		for (const response of rejected) expect(await response.json()).toEqual({ error: DEVICE_LIMIT_ERROR });
+
+		const state = await metadata(userId);
+		expect(state.devices).toHaveLength(MAX_DEVICES_PER_USER);
+		expect(new Set(state.devices.map((device) => device.device_id)).size).toBe(MAX_DEVICES_PER_USER);
+		expect(state.devices.every((device) => device.name?.startsWith("Admitted "))).toBe(true);
+
+		const afterCapProbes = await Promise.all(Array.from({ length: 80 }, (_, index) =>
+			SELF.fetch(`${base}/v1/sync/status`, {
+				headers: clientHeaders(userId, `post-cap-probe-${index}`),
+			})
+		));
+		expect(afterCapProbes.every((response) => response.status === 200)).toBe(true);
+		expect((await metadata(userId)).devices).toHaveLength(MAX_DEVICES_PER_USER);
+	});
+
+	it("keeps existing devices writable/readable while new admitting paths are rejected at the cap", async () => {
+		const userId = "device-cap-http-paths";
+		for (let index = 0; index < MAX_DEVICES_PER_USER; index++) {
+			const response = await SELF.fetch(`${base}/v1/sync/changes?since=0`, {
+				headers: clientHeaders(userId, `device-${index}`, `Named ${index}`),
+			});
+			expect(response.status).toBe(200);
+		}
+
+		const existingStatus = await SELF.fetch(`${base}/v1/sync/status`, {
+			headers: clientHeaders(userId, "device-0", "Changed by client"),
+		});
+		expect(existingStatus.status).toBe(200);
+
+		const readOnlyNewStatus = await SELF.fetch(`${base}/v1/sync/status`, {
+			headers: clientHeaders(userId, "device-new"),
+		});
+		expect(readOnlyNewStatus.status).toBe(200);
+
+		const rejectedPull = await SELF.fetch(`${base}/v1/sync/changes?since=0`, {
+			headers: clientHeaders(userId, "device-pull-new"),
+		});
+		expect(rejectedPull.status).toBe(409);
+		expect(await rejectedPull.json()).toEqual({ error: DEVICE_LIMIT_ERROR });
+
+		const rejectedPush = await SELF.fetch(`${base}/v1/sync/ops`, {
+			method: "POST",
+			headers: { ...clientHeaders(userId, "device-push-new"), "Content-Type": "application/json" },
+			body: JSON.stringify({
+				protocol_version: 2,
+				ops: [await observationOp("1", "1", "device-push-new")],
+			}),
+		});
+		expect(rejectedPush.status).toBe(409);
+		expect(await rejectedPush.json()).toEqual({ error: DEVICE_LIMIT_ERROR });
+
+		const acceptedPush = await SELF.fetch(`${base}/v1/sync/ops`, {
+			method: "POST",
+			headers: { ...clientHeaders(userId, "device-0"), "Content-Type": "application/json" },
+			body: JSON.stringify({
+				protocol_version: 2,
+				ops: [await observationOp("1", "1", "device-0")],
+			}),
+		});
+		expect(acceptedPush.status).toBe(200);
+		const acceptedPull = await SELF.fetch(`${base}/v1/sync/changes?since=0`, {
+			headers: clientHeaders(userId, "device-1"),
+		});
+		expect(acceptedPull.status).toBe(200);
+		expect((await acceptedPull.json() as { ops: unknown[] }).ops).toHaveLength(1);
+
+		const readOnlyStatus = await SELF.fetch(`${base}/v1/sync/status`, {
+			headers: clientHeaders(userId),
+		});
+		expect(readOnlyStatus.status).toBe(200);
+		const unknownRename = await SELF.fetch(`${base}/internal/v1/sync/device-name`, {
+			method: "POST",
+			headers: internalHeaders,
+			body: JSON.stringify({
+				protocol_version: 1,
+				user_id: userId,
+				device_id: "unknown-rename",
+				name: "Must Not Exist",
+			}),
+		});
+		expect(unknownRename.status).toBe(404);
+
+		const state = await metadata(userId);
+		expect(state.head_seq).toBe("1");
+		expect(state.devices).toHaveLength(MAX_DEVICES_PER_USER);
+		expect(state.devices.find((device) => device.device_id === "device-0")?.name).toBe("Named 0");
+		expect(state.devices.some((device) => device.device_id === "unknown-rename")).toBe(false);
 	});
 });

@@ -504,8 +504,7 @@ describe('SessionStore migrations', () => {
     // anyone reverts the predicate.
     const db = new Database(':memory:');
     try {
-      const missingStatePath = '/nonexistent/claude-mem-cloud-sync-state.json';
-      new SessionStore(db, { cloudSyncStatePath: missingStatePath });
+      new SessionStore(db);
 
       db.prepare(`
         INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
@@ -520,7 +519,7 @@ describe('SessionStore migrations', () => {
 
       // A second construction over the fully migrated DB must be a no-op for
       // session_summaries.
-      new SessionStore(db, { cloudSyncStatePath: missingStatePath });
+      new SessionStore(db);
 
       const row = db.prepare(`
         SELECT synced_at, origin_device_id, origin_local_id, sync_rev

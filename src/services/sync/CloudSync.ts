@@ -5,8 +5,9 @@
 // trailing debounce coalesces bursts into one `flush()`, which drains
 // `WHERE synced_at IS NULL AND origin_device_id IS NULL` in batches, POSTs to
 // the per-user sync hub (workers/sync-hub), and stamps rows on ack. That
-// single mechanism IS live sync, backfill, offline catch-up, and retry — no
-// second process, no cursor files. Mutation ops (custom title, prompt→session
+// single mechanism handles post-launch live sync, offline catch-up, and retry
+// — no historical/pre-launch backfill, second process, or cursor files.
+// Mutation ops (custom title, prompt→session
 // repair, project remaps) ride the same flush from the `sync_outbox` table
 // (migration v42). Already-frozen content (especially tombstones) drains
 // first; mutations drain before newly materialized row snapshots so title
@@ -30,7 +31,7 @@
 // Acked mutation ops are DELETEd from sync_outbox (queue entries, not data).
 //
 // SIZE CONTRACT: each canonical body is at most 256,000 UTF-8 bytes and each
-// request is packed below 4,000,000 bytes / 500 ops. Invalid historical rows
+// request is packed below 4,000,000 bytes / 500 ops. Invalid queued rows
 // are moved to a durable dead-letter with their exact rejection reason so a
 // poison row cannot wedge later work. Mutation semantics are never clamped or
 // rewritten: all bounded fields are validated in UTF-8 bytes before append.
@@ -46,7 +47,7 @@ import { randomUUID } from 'crypto';
 import { logger } from '../../utils/logger.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import {
   assertCanonicalDecimal,
   buildContentOperation,
@@ -65,6 +66,15 @@ const BATCH = 200;
 const MAX_BODY_BYTES = 4_000_000;
 // Hub cap: ≤500 ops per POST /v1/sync/ops request.
 const MAX_OPS_PER_PUSH = 500;
+const EMPTY_PUSH_REQUEST_BYTES = Buffer.byteLength(
+  JSON.stringify({ protocol_version: 2, ops: [] }),
+  'utf8',
+);
+
+/** Exact encoded request bytes from the sum of serialized op wrapper bytes. */
+function pushRequestBytes(opBytes: number, opCount: number): number {
+  return EMPTY_PUSH_REQUEST_BYTES + opBytes + Math.max(0, opCount - 1);
+}
 type LocalRow = Record<string, unknown> & { id: string; sync_rev: string };
 type OpBody = Record<string, unknown>;
 
@@ -306,8 +316,6 @@ export interface CloudSyncOptions {
   fetchImpl?: typeof fetch;
   /** settings.json path where a newly resolved device id is persisted. */
   settingsPath?: string;
-  /** Legacy standalone-client state file (~/.claude-mem/cloud-sync-state.json). */
-  legacyStatePath?: string;
   /** Trailing debounce for notify() bursts. */
   debounceMs?: number;
   /**
@@ -331,6 +339,14 @@ export interface CloudSyncStatus {
   quarantine: { count: number; latestReason: string | null };
   lastFlushAt: number | null;
   lastError: string | null;
+  hub: {
+    checkedAt: number | null;
+    reachable: boolean | null;
+    epoch: string | null;
+    headSeq: string | null;
+    projectedSeq: string | null;
+    error: string | null;
+  };
 }
 
 export class CloudSync {
@@ -341,7 +357,6 @@ export class CloudSync {
   private readonly deviceName: string;
   private readonly fetchImpl: typeof fetch;
   private readonly settingsPath: string;
-  private readonly legacyStatePath: string;
   private readonly debounceMs: number;
   private readonly fastDebounceMs: number;
   private readonly backoffInitialMs: number;
@@ -358,6 +373,14 @@ export class CloudSync {
   private stopped = false;
   private lastFlushAt: number | null = null;
   private lastError: string | null = null;
+  private hubStatus: CloudSyncStatus['hub'] = {
+    checkedAt: null,
+    reachable: null,
+    epoch: null,
+    headSeq: null,
+    projectedSeq: null,
+    error: null,
+  };
   /** True while SyncClient's advisory socket is live (setFastDebounce). */
   private fastDebounce = false;
   /**
@@ -380,15 +403,13 @@ export class CloudSync {
     this.db = db;
     this.token = settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN ?? '';
     this.userId = settings.CLAUDE_MEM_CLOUD_SYNC_USER_ID ?? '';
-    // Hard cutover (plan Phase 3 task 5, open decision 2): the hub URL has NO
-    // default. Empty ⇒ sync is OFF entirely — there is no legacy per-kind
-    // fallback lane.
+    // Launch contract: the Hub URL has no default. Empty means sync is off;
+    // there is no application-API or per-kind fallback lane.
     this.hubUrl = (settings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL ?? '').trim().replace(/\/+$/, '');
     // Human-readable device label for the dashboard's Devices panel.
     this.deviceName = (settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME || hostname() || '').slice(0, 80);
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.settingsPath = options.settingsPath ?? USER_SETTINGS_PATH;
-    this.legacyStatePath = options.legacyStatePath ?? paths.cloudSyncState();
     this.debounceMs = options.debounceMs ?? 1_500;
     this.fastDebounceMs = options.fastDebounceMs ?? 250;
     this.backoffInitialMs = options.backoffInitialMs ?? 30_000;
@@ -439,8 +460,9 @@ export class CloudSync {
   }
 
   /**
-   * Kick one flush (non-blocking). This IS backfill: a never-synced install
-   * simply has everything `synced_at IS NULL`.
+   * Kick one non-blocking catch-up flush for eligible post-launch writes.
+   * The v47 launch baseline is deliberately stamped/excluded and is not a
+   * historical corpus to upload.
    */
   start(): void {
     if (!this.isActive()) {
@@ -450,7 +472,7 @@ export class CloudSync {
       });
       return;
     }
-    logger.info('CLOUD_SYNC', 'Cloud sync active — kicking startup drain', {
+    logger.info('CLOUD_SYNC', 'Cloud sync active — kicking post-launch catch-up drain', {
       hubUrl: this.hubUrl,
       deviceId: this.deviceId,
       deviceName: this.deviceName,
@@ -536,7 +558,90 @@ export class CloudSync {
       quarantine: this.quarantineStatus(),
       lastFlushAt: this.lastFlushAt,
       lastError: this.lastError,
+      hub: { ...this.hubStatus },
     };
+  }
+
+  /**
+   * Status for the local `/api/sync/status` route. Even with an empty queue,
+   * authenticate directly against SyncHub so "nothing to upload" cannot be
+   * mistaken for a working connection. This is a read-only Hub status GET:
+   * it never appends an operation or advances a client cursor.
+   */
+  async statusWithHubProbe(): Promise<CloudSyncStatus> {
+    if (!this.stopped && this.isActive()) {
+      await this.probeHubStatus();
+    }
+    return this.status();
+  }
+
+  private async probeHubStatus(): Promise<void> {
+    let checkedAt = Date.now();
+    try {
+      const response = await this.fetchImpl(`${this.hubUrl}/v1/sync/status`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${this.token}`,
+          'X-User-Id': this.userId,
+          'X-Device-Id': this.deviceId,
+          ...(this.deviceName ? { 'X-Device-Name': this.deviceName } : {}),
+        },
+        signal: AbortSignal.timeout(this.requestTimeoutMs),
+      });
+      checkedAt = Date.now();
+      const syncMode = response.headers.get('X-Sync-Mode');
+      if (syncMode !== null || response.ok) this.emitSyncMode(syncMode);
+      if (!response.ok) {
+        const body = (await response.text().catch(() => '')).slice(0, 200);
+        throw new Error(`sync hub status ${response.status}: ${body}`);
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = await response.json();
+      } catch {
+        throw new Error('sync hub status: response is not JSON');
+      }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('sync hub status: response must be an object');
+      }
+      const record = parsed as Record<string, unknown>;
+      if (record.protocol_version !== 2) {
+        throw new Error('sync hub status: response requires protocol_version 2');
+      }
+      if (
+        typeof record.epoch !== 'string'
+        || typeof record.head_seq !== 'string'
+        || typeof record.projected_seq !== 'string'
+      ) {
+        throw new Error('sync hub status: response requires decimal-string epoch/head_seq/projected_seq');
+      }
+      const epoch = assertCanonicalDecimal(record.epoch, { positive: true });
+      const headSeq = assertCanonicalDecimal(record.head_seq);
+      const projectedSeq = assertCanonicalDecimal(record.projected_seq);
+      if (compareCanonicalDecimals(projectedSeq, headSeq) > 0) {
+        throw new Error('sync hub status: projected_seq exceeds head_seq');
+      }
+      this.hubStatus = {
+        checkedAt,
+        reachable: true,
+        epoch,
+        headSeq,
+        projectedSeq,
+        error: null,
+      };
+    } catch (error) {
+      const raw = error instanceof Error ? error.message : String(error);
+      const safe = this.token === '' ? raw : raw.split(this.token).join('[REDACTED]');
+      this.hubStatus = {
+        checkedAt,
+        reachable: false,
+        epoch: null,
+        headSeq: null,
+        projectedSeq: null,
+        error: safe,
+      };
+    }
   }
 
   /**
@@ -630,7 +735,10 @@ export class CloudSync {
       let bytes = 0;
       for (const row of rows) {
         const size = Buffer.byteLength(JSON.stringify(row), 'utf8');
-        if (batch.length > 0 && (batch.length >= MAX_OPS_PER_PUSH || bytes + size > MAX_BODY_BYTES)) {
+        if (batch.length > 0 && (
+          batch.length >= MAX_OPS_PER_PUSH
+          || pushRequestBytes(bytes + size, batch.length + 1) > MAX_BODY_BYTES
+        )) {
           await this.sendOps(batch);
           if (this.stopped) return;
           batch = [];
@@ -708,7 +816,10 @@ export class CloudSync {
             `).run(op.body, op.operation_sha256, row.id);
           }
           const size = Buffer.byteLength(JSON.stringify(op), 'utf8');
-          if (buf.length > 0 && (bufBytes + size > MAX_BODY_BYTES || buf.length >= MAX_OPS_PER_PUSH)) {
+          if (buf.length > 0 && (
+            pushRequestBytes(bufBytes + size, buf.length + 1) > MAX_BODY_BYTES
+            || buf.length >= MAX_OPS_PER_PUSH
+          )) {
             await send();
             if (this.stopped) return;
           }
@@ -825,6 +936,10 @@ export class CloudSync {
   }
 
   private async pushOps(ops: WireOp[]): Promise<PushResponse> {
+    const requestBody = JSON.stringify({ protocol_version: 2, ops });
+    if (Buffer.byteLength(requestBody, 'utf8') > MAX_BODY_BYTES) {
+      throw new Error(`sync hub push invariant: request exceeds ${MAX_BODY_BYTES} encoded bytes`);
+    }
     const res = await this.fetchImpl(`${this.hubUrl}/v1/sync/ops`, {
       method: 'POST',
       headers: {
@@ -834,7 +949,7 @@ export class CloudSync {
         'X-Device-Id': this.deviceId,
         ...(this.deviceName ? { 'X-Device-Name': this.deviceName } : {}),
       },
-      body: JSON.stringify({ protocol_version: 2, ops }),
+      body: requestBody,
       signal: AbortSignal.timeout(this.requestTimeoutMs),
     });
     // Mode hint BEFORE the ok-check: the kill-switch header rides error
@@ -1301,50 +1416,13 @@ export class CloudSync {
   // -------------------------------------------------------------------------
 
   /**
-   * Resolve this install's stable device id, in priority order:
-   *   1. CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID from settings (already resolved once);
-   *   2. the legacy standalone client's cloud-sync-state.json deviceId;
-   *   3. a freshly minted randomUUID().
-   *
-   * CRITICAL: never mint a new id while a legacy state file exists — the hub
-   * keys ops on (origin_device, kind, origin_id, rev), so a new id forks
-   * every previously pushed row into a duplicate entity. If the legacy file
-   * is unreadable, fail closed (sync disabled) rather than guess.
+   * Resolve this launch client's stable device id from settings, or mint and
+   * immediately persist one. There is no standalone-client state to adopt.
    */
   private resolveDeviceId(configuredId: string): string {
     if (configuredId) return configuredId;
 
-    if (existsSync(this.legacyStatePath)) {
-      try {
-        const parsed = parseJsonWithBom<{ deviceId?: unknown }>(readFileSync(this.legacyStatePath, 'utf-8'));
-        const legacyId = parsed && typeof parsed === 'object' ? parsed.deviceId : undefined;
-        if (typeof legacyId !== 'string' || legacyId === '') {
-          throw new Error('legacy cloud-sync state has no valid deviceId');
-        }
-        try {
-          this.persistDeviceId(legacyId);
-        } catch (persistError) {
-          // Adoption survives a failed persist: the legacy file still holds
-          // the id, so the next start re-adopts the SAME id — no fork risk.
-          logger.warn('CLOUD_SYNC', 'Adopted legacy device id but failed to persist it to settings; will re-adopt on next start', {
-            settingsPath: this.settingsPath,
-          }, persistError instanceof Error ? persistError : new Error(String(persistError)));
-        }
-        logger.info('CLOUD_SYNC', 'Adopted device id from legacy cloud-sync state', {
-          deviceId: legacyId,
-          statePath: this.legacyStatePath,
-        });
-        return legacyId;
-      } catch (error) {
-        this.lastError = 'legacy cloud-sync state unreadable — sync disabled to avoid forking device identity';
-        logger.error('CLOUD_SYNC', 'Legacy cloud-sync state exists but is unusable; refusing to mint a new device id (fix or delete the file)', {
-          statePath: this.legacyStatePath,
-        }, error instanceof Error ? error : new Error(String(error)));
-        return '';
-      }
-    }
-
-    // First run on a fresh install: mint and persist immediately, so a later
+    // First run: mint and persist immediately, so a later
     // transient failure can't mint a different one and fork device identity.
     const minted = randomUUID();
     try {

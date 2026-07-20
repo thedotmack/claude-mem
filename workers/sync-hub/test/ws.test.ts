@@ -1,6 +1,13 @@
 import { env, evictDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import type { PushOutcome, PushResult } from "../src/do/SyncHub";
+import {
+	DEVICE_LIMIT_ERROR,
+	MAX_DEVICES_PER_USER,
+	type ChangesOutcome,
+	type ChangesResult,
+	type PushOutcome,
+	type PushResult,
+} from "../src/do/SyncHub";
 import { KILL_SWITCH_KEY } from "../src/kill-switch";
 import { observationOp } from "./content-v2-helpers";
 
@@ -32,6 +39,11 @@ function headers(userId: string, deviceId: string): Record<string, string> {
 }
 
 function ok(outcome: PushOutcome): PushResult {
+	if ("refused" in outcome) throw new Error(`unexpected refusal: ${outcome.error}`);
+	return outcome;
+}
+
+function changes(outcome: ChangesOutcome): ChangesResult {
 	if ("refused" in outcome) throw new Error(`unexpected refusal: ${outcome.error}`);
 	return outcome;
 }
@@ -79,6 +91,24 @@ describe("upgrade and auth", () => {
 		expect(unauthenticated.status).toBe(401);
 		const notUpgrade = await SELF.fetch(`${base}/v1/sync/ws`, { headers: headers("user-ws-426", "dev-a") });
 		expect(notUpgrade.status).toBe(426);
+	});
+
+	it("rejects a 65th WebSocket device but still upgrades an existing device", async () => {
+		const user = "user-ws-device-cap";
+		for (let index = 0; index < MAX_DEVICES_PER_USER; index++) {
+			const response = await SELF.fetch(`${base}/v1/sync/changes?since=0`, {
+				headers: headers(user, `dev-${index}`),
+			});
+			expect(response.status).toBe(200);
+		}
+		const rejected = await SELF.fetch(`${base}/v1/sync/ws`, {
+			headers: { ...headers(user, "dev-new"), Upgrade: "websocket" },
+		});
+		expect(rejected.status).toBe(409);
+		expect(await rejected.json()).toEqual({ error: DEVICE_LIMIT_ERROR });
+
+		const existing = await connect(user, "dev-0");
+		existing.ws.close();
 	});
 });
 
@@ -154,7 +184,7 @@ describe("canonical advisory fan-out", () => {
 		replica.ws.close();
 		const result = ok(await stub.pushOps("dev-a", [await observationOp("2")]));
 		expect(result.acked).toHaveLength(1);
-		expect((await stub.getChanges("dev-c", "0", 500)).ops).toHaveLength(2);
+		expect(changes(await stub.getChanges("dev-c", "0", 500)).ops).toHaveLength(2);
 	});
 });
 

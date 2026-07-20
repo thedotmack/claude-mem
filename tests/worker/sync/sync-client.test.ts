@@ -79,6 +79,7 @@ describe('SyncClient', () => {
       token: 'test-token-1234',
       userId: 'user-42',
       deviceId: SELF,
+      deviceName: 'test laptop',
       fetchImpl,
       // This suite covers the HTTP lanes exactly as they behave with the
       // advisory socket absent (prime directive #2: deleting the socket path
@@ -108,7 +109,7 @@ describe('SyncClient', () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-sync-client-'));
     db = new Database(':memory:');
-    new SessionStore(db, { cloudSyncStatePath: join(tempDir, 'no-legacy.json') });
+    new SessionStore(db);
     apply = new SyncApply(db, { deviceId: SELF });
     clients = [];
   });
@@ -133,6 +134,7 @@ describe('SyncClient', () => {
     expect(state.requests[0].headers['Authorization']).toBe('Bearer test-token-1234');
     expect(state.requests[0].headers['X-User-Id']).toBe('user-42');
     expect(state.requests[0].headers['X-Device-Id']).toBe(SELF);
+    expect(state.requests[0].headers['X-Device-Name']).toBe('test laptop');
   });
 
   it('loops while more=true, presenting the advanced cursor each page', async () => {

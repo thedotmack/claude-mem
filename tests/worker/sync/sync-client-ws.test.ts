@@ -147,6 +147,7 @@ describe('SyncClient advisory WebSocket', () => {
       token: 'test-token-1234',
       userId: 'user-42',
       deviceId: SELF,
+      deviceName: 'test laptop',
       fetchImpl,
       webSocketImpl: ws,
       // Slow poll tiers by default: WS behavior must not hide behind polls.
@@ -176,7 +177,7 @@ describe('SyncClient advisory WebSocket', () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-sync-ws-'));
     db = new Database(':memory:');
-    new SessionStore(db, { cloudSyncStatePath: join(tempDir, 'no-legacy.json') });
+    new SessionStore(db);
     apply = new SyncApply(db, { deviceId: SELF });
     clients = [];
   });
@@ -187,7 +188,7 @@ describe('SyncClient advisory WebSocket', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('connects to the ws URL with the exact auth header trio', async () => {
+  it('connects to the ws URL with auth and device metadata headers', async () => {
     const { impl } = makeHub({ epoch: '1' });
     const { ctor, sockets } = makeWsFactory();
     makeClient(impl, ctor).start();
@@ -199,6 +200,7 @@ describe('SyncClient advisory WebSocket', () => {
       'Authorization': 'Bearer test-token-1234',
       'X-User-Id': 'user-42',
       'X-Device-Id': SELF,
+      'X-Device-Name': 'test laptop',
     });
   });
 

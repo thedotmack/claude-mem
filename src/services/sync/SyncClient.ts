@@ -138,6 +138,8 @@ export interface SyncClientOptions {
   userId: string;
   /** MUST be the CloudSync-resolved device id (single identity source). */
   deviceId: string;
+  /** Human-readable Hub device label (CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME). */
+  deviceName?: string;
   /** Injectable for tests; defaults to globalThis.fetch. */
   fetchImpl?: typeof fetch;
   /** Poll interval while a session is active. */
@@ -203,6 +205,7 @@ export class SyncClient {
   private readonly token: string;
   private readonly userId: string;
   private readonly deviceId: string;
+  private readonly deviceName: string;
   private readonly fetchImpl: typeof fetch;
   private readonly activePollMs: number;
   private readonly idlePollMs: number;
@@ -262,6 +265,7 @@ export class SyncClient {
     this.token = options.token ?? '';
     this.userId = options.userId ?? '';
     this.deviceId = options.deviceId;
+    this.deviceName = (options.deviceName ?? '').trim().slice(0, 80);
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.activePollMs = options.activePollMs ?? 30_000;
     this.idlePollMs = options.idlePollMs ?? 300_000;
@@ -523,6 +527,7 @@ export class SyncClient {
               'Authorization': `Bearer ${this.token}`,
               'X-User-Id': this.userId,
               'X-Device-Id': this.deviceId,
+              ...(this.deviceName ? { 'X-Device-Name': this.deviceName } : {}),
             },
             // Plain short request — never a held connection (directive #4).
             signal: AbortSignal.timeout(Math.max(1, Math.min(this.requestTimeoutMs, remaining))),
@@ -608,6 +613,7 @@ export class SyncClient {
           'Authorization': `Bearer ${this.token}`,
           'X-User-Id': this.userId,
           'X-Device-Id': this.deviceId,
+          ...(this.deviceName ? { 'X-Device-Name': this.deviceName } : {}),
         },
       });
       this.socket = ws;

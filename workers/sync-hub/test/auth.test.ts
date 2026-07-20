@@ -151,7 +151,7 @@ describe("token-verdict cache behavior", () => {
 		};
 
 		const result = await authenticateRequest(request, authEnv, dependencies);
-		expect(result).toEqual({ ok: true, userId, deviceId: "dev-auth" });
+		expect(result).toEqual({ ok: true, userId, deviceId: "dev-auth", deviceName: null });
 		expect(verifyCalls).toBe(1);
 		expect(putCalls).toBe(1);
 		expect(logged).toEqual(["get"]);
@@ -177,7 +177,7 @@ describe("token-verdict cache behavior", () => {
 		};
 
 		const result = await authenticateRequest(request, authEnv, dependencies);
-		expect(result).toEqual({ ok: true, userId, deviceId: "dev-auth" });
+		expect(result).toEqual({ ok: true, userId, deviceId: "dev-auth", deviceName: null });
 		expect(verifyCalls).toBe(1);
 		expect(logged).toEqual(["put"]);
 	});
@@ -209,6 +209,7 @@ describe("token-verdict cache behavior", () => {
 			ok: true,
 			userId,
 			deviceId: "dev-auth",
+			deviceName: null,
 		});
 		expect(ttlWrites).toEqual([60]);
 		revoked = true;

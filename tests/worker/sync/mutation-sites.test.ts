@@ -66,7 +66,7 @@ describe('mutation sites', () => {
 
     beforeEach(() => {
       db = new Database(':memory:');
-      store = new SessionStore(db, { cloudSyncStatePath: join(tempDir, 'none.json') });
+      store = new SessionStore(db);
     });
 
     afterEach(() => db.close());
@@ -119,7 +119,7 @@ describe('mutation sites', () => {
 
     beforeEach(() => {
       db = new Database(':memory:');
-      store = new SessionStore(db, { cloudSyncStatePath: join(tempDir, 'none.json') });
+      store = new SessionStore(db);
       db.prepare(`
         INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, platform_source, started_at, started_at_epoch, status)
         VALUES ('sess-1', NULL, 'proj-x', 'claude', ?, 1751234567000, 'active')
@@ -211,7 +211,7 @@ describe('mutation sites', () => {
 
     beforeEach(() => {
       dbPath = join(tempDir, 'claude-mem.db');
-      const store = new SessionStore(dbPath, { cloudSyncStatePath: join(tempDir, 'none.json') });
+      const store = new SessionStore(dbPath);
       store.db.prepare(`
         INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
         VALUES ('sess-1', 'mem-1', 'parent/wt', ?, 1751234567000, 'active')
@@ -332,7 +332,7 @@ describe('mutation sites', () => {
     const dataDir = join(tempDir, 'data');
     mkdirSync(dataDir);
     const dbPath = join(dataDir, 'claude-mem.db');
-    const store = new SessionStore(dbPath, { cloudSyncStatePath: join(tempDir, 'none.json') });
+    const store = new SessionStore(dbPath);
     store.db.prepare(`
       INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
       VALUES ('sess-1', 'mem-1', 'mainrepo/wt', ?, 1751234567000, 'active')
@@ -383,7 +383,7 @@ describe('mutation sites', () => {
     const dataDir = join(tempDir, 'data');
     mkdirSync(dataDir);
     const dbPath = join(dataDir, 'claude-mem.db');
-    const store = new SessionStore(dbPath, { cloudSyncStatePath: join(tempDir, 'none.json') });
+    const store = new SessionStore(dbPath);
     store.db.prepare(`
       INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
       VALUES ('sess-1', 'mem-1', 'stale-name', ?, 1751234567000, 'active')

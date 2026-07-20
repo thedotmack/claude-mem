@@ -525,6 +525,7 @@ export class WorkerService implements WorkerRef {
           token: settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN,
           userId: settings.CLAUDE_MEM_CLOUD_SYNC_USER_ID,
           deviceId: pullDeviceId,
+          deviceName: settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME,
           isSessionActive: () => this.sessionManager.getActiveSessionCount() > 0,
           // Advisory WebSocket (plan Phase 4): enabled by default alongside
           // the hub URL; CLAUDE_MEM_CLOUD_SYNC_WS='false' pins HTTP-only.
@@ -646,9 +647,10 @@ export class WorkerService implements WorkerRef {
       }
 
       // Cloud sync startup drain (non-blocking). The database is the queue:
-      // everything unsynced is simply `synced_at IS NULL`, so this one kick
-      // IS backfill, offline catch-up, and retry. Null when no token/user
-      // id/hub URL is configured (DatabaseManager gates construction).
+      // eligible post-launch writes remain `synced_at IS NULL`, so this one
+      // kick handles catch-up and retry without migrating the pre-launch
+      // baseline. Null when no token/user id/hub URL is configured
+      // (DatabaseManager gates construction).
       this.dbManager.getCloudSync()?.start();
       // Pull loop start (plan Phase 3 task 3): immediate catch-up pull, then
       // 30 s active / 5 min idle / suspended after 1 h without sessions.

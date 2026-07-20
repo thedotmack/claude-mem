@@ -18,7 +18,7 @@ describe('DataRoutes synchronized delete APIs', () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'cmem-delete-routes-'));
     db = new Database(':memory:');
-    store = new SessionStore(db, { cloudSyncStatePath: join(tempDir, 'missing-state.json') });
+    store = new SessionStore(db);
     sync = new CloudSync(db, {
       CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'test-token',
       CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'test-user',
@@ -27,7 +27,6 @@ describe('DataRoutes synchronized delete APIs', () => {
       CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: 'test',
     }, {
       settingsPath: join(tempDir, 'settings.json'),
-      legacyStatePath: join(tempDir, 'missing-state.json'),
       fetchImpl: mock(async () => new Response('{}', { status: 500 })) as typeof fetch,
     });
 

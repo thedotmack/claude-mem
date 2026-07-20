@@ -70,7 +70,6 @@ export interface SettingsDefaults {
   // entirely (the old per-kind cmem.ai lane was deleted in the hub cutover).
   CLAUDE_MEM_CLOUD_SYNC_TOKEN: string;
   CLAUDE_MEM_CLOUD_SYNC_USER_ID: string;
-  CLAUDE_MEM_CLOUD_SYNC_URL: string;   // legacy per-kind endpoint base — unused since the hub cutover, kept so existing settings files round-trip
   CLAUDE_MEM_CLOUD_SYNC_HUB_URL: string;
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: string;
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: string;
@@ -162,9 +161,8 @@ export class SettingsDefaultsManager {
     // Worker-native cloud sync: credentials come from cmem.ai → Connect.
     CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
     CLAUDE_MEM_CLOUD_SYNC_USER_ID: '',
-    CLAUDE_MEM_CLOUD_SYNC_URL: 'https://cmem.ai/api/pro/sync',  // legacy, unused since the hub cutover
-    CLAUDE_MEM_CLOUD_SYNC_HUB_URL: '',  // sync-hub base URL (e.g. https://sync.cmem.ai). Empty = sync OFF (hard cutover, plan Phase 3 task 5)
-    CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',      // Resolved at first CloudSync start (legacy state file → adopt; else randomUUID), then persisted back here
+    CLAUDE_MEM_CLOUD_SYNC_HUB_URL: '',  // sync-hub base URL (e.g. https://sync.cmem.ai). Empty = sync OFF
+    CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',      // Minted at first CloudSync start, then persisted back here
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: hostname(),  // Human-readable label for the cmem.ai Devices panel
     CLAUDE_MEM_CLOUD_SYNC_WS: 'true',  // Advisory WebSocket speed layer (plan Phase 4). 'false' = HTTP polling only — sync stays fully correct, just poll-latency (prime directive #2)
     CLAUDE_MEM_TELEGRAM_ENABLED: 'true',

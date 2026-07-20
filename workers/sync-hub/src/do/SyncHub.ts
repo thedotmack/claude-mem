@@ -25,6 +25,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_PAGE = 500;
 const ADVANCE_MAX_OPS = 100;
 const ADVANCE_MAX_FRAME_BYTES = 262_144;
+export const MAX_DEVICES_PER_USER = 64;
+export const DEVICE_LIMIT_ERROR = "device_limit_exceeded";
 /** 45s Hub abort < 60s Pro platform ceiling < 90s fencing lease. */
 export const PROJECTION_LEASE_MS = 90_000;
 const encoder = new TextEncoder();
@@ -45,12 +47,12 @@ export interface PushResult {
 	head_seq: string;
 }
 
-export interface PushRefusal {
+export interface HubRefusal {
 	refused: true;
 	error: string;
 }
 
-export type PushOutcome = PushResult | PushRefusal;
+export type PushOutcome = PushResult | HubRefusal;
 
 export interface ChangeOp {
 	seq: string;
@@ -67,6 +69,8 @@ export interface ChangesResult {
 	more: boolean;
 }
 
+export type ChangesOutcome = ChangesResult | HubRefusal;
+
 export interface StatusResult {
 	protocol_version: 2;
 	epoch: string;
@@ -74,6 +78,29 @@ export interface StatusResult {
 	projected_seq: string;
 	op_count: number;
 	device_count: number;
+}
+
+export type StatusOutcome = StatusResult | HubRefusal;
+
+export interface DeviceMetadata {
+	device_id: string;
+	name: string | null;
+	last_seen_at: string | null;
+	last_seen_epoch_ms: string | null;
+	last_ack_seq: string;
+	cursor_lag_ops: string;
+	connection_state: "connected" | "disconnected";
+}
+
+export interface HubMetadata {
+	protocol_version: 1;
+	user_id: string;
+	epoch: string;
+	head_seq: string;
+	projected_seq: string;
+	projection_lag_ops: string;
+	sync_health: "healthy" | "projector_lagging";
+	devices: DeviceMetadata[];
 }
 
 export interface ProjectionLease {
@@ -110,6 +137,14 @@ function invalid(message: string): Error {
 
 function projectionError(message: string): Error {
 	return new Error(`${PROJECTION_ERROR_PREFIX} ${message}`);
+}
+
+function deviceLimitError(): Error {
+	return new Error(DEVICE_LIMIT_ERROR);
+}
+
+function isDeviceLimitError(error: unknown): boolean {
+	return error instanceof Error && error.message === DEVICE_LIMIT_ERROR;
 }
 
 interface ValidatedOp {
@@ -204,6 +239,18 @@ export class SyncHub extends DurableObject<Env> {
 		}
 		const deviceId = (request.headers.get("X-Device-Id") ?? "").trim();
 		if (deviceId.length === 0) return new Response("missing X-Device-Id header", { status: 400 });
+		const deviceName = normalizeDeviceName(request.headers.get("X-Device-Name"));
+		try {
+			this.touchDevice(deviceId, deviceName);
+		} catch (error) {
+			if (isDeviceLimitError(error)) {
+				return new Response(JSON.stringify({ error: DEVICE_LIMIT_ERROR }), {
+					status: 409,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			throw error;
+		}
 		const [client, server] = Object.values(new WebSocketPair());
 		this.ctx.acceptWebSocket(server);
 		server.serializeAttachment({ device_id: deviceId });
@@ -274,7 +321,7 @@ export class SyncHub extends DurableObject<Env> {
 	// Canonical append path and client cursor reads.
 	// ---------------------------------------------------------------------
 
-	async pushOps(deviceId: string, ops: PushOp[]): Promise<PushOutcome> {
+	async pushOps(deviceId: string, ops: PushOp[], deviceName: string | null = null): Promise<PushOutcome> {
 		let rows: ValidatedOp[];
 		try {
 			if (typeof deviceId !== "string" || deviceId.length === 0) throw invalid("deviceId must be non-empty");
@@ -294,6 +341,7 @@ export class SyncHub extends DurableObject<Env> {
 			if (error instanceof Error && error.message.startsWith(INVALID_OPS_PREFIX)) {
 				return { refused: true, error: error.message };
 			}
+			if (isDeviceLimitError(error)) return { refused: true, error: DEVICE_LIMIT_ERROR };
 			throw error;
 		}
 
@@ -304,12 +352,7 @@ export class SyncHub extends DurableObject<Env> {
 		const acked: AckedOp[] = [];
 		try {
 			this.ctx.storage.transactionSync(() => {
-				sql.exec(
-					`INSERT INTO devices (device_id, last_seen) VALUES (?, ?)
-					 ON CONFLICT(device_id) DO UPDATE SET last_seen = excluded.last_seen`,
-					deviceId,
-					now,
-				);
+				this.touchDevice(deviceId, normalizeDeviceName(deviceName), now);
 				for (const row of rows) {
 					const body = row.body;
 					const head = sql.exec<HeadRow>(
@@ -387,6 +430,7 @@ export class SyncHub extends DurableObject<Env> {
 			if (error instanceof Error && error.message.startsWith(INVALID_OPS_PREFIX)) {
 				return { refused: true, error: error.message };
 			}
+			if (isDeviceLimitError(error)) return { refused: true, error: DEVICE_LIMIT_ERROR };
 			throw error;
 		}
 
@@ -394,28 +438,38 @@ export class SyncHub extends DurableObject<Env> {
 		return { acked, head_seq: this.headSeq() };
 	}
 
-	getChanges(deviceId: string, sinceSeq: string, limit = MAX_PAGE): ChangesResult {
+	getChanges(
+		deviceId: string,
+		sinceSeq: string,
+		limit = MAX_PAGE,
+		deviceName: string | null = null,
+	): ChangesOutcome {
 		if (typeof deviceId !== "string" || deviceId.length === 0) throw invalid("deviceId must be non-empty");
 		const since = assertCanonicalDecimal(sinceSeq);
 		const lim = Number.isFinite(limit) ? Math.min(MAX_PAGE, Math.max(1, Math.floor(limit))) : MAX_PAGE;
 		const head = this.headSeq();
 		const acknowledged = decimalMin(since, head);
 		const sql = this.ctx.storage.sql;
-		const existing = sql.exec<{ last_ack_seq: string }>(
-			"SELECT last_ack_seq FROM devices WHERE device_id = ?",
-			deviceId,
-		).toArray()[0];
-		const nextAck = existing && compareCanonicalDecimals(existing.last_ack_seq, acknowledged) > 0
-			? existing.last_ack_seq
-			: acknowledged;
-		sql.exec(
-			`INSERT INTO devices (device_id, last_seen, last_ack_seq) VALUES (?, ?, ?)
-			 ON CONFLICT(device_id) DO UPDATE SET last_seen=excluded.last_seen,
-			 last_ack_seq=excluded.last_ack_seq`,
-			deviceId,
-			Date.now(),
-			nextAck,
-		);
+		try {
+			this.ctx.storage.transactionSync(() => {
+				this.touchDevice(deviceId, normalizeDeviceName(deviceName));
+				const existing = sql.exec<{ last_ack_seq: string }>(
+					"SELECT last_ack_seq FROM devices WHERE device_id = ?",
+					deviceId.trim(),
+				).one();
+				const nextAck = compareCanonicalDecimals(existing.last_ack_seq, acknowledged) > 0
+					? existing.last_ack_seq
+					: acknowledged;
+				sql.exec(
+					"UPDATE devices SET last_ack_seq = ? WHERE device_id = ?",
+					nextAck,
+					deviceId.trim(),
+				);
+			});
+		} catch (error) {
+			if (isDeviceLimitError(error)) return { refused: true, error: DEVICE_LIMIT_ERROR };
+			throw error;
+		}
 		const rows = sql.exec<{
 			seq: string;
 			body: string;
@@ -453,7 +507,11 @@ export class SyncHub extends DurableObject<Env> {
 		};
 	}
 
-	getStatus(): StatusResult {
+	getStatus(deviceId: string | null = null, deviceName: string | null = null): StatusOutcome {
+		// Status is an authenticated read/probe, not device admission. A known
+		// device may refresh its display metadata, but an arbitrary X-Device-Id
+		// must not consume one of the account's 64 durable device slots.
+		if (deviceId !== null) this.touchExistingDevice(deviceId, normalizeDeviceName(deviceName));
 		const sql = this.ctx.storage.sql;
 		return {
 			protocol_version: 2,
@@ -463,6 +521,63 @@ export class SyncHub extends DurableObject<Env> {
 			op_count: sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM canonical_ops").one().n,
 			device_count: sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM devices").one().n,
 		};
+	}
+
+	getMetadata(userId: string): HubMetadata {
+		if (typeof userId !== "string" || userId.length === 0) throw invalid("user_id must be non-empty");
+		const head = this.headSeq();
+		const projected = this.projectedSeq();
+		const connected = new Set<string>();
+		for (const socket of this.ctx.getWebSockets()) {
+			try {
+				const attachment = socket.deserializeAttachment() as { device_id?: unknown } | null;
+				if (typeof attachment?.device_id === "string") connected.add(attachment.device_id);
+			} catch {}
+		}
+		const devices = this.ctx.storage.sql.exec<{
+			device_id: string;
+			name: string | null;
+			last_ack_seq: string;
+			last_seen: number | null;
+		}>(
+			`SELECT device_id, name, last_ack_seq, last_seen
+			 FROM devices
+			 ORDER BY last_seen IS NULL, last_seen DESC, device_id
+			 LIMIT ${MAX_DEVICES_PER_USER}`,
+		).toArray().map((row) => {
+			const lastSeen = row.last_seen === null ? null : String(row.last_seen);
+			return {
+				device_id: row.device_id,
+				name: row.name,
+				last_seen_at: row.last_seen === null ? null : new Date(row.last_seen).toISOString(),
+				last_seen_epoch_ms: lastSeen,
+				last_ack_seq: row.last_ack_seq,
+				cursor_lag_ops: decimalLag(head, row.last_ack_seq),
+				connection_state: connected.has(row.device_id) ? "connected" as const : "disconnected" as const,
+			};
+		});
+		return {
+			protocol_version: 1,
+			user_id: userId,
+			epoch: this.meta("epoch"),
+			head_seq: head,
+			projected_seq: projected,
+			projection_lag_ops: decimalLag(head, projected),
+			sync_health: head === projected ? "healthy" : "projector_lagging",
+			devices,
+		};
+	}
+
+	renameDevice(deviceId: string, name: string): boolean {
+		const normalizedId = deviceId.trim();
+		const normalizedName = normalizeDeviceName(name);
+		if (normalizedId.length === 0 || normalizedId.length > 128) throw invalid("device_id must be 1-128 characters");
+		if (normalizedName === null) throw invalid("name must be 1-80 characters");
+		return this.ctx.storage.sql.exec(
+			"UPDATE devices SET name = ? WHERE device_id = ?",
+			normalizedName,
+			normalizedId,
+		).rowsWritten > 0;
 	}
 
 	// ---------------------------------------------------------------------
@@ -656,6 +771,45 @@ export class SyncHub extends DurableObject<Env> {
 	private headSeq(): string { return this.meta("head_seq"); }
 	private projectedSeq(): string { return this.meta("projected_seq"); }
 
+	private touchDevice(deviceId: string, name: string | null, now = Date.now()): void {
+		const normalizedId = this.normalizeDeviceId(deviceId);
+		const result = this.ctx.storage.sql.exec(
+			`INSERT INTO devices (device_id, name, last_seen)
+			 SELECT ?, ?, ?
+			 WHERE EXISTS (SELECT 1 FROM devices WHERE device_id = ?)
+			    OR (SELECT COUNT(*) FROM devices) < ?
+			 ON CONFLICT(device_id) DO UPDATE SET
+			 name=COALESCE(devices.name, excluded.name),
+			 last_seen=excluded.last_seen`,
+			normalizedId,
+			name,
+			now,
+			normalizedId,
+			MAX_DEVICES_PER_USER,
+		);
+		if (result.rowsWritten === 0) throw deviceLimitError();
+	}
+
+	private touchExistingDevice(deviceId: string, name: string | null, now = Date.now()): void {
+		const normalizedId = this.normalizeDeviceId(deviceId);
+		this.ctx.storage.sql.exec(
+			`UPDATE devices
+			 SET name = COALESCE(name, ?), last_seen = ?
+			 WHERE device_id = ?`,
+			name,
+			now,
+			normalizedId,
+		);
+	}
+
+	private normalizeDeviceId(deviceId: string): string {
+		const normalizedId = deviceId.trim();
+		if (normalizedId.length === 0 || normalizedId.length > 128) {
+			throw invalid("deviceId must be 1-128 characters");
+		}
+		return normalizedId;
+	}
+
 	private meta(key: string): string {
 		const row = this.ctx.storage.sql.exec<{ v: string }>("SELECT v FROM meta WHERE k = ?", key).toArray()[0];
 		if (!row) throw new Error(`sync-hub invariant: missing meta ${key}`);
@@ -677,4 +831,19 @@ export class SyncHub extends DurableObject<Env> {
 	private deleteMeta(key: string): void {
 		this.ctx.storage.sql.exec("DELETE FROM meta WHERE k = ?", key);
 	}
+}
+
+function normalizeDeviceName(value: string | null): string | null {
+	if (value === null) return null;
+	const normalized = value.trim();
+	if (normalized.length === 0) return null;
+	if (normalized.length > 80) throw invalid("device name must be at most 80 characters");
+	return normalized;
+}
+
+function decimalLag(head: string, cursor: string): string {
+	const canonicalHead = assertCanonicalDecimal(head);
+	const canonicalCursor = assertCanonicalDecimal(cursor);
+	if (compareCanonicalDecimals(canonicalCursor, canonicalHead) >= 0) return "0";
+	return (BigInt(canonicalHead) - BigInt(canonicalCursor)).toString(10);
 }

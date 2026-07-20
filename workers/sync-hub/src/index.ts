@@ -22,10 +22,13 @@
  *                            authentication (canonical-userId binding) as
  *                            every other route; the socket itself carries
  *                            nothing durable — it is a downstream hint lane.
+ *   POST /internal/v1/sync/metadata    — payload-free Hub state for Pro.
+ *   POST /internal/v1/sync/device-name — rename an existing Hub device.
  */
 
 import type { PushOp } from "./do/SyncHub";
 import {
+	DEVICE_LIMIT_ERROR,
 	INVALID_OPS_PREFIX,
 	PROJECTION_LEASE_MS,
 	PROJECTION_ERROR_PREFIX,
@@ -99,6 +102,7 @@ interface AuthOk {
 	ok: true;
 	userId: string;
 	deviceId: string | null;
+	deviceName: string | null;
 }
 
 interface AuthFail {
@@ -209,6 +213,14 @@ export async function authenticateRequest(
 	// missing ids). Canonical operation bodies themselves are never rewritten.
 	const deviceIdTrimmed = (request.headers.get("X-Device-Id") ?? "").trim();
 	const deviceId = deviceIdTrimmed.length > 0 ? deviceIdTrimmed : null;
+	const deviceNameTrimmed = (request.headers.get("X-Device-Name") ?? "").trim();
+	if (deviceId !== null && deviceId.length > 128) {
+		return { ok: false, response: errorResponse(400, "X-Device-Id must be at most 128 characters") };
+	}
+	if (deviceNameTrimmed.length > 80) {
+		return { ok: false, response: errorResponse(400, "X-Device-Name must be at most 80 characters") };
+	}
+	const deviceName = deviceNameTrimmed.length > 0 ? deviceNameTrimmed : null;
 
 	if (!authHeader.startsWith("Bearer ")) {
 		return { ok: false, response: errorResponse(401, "missing bearer token") };
@@ -231,7 +243,7 @@ export async function authenticateRequest(
 		dependencies.logCacheFailure("get", error);
 	}
 	if (cached === "1") {
-		return { ok: true, userId, deviceId };
+		return { ok: true, userId, deviceId, deviceName };
 	}
 
 	let verifyRes: Response;
@@ -275,7 +287,7 @@ export async function authenticateRequest(
 			// could not be populated. The next request will verify upstream again.
 			dependencies.logCacheFailure("put", error);
 		}
-		return { ok: true, userId, deviceId };
+		return { ok: true, userId, deviceId, deviceName };
 	}
 	if (verifyRes.status === 401 || verifyRes.status === 403) {
 		return { ok: false, response: errorResponse(401, "invalid token") };
@@ -291,6 +303,7 @@ async function handlePushOps(
 	env: Env,
 	userId: string,
 	deviceId: string,
+	deviceName: string | null,
 ): Promise<Response> {
 	const raw = await request.text();
 	// Deliberate 413s (see the cap constants above): an oversize batch must
@@ -324,9 +337,9 @@ async function handlePushOps(
 
 	const stub = env.SYNC_HUB.getByName(userId);
 	try {
-		const result = await stub.pushOps(deviceId, ops as PushOp[]);
+		const result = await stub.pushOps(deviceId, ops as PushOp[], deviceName);
 		if ("refused" in result) {
-			return errorResponse(400, result.error);
+			return errorResponse(result.error === DEVICE_LIMIT_ERROR ? 409 : 400, result.error);
 		}
 		const projection = await drainProjection(env, userId, result.head_seq);
 		if (!projection.ok) {
@@ -349,6 +362,7 @@ async function handleGetChanges(
 	env: Env,
 	userId: string,
 	deviceId: string,
+	deviceName: string | null,
 ): Promise<Response> {
 	const sinceRaw = url.searchParams.get("since") ?? "0";
 	const limitRaw = url.searchParams.get("limit");
@@ -366,24 +380,100 @@ async function handleGetChanges(
 
 	const stub = env.SYNC_HUB.getByName(userId);
 	try {
-		const result = await stub.getChanges(deviceId, sinceRaw, limit);
+		const result = await stub.getChanges(deviceId, sinceRaw, limit, deviceName);
+		if ("refused" in result) return errorResponse(409, result.error);
 		return json(200, result);
 	} catch (e) {
 		return mapHubError(e);
 	}
 }
 
-async function handleGetStatus(env: Env, userId: string): Promise<Response> {
+async function handleGetStatus(
+	env: Env,
+	userId: string,
+	deviceId: string | null,
+	deviceName: string | null,
+): Promise<Response> {
 	const stub = env.SYNC_HUB.getByName(userId);
 	try {
-		const result = await stub.getStatus();
+		const result = await stub.getStatus(deviceId, deviceName);
+		if ("refused" in result) return errorResponse(409, result.error);
 		return json(200, result);
 	} catch (e) {
 		return mapHubError(e);
+	}
+}
+
+function hasInternalCredential(request: Request, env: Env): boolean {
+	const secret = env.CMEM_INTERNAL_PROJECTOR_SECRET ?? "";
+	return secret.length > 0 && request.headers.get("Authorization") === `Bearer ${secret}`;
+}
+
+function exactKeys(record: Record<string, unknown>, expected: string[]): boolean {
+	const keys = Object.keys(record).sort();
+	return keys.length === expected.length && keys.every((key, index) => key === expected[index]);
+}
+
+async function readInternalBody(request: Request): Promise<Record<string, unknown> | null> {
+	let value: unknown;
+	try { value = await request.json(); } catch { return null; }
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+		? value as Record<string, unknown>
+		: null;
+}
+
+async function handleMetadataRead(request: Request, env: Env): Promise<Response> {
+	if (!hasInternalCredential(request, env)) return errorResponse(401, "invalid internal credential");
+	const body = await readInternalBody(request);
+	if (
+		body === null
+		|| !exactKeys(body, ["protocol_version", "user_id"])
+		|| body.protocol_version !== 1
+		|| typeof body.user_id !== "string"
+		|| body.user_id.trim().length === 0
+	) {
+		return errorResponse(400, "expected exactly {protocol_version:1,user_id}");
+	}
+	const userId = body.user_id.trim();
+	try {
+		return json(200, await env.SYNC_HUB.getByName(userId).getMetadata(userId));
+	} catch (error) {
+		return mapHubError(error);
+	}
+}
+
+async function handleDeviceRename(request: Request, env: Env): Promise<Response> {
+	if (!hasInternalCredential(request, env)) return errorResponse(401, "invalid internal credential");
+	const body = await readInternalBody(request);
+	if (
+		body === null
+		|| !exactKeys(body, ["device_id", "name", "protocol_version", "user_id"])
+		|| body.protocol_version !== 1
+		|| typeof body.user_id !== "string"
+		|| typeof body.device_id !== "string"
+		|| typeof body.name !== "string"
+	) {
+		return errorResponse(400, "expected exactly {protocol_version:1,user_id,device_id,name}");
+	}
+	const userId = body.user_id.trim();
+	const deviceId = body.device_id.trim();
+	const name = body.name.trim();
+	if (userId.length === 0) return errorResponse(400, "user_id must be non-empty");
+	if (deviceId.length === 0 || deviceId.length > 128) return errorResponse(400, "device_id must be 1-128 characters");
+	if (name.length === 0 || name.length > 80) return errorResponse(400, "name must be 1-80 characters");
+	try {
+		const renamed = await env.SYNC_HUB.getByName(userId).renameDevice(deviceId, name);
+		if (!renamed) return errorResponse(404, "device not found");
+		return json(200, { protocol_version: 1, user_id: userId, device_id: deviceId, name });
+	} catch (error) {
+		return mapHubError(error);
 	}
 }
 
 function mapHubError(e: unknown): Response {
+	if (e instanceof Error && e.message.includes(DEVICE_LIMIT_ERROR)) {
+		return errorResponse(409, DEVICE_LIMIT_ERROR);
+	}
 	if (e instanceof Error && e.message.includes(INVALID_OPS_PREFIX)) {
 		return errorResponse(400, e.message);
 	}
@@ -738,6 +828,14 @@ export default {
 			if (request.method !== "POST") return errorResponse(405, "use POST");
 			return handleRepairDrain(request, env);
 		}
+		if (pathname === "/internal/v1/sync/metadata") {
+			if (request.method !== "POST") return errorResponse(405, "use POST");
+			return handleMetadataRead(request, env);
+		}
+		if (pathname === "/internal/v1/sync/device-name") {
+			if (request.method !== "POST") return errorResponse(405, "use POST");
+			return handleDeviceRename(request, env);
+		}
 
 		if (
 			pathname !== "/v1/sync/ops" &&
@@ -801,18 +899,18 @@ export default {
 			if (pathname === "/v1/sync/ops") {
 				if (request.method !== "POST") return errorResponse(405, "use POST");
 				if (!auth.deviceId) return errorResponse(400, "missing X-Device-Id header");
-				return handlePushOps(request, env, auth.userId, auth.deviceId);
+				return handlePushOps(request, env, auth.userId, auth.deviceId, auth.deviceName);
 			}
 
 			if (pathname === "/v1/sync/changes") {
 				if (request.method !== "GET") return errorResponse(405, "use GET");
 				if (!auth.deviceId) return errorResponse(400, "missing X-Device-Id header");
-				return handleGetChanges(url, env, auth.userId, auth.deviceId);
+				return handleGetChanges(url, env, auth.userId, auth.deviceId, auth.deviceName);
 			}
 
 			// /v1/sync/status
 			if (request.method !== "GET") return errorResponse(405, "use GET");
-			return handleGetStatus(env, auth.userId);
+			return handleGetStatus(env, auth.userId, auth.deviceId, auth.deviceName);
 		})();
 		if (killSwitch.tripped) {
 			response.headers.set(SYNC_MODE_HEADER, SYNC_MODE_POLL);

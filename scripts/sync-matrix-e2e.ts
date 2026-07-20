@@ -1,221 +1,458 @@
 #!/usr/bin/env bun
-// Full-matrix sync e2e (plan Phase 6 task 1) — real SessionStore + CloudSync +
-// SyncApply + SyncClient stacks against a real `wrangler dev` sync hub. The
-// script starts (and restarts) its own hub on a private port with a private
-// --persist-to dir, so it never collides with a dev hub on 8787 and an epoch
-// reset is just "wipe the persist dir and restart".
-//
-// Matrix scenarios (plan: "fresh device bootstrap (since=0), week-offline
-// catch-up, concurrent two-device writes, all four mutation types, epoch
-// reset, kill-switch degradation"):
-//   1. Row replication A→B: preserved created_at_epoch, origin attribution,
-//      echo-guard stamp, FTS row, prompt linking, and the set_title PARK path
-//      (in the hub log set_title precedes the session's row ops, so a device
-//      that has never seen the session parks the title, then claims it when
-//      the stub session materializes — all inside one applied batch).
-//   2. set_prompt_session repair: a prompt pushed before its memory id
-//      registers is re-linked on replicas by the repair mutation.
-//   3. remap_project, BOTH shapes, emitted own-connection (the
-//      WorktreeAdoption/ProcessManager shape — pure SQL + sync_outbox):
-//      {project, merged_into_project_is_null} → {merged_into_project} and
-//      {memory_session_id} → {project} (which also retargets sdk_sessions).
-//   4. set_title DIRECT path (the other arrival order): a mutation pushed by
-//      a third device targeting a session that ALREADY exists on A and B
-//      applies as a direct UPDATE on both.
-//   5. Concurrent two-device writes: A and B write + flush simultaneously;
-//      both converge to the identical corpus — no echo, no loss, no dupes.
-//   6. Week-offline catch-up: B stops pulling while A accumulates >500 ops
-//      (more than one /changes page — hub cap 500), then B converges through
-//      paginated pulls in one cycle.
-//   7. Fresh device bootstrap: a brand-new device C (empty DB, cursor 0)
-//      pulls since=0 and converges on the full corpus, titles included.
-//   8. Epoch reset: hub storage wiped → fresh DO mints a new epoch → clients
-//      detect the mismatch, reset cursors, requeue their NATIVE corpora for
-//      re-push (the Phase 3 fix), and all devices reconverge without dupes.
-//
-// Kill-switch degradation (matrix scenario 9) lives in its own harness —
-// scripts/sync-kill-switch-e2e.ts — because tripping the switch requires
-// `wrangler kv --local` against the hub's DEFAULT persist dir. Run both:
-//   bun scripts/sync-matrix-e2e.ts
-//   (cd workers/sync-hub && bunx wrangler dev --var KILL_SWITCH_CACHE_MS:0 &)
-//   bun scripts/sync-kill-switch-e2e.ts
-//
-// Env knobs: MATRIX_PORT (default 8794), MATRIX_KEEP_TMP=1 to keep temp dirs.
+/**
+ * Canonical protocol-v2 sync E2E.
+ *
+ * Safety is structural: a Bun loopback sidecar owns token verification and
+ * projection, while the existing Node Miniflare wrapper starts the actual
+ * bundled Worker and SQLite Durable Object on an ephemeral loopback port.
+ * Every client fetch is guarded as loopback-only. Exactly two real client
+ * stacks (SessionStore + CloudSync + SyncApply + SyncClient) exercise both
+ * the advisory WebSocket and authoritative HTTP lanes.
+ */
 
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { SessionStore } from '../src/services/sqlite/SessionStore.js';
-import { SessionSearch } from '../src/services/sqlite/SessionSearch.js';
-import { openConfiguredSqliteDatabase } from '../src/services/sqlite/connection.js';
 import { CloudSync } from '../src/services/sync/CloudSync.js';
+import {
+  assertCanonicalDecimal,
+  compareCanonicalDecimals,
+  incrementCanonicalDecimal,
+  parseCanonicalOperation,
+  stableDocumentId,
+  type CanonicalContentBody,
+} from '../src/services/sync/CanonicalContent.js';
 import { SyncApply } from '../src/services/sync/SyncApply.js';
 import { SyncClient } from '../src/services/sync/SyncClient.js';
 import { emitRemapProject } from '../src/services/sync/remap-outbox.js';
 
 const HUB_DIR = resolve(import.meta.dir, '../workers/sync-hub');
-const PORT = Number(process.env.MATRIX_PORT ?? 8794);
-const HUB_URL = `http://127.0.0.1:${PORT}`;
-const USER_ID = `matrix-user-${Date.now().toString(36)}`;
-const TOKEN = 'matrix-token';
-/** >500 forces at least two /changes pages (hub page cap is 500). */
-const OFFLINE_OPS = 520;
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+const HUB_RUNNER = resolve(HUB_DIR, 'test/run-miniflare-pro-e2e.mjs');
+const USER_ID = `matrix-user-${crypto.randomUUID()}`;
+const TOKEN = `matrix-token-${crypto.randomUUID()}`;
+const PROJECTOR_SECRET = 'matrix-projector-secret-32-characters-minimum';
+const DEVICE_IDS = { a: 'matrix-device-a', b: 'matrix-device-b' } as const;
+const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
+const CHILD_ENV_ALLOWLIST = ['PATH', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL'] as const;
 
-let failures = 0;
-function check(name: string, cond: boolean, detail?: unknown): void {
-  if (cond) {
-    console.log(`  PASS  ${name}`);
-  } else {
-    failures++;
-    console.log(`  FAIL  ${name}${detail !== undefined ? ` — ${JSON.stringify(detail)}` : ''}`);
+function childEnvironment(overrides: Record<string, string>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of CHILD_ENV_ALLOWLIST) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return { ...env, ...overrides };
+}
+
+function check(condition: unknown, message: string, detail?: unknown): asserts condition {
+  if (!condition) {
+    const suffix = detail === undefined ? '' : ` — ${JSON.stringify(detail)}`;
+    throw new Error(`${message}${suffix}`);
+  }
+  console.log(`  PASS  ${message}`);
+}
+
+function invariant(condition: unknown, message: string, detail?: unknown): asserts condition {
+  if (!condition) {
+    const suffix = detail === undefined ? '' : ` — ${JSON.stringify(detail)}`;
+    throw new Error(`${message}${suffix}`);
   }
 }
 
-// ---------------------------------------------------------------------------
-// Hub lifecycle (private port + private persist dir)
-// ---------------------------------------------------------------------------
-let hubProc: ReturnType<typeof Bun.spawn> | null = null;
-let persistDir = '';
-
-function authHeaders(deviceId: string): Record<string, string> {
-  return {
-    'Authorization': `Bearer ${TOKEN}`,
-    'X-User-Id': USER_ID,
-    'X-Device-Id': deviceId,
-  };
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolvePromise, rejectPromise) => {
+    const timer = setTimeout(() => rejectPromise(new Error(`timed out waiting for ${label}`)), timeoutMs);
+    promise.then(
+      value => {
+        clearTimeout(timer);
+        resolvePromise(value);
+      },
+      error => {
+        clearTimeout(timer);
+        rejectPromise(error);
+      },
+    );
+  });
 }
 
-async function startHub(): Promise<void> {
-  hubProc = Bun.spawn(
-    ['bunx', 'wrangler', 'dev', '--port', String(PORT), '--persist-to', persistDir],
-    { cwd: HUB_DIR, stdout: 'ignore', stderr: 'ignore', env: { ...process.env } },
+async function waitFor(condition: () => boolean, label: string, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) return;
+    await Bun.sleep(20);
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+function loopbackUrl(input: RequestInfo | URL, label: string): URL {
+  const raw = input instanceof Request ? input.url : String(input);
+  const url = new URL(raw);
+  if (url.protocol !== 'http:' || (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost')) {
+    throw new Error(`${label} refused non-loopback URL: ${url.origin}`);
+  }
+  return url;
+}
+
+function exactKeys(value: Record<string, unknown>, expected: string[], label: string): void {
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  invariant(
+    actual.length === wanted.length && actual.every((key, index) => key === wanted[index]),
+    `${label} uses the exact wire envelope`,
+    { actual, wanted },
   );
-  for (let i = 0; i < 120; i++) {
-    try {
-      const res = await fetch(`${HUB_URL}/v1/sync/status`, {
-        headers: authHeaders('probe'),
-        signal: AbortSignal.timeout(1000),
-      });
-      if (res.ok) return;
-    } catch { /* not up yet */ }
-    await sleep(500);
+}
+
+interface ProjectionWireOp {
+  seq: string;
+  body: string;
+  operation_sha256: string;
+}
+
+interface ProjectionRequest {
+  protocol_version: number;
+  user_id: string;
+  epoch: string;
+  from_seq_exclusive: string;
+  through_seq: string;
+  ops: ProjectionWireOp[];
+}
+
+interface SidecarState {
+  verifyCalls: number;
+  projectionCalls: ProjectionRequest[];
+  projectedThrough: string;
+  epoch: string | null;
+  bodies: CanonicalContentBody[];
+  errors: string[];
+}
+
+function startSidecar(): { server: ReturnType<typeof Bun.serve>; state: SidecarState; baseUrl: string } {
+  const state: SidecarState = {
+    verifyCalls: 0,
+    projectionCalls: [],
+    projectedThrough: '0',
+    epoch: null,
+    bodies: [],
+    errors: [],
+  };
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    async fetch(request): Promise<Response> {
+      try {
+        const url = loopbackUrl(request, 'sidecar');
+        if (url.pathname === '/verify') {
+          state.verifyCalls++;
+          if (
+            request.method !== 'GET'
+            || request.headers.get('Authorization') !== `Bearer ${TOKEN}`
+            || request.headers.get('X-User-Id') !== USER_ID
+          ) {
+            return Response.json({ error: 'denied' }, { status: 401 });
+          }
+          return Response.json({ userId: USER_ID });
+        }
+        if (url.pathname === '/project') {
+          if (
+            request.method !== 'POST'
+            || request.headers.get('Authorization') !== `Bearer ${PROJECTOR_SECRET}`
+          ) {
+            return Response.json({ error: 'denied' }, { status: 401 });
+          }
+          const value = await request.json();
+          invariant(value !== null && typeof value === 'object' && !Array.isArray(value), 'projector receives an object');
+          const payload = value as ProjectionRequest;
+          exactKeys(
+            payload as unknown as Record<string, unknown>,
+            ['protocol_version', 'user_id', 'epoch', 'from_seq_exclusive', 'through_seq', 'ops'],
+            'projection request',
+          );
+          invariant(payload.protocol_version === 1, 'projection protocol is v1');
+          invariant(payload.user_id === USER_ID, 'projection is bound to the fresh test account');
+          assertCanonicalDecimal(payload.epoch, { positive: true });
+          assertCanonicalDecimal(payload.from_seq_exclusive);
+          assertCanonicalDecimal(payload.through_seq, { positive: true });
+          invariant(Array.isArray(payload.ops) && payload.ops.length > 0, 'projection page contains operations');
+          invariant(payload.from_seq_exclusive === state.projectedThrough, 'projection pages start at the checkpoint', {
+            from: payload.from_seq_exclusive,
+            checkpoint: state.projectedThrough,
+          });
+          if (state.epoch === null) state.epoch = payload.epoch;
+          invariant(payload.epoch === state.epoch, 'projection epoch remains stable');
+
+          let expected = incrementCanonicalDecimal(payload.from_seq_exclusive);
+          const parsedBodies: CanonicalContentBody[] = [];
+          for (const op of payload.ops) {
+            exactKeys(op as unknown as Record<string, unknown>, ['seq', 'body', 'operation_sha256'], 'projection op');
+            invariant(op.seq === expected, 'projection sequences are contiguous', { expected, actual: op.seq });
+            parsedBodies.push(parseCanonicalOperation({ body: op.body, operation_sha256: op.operation_sha256 }));
+            expected = incrementCanonicalDecimal(expected);
+          }
+          invariant(payload.ops.at(-1)?.seq === payload.through_seq, 'projection through_seq matches the last operation');
+          state.projectionCalls.push(payload);
+          state.bodies.push(...parsedBodies);
+          state.projectedThrough = payload.through_seq;
+          return Response.json({
+            protocol_version: 1,
+            epoch: payload.epoch,
+            projected_through_seq: payload.through_seq,
+          });
+        }
+        return Response.json({ error: 'not found' }, { status: 404 });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        state.errors.push(message);
+        return Response.json({ error: message }, { status: 500 });
+      }
+    },
+  });
+  const baseUrl = `http://127.0.0.1:${server.port}`;
+  loopbackUrl(baseUrl, 'sidecar');
+  return { server, state, baseUrl };
+}
+
+interface HubRuntime {
+  proc: ReturnType<typeof Bun.spawn>;
+  events: Array<Record<string, unknown>>;
+  stdoutDone: Promise<void>;
+  stderrDone: Promise<string>;
+}
+
+let hubRuntime: HubRuntime | null = null;
+let hubUrl = '';
+
+async function readLines(
+  stream: ReadableStream<Uint8Array>,
+  onLine: (line: string) => void,
+): Promise<void> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffered = '';
+  for (;;) {
+    const result = await reader.read();
+    if (result.done) break;
+    buffered += decoder.decode(result.value, { stream: true });
+    for (;;) {
+      const newline = buffered.indexOf('\n');
+      if (newline < 0) break;
+      const line = buffered.slice(0, newline).trim();
+      buffered = buffered.slice(newline + 1);
+      if (line) onLine(line);
+    }
   }
-  throw new Error('wrangler dev did not become ready');
+  buffered += decoder.decode();
+  if (buffered.trim()) onLine(buffered.trim());
+}
+
+async function startHub(sidecarUrl: string): Promise<void> {
+  loopbackUrl(sidecarUrl, 'Hub sidecar binding');
+  let resolveReady!: (url: string) => void;
+  let rejectReady!: (error: unknown) => void;
+  const ready = new Promise<string>((resolvePromise, rejectPromise) => {
+    resolveReady = resolvePromise;
+    rejectReady = rejectPromise;
+  });
+  const proc = Bun.spawn([
+    'node',
+    HUB_RUNNER,
+    '--worker-root', HUB_DIR,
+    '--host', '127.0.0.1',
+    '--port', '0',
+  ], {
+    cwd: HUB_DIR,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: childEnvironment({
+      INTERNAL_PROJECTOR_URL: `${sidecarUrl}/project`,
+      TOKEN_VERIFY_URL: `${sidecarUrl}/verify`,
+      CMEM_INTERNAL_PROJECTOR_SECRET: PROJECTOR_SECRET,
+    }),
+  });
+  const events: Array<Record<string, unknown>> = [];
+  const stdoutDone = readLines(proc.stdout as ReadableStream<Uint8Array>, line => {
+    try {
+      const event = JSON.parse(line) as Record<string, unknown>;
+      events.push(event);
+      if (event.event === 'ready' && typeof event.url === 'string') resolveReady(event.url);
+    } catch {
+      // Miniflare dependency output is diagnostic only; ready/stopped are JSON.
+    }
+  }).catch(error => rejectReady(error));
+  const stderrDone = new Response(proc.stderr as ReadableStream<Uint8Array>).text();
+  hubRuntime = { proc, events, stdoutDone, stderrDone };
+  const earlyExit = proc.exited.then(async code => {
+    const stderr = await stderrDone;
+    throw new Error(`Miniflare Hub exited before ready (${code}): ${stderr.slice(0, 500)}`);
+  });
+  hubUrl = (await withTimeout(Promise.race([ready, earlyExit]), 30_000, 'Miniflare Hub ready')).replace(/\/$/, '');
+  loopbackUrl(hubUrl, 'Hub');
 }
 
 async function stopHub(): Promise<void> {
-  if (!hubProc) return;
-  hubProc.kill(); // SIGTERM — a SIGKILLed workerd can wedge wrangler state
-  await hubProc.exited.catch(() => {});
-  hubProc = null;
-  for (let i = 0; i < 40; i++) {
-    try {
-      await fetch(`${HUB_URL}/v1/sync/status`, { headers: authHeaders('probe'), signal: AbortSignal.timeout(500) });
-    } catch {
-      return; // port refuses connections — actually down
-    }
-    await sleep(250);
+  const runtime = hubRuntime;
+  if (!runtime) return;
+  hubRuntime = null;
+  runtime.proc.kill(15);
+  let code: number;
+  try {
+    code = await withTimeout(runtime.proc.exited, 10_000, 'clean Miniflare shutdown');
+  } catch (error) {
+    runtime.proc.kill(9);
+    await runtime.proc.exited;
+    throw error;
   }
+  await runtime.stdoutDone;
+  const stderr = await runtime.stderrDone;
+  check(code === 0, 'Miniflare wrapper exits cleanly', { code, stderr: stderr.slice(0, 500) });
+  check(runtime.events.some(event => event.event === 'stopped'), 'Miniflare disposes the Worker and Durable Object');
 }
 
-interface HubStatus { epoch: string; head_seq: number; op_count: number; device_count: number }
-async function hubStatus(): Promise<HubStatus> {
-  const res = await fetch(`${HUB_URL}/v1/sync/status`, { headers: authHeaders('probe') });
-  if (!res.ok) throw new Error(`hub status ${res.status}`);
-  return await res.json() as HubStatus;
-}
-
-/** Raw push as an arbitrary device (the synthetic third device of scenario 4). */
-async function rawPush(deviceId: string, ops: Array<{ kind: string; origin_id: string; rev: number; body: string }>): Promise<void> {
-  const res = await fetch(`${HUB_URL}/v1/sync/ops`, {
-    method: 'POST',
-    headers: { ...authHeaders(deviceId), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ops }),
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!res.ok) throw new Error(`raw push ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
-}
-
-// ---------------------------------------------------------------------------
-// Device harness — the real client stack, deterministic (no started loops)
-// ---------------------------------------------------------------------------
-interface Device {
-  name: string;
-  dir: string;
-  store: SessionStore;
-  search: SessionSearch;
-  cloudSync: CloudSync;
-  apply: SyncApply;
-  client: SyncClient;
-}
-
-function makeDevice(name: string): Device {
-  const dir = mkdtempSync(join(tmpdir(), `claude-mem-matrix-${name}-`));
-  const dbPath = join(dir, 'claude-mem.db');
-  const store = new SessionStore(dbPath, {
-    cloudSyncStatePath: join(dir, 'no-legacy.json'),
-    cloudSyncHubUrl: HUB_URL,
-  });
-  const search = new SessionSearch(store.db); // FTS tables + triggers
-  const cloudSync = new CloudSync(store.db, {
-    CLAUDE_MEM_CLOUD_SYNC_TOKEN: TOKEN,
-    CLAUDE_MEM_CLOUD_SYNC_USER_ID: USER_ID,
-    CLAUDE_MEM_CLOUD_SYNC_HUB_URL: HUB_URL,
-    CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: `device-${name}`,
-    CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: `matrix-${name}`,
-  }, {
-    settingsPath: join(dir, 'settings.json'),
-    legacyStatePath: join(dir, 'no-legacy.json'),
-    debounceMs: 50,
-    backoffInitialMs: 100,
-    backoffMaxMs: 1000,
-    requestTimeoutMs: 15_000,
-  });
-  const apply = new SyncApply(store.db, { deviceId: `device-${name}` });
-  const client = new SyncClient(apply, {
-    hubUrl: HUB_URL,
-    token: TOKEN,
-    userId: USER_ID,
-    deviceId: `device-${name}`,
-    minPullGapMs: 0,
-    requestTimeoutMs: 15_000,
-    wsEnabled: false, // deterministic HTTP-lane matrix; the WS lane has its own e2e
-  });
-  return { name, dir, store, search, cloudSync, apply, client };
-}
-
-function destroyDevice(dev: Device): void {
-  dev.cloudSync.stop();
-  dev.client.stop();
-  dev.store.db.close();
-  if (process.env.MATRIX_KEEP_TMP !== '1') {
-    rmSync(dev.dir, { recursive: true, force: true });
-  }
-}
-
-function q<T>(dev: Device, sql: string, ...params: unknown[]): T | undefined {
-  return dev.store.db.prepare(sql).get(...params as never[]) as T | undefined;
-}
-
-function count(dev: Device, sql: string, ...params: unknown[]): number {
-  return (q<{ n: number }>(dev, sql, ...params) ?? { n: -1 }).n;
-}
-
-function pendingTotal(dev: Device): number {
-  const p = dev.cloudSync.status().pending;
-  return p.observations + p.summaries + p.prompts + p.mutations;
-}
-
-function corpusCounts(dev: Device): { obs: number; sums: number; prompts: number } {
+function authHeaders(deviceId?: string): Record<string, string> {
   return {
-    obs: count(dev, 'SELECT COUNT(*) AS n FROM observations'),
-    sums: count(dev, 'SELECT COUNT(*) AS n FROM session_summaries'),
-    prompts: count(dev, 'SELECT COUNT(*) AS n FROM user_prompts'),
+    'Authorization': `Bearer ${TOKEN}`,
+    'X-User-Id': USER_ID,
+    ...(deviceId ? { 'X-Device-Id': deviceId } : {}),
   };
 }
 
-function makeObs(title: string, narrative: string): Parameters<SessionStore['storeObservation']>[2] {
+interface HubStatus {
+  protocol_version: 2;
+  epoch: string;
+  head_seq: string;
+  projected_seq: string;
+  op_count: number;
+  device_count: number;
+}
+
+async function getHubStatus(): Promise<HubStatus> {
+  loopbackUrl(hubUrl, 'Hub status');
+  const response = await fetch(`${hubUrl}/v1/sync/status`, { headers: authHeaders() });
+  if (!response.ok) throw new Error(`Hub status ${response.status}: ${(await response.text()).slice(0, 200)}`);
+  const status = await response.json() as HubStatus;
+  invariant(status.protocol_version === 2, 'Hub status speaks protocol v2');
+  assertCanonicalDecimal(status.epoch, { positive: true });
+  assertCanonicalDecimal(status.head_seq);
+  assertCanonicalDecimal(status.projected_seq);
+  return status;
+}
+
+interface NetworkGate {
+  pushesOnline: boolean;
+  pushAttempts: number;
+  pullRequests: number;
+}
+
+interface Device {
+  name: keyof typeof DEVICE_IDS;
+  dir: string;
+  dbPath: string;
+  store: SessionStore;
+  cloudSync: CloudSync;
+  apply: SyncApply;
+  client: SyncClient;
+  gate: NetworkGate;
+}
+
+function guardedFetch(gate: NetworkGate): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = loopbackUrl(input, 'sync client');
+    if (url.pathname === '/v1/sync/ops') {
+      gate.pushAttempts++;
+      if (!gate.pushesOnline) throw new Error('simulated offline push transport');
+    }
+    if (url.pathname === '/v1/sync/changes') gate.pullRequests++;
+    return fetch(input, init);
+  }) as typeof fetch;
+}
+
+function createClient(device: Device, wsEnabled: boolean): SyncClient {
+  return new SyncClient(device.apply, {
+    hubUrl,
+    token: TOKEN,
+    userId: USER_ID,
+    deviceId: DEVICE_IDS[device.name],
+    deviceName: `Matrix ${device.name.toUpperCase()}`,
+    fetchImpl: guardedFetch(device.gate),
+    activePollMs: 60_000,
+    idlePollMs: 60_000,
+    suspendAfterMs: 600_000,
+    pageLimit: 2,
+    maxPagesPerCycle: 100,
+    requestTimeoutMs: 10_000,
+    backoffInitialMs: 100,
+    backoffMaxMs: 1_000,
+    minPullGapMs: 0,
+    wsEnabled,
+    wsPingIntervalMs: 5_000,
+    wsBackoffBaseMs: 50,
+    wsBackoffMaxMs: 500,
+    onSocketLiveChange: live => device.cloudSync.setFastDebounce(live),
+  });
+}
+
+function openDevice(
+  name: keyof typeof DEVICE_IDS,
+  existingDir?: string,
+  options: { wsEnabled?: boolean; start?: boolean } = {},
+): Device {
+  const dir = existingDir ?? mkdtempSync(join(tmpdir(), `claude-mem-matrix-${name}-`));
+  const dbPath = join(dir, 'claude-mem.db');
+  const store = new SessionStore(dbPath);
+  const gate: NetworkGate = { pushesOnline: true, pushAttempts: 0, pullRequests: 0 };
+  const cloudSync = new CloudSync(store.db, {
+    CLAUDE_MEM_CLOUD_SYNC_TOKEN: TOKEN,
+    CLAUDE_MEM_CLOUD_SYNC_USER_ID: USER_ID,
+    CLAUDE_MEM_CLOUD_SYNC_HUB_URL: hubUrl,
+    CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: DEVICE_IDS[name],
+    CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: `Matrix ${name.toUpperCase()}`,
+  }, {
+    fetchImpl: guardedFetch(gate),
+    settingsPath: join(dir, 'settings.json'),
+    debounceMs: 50,
+    fastDebounceMs: 10,
+    backoffInitialMs: 60_000,
+    backoffMaxMs: 60_000,
+    requestTimeoutMs: 10_000,
+  });
+  const apply = new SyncApply(store.db, { deviceId: DEVICE_IDS[name] });
+  const device = { name, dir, dbPath, store, cloudSync, apply, client: null!, gate } satisfies Device;
+  device.client = createClient(device, options.wsEnabled ?? true);
+  cloudSync.setHeadSeqListener(head => device.client.onHeadSeq(head));
+  cloudSync.setSyncModeListener(mode => device.client.onSyncModeHint(mode));
+  if (options.start !== false) device.client.start();
+  return device;
+}
+
+function replaceClient(device: Device, wsEnabled: boolean, start: boolean): void {
+  device.client.stop();
+  device.cloudSync.setFastDebounce(false);
+  device.client = createClient(device, wsEnabled);
+  if (start) device.client.start();
+}
+
+function closeDevice(device: Device, remove: boolean): void {
+  device.cloudSync.stop();
+  device.client.stop();
+  device.store.db.close();
+  if (remove) rmSync(device.dir, { recursive: true, force: true });
+}
+
+function row<T>(device: Device, sql: string, ...params: unknown[]): T | undefined {
+  return device.store.db.prepare(sql).get(...params as never[]) as T | undefined;
+}
+
+function count(device: Device, sql: string, ...params: unknown[]): number {
+  return row<{ n: number }>(device, sql, ...params)?.n ?? -1;
+}
+
+function pending(device: Device): number {
+  const value = device.cloudSync.status().pending;
+  return value.observations + value.summaries + value.prompts + value.mutations + value.tombstones;
+}
+
+function observation(title: string, narrative: string): Parameters<SessionStore['storeObservation']>[2] {
   return {
     type: 'discovery',
     title,
@@ -228,235 +465,274 @@ function makeObs(title: string, narrative: string): Parameters<SessionStore['sto
   };
 }
 
-// ---------------------------------------------------------------------------
-async function main(): Promise<void> {
-  persistDir = mkdtempSync(join(tmpdir(), 'claude-mem-matrix-hub-'));
-  console.log(`Sync matrix e2e — hub ${HUB_URL}, user ${USER_ID}`);
-  console.log('[hub] starting wrangler dev...');
-  await startHub();
-  console.log('[hub] ready');
-
-  const A = makeDevice('a');
-  const B = makeDevice('b');
-  let C: Device | null = null;
-
-  try {
-    // === Scenario 1: row replication + set_title park path =================
-    console.log('\nScenario 1: row replication A -> B (epoch, origin, FTS, parked title)');
-    const sessA = A.store.createSDKSession('sess-matrix-1', 'proj-matrix', 'hello matrix', 'Matrix Title vA', 'claude');
-    A.store.updateMemorySessionId(sessA, 'mem-matrix-1');
-    A.store.saveUserPrompt('sess-matrix-1', 1, 'find the flux capacitor', sessA);
-    const obsA = A.store.storeObservation('mem-matrix-1', 'proj-matrix', makeObs('Observation from A', 'the zeppelin narrative body'), 1, 7);
-    A.store.storeSummary('mem-matrix-1', 'proj-matrix', {
-      request: 'summarize matrix', investigated: 'inv', learned: 'lrn',
-      completed: 'done', next_steps: 'next', notes: null,
-    }, 1);
-    await A.cloudSync.flush();
-    check('A drain empty after flush', pendingTotal(A) === 0, A.cloudSync.status());
-
-    await B.client.pullOnce({ timeoutMs: 15_000 });
-    const obsB = q<{ title: string; created_at_epoch: number; origin_device_id: string; synced_at: number }>(
-      B, `SELECT title, created_at_epoch, origin_device_id, synced_at FROM observations WHERE origin_local_id = ?`, String(obsA.id));
-    check('observation replicated to B', obsB?.title === 'Observation from A');
-    check('created_at_epoch preserved', obsB?.created_at_epoch === obsA.createdAtEpoch, { got: obsB?.created_at_epoch, want: obsA.createdAtEpoch });
-    check('origin attribution recorded', obsB?.origin_device_id === 'device-a');
-    check('applied row pre-stamped synced_at (echo guard)', obsB?.synced_at != null);
-    check('FTS row present on B', count(B, `SELECT COUNT(*) AS n FROM observations_fts WHERE observations_fts MATCH 'zeppelin'`) >= 1);
-    check('summary replicated to B', count(B, `SELECT COUNT(*) AS n FROM session_summaries WHERE origin_device_id = 'device-a'`) === 1);
-    const promptB = q<{ session_db_id: number | null }>(B, `SELECT session_db_id FROM user_prompts WHERE prompt_text = 'find the flux capacitor'`);
-    check('prompt replicated + linked on B', promptB?.session_db_id != null);
-    const titleB = q<{ custom_title: string | null }>(B, `SELECT custom_title FROM sdk_sessions WHERE memory_session_id = 'mem-matrix-1'`);
-    check('set_title converged via park->claim (log order: title before rows)', titleB?.custom_title === 'Matrix Title vA', titleB);
-
-    // === Scenario 2: set_prompt_session repair =============================
-    console.log('\nScenario 2: set_prompt_session repair');
-    const sess2 = A.store.createSDKSession('sess-matrix-2', 'proj-matrix', 'second session');
-    A.store.saveUserPrompt('sess-matrix-2', 1, 'early unlinked prompt', sess2);
-    await A.cloudSync.flush(); // prompt travels with NULL join fields
-    A.store.updateMemorySessionId(sess2, 'mem-matrix-2'); // emits the repair op
-    await A.cloudSync.flush();
-    await B.client.pullOnce({ timeoutMs: 15_000 });
-    const repaired = q<{ session_db_id: number | null }>(B, `SELECT session_db_id FROM user_prompts WHERE prompt_text = 'early unlinked prompt'`);
-    const repairedSession = repaired?.session_db_id != null
-      ? q<{ memory_session_id: string | null }>(B, `SELECT memory_session_id FROM sdk_sessions WHERE id = ?`, repaired.session_db_id)
-      : undefined;
-    check('repair re-linked the replica prompt to mem-matrix-2', repairedSession?.memory_session_id === 'mem-matrix-2', repaired);
-
-    // === Scenario 3: remap_project, both shapes, own-connection ============
-    console.log('\nScenario 3: remap_project (worktree shape + cwd shape)');
-    // Worktree-adoption shape: separate connection to A's DB, inside a tx.
-    let ownConn = openConfiguredSqliteDatabase(join(A.dir, 'claude-mem.db'));
-    try {
-      ownConn.transaction(() => {
-        emitRemapProject(ownConn, { project: 'proj-matrix', merged_into_project_is_null: true }, { merged_into_project: 'proj-parent' });
-      })();
-    } finally {
-      ownConn.close();
-    }
-    await A.cloudSync.flush(); // the startup-drain pickup of the outbox
-    await B.client.pullOnce({ timeoutMs: 15_000 });
-    check('worktree-shape remap converged on B (merged_into_project)',
-      count(B, `SELECT COUNT(*) AS n FROM observations WHERE merged_into_project = 'proj-parent'`) >= 1);
-
-    // Cwd-remap shape: {memory_session_id} -> {project}; also retargets the
-    // owning sdk_sessions row on apply.
-    ownConn = openConfiguredSqliteDatabase(join(A.dir, 'claude-mem.db'));
-    try {
-      ownConn.transaction(() => {
-        emitRemapProject(ownConn, { memory_session_id: 'mem-matrix-1' }, { project: 'proj-moved' });
-      })();
-    } finally {
-      ownConn.close();
-    }
-    await A.cloudSync.flush();
-    await B.client.pullOnce({ timeoutMs: 15_000 });
-    check('cwd-shape remap converged on B (observations.project)',
-      count(B, `SELECT COUNT(*) AS n FROM observations WHERE memory_session_id = 'mem-matrix-1' AND project = 'proj-moved'`) >= 1);
-    const remappedSession = q<{ project: string }>(B, `SELECT project FROM sdk_sessions WHERE memory_session_id = 'mem-matrix-1'`);
-    check('cwd-shape remap retargeted the session row on B', remappedSession?.project === 'proj-moved', remappedSession);
-
-    // === Scenario 4: set_title direct path (the other order) ===============
-    console.log('\nScenario 4: set_title direct path (session already exists on both)');
-    await rawPush('device-x', [{
-      kind: 'mutation',
-      origin_id: crypto.randomUUID(),
-      rev: 1,
-      body: JSON.stringify({
-        op: 'set_title',
-        target: { memory_session_id: 'mem-matrix-1' },
-        fields: { custom_title: 'Retitled by X' },
-      }),
-    }]);
-    await A.client.pullOnce({ timeoutMs: 15_000 });
-    await B.client.pullOnce({ timeoutMs: 15_000 });
-    check('direct set_title applied on A',
-      q<{ custom_title: string }>(A, `SELECT custom_title FROM sdk_sessions WHERE memory_session_id = 'mem-matrix-1'`)?.custom_title === 'Retitled by X');
-    check('direct set_title applied on B',
-      q<{ custom_title: string }>(B, `SELECT custom_title FROM sdk_sessions WHERE memory_session_id = 'mem-matrix-1'`)?.custom_title === 'Retitled by X');
-
-    // === Scenario 5: concurrent two-device writes ==========================
-    console.log('\nScenario 5: concurrent two-device writes (30 + 30, overlapping flushes)');
-    const sessCA = A.store.createSDKSession('sess-conc-a', 'proj-conc', 'conc a');
-    A.store.updateMemorySessionId(sessCA, 'mem-conc-a');
-    const sessCB = B.store.createSDKSession('sess-conc-b', 'proj-conc', 'conc b');
-    B.store.updateMemorySessionId(sessCB, 'mem-conc-b');
-    await Promise.all([A.cloudSync.flush(), B.cloudSync.flush()]); // session bootstrap ops
-    const writer = async (dev: Device, memId: string, prefix: string): Promise<void> => {
-      for (let i = 0; i < 30; i++) {
-        dev.store.storeObservation(memId, 'proj-conc', makeObs(`${prefix}-${i}`, `${prefix} narrative ${i}`), 1, 0);
-        if (i % 5 === 4) {
-          await Promise.all([dev.cloudSync.flush(), sleep(10)]); // overlap pushes
-        }
-      }
-      await dev.cloudSync.flush();
-    };
-    await Promise.all([writer(A, 'mem-conc-a', 'conc-a'), writer(B, 'mem-conc-b', 'conc-b')]);
-    await A.client.pullOnce({ timeoutMs: 15_000 });
-    await B.client.pullOnce({ timeoutMs: 15_000 });
-    const concCountA = count(A, `SELECT COUNT(*) AS n FROM observations WHERE project = 'proj-conc'`);
-    const concCountB = count(B, `SELECT COUNT(*) AS n FROM observations WHERE project = 'proj-conc'`);
-    check('A holds all 60 concurrent rows exactly once', concCountA === 60, { concCountA });
-    check('B holds all 60 concurrent rows exactly once', concCountB === 60, { concCountB });
-    const distinctA = count(A, `SELECT COUNT(DISTINCT title) AS n FROM observations WHERE project = 'proj-conc'`);
-    const distinctB = count(B, `SELECT COUNT(DISTINCT title) AS n FROM observations WHERE project = 'proj-conc'`);
-    check('no loss, no dupes (60 distinct titles on both)', distinctA === 60 && distinctB === 60, { distinctA, distinctB });
-    const opsBeforeEcho = (await hubStatus()).op_count;
-    await Promise.all([A.cloudSync.flush(), B.cloudSync.flush()]);
-    const opsAfterEcho = (await hubStatus()).op_count;
-    check('no echo: hub op_count stable after both re-flush', opsBeforeEcho === opsAfterEcho, { opsBeforeEcho, opsAfterEcho });
-
-    // === Scenario 6: week-offline catch-up (pagination) ====================
-    console.log(`\nScenario 6: week-offline catch-up (B dark while A writes ${OFFLINE_OPS} ops)`);
-    const sessBulk = A.store.createSDKSession('sess-bulk', 'proj-bulk', 'bulk');
-    A.store.updateMemorySessionId(sessBulk, 'mem-bulk');
-    for (let i = 0; i < OFFLINE_OPS; i++) {
-      A.store.storeObservation('mem-bulk', 'proj-bulk', makeObs(`bulk-${i}`, `offline backlog item ${i}`), 1, 0);
-    }
-    await A.cloudSync.flush();
-    check('A drained the backlog', pendingTotal(A) === 0, A.cloudSync.status());
-    const cursorBefore = B.apply.getCursor();
-    const headBefore = (await hubStatus()).head_seq;
-    check(`B is >500 ops behind (multiple /changes pages)`, headBefore - cursorBefore > 500, { headBefore, cursorBefore });
-    await B.client.pullOnce({ timeoutMs: 60_000 });
-    check('B converged on the full backlog', count(B, `SELECT COUNT(*) AS n FROM observations WHERE project = 'proj-bulk'`) === OFFLINE_OPS);
-    check('B cursor reached hub head', B.apply.getCursor() === headBefore, { cursor: B.apply.getCursor(), headBefore });
-
-    // === Scenario 7: fresh device bootstrap (since=0) ======================
-    console.log('\nScenario 7: fresh device bootstrap (empty DB, since=0)');
-    C = makeDevice('c');
-    check('C starts at cursor 0', C.apply.getCursor() === 0);
-    await C.client.pullOnce({ timeoutMs: 60_000 });
-    const bCounts = corpusCounts(B);
-    const cCounts = corpusCounts(C);
-    check('C converged on the full corpus (matches B)',
-      cCounts.obs === bCounts.obs && cCounts.sums === bCounts.sums && cCounts.prompts === bCounts.prompts,
-      { cCounts, bCounts });
-    check('C sees the final title (full-log replay: park, claim, then overwrite)',
-      q<{ custom_title: string }>(C, `SELECT custom_title FROM sdk_sessions WHERE memory_session_id = 'mem-matrix-1'`)?.custom_title === 'Retitled by X');
-    check('C sees the remap state',
-      count(C, `SELECT COUNT(*) AS n FROM observations WHERE merged_into_project = 'proj-parent'`) >= 1
-      && q<{ project: string }>(C, `SELECT project FROM sdk_sessions WHERE memory_session_id = 'mem-matrix-1'`)?.project === 'proj-moved');
-    check('C adopted the hub epoch', C.apply.getEpoch() === (await hubStatus()).epoch);
-    check('C pushed nothing (pure replica)', pendingTotal(C) === 0, C.cloudSync.status());
-
-    // === Scenario 8: epoch reset ==========================================
-    console.log('\nScenario 8: epoch reset (hub storage wiped -> reconverge, no dupes)');
-    const epoch1 = (await hubStatus()).epoch;
-    const before = { a: corpusCounts(A), b: corpusCounts(B), c: corpusCounts(C) };
-    const nativeA = count(A, 'SELECT COUNT(*) AS n FROM observations WHERE origin_device_id IS NULL')
-      + count(A, 'SELECT COUNT(*) AS n FROM session_summaries WHERE origin_device_id IS NULL')
-      + count(A, 'SELECT COUNT(*) AS n FROM user_prompts WHERE origin_device_id IS NULL');
-
-    await stopHub();
-    rmSync(persistDir, { recursive: true, force: true });
-    console.log('[hub] state wiped; restarting...');
-    await startHub();
-    const epoch2 = (await hubStatus()).epoch;
-    check('fresh DO storage minted a new epoch', epoch2 !== epoch1 && epoch2.length > 0, { epoch1, epoch2 });
-
-    await A.client.pullOnce({ timeoutMs: 15_000 });
-    check('A adopted the new epoch', A.apply.getEpoch() === epoch2);
-    const requeuedA = pendingTotal(A);
-    check('A requeued its native corpus for re-push (the Phase 3 fix)', requeuedA === nativeA && requeuedA > 0, { requeuedA, nativeA });
-    await A.cloudSync.flush();
-
-    await B.client.pullOnce({ timeoutMs: 60_000 });
-    check('B adopted the new epoch', B.apply.getEpoch() === epoch2);
-    check('B requeued its native corpus', pendingTotal(B) > 0, B.cloudSync.status());
-    await B.cloudSync.flush();
-
-    await C.client.pullOnce({ timeoutMs: 60_000 });
-    check('C requeued nothing (no native rows)', pendingTotal(C) === 0, C.cloudSync.status());
-
-    // Settle: everyone pulls everyone's re-pushed corpus.
-    await A.client.pullOnce({ timeoutMs: 60_000 });
-    await B.client.pullOnce({ timeoutMs: 60_000 });
-    await C.client.pullOnce({ timeoutMs: 60_000 });
-
-    const after = { a: corpusCounts(A), b: corpusCounts(B), c: corpusCounts(C) };
-    check('A reconverged with no loss and no dupes', JSON.stringify(after.a) === JSON.stringify(before.a), { before: before.a, after: after.a });
-    check('B reconverged with no loss and no dupes', JSON.stringify(after.b) === JSON.stringify(before.b), { before: before.b, after: after.b });
-    check('C reconverged with no loss and no dupes', JSON.stringify(after.c) === JSON.stringify(before.c), { before: before.c, after: after.c });
-    check('all drains empty after reconvergence',
-      pendingTotal(A) === 0 && pendingTotal(B) === 0 && pendingTotal(C) === 0,
-      { a: A.cloudSync.status().pending, b: B.cloudSync.status().pending, c: C.cloudSync.status().pending });
-    check('rebuilt hub carries the re-pushed log', (await hubStatus()).head_seq > 0);
-  } finally {
-    destroyDevice(A);
-    destroyDevice(B);
-    if (C) destroyDevice(C);
-    await stopHub();
-    if (process.env.MATRIX_KEEP_TMP !== '1') {
-      rmSync(persistDir, { recursive: true, force: true });
-    }
+async function pullToHead(device: Device): Promise<void> {
+  await device.client.pullOnce({ timeoutMs: 20_000, force: true });
+  const status = await getHubStatus();
+  if (device.apply.getCursor() !== status.head_seq) {
+    await device.client.pullOnce({ timeoutMs: 20_000, force: true });
   }
-
-  console.log(failures === 0 ? '\nMATRIX RESULT: ALL CHECKS PASSED' : `\nMATRIX RESULT: ${failures} CHECK(S) FAILED`);
-  process.exit(failures === 0 ? 0 : 1);
+  check(device.apply.getCursor() === status.head_seq, `${device.name.toUpperCase()} cursor reaches Hub head`, {
+    cursor: device.apply.getCursor(),
+    head: status.head_seq,
+  });
 }
 
-main().catch(async (err) => {
-  console.error('Matrix harness error:', err);
-  await stopHub();
-  process.exit(1);
+function reviveObservation(device: Device, id: string, memorySessionId: string): void {
+  device.store.db.prepare(`
+    INSERT INTO observations
+      (id, memory_session_id, project, type, title, subtitle, facts, narrative,
+       concepts, files_read, files_modified, prompt_number, discovery_tokens,
+       created_at, created_at_epoch)
+    VALUES (?, ?, 'project-offline', 'discovery', 'revived-offline', NULL,
+      '[]', 'revived after tombstone', '[]', '[]', '[]', 1, 0, ?, ?)
+  `).run(id, memorySessionId, new Date().toISOString(), Date.now());
+}
+
+async function runMatrix(sidecar: SidecarState): Promise<void> {
+  console.log(`Sync matrix E2E — fresh account ${USER_ID}`);
+  const fresh = await getHubStatus();
+  check(
+    fresh.head_seq === '0' && fresh.projected_seq === '0' && fresh.op_count === 0 && fresh.device_count === 0,
+    'fresh account starts with an empty log and no devices',
+    fresh,
+  );
+
+  let a = openDevice('a');
+  let b = openDevice('b');
+  const tempDirs = new Set([a.dir, b.dir]);
+  try {
+    await waitFor(() => a.client.isSocketLive() && b.client.isSocketLive(), 'both advisory sockets');
+    await waitFor(() => a.apply.getEpoch() === fresh.epoch && b.apply.getEpoch() === fresh.epoch, 'initial epoch adoption');
+    check(true, 'both real clients connect their advisory WebSockets');
+
+    console.log('\nScenario: canonical content plus set_title and set_prompt_session');
+    const sessionA = a.store.createSDKSession(
+      'content-baseline-a',
+      'project-baseline',
+      'baseline request',
+      'Baseline Custom Title',
+      'claude',
+    );
+    a.store.saveUserPrompt('content-baseline-a', 1, 'prompt captured before memory id', sessionA);
+    await a.cloudSync.flush();
+    a.store.updateMemorySessionId(sessionA, 'memory-baseline-a');
+    const baseline = a.store.storeObservation(
+      'memory-baseline-a',
+      'project-baseline',
+      observation('baseline-observation', 'baseline canonical narrative'),
+      1,
+      7,
+    );
+    a.store.storeSummary('memory-baseline-a', 'project-baseline', {
+      request: 'summarize baseline',
+      investigated: 'canonical flow',
+      learned: 'protocol v2',
+      completed: 'baseline complete',
+      next_steps: 'continue matrix',
+      notes: null,
+    }, 1);
+    await a.cloudSync.flush();
+    await pullToHead(b);
+    check(
+      row<{ custom_title: string | null }>(b, "SELECT custom_title FROM sdk_sessions WHERE memory_session_id = 'memory-baseline-a'")?.custom_title
+        === 'Baseline Custom Title',
+      'set_title converges on the second client',
+    );
+    const repairedPrompt = row<{ memory_session_id: string | null }>(b, `
+      SELECT s.memory_session_id
+      FROM user_prompts p JOIN sdk_sessions s ON s.id = p.session_db_id
+      WHERE p.prompt_text = 'prompt captured before memory id'
+    `);
+    check(repairedPrompt?.memory_session_id === 'memory-baseline-a', 'set_prompt_session repairs the early prompt');
+    check(count(b, "SELECT COUNT(*) AS n FROM session_summaries WHERE origin_device_id = ?", DEVICE_IDS.a) === 1,
+      'summary content replicates through canonical protocol v2');
+
+    console.log('\nScenario: WebSocket hint path and authoritative HTTP path');
+    await Bun.sleep(100);
+    b.gate.pullRequests = 0;
+    a.store.storeObservation(
+      'memory-baseline-a',
+      'project-baseline',
+      observation('websocket-only-observation', 'delivered by advisory frame'),
+      2,
+      0,
+    );
+    await a.cloudSync.flush();
+    await waitFor(
+      () => count(b, "SELECT COUNT(*) AS n FROM observations WHERE title = 'websocket-only-observation'") === 1,
+      'WebSocket delivery to B',
+    );
+    check(b.gate.pullRequests === 0, 'advisory WebSocket applies a contiguous frame without an HTTP pull', b.gate);
+
+    replaceClient(b, false, false);
+    b.gate.pullRequests = 0;
+    a.store.storeObservation(
+      'memory-baseline-a',
+      'project-baseline',
+      observation('http-authoritative-observation', 'must arrive by cursor pull'),
+      3,
+      0,
+    );
+    await a.cloudSync.flush();
+    await Bun.sleep(100);
+    check(count(b, "SELECT COUNT(*) AS n FROM observations WHERE title = 'http-authoritative-observation'") === 0,
+      'HTTP-only client has no advisory delivery');
+    await b.client.pullOnce({ timeoutMs: 20_000, force: true });
+    check(count(b, "SELECT COUNT(*) AS n FROM observations WHERE title = 'http-authoritative-observation'") === 1,
+      'authoritative HTTP cursor pull converges without WebSocket');
+    check(b.gate.pullRequests > 0, 'HTTP correctness uses /v1/sync/changes');
+
+    console.log('\nScenario: restart with durable cursor');
+    const persistedCursor = b.apply.getCursor();
+    const bDir = b.dir;
+    closeDevice(b, false);
+    b = openDevice('b', bDir, { start: false });
+    check(b.apply.getCursor() === persistedCursor, 'client restart preserves the decimal cursor', {
+      before: persistedCursor,
+      after: b.apply.getCursor(),
+    });
+    b.client.start();
+    await waitFor(() => b.client.isSocketLive(), 'B WebSocket after restart');
+    check(true, 'restarted client reconnects the advisory lane');
+
+    console.log('\nScenario: concurrent two-client writes');
+    const sessionConcurrentA = a.store.createSDKSession('content-concurrent-a', 'project-concurrent', 'A concurrent');
+    a.store.updateMemorySessionId(sessionConcurrentA, 'memory-concurrent-a');
+    const sessionConcurrentB = b.store.createSDKSession('content-concurrent-b', 'project-concurrent', 'B concurrent');
+    b.store.updateMemorySessionId(sessionConcurrentB, 'memory-concurrent-b');
+    a.store.storeObservation('memory-concurrent-a', 'project-concurrent', observation('concurrent-a', 'written by A'), 1, 0);
+    b.store.storeObservation('memory-concurrent-b', 'project-concurrent', observation('concurrent-b', 'written by B'), 1, 0);
+    await Promise.all([a.cloudSync.flush(), b.cloudSync.flush()]);
+    // A simultaneous projector lease can deliberately refuse one drain as
+    // busy. Once the successful request releases it, both real queues retry.
+    await Promise.all([a.cloudSync.flush(), b.cloudSync.flush()]);
+    await Promise.all([pullToHead(a), pullToHead(b)]);
+    for (const device of [a, b]) {
+      check(count(device, "SELECT COUNT(*) AS n FROM observations WHERE title IN ('concurrent-a','concurrent-b')") === 2,
+        `${device.name.toUpperCase()} converges both concurrent writes exactly once`);
+      check(pending(device) === 0, `${device.name.toUpperCase()} concurrent queue drains`);
+    }
+
+    console.log('\nScenario: offline push retry');
+    const offline = a.store.storeObservation(
+      'memory-baseline-a',
+      'project-offline',
+      observation('offline-retry-observation', 'queued while transport is offline'),
+      4,
+      0,
+    );
+    a.gate.pushesOnline = false;
+    await a.cloudSync.flush();
+    check(a.cloudSync.status().lastError?.includes('simulated offline push transport') === true,
+      'offline failure is surfaced without losing the row');
+    check(pending(a) > 0, 'offline write remains queued for retry');
+    a.gate.pushesOnline = true;
+    await a.cloudSync.flush();
+    check(pending(a) === 0 && a.cloudSync.status().lastError === null, 'online retry drains the same durable queue');
+    await pullToHead(b);
+    check(count(b, "SELECT COUNT(*) AS n FROM observations WHERE title = 'offline-retry-observation'") === 1,
+      'retried offline write converges on B');
+
+    console.log('\nScenario: remap_project mutation');
+    a.store.db.transaction(() => {
+      emitRemapProject(a.store.db, { memory_session_id: 'memory-baseline-a' }, { project: 'project-remapped' });
+    })();
+    await a.cloudSync.flush();
+    await pullToHead(b);
+    check(
+      count(b, "SELECT COUNT(*) AS n FROM observations WHERE memory_session_id = 'memory-baseline-a' AND project = 'project-remapped'") >= 1,
+      'remap_project converges matching content',
+    );
+
+    console.log('\nScenario: delete then higher-revision revive');
+    const offlineId = String(offline.id);
+    const entityId = stableDocumentId('observation', DEVICE_IDS.a, offlineId);
+    const deleteRev = a.cloudSync.queueDelete('observation', offlineId, '2026-07-20T12:00:00.000Z');
+    await a.cloudSync.flush();
+    await pullToHead(b);
+    check(count(b, 'SELECT COUNT(*) AS n FROM observations WHERE origin_device_id = ? AND origin_local_id = ?', DEVICE_IDS.a, offlineId) === 0,
+      'tombstone deletes the replica');
+    const deletedHead = row<{ entity_rev: string; deleted: number }>(b,
+      'SELECT entity_rev, deleted FROM sync_entity_heads WHERE entity_id = ?', entityId);
+    check(deletedHead?.deleted === 1 && deletedHead.entity_rev === deleteRev, 'delete advances the entity head', deletedHead);
+
+    reviveObservation(a, offlineId, 'memory-baseline-a');
+    await a.cloudSync.flush();
+    await pullToHead(b);
+    const revived = row<{ title: string; sync_rev: string }>(b, `
+      SELECT title, CAST(sync_rev AS TEXT) AS sync_rev
+      FROM observations WHERE origin_device_id = ? AND origin_local_id = ?
+    `, DEVICE_IDS.a, offlineId);
+    check(revived?.title === 'revived-offline', 'higher-revision live body revives the deleted entity', revived);
+    check(revived !== undefined && compareCanonicalDecimals(revived.sync_rev, deleteRev) > 0,
+      'revive revision is strictly greater than the tombstone', { deleteRev, revived: revived?.sync_rev });
+
+    await Promise.all([pullToHead(a), pullToHead(b)]);
+    const finalStatus = await getHubStatus();
+    check(typeof a.apply.getCursor() === 'string' && DECIMAL.test(a.apply.getCursor()), 'A cursor remains a decimal string');
+    check(typeof b.apply.getCursor() === 'string' && DECIMAL.test(b.apply.getCursor()), 'B cursor remains a decimal string');
+    check(finalStatus.head_seq.length >= 2, 'matrix crosses a multi-digit decimal Hub sequence', finalStatus.head_seq);
+    check(a.apply.getCursor() === finalStatus.head_seq && b.apply.getCursor() === finalStatus.head_seq,
+      'both decimal cursors equal the authoritative head');
+    check(finalStatus.projected_seq === finalStatus.head_seq, 'Hub checkpoint equals head');
+    check(sidecar.projectedThrough === finalStatus.head_seq, 'loopback projector checkpoint equals Hub head');
+    check(finalStatus.device_count === 2, 'exactly two real device identities touched the Hub', finalStatus.device_count);
+    check(sidecar.errors.length === 0, 'loopback verifier/projector recorded no contract errors', sidecar.errors);
+    check(sidecar.verifyCalls > 0 && sidecar.projectionCalls.length > 0, 'real Hub used both loopback sidecar routes');
+
+    const kinds = new Set(sidecar.bodies.map(body => body.kind));
+    const mutations = new Set(sidecar.bodies
+      .filter(body => body.kind === 'mutation')
+      .map(body => (body.mutation as { op?: unknown } | null)?.op));
+    check(['observation', 'summary', 'prompt', 'mutation'].every(kind => kinds.has(kind as CanonicalContentBody['kind'])),
+      'projector receives every canonical content kind', [...kinds]);
+    check(['set_title', 'set_prompt_session', 'remap_project'].every(op => mutations.has(op)),
+      'projector receives all required mutation kinds', [...mutations]);
+    const lifecycle = sidecar.bodies.filter(body => body.id === entityId);
+    check(lifecycle.some(body => body.deleted) && lifecycle.some(body => !body.deleted && compareCanonicalDecimals(body.entity_rev, deleteRev) > 0),
+      'projector observes both tombstone and higher-revision revive');
+
+    const [statusA, statusB] = await Promise.all([
+      a.cloudSync.statusWithHubProbe(),
+      b.cloudSync.statusWithHubProbe(),
+    ]);
+    check(statusA.hub.reachable === true && statusB.hub.reachable === true,
+      'both empty-queue status checks authenticate against Hub');
+    check(pending(a) === 0 && pending(b) === 0, 'both clients finish with empty durable queues');
+    check(String(baseline.id) !== offlineId, 'delete/revive reused only its intended stable local id');
+  } finally {
+    for (const device of [a, b]) {
+      try { closeDevice(device, false); } catch { /* cleanup continues */ }
+    }
+    for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function main(): Promise<void> {
+  const sidecar = startSidecar();
+  let failure: unknown = null;
+  try {
+    await startHub(sidecar.baseUrl);
+    await runMatrix(sidecar.state);
+  } catch (error) {
+    failure = error;
+  } finally {
+    try {
+      await stopHub();
+    } catch (error) {
+      failure ??= error;
+    }
+    try {
+      await sidecar.server.stop(true);
+    } catch (error) {
+      failure ??= error;
+    }
+  }
+  if (failure) throw failure;
+  console.log('\nMATRIX RESULT: ALL CHECKS PASSED');
+}
+
+await main().catch(error => {
+  console.error('Matrix harness error:', error);
+  process.exitCode = 1;
 });
