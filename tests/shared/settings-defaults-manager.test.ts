@@ -99,6 +99,16 @@ describe('SettingsDefaultsManager', () => {
     });
 
     describe('file exists with valid content', () => {
+      it('loads the OpenRouter context-message cap from settings', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '7',
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect((result as any).CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES).toBe('7');
+      });
+
       it('should return parsed content when file has valid JSON', () => {
         const customSettings = {
           CLAUDE_MEM_MODEL: 'custom-model',

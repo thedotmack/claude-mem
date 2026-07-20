@@ -131,9 +131,28 @@ interface OpenRouterResponse {
 interface OpenRouterConfig {
   apiKey: string;
   model: string;
+  maxContextMessages: number;
   apiUrl: string;
   siteUrl?: string;
   appName?: string;
+}
+
+const DEFAULT_MAX_CONTEXT_MESSAGES = 20;
+const MIN_MAX_CONTEXT_MESSAGES = 2;
+const MAX_MAX_CONTEXT_MESSAGES = 200;
+
+function parseMaxContextMessages(value: unknown): number {
+  const parsed = typeof value === 'string' ? Number.parseInt(value, 10) : Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_MAX_CONTEXT_MESSAGES;
+  return Math.min(MAX_MAX_CONTEXT_MESSAGES, Math.max(MIN_MAX_CONTEXT_MESSAGES, Math.floor(parsed)));
+}
+
+function limitConversationHistory(
+  history: ConversationMessage[],
+  maxContextMessages: number,
+): ConversationMessage[] {
+  if (history.length <= maxContextMessages) return history;
+  return [history[0], ...history.slice(-(maxContextMessages - 1))];
 }
 
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
@@ -187,7 +206,14 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   }
 
   protected async query(history: ConversationMessage[], config: OpenRouterConfig): Promise<ProviderQueryResult> {
-    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName);
+    const boundedHistory = limitConversationHistory(history, config.maxContextMessages);
+    if (boundedHistory.length !== history.length) {
+      logger.debug('SDK', 'Truncated OpenRouter conversation history', {
+        originalMessages: history.length,
+        messagesInContext: boundedHistory.length,
+      });
+    }
+    return this.queryOpenRouterMultiTurn(boundedHistory, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName);
   }
 
   /** POST the chat-completions request. Extracted so the retry try block stays narrow. */
@@ -353,8 +379,9 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
 
     const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
     const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem';
+    const maxContextMessages = parseMaxContextMessages(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES);
 
-    return { apiKey, model, apiUrl, siteUrl, appName };
+    return { apiKey, model, maxContextMessages, apiUrl, siteUrl, appName };
   }
 }
 
