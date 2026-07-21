@@ -216,21 +216,44 @@ function candidateWorkerScriptPath(root: string): string {
   return path.join(pluginRoot, 'scripts', 'worker-service.cjs');
 }
 
+/**
+ * Compare two `<major>.<minor>.<patch>` version strings, descending (newest
+ * first). Non-numeric or missing components compare as 0. Exported for unit
+ * testing (see tests/shared/worker-utils-cache-version-resolution.test.ts).
+ */
+export function compareVersionDescending(a: string, b: string): number {
+  const partsA = a.split('.').map(part => Number.parseInt(part, 10));
+  const partsB = b.split('.').map(part => Number.parseInt(part, 10));
+  const length = Math.max(partsA.length, partsB.length);
+  for (let i = 0; i < length; i += 1) {
+    const numA = Number.isFinite(partsA[i]) ? partsA[i] : 0;
+    const numB = Number.isFinite(partsB[i]) ? partsB[i] : 0;
+    if (numA !== numB) {
+      return numB - numA;
+    }
+  }
+  return 0;
+}
+
 function cacheWorkerScriptCandidates(): string[] {
   const pluginsRoot = path.dirname(path.dirname(MARKETPLACE_ROOT));
   const cacheRoot = path.join(pluginsRoot, 'cache', 'thedotmack', 'claude-mem');
   try {
     return readdirSync(cacheRoot)
       .filter(name => /^\d/.test(name))
-      .map(name => path.join(cacheRoot, name))
-      .filter(candidate => {
+      .filter(name => {
         try {
-          return statSync(candidate).isDirectory();
+          return statSync(path.join(cacheRoot, name)).isDirectory();
         } catch {
           return false;
         }
       })
-      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
+      // Sort by the version directory name itself (semver descending), not
+      // mtime: an in-place update can leave two version dirs with identical
+      // mtimes, making mtime-sort order undefined and letting the worker
+      // spawn from a stale version indefinitely (issue #2424).
+      .sort(compareVersionDescending)
+      .map(name => path.join(cacheRoot, name))
       .map(candidateWorkerScriptPath);
   } catch {
     return [];
