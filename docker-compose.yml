@@ -54,6 +54,7 @@
 services:
   postgres:
     image: postgres:17-alpine
+    container_name: claude-mem-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
@@ -70,6 +71,7 @@ services:
 
   valkey:
     image: valkey/valkey:8-alpine
+    container_name: claude-mem-valkey
     restart: unless-stopped
     # BullMQ requires noeviction; AOF gives durability across restarts.
     command:
@@ -89,9 +91,11 @@ services:
       retries: 12
 
   claude-mem-server:
+    image: claude-mem-server:${CLAUDE_MEM_IMAGE_TAG:-v13.11.0}
     build:
       context: .
       dockerfile: docker/claude-mem/Dockerfile
+    container_name: claude-mem-server
     restart: unless-stopped
     depends_on:
       postgres:
@@ -123,7 +127,12 @@ services:
       # does. This split keeps HTTP latency unaffected by provider calls.
       CLAUDE_MEM_GENERATION_DISABLED: "true"
     ports:
-      - "37877:37877"
+      # CRITICAL: never bind 0.0.0.0 — VPS INPUT policy is open and ufw is
+      # inactive, so an unqualified "37877:37877" here would expose the
+      # server to the public internet. Loopback (local hooks/healthcheck)
+      # + the box's own Tailscale IP (cross-machine access) only.
+      - "127.0.0.1:37877:37877"
+      - "${CLAUDE_MEM_TAILSCALE_IP:-100.96.136.102}:37877:37877"
     volumes:
       - claude-mem-data:/data/claude-mem
       # #2558 — credentials-file mount. Place provider/API secrets in a file
@@ -139,9 +148,11 @@ services:
       start_period: 20s
 
   claude-mem-worker:
+    image: claude-mem-server:${CLAUDE_MEM_IMAGE_TAG:-v13.11.0}
     build:
       context: .
       dockerfile: docker/claude-mem/Dockerfile
+    container_name: claude-mem-worker
     restart: unless-stopped
     depends_on:
       postgres:
@@ -156,6 +167,12 @@ services:
       CLAUDE_MEM_RUNTIME: server-beta
       CLAUDE_MEM_DATA_DIR: /data/claude-mem
       CLAUDE_MEM_QUEUE_ENGINE: bullmq
+      # MUST match the server's SERVER_PORT/WORKER_PORT: the BullMQ queue prefix is
+      # derived from CLAUDE_MEM_WORKER_PORT (default falls back to a UID-derived port
+      # if unset), so a mismatch here means the worker silently reads from a different,
+      # never-populated queue while the server enqueues jobs under the real prefix.
+      CLAUDE_MEM_SERVER_PORT: "37877"
+      CLAUDE_MEM_WORKER_PORT: "37877"
       # #2558 — REDIS_URL fallback (see server service above).
       CLAUDE_MEM_REDIS_URL: ${CLAUDE_MEM_REDIS_URL:-redis://valkey:6379}
       CLAUDE_MEM_REDIS_MODE: docker
@@ -166,6 +183,8 @@ services:
       # CLAUDE_MEM_ANTHROPIC_API_KEY) is required for real generation; the
       # worker stays running but never produces observations without one.
       CLAUDE_MEM_SERVER_PROVIDER: ${CLAUDE_MEM_SERVER_PROVIDER:-claude}
+      CLAUDE_MEM_SERVER_MODEL: ${CLAUDE_MEM_SERVER_MODEL:-}
+      CLAUDE_MEM_OPENROUTER_BASE_URL: ${CLAUDE_MEM_OPENROUTER_BASE_URL:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CLAUDE_MEM_ANTHROPIC_API_KEY: ${CLAUDE_MEM_ANTHROPIC_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -178,5 +197,11 @@ services:
 
 volumes:
   claude-mem-data:
+    external: true
+    name: claude-mem-data
   postgres-data:
+    external: true
+    name: claude-mem-postgres-data
   valkey-data:
+    external: true
+    name: claude-mem-valkey-data
