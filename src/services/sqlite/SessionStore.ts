@@ -2229,7 +2229,7 @@ export class SessionStore {
     const { orderBy = 'date_desc', limit, project, platformSource } = options;
     const preserveIdOrder = orderBy === 'relevance';
     const orderClause = preserveIdOrder ? '' : `ORDER BY up.created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
-    const limitClause = limit ? `LIMIT ${limit}` : '';
+    const limitClause = limit && !preserveIdOrder ? `LIMIT ${limit}` : '';
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
     const additionalConditions: string[] = [];
@@ -2265,7 +2265,8 @@ export class SessionStore {
     if (!preserveIdOrder) return rows;
 
     const rowMap = new Map(rows.map(r => [r.id, r]));
-    return ids.map(id => rowMap.get(id)).filter((r): r is UserPromptRecord => !!r);
+    const ordered = ids.map(id => rowMap.get(id)).filter((r): r is UserPromptRecord => !!r);
+    return limit ? ordered.slice(0, limit) : ordered;
   }
 
   getTimelineAroundTimestamp(
