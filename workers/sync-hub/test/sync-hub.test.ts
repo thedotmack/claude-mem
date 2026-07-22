@@ -26,6 +26,7 @@ import {
 	type StatusResult,
 	type SyncHub,
 } from "../src/do/SyncHub";
+import { KILL_SWITCH_KEY } from "../src/kill-switch";
 import {
 	PROJECTION_FETCH_TIMEOUT_MS,
 	PROJECTION_PAGE_MAX_BYTES,
@@ -957,6 +958,166 @@ describe("internal payload-free Hub metadata", () => {
 			body: JSON.stringify({ protocol_version: 1, user_id: "user", include_content_counts: true }),
 		});
 		expect(extended.status).toBe(400);
+	});
+});
+
+describe("internal per-user hub reset", () => {
+	const base = "https://sync-hub.test";
+	const internalHeaders = {
+		Authorization: "Bearer test-projector-secret",
+		"Content-Type": "application/json",
+	};
+
+	function reset(body: unknown, headers: Record<string, string> = internalHeaders): Promise<Response> {
+		return SELF.fetch(`${base}/internal/v1/sync/reset`, {
+			method: "POST",
+			headers,
+			body: JSON.stringify(body),
+		});
+	}
+
+	it("fails closed without the internal secret and refuses non-POST", async () => {
+		const absent = await reset({ protocol_version: 1, user_id: "user" }, {
+			"Content-Type": "application/json",
+		});
+		expect(absent.status).toBe(401);
+		const wrong = await reset({ protocol_version: 1, user_id: "user" }, {
+			Authorization: "Bearer wrong",
+			"Content-Type": "application/json",
+		});
+		expect(wrong.status).toBe(401);
+		// A valid SUBSCRIBER token is not the internal credential either.
+		const subscriber = await reset({ protocol_version: 1, user_id: "user" }, {
+			Authorization: "Bearer valid-for:user",
+			"Content-Type": "application/json",
+		});
+		expect(subscriber.status).toBe(401);
+		const get = await SELF.fetch(`${base}/internal/v1/sync/reset`);
+		expect(get.status).toBe(405);
+	});
+
+	it("rejects every malformed body with 400", async () => {
+		for (const body of [
+			{ user_id: "user" },
+			{ protocol_version: 2, user_id: "user" },
+			{ protocol_version: 1 },
+			{ protocol_version: 1, user_id: "" },
+			{ protocol_version: 1, user_id: "   " },
+			{ protocol_version: 1, user_id: 7 },
+			{ protocol_version: 1, user_id: "user", force: true },
+			["not", "an", "object"],
+		]) {
+			expect((await reset(body)).status).toBe(400);
+		}
+		const notJson = await SELF.fetch(`${base}/internal/v1/sync/reset`, {
+			method: "POST",
+			headers: internalHeaders,
+			body: "{",
+		});
+		expect(notJson.status).toBe(400);
+	});
+
+	it("wipes pushed state to a pristine hub and accepts a fresh seq-1 push under the new epoch", async () => {
+		const userId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+		const clientHeaders = {
+			Authorization: `Bearer valid-for:${userId}`,
+			"X-User-Id": userId,
+			"X-Device-Id": "dev-a",
+			"Content-Type": "application/json",
+		};
+		const first = await SELF.fetch(`${base}/v1/sync/ops`, {
+			method: "POST",
+			headers: clientHeaders,
+			body: JSON.stringify({
+				protocol_version: 2,
+				ops: [await observationOp("1", "1", "dev-a"), await observationOp("2", "1", "dev-a")],
+			}),
+		});
+		expect(first.status).toBe(200);
+		const pull = await SELF.fetch(`${base}/v1/sync/changes?since=0`, {
+			headers: { ...clientHeaders, "X-Device-Id": "dev-b" },
+		});
+		expect(pull.status).toBe(200);
+		const stub = hub(userId);
+		const populated = status(await stub.getStatus());
+		expect(populated).toMatchObject({ head_seq: "2", projected_seq: "2", op_count: 2, device_count: 2 });
+
+		const response = await reset({ protocol_version: 1, user_id: userId });
+		expect(response.status).toBe(200);
+		const body = await response.json() as { protocol_version: number; epoch: string; head_seq: string };
+		expect(body).toMatchObject({ protocol_version: 1, head_seq: "0" });
+		expect(body.epoch).toMatch(/^[1-9][0-9]*$/);
+		expect(body.epoch).not.toBe(populated.epoch);
+
+		const pristine = status(await stub.getStatus());
+		expect(pristine).toMatchObject({
+			epoch: body.epoch,
+			head_seq: "0",
+			projected_seq: "0",
+			op_count: 0,
+			device_count: 0,
+		});
+		// The daily no-op alarm is rescheduled along with the pristine state.
+		await runInDurableObject(stub, async (_instance, state) => {
+			expect(await state.storage.getAlarm()).not.toBeNull();
+		});
+
+		// The same device replays its op from scratch: fresh entity ledger,
+		// seq restarts at 1, and the page carries the NEW epoch end to end.
+		const repush = await SELF.fetch(`${base}/v1/sync/ops`, {
+			method: "POST",
+			headers: clientHeaders,
+			body: JSON.stringify({ protocol_version: 2, ops: [await observationOp("1", "1", "dev-a")] }),
+		});
+		expect(repush.status).toBe(200);
+		const repushed = await repush.json() as {
+			acked: Array<{ seq: string }>;
+			head_seq: string;
+			projected_seq: string;
+		};
+		expect(repushed.acked[0].seq).toBe("1");
+		expect(repushed).toMatchObject({ head_seq: "1", projected_seq: "1" });
+		const page = changes(await stub.getChanges("dev-b", "0", 500));
+		expect(page.epoch).toBe(body.epoch);
+		expect(page.ops).toHaveLength(1);
+		expect(page.ops[0].seq).toBe("1");
+	});
+
+	it("creates a pristine hub when resetting a never-seen user", async () => {
+		const userId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+		const response = await reset({ protocol_version: 1, user_id: userId });
+		expect(response.status).toBe(200);
+		const body = await response.json() as { epoch: string; head_seq: string };
+		expect(body.head_seq).toBe("0");
+		expect(body.epoch).toMatch(/^[1-9][0-9]*$/);
+		expect(status(await hub(userId).getStatus())).toMatchObject({
+			epoch: body.epoch,
+			head_seq: "0",
+			projected_seq: "0",
+			op_count: 0,
+			device_count: 0,
+		});
+	});
+
+	it("trims user_id to the canonical hub name", async () => {
+		const userId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+		const stub = hub(userId);
+		ok(await stub.pushOps("dev-a", [await observationOp("1")]));
+		const response = await reset({ protocol_version: 1, user_id: `  ${userId}  ` });
+		expect(response.status).toBe(200);
+		expect(status(await stub.getStatus())).toMatchObject({ head_seq: "0", op_count: 0 });
+	});
+
+	it("leaves the kill switch untouched — it is Worker-owned KV, not hub state", async () => {
+		const userId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+		await env.AUTH_CACHE.put(KILL_SWITCH_KEY, JSON.stringify({ source: "manual", reason: "test" }));
+		try {
+			const response = await reset({ protocol_version: 1, user_id: userId });
+			expect(response.status).toBe(200);
+			expect(await env.AUTH_CACHE.get(KILL_SWITCH_KEY)).not.toBeNull();
+		} finally {
+			await env.AUTH_CACHE.delete(KILL_SWITCH_KEY);
+		}
 	});
 });
 

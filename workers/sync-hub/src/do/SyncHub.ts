@@ -128,6 +128,12 @@ export interface ProjectionState {
 	projected_seq: string;
 }
 
+export interface ResetResult {
+	protocol_version: 1;
+	epoch: string;
+	head_seq: string;
+}
+
 export const INVALID_OPS_PREFIX = "invalid_ops:";
 export const PROJECTION_ERROR_PREFIX = "projection_error:";
 
@@ -178,55 +184,98 @@ export class SyncHub extends DurableObject<Env> {
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
 		ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
-		ctx.blockConcurrencyWhile(async () => {
-			ctx.storage.sql.exec(
-				`CREATE TABLE IF NOT EXISTS canonical_ops (
-					seq                 TEXT PRIMARY KEY,
-					entity_id           TEXT NOT NULL,
-					kind                TEXT NOT NULL,
-					origin_device_id    TEXT NOT NULL,
-					origin_local_id     TEXT,
-					entity_rev          TEXT NOT NULL,
-					operation_sha256    TEXT NOT NULL,
-					body                TEXT NOT NULL,
-					deleted             INTEGER NOT NULL CHECK (deleted IN (0, 1)),
-					server_ts           TEXT NOT NULL
-				);
-				CREATE UNIQUE INDEX IF NOT EXISTS canonical_ops_entity_rev
-					ON canonical_ops(entity_id, entity_rev);
-				CREATE TABLE IF NOT EXISTS entity_heads (
-					entity_id           TEXT PRIMARY KEY,
-					kind                TEXT NOT NULL,
-					origin_device_id    TEXT NOT NULL,
-					origin_local_id     TEXT,
-					entity_rev          TEXT NOT NULL,
-					operation_sha256    TEXT NOT NULL,
-					deleted             INTEGER NOT NULL CHECK (deleted IN (0, 1)),
-					seq                 TEXT NOT NULL
-				);
-				CREATE TABLE IF NOT EXISTS devices (
-					device_id           TEXT PRIMARY KEY,
-					name                TEXT,
-					last_ack_seq        TEXT NOT NULL DEFAULT '0',
-					last_seen           INTEGER
-				);
-				CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);`,
+		ctx.blockConcurrencyWhile(() => this.initializePristineState());
+	}
+
+	/**
+	 * Idempotent schema + pristine-state bootstrap, shared by the constructor
+	 * (cold start) and resetAllState() (post-wipe). Existing state is never
+	 * overwritten: tables are IF NOT EXISTS, meta defaults are DO NOTHING, and
+	 * the daily no-op alarm is scheduled only when none is pending.
+	 */
+	private async initializePristineState(): Promise<void> {
+		const storage = this.ctx.storage;
+		storage.sql.exec(
+			`CREATE TABLE IF NOT EXISTS canonical_ops (
+				seq                 TEXT PRIMARY KEY,
+				entity_id           TEXT NOT NULL,
+				kind                TEXT NOT NULL,
+				origin_device_id    TEXT NOT NULL,
+				origin_local_id     TEXT,
+				entity_rev          TEXT NOT NULL,
+				operation_sha256    TEXT NOT NULL,
+				body                TEXT NOT NULL,
+				deleted             INTEGER NOT NULL CHECK (deleted IN (0, 1)),
+				server_ts           TEXT NOT NULL
 			);
-			const defaults: Array<[string, string]> = [
-				["epoch", newEpoch()],
-				["head_seq", "0"],
-				["projected_seq", "0"],
-			];
-			for (const [key, value] of defaults) {
-				ctx.storage.sql.exec(
-					"INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO NOTHING",
-					key,
-					value,
-				);
+			CREATE UNIQUE INDEX IF NOT EXISTS canonical_ops_entity_rev
+				ON canonical_ops(entity_id, entity_rev);
+			CREATE TABLE IF NOT EXISTS entity_heads (
+				entity_id           TEXT PRIMARY KEY,
+				kind                TEXT NOT NULL,
+				origin_device_id    TEXT NOT NULL,
+				origin_local_id     TEXT,
+				entity_rev          TEXT NOT NULL,
+				operation_sha256    TEXT NOT NULL,
+				deleted             INTEGER NOT NULL CHECK (deleted IN (0, 1)),
+				seq                 TEXT NOT NULL
+			);
+			CREATE TABLE IF NOT EXISTS devices (
+				device_id           TEXT PRIMARY KEY,
+				name                TEXT,
+				last_ack_seq        TEXT NOT NULL DEFAULT '0',
+				last_seen           INTEGER
+			);
+			CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);`,
+		);
+		const defaults: Array<[string, string]> = [
+			["epoch", newEpoch()],
+			["head_seq", "0"],
+			["projected_seq", "0"],
+		];
+		for (const [key, value] of defaults) {
+			storage.sql.exec(
+				"INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO NOTHING",
+				key,
+				value,
+			);
+		}
+		const scheduled = await storage.getAlarm();
+		if (scheduled === null) await storage.setAlarm(Date.now() + DAY_MS);
+	}
+
+	/**
+	 * Wipe ALL durable state for this user and reinitialize a pristine hub —
+	 * fresh random epoch, empty log/heads/devices, projection checkpoint "0".
+	 * Reached only via the secret-gated internal route in ../index.ts
+	 * (POST /internal/v1/sync/reset); no public route can invoke it. Like every
+	 * other method here, it performs zero outbound I/O — in particular the
+	 * kill switch lives in Workers KV owned by the stateless Worker and is
+	 * deliberately untouched by a reset.
+	 *
+	 * Re-initialization is EAGER (inside the same blockConcurrencyWhile as the
+	 * wipe) rather than lazy via the constructor path: the constructor only
+	 * runs on a cold start, but this very in-memory instance keeps serving
+	 * RPCs after the reset — deferring re-init would leave every subsequent
+	 * call (headSeq(), pushOps, ...) reading missing tables until the object
+	 * happened to be evicted. Eager re-init restores the exact constructor
+	 * invariants before any other event can interleave.
+	 */
+	async resetAllState(): Promise<ResetResult> {
+		await this.ctx.blockConcurrencyWhile(async () => {
+			// Advisory sockets reference device rows this wipe deletes; close
+			// them so clients re-handshake against the pristine hub. (Hints
+			// only — HTTP remains authoritative, so this loses nothing.)
+			for (const ws of this.ctx.getWebSockets()) {
+				try { ws.close(1000, "sync-hub reset"); } catch {}
 			}
-			const scheduled = await ctx.storage.getAlarm();
-			if (scheduled === null) await ctx.storage.setAlarm(Date.now() + DAY_MS);
+			// deleteAll() clears SQL tables and KV state but never the alarm —
+			// delete it explicitly so re-init schedules a fresh one.
+			await this.ctx.storage.deleteAlarm();
+			await this.ctx.storage.deleteAll();
+			await this.initializePristineState();
 		});
+		return { protocol_version: 1, epoch: this.meta("epoch"), head_seq: this.headSeq() };
 	}
 
 	// ---------------------------------------------------------------------

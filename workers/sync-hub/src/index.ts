@@ -24,6 +24,11 @@
  *                            nothing durable — it is a downstream hint lane.
  *   POST /internal/v1/sync/metadata    — payload-free Hub state for Pro.
  *   POST /internal/v1/sync/device-name — rename an existing Hub device.
+ *   POST /internal/v1/sync/reset       — wipe one user's Hub to pristine
+ *                                        state (pre-launch hygiene; DEPLOY.md
+ *                                        §1.6). Secret-gated like the other
+ *                                        internal routes; kill-switch KV is
+ *                                        deliberately untouched.
  */
 
 import type { PushOp } from "./do/SyncHub";
@@ -442,6 +447,32 @@ async function handleMetadataRead(request: Request, env: Env): Promise<Response>
 	}
 }
 
+/**
+ * Secret-gated per-user reset (auth + body contract mirror the internal
+ * metadata route exactly). The DO wipes its storage and reinitializes a
+ * pristine hub; the kill switch is KV state owned by this Worker and is
+ * deliberately NOT touched by a reset.
+ */
+async function handleHubReset(request: Request, env: Env): Promise<Response> {
+	if (!hasInternalCredential(request, env)) return errorResponse(401, "invalid internal credential");
+	const body = await readInternalBody(request);
+	if (
+		body === null
+		|| !exactKeys(body, ["protocol_version", "user_id"])
+		|| body.protocol_version !== 1
+		|| typeof body.user_id !== "string"
+		|| body.user_id.trim().length === 0
+	) {
+		return errorResponse(400, "expected exactly {protocol_version:1,user_id}");
+	}
+	const userId = body.user_id.trim();
+	try {
+		return json(200, await env.SYNC_HUB.getByName(userId).resetAllState());
+	} catch (error) {
+		return mapHubError(error);
+	}
+}
+
 async function handleDeviceRename(request: Request, env: Env): Promise<Response> {
 	if (!hasInternalCredential(request, env)) return errorResponse(401, "invalid internal credential");
 	const body = await readInternalBody(request);
@@ -835,6 +866,10 @@ export default {
 		if (pathname === "/internal/v1/sync/device-name") {
 			if (request.method !== "POST") return errorResponse(405, "use POST");
 			return handleDeviceRename(request, env);
+		}
+		if (pathname === "/internal/v1/sync/reset") {
+			if (request.method !== "POST") return errorResponse(405, "use POST");
+			return handleHubReset(request, env);
 		}
 
 		if (

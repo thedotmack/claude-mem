@@ -163,6 +163,27 @@ The Pro-side command owns server lifecycle and supplies its relative Hub path
 to the helper. No production URL or workstation-specific absolute path belongs
 in the E2E config.
 
+### 1.6 Internal per-user reset (pre-launch state hygiene)
+
+`POST /internal/v1/sync/reset` wipes ONE user's Durable Object back to
+pristine state: empty log/heads/devices, projection checkpoint `0`, and a
+fresh random epoch (so any device still holding an old cursor is forced to
+re-bootstrap instead of silently mixing histories). Purpose: clearing
+stale/corrupt **pre-launch** per-user DO state — it deletes the user's entire
+ordered log, so never point it at a live post-launch account casually.
+Auth and body contract mirror the drain endpoint (§1.3): the shared
+`CMEM_INTERNAL_PROJECTOR_SECRET` bearer, exact-keys JSON body, 401 without the
+secret, 400 on any contract deviation. The kill switch (§3) is Workers KV
+state and is deliberately untouched by a reset.
+
+```sh
+curl -fsS https://<sync-hub>/internal/v1/sync/reset \
+  -H "Authorization: Bearer $CMEM_INTERNAL_PROJECTOR_SECRET" \
+  -H 'Content-Type: application/json' \
+  --data '{"protocol_version":1,"user_id":"<canonical-lowercase-uuid>"}'
+# → 200 {"protocol_version":1,"epoch":"<new>","head_seq":"0"}
+```
+
 For a Bun- or process-isolated Pro client, start the actual Hub in its own Node
 process instead of importing workerd into Bun:
 
