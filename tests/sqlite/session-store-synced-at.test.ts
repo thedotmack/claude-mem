@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { CloudSync } from '../../src/services/sync/CloudSync.js';
+import { SyncApply } from '../../src/services/sync/SyncApply.js';
 
 const SYNCED_TABLES = ['observations', 'session_summaries', 'user_prompts'] as const;
 
@@ -20,295 +19,44 @@ function stampedCount(db: Database, table: string): number {
   return (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE synced_at IS NOT NULL`).get() as { n: number }).n;
 }
 
+function contentSnapshot(db: Database): Record<string, Array<Record<string, unknown>>> {
+  return Object.fromEntries(SYNCED_TABLES.map(table => [
+    table,
+    (db.prepare(`SELECT * FROM ${table} ORDER BY id`).all() as Array<Record<string, unknown>>)
+      .map(({ synced_at: _syncedAt, ...content }) => content),
+  ]));
+}
+
+function rowCount(db: Database, table: string): number {
+  return (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+}
+
 function seedRows(db: Database): void {
   const now = new Date().toISOString();
   const epoch = Date.now();
-
   db.prepare(`
     INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
     VALUES (?, ?, ?, ?, ?, 'active')
   `).run('content-sync', 'memory-sync', 'sync-project', now, epoch);
-
-  const insertObs = db.prepare(`
-    INSERT INTO observations (memory_session_id, project, type, content_hash, created_at, created_at_epoch)
-    VALUES ('memory-sync', 'sync-project', 'discovery', ?, ?, ?)
-  `);
-  for (let i = 0; i < 5; i++) insertObs.run(`hash-${i}`, now, epoch + i);
-
-  const insertSummary = db.prepare(`
-    INSERT INTO session_summaries (memory_session_id, project, request, created_at, created_at_epoch)
-    VALUES ('memory-sync', 'sync-project', 'request', ?, ?)
-  `);
-  for (let i = 0; i < 3; i++) insertSummary.run(now, epoch + i);
-
-  const insertPrompt = db.prepare(`
-    INSERT INTO user_prompts (content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
-    VALUES ('content-sync', ?, 'prompt', ?, ?)
-  `);
-  for (let i = 0; i < 4; i++) insertPrompt.run(i + 1, now, epoch + i);
-}
-
-/**
- * A modern (v35-era) schema WITHOUT synced_at columns, seeded by hand so the
- * migration's column adoption and legacy stamping can be exercised against
- * pre-existing rows. `throughVersion: 38` reproduces the community-edge
- * collision: schema_versions rows 36-38 exist while synced_at does not.
- */
-function seedPreSyncedAtDb(db: Database, throughVersion: number): void {
-  const now = new Date().toISOString();
-  const epoch = Date.now();
-
-  db.run(`
-    CREATE TABLE schema_versions (
-      id INTEGER PRIMARY KEY,
-      version INTEGER UNIQUE NOT NULL,
-      applied_at TEXT NOT NULL
-    )
-  `);
-
-  db.run(`
-    CREATE TABLE sdk_sessions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      content_session_id TEXT NOT NULL,
-      memory_session_id TEXT UNIQUE,
-      project TEXT NOT NULL,
-      platform_source TEXT NOT NULL DEFAULT 'claude',
-      user_prompt TEXT,
-      started_at TEXT NOT NULL,
-      started_at_epoch INTEGER NOT NULL,
-      completed_at TEXT,
-      completed_at_epoch INTEGER,
-      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'completed', 'failed')),
-      worker_port INTEGER,
-      prompt_counter INTEGER DEFAULT 0,
-      custom_title TEXT
-    )
-  `);
-  db.run('CREATE UNIQUE INDEX ux_sdk_sessions_platform_content ON sdk_sessions(platform_source, content_session_id)');
-
-  db.run(`
-    CREATE TABLE observations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      memory_session_id TEXT NOT NULL,
-      project TEXT NOT NULL,
-      text TEXT,
-      type TEXT NOT NULL,
-      title TEXT,
-      subtitle TEXT,
-      facts TEXT,
-      narrative TEXT,
-      concepts TEXT,
-      files_read TEXT,
-      files_modified TEXT,
-      prompt_number INTEGER,
-      discovery_tokens INTEGER DEFAULT 0,
-      content_hash TEXT,
-      agent_type TEXT,
-      agent_id TEXT,
-      merged_into_project TEXT,
-      generated_by_model TEXT,
-      metadata TEXT,
-      created_at TEXT NOT NULL,
-      created_at_epoch INTEGER NOT NULL,
-      FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
-    )
-  `);
-  db.run('CREATE UNIQUE INDEX ux_observations_session_hash ON observations(memory_session_id, content_hash)');
-
-  db.run(`
-    CREATE TABLE session_summaries (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      memory_session_id TEXT NOT NULL,
-      project TEXT NOT NULL,
-      request TEXT,
-      investigated TEXT,
-      learned TEXT,
-      completed TEXT,
-      next_steps TEXT,
-      files_read TEXT,
-      files_edited TEXT,
-      notes TEXT,
-      prompt_number INTEGER,
-      discovery_tokens INTEGER DEFAULT 0,
-      merged_into_project TEXT,
-      created_at TEXT NOT NULL,
-      created_at_epoch INTEGER NOT NULL,
-      FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
-    )
-  `);
-
-  db.run(`
-    CREATE TABLE user_prompts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      session_db_id INTEGER,
-      content_session_id TEXT NOT NULL,
-      prompt_number INTEGER NOT NULL,
-      prompt_text TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      created_at_epoch INTEGER NOT NULL,
-      FOREIGN KEY(session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
-    )
-  `);
-
-  db.run(`
-    CREATE TABLE pending_messages (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      session_db_id INTEGER NOT NULL,
-      content_session_id TEXT NOT NULL,
-      tool_use_id TEXT,
-      message_type TEXT NOT NULL CHECK(message_type IN ('observation', 'summarize')),
-      tool_name TEXT,
-      tool_input TEXT,
-      tool_response TEXT,
-      cwd TEXT,
-      last_user_message TEXT,
-      last_assistant_message TEXT,
-      prompt_number INTEGER,
-      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing')),
-      created_at_epoch INTEGER NOT NULL,
-      agent_type TEXT,
-      agent_id TEXT,
-      FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
-    )
-  `);
-  db.run(`
-    CREATE UNIQUE INDEX ux_pending_session_tool
-    ON pending_messages(session_db_id, tool_use_id)
-    WHERE tool_use_id IS NOT NULL
-  `);
-
-  const insertVersion = db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)');
-  for (let version = 4; version <= throughVersion; version++) insertVersion.run(version, now);
-
   db.prepare(`
-    INSERT INTO sdk_sessions (id, content_session_id, memory_session_id, project, started_at, started_at_epoch)
-    VALUES (1, 'content-sync', 'memory-sync', 'sync-project', ?, ?)
-  `).run(now, epoch);
-
-  const insertObs = db.prepare(`
     INSERT INTO observations (memory_session_id, project, type, content_hash, created_at, created_at_epoch)
-    VALUES ('memory-sync', 'sync-project', 'discovery', ?, ?, ?)
-  `);
-  for (let i = 0; i < 5; i++) insertObs.run(`hash-${i}`, now, epoch + i);
-
-  const insertSummary = db.prepare(`
+    VALUES ('memory-sync', 'sync-project', 'discovery', 'hash-1', ?, ?)
+  `).run(now, epoch);
+  db.prepare(`
     INSERT INTO session_summaries (memory_session_id, project, request, created_at, created_at_epoch)
     VALUES ('memory-sync', 'sync-project', 'request', ?, ?)
-  `);
-  for (let i = 0; i < 3; i++) insertSummary.run(now, epoch + i);
-
-  const insertPrompt = db.prepare(`
-    INSERT INTO user_prompts (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
-    VALUES (1, 'content-sync', ?, 'prompt', ?, ?)
-  `);
-  for (let i = 0; i < 4; i++) insertPrompt.run(i + 1, now, epoch + i);
+  `).run(now, epoch);
+  db.prepare(`
+    INSERT INTO user_prompts (content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
+    VALUES ('content-sync', 1, 'prompt', ?, ?)
+  `).run(now, epoch);
 }
 
-function expectStampedThroughCursors(db: Database, before: number): void {
-  const observations = syncedAtById(db, 'observations');
-  expect(observations.get(1)).toBeGreaterThanOrEqual(before);
-  expect(observations.get(2)).toBeGreaterThanOrEqual(before);
-  expect(observations.get(3)).toBeGreaterThanOrEqual(before);
-  expect(observations.get(4)).toBeNull();
-  expect(observations.get(5)).toBeNull();
-
-  const summaries = syncedAtById(db, 'session_summaries');
-  expect(summaries.get(1)).toBeGreaterThanOrEqual(before);
-  expect(summaries.get(2)).toBeGreaterThanOrEqual(before);
-  expect(summaries.get(3)).toBeNull();
-
-  // Prompts end up NULL regardless of the legacy cursor: the v40 repair
-  // migration re-nulls every prompt's synced_at right after v39 stamps them,
-  // because the legacy client uploaded prompts with the broken
-  // memory_session_id/project mapping and they must re-push through the
-  // fixed mapper.
-  const prompts = syncedAtById(db, 'user_prompts');
-  expect(prompts.get(1)).toBeNull();
-  expect(prompts.get(2)).toBeNull();
-  expect(prompts.get(3)).toBeNull();
-  expect(prompts.get(4)).toBeNull();
-}
-
-describe('SessionStore synced_at migration (v39)', () => {
-  let tempDir: string;
-  let missingStatePath: string;
-
-  beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-synced-at-'));
-    missingStatePath = join(tempDir, 'does-not-exist.json');
-  });
-
-  afterEach(() => {
-    rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  it('adds synced_at columns and partial unsynced indexes to all three tables', () => {
+describe('SessionStore SyncHub launch baseline', () => {
+  it('creates synced_at columns, unsynced indexes, and the durable launch boundary', () => {
     const db = new Database(':memory:');
     try {
-      new SessionStore(db, { cloudSyncStatePath: missingStatePath });
-
-      for (const table of SYNCED_TABLES) {
-        expect(columnNames(db, table).has('synced_at')).toBe(true);
-
-        const index = db.prepare(`
-          SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?
-        `).get(`idx_${table}_unsynced`) as { sql: string } | undefined;
-        expect(index?.sql).toContain('synced_at IS NULL');
-      }
-
-      const version = db.prepare('SELECT version FROM schema_versions WHERE version = 39').get() as { version: number } | undefined;
-      expect(version?.version).toBe(39);
-
-      const plan = db.prepare('EXPLAIN QUERY PLAN SELECT id FROM observations WHERE synced_at IS NULL').all() as Array<{ detail: string }>;
-      expect(plan.some(row => row.detail.includes('idx_observations_unsynced'))).toBe(true);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('is idempotent: repeat construction, even without the version-39 row, does not throw or duplicate columns', () => {
-    const db = new Database(':memory:');
-    try {
-      new SessionStore(db, { cloudSyncStatePath: missingStatePath });
-      expect(() => new SessionStore(db, { cloudSyncStatePath: missingStatePath })).not.toThrow();
-
-      // The version row is bookkeeping only — losing it must not break re-runs.
-      db.run('DELETE FROM schema_versions WHERE version = 39');
-      expect(() => new SessionStore(db, { cloudSyncStatePath: missingStatePath })).not.toThrow();
-
-      for (const table of SYNCED_TABLES) {
-        const syncedAtColumns = (db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
-          .filter(col => col.name === 'synced_at');
-        expect(syncedAtColumns.length).toBe(1);
-      }
-    } finally {
-      db.close();
-    }
-  });
-
-  it('adds columns, indexes, and stamps legacy rows even when community-edge version rows 36-38 already exist', () => {
-    const db = new Database(':memory:');
-    try {
-      seedPreSyncedAtDb(db, 38);
-
-      // Collision preconditions: version rows 36-38 present, synced_at absent.
-      const collidingVersions = db.prepare('SELECT COUNT(*) AS n FROM schema_versions WHERE version IN (36, 37, 38)').get() as { n: number };
-      expect(collidingVersions.n).toBe(3);
-      for (const table of SYNCED_TABLES) {
-        expect(columnNames(db, table).has('synced_at')).toBe(false);
-      }
-
-      const statePath = join(tempDir, 'cloud-sync-state.json');
-      writeFileSync(statePath, JSON.stringify({
-        deviceId: 'ee1b7637-test',
-        lastId: 3,
-        lastSummaryId: 2,
-        lastPromptId: 2,
-      }));
-
-      const before = Date.now();
-      new SessionStore(db, { cloudSyncStatePath: statePath });
-
+      new SessionStore(db);
       for (const table of SYNCED_TABLES) {
         expect(columnNames(db, table).has('synced_at')).toBe(true);
         const index = db.prepare(`
@@ -316,162 +64,355 @@ describe('SessionStore synced_at migration (v39)', () => {
         `).get(`idx_${table}_unsynced`) as { sql: string } | undefined;
         expect(index?.sql).toContain('synced_at IS NULL');
       }
-
-      expectStampedThroughCursors(db, before);
-
-      const version = db.prepare('SELECT version FROM schema_versions WHERE version = 39').get() as { version: number } | undefined;
-      expect(version?.version).toBe(39);
-
-      // The state file is left in place — later phases still read it.
-      expect(existsSync(statePath)).toBe(true);
+      expect(db.prepare('SELECT version FROM schema_versions WHERE version = 47').get()).not.toBeNull();
+      expect(db.prepare('SELECT version FROM schema_versions WHERE version = 48').get()).not.toBeNull();
+      expect(db.prepare(`
+        SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sync_launch_exclusions'
+      `).get()).not.toBeNull();
     } finally {
       db.close();
     }
   });
 
-  it('stamps rows at or below the legacy cursors on a v35-era DB when cloud-sync-state.json exists', () => {
+  it('preserves all content while marking only the native pre-launch corpus and clearing stale sync state', () => {
     const db = new Database(':memory:');
     try {
-      seedPreSyncedAtDb(db, 35);
+      new SessionStore(db);
+      seedRows(db);
+      db.prepare(`
+        INSERT INTO observations
+          (memory_session_id, project, type, title, content_hash, created_at, created_at_epoch, synced_at)
+        VALUES ('memory-sync', 'sync-project', 'discovery', 'already stamped', 'hash-2',
+                '2026-07-20T00:00:00.000Z', 1752969600000, 777)
+      `).run();
+      db.prepare(`
+        INSERT INTO observations
+          (memory_session_id, project, type, title, content_hash, created_at, created_at_epoch,
+           synced_at, origin_device_id, origin_local_id)
+        VALUES ('memory-sync', 'sync-project', 'discovery', 'replica', 'hash-3',
+                '2026-07-20T00:00:01.000Z', 1752969601000, NULL, 'device-other', '9')
+      `).run();
+      db.prepare(`
+        INSERT INTO sync_outbox (op_uuid, rev, body, created_at_epoch)
+        VALUES ('old-mutation', '1', '{"op":"set_title"}', 1)
+      `).run();
+      db.prepare(`
+        INSERT INTO sync_content_outbox
+          (entity_id, kind, origin_local_id, entity_rev, body, operation_sha256, deleted, created_at_epoch)
+        VALUES ('old-doc', 'observation', '1', '1', '{}', 'hash', 1, 1)
+      `).run();
+      db.prepare(`
+        INSERT INTO sync_dead_letter
+          (lane, queue_key, kind, origin_local_id, entity_rev, reason, raw_body, created_at_epoch)
+        VALUES ('content', 'old-doc', 'observation', '1', '1', 'pre-launch fixture', '{}', 1)
+      `).run();
+      db.prepare(`
+        INSERT INTO sync_entity_heads
+          (entity_id, kind, origin_device_id, origin_local_id, entity_rev,
+           operation_sha256, deleted, updated_at_epoch)
+        VALUES ('preserved-head', 'observation', 'device-self', '1', '4', 'head-hash', 0, 1)
+      `).run();
+      const insertState = db.prepare('INSERT INTO sync_state (k, v) VALUES (?, ?)');
+      insertState.run('cursor', '42');
+      insertState.run('epoch', 'pre-launch-epoch');
+      insertState.run('cutover_hub_url', 'https://pre-launch-hub.test');
+      insertState.run('parked_title:mem:old', 'stale title');
 
-      const statePath = join(tempDir, 'cloud-sync-state.json');
-      writeFileSync(statePath, JSON.stringify({
-        deviceId: 'ee1b7637-test',
-        lastId: 3,
-        lastSummaryId: 2,
-        lastPromptId: 2,
-      }));
+      const contentBefore = contentSnapshot(db);
 
-      const before = Date.now();
-      new SessionStore(db, { cloudSyncStatePath: statePath });
+      // Reproduce a database created before the v47 launch boundary landed.
+      db.run('DELETE FROM schema_versions WHERE version = 47');
+      new SessionStore(db);
 
-      expectStampedThroughCursors(db, before);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('stamps nothing when no state file exists', () => {
-    const db = new Database(':memory:');
-    try {
-      seedPreSyncedAtDb(db, 35);
-
-      new SessionStore(db, { cloudSyncStatePath: missingStatePath });
-
-      for (const table of SYNCED_TABLES) {
-        expect(columnNames(db, table).has('synced_at')).toBe(true);
-        expect(stampedCount(db, table)).toBe(0);
+      expect(contentSnapshot(db)).toEqual(contentBefore);
+      for (const table of ['session_summaries', 'user_prompts']) {
+        expect(stampedCount(db, table)).toBe(1);
       }
+      expect(db.prepare(`
+        SELECT title, synced_at, origin_device_id FROM observations ORDER BY id
+      `).all()).toEqual([
+        { title: null, synced_at: expect.any(Number), origin_device_id: null },
+        { title: 'already stamped', synced_at: 777, origin_device_id: null },
+        { title: 'replica', synced_at: null, origin_device_id: 'device-other' },
+      ]);
+      expect(rowCount(db, 'sync_outbox')).toBe(0);
+      expect(rowCount(db, 'sync_content_outbox')).toBe(0);
+      expect(rowCount(db, 'sync_dead_letter')).toBe(0);
+      expect(rowCount(db, 'sync_state')).toBe(0);
+      expect(rowCount(db, 'sync_entity_heads')).toBe(1);
+      expect(db.prepare(`
+        SELECT kind, origin_local_id, through_rev
+        FROM sync_launch_exclusions
+        ORDER BY kind, origin_local_id
+      `).all()).toEqual([
+        { kind: 'observation', origin_local_id: '1', through_rev: '1' },
+        { kind: 'observation', origin_local_id: '2', through_rev: '1' },
+        { kind: 'prompt', origin_local_id: '1', through_rev: '1' },
+        { kind: 'summary', origin_local_id: '1', through_rev: '1' },
+      ]);
+      expect(db.prepare('SELECT entity_rev, operation_sha256 FROM sync_entity_heads').get())
+        .toEqual({ entity_rev: '4', operation_sha256: 'head-hash' });
     } finally {
       db.close();
     }
   });
 
-  it('does not re-run stamping once the columns exist, even if a state file appears later', () => {
+  it('preserves excluded pre-launch revisions across epoch changes while requeueing post-launch native rows', () => {
     const db = new Database(':memory:');
+    let sync: CloudSync | null = null;
     try {
-      new SessionStore(db, { cloudSyncStatePath: missingStatePath });
+      new SessionStore(db);
       seedRows(db);
 
-      const statePath = join(tempDir, 'cloud-sync-state.json');
-      writeFileSync(statePath, JSON.stringify({ deviceId: 'late', lastId: 5, lastSummaryId: 3, lastPromptId: 4 }));
+      // Reproduce a database whose content existed when the one-time launch
+      // boundary was applied.
+      db.run('DELETE FROM schema_versions WHERE version IN (47, 48)');
+      db.run('DELETE FROM sync_launch_exclusions');
+      new SessionStore(db);
 
-      new SessionStore(db, { cloudSyncStatePath: statePath });
+      const baseline = Object.fromEntries(SYNCED_TABLES.map(table => [
+        table,
+        db.prepare(`SELECT id, synced_at FROM ${table} ORDER BY id`).all(),
+      ]));
+      expect(rowCount(db, 'sync_launch_exclusions')).toBe(3);
+
+      const now = new Date().toISOString();
+      const epoch = Date.now() + 10_000;
+      db.prepare(`
+        INSERT INTO observations
+          (memory_session_id, project, type, title, content_hash, created_at, created_at_epoch, synced_at)
+        VALUES ('memory-sync', 'sync-project', 'discovery', 'post-launch observation',
+                'post-launch-hash', ?, ?, ?)
+      `).run(now, epoch, epoch);
+      db.prepare(`
+        INSERT INTO session_summaries
+          (memory_session_id, project, request, created_at, created_at_epoch, synced_at)
+        VALUES ('memory-sync', 'sync-project', 'post-launch summary', ?, ?, ?)
+      `).run(now, epoch + 1, epoch + 1);
+      db.prepare(`
+        INSERT INTO user_prompts
+          (content_session_id, prompt_number, prompt_text, created_at, created_at_epoch, synced_at)
+        VALUES ('content-sync', 2, 'post-launch prompt', ?, ?, ?)
+      `).run(now, epoch + 2, epoch + 2);
+
+      const apply = new SyncApply(db, { deviceId: 'epoch-boundary-device' });
+      expect(apply.handleEpoch('epoch-one')).toBe(false);
+      expect(apply.handleEpoch('epoch-two')).toBe(true);
 
       for (const table of SYNCED_TABLES) {
-        expect(stampedCount(db, table)).toBe(0);
+        const rows = db.prepare(`SELECT id, synced_at FROM ${table} ORDER BY id`).all() as Array<{
+          id: number;
+          synced_at: number | null;
+        }>;
+        expect(rows[0]).toEqual((baseline[table] as Array<{ id: number; synced_at: number }>)[0]);
+        expect(rows.at(-1)?.synced_at).toBeNull();
+        expect(db.prepare(`
+          SELECT id FROM ${table}
+          WHERE synced_at IS NULL AND origin_device_id IS NULL
+        `).all()).toEqual([{ id: rows.at(-1)?.id }]);
       }
+
+      sync = new CloudSync(db, {
+        CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'test-token',
+        CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'test-user',
+        CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://hub.test',
+        CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: 'epoch-boundary-device',
+      });
+      expect(sync.status().pending).toEqual({
+        observations: 1,
+        summaries: 1,
+        prompts: 1,
+        mutations: 0,
+        tombstones: 0,
+      });
+
+      // The exclusion is revision-bounded, not a permanent row-id ban. A
+      // post-launch edit of a baseline row has a higher native revision and
+      // must re-enter a later rebuilt Hub log.
+      db.prepare(`
+        UPDATE observations SET sync_rev = '2', synced_at = ? WHERE id = 1
+      `).run(epoch + 3);
+      expect(apply.handleEpoch('epoch-three')).toBe(true);
+      expect(db.prepare('SELECT synced_at FROM observations WHERE id = 1').get())
+        .toEqual({ synced_at: null });
     } finally {
+      sync?.stop();
       db.close();
     }
   });
 
-  it('stamps nothing when the state file contains the JSON literal null', () => {
+  it('repairs an earlier v47 database without excluding later writes', () => {
     const db = new Database(':memory:');
     try {
-      seedPreSyncedAtDb(db, 38);
+      new SessionStore(db);
+      const appliedAt = (db.prepare(`
+        SELECT applied_at FROM schema_versions WHERE version = 47
+      `).get() as { applied_at: string }).applied_at;
+      const boundaryMs = Date.parse(appliedAt);
 
-      const statePath = join(tempDir, 'cloud-sync-state.json');
-      writeFileSync(statePath, 'null');
-
-      expect(() => new SessionStore(db, { cloudSyncStatePath: statePath })).not.toThrow();
-
-      // The migration must complete: version recorded, columns added, no rows stamped.
-      const version = db.prepare('SELECT version FROM schema_versions WHERE version = 39').get() as { version: number } | undefined;
-      expect(version?.version).toBe(39);
-
-      for (const table of SYNCED_TABLES) {
-        expect(columnNames(db, table).has('synced_at')).toBe(true);
-        expect(stampedCount(db, table)).toBe(0);
-      }
-    } finally {
-      db.close();
-    }
-  });
-
-  it('stamps nothing when the state file is unreadable JSON', () => {
-    const db = new Database(':memory:');
-    try {
-      seedPreSyncedAtDb(db, 35);
-
-      const statePath = join(tempDir, 'cloud-sync-state.json');
-      writeFileSync(statePath, 'not json{');
-
-      expect(() => new SessionStore(db, { cloudSyncStatePath: statePath })).not.toThrow();
-
-      expect(stampedCount(db, 'observations')).toBe(0);
-    } finally {
-      db.close();
-    }
-  });
-});
-
-describe('SessionStore v40 prompt requeue (one-time cloud repair)', () => {
-  let tempDir: string;
-  let missingStatePath: string;
-
-  beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-v40-requeue-'));
-    missingStatePath = join(tempDir, 'does-not-exist.json');
-  });
-
-  afterEach(() => {
-    rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  it('records version 40 and never re-nulls prompts stamped after the repair ran', () => {
-    const db = new Database(':memory:');
-    try {
-      new SessionStore(db, { cloudSyncStatePath: missingStatePath });
-
-      const version = db.prepare('SELECT version FROM schema_versions WHERE version = 40').get() as { version: number } | undefined;
-      expect(version?.version).toBe(40);
-
-      // Prompts synced through the FIXED mapper after the repair must keep
-      // their stamps across restarts — a repeat requeue would re-push the
-      // whole history on every worker boot.
       seedRows(db);
-      db.run('UPDATE user_prompts SET synced_at = 1751234567890');
-      new SessionStore(db, { cloudSyncStatePath: missingStatePath });
+      for (const table of SYNCED_TABLES) db.run(`UPDATE ${table} SET synced_at = ${boundaryMs}`);
+      db.prepare(`
+        INSERT INTO observations
+          (memory_session_id, project, type, title, content_hash, created_at, created_at_epoch, synced_at)
+        VALUES ('memory-sync', 'sync-project', 'discovery', 'later write', 'later-write-hash',
+                ?, ?, ?)
+      `).run(new Date(boundaryMs + 1).toISOString(), boundaryMs + 1, boundaryMs + 1);
 
-      expect(stampedCount(db, 'user_prompts')).toBe(4);
+      // Earlier v47 builds had only the applied_at boundary and stamps, not
+      // the explicit revision ledger introduced by v48.
+      db.run('DROP TABLE sync_launch_exclusions');
+      db.run('DELETE FROM schema_versions WHERE version = 48');
+      new SessionStore(db);
+
+      expect(rowCount(db, 'sync_launch_exclusions')).toBe(3);
+      expect(db.prepare(`
+        SELECT origin_local_id FROM sync_launch_exclusions
+        WHERE kind = 'observation' ORDER BY origin_local_id
+      `).all()).toEqual([{ origin_local_id: '1' }]);
+
+      const apply = new SyncApply(db, { deviceId: 'v48-repair-device' });
+      expect(apply.handleEpoch('repair-one')).toBe(false);
+      expect(apply.handleEpoch('repair-two')).toBe(true);
+      expect(db.prepare(`
+        SELECT id, synced_at FROM observations ORDER BY id
+      `).all()).toEqual([
+        { id: 1, synced_at: boundaryMs },
+        { id: 2, synced_at: null },
+      ]);
     } finally {
+      db.close();
+    }
+  });
+
+  it('runs once and cannot clear post-boundary queues after restarts or lower-version migration repair', () => {
+    const db = new Database(':memory:');
+    try {
+      const store = new SessionStore(db);
+      seedRows(db);
+      for (const table of SYNCED_TABLES) expect(stampedCount(db, table)).toBe(0);
+      store.createSDKSession('content-edit', 'sync-project', 'prompt', 'Post-launch title', 'claude');
+      db.prepare(`
+        INSERT INTO sync_content_outbox
+          (entity_id, kind, origin_local_id, entity_rev, body, operation_sha256, deleted, created_at_epoch)
+        VALUES ('post-launch-doc', 'observation', '1', '1', '{}', 'post-launch-hash', 0, 2)
+      `).run();
+      db.prepare(`
+        INSERT INTO sync_dead_letter
+          (lane, queue_key, kind, origin_local_id, entity_rev, reason, raw_body, created_at_epoch)
+        VALUES ('content', 'post-launch-bad', 'observation', '2', '1', 'post-launch fixture', '{}', 2)
+      `).run();
+
+      // Simulate an older build repairing the lower v44-v46 bookkeeping rows.
+      // Unknown v47 remains in schema_versions, as SQLite migrations must.
+      db.run('DELETE FROM schema_versions WHERE version IN (44, 45, 46)');
+
+      new SessionStore(db);
+      for (const table of SYNCED_TABLES) expect(stampedCount(db, table)).toBe(0);
+      expect(rowCount(db, 'sync_outbox')).toBe(1);
+      expect(rowCount(db, 'sync_content_outbox')).toBe(1);
+      expect(rowCount(db, 'sync_dead_letter')).toBe(1);
+      expect((db.prepare('SELECT COUNT(*) AS n FROM schema_versions WHERE version = 47').get() as { n: number }).n).toBe(1);
+
+      new SessionStore(db);
+      expect(rowCount(db, 'sync_outbox')).toBe(1);
+      expect(rowCount(db, 'sync_content_outbox')).toBe(1);
+      expect(rowCount(db, 'sync_dead_letter')).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps later edits, deletes, and revives in the canonical queues across restart', async () => {
+    const db = new Database(':memory:');
+    let sync: CloudSync | null = null;
+    try {
+      const store = new SessionStore(db);
+      seedRows(db);
+
+      store.createSDKSession('content-edit', 'sync-project', 'prompt', 'Post-launch title', 'claude');
+      expect(rowCount(db, 'sync_outbox')).toBe(1);
+      new SessionStore(db);
+      expect(rowCount(db, 'sync_outbox')).toBe(1);
+
+      let seq = 0;
+      let failNext = false;
+      const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (failNext) {
+          failNext = false;
+          return new Response('offline', { status: 503 });
+        }
+        const request = JSON.parse(String(init?.body)) as {
+          ops: Array<{ body: string; operation_sha256: string }>;
+        };
+        const acked = request.ops.map(op => {
+          const body = JSON.parse(op.body) as {
+            id: string;
+            kind: string;
+            origin_local_id: string | null;
+            entity_rev: string;
+          };
+          seq += 1;
+          return {
+            id: body.id,
+            kind: body.kind,
+            origin_local_id: body.origin_local_id,
+            entity_rev: body.entity_rev,
+            operation_sha256: op.operation_sha256,
+            seq: String(seq),
+          };
+        });
+        return Response.json({ acked, head_seq: String(seq), projected_seq: String(seq) });
+      }) as typeof fetch;
+      sync = new CloudSync(db, {
+        CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'token',
+        CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'user',
+        CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://hub.test',
+        CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: 'device-launch-boundary',
+        CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: 'launch-boundary-test',
+      }, {
+        fetchImpl,
+      });
+
+      expect(sync.queueDelete('observation', '1')).toBe('2');
+      expect(db.prepare(`
+        SELECT entity_rev, deleted FROM sync_content_outbox WHERE entity_id LIKE 'observation:%'
+      `).get()).toEqual({ entity_rev: '2', deleted: 1 });
+      new SessionStore(db);
+      expect(rowCount(db, 'sync_content_outbox')).toBe(1);
+      await sync.flush();
+      expect(rowCount(db, 'sync_content_outbox')).toBe(0);
+
+      db.prepare(`
+        INSERT INTO observations
+          (id, memory_session_id, project, type, title, content_hash, created_at, created_at_epoch)
+        VALUES (1, 'memory-sync', 'sync-project', 'discovery', 'revived after launch', 'hash-revived',
+                '2026-07-20T00:00:02.000Z', 1752969602000)
+      `).run();
+      failNext = true;
+      await sync.flush();
+      expect(db.prepare(`
+        SELECT entity_rev, deleted FROM sync_content_outbox
+        WHERE entity_id LIKE 'observation:%' ORDER BY id DESC LIMIT 1
+      `).get()).toEqual({ entity_rev: '3', deleted: 0 });
+
+      const queuedBeforeRestart = rowCount(db, 'sync_content_outbox');
+      new SessionStore(db);
+      expect(rowCount(db, 'sync_content_outbox')).toBe(queuedBeforeRestart);
+    } finally {
+      sync?.stop();
       db.close();
     }
   });
 });
 
 describe('SessionStore prompt re-push hooks (memory id lands after first sync)', () => {
-  let tempDir: string;
-  let missingStatePath: string;
   let db: Database;
   let store: SessionStore;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-prompt-requeue-'));
-    missingStatePath = join(tempDir, 'does-not-exist.json');
     db = new Database(':memory:');
-    store = new SessionStore(db, { cloudSyncStatePath: missingStatePath });
+    store = new SessionStore(db);
 
     const now = new Date().toISOString();
     const epoch = Date.now();
@@ -482,7 +423,6 @@ describe('SessionStore prompt re-push hooks (memory id lands after first sync)',
     insertSession.run('sess-1', 'mem-a', now, epoch);
     insertSession.run('sess-2', 'mem-b', now, epoch);
 
-    // All prompts start out synced (as if the pre-registration push happened).
     const insertPrompt = db.prepare(`
       INSERT INTO user_prompts (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch, synced_at)
       VALUES (?, ?, ?, 'prompt', ?, ?, 1751234567890)
@@ -494,22 +434,18 @@ describe('SessionStore prompt re-push hooks (memory id lands after first sync)',
 
   afterEach(() => {
     db.close();
-    rmSync(tempDir, { recursive: true, force: true });
   });
 
   it('updateMemorySessionId requeues only that session\'s prompts', () => {
     store.updateMemorySessionId(1, 'mem-a2');
-
     const prompts = syncedAtById(db, 'user_prompts');
     expect(prompts.get(1)).toBeNull();
     expect(prompts.get(2)).toBeNull();
-    expect(prompts.get(3)).toBe(1751234567890); // other session untouched
+    expect(prompts.get(3)).toBe(1751234567890);
   });
 
   it('updateMemorySessionId(null) clears the mapping without requeueing', () => {
     store.updateMemorySessionId(1, null);
-
-    // Re-pushing now would only re-send the fallback shape — nothing to repair.
     expect(stampedCount(db, 'user_prompts')).toBe(3);
   });
 

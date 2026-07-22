@@ -47,6 +47,8 @@ export type Component =
   | 'SESSION'
   | 'SETTINGS'
   | 'SHUTDOWN'
+  | 'SYNC_APPLY'
+  | 'SYNC_CLIENT'
   | 'SYSTEM'
   | 'TELEGRAM'
   | 'TRANSCRIPT'

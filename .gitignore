@@ -19,6 +19,7 @@ plugin/data.backup/
 package-lock.json
 bun.lock
 !plugin/bun.lock
+!workers/sync-hub/bun.lock
 private/
 Auto Run Docs/
 

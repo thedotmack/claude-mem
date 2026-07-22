@@ -92,6 +92,39 @@ function hasUniqueIndexOnColumns(db: Database, table: string, columns: string[])
   });
 }
 
+const REVISION_COLUMNS = [
+  { table: 'observations', column: 'sync_rev' },
+  { table: 'session_summaries', column: 'sync_rev' },
+  { table: 'user_prompts', column: 'sync_rev' },
+  { table: 'sync_outbox', column: 'rev' },
+] as const;
+
+function replaceRevisionColumnAffinity(
+  db: Database,
+  table: (typeof REVISION_COLUMNS)[number]['table'],
+  column: (typeof REVISION_COLUMNS)[number]['column'],
+  affinity: 'INTEGER' | 'TEXT',
+): void {
+  const temporary = `${column}_test_affinity`;
+  db.run(`ALTER TABLE ${table} ADD COLUMN ${temporary} ${affinity} NOT NULL DEFAULT 1`);
+  db.run(`UPDATE ${table} SET ${temporary} = ${column}`);
+  db.run(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+  db.run(`ALTER TABLE ${table} RENAME COLUMN ${temporary} TO ${column}`);
+}
+
+function revisionColumnInfo(
+  db: Database,
+  table: (typeof REVISION_COLUMNS)[number]['table'],
+  column: (typeof REVISION_COLUMNS)[number]['column'],
+): { name: string; type: string; notnull: number; dflt_value: string | null } {
+  return (db.query(`PRAGMA table_info(${table})`).all() as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+  }>).find(info => info.name === column)!;
+}
+
 function insertSchemaVersions(db: Database, throughVersion: number): void {
   const now = new Date().toISOString();
   for (let version = 4; version <= throughVersion; version++) {
@@ -460,6 +493,52 @@ describe('SessionStore migrations', () => {
     }
   });
 
+  it('v41 unique origin index does not retrigger the v7 session_summaries rebuild (which would destroy sync metadata)', () => {
+    // Regression guard for the v7 predicate (removeSessionSummariesUniqueConstraint):
+    // it must only match table-level UNIQUE constraints (PRAGMA origin 'u'),
+    // never explicitly created unique indexes (origin 'c') like v41's
+    // ux_session_summaries_origin. With the old `origin !== 'pk'` predicate,
+    // every constructor run after v41 rebuilt session_summaries with the
+    // v7-era column list, silently NULLing synced_at / origin_device_id /
+    // origin_local_id and resetting sync_rev — this test fails loudly if
+    // anyone reverts the predicate.
+    const db = new Database(':memory:');
+    try {
+      new SessionStore(db);
+
+      db.prepare(`
+        INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+        VALUES ('content-v7', 'mem-v7', 'proj-v7', ?, 1751234567000, 'active')
+      `).run(new Date().toISOString());
+      db.prepare(`
+        INSERT INTO session_summaries
+          (memory_session_id, project, request, created_at, created_at_epoch,
+           synced_at, origin_device_id, origin_local_id, sync_rev)
+        VALUES ('mem-v7', 'proj-v7', 'req', ?, 1751234567890, 123456, 'device-a', '7', 2)
+      `).run(new Date().toISOString());
+
+      // A second construction over the fully migrated DB must be a no-op for
+      // session_summaries.
+      new SessionStore(db);
+
+      const row = db.prepare(`
+        SELECT synced_at, origin_device_id, origin_local_id, sync_rev
+        FROM session_summaries WHERE memory_session_id = 'mem-v7'
+      `).get() as { synced_at: number | null; origin_device_id: string | null; origin_local_id: string | null; sync_rev: string };
+      expect(row.synced_at).toBe(123456);
+      expect(row.origin_device_id).toBe('device-a');
+      expect(row.origin_local_id).toBe('7');
+      expect(row.sync_rev).toBe('2');
+
+      const index = db.prepare(`
+        SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'ux_session_summaries_origin'
+      `).get() as { name: string } | undefined;
+      expect(index?.name).toBe('ux_session_summaries_origin');
+    } finally {
+      db.close();
+    }
+  });
+
   it('is idempotent: constructing twice over the same db does not throw and leaves data unchanged', () => {
     const db = new Database(':memory:');
     try {
@@ -476,6 +555,135 @@ describe('SessionStore migrations', () => {
 
       expect(versionsAfter.n).toBe(versionsBefore.n);
       expect(sessions.n).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('v46 gives all fresh content and mutation revisions TEXT affinity', () => {
+    const db = new Database(':memory:');
+    try {
+      new SessionStore(db);
+
+      for (const target of REVISION_COLUMNS) {
+        const column = revisionColumnInfo(db, target.table, target.column);
+        expect(column.type).toBe('TEXT');
+        expect(column.notnull).toBe(1);
+        expect(column.dflt_value).toBe("'1'");
+      }
+      expect(db.prepare('SELECT version FROM schema_versions WHERE version = 46').get()).not.toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('v46 upgrades INTEGER-affinity revisions atomically and idempotently without changing indexes or foreign keys', () => {
+    const db = new Database(':memory:');
+    const signedInt64Max = '9223372036854775807';
+    try {
+      new SessionStore(db);
+      for (const target of REVISION_COLUMNS) {
+        replaceRevisionColumnAffinity(db, target.table, target.column, 'INTEGER');
+        expect(revisionColumnInfo(db, target.table, target.column).type).toBe('INTEGER');
+      }
+      db.prepare('DELETE FROM schema_versions WHERE version = 46').run();
+
+      db.prepare(`
+        INSERT INTO sdk_sessions
+          (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+        VALUES ('v46-content', 'v46-memory', 'v46-project', ?, 1751234567000, 'active')
+      `).run(new Date().toISOString());
+      db.prepare(`
+        INSERT INTO observations
+          (memory_session_id, project, type, title, content_hash, created_at, created_at_epoch, sync_rev)
+        VALUES ('v46-memory', 'v46-project', 'discovery', 'v46 observation', 'v46-hash', ?, 1751234567001, ?)
+      `).run(new Date().toISOString(), signedInt64Max);
+      db.prepare(`
+        INSERT INTO session_summaries
+          (memory_session_id, project, request, created_at, created_at_epoch, sync_rev)
+        VALUES ('v46-memory', 'v46-project', 'v46 summary', ?, 1751234567002, ?)
+      `).run(new Date().toISOString(), signedInt64Max);
+      db.prepare(`
+        INSERT INTO user_prompts
+          (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch, sync_rev)
+        VALUES (1, 'v46-content', 1, 'v46 prompt', ?, 1751234567003, ?)
+      `).run(new Date().toISOString(), signedInt64Max);
+      db.prepare(`
+        INSERT INTO sync_outbox (op_uuid, rev, body, created_at_epoch)
+        VALUES ('00000000-0000-4000-8000-000000000046', ?, '{}', 1751234567004)
+      `).run(signedInt64Max);
+
+      for (const target of REVISION_COLUMNS) {
+        expect(db.prepare(`SELECT typeof(${target.column}) AS storage_type FROM ${target.table}`).get())
+          .toEqual({ storage_type: 'integer' });
+      }
+      const schemaObjectsBefore = db.prepare(`
+        SELECT type, name, tbl_name, sql
+        FROM sqlite_master
+        WHERE tbl_name IN ('observations', 'session_summaries', 'user_prompts', 'sync_outbox')
+          AND type IN ('index', 'trigger')
+        ORDER BY type, name
+      `).all();
+      const foreignKeysBefore = ['observations', 'session_summaries', 'user_prompts']
+        .map(table => [table, db.query(`PRAGMA foreign_key_list(${table})`).all()]);
+
+      new SessionStore(db);
+
+      for (const target of REVISION_COLUMNS) {
+        expect(revisionColumnInfo(db, target.table, target.column).type).toBe('TEXT');
+        expect(db.prepare(`
+          SELECT ${target.column} AS revision, typeof(${target.column}) AS storage_type
+          FROM ${target.table}
+        `).get()).toEqual({ revision: signedInt64Max, storage_type: 'text' });
+      }
+      expect(db.prepare('SELECT COUNT(*) AS n FROM schema_versions WHERE version = 46').get())
+        .toEqual({ n: 1 });
+      expect(db.prepare(`
+        SELECT type, name, tbl_name, sql
+        FROM sqlite_master
+        WHERE tbl_name IN ('observations', 'session_summaries', 'user_prompts', 'sync_outbox')
+          AND type IN ('index', 'trigger')
+        ORDER BY type, name
+      `).all()).toEqual(schemaObjectsBefore);
+      expect(['observations', 'session_summaries', 'user_prompts']
+        .map(table => [table, db.query(`PRAGMA foreign_key_list(${table})`).all()]))
+        .toEqual(foreignKeysBefore);
+
+      expect(() => new SessionStore(db)).not.toThrow();
+      expect(db.prepare('SELECT COUNT(*) AS n FROM sync_outbox').get()).toEqual({ n: 1 });
+      for (const target of REVISION_COLUMNS) {
+        expect(db.query(`PRAGMA table_info(${target.table})`).all()
+          .filter((info: any) => info.name === target.column || info.name.endsWith('_v46')).length).toBe(1);
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it('v46 refuses an already-rounded REAL revision and rolls the schema transaction back', () => {
+    const db = new Database(':memory:');
+    try {
+      new SessionStore(db);
+      replaceRevisionColumnAffinity(db, 'observations', 'sync_rev', 'INTEGER');
+      db.prepare('DELETE FROM schema_versions WHERE version = 46').run();
+      db.prepare(`
+        INSERT INTO sdk_sessions
+          (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+        VALUES ('v46-real-content', 'v46-real-memory', 'v46-project', ?, 1751234567000, 'active')
+      `).run(new Date().toISOString());
+      db.prepare(`
+        INSERT INTO observations
+          (memory_session_id, project, type, title, content_hash, created_at, created_at_epoch, sync_rev)
+        VALUES ('v46-real-memory', 'v46-project', 'discovery', 'rounded', 'v46-real-hash', ?, 1751234567001, ?)
+      `).run(new Date().toISOString(), '18446744073709551615');
+      expect(db.prepare('SELECT typeof(sync_rev) AS storage_type FROM observations').get())
+        .toEqual({ storage_type: 'real' });
+
+      expect(() => new SessionStore(db)).toThrow(/observations\.sync_rev row 1 is REAL and unrecoverably rounded/);
+      expect(revisionColumnInfo(db, 'observations', 'sync_rev').type).toBe('INTEGER');
+      expect(db.prepare('SELECT version FROM schema_versions WHERE version = 46').get()).toBeNull();
+      expect(db.query('PRAGMA table_info(observations)').all()
+        .some((info: any) => info.name === 'sync_rev_text_v46')).toBe(false);
     } finally {
       db.close();
     }
