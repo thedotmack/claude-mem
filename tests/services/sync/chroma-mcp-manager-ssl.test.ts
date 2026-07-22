@@ -8,9 +8,13 @@ import { PassThrough } from 'node:stream';
 import * as realSettingsDefaultsManager from '../../../src/shared/SettingsDefaultsManager.js';
 import * as realPaths from '../../../src/shared/paths.js';
 import * as realLogger from '../../../src/utils/logger.js';
+import * as realSdkClientStdio from '@modelcontextprotocol/sdk/client/stdio.js';
+import * as realSdkClientIndex from '@modelcontextprotocol/sdk/client/index.js';
 const realSettingsSnapshot = { ...realSettingsDefaultsManager };
 const realPathsSnapshot = { ...realPaths };
 const realLoggerSnapshot = { ...realLogger };
+const realSdkClientStdioSnapshot = { ...realSdkClientStdio };
+const realSdkClientIndexSnapshot = { ...realSdkClientIndex };
 const realChildProcess = require('node:child_process');
 
 let currentSettings: Record<string, string> = {};
@@ -105,6 +109,11 @@ afterAll(() => {
   mock.module('../../../src/shared/paths.js', () => realPathsSnapshot);
   mock.module('../../../src/utils/logger.js', () => realLoggerSnapshot);
   mock.module('child_process', () => realChildProcess);
+  // The MCP SDK mocks must be re-registered too: leaking FakeClient (no
+  // listTools, canned callTool) breaks tests/server/mcp/recall-mcp-server.test.ts
+  // whenever the readdir-dependent file order runs it after this file.
+  mock.module('@modelcontextprotocol/sdk/client/stdio.js', () => realSdkClientStdioSnapshot);
+  mock.module('@modelcontextprotocol/sdk/client/index.js', () => realSdkClientIndexSnapshot);
 });
 
 function expectLauncherPrefixBeforeMode(args: string[], mode: 'http' | 'persistent') {

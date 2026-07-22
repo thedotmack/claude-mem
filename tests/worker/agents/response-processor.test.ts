@@ -1,5 +1,26 @@
-import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import { logger } from '../../../src/utils/logger.js';
+
+// Capture real exports before mock.module mutates the live namespace, then
+// re-register the snapshots in afterAll so these partial stubs do not leak
+// into later test files (bun's mock.module is process-global; mock.restore()
+// does NOT undo it). A leaked ModeManager stub (no class prototype, no
+// loadMode) breaks tests/server/server-boot.test.ts, server-runtime-smoke and
+// the tests/sdk parser suites; leaked worker-service/worker-utils stubs break
+// any later file that imports the real modules.
+import * as realWorkerServiceModule from '../../../src/services/worker-service.js';
+import * as realWorkerUtilsModule from '../../../src/shared/worker-utils.js';
+import * as realModeManagerModule from '../../../src/services/domain/ModeManager.js';
+
+const realWorkerServiceSnapshot = { ...realWorkerServiceModule };
+const realWorkerUtilsSnapshot = { ...realWorkerUtilsModule };
+const realModeManagerSnapshot = { ...realModeManagerModule };
+
+afterAll(() => {
+  mock.module('../../../src/services/worker-service.js', () => realWorkerServiceSnapshot);
+  mock.module('../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
+  mock.module('../../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
+});
 
 mock.module('../../../src/services/worker-service.js', () => ({
   updateCursorContextForProject: () => Promise.resolve(),

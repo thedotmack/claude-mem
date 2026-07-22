@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
@@ -6,12 +6,26 @@ import {
   resetDependencyStatusesForTesting,
 } from '../../src/shared/dependency-health.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
+// Capture real exports before mock.module mutates the live namespace, then
+// re-register the snapshot in afterAll so this mock does not leak into later
+// test files (bun's mock.module is process-global; mock.restore() does NOT
+// undo it). Without the restore, whichever file runs after this one sees the
+// stub — tests/shared/find-claude-executable.test.ts exercises the real
+// implementation and fails when the readdir-dependent file order puts it
+// after this file (the CI-only findClaudeExecutable failures).
+import * as realFindClaudeExecutableModule from '../../src/shared/find-claude-executable.js';
+
+const realFindClaudeExecutableSnapshot = { ...realFindClaudeExecutableModule };
 
 let findClaudeExecutableImpl: () => string = () => '/mock/claude';
 
 mock.module('../../src/shared/find-claude-executable.js', () => ({
   findClaudeExecutable: () => findClaudeExecutableImpl(),
 }));
+
+afterAll(() => {
+  mock.module('../../src/shared/find-claude-executable.js', () => realFindClaudeExecutableSnapshot);
+});
 
 const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
 const { ClaudeProvider } = await import('../../src/services/worker/ClaudeProvider.js');
