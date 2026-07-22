@@ -1,4 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
+
+import * as realModeManager from '../../src/services/domain/ModeManager.js';
+const realModeManagerSnapshot = { ...realModeManager };
 
 mock.module('../../src/services/domain/ModeManager.js', () => ({
   ModeManager: {
@@ -24,6 +27,10 @@ import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
 import { FormattingService } from '../../src/services/worker/FormattingService.js';
 import { TimelineService } from '../../src/services/worker/TimelineService.js';
 import { SearchManager } from '../../src/services/worker/SearchManager.js';
+
+afterAll(() => {
+  mock.module('../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
+});
 
 const PROJECT = 'timeline-anchor-test';
 const MEMORY_SESSION_ID = 'mem-session-timeline-anchor';

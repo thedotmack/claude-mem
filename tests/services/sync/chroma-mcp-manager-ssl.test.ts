@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import * as realMcpClient from '@modelcontextprotocol/sdk/client/index.js';
+import * as realMcpStdio from '@modelcontextprotocol/sdk/client/stdio.js';
 
 // Capture real exports before mock.module mutates the live namespace, then
 // re-register the snapshots in afterAll so these mocks do not leak into later
@@ -11,6 +13,8 @@ import * as realLogger from '../../../src/utils/logger.js';
 const realSettingsSnapshot = { ...realSettingsDefaultsManager };
 const realPathsSnapshot = { ...realPaths };
 const realLoggerSnapshot = { ...realLogger };
+const realMcpClientSnapshot = { ...realMcpClient };
+const realMcpStdioSnapshot = { ...realMcpStdio };
 const realChildProcess = require('node:child_process');
 
 let currentSettings: Record<string, string> = {};
@@ -101,6 +105,8 @@ import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js
 
 afterAll(() => {
   ChromaMcpManager.setUvxAvailabilityProbeForTesting(null);
+  mock.module('@modelcontextprotocol/sdk/client/index.js', () => realMcpClientSnapshot);
+  mock.module('@modelcontextprotocol/sdk/client/stdio.js', () => realMcpStdioSnapshot);
   mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
   mock.module('../../../src/shared/paths.js', () => realPathsSnapshot);
   mock.module('../../../src/utils/logger.js', () => realLoggerSnapshot);

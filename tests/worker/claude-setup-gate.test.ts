@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
@@ -6,6 +6,9 @@ import {
   resetDependencyStatusesForTesting,
 } from '../../src/shared/dependency-health.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
+import * as realFindClaudeExecutable from '../../src/shared/find-claude-executable.js';
+
+const realFindClaudeExecutableSnapshot = { ...realFindClaudeExecutable };
 
 let findClaudeExecutableImpl: () => string = () => '/mock/claude';
 
@@ -15,6 +18,10 @@ mock.module('../../src/shared/find-claude-executable.js', () => ({
 
 const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
 const { ClaudeProvider } = await import('../../src/services/worker/ClaudeProvider.js');
+
+afterAll(() => {
+  mock.module('../../src/shared/find-claude-executable.js', () => realFindClaudeExecutableSnapshot);
+});
 
 function makeSession(): ActiveSession {
   return {
