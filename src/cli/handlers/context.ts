@@ -14,6 +14,7 @@ import { getProjectContext } from '../../utils/project-name.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
+import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { callMcpToolOnce } from '../../shared/mcp-client.js';
@@ -55,6 +56,18 @@ async function fetchSessionStartContextViaMcp(args: {
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     const cwd = input.cwd ?? process.cwd();
+
+    // Honor CLAUDE_MEM_EXCLUDED_PROJECTS on the inject/read path too. The
+    // write path (ingestObservation) already skips excluded projects, but the
+    // SessionStart summary was injected regardless — so an excluded dir (e.g.
+    // "~") still got a context dump on every new session. Suppress it here.
+    if (!shouldTrackProject(cwd)) {
+      return {
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+        exitCode: HOOK_EXIT_CODES.SUCCESS,
+      };
+    }
+
     const context = getProjectContext(cwd);
     const port = getWorkerPort();
 
