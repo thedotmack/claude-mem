@@ -26,12 +26,11 @@
 	"kv_namespaces": [
 		{
 			"binding": "AUTH_CACHE",
-			// PLACEHOLDER — create the real namespace before deploying:
-			//   wrangler kv namespace create AUTH_CACHE
+			// Created via Cloudflare MCP: kv_namespace_create("sync-hub-AUTH_CACHE").
 			// Local dev and vitest use a local simulator and ignore this id.
 			// Also holds the kill-switch flag under the `control:` key prefix
 			// (src/kill-switch.ts documents why it shares this namespace).
-			"id": "00000000000000000000000000000000"
+			"id": "f8b295652fed47d7ab7f739460443111"
 		}
 	],
 	// Hourly watchdog (plan Phase 5 task 1) — runs the `scheduled` handler in
@@ -59,11 +58,11 @@
 
 		// --- Watchdog (src/watchdog.ts) ---------------------------------------
 		// Account tag (32-hex account id) for the GraphQL Analytics query.
-		// PLACEHOLDER — required for the watchdog to run; empty ⇒ the watchdog
-		// logs a skip (never a false alert). Set at deploy time (DEPLOY.md).
+		// Required for the watchdog to run; empty ⇒ the watchdog
+		// logs a skip (never a false alert). (DEPLOY.md)
 		// The companion secrets ANALYTICS_API_TOKEN and DISCORD_WEBHOOK_URL are
 		// set via `wrangler secret put` (typed in src/secrets.d.ts).
-		"ACCOUNT_ID": "",
+		"ACCOUNT_ID": "b68923b1c0a9c2840648102da88ba9d4",
 		// Durable Object namespace id of SyncHub — narrows the periodic-groups
 		// query (that dataset has no scriptName dimension). Empty ⇒ account-wide
 		// periodic metrics, which is correct while sync-hub is the account's
