@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'bun:test';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { runShutdownSequence, type ShutdownSequenceOptions, type WorkerShutdownReason } from '../../src/services/worker-shutdown.js';
 
 // runShutdownSequence lives in src/services/worker-shutdown.ts (not
@@ -10,6 +12,10 @@ import { runShutdownSequence, type ShutdownSequenceOptions, type WorkerShutdownR
 
 const PORT = 45678;
 const SCRIPT = '/marketplace/plugin/scripts/worker-service.cjs';
+const workerServiceSource = readFileSync(
+  join(import.meta.dir, '../../src/services/worker-service.ts'),
+  'utf-8',
+);
 
 interface Harness {
   options: ShutdownSequenceOptions;
@@ -179,6 +185,17 @@ describe('runShutdownSequence — graceful-shutdown deadline', () => {
 });
 
 describe('runShutdownSequence — last-resort child teardown', () => {
+  it('kills the Chroma tree before the supervisor can signal its root PID', () => {
+    const start = workerServiceSource.indexOf('lastResortChildTreeKill: async () => {');
+    const end = workerServiceSource.indexOf('restartHandoff:', start);
+    const lastResortSource = workerServiceSource.slice(start, end);
+    const chromaStop = lastResortSource.indexOf('this.chromaMcpManager?.stop()');
+    const supervisorStop = lastResortSource.indexOf('getSupervisor().stop()');
+
+    expect(chromaStop).toBeGreaterThanOrEqual(0);
+    expect(supervisorStop).toBeGreaterThan(chromaStop);
+  });
+
   it.each(['stop', 'restart', 'signal'] as const)(
     'runs exactly once after a clean shutdown (reason=%s)',
     async (reason) => {
