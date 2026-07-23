@@ -62,4 +62,16 @@ describe('ObserverJobStore', () => {
     expect(store.metrics(9)).toMatchObject({ pending: 0, claimed: 1, quarantined: 0, settled: 1 });
     expect(store.getCheckpoint(9)).toEqual({ generation: 2, checkpoint: { summary: 'durable context', recentEventIds: ['tool-9a'] } });
   });
+
+  test('reports a blocked observer only for durable authentication/setup failures', () => {
+    const db = new Database(':memory:');
+    const store = new ObserverJobStore(db);
+    const job = store.admit(11, event('auth-1'));
+    expect(store.claim(job.id)).toBe(true);
+    store.reset([job.id], 'auth_invalid');
+
+    expect(store.status()).toMatchObject({
+      state: 'blocked', pending: 1, lastErrorClass: 'auth_invalid',
+    });
+  });
 });

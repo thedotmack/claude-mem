@@ -22,6 +22,17 @@ export type ObserverJobMetrics = {
   settled: number;
 };
 
+export type ObserverStatus = ObserverJobMetrics & {
+  /**
+   * This is deliberately a queue/recovery diagnostic, not a claim that the
+   * provider has authenticated. A provider canary is a separate, active
+   * probe and must not be faked from process liveness.
+   */
+  state: 'ready' | 'degraded' | 'blocked' | 'recovering';
+  lastErrorClass: string | null;
+  oldestPendingAgeMs: number | null;
+};
+
 /**
  * Durable observer source-event ledger. This intentionally does not reuse the
  * retired pending_messages queue: job identity, recovery state, error class,
@@ -157,6 +168,40 @@ export class ObserverJobStore {
     const metrics: ObserverJobMetrics = { pending: 0, claimed: 0, quarantined: 0, settled: 0 };
     for (const row of rows) metrics[row.state] = row.count;
     return metrics;
+  }
+
+  status(): ObserverStatus {
+    const rows = this.db.prepare(`
+      SELECT state, COUNT(*) AS count FROM observer_jobs GROUP BY state
+    `).all() as Array<{ state: ObserverJobState; count: number }>;
+    const metrics: ObserverJobMetrics = { pending: 0, claimed: 0, quarantined: 0, settled: 0 };
+    for (const row of rows) metrics[row.state] = row.count;
+
+    const latest = this.db.prepare(`
+      SELECT last_error_class FROM observer_jobs
+      WHERE last_error_class IS NOT NULL
+      ORDER BY updated_at_epoch DESC LIMIT 1
+    `).get() as { last_error_class: string } | null;
+    const oldest = this.db.prepare(`
+      SELECT MIN(created_at_epoch) AS created_at_epoch
+      FROM observer_jobs WHERE state = 'pending'
+    `).get() as { created_at_epoch: number | null };
+    const lastErrorClass = latest?.last_error_class ?? null;
+    const blocked = metrics.pending > 0 && (lastErrorClass === 'auth_invalid' || lastErrorClass === 'setup_required');
+    const state = blocked
+      ? 'blocked'
+      : metrics.claimed > 0 || (metrics.pending > 0 && lastErrorClass !== null)
+        ? 'recovering'
+        : metrics.quarantined > 0
+          ? 'degraded'
+          : 'ready';
+
+    return {
+      ...metrics,
+      state,
+      lastErrorClass,
+      oldestPendingAgeMs: oldest.created_at_epoch === null ? null : Math.max(0, Date.now() - oldest.created_at_epoch),
+    };
   }
 
   private setState(ids: number[], state: 'settled'): void {

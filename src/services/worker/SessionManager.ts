@@ -5,7 +5,7 @@ import { SessionMessageBuffer } from './SessionMessageBuffer.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
-import { ObserverJobStore } from './ObserverJobStore.js';
+import { ObserverJobStore, type ObserverStatus } from './ObserverJobStore.js';
 
 export class SessionManager {
   private dbManager: DatabaseManager;
@@ -372,6 +372,14 @@ export class SessionManager {
 
   async getTotalActiveWork(): Promise<number> {
     return this.getTotalQueueDepth();
+  }
+
+  /**
+   * Durable observer diagnostics. This intentionally says nothing about
+   * provider authentication; only a real provider canary can establish that.
+   */
+  getObserverStatus(): ObserverStatus | null {
+    return this.observerJobs?.status() ?? null;
   }
 
   async isAnySessionProcessing(): Promise<boolean> {
