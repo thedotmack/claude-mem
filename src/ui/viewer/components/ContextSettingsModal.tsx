@@ -332,7 +332,7 @@ export function ContextSettingsModal({
             >
               <FormField
                 label="AI Provider"
-                tooltip="Choose between Claude (via Agent SDK) or Gemini (via REST API)"
+                tooltip="Choose the provider used for generating observations"
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
@@ -341,6 +341,7 @@ export function ContextSettingsModal({
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter (multi-model)</option>
+                  <option value="minimax">MiniMax (uses API key)</option>
                 </select>
               </FormField>
 
@@ -444,6 +445,45 @@ export function ContextSettingsModal({
                       value={formState.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_APP_NAME', e.target.value)}
                       placeholder="claude-mem"
+                    />
+                  </FormField>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'minimax' && (
+                <>
+                  <FormField
+                    label="MiniMax API Key"
+                    tooltip="Your MiniMax API key (or set MINIMAX_API_KEY in ~/.claude-mem/.env)"
+                  >
+                    <input
+                      type="password"
+                      value={formState.CLAUDE_MEM_MINIMAX_API_KEY || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_MINIMAX_API_KEY', e.target.value)}
+                      placeholder="Enter MiniMax API key..."
+                    />
+                  </FormField>
+                  <FormField
+                    label="MiniMax Model"
+                    tooltip="MiniMax model used for generating observations"
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_MINIMAX_MODEL || 'MiniMax-M3'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_MINIMAX_MODEL', e.target.value)}
+                    >
+                      <option value="MiniMax-M3">MiniMax-M3 (default)</option>
+                      <option value="MiniMax-M2.7">MiniMax-M2.7</option>
+                    </select>
+                  </FormField>
+                  <FormField
+                    label="MiniMax Base URL"
+                    tooltip="OpenAI-compatible MiniMax endpoint; use api.minimaxi.com for China"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_MINIMAX_BASE_URL || 'https://api.minimax.io/v1'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_MINIMAX_BASE_URL', e.target.value)}
+                      placeholder="https://api.minimax.io/v1"
                     />
                   </FormField>
                 </>

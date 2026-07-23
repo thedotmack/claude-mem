@@ -88,6 +88,9 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_OPENROUTER_MODEL',
       'CLAUDE_MEM_OPENROUTER_SITE_URL',
       'CLAUDE_MEM_OPENROUTER_APP_NAME',
+      'CLAUDE_MEM_MINIMAX_API_KEY',
+      'CLAUDE_MEM_MINIMAX_MODEL',
+      'CLAUDE_MEM_MINIMAX_BASE_URL',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
@@ -142,9 +145,9 @@ export class SettingsRoutes extends BaseRouteHandler {
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {
     if (settings.CLAUDE_MEM_PROVIDER) {
-    const validProviders = ['claude', 'gemini', 'openrouter'];
+    const validProviders = ['claude', 'gemini', 'openrouter', 'minimax'];
     if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
-      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openrouter"' };
+      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "openrouter", or "minimax"' };
       }
     }
 
@@ -159,6 +162,13 @@ export class SettingsRoutes extends BaseRouteHandler {
       const validGeminiModels = ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-3-flash-preview'];
       if (!validGeminiModels.includes(settings.CLAUDE_MEM_GEMINI_MODEL)) {
         return { valid: false, error: 'CLAUDE_MEM_GEMINI_MODEL must be one of: gemini-flash-latest, gemini-flash-lite-latest, gemini-3.5-flash, gemini-3.1-flash-lite, gemini-3-flash-preview' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_MINIMAX_MODEL) {
+      const validMiniMaxModels = ['MiniMax-M3', 'MiniMax-M2.7'];
+      if (!validMiniMaxModels.includes(settings.CLAUDE_MEM_MINIMAX_MODEL)) {
+        return { valid: false, error: 'CLAUDE_MEM_MINIMAX_MODEL must be one of: MiniMax-M3, MiniMax-M2.7' };
       }
     }
 

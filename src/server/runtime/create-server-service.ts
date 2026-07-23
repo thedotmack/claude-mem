@@ -12,6 +12,7 @@ import { ActiveServerGenerationWorkerManager } from './ActiveServerGenerationWor
 import { ClaudeObservationProvider } from '../generation/providers/ClaudeObservationProvider.js';
 import { GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../generation/providers/OpenRouterObservationProvider.js';
+import { MiniMaxObservationProvider } from '../generation/providers/MiniMaxObservationProvider.js';
 import type { ServerGenerationProvider } from '../generation/providers/shared/types.js';
 import { ServerService } from './ServerService.js';
 import {
@@ -277,6 +278,15 @@ function instantiateServerGenerationProvider(provider: string): ServerGeneration
     const baseUrl = process.env.CLAUDE_MEM_OPENROUTER_BASE_URL ?? process.env.OPENROUTER_BASE_URL;
     if (baseUrl) opts.baseUrl = baseUrl;
     return new OpenRouterObservationProvider(opts);
+  }
+  if (provider === 'minimax') {
+    const apiKey = process.env.MINIMAX_API_KEY ?? process.env.CLAUDE_MEM_MINIMAX_API_KEY ?? '';
+    if (!apiKey) return null;
+    const opts: { apiKey: string; model?: string; baseUrl?: string } = { apiKey };
+    if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+    const baseUrl = process.env.CLAUDE_MEM_MINIMAX_BASE_URL ?? process.env.MINIMAX_BASE_URL;
+    if (baseUrl) opts.baseUrl = baseUrl;
+    return new MiniMaxObservationProvider(opts);
   }
   return null;
 }

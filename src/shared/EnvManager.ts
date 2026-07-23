@@ -51,11 +51,12 @@ export interface ClaudeMemEnv {
   ANTHROPIC_AUTH_TOKEN?: string;
   GEMINI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
+  MINIMAX_API_KEY?: string;
 }
 
 /**
  * The only env keys ever copied out of ~/.claude-mem/.env. This is the
- * whitelist that load/save/buildIsolatedEnv enforce — only these five keys
+ * whitelist that load/save/buildIsolatedEnv enforce — only these credential keys
  * cross the boundary. Do NOT replace the per-key copy loops with
  * Object.assign(result, parsed): that would let arbitrary keys (a leaked
  * CLAUDE_CODE_* or a typo'd ANTHROPIC_* variant) through (see #2375).
@@ -66,6 +67,7 @@ const CREDENTIAL_KEYS = [
   'ANTHROPIC_AUTH_TOKEN',
   'GEMINI_API_KEY',
   'OPENROUTER_API_KEY',
+  'MINIMAX_API_KEY',
 ] as const;
 
 // Node's stdlib .env parser (util.parseEnv, Node ≥20.12 / stable in 24):
@@ -105,7 +107,7 @@ function serializeEnvFile(env: Record<string, string>): string {
  * exclusively from the file.
  *
  * The whitelist is enforced by the CREDENTIAL_KEYS copy loop below — only the
- * five named keys are ever copied out (see CREDENTIAL_KEYS for why this must
+ * named credential keys are ever copied out (see CREDENTIAL_KEYS for why this must
  * not become Object.assign(result, parsed)).
  */
 export function loadClaudeMemEnv(): ClaudeMemEnv {
