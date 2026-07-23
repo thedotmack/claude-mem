@@ -38,6 +38,13 @@ const OTHER_INSTALL_ORPHAN = psRow(
   1,
   `/Users/someone/.local/bin/uv tool uvx --from chroma-mcp==0.2.6 chroma-mcp --client-type persistent --data-dir /Users/other/.claude-mem/chroma`
 );
+// Shares OUR data dir as a path PREFIX — a bare substring match would kill it
+// (PR #3369 review); the boundary-anchored --data-dir match must not.
+const PREFIXED_PEER_ORPHAN = psRow(
+  92000,
+  1,
+  `/Users/someone/.local/bin/uv tool uvx --from chroma-mcp==0.2.6 chroma-mcp --client-type persistent --data-dir ${DATA_DIR}-backup`
+);
 const UNRELATED_INIT_CHILD = psRow(2001, 1, '/usr/libexec/secd');
 
 describe('ChromaMcpManager.findOrphanedChromaRoots', () => {
@@ -52,6 +59,11 @@ describe('ChromaMcpManager.findOrphanedChromaRoots', () => {
 
   it('never selects another install\'s orphans (data dir mismatch)', () => {
     expect(ChromaMcpManager.findOrphanedChromaRoots(OTHER_INSTALL_ORPHAN, DATA_DIR)).toEqual([]);
+  });
+
+  it('never selects a peer whose data dir merely shares our dir as a prefix', () => {
+    const psOutput = [PREFIXED_PEER_ORPHAN, UV_ORPHAN].join('\n');
+    expect(ChromaMcpManager.findOrphanedChromaRoots(psOutput, DATA_DIR)).toEqual([88562]);
   });
 
   it('ignores unrelated init children and malformed rows', () => {

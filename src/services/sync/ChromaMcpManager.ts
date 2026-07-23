@@ -220,6 +220,15 @@ export class ChromaMcpManager {
       await this.disposeCurrentSubprocess();
       throw error;
     }
+
+    // Track the child from the moment it exists, not only after the handshake
+    // succeeds: connect() calls transport.start(), which spawns synchronously
+    // before awaiting, so a worker exiting during the pending/timed-out
+    // connection window must still be able to kill the already-running child
+    // (PR #3369 review). Failure paths route through
+    // disposeCurrentSubprocess(), which clears the tracked pid.
+    ChromaMcpManager.liveChildPid = (this.transport as unknown as { _process?: ChildProcess })._process?.pid;
+    ChromaMcpManager.registerExitSafetyNet();
     let timeoutId: ReturnType<typeof setTimeout>;
     const timeoutPromise = new Promise<never>((_, reject) => {
       timeoutId = setTimeout(
@@ -263,16 +272,6 @@ export class ChromaMcpManager {
 
     const currentTransport = this.transport;
     const currentTrackedPid = (this.transport as unknown as { _process?: ChildProcess })._process?.pid;
-
-    // Exit-time safety net: if this process exits while the chroma child is
-    // still alive (graceful shutdown failed or hit its deadline and
-    // worker-shutdown.ts proceeded anyway, or any stray process.exit), the
-    // 'exit' handler below sync-kills the child tree as the final act. This
-    // is the last in-process line of defense; SIGKILL deaths are covered by
-    // reapOrphanedChromaProcesses on the next boot.
-    ChromaMcpManager.liveChildPid = currentTrackedPid;
-    ChromaMcpManager.registerExitSafetyNet();
-
     this.transport.onclose = () => {
       if (this.transport !== currentTransport) {
         logger.debug('CHROMA_MCP', 'Ignoring stale onclose from previous transport');
@@ -291,9 +290,10 @@ export class ChromaMcpManager {
       this.client = null;
       this.transport = null;
       this.lastConnectionFailureTimestamp = Date.now();
-      if (ChromaMcpManager.liveChildPid === currentTrackedPid) {
-        ChromaMcpManager.liveChildPid = undefined;
-      }
+      // liveChildPid is NOT cleared here: the background cleanup below still
+      // has to tree-kill surviving descendants, and a worker exit during that
+      // window must leave the exit handler able to finish the job. The pid is
+      // cleared when the cleanup completes (PR #3369 review).
 
       // Direct child (uvx) emitted close, but on Linux the grandchildren
       // (uv/python/chroma-mcp) often outlive their parent because MCP SDK
@@ -325,6 +325,13 @@ export class ChromaMcpManager {
         error: error instanceof Error ? error.message : String(error)
       });
     } finally {
+      // Only now is the descendant sweep done — release the exit-time
+      // tracking so the handler doesn't re-kill a completed tree, but never
+      // earlier, so a worker exit mid-cleanup can still finish the job
+      // (PR #3369 review).
+      if (pid && ChromaMcpManager.liveChildPid === pid) {
+        ChromaMcpManager.liveChildPid = undefined;
+      }
       this.releaseChromaWriterLock();
     }
   }
@@ -629,6 +636,11 @@ export class ChromaMcpManager {
       windowsHide: process.platform === 'win32',
     });
     this.activePrewarmChild = child;
+    // Same spawn-time tracking rationale as the transport child: a worker
+    // exiting mid-prewarm (uvx resolution can take minutes cold) must be able
+    // to kill the in-flight uvx tree from the exit handler (PR #3369 review).
+    ChromaMcpManager.liveChildPid = child.pid;
+    ChromaMcpManager.registerExitSafetyNet();
 
     const stdoutTail = ChromaMcpManager.captureOutputTail(child.stdout);
     const stderrTail = ChromaMcpManager.captureOutputTail(child.stderr);
@@ -707,6 +719,12 @@ export class ChromaMcpManager {
       }
       if (this.activePrewarmChild === child) {
         this.activePrewarmChild = null;
+      }
+      // The prewarm child has exited (or been tree-killed) on every path out
+      // of the race above; release the exit-time tracking so it never holds
+      // a stale pid. The transport spawn that follows re-populates it.
+      if (child.pid && ChromaMcpManager.liveChildPid === child.pid) {
+        ChromaMcpManager.liveChildPid = undefined;
       }
     }
   }
@@ -1136,6 +1154,7 @@ export class ChromaMcpManager {
   private static liveChildPid: number | undefined;
   private static exitSafetyNetRegistered = false;
   private static orphanReapDone = false;
+  private static orphanReapInFlight = false;
 
   private static registerExitSafetyNet(): void {
     if (ChromaMcpManager.exitSafetyNetRegistered) {
@@ -1215,11 +1234,18 @@ export class ChromaMcpManager {
    * Pure parser for the orphan reaper: given `ps -axo pid=,ppid=,command=`
    * output, return the pids of chroma-mcp processes that (a) have been
    * re-parented to init/launchd (ppid 1 — only true orphans qualify; live
-   * workers' children keep their worker as ppid) and (b) reference OUR chroma
-   * data dir (never another install's, and never the http/remote mode which
-   * has no local dir).
+   * workers' children keep their worker as ppid) and (b) carry OUR chroma
+   * data dir as their `--data-dir` argument (never another install's, and
+   * never the http/remote mode which has no local dir).
    */
   static findOrphanedChromaRoots(psOutput: string, normalizedDataDir: string): number[] {
+    // Boundary-anchored match: `--data-dir <dir>` followed by whitespace or
+    // end-of-command. A bare substring test would also match sibling dirs
+    // that merely share the prefix (e.g. `.claude-mem/chroma-backup`) and
+    // kill an unrelated install's process tree (PR #3369 review).
+    const escapedDataDir = normalizedDataDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const dataDirArgPattern = new RegExp(`(?:^|\\s)--data-dir\\s+${escapedDataDir}(?:\\s|$)`);
+
     const orphanRoots: number[] = [];
     for (const row of psOutput.split('\n')) {
       const match = row.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
@@ -1230,7 +1256,7 @@ export class ChromaMcpManager {
       if (ppidText !== '1') {
         continue;
       }
-      if (!command.includes('chroma-mcp') || !command.includes(normalizedDataDir)) {
+      if (!command.includes('chroma-mcp') || !dataDirArgPattern.test(command)) {
         continue;
       }
       const pid = Number.parseInt(pidText, 10);
@@ -1248,14 +1274,16 @@ export class ChromaMcpManager {
    * tree, and ppid-based matching is unsafe there due to pid reuse).
    */
   private static async reapOrphanedChromaProcesses(localChromaDataDir: string | null): Promise<void> {
-    if (ChromaMcpManager.orphanReapDone) {
+    if (ChromaMcpManager.orphanReapDone || ChromaMcpManager.orphanReapInFlight) {
       return;
     }
-    ChromaMcpManager.orphanReapDone = true;
 
     if (process.platform === 'win32' || !localChromaDataDir) {
+      ChromaMcpManager.orphanReapDone = true;
       return;
     }
+
+    ChromaMcpManager.orphanReapInFlight = true;
 
     const normalizedDataDir = localChromaDataDir.replace(/\\/g, '/');
 
@@ -1266,11 +1294,19 @@ export class ChromaMcpManager {
         maxBuffer: 4 * 1024 * 1024
       }));
     } catch (error) {
-      logger.debug('CHROMA_MCP', 'Orphan reap skipped: ps enumeration failed (best-effort)', {
+      // Do NOT latch orphanReapDone on a failed enumeration — a transient ps
+      // failure would otherwise disable reaping for this worker's entire
+      // lifetime, leaving existing orphans running until the NEXT worker
+      // boots (PR #3369 review). The next reconnect retries.
+      ChromaMcpManager.orphanReapInFlight = false;
+      logger.debug('CHROMA_MCP', 'Orphan reap skipped: ps enumeration failed (best-effort, will retry on next connect)', {
         error: error instanceof Error ? error.message : String(error)
       });
       return;
     }
+
+    ChromaMcpManager.orphanReapDone = true;
+    ChromaMcpManager.orphanReapInFlight = false;
 
     const orphanRoots = ChromaMcpManager.findOrphanedChromaRoots(stdout, normalizedDataDir);
     if (orphanRoots.length === 0) {
