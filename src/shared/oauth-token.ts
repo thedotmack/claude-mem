@@ -150,7 +150,7 @@ async function readWindowsCredentialManager(): Promise<OAuthTokenResult> {
         exit 0
       }
     }
-    exit 1
+    exit 0
   `.trim();
 
   let stdout: string;

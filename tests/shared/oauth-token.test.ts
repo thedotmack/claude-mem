@@ -252,6 +252,10 @@ describe('readClaudeOAuthToken — Windows branch', () => {
     delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
     const result = await readClaudeOAuthToken();
     expect(['present', 'expired', 'absent']).toContain(result.kind);
+    if (result.kind === 'absent') {
+      expect(result.reason).not.toContain('Windows Credential Manager read failed');
+      expect(result.reason).toContain('Windows Credential Manager has no entry');
+    }
   });
 });
 
