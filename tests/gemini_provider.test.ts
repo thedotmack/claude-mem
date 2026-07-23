@@ -172,7 +172,6 @@ describe('GeminiProvider', () => {
     if (modeManagerSpy) modeManagerSpy.mockRestore();
     if (loadFromFileSpy) loadFromFileSpy.mockRestore();
     if (getSpy) getSpy.mockRestore();
-    mock.restore();
   });
 
   it('should initialize with correct config', async () => {
