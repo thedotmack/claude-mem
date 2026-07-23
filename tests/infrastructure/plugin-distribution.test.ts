@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import path from 'path';
@@ -489,8 +489,38 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     try {
       for (const { command } of claudeCommands()) {
         const { stdout } = shellEval(instrument(command), { HOME: home });
-        // ls -dt yields a trailing slash; the hook trims it via _R="${_R%/}".
+        // The version-sort producer yields a trailing slash; the hook trims it
+        // via _R="${_R%/}".
         expect(stdout).toContain(`RESOLVED=${cacheRoot}`);
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers the highest cache version over the newest mtime and skips .orphaned_at dirs (2026-07-22 restart storm)', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
+    const cacheBase = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
+    const makeVersion = (version: string) => {
+      const root = path.join(cacheBase, version);
+      mkdirSync(path.join(root, 'scripts'), { recursive: true });
+      for (const file of ['version-check.js', 'bun-runner.js', 'worker-service.cjs']) {
+        writeFileSync(path.join(root, 'scripts', file), '');
+      }
+      return root;
+    };
+    // The storm layout: the OLD version dir carries the .orphaned_at stamp and
+    // the newest mtime; the NEW version dir is older by mtime. The resolver
+    // must pick the new version anyway.
+    const oldRoot = makeVersion('13.11.0');
+    writeFileSync(path.join(oldRoot, '.orphaned_at'), String(Date.now()));
+    const newRoot = makeVersion('13.12.0');
+    const past = new Date(Date.now() - 600_000);
+    utimesSync(newRoot, past, past);
+    try {
+      for (const { command } of claudeCommands()) {
+        const { stdout } = shellEval(instrument(command), { HOME: home });
+        expect(stdout).toContain(`RESOLVED=${newRoot}`);
       }
     } finally {
       rmSync(home, { recursive: true, force: true });
