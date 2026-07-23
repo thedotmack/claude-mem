@@ -7,7 +7,7 @@ import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaul
 import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
-import { emitBlockingError } from "./hook-io.js";
+import { emitDegradedNotice } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
 import { checkVersionMatch } from "../services/infrastructure/index.js";
 // Imported from ProcessManager.js directly (not the infrastructure barrel):
@@ -644,10 +644,8 @@ export async function recordWorkerUnreachable(): Promise<number> {
     // hook_failed distress signal. Gated to the failure that JUST reached the
     // threshold (`===`, not `>=`): the stderr warning below repeats on every
     // failure past the threshold, but telemetry emits once per failure streak
-    // to bound volume. MUST be awaited BEFORE emitBlockingError — it calls
-    // process.exit(2) immediately, which would kill a fire-and-forget POST
-    // mid-flight. captureCliEvent never throws and is hard-capped at 2s, so
-    // this cannot hang the fail-loud path. Closed-enum/count props only —
+    // to bound volume. captureCliEvent never throws and is hard-capped at 2s,
+    // so this cannot hang the fail-loud path. Closed-enum/count props only —
     // never error text. Transport is the direct CLI POST, never the worker
     // API (the defining failure here IS "worker unreachable").
     if (next.consecutiveFailures === threshold) {
@@ -658,12 +656,22 @@ export async function recordWorkerUnreachable(): Promise<number> {
         threshold_tripped: true,
       });
     }
-    // #2292 fix: BLOCKING_FEEDBACK. emitBlockingError flushes the Phase 2
-    // stderr buffer (so preceding logger.warn lines also surface) and writes
-    // via the bypass channel + exits 2. Previously this raw process.stderr.write
-    // was swallowed by hookCommand's blanket no-op, so the user/model never saw it.
-    emitBlockingError(
-      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`
+    // DEGRADED_NOTICE (fail-open). The memory worker is an AUXILIARY service; a
+    // memory outage must NEVER block the user's critical path. This previously
+    // called emitBlockingError → process.exit(2), which — on the UserPromptSubmit
+    // hook — blocked prompt submission and locked the editor entirely (a benign
+    // memory outage cascaded into a total lockout; the user had to relaunch in
+    // safe-mode from a terminal). We now surface a LOUD but non-blocking warning
+    // and let hookCommand exit 0 via exitGraceful. The counter/telemetry above
+    // still fire for diagnosis. Rationale: an auxiliary service must never block
+    // the user's critical path — blocking input to force attention is a DevEx
+    // anti-pattern (SRE: cascading failures / graceful degradation).
+    // emitDegradedNotice flushes the Phase 2 stderr buffer so preceding
+    // logger.warn lines also surface.
+    emitDegradedNotice(
+      `claude-mem: memory worker unreachable for ${next.consecutiveFailures} consecutive hooks — ` +
+      `memory features are degraded but your prompt was NOT blocked. ` +
+      `Restart the worker (npm run worker:restart) or run claude-mem doctor.`
     );
   }
   return next.consecutiveFailures;

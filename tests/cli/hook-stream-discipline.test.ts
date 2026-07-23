@@ -3,7 +3,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
   installHookStderrBuffer,
-  emitBlockingError,
+  emitDegradedNotice,
   exitGraceful,
   emitModelContext,
   resetHookIoState,
@@ -14,8 +14,10 @@ import type { HookResult } from '../../src/cli/types.js';
 // Windows Terminal tab-accumulation rationale (per CLAUDE.md):
 // The exit-0-on-error policy is intentional — non-zero exits keep Windows
 // Terminal tabs open. exitGraceful() exits 0 and drops buffered stderr for the
-// transient worker-unavailable path. emitBlockingError() exits 2 only for the
-// fail-loud counter (recordWorkerUnreachable) and unrecoverable handler errors.
+// transient worker-unavailable path. The fail-loud counter (recordWorkerUnreachable)
+// now surfaces via emitDegradedNotice() — LOUD but non-blocking (no exit) so a
+// memory outage can never lock the editor. emitBlockingError() (exit 2) is
+// reserved for unrecoverable handler errors, never the auxiliary-service path.
 //
 // These tests assert the IO-discipline CONTRACT at the seam level rather than
 // spawning the built worker daemon, because worker-service auto-spawns a Bun
@@ -36,20 +38,21 @@ function captureRealStderr(): { chunks: string[]; restore: () => void } {
 
 afterEach(() => resetHookIoState());
 
-describe('#2292 — fail-loud diagnostic is no longer swallowed', () => {
-  it('emitBlockingError surfaces the worker-unreachable message through the buffered window', () => {
+describe('#2292 — fail-loud diagnostic is no longer swallowed (now non-blocking)', () => {
+  it('emitDegradedNotice surfaces the worker-unreachable message through the buffered window', () => {
     // Simulate hookCommand: install the stderr buffer that previously swallowed
     // EVERYTHING (the #2292 no-op). recordWorkerUnreachable now calls
-    // emitBlockingError, which must bypass the buffer and reach real stderr.
+    // emitDegradedNotice, which must bypass the buffer and reach real stderr —
+    // WITHOUT exiting (fail-open: a memory outage never blocks the user).
     const real = captureRealStderr();
     const buffer = installHookStderrBuffer();
     try {
       // A swallowed write (what the old no-op did to library noise) stays buffered.
       process.stderr.write('library noise that should NOT surface on success\n');
-      // The fail-loud path:
-      emitBlockingError('claude-mem worker unreachable for 3 consecutive hooks.', { skipExit: true });
+      // The fail-loud (now non-blocking) path:
+      emitDegradedNotice('claude-mem: memory worker unreachable for 3 consecutive hooks — NOT blocked.');
       const surfaced = real.chunks.join('');
-      expect(surfaced).toContain('claude-mem worker unreachable for 3 consecutive hooks.');
+      expect(surfaced).toContain('worker unreachable for 3 consecutive hooks');
       // and the preceding buffered noise is flushed too (operator gets full context).
       expect(surfaced).toContain('library noise');
     } finally {
@@ -58,11 +61,18 @@ describe('#2292 — fail-loud diagnostic is no longer swallowed', () => {
     }
   });
 
-  it('worker-utils recordWorkerUnreachable routes through emitBlockingError (source contract)', () => {
+  it('worker-utils recordWorkerUnreachable routes through emitDegradedNotice, never a hard block (source contract)', () => {
     const src = readFileSync(join(REPO_ROOT, 'src', 'shared', 'worker-utils.ts'), 'utf-8');
-    // The fail-loud branch must NOT call process.stderr.write / process.exit directly.
-    expect(src).toContain('emitBlockingError(');
-    expect(src).not.toMatch(/process\.stderr\.write\(\s*\n\s*`claude-mem worker unreachable/);
+    const fn = src.slice(
+      src.indexOf('export async function recordWorkerUnreachable'),
+      src.indexOf('function resetWorkerFailureCounter'),
+    );
+    const code = fn.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+    // Fail-open: the auxiliary-service escalation surfaces loudly but never blocks.
+    expect(code).toContain('emitDegradedNotice(');
+    expect(code).not.toContain('emitBlockingError(');
+    expect(code).not.toContain('process.exit');
+    expect(code).not.toMatch(/process\.stderr\.write\(\s*\n\s*`claude-mem/);
   });
 });
 
