@@ -35,6 +35,7 @@ const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
 const RECONNECT_BACKOFF_MS = 10_000;
 const CHROMA_WRITER_LOCK_FILENAME = '.claude-mem-chroma-writer.lock';
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
+const CHROMA_DESCENDANT_SUPERVISOR_ID_PREFIX = `${CHROMA_SUPERVISOR_ID}-descendant-`;
 const CHROMA_OUTPUT_TAIL_MAX_CHARS = 2048;
 
 const CHROMA_MCP_PINNED_VERSION = '0.2.6';
@@ -97,6 +98,7 @@ export class ChromaMcpManager {
   private unexpectedCloseCleanup: Promise<void> | null = null;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
   private static chromaLauncherIdentityProbe: ((pid: number, dataDir: string | null) => Promise<boolean | null>) | null = null;
+  private static descendantPidProbe: ((pid: number) => Promise<number[]>) | null = null;
 
   private constructor() {}
 
@@ -255,7 +257,7 @@ export class ChromaMcpManager {
     clearTimeout(timeoutId!);
 
     this.connected = true;
-    this.registerManagedProcess();
+    await this.registerManagedProcess();
     clearDependencyStatus('chroma');
 
     logger.info('CHROMA_MCP', 'Connected to chroma-mcp successfully');
@@ -904,48 +906,65 @@ export class ChromaMcpManager {
    */
   private async reapRegisteredChromaFromPriorGeneration(dataDir: string | null): Promise<void> {
     const supervisor = getSupervisor();
-    const record = supervisor.getRegistry().getAll()
-      .find(entry => entry.id === CHROMA_SUPERVISOR_ID);
-    if (!record) {
+    const records = supervisor.getRegistry().getAll()
+      .filter(entry =>
+        entry.id === CHROMA_SUPERVISOR_ID
+        || entry.id.startsWith(CHROMA_DESCENDANT_SUPERVISOR_ID_PREFIX)
+      );
+    if (records.length === 0) {
       return;
     }
 
-    if (!isPidAlive(record.pid)) {
-      supervisor.unregisterProcess(CHROMA_SUPERVISOR_ID);
+    const verifiedRecords: ManagedProcessRecord[] = [];
+    for (const record of records) {
+      if (!isPidAlive(record.pid)) {
+        supervisor.unregisterProcess(record.id);
+        continue;
+      }
+
+      const identity = await ChromaMcpManager.identifyRegisteredChromaProcess(record, dataDir);
+      if (identity === 'mismatch') {
+        logger.warn('CHROMA_MCP', 'Dropping stale chroma-mcp registry entry after PID reuse', {
+          pid: record.pid,
+        });
+        supervisor.unregisterProcess(record.id);
+        continue;
+      }
+      if (identity === 'unknown') {
+        const message = `Unable to verify prior chroma-mcp PID ${record.pid}; refusing to spawn a replacement`;
+        recordChromaVectorSearchUnavailable(message);
+        throw new ChromaUnavailableError(message);
+      }
+      verifiedRecords.push(record);
+    }
+
+    if (verifiedRecords.length === 0) {
       return;
     }
 
-    const identity = await ChromaMcpManager.identifyRegisteredChromaLauncher(record, dataDir);
-    if (identity === 'mismatch') {
-      logger.warn('CHROMA_MCP', 'Dropping stale chroma-mcp registry entry after PID reuse', {
-        pid: record.pid,
-      });
-      supervisor.unregisterProcess(CHROMA_SUPERVISOR_ID);
-      return;
-    }
-    if (identity === 'unknown') {
-      const message = `Unable to verify prior chroma-mcp PID ${record.pid}; refusing to spawn a replacement`;
-      recordChromaVectorSearchUnavailable(message);
-      throw new ChromaUnavailableError(message);
-    }
-
-    logger.warn('CHROMA_MCP', 'Reaping chroma-mcp left by a prior worker generation', {
-      pid: record.pid,
-      startedAt: record.startedAt,
+    logger.warn('CHROMA_MCP', 'Reaping chroma-mcp processes left by a prior worker generation', {
+      pids: verifiedRecords.map(record => record.pid),
     });
-    await ChromaMcpManager.killProcessTree(record.pid);
-    await waitForExit([record], 1_000);
+    for (const record of verifiedRecords) {
+      if (isPidAlive(record.pid)) {
+        await ChromaMcpManager.killProcessTree(record.pid);
+      }
+    }
+    await waitForExit(verifiedRecords, 1_000);
 
-    if (isPidAlive(record.pid)) {
-      const message = `Prior chroma-mcp PID ${record.pid} is still alive after teardown; refusing to spawn a replacement`;
+    const survivors = verifiedRecords.filter(record => isPidAlive(record.pid));
+    if (survivors.length > 0) {
+      const message = `Prior chroma-mcp PID(s) ${survivors.map(record => record.pid).join(', ')} still alive after teardown; refusing to spawn a replacement`;
       recordChromaVectorSearchUnavailable(message);
       throw new ChromaUnavailableError(message);
     }
 
-    supervisor.unregisterProcess(CHROMA_SUPERVISOR_ID);
+    for (const record of records) {
+      supervisor.unregisterProcess(record.id);
+    }
   }
 
-  private static async identifyRegisteredChromaLauncher(
+  private static async identifyRegisteredChromaProcess(
     record: ManagedProcessRecord,
     dataDir: string | null,
   ): Promise<ManagedProcessIdentity> {
@@ -1375,6 +1394,12 @@ export class ChromaMcpManager {
     ChromaMcpManager.chromaLauncherIdentityProbe = probe;
   }
 
+  static setDescendantPidProbeForTesting(
+    probe: ((pid: number) => Promise<number[]>) | null,
+  ): void {
+    ChromaMcpManager.descendantPidProbe = probe;
+  }
+
   private static ensureUvOnPath(env: Record<string, string>): void {
     const sep = process.platform === 'win32' ? ';' : ':';
     const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
@@ -1435,7 +1460,7 @@ export class ChromaMcpManager {
     };
   }
 
-  private registerManagedProcess(): void {
+  private async registerManagedProcess(): Promise<void> {
     const chromaProcess = (this.transport as unknown as { _process?: ChildProcess })._process;
     if (!chromaProcess?.pid) {
       return;
@@ -1460,6 +1485,21 @@ export class ChromaMcpManager {
       // and shutdown falls back to single-PID kill (see signalProcess()).
       pgid: chromaProcess.pid,
     }, chromaProcess);
+
+    const descendantPids = ChromaMcpManager.descendantPidProbe
+      ? await ChromaMcpManager.descendantPidProbe(chromaProcess.pid)
+      : await ChromaMcpManager.collectDescendantPids(chromaProcess.pid);
+    for (const pid of descendantPids) {
+      getSupervisor().registerProcess(`${CHROMA_DESCENDANT_SUPERVISOR_ID_PREFIX}${pid}`, {
+        pid,
+        type: 'chroma',
+        startedAt: new Date().toISOString(),
+        // Preserve the token captured while this PID is known to be a child.
+        // Empty means fail closed later; ProcessRegistry must not recapture a
+        // potentially recycled PID after this point.
+        startToken: captureProcessStartToken(pid) ?? '',
+      });
+    }
 
     chromaProcess.once('exit', () => {
       getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);

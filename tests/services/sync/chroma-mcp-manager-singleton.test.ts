@@ -207,12 +207,17 @@ let mockSupervisorRegistryEntries: Array<{
   pgid?: number;
   startToken?: string;
 }> = [];
+let supervisorRegisterCalls: Array<{ id: string; pid: number }> = [];
 let supervisorUnregisterCalls: string[] = [];
 
 mock.module('../../../src/supervisor/index.ts', () => ({
   getSupervisor: () => ({
     assertCanSpawn: () => {},
-    registerProcess: () => {},
+    registerProcess: (id: string, processInfo: { pid: number; type: string; startedAt: string; pgid?: number }) => {
+      supervisorRegisterCalls.push({ id, pid: processInfo.pid });
+      mockSupervisorRegistryEntries = mockSupervisorRegistryEntries.filter(entry => entry.id !== id);
+      mockSupervisorRegistryEntries.push({ id, ...processInfo, startToken: `token-${processInfo.pid}` });
+    },
     unregisterProcess: (id: string) => {
       supervisorUnregisterCalls.push(id);
       mockSupervisorRegistryEntries = mockSupervisorRegistryEntries.filter(entry => entry.id !== id);
@@ -306,6 +311,7 @@ import {
 afterAll(() => {
   ChromaMcpManager.setUvxAvailabilityProbeForTesting(null);
   ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(null);
+  ChromaMcpManager.setDescendantPidProbeForTesting(null);
   process.kill = realProcessKill;
   if (originalPrewarmTimeout === undefined) {
     delete process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS;
@@ -339,6 +345,7 @@ function resetState(): void {
   deadPids.clear();
   survivingPids.clear();
   mockSupervisorRegistryEntries = [];
+  supervisorRegisterCalls = [];
   supervisorUnregisterCalls = [];
   logEntries.length = 0;
   execSyncCalls = 0;
@@ -358,6 +365,7 @@ function resetState(): void {
   resetMockedChromaPaths();
   ChromaMcpManager.setUvxAvailabilityProbeForTesting(() => true);
   ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(null);
+  ChromaMcpManager.setDescendantPidProbeForTesting(null);
   resetDependencyStatusesForTesting();
   if (originalPrewarmTimeout === undefined) {
     delete process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS;
@@ -415,6 +423,26 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(prewarmSpawnCalls.length).toBe(1);
   });
 
+  it('registers descendants separately so they survive a dead launcher record', async () => {
+    const expectedLauncherPid = 100_001;
+    const descendantPid = 100_002;
+    ChromaMcpManager.setDescendantPidProbeForTesting(async pid =>
+      pid === expectedLauncherPid ? [descendantPid] : []
+    );
+
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(supervisorRegisterCalls).toContainEqual({
+      id: 'chroma-mcp',
+      pid: expectedLauncherPid,
+    });
+    expect(supervisorRegisterCalls).toContainEqual({
+      id: `chroma-mcp-descendant-${descendantPid}`,
+      pid: descendantPid,
+    });
+  });
+
   it('reaps a verified chroma-mcp tree from the prior worker generation before spawning', async () => {
     const orphanPid = 99_777;
     mockSupervisorRegistryEntries = [{
@@ -431,6 +459,37 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     expect(killTreeCalls).toContain(orphanPid);
     expect(supervisorUnregisterCalls).toContain('chroma-mcp');
+    expect(transportCount).toBe(1);
+  });
+
+  it('reaps a registered orphan after its launcher has already exited', async () => {
+    const launcherPid = 99_782;
+    const orphanPid = 99_783;
+    deadPids.add(launcherPid);
+    mockSupervisorRegistryEntries = [
+      {
+        id: 'chroma-mcp',
+        pid: launcherPid,
+        type: 'chroma',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        startToken: 'launcher-token',
+      },
+      {
+        id: `chroma-mcp-descendant-${orphanPid}`,
+        pid: orphanPid,
+        type: 'chroma',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        startToken: 'orphan-token',
+      },
+    ];
+    ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(async pid => pid === orphanPid);
+
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(killTreeCalls).toContain(orphanPid);
+    expect(supervisorUnregisterCalls).toContain('chroma-mcp');
+    expect(supervisorUnregisterCalls).toContain(`chroma-mcp-descendant-${orphanPid}`);
     expect(transportCount).toBe(1);
   });
 
