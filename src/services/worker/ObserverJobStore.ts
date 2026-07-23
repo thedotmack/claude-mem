@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import type { Database } from 'bun:sqlite';
 import type { PendingMessage } from '../worker-types.js';
+import { logger } from '../../utils/logger.js';
 
 export type ObserverJobState = 'pending' | 'claimed' | 'settled' | 'quarantined';
 
@@ -41,6 +42,7 @@ export type ObserverStatus = ObserverJobMetrics & {
 export class ObserverJobStore {
   constructor(private readonly db: Database) {
     this.initialize();
+    logger.debug('WORKER', 'Durable observer job ledger initialized');
   }
 
   admit(sessionDbId: number, payload: PendingMessage): { id: number; admitted: boolean } {
