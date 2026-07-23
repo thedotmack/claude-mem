@@ -191,7 +191,7 @@ async function fetchRealContextFromWorker(): Promise<string | null> {
   if (!contextResponse.ok) return null;
 
   const realContext = await contextResponse.text();
-  return realContext && realContext.trim() ? realContext : null;
+  return typeof realContext === 'string' && realContext.trim() ? realContext : null;
 }
 
 function writeOrRemoveCleanedAgentsMd(agentsMdPath: string, trimmedContent: string): void {
