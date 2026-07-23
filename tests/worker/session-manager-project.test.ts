@@ -6,6 +6,15 @@ import type { ActiveSession } from '../../src/services/worker-types.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { StorageResult, WorkerRef } from '../../src/services/worker/agents/types.js';
 
+// Restore real modules in afterAll because mock.module leaks across test files.
+import * as realWorkerServiceModule from '../../src/services/worker-service.js';
+import * as realWorkerUtilsModule from '../../src/shared/worker-utils.js';
+import * as realModeManagerModule from '../../src/services/domain/ModeManager.js';
+
+const realWorkerServiceSnapshot = { ...realWorkerServiceModule };
+const realWorkerUtilsSnapshot = { ...realWorkerUtilsModule };
+const realModeManagerSnapshot = { ...realModeManagerModule };
+
 mock.module('../../src/services/worker-service.js', () => ({
   updateCursorContextForProject: () => Promise.resolve(),
 }));
@@ -41,6 +50,12 @@ mock.module('../../src/services/domain/ModeManager.js', () => ({
     }),
   },
 }));
+
+afterAll(() => {
+  mock.module('../../src/services/worker-service.js', () => realWorkerServiceSnapshot);
+  mock.module('../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
+  mock.module('../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
+});
 
 const durableSessionTemplate = {
   content_session_id: 'content-123',
