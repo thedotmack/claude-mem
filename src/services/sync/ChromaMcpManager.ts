@@ -45,11 +45,15 @@ const CHROMA_MCP_PINNED_VERSION = '0.2.6';
 // `TypeError: Descriptors cannot be created directly` at chromadb import.
 // Capping below 7 lands on protobuf 6.x which opentelemetry tolerates.
 //
+// Why chromadb==1.0.16: chroma-mcp 0.2.6 declares chromadb>=1.0.16.
+// Pinning that floor keeps claude-mem's runtime closure reproducible.
+//
 // These pins are runtime-only (uvx --with) so we don't have to fork
 // chroma-mcp upstream — they apply only to claude-mem's spawned subprocess.
 const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
   'onnxruntime>=1.20',
   'protobuf<7',
+  'chromadb==1.0.16',
 ];
 
 // Issue #2696 (revised): chroma-mcp is now spawned by invoking uvx DIRECTLY on

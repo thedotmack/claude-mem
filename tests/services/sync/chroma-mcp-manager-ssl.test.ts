@@ -123,10 +123,12 @@ function expectLauncherPrefixBeforeMode(args: string[], mode: 'http' | 'persiste
   expect(args[fromIdx + 2]).toBe('chroma-mcp');
   expect(args[fromIdx + 3]).toBe('--client-type');
   expect(args[fromIdx + 4]).toBe(mode);
+  expect(args.filter(arg => arg === 'chromadb==1.0.16')).toHaveLength(1);
   expect(args.slice(0, fromIdx)).toEqual([
     '--python', '3.13',
     '--with', 'onnxruntime>=1.20',
     '--with', 'protobuf<7',
+    '--with', 'chromadb==1.0.16',
   ]);
 }
 
@@ -179,5 +181,18 @@ describe('ChromaMcpManager SSL flag regression (#1286)', () => {
     expectLauncherPrefixBeforeMode(args, 'persistent');
     expect(args).toContain('--client-type');
     expect(args[args.indexOf('--client-type') + 1]).toBe('persistent');
+  });
+
+  it('pins chromadb exactly once before --from in remote and local modes', async () => {
+    currentSettings = { CLAUDE_MEM_CHROMA_MODE: 'remote' };
+    await mgr.callTool('chroma_list_collections', {});
+    expectLauncherPrefixBeforeMode(capturedTransportOpts!.args, 'http');
+
+    await ChromaMcpManager.reset();
+    capturedTransportOpts = null;
+    currentSettings = { CLAUDE_MEM_CHROMA_MODE: 'local' };
+    mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', {});
+    expectLauncherPrefixBeforeMode(capturedTransportOpts!.args, 'persistent');
   });
 });
