@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.12.1] - 2026-07-23
+
+## Critical fix: worker restart storm
+
+Fixes an infinite worker restart loop triggered by plugin upgrades. The worker-script resolver ranked plugin cache directories by **mtime**, so when Claude Code stamped a superseded version dir with `.orphaned_at` (bumping its mtime), every restart respawned the **old** version while hooks on the new version kept demanding a restart — spawning hundreds of processes until the host machine exhausted its process table.
+
+All four resolvers (worker successor, MCP launcher, Codex Windows launcher, POSIX hook prelude) now rank cache dirs by **version** — never mtime — skip orphan-stamped dirs, and share one deterministic version oracle with the staleness detector (`checkVersionMatch`), making the restart loop structurally impossible.
+
+**Recommended upgrade for all users.** Note: the vulnerable resolver is the one running *during* an upgrade, so machines are protected from the next upgrade onward.
+
+Details: #3371
+
 ## [13.12.0] - 2026-07-22
 
 ## Two-Lane Cloud Sync (cmem.ai Pro)
