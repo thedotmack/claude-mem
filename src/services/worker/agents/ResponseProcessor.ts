@@ -3,6 +3,7 @@ import { logger } from '../../../utils/logger.js';
 import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
 import {
   classifyObserverOutput,
+  isAuthFailureObserverOutput,
   isQuotaLimitedObserverOutput,
   previewOutput,
 } from '../../../sdk/output-classifier.js';
@@ -302,6 +303,26 @@ export async function processAgentResponse(
         // best-effort; AbortController.abort() should not throw in normal use.
       }
       worker?.broadcastProcessingStatus?.();
+      return;
+    }
+
+    if (isAuthFailureObserverOutput(text)) {
+      session.consecutiveInvalidOutputs = 0;
+
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = 'auth:observer_text';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      logger.error('PARSER', `${agentName} authentication failed; run /login to preserve queued batch`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'prose',
+        remediation: '/login',
+        preview: previewOutput(text),
+      });
       return;
     }
 
