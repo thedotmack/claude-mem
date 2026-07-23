@@ -6,13 +6,17 @@ const realChromaMcpManagerSnapshot = { ...realChromaMcpManager };
 
 let callCount = 0;
 
+const callTool = async () => {
+  callCount += 1;
+  throw new ChromaUnavailableError('chroma-mcp connection in backoff');
+};
+
 mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
   ChromaMcpManager: {
     getInstance: () => ({
-      callTool: async () => {
-        callCount += 1;
-        throw new ChromaUnavailableError('chroma-mcp connection in backoff');
-      },
+      callTool,
+      runOperation: async <T>(operation: (scopedCallTool: typeof callTool) => Promise<T>) =>
+        operation(callTool) as Promise<T>,
     }),
   },
 }));

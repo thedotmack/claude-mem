@@ -18,6 +18,7 @@ interface Harness {
   counters: {
     beforeGraceful: number;
     graceful: number;
+    lastResortCleanup: number;
     waitForPortFree: number;
     removePidFile: number;
     spawnDaemon: number;
@@ -28,8 +29,11 @@ interface Harness {
 function makeHarness(overrides: {
   reason?: WorkerShutdownReason;
   gracefulDeadlineMs?: number;
+  lastResortCleanupDeadlineMs?: number;
   beforeGracefulThrows?: boolean;
   graceful?: () => Promise<void>;
+  lastResortCleanup?: () => Promise<void>;
+  lastResortCleanupThrows?: boolean;
   portFree?: boolean;
   spawnResult?: number | undefined;
   spawnThrows?: boolean;
@@ -39,6 +43,7 @@ function makeHarness(overrides: {
   const counters = {
     beforeGraceful: 0,
     graceful: 0,
+    lastResortCleanup: 0,
     waitForPortFree: 0,
     removePidFile: 0,
     spawnDaemon: 0,
@@ -61,6 +66,17 @@ function makeHarness(overrides: {
       calls.push('graceful');
       return overrides.graceful ? overrides.graceful() : Promise.resolve();
     },
+    lastResortCleanup: async () => {
+      counters.lastResortCleanup++;
+      calls.push('lastResortCleanup');
+      if (overrides.lastResortCleanup) {
+        await overrides.lastResortCleanup();
+      }
+      if (overrides.lastResortCleanupThrows) {
+        throw new Error('chroma cleanup failed');
+      }
+    },
+    lastResortCleanupDeadlineMs: overrides.lastResortCleanupDeadlineMs ?? 1000,
     gracefulDeadlineMs: overrides.gracefulDeadlineMs ?? 1000,
     restartHandoff: {
       port: PORT,
@@ -148,6 +164,8 @@ describe('runShutdownSequence — graceful-shutdown deadline', () => {
 
     // Deadlined and continued into the restart handoff anyway.
     expect(elapsed).toBeLessThan(2000);
+    expect(h.counters.lastResortCleanup).toBe(1);
+    expect(h.calls.indexOf('lastResortCleanup')).toBeLessThan(h.calls.indexOf(`waitForPortFree:${PORT}`));
     expect(h.counters.waitForPortFree).toBe(1);
     expect(h.counters.spawnDaemon).toBe(1);
   });
@@ -160,6 +178,37 @@ describe('runShutdownSequence — graceful-shutdown deadline', () => {
 
     await runShutdownSequence(h.options); // must not throw
 
+    expect(h.counters.lastResortCleanup).toBe(1);
+    expect(h.counters.spawnDaemon).toBe(1);
+  });
+
+  it('still proceeds when last-resort cleanup fails', async () => {
+    const h = makeHarness({
+      reason: 'restart',
+      graceful: () => Promise.reject(new Error('session drain failed')),
+      lastResortCleanupThrows: true,
+    });
+
+    await runShutdownSequence(h.options);
+
+    expect(h.counters.lastResortCleanup).toBe(1);
+    expect(h.counters.spawnDaemon).toBe(1);
+  });
+
+  it('still proceeds when last-resort cleanup never resolves', async () => {
+    const h = makeHarness({
+      reason: 'restart',
+      graceful: () => Promise.reject(new Error('session drain failed')),
+      lastResortCleanupDeadlineMs: 25,
+      lastResortCleanup: () => new Promise<void>(() => { /* hangs forever */ }),
+    });
+
+    const start = Date.now();
+    await runShutdownSequence(h.options);
+    const elapsed = Date.now() - start;
+
+    expect(elapsed).toBeLessThan(2000);
+    expect(h.counters.lastResortCleanup).toBe(1);
     expect(h.counters.spawnDaemon).toBe(1);
   });
 });
@@ -170,6 +219,7 @@ describe('runShutdownSequence — restart successor handoff', () => {
 
     await runShutdownSequence(h.options);
 
+    expect(h.counters.lastResortCleanup).toBe(0);
     expect(h.counters.spawnDaemon).toBe(1);
     expect(h.spawnArgs[0]).toEqual({ scriptPath: SCRIPT, port: PORT });
     // Ordering: graceful → port-free confirmation → pid-file cleanup → spawn.

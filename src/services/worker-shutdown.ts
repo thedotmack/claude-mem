@@ -57,6 +57,10 @@ export interface ShutdownSequenceOptions {
   /** Pre-graceful bookkeeping: transcript watcher, heartbeat, sentinel, telemetry flush. */
   beforeGracefulShutdown: () => Promise<void>;
   performGracefulShutdown: () => Promise<void>;
+  /** Best-effort cleanup after graceful shutdown fails or exceeds its deadline. */
+  lastResortCleanup?: () => Promise<void>;
+  /** Separate hard deadline so last-resort cleanup cannot block restart handoff forever. */
+  lastResortCleanupDeadlineMs?: number;
   gracefulDeadlineMs: number;
   restartHandoff: RestartHandoffDeps;
 }
@@ -116,6 +120,47 @@ export async function runShutdownSequence(options: ShutdownSequenceOptions): Pro
         deadlineMs: options.gracefulDeadlineMs,
         reason: options.reason,
       });
+    }
+    if (outcome !== 'graceful' && options.lastResortCleanup) {
+      let cleanupDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const cleanupOutcome = await Promise.race([
+          options.lastResortCleanup().then(
+            () => 'cleaned' as const,
+            (error: unknown) => {
+              logger.error(
+                'SYSTEM',
+                'Last-resort shutdown cleanup failed — proceeding',
+                { reason: options.reason },
+                error instanceof Error ? error : new Error(String(error))
+              );
+              return 'cleanup-error' as const;
+            }
+          ),
+          new Promise<'deadline'>((resolve) => {
+            cleanupDeadlineTimer = setTimeout(
+              () => resolve('deadline'),
+              options.lastResortCleanupDeadlineMs ?? 5_000
+            );
+            cleanupDeadlineTimer.unref?.();
+          }),
+        ]);
+        if (cleanupOutcome === 'deadline') {
+          logger.warn('SYSTEM', 'Last-resort shutdown cleanup deadline exceeded — proceeding', {
+            deadlineMs: options.lastResortCleanupDeadlineMs ?? 5_000,
+            reason: options.reason,
+          });
+        }
+      } catch (error: unknown) {
+        logger.error(
+          'SYSTEM',
+          'Last-resort shutdown cleanup failed — proceeding',
+          { reason: options.reason },
+          error instanceof Error ? error : new Error(String(error))
+        );
+      } finally {
+        if (cleanupDeadlineTimer !== undefined) clearTimeout(cleanupDeadlineTimer);
+      }
     }
   } finally {
     if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);

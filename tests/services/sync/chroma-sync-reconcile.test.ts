@@ -9,31 +9,35 @@ const calls: Array<{ tool: string; args: any }> = [];
 // update ignores absent IDs, get reports which of the requested IDs exist.
 const stored = new Set<string>();
 
+const callTool = async (tool: string, args: any) => {
+  calls.push({ tool, args });
+  const ids: string[] = args?.ids ?? [];
+  switch (tool) {
+    case 'chroma_add_documents': {
+      // Chroma rejects the entire batch if ANY id already exists.
+      if (ids.some(id => stored.has(id))) {
+        throw new Error(`IDs already exist in collection: ${ids.filter(id => stored.has(id)).join(', ')}`);
+      }
+      ids.forEach(id => stored.add(id));
+      return {};
+    }
+    case 'chroma_get_documents':
+      // Report only the requested IDs that actually exist.
+      return { ids: ids.filter(id => stored.has(id)) };
+    case 'chroma_update_documents':
+      // Chroma silently ignores IDs that are not already present.
+      return {};
+    default:
+      return {};
+  }
+};
+
 mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
   ChromaMcpManager: {
     getInstance: () => ({
-      callTool: async (tool: string, args: any) => {
-        calls.push({ tool, args });
-        const ids: string[] = args?.ids ?? [];
-        switch (tool) {
-          case 'chroma_add_documents': {
-            // Chroma rejects the entire batch if ANY id already exists.
-            if (ids.some(id => stored.has(id))) {
-              throw new Error(`IDs already exist in collection: ${ids.filter(id => stored.has(id)).join(', ')}`);
-            }
-            ids.forEach(id => stored.add(id));
-            return {};
-          }
-          case 'chroma_get_documents':
-            // Report only the requested IDs that actually exist.
-            return { ids: ids.filter(id => stored.has(id)) };
-          case 'chroma_update_documents':
-            // Chroma silently ignores IDs that are not already present.
-            return {};
-          default:
-            return {};
-        }
-      },
+      callTool,
+      runOperation: async <T>(operation: (scopedCallTool: typeof callTool) => Promise<T>) =>
+        operation(callTool),
     }),
   },
 }));

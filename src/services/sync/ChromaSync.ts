@@ -1,5 +1,5 @@
 
-import { ChromaMcpManager } from './ChromaMcpManager.js';
+import { ChromaMcpManager, type ChromaToolCall } from './ChromaMcpManager.js';
 import { ChromaSyncState, ProjectWatermarks } from './ChromaSyncState.js';
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 // cmem-sdk: keep SessionStore + parseFileList off the SDK's import graph.
@@ -116,13 +116,19 @@ export class ChromaSync {
 
   // Public: cmem-sdk requires Chroma at construction. Plan §3 line 192.
   public async ensureCollectionExists(): Promise<void> {
+    const chromaMcp = ChromaMcpManager.getInstance();
+    await this.ensureCollectionExistsWith((toolName, toolArguments) =>
+      chromaMcp.callTool(toolName, toolArguments)
+    );
+  }
+
+  private async ensureCollectionExistsWith(callTool: ChromaToolCall): Promise<void> {
     if (this.collectionCreated) {
       return;
     }
 
-    const chromaMcp = ChromaMcpManager.getInstance();
     try {
-      await chromaMcp.callTool('chroma_create_collection', {
+      await callTool('chroma_create_collection', {
         collection_name: this.collectionName
       });
     } catch (error) {
@@ -293,8 +299,18 @@ export class ChromaSync {
       return 0;
     }
 
+    const chromaMcp = ChromaMcpManager.getInstance();
+    return chromaMcp.runOperation((callTool) =>
+      this.addDocumentsWithinOperation(documents, callTool)
+    );
+  }
+
+  private async addDocumentsWithinOperation(
+    documents: ChromaDocument[],
+    callTool: ChromaToolCall
+  ): Promise<number> {
     try {
-      await this.ensureCollectionExists();
+      await this.ensureCollectionExistsWith(callTool);
     } catch (error) {
       if (error instanceof ChromaUnavailableError) {
         logger.warn('CHROMA_SYNC', 'Chroma unavailable before write; leaving documents unsynced', {
@@ -312,8 +328,6 @@ export class ChromaSync {
       throw error;
     }
 
-    const chromaMcp = ChromaMcpManager.getInstance();
-
     let written = 0;
     for (let i = 0; i < documents.length; i += this.BATCH_SIZE) {
       const batch = documents.slice(i, i + this.BATCH_SIZE);
@@ -325,7 +339,7 @@ export class ChromaSync {
       );
 
       try {
-        await chromaMcp.callTool('chroma_add_documents', {
+        await callTool('chroma_add_documents', {
           collection_name: this.collectionName,
           ids: batch.map(d => d.id),
           documents: batch.map(d => d.document),
@@ -351,7 +365,7 @@ export class ChromaSync {
             // still advancing the watermark past them (data loss). So split
             // the batch: update the existing IDs in place, add only the new
             // ones, and count each part only if it actually succeeds.
-            const existing = await chromaMcp.callTool('chroma_get_documents', {
+            const existing = await callTool('chroma_get_documents', {
               collection_name: this.collectionName,
               ids: batch.map(d => d.id),
               include: []
@@ -367,7 +381,7 @@ export class ChromaSync {
             );
 
             if (toUpdate.length > 0) {
-              await chromaMcp.callTool('chroma_update_documents', {
+              await callTool('chroma_update_documents', {
                 collection_name: this.collectionName,
                 ids: toUpdate.map(d => d.id),
                 documents: toUpdate.map(d => d.document),
@@ -377,7 +391,7 @@ export class ChromaSync {
             }
 
             if (toAdd.length > 0) {
-              await chromaMcp.callTool('chroma_add_documents', {
+              await callTool('chroma_add_documents', {
                 collection_name: this.collectionName,
                 ids: toAdd.map(d => d.id),
                 documents: toAdd.map(d => d.document),

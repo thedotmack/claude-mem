@@ -817,6 +817,10 @@ export class WorkerService implements WorkerRef {
         dbManager: this.dbManager,
         chromaMcpManager: this.chromaMcpManager || undefined
       }),
+      lastResortCleanup: async () => {
+        await this.chromaMcpManager?.stop();
+      },
+      lastResortCleanupDeadlineMs: getPlatformTimeout(5000),
       gracefulDeadlineMs: getPlatformTimeout(10000),
       restartHandoff: {
         port: getWorkerPort(),

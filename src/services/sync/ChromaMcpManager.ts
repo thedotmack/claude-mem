@@ -25,6 +25,7 @@ const DEFAULT_CHROMA_PREWARM_TIMEOUT_MS = 120_000;
 const CHROMA_PREWARM_TIMEOUT_SETTING = 'CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS';
 const CHROMA_PREWARM_TIMEOUT_BOUNDS = { min: 1, max: 600_000 } as const;
 const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
+const CHROMA_SHUTDOWN_DRAIN_TIMEOUT_MS = 5_000;
 const RECONNECT_BACKOFF_MS = 10_000;
 const CHROMA_WRITER_LOCK_FILENAME = '.claude-mem-chroma-writer.lock';
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
@@ -67,6 +68,11 @@ class ChromaMcpConnectionCancelledError extends Error {
   }
 }
 
+export type ChromaToolCall = (
+  toolName: string,
+  toolArguments: Record<string, unknown>
+) => Promise<unknown>;
+
 interface ChromaWriterLockPayload {
   pid: number;
   ownerId: string;
@@ -84,6 +90,10 @@ export class ChromaMcpManager {
   private connecting: Promise<void> | null = null;
   private activePrewarmChild: ChildProcess | null = null;
   private connectionGeneration: number = 0;
+  private stopping = false;
+  private stopPromise: Promise<void> | null = null;
+  private readonly activeToolCalls = new Set<Promise<unknown>>();
+  private readonly activeOperations = new Set<Promise<unknown>>();
   private intentionallyClosingTransports = new WeakSet<object>();
   private readonly chromaWriterOwnerId = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
   private chromaWriterLock: { path: string; dataDir: string; ownerId: string } | null = null;
@@ -99,8 +109,10 @@ export class ChromaMcpManager {
     return ChromaMcpManager.instance;
   }
 
-  private async ensureConnected(): Promise<void> {
+  private async ensureConnected(callGeneration: number, allowDuringStopping: boolean): Promise<void> {
+    this.assertCallAllowed(callGeneration, allowDuringStopping);
     await this.waitForUnexpectedCloseCleanup();
+    this.assertCallAllowed(callGeneration, allowDuringStopping);
 
     if (this.connected && this.client) {
       return;
@@ -113,6 +125,7 @@ export class ChromaMcpManager {
 
     if (this.connecting) {
       await this.connecting;
+      this.assertCallAllowed(callGeneration, allowDuringStopping);
       return;
     }
 
@@ -314,6 +327,21 @@ export class ChromaMcpManager {
 
   private assertConnectionNotCancelled(connectionGeneration: number): void {
     if (this.connectionGeneration !== connectionGeneration) {
+      throw new ChromaMcpConnectionCancelledError();
+    }
+  }
+
+  private assertNotStopping(): void {
+    if (this.stopping) {
+      throw new ChromaMcpConnectionCancelledError();
+    }
+  }
+
+  private assertCallAllowed(callGeneration: number, allowDuringStopping: boolean): void {
+    if (
+      this.connectionGeneration !== callGeneration ||
+      (this.stopping && !allowDuringStopping)
+    ) {
       throw new ChromaMcpConnectionCancelledError();
     }
   }
@@ -688,7 +716,57 @@ export class ChromaMcpManager {
   }
 
   async callTool(toolName: string, toolArguments: Record<string, unknown>): Promise<unknown> {
-    await this.ensureConnected();
+    this.assertNotStopping();
+    return this.trackToolCall(
+      toolName,
+      toolArguments,
+      this.connectionGeneration,
+      false
+    );
+  }
+
+  async runOperation<T>(operation: (callTool: ChromaToolCall) => Promise<T>): Promise<T> {
+    this.assertNotStopping();
+    const operationGeneration = this.connectionGeneration;
+    const activeOperation = operation((toolName, toolArguments) =>
+      this.trackToolCall(toolName, toolArguments, operationGeneration, true)
+    );
+    this.activeOperations.add(activeOperation);
+    try {
+      return await activeOperation;
+    } finally {
+      this.activeOperations.delete(activeOperation);
+    }
+  }
+
+  private async trackToolCall(
+    toolName: string,
+    toolArguments: Record<string, unknown>,
+    callGeneration: number,
+    allowDuringStopping: boolean
+  ): Promise<unknown> {
+    this.assertCallAllowed(callGeneration, allowDuringStopping);
+    const activeCall = this.callToolInternal(
+      toolName,
+      toolArguments,
+      callGeneration,
+      allowDuringStopping
+    );
+    this.activeToolCalls.add(activeCall);
+    try {
+      return await activeCall;
+    } finally {
+      this.activeToolCalls.delete(activeCall);
+    }
+  }
+
+  private async callToolInternal(
+    toolName: string,
+    toolArguments: Record<string, unknown>,
+    callGeneration: number,
+    allowDuringStopping: boolean
+  ): Promise<unknown> {
+    await this.ensureConnected(callGeneration, allowDuringStopping);
 
     logger.debug('CHROMA_MCP', `Calling tool: ${toolName}`, {
       arguments: JSON.stringify(toolArguments).slice(0, 200)
@@ -701,6 +779,9 @@ export class ChromaMcpManager {
         arguments: toolArguments
       });
     } catch (transportError) {
+      // stop() deliberately closes the transport after its drain deadline.
+      // That shutdown-induced error must not enter the reconnect path.
+      this.assertCallAllowed(callGeneration, allowDuringStopping);
       logger.warn('CHROMA_MCP', `Transport error during "${toolName}", reconnecting and retrying once`, {
         error: transportError instanceof Error ? transportError.message : String(transportError)
       });
@@ -711,7 +792,8 @@ export class ChromaMcpManager {
       await this.disposeCurrentSubprocess();
 
       try {
-        await this.ensureConnected();
+        this.assertCallAllowed(callGeneration, allowDuringStopping);
+        await this.ensureConnected(callGeneration, allowDuringStopping);
         result = await this.client!.callTool({
           name: toolName,
           arguments: toolArguments
@@ -937,23 +1019,98 @@ export class ChromaMcpManager {
    * accumulate across reconnects or worker restarts. Matches the tree-kill
    * pattern from shutdown.ts (Principle 5: OS-supervised teardown).
    */
-  async stop(): Promise<void> {
-    this.connectionGeneration += 1;
-    await this.waitForUnexpectedCloseCleanup();
-
-    if (!this.client && !this.transport && !this.activePrewarmChild) {
-      logger.debug('CHROMA_MCP', 'No active MCP connection to stop');
-      this.releaseChromaWriterLock();
-      this.connecting = null;
+  async stop(drainTimeoutMs = CHROMA_SHUTDOWN_DRAIN_TIMEOUT_MS): Promise<void> {
+    if (this.stopPromise) {
+      await this.stopPromise;
       return;
     }
 
-    logger.info('CHROMA_MCP', 'Stopping chroma-mcp MCP connection');
+    this.stopPromise = this.stopInternal(drainTimeoutMs);
+    try {
+      await this.stopPromise;
+    } finally {
+      this.stopPromise = null;
+    }
+  }
 
-    await this.disposeCurrentSubprocess();
-    this.connecting = null;
+  private async stopInternal(drainTimeoutMs: number): Promise<void> {
+    this.stopping = true;
+    let connectionCancelled = false;
+    try {
+      // A call still establishing the subprocess/handshake has not started a
+      // Chroma operation yet. Cancel that setup immediately so stop() cannot
+      // deadlock waiting for a connection attempt that only transport.close()
+      // can release. Established tool calls are drained below.
+      if (
+        this.activeOperations.size === 0 &&
+        (this.connecting || this.activePrewarmChild)
+      ) {
+        this.connectionGeneration += 1;
+        connectionCancelled = true;
+        await this.disposeCurrentSubprocess();
+      }
+      await this.waitForActiveWork(drainTimeoutMs);
+      if (!connectionCancelled) {
+        // Permanently revoke the generation held by drained or timed-out work
+        // before closing the transport. A late rejection can never reconnect.
+        this.connectionGeneration += 1;
+      }
+      await this.waitForUnexpectedCloseCleanup();
 
-    logger.info('CHROMA_MCP', 'chroma-mcp MCP connection stopped');
+      if (!this.client && !this.transport && !this.activePrewarmChild) {
+        logger.debug('CHROMA_MCP', 'No active MCP connection to stop');
+        this.releaseChromaWriterLock();
+        return;
+      }
+
+      logger.info('CHROMA_MCP', 'Stopping chroma-mcp MCP connection');
+      await this.disposeCurrentSubprocess();
+      logger.info('CHROMA_MCP', 'chroma-mcp MCP connection stopped');
+    } finally {
+      this.connecting = null;
+      // Calls that exceeded the drain deadline belong to the subprocess tree
+      // just disposed above. Do not make a later, reusable stop() wait for the
+      // same permanently hung promises again.
+      this.activeToolCalls.clear();
+      this.activeOperations.clear();
+      this.stopping = false;
+    }
+  }
+
+  private async waitForActiveWork(timeoutMs: number): Promise<void> {
+    const activeWork = [
+      ...this.activeOperations,
+      ...this.activeToolCalls
+    ];
+    if (activeWork.length === 0) {
+      return;
+    }
+
+    logger.info('CHROMA_MCP', 'Waiting for active Chroma operations before shutdown', {
+      activeOperations: this.activeOperations.size,
+      activeToolCalls: this.activeToolCalls.size,
+      timeoutMs
+    });
+
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      Promise.allSettled(activeWork).then(() => 'drained' as const),
+      new Promise<'deadline'>((resolve) => {
+        timeoutId = setTimeout(() => resolve('deadline'), Math.max(0, timeoutMs));
+        timeoutId.unref?.();
+      })
+    ]);
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
+
+    if (outcome === 'deadline') {
+      logger.warn('CHROMA_MCP', 'Active Chroma operations did not drain before shutdown deadline', {
+        activeOperations: this.activeOperations.size,
+        activeToolCalls: this.activeToolCalls.size,
+        timeoutMs
+      });
+    }
   }
 
   /**

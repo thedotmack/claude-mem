@@ -9,35 +9,39 @@ const realChromaMcpManagerSnapshot = { ...realChromaMcpManager };
 let existingObservationIds = new Set<number>();
 const addDocumentCalls: string[][] = [];
 
+const callTool = async (toolName: string, args: Record<string, unknown>) => {
+  if (toolName === 'chroma_create_collection') {
+    return {};
+  }
+
+  if (toolName === 'chroma_get_documents') {
+    const offset = Number(args.offset ?? 0);
+    if (offset > 0) {
+      return { metadatas: [] };
+    }
+
+    return {
+      metadatas: [...existingObservationIds].sort((a, b) => a - b).map(sqliteId => ({
+        sqlite_id: sqliteId,
+        doc_type: 'observation',
+      })),
+    };
+  }
+
+  if (toolName === 'chroma_add_documents') {
+    addDocumentCalls.push((args.ids as string[]) ?? []);
+    return {};
+  }
+
+  return {};
+};
+
 mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
   ChromaMcpManager: {
     getInstance: () => ({
-      callTool: async (toolName: string, args: Record<string, unknown>) => {
-        if (toolName === 'chroma_create_collection') {
-          return {};
-        }
-
-        if (toolName === 'chroma_get_documents') {
-          const offset = Number(args.offset ?? 0);
-          if (offset > 0) {
-            return { metadatas: [] };
-          }
-
-          return {
-            metadatas: [...existingObservationIds].sort((a, b) => a - b).map(sqliteId => ({
-              sqlite_id: sqliteId,
-              doc_type: 'observation',
-            })),
-          };
-        }
-
-        if (toolName === 'chroma_add_documents') {
-          addDocumentCalls.push((args.ids as string[]) ?? []);
-          return {};
-        }
-
-        return {};
-      },
+      callTool,
+      runOperation: async <T>(operation: (scopedCallTool: typeof callTool) => Promise<T>) =>
+        operation(callTool),
     }),
   },
 }));
