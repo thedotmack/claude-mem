@@ -33,12 +33,19 @@
 			"id": "f8b295652fed47d7ab7f739460443111"
 		}
 	],
-	// Hourly watchdog (plan Phase 5 task 1) — runs the `scheduled` handler in
-	// src/index.ts. Minute 7, not 0: gives the GraphQL adaptive datasets a
-	// few minutes of ingest headroom past each hour boundary and dodges the
-	// top-of-hour cron stampede. Activated automatically by `wrangler deploy`.
+	// Two crons, dispatched on event.cron in src/index.ts's scheduled handler
+	// (both activated automatically by `wrangler deploy`):
+	//   "7 * * * *"   — hourly watchdog (plan Phase 5 task 1). Minute 7, not 0:
+	//                   gives the GraphQL adaptive datasets a few minutes of
+	//                   ingest headroom past each hour boundary and dodges the
+	//                   top-of-hour cron stampede.
+	//   "*/5 * * * *" — control-plane uptime probe (launch Phase 5 task 4,
+	//                   src/control-plane-probe.ts): pages Discord when the
+	//                   DB-backed TOKEN_VERIFY_URL stops answering 401/403+JSON
+	//                   for a bogus token (the Jul 20–22 silent-Supabase-pause
+	//                   failure mode). Anti-flap policy + silencing: DEPLOY.md §7.
 	"triggers": {
-		"crons": ["7 * * * *"]
+		"crons": ["7 * * * *", "*/5 * * * *"]
 	},
 	"vars": {
 		// Implemented Pro verifier dependency. Deploy and canary this route first;

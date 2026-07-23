@@ -52,6 +52,7 @@
  * the ping is a courtesy).
  */
 
+import { postDiscordEmbed, type DiscordEmbed, type DiscordEmbedField } from "./discord";
 import { tripKillSwitch } from "./kill-switch";
 
 export const GRAPHQL_ENDPOINT = "https://api.cloudflare.com/client/v4/graphql";
@@ -370,18 +371,19 @@ function evaluate(env: Env, metrics: WatchdogMetrics): WatchdogBreach[] {
 
 /**
  * Discord embed, shape copied from scripts/discord-release-notify.js
- * (payload = {embeds: [{title, description, color, fields, footer,
- * timestamp}]}). The webhook URL is a SECRET binding — never hardcoded.
+ * (posted via the shared src/discord.ts helper, which owns the
+ * {embeds: [embed]} envelope). The webhook URL is a SECRET binding — never
+ * hardcoded.
  */
-function buildDiscordPayload(
+function buildDiscordEmbed(
 	severe: boolean,
 	breaches: WatchdogBreach[],
 	metrics: WatchdogMetrics,
 	killSwitch: WatchdogResult["killSwitch"],
 	windowStart: string,
 	windowEnd: string,
-): Record<string, unknown> {
-	const fields = breaches.map((b) => ({
+): DiscordEmbed {
+	const fields: DiscordEmbedField[] = breaches.map((b) => ({
 		name: `${b.severe ? "🔴" : "🟠"} ${b.label}`,
 		value: `${b.value.toLocaleString("en-US")} (alert ≥ ${b.alertThreshold.toLocaleString("en-US")}, kill ≥ ${b.killThreshold.toLocaleString("en-US")})`,
 		inline: false,
@@ -397,27 +399,23 @@ function buildDiscordPayload(
 		inline: false,
 	});
 	return {
-		embeds: [
-			{
-				title: severe
-					? "🚨 sync-hub watchdog: SEVERE threshold breach"
-					: "⚠️ sync-hub watchdog: threshold breach",
-				description:
-					`DO metrics for ${windowStart} → ${windowEnd} (last hour).\n` +
-					`requests=${metrics.requests.toLocaleString("en-US")}, ` +
-					`duration=${metrics.duration_gbs.toFixed(2)} GB-s, ` +
-					`rowsRead=${metrics.rows_read.toLocaleString("en-US")}, ` +
-					`rowsWritten=${metrics.rows_written.toLocaleString("en-US")}, ` +
-					`errors=${metrics.errors.toLocaleString("en-US")}, ` +
-					`inboundWsMsgs=${metrics.inbound_ws_messages.toLocaleString("en-US")}`,
-				color: severe ? 0xdc2626 : 0xf59e0b, // red / amber
-				fields,
-				footer: {
-					text: "sync-hub watchdog • poll mode keeps the product complete",
-				},
-				timestamp: new Date().toISOString(),
-			},
-		],
+		title: severe
+			? "🚨 sync-hub watchdog: SEVERE threshold breach"
+			: "⚠️ sync-hub watchdog: threshold breach",
+		description:
+			`DO metrics for ${windowStart} → ${windowEnd} (last hour).\n` +
+			`requests=${metrics.requests.toLocaleString("en-US")}, ` +
+			`duration=${metrics.duration_gbs.toFixed(2)} GB-s, ` +
+			`rowsRead=${metrics.rows_read.toLocaleString("en-US")}, ` +
+			`rowsWritten=${metrics.rows_written.toLocaleString("en-US")}, ` +
+			`errors=${metrics.errors.toLocaleString("en-US")}, ` +
+			`inboundWsMsgs=${metrics.inbound_ws_messages.toLocaleString("en-US")}`,
+		color: severe ? 0xdc2626 : 0xf59e0b, // red / amber
+		fields,
+		footer: {
+			text: "sync-hub watchdog • poll mode keeps the product complete",
+		},
+		timestamp: new Date().toISOString(),
 	};
 }
 
@@ -504,7 +502,7 @@ export async function runWatchdog(env: Env, deps: WatchdogDeps = {}): Promise<Wa
 		return result;
 	}
 	try {
-		const payload = buildDiscordPayload(
+		const embed = buildDiscordEmbed(
 			severe,
 			breaches,
 			outcome.metrics,
@@ -512,15 +510,7 @@ export async function runWatchdog(env: Env, deps: WatchdogDeps = {}): Promise<Wa
 			result.windowStart,
 			result.windowEnd,
 		);
-		const res = await fetchImpl(webhook, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(payload),
-		});
-		if (!res.ok) {
-			const errorText = await res.text().catch(() => "");
-			throw new Error(`Discord API error: ${res.status} - ${errorText.slice(0, 200)}`);
-		}
+		await postDiscordEmbed(webhook, embed, fetchImpl);
 		result.discord = "sent";
 	} catch (e) {
 		result.discord = "failed";

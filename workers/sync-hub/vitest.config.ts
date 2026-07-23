@@ -22,6 +22,9 @@
  *   denied-401/403   → 401 / 403
  *   upstream-500     → 500
  *   network-error    → throws (unreachable endpoint)
+ *   cmem-uptime-probe-invalid-token
+ *                    → 401 {error} JSON — the HEALTHY answer the
+ *                      control-plane probe expects (src/control-plane-probe.ts)
  *
  * Phase 5 adds two more outbound targets, dispatched by hostname:
  *   - api.cloudflare.com/client/v4/graphql → mock GraphQL Analytics API,
@@ -47,6 +50,13 @@ function mockVerifyEndpoint(request: Request): Response {
 
 	if (token === "network-error") {
 		throw new Error("simulated network failure reaching the verify endpoint");
+	}
+	if (token === "cmem-uptime-probe-invalid-token") {
+		// Control-plane probe (src/control-plane-probe.ts): a HEALTHY verify
+		// endpoint rejects the probe's deliberately bogus token with 401 + a
+		// JSON body. (The generic unknown-token fallback below is text/plain,
+		// which the probe rightly classifies as unhealthy.)
+		return Response.json({ error: "invalid token" }, { status: 401 });
 	}
 	if (token === "denied-401") return new Response("denied", { status: 401 });
 	if (token === "denied-403") return new Response("denied", { status: 403 });

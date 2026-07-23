@@ -422,7 +422,63 @@ silent week is the success case.
 
 ---
 
-## 7. Deploy + verify checklist
+## 7. Control-plane uptime probe (launch Phase 5 task 4)
+
+**Why it exists**: on Jul 20–22 Supabase paused the project silently — signups
+failed for 52 hours with no page, while the static landing page answered 200
+the whole time. The probe therefore runs OUTSIDE the Vercel/Supabase failure
+domain (this Worker) and checks a DB-BACKED endpoint, never the landing page.
+
+**What it checks**: every 5 minutes (cron `*/5 * * * *`, dispatched on
+`event.cron` in `src/index.ts` — the hourly `7 * * * *` watchdog is
+unaffected), `src/control-plane-probe.ts` GETs `TOKEN_VERIFY_URL` with a
+deliberately bogus bearer token (`cmem-uptime-probe-invalid-token`) and the
+all-zero user id. **Healthy = HTTP 401/403 with a JSON body** — that exact
+answer requires the Pro app AND its Postgres lookup to be alive (the endpoint
+queries `pro_users` to reject the token). Unhealthy: network error, 10 s
+timeout, any 5xx, a non-JSON 401 (an edge page answering for a dead app), or
+any other status. A **2xx for the bogus token pages a distinct SECURITY
+alert** — that is an auth bypass, not an outage.
+
+**No new configuration**: reuses `TOKEN_VERIFY_URL` (var) and
+`DISCORD_WEBHOOK_URL` (§2.2 secret). Empty `TOKEN_VERIFY_URL` ⇒ logged skip.
+No Durable Object involvement.
+
+**Anti-flap policy** (state = KV key `control:uptime-probe` in `AUTH_CACHE`,
+absent in the healthy steady state):
+
+1. Healthy steady state → one `{"status":"healthy"}` log line, **no Discord
+   post, no KV write**.
+2. First failure alerts only after one immediate in-run retry confirms it
+   (a single blip never pages); the alert writes the failing state.
+3. While failing: re-page at most every 30 minutes; in between, log-only
+   (`suppressed`), no KV writes.
+4. Healthy again after a failure state → one green "recovered" embed, state
+   key deleted.
+5. A Discord post failure is swallowed with a log (the KV state is still
+   written); a probe bug is contained by the scheduled handler's top-level
+   try/catch and can never affect the sync routes.
+
+**Silence during maintenance** (planned Pro/DB downtime):
+
+```sh
+cd workers/sync-hub
+# Silence until the maintenance window ends (ISO-8601 UTC):
+wrangler kv key put --binding AUTH_CACHE "control:uptime-probe" \
+  '{"silenced_until":"2026-08-01T09:00:00Z"}' --remote
+# Inspect / lift early:
+wrangler kv key get --binding AUTH_CACHE "control:uptime-probe" --remote
+wrangler kv key delete --binding AUTH_CACHE "control:uptime-probe" --remote
+```
+
+While `silenced_until` is in the future the probe does nothing at all (not
+even the fetch). After it expires, the first healthy run deletes the marker
+quietly; a confirmed failure alerts normally. Deleting the key always returns
+the probe to its normal state machine immediately.
+
+---
+
+## 8. Deploy + verify checklist
 
 ```sh
 cd workers/sync-hub

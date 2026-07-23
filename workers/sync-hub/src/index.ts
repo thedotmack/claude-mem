@@ -31,6 +31,7 @@
  *                                        deliberately untouched.
  */
 
+import { CONTROL_PLANE_PROBE_CRON, runControlPlaneProbe } from "./control-plane-probe";
 import type { PushOp } from "./do/SyncHub";
 import {
 	DEVICE_LIMIT_ERROR,
@@ -954,15 +955,38 @@ export default {
 	},
 
 	/**
-	 * Hourly watchdog (plan Phase 5 task 1; cron in wrangler.jsonc). Lives in
-	 * the stateless Worker — the DO stays I/O-free. runWatchdog never throws;
-	 * its structured result is logged as one JSON line for observability.
-	 * The metrics window is anchored to controller.scheduledTime (not
-	 * Date.now()) so a delayed invocation still measures the exact trailing
-	 * hour it was scheduled for. A persisting breach re-alerts on every
-	 * hourly run — intended (silence would hide an ongoing incident).
+	 * Scheduled entrypoint — TWO crons (wrangler.jsonc), dispatched on
+	 * event.cron. Both live in the stateless Worker — the DO stays I/O-free —
+	 * and both are anchored to controller.scheduledTime (not Date.now()) so a
+	 * delayed invocation still measures the window it was scheduled for.
+	 *
+	 *   every-5-minutes (CONTROL_PLANE_PROBE_CRON) — control-plane uptime
+	 *     probe (launch Phase 5 task 4, src/control-plane-probe.ts): is
+	 *     cmem.ai's DB-backed verify endpoint still rejecting a bogus token
+	 *     with 401/403 + JSON? Pages Discord with anti-flap KV state when it
+	 *     is not.
+	 *   "7 * * * *" (and any unrecognized cron) — hourly watchdog (plan
+	 *     Phase 5 task 1, src/watchdog.ts). A persisting breach re-alerts on
+	 *     every hourly run — intended (silence would hide an ongoing
+	 *     incident).
+	 *
+	 * Both runners never throw by contract; the probe is ADDITIONALLY wrapped
+	 * in the one permitted top-level try/catch (mirroring how the watchdog
+	 * isolates itself) so even a probe implementation bug cannot escape the
+	 * scheduled handler — and can never affect the sync routes either way.
 	 */
 	async scheduled(controller, env, _ctx): Promise<void> {
+		if (controller.cron === CONTROL_PLANE_PROBE_CRON) {
+			try {
+				const result = await runControlPlaneProbe(env, {
+					now: () => controller.scheduledTime,
+				});
+				console.log("sync-hub control-plane probe:", JSON.stringify(result));
+			} catch (e) {
+				console.error("sync-hub control-plane probe crashed:", e);
+			}
+			return;
+		}
 		const result = await runWatchdog(env, { now: () => controller.scheduledTime });
 		console.log("sync-hub watchdog:", JSON.stringify(result));
 	},
