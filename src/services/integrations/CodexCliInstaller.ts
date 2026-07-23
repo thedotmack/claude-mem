@@ -31,7 +31,7 @@ const WINDOWS_CODEX_EXTENSIONS = new Set(['.cmd', '.exe', '.bat', '.com']);
 function commandExists(command: string): boolean {
   try {
     if (process.platform === 'win32') {
-      execFileSync('where', [command], { stdio: 'ignore' });
+      execFileSync('where.exe', [command], { stdio: 'ignore', windowsHide: true });
     } else {
       execFileSync('which', [command], { stdio: 'ignore' });
     }
@@ -90,7 +90,7 @@ function resolvePluginMarketplaceRoot(preferredRoot?: string): string {
 function lookupCodexOnWindows(): string | null {
   let stdout: string;
   try {
-    stdout = execFileSync('where', ['codex'], {
+    stdout = execFileSync('where.exe', ['codex'], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
