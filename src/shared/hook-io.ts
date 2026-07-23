@@ -127,21 +127,29 @@ let moduleHasEmitted = false;
 
 export interface ExitOptions {
   skipExit?: boolean;
+  /** Veto exit 2 in emitBlockingError; irrelevant to exitGraceful (already exit 0). */
+  neverBlock?: boolean;
 }
 
 /**
- * BLOCKING_FEEDBACK: flush buffered stderr (so preceding diagnostics reach the
- * operator/model), write `msg` to real stderr, then exit 2 so the model
- * receives it per Claude Code's hook contract. `skipExit` is the test seam
- * that mirrors HookCommandOptions.skipExit.
+ * BLOCKING_FEEDBACK: flush buffered stderr, write `msg` to real stderr, then
+ * exit 2 so the model receives it per Claude Code's hook contract. `skipExit`
+ * is the test seam that mirrors HookCommandOptions.skipExit.
+ *
+ * `neverBlock` vetoes both the flush and the exit — #3161: exit 2 from a Stop
+ * hook means "don't stop", not "show the model an error", so blocking on a
+ * worker outage re-wakes the agent every time it tries to end the session, an
+ * endless loop while the worker stays down. Callers compute neverBlock from
+ * the active hook event so every call site inherits the rule without
+ * repeating the check.
  */
 export function emitBlockingError(msg: string, options: ExitOptions = {}): void {
   if (bufferedChunks && bufferedChunks.length > 0) {
-    bypassWrite(bufferedChunks.join(''));
+    if (!options.neverBlock) bypassWrite(bufferedChunks.join(''));
     bufferedChunks = [];
   }
   bypassWrite(msg.endsWith('\n') ? msg : `${msg}\n`);
-  if (!options.skipExit) {
+  if (!options.skipExit && !options.neverBlock) {
     process.exit(2);
   }
 }

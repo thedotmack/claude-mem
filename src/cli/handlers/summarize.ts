@@ -57,7 +57,7 @@ export const summarizeHandler: EventHandler = {
     }
 
     if (input.stopHookActive === true) {
-      logger.debug('HOOK', 'Skipping summary: Codex Stop hook re-entry detected', {
+      logger.debug('HOOK', 'Skipping summary: Stop hook re-entry detected (stop_hook_active)', {
         sessionId: input.sessionId,
       });
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
@@ -145,6 +145,18 @@ export const summarizeHandler: EventHandler = {
       },
     );
     if (isWorkerFallback(queueResult)) {
+      // #3161: this handler never exits 2 (neverBlock) and exit-0 stderr is
+      // verbose-only, so a tripped fail-loud streak surfaces as a USER_HINT —
+      // the Stop hook fires at the end of every turn, exactly when the user
+      // is watching the terminal.
+      if (queueResult.consecutiveFailures !== undefined) {
+        return {
+          continue: true,
+          suppressOutput: true,
+          exitCode: HOOK_EXIT_CODES.SUCCESS,
+          systemMessage: `claude-mem worker unreachable for ${queueResult.consecutiveFailures} consecutive hooks — memory capture is paused. Run \`npx claude-mem restart\` to recover.`,
+        };
+      }
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
