@@ -353,7 +353,13 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
       trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
       notFoundMessage: 'claude-mem: version-check.js not found',
     }),
-    'SessionStart.0.0': claudeHook(['start'], { trailingJson: { continue: true, suppressOutput: true } }),
+    // `start` already prints its own single, valid status JSON
+    // (buildStatusOutput → {"continue":true,"status":"ready","suppressOutput":true}),
+    // so NO trailingJson echo is appended — a second echoed object would
+    // concatenate two JSON documents on stdout, which Claude Code cannot parse,
+    // causing it to ignore suppressOutput and render the raw JSON at the top of
+    // every session.
+    'SessionStart.0.0': claudeHook(['start']),
     'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
     'UserPromptSubmit.0.0': claudeHook(['hook', 'claude-code', 'session-init']),
     'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),

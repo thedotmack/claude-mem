@@ -99,7 +99,13 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
           trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
           notFoundMessage: 'claude-mem: version-check.js not found',
         }),
-        'SessionStart.0.0': claudeHook(['start'], { trailingJson: { continue: true, suppressOutput: true } }),
+        // `start` already emits its own single, valid status JSON via
+        // buildStatusOutput ({"continue":true,"status":"ready","suppressOutput":true}).
+        // Appending a trailingJson echo would print a SECOND JSON object on
+        // stdout — two concatenated documents are invalid JSON, so Claude Code
+        // fails to parse them, ignores suppressOutput, and dumps the raw text at
+        // the top of every session. Let `start` speak for itself.
+        'SessionStart.0.0': claudeHook(['start']),
         'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
         'UserPromptSubmit.0.0': claudeHook(['hook', 'claude-code', 'session-init']),
         'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
