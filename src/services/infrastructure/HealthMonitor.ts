@@ -1,10 +1,8 @@
 
-import path from 'path';
 import net from 'net';
-import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { MARKETPLACE_ROOT, USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
 function getWorkerHost(): string {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
@@ -126,24 +124,6 @@ export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 's
   }
 }
 
-export function getInstalledPluginVersion(): string {
-  try {
-    const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-    return packageJson.version;
-  } catch (error: unknown) {
-    if (error instanceof Error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT' || code === 'EBUSY') {
-        logger.debug('SYSTEM', 'Could not read plugin version (shutdown race)', { code });
-        return 'unknown';
-      }
-      throw error;
-    }
-    throw error;
-  }
-}
-
 export async function getRunningWorkerVersion(port: number): Promise<string | null> {
   try {
     const result = await httpRequestToWorker(port, '/api/health');
@@ -162,8 +142,15 @@ export interface VersionCheckResult {
   workerVersion: string | null;
 }
 
-export async function checkVersionMatch(port: number): Promise<VersionCheckResult> {
-  const pluginVersion = getInstalledPluginVersion();
+/**
+ * Compare the live worker's self-reported version against expectedVersion —
+ * the version of the script the caller's resolveWorkerScript() oracle would
+ * spawn. The caller supplies it so detection and respawn can never consult
+ * different oracles (the 2026-07-22 restart storm). Either side unknown →
+ * matches, since a recycle could not change the outcome deterministically.
+ */
+export async function checkVersionMatch(port: number, expectedVersion: string | null): Promise<VersionCheckResult> {
+  const pluginVersion = expectedVersion ?? 'unknown';
   const workerVersion = await getRunningWorkerVersion(port);
 
   if (!workerVersion || pluginVersion === 'unknown') {

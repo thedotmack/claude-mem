@@ -4,7 +4,6 @@ import {
   isPortInUse,
   waitForHealth,
   waitForPortFree,
-  getInstalledPluginVersion,
   getRunningWorkerVersion,
   checkVersionMatch
 } from '../../src/services/infrastructure/index.js';
@@ -201,20 +200,6 @@ describe('HealthMonitor', () => {
     });
   });
 
-  describe('getInstalledPluginVersion', () => {
-    it('should return a valid semver string', () => {
-      const version = getInstalledPluginVersion();
-
-      if (version !== 'unknown') {
-        expect(version).toMatch(/^\d+\.\d+\.\d+/);
-      }
-    });
-
-    it('should not throw on ENOENT (graceful degradation)', () => {
-      expect(() => getInstalledPluginVersion()).not.toThrow();
-    });
-  });
-
   describe('checkVersionMatch', () => {
     it('reads the running worker version from /api/health, not /api/version', async () => {
       const fetchMock = mock(() => Promise.resolve({
@@ -230,45 +215,55 @@ describe('HealthMonitor', () => {
       expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:37777/api/health');
     });
 
-    it('should assume match when worker version is unavailable', async () => {
+    it('assumes match when the worker version is unavailable', async () => {
       global.fetch = mock(() => Promise.reject(new Error('ECONNREFUSED')));
 
-      const result = await checkVersionMatch(39999);
+      const result = await checkVersionMatch(39999, '13.12.0');
 
       expect(result.matches).toBe(true);
       expect(result.workerVersion).toBeNull();
     });
 
-    it('should detect version mismatch', async () => {
+    it('assumes match when the caller-supplied expected version is unknown', async () => {
       global.fetch = mock(() => Promise.resolve({
         ok: true,
         status: 200,
-        text: () => Promise.resolve(JSON.stringify({ version: '0.0.0-definitely-wrong' }))
+        text: () => Promise.resolve(JSON.stringify({ version: '13.11.0' }))
       } as unknown as Response));
 
-      const result = await checkVersionMatch(37777);
-
-      const pluginVersion = getInstalledPluginVersion();
-      if (pluginVersion !== 'unknown' && pluginVersion !== '0.0.0-definitely-wrong') {
-        expect(result.matches).toBe(false);
-      }
-    });
-
-    it('should detect version match', async () => {
-      const pluginVersion = getInstalledPluginVersion();
-      if (pluginVersion === 'unknown') return; 
-
-      global.fetch = mock(() => Promise.resolve({
-        ok: true,
-        status: 200,
-        text: () => Promise.resolve(JSON.stringify({ version: pluginVersion }))
-      } as unknown as Response));
-
-      const result = await checkVersionMatch(37777);
+      const result = await checkVersionMatch(37777, null);
 
       expect(result.matches).toBe(true);
-      expect(result.pluginVersion).toBe(pluginVersion);
-      expect(result.workerVersion).toBe(pluginVersion);
+      expect(result.pluginVersion).toBe('unknown');
+      expect(result.workerVersion).toBe('13.11.0');
+    });
+
+    it('detects a mismatch against the caller-supplied expected version', async () => {
+      global.fetch = mock(() => Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(JSON.stringify({ version: '13.11.0' }))
+      } as unknown as Response));
+
+      const result = await checkVersionMatch(37777, '13.12.0');
+
+      expect(result.matches).toBe(false);
+      expect(result.pluginVersion).toBe('13.12.0');
+      expect(result.workerVersion).toBe('13.11.0');
+    });
+
+    it('detects a match against the caller-supplied expected version', async () => {
+      global.fetch = mock(() => Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(JSON.stringify({ version: '13.12.0' }))
+      } as unknown as Response));
+
+      const result = await checkVersionMatch(37777, '13.12.0');
+
+      expect(result.matches).toBe(true);
+      expect(result.pluginVersion).toBe('13.12.0');
+      expect(result.workerVersion).toBe('13.12.0');
     });
   });
 
