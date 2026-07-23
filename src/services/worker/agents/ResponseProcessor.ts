@@ -37,6 +37,7 @@ export async function processAgentResponse(
   if (text) {
     session.conversationHistory.push({ role: 'assistant', content: text });
   }
+  sessionManager.checkpointObserverSession?.(session);
 
   const parsed = parseAgentXml(text, session.contentSessionId);
 
@@ -57,7 +58,7 @@ export async function processAgentResponse(
         preview: previewOutput(text),
       });
 
-      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      await sessionManager.resetProcessingToPending(session.sessionDbId, 'quota_exhausted');
       session.abortReason = 'quota:observer_text';
       try {
         session.abortController.abort();
@@ -83,7 +84,7 @@ export async function processAgentResponse(
       consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
     });
 
-    await sessionManager.resetProcessingToPending(session.sessionDbId);
+    await sessionManager.resetProcessingToPending(session.sessionDbId, 'malformed_output');
     session.abortReason = `observer_failure:${outputClass}`;
     try {
       session.abortController.abort();
@@ -105,7 +106,7 @@ export async function processAgentResponse(
     // Reset any claimed-but-undelivered messages back to pending so they don't
     // count as "in progress" and trigger a respawn loop while we wait for the
     // memory session id to appear. The next generator pass will re-claim them.
-    await sessionManager.resetProcessingToPending(session.sessionDbId);
+    await sessionManager.resetProcessingToPending(session.sessionDbId, 'transient');
     return;
   }
 
@@ -136,7 +137,8 @@ export async function processAgentResponse(
       session.lastPromptNumber,
       discoveryTokens,
       originalTimestamp ?? undefined,
-      modelId
+      modelId,
+      session.claimedMessageIds,
     );
   } finally {
     session.pendingAgentId = null;

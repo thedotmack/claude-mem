@@ -201,7 +201,10 @@ export class SessionRoutes extends BaseRouteHandler {
         // Preserve claimed work before this recoverable provider failure reaches
         // generator finalization. The next observation ingest can start a fresh
         // generation; no claimed source event is silently settled or discarded.
-        await this.sessionManager.resetProcessingToPending(session.sessionDbId);
+        await this.sessionManager.resetProcessingToPending(
+          session.sessionDbId,
+          isClassified(error) ? error.kind : 'transient',
+        );
         session.abortReason = 'observer_failure:provider_error';
         try {
           session.abortController.abort();

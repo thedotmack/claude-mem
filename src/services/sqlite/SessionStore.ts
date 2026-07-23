@@ -1995,7 +1995,8 @@ export class SessionStore {
     promptNumber?: number,
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
-    generatedByModel?: string
+    generatedByModel?: string,
+    observerJobIds: number[] = [],
   ): { id: number; createdAtEpoch: number } {
     const result = this.storeObservations(
       memorySessionId,
@@ -2005,7 +2006,8 @@ export class SessionStore {
       promptNumber,
       discoveryTokens,
       overrideTimestampEpoch,
-      generatedByModel
+      generatedByModel,
+      observerJobIds,
     );
 
     return { id: result.observationIds[0], createdAtEpoch: result.createdAtEpoch };
@@ -2084,7 +2086,8 @@ export class SessionStore {
     promptNumber?: number,
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
-    generatedByModel?: string
+    generatedByModel?: string,
+    observerJobIds: number[] = [],
   ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
@@ -2167,6 +2170,15 @@ export class SessionStore {
           timestampEpoch
         );
         summaryId = Number(result.lastInsertRowid);
+      }
+
+      if (observerJobIds.length > 0) {
+        const placeholders = observerJobIds.map(() => '?').join(', ');
+        this.db.prepare(`
+          UPDATE observer_jobs
+          SET state = 'settled', updated_at_epoch = ?
+          WHERE id IN (${placeholders}) AND state = 'claimed'
+        `).run(Date.now(), ...observerJobIds);
       }
 
       return { observationIds, summaryId, createdAtEpoch: timestampEpoch };

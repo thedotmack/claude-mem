@@ -84,7 +84,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     );
 
     expect(confirmSpy).not.toHaveBeenCalled();
-    expect(resetSpy).toHaveBeenCalledWith(1);
+    expect(resetSpy).toHaveBeenCalledWith(1, 'malformed_output');
     expect(sm.getMessageBuffer().getPendingCount(1)).toBe(1);
     expect(session.claimedMessageIds).toEqual([]);
     expect(session.consecutiveInvalidOutputs).toBe(0);
@@ -113,7 +113,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     );
 
     expect(confirmSpy).not.toHaveBeenCalled();
-    expect(resetSpy).toHaveBeenCalledWith(2);
+    expect(resetSpy).toHaveBeenCalledWith(2, 'malformed_output');
     expect(sm.getMessageBuffer().getPendingCount(2)).toBe(1);
     expect(session.claimedMessageIds).toEqual([]);
     expect(session.abortController.signal.aborted).toBe(true);
@@ -143,7 +143,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     );
 
     expect(confirmSpy).not.toHaveBeenCalled();
-    expect(resetSpy).toHaveBeenCalledWith(3);
+    expect(resetSpy).toHaveBeenCalledWith(3, 'quota_exhausted');
     expect(sm.getMessageBuffer().getPendingCount(3)).toBe(1);
     expect(session.claimedMessageIds).toEqual([]);
     expect(session.consecutiveInvalidOutputs).toBe(0);

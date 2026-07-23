@@ -235,7 +235,7 @@ describe('ResponseProcessor', () => {
         expect.stringMatching(/^TestAgent returned non-XML prose response — preserving queued batch/),
         expect.objectContaining({ sessionId: 1, outputClass: 'prose' })
       );
-      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1, 'malformed_output');
       expect(confirmClaimedMessages).not.toHaveBeenCalled();
       expect(mockStoreObservations).not.toHaveBeenCalled();
     });
@@ -478,7 +478,7 @@ describe('ResponseProcessor', () => {
       );
 
       expect(mockStoreObservations).not.toHaveBeenCalled();
-      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1, 'malformed_output');
       expect(confirmClaimedMessages).not.toHaveBeenCalled();
     });
 
@@ -501,7 +501,7 @@ describe('ResponseProcessor', () => {
       );
 
       expect(mockStoreObservations).not.toHaveBeenCalled();
-      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1, 'malformed_output');
       expect(confirmClaimedMessages).not.toHaveBeenCalled();
     });
   });
@@ -657,7 +657,7 @@ describe('ResponseProcessor', () => {
         'TestAgent'
       );
 
-      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1, 'transient');
       expect(mockStoreObservations).not.toHaveBeenCalled();
     });
   });
