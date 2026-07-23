@@ -61,6 +61,7 @@ describe('ResponseProcessor', () => {
   let mockChromaSyncSummary: ReturnType<typeof mock>;
   let mockBroadcast: ReturnType<typeof mock>;
   let mockBroadcastProcessingStatus: ReturnType<typeof mock>;
+  let mockRecordAiInteraction: ReturnType<typeof mock>;
   let mockDbManager: DatabaseManager;
   let mockSessionManager: SessionManager;
   let mockWorker: WorkerRef;
@@ -111,12 +112,14 @@ describe('ResponseProcessor', () => {
 
     mockBroadcast = mock(() => {});
     mockBroadcastProcessingStatus = mock(() => {});
+    mockRecordAiInteraction = mock(() => {});
 
     mockWorker = {
       sseBroadcaster: {
         broadcast: mockBroadcast,
       },
       broadcastProcessingStatus: mockBroadcastProcessingStatus,
+      recordAiInteraction: mockRecordAiInteraction,
     };
   });
 
@@ -257,6 +260,54 @@ describe('ResponseProcessor', () => {
       expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
       expect(session.earliestPendingTimestamp).toBeNull();
       expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('AI interaction health signal', () => {
+    it('records a failed interaction when the observer returns auth-failure prose', async () => {
+      const session = createMockSession();
+      const responseText = 'API Error: 401 Invalid authentication credentials';
+
+      await processAgentResponse(
+        responseText, session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent'
+      );
+
+      expect(mockRecordAiInteraction).toHaveBeenCalledWith({ success: false, error: 'unauthenticated' });
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+
+    it('does NOT record an interaction for ordinary non-auth prose', async () => {
+      const session = createMockSession();
+      const responseText = 'Skipping — repeated log scan with no new findings.';
+
+      await processAgentResponse(
+        responseText, session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent'
+      );
+
+      expect(mockRecordAiInteraction).not.toHaveBeenCalled();
+    });
+
+    it('records a successful interaction when observations store', async () => {
+      const session = createMockSession();
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Test</title>
+          <facts></facts>
+          <concepts></concepts>
+          <files_read></files_read>
+          <files_modified></files_modified>
+        </observation>
+      `;
+
+      await processAgentResponse(
+        responseText, session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent'
+      );
+
+      expect(mockRecordAiInteraction).toHaveBeenCalledWith({ success: true });
     });
   });
 

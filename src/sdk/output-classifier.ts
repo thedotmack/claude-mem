@@ -70,3 +70,30 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
     /\b(rate limit|quota)\b.*\b(subscription|weekly|claude usage)\b.*\b(reached|exceeded|exhausted|reset|resets|try again)\b/.test(text)
   );
 }
+
+/**
+ * Detect authentication-failure prose returned as an assistant message instead of
+ * a structured error — e.g. the Claude CLI's "Not logged in · Please run /login"
+ * or an API "401 / Invalid authentication credentials". Distinct from a benign
+ * `idle` "nothing to observe": auth prose means the extraction silently produced
+ * NOTHING and will keep doing so until re-auth, so the pipeline should record a
+ * durable signal (see ResponseProcessor) rather than drop it indistinguishably.
+ * Kept intentionally narrow so ordinary prose about auth/HTTP does not trip it.
+ */
+export function isAuthFailureObserverOutput(raw: unknown): boolean {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return false;
+  }
+
+  const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  return (
+    /\bnot logged in\b/.test(text) ||
+    /\brun\b[^.]{0,30}\/login\b/.test(text) ||
+    /invalid authentication/.test(text) ||
+    /authentication (failed|error|credentials)/.test(text) ||
+    /\bunauthenticated\b/.test(text) ||
+    /\bapi error:?\s*401\b/.test(text) ||
+    /\b401\b[^0-9]{0,40}(unauthor|authenticat|credential|token|login)/.test(text)
+  );
+}

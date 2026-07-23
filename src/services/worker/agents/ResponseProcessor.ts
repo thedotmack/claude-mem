@@ -4,6 +4,7 @@ import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../..
 import {
   classifyObserverOutput,
   isQuotaLimitedObserverOutput,
+  isAuthFailureObserverOutput,
   previewOutput,
 } from '../../../sdk/output-classifier.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
@@ -82,6 +83,12 @@ export async function processAgentResponse(
       consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
     });
 
+    // Auth-failure prose means extraction produced nothing and will keep doing
+    // so until re-auth — record a durable failure signal before dropping.
+    if (isAuthFailureObserverOutput(text)) {
+      worker?.recordAiInteraction?.({ success: false, error: 'unauthenticated' });
+    }
+
     // Plain-text skip responses are intentionally ignored. Re-queueing them
     // creates an observer loop where the same low-signal batch is retried.
     await sessionManager.confirmClaimedMessages(session.sessionDbId);
@@ -142,6 +149,8 @@ export async function processAgentResponse(
     sessionId: session.sessionDbId,
     memorySessionId: session.memorySessionId
   });
+
+  worker?.recordAiInteraction?.({ success: true });
 
   session.lastSummaryStored = result.summaryId !== null;
 
