@@ -1635,6 +1635,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             }
             writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
           }
+          writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion);
           return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
         },
       },

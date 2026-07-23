@@ -161,18 +161,6 @@ function runCodex(args: string[]): void {
   }
 }
 
-function runCodexBestEffort(args: string[], successMessage: string, failureMessage: string): boolean {
-  try {
-    runCodex(args);
-    console.log(`  ${successMessage}`);
-    return true;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(`  ${failureMessage}: ${message}`);
-    return false;
-  }
-}
-
 function isMarketplaceDifferentSourceError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes(`marketplace '${MARKETPLACE_NAME}' is already added from a different source`)
@@ -467,11 +455,8 @@ function performCodexInstall(marketplaceRootOverride?: string): number {
   console.log(`  Registering Codex plugin marketplace: ${marketplaceRoot}`);
   registerCodexMarketplace(marketplaceRoot);
   enableCodexPluginConfig();
-  runCodexBestEffort(
-    ['plugin', 'marketplace', 'upgrade', MARKETPLACE_NAME],
-    'Refreshed Codex marketplace and installed plugin cache.',
-    'Could not refresh Codex marketplace cache; reinstall or upgrade claude-mem from /plugins if Codex still uses old MCP config',
-  );
+  runCodex(['plugin', 'add', CODEX_PLUGIN_ID]);
+  console.log('  Installed Codex plugin cache.');
   if (!cleanupLegacyCodexAgentsMdContext()) {
     console.warn(`  Native Codex hooks registered, but failed to remove legacy AGENTS.md context from ${CODEX_AGENTS_MD_PATH}.`);
   }
