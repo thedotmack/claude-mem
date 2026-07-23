@@ -504,6 +504,7 @@ export class WorkerService implements WorkerRef {
 
       logger.info('WORKER', 'Initializing database manager...');
       await this.dbManager.initialize();
+      this.sessionManager.initializeDurableObserverStore();
 
       runOneTimeV12_4_3Cleanup();
 

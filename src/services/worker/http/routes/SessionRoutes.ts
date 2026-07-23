@@ -198,10 +198,20 @@ export class SessionRoutes extends BaseRouteHandler {
           return;
         }
 
-        // No retry: the generator failed, the in-RAM batch is dropped, and the
-        // transcript is the recovery path. The next observation ingest will
-        // start a fresh generator via ensureGeneratorRunning.
-        //
+        // Preserve claimed work before this recoverable provider failure reaches
+        // generator finalization. The next observation ingest can start a fresh
+        // generation; no claimed source event is silently settled or discarded.
+        await this.sessionManager.resetProcessingToPending(
+          session.sessionDbId,
+          isClassified(error) ? error.kind : 'transient',
+        );
+        session.abortReason = 'observer_failure:provider_error';
+        try {
+          session.abortController.abort();
+        } catch {
+          // best-effort; AbortController.abort() should not throw in normal use.
+        }
+
         // The local error line (full fidelity) and the scrubbed
         // session_compressed rollup are one logical event.
         // No abort_reason here: every site that sets abortReason aborts the

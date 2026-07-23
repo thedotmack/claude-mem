@@ -227,12 +227,14 @@ describe('ResponseProcessor', () => {
   });
 
   describe('non-XML observer responses', () => {
-    it('warns and clears pending work when the observer returns non-XML prose', async () => {
+    it('preserves claimed work when the observer returns non-XML prose', async () => {
       const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(1));
       mockSessionManager = {
         getMessageIterator: async function* () { yield* []; },
         getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
         confirmClaimedMessages,
+        resetProcessingToPending,
       } as unknown as SessionManager;
 
       const session = createMockSession();
@@ -251,11 +253,11 @@ describe('ResponseProcessor', () => {
 
       expect(logger.warn).toHaveBeenCalledWith(
         'PARSER',
-        expect.stringMatching(/^TestAgent returned non-XML prose response/),
+        expect.stringMatching(/^TestAgent returned non-XML prose response — preserving queued batch/),
         expect.objectContaining({ sessionId: 1, outputClass: 'prose' })
       );
-      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
-      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1, 'malformed_output');
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
       expect(mockStoreObservations).not.toHaveBeenCalled();
     });
   });
@@ -478,12 +480,14 @@ describe('ResponseProcessor', () => {
   });
 
   describe('handling empty / non-XML response', () => {
-    it('clears pending work and does NOT call storeObservations on empty response', async () => {
+    it('preserves claimed work and does NOT call storeObservations on empty response', async () => {
       const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(1));
       mockSessionManager = {
         getMessageIterator: async function* () { yield* []; },
         getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
         confirmClaimedMessages,
+        resetProcessingToPending,
       } as unknown as SessionManager;
 
       const session = createMockSession();
@@ -495,16 +499,18 @@ describe('ResponseProcessor', () => {
       );
 
       expect(mockStoreObservations).not.toHaveBeenCalled();
-      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
-      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1, 'malformed_output');
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
     });
 
-    it('clears pending work and does NOT call storeObservations on plain-text response', async () => {
+    it('preserves claimed work and does NOT call storeObservations on plain-text response', async () => {
       const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(1));
       mockSessionManager = {
         getMessageIterator: async function* () { yield* []; },
         getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
         confirmClaimedMessages,
+        resetProcessingToPending,
       } as unknown as SessionManager;
 
       const session = createMockSession();
@@ -516,8 +522,8 @@ describe('ResponseProcessor', () => {
       );
 
       expect(mockStoreObservations).not.toHaveBeenCalled();
-      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
-      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1, 'malformed_output');
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
     });
   });
 
@@ -672,7 +678,7 @@ describe('ResponseProcessor', () => {
         'TestAgent'
       );
 
-      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1, 'transient');
       expect(mockStoreObservations).not.toHaveBeenCalled();
     });
   });
