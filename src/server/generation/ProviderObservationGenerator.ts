@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Job } from 'bullmq';
+import { UnrecoverableError, type Job } from 'bullmq';
 import { logger } from '../../utils/logger.js';
 import { PostgresAgentEventsRepository } from '../../storage/postgres/agent-events.js';
 import { PostgresObservationGenerationJobRepository } from '../../storage/postgres/generation-jobs.js';
@@ -32,6 +32,24 @@ export class ServerGenerationScopeViolationError extends Error {
   constructor(reason: 'scope_mismatch' | 'revoked_key', message: string) {
     super(message);
     this.reason = reason;
+  }
+}
+
+// Terminal generation outcomes (empty provider response, unparseable XML)
+// already move the outbox row to `failed` before throwing. Extending
+// UnrecoverableError makes BullMQ fail the job immediately instead of
+// burning its remaining retry attempts re-running a job whose outbox row is
+// already terminal. The name must stay 'UnrecoverableError' — BullMQ
+// identifies these by name, so the subclass must not override it.
+export class ServerGenerationTerminalOutcomeError extends UnrecoverableError {
+  readonly classification: 'parse_error' | 'empty_response';
+  constructor(classification: 'parse_error' | 'empty_response', message: string) {
+    super(message);
+    this.classification = classification;
+    // BullMQ also detects unrecoverable errors by name (job.js checks
+    // `err.name == 'UnrecoverableError'`), and instanceof breaks across
+    // duplicated bullmq installs — keep the parent name.
+    this.name = 'UnrecoverableError';
   }
 }
 
@@ -191,18 +209,23 @@ export class ProviderObservationGenerator {
     try {
       return await this.generateAndPersist(job, payload, fresh, correlationId, payloadRequestId);
     } catch (error) {
-      const classified = error instanceof ServerClassifiedProviderError ? error : null;
-      const retryable = classified
-        ? classified.kind === 'transient' || classified.kind === 'rate_limit'
-        : false;
-      await markGenerationFailed({
-        pool: this.options.pool,
-        job: fresh,
-        reason: error instanceof Error ? error.message : String(error),
-        classification: classified?.kind ?? 'unknown',
-        retryable,
-        ...(this.options.workerId !== undefined ? { workerId: this.options.workerId } : {}),
-      });
+      // Terminal outcomes already moved the outbox to `failed` before
+      // throwing; re-marking here would append a duplicate lifecycle event
+      // under a bogus 'unknown' classification.
+      if (!(error instanceof ServerGenerationTerminalOutcomeError)) {
+        const classified = error instanceof ServerClassifiedProviderError ? error : null;
+        const retryable = classified
+          ? classified.kind === 'transient' || classified.kind === 'rate_limit'
+          : false;
+        await markGenerationFailed({
+          pool: this.options.pool,
+          job: fresh,
+          reason: error instanceof Error ? error.message : String(error),
+          classification: classified?.kind ?? 'unknown',
+          retryable,
+          ...(this.options.workerId !== undefined ? { workerId: this.options.workerId } : {}),
+        });
+      }
       throw error;
     }
   }
@@ -250,16 +273,21 @@ export class ProviderObservationGenerator {
       ? await processSessionSummaryResponse(persistInput)
       : await processGeneratedResponse(persistInput);
 
-    if (outcome.kind === 'parse_error') {
+    if (outcome.kind === 'parse_error' || outcome.kind === 'empty_response') {
       await markGenerationFailed({
         pool: this.options.pool,
         job: fresh,
         reason: outcome.reason,
-        classification: 'parse_error',
+        classification: outcome.kind,
         retryable: false,
         ...(this.options.workerId !== undefined ? { workerId: this.options.workerId } : {}),
       });
-      throw new Error(`generation parse error: ${outcome.reason}`);
+      throw new ServerGenerationTerminalOutcomeError(
+        outcome.kind,
+        outcome.kind === 'empty_response'
+          ? `generation empty response: ${outcome.reason}`
+          : `generation parse error: ${outcome.reason}`,
+      );
     }
 
     logger.info('SYSTEM', 'generation completed', {
