@@ -58,11 +58,15 @@ describe('#2292 — fail-loud diagnostic is no longer swallowed', () => {
     }
   });
 
-  it('worker-utils recordWorkerUnreachable routes through emitBlockingError (source contract)', () => {
+  it('worker-utils recordWorkerUnreachable fails open by default and only blocks when opted in (source contract)', () => {
     const src = readFileSync(join(REPO_ROOT, 'src', 'shared', 'worker-utils.ts'), 'utf-8');
     // The fail-loud branch must NOT call process.stderr.write / process.exit directly.
-    expect(src).toContain('emitBlockingError(');
     expect(src).not.toMatch(/process\.stderr\.write\(\s*\n\s*`claude-mem worker unreachable/);
+    // #3184: blocking (emitBlockingError / exit 2) is now gated behind the
+    // opt-in setting; the default surfaces a non-blocking diagnostic instead.
+    expect(src).toContain('isFailLoudBlockingEnabled()');
+    expect(src).toContain('emitDiagnostic(');
+    expect(src).toContain('emitBlockingError(');
   });
 });
 

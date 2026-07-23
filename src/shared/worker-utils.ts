@@ -7,7 +7,7 @@ import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaul
 import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile } from "../supervisor/index.js";
-import { emitBlockingError } from "./hook-io.js";
+import { emitBlockingError, emitDiagnostic } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
 import { checkVersionMatch } from "../services/infrastructure/index.js";
 // Imported from ProcessManager.js directly (not the infrastructure barrel):
@@ -690,6 +690,25 @@ function getFailLoudThreshold(): number {
 }
 
 /**
+ * Whether a tripped fail-loud threshold should BLOCK the hook (exit 2) instead
+ * of just surfacing a non-blocking warning. Opt-in only — default false.
+ *
+ * #3184: blocking on exit 2 makes Claude Code treat the UserPromptSubmit hook
+ * as "block this operation", killing the user's command (e.g. `/model`)
+ * whenever the worker is slow to start or unavailable. Failing open is the
+ * correct default; users who genuinely want the hard stop can re-enable it.
+ */
+function isFailLoudBlockingEnabled(): boolean {
+  try {
+    const settings = loadFromFileOnce();
+    return settings.CLAUDE_MEM_HOOK_FAIL_LOUD_BLOCK.trim().toLowerCase() === 'true';
+  } catch {
+    // settings unreadable — fail open (never block by default)
+    return false;
+  }
+}
+
+/**
  * Closed enum of hook handler names allowed as the `hook_type` telemetry
  * property. Mirrors the scrub whitelist comment (scrub.ts), the CLI
  * disclosure (npx-cli/commands/telemetry.ts), and docs/public/telemetry.mdx —
@@ -744,13 +763,28 @@ export async function recordWorkerUnreachable(): Promise<number> {
         threshold_tripped: true,
       });
     }
-    // #2292 fix: BLOCKING_FEEDBACK. emitBlockingError flushes the Phase 2
-    // stderr buffer (so preceding logger.warn lines also surface) and writes
-    // via the bypass channel + exits 2. Previously this raw process.stderr.write
-    // was swallowed by hookCommand's blanket no-op, so the user/model never saw it.
-    emitBlockingError(
-      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`
-    );
+
+    const message = `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`;
+
+    // #3184: fail OPEN by default. On a UserPromptSubmit hook, exit code 2 is
+    // Claude Code's "block this operation" signal, so the old unconditional
+    // emitBlockingError() here killed the user's command (e.g. `/model`)
+    // whenever the worker was slow to start or unavailable. The distress
+    // telemetry above still fires; we just never block by default.
+    if (isFailLoudBlockingEnabled()) {
+      // Opt-in only. BLOCKING_FEEDBACK: emitBlockingError flushes the Phase 2
+      // stderr buffer (so preceding logger.warn lines also surface) and writes
+      // via the bypass channel + exits 2.
+      emitBlockingError(message);
+    } else {
+      // Default path: surface a non-blocking diagnostic (bypasses the buffer,
+      // reaches real stderr) and let the caller exit 0 so the command passes
+      // through. Fires each failure past the threshold so a persistently-down
+      // worker keeps reminding the operator without ever blocking.
+      emitDiagnostic(
+        `${message} Continuing without claude-mem memory context — restart the worker (\`claude-mem restart\`) to restore it.\n`
+      );
+    }
   }
   return next.consecutiveFailures;
 }

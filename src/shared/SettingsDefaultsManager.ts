@@ -44,8 +44,9 @@ export interface SettingsDefaults {
   CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: string;  
   CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: string;
   CLAUDE_MEM_MAX_CONCURRENT_AGENTS: string;  
-  CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: string;  
-  CLAUDE_MEM_EXCLUDED_PROJECTS: string;  
+  CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: string;
+  CLAUDE_MEM_HOOK_FAIL_LOUD_BLOCK: string;
+  CLAUDE_MEM_EXCLUDED_PROJECTS: string;
   CLAUDE_MEM_FOLDER_MD_EXCLUDE: string;
   CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: string;
   CLAUDE_MEM_SEMANTIC_INJECT: string;        
@@ -138,7 +139,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: join(homedir(), '.claude-mem', 'transcript-watch.json'),
     CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: 'false',
     CLAUDE_MEM_MAX_CONCURRENT_AGENTS: '2',  // Max concurrent Claude SDK agent subprocesses
-    CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '3',  // Plan 05 Phase 8 — escalate to exit code 2 after N consecutive worker-unreachable hook invocations
+    CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '3',  // Number of consecutive worker-unreachable hook invocations before the fail-loud warning surfaces
+    CLAUDE_MEM_HOOK_FAIL_LOUD_BLOCK: 'false',  // Opt-in: when 'true', a tripped fail-loud threshold blocks the hook (exit 2). Default 'false' fails open — the hook only surfaces a non-blocking warning so Claude Code commands are never blocked when the worker is down (#3184).
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
     CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: '[]',  // #2400 — JSON array of glob patterns; when a folder matches AND its generated CLAUDE.md would be empty/skeleton, skip injection (avoids polluting non-content dirs with empty skeletons). Default [] preserves existing behavior.
