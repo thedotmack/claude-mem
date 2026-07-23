@@ -119,6 +119,7 @@ export class SessionStore {
     this.ensureSyncEntityLedger();
     this.ensureSyncRevisionTextAffinity();
     this.initializeSyncHubLaunchBaseline();
+    this.normalizeConceptTags();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -826,6 +827,62 @@ export class SessionStore {
         .run(48, new Date().toISOString());
     });
     repair();
+  }
+
+  // v49 (#3379): the context-injection query matches concepts exactly
+  // (ObservationCompiler `WHERE value IN (...)`), so historical rows written
+  // as "keyword: description" never matched. Truncate each stored concept at
+  // the first ':' and trim; the parser now enforces the same shape on write.
+  //
+  // `json_valid` guard: a non-JSON concepts value containing ':' would make
+  // json_each throw and abort the whole constructor migration chain (worker
+  // never initializes — the #3378 failure class). Invalid-JSON rows are
+  // equally unreadable before and after v49 for every json_each reader, so
+  // skipping them changes no behavior; this is an explicit domain-state
+  // check, not error swallowing.
+  //
+  // Corrected NATIVE rows must re-sync: the row body changed, so bump
+  // sync_rev and re-null synced_at (mirroring requeuePromptSync) — the next
+  // drain re-pushes the corrected body at the higher rev and replicas apply
+  // it via the rev guard. Replica rows (origin_device_id NOT NULL) are
+  // normalized locally only; their repair travels from THEIR origin device.
+  private normalizeConceptTags(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(49) as SchemaVersion | undefined;
+    if (applied) return;
+
+    let changedCount = 0;
+    const tx = this.db.transaction(() => {
+      const affected = this.db.prepare(`
+        SELECT CAST(id AS TEXT) AS id, origin_device_id, CAST(sync_rev AS TEXT) AS sync_rev
+        FROM observations
+        WHERE concepts LIKE '%:%' AND json_valid(concepts)
+      `).all() as Array<{ id: string; origin_device_id: string | null; sync_rev: string }>;
+      changedCount = affected.length;
+
+      this.db.run(`
+        UPDATE observations
+        SET concepts = (
+          SELECT json_group_array(
+            CASE WHEN instr(value, ':') > 0
+                 THEN trim(substr(value, 1, instr(value, ':') - 1))
+                 ELSE value END)
+          FROM json_each(observations.concepts))
+        WHERE concepts LIKE '%:%' AND json_valid(concepts)
+      `);
+
+      for (const row of affected) {
+        if (row.origin_device_id !== null) continue;
+        const nextRev = incrementCanonicalDecimal(row.sync_rev);
+        this.db.prepare(`
+          UPDATE observations SET sync_rev = ?, synced_at = NULL
+          WHERE id = ? AND origin_device_id IS NULL
+        `).run(nextRev, row.id);
+      }
+
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(49, new Date().toISOString());
+    });
+    tx();
+    logger.debug('DB', `Normalized prefixed concept tags in ${changedCount} observations (v49)`);
   }
 
   private dropDeadPendingMessagesColumns(): void {

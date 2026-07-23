@@ -3,6 +3,8 @@ import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
 import { SQLITE_BUSY_TIMEOUT_MS, SQLITE_JOURNAL_SIZE_LIMIT_BYTES } from '../../src/services/sqlite/connection.js';
+import { queryObservationsMulti } from '../../src/services/context/ObservationCompiler.js';
+import type { ContextConfig } from '../../src/services/context/types.js';
 
 function seedLegacyContentHashScenario(db: Database): void {
   db.run(`
@@ -892,6 +894,147 @@ describe('SessionStore migrations', () => {
       expect(cols.has('failed_at_epoch')).toBe(false);
       expect(cols.has('completed_at_epoch')).toBe(false);
       expect(cols.has('worker_pid')).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('v49 truncates prefixed concept tags so the injection query matches them again (#3379)', () => {
+    const db = new Database(':memory:');
+    try {
+      new SessionStore(db);
+
+      db.prepare(`
+        INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+        VALUES ('content-v49', 'mem-v49', 'proj-v49', ?, 1751234567000, 'active')
+      `).run(new Date().toISOString());
+      const insertObs = db.prepare(`
+        INSERT INTO observations (memory_session_id, project, type, title, concepts, created_at, created_at_epoch)
+        VALUES ('mem-v49', 'proj-v49', 'discovery', ?, ?, ?, ?)
+      `);
+      const now = new Date().toISOString();
+      insertObs.run('MIXED_CONCEPTS', '["how-it-works","gotcha: x"]', now, 1_700_000_000_000);
+      insertObs.run('CLEAN_CONCEPTS', '["pattern"]', now, 1_700_000_001_000);
+
+      // The fresh DB is already at v49; rewind it so the constructor re-runs
+      // the backfill over the rows above (which mimic pre-v49 data).
+      db.run('DELETE FROM schema_versions WHERE version = 49');
+      const migrated = new SessionStore(db);
+
+      const mixed = db.prepare("SELECT concepts FROM observations WHERE title = 'MIXED_CONCEPTS'").get() as { concepts: string };
+      expect(mixed.concepts).toBe('["how-it-works","gotcha"]');
+
+      // Rows without a ':' are untouched byte-for-byte (WHERE clause skip).
+      const clean = db.prepare("SELECT concepts FROM observations WHERE title = 'CLEAN_CONCEPTS'").get() as { concepts: string };
+      expect(clean.concepts).toBe('["pattern"]');
+
+      // The healed row is now returned by the exact-match injection query.
+      const config: ContextConfig = {
+        totalObservationCount: 20,
+        fullObservationCount: 3,
+        sessionCount: 20,
+        showReadTokens: true,
+        showWorkTokens: true,
+        showSavingsAmount: true,
+        showSavingsPercent: true,
+        observationTypes: new Set(['discovery']),
+        observationConcepts: new Set(['gotcha']),
+        fullObservationField: 'narrative',
+        showLastSummary: true,
+        showLastMessage: false,
+      };
+      const injected = queryObservationsMulti(migrated, ['proj-v49'], config);
+      expect(injected.map(obs => obs.title)).toEqual(['MIXED_CONCEPTS']);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('v49 is idempotent: once recorded, a second construction leaves concepts untouched', () => {
+    const db = new Database(':memory:');
+    try {
+      new SessionStore(db);
+
+      db.prepare(`
+        INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+        VALUES ('content-v49-idem', 'mem-v49-idem', 'proj-v49-idem', ?, 1751234567000, 'active')
+      `).run(new Date().toISOString());
+      // Inserted AFTER v49 was recorded — the version gate must make the
+      // second construction a no-op, so this row stays exactly as written.
+      db.prepare(`
+        INSERT INTO observations (memory_session_id, project, type, title, concepts, created_at, created_at_epoch)
+        VALUES ('mem-v49-idem', 'proj-v49-idem', 'discovery', 'POST_V49_ROW', '["gotcha: x"]', ?, ?)
+      `).run(new Date().toISOString(), 1_700_000_000_000);
+
+      const versionsBefore = (db.prepare('SELECT COUNT(*) AS n FROM schema_versions').get() as { n: number }).n;
+      new SessionStore(db);
+      const versionsAfter = (db.prepare('SELECT COUNT(*) AS n FROM schema_versions').get() as { n: number }).n;
+      expect(versionsAfter).toBe(versionsBefore);
+
+      const row = db.prepare("SELECT concepts FROM observations WHERE title = 'POST_V49_ROW'").get() as { concepts: string };
+      expect(row.concepts).toBe('["gotcha: x"]');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('v49 requeues corrected native rows for sync and leaves replicas and invalid JSON untouched', () => {
+    const db = new Database(':memory:');
+    try {
+      new SessionStore(db);
+
+      db.prepare(`
+        INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+        VALUES ('content-v49-sync', 'mem-v49-sync', 'proj-v49-sync', ?, 1751234567000, 'active')
+      `).run(new Date().toISOString());
+      const now = new Date().toISOString();
+      const insertObs = db.prepare(`
+        INSERT INTO observations
+          (memory_session_id, project, type, title, concepts, created_at, created_at_epoch,
+           synced_at, sync_rev, origin_device_id, origin_local_id)
+        VALUES ('mem-v49-sync', 'proj-v49-sync', 'discovery', ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      // (b) native changed row: already pushed (synced_at stamped) — must be requeued.
+      insertObs.run('NATIVE_CHANGED', '["gotcha: x"]', now, 1_700_000_000_000, 123456, '3', null, null);
+      // (c) replica changed row: normalized locally, but its repair travels
+      // from its origin device — sync fields must stay untouched.
+      insertObs.run('REPLICA_CHANGED', '["gotcha: y"]', now, 1_700_000_001_000, 999, '5', 'device-r', '7');
+      // (d) colon-free native row: fully untouched, including sync fields.
+      insertObs.run('NATIVE_CLEAN', '["pattern"]', now, 1_700_000_002_000, 777, '2', null, null);
+      // (a) non-JSON concepts text containing a colon: json_each would throw —
+      // the json_valid guard must skip it so the migration (and worker boot)
+      // completes, leaving the row byte-identical.
+      insertObs.run('INVALID_JSON', 'gotcha: not json', now, 1_700_000_003_000, 555, '4', null, null);
+
+      db.run('DELETE FROM schema_versions WHERE version = 49');
+      new SessionStore(db);
+
+      const v49 = db.prepare('SELECT version FROM schema_versions WHERE version = 49').get() as { version: number } | undefined;
+      expect(v49?.version).toBe(49);
+
+      const read = (title: string) => db.prepare(
+        'SELECT concepts, synced_at, CAST(sync_rev AS TEXT) AS sync_rev FROM observations WHERE title = ?'
+      ).get(title) as { concepts: string; synced_at: number | null; sync_rev: string };
+
+      const native = read('NATIVE_CHANGED');
+      expect(native.concepts).toBe('["gotcha"]');
+      expect(native.synced_at).toBeNull();
+      expect(native.sync_rev).toBe('4');
+
+      const replica = read('REPLICA_CHANGED');
+      expect(replica.concepts).toBe('["gotcha"]');
+      expect(replica.synced_at).toBe(999);
+      expect(replica.sync_rev).toBe('5');
+
+      const clean = read('NATIVE_CLEAN');
+      expect(clean.concepts).toBe('["pattern"]');
+      expect(clean.synced_at).toBe(777);
+      expect(clean.sync_rev).toBe('2');
+
+      const invalid = read('INVALID_JSON');
+      expect(invalid.concepts).toBe('gotcha: not json');
+      expect(invalid.synced_at).toBe(555);
+      expect(invalid.sync_rev).toBe('4');
     } finally {
       db.close();
     }
