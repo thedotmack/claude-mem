@@ -58,7 +58,7 @@ export async function processAgentResponse(
         preview: previewOutput(text),
       });
 
-      await sessionManager.resetProcessingToPending(session.sessionDbId, 'quota_exhausted');
+      await sessionManager.applyObserverFailure(session.sessionDbId, 'quota_exhausted');
       session.abortReason = 'quota:observer_text';
       try {
         session.abortController.abort();
@@ -84,7 +84,7 @@ export async function processAgentResponse(
       consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
     });
 
-    await sessionManager.resetProcessingToPending(session.sessionDbId, 'malformed_output');
+    await sessionManager.applyObserverFailure(session.sessionDbId, 'malformed_output');
     session.abortReason = `observer_failure:${outputClass}`;
     try {
       session.abortController.abort();
@@ -103,10 +103,10 @@ export async function processAgentResponse(
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {
       sessionId: session.sessionDbId
     });
-    // Reset any claimed-but-undelivered messages back to pending so they don't
-    // count as "in progress" and trigger a respawn loop while we wait for the
-    // memory session id to appear. The next generator pass will re-claim them.
-    await sessionManager.resetProcessingToPending(session.sessionDbId, 'transient');
+    // Apply the durable retry policy before releasing claimed-but-undelivered
+    // messages. The next generator pass can re-claim retriable work without
+    // silently settling failures or bypassing bounded quarantine.
+    await sessionManager.applyObserverFailure(session.sessionDbId, 'transient');
     return;
   }
 

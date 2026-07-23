@@ -1,4 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { logger } from '../../src/utils/logger.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import { processAgentResponse } from '../../src/services/worker/agents/ResponseProcessor.js';
@@ -6,8 +7,12 @@ import { handleGeneratorExit } from '../../src/services/worker/session/Generator
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { WorkerRef } from '../../src/services/worker/agents/types.js';
 
-function makeDbManager(storeObservations = mock(() => ({ observationIds: [], summaryId: null, createdAtEpoch: 0 }))): DatabaseManager {
+function makeDbManager(
+  storeObservations = mock(() => ({ observationIds: [], summaryId: null, createdAtEpoch: 0 })),
+  connection?: Database,
+): DatabaseManager {
   return {
+    getConnection: () => connection,
     getSessionById: () => ({
       content_session_id: 'content-123',
       project: 'proj',
@@ -69,7 +74,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     await queueAndClaimOne(sm, 1);
 
     const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
-    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+    const failureSpy = spyOn(sm, 'applyObserverFailure');
     const worker = makeWorker();
 
     await processAgentResponse(
@@ -84,7 +89,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     );
 
     expect(confirmSpy).not.toHaveBeenCalled();
-    expect(resetSpy).toHaveBeenCalledWith(1, 'malformed_output');
+    expect(failureSpy).toHaveBeenCalledWith(1, 'malformed_output');
     expect(sm.getMessageBuffer().getPendingCount(1)).toBe(1);
     expect(session.claimedMessageIds).toEqual([]);
     expect(session.consecutiveInvalidOutputs).toBe(0);
@@ -99,7 +104,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     await queueAndClaimOne(sm, 2);
 
     const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
-    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+    const failureSpy = spyOn(sm, 'applyObserverFailure');
 
     await processAgentResponse(
       'No observations to record.',
@@ -113,10 +118,51 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     );
 
     expect(confirmSpy).not.toHaveBeenCalled();
-    expect(resetSpy).toHaveBeenCalledWith(2, 'malformed_output');
+    expect(failureSpy).toHaveBeenCalledWith(2, 'malformed_output');
     expect(sm.getMessageBuffer().getPendingCount(2)).toBe(1);
     expect(session.claimedMessageIds).toEqual([]);
     expect(session.abortController.signal.aborted).toBe(true);
+  });
+
+  it('quarantines a second malformed processor response without settling the claimed job', async () => {
+    const db = new Database(':memory:');
+    const sm = new SessionManager(makeDbManager(undefined, db));
+    sm.initializeDurableObserverStore();
+    const session = sm.initializeSession(8, 'do the thing', 1);
+    session.memorySessionId = 'mem-8';
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+
+    await queueAndClaimOne(sm, 8);
+    await processAgentResponse(
+      'The observer returned prose instead of structured XML.',
+      session,
+      makeDbManager(undefined, db),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'TestAgent',
+    );
+    expect(sm.getObserverStatus()).toMatchObject({ pending: 1, quarantined: 0, settled: 0 });
+
+    session.abortController = new AbortController();
+    const retryIterator = sm.getMessageIterator(8);
+    expect((await retryIterator.next()).done).toBe(false);
+    await retryIterator.return?.();
+    await processAgentResponse(
+      'The observer returned prose instead of structured XML again.',
+      session,
+      makeDbManager(undefined, db),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'TestAgent',
+    );
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(sm.getObserverStatus()).toMatchObject({ pending: 0, quarantined: 1, settled: 0 });
+    expect(sm.getMessageBuffer().getPendingCount(8)).toBe(0);
   });
 
   it('pauses on weekly-limit quota prose and preserves claimed pending work', async () => {
@@ -128,7 +174,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     await queueAndClaimOne(sm, 3);
 
     const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
-    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+    const failureSpy = spyOn(sm, 'applyObserverFailure');
     const worker = makeWorker();
 
     await processAgentResponse(
@@ -143,7 +189,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     );
 
     expect(confirmSpy).not.toHaveBeenCalled();
-    expect(resetSpy).toHaveBeenCalledWith(3, 'quota_exhausted');
+    expect(failureSpy).toHaveBeenCalledWith(3, 'quota_exhausted');
     expect(sm.getMessageBuffer().getPendingCount(3)).toBe(1);
     expect(session.claimedMessageIds).toEqual([]);
     expect(session.consecutiveInvalidOutputs).toBe(0);
