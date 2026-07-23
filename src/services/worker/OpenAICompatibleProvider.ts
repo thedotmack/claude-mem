@@ -12,6 +12,45 @@ import {
 } from './agents/index.js';
 
 /**
+ * Fail-fast guard for empty assistant responses on the observer output path.
+ *
+ * On the non-forwarding path (Gemini) an empty observation/summary response
+ * used to leave the claimed batch in the queue unconditionally. Because
+ * getMessageIterator resets claimed-but-unconfirmed messages back to pending
+ * on every generator start, a model that persistently returns empty content
+ * (safety block, MAX_TOKENS truncation) re-queried the same batch on every
+ * restart — an unbounded retry loop burning one full query per stuck message.
+ * Allow a bounded number of consecutive empties to stay queued (a transient
+ * blip resolves on the next pass), then drop the batch loudly.
+ */
+export const MAX_CONSECUTIVE_EMPTY_RESPONSES = 3;
+
+export async function guardEmptyMessageResponse(
+  session: ActiveSession,
+  sessionManager: SessionManager,
+  providerName: string,
+  messageType: 'observation' | 'summary'
+): Promise<void> {
+  session.consecutiveEmptyResponses = (session.consecutiveEmptyResponses ?? 0) + 1;
+
+  if (session.consecutiveEmptyResponses < MAX_CONSECUTIVE_EMPTY_RESPONSES) {
+    logger.warn('SDK', `Empty ${providerName} ${messageType} response, leaving queue intact`, {
+      sessionId: session.sessionDbId,
+      consecutiveEmptyResponses: session.consecutiveEmptyResponses,
+    });
+    return;
+  }
+
+  logger.error('SDK', `Empty ${providerName} ${messageType} response ${session.consecutiveEmptyResponses}x in a row — dropping claimed batch instead of retrying`, {
+    sessionId: session.sessionDbId,
+    consecutiveEmptyResponses: session.consecutiveEmptyResponses,
+  });
+  await sessionManager.confirmClaimedMessages(session.sessionDbId);
+  session.earliestPendingTimestamp = null;
+  session.consecutiveEmptyResponses = 0;
+}
+
+/**
  * Normalized result returned by a concrete provider's `query()`.
  * Optional fields (costUsd, servedModel) are populated only by providers that
  * surface them; absent fields are simply not forwarded.
@@ -212,6 +251,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     let tokensUsed = 0;
     if (obsResponse.content) {
+      session.consecutiveEmptyResponses = 0;
       session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
       tokensUsed = obsResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
@@ -227,9 +267,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         worker, tokensUsed, originalTimestamp, this.providerName, lastCwd, obsResponse.servedModel ?? config.model
       );
     } else {
-      logger.warn('SDK', `Empty ${this.providerName} observation response, leaving queue intact`, {
-        sessionId: session.sessionDbId
-      });
+      await guardEmptyMessageResponse(session, this.sessionManager, this.providerName, 'observation');
     }
   }
 
@@ -261,6 +299,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     let tokensUsed = 0;
     if (summaryResponse.content) {
+      session.consecutiveEmptyResponses = 0;
       session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
       tokensUsed = summaryResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
@@ -274,9 +313,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         worker, tokensUsed, originalTimestamp, this.providerName, lastCwd, summaryResponse.servedModel ?? config.model
       );
     } else {
-      logger.warn('SDK', `Empty ${this.providerName} summary response, leaving queue intact`, {
-        sessionId: session.sessionDbId
-      });
+      await guardEmptyMessageResponse(session, this.sessionManager, this.providerName, 'summary');
     }
   }
 
