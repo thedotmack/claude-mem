@@ -171,4 +171,56 @@ describe('Claude setup-required generator gate', () => {
       remediation: expect.stringContaining('Claude Code CLI'),
     });
   });
+
+  it('preserves claimed work when the provider throws an authentication failure', async () => {
+    const session = makeSession();
+    let resetCalls = 0;
+    let finalizerCalls = 0;
+    let removeCalls = 0;
+    const sessionManager = {
+      getSession: () => session,
+      getMessageBuffer: () => ({
+        getPendingCount: () => 1,
+        peekTypes: () => [],
+      }),
+      resetProcessingToPending: async () => {
+        resetCalls += 1;
+        return 1;
+      },
+      removeSessionImmediate: () => {
+        removeCalls += 1;
+      },
+    };
+    const routes = new SessionRoutes(
+      sessionManager as any,
+      {} as any,
+      {
+        startSession: async () => {
+          throw new ClassifiedProviderError('authentication required', {
+            kind: 'auth_invalid',
+            cause: new Error('authentication required'),
+          });
+        },
+      } as any,
+      { startSession: async () => {} } as any,
+      { startSession: async () => {} } as any,
+      {} as any,
+      {} as any,
+      {
+        finalizeSession: async () => {
+          finalizerCalls += 1;
+        },
+      } as any,
+    );
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    await session.generatorPromise;
+
+    expect(resetCalls).toBe(1);
+    expect(session.abortReason).toBeNull();
+    expect(session.abortController.signal.aborted).toBe(true);
+    expect(finalizerCalls).toBe(0);
+    expect(removeCalls).toBe(0);
+    expect(session.generatorPromise).toBeNull();
+  });
 });

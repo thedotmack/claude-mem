@@ -13,11 +13,12 @@ export interface GeneratorExitDependencies {
  * Post-generator-exit handler.
  *
  * The generator's message iterator only ends on abort (idle / shutdown) or when
- * the SDK stream throws, so most exits mean this session is done. Quota exits
- * are different: claimed work has already been reset to pending, so leave the
- * session and in-RAM buffer alive for a later generator start.
+ * the SDK stream throws, so most exits mean this session is done. Quota and
+ * observer-failure exits are different: claimed work has already been reset to
+ * pending, so leave the session and in-RAM buffer alive for a later generator
+ * start.
  *
- * For non-quota exits we do NOT respawn on remaining buffered work: the old
+ * For terminal exits we do NOT respawn on remaining buffered work: the old
  * respawn-on-pending loop, driven by the durable pending_messages queue, was the
  * retry storm. Buffered work lives only in RAM now; anything still buffered is
  * dropped here and recovered, if needed, by replaying the Claude Code
@@ -41,9 +42,11 @@ export async function handleGeneratorExit(
   session.generatorPromise = null;
   session.currentProvider = null;
 
-  if ((reason ?? '').split(':')[0] === 'quota') {
-    logger.warn('SESSION', 'Generator paused for quota; preserving buffered work', {
+  const exitClass = (reason ?? '').split(':')[0];
+  if (exitClass === 'quota' || exitClass === 'observer_failure') {
+    logger.warn('SESSION', 'Generator paused after recoverable observer failure; preserving buffered work', {
       sessionId: sessionDbId,
+      reason: exitClass,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
     });
     return;
