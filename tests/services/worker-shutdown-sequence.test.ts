@@ -32,6 +32,7 @@ function makeHarness(overrides: {
   beforeGracefulThrows?: boolean;
   graceful?: () => Promise<void>;
   lastResortChildTreeKillThrows?: boolean;
+  lastResortChildTreeKillHangs?: boolean;
   portFree?: boolean;
   spawnResult?: number | undefined;
   spawnThrows?: boolean;
@@ -70,6 +71,9 @@ function makeHarness(overrides: {
       calls.push('lastResortChildTreeKill');
       if (overrides.lastResortChildTreeKillThrows) {
         throw new Error('supervisor stop failed');
+      }
+      if (overrides.lastResortChildTreeKillHangs) {
+        await new Promise<void>(() => {});
       }
     },
     restartHandoff: {
@@ -220,6 +224,21 @@ describe('runShutdownSequence — last-resort child teardown', () => {
 
     await runShutdownSequence(h.options);
 
+    expect(h.counters.lastResortChildTreeKill).toBe(1);
+    expect(h.counters.spawnDaemon).toBe(1);
+  });
+
+  it('does not block the restart handoff when the last-resort teardown hangs', async () => {
+    const h = makeHarness({
+      reason: 'restart',
+      gracefulDeadlineMs: 50,
+      lastResortChildTreeKillHangs: true,
+    });
+
+    const start = Date.now();
+    await runShutdownSequence(h.options);
+
+    expect(Date.now() - start).toBeLessThan(2000);
     expect(h.counters.lastResortChildTreeKill).toBe(1);
     expect(h.counters.spawnDaemon).toBe(1);
   });

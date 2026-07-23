@@ -99,9 +99,9 @@ function queryWindowsCreationDate(pid: number): string | null {
   return null;
 }
 
-function captureWindowsStartToken(pid: number): string | null {
+function captureWindowsStartToken(pid: number, fresh = false): string | null {
   const cached = windowsStartTokenCache.get(pid);
-  if (cached && Date.now() - cached.capturedAtMs < WINDOWS_START_TOKEN_CACHE_TTL_MS) {
+  if (!fresh && cached && Date.now() - cached.capturedAtMs < WINDOWS_START_TOKEN_CACHE_TTL_MS) {
     return cached.token;
   }
 
@@ -120,7 +120,7 @@ function captureWindowsStartToken(pid: number): string | null {
   return token;
 }
 
-export function captureProcessStartToken(pid: number): string | null {
+export function captureProcessStartToken(pid: number, options: { fresh?: boolean } = {}): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
 
   if (process.platform === 'linux') {
@@ -141,7 +141,7 @@ export function captureProcessStartToken(pid: number): string | null {
   }
 
   if (process.platform === 'win32') {
-    return captureWindowsStartToken(pid);
+    return captureWindowsStartToken(pid, options.fresh);
   }
 
   try {
@@ -162,6 +162,25 @@ export function captureProcessStartToken(pid: number): string | null {
     });
     return null;
   }
+}
+
+export type ManagedProcessIdentity = 'match' | 'mismatch' | 'unknown';
+export type ProcessStartTokenReader = (pid: number) => string | null;
+
+function captureFreshProcessStartToken(pid: number): string | null {
+  // Destructive checks must not trust the Windows TTL cache: the PID can be
+  // recycled while the cached token still describes its previous owner.
+  return captureProcessStartToken(pid, { fresh: true });
+}
+
+export function verifyManagedProcessIdentity(
+  record: Pick<ManagedProcessInfo, 'pid' | 'startToken'>,
+  readStartToken: ProcessStartTokenReader = captureFreshProcessStartToken,
+): ManagedProcessIdentity {
+  if (!record.startToken) return 'unknown';
+  const currentToken = readStartToken(record.pid);
+  if (currentToken === null) return 'unknown';
+  return currentToken === record.startToken ? 'match' : 'mismatch';
 }
 
 export function verifyPidFileOwnership(info: PidInfo | null): info is PidInfo {
@@ -234,7 +253,8 @@ export class ProcessRegistry {
 
   register(id: string, processInfo: ManagedProcessInfo, processRef?: ChildProcess): void {
     this.initialize();
-    this.entries.set(id, processInfo);
+    const startToken = processInfo.startToken ?? captureFreshProcessStartToken(processInfo.pid);
+    this.entries.set(id, startToken ? { ...processInfo, startToken } : processInfo);
     if (processRef) {
       this.runtimeProcesses.set(id, processRef);
     }
@@ -311,8 +331,31 @@ export class ProcessRegistry {
       pids: sessionRecords.map(r => r.pid)
     });
 
-    const aliveRecords = sessionRecords.filter(r => isPidAlive(r.pid));
-    for (const record of aliveRecords) {
+    const staleIds = new Set<string>();
+    const verifiedRecords: ManagedProcessRecord[] = [];
+    for (const record of sessionRecords) {
+      if (!isPidAlive(record.pid)) continue;
+
+      const identity = verifyManagedProcessIdentity(record);
+      if (identity === 'mismatch') {
+        staleIds.add(record.id);
+        logger.warn('SYSTEM', 'Dropping stale session process after PID reuse', {
+          pid: record.pid,
+          sessionId: sessionIdNum
+        });
+        continue;
+      }
+      if (identity === 'unknown') {
+        logger.warn('SYSTEM', 'Preserving session process whose identity cannot be verified', {
+          pid: record.pid,
+          sessionId: sessionIdNum
+        });
+        continue;
+      }
+      verifiedRecords.push(record);
+    }
+
+    for (const record of verifiedRecords) {
       try {
         if (typeof record.pgid === 'number' && process.platform !== 'win32') {
           process.kill(-record.pgid, 'SIGTERM');
@@ -338,9 +381,31 @@ export class ProcessRegistry {
       }
     }
 
-    await waitForExit(aliveRecords, REAP_SESSION_SIGTERM_TIMEOUT_MS);
+    await waitForExit(verifiedRecords, REAP_SESSION_SIGTERM_TIMEOUT_MS);
 
-    const survivors = aliveRecords.filter(r => isPidAlive(r.pid));
+    const survivors: ManagedProcessRecord[] = [];
+    for (const record of verifiedRecords) {
+      if (!isPidAlive(record.pid)) continue;
+
+      const identity = verifyManagedProcessIdentity(record);
+      if (identity === 'mismatch') {
+        staleIds.add(record.id);
+        logger.warn('SYSTEM', 'Dropping stale session process after PID reuse during shutdown', {
+          pid: record.pid,
+          sessionId: sessionIdNum
+        });
+        continue;
+      }
+      if (identity === 'unknown') {
+        logger.warn('SYSTEM', 'Skipping SIGKILL because session process identity cannot be reverified', {
+          pid: record.pid,
+          sessionId: sessionIdNum
+        });
+        continue;
+      }
+      survivors.push(record);
+    }
+
     for (const record of survivors) {
       logger.warn('SYSTEM', `Session process PID ${record.pid} did not exit after SIGTERM, sending SIGKILL`, {
         pid: record.pid,
@@ -381,21 +446,33 @@ export class ProcessRegistry {
       }
     }
 
+    let reaped = 0;
+    let reapedSdk = 0;
     for (const record of sessionRecords) {
+      const alive = isPidAlive(record.pid);
+      const stale = staleIds.has(record.id)
+        || (alive && verifyManagedProcessIdentity(record) === 'mismatch');
+      if (alive && !stale) continue;
+
       this.entries.delete(record.id);
       this.runtimeProcesses.delete(record.id);
-    }
-    this.persist();
-    for (const record of sessionRecords) {
-      if (record.type === 'sdk') notifySlotAvailable();
+      reaped += 1;
+      if (record.type === 'sdk') reapedSdk += 1;
     }
 
-    logger.info('SYSTEM', `Reaped ${sessionRecords.length} process(es) for session ${sessionId}`, {
+    if (reaped > 0) {
+      this.persist();
+    }
+    for (let i = 0; i < reapedSdk; i += 1) {
+      notifySlotAvailable();
+    }
+
+    logger.info('SYSTEM', `Reaped ${reaped} process(es) for session ${sessionId}`, {
       sessionId: sessionIdNum,
-      reaped: sessionRecords.length
+      reaped
     });
 
-    return sessionRecords.length;
+    return reaped;
   }
 
   private persist(): void {

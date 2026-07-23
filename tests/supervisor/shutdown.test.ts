@@ -67,17 +67,20 @@ describe('supervisor shutdown cascade', () => {
     registry.register('oldest', {
       pid: 41001,
       type: 'sdk',
-      startedAt: '2026-03-15T00:00:00.000Z'
+      startedAt: '2026-03-15T00:00:00.000Z',
+      startToken: 'test-token'
     });
     registry.register('middle', {
       pid: 41002,
       type: 'mcp',
-      startedAt: '2026-03-15T00:00:01.000Z'
+      startedAt: '2026-03-15T00:00:01.000Z',
+      startToken: 'test-token'
     });
     registry.register('newest', {
       pid: 41003,
       type: 'chroma',
-      startedAt: '2026-03-15T00:00:02.000Z'
+      startedAt: '2026-03-15T00:00:02.000Z',
+      startToken: 'test-token'
     });
 
     const originalKill = process.kill;
@@ -104,7 +107,8 @@ describe('supervisor shutdown cascade', () => {
       await runShutdownCascade({
         registry,
         currentPid: process.pid,
-          pidFilePath: path.join(tempDir, 'worker.pid')
+        pidFilePath: path.join(tempDir, 'worker.pid'),
+        processStartTokenReader: () => 'test-token'
       });
     } finally {
       process.kill = originalKill;
@@ -249,6 +253,140 @@ describe('supervisor shutdown cascade', () => {
 
     expect(registry.getAll().map(record => record.id)).toEqual(['survivor']);
   }, 10_000);
+
+  it('never signals a reused PID whose start token no longer matches', async () => {
+    const tempDir = makeTempDir();
+    tempDirs.push(tempDir);
+    mkdirSync(tempDir, { recursive: true });
+
+    const registry = createProcessRegistry(path.join(tempDir, 'supervisor.json'));
+    const reusedPid = 41005;
+    registry.register('stale-child', {
+      pid: reusedPid,
+      type: 'chroma',
+      startedAt: '2026-03-15T00:00:01.000Z',
+      startToken: 'original-token'
+    });
+
+    const originalKill = process.kill;
+    const signals: Array<NodeJS.Signals | number> = [];
+    const alive = new Set([reusedPid]);
+    process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        if (alive.has(pid)) return true;
+        const error = new Error(`kill ESRCH ${pid}`) as NodeJS.ErrnoException;
+        error.code = 'ESRCH';
+        throw error;
+      }
+      signals.push(signal ?? 'SIGTERM');
+      alive.delete(pid);
+      return true;
+    }) as typeof process.kill;
+
+    try {
+      await runShutdownCascade({
+        registry,
+        currentPid: process.pid,
+        pidFilePath: path.join(tempDir, 'worker.pid'),
+        processStartTokenReader: () => 'reused-token'
+      });
+    } finally {
+      process.kill = originalKill;
+    }
+
+    expect(signals).toEqual([]);
+    expect(registry.getAll()).toHaveLength(0);
+  });
+
+  it('rechecks process identity before escalating from SIGTERM to SIGKILL', async () => {
+    const tempDir = makeTempDir();
+    tempDirs.push(tempDir);
+    mkdirSync(tempDir, { recursive: true });
+
+    const registry = createProcessRegistry(path.join(tempDir, 'supervisor.json'));
+    const reusedPid = 41007;
+    registry.register('reused-after-sigterm', {
+      pid: reusedPid,
+      type: 'chroma',
+      startedAt: '2026-03-15T00:00:01.000Z',
+      startToken: 'original-token'
+    });
+
+    const originalKill = process.kill;
+    const signals: Array<NodeJS.Signals | number> = [];
+    let livenessChecks = 0;
+    process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        livenessChecks += 1;
+        if (livenessChecks === 2) {
+          const error = new Error(`kill ESRCH ${pid}`) as NodeJS.ErrnoException;
+          error.code = 'ESRCH';
+          throw error;
+        }
+        return true;
+      }
+      signals.push(signal ?? 'SIGTERM');
+      return true;
+    }) as typeof process.kill;
+
+    const startTokens = ['original-token', 'reused-token'];
+    try {
+      await runShutdownCascade({
+        registry,
+        currentPid: process.pid,
+        pidFilePath: path.join(tempDir, 'worker.pid'),
+        processStartTokenReader: () => startTokens.shift() ?? 'reused-token'
+      });
+    } finally {
+      process.kill = originalKill;
+    }
+
+    expect(signals).toEqual(['SIGTERM']);
+    expect(registry.getAll()).toHaveLength(0);
+  });
+
+  it('preserves and never signals a live legacy record without a start token', async () => {
+    const tempDir = makeTempDir();
+    tempDirs.push(tempDir);
+    mkdirSync(tempDir, { recursive: true });
+
+    const registry = createProcessRegistry(path.join(tempDir, 'supervisor.json'));
+    const legacyPid = 41006;
+    registry.register('legacy-child', {
+      pid: legacyPid,
+      type: 'chroma',
+      startedAt: '2026-03-15T00:00:01.000Z'
+    });
+
+    const originalKill = process.kill;
+    const signals: Array<NodeJS.Signals | number> = [];
+    const alive = new Set([legacyPid]);
+    process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        if (alive.has(pid)) return true;
+        const error = new Error(`kill ESRCH ${pid}`) as NodeJS.ErrnoException;
+        error.code = 'ESRCH';
+        throw error;
+      }
+      signals.push(signal ?? 'SIGTERM');
+      alive.delete(pid);
+      return true;
+    }) as typeof process.kill;
+
+    try {
+      await runShutdownCascade({
+        registry,
+        currentPid: process.pid,
+        pidFilePath: path.join(tempDir, 'worker.pid'),
+        processStartTokenReader: () => 'current-token'
+      });
+    } finally {
+      process.kill = originalKill;
+    }
+
+    expect(signals).toEqual([]);
+    expect(registry.getAll().map(record => record.id)).toEqual(['legacy-child']);
+  });
 });
 
 describe('removeOwnedPidFile (owner guard, Phase 5)', () => {

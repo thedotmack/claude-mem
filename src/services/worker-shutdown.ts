@@ -64,6 +64,8 @@ export interface ShutdownSequenceOptions {
    * worker and re-parent to init.
    */
   lastResortChildTreeKill: () => Promise<void>;
+  /** Defaults to gracefulDeadlineMs when omitted. */
+  lastResortDeadlineMs?: number;
   restartHandoff: RestartHandoffDeps;
 }
 
@@ -127,8 +129,23 @@ export async function runShutdownSequence(options: ShutdownSequenceOptions): Pro
     if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
   }
 
+  const lastResortDeadlineMs = options.lastResortDeadlineMs ?? options.gracefulDeadlineMs;
+  let lastResortDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  const lastResortDeadline = new Promise<'deadline'>((resolve) => {
+    lastResortDeadlineTimer = setTimeout(() => resolve('deadline'), lastResortDeadlineMs);
+    lastResortDeadlineTimer.unref?.();
+  });
   try {
-    await options.lastResortChildTreeKill();
+    const outcome = await Promise.race([
+      options.lastResortChildTreeKill().then(() => 'complete' as const),
+      lastResortDeadline,
+    ]);
+    if (outcome === 'deadline') {
+      logger.warn('SYSTEM', 'Last-resort child tree-kill deadline exceeded — proceeding', {
+        deadlineMs: lastResortDeadlineMs,
+        reason: options.reason,
+      });
+    }
   } catch (error: unknown) {
     logger.error(
       'SYSTEM',
@@ -136,6 +153,8 @@ export async function runShutdownSequence(options: ShutdownSequenceOptions): Pro
       { reason: options.reason },
       error instanceof Error ? error : new Error(String(error))
     );
+  } finally {
+    if (lastResortDeadlineTimer !== undefined) clearTimeout(lastResortDeadlineTimer);
   }
 
   // Successor handoff — ONLY for restart; 'stop' and signal shutdowns stay

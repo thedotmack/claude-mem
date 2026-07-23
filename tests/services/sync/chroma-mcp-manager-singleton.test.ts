@@ -194,6 +194,7 @@ const killTreeCalls: number[] = [];
 const deadPids = new Set<number>();
 const survivingPids = new Set<number>();
 let execSyncCalls = 0;
+let processInspectionStdout = '';
 const prewarmSpawnCalls: Array<{ command: string; args: string[]; child: FakeChildProcess }> = [];
 let prewarmSpawnBehavior: 'success' | 'timeout' | 'failure' = 'success';
 let prewarmStdout = '';
@@ -256,6 +257,8 @@ mock.module('child_process', () => {
       // Bun's promisify path will call this as if it were a Node-style callback.
       if (cmd === 'pgrep') {
         cb(null, { stdout: '', stderr: '' } as any);
+      } else if (cmd === 'ps') {
+        cb(null, { stdout: processInspectionStdout, stderr: '' } as any);
       } else {
         cb(null, { stdout: '', stderr: '' } as any);
       }
@@ -339,6 +342,7 @@ function resetState(): void {
   supervisorUnregisterCalls = [];
   logEntries.length = 0;
   execSyncCalls = 0;
+  processInspectionStdout = '';
   nextFakePid = 100_000;
   prewarmSpawnBehavior = 'success';
   prewarmStdout = '';
@@ -457,6 +461,26 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
       startedAt: '2026-01-01T00:00:00.000Z',
     }];
     ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(async () => null);
+
+    const mgr = ChromaMcpManager.getInstance();
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
+      .rejects.toThrow('refusing to spawn a replacement');
+
+    expect(killTreeCalls).not.toContain(unknownPid);
+    expect(supervisorUnregisterCalls).not.toContain('chroma-mcp');
+    expect(transportCount).toBe(0);
+  });
+
+  it('does not authorize teardown from a matching command line alone', async () => {
+    const unknownPid = 99_781;
+    mockSupervisorRegistryEntries = [{
+      id: 'chroma-mcp',
+      pid: unknownPid,
+      type: 'chroma',
+      startedAt: '2026-01-01T00:00:00.000Z',
+    }];
+    processInspectionStdout =
+      `${typeof process.getuid === 'function' ? process.getuid() : 0} chroma-mcp --client-type persistent --data-dir ${mockedChromaDir}`;
 
     const mgr = ChromaMcpManager.getInstance();
     await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))

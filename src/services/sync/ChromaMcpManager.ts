@@ -15,7 +15,9 @@ import { getSupervisor } from '../../supervisor/index.js';
 import {
   captureProcessStartToken,
   isPidAlive,
+  verifyManagedProcessIdentity,
   waitForExit,
+  type ManagedProcessIdentity,
   type ManagedProcessRecord,
 } from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
@@ -79,8 +81,6 @@ interface ChromaWriterLockPayload {
   acquiredAt: string;
   startToken?: string | null;
 }
-
-type ChromaLauncherIdentity = 'match' | 'mismatch' | 'unknown';
 
 export class ChromaMcpManager {
   private static instance: ChromaMcpManager | null = null;
@@ -948,12 +948,10 @@ export class ChromaMcpManager {
   private static async identifyRegisteredChromaLauncher(
     record: ManagedProcessRecord,
     dataDir: string | null,
-  ): Promise<ChromaLauncherIdentity> {
-    if (record.startToken) {
-      const currentStartToken = captureProcessStartToken(record.pid);
-      if (currentStartToken !== null) {
-        return currentStartToken === record.startToken ? 'match' : 'mismatch';
-      }
+  ): Promise<ManagedProcessIdentity> {
+    const identity = verifyManagedProcessIdentity(record);
+    if (identity !== 'unknown') {
+      return identity;
     }
 
     if (ChromaMcpManager.chromaLauncherIdentityProbe) {
@@ -961,48 +959,7 @@ export class ChromaMcpManager {
       return result === null ? 'unknown' : result ? 'match' : 'mismatch';
     }
 
-    if (process.platform === 'win32') {
-      return 'unknown';
-    }
-
-    try {
-      const { stdout } = await execFileAsync(
-        'ps',
-        ['-p', String(record.pid), '-o', 'uid=,command='],
-        {
-          timeout: 5_000,
-          env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' },
-        },
-      );
-      const match = stdout.trim().match(/^(\d+)\s+([\s\S]+)$/);
-      if (!match) {
-        return 'unknown';
-      }
-      if (typeof process.getuid === 'function' && Number(match[1]) !== process.getuid()) {
-        return 'mismatch';
-      }
-
-      const command = match[2];
-      if (!command.includes('chroma-mcp')) {
-        return 'mismatch';
-      }
-      if (dataDir === null) {
-        return command.includes('--client-type http') ? 'match' : 'mismatch';
-      }
-
-      const normalizedDataDir = dataDir.replace(/\\/g, '/');
-      return command.includes('--client-type persistent') &&
-        command.includes('--data-dir') &&
-        command.replace(/\\/g, '/').includes(normalizedDataDir)
-        ? 'match'
-        : 'mismatch';
-    } catch (error) {
-      logger.debug('CHROMA_MCP', 'Unable to inspect prior chroma-mcp launcher PID', {
-        pid: record.pid,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return 'unknown';
-    }
+    return 'unknown';
   }
 
   private async disposeActivePrewarm(): Promise<void> {
@@ -1483,8 +1440,6 @@ export class ChromaMcpManager {
     if (!chromaProcess?.pid) {
       return;
     }
-    const startToken = captureProcessStartToken(chromaProcess.pid);
-
     // Register with pgid so the supervisor's shutdown cascade can use
     // process-group signaling (kill(-pgid, signal)) to tear down the
     // entire spawn chain (uvx -> uv -> python -> chroma-mcp) in one
@@ -1504,7 +1459,6 @@ export class ChromaMcpManager {
       // If the child isn't actually its own group leader, the ESRCH is caught
       // and shutdown falls back to single-PID kill (see signalProcess()).
       pgid: chromaProcess.pid,
-      ...(startToken ? { startToken } : {}),
     }, chromaProcess);
 
     chromaProcess.once('exit', () => {

@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import { createProcessRegistry, isPidAlive, normalizeSpawnSdkArgs } from '../../src/supervisor/process-registry.js';
+import {
+  captureProcessStartToken,
+  createProcessRegistry,
+  isPidAlive,
+  normalizeSpawnSdkArgs,
+} from '../../src/supervisor/process-registry.js';
 
 function makeTempDir(): string {
   return path.join(tmpdir(), `claude-mem-supervisor-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -127,6 +132,23 @@ describe('supervisor ProcessRegistry', () => {
       expect(records).toHaveLength(1);
       expect(records[0]?.id).toBe('sdk:1');
       expect(records[0]?.type).toBe('sdk');
+    });
+
+    it('captures a process start token when registering a live process', () => {
+      const tempDir = makeTempDir();
+      tempDirs.push(tempDir);
+      const registry = createProcessRegistry(path.join(tempDir, 'supervisor.json'));
+      const expectedToken = captureProcessStartToken(process.pid);
+
+      expect(expectedToken).not.toBeNull();
+
+      registry.register('sdk:1', {
+        pid: process.pid,
+        type: 'sdk',
+        startedAt: '2026-03-15T00:00:00.000Z'
+      });
+
+      expect(registry.getAll()[0]?.startToken).toBe(expectedToken);
     });
 
     it('unregister removes an entry', () => {
@@ -415,6 +437,36 @@ describe('supervisor ProcessRegistry', () => {
 
       expect(registry.getBySession(99)).toHaveLength(0);
       expect(registry.getBySession(100)).toHaveLength(1);
+    });
+
+    it('drops a reused PID record without signaling the current process', async () => {
+      const tempDir = makeTempDir();
+      tempDirs.push(tempDir);
+      const registry = createProcessRegistry(path.join(tempDir, 'supervisor.json'));
+      registry.register('sdk:99:reused', {
+        pid: process.pid,
+        type: 'sdk',
+        sessionId: 99,
+        startedAt: '2026-03-15T00:00:00.000Z',
+        startToken: 'stale-token'
+      });
+
+      const originalKill = process.kill;
+      const signals: Array<NodeJS.Signals | number> = [];
+      process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
+        if (signal === 0 && pid === process.pid) return true;
+        signals.push(signal ?? 'SIGTERM');
+        return true;
+      }) as typeof process.kill;
+
+      try {
+        expect(await registry.reapSession(99)).toBe(1);
+      } finally {
+        process.kill = originalKill;
+      }
+
+      expect(signals).toEqual([]);
+      expect(registry.getBySession(99)).toHaveLength(0);
     });
 
     it('returns 0 when no processes match the session', async () => {
