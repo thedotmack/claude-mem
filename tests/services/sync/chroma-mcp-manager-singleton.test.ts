@@ -434,6 +434,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     await mgr.callTool('chroma_list_collections', { limit: 1 });
 
     expect(transportInstances.length).toBe(2);
+    expect(mgr.getCrashState()).toMatchObject({ count: 0, lastExit: null });
     expect(logEntries.some(entry => entry.message === 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff')).toBe(false);
   });
 
@@ -456,7 +457,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(transportInstances.length).toBe(2);
   });
 
-  it('stop() ignores close-triggered onclose from an intentionally closed transport', async () => {
+  it('stop() ignores close-triggered onclose after shutdown generation changes', async () => {
     transportCloseEmitsOnclose = true;
     const mgr = ChromaMcpManager.getInstance();
 
@@ -520,14 +521,11 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     });
   });
 
-  it('keeps intentional and stale closes out of crash state', async () => {
-    transportCloseEmitsOnclose = true;
+  it('keeps stale closes out of crash state', async () => {
     const mgr = ChromaMcpManager.getInstance();
     await mgr.callTool('chroma_list_collections', { limit: 1 });
     const firstTransport = transportInstances[0];
     await mgr.stop();
-    expect(mgr.getCrashState().count).toBe(0);
-    expect(logEntries.some(entry => entry.meta?.signalCode === 'SIGSEGV' || entry.meta?.exitCode === 1)).toBe(false);
 
     await mgr.callTool('chroma_list_collections', { limit: 1 });
     firstTransport._process.finish(null, 'SIGSEGV');
