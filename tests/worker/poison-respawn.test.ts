@@ -61,7 +61,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     mock.restore();
   });
 
-  it('drops context-window prose that is not valid XML without aborting or preserving the claimed batch', async () => {
+  it('preserves context-window prose that is not valid XML and stops the generation', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(1, 'do the thing', 1);
     session.memorySessionId = 'mem-1';
@@ -83,17 +83,16 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
       'TestAgent',
     );
 
-    expect(confirmSpy).toHaveBeenCalledWith(1);
-    expect(resetSpy).not.toHaveBeenCalled();
-    expect(sm.getMessageBuffer().getPendingCount(1)).toBe(0);
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(resetSpy).toHaveBeenCalledWith(1);
+    expect(sm.getMessageBuffer().getPendingCount(1)).toBe(1);
     expect(session.claimedMessageIds).toEqual([]);
-    expect(session.earliestPendingTimestamp).toBeNull();
     expect(session.consecutiveInvalidOutputs).toBe(0);
-    expect(session.abortController.signal.aborted).toBe(false);
-    expect(session.abortReason ?? null).toBeNull();
+    expect(session.abortController.signal.aborted).toBe(true);
+    expect(session.abortReason).toBe('observer_failure:xml');
   });
 
-  it('repeated "No observations to record" acknowledgements confirm and never build respawn debt', async () => {
+  it('preserves non-XML no-observation prose instead of treating it as a structured no-op', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(2, 'do the thing', 1);
     session.memorySessionId = 'mem-2';
@@ -102,25 +101,22 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
     const resetSpy = spyOn(sm, 'resetProcessingToPending');
 
-    for (let i = 0; i < 5; i++) {
-      await processAgentResponse(
-        'No observations to record.',
-        session,
-        makeDbManager(),
-        sm,
-        makeWorker(),
-        0,
-        null,
-        'TestAgent',
-      );
-      expect(session.consecutiveInvalidOutputs).toBe(0);
-      expect(session.abortController.signal.aborted).toBe(false);
-    }
+    await processAgentResponse(
+      'No observations to record.',
+      session,
+      makeDbManager(),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'TestAgent',
+    );
 
-    expect(confirmSpy).toHaveBeenCalledTimes(5);
-    expect(resetSpy).not.toHaveBeenCalled();
-    expect(sm.getMessageBuffer().getPendingCount(2)).toBe(0);
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(resetSpy).toHaveBeenCalledWith(2);
+    expect(sm.getMessageBuffer().getPendingCount(2)).toBe(1);
     expect(session.claimedMessageIds).toEqual([]);
+    expect(session.abortController.signal.aborted).toBe(true);
   });
 
   it('pauses on weekly-limit quota prose and preserves claimed pending work', async () => {
@@ -192,7 +188,40 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(session.currentProvider).toBeNull();
   });
 
-  it('confirms skip/no-op prose but preserves the same queue shape for quota pause', async () => {
+  it('observer-failure generator exit keeps the active session and in-memory buffer', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(7, 'do the thing', 1);
+    session.memorySessionId = 'mem-7';
+    session.currentProvider = 'claude';
+    session.generatorPromise = Promise.resolve();
+    await queueAndClaimOne(sm, 7);
+
+    await processAgentResponse(
+      'The authentication required message was returned as prose.',
+      session,
+      makeDbManager(),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'TestAgent',
+    );
+
+    const finalizeSession = mock(() => Promise.resolve());
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+
+    await handleGeneratorExit(session, session.abortReason, {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+    });
+
+    expect(finalizeSession).not.toHaveBeenCalled();
+    expect(removeSpy).not.toHaveBeenCalled();
+    expect(sm.getSession(7)).toBe(session);
+    expect(sm.getMessageBuffer().getPendingCount(7)).toBe(1);
+  });
+
+  it('preserves non-XML prose and quota prose with the same queue shape', async () => {
     const skipSm = new SessionManager(makeDbManager());
     const skipSession = skipSm.initializeSession(4, 'do the thing', 1);
     skipSession.memorySessionId = 'mem-4';
@@ -225,7 +254,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
       'TestAgent',
     );
 
-    expect(skipSm.getMessageBuffer().getPendingCount(4)).toBe(0);
+    expect(skipSm.getMessageBuffer().getPendingCount(4)).toBe(1);
     expect(quotaSm.getMessageBuffer().getPendingCount(5)).toBe(1);
   });
 });

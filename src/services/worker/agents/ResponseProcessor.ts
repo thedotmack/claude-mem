@@ -68,24 +68,29 @@ export async function processAgentResponse(
       return;
     }
 
-    // Classify the non-XML output so a dropped batch is visible, not silent.
-    // Ordinary idle/prose is a claimed no-op batch: confirm it and do not build
-    // any respawn debt from repeated skip acknowledgements.
+    // Non-XML output is not an explicit no-op. It can be provider prose for an
+    // authentication, context-window, or malformed-output failure. Preserve the
+    // claimed batch and stop this generation; a valid `<skip_summary/>` is the
+    // only structured no-op accepted by the parser below.
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
     session.consecutiveInvalidOutputs = 0;
 
-    logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
+    logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — preserving queued batch`, {
       sessionId: session.sessionDbId,
       outputClass,
       preview,
       consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
     });
 
-    // Plain-text skip responses are intentionally ignored. Re-queueing them
-    // creates an observer loop where the same low-signal batch is retried.
-    await sessionManager.confirmClaimedMessages(session.sessionDbId);
-    session.earliestPendingTimestamp = null;
+    await sessionManager.resetProcessingToPending(session.sessionDbId);
+    session.abortReason = `observer_failure:${outputClass}`;
+    try {
+      session.abortController.abort();
+    } catch {
+      // best-effort; AbortController.abort() should not throw in normal use.
+    }
+    worker?.broadcastProcessingStatus?.();
     return;
   }
 
