@@ -119,6 +119,7 @@ export class SessionStore {
     this.ensureSyncEntityLedger();
     this.ensureSyncRevisionTextAffinity();
     this.initializeSyncHubLaunchBaseline();
+    this.normalizeConceptTags();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -826,6 +827,29 @@ export class SessionStore {
         .run(48, new Date().toISOString());
     });
     repair();
+  }
+
+  // v49 (#3379): the context-injection query matches concepts exactly
+  // (ObservationCompiler `WHERE value IN (...)`), so historical rows written
+  // as "keyword: description" never matched. Truncate each stored concept at
+  // the first ':' and trim; the parser now enforces the same shape on write.
+  private normalizeConceptTags(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(49) as SchemaVersion | undefined;
+    if (applied) return;
+
+    this.db.run(`
+      UPDATE observations
+      SET concepts = (
+        SELECT json_group_array(
+          CASE WHEN instr(value, ':') > 0
+               THEN trim(substr(value, 1, instr(value, ':') - 1))
+               ELSE value END)
+        FROM json_each(observations.concepts))
+      WHERE concepts LIKE '%:%'
+    `);
+    logger.debug('DB', 'Normalized prefixed concept tags in observations (v49)');
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(49, new Date().toISOString());
   }
 
   private dropDeadPendingMessagesColumns(): void {
