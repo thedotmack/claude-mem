@@ -3,7 +3,7 @@ import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import path from 'path';
 import { readFileSync, existsSync, renameSync, mkdirSync } from 'fs';
-import { getPackageRoot, paths } from '../../../../shared/paths.js';
+import { getPackageRoot, paths, expandTilde } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsManager } from '../../SettingsManager.js';
 import { ModeManager } from '../../../domain/ModeManager.js';
@@ -110,6 +110,14 @@ export class SettingsRoutes extends BaseRouteHandler {
       if (req.body[key] !== undefined) {
         settings[key] = req.body[key];
       }
+    }
+
+    // Persist CLAUDE_CODE_PATH with any leading `~` expanded: it's fed straight
+    // to existsSync/posix_spawn (no shell), where a literal `~` fails with
+    // ENOENT and silently breaks all memory capture. Store the resolved path so
+    // the resolver never sees the tilde.
+    if (typeof settings.CLAUDE_CODE_PATH === 'string' && settings.CLAUDE_CODE_PATH) {
+      settings.CLAUDE_CODE_PATH = expandTilde(settings.CLAUDE_CODE_PATH);
     }
 
     writeJsonFileAtomic(settingsPath, settings);

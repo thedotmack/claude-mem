@@ -17,21 +17,34 @@ import * as realFindClaudeExecutableModule from '../../src/shared/find-claude-ex
 
 const realFindClaudeExecutableSnapshot = { ...realFindClaudeExecutableModule };
 
-// Snapshot the real module BEFORE mock.module mutates the live namespace, then
-// re-register it in afterAll. bun's mock.module is process-global and
-// mock.restore() does NOT undo it, so this partial stub (only findClaudeExecutable,
-// missing resetClaudeExecutableCache / _internals / CAPABILITY_PROBE_ARGS) would
-// otherwise leak into find-claude-executable.test.ts and break its whole suite.
-import * as realFindClaudeExecutable from '../../src/shared/find-claude-executable.js';
-const realFindClaudeExecutableSnapshot = { ...realFindClaudeExecutable };
+// bun's mock.module is process-global and sticky — it is never auto-unregistered
+// and leaks into every test file that runs afterwards in the same process. So
+// this mock must be leak-proof in two ways:
+//   1. Spread the REAL module through the factory, overriding only
+//      findClaudeExecutable. Otherwise the module's other exports (_internals,
+//      resetClaudeExecutableCache, CAPABILITY_PROBE_ARGS) vanish for later files
+//      like find-claude-executable.test.ts, which drives all of them.
+//   2. Default the override to the real implementation and restore it in
+//      afterAll, so the per-test stubs below (one of which throws) don't leak
+//      out and break unrelated suites (recall-mcp-server, server-boot) that
+//      transitively resolve the CLI.
+// The real module is snapshotted into a plain object before mocking so the
+// captured references can't be live-swapped by the mock registration.
+const actualFindClaude = { ...(await import('../../src/shared/find-claude-executable.js')) };
+const realFindClaudeExecutable = actualFindClaude.findClaudeExecutable;
 
-let findClaudeExecutableImpl: () => string = () => '/mock/claude';
+type FindClaudeExecutable = typeof realFindClaudeExecutable;
+let findClaudeExecutableImpl: (...args: Parameters<FindClaudeExecutable>) => string = realFindClaudeExecutable;
 
 mock.module('../../src/shared/find-claude-executable.js', () => ({
-  findClaudeExecutable: () => findClaudeExecutableImpl(),
+  ...actualFindClaude,
+  findClaudeExecutable: (...args: Parameters<FindClaudeExecutable>) => findClaudeExecutableImpl(...args),
 }));
 
 afterAll(() => {
+  // Point the leaked mock back at the real implementation for subsequent files,
+  // then re-register the untouched module snapshot.
+  findClaudeExecutableImpl = realFindClaudeExecutable;
   mock.module('../../src/shared/find-claude-executable.js', () => realFindClaudeExecutableSnapshot);
 });
 

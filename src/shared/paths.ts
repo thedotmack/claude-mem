@@ -78,6 +78,25 @@ export function getPackageRoot(): string {
   return join(_dirname, '..');
 }
 
+/**
+ * Expand a leading `~` / `~/` (or `~\` on Windows) to the user's home dir.
+ *
+ * User-typed config paths like `~/.local/bin/claude` are never expanded by the
+ * shell when passed programmatically to existsSync/posix_spawn, so a literal
+ * `~` reaches the syscall and fails with ENOENT. Every other home-relative path
+ * in the codebase is built with join(homedir(), ...); this brings user-supplied
+ * ones onto the same footing. Non-tilde paths are returned unchanged.
+ *
+ * `home` is injectable so callers behind a homedir() test seam stay testable.
+ */
+export function expandTilde(filePath: string, home: string = homedir()): string {
+  if (filePath === '~') return home;
+  if (filePath.startsWith('~/') || filePath.startsWith('~\\')) {
+    return join(home, filePath.slice(2));
+  }
+  return filePath;
+}
+
 export const paths = {
   dataDir: () => DATA_DIR,
   workerPid: () => join(DATA_DIR, 'worker.pid'),
