@@ -157,6 +157,7 @@ describe('GeminiProvider', () => {
 
     mockSessionManager = {
       getMessageIterator: async function* () { yield* []; },
+      getClaimedMessages: mock(() => []),
       confirmClaimedMessages: mock(() => Promise.resolve(0)),
       resetProcessingToPending: mock(() => Promise.resolve(0)),
       getMessageBuffer: () => mockPendingMessageStore,

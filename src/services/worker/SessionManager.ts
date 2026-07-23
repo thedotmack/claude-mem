@@ -230,6 +230,12 @@ export class SessionManager {
     return confirmed;
   }
 
+  getClaimedMessages(sessionDbId: number): PendingMessageWithId[] {
+    const session = this.sessions.get(sessionDbId);
+    const claimedIds = session?.claimedMessageIds ?? [];
+    return this.buffer.getMessagesByIds(sessionDbId, claimedIds);
+  }
+
   async deleteSession(sessionDbId: number): Promise<void> {
     const session = this.sessions.get(sessionDbId);
     if (!session) {

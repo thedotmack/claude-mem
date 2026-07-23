@@ -1,4 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
+import { existsSync, readFileSync } from 'fs';
 import { logger } from '../../../src/utils/logger.js';
 
 // Capture real exports before mock.module mutates the live namespace, then
@@ -22,12 +23,56 @@ afterAll(() => {
   mock.module('../../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
 });
 
+function mockSettingsDefaults(): Record<string, string> {
+  return {
+    CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: mockFolderClaudeMdEnabled,
+    CLAUDE_MEM_QUEUE_ENGINE: 'sqlite',
+    CLAUDE_MEM_WELCOME_HINT_ENABLED: 'true',
+    CLAUDE_MEM_WORKER_PORT: '37777',
+  };
+}
+
+function mockSettingsFromFile(settingsPath?: string, applyEnvOverrides = true): Record<string, string> {
+  const settings = settingsPath && existsSync(settingsPath)
+    ? { ...mockSettingsDefaults(), ...JSON.parse(readFileSync(settingsPath, 'utf-8')) }
+    : mockSettingsDefaults();
+
+  if (!applyEnvOverrides) {
+    settings.CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED = mockFolderClaudeMdEnabled;
+    return settings;
+  }
+
+  for (const key of Object.keys(settings)) {
+    if (key === 'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED') {
+      continue;
+    }
+    settings[key] = process.env[key] ?? settings[key];
+  }
+  settings.CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED = mockFolderClaudeMdEnabled;
+
+  return settings;
+}
+
 mock.module('../../../src/services/worker-service.js', () => ({
   updateCursorContextForProject: () => Promise.resolve(),
 }));
 
+mock.module('../../../src/utils/claude-md-utils.js', () => ({
+  updateFolderClaudeMdFiles: (...args: unknown[]) => mockUpdateFolderClaudeMdFiles(...args),
+}));
+
 mock.module('../../../src/shared/worker-utils.js', () => ({
   getWorkerPort: () => 37777,
+}));
+
+mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
+  SettingsDefaultsManager: {
+    getAllDefaults: () => mockSettingsDefaults(),
+    get: (key: string) => process.env[key] ?? mockSettingsDefaults()[key] ?? '',
+    getInt: (key: string) => parseInt(process.env[key] ?? mockSettingsDefaults()[key] ?? '0', 10),
+    loadFromFile: (settingsPath?: string, applyEnvOverrides = true) =>
+      mockSettingsFromFile(settingsPath, applyEnvOverrides),
+  },
 }));
 
 mock.module('../../../src/services/domain/ModeManager.js', () => ({
@@ -47,13 +92,21 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
   },
 }));
 
-import { processAgentResponse } from '../../../src/services/worker/agents/ResponseProcessor.js';
+import { extractObservationFileEvidence, processAgentResponse } from '../../../src/services/worker/agents/ResponseProcessor.js';
 import type { WorkerRef, StorageResult } from '../../../src/services/worker/agents/types.js';
 import type { ActiveSession } from '../../../src/services/worker-types.js';
 import type { DatabaseManager } from '../../../src/services/worker/DatabaseManager.js';
 import type { SessionManager } from '../../../src/services/worker/SessionManager.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
+let mockFolderClaudeMdEnabled = false;
+let mockUpdateFolderClaudeMdFiles: ReturnType<typeof mock>;
+let claimedMessages: Array<{
+  type: 'observation' | 'summarize';
+  tool_name?: string;
+  tool_input?: unknown;
+}> = [];
+let mockGetClaimedMessages: ReturnType<typeof mock>;
 
 describe('ResponseProcessor', () => {
   let mockStoreObservations: ReturnType<typeof mock>;
@@ -72,6 +125,10 @@ describe('ResponseProcessor', () => {
       spyOn(logger, 'warn').mockImplementation(() => {}),
       spyOn(logger, 'error').mockImplementation(() => {}),
     ];
+    mockFolderClaudeMdEnabled = false;
+    claimedMessages = [];
+    mockUpdateFolderClaudeMdFiles = mock(() => Promise.resolve());
+    mockGetClaimedMessages = mock(() => claimedMessages);
 
     mockStoreObservations = mock(() => ({
       observationIds: [1, 2],
@@ -105,6 +162,7 @@ describe('ResponseProcessor', () => {
         cleanupProcessed: mock(() => 0),
         resetStuckMessages: mock(() => 0),
       }),
+      getClaimedMessages: mockGetClaimedMessages,
       confirmClaimedMessages: mock(() => Promise.resolve(0)),
       resetProcessingToPending: mock(() => Promise.resolve(0)),
     } as unknown as SessionManager;
@@ -223,6 +281,199 @@ describe('ResponseProcessor', () => {
       expect(observations).toHaveLength(2);
       expect(observations[0].type).toBe('discovery');
       expect(observations[1].type).toBe('bugfix');
+    });
+  });
+
+  describe('file evidence sanitization', () => {
+    it('enforces the provenance contract for read and write evidence', () => {
+      const evidence = extractObservationFileEvidence([
+        { type: 'observation', tool_name: 'Read', tool_input: { file_path: 'src/read.ts' } },
+        { type: 'observation', tool_name: 'write_file', tool_input: { filePath: 'src/write.ts', edits: [] } },
+        {
+          type: 'observation',
+          tool_name: 'apply_patch',
+          tool_input: '*** Update File: src/patch.ts\n@@\n-old\n+new\n',
+        },
+        {
+          type: 'observation',
+          tool_name: 'apply_patch',
+          tool_input: JSON.stringify({ patch: '*** Update File: src/json-patch.ts\n@@\n-old\n+new\n' }),
+        },
+        { type: 'observation', tool_name: 'Read', tool_input: { file_path: 'src/read.ts' } },
+      ]);
+
+      expect(evidence.files_read).toEqual(['src/read.ts']);
+      expect(evidence.files_modified).toEqual(['src/write.ts', 'src/patch.ts', 'src/json-patch.ts']);
+    });
+  });
+
+  describe('observation file metadata gating', () => {
+    it('drops fabricated files_modified while preserving read evidence', async () => {
+      claimedMessages = [
+        { type: 'observation', tool_name: 'Read', tool_input: { file_path: 'supabase/functions/edge/index.ts' } },
+      ];
+
+      const session = createMockSession();
+      const responseText = `
+        <observation>
+          <type>bugfix</type>
+          <title>Secured edge function access</title>
+          <narrative>Completed the security work.</narrative>
+          <facts><fact>Observed read-only inspection</fact></facts>
+          <concepts><concept>security</concept></concepts>
+          <files_read><file>supabase/functions/edge/index.ts</file></files_read>
+          <files_modified><file>supabase/functions/edge/index.ts</file></files_modified>
+        </observation>
+      `;
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+      const [, , observations] = mockStoreObservations.mock.calls[0];
+      expect(observations[0].files_read).toEqual(['supabase/functions/edge/index.ts']);
+      expect(observations[0].files_modified).toEqual([]);
+    });
+
+    it('populates files_modified from captured write evidence when XML omits it', async () => {
+      claimedMessages = [
+        { type: 'observation', tool_name: 'write_file', tool_input: { filePath: 'src/services/worker/agents/ResponseProcessor.ts', edits: [{ type: 'replace' }] } },
+      ];
+
+      const session = createMockSession();
+      const responseText = `
+        <observation>
+          <type>bugfix</type>
+          <title>Wrote the fix</title>
+          <narrative>Captured write evidence drives stored metadata.</narrative>
+          <facts><fact>Write evidence present</fact></facts>
+          <concepts><concept>storage</concept></concepts>
+          <files_read></files_read>
+          <files_modified></files_modified>
+        </observation>
+      `;
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      const [, , observations] = mockStoreObservations.mock.calls[0];
+      expect(observations[0].files_modified).toEqual(['src/services/worker/agents/ResponseProcessor.ts']);
+    });
+
+    it('keeps native records scoped to their originating project', async () => {
+      claimedMessages = [
+        { type: 'observation', tool_name: 'Read', tool_input: { file_path: 'src/native.ts' } },
+      ];
+
+      const session = createMockSession({ project: 'origin-project' });
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Native scope</title>
+          <facts><fact>Project stays unchanged</fact></facts>
+          <concepts><concept>scoping</concept></concepts>
+          <files_read><file>src/native.ts</file></files_read>
+          <files_modified><file>src/native.ts</file></files_modified>
+        </observation>
+      `;
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      const [memorySessionId, project] = mockStoreObservations.mock.calls[0];
+      expect(memorySessionId).toBe('memory-session-456');
+      expect(project).toBe('origin-project');
+    });
+
+    it('stores worktree-adopted records under the parent project scope', async () => {
+      claimedMessages = [
+        { type: 'observation', tool_name: 'Read', tool_input: { file_path: 'src/parent.ts' } },
+      ];
+
+      const session = createMockSession({ project: 'parent-project' });
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Adopted scope</title>
+          <facts><fact>Parent project owns the stored row</fact></facts>
+          <concepts><concept>scoping</concept></concepts>
+          <files_read><file>src/parent.ts</file></files_read>
+          <files_modified><file>src/parent.ts</file></files_modified>
+        </observation>
+      `;
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      const [memorySessionId, project] = mockStoreObservations.mock.calls[0];
+      expect(memorySessionId).toBe('memory-session-456');
+      expect(project).toBe('parent-project');
+    });
+
+    it('preserves read-only batches while clearing only files_modified', async () => {
+      claimedMessages = [
+        { type: 'observation', tool_name: 'Read', tool_input: { file_path: 'src/read-only.ts' } },
+      ];
+
+      const session = createMockSession();
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Read-only batch</title>
+          <narrative>Read evidence should stay visible.</narrative>
+          <facts><fact>Read evidence present</fact></facts>
+          <concepts><concept>evidence</concept></concepts>
+          <files_read></files_read>
+          <files_modified><file>src/fabricated.ts</file></files_modified>
+        </observation>
+      `;
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      const [, , observations] = mockStoreObservations.mock.calls[0];
+      expect(observations[0].files_read).toEqual(['src/read-only.ts']);
+      expect(observations[0].files_modified).toEqual([]);
     });
   });
 
