@@ -330,6 +330,48 @@ describe('GeminiProvider', () => {
     expect(session.cumulativeInputTokens).toBeGreaterThan(0);
   });
 
+  it('stores a deferred init response under the original prompt project after the live session advances', async () => {
+    const session = makeSession({
+      project: 'repo-a',
+      userPrompt: 'prompt 1',
+      lastPromptNumber: 1,
+    });
+    const observationXml = `
+      <observation>
+        <type>discovery</type>
+        <title>Late init response</title>
+        <narrative>Should stay on the original prompt project.</narrative>
+        <facts></facts>
+        <concepts></concepts>
+        <files_read></files_read>
+        <files_modified></files_modified>
+      </observation>
+    `;
+
+    let resolveFetch!: (response: Response) => void;
+    global.fetch = mock(() => new Promise<Response>(resolve => {
+      resolveFetch = resolve;
+    }));
+
+    const pending = agent.startSession(session);
+    await Promise.resolve();
+
+    session.project = 'repo-b/worktree';
+    session.userPrompt = 'prompt 2';
+    session.lastPromptNumber = 2;
+
+    resolveFetch(new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: observationXml }] } }],
+      usageMetadata: { totalTokenCount: 50 }
+    })));
+
+    await pending;
+
+    const [, project, , , promptNumber] = mockStoreObservations.mock.calls[0];
+    expect(project).toBe('repo-a');
+    expect(promptNumber).toBe(1);
+  });
+
   it('should throw on rate limit (429) error — no Claude fallback (#2087)', async () => {
     const session = {
       sessionDbId: 1,

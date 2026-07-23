@@ -257,6 +257,22 @@ function mergeFileLists(primary: string[], secondary: string[]): string[] {
   return dedupeStable([...primary, ...secondary]);
 }
 
+export interface ResponseContext {
+  project: string;
+  promptNumber: number;
+  pendingAgentId: string | null;
+  pendingAgentType: string | null;
+}
+
+export function snapshotResponseContext(session: ActiveSession): ResponseContext {
+  return {
+    project: session.project,
+    promptNumber: session.lastPromptNumber,
+    pendingAgentId: session.pendingAgentId ?? null,
+    pendingAgentType: session.pendingAgentType ?? null,
+  };
+}
+
 export async function processAgentResponse(
   text: string,
   session: ActiveSession,
@@ -267,10 +283,12 @@ export async function processAgentResponse(
   originalTimestamp: number | null,
   agentName: string,
   projectRoot?: string,
-  modelId?: string
+  modelId?: string,
+  responseContext?: ResponseContext
 ): Promise<void> {
   const processingStartedAt = Date.now();
   session.lastGeneratorActivity = Date.now();
+  const context = responseContext ?? snapshotResponseContext(session);
 
   if (text) {
     session.conversationHistory.push({ role: 'assistant', content: text });
@@ -378,18 +396,18 @@ export async function processAgentResponse(
 
   const labeledObservations = sanitizedObservations.map(obs => ({
     ...obs,
-    agent_type: session.pendingAgentType ?? null,
-    agent_id: session.pendingAgentId ?? null
+    agent_type: context.pendingAgentType,
+    agent_id: context.pendingAgentId
   }));
 
   let result: ReturnType<typeof sessionStore.storeObservations>;
   try {
     result = sessionStore.storeObservations(
       session.memorySessionId,
-      session.project,
+      context.project,
       labeledObservations,
       summaryForStore,
-      session.lastPromptNumber,
+      context.promptNumber,
       discoveryTokens,
       originalTimestamp ?? undefined,
       modelId
@@ -475,7 +493,7 @@ export async function processAgentResponse(
   void notifyTelegram({
     observations: labeledObservations,
     observationIds: result.observationIds,
-    project: session.project,
+    project: context.project,
     memorySessionId: session.memorySessionId,
   });
 
@@ -483,6 +501,7 @@ export async function processAgentResponse(
     labeledObservations,
     result,
     session,
+    context,
     dbManager,
     worker,
     agentName,
@@ -494,6 +513,7 @@ export async function processAgentResponse(
     summaryForStore,
     result,
     session,
+    context,
     dbManager,
     worker,
     agentName
@@ -525,6 +545,7 @@ async function syncAndBroadcastObservations(
   observations: ParsedObservation[],
   result: StorageResult,
   session: ActiveSession,
+  context: ResponseContext,
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
   agentName: string,
@@ -557,9 +578,9 @@ async function syncAndBroadcastObservations(
     dbManager.getChromaSync()?.syncObservation(
       obsId,
       memorySessionId,
-      session.project,
+      context.project,
       obs,
-      session.lastPromptNumber,
+      context.promptNumber,
       result.createdAtEpoch,
       session.platformSource
     ).then(() => {
@@ -594,8 +615,8 @@ async function syncAndBroadcastObservations(
       concepts: JSON.stringify(obs.concepts || []),
       files_read: JSON.stringify(obs.files_read || []),
       files_modified: JSON.stringify(obs.files_modified || []),
-      project: session.project,
-      prompt_number: session.lastPromptNumber,
+      project: context.project,
+      prompt_number: context.promptNumber,
       created_at_epoch: result.createdAtEpoch
     });
   }
@@ -614,11 +635,11 @@ async function syncAndBroadcastObservations(
     if (allFilePaths.length > 0) {
       updateFolderClaudeMdFiles(
         allFilePaths,
-        session.project,
+        context.project,
         getWorkerPort(),
         projectRoot
       ).catch(error => {
-        logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)', { project: session.project }, error as Error);
+        logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)', { project: context.project }, error as Error);
       });
     }
   }
@@ -629,6 +650,7 @@ async function syncAndBroadcastSummary(
   summaryForStore: { request: string; investigated: string; learned: string; completed: string; next_steps: string; notes: string | null } | null,
   result: StorageResult,
   session: ActiveSession,
+  context: ResponseContext,
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
   agentName: string
@@ -646,9 +668,9 @@ async function syncAndBroadcastSummary(
   dbManager.getChromaSync()?.syncSummary(
     result.summaryId,
     memorySessionId,
-    session.project,
+    context.project,
     summaryForStore,
-    session.lastPromptNumber,
+    context.promptNumber,
     result.createdAtEpoch,
     session.platformSource
   ).then(() => {
@@ -677,12 +699,12 @@ async function syncAndBroadcastSummary(
     completed: summaryForStore!.completed,
     next_steps: summaryForStore!.next_steps,
     notes: summaryForStore!.notes,
-    project: session.project,
-    prompt_number: session.lastPromptNumber,
+    project: context.project,
+    prompt_number: context.promptNumber,
     created_at_epoch: result.createdAtEpoch
   });
 
-  updateCursorContextForProject(session.project).catch(error => {
-    logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error as Error);
+  updateCursorContextForProject(context.project).catch(error => {
+    logger.warn('CURSOR', 'Context update failed (non-critical)', { project: context.project }, error as Error);
   });
 }
