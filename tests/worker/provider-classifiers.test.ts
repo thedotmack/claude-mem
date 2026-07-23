@@ -3,7 +3,7 @@ import {
   ClassifiedProviderError,
   isClassified,
 } from '../../src/services/worker/provider-errors.js';
-import { classifyClaudeError } from '../../src/services/worker/ClaudeProvider.js';
+import { classifyClaudeError, isObserverCanaryResponse } from '../../src/services/worker/ClaudeProvider.js';
 import {
   categorizeGeminiBadRequest,
   classifyGeminiError,
@@ -268,14 +268,14 @@ describe('classifyClaudeError', () => {
     expect(err.kind).toBe('setup_required');
   });
 
-  it('classifies prompt-too-long as unrecoverable', () => {
+  it('classifies prompt-too-long as context_overflow', () => {
     const err = classifyClaudeError(new Error('Claude session context overflow: prompt is too long'));
-    expect(err.kind).toBe('unrecoverable');
+    expect(err.kind).toBe('context_overflow');
   });
 
-  it('classifies structured context-window errors as unrecoverable', () => {
+  it('classifies structured context-window errors as context_overflow', () => {
     const err = classifyClaudeError(new Error('Claude SDK error: context window exceeded'));
-    expect(err.kind).toBe('unrecoverable');
+    expect(err.kind).toBe('context_overflow');
   });
 
   it('classifies status=429 as rate_limit', () => {
@@ -298,5 +298,12 @@ describe('classifyClaudeError', () => {
   it('classifies unknown error as transient (preserve old default)', () => {
     const err = classifyClaudeError(new Error('something weird happened'));
     expect(err.kind).toBe('transient');
+  });
+});
+
+describe('observer provider canary output', () => {
+  it('accepts only the explicit tool-disabled canary acknowledgement', () => {
+    expect(isObserverCanaryResponse('<skip_summary/>')).toBe(true);
+    expect(isObserverCanaryResponse('ready')).toBe(false);
   });
 });

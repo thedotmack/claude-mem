@@ -1,16 +1,23 @@
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
-import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationData } from '../worker-types.js';
+import type { ActiveSession, ConversationMessage, PendingMessage, PendingMessageWithId, ObservationData } from '../worker-types.js';
 import { SessionMessageBuffer } from './SessionMessageBuffer.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
+import {
+  ObserverJobStore,
+  type ObserverFailureClass,
+  type ObserverFailureOutcome,
+  type ObserverStatus,
+} from './ObserverJobStore.js';
 
 export class SessionManager {
   private dbManager: DatabaseManager;
   private sessions: Map<number, ActiveSession> = new Map();
   private onPendingMutate?: () => void;
   private readonly buffer = new SessionMessageBuffer(() => this.onPendingMutate?.());
+  private observerJobs: ObserverJobStore | null = null;
 
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager;
@@ -18,6 +25,20 @@ export class SessionManager {
 
   setOnPendingMutate(cb: () => void): void {
     this.onPendingMutate = cb;
+  }
+
+  /** Must run after DatabaseManager.initialize(); no native runtime state is read before that point. */
+  initializeDurableObserverStore(): void {
+    this.observerJobs = new ObserverJobStore(this.dbManager.getConnection());
+  }
+
+  checkpointObserverSession(session: ActiveSession): void {
+    if (!this.observerJobs) return;
+    this.observerJobs.checkpoint(session.sessionDbId, session.observerGeneration ?? 1, {
+      contentSessionId: session.contentSessionId,
+      memorySessionId: session.memorySessionId,
+      conversationHistory: session.conversationHistory.slice(-20),
+    });
   }
 
   initializeSession(sessionDbId: number, currentUserPrompt?: string, promptNumber?: number): ActiveSession {
@@ -133,6 +154,20 @@ export class SessionManager {
 
     this.sessions.set(sessionDbId, session);
 
+    if (this.observerJobs) {
+      const checkpoint = this.observerJobs.getCheckpoint(sessionDbId);
+      if (checkpoint) {
+        session.observerGeneration = checkpoint.generation;
+        const history = (checkpoint.checkpoint as { conversationHistory?: unknown })?.conversationHistory;
+        if (Array.isArray(history) && history.every(isConversationMessage)) {
+          session.conversationHistory = history.slice(-20);
+        }
+      }
+      for (const job of this.observerJobs.recover(sessionDbId)) {
+        this.buffer.enqueue(sessionDbId, job.payload, job.id);
+      }
+    }
+
     logger.info('SESSION', 'Session initialized', {
       sessionId: sessionDbId,
       project: session.project,
@@ -166,7 +201,10 @@ export class SessionManager {
       toolUseId: data.toolUseId,
     };
 
-    const messageId = this.buffer.enqueue(sessionDbId, message);
+    const admission = this.observerJobs?.admit(sessionDbId, message);
+    const messageId = admission
+      ? (admission.admitted ? this.buffer.enqueue(sessionDbId, message, admission.id) : 0)
+      : this.buffer.enqueue(sessionDbId, message);
     const queueDepth = this.buffer.getPendingCount(sessionDbId);
     const toolSummary = logger.formatTool(data.tool_name, data.tool_input);
     if (messageId === 0) {
@@ -191,7 +229,10 @@ export class SessionManager {
       last_assistant_message: lastAssistantMessage
     };
 
-    const messageId = this.buffer.enqueue(sessionDbId, message);
+    const admission = this.observerJobs?.admit(sessionDbId, message);
+    const messageId = admission
+      ? (admission.admitted ? this.buffer.enqueue(sessionDbId, message, admission.id) : 0)
+      : this.buffer.enqueue(sessionDbId, message);
     const queueDepth = this.buffer.getPendingCount(sessionDbId);
     if (messageId === 0) {
       logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=summarize | depth=${queueDepth}`, {
@@ -208,17 +249,39 @@ export class SessionManager {
     return this.buffer.clear(sessionDbId);
   }
 
-  async resetProcessingToPending(sessionDbId: number): Promise<number> {
+  async resetProcessingToPending(sessionDbId: number, errorClass: string = 'transient'): Promise<number> {
     const session = this.sessions.get(sessionDbId);
     if (session) {
+      this.observerJobs?.reset(session.claimedMessageIds, errorClass);
       session.claimedMessageIds = [];
     }
     return this.buffer.resetClaimed(sessionDbId);
   }
 
+  /** Apply durable retry/quarantine policy before releasing claimed buffer entries. */
+  async applyObserverFailure(
+    sessionDbId: number,
+    errorClass: ObserverFailureClass,
+    nextAttemptAtEpoch: number | null = null,
+  ): Promise<ObserverFailureOutcome> {
+    const session = this.sessions.get(sessionDbId);
+    const claimedIds = session?.claimedMessageIds ?? [];
+    const outcome = this.observerJobs?.applyFailure(claimedIds, errorClass, nextAttemptAtEpoch)
+      ?? { action: 'retry' as const, nextAttemptAtEpoch };
+
+    if (outcome.action === 'quarantine') {
+      for (const id of claimedIds) this.buffer.confirm(id);
+    } else {
+      this.buffer.resetClaimed(sessionDbId);
+    }
+    if (session) session.claimedMessageIds = [];
+    return outcome;
+  }
+
   async confirmClaimedMessages(sessionDbId: number): Promise<number> {
     const session = this.sessions.get(sessionDbId);
     const claimedIds = session?.claimedMessageIds ?? [];
+    this.observerJobs?.settle(claimedIds);
     let confirmed = 0;
     for (const messageId of claimedIds) {
       confirmed += this.buffer.confirm(messageId);
@@ -336,6 +399,22 @@ export class SessionManager {
     return this.getTotalQueueDepth();
   }
 
+  /**
+   * Durable observer diagnostics. This intentionally says nothing about
+   * provider authentication; only a real provider canary can establish that.
+   */
+  getObserverStatus(): ObserverStatus | null {
+    return this.observerJobs?.status() ?? null;
+  }
+
+  recordObserverCanarySuccess(): void {
+    this.observerJobs?.recordCanarySuccess();
+  }
+
+  recordObserverCanaryFailure(errorClass: string): void {
+    this.observerJobs?.recordCanaryFailure(errorClass);
+  }
+
   async isAnySessionProcessing(): Promise<boolean> {
     return this.getTotalQueueDepth() > 0;
   }
@@ -359,6 +438,10 @@ export class SessionManager {
         session.abortController.abort();
       }
     })) {
+      if (this.observerJobs && !this.observerJobs.claim(message._persistentId)) {
+        this.buffer.confirm(message._persistentId);
+        continue;
+      }
       session.claimedMessageIds.push(message._persistentId);
       if (session.earliestPendingTimestamp === null) {
         session.earliestPendingTimestamp = message._originalTimestamp;
@@ -376,4 +459,11 @@ export class SessionManager {
   getMessageBuffer(): SessionMessageBuffer {
     return this.buffer;
   }
+}
+
+function isConversationMessage(value: unknown): value is ConversationMessage {
+  return !!value
+    && typeof value === 'object'
+    && (((value as ConversationMessage).role === 'user') || ((value as ConversationMessage).role === 'assistant'))
+    && typeof (value as ConversationMessage).content === 'string';
 }

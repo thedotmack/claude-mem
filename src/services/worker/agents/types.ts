@@ -4,6 +4,7 @@ export interface WorkerRef {
     broadcast(event: SSEEventPayload): void;
   };
   broadcastProcessingStatus?: () => void;
+  runObserverCanary?: () => Promise<void>;
 }
 
 export interface ObservationSSEPayload {

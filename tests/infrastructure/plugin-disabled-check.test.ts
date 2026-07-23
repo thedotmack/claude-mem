@@ -6,12 +6,15 @@ import { isPluginDisabledInClaudeSettings } from '../../src/shared/plugin-state.
 
 let tempDir: string;
 let originalClaudeConfigDir: string | undefined;
+let originalClaudePluginRoot: string | undefined;
 
 beforeEach(() => {
   tempDir = join(tmpdir(), `plugin-disabled-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(tempDir, { recursive: true });
   originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  originalClaudePluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
   process.env.CLAUDE_CONFIG_DIR = tempDir;
+  delete process.env.CLAUDE_PLUGIN_ROOT;
 });
 
 afterEach(() => {
@@ -19,6 +22,11 @@ afterEach(() => {
     process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir;
   } else {
     delete process.env.CLAUDE_CONFIG_DIR;
+  }
+  if (originalClaudePluginRoot !== undefined) {
+    process.env.CLAUDE_PLUGIN_ROOT = originalClaudePluginRoot;
+  } else {
+    delete process.env.CLAUDE_PLUGIN_ROOT;
   }
   try {
     rmSync(tempDir, { recursive: true, force: true });
@@ -42,10 +50,30 @@ describe('isPluginDisabledInClaudeSettings (#781)', () => {
     expect(isPluginDisabledInClaudeSettings()).toBe(false);
   });
 
-  it('should return true when plugin is explicitly disabled', () => {
+  it('uses the official marketplace key when plugin root is not a cache install', () => {
+    process.env.CLAUDE_PLUGIN_ROOT = join(tempDir, 'plugin');
     const settings = {
       enabledPlugins: {
         'claude-mem@thedotmack': false
+      }
+    };
+    writeFileSync(join(tempDir, 'settings.json'), JSON.stringify(settings));
+    expect(isPluginDisabledInClaudeSettings()).toBe(true);
+  });
+
+  it('uses the marketplace from a cache plugin root', () => {
+    process.env.CLAUDE_PLUGIN_ROOT = join(
+      tempDir,
+      'plugins',
+      'cache',
+      'claude-mem-candidate-d9cffe1b0',
+      'claude-mem',
+      '1.0.0'
+    );
+    const settings = {
+      enabledPlugins: {
+        'claude-mem@claude-mem-candidate-d9cffe1b0': false,
+        'claude-mem@thedotmack': true
       }
     };
     writeFileSync(join(tempDir, 'settings.json'), JSON.stringify(settings));

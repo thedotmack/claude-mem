@@ -171,4 +171,79 @@ describe('Claude setup-required generator gate', () => {
       remediation: expect.stringContaining('Claude Code CLI'),
     });
   });
+
+  it('preserves claimed work when the provider throws an authentication failure', async () => {
+    const session = makeSession();
+    let failureCalls = 0;
+    let finalizerCalls = 0;
+    let removeCalls = 0;
+    const sessionManager = {
+      getSession: () => session,
+      getObserverStatus: () => null,
+      getMessageBuffer: () => ({
+        getPendingCount: () => 1,
+        peekTypes: () => [],
+      }),
+      applyObserverFailure: async () => {
+        failureCalls += 1;
+        return { action: 'blocked', nextAttemptAtEpoch: null };
+      },
+      removeSessionImmediate: () => {
+        removeCalls += 1;
+      },
+    };
+    const routes = new SessionRoutes(
+      sessionManager as any,
+      {} as any,
+      {
+        startSession: async () => {
+          throw new ClassifiedProviderError('authentication required', {
+            kind: 'auth_invalid',
+            cause: new Error('authentication required'),
+          });
+        },
+      } as any,
+      { startSession: async () => {} } as any,
+      { startSession: async () => {} } as any,
+      {} as any,
+      {} as any,
+      {
+        finalizeSession: async () => {
+          finalizerCalls += 1;
+        },
+      } as any,
+    );
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    await session.generatorPromise;
+
+    expect(failureCalls).toBe(1);
+    expect(session.abortReason).toBeNull();
+    expect(session.abortController.signal.aborted).toBe(true);
+    expect(finalizerCalls).toBe(0);
+    expect(removeCalls).toBe(0);
+    expect(session.generatorPromise).toBeNull();
+  });
+
+  it('does not start an observer while durable readiness is blocked', async () => {
+    const session = makeSession();
+    let starts = 0;
+    const routes = new SessionRoutes(
+      {
+        getSession: () => session,
+        getObserverStatus: () => ({ state: 'blocked' }),
+        getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => [] }),
+      } as any,
+      {} as any,
+      { startSession: async () => { starts += 1; } } as any,
+      { startSession: async () => {} } as any,
+      { startSession: async () => {} } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    expect(starts).toBe(0);
+  });
 });

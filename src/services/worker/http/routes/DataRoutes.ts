@@ -98,6 +98,7 @@ export class DataRoutes extends BaseRouteHandler {
     app.get('/api/projects', this.handleGetProjects.bind(this));
 
     app.get('/api/processing-status', this.handleGetProcessingStatus.bind(this));
+    app.get('/api/observer-readiness', this.handleGetObserverReadiness.bind(this));
 
     app.post('/api/import', validateBody(importSchema), this.handleImport.bind(this));
   }
@@ -344,7 +345,18 @@ export class DataRoutes extends BaseRouteHandler {
   private handleGetProcessingStatus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const isProcessing = await this.sessionManager.isAnySessionProcessing();
     const queueDepth = await this.sessionManager.getTotalActiveWork(); 
-    res.json({ isProcessing, queueDepth });
+    res.json({ isProcessing, queueDepth, observer: this.sessionManager.getObserverStatus() });
+  });
+
+  private handleGetObserverReadiness = this.wrapHandler((_req: Request, res: Response): void => {
+    const observer = this.sessionManager.getObserverStatus();
+    if (!observer) {
+      res.status(503).json({ status: 'initializing' });
+      return;
+    }
+    // `ready` means no known queue/recovery fault. It is not a substitute for
+    // an authenticated provider canary, which is intentionally not claimed.
+    res.status(observer.state === 'blocked' ? 503 : 200).json(observer);
   });
 
   private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; platformSource?: string } {

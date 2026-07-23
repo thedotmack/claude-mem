@@ -37,6 +37,7 @@ export async function processAgentResponse(
   if (text) {
     session.conversationHistory.push({ role: 'assistant', content: text });
   }
+  sessionManager.checkpointObserverSession?.(session);
 
   const parsed = parseAgentXml(text, session.contentSessionId);
 
@@ -57,7 +58,7 @@ export async function processAgentResponse(
         preview: previewOutput(text),
       });
 
-      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      await sessionManager.applyObserverFailure(session.sessionDbId, 'quota_exhausted');
       session.abortReason = 'quota:observer_text';
       try {
         session.abortController.abort();
@@ -68,24 +69,29 @@ export async function processAgentResponse(
       return;
     }
 
-    // Classify the non-XML output so a dropped batch is visible, not silent.
-    // Ordinary idle/prose is a claimed no-op batch: confirm it and do not build
-    // any respawn debt from repeated skip acknowledgements.
+    // Non-XML output is not an explicit no-op. It can be provider prose for an
+    // authentication, context-window, or malformed-output failure. Preserve the
+    // claimed batch and stop this generation; a valid `<skip_summary/>` is the
+    // only structured no-op accepted by the parser below.
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
     session.consecutiveInvalidOutputs = 0;
 
-    logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
+    logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — preserving queued batch`, {
       sessionId: session.sessionDbId,
       outputClass,
       preview,
       consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
     });
 
-    // Plain-text skip responses are intentionally ignored. Re-queueing them
-    // creates an observer loop where the same low-signal batch is retried.
-    await sessionManager.confirmClaimedMessages(session.sessionDbId);
-    session.earliestPendingTimestamp = null;
+    await sessionManager.applyObserverFailure(session.sessionDbId, 'malformed_output');
+    session.abortReason = `observer_failure:${outputClass}`;
+    try {
+      session.abortController.abort();
+    } catch {
+      // best-effort; AbortController.abort() should not throw in normal use.
+    }
+    worker?.broadcastProcessingStatus?.();
     return;
   }
 
@@ -97,10 +103,10 @@ export async function processAgentResponse(
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {
       sessionId: session.sessionDbId
     });
-    // Reset any claimed-but-undelivered messages back to pending so they don't
-    // count as "in progress" and trigger a respawn loop while we wait for the
-    // memory session id to appear. The next generator pass will re-claim them.
-    await sessionManager.resetProcessingToPending(session.sessionDbId);
+    // Apply the durable retry policy before releasing claimed-but-undelivered
+    // messages. The next generator pass can re-claim retriable work without
+    // silently settling failures or bypassing bounded quarantine.
+    await sessionManager.applyObserverFailure(session.sessionDbId, 'transient');
     return;
   }
 
@@ -131,7 +137,8 @@ export async function processAgentResponse(
       session.lastPromptNumber,
       discoveryTokens,
       originalTimestamp ?? undefined,
-      modelId
+      modelId,
+      session.claimedMessageIds,
     );
   } finally {
     session.pendingAgentId = null;
