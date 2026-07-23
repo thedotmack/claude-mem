@@ -44,7 +44,7 @@ function mockGeminiConfig() {
   loadFromFileSpy.mockImplementation(() => ({
     ...SettingsDefaultsManager.getAllDefaults(),
     CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
-    CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',
+    CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'false',
     CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test',
   }));
@@ -100,14 +100,14 @@ describe('GeminiProvider', () => {
     loadFromFileSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
       ...SettingsDefaultsManager.getAllDefaults(),
       CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
-      CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',
+      CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',
       CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: rateLimitingEnabled,
       CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test',
     }));
 
     getSpy = spyOn(SettingsDefaultsManager, 'get').mockImplementation((key: string) => {
       if (key === 'CLAUDE_MEM_GEMINI_API_KEY') return 'test-api-key';
-      if (key === 'CLAUDE_MEM_GEMINI_MODEL') return 'gemini-2.5-flash-lite';
+      if (key === 'CLAUDE_MEM_GEMINI_MODEL') return 'gemini-flash-latest';
       if (key === 'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED') return rateLimitingEnabled;
       if (key === 'CLAUDE_MEM_DATA_DIR') return '/tmp/claude-mem-test';
       return SettingsDefaultsManager.getAllDefaults()[key as keyof ReturnType<typeof SettingsDefaultsManager.getAllDefaults>] ?? '';
@@ -205,7 +205,7 @@ describe('GeminiProvider', () => {
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
     const url = (global.fetch as any).mock.calls[0][0];
-    expect(url).toContain('https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash-lite:generateContent');
+    expect(url).toContain('https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent');
     expect(url).toContain('key=test-api-key');
   });
 
@@ -501,18 +501,21 @@ describe('GeminiProvider', () => {
   });
 
   describe('gemini-3-flash-preview model support', () => {
-    it('should accept gemini-3-flash-preview as a valid model', async () => {
+    it('should accept only currently-available models (no retired 2.x IDs)', async () => {
       const validModels = [
-        'gemini-2.5-flash-lite',
-        'gemini-2.5-flash',
-        'gemini-2.5-pro',
-        'gemini-2.0-flash',
-        'gemini-2.0-flash-lite',
+        'gemini-flash-latest',
+        'gemini-flash-lite-latest',
+        'gemini-3.5-flash',
+        'gemini-3.1-flash-lite',
         'gemini-3-flash-preview'
       ];
 
       expect(validModels.every(m => typeof m === 'string')).toBe(true);
       expect(validModels).toContain('gemini-3-flash-preview');
+      // Retired IDs that 404 for new API keys must not be selectable.
+      expect(validModels).not.toContain('gemini-2.5-flash-lite');
+      expect(validModels).not.toContain('gemini-2.5-flash');
+      expect(validModels).not.toContain('gemini-2.0-flash');
     });
 
     it('should have rate limit defined for gemini-3-flash-preview', async () => {
