@@ -1,10 +1,24 @@
-import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import { logger } from '../../src/utils/logger.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import { processAgentResponse } from '../../src/services/worker/agents/ResponseProcessor.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { StorageResult, WorkerRef } from '../../src/services/worker/agents/types.js';
+
+import * as realWorkerServiceModule from '../../src/services/worker-service.js';
+import * as realWorkerUtilsModule from '../../src/shared/worker-utils.js';
+import * as realModeManagerModule from '../../src/services/domain/ModeManager.js';
+
+const realWorkerServiceSnapshot = { ...realWorkerServiceModule };
+const realWorkerUtilsSnapshot = { ...realWorkerUtilsModule };
+const realModeManagerSnapshot = { ...realModeManagerModule };
+
+afterAll(() => {
+  mock.module('../../src/services/worker-service.js', () => realWorkerServiceSnapshot);
+  mock.module('../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
+  mock.module('../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
+});
 
 mock.module('../../src/services/worker-service.js', () => ({
   updateCursorContextForProject: () => Promise.resolve(),

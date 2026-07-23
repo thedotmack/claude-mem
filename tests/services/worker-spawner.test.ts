@@ -1,6 +1,20 @@
 
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, afterAll } from 'bun:test';
 import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
+
+import * as realProcessManagerModule from '../../src/services/infrastructure/ProcessManager.js';
+import * as realHealthMonitorModule from '../../src/services/infrastructure/HealthMonitor.js';
+import * as realSpawnGateModule from '../../src/shared/worker-spawn-gate.js';
+
+const realProcessManagerSnapshot = { ...realProcessManagerModule };
+const realHealthMonitorSnapshot = { ...realHealthMonitorModule };
+const realSpawnGateSnapshot = { ...realSpawnGateModule };
+
+afterAll(() => {
+  mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManagerSnapshot);
+  mock.module('../../src/services/infrastructure/HealthMonitor.js', () => realHealthMonitorSnapshot);
+  mock.module('../../src/shared/worker-spawn-gate.js', () => realSpawnGateSnapshot);
+});
 
 const processManager = {
   cleanStalePidFile: mock(() => 'dead' as 'alive' | 'dead'),
