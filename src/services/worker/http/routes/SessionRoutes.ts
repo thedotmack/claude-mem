@@ -159,6 +159,23 @@ export class SessionRoutes extends BaseRouteHandler {
     }
   }
 
+  /**
+   * Failed observer turns reset their durable job to pending before the
+   * generator exits. Restart that same session once so bounded retry and
+   * quarantine policy is actually exercised without waiting for an unrelated
+   * future hook event.
+   */
+  private scheduleObserverRetry(sessionDbId: number, reason: string | null): void {
+    if (reason !== 'observer_failure:retry' && reason !== 'observer_failure:compact_retry') return;
+    if (this.sessionManager.getMessageBuffer().getPendingCount(sessionDbId) === 0) return;
+
+    queueMicrotask(() => {
+      void this.ensureGeneratorRunning(sessionDbId, 'observer-retry').catch(error => {
+        logger.error('SESSION', 'Observer retry could not start', { sessionId: sessionDbId }, error);
+      });
+    });
+  }
+
   private async startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
     provider: 'claude' | 'gemini' | 'openrouter',
@@ -239,7 +256,7 @@ export class SessionRoutes extends BaseRouteHandler {
           session.conversationHistory = session.conversationHistory.slice(-10);
           this.sessionManager.checkpointObserverSession(session);
         }
-        session.abortReason = 'observer_failure:provider_error';
+        session.abortReason = `observer_failure:${outcome.action}`;
         try {
           session.abortController.abort();
         } catch {
@@ -299,6 +316,7 @@ export class SessionRoutes extends BaseRouteHandler {
           sessionManager: this.sessionManager,
           completionHandler: this.completionHandler,
         });
+        this.scheduleObserverRetry(session.sessionDbId, reason);
       });
     session.generatorPromise = generatorPromise;
   }

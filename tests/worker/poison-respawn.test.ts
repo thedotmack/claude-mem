@@ -94,7 +94,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(session.claimedMessageIds).toEqual([]);
     expect(session.consecutiveInvalidOutputs).toBe(0);
     expect(session.abortController.signal.aborted).toBe(true);
-    expect(session.abortReason).toBe('observer_failure:xml');
+    expect(session.abortReason).toBe('observer_failure:retry');
   });
 
   it('preserves non-XML no-observation prose instead of treating it as a structured no-op', async () => {

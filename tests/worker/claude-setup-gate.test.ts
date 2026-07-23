@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock, spyOn } from 'bun:test';
 import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
@@ -223,6 +223,44 @@ describe('Claude setup-required generator gate', () => {
     expect(finalizerCalls).toBe(0);
     expect(removeCalls).toBe(0);
     expect(session.generatorPromise).toBeNull();
+  });
+
+  it('restarts a retryable observer failure without waiting for another hook event', async () => {
+    const session = makeSession();
+    let starts = 0;
+    let finalized = 0;
+    const routes = new SessionRoutes(
+      {
+        getSession: () => session,
+        getObserverStatus: () => ({ state: 'recovering' }),
+        getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => [] }),
+        removeSessionImmediate: () => {},
+      } as any,
+      {} as any,
+      {
+        startSession: async () => {
+          starts += 1;
+          if (starts === 1) {
+            session.abortReason = 'observer_failure:retry';
+            session.abortController.abort();
+          }
+        },
+      } as any,
+      { startSession: async () => {} } as any,
+      { startSession: async () => {} } as any,
+      {} as any,
+      {} as any,
+      { finalizeSession: async () => { finalized += 1; } } as any,
+    );
+    const retrySpy = spyOn(routes as any, 'scheduleObserverRetry');
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    await session.generatorPromise;
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(retrySpy).toHaveBeenCalledWith(session.sessionDbId, 'observer_failure:retry');
+    expect(starts).toBe(2);
+    expect(finalized).toBe(1);
   });
 
   it('does not start an observer while durable readiness is blocked', async () => {

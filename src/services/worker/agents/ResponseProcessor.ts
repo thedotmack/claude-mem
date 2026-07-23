@@ -84,8 +84,8 @@ export async function processAgentResponse(
       consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
     });
 
-    await sessionManager.applyObserverFailure(session.sessionDbId, 'malformed_output');
-    session.abortReason = `observer_failure:${outputClass}`;
+    const outcome = await sessionManager.applyObserverFailure(session.sessionDbId, 'malformed_output');
+    session.abortReason = `observer_failure:${outcome.action}`;
     try {
       session.abortController.abort();
     } catch {
