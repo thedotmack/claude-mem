@@ -164,7 +164,14 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
           await this.processSummaryMessage(session, message, worker, config, mode, originalTimestamp, lastCwd);
         }
       } catch (error) {
-        session.conversationHistory.length = messageHistoryLength;
+        // Only erase the prompt/response when the claimed queue item still
+        // exists and can actually be retried. processAgentResponse confirms
+        // the item immediately after durable SQLite storage; a later
+        // broadcast/sync failure must not erase that already-completed turn.
+        const retryableMessages = this.sessionManager.getClaimedMessages(session.sessionDbId);
+        if (retryableMessages.length > 0) {
+          session.conversationHistory.length = messageHistoryLength;
+        }
         throw error;
       }
     }

@@ -374,6 +374,10 @@ describe('GeminiProvider', () => {
 
   it('rolls back a failed observation prompt before buffered work is retried', async () => {
     const session = makeSession();
+    (mockSessionManager as any).getClaimedMessages = mock(() => [{
+      type: 'observation',
+      _persistentId: 1,
+    }]);
     (mockSessionManager as any).getMessageIterator = async function* () {
       yield {
         type: 'observation',
@@ -401,6 +405,44 @@ describe('GeminiProvider', () => {
 
     expect(session.conversationHistory.some((message: { content: string }) =>
       message.content.includes('FAILED_RETRY_MARKER'))).toBe(false);
+  });
+
+  it('keeps a completed conversation turn when downstream work fails after queue confirmation', async () => {
+    const session = makeSession({
+      claimedMessageIds: [1],
+    });
+    (mockSessionManager as any).getClaimedMessages = mock(() => []);
+    (mockSessionManager as any).getMessageIterator = async function* () {
+      yield {
+        type: 'observation',
+        tool_name: 'Read',
+        tool_input: { marker: 'COMPLETED_TURN_MARKER' },
+        tool_response: { ok: true },
+        prompt_number: 1,
+        _persistentId: 1,
+        _originalTimestamp: Date.now(),
+      };
+    };
+    (mockDbManager as any).getChromaSync = () => {
+      throw new Error('downstream broadcast failed after confirmation');
+    };
+
+    let callCount = 0;
+    global.fetch = mock(() => {
+      callCount += 1;
+      const text = callCount === 1
+        ? 'No observations to record.'
+        : '<observation><type>discovery</type><title>Stored turn</title></observation>';
+      return Promise.resolve(new Response(JSON.stringify({
+        candidates: [{ content: { parts: [{ text }] } }],
+      })));
+    });
+
+    await expect(agent.startSession(session)).rejects.toThrow('downstream broadcast failed after confirmation');
+
+    expect((mockSessionManager as any).confirmClaimedMessages).toHaveBeenCalled();
+    expect(session.conversationHistory.some((message: { content: string }) =>
+      message.content.includes('COMPLETED_TURN_MARKER'))).toBe(true);
   });
 
   it('should throw on rate limit (429) error — no Claude fallback (#2087)', async () => {
