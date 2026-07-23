@@ -21,6 +21,35 @@ const observation = {
 };
 
 describe('SearchOrchestrator platform-scoped Chroma zero fallback', () => {
+  it('normalizes date_from/date_to filters into dateRange for SQLite search', async () => {
+    const searchObservations = mock(() => [observation]);
+    const orchestrator = new SearchOrchestrator(
+      {
+        searchObservations,
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {} as any,
+      null,
+    );
+
+    const result = await orchestrator.search({
+      searchType: 'observations',
+      date_from: '2025-01-01',
+      date_to: '2025-01-31',
+    });
+
+    expect(searchObservations).toHaveBeenCalledWith(undefined, expect.objectContaining({
+      dateRange: {
+        start: '2025-01-01',
+        end: '2025-01-31',
+      },
+    }));
+    expect(result.usedChroma).toBe(false);
+    expect(result.strategy).toBe('sqlite');
+    expect(result.results.observations).toEqual([observation]);
+  });
+
   it('falls back to SQLiteStrategy when platform-scoped Chroma search returns no rows', async () => {
     const queryChroma = mock(() => Promise.resolve({ ids: [], distances: [], metadatas: [] }));
     const searchObservations = mock(() => [observation]);
