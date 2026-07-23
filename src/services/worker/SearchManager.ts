@@ -426,8 +426,9 @@ export class SearchManager {
       }
 
       if (obsIds.length > 0) {
-        const obsOptions = { ...options, type: obs_type, concepts, files };
+        const obsOptions = { ...options, type: obs_type, concepts, files, orderBy: 'relevance' };
         observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
+        observations.sort((a, b) => obsIds.indexOf(a.id) - obsIds.indexOf(b.id));
       }
       if (sessionIds.length > 0) {
         sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, {
