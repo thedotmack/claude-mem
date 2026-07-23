@@ -124,6 +124,29 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(session.abortController.signal.aborted).toBe(true);
   });
 
+  it('ignores late provider output after a retryable generation abort', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(12, 'do the thing', 1);
+    session.memorySessionId = 'mem-12';
+    session.abortController.abort();
+    const failureSpy = spyOn(sm, 'applyObserverFailure');
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+
+    await processAgentResponse(
+      'Late malformed output after the observer generation was aborted.',
+      session,
+      makeDbManager(),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'TestAgent',
+    );
+
+    expect(failureSpy).not.toHaveBeenCalled();
+    expect(confirmSpy).not.toHaveBeenCalled();
+  });
+
   it('quarantines a second malformed processor response without settling the claimed job', async () => {
     const db = new Database(':memory:');
     const sm = new SessionManager(makeDbManager(undefined, db));

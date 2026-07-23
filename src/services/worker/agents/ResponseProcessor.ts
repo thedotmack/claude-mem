@@ -31,6 +31,16 @@ export async function processAgentResponse(
   projectRoot?: string,
   modelId?: string
 ): Promise<void> {
+  // A provider stream can yield one final chunk after a retryable failure has
+  // aborted this generation. The claimed job has already been reset to pending;
+  // processing that late chunk would consume another retry in the same turn.
+  if (session.abortController.signal.aborted) {
+    logger.debug('PARSER', 'Ignoring late observer output after generation abort', {
+      sessionId: session.sessionDbId,
+    });
+    return;
+  }
+
   const processingStartedAt = Date.now();
   session.lastGeneratorActivity = Date.now();
 
