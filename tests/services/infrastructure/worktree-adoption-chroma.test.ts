@@ -8,20 +8,24 @@ import * as realChromaMcpManager from '../../../src/services/sync/ChromaMcpManag
 const chromaCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
 const realChromaMcpManagerSnapshot = { ...realChromaMcpManager };
 
+const callTool = async (name: string, args: Record<string, unknown>) => {
+  chromaCalls.push({ name, args });
+  if (name === 'chroma_create_collection') return {};
+  if (name === 'chroma_get_documents') {
+    return {
+      ids: ['summary_1_request'],
+      metadatas: [{ sqlite_id: 1, doc_type: 'session_summary' }]
+    };
+  }
+  return {};
+};
+
 mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
   ChromaMcpManager: {
     getInstance: () => ({
-      callTool: async (name: string, args: Record<string, unknown>) => {
-        chromaCalls.push({ name, args });
-        if (name === 'chroma_create_collection') return {};
-        if (name === 'chroma_get_documents') {
-          return {
-            ids: ['summary_1_request'],
-            metadatas: [{ sqlite_id: 1, doc_type: 'session_summary' }]
-          };
-        }
-        return {};
-      }
+      callTool,
+      runOperation: async <T>(operation: (scopedCallTool: typeof callTool) => Promise<T>) =>
+        operation(callTool),
     })
   }
 }));

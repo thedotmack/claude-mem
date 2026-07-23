@@ -337,7 +337,17 @@ export class SessionManager {
 
   async shutdownAll(): Promise<void> {
     const sessionIds = Array.from(this.sessions.keys());
-    await Promise.all(sessionIds.map(id => this.deleteSession(id)));
+    const results = await Promise.allSettled(sessionIds.map(id => this.deleteSession(id)));
+    const failures = results
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map(result => result.reason instanceof Error ? result.reason : new Error(String(result.reason)));
+
+    if (failures.length === 1) {
+      throw failures[0];
+    }
+    if (failures.length > 1) {
+      throw new AggregateError(failures, `${failures.length} session cleanup steps failed`);
+    }
   }
 
   getActiveSessionCount(): number {

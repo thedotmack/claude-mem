@@ -25,7 +25,6 @@ const DEFAULT_CHROMA_PREWARM_TIMEOUT_MS = 120_000;
 const CHROMA_PREWARM_TIMEOUT_SETTING = 'CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS';
 const CHROMA_PREWARM_TIMEOUT_BOUNDS = { min: 1, max: 600_000 } as const;
 const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
-const CHROMA_SHUTDOWN_DRAIN_TIMEOUT_MS = 5_000;
 const RECONNECT_BACKOFF_MS = 10_000;
 const CHROMA_WRITER_LOCK_FILENAME = '.claude-mem-chroma-writer.lock';
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
@@ -725,11 +724,17 @@ export class ChromaMcpManager {
     );
   }
 
+  /**
+   * Keep a logical multi-call write accepted before shutdown alive until its
+   * final MCP call settles. New operations are rejected once stop() begins.
+   */
   async runOperation<T>(operation: (callTool: ChromaToolCall) => Promise<T>): Promise<T> {
     this.assertNotStopping();
     const operationGeneration = this.connectionGeneration;
-    const activeOperation = operation((toolName, toolArguments) =>
-      this.trackToolCall(toolName, toolArguments, operationGeneration, true)
+    const activeOperation = Promise.resolve().then(() =>
+      operation((toolName, toolArguments) =>
+        this.trackToolCall(toolName, toolArguments, operationGeneration, true)
+      )
     );
     this.activeOperations.add(activeOperation);
     try {
@@ -779,8 +784,9 @@ export class ChromaMcpManager {
         arguments: toolArguments
       });
     } catch (transportError) {
-      // stop() deliberately closes the transport after its drain deadline.
-      // That shutdown-induced error must not enter the reconnect path.
+      // A direct call that fails after stop() begins must not reconnect a new
+      // subprocess behind teardown. Calls inside an already accepted logical
+      // operation may retry because stop() is waiting for that operation.
       this.assertCallAllowed(callGeneration, allowDuringStopping);
       logger.warn('CHROMA_MCP', `Transport error during "${toolName}", reconnecting and retrying once`, {
         error: transportError instanceof Error ? transportError.message : String(transportError)
@@ -1019,13 +1025,13 @@ export class ChromaMcpManager {
    * accumulate across reconnects or worker restarts. Matches the tree-kill
    * pattern from shutdown.ts (Principle 5: OS-supervised teardown).
    */
-  async stop(drainTimeoutMs = CHROMA_SHUTDOWN_DRAIN_TIMEOUT_MS): Promise<void> {
+  async stop(): Promise<void> {
     if (this.stopPromise) {
       await this.stopPromise;
       return;
     }
 
-    this.stopPromise = this.stopInternal(drainTimeoutMs);
+    this.stopPromise = this.stopInternal();
     try {
       await this.stopPromise;
     } finally {
@@ -1033,14 +1039,14 @@ export class ChromaMcpManager {
     }
   }
 
-  private async stopInternal(drainTimeoutMs: number): Promise<void> {
+  private async stopInternal(): Promise<void> {
     this.stopping = true;
     let connectionCancelled = false;
     try {
-      // A call still establishing the subprocess/handshake has not started a
-      // Chroma operation yet. Cancel that setup immediately so stop() cannot
-      // deadlock waiting for a connection attempt that only transport.close()
-      // can release. Established tool calls are drained below.
+      // A standalone call that is still establishing the subprocess has not
+      // reached Chroma yet, so cancel it immediately. A runOperation() write
+      // is different: it has been accepted as one logical persistence unit
+      // and is drained in full below.
       if (
         this.activeOperations.size === 0 &&
         (this.connecting || this.activePrewarmChild)
@@ -1049,10 +1055,12 @@ export class ChromaMcpManager {
         connectionCancelled = true;
         await this.disposeCurrentSubprocess();
       }
-      await this.waitForActiveWork(drainTimeoutMs);
+
+      await this.waitForActiveWork();
+
       if (!connectionCancelled) {
-        // Permanently revoke the generation held by drained or timed-out work
-        // before closing the transport. A late rejection can never reconnect.
+        // Revoke the generation held by drained work before closing the
+        // transport. Any late callback is unable to reconnect.
         this.connectionGeneration += 1;
       }
       await this.waitForUnexpectedCloseCleanup();
@@ -1064,20 +1072,17 @@ export class ChromaMcpManager {
       }
 
       logger.info('CHROMA_MCP', 'Stopping chroma-mcp MCP connection');
+
       await this.disposeCurrentSubprocess();
+
       logger.info('CHROMA_MCP', 'chroma-mcp MCP connection stopped');
     } finally {
       this.connecting = null;
-      // Calls that exceeded the drain deadline belong to the subprocess tree
-      // just disposed above. Do not make a later, reusable stop() wait for the
-      // same permanently hung promises again.
-      this.activeToolCalls.clear();
-      this.activeOperations.clear();
       this.stopping = false;
     }
   }
 
-  private async waitForActiveWork(timeoutMs: number): Promise<void> {
+  private async waitForActiveWork(): Promise<void> {
     const activeWork = [
       ...this.activeOperations,
       ...this.activeToolCalls
@@ -1088,29 +1093,14 @@ export class ChromaMcpManager {
 
     logger.info('CHROMA_MCP', 'Waiting for active Chroma operations before shutdown', {
       activeOperations: this.activeOperations.size,
-      activeToolCalls: this.activeToolCalls.size,
-      timeoutMs
+      activeToolCalls: this.activeToolCalls.size
     });
 
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    const outcome = await Promise.race([
-      Promise.allSettled(activeWork).then(() => 'drained' as const),
-      new Promise<'deadline'>((resolve) => {
-        timeoutId = setTimeout(() => resolve('deadline'), Math.max(0, timeoutMs));
-        timeoutId.unref?.();
-      })
-    ]);
-    if (timeoutId !== undefined) {
-      clearTimeout(timeoutId);
-    }
-
-    if (outcome === 'deadline') {
-      logger.warn('CHROMA_MCP', 'Active Chroma operations did not drain before shutdown deadline', {
-        activeOperations: this.activeOperations.size,
-        activeToolCalls: this.activeToolCalls.size,
-        timeoutMs
-      });
-    }
+    // Do not add a short shutdown-only cutoff here. MCP requests and Chroma
+    // connection setup already have their own bounded timeouts; cutting an
+    // accepted write off earlier can advance SQLite/queue state without its
+    // matching vector document.
+    await Promise.allSettled(activeWork);
   }
 
   /**

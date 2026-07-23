@@ -483,7 +483,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     await waitForCondition(() => finishCall !== undefined && transportInstances.length === 1);
     const subprocessPid = transportInstances[0]._process.pid;
 
-    const stopPromise = mgr.stop(1000);
+    const stopPromise = mgr.stop();
     await Promise.resolve();
     expect(killTreeCalls).not.toContain(subprocessPid);
 
@@ -494,7 +494,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(killTreeCalls).toContain(subprocessPid);
   });
 
-  it('lets an accepted multi-call operation finish all of its calls during shutdown drain', async () => {
+  it('lets an accepted multi-call operation finish all calls before shutdown', async () => {
     const mgr = ChromaMcpManager.getInstance();
     let releaseSecondCall: (() => void) | undefined;
     let firstCallFinished = false;
@@ -515,7 +515,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     await waitForCondition(() => firstCallFinished && releaseSecondCall !== undefined);
     const subprocessPid = transportInstances[0]._process.pid;
 
-    const stopPromise = mgr.stop(1000);
+    const stopPromise = mgr.stop();
     await Promise.resolve();
     expect(killTreeCalls).not.toContain(subprocessPid);
 
@@ -527,7 +527,31 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(killTreeCalls).toContain(subprocessPid);
   });
 
-  it('does not reconnect an active tool call after shutdown starts', async () => {
+  it('rejects new calls while an accepted operation is draining for shutdown', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    let releaseOperation: (() => void) | undefined;
+
+    const operation = mgr.runOperation(async (callTool) => {
+      await callTool('chroma_create_collection', {});
+      await new Promise<void>(resolve => {
+        releaseOperation = resolve;
+      });
+      await callTool('chroma_add_documents', {});
+    });
+    await waitForCondition(() => releaseOperation !== undefined);
+
+    const stopPromise = mgr.stop();
+
+    await expect(
+      mgr.callTool('chroma_list_collections', { limit: 1 })
+    ).rejects.toThrow('connection cancelled during shutdown');
+
+    releaseOperation!();
+    await operation;
+    await stopPromise;
+  });
+
+  it('does not reconnect an active direct call after shutdown starts', async () => {
     const mgr = ChromaMcpManager.getInstance();
     let rejectCall: ((error: Error) => void) | undefined;
     callToolImpl = () => new Promise((_resolve, reject) => {
@@ -537,49 +561,12 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     const pendingCall = mgr.callTool('chroma_add_documents', {});
     await waitForCondition(() => rejectCall !== undefined && transportInstances.length === 1);
 
-    const stopPromise = mgr.stop(1000);
+    const stopPromise = mgr.stop();
     rejectCall!(new Error('Connection closed'));
 
     await expect(pendingCall).rejects.toThrow('connection cancelled during shutdown');
     await stopPromise;
 
-    expect(transportInstances.length).toBe(1);
-  });
-
-  it('stops after the drain deadline when an active tool call never resolves', async () => {
-    const mgr = ChromaMcpManager.getInstance();
-    let callStarted = false;
-    callToolImpl = () => {
-      callStarted = true;
-      return new Promise(() => { /* hangs forever */ });
-    };
-
-    void mgr.callTool('chroma_add_documents', {});
-    await waitForCondition(() => callStarted && transportInstances.length === 1);
-    const subprocessPid = transportInstances[0]._process.pid;
-
-    const start = Date.now();
-    await mgr.stop(25);
-    const elapsed = Date.now() - start;
-
-    expect(elapsed).toBeLessThan(2000);
-    expect(killTreeCalls).toContain(subprocessPid);
-  });
-
-  it('does not let a timed-out call reconnect after stop() has already returned', async () => {
-    const mgr = ChromaMcpManager.getInstance();
-    let rejectCall: ((error: Error) => void) | undefined;
-    callToolImpl = () => new Promise((_resolve, reject) => {
-      rejectCall = reject;
-    });
-
-    const pendingCall = mgr.callTool('chroma_add_documents', {});
-    await waitForCondition(() => rejectCall !== undefined && transportInstances.length === 1);
-
-    await mgr.stop(25);
-    rejectCall!(new Error('late Connection closed'));
-
-    await expect(pendingCall).rejects.toThrow('connection cancelled during shutdown');
     expect(transportInstances.length).toBe(1);
   });
 

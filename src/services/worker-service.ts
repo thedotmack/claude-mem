@@ -20,6 +20,7 @@ import { ChromaSync } from './sync/ChromaSync.js';
 import { openConfiguredSqliteDatabase } from './sqlite/connection.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
+import { isPidAlive } from '../supervisor/process-registry.js';
 
 import { ensureWorkerStarted as ensureWorkerStartedShared, type WorkerStartResult } from './worker-spawner.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
@@ -817,11 +818,7 @@ export class WorkerService implements WorkerRef {
         dbManager: this.dbManager,
         chromaMcpManager: this.chromaMcpManager || undefined
       }),
-      lastResortCleanup: async () => {
-        await this.chromaMcpManager?.stop();
-      },
-      lastResortCleanupDeadlineMs: getPlatformTimeout(5000),
-      gracefulDeadlineMs: getPlatformTimeout(10000),
+      gracefulWarningMs: getPlatformTimeout(10000),
       restartHandoff: {
         port: getWorkerPort(),
         portFreeTimeoutMs: getPlatformTimeout(5000),
@@ -1099,8 +1096,24 @@ async function main() {
       if (!freed) {
         logger.warn('SYSTEM', 'Port did not free up after shutdown', { port });
       }
-      removePidFileIfOwner(stoppedPid);
-      logger.info('SYSTEM', 'Worker stopped successfully');
+      // Closing the HTTP listener happens before sessions/Chroma finish
+      // draining, so "port free" does not prove the old worker exited. Keep
+      // its live PID file as a spawn barrier; the worker removes it itself
+      // after managed-child cleanup completes.
+      const workerStillDraining = stoppedPid !== null && isPidAlive(stoppedPid);
+      if (!workerStillDraining) {
+        removePidFileIfOwner(stoppedPid);
+      } else {
+        logger.info('SYSTEM', 'Worker is still draining after HTTP shutdown; leaving its PID file until process exit', {
+          pid: stoppedPid
+        });
+      }
+      logger.info(
+        'SYSTEM',
+        workerStillDraining
+          ? 'Worker shutdown accepted; background cleanup is still draining'
+          : 'Worker stopped successfully'
+      );
       process.exit(0);
       break;
     }
@@ -1149,14 +1162,17 @@ async function main() {
       // health responder, a worker (just not a verifiable successor) holds
       // the port — waiting for it to free would burn the full timeout for
       // nothing, so skip straight to verifying the current owner.
-      const restartFreed = handoffSawLiveWorker
+      const oldWorkerStillDraining = oldPid !== null && isPidAlive(oldPid);
+      const restartFreed = handoffSawLiveWorker || oldWorkerStillDraining
         ? false
         : await waitForPortFree(port, getPlatformTimeout(15000));
       // Prefer the marketplace-installed script so restart boots the
       // freshly-synced plugin, falling back to this script for dev trees /
       // CI where no marketplace copy exists.
       const restartScript = resolveWorkerScriptPath() ?? __filename;
-      let spawnedScript = 'none (port still bound — nothing spawned)';
+      let spawnedScript = oldWorkerStillDraining
+        ? 'none (old worker still draining — self-handoff pending)'
+        : 'none (port still bound — nothing spawned)';
       let spawnLockHeld = false;
       if (restartFreed) {
         // Owner-or-dead guarded (Phase 5): delete only the old worker's PID
@@ -1167,6 +1183,10 @@ async function main() {
         // (a hook or the MCP server) is already mid-spawn, skip our own spawn
         // and just verify its worker below.
         spawnLockHeld = acquireSpawnLock();
+      } else if (oldWorkerStillDraining) {
+        logger.warn('SYSTEM', 'Old worker is still draining persisted work — refusing to spawn a concurrent replacement', {
+          oldPid
+        });
       } else {
         // The port never freed: either the old worker refuses to die (the
         // verification below fails and reports its health payload) or a

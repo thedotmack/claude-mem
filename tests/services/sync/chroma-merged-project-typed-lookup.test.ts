@@ -4,36 +4,40 @@ import * as realChromaMcpManager from '../../../src/services/sync/ChromaMcpManag
 const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
 const realChromaMcpManagerSnapshot = { ...realChromaMcpManager };
 
+const callTool = async (name: string, args: Record<string, unknown>) => {
+  calls.push({ name, args });
+  if (name === 'chroma_create_collection') return {};
+
+  if (name === 'chroma_get_documents') {
+    const where = args.where as { $and?: Array<Record<string, unknown>> };
+    const docType = where.$and?.find(condition => condition.doc_type)?.doc_type;
+    if (docType === 'observation') {
+      return {
+        ids: ['obs_9_narrative'],
+        metadatas: [{ sqlite_id: 9, doc_type: 'observation' }]
+      };
+    }
+    if (docType === 'session_summary') {
+      return {
+        ids: ['summary_7_request'],
+        metadatas: [{ sqlite_id: 7, doc_type: 'session_summary' }]
+      };
+    }
+    return {
+      ids: ['prompt_7'],
+      metadatas: [{ sqlite_id: 7, doc_type: 'user_prompt' }]
+    };
+  }
+
+  return {};
+};
+
 mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
   ChromaMcpManager: {
     getInstance: () => ({
-      callTool: async (name: string, args: Record<string, unknown>) => {
-        calls.push({ name, args });
-        if (name === 'chroma_create_collection') return {};
-
-        if (name === 'chroma_get_documents') {
-          const where = args.where as { $and?: Array<Record<string, unknown>> };
-          const docType = where.$and?.find(condition => condition.doc_type)?.doc_type;
-          if (docType === 'observation') {
-            return {
-              ids: ['obs_9_narrative'],
-              metadatas: [{ sqlite_id: 9, doc_type: 'observation' }]
-            };
-          }
-          if (docType === 'session_summary') {
-            return {
-              ids: ['summary_7_request'],
-              metadatas: [{ sqlite_id: 7, doc_type: 'session_summary' }]
-            };
-          }
-          return {
-            ids: ['prompt_7'],
-            metadatas: [{ sqlite_id: 7, doc_type: 'user_prompt' }]
-          };
-        }
-
-        return {};
-      }
+      callTool,
+      runOperation: async <T>(operation: (scopedCallTool: typeof callTool) => Promise<T>) =>
+        operation(callTool),
     })
   }
 }));

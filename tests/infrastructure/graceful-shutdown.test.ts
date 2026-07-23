@@ -325,6 +325,41 @@ describe('GracefulShutdown', () => {
       expect(callOrder).toEqual(['sessionManager', 'mcpClient', 'chromaMcpManager', 'dbManager']);
     });
 
+    it('should continue later cleanup when session draining fails', async () => {
+      const callOrder: string[] = [];
+      const mockSessionManager: ShutdownableService = {
+        shutdownAll: mock(async () => {
+          callOrder.push('sessionManager');
+          throw new Error('session drain failed');
+        })
+      };
+      const mockMcpClient: CloseableClient = {
+        close: mock(async () => {
+          callOrder.push('mcpClient');
+        })
+      };
+      const mockChromaMcpManager = {
+        stop: mock(async () => {
+          callOrder.push('chromaMcpManager');
+        })
+      };
+      const mockDbManager: CloseableDatabase = {
+        close: mock(async () => {
+          callOrder.push('dbManager');
+        })
+      };
+
+      await expect(performGracefulShutdown({
+        server: null,
+        sessionManager: mockSessionManager,
+        mcpClient: mockMcpClient,
+        chromaMcpManager: mockChromaMcpManager,
+        dbManager: mockDbManager
+      })).rejects.toThrow('session drain failed');
+
+      expect(callOrder).toEqual(['sessionManager', 'mcpClient', 'chromaMcpManager', 'dbManager']);
+    });
+
     it('should handle shutdown when PID file does not exist', async () => {
       removePidFile();
       expect(existsSync(PID_FILE)).toBe(false);

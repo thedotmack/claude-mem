@@ -29,30 +29,60 @@ export interface GracefulShutdownConfig {
 
 export async function performGracefulShutdown(config: GracefulShutdownConfig): Promise<void> {
   logger.info('SYSTEM', 'Shutdown initiated');
+  const failures: Error[] = [];
+  const attempt = async (step: string, action: () => Promise<void>): Promise<void> => {
+    try {
+      await action();
+    } catch (error) {
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      failures.push(normalized);
+      logger.error('SHUTDOWN', `${step} failed — continuing remaining cleanup`, {}, normalized);
+    }
+  };
 
-  if (config.server) {
-    await closeHttpServer(config.server);
-    logger.info('SYSTEM', 'HTTP server closed');
+  const server = config.server;
+  if (server) {
+    await attempt('HTTP server close', async () => {
+      await closeHttpServer(server);
+      logger.info('SYSTEM', 'HTTP server closed');
+    });
   }
 
-  await config.sessionManager.shutdownAll();
+  await attempt('Session drain', () => config.sessionManager.shutdownAll());
 
-  if (config.mcpClient) {
-    await config.mcpClient.close();
-    logger.info('SYSTEM', 'MCP client closed');
+  const mcpClient = config.mcpClient;
+  if (mcpClient) {
+    await attempt('MCP client close', async () => {
+      await mcpClient.close();
+      logger.info('SYSTEM', 'MCP client closed');
+    });
   }
 
-  if (config.chromaMcpManager) {
-    logger.info('SHUTDOWN', 'Stopping Chroma MCP connection...');
-    await config.chromaMcpManager.stop();
-    logger.info('SHUTDOWN', 'Chroma MCP connection stopped');
+  const chromaMcpManager = config.chromaMcpManager;
+  if (chromaMcpManager) {
+    await attempt('Chroma MCP stop', async () => {
+      logger.info('SHUTDOWN', 'Stopping Chroma MCP connection...');
+      await chromaMcpManager.stop();
+      logger.info('SHUTDOWN', 'Chroma MCP connection stopped');
+    });
   }
 
-  if (config.dbManager) {
-    await config.dbManager.close();
+  const dbManager = config.dbManager;
+  if (dbManager) {
+    await attempt('Database close', () => dbManager.close());
   }
 
-  await getSupervisor().stop();
+  await attempt('Supervisor stop', () => getSupervisor().stop());
+
+  if (failures.length > 0) {
+    logger.warn('SYSTEM', 'Worker shutdown cleanup completed with errors', {
+      failureCount: failures.length
+    });
+    if (failures.length === 1) {
+      throw failures[0];
+    }
+    throw new AggregateError(failures, `${failures.length} shutdown steps failed`);
+  }
 
   logger.info('SYSTEM', 'Worker shutdown complete');
 }
