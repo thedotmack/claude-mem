@@ -23,6 +23,21 @@ export type ObserverJobMetrics = {
   settled: number;
 };
 
+export type ObserverFailureClass =
+  | 'auth_invalid'
+  | 'setup_required'
+  | 'quota_exhausted'
+  | 'context_overflow'
+  | 'rate_limit'
+  | 'malformed_output'
+  | 'transient'
+  | 'unrecoverable';
+
+export type ObserverFailureOutcome = {
+  action: 'retry' | 'compact_retry' | 'blocked' | 'deferred' | 'quarantine';
+  nextAttemptAtEpoch: number | null;
+};
+
 export type ObserverStatus = ObserverJobMetrics & {
   /**
    * This is deliberately a queue/recovery diagnostic, not a claim that the
@@ -127,6 +142,46 @@ export class ObserverJobStore {
           next_attempt_at_epoch = ?, updated_at_epoch = ?
       WHERE id IN (${placeholders}) AND state = 'claimed'
     `).run(errorClass, nextAttemptAtEpoch, Date.now(), ...ids);
+  }
+
+  /**
+   * Apply the bounded observer retry policy without ever settling a failed
+   * source event. Attempts are failure counts: transient/rate-limit gets two
+   * retries (three total attempts); malformed/context gets one retry.
+   */
+  applyFailure(
+    ids: number[],
+    errorClass: ObserverFailureClass,
+    nextAttemptAtEpoch: number | null = null,
+  ): ObserverFailureOutcome {
+    if (ids.length === 0) return { action: 'retry', nextAttemptAtEpoch };
+    const placeholders = ids.map(() => '?').join(', ');
+    const rows = this.db.prepare(`
+      SELECT attempts FROM observer_jobs WHERE id IN (${placeholders}) AND state = 'claimed'
+    `).all(...ids) as Array<{ attempts: number }>;
+    const priorAttempts = Math.max(0, ...rows.map(row => row.attempts));
+
+    if (errorClass === 'unrecoverable' ||
+      ((errorClass === 'malformed_output' || errorClass === 'context_overflow') && priorAttempts >= 1) ||
+      ((errorClass === 'transient' || errorClass === 'rate_limit') && priorAttempts >= 2)) {
+      this.quarantine(ids, errorClass);
+      return { action: 'quarantine', nextAttemptAtEpoch: null };
+    }
+
+    if (errorClass === 'auth_invalid' || errorClass === 'setup_required') {
+      this.reset(ids, errorClass);
+      return { action: 'blocked', nextAttemptAtEpoch: null };
+    }
+    if (errorClass === 'quota_exhausted') {
+      this.reset(ids, errorClass, nextAttemptAtEpoch);
+      return { action: 'deferred', nextAttemptAtEpoch };
+    }
+
+    this.reset(ids, errorClass, nextAttemptAtEpoch);
+    return {
+      action: errorClass === 'context_overflow' ? 'compact_retry' : 'retry',
+      nextAttemptAtEpoch,
+    };
   }
 
   settle(ids: number[]): void {

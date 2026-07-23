@@ -268,14 +268,14 @@ describe('classifyClaudeError', () => {
     expect(err.kind).toBe('setup_required');
   });
 
-  it('classifies prompt-too-long as unrecoverable', () => {
+  it('classifies prompt-too-long as context_overflow', () => {
     const err = classifyClaudeError(new Error('Claude session context overflow: prompt is too long'));
-    expect(err.kind).toBe('unrecoverable');
+    expect(err.kind).toBe('context_overflow');
   });
 
-  it('classifies structured context-window errors as unrecoverable', () => {
+  it('classifies structured context-window errors as context_overflow', () => {
     const err = classifyClaudeError(new Error('Claude SDK error: context window exceeded'));
-    expect(err.kind).toBe('unrecoverable');
+    expect(err.kind).toBe('context_overflow');
   });
 
   it('classifies status=429 as rate_limit', () => {

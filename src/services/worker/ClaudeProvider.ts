@@ -98,13 +98,13 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
     return new ClassifiedProviderError(message, { kind: 'quota_exhausted', cause: err });
   }
 
-  // Context overflow — unrecoverable in this session, requires reset.
+  // Context overflow — roll this provider generation and compact-retry once.
   if (
     message.includes('Prompt is too long') ||
     message.includes('prompt is too long') ||
     message.includes('context window')
   ) {
-    return new ClassifiedProviderError(message, { kind: 'unrecoverable', cause: err });
+    return new ClassifiedProviderError(message, { kind: 'context_overflow', cause: err });
   }
 
   // HTTP 400 from the Anthropic SDK — bad request, never recoverable. Mirrors

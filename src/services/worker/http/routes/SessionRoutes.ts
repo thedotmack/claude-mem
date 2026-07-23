@@ -31,6 +31,7 @@ import {
 import { findClaudeExecutable } from '../../../../shared/find-claude-executable.js';
 import { isClassified } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
+import type { ObserverFailureClass } from '../../ObserverJobStore.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
@@ -49,6 +50,23 @@ function normalizeAbortReason(
     case 'restart-guard': return 'restart_guard';
     case 'quota': return 'quota';
     default: return 'none';
+  }
+}
+
+function observerFailureClassFor(error: unknown): ObserverFailureClass {
+  if (!isClassified(error)) return 'transient';
+  switch (error.kind) {
+    case 'auth_invalid':
+    case 'setup_required':
+    case 'quota_exhausted':
+    case 'context_overflow':
+    case 'rate_limit':
+    case 'malformed_output':
+    case 'transient':
+    case 'unrecoverable':
+      return error.kind as ObserverFailureClass;
+    default:
+      return 'transient';
   }
 }
 
@@ -76,6 +94,14 @@ export class SessionRoutes extends BaseRouteHandler {
   public async ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
+
+    if (this.sessionManager.getObserverStatus?.()?.state === 'blocked') {
+      logger.warn('SESSION', 'Observer generator remains blocked pending a successful provider canary', {
+        sessionId: sessionDbId,
+        source,
+      });
+      return;
+    }
 
     const selectedProvider = this.getSelectedProvider();
 
@@ -201,10 +227,15 @@ export class SessionRoutes extends BaseRouteHandler {
         // Preserve claimed work before this recoverable provider failure reaches
         // generator finalization. The next observation ingest can start a fresh
         // generation; no claimed source event is silently settled or discarded.
-        await this.sessionManager.resetProcessingToPending(
-          session.sessionDbId,
-          isClassified(error) ? error.kind : 'transient',
-        );
+        const failureClass = observerFailureClassFor(error);
+        const outcome = await this.sessionManager.applyObserverFailure(session.sessionDbId, failureClass);
+        if (outcome.action === 'compact_retry') {
+          session.forceInit = true;
+          session.memorySessionId = null;
+          session.observerGeneration = (session.observerGeneration ?? 1) + 1;
+          session.conversationHistory = session.conversationHistory.slice(-10);
+          this.sessionManager.checkpointObserverSession(session);
+        }
         session.abortReason = 'observer_failure:provider_error';
         try {
           session.abortController.abort();

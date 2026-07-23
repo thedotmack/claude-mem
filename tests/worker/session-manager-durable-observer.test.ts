@@ -78,4 +78,24 @@ describe('SessionManager durable observer admission', () => {
     expect(recovered.observerGeneration).toBe(3);
     expect(recovered.conversationHistory).toEqual([{ role: 'assistant', content: 'durable context' }]);
   });
+
+  test('quarantines a repeatedly malformed claimed event without settling it', async () => {
+    const db = new Database(':memory:');
+    const manager = managerFor(db);
+    await manager.queueObservation(20, {
+      tool_name: 'Read', tool_input: { path: 'src/a.ts' }, tool_response: { type: 'text', text: 'a' },
+      prompt_number: 1, toolUseId: 'malformed-session',
+    });
+
+    let iterator = manager.getMessageIterator(20);
+    await iterator.next();
+    expect(await manager.applyObserverFailure(20, 'malformed_output')).toMatchObject({ action: 'retry' });
+    await iterator.return?.();
+
+    iterator = manager.getMessageIterator(20);
+    await iterator.next();
+    expect(await manager.applyObserverFailure(20, 'malformed_output')).toMatchObject({ action: 'quarantine' });
+    expect(manager.getObserverStatus()).toMatchObject({ quarantined: 1, settled: 0 });
+    await iterator.return?.();
+  });
 });

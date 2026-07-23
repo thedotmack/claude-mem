@@ -5,7 +5,12 @@ import { SessionMessageBuffer } from './SessionMessageBuffer.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
-import { ObserverJobStore, type ObserverStatus } from './ObserverJobStore.js';
+import {
+  ObserverJobStore,
+  type ObserverFailureClass,
+  type ObserverFailureOutcome,
+  type ObserverStatus,
+} from './ObserverJobStore.js';
 
 export class SessionManager {
   private dbManager: DatabaseManager;
@@ -251,6 +256,26 @@ export class SessionManager {
       session.claimedMessageIds = [];
     }
     return this.buffer.resetClaimed(sessionDbId);
+  }
+
+  /** Apply durable retry/quarantine policy before releasing claimed buffer entries. */
+  async applyObserverFailure(
+    sessionDbId: number,
+    errorClass: ObserverFailureClass,
+    nextAttemptAtEpoch: number | null = null,
+  ): Promise<ObserverFailureOutcome> {
+    const session = this.sessions.get(sessionDbId);
+    const claimedIds = session?.claimedMessageIds ?? [];
+    const outcome = this.observerJobs?.applyFailure(claimedIds, errorClass, nextAttemptAtEpoch)
+      ?? { action: 'retry' as const, nextAttemptAtEpoch };
+
+    if (outcome.action === 'quarantine') {
+      for (const id of claimedIds) this.buffer.confirm(id);
+    } else {
+      this.buffer.resetClaimed(sessionDbId);
+    }
+    if (session) session.claimedMessageIds = [];
+    return outcome;
   }
 
   async confirmClaimedMessages(sessionDbId: number): Promise<number> {

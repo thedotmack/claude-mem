@@ -174,18 +174,19 @@ describe('Claude setup-required generator gate', () => {
 
   it('preserves claimed work when the provider throws an authentication failure', async () => {
     const session = makeSession();
-    let resetCalls = 0;
+    let failureCalls = 0;
     let finalizerCalls = 0;
     let removeCalls = 0;
     const sessionManager = {
       getSession: () => session,
+      getObserverStatus: () => null,
       getMessageBuffer: () => ({
         getPendingCount: () => 1,
         peekTypes: () => [],
       }),
-      resetProcessingToPending: async () => {
-        resetCalls += 1;
-        return 1;
+      applyObserverFailure: async () => {
+        failureCalls += 1;
+        return { action: 'blocked', nextAttemptAtEpoch: null };
       },
       removeSessionImmediate: () => {
         removeCalls += 1;
@@ -216,11 +217,33 @@ describe('Claude setup-required generator gate', () => {
     await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
     await session.generatorPromise;
 
-    expect(resetCalls).toBe(1);
+    expect(failureCalls).toBe(1);
     expect(session.abortReason).toBeNull();
     expect(session.abortController.signal.aborted).toBe(true);
     expect(finalizerCalls).toBe(0);
     expect(removeCalls).toBe(0);
     expect(session.generatorPromise).toBeNull();
+  });
+
+  it('does not start an observer while durable readiness is blocked', async () => {
+    const session = makeSession();
+    let starts = 0;
+    const routes = new SessionRoutes(
+      {
+        getSession: () => session,
+        getObserverStatus: () => ({ state: 'blocked' }),
+        getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => [] }),
+      } as any,
+      {} as any,
+      { startSession: async () => { starts += 1; } } as any,
+      { startSession: async () => {} } as any,
+      { startSession: async () => {} } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    expect(starts).toBe(0);
   });
 });

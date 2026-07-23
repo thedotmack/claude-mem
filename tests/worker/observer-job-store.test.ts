@@ -74,4 +74,33 @@ describe('ObserverJobStore', () => {
       state: 'blocked', pending: 1, lastErrorClass: 'auth_invalid',
     });
   });
+
+  test('quarantines malformed output after its one permitted retry', () => {
+    const db = new Database(':memory:');
+    const store = new ObserverJobStore(db);
+    const job = store.admit(12, event('malformed-1'));
+
+    expect(store.claim(job.id)).toBe(true);
+    expect(store.applyFailure([job.id], 'malformed_output', 1_000)).toEqual({ action: 'retry', nextAttemptAtEpoch: 1_000 });
+    expect(store.claim(job.id)).toBe(true);
+    expect(store.applyFailure([job.id], 'malformed_output', 2_000)).toEqual({ action: 'quarantine', nextAttemptAtEpoch: null });
+    expect(store.metrics(12)).toMatchObject({ quarantined: 1, settled: 0 });
+  });
+
+  test('allows at most three total transient attempts', () => {
+    const db = new Database(':memory:');
+    const store = new ObserverJobStore(db);
+    const job = store.admit(13, event('transient-1'));
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      expect(store.claim(job.id)).toBe(true);
+      const outcome = store.applyFailure([job.id], 'transient', attempt * 1_000);
+      if (attempt < 3) {
+        expect(outcome.action).toBe('retry');
+      } else {
+        expect(outcome.action).toBe('quarantine');
+      }
+    }
+    expect(store.metrics(13)).toMatchObject({ quarantined: 1, settled: 0 });
+  });
 });
