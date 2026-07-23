@@ -3,7 +3,7 @@ import {
   ClassifiedProviderError,
   isClassified,
 } from '../../src/services/worker/provider-errors.js';
-import { classifyClaudeError } from '../../src/services/worker/ClaudeProvider.js';
+import { classifyClaudeError, isObserverCanaryResponse } from '../../src/services/worker/ClaudeProvider.js';
 import {
   categorizeGeminiBadRequest,
   classifyGeminiError,
@@ -298,5 +298,12 @@ describe('classifyClaudeError', () => {
   it('classifies unknown error as transient (preserve old default)', () => {
     const err = classifyClaudeError(new Error('something weird happened'));
     expect(err.kind).toBe('transient');
+  });
+});
+
+describe('observer provider canary output', () => {
+  it('accepts only the explicit tool-disabled canary acknowledgement', () => {
+    expect(isObserverCanaryResponse('<skip_summary/>')).toBe(true);
+    expect(isObserverCanaryResponse('ready')).toBe(false);
   });
 });

@@ -229,6 +229,9 @@ export class SessionRoutes extends BaseRouteHandler {
         // generation; no claimed source event is silently settled or discarded.
         const failureClass = observerFailureClassFor(error);
         const outcome = await this.sessionManager.applyObserverFailure(session.sessionDbId, failureClass);
+        if (failureClass === 'auth_invalid' || failureClass === 'setup_required') {
+          void this.workerService.runObserverCanary?.();
+        }
         if (outcome.action === 'compact_retry') {
           session.forceInit = true;
           session.memorySessionId = null;

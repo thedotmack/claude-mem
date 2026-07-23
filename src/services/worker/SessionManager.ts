@@ -407,6 +407,14 @@ export class SessionManager {
     return this.observerJobs?.status() ?? null;
   }
 
+  recordObserverCanarySuccess(): void {
+    this.observerJobs?.recordCanarySuccess();
+  }
+
+  recordObserverCanaryFailure(errorClass: string): void {
+    this.observerJobs?.recordCanaryFailure(errorClass);
+  }
+
   async isAnySessionProcessing(): Promise<boolean> {
     return this.getTotalQueueDepth() > 0;
   }

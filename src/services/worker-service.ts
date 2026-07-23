@@ -505,6 +505,15 @@ export class WorkerService implements WorkerRef {
       logger.info('WORKER', 'Initializing database manager...');
       await this.dbManager.initialize();
       this.sessionManager.initializeDurableObserverStore();
+      await this.runObserverCanary();
+      setInterval(() => {
+        const observer = this.sessionManager.getObserverStatus();
+        if (!observer || observer.pending === 0) return;
+        const lastAttempt = observer.canary.lastAttemptAtEpoch ?? 0;
+        if (Date.now() - lastAttempt >= 30 * 60 * 1000 || observer.canary.state === 'failed') {
+          void this.runObserverCanary();
+        }
+      }, 30 * 60 * 1000).unref();
 
       runOneTimeV12_4_3Cleanup();
 
@@ -667,6 +676,22 @@ export class WorkerService implements WorkerRef {
       return;
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error instanceof Error ? error : undefined);
+    }
+  }
+
+  /** Active no-tool provider probe; a failed probe blocks observer processing. */
+  public async runObserverCanary(): Promise<void> {
+    try {
+      await this.sdkAgent.runObserverCanary();
+      this.sessionManager.recordObserverCanarySuccess();
+      this.broadcastProcessingStatus();
+    } catch (error) {
+      const classified = classifyClaudeError(error);
+      this.sessionManager.recordObserverCanaryFailure(classified.kind);
+      this.broadcastProcessingStatus();
+      logger.warn('WORKER', 'Observer provider canary failed; processing remains blocked', {
+        kind: classified.kind,
+      });
     }
   }
 

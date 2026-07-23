@@ -163,6 +163,11 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   return new ClassifiedProviderError(message, { kind: 'transient', cause: err });
 }
 
+/** The canary is valid only when the model emits the observer's explicit no-op. */
+export function isObserverCanaryResponse(text: string): boolean {
+  return text.trim() === '<skip_summary/>';
+}
+
 export class ClaudeProvider {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -170,6 +175,56 @@ export class ClaudeProvider {
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     this.dbManager = dbManager;
     this.sessionManager = sessionManager;
+  }
+
+  /**
+   * Active, tool-disabled provider probe. This is intentionally independent of
+   * worker/process health and has no source events to settle.
+   */
+  async runObserverCanary(): Promise<void> {
+    let claudePath: string;
+    try {
+      claudePath = findClaudeExecutable('SDK');
+    } catch (error) {
+      throw classifyClaudeError(error);
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30_000);
+    try {
+      const model = this.getModelId();
+      const env = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
+      const result = query({
+        prompt: 'Return exactly <skip_summary/>. Do not call tools.',
+        options: buildHardenedSdkOptions({
+          source: 'Observer',
+          model,
+          env,
+          pathToClaudeCodeExecutable: claudePath,
+          abortController: controller,
+        }),
+      });
+      let valid = false;
+      for await (const message of result) {
+        if (message.type !== 'assistant') continue;
+        const content = message.message.content;
+        const text = Array.isArray(content)
+          ? content.filter((part: any) => part.type === 'text').map((part: any) => part.text).join('\n')
+          : typeof content === 'string' ? content : '';
+        valid ||= isObserverCanaryResponse(text);
+      }
+      if (!valid) {
+        throw new ClassifiedProviderError('Observer canary did not return <skip_summary/>', {
+          kind: 'malformed_output', cause: new Error('invalid canary response'),
+        });
+      }
+      clearDependencyStatus('claude_cli');
+    } catch (error) {
+      if (error instanceof ClassifiedProviderError) throw error;
+      throw classifyClaudeError(error);
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {

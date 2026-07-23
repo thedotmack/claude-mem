@@ -103,4 +103,15 @@ describe('ObserverJobStore', () => {
     }
     expect(store.metrics(13)).toMatchObject({ quarantined: 1, settled: 0 });
   });
+
+  test('persists a successful provider canary separately from queue health', () => {
+    const db = new Database(':memory:');
+    const store = new ObserverJobStore(db);
+    expect(store.status()).toMatchObject({ canary: { state: 'unknown' } });
+
+    store.recordCanarySuccess(4_000);
+    expect(store.status()).toMatchObject({
+      canary: { state: 'ready', lastAttemptAtEpoch: 4_000, lastSuccessAtEpoch: 4_000, lastErrorClass: null },
+    });
+  });
 });

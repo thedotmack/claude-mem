@@ -47,6 +47,12 @@ export type ObserverStatus = ObserverJobMetrics & {
   state: 'ready' | 'degraded' | 'blocked' | 'recovering';
   lastErrorClass: string | null;
   oldestPendingAgeMs: number | null;
+  canary: {
+    state: 'unknown' | 'ready' | 'failed';
+    lastAttemptAtEpoch: number | null;
+    lastSuccessAtEpoch: number | null;
+    lastErrorClass: string | null;
+  };
 };
 
 /**
@@ -244,7 +250,17 @@ export class ObserverJobStore {
       FROM observer_jobs WHERE state = 'pending'
     `).get() as { created_at_epoch: number | null };
     const lastErrorClass = latest?.last_error_class ?? null;
-    const blocked = metrics.pending > 0 && (lastErrorClass === 'auth_invalid' || lastErrorClass === 'setup_required');
+    const canary = this.db.prepare(`
+      SELECT state, last_attempt_at_epoch, last_success_at_epoch, last_error_class
+      FROM observer_runtime WHERE id = 1
+    `).get() as {
+      state: 'unknown' | 'ready' | 'failed';
+      last_attempt_at_epoch: number | null;
+      last_success_at_epoch: number | null;
+      last_error_class: string | null;
+    } | null;
+    const blocked = canary?.state === 'failed' ||
+      (metrics.pending > 0 && (lastErrorClass === 'auth_invalid' || lastErrorClass === 'setup_required'));
     const state = blocked
       ? 'blocked'
       : metrics.claimed > 0 || (metrics.pending > 0 && lastErrorClass !== null)
@@ -258,7 +274,33 @@ export class ObserverJobStore {
       state,
       lastErrorClass,
       oldestPendingAgeMs: oldest.created_at_epoch === null ? null : Math.max(0, Date.now() - oldest.created_at_epoch),
+      canary: {
+        state: canary?.state ?? 'unknown',
+        lastAttemptAtEpoch: canary?.last_attempt_at_epoch ?? null,
+        lastSuccessAtEpoch: canary?.last_success_at_epoch ?? null,
+        lastErrorClass: canary?.last_error_class ?? null,
+      },
     };
+  }
+
+  recordCanarySuccess(atEpoch: number = Date.now()): void {
+    this.db.prepare(`
+      INSERT INTO observer_runtime (id, state, last_attempt_at_epoch, last_success_at_epoch, last_error_class)
+      VALUES (1, 'ready', ?, ?, NULL)
+      ON CONFLICT(id) DO UPDATE SET
+        state = 'ready', last_attempt_at_epoch = excluded.last_attempt_at_epoch,
+        last_success_at_epoch = excluded.last_success_at_epoch, last_error_class = NULL
+    `).run(atEpoch, atEpoch);
+  }
+
+  recordCanaryFailure(errorClass: string, atEpoch: number = Date.now()): void {
+    this.db.prepare(`
+      INSERT INTO observer_runtime (id, state, last_attempt_at_epoch, last_success_at_epoch, last_error_class)
+      VALUES (1, 'failed', ?, NULL, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        state = 'failed', last_attempt_at_epoch = excluded.last_attempt_at_epoch,
+        last_error_class = excluded.last_error_class
+    `).run(atEpoch, errorClass);
   }
 
   private setState(ids: number[], state: 'settled'): void {
@@ -293,6 +335,13 @@ export class ObserverJobStore {
         generation INTEGER NOT NULL,
         checkpoint_json TEXT NOT NULL,
         updated_at_epoch INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS observer_runtime (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        state TEXT NOT NULL CHECK(state IN ('unknown', 'ready', 'failed')),
+        last_attempt_at_epoch INTEGER,
+        last_success_at_epoch INTEGER,
+        last_error_class TEXT
       );
     `);
   }
