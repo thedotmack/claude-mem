@@ -57,9 +57,10 @@ describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', (
       '/d',
       '/s',
       '/c',
-      '"C:\\Tools\\bin\\tool.cmd" "run" "C:\\Path With Spaces"',
+      '""C:\\Tools\\bin\\tool.cmd" "run" "C:\\Path With Spaces""',
     ]);
     expect(invocation.options.windowsHide).toBe(true);
+    expect(invocation.options.windowsVerbatimArguments).toBe(true);
     expect('shell' in invocation.options).toBe(false);
   });
 
@@ -84,9 +85,10 @@ describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', (
       '/d',
       '/s',
       '/c',
-      '"C:\\Program Files\\nodejs\\codex.cmd" "plugin" "marketplace" "add" "C:\\Users\\tester\\Market Place"',
+      '""C:\\Program Files\\nodejs\\codex.cmd" "plugin" "marketplace" "add" "C:\\Users\\tester\\Market Place""',
     ]);
     expect(invocation.options.windowsHide).toBe(true);
+    expect(invocation.options.windowsVerbatimArguments).toBe(true);
     expect('shell' in invocation.options).toBe(false);
   });
 
@@ -94,7 +96,8 @@ describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', (
     const invocation = resolveCodexSpawnInvocation(['--version'], 'win32', () => null);
 
     expect(invocation.command).toBe('cmd.exe');
-    expect(invocation.args).toEqual(['/d', '/s', '/c', '"codex.cmd" "--version"']);
+    expect(invocation.args).toEqual(['/d', '/s', '/c', '""codex.cmd" "--version""']);
+    expect(invocation.options.windowsVerbatimArguments).toBe(true);
     expect('shell' in invocation.options).toBe(false);
   });
 
