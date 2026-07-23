@@ -160,6 +160,52 @@ describe('GracefulShutdown', () => {
       expect(callOrder.indexOf('chromaMcpManager.stop')).toBeLessThan(callOrder.indexOf('dbManager.close'));
     }, 15000);
 
+    it('should continue teardown when the HTTP server is already closed', async () => {
+      const callOrder: string[] = [];
+      const alreadyClosed = Object.assign(new Error('Server is not running.'), {
+        code: 'ERR_SERVER_NOT_RUNNING',
+      });
+      const mockServer = {
+        closeAllConnections: mock(() => {
+          callOrder.push('closeAllConnections');
+        }),
+        close: mock((cb: (err?: Error) => void) => {
+          callOrder.push('serverClose');
+          cb(alreadyClosed);
+        }),
+      } as unknown as http.Server;
+      const mockSessionManager: ShutdownableService = {
+        shutdownAll: mock(async () => {
+          callOrder.push('sessionManager.shutdownAll');
+        }),
+      };
+      const mockChromaMcpManager = {
+        stop: mock(async () => {
+          callOrder.push('chromaMcpManager.stop');
+        }),
+      };
+      const mockDbManager: CloseableDatabase = {
+        close: mock(async () => {
+          callOrder.push('dbManager.close');
+        }),
+      };
+
+      await expect(performGracefulShutdown({
+        server: mockServer,
+        sessionManager: mockSessionManager,
+        chromaMcpManager: mockChromaMcpManager,
+        dbManager: mockDbManager,
+      })).resolves.toBeUndefined();
+
+      expect(callOrder).toEqual([
+        'closeAllConnections',
+        'serverClose',
+        'sessionManager.shutdownAll',
+        'chromaMcpManager.stop',
+        'dbManager.close',
+      ]);
+    });
+
     it('should remove its OWN PID file during shutdown (owner guard)', async () => {
       const mockSessionManager: ShutdownableService = {
         shutdownAll: mock(async () => {})

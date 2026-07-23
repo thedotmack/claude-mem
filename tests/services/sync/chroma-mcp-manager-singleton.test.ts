@@ -192,17 +192,33 @@ mock.module('../../../src/utils/logger.js', () => ({
 // Track tree-kill invocations and the transport whose subprocess was killed.
 const killTreeCalls: number[] = [];
 const deadPids = new Set<number>();
+const survivingPids = new Set<number>();
 let execSyncCalls = 0;
 const prewarmSpawnCalls: Array<{ command: string; args: string[]; child: FakeChildProcess }> = [];
 let prewarmSpawnBehavior: 'success' | 'timeout' | 'failure' = 'success';
 let prewarmStdout = '';
 let prewarmStderr = '';
+let mockSupervisorRegistryEntries: Array<{
+  id: string;
+  pid: number;
+  type: string;
+  startedAt: string;
+  pgid?: number;
+  startToken?: string;
+}> = [];
+let supervisorUnregisterCalls: string[] = [];
 
 mock.module('../../../src/supervisor/index.ts', () => ({
   getSupervisor: () => ({
     assertCanSpawn: () => {},
     registerProcess: () => {},
-    unregisterProcess: () => {},
+    unregisterProcess: (id: string) => {
+      supervisorUnregisterCalls.push(id);
+      mockSupervisorRegistryEntries = mockSupervisorRegistryEntries.filter(entry => entry.id !== id);
+    },
+    getRegistry: () => ({
+      getAll: () => [...mockSupervisorRegistryEntries],
+    }),
   }),
 }));
 
@@ -264,6 +280,9 @@ const stubbedProcessKill = ((pid: number, signal?: string | number) => {
     return true;
   }
   killTreeCalls.push(pid);
+  if (!survivingPids.has(pid)) {
+    deadPids.add(pid);
+  }
   if (transportKillEmitsOnclose) {
     const transport = transportInstances.find(instance => instance._process.pid === pid);
     if (transport && transport._process.exitCode === null && transport._process.signalCode === null) {
@@ -283,6 +302,7 @@ import {
 
 afterAll(() => {
   ChromaMcpManager.setUvxAvailabilityProbeForTesting(null);
+  ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(null);
   process.kill = realProcessKill;
   if (originalPrewarmTimeout === undefined) {
     delete process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS;
@@ -314,6 +334,9 @@ function resetState(): void {
   prewarmSpawnCalls.length = 0;
   killTreeCalls.length = 0;
   deadPids.clear();
+  survivingPids.clear();
+  mockSupervisorRegistryEntries = [];
+  supervisorUnregisterCalls = [];
   logEntries.length = 0;
   execSyncCalls = 0;
   nextFakePid = 100_000;
@@ -330,6 +353,7 @@ function resetState(): void {
   mockedSettings = {};
   resetMockedChromaPaths();
   ChromaMcpManager.setUvxAvailabilityProbeForTesting(() => true);
+  ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(null);
   resetDependencyStatusesForTesting();
   if (originalPrewarmTimeout === undefined) {
     delete process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS;
@@ -387,6 +411,82 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(prewarmSpawnCalls.length).toBe(1);
   });
 
+  it('reaps a verified chroma-mcp tree from the prior worker generation before spawning', async () => {
+    const orphanPid = 99_777;
+    mockSupervisorRegistryEntries = [{
+      id: 'chroma-mcp',
+      pid: orphanPid,
+      type: 'chroma',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      pgid: orphanPid,
+    }];
+    ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(async () => true);
+
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(killTreeCalls).toContain(orphanPid);
+    expect(supervisorUnregisterCalls).toContain('chroma-mcp');
+    expect(transportCount).toBe(1);
+  });
+
+  it('drops a recycled-PID registry entry without signaling the unrelated process', async () => {
+    const recycledPid = 99_778;
+    mockSupervisorRegistryEntries = [{
+      id: 'chroma-mcp',
+      pid: recycledPid,
+      type: 'chroma',
+      startedAt: '2026-01-01T00:00:00.000Z',
+    }];
+    ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(async () => false);
+
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(killTreeCalls).not.toContain(recycledPid);
+    expect(supervisorUnregisterCalls).toContain('chroma-mcp');
+    expect(transportCount).toBe(1);
+  });
+
+  it('refuses to spawn when a live prior PID cannot be identified safely', async () => {
+    const unknownPid = 99_779;
+    mockSupervisorRegistryEntries = [{
+      id: 'chroma-mcp',
+      pid: unknownPid,
+      type: 'chroma',
+      startedAt: '2026-01-01T00:00:00.000Z',
+    }];
+    ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(async () => null);
+
+    const mgr = ChromaMcpManager.getInstance();
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
+      .rejects.toThrow('refusing to spawn a replacement');
+
+    expect(killTreeCalls).not.toContain(unknownPid);
+    expect(supervisorUnregisterCalls).not.toContain('chroma-mcp');
+    expect(transportCount).toBe(0);
+  });
+
+  it('refuses to spawn when the verified prior chroma-mcp tree survives teardown', async () => {
+    const survivorPid = 99_780;
+    mockSupervisorRegistryEntries = [{
+      id: 'chroma-mcp',
+      pid: survivorPid,
+      type: 'chroma',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      pgid: survivorPid,
+    }];
+    survivingPids.add(survivorPid);
+    ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(async () => true);
+
+    const mgr = ChromaMcpManager.getInstance();
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
+      .rejects.toThrow('still alive after teardown');
+
+    expect(supervisorUnregisterCalls).not.toContain('chroma-mcp');
+    expect(transportCount).toBe(0);
+  });
+
   it('kills the prior subprocess tree before a reconnect spawn', async () => {
     const mgr = ChromaMcpManager.getInstance();
 
@@ -413,6 +513,22 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     // The first transport's pid must have been signaled by killProcessTree
     // before the second transport spawned.
     expect(killTreeCalls).toContain(firstPid);
+  });
+
+  it('refuses a reconnect when the current chroma-mcp tree survives teardown', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    const firstPid = transportInstances[0]._process.pid;
+    survivingPids.add(firstPid);
+    callToolImpl = async () => {
+      throw new Error('Connection closed');
+    };
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
+      .rejects.toThrow('still alive after teardown');
+
+    expect(transportCount).toBe(1);
+    expect(supervisorUnregisterCalls).not.toContain('chroma-mcp');
   });
 
   it('ignores kill-triggered onclose while retrying after a transport error', async () => {

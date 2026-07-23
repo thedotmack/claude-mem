@@ -217,6 +217,38 @@ describe('supervisor shutdown cascade', () => {
 
     expect(registry.getAll()).toHaveLength(0);
   });
+
+  it('preserves a live child record when teardown cannot prove it exited', async () => {
+    const tempDir = makeTempDir();
+    tempDirs.push(tempDir);
+    mkdirSync(tempDir, { recursive: true });
+
+    const registry = createProcessRegistry(path.join(tempDir, 'supervisor.json'));
+    const survivorPid = 41004;
+    registry.register('survivor', {
+      pid: survivorPid,
+      type: 'chroma',
+      startedAt: '2026-03-15T00:00:01.000Z'
+    });
+
+    const originalKill = process.kill;
+    process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
+      if (pid === survivorPid) return true;
+      return originalKill(pid, signal);
+    }) as typeof process.kill;
+
+    try {
+      await runShutdownCascade({
+        registry,
+        currentPid: process.pid,
+        pidFilePath: path.join(tempDir, 'worker.pid')
+      });
+    } finally {
+      process.kill = originalKill;
+    }
+
+    expect(registry.getAll().map(record => record.id)).toEqual(['survivor']);
+  }, 10_000);
 });
 
 describe('removeOwnedPidFile (owner guard, Phase 5)', () => {
@@ -279,4 +311,3 @@ describe('removeOwnedPidFile (owner guard, Phase 5)', () => {
     expect(existsSync(pidFilePath)).toBe(false);
   });
 });
-

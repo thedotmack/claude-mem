@@ -17,6 +17,7 @@ export interface ManagedProcessInfo {
   sessionId?: string | number;
   startedAt: string;
   pgid?: number;
+  startToken?: string;
 }
 
 export interface ManagedProcessRecord extends ManagedProcessInfo {

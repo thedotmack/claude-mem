@@ -76,7 +76,15 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
   await waitForExit(survivors, 1000);
 
   for (const record of childRecords) {
-    options.registry.unregister(record.id);
+    if (!isPidAlive(record.pid)) {
+      options.registry.unregister(record.id);
+      continue;
+    }
+    logger.error('SYSTEM', 'Child process survived shutdown cascade; preserving registry entry', {
+      pid: record.pid,
+      pgid: record.pgid,
+      type: record.type
+    });
   }
   for (const record of allRecords.filter(record => record.pid === currentPid)) {
     options.registry.unregister(record.id);

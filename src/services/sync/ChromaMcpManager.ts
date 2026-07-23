@@ -12,7 +12,12 @@ import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
-import { captureProcessStartToken, isPidAlive } from '../../supervisor/process-registry.js';
+import {
+  captureProcessStartToken,
+  isPidAlive,
+  waitForExit,
+  type ManagedProcessRecord,
+} from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
 
@@ -75,6 +80,8 @@ interface ChromaWriterLockPayload {
   startToken?: string | null;
 }
 
+type ChromaLauncherIdentity = 'match' | 'mismatch' | 'unknown';
+
 export class ChromaMcpManager {
   private static instance: ChromaMcpManager | null = null;
   private client: Client | null = null;
@@ -89,6 +96,7 @@ export class ChromaMcpManager {
   private chromaWriterLock: { path: string; dataDir: string; ownerId: string } | null = null;
   private unexpectedCloseCleanup: Promise<void> | null = null;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
+  private static chromaLauncherIdentityProbe: ((pid: number, dataDir: string | null) => Promise<boolean | null>) | null = null;
 
   private constructor() {}
 
@@ -147,9 +155,11 @@ export class ChromaMcpManager {
     // tree-kill primitive used by stop() so reconnect can never leave
     // orphans behind.
     await this.disposeCurrentSubprocess();
-    this.assertConnectionNotCancelled(connectionGeneration);
 
     const localChromaDataDir = this.getLocalPersistentChromaDataDir();
+    await this.reapRegisteredChromaFromPriorGeneration(localChromaDataDir);
+    this.assertConnectionNotCancelled(connectionGeneration);
+
     const commandArgs = this.buildCommandArgs(localChromaDataDir);
     const uvxPreflightEnv = ChromaMcpManager.getUvxPreflightEnv();
     getSupervisor().assertCanSpawn('chroma mcp');
@@ -863,13 +873,136 @@ export class ChromaMcpManager {
     }
 
     if (trackedPid) {
-      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+      await waitForExit([{
+        id: CHROMA_SUPERVISOR_ID,
+        pid: trackedPid,
+        type: 'chroma',
+        startedAt: new Date(0).toISOString(),
+      }], 1_000);
+      if (!isPidAlive(trackedPid)) {
+        getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+      }
     }
     this.releaseChromaWriterLock();
 
     this.client = null;
     this.transport = null;
     this.connected = false;
+
+    if (trackedPid && isPidAlive(trackedPid)) {
+      const message = `Current chroma-mcp PID ${trackedPid} is still alive after teardown; refusing to spawn a replacement`;
+      recordChromaVectorSearchUnavailable(message);
+      throw new ChromaUnavailableError(message);
+    }
+  }
+
+  /**
+   * A fresh worker has no in-memory transport for the previous generation.
+   * Reap its persisted chroma entry before a new spawn can overwrite the only
+   * PID record. If identity or teardown cannot be proven, fail closed for
+   * vector search instead of growing another process tree.
+   */
+  private async reapRegisteredChromaFromPriorGeneration(dataDir: string | null): Promise<void> {
+    const supervisor = getSupervisor();
+    const record = supervisor.getRegistry().getAll()
+      .find(entry => entry.id === CHROMA_SUPERVISOR_ID);
+    if (!record) {
+      return;
+    }
+
+    if (!isPidAlive(record.pid)) {
+      supervisor.unregisterProcess(CHROMA_SUPERVISOR_ID);
+      return;
+    }
+
+    const identity = await ChromaMcpManager.identifyRegisteredChromaLauncher(record, dataDir);
+    if (identity === 'mismatch') {
+      logger.warn('CHROMA_MCP', 'Dropping stale chroma-mcp registry entry after PID reuse', {
+        pid: record.pid,
+      });
+      supervisor.unregisterProcess(CHROMA_SUPERVISOR_ID);
+      return;
+    }
+    if (identity === 'unknown') {
+      const message = `Unable to verify prior chroma-mcp PID ${record.pid}; refusing to spawn a replacement`;
+      recordChromaVectorSearchUnavailable(message);
+      throw new ChromaUnavailableError(message);
+    }
+
+    logger.warn('CHROMA_MCP', 'Reaping chroma-mcp left by a prior worker generation', {
+      pid: record.pid,
+      startedAt: record.startedAt,
+    });
+    await ChromaMcpManager.killProcessTree(record.pid);
+    await waitForExit([record], 1_000);
+
+    if (isPidAlive(record.pid)) {
+      const message = `Prior chroma-mcp PID ${record.pid} is still alive after teardown; refusing to spawn a replacement`;
+      recordChromaVectorSearchUnavailable(message);
+      throw new ChromaUnavailableError(message);
+    }
+
+    supervisor.unregisterProcess(CHROMA_SUPERVISOR_ID);
+  }
+
+  private static async identifyRegisteredChromaLauncher(
+    record: ManagedProcessRecord,
+    dataDir: string | null,
+  ): Promise<ChromaLauncherIdentity> {
+    if (record.startToken) {
+      const currentStartToken = captureProcessStartToken(record.pid);
+      if (currentStartToken !== null) {
+        return currentStartToken === record.startToken ? 'match' : 'mismatch';
+      }
+    }
+
+    if (ChromaMcpManager.chromaLauncherIdentityProbe) {
+      const result = await ChromaMcpManager.chromaLauncherIdentityProbe(record.pid, dataDir);
+      return result === null ? 'unknown' : result ? 'match' : 'mismatch';
+    }
+
+    if (process.platform === 'win32') {
+      return 'unknown';
+    }
+
+    try {
+      const { stdout } = await execFileAsync(
+        'ps',
+        ['-p', String(record.pid), '-o', 'uid=,command='],
+        {
+          timeout: 5_000,
+          env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' },
+        },
+      );
+      const match = stdout.trim().match(/^(\d+)\s+([\s\S]+)$/);
+      if (!match) {
+        return 'unknown';
+      }
+      if (typeof process.getuid === 'function' && Number(match[1]) !== process.getuid()) {
+        return 'mismatch';
+      }
+
+      const command = match[2];
+      if (!command.includes('chroma-mcp')) {
+        return 'mismatch';
+      }
+      if (dataDir === null) {
+        return command.includes('--client-type http') ? 'match' : 'mismatch';
+      }
+
+      const normalizedDataDir = dataDir.replace(/\\/g, '/');
+      return command.includes('--client-type persistent') &&
+        command.includes('--data-dir') &&
+        command.replace(/\\/g, '/').includes(normalizedDataDir)
+        ? 'match'
+        : 'mismatch';
+    } catch (error) {
+      logger.debug('CHROMA_MCP', 'Unable to inspect prior chroma-mcp launcher PID', {
+        pid: record.pid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return 'unknown';
+    }
   }
 
   private async disposeActivePrewarm(): Promise<void> {
@@ -1279,6 +1412,12 @@ export class ChromaMcpManager {
     ChromaMcpManager.uvxAvailabilityProbe = probe;
   }
 
+  static setChromaLauncherIdentityProbeForTesting(
+    probe: ((pid: number, dataDir: string | null) => Promise<boolean | null>) | null,
+  ): void {
+    ChromaMcpManager.chromaLauncherIdentityProbe = probe;
+  }
+
   private static ensureUvOnPath(env: Record<string, string>): void {
     const sep = process.platform === 'win32' ? ';' : ':';
     const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
@@ -1344,6 +1483,7 @@ export class ChromaMcpManager {
     if (!chromaProcess?.pid) {
       return;
     }
+    const startToken = captureProcessStartToken(chromaProcess.pid);
 
     // Register with pgid so the supervisor's shutdown cascade can use
     // process-group signaling (kill(-pgid, signal)) to tear down the
@@ -1363,7 +1503,8 @@ export class ChromaMcpManager {
       // Store pid as pgid — shutdown.ts will attempt kill(-pgid) on POSIX.
       // If the child isn't actually its own group leader, the ESRCH is caught
       // and shutdown falls back to single-PID kill (see signalProcess()).
-      pgid: chromaProcess.pid
+      pgid: chromaProcess.pid,
+      ...(startToken ? { startToken } : {}),
     }, chromaProcess);
 
     chromaProcess.once('exit', () => {

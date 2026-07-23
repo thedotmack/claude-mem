@@ -818,6 +818,13 @@ export class WorkerService implements WorkerRef {
         chromaMcpManager: this.chromaMcpManager || undefined
       }),
       gracefulDeadlineMs: getPlatformTimeout(10000),
+      lastResortChildTreeKill: async () => {
+        try {
+          await this.chromaMcpManager?.stop();
+        } finally {
+          await getSupervisor().stop();
+        }
+      },
       restartHandoff: {
         port: getWorkerPort(),
         portFreeTimeoutMs: getPlatformTimeout(5000),

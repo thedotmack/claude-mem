@@ -58,6 +58,12 @@ export interface ShutdownSequenceOptions {
   beforeGracefulShutdown: () => Promise<void>;
   performGracefulShutdown: () => Promise<void>;
   gracefulDeadlineMs: number;
+  /**
+   * Idempotent final child teardown. It must run even when graceful shutdown
+   * rejects or exceeds its deadline, otherwise chroma-mcp can outlive the
+   * worker and re-parent to init.
+   */
+  lastResortChildTreeKill: () => Promise<void>;
   restartHandoff: RestartHandoffDeps;
 }
 
@@ -119,6 +125,17 @@ export async function runShutdownSequence(options: ShutdownSequenceOptions): Pro
     }
   } finally {
     if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+  }
+
+  try {
+    await options.lastResortChildTreeKill();
+  } catch (error: unknown) {
+    logger.error(
+      'SYSTEM',
+      'Last-resort child tree-kill failed — proceeding',
+      { reason: options.reason },
+      error instanceof Error ? error : new Error(String(error))
+    );
   }
 
   // Successor handoff — ONLY for restart; 'stop' and signal shutdowns stay
