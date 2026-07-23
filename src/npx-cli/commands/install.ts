@@ -1168,8 +1168,8 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
 async function promptClaudeModel(options: InstallOptions): Promise<void> {
   const allowed = new Set([
     'claude-haiku-4-5-20251001',
-    'claude-sonnet-4-6',
-    'claude-opus-4-7',
+    'claude-sonnet-5',
+    'claude-opus-4-8',
   ]);
   const allowCustomModel = resolveClaudeAuthMethod() === 'gateway';
 
@@ -1224,8 +1224,8 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
     message: 'Which Claude model should claude-mem use to compress observations?\nThis runs whenever you and Claude touch a file — keep it cheap and fast.',
     options: [
       { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (recommended — fast, cheap, great for compression)' },
-      { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6 (balanced quality and cost)' },
-      { value: 'claude-opus-4-7', label: 'Opus 4.7 (highest quality, most expensive)' },
+      { value: 'claude-sonnet-5', label: 'Sonnet 5 (balanced quality and cost)' },
+      { value: 'claude-opus-4-8', label: 'Opus 4.8 (highest quality, most expensive)' },
     ],
     initialValue,
   });
