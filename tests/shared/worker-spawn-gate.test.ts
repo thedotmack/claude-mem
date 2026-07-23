@@ -59,17 +59,17 @@ describe('worker-spawn-gate — cross-launcher spawn lockfile', () => {
     expect(lock.pid).toBe(process.pid);
   });
 
-  it('breaks a stale lock (mtime backdated >60s) and re-acquires', async () => {
+  it('breaks a stale lock (mtime backdated >90s) and re-acquires', async () => {
     const { acquireSpawnLock } = await importGateFresh();
 
-    // A crashed launcher's leftover lock, last touched 61s ago. This also
+    // A crashed launcher's leftover lock, last touched 91s ago. This also
     // exercises the re-stat-before-unlink guard's happy path: nothing races
     // us, so the second stat sees the same mtime and the break proceeds.
     writeFileSync(
       lockPath,
-      JSON.stringify({ pid: 999_999_999, startedAt: new Date(Date.now() - 61_000).toISOString() })
+      JSON.stringify({ pid: 999_999_999, startedAt: new Date(Date.now() - 91_000).toISOString() })
     );
-    const past = new Date(Date.now() - 61_000);
+    const past = new Date(Date.now() - 91_000);
     utimesSync(lockPath, past, past);
 
     expect(acquireSpawnLock()).toBe(true);
@@ -79,18 +79,17 @@ describe('worker-spawn-gate — cross-launcher spawn lockfile', () => {
     expect(lock.pid).toBe(process.pid);
   });
 
-  it('honors a 45s-old lock — within the 60s staleness window (regression: was broken under the old 30s threshold)', async () => {
+  it('honors a lock just inside the 90s staleness boundary', async () => {
     const { acquireSpawnLock } = await importGateFresh();
 
-    // 45s covers the worst legitimate in-lock wait: the ~15s post-spawn
-    // health wait scaled 2.0x by getPlatformTimeout on Windows (~30s). A
-    // 30s staleness window would break this holder's lock mid-spawn.
+    // The readiness deadline is 60s on Windows. A lock still inside the
+    // boundary must remain fresh so a readiness poll cannot lose ownership.
     const foreignPayload = JSON.stringify({
       pid: 999_999_999,
-      startedAt: new Date(Date.now() - 45_000).toISOString(),
+      startedAt: new Date(Date.now() - 89_000).toISOString(),
     });
     writeFileSync(lockPath, foreignPayload);
-    const past = new Date(Date.now() - 45_000);
+    const past = new Date(Date.now() - 89_000);
     utimesSync(lockPath, past, past);
 
     expect(acquireSpawnLock()).toBe(false);
