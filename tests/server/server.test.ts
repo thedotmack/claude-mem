@@ -120,10 +120,9 @@ describe('Server', () => {
 
       await expect(server2.listen(testPort, '127.0.0.1')).rejects.toThrow();
 
-      const httpServer = server2.getHttpServer();
-      if (httpServer) {
-        expect(httpServer.listening).toBe(false);
-      }
+      // #3380 — a failed bind must never leave a non-listening handle behind
+      // for graceful shutdown to trip on.
+      expect(server2.getHttpServer()).toBeNull();
     });
   });
 
