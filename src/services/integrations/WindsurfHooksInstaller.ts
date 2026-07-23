@@ -115,7 +115,8 @@ function buildHookCommand(bunPath: string, workerServicePath: string, eventName:
 
   const hookCommand = eventToCommand[eventName] ?? 'observation';
 
-  return `"${bunPath}" "${workerServicePath}" hook windsurf ${hookCommand}`;
+  const callOperator = process.platform === 'win32' ? '& ' : '';
+  return `${callOperator}"${bunPath}" "${workerServicePath}" hook windsurf ${hookCommand}`;
 }
 
 function mergeAndWriteHooksJson(
