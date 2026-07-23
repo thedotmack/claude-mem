@@ -23,6 +23,17 @@ interface CheckResult {
   required: boolean;
 }
 
+interface ChromaCrashState {
+  count: number;
+  lastExit: {
+    timestamp: string;
+    code: number | null;
+    signal: string | null;
+  } | null;
+  chromaMcpVersion: string;
+  dependencyOverrides: string[];
+}
+
 function probeVersion(bin: 'bun' | 'uv'): string | null {
   try {
     return bin === 'bun' ? getBunVersion() : getUvVersion();
@@ -33,15 +44,30 @@ function probeVersion(bin: 'bun' | 'uv'): string | null {
   }
 }
 
-async function probeWorkerHealth(workerHost: string, workerPort: string): Promise<{ status: CheckStatus; detail: string }> {
+async function probeWorkerHealth(workerHost: string, workerPort: string): Promise<{
+  status: CheckStatus;
+  detail: string;
+  workerUrl: string;
+}> {
   const workerUrl = `http://${workerHost}:${workerPort}`;
   const res = await fetch(`${workerUrl}/api/health`, {
     signal: AbortSignal.timeout(3000),
   });
   if (res.ok) {
-    return { status: 'ok', detail: `healthy at ${workerUrl}` };
+    return { status: 'ok', detail: `healthy at ${workerUrl}`, workerUrl };
   }
-  return { status: 'warn', detail: `reachable but unhealthy (HTTP ${res.status}) at ${workerUrl}` };
+  return { status: 'warn', detail: `reachable but unhealthy (HTTP ${res.status}) at ${workerUrl}`, workerUrl };
+}
+
+function isChromaCrashState(value: unknown): value is ChromaCrashState {
+  if (!value || typeof value !== 'object') return false;
+  const state = value as Partial<ChromaCrashState>;
+  return typeof state.count === 'number' && Number.isInteger(state.count) && state.count >= 0 && Array.isArray(state.dependencyOverrides)
+    && typeof state.chromaMcpVersion === 'string'
+    && (state.lastExit === null || (typeof state.lastExit === 'object' && state.lastExit !== null
+      && typeof state.lastExit.timestamp === 'string'
+      && (typeof state.lastExit.code === 'number' || state.lastExit.code === null)
+      && (typeof state.lastExit.signal === 'string' || state.lastExit.signal === null)));
 }
 
 export async function runDoctorCommand(): Promise<void> {
@@ -105,6 +131,28 @@ export async function runDoctorCommand(): Promise<void> {
     const worker = await probeWorkerHealth(workerHost, workerPort);
     workerStatus = worker.status;
     workerDetail = worker.detail;
+    try {
+      const diagnosticsResponse = await fetch(`${worker.workerUrl}/api/admin/doctor`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (diagnosticsResponse.ok) {
+        const diagnostics = await diagnosticsResponse.json() as { health?: { chroma?: unknown } };
+        const chroma = diagnostics?.health?.chroma;
+        if (isChromaCrashState(chroma) && chroma.count > 0 && chroma.lastExit) {
+          const outcome = chroma.lastExit.signal
+            ? `signal ${chroma.lastExit.signal}`
+            : `code ${chroma.lastExit.code}`;
+          checks.push({
+            name: 'Chroma child exits',
+            status: 'warn',
+            detail: `${chroma.count} (${outcome}) at ${chroma.lastExit.timestamp}; chroma-mcp ${chroma.chromaMcpVersion}; overrides: ${chroma.dependencyOverrides.join(', ')}`,
+            required: false,
+          });
+        }
+      }
+    } catch {
+      // Diagnostics are optional and must not change worker health status.
+    }
   } catch {
     // leave as fail
   }
