@@ -925,6 +925,7 @@ function runServerServiceCli(command: string, extraArgs: string[] = []): void {
 
   const child = spawn(process.execPath, [serverScript, command, ...extraArgs], {
     stdio: 'inherit',
+    windowsHide: true,
     // Strip host CLI bleed-through (CLAUDE_CODE_*, including EFFORT_LEVEL) and
     // Anthropic credentials before handing env to the spawned daemon. The
     // daemon re-reads its own credentials from ~/.claude-mem/.env. See
