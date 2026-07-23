@@ -99,14 +99,79 @@ describe('HealthMonitor', () => {
         }),
         listen: mock(() => {})
       }));
-      
+
       const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
 
       const result = await isPortInUse(37777);
 
       expect(result).toBe(false);
-      
+
       spy.mockRestore();
+    });
+
+    it('should fall through to socket probe on Windows when health check fails and port is actually in use (zombie port)', async () => {
+      // Simulate a zombie process: the port is occupied but does not serve HTTP.
+      // fetch for /api/health throws, then net.createServer hits EADDRINUSE.
+      const origPlatform = process.platform;
+      try {
+        Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+
+        global.fetch = mock(() => Promise.reject(new Error('fetch failed')));
+
+        const createServerMock = mock(() => ({
+          once: mock((event: string, cb: Function) => {
+            if (event === 'error') {
+              setTimeout(() => cb({ code: 'EADDRINUSE' }), 0);
+            }
+          }),
+          listen: mock(() => {}),
+        }));
+
+        const netSpy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+
+        const result = await isPortInUse(37777);
+
+        expect(result).toBe(true);
+        expect(global.fetch).toHaveBeenCalled();
+        expect(net.createServer).toHaveBeenCalled();
+
+        netSpy.mockRestore();
+      } finally {
+        Object.defineProperty(process, 'platform', { value: origPlatform, configurable: true });
+      }
+    });
+
+    it('should fall through to socket probe on Windows when health check fails and port is actually free', async () => {
+      const origPlatform = process.platform;
+      try {
+        Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+
+        global.fetch = mock(() => Promise.reject(new Error('ECONNREFUSED')));
+
+        const closeMock = mock((cb: Function) => cb());
+        const createServerMock = mock(() => ({
+          once: mock((event: string, cb: Function) => {
+            if (event === 'listening') {
+              setTimeout(() => cb(), 0);
+            }
+          }),
+          listen: mock(() => {}),
+          close: closeMock,
+        }));
+
+        const netSpy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+
+        const result = await isPortInUse(39999);
+
+        expect(result).toBe(false);
+        expect(global.fetch).toHaveBeenCalled();
+        expect(net.createServer).toHaveBeenCalled();
+        expect(closeMock).toHaveBeenCalled();
+
+        netSpy.mockRestore();
+      } finally {
+        Object.defineProperty(process, 'platform', { value: origPlatform, configurable: true });
+      }
     });
   });
 

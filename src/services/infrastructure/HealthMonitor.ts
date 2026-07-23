@@ -32,17 +32,38 @@ async function httpRequestToWorker(
 
 export async function isPortInUse(port: number): Promise<boolean> {
   if (process.platform === 'win32') {
+    // Fast path: HTTP health check. A live claude-mem worker responds to
+    // /api/health, so this is the cheapest non-disruptive probe for the
+    // common case (worker is running and healthy).
     try {
       const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`);
-      return response.ok;
+      if (response.ok) return true;
+      // Non-ok response: port is reachable but the worker is unhealthy.
+      // Fall through to the net.createServer check below so we still report
+      // the port as in-use rather than falsely claiming it is free.
+      logger.debug('SYSTEM', 'Windows health check returned non-ok; falling through to socket probe', {
+        port,
+        status: response.status,
+      });
     } catch (error) {
+      // fetch threw (ECONNREFUSED, timeout, etc.): the port may still be in
+      // use by a non-HTTP process (zombie worker, foreign service, etc.).
+      // Fall through to the net.createServer probe — only a definitive bind
+      // attempt can tell whether the port is truly free.
       if (error instanceof Error) {
-        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', {}, error);
+        logger.debug('SYSTEM', 'Windows health check threw; falling through to socket probe', {
+          port,
+          message: error.message,
+        });
       } else {
-        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', { error: String(error) });
+        logger.debug('SYSTEM', 'Windows health check threw; falling through to socket probe', {
+          port,
+          error: String(error),
+        });
       }
-      return false;
     }
+    // Fall through: the HTTP probe was inconclusive. Use the POSIX
+    // net.createServer() approach to definitively check port occupancy.
   }
 
   return new Promise((resolve) => {
