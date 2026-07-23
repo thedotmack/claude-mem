@@ -5,7 +5,8 @@ import {
   waitForHealth,
   waitForPortFree,
   getRunningWorkerVersion,
-  checkVersionMatch
+  checkVersionMatch,
+  isPortListening
 } from '../../src/services/infrastructure/index.js';
 
 describe('HealthMonitor', () => {
@@ -172,6 +173,56 @@ describe('HealthMonitor', () => {
       } finally {
         Object.defineProperty(process, 'platform', { value: origPlatform, configurable: true });
       }
+    });
+  });
+
+  describe('isPortListening', () => {
+    it('returns true for a live TCP listener', async () => {
+      const server = net.createServer();
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+      const port = (server.address() as net.AddressInfo).port;
+
+      try {
+        expect(await isPortListening(port, '127.0.0.1')).toBe(true);
+      } finally {
+        await new Promise<void>(resolve => server.close(() => resolve()));
+      }
+    });
+
+    it('returns false for a closed port', async () => {
+      const server = net.createServer();
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+      const port = (server.address() as net.AddressInfo).port;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+
+      expect(await isPortListening(port, '127.0.0.1', 100)).toBe(false);
+    });
+
+    it('returns false when the probe socket times out', async () => {
+      const destroyMock = mock(() => {});
+      const onceMock = mock(() => {});
+      const timeoutMock = mock((_timeoutMs: number, cb: Function) => cb());
+      const spy = spyOn(net, 'createConnection').mockImplementation(() => ({
+        once: onceMock,
+        setTimeout: timeoutMock,
+        destroy: destroyMock,
+      } as any));
+
+      expect(await isPortListening(37777, '127.0.0.1', 100)).toBe(false);
+      expect(timeoutMock).toHaveBeenCalledWith(100, expect.any(Function));
+      expect(destroyMock).toHaveBeenCalled();
+
+      spy.mockRestore();
+    });
+
+    it('returns false when socket setup throws synchronously', async () => {
+      const spy = spyOn(net, 'createConnection').mockImplementation(() => {
+        throw new RangeError('ERR_SOCKET_BAD_PORT');
+      });
+
+      expect(await isPortListening(Number.NaN, '127.0.0.1')).toBe(false);
+
+      spy.mockRestore();
     });
   });
 

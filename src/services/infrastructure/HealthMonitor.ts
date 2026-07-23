@@ -15,6 +15,28 @@ function formatHostForUrl(host: string): string {
   return host.includes(':') ? `[${host}]` : host;
 }
 
+export function isPortListening(
+  port: number,
+  host: string = '127.0.0.1',
+  timeoutMs: number = 500
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const socket = net.createConnection({ port, host });
+      const finish = (listening: boolean) => {
+        socket.destroy();
+        resolve(listening);
+      };
+
+      socket.once('connect', () => finish(true));
+      socket.once('error', () => finish(false));
+      socket.setTimeout(timeoutMs, () => finish(false));
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
 async function httpRequestToWorker(
   port: number,
   endpointPath: string,

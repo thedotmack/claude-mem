@@ -44,6 +44,7 @@ const spawnCalls: Array<{ command: string; args: string[] }> = [];
 
 mock.module('../../src/services/infrastructure/index.js', () => ({
   checkVersionMatch: () => Promise.resolve(versionMatchResult),
+  isPortListening: () => Promise.resolve(false),
 }));
 
 mock.module('../../src/supervisor/index.js', () => ({
