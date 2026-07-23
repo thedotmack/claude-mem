@@ -194,6 +194,7 @@ export class ClaudeProvider {
     try {
       const model = this.getModelId();
       const env = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
+      ensureDir(OBSERVER_SESSIONS_DIR);
       const result = query({
         prompt: 'Return exactly <skip_summary/>. Do not call tools.',
         options: buildHardenedSdkOptions({
