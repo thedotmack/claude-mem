@@ -977,4 +977,66 @@ describe('SessionStore migrations', () => {
       db.close();
     }
   });
+
+  it('v49 requeues corrected native rows for sync and leaves replicas and invalid JSON untouched', () => {
+    const db = new Database(':memory:');
+    try {
+      new SessionStore(db);
+
+      db.prepare(`
+        INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+        VALUES ('content-v49-sync', 'mem-v49-sync', 'proj-v49-sync', ?, 1751234567000, 'active')
+      `).run(new Date().toISOString());
+      const now = new Date().toISOString();
+      const insertObs = db.prepare(`
+        INSERT INTO observations
+          (memory_session_id, project, type, title, concepts, created_at, created_at_epoch,
+           synced_at, sync_rev, origin_device_id, origin_local_id)
+        VALUES ('mem-v49-sync', 'proj-v49-sync', 'discovery', ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      // (b) native changed row: already pushed (synced_at stamped) — must be requeued.
+      insertObs.run('NATIVE_CHANGED', '["gotcha: x"]', now, 1_700_000_000_000, 123456, '3', null, null);
+      // (c) replica changed row: normalized locally, but its repair travels
+      // from its origin device — sync fields must stay untouched.
+      insertObs.run('REPLICA_CHANGED', '["gotcha: y"]', now, 1_700_000_001_000, 999, '5', 'device-r', '7');
+      // (d) colon-free native row: fully untouched, including sync fields.
+      insertObs.run('NATIVE_CLEAN', '["pattern"]', now, 1_700_000_002_000, 777, '2', null, null);
+      // (a) non-JSON concepts text containing a colon: json_each would throw —
+      // the json_valid guard must skip it so the migration (and worker boot)
+      // completes, leaving the row byte-identical.
+      insertObs.run('INVALID_JSON', 'gotcha: not json', now, 1_700_000_003_000, 555, '4', null, null);
+
+      db.run('DELETE FROM schema_versions WHERE version = 49');
+      new SessionStore(db);
+
+      const v49 = db.prepare('SELECT version FROM schema_versions WHERE version = 49').get() as { version: number } | undefined;
+      expect(v49?.version).toBe(49);
+
+      const read = (title: string) => db.prepare(
+        'SELECT concepts, synced_at, CAST(sync_rev AS TEXT) AS sync_rev FROM observations WHERE title = ?'
+      ).get(title) as { concepts: string; synced_at: number | null; sync_rev: string };
+
+      const native = read('NATIVE_CHANGED');
+      expect(native.concepts).toBe('["gotcha"]');
+      expect(native.synced_at).toBeNull();
+      expect(native.sync_rev).toBe('4');
+
+      const replica = read('REPLICA_CHANGED');
+      expect(replica.concepts).toBe('["gotcha"]');
+      expect(replica.synced_at).toBe(999);
+      expect(replica.sync_rev).toBe('5');
+
+      const clean = read('NATIVE_CLEAN');
+      expect(clean.concepts).toBe('["pattern"]');
+      expect(clean.synced_at).toBe(777);
+      expect(clean.sync_rev).toBe('2');
+
+      const invalid = read('INVALID_JSON');
+      expect(invalid.concepts).toBe('gotcha: not json');
+      expect(invalid.synced_at).toBe(555);
+      expect(invalid.sync_rev).toBe('4');
+    } finally {
+      db.close();
+    }
+  });
 });
