@@ -1030,6 +1030,48 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(6, new Date().toISOString());
   }
 
+  // #3378: legacy DBs contain child rows whose memory_session_id has no
+  // sdk_sessions parent (written historically while foreign_keys was OFF).
+  // The v7/v9 rebuilds copy those children into a freshly created table via
+  // INSERT ... SELECT with foreign_keys = ON (the connection pragma; these
+  // rebuilds, unlike v21/v33/v34, never disable it), so a single orphan
+  // aborts the whole constructor migration chain with 'FOREIGN KEY
+  // constraint failed' and the worker never reports ready. Orphaned children
+  // are live user data served by context injection — the missing side is the
+  // parent, so create a minimal completed stub session per orphaned
+  // memory_session_id immediately before the copy, mirroring
+  // SyncApply.ensureSessionForMemoryId (INSERT ... ON CONFLICT DO NOTHING;
+  // content_session_id falls back to the memory id). COUNT-then-INSERT for
+  // the log figure, per the bun:sqlite `.run().changes` trap documented in
+  // SyncApply.ts.
+  private repairOrphanedSessionParents(childTable: 'observations' | 'session_summaries'): void {
+    const orphaned = (this.db.prepare(`
+      SELECT COUNT(DISTINCT c.memory_session_id) AS n
+      FROM ${childTable} c
+      WHERE c.memory_session_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM sdk_sessions s WHERE s.memory_session_id = c.memory_session_id)
+    `).get() as { n: number }).n;
+    if (orphaned === 0) return;
+
+    this.db.run(`
+      INSERT INTO sdk_sessions
+        (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+      SELECT
+        c.memory_session_id,
+        c.memory_session_id,
+        MIN(c.project),
+        MIN(c.created_at),
+        MIN(c.created_at_epoch),
+        'completed'
+      FROM ${childTable} c
+      WHERE c.memory_session_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM sdk_sessions s WHERE s.memory_session_id = c.memory_session_id)
+      GROUP BY c.memory_session_id
+      ON CONFLICT DO NOTHING
+    `);
+    logger.warn('DB', `Created ${orphaned} stub sdk_sessions parent(s) for orphaned ${childTable} rows before rebuild (#3378)`);
+  }
+
   private removeSessionSummariesUniqueConstraint(): void {
     const summariesIndexes = this.db.query('PRAGMA index_list(session_summaries)').all() as IndexInfo[];
     // Only table-level UNIQUE constraints (PRAGMA origin 'u' — the v7 target,
@@ -1048,6 +1090,10 @@ export class SessionStore {
     logger.debug('DB', 'Removing UNIQUE constraint from session_summaries.memory_session_id');
 
     this.db.run('BEGIN TRANSACTION');
+
+    // The copy below runs with foreign_keys = ON; repair orphaned parents
+    // first or a single orphan aborts the migration chain (#3378).
+    this.repairOrphanedSessionParents('session_summaries');
 
     this.db.run('DROP TABLE IF EXISTS session_summaries_new');
 
@@ -1140,6 +1186,10 @@ export class SessionStore {
     logger.debug('DB', 'Making observations.text nullable');
 
     this.db.run('BEGIN TRANSACTION');
+
+    // The copy below runs with foreign_keys = ON; repair orphaned parents
+    // first or a single orphan aborts the migration chain (#3378).
+    this.repairOrphanedSessionParents('observations');
 
     this.db.run('DROP TABLE IF EXISTS observations_new');
 
