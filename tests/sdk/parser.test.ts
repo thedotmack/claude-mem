@@ -257,3 +257,61 @@ Trailing prose.`;
     expect(result.observations[0].narrative).toContain('```');
   });
 });
+
+describe('parseAgentXml — concept normalization (#3379)', () => {
+  it('truncates a prefixed concept at the first colon', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <title>Prefixed concept tag</title>
+      <concepts><concept>gotcha: some long description</concept></concepts>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].concepts).toEqual(['gotcha']);
+  });
+
+  it('leaves a bare concept unchanged', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <title>Bare concept tag</title>
+      <concepts><concept>gotcha</concept></concepts>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].concepts).toEqual(['gotcha']);
+  });
+
+  it('still drops a concept equal to the observation type, bare or prefixed', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <title>Type echoed as concept</title>
+      <concepts>
+        <concept>discovery</concept>
+        <concept>discovery: echoed with a description</concept>
+        <concept>pattern</concept>
+      </concepts>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].concepts).toEqual(['pattern']);
+  });
+
+  it('drops concepts that become empty after truncation', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <title>Leading-colon concept</title>
+      <concepts><concept>: only a description</concept></concepts>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].concepts).toEqual([]);
+  });
+});

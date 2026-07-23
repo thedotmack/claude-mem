@@ -41,6 +41,7 @@ plugin/.cli-installed
 plugin/scripts/claude-mem
 
 CONTRIB_NOTES.md
+CLAUDE.local.md
 
 .docker-claude-mem-data/
 
