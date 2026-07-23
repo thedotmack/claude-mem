@@ -32,6 +32,10 @@ npm run build-and-sync        # Build, sync to marketplace, restart worker
 
 No need to edit the changelog ever, it's generated automatically.
 
+## Local Status Notes
+
+- 2026-06-15: Issue #2909 is intentionally split. PR #2919 covers session-isolation/read-path behavior, while target 29 covers the observer `.jsonl` accumulation half by disabling session persistence for observer tool-use SDK queries.
+
 ## Daily Maintenance
 
 Run a daily version check across all package manifests and upgrade every dependency to its latest version — including major version bumps. Staying on the latest is the goal; do not skip majors.
