@@ -1,10 +1,13 @@
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
+import { resolveSummaryTierModel } from './model-aliases.js';
 import {
   processAgentResponse,
   isAbortError,
@@ -257,7 +260,15 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'summarize';
-    const summaryResponse = await this.query(session.conversationHistory, config);
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const summaryModel = resolveSummaryTierModel(config.model, settings);
+    const summaryConfig = summaryModel === config.model ? config : { ...config, model: summaryModel };
+    if (summaryConfig !== config) {
+      logger.debug('SESSION', 'Tier routing: summary model', {
+        sessionId: session.sessionDbId, model: summaryModel
+      });
+    }
+    const summaryResponse = await this.query(session.conversationHistory, summaryConfig);
 
     let tokensUsed = 0;
     if (summaryResponse.content) {
@@ -271,7 +282,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     if (summaryResponse.content || this.forwardEmptyMessageResponse) {
       await processAgentResponse(
         summaryResponse.content || '', session, this.dbManager, this.sessionManager,
-        worker, tokensUsed, originalTimestamp, this.providerName, lastCwd, summaryResponse.servedModel ?? config.model
+        worker, tokensUsed, originalTimestamp, this.providerName, lastCwd, summaryResponse.servedModel ?? summaryConfig.model
       );
     } else {
       logger.warn('SDK', `Empty ${this.providerName} summary response, leaving queue intact`, {

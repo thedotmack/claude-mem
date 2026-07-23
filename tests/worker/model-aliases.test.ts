@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { resolveTierAlias } from '../../src/services/worker/model-aliases.js';
+import { resolveSummaryTierModel, resolveTierAlias } from '../../src/services/worker/model-aliases.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../src/shared/SettingsDefaultsManager.js';
 
 /**
@@ -53,5 +53,31 @@ describe('resolveTierAlias (#2289)', () => {
     const settings = settingsWith({ CLAUDE_MEM_TIER_FAST_MODEL: '', CLAUDE_MEM_TIER_SMART_MODEL: '' });
     expect(resolveTierAlias('$TIER:fast', settings)).toBe('haiku');
     expect(resolveTierAlias('$TIER:smart', settings)).toBe('sonnet');
+  });
+});
+
+describe('resolveSummaryTierModel', () => {
+  it('returns the configured summary model when routing is enabled', () => {
+    const settings = settingsWith({
+      CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',
+      CLAUDE_MEM_TIER_SUMMARY_MODEL: 'summary-model',
+    });
+    expect(resolveSummaryTierModel('session-model', settings)).toBe('summary-model');
+  });
+
+  it('falls back to the session model when the summary model is empty', () => {
+    const settings = settingsWith({
+      CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',
+      CLAUDE_MEM_TIER_SUMMARY_MODEL: '',
+    });
+    expect(resolveSummaryTierModel('session-model', settings)).toBe('session-model');
+  });
+
+  it('returns the session model when tier routing is disabled', () => {
+    const settings = settingsWith({
+      CLAUDE_MEM_TIER_ROUTING_ENABLED: 'false',
+      CLAUDE_MEM_TIER_SUMMARY_MODEL: 'summary-model',
+    });
+    expect(resolveSummaryTierModel('session-model', settings)).toBe('session-model');
   });
 });
