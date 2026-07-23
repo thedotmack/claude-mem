@@ -293,3 +293,75 @@ describe('context compiler platform scoping', () => {
     }
   });
 });
+
+describe('context compiler concept scoping', () => {
+  const config: ContextConfig = {
+    totalObservationCount: 20,
+    fullObservationCount: 3,
+    sessionCount: 20,
+    showReadTokens: true,
+    showWorkTokens: true,
+    showSavingsAmount: true,
+    showSavingsPercent: true,
+    observationTypes: new Set(['discovery']),
+    observationConcepts: new Set(['gotcha']),
+    fullObservationField: 'narrative',
+    showLastSummary: true,
+    showLastMessage: false,
+  };
+
+  it('matches prefixed concepts while preserving project and adoption scope', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      let seedIndex = 0;
+      const seed = (memorySessionId: string, project: string, title: string, concepts: string[]) => {
+        const sessionDbId = store.createSDKSession(
+          `content-${memorySessionId}`,
+          project,
+          `${title} prompt`,
+          undefined,
+          'claude',
+        );
+        store.ensureMemorySessionIdRegistered(sessionDbId, memorySessionId);
+        store.storeObservation(
+          memorySessionId,
+          project,
+          {
+            type: 'discovery',
+            title,
+            subtitle: null,
+            facts: [],
+            narrative: `${title} narrative`,
+            concepts,
+            files_read: [],
+            files_modified: [],
+          },
+          1,
+          0,
+          1_700_000_000_000 + seedIndex++,
+        );
+      };
+
+      seed('native-bare', 'concept-parent', 'NATIVE_BARE', ['gotcha']);
+      seed('native-prefixed', 'concept-parent', 'NATIVE_PREFIXED', [
+        'gotcha: WASM libraries in Workers have different URL resolution semantics',
+      ]);
+      seed('unrelated-concept', 'concept-parent', 'UNRELATED_CONCEPT', ['pattern: unrelated']);
+      seed('lookalike-concept', 'concept-parent', 'LOOKALIKE_CONCEPT', ['gotcha-ish: lookalike']);
+      seed('out-of-project', 'other-project', 'OUT_OF_PROJECT', ['gotcha: other project']);
+      seed('adopted-prefixed', 'child-project', 'ADOPTED_PREFIXED', ['gotcha: adopted']);
+      store.db
+        .prepare('UPDATE observations SET merged_into_project = ? WHERE title = ?')
+        .run('concept-parent', 'ADOPTED_PREFIXED');
+
+      const titles = queryObservationsMulti(store, ['concept-parent'], config).map(obs => obs.title);
+      expect(titles).toEqual([
+        'ADOPTED_PREFIXED',
+        'NATIVE_PREFIXED',
+        'NATIVE_BARE',
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+});

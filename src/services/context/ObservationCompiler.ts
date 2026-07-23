@@ -55,7 +55,7 @@ export function queryObservationsMulti(
       AND type IN (${typePlaceholders})
       AND EXISTS (
         SELECT 1 FROM json_each(o.concepts)
-        WHERE value IN (${conceptPlaceholders})
+        WHERE substr(value, 1, instr(value || ':', ':') - 1) IN (${conceptPlaceholders})
       )
     ORDER BY o.created_at_epoch DESC
     LIMIT ?

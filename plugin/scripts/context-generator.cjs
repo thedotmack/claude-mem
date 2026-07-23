@@ -34,7 +34,7 @@ ${A.stack??""}
       AND type IN (${s})
       AND EXISTS (
         SELECT 1 FROM json_each(o.concepts)
-        WHERE value IN (${c})
+        WHERE substr(value, 1, instr(value || ':', ':') - 1) IN (${c})
       )
     ORDER BY o.created_at_epoch DESC
     LIMIT ?
