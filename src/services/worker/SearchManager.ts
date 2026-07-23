@@ -425,7 +425,7 @@ export class SearchManager {
 
   async search(args: any, telemetryOut?: SearchTelemetryEnvelope): Promise<any> {
     const normalized = this.normalizeParams(args);
-    const { query, type, obs_type, concepts, files, format, ...options } = normalized;
+    const { query, type: rawType, obs_type: rawObsType, concepts, files, format, ...options } = normalized;
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
@@ -433,9 +433,25 @@ export class SearchManager {
     let platformScopedChromaZeroFallback = false;
     let chromaFailureReason: { message: string; isConnectionError: boolean } | null = null;
 
-    const searchObservations = !type || type === 'observations';
-    const searchSessions = !type || type === 'sessions';
-    const searchPrompts = !type || type === 'prompts';
+    // `type` is overloaded: as a doc-type SELECTOR it picks which corpora to
+    // search (observations/sessions/prompts); the MCP tool also documents it as
+    // "Filter by observation type". A `type` value that is not one of the three
+    // reserved selectors (e.g. a custom mode's `correction`, or a built-in like
+    // `bugfix`) is therefore an observation-type FILTER, not a selector. Route
+    // it into obs_type and scope the search to observations, otherwise it fails
+    // all three selector checks below and silently returns zero results (#3279).
+    const DOC_TYPE_SELECTORS = ['observations', 'sessions', 'prompts'];
+    const typeIsObsFilter = typeof rawType === 'string' && !DOC_TYPE_SELECTORS.includes(rawType);
+    const type = typeIsObsFilter ? undefined : rawType;
+    const obs_type = typeIsObsFilter
+      ? (rawObsType === undefined
+          ? rawType
+          : (Array.isArray(rawObsType) ? rawObsType : [rawObsType]).concat(rawType))
+      : rawObsType;
+
+    const searchObservations = typeIsObsFilter || !type || type === 'observations';
+    const searchSessions = !typeIsObsFilter && (!type || type === 'sessions');
+    const searchPrompts = !typeIsObsFilter && (!type || type === 'prompts');
 
     if (!query) {
       logger.debug('SEARCH', 'Filter-only query (no query text), using direct SQLite filtering', { enablesDateFilters: true });
