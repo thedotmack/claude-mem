@@ -38,7 +38,7 @@
  *
  * OUTPUT (one JSON object per line)
  *   {"event":"cycle","cycle":3,"origin":"canary-dev-a","converged":true,
- *    "latency_ms":412,"seq":57,"sync_mode":"live",...}
+ *    "latency_ms":412,"seq":"57","sync_mode":"live",...}
  *   sync_mode mirrors the hub's X-Sync-Mode header ("live" when absent,
  *   "poll" while the kill switch is tripped) — the canary doubles as a
  *   kill-switch observability probe.
@@ -134,10 +134,40 @@ function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * RFC-8259 JSON with recursively sorted object keys — the hub's canonical
+ * wire form (src/canonical-content.ts). Reimplemented locally on purpose:
+ * the canary imports nothing from the hub.
+ */
+function canonicalJson(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+	if (value !== null && typeof value === "object") {
+		const record = value as Record<string, unknown>;
+		const parts = Object.keys(record)
+			.sort()
+			.map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`);
+		return `{${parts.join(",")}}`;
+	}
+	return JSON.stringify(value);
+}
+
+/** Unpadded base64url SHA-256 (matches the hub's digest form). */
+async function sha256Base64Url(value: string): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+	let binary = "";
+	for (const byte of new Uint8Array(digest)) binary += String.fromCharCode(byte);
+	return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
+/** Max of two canonical unsigned decimal strings (hub cursors are uint64). */
+function decimalMax(left: string, right: string): string {
+	return BigInt(left) >= BigInt(right) ? left : right;
+}
+
 class Canary {
 	private readonly args: Args;
-	/** Per-device pull cursor (hub seq). */
-	private readonly cursors: Record<string, number> = { [DEVICE_A]: 0, [DEVICE_B]: 0 };
+	/** Per-device pull cursor (hub seq, canonical unsigned decimal string). */
+	private readonly cursors: Record<string, string> = { [DEVICE_A]: "0", [DEVICE_B]: "0" };
 	/** Last X-Sync-Mode seen on any response ("live" when absent). */
 	private syncMode = "live";
 	/** Unique-per-run origin-id prefix (no state file needed). */
@@ -159,16 +189,49 @@ class Canary {
 		this.syncMode = res.headers.get("X-Sync-Mode") ?? "live";
 	}
 
+	/**
+	 * Push one canonical protocol-v2 observation op (the full envelope the
+	 * hub validates in src/canonical-content.ts). Returns the acked seq plus
+	 * the operation digest — the digest is how the replica recognizes the op.
+	 */
 	private async push(
 		deviceId: string,
-		originId: string,
-		body: Record<string, unknown>,
-	): Promise<{ seq: number; headSeq: number }> {
+		localId: string,
+		info: Record<string, string>,
+	): Promise<{ seq: string; headSeq: string; opSha: string }> {
+		const payload = {
+			created_at: new Date().toISOString(),
+			created_at_epoch: Date.now().toString(10),
+			memory_session_id: `canary-${this.runId}`,
+			project: "sync-canary",
+			text: JSON.stringify(info),
+			title: "sync-hub canary op",
+			type: "canary",
+		};
+		const envelope = {
+			body_schema_version: 1,
+			deleted: false,
+			deleted_at: null,
+			entity_rev: "1",
+			id: `observation:${await sha256Base64Url(
+				canonicalJson(["cmem-doc-id-v1", "device", "observation", deviceId, localId]),
+			)}`,
+			kind: "observation",
+			mutation: null,
+			origin_device_id: deviceId,
+			origin_local_id: localId,
+			payload,
+			payload_schema_version: 2,
+			payload_sha256: await sha256Base64Url(canonicalJson(payload)),
+		};
+		const body = canonicalJson(envelope);
+		const operationSha256 = await sha256Base64Url(body);
 		const res = await fetch(`${this.args.hub}/v1/sync/ops`, {
 			method: "POST",
 			headers: { ...this.headers(deviceId), "Content-Type": "application/json" },
 			body: JSON.stringify({
-				ops: [{ kind: "observation", origin_id: originId, rev: 1, body: JSON.stringify(body) }],
+				protocol_version: 2,
+				ops: [{ body, operation_sha256: operationSha256 }],
 			}),
 			signal: AbortSignal.timeout(this.args.timeoutMs),
 		});
@@ -177,18 +240,18 @@ class Canary {
 			throw new Error(`push ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
 		}
 		const parsed = (await res.json()) as {
-			acked: Array<{ origin_id: string; seq: number }>;
-			head_seq: number;
+			acked: Array<{ operation_sha256: string; seq: string }>;
+			head_seq: string;
 		};
-		const ack = parsed.acked.find((a) => a.origin_id === originId);
+		const ack = parsed.acked.find((a) => a.operation_sha256 === operationSha256);
 		if (!ack) throw new Error("push response did not ack the canary op");
-		return { seq: ack.seq, headSeq: parsed.head_seq };
+		return { seq: ack.seq, headSeq: parsed.head_seq, opSha: operationSha256 };
 	}
 
 	private async pull(
 		deviceId: string,
-		since: number,
-	): Promise<{ ops: Array<{ seq: number; origin_id: string; origin_device: string }>; headSeq: number }> {
+		since: string,
+	): Promise<{ ops: Array<{ seq: string; operation_sha256: string }>; headSeq: string }> {
 		const res = await fetch(`${this.args.hub}/v1/sync/changes?since=${since}&limit=500`, {
 			headers: this.headers(deviceId),
 			signal: AbortSignal.timeout(this.args.timeoutMs),
@@ -198,8 +261,8 @@ class Canary {
 			throw new Error(`pull ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
 		}
 		const parsed = (await res.json()) as {
-			ops: Array<{ seq: number; origin_id: string; origin_device: string }>;
-			head_seq: number;
+			ops: Array<{ seq: string; operation_sha256: string }>;
+			head_seq: string;
 		};
 		return { ops: parsed.ops, headSeq: parsed.head_seq };
 	}
@@ -214,9 +277,9 @@ class Canary {
 		if (!res.ok) {
 			throw new Error(`status ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
 		}
-		const status = (await res.json()) as { head_seq: number; epoch: string };
-		this.cursors[DEVICE_A] = status.head_seq;
-		this.cursors[DEVICE_B] = status.head_seq;
+		const status = (await res.json()) as { head_seq: string; epoch: string };
+		this.cursors[DEVICE_A] = String(status.head_seq);
+		this.cursors[DEVICE_B] = String(status.head_seq);
 		log({
 			event: "init",
 			hub: this.args.hub,
@@ -234,12 +297,13 @@ class Canary {
 	async cycle(n: number): Promise<boolean> {
 		const origin = n % 2 === 0 ? DEVICE_A : DEVICE_B;
 		const replica = origin === DEVICE_A ? DEVICE_B : DEVICE_A;
-		const originId = `c-${this.runId}-${n}`;
+		// Canonical decimal, unique per push: ms timestamp + zero-padded cycle.
+		const localId = `${Date.now()}${String(n % 1000).padStart(3, "0")}`;
 		const startedAt = Date.now();
 		try {
-			const pushed = await this.push(origin, originId, {
-				canary: true,
-				cycle: n,
+			const pushed = await this.push(origin, localId, {
+				canary: "true",
+				cycle: String(n),
 				sent_at: new Date(startedAt).toISOString(),
 			});
 			// Poll the replica cursor forward until the op shows up.
@@ -248,8 +312,8 @@ class Canary {
 			while (Date.now() < deadline && !converged) {
 				const page = await this.pull(replica, this.cursors[replica]);
 				for (const op of page.ops) {
-					this.cursors[replica] = Math.max(this.cursors[replica], op.seq);
-					if (op.origin_id === originId && op.origin_device === origin) {
+					this.cursors[replica] = decimalMax(this.cursors[replica], op.seq);
+					if (op.operation_sha256 === pushed.opSha) {
 						converged = true;
 					}
 				}
@@ -259,13 +323,13 @@ class Canary {
 			// own echo is consumed, keeping pages tiny forever).
 			const originPage = await this.pull(origin, this.cursors[origin]);
 			for (const op of originPage.ops) {
-				this.cursors[origin] = Math.max(this.cursors[origin], op.seq);
+				this.cursors[origin] = decimalMax(this.cursors[origin], op.seq);
 			}
 			log({
 				event: "cycle",
 				cycle: n,
 				origin,
-				origin_id: originId,
+				origin_local_id: localId,
 				seq: pushed.seq,
 				converged,
 				latency_ms: Date.now() - startedAt,
