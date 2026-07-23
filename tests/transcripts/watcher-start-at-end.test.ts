@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -6,6 +6,13 @@ import type { NormalizedHookInput } from '../../src/cli/types.js';
 import type { TranscriptSchema, WatchTarget } from '../../src/services/transcripts/types.js';
 
 const sessionInitCalls: NormalizedHookInput[] = [];
+
+// Snapshot the real module BEFORE mock.module mutates the live namespace, then
+// re-register it in afterAll. bun's mock.module is process-global and
+// mock.restore() does NOT undo it, so this partial session-init stub would
+// otherwise leak into other test files in the same `bun test` run.
+import * as realSessionInit from '../../src/cli/handlers/session-init.js';
+const realSessionInitSnapshot = { ...realSessionInit };
 
 mock.module('../../src/cli/handlers/session-init.js', () => ({
   sessionInitHandler: {
@@ -15,6 +22,10 @@ mock.module('../../src/cli/handlers/session-init.js', () => ({
     },
   },
 }));
+
+afterAll(() => {
+  mock.module('../../src/cli/handlers/session-init.js', () => realSessionInitSnapshot);
+});
 
 import { logger } from '../../src/utils/logger.js';
 import { TranscriptWatcher } from '../../src/services/transcripts/watcher.js';

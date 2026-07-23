@@ -331,24 +331,65 @@ export class ChromaSync {
         const errMsg = error instanceof Error ? error.message : String(error);
         if (errMsg.includes('already exist')) {
           try {
-            await chromaMcp.callTool('chroma_delete_documents', {
-              collection_name: this.collectionName,
-              ids: batch.map(d => d.id)
-            });
-            await chromaMcp.callTool('chroma_add_documents', {
+            // Reconcile without delete+add. Document IDs are deterministic
+            // (e.g. obs_<sqlite_id>_narrative), so every resync, backfill,
+            // retry, or interruption collides on the same IDs. HNSW deletions
+            // are soft-deletes: a delete+add cycle leaves the old graph nodes
+            // in link_lists.bin while appending new ones, so the on-disk index
+            // grows without bound and can exhaust disk/RAM.
+            //
+            // chroma_add_documents rejects the WHOLE batch when any single ID
+            // already exists, so a mixed batch may contain both colliding IDs
+            // and genuinely-new IDs. chroma_update_documents silently ignores
+            // IDs that are not already present, so a blanket update would
+            // overwrite the duplicates but never insert the new docs — while
+            // still advancing the watermark past them (data loss). So split
+            // the batch: update the existing IDs in place, add only the new
+            // ones, and count each part only if it actually succeeds.
+            const existing = await chromaMcp.callTool('chroma_get_documents', {
               collection_name: this.collectionName,
               ids: batch.map(d => d.id),
-              documents: batch.map(d => d.document),
-              metadatas: cleanMetadatas
-            });
-            written += batch.length;
-            logger.info('CHROMA_SYNC', 'Batch reconciled via delete+add after duplicate conflict', {
+              include: []
+            }) as { ids?: string[] };
+            const existingIds = new Set(existing?.ids ?? []);
+
+            const toUpdate = batch.filter(d => existingIds.has(d.id));
+            const toAdd = batch.filter(d => !existingIds.has(d.id));
+            const cleanFor = (docs: ChromaDocument[]) => docs.map(d =>
+              Object.fromEntries(
+                Object.entries(d.metadata).filter(([_, v]) => v !== null && v !== undefined && v !== '')
+              )
+            );
+
+            if (toUpdate.length > 0) {
+              await chromaMcp.callTool('chroma_update_documents', {
+                collection_name: this.collectionName,
+                ids: toUpdate.map(d => d.id),
+                documents: toUpdate.map(d => d.document),
+                metadatas: cleanFor(toUpdate)
+              });
+              written += toUpdate.length;
+            }
+
+            if (toAdd.length > 0) {
+              await chromaMcp.callTool('chroma_add_documents', {
+                collection_name: this.collectionName,
+                ids: toAdd.map(d => d.id),
+                documents: toAdd.map(d => d.document),
+                metadatas: cleanFor(toAdd)
+              });
+              written += toAdd.length;
+            }
+
+            logger.info('CHROMA_SYNC', 'Batch reconciled via in-place update + add after duplicate conflict', {
               collection: this.collectionName,
               batchStart: i,
-              batchSize: batch.length
+              batchSize: batch.length,
+              updated: toUpdate.length,
+              added: toAdd.length
             });
           } catch (reconcileError) {
-            logger.error('CHROMA_SYNC', 'Batch reconcile (delete+add) failed — watermark will not advance for this batch', {
+            logger.error('CHROMA_SYNC', 'Batch reconcile (update+add) failed — watermark will not advance for this batch', {
               collection: this.collectionName,
               batchStart: i,
               batchSize: batch.length

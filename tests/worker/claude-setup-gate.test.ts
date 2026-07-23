@@ -17,6 +17,14 @@ import * as realFindClaudeExecutableModule from '../../src/shared/find-claude-ex
 
 const realFindClaudeExecutableSnapshot = { ...realFindClaudeExecutableModule };
 
+// Snapshot the real module BEFORE mock.module mutates the live namespace, then
+// re-register it in afterAll. bun's mock.module is process-global and
+// mock.restore() does NOT undo it, so this partial stub (only findClaudeExecutable,
+// missing resetClaudeExecutableCache / _internals / CAPABILITY_PROBE_ARGS) would
+// otherwise leak into find-claude-executable.test.ts and break its whole suite.
+import * as realFindClaudeExecutable from '../../src/shared/find-claude-executable.js';
+const realFindClaudeExecutableSnapshot = { ...realFindClaudeExecutable };
+
 let findClaudeExecutableImpl: () => string = () => '/mock/claude';
 
 mock.module('../../src/shared/find-claude-executable.js', () => ({
