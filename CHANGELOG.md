@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.12.3] - 2026-07-23
+
+## Hotfix: self-perpetuating stale-worker recycle loop (#3378)
+
+**The bug.** On a version mismatch, hooks asked the running (stale) worker to restart itself — and the dying worker spawned its successor using its *own install's* code and resolver. A ≤13.11.0 worker would respawn its own version, re-bind the worker port before the hook's correctly-resolved lazy-spawn could, and the mismatch recurred on every prompt, forever. One report measured **2,424 recycles in a single day**, with every `UserPromptSubmit` ending in a ~40s hook timeout. Because the buggy handoff ran inside the *old* install's process, fixing the new version's resolver alone could never break the loop.
+
+**The fix.** Hooks no longer delegate the recycle to the corpse. On version mismatch the hook now:
+
+1. reads the owner-verified worker PID file,
+2. `SIGKILL`s the stale worker — the only teardown guaranteed to execute zero stale-version code,
+3. waits for the port to actually close, and
+4. spawns the resolved installed version itself, via the existing lazy-spawn path and the single version oracle.
+
+The dying-worker successor handoff now serves only CLI-initiated `claude-mem restart`, where the running install *is* the resolved install.
+
+**If you're currently stuck in the loop:** just update. The first hook that runs after this version installs will kill the resident stale worker and take over — no manual cleanup needed.
+
+**Not addressed in this release** (still open): the `FOREIGN KEY constraint failed` background-init error also reported in #3378, and the Windows stale-socket port hold in #3380.
+
 ## [13.12.2] - 2026-07-23
 
 **54 community bug-fix PRs merged in one pass.** Every open PR in the repo (157 total) was evaluated against a strict rubric — now codified in [`docs/merge-rubric.md`](https://github.com/thedotmack/claude-mem/blob/main/docs/merge-rubric.md): root-cause corrections only, with no guards, circuit breakers, fallbacks, retries, fail-open modes, self-healing machinery, truncation, or bolt-on second systems.
