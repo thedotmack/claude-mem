@@ -107,10 +107,9 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
     const fallbackType = validTypes[0];
     let finalType = fallbackType;
     if (type) {
-      if (validTypes.includes(type.trim())) {
-        finalType = type.trim();
-      } else {
-        logger.error('PARSER', `Invalid observation type: ${type}, using "${fallbackType}"`, { correlationId });
+      finalType = type;
+      if (!validTypes.includes(type)) {
+        logger.error('PARSER', `Invalid observation type: ${type}, preserving emitted type`, { correlationId });
       }
     } else {
       logger.error('PARSER', `Observation missing type field, using "${fallbackType}"`, { correlationId });
