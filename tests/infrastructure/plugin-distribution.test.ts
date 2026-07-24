@@ -311,6 +311,22 @@ describe('Plugin Distribution - Non-blocking bookkeeping hooks (#3206)', () => {
     expect(stop.command).toContain('summarize');
     expect(stop.async).toBe(true);
   });
+
+  it('does not force bash for Claude hooks (#3396)', () => {
+    const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
+
+    const claudeCommandHooks = Object.values(parsed.hooks)
+      .flatMap((entries: any) => entries)
+      .flatMap((entry: any) => entry.hooks ?? [])
+      .filter((hook: any) => hook.type === 'command' && typeof hook.command === 'string')
+      .filter((hook: any) => hook.command.includes(' hook claude-code ') || hook.command.endsWith(' start') || hook.command.includes('version-check.js'));
+
+    expect(claudeCommandHooks).toHaveLength(7);
+    for (const hook of claudeCommandHooks) {
+      expect(hook.shell).toBeUndefined();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
