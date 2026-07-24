@@ -140,10 +140,42 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
       projectId,
       teamId,
     });
-    expect(sources).toHaveLength(1);
-    expect(sources[0]!.sourceType).toBe('agent_event');
-    expect(sources[0]!.sourceId).toBe(eventId);
-    expect(sources[0]!.generationJobId).toBe(jobId);
+  expect(sources).toHaveLength(1);
+  expect(sources[0]!.sourceType).toBe('agent_event');
+  expect(sources[0]!.sourceId).toBe(eventId);
+  expect(sources[0]!.generationJobId).toBe(jobId);
+  });
+
+  it('persists freeform prose from a closed observation block', async () => {
+    const xml = `
+      <observation>
+        This deploy unblocked the worker restart path after the queue drained.
+      </observation>
+    `;
+
+    await storage.observationGenerationJobs.transitionStatus({
+      id: jobId,
+      projectId,
+      teamId,
+      status: 'processing',
+    });
+
+    const fresh = (await reloadJob())!;
+    const outcome = await processGeneratedResponse({
+      pool: pool as unknown as Parameters<typeof processGeneratedResponse>[0]['pool'],
+      job: fresh,
+      rawText: xml,
+      providerLabel: 'fake',
+      modelId: 'fake-1',
+    });
+
+    expect(outcome.kind).toBe('completed');
+    if (outcome.kind === 'completed') {
+      expect(outcome.observations).toHaveLength(1);
+      expect(outcome.observations[0]!.content).toContain('This deploy unblocked the worker restart path');
+      expect(outcome.observations[0]!.metadata.title).toBe('This deploy unblocked the worker restart path after the queue drained.');
+      expect(outcome.observations[0]!.content).not.toContain('This deploy unblocked the worker restart path after the queue drained.\n\nThis deploy unblocked the worker restart path after the queue drained.');
+    }
   });
 
   it('records token + observation usage when metering is enabled', async () => {
