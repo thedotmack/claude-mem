@@ -888,6 +888,26 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     });
   });
 
+  it('does not reap registered Chroma while another live writer owns the data dir', async () => {
+    const registeredPid = 99_784;
+    writeChromaWriterLock(process.pid, 'other-worker-owner');
+    mockSupervisorRegistryEntries = [{
+      id: 'chroma-mcp',
+      pid: registeredPid,
+      type: 'chroma',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      startToken: 'registered-token',
+    }];
+    ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(async () => true);
+
+    const mgr = ChromaMcpManager.getInstance();
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('already owned by PID');
+
+    expect(killTreeCalls).not.toContain(registeredPid);
+    expect(supervisorUnregisterCalls).not.toContain('chroma-mcp');
+    expect(transportCount).toBe(0);
+  });
+
   it('replaces a stale Chroma writer lock whose PID is dead', async () => {
     const stalePid = 999_998_311;
     deadPids.add(stalePid);

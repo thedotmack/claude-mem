@@ -159,12 +159,8 @@ export class ChromaMcpManager {
     await this.disposeCurrentSubprocess();
 
     const localChromaDataDir = this.getLocalPersistentChromaDataDir();
-    await this.reapRegisteredChromaFromPriorGeneration(localChromaDataDir);
-    this.assertConnectionNotCancelled(connectionGeneration);
-
     const commandArgs = this.buildCommandArgs(localChromaDataDir);
     const uvxPreflightEnv = ChromaMcpManager.getUvxPreflightEnv();
-    getSupervisor().assertCanSpawn('chroma mcp');
 
     // Spawn uvx DIRECTLY (no `cmd.exe` shell wrapper). On Windows, routing through
     // cmd.exe makes it parse the `>`/`<` in the dep-override specs as shell
@@ -174,28 +170,33 @@ export class ChromaMcpManager {
     const uvxSpawnCommand = ChromaMcpManager.resolveUvxCommand();
     const uvxSpawnArgs = commandArgs;
 
-    if (!ChromaMcpManager.isUvxAvailable(uvxSpawnCommand, uvxPreflightEnv, process.platform)) {
-      const message = `uvx executable not found for chroma-mcp (${uvxSpawnCommand})`;
-      recordUvxVectorSearchUnavailable(message);
-      throw new ChromaUnavailableError(message);
-    }
-
-    const spawnEnvironment = this.getSpawnEnv(uvxPreflightEnv);
-
-    await this.prewarmChromaMcp(uvxSpawnCommand, uvxSpawnArgs, spawnEnvironment, connectionGeneration);
-    this.assertConnectionNotCancelled(connectionGeneration);
-
-    clearDependencyStatus('uvx');
-
-    logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
-      command: uvxSpawnCommand,
-      args: uvxSpawnArgs.join(' ')
-    });
-
     try {
       if (localChromaDataDir) {
         this.acquireChromaWriterLock(localChromaDataDir);
       }
+
+      await this.reapRegisteredChromaFromPriorGeneration(localChromaDataDir);
+      this.assertConnectionNotCancelled(connectionGeneration);
+
+      getSupervisor().assertCanSpawn('chroma mcp');
+
+      if (!ChromaMcpManager.isUvxAvailable(uvxSpawnCommand, uvxPreflightEnv, process.platform)) {
+        const message = `uvx executable not found for chroma-mcp (${uvxSpawnCommand})`;
+        recordUvxVectorSearchUnavailable(message);
+        throw new ChromaUnavailableError(message);
+      }
+
+      const spawnEnvironment = this.getSpawnEnv(uvxPreflightEnv);
+
+      await this.prewarmChromaMcp(uvxSpawnCommand, uvxSpawnArgs, spawnEnvironment, connectionGeneration);
+      this.assertConnectionNotCancelled(connectionGeneration);
+
+      clearDependencyStatus('uvx');
+
+      logger.info('CHROMA_MCP', 'Connecting to chroma-mcp via MCP stdio', {
+        command: uvxSpawnCommand,
+        args: uvxSpawnArgs.join(' ')
+      });
 
       this.transport = new StdioClientTransport({
         command: uvxSpawnCommand,
