@@ -99,6 +99,7 @@ export class ChromaMcpManager {
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
   private static chromaLauncherIdentityProbe: ((pid: number, dataDir: string | null) => Promise<boolean | null>) | null = null;
   private static descendantPidProbe: ((pid: number) => Promise<number[]>) | null = null;
+  private static processStartTokenProbe: ((pid: number) => string | null) | null = null;
 
   private constructor() {}
 
@@ -1401,6 +1402,12 @@ export class ChromaMcpManager {
     ChromaMcpManager.descendantPidProbe = probe;
   }
 
+  static setProcessStartTokenProbeForTesting(
+    probe: ((pid: number) => string | null) | null,
+  ): void {
+    ChromaMcpManager.processStartTokenProbe = probe;
+  }
+
   private static ensureUvOnPath(env: Record<string, string>): void {
     const sep = process.platform === 'win32' ? ';' : ':';
     const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
@@ -1487,18 +1494,47 @@ export class ChromaMcpManager {
       pgid: chromaProcess.pid,
     }, chromaProcess);
 
-    const descendantPids = ChromaMcpManager.descendantPidProbe
-      ? await ChromaMcpManager.descendantPidProbe(chromaProcess.pid)
-      : await ChromaMcpManager.collectDescendantPids(chromaProcess.pid);
+    const collectDescendants = async (): Promise<number[]> => (
+      ChromaMcpManager.descendantPidProbe
+        ? await ChromaMcpManager.descendantPidProbe(chromaProcess.pid!)
+        : await ChromaMcpManager.collectDescendantPids(chromaProcess.pid!)
+    );
+    const readStartToken = (pid: number): string | null => (
+      ChromaMcpManager.processStartTokenProbe
+        ? ChromaMcpManager.processStartTokenProbe(pid)
+        : captureProcessStartToken(pid, { fresh: true })
+    );
+
+    const descendantPids = [...new Set(await collectDescendants())];
+    const initialStartTokens = new Map(
+      descendantPids.map(pid => [pid, readStartToken(pid)]),
+    );
+    const confirmedDescendantPids = new Set(await collectDescendants());
     for (const pid of descendantPids) {
+      if (!confirmedDescendantPids.has(pid)) {
+        logger.warn('CHROMA_MCP', 'Skipping descendant registration after parentage changed during discovery', {
+          pid,
+        });
+        continue;
+      }
+
+      const startToken = initialStartTokens.get(pid) ?? null;
+      const confirmedStartToken = readStartToken(pid);
+      if (startToken && confirmedStartToken && startToken !== confirmedStartToken) {
+        logger.warn('CHROMA_MCP', 'Skipping descendant registration after PID reuse during discovery', {
+          pid,
+        });
+        continue;
+      }
+
       getSupervisor().registerProcess(`${CHROMA_DESCENDANT_SUPERVISOR_ID_PREFIX}${pid}`, {
         pid,
         type: 'chroma',
         startedAt: new Date().toISOString(),
-        // Preserve the token captured while this PID is known to be a child.
-        // Empty means fail closed later; ProcessRegistry must not recapture a
-        // potentially recycled PID after this point.
-        startToken: captureProcessStartToken(pid) ?? '',
+        // Only persist an identity observed unchanged around a fresh parentage
+        // check. Empty means fail closed later; ProcessRegistry must not
+        // recapture a potentially recycled PID after this point.
+        startToken: startToken && confirmedStartToken === startToken ? startToken : '',
       });
     }
 

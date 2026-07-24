@@ -208,15 +208,21 @@ let mockSupervisorRegistryEntries: Array<{
   startToken?: string;
 }> = [];
 let supervisorRegisterCalls: Array<{ id: string; pid: number }> = [];
+const supervisorRegisteredStartTokens = new Map<string, string | undefined>();
 let supervisorUnregisterCalls: string[] = [];
 
 mock.module('../../../src/supervisor/index.ts', () => ({
   getSupervisor: () => ({
     assertCanSpawn: () => {},
-    registerProcess: (id: string, processInfo: { pid: number; type: string; startedAt: string; pgid?: number }) => {
+    registerProcess: (id: string, processInfo: { pid: number; type: string; startedAt: string; pgid?: number; startToken?: string }) => {
       supervisorRegisterCalls.push({ id, pid: processInfo.pid });
+      supervisorRegisteredStartTokens.set(id, processInfo.startToken);
       mockSupervisorRegistryEntries = mockSupervisorRegistryEntries.filter(entry => entry.id !== id);
-      mockSupervisorRegistryEntries.push({ id, ...processInfo, startToken: `token-${processInfo.pid}` });
+      mockSupervisorRegistryEntries.push({
+        id,
+        ...processInfo,
+        startToken: processInfo.startToken ?? `token-${processInfo.pid}`,
+      });
     },
     unregisterProcess: (id: string) => {
       supervisorUnregisterCalls.push(id);
@@ -312,6 +318,7 @@ afterAll(() => {
   ChromaMcpManager.setUvxAvailabilityProbeForTesting(null);
   ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(null);
   ChromaMcpManager.setDescendantPidProbeForTesting(null);
+  ChromaMcpManager.setProcessStartTokenProbeForTesting(null);
   process.kill = realProcessKill;
   if (originalPrewarmTimeout === undefined) {
     delete process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS;
@@ -346,6 +353,7 @@ function resetState(): void {
   survivingPids.clear();
   mockSupervisorRegistryEntries = [];
   supervisorRegisterCalls = [];
+  supervisorRegisteredStartTokens.clear();
   supervisorUnregisterCalls = [];
   logEntries.length = 0;
   execSyncCalls = 0;
@@ -366,6 +374,7 @@ function resetState(): void {
   ChromaMcpManager.setUvxAvailabilityProbeForTesting(() => true);
   ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(null);
   ChromaMcpManager.setDescendantPidProbeForTesting(null);
+  ChromaMcpManager.setProcessStartTokenProbeForTesting(null);
   resetDependencyStatusesForTesting();
   if (originalPrewarmTimeout === undefined) {
     delete process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS;
@@ -429,6 +438,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     ChromaMcpManager.setDescendantPidProbeForTesting(async pid =>
       pid === expectedLauncherPid ? [descendantPid] : []
     );
+    ChromaMcpManager.setProcessStartTokenProbeForTesting(() => 'descendant-token');
 
     const mgr = ChromaMcpManager.getInstance();
     await mgr.callTool('chroma_list_collections', { limit: 1 });
@@ -440,6 +450,28 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(supervisorRegisterCalls).toContainEqual({
       id: `chroma-mcp-descendant-${descendantPid}`,
       pid: descendantPid,
+    });
+    expect(supervisorRegisteredStartTokens.get(`chroma-mcp-descendant-${descendantPid}`))
+      .toBe('descendant-token');
+  });
+
+  it('does not bind a reused PID to a Chroma descendant record', async () => {
+    const expectedLauncherPid = 100_001;
+    const reusedPid = 100_002;
+    const startTokens = ['original-token', 'replacement-token'];
+    ChromaMcpManager.setDescendantPidProbeForTesting(async pid =>
+      pid === expectedLauncherPid ? [reusedPid] : []
+    );
+    ChromaMcpManager.setProcessStartTokenProbeForTesting(() =>
+      startTokens.shift() ?? 'replacement-token'
+    );
+
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(supervisorRegisterCalls).not.toContainEqual({
+      id: `chroma-mcp-descendant-${reusedPid}`,
+      pid: reusedPid,
     });
   });
 
