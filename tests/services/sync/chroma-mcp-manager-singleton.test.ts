@@ -475,6 +475,51 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     });
   });
 
+  it('handles transport close while descendant discovery is pending', async () => {
+    const managerForTesting = ChromaMcpManager as unknown as typeof ChromaMcpManager & {
+      killProcessTree: (pid: number) => Promise<void>;
+    };
+    const originalKillProcessTree = managerForTesting.killProcessTree;
+    const cleanupPids: number[] = [];
+    let discoveryStarted: (() => void) | null = null;
+    let finishDiscovery: (() => void) | null = null;
+    const started = new Promise<void>(resolve => {
+      discoveryStarted = resolve;
+    });
+    ChromaMcpManager.setDescendantPidProbeForTesting(async () => {
+      discoveryStarted?.();
+      await new Promise<void>(resolve => {
+        finishDiscovery = resolve;
+      });
+      return [];
+    });
+    managerForTesting.killProcessTree = async pid => {
+      cleanupPids.push(pid);
+    };
+
+    try {
+      const mgr = ChromaMcpManager.getInstance();
+      const pendingCall = mgr.callTool('chroma_list_collections', { limit: 1 });
+      await started;
+
+      const transport = transportInstances[0];
+      expect(transport.onclose).not.toBeNull();
+      transport.onclose?.();
+      finishDiscovery?.();
+
+      await expect(pendingCall).rejects.toThrow('closed during process registration');
+      await waitForCondition(() => !existsSync(chromaWriterLockPath()));
+      expect(cleanupPids).toContain(transport._process.pid);
+      expect(supervisorUnregisterCalls).toContain('chroma-mcp');
+      expect(logEntries.some(entry =>
+        entry.message === 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff'
+      )).toBe(true);
+    } finally {
+      finishDiscovery?.();
+      managerForTesting.killProcessTree = originalKillProcessTree;
+    }
+  });
+
   it('reaps a verified chroma-mcp tree from the prior worker generation before spawning', async () => {
     const orphanPid = 99_777;
     mockSupervisorRegistryEntries = [{

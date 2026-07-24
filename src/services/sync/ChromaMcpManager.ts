@@ -258,15 +258,12 @@ export class ChromaMcpManager {
     }
     clearTimeout(timeoutId!);
 
-    this.connected = true;
-    await this.registerManagedProcess();
-    clearDependencyStatus('chroma');
-
-    logger.info('CHROMA_MCP', 'Connected to chroma-mcp successfully');
-
     const currentTransport = this.transport;
-    const currentTrackedPid = (this.transport as unknown as { _process?: ChildProcess })._process?.pid;
-    this.transport.onclose = () => {
+    if (!currentTransport) {
+      throw new ChromaUnavailableError('chroma-mcp transport missing after MCP handshake');
+    }
+    const currentTrackedPid = (currentTransport as unknown as { _process?: ChildProcess })._process?.pid;
+    currentTransport.onclose = () => {
       if (this.transport !== currentTransport) {
         logger.debug('CHROMA_MCP', 'Ignoring stale onclose from previous transport');
         return;
@@ -292,6 +289,16 @@ export class ChromaMcpManager {
       // already exited (#2313).
       this.scheduleUnexpectedCloseCleanup(currentTrackedPid);
     };
+
+    this.connected = true;
+    await this.registerManagedProcess(currentTransport, connectionGeneration);
+    this.assertConnectionNotCancelled(connectionGeneration);
+    if (this.transport !== currentTransport || !this.connected) {
+      throw new ChromaUnavailableError('chroma-mcp closed during process registration');
+    }
+    clearDependencyStatus('chroma');
+
+    logger.info('CHROMA_MCP', 'Connected to chroma-mcp successfully');
   }
 
   private scheduleUnexpectedCloseCleanup(pid: number | undefined): void {
@@ -1468,8 +1475,11 @@ export class ChromaMcpManager {
     };
   }
 
-  private async registerManagedProcess(): Promise<void> {
-    const chromaProcess = (this.transport as unknown as { _process?: ChildProcess })._process;
+  private async registerManagedProcess(
+    transport: StdioClientTransport,
+    connectionGeneration: number,
+  ): Promise<void> {
+    const chromaProcess = (transport as unknown as { _process?: ChildProcess })._process;
     if (!chromaProcess?.pid) {
       return;
     }
@@ -1493,6 +1503,9 @@ export class ChromaMcpManager {
       // and shutdown falls back to single-PID kill (see signalProcess()).
       pgid: chromaProcess.pid,
     }, chromaProcess);
+    chromaProcess.once('exit', () => {
+      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+    });
 
     const collectDescendants = async (): Promise<number[]> => (
       ChromaMcpManager.descendantPidProbe
@@ -1506,10 +1519,16 @@ export class ChromaMcpManager {
     );
 
     const descendantPids = [...new Set(await collectDescendants())];
+    if (this.transport !== transport || this.connectionGeneration !== connectionGeneration) {
+      return;
+    }
     const initialStartTokens = new Map(
       descendantPids.map(pid => [pid, readStartToken(pid)]),
     );
     const confirmedDescendantPids = new Set(await collectDescendants());
+    if (this.transport !== transport || this.connectionGeneration !== connectionGeneration) {
+      return;
+    }
     for (const pid of descendantPids) {
       if (!confirmedDescendantPids.has(pid)) {
         logger.warn('CHROMA_MCP', 'Skipping descendant registration after parentage changed during discovery', {
@@ -1537,9 +1556,5 @@ export class ChromaMcpManager {
         startToken: startToken && confirmedStartToken === startToken ? startToken : '',
       });
     }
-
-    chromaProcess.once('exit', () => {
-      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
-    });
   }
 }
