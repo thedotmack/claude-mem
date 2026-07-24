@@ -1,33 +1,26 @@
 import { describe, it, expect } from 'bun:test';
-import { readFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { antigravityCliAdapter } from '../src/cli/adapters/antigravity-cli.js';
 
 const INSTALLER_PATH = 'src/services/integrations/AntigravityCliHooksInstaller.ts';
 
-describe('AntigravityCliHooksInstaller - event mapping (B0-confirmed 7-event map)', () => {
+describe('AntigravityCliHooksInstaller - event mapping (official 5-event hooks.json schema)', () => {
   const src = readFileSync(INSTALLER_PATH, 'utf-8');
 
-  it('maps SessionStart to context', () => {
-    expect(src).toContain("'SessionStart': 'context'");
+  it('maps PreInvocation to context', () => {
+    expect(src).toContain("'PreInvocation': 'context'");
   });
 
-  it('maps BeforeAgent to session-init, not user-message', () => {
-    expect(src).toContain("'BeforeAgent': 'session-init'");
+  it('maps PreToolUse, PostToolUse, and PostInvocation to observation', () => {
+    expect(src).toContain("'PreToolUse': 'observation'");
+    expect(src).toContain("'PostToolUse': 'observation'");
+    expect(src).toContain("'PostInvocation': 'observation'");
   });
 
-  it('maps AfterAgent, BeforeTool, AfterTool, and Notification to observation', () => {
-    expect(src).toContain("'AfterAgent': 'observation'");
-    expect(src).toContain("'BeforeTool': 'observation'");
-    expect(src).toContain("'AfterTool': 'observation'");
-    expect(src).toContain("'Notification': 'observation'");
-  });
-
-  it('maps PreCompress to summarize', () => {
-    expect(src).toContain("'PreCompress': 'summarize'");
-  });
-
-  it('should not map SessionEnd (session-complete has no handler; worker self-completes)', () => {
-    expect(src).not.toContain("'SessionEnd':");
+  it('maps Stop to summarize', () => {
+    expect(src).toContain("'Stop': 'summarize'");
   });
 
   it('uses the antigravity-cli hook command string, not gemini-cli', () => {
@@ -35,9 +28,13 @@ describe('AntigravityCliHooksInstaller - event mapping (B0-confirmed 7-event map
     expect(src).not.toContain('hook gemini-cli');
   });
 
-  it('targets the shared ~/.gemini config tree (settings.json + GEMINI.md), not a separate Antigravity-only file', () => {
-    expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'settings.json')");
-    expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'GEMINI.md')");
+  it('writes hooks to ~/.gemini/config/hooks.json (agy does not read hooks from settings.json)', () => {
+    expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'config', 'hooks.json')");
+    expect(src).not.toContain('mergeHooksIntoSettings');
+  });
+
+  it('wraps only tool events in matcher groups; invocation/Stop events use bare entries', () => {
+    expect(src).toContain("new Set(['PreToolUse', 'PostToolUse'])");
   });
 
   it('dual-writes MCP config to both B0-confirmed candidate paths', () => {
@@ -55,7 +52,7 @@ describe('AntigravityCliHooksInstaller - event mapping (B0-confirmed 7-event map
   });
 });
 
-describe('antigravityCliAdapter - normalizeInput', () => {
+describe('antigravityCliAdapter - normalizeInput (flat payload, no event-name field)', () => {
   it('falls back to process.cwd() when no cwd and no GEMINI_*/CLAUDE_PROJECT_DIR env vars are set', () => {
     const savedCwd = process.env.GEMINI_CWD;
     const savedProjectDir = process.env.GEMINI_PROJECT_DIR;
@@ -73,68 +70,126 @@ describe('antigravityCliAdapter - normalizeInput', () => {
     }
   });
 
-  it('prefers an explicit cwd over any env var fallback', () => {
-    const result = antigravityCliAdapter.normalizeInput({ cwd: '/tmp/explicit-cwd' });
-    expect(result.cwd).toBe('/tmp/explicit-cwd');
+  it('prefers workspacePaths[0] over an explicit cwd', () => {
+    const result = antigravityCliAdapter.normalizeInput({
+      workspacePaths: ['/tmp/workspace'],
+      cwd: '/tmp/explicit-cwd',
+    });
+    expect(result.cwd).toBe('/tmp/workspace');
   });
 
   it('rejects an invalid (empty) cwd', () => {
     expect(() => antigravityCliAdapter.normalizeInput({ cwd: '' })).toThrow('adapter rejected input: invalid_cwd');
   });
 
-  it('maps AfterAgent prompt_response into toolName/toolInput/toolResponse', () => {
-    const result = antigravityCliAdapter.normalizeInput({
-      cwd: '/tmp',
-      hook_event_name: 'AfterAgent',
-      prompt: 'hi',
-      prompt_response: 'hello there',
-    });
-    expect(result.toolName).toBe('AntigravityProvider');
-    expect(result.toolInput).toEqual({ prompt: 'hi' });
-    expect(result.toolResponse).toEqual({ response: 'hello there' });
+  it('maps a flat PostInvocation payload using the latest transcript prompt and response', () => {
+    const transcriptDir = mkdtempSync(join(tmpdir(), 'claude-mem-antigravity-'));
+    try {
+      const transcriptPath = join(transcriptDir, 'transcript.jsonl');
+      writeFileSync(
+        transcriptPath,
+        [
+          { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'older prompt' },
+          { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'older response' },
+          { step_index: 2, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'latest prompt' },
+          { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'latest response' },
+          { step_index: 4, source: 'MODEL', type: 'RUN_COMMAND', content: 'not the assistant response' },
+        ].map(node => JSON.stringify(node)).join('\n'),
+      );
+
+      const result = antigravityCliAdapter.normalizeInput({
+        conversationId: 'conversation-123',
+        workspacePaths: ['/tmp/workspace'],
+        transcriptPath,
+        invocationNum: 2,
+        initialNumSteps: 1,
+      });
+
+      expect(result.sessionId).toBe('conversation-123');
+      expect(result.cwd).toBe('/tmp/workspace');
+      expect(result.prompt).toBe('latest prompt');
+      expect(result.toolName).toBe('AntigravityProvider');
+      expect(result.toolInput).toEqual({ prompt: 'latest prompt' });
+      expect(result.toolResponse).toEqual({ response: 'latest response' });
+    } finally {
+      rmSync(transcriptDir, { recursive: true, force: true });
+    }
   });
 
-  it('marks a BeforeTool call as pre-execution when no response is present', () => {
+  it('detects a flat PreToolUse payload by the absence of the error key', () => {
     const result = antigravityCliAdapter.normalizeInput({
-      cwd: '/tmp',
-      hook_event_name: 'BeforeTool',
-      tool_name: 'Read',
+      workspacePaths: ['/tmp'],
+      toolCall: { name: 'Read', args: { path: '/tmp/file.txt' } },
     });
+
+    expect(result.toolName).toBe('Read');
+    expect(result.toolInput).toEqual({ path: '/tmp/file.txt' });
     expect(result.toolResponse).toEqual({ _preExecution: true });
   });
 
-  it('maps Notification fields into toolName/toolInput/toolResponse', () => {
+  it('detects a flat PostToolUse payload by the presence of the error key', () => {
     const result = antigravityCliAdapter.normalizeInput({
-      cwd: '/tmp',
-      hook_event_name: 'Notification',
-      notification_type: 'permission',
-      message: 'allow?',
-      details: { foo: 'bar' },
+      workspacePaths: ['/tmp'],
+      toolCall: { name: 'Write', args: { path: '/tmp/file.txt' } },
+      error: '',
     });
-    expect(result.toolName).toBe('AntigravityNotification');
-    expect(result.toolInput).toEqual({ notification_type: 'permission', message: 'allow?' });
-    expect(result.toolResponse).toEqual({ details: { foo: 'bar' } });
+
+    expect(result.toolName).toBe('Write');
+    expect(result.toolInput).toEqual({ path: '/tmp/file.txt' });
+    expect(result.toolResponse).toEqual({ status: 'completed' });
+  });
+
+  it('surfaces a PostToolUse error string as the tool response', () => {
+    const result = antigravityCliAdapter.normalizeInput({
+      workspacePaths: ['/tmp'],
+      toolCall: { name: 'Write', args: {} },
+      error: 'permission denied',
+    });
+    expect(result.toolResponse).toEqual({ error: 'permission denied' });
+  });
+
+  it('does not treat a Stop payload (error key, no toolCall) as a tool event', () => {
+    const result = antigravityCliAdapter.normalizeInput({
+      workspacePaths: ['/tmp'],
+      error: '',
+      executionNum: 0,
+      terminationReason: 'NO_TOOL_CALL',
+    });
+    expect(result.toolName).toBeUndefined();
   });
 });
 
-describe('antigravityCliAdapter - formatOutput', () => {
-  it('strips ANSI escape codes from systemMessage (real bug fix carried over from Gemini CLI adapter)', () => {
+describe('antigravityCliAdapter - formatOutput (strict protojson contract)', () => {
+  it('returns injectSteps with ANSI codes stripped when context is present', () => {
     const raw = '[31mRed text[0m';
-    const result = antigravityCliAdapter.formatOutput({ systemMessage: raw }) as Record<string, unknown>;
-    expect(result.systemMessage).toBe('Red text');
+    const result = antigravityCliAdapter.formatOutput(
+      { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: raw } },
+      {},
+    ) as Record<string, any>;
+    expect(result.injectSteps).toEqual([{ ephemeralMessage: 'Red text' }]);
+    expect(result.continue).toBeUndefined();
   });
 
-  it('defaults continue to true and passes through hookSpecificOutput.additionalContext', () => {
-    const result = antigravityCliAdapter.formatOutput({
-      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'ctx' },
-    }) as Record<string, unknown>;
-    expect(result.continue).toBe(true);
-    expect(result.hookSpecificOutput).toEqual({ additionalContext: 'ctx' });
+  it('returns allowTool:true for a PreToolUse raw input (missing allowTool would deny all tools)', () => {
+    const result = antigravityCliAdapter.formatOutput(
+      {},
+      { toolCall: { name: 'Read', args: {} } },
+    );
+    expect(result).toEqual({ allowTool: true });
   });
 
-  it('passes through suppressOutput when explicitly set', () => {
-    const result = antigravityCliAdapter.formatOutput({ suppressOutput: true }) as Record<string, unknown>;
-    expect(result.suppressOutput).toBe(true);
+  it('returns an empty object for non-preTool no-op results (no unknown proto fields)', () => {
+    expect(antigravityCliAdapter.formatOutput({ suppressOutput: true }, { error: '' })).toEqual({});
+  });
+
+  it('returns a deny decision when the hook blocks', () => {
+    const result = antigravityCliAdapter.formatOutput(
+      { continue: false, reason: 'nope' },
+      { toolCall: { name: 'Read', args: {} } },
+    ) as Record<string, any>;
+    expect(result.allowTool).toBe(false);
+    expect(result.decision).toBe('deny');
+    expect(result.reason).toBe('nope');
   });
 });
 
