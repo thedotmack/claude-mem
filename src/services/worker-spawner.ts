@@ -69,10 +69,44 @@ function clearWorkerSpawnAttempted(): void {
 
 export type WorkerStartResult = 'ready' | 'warming' | 'dead';
 
+type WorkerStartDeps = {
+  cleanStalePidFile: typeof cleanStalePidFile;
+  getPlatformTimeout: typeof getPlatformTimeout;
+  spawnDaemon: typeof spawnDaemon;
+  touchPidFile: typeof touchPidFile;
+  isPortInUse: typeof isPortInUse;
+  waitForHealth: typeof waitForHealth;
+  waitForReadiness: typeof waitForReadiness;
+  acquireSpawnLock: typeof acquireSpawnLock;
+  releaseSpawnLock: typeof releaseSpawnLock;
+  isPidAlive: typeof isPidAlive;
+  shouldSkipSpawnOnWindows: typeof shouldSkipSpawnOnWindows;
+  markWorkerSpawnAttempted: typeof markWorkerSpawnAttempted;
+  clearWorkerSpawnAttempted: typeof clearWorkerSpawnAttempted;
+};
+
+const defaultWorkerStartDeps: WorkerStartDeps = {
+  cleanStalePidFile,
+  getPlatformTimeout,
+  spawnDaemon,
+  touchPidFile,
+  isPortInUse,
+  waitForHealth,
+  waitForReadiness,
+  acquireSpawnLock,
+  releaseSpawnLock,
+  isPidAlive,
+  shouldSkipSpawnOnWindows,
+  markWorkerSpawnAttempted,
+  clearWorkerSpawnAttempted,
+};
+
 export async function ensureWorkerStarted(
   port: number,
-  workerScriptPath: string
+  workerScriptPath: string,
+  deps: Partial<WorkerStartDeps> = {}
 ): Promise<WorkerStartResult> {
+  const workerStartDeps = { ...defaultWorkerStartDeps, ...deps };
   if (!workerScriptPath) {
     logger.error('SYSTEM', 'ensureWorkerStarted called with empty workerScriptPath — caller bug');
     return 'dead';
@@ -86,17 +120,17 @@ export async function ensureWorkerStarted(
     return 'dead';
   }
 
-  const pidFileStatus = cleanStalePidFile();
+  const pidFileStatus = workerStartDeps.cleanStalePidFile();
   if (pidFileStatus === 'alive') {
     logger.info('SYSTEM', 'Worker PID file points to a live process, skipping duplicate spawn');
-    const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+    const ready = await workerStartDeps.waitForReadiness(port, workerStartDeps.getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
     if (ready) {
-      clearWorkerSpawnAttempted();
+      workerStartDeps.clearWorkerSpawnAttempted();
       logger.info('SYSTEM', 'Worker became ready while waiting on live PID');
       return 'ready';
     }
-    const workerStillHealthy = await waitForHealth(port, 1000);
-    const workerPidStillAlive = cleanStalePidFile() === 'alive';
+    const workerStillHealthy = await workerStartDeps.waitForHealth(port, 1000);
+    const workerPidStillAlive = workerStartDeps.cleanStalePidFile() === 'alive';
     if (!workerStillHealthy && !workerPidStillAlive) {
       logger.error('SYSTEM', 'Live PID disappeared before readiness endpoint became available');
       return 'dead';
@@ -105,9 +139,9 @@ export async function ensureWorkerStarted(
     return 'warming';
   }
 
-  if (await waitForHealth(port, 1000)) {
-    clearWorkerSpawnAttempted();
-    const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+  if (await workerStartDeps.waitForHealth(port, 1000)) {
+    workerStartDeps.clearWorkerSpawnAttempted();
+    const ready = await workerStartDeps.waitForReadiness(port, workerStartDeps.getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
     if (!ready) {
       logger.warn('SYSTEM', 'Worker is alive but readiness timed out — proceeding anyway');
     }
@@ -115,13 +149,13 @@ export async function ensureWorkerStarted(
     return ready ? 'ready' : 'warming';
   }
 
-  const portInUse = await isPortInUse(port);
+  const portInUse = await workerStartDeps.isPortInUse(port);
   if (portInUse) {
     logger.info('SYSTEM', 'Port in use, waiting for worker to become healthy');
-    const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
+    const healthy = await workerStartDeps.waitForHealth(port, workerStartDeps.getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
     if (healthy) {
-      clearWorkerSpawnAttempted();
-      const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+      workerStartDeps.clearWorkerSpawnAttempted();
+      const ready = await workerStartDeps.waitForReadiness(port, workerStartDeps.getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
       logger.info('SYSTEM', 'Worker is now healthy');
       return ready ? 'ready' : 'warming';
     }
@@ -129,7 +163,7 @@ export async function ensureWorkerStarted(
     return 'dead';
   }
 
-  if (shouldSkipSpawnOnWindows()) {
+  if (workerStartDeps.shouldSkipSpawnOnWindows()) {
     logger.warn('SYSTEM', 'Worker unavailable on Windows — skipping spawn (recent attempt failed within cooldown)');
     return 'dead';
   }
@@ -141,13 +175,13 @@ export async function ensureWorkerStarted(
   // successor.) Losing the lock never fails this path; the loser skips its
   // spawn and waits for the holder's worker. The winner holds the lock through
   // the readiness wait and releases it in finally on every exit path.
-  const spawnLockHeld = acquireSpawnLock();
+  const spawnLockHeld = workerStartDeps.acquireSpawnLock();
   let spawnedPid: number | undefined;
   try {
     if (spawnLockHeld) {
       logger.info('SYSTEM', 'Starting worker daemon', { workerScriptPath });
-      markWorkerSpawnAttempted();
-      spawnedPid = spawnDaemon(workerScriptPath, port);
+      workerStartDeps.markWorkerSpawnAttempted();
+      spawnedPid = workerStartDeps.spawnDaemon(workerScriptPath, port);
       if (spawnedPid === undefined) {
         logger.error('SYSTEM', 'Failed to spawn worker daemon');
         return 'dead';
@@ -156,11 +190,11 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Another launcher holds the spawn lock — skipping duplicate spawn and waiting for its worker');
     }
 
-    const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+    const ready = await workerStartDeps.waitForReadiness(port, workerStartDeps.getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
     if (!ready) {
-      const workerStillHealthy = await waitForHealth(port, 1000);
-      const workerPidStillAlive = cleanStalePidFile() === 'alive';
-      const spawnedProcessStillAlive = spawnedPid !== undefined && spawnedPid > 0 && isPidAlive(spawnedPid);
+      const workerStillHealthy = await workerStartDeps.waitForHealth(port, 1000);
+      const workerPidStillAlive = workerStartDeps.cleanStalePidFile() === 'alive';
+      const spawnedProcessStillAlive = spawnedPid !== undefined && spawnedPid > 0 && workerStartDeps.isPidAlive(spawnedPid);
       if (!workerStillHealthy && !workerPidStillAlive && !spawnedProcessStillAlive) {
         logger.error('SYSTEM', spawnLockHeld
           ? 'Worker exited before readiness endpoint became available'
@@ -172,15 +206,15 @@ export async function ensureWorkerStarted(
         : 'Spawn-lock holder\'s worker not ready within window');
       return 'warming';
     }
-    clearWorkerSpawnAttempted();
+    workerStartDeps.clearWorkerSpawnAttempted();
     // touchPidFile is existsSync-guarded and merely refreshes the live worker's
     // pid-file mtime — correct for lock losers too, since the worker IS up.
-    touchPidFile();
+    workerStartDeps.touchPidFile();
     logger.info('SYSTEM', spawnLockHeld
       ? 'Worker started successfully'
       : 'Worker is up (started by another launcher)');
     return 'ready';
   } finally {
-    if (spawnLockHeld) releaseSpawnLock();
+    if (spawnLockHeld) workerStartDeps.releaseSpawnLock();
   }
 }
