@@ -1,6 +1,13 @@
-
-import { describe, it, expect, mock } from 'bun:test';\nimport { readFileSync } from 'fs';\nimport { join } from 'path';
+import { describe, it, expect, mock } from 'bun:test';
+import { readFileSync, mkdtempSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
+
+// Isolate the Windows spawn-cooldown marker (.worker-start-attempted) from the
+// real ~/.claude-mem so spawning in one test cannot cooldown-block the next.
+const TEST_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-spawner-test-'));
+process.env.CLAUDE_MEM_DATA_DIR = TEST_DATA_DIR;
 
 const processManager = {
   cleanStalePidFile: mock(() => 'dead' as 'alive' | 'dead'),
@@ -68,6 +75,7 @@ function resetMocks(): void {
   spawnGate.acquireSpawnLock.mockReset();
   spawnGate.acquireSpawnLock.mockReturnValue(true);
   spawnGate.releaseSpawnLock.mockReset();
+  rmSync(join(TEST_DATA_DIR, '.worker-start-attempted'), { force: true });
 }
 
 describe('ensureWorkerStarted startup readiness', () => {
@@ -123,7 +131,9 @@ describe('ensureWorkerStarted startup readiness', () => {
 
   it('self-heals when a live PID never becomes ready before timeout (#3224)', async () => {
     resetMocks();
-    processManager.cleanStalePidFile.mockReturnValue('alive');
+    // 'alive' once for the initial PID-file check; after removePidFile() the
+    // post-spawn readiness-timeout re-check sees the cleared file as 'dead'.
+    processManager.cleanStalePidFile.mockReturnValueOnce('alive');
 
     const result = await ensureWorkerStarted(39003, import.meta.filename);
 
