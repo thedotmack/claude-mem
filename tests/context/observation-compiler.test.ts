@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import {
   buildTimeline,
@@ -290,6 +291,46 @@ describe('context compiler platform scoping', () => {
       ]);
     } finally {
       store.close();
+    }
+  });
+});
+
+describe('concept exact-match injection (#3379)', () => {
+  const config: ContextConfig = {
+    totalObservationCount: 20,
+    fullObservationCount: 3,
+    sessionCount: 20,
+    showReadTokens: true,
+    showWorkTokens: true,
+    showSavingsAmount: true,
+    showSavingsPercent: true,
+    observationTypes: new Set(['discovery']),
+    observationConcepts: new Set(['gotcha']),
+    fullObservationField: 'narrative',
+    showLastSummary: true,
+    showLastMessage: false,
+  };
+
+  it('excludes a row whose stored concept carries a "keyword: description" prefix', () => {
+    // The injection query matches concepts exactly (`WHERE value IN (...)`).
+    // A row stored as "gotcha: x" must NOT match — this is the #3379 defect
+    // that the parser normalization and the v49 backfill remove at the write
+    // side; the query itself intentionally stays exact-match.
+    const db = new Database(':memory:');
+    try {
+      const store = new SessionStore(db);
+      const sessionDbId = store.createSDKSession('content-3379', 'concept-project', 'prompt');
+      store.ensureMemorySessionIdRegistered(sessionDbId, 'mem-3379');
+      // Insert directly: the fresh store is already past v49, so this mimics
+      // a malformed row written before the migration existed.
+      db.prepare(`
+        INSERT INTO observations (memory_session_id, project, type, title, concepts, created_at, created_at_epoch)
+        VALUES ('mem-3379', 'concept-project', 'discovery', 'MALFORMED_CONCEPT_OBS', '["gotcha: x"]', ?, ?)
+      `).run(new Date().toISOString(), 1_700_000_000_000);
+
+      expect(queryObservationsMulti(store, ['concept-project'], config)).toEqual([]);
+    } finally {
+      db.close();
     }
   });
 });
