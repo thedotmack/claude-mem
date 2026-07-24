@@ -181,3 +181,26 @@ describe('ChromaSync corrupt-collection handling', () => {
     expect((ChromaSyncState.resetAll as CallToolMock).mock.calls.length).toBe(1);
   });
 });
+
+describe('ChromaSync project discovery', () => {
+  it('discovers projects that have only summaries or only prompts, not just observation-bearing ones', () => {
+    const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
+    const db = new Database(':memory:');
+    db.run('CREATE TABLE observations (project TEXT)');
+    db.run('CREATE TABLE session_summaries (project TEXT)');
+    db.run('CREATE TABLE sdk_sessions (project TEXT)');
+    db.run("INSERT INTO observations VALUES ('has-observations')");
+    db.run("INSERT INTO session_summaries VALUES ('summaries-only')");
+    db.run("INSERT INTO sdk_sessions VALUES ('prompts-only'), ('has-observations'), (''), (NULL)");
+
+    const discovered = (ChromaSync as unknown as {
+      discoverProjects(store: { db: typeof db }): { project: string }[];
+    }).discoverProjects({ db });
+
+    expect(discovered.map(row => row.project).sort()).toEqual([
+      'has-observations',
+      'prompts-only',
+      'summaries-only'
+    ]);
+  });
+});

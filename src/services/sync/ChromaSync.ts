@@ -1181,6 +1181,26 @@ export class ChromaSync {
    * to bound CPU and memory pressure from concurrent Chroma embedding operations.
    * A re-entrant guard prevents overlapping backfill runs from accumulating.
    */
+  /**
+   * Every project that has anything to sync. Observations, summaries, and
+   * prompts each reach Chroma through the backfill, and a project can have
+   * summaries or prompts without a single observation — discovering from
+   * observations alone silently strands those projects' rows.
+   * (session_summaries carries its own project column; prompts resolve
+   * theirs through sdk_sessions, the same join backfillPrompts uses.)
+   */
+  private static discoverProjects(store: SessionStore): { project: string }[] {
+    return store.db.prepare(`
+      SELECT DISTINCT project FROM (
+        SELECT project FROM observations
+        UNION
+        SELECT project FROM session_summaries
+        UNION
+        SELECT project FROM sdk_sessions
+      ) WHERE project IS NOT NULL AND project != ?
+    `).all('') as { project: string }[];
+  }
+
   static async backfillAllProjects(store: SessionStore): Promise<void> {
     if (ChromaSync.backfillInProgress) {
       logger.info('CHROMA_SYNC', 'Backfill already in progress, skipping duplicate run');
@@ -1191,9 +1211,7 @@ export class ChromaSync {
 
     ChromaSync.backfillInProgress = true;
     try {
-      const projects = store.db.prepare(
-        'SELECT DISTINCT project FROM observations WHERE project IS NOT NULL AND project != ?'
-      ).all('') as { project: string }[];
+      const projects = ChromaSync.discoverProjects(store);
 
       logger.info('CHROMA_SYNC', `Backfill check for ${projects.length} projects`);
 
