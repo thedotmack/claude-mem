@@ -24,6 +24,7 @@ async function dispatchToWorker(
       tool_name: input.toolName,
       tool_input: input.toolInput,
       tool_response: input.toolResponse,
+      toolUseId: input.toolUseId,
       cwd: input.cwd,
       agentId: input.agentId,
       agentType: input.agentType,

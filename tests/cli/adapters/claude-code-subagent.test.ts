@@ -2,6 +2,16 @@ import { describe, it, expect } from 'bun:test';
 import { claudeCodeAdapter } from '../../../src/cli/adapters/claude-code.js';
 
 describe('claudeCodeAdapter.normalizeInput — subagent fields', () => {
+  it('preserves the Claude tool-use ID for exactly-once observation admission', () => {
+    const normalized = claudeCodeAdapter.normalizeInput({
+      session_id: 's1',
+      cwd: '/tmp',
+      tool_use_id: 'toolu_123',
+    });
+
+    expect(normalized.toolUseId).toBe('toolu_123');
+  });
+
   it('extracts agentId and agentType when both are present', () => {
     const normalized = claudeCodeAdapter.normalizeInput({
       session_id: 's1',

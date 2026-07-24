@@ -17,6 +17,7 @@ export const claudeCodeAdapter: PlatformAdapter = {
       cwd,
       prompt: r.prompt,
       toolName: r.tool_name,
+      toolUseId: pickAgentField(r.tool_use_id ?? r.toolUseId),
       toolInput: r.tool_input,
       toolResponse: r.tool_response,
       transcriptPath: r.transcript_path,
