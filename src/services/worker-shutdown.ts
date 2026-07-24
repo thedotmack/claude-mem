@@ -64,7 +64,9 @@ export interface ShutdownSequenceOptions {
    * worker and re-parent to init.
    */
   lastResortChildTreeKill: () => Promise<void>;
-  /** Defaults to gracefulDeadlineMs when omitted. */
+  /** Runs after the child-tree phase, even when that phase fails or times out. */
+  lastResortSupervisorStop: () => Promise<void>;
+  /** Per-phase deadline. Defaults to gracefulDeadlineMs when omitted. */
   lastResortDeadlineMs?: number;
   restartHandoff: RestartHandoffDeps;
 }
@@ -130,32 +132,18 @@ export async function runShutdownSequence(options: ShutdownSequenceOptions): Pro
   }
 
   const lastResortDeadlineMs = options.lastResortDeadlineMs ?? options.gracefulDeadlineMs;
-  let lastResortDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
-  const lastResortDeadline = new Promise<'deadline'>((resolve) => {
-    lastResortDeadlineTimer = setTimeout(() => resolve('deadline'), lastResortDeadlineMs);
-    lastResortDeadlineTimer.unref?.();
-  });
-  try {
-    const outcome = await Promise.race([
-      options.lastResortChildTreeKill().then(() => 'complete' as const),
-      lastResortDeadline,
-    ]);
-    if (outcome === 'deadline') {
-      logger.warn('SYSTEM', 'Last-resort child tree-kill deadline exceeded — proceeding', {
-        deadlineMs: lastResortDeadlineMs,
-        reason: options.reason,
-      });
-    }
-  } catch (error: unknown) {
-    logger.error(
-      'SYSTEM',
-      'Last-resort child tree-kill failed — proceeding',
-      { reason: options.reason },
-      error instanceof Error ? error : new Error(String(error))
-    );
-  } finally {
-    if (lastResortDeadlineTimer !== undefined) clearTimeout(lastResortDeadlineTimer);
-  }
+  await runBoundedLastResortPhase(
+    'child tree-kill',
+    options.lastResortChildTreeKill,
+    lastResortDeadlineMs,
+    options.reason,
+  );
+  await runBoundedLastResortPhase(
+    'supervisor stop',
+    options.lastResortSupervisorStop,
+    lastResortDeadlineMs,
+    options.reason,
+  );
 
   // Successor handoff — ONLY for restart; 'stop' and signal shutdowns stay
   // kill-only. The old worker spawns its replacement as its final act, after
@@ -182,6 +170,40 @@ export async function runShutdownSequence(options: ShutdownSequenceOptions): Pro
       { port: handoff.port },
       error instanceof Error ? error : new Error(String(error))
     );
+  }
+}
+
+async function runBoundedLastResortPhase(
+  phase: string,
+  run: () => Promise<void>,
+  deadlineMs: number,
+  reason: WorkerShutdownReason,
+): Promise<void> {
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<'deadline'>((resolve) => {
+    deadlineTimer = setTimeout(() => resolve('deadline'), deadlineMs);
+    deadlineTimer.unref?.();
+  });
+  try {
+    const outcome = await Promise.race([
+      run().then(() => 'complete' as const),
+      deadline,
+    ]);
+    if (outcome === 'deadline') {
+      logger.warn('SYSTEM', `Last-resort ${phase} deadline exceeded — proceeding`, {
+        deadlineMs,
+        reason,
+      });
+    }
+  } catch (error: unknown) {
+    logger.error(
+      'SYSTEM',
+      `Last-resort ${phase} failed — proceeding`,
+      { reason },
+      error instanceof Error ? error : new Error(String(error))
+    );
+  } finally {
+    if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
   }
 }
 

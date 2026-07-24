@@ -824,16 +824,11 @@ export class WorkerService implements WorkerRef {
       }),
       gracefulDeadlineMs: getPlatformTimeout(10000),
       lastResortDeadlineMs: getPlatformTimeout(10000),
-      lastResortChildTreeKill: async () => {
-        // Chroma must snapshot and signal descendants while its root PID is
-        // still alive. The sequence-level deadline keeps the restart handoff
-        // bounded if MCP close hangs after that tree kill.
-        try {
-          await this.chromaMcpManager?.stop();
-        } finally {
-          await getSupervisor().stop();
-        }
-      },
+      // Chroma gets the first bounded phase so it can snapshot and signal
+      // descendants while the root is alive. The sequencer always starts the
+      // supervisor phase next, even if MCP close never settles.
+      lastResortChildTreeKill: () => this.chromaMcpManager?.stop() ?? Promise.resolve(),
+      lastResortSupervisorStop: () => getSupervisor().stop(),
       restartHandoff: {
         port: getWorkerPort(),
         portFreeTimeoutMs: getPlatformTimeout(5000),
