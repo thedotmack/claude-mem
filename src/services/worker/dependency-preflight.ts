@@ -12,6 +12,7 @@ import {
   snapshotDependencyHealth,
   type DependencyHealthSnapshot,
 } from '../../shared/dependency-health.js';
+import { clearClaudeCliSelfHealAttempts } from './stale-spawn-recovery.js';
 
 interface DependencyPreflightSettings {
   CLAUDE_MEM_PROVIDER?: string;
@@ -158,6 +159,7 @@ export function runWorkerDependencyPreflight(options: WorkerDependencyPreflightO
     try {
       findClaudeExecutable();
       clearDependencyStatus('claude_cli');
+      clearClaudeCliSelfHealAttempts();
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       const classified = options.classifyClaudeError(error);
