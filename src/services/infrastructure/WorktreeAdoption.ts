@@ -24,6 +24,16 @@ export interface AdoptionResult {
   errors: Array<{ worktree: string; error: string }>;
 }
 
+/**
+ * Render per-branch adoption errors as a string for logger CONTEXT values —
+ * the logger interpolates context values with a template literal
+ * (logger.ts `${k}=${v}`), so a raw object array renders as
+ * '[object Object]' (#3378).
+ */
+export function formatAdoptionErrors(errors: AdoptionResult['errors']): string {
+  return errors.map(e => `${e.worktree}: ${e.error}`).join('; ');
+}
+
 interface WorktreeEntry {
   path: string;
   branch: string | null;
