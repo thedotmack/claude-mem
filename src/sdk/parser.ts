@@ -34,6 +34,10 @@ export interface ParsedSummary {
   skip_reason?: string | null;
 }
 
+const OBSERVATION_TITLE_MAX_GRAPHEMES = 120;
+const OBSERVATION_TITLE_TRUNCATE_AT = 117;
+const observationGraphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
 export type ParseResult =
   | { valid: true; observations: ParsedObservation[]; summary: ParsedSummary | null }
   | { valid: false };
@@ -260,13 +264,13 @@ function extractObservationFallback(text: string): { title: string; narrative: s
     .map(line => line.trim())
     .filter(line => line !== '');
   const firstLine = lines[0] ?? text.trim();
-  const firstLineCodePoints = Array.from(firstLine);
-  const hasOverflow = firstLineCodePoints.length > 120;
+  const firstLineGraphemes = Array.from(observationGraphemeSegmenter.segment(firstLine), part => part.segment);
+  const hasOverflow = firstLineGraphemes.length > OBSERVATION_TITLE_MAX_GRAPHEMES;
   const title = hasOverflow
-    ? `${firstLineCodePoints.slice(0, 117).join('')}...`
+    ? `${firstLineGraphemes.slice(0, OBSERVATION_TITLE_TRUNCATE_AT).join('')}...`
     : firstLine;
   const narrativeLines = hasOverflow
-    ? [firstLineCodePoints.slice(117).join('').trim(), ...lines.slice(1)]
+    ? [firstLineGraphemes.slice(OBSERVATION_TITLE_TRUNCATE_AT).join('').trim(), ...lines.slice(1)]
     : lines.slice(1);
   const narrative = narrativeLines
     .filter(line => line !== '')

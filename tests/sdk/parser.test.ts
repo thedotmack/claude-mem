@@ -170,6 +170,28 @@ describe('parseAgentXml — observations', () => {
     expect(result[0].narrative).not.toContain('�');
   });
 
+  it('keeps grapheme clusters intact when a long first prose line overflows', () => {
+    const cases = [
+      { label: 'combining mark', cluster: 'e\u0301' },
+      { label: 'zwj emoji', cluster: '👩‍💻' },
+    ];
+
+    for (const { label, cluster } of cases) {
+      const longFirstLine = `${'A'.repeat(116)}${cluster}${'B'.repeat(10)}`;
+      const xml = `<observation>
+        <type>discovery</type>
+        ${longFirstLine}
+        Follow-up detail stays in the narrative.
+      </observation>`;
+
+      const result = expectObservation(xml);
+
+      expect(result, label).toHaveLength(1);
+      expect(result[0].title, label).toBe(`${'A'.repeat(116)}${cluster}...`);
+      expect(result[0].narrative, label).toBe(`${'B'.repeat(10)}\nFollow-up detail stays in the narrative.`);
+    }
+  });
+
   it('filters out multiple ghost observations while keeping valid ones (#1625)', () => {
     const xml = `
       <observation><type>bugfix</type></observation>
