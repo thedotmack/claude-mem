@@ -38,6 +38,10 @@ src/ui/viewer.html
 
 plugin/.cli-installed
 
+# Transient lock from bun-runner's runtime self-heal (created/removed in-process;
+# only persists if a holder crashes mid-install — must never be committed).
+plugin/.claude-mem-heal.lock
+
 plugin/scripts/claude-mem
 
 CONTRIB_NOTES.md

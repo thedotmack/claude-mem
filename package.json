@@ -48,6 +48,7 @@
     "plugin/sqlite",
     "plugin/skills",
     "plugin/ui",
+    "plugin/node_modules",
     "openclaw"
   ],
   "engines": {
