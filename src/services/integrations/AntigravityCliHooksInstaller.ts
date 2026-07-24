@@ -85,10 +85,14 @@ function buildHookCommand(
     throw new Error(`Unknown Antigravity CLI event: ${antigravityEventName}`);
   }
 
-  const formattedBunPath = bunPath.includes(' ') ? `"${bunPath.replace(/\\/g, '/')}"` : bunPath.replace(/\\/g, '/');
+  // agy splits the command on spaces and does NOT strip quotes, so wrapping a
+  // path in "..." makes bun receive a literal quoted filename and fail with
+  // "File not found" (verified on a live install: quoted paths broke every hook
+  // with exit status 1). Emit bare, forward-slashed paths.
+  const formattedBunPath = bunPath.replace(/\\/g, '/');
   const formattedWorkerPath = workerServicePath.replace(/\\/g, '/');
 
-  return `${formattedBunPath} "${formattedWorkerPath}" hook antigravity-cli ${internalEvent}`;
+  return `${formattedBunPath} ${formattedWorkerPath} hook antigravity-cli ${internalEvent}`;
 }
 
 const TOOL_MATCHER_EVENTS = new Set(['PreToolUse', 'PostToolUse']);
