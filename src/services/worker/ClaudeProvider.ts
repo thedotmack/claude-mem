@@ -183,6 +183,7 @@ export class ClaudeProvider {
    */
   async runObserverCanary(): Promise<void> {
     let claudePath: string;
+    let receivedTextResponse = false;
     try {
       claudePath = findClaudeExecutable('SDK');
     } catch (error) {
@@ -375,6 +376,14 @@ export class ClaudeProvider {
 
           const responseSize = textContent.length;
 
+          // Claude can emit a thinking-only/empty assistant event before the
+          // text event for the same turn.  It is not an observer response and
+          // must not fail a claimed source event prematurely.
+          if (responseSize === 0) {
+            continue;
+          }
+          receivedTextResponse = true;
+
           const tokensBeforeResponse = session.cumulativeInputTokens + session.cumulativeOutputTokens;
 
           const usage = message.message.usage;
@@ -482,6 +491,18 @@ export class ClaudeProvider {
             });
           }
         }
+      }
+
+      // A completed turn with queued source work but no textual observer
+      // response is a malformed provider result.  Preserve it through the
+      // durable retry/quarantine policy rather than finalizing it silently.
+      if (
+        !receivedTextResponse &&
+        !session.abortController.signal.aborted &&
+        this.sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId) > 0
+      ) {
+        await this.sessionManager.applyObserverFailure(session.sessionDbId, 'malformed_output');
+        session.abortReason = 'observer_failure:missing_text_response';
       }
     } finally {
       // A stashed compression event whose turn never reached a result message
