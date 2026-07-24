@@ -344,6 +344,23 @@ export class SessionManager {
     return this.sessions.size;
   }
 
+  /**
+   * SessionEnd (#3073): reap the in-memory session for a given Claude Code
+   * content session id, if one is currently tracked. Used by the SessionEnd
+   * hook to give an explicit end-of-session signal so any in-flight generator
+   * and its SDK subprocess are finalized rather than orphaned. Returns true
+   * when a matching live session was found and torn down.
+   */
+  async endByContentSessionId(contentSessionId: string): Promise<boolean> {
+    for (const [dbId, session] of this.sessions) {
+      if (session.contentSessionId === contentSessionId) {
+        await this.deleteSession(dbId);
+        return true;
+      }
+    }
+    return false;
+  }
+
   getTotalQueueDepth(): number {
     return this.buffer.getTotalDepth();
   }
