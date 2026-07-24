@@ -56,7 +56,7 @@ import {
   httpShutdown
 } from './infrastructure/HealthMonitor.js';
 import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
-import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos } from './infrastructure/WorktreeAdoption.js';
+import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos, formatAdoptionErrors } from './infrastructure/WorktreeAdoption.js';
 
 import { Server } from './server/Server.js';
 import { BetterAuthRoutes } from '../server/auth/BetterAuthRoutes.js';
@@ -476,25 +476,6 @@ export class WorkerService implements WorkerRef {
       logger.info('WORKER', 'Checking for one-time CWD remap...');
       runOneTimeCwdRemap();
 
-      logger.info('WORKER', 'Adopting merged worktrees (background)...');
-      adoptMergedWorktreesForAllKnownRepos({}).then(adoptions => {
-        if (adoptions) {
-          for (const adoption of adoptions) {
-            if (adoption.adoptedObservations > 0 || adoption.adoptedSummaries > 0 || adoption.chromaUpdates > 0) {
-              logger.info('SYSTEM', 'Merged worktrees adopted in background', adoption);
-            }
-            if (adoption.errors.length > 0) {
-              logger.warn('SYSTEM', 'Worktree adoption had per-branch errors', {
-                repoPath: adoption.repoPath,
-                errors: adoption.errors
-              });
-            }
-          }
-        }
-      }).catch(err => {
-        logger.error('WORKER', 'Worktree adoption failed (background)', {}, err instanceof Error ? err : new Error(String(err)));
-      });
-
       const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
       if (chromaEnabled) {
         this.chromaMcpManager = ChromaMcpManager.getInstance();
@@ -507,6 +488,30 @@ export class WorkerService implements WorkerRef {
       await this.dbManager.initialize();
 
       runOneTimeV12_4_3Cleanup();
+
+      // Worktree adoption stays fire-and-forget (#2122) — init never awaits
+      // it — but it is kicked only after dbManager.initialize() and the
+      // one-time cleanup above have finished: adoption writes through its own
+      // connection, and starting it earlier raced the boot-time migration
+      // writer for the single WAL writer slot ('database is locked', #3378).
+      logger.info('WORKER', 'Adopting merged worktrees (background)...');
+      adoptMergedWorktreesForAllKnownRepos({}).then(adoptions => {
+        if (adoptions) {
+          for (const adoption of adoptions) {
+            if (adoption.adoptedObservations > 0 || adoption.adoptedSummaries > 0 || adoption.chromaUpdates > 0) {
+              logger.info('SYSTEM', 'Merged worktrees adopted in background', adoption);
+            }
+            if (adoption.errors.length > 0) {
+              logger.warn('SYSTEM', 'Worktree adoption had per-branch errors', {
+                repoPath: adoption.repoPath,
+                errors: formatAdoptionErrors(adoption.errors)
+              });
+            }
+          }
+        }
+      }).catch(err => {
+        logger.error('WORKER', 'Worktree adoption failed (background)', {}, err instanceof Error ? err : new Error(String(err)));
+      });
 
       // Two-lane sync pull loop (plan Phase 3 task 3). Constructed only when
       // CloudSync is active AND resolved a device id (fail-closed identity —

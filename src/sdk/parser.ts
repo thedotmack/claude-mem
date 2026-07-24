@@ -115,7 +115,15 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
       logger.error('PARSER', `Observation missing type field, using "${fallbackType}"`, { correlationId });
     }
 
-    const cleanedConcepts = concepts.filter(c => c !== finalType);
+    // #3379: concepts are matched exactly by the injection SQL, so a prefixed
+    // tag like "gotcha: WASM quirk" would never match. Truncate at the first
+    // ':' and trim, then drop empties and the observation type.
+    const cleanedConcepts = concepts
+      .map(c => {
+        const colonIndex = c.indexOf(':');
+        return (colonIndex === -1 ? c : c.slice(0, colonIndex)).trim();
+      })
+      .filter(c => c !== '' && c !== finalType);
 
     if (cleanedConcepts.length !== concepts.length) {
       logger.debug('PARSER', 'Removed observation type from concepts array', {
