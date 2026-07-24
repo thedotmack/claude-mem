@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { exec, execSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'child_process';
+import { exec, execFile, execSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'child_process';
 import { createRequire } from 'module';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -7,6 +7,7 @@ import { ErrorSeverity } from './error-taxonomy.js';
 import { installerError, type InstallSummary } from './error-reporter.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
+import { selectTreeSitterBinary } from '../../shared/tree-sitter-binary.js';
 import { IS_WINDOWS } from '../utils/paths.js';
 import { parseJsonWithBom } from '../../shared/atomic-json.js';
 
@@ -241,6 +242,60 @@ function installUv(): void {
  * we resolve subpaths, never a pinned version.
  */
 const ZOD_REQUIRED_SUBPATHS = ['zod/v3', 'zod/v4', 'zod/v4-mini'] as const;
+const TREE_SITTER_VERSION_TIMEOUT_MS = 10_000;
+
+function treeSitterCliPackageDir(targetDir: string): string {
+  return join(targetDir, 'node_modules', 'tree-sitter-cli');
+}
+
+export function treeSitterCliBinaryPath(targetDir: string): string {
+  return selectTreeSitterBinary(treeSitterCliPackageDir(targetDir))
+    ?? join(treeSitterCliPackageDir(targetDir), IS_WINDOWS ? 'tree-sitter.exe' : 'tree-sitter');
+}
+
+export function isTreeSitterCliBinaryUsable(targetDir: string): boolean {
+  const result = spawnSync(treeSitterCliBinaryPath(targetDir), ['--version'], {
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: TREE_SITTER_VERSION_TIMEOUT_MS,
+    windowsHide: true,
+  });
+  return result.status === 0
+    && /^tree-sitter \d+\.\d+\.\d+(?:\s|$)/.test((result.stdout ?? '').trim());
+}
+
+export async function ensureTreeSitterCliBinary(
+  targetDir: string,
+  isUsable: (targetDir: string) => boolean = isTreeSitterCliBinaryUsable,
+): Promise<void> {
+  const binaryPath = treeSitterCliBinaryPath(targetDir);
+  if (isUsable(targetDir)) return;
+
+  const cliDir = treeSitterCliPackageDir(targetDir);
+  const installScript = join(cliDir, 'install.js');
+  if (!existsSync(installScript)) {
+    throw new Error(`tree-sitter-cli install script not found: ${installScript}`);
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    execFile(process.execPath, [installScript], {
+      cwd: cliDir,
+      timeout: INSTALL_TIMEOUT_MS,
+      maxBuffer: 16 * 1024 * 1024,
+      windowsHide: true,
+    }, (error, stdout, stderr) => {
+      if (error) {
+        reject(Object.assign(error, { stdout, stderr }));
+        return;
+      }
+      resolve();
+    });
+  });
+
+  if (!isUsable(targetDir)) {
+    throw new Error(`tree-sitter-cli install completed without creating a working executable ${binaryPath}`);
+  }
+}
 
 export function verifyCriticalModules(targetDir: string): void {
   const pkg = JSON.parse(readFileSync(join(targetDir, 'package.json'), 'utf-8'));

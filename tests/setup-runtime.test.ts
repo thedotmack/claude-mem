@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
+import { copyFileSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -9,11 +9,21 @@ import {
   isInstallCurrent,
   platformBunRemediation,
   platformUvRemediation,
+  ensureTreeSitterCliBinary,
 } from '../src/npx-cli/install/setup-runtime';
+import { warnMarketplaceTreeSitterCliIfUnavailable } from '../src/npx-cli/commands/install';
+import type { InstallSummary } from '../src/npx-cli/install/error-reporter';
 
 const SETUP_RUNTIME_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'npx-cli', 'install', 'setup-runtime.ts');
 const SHARED_SPAWN_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'shared', 'spawn.ts');
 const DOCTOR_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'npx-cli', 'commands', 'doctor.ts');
+const REPO_TREE_SITTER_BINARY = join(
+  import.meta.dir,
+  '..',
+  'node_modules',
+  'tree-sitter-cli',
+  process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter',
+);
 
 function probeBunVersion(): string | null {
   try {
@@ -152,6 +162,71 @@ describe('setup-runtime install marker', () => {
       expect(text.length).toBeGreaterThan(0);
       expect(text.toLowerCase()).toContain('uv');
       expect(text).toContain('claude-mem install');
+    });
+  });
+
+  describe('marketplace tree-sitter warning', () => {
+    function summaryWithWarnings(): InstallSummary {
+      return { warnings: [] } as unknown as InstallSummary;
+    }
+
+    it('does nothing when tree-sitter-cli is not installed in the marketplace root', async () => {
+      const summary = summaryWithWarnings();
+
+      await warnMarketplaceTreeSitterCliIfUnavailable(summary, tempDir);
+
+      expect(summary.warnings).toEqual([]);
+    });
+
+    it('warns when the marketplace tree-sitter-cli package lacks a usable binary', async () => {
+      const cliDir = join(tempDir, 'node_modules', 'tree-sitter-cli');
+      mkdirSync(cliDir, { recursive: true });
+      writeFileSync(join(cliDir, 'package.json'), '{}');
+      const summary = summaryWithWarnings();
+
+      await warnMarketplaceTreeSitterCliIfUnavailable(summary, tempDir);
+
+      expect(summary.warnings).toEqual([
+        expect.objectContaining({
+          component: 'marketplace-tree-sitter-cli',
+          remediation: 'Smart-explore may use a PATH tree-sitter binary if available.',
+        }),
+      ]);
+    });
+
+    it('does not warn when the marketplace tree-sitter-cli package already has a usable binary', async () => {
+      const cliDir = join(tempDir, 'node_modules', 'tree-sitter-cli');
+      mkdirSync(cliDir, { recursive: true });
+      writeFileSync(join(cliDir, 'package.json'), '{}');
+      copyFileSync(REPO_TREE_SITTER_BINARY, join(cliDir, process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter'));
+      if (process.platform !== 'win32') {
+        chmodSync(join(cliDir, 'tree-sitter'), 0o755);
+      }
+      const summary = summaryWithWarnings();
+
+      await warnMarketplaceTreeSitterCliIfUnavailable(summary, tempDir);
+
+      expect(summary.warnings).toEqual([]);
+    });
+
+    it('provisions an absent binary by running the package install script', async () => {
+      const cliDir = join(tempDir, 'node_modules', 'tree-sitter-cli');
+      mkdirSync(cliDir, { recursive: true });
+      writeFileSync(join(cliDir, 'package.json'), '{}');
+      writeFileSync(
+        join(cliDir, 'install.js'),
+        [
+          `const fs = require('fs');`,
+          `const source = ${JSON.stringify(REPO_TREE_SITTER_BINARY)};`,
+          `const target = require('path').join(__dirname, ${JSON.stringify(process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter')});`,
+          `fs.copyFileSync(source, target);`,
+          process.platform === 'win32' ? '' : `fs.chmodSync(target, 0o755);`,
+          '',
+        ].join('\n'),
+      );
+
+      await expect(ensureTreeSitterCliBinary(tempDir)).resolves.toBeUndefined();
+      expect(existsSync(join(cliDir, process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter'))).toBe(true);
     });
   });
 });
