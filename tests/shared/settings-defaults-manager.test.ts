@@ -346,6 +346,9 @@ describe('SettingsDefaultsManager', () => {
       expect(defaults.CLAUDE_MEM_PROVIDER).toBeDefined();
       expect(defaults.CLAUDE_MEM_GEMINI_API_KEY).toBeDefined();
       expect(defaults.CLAUDE_MEM_OPENROUTER_API_KEY).toBeDefined();
+      expect(defaults.CLAUDE_MEM_MINIMAX_API_KEY).toBeDefined();
+      expect(defaults.CLAUDE_MEM_MINIMAX_MODEL).toBe('MiniMax-M3');
+      expect(defaults.CLAUDE_MEM_MINIMAX_BASE_URL).toBe('https://api.minimax.io/v1');
 
       expect(defaults.CLAUDE_MEM_DATA_DIR).toBeDefined();
       expect(defaults.CLAUDE_MEM_LOG_LEVEL).toBeDefined();

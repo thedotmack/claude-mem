@@ -17,6 +17,7 @@ import {
   type GeminiBadRequestCategory,
 } from '../../../src/server/generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../../../src/server/generation/providers/OpenRouterObservationProvider.js';
+import { MiniMaxObservationProvider } from '../../../src/server/generation/providers/MiniMaxObservationProvider.js';
 import { buildServerGenerationPrompt } from '../../../src/server/generation/providers/shared/prompt-builder.js';
 import type { ServerGenerationContext } from '../../../src/server/generation/providers/shared/types.js';
 
@@ -404,5 +405,41 @@ describe('OpenRouterObservationProvider', () => {
     await provider.generate(makeContext());
     const body = JSON.parse(String(capturing.lastInit?.body)) as { model?: string };
     expect(body.model).toBe('deepseek-chat');
+  });
+});
+
+describe('MiniMaxObservationProvider', () => {
+  it('uses the global default endpoint and returns OpenAI-style content', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, {
+        model: 'MiniMax-M3',
+        choices: [{ message: { content: '<observation><type>x</type><title>o</title></observation>' } }],
+        usage: { total_tokens: 42 },
+      }),
+    );
+    const provider = new MiniMaxObservationProvider({ apiKey: 'fake', fetchImpl: capturing.fetch });
+    const result = await provider.generate(makeContext());
+
+    expect(capturing.lastUrl).toBe('https://api.minimax.io/v1/chat/completions');
+    expect(result.rawText).toContain('<observation>');
+    expect(result.tokensUsed).toBe(42);
+    expect(result.providerLabel).toBe('minimax');
+  });
+
+  it('supports the China endpoint and configured model', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
+    );
+    const provider = new MiniMaxObservationProvider({
+      apiKey: 'fake',
+      baseUrl: 'https://api.minimaxi.com/v1',
+      model: 'MiniMax-M2.7',
+      fetchImpl: capturing.fetch,
+    });
+    await provider.generate(makeContext());
+
+    expect(capturing.lastUrl).toBe('https://api.minimaxi.com/v1/chat/completions');
+    const body = JSON.parse(String(capturing.lastInit?.body)) as { model?: string };
+    expect(body.model).toBe('MiniMax-M2.7');
   });
 });

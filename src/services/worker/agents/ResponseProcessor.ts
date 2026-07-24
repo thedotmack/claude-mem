@@ -300,7 +300,7 @@ export async function processAgentResponse(
   // success paths stamp the same value.
   const providerName =
     session.currentProvider ??
-    ({ SDK: 'claude', Gemini: 'gemini', OpenRouter: 'openrouter' } as Record<string, string>)[agentName] ??
+    ({ SDK: 'claude', Gemini: 'gemini', OpenRouter: 'openrouter', MiniMax: 'minimax' } as Record<string, string>)[agentName] ??
     'claude';
 
   if (!parsed.valid) {
