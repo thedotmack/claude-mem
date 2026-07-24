@@ -288,6 +288,32 @@ describe('ResponseProcessor', () => {
       expect(observations[1].type).toBe('bugfix');
     });
 
+    it('stores a closed observation block with freeform prose through the success path', async () => {
+      const session = createMockSession();
+      const responseText = `<observation>
+        <type>discovery</type>
+        Refactored transformer_markdown.py helpers and narrowed the shared formatting path.
+        The follow-up kept the line-range handling aligned with the new helpers.
+      </observation>`;
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+      const [, , observations] = mockStoreObservations.mock.calls[0];
+      expect(observations).toHaveLength(1);
+      expect(observations[0].title).toBe('Refactored transformer_markdown.py helpers and narrowed the shared formatting path.');
+      expect(observations[0].narrative).toContain('line-range handling aligned with the new helpers');
+    });
+
     it('stores observations against the dispatched prompt context when the live session has already advanced', async () => {
       const session = createMockSession({
         project: 'repo-b/worktree',
