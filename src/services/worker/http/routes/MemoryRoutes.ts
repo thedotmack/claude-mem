@@ -42,7 +42,9 @@ export class MemoryRoutes extends BaseRouteHandler {
 
     const observation = {
       type: 'discovery',  // Use existing valid type
-      title: title || text.substring(0, 60).trim() + (text.length > 60 ? '...' : ''),
+      // A whitespace-only title is truthy but blank once trimmed; fall back to the text so we
+      // never hand storeObservation an empty title.
+      title: title?.trim() || text.substring(0, 60).trim() + (text.length > 60 ? '...' : ''),
       subtitle: 'Manual memory',
       facts: [] as string[],
       narrative: text,
