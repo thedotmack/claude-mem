@@ -140,13 +140,16 @@ export class Server {
   async listen(port: number, host: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const server = http.createServer(this.app);
-      this.server = server;
       const onError = (err: Error) => {
         server.off('listening', onListening);
         reject(err);
       };
       const onListening = () => {
         server.off('error', onError);
+        // #3380 — retain the handle only once it is actually listening. A
+        // failed bind (e.g. EADDRINUSE) must never leave a non-listening
+        // handle behind for graceful shutdown to trip on.
+        this.server = server;
         logger.info('SYSTEM', 'HTTP server started', { host, port, pid: process.pid });
         resolve();
       };

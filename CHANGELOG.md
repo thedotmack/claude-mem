@@ -4,6 +4,46 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.12.4] - 2026-07-23
+
+Four root-cause fixes from the post-v13.12.2 issue batch.
+
+## Fixes
+
+### Shutdown teardown no longer skipped on a non-listening server handle (#3380)
+`performGracefulShutdown` treated Node's `ERR_SERVER_NOT_RUNNING` from `server.close()` as fatal in step 1, which skipped session drain, MCP close, Chroma stop, DB close, and supervisor stop — the Windows port-hold symptom. An already-closed server now counts as closed (explicit code check, everything else still rejects), and `Server.listen()` assigns the handle only once actually listening, so a failed bind can no longer leave a stale non-listening handle for shutdown to trip on. (#3387)
+
+### Concept tags participate in context injection again (#3379)
+The observer prompt's own guidance format taught the model to emit `keyword: description` concept tags, which the exact-match injection SQL silently excluded — observations tagged that way never surfaced. Concepts are now truncated at the first colon at the parse boundary, the producer prompts in all four modes require bare keywords, and migration v49 backfills stored rows — requeueing corrected native rows for cloud re-push (sync_rev bump + synced_at reset, mirroring the prompt-repair convention) and guarded by `json_valid` so a malformed row cannot abort boot. The injection query itself is unchanged. (#3389)
+
+### Background init no longer aborts on orphaned rows; adoption race and logging fixed (#3378)
+The v7/v9 table-rebuild migrations copy child tables with foreign keys enforced, so historical orphaned observations/summaries (no `sdk_sessions` parent) threw `FOREIGN KEY constraint failed` in the SessionStore constructor and the worker never reported ready. A pin-down test proved the site red→green; the fix repairs stub parents in-place before both rebuild copies — orphaned rows are user data and are never deleted. Also: adoption errors now log as real text instead of `[object Object]`, and the worktree-adoption kick moved after DB init so its write connection no longer races boot migrations (`database is locked`). Complements the stale-worker recycle fix shipped in 13.12.3. (#3390)
+
+### Maintainer directives no longer ship to end users (#3381)
+Root CLAUDE.md's `Local Status Notes` and `Daily Maintenance` sections — including an autonomous upgrade-and-commit directive — shipped verbatim to every marketplace git-clone install and were obeyed by end-user Claude instances (the #2537 `.npmignore` guard only covers the npm tarball, see #3359). Those sections now live in gitignored `CLAUDE.local.md`; tracked CLAUDE.md keeps only contributor content, and the maintainer sync copies the slim file over any stale marketplace copy. (#3391)
+
+## Verification
+Full suite 2539 pass / 0 fail, tsc clean, anti-pattern sweep over the round's diff clean, worker restart cycle at 13.12.4 shows none of the fixed failure signatures.
+
+## [13.12.3] - 2026-07-23
+
+## Hotfix: self-perpetuating stale-worker recycle loop (#3378)
+
+**The bug.** On a version mismatch, hooks asked the running (stale) worker to restart itself — and the dying worker spawned its successor using its *own install's* code and resolver. A ≤13.11.0 worker would respawn its own version, re-bind the worker port before the hook's correctly-resolved lazy-spawn could, and the mismatch recurred on every prompt, forever. One report measured **2,424 recycles in a single day**, with every `UserPromptSubmit` ending in a ~40s hook timeout. Because the buggy handoff ran inside the *old* install's process, fixing the new version's resolver alone could never break the loop.
+
+**The fix.** Hooks no longer delegate the recycle to the corpse. On version mismatch the hook now:
+
+1. reads the owner-verified worker PID file,
+2. `SIGKILL`s the stale worker — the only teardown guaranteed to execute zero stale-version code,
+3. waits for the port to actually close, and
+4. spawns the resolved installed version itself, via the existing lazy-spawn path and the single version oracle.
+
+The dying-worker successor handoff now serves only CLI-initiated `claude-mem restart`, where the running install *is* the resolved install.
+
+**If you're currently stuck in the loop:** just update. The first hook that runs after this version installs will kill the resident stale worker and take over — no manual cleanup needed.
+
+**Not addressed in this release** (still open): the `FOREIGN KEY constraint failed` background-init error also reported in #3378, and the Windows stale-socket port hold in #3380.
+
 ## [13.12.2] - 2026-07-23
 
 **54 community bug-fix PRs merged in one pass.** Every open PR in the repo (157 total) was evaluated against a strict rubric — now codified in [`docs/merge-rubric.md`](https://github.com/thedotmack/claude-mem/blob/main/docs/merge-rubric.md): root-cause corrections only, with no guards, circuit breakers, fallbacks, retries, fail-open modes, self-healing machinery, truncation, or bolt-on second systems.
