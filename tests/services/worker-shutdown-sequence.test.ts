@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'bun:test';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { runShutdownSequence, type ShutdownSequenceOptions, type WorkerShutdownReason } from '../../src/services/worker-shutdown.js';
 
 // runShutdownSequence lives in src/services/worker-shutdown.ts (not
@@ -10,6 +12,10 @@ import { runShutdownSequence, type ShutdownSequenceOptions, type WorkerShutdownR
 
 const PORT = 45678;
 const SCRIPT = '/marketplace/plugin/scripts/worker-service.cjs';
+const workerServiceSource = readFileSync(
+  join(import.meta.dir, '../../src/services/worker-service.ts'),
+  'utf-8',
+);
 
 interface Harness {
   options: ShutdownSequenceOptions;
@@ -18,6 +24,8 @@ interface Harness {
   counters: {
     beforeGraceful: number;
     graceful: number;
+    lastResortChildTreeKill: number;
+    lastResortSupervisorStop: number;
     waitForPortFree: number;
     removePidFile: number;
     spawnDaemon: number;
@@ -30,6 +38,8 @@ function makeHarness(overrides: {
   gracefulDeadlineMs?: number;
   beforeGracefulThrows?: boolean;
   graceful?: () => Promise<void>;
+  lastResortChildTreeKillThrows?: boolean;
+  lastResortChildTreeKillHangs?: boolean;
   portFree?: boolean;
   spawnResult?: number | undefined;
   spawnThrows?: boolean;
@@ -39,6 +49,8 @@ function makeHarness(overrides: {
   const counters = {
     beforeGraceful: 0,
     graceful: 0,
+    lastResortChildTreeKill: 0,
+    lastResortSupervisorStop: 0,
     waitForPortFree: 0,
     removePidFile: 0,
     spawnDaemon: 0,
@@ -62,6 +74,20 @@ function makeHarness(overrides: {
       return overrides.graceful ? overrides.graceful() : Promise.resolve();
     },
     gracefulDeadlineMs: overrides.gracefulDeadlineMs ?? 1000,
+    lastResortChildTreeKill: async () => {
+      counters.lastResortChildTreeKill++;
+      calls.push('lastResortChildTreeKill');
+      if (overrides.lastResortChildTreeKillThrows) {
+        throw new Error('supervisor stop failed');
+      }
+      if (overrides.lastResortChildTreeKillHangs) {
+        await new Promise<void>(() => {});
+      }
+    },
+    lastResortSupervisorStop: async () => {
+      counters.lastResortSupervisorStop++;
+      calls.push('lastResortSupervisorStop');
+    },
     restartHandoff: {
       port: PORT,
       portFreeTimeoutMs: 1000,
@@ -160,6 +186,94 @@ describe('runShutdownSequence — graceful-shutdown deadline', () => {
 
     await runShutdownSequence(h.options); // must not throw
 
+    expect(h.counters.spawnDaemon).toBe(1);
+  });
+});
+
+describe('runShutdownSequence — last-resort child teardown', () => {
+  it('kills the Chroma tree before the supervisor can signal its root PID', () => {
+    const chromaStop = workerServiceSource.indexOf(
+      'lastResortChildTreeKill: () => this.chromaMcpManager?.stop()',
+    );
+    const supervisorStop = workerServiceSource.indexOf(
+      'lastResortSupervisorStop: () => getSupervisor().stop()',
+    );
+
+    expect(chromaStop).toBeGreaterThanOrEqual(0);
+    expect(supervisorStop).toBeGreaterThan(chromaStop);
+  });
+
+  it.each(['stop', 'restart', 'signal'] as const)(
+    'runs exactly once after a clean shutdown (reason=%s)',
+    async (reason) => {
+      const h = makeHarness({ reason });
+
+      await runShutdownSequence(h.options);
+
+      expect(h.counters.lastResortChildTreeKill).toBe(1);
+      expect(h.counters.lastResortSupervisorStop).toBe(1);
+      expect(h.calls.indexOf('lastResortChildTreeKill')).toBeGreaterThan(h.calls.indexOf('graceful'));
+      expect(h.calls.indexOf('lastResortSupervisorStop'))
+        .toBeGreaterThan(h.calls.indexOf('lastResortChildTreeKill'));
+    },
+  );
+
+  it('runs after graceful shutdown rejects and before the restart handoff', async () => {
+    const h = makeHarness({
+      reason: 'restart',
+      graceful: () => Promise.reject(new Error('Server is not running.')),
+    });
+
+    await runShutdownSequence(h.options);
+
+    expect(h.counters.lastResortChildTreeKill).toBe(1);
+    expect(h.counters.lastResortSupervisorStop).toBe(1);
+    expect(h.calls.indexOf('lastResortChildTreeKill')).toBeGreaterThan(h.calls.indexOf('graceful'));
+    expect(h.calls.indexOf('lastResortSupervisorStop')).toBeLessThan(h.calls.indexOf('spawnDaemon'));
+  });
+
+  it('runs after the graceful deadline expires', async () => {
+    const h = makeHarness({
+      reason: 'stop',
+      gracefulDeadlineMs: 50,
+      graceful: () => new Promise<void>(() => {}),
+    });
+
+    await runShutdownSequence(h.options);
+
+    expect(h.counters.lastResortChildTreeKill).toBe(1);
+    expect(h.counters.lastResortSupervisorStop).toBe(1);
+  });
+
+  it('does not block the restart handoff when the last-resort teardown rejects', async () => {
+    const h = makeHarness({
+      reason: 'restart',
+      lastResortChildTreeKillThrows: true,
+    });
+
+    await runShutdownSequence(h.options);
+
+    expect(h.counters.lastResortChildTreeKill).toBe(1);
+    expect(h.counters.lastResortSupervisorStop).toBe(1);
+    expect(h.counters.spawnDaemon).toBe(1);
+  });
+
+  it('runs the supervisor before handoff when the Chroma teardown hangs', async () => {
+    const h = makeHarness({
+      reason: 'restart',
+      gracefulDeadlineMs: 50,
+      lastResortChildTreeKillHangs: true,
+    });
+
+    const start = Date.now();
+    await runShutdownSequence(h.options);
+
+    expect(Date.now() - start).toBeLessThan(2000);
+    expect(h.counters.lastResortChildTreeKill).toBe(1);
+    expect(h.counters.lastResortSupervisorStop).toBe(1);
+    expect(h.calls.indexOf('lastResortSupervisorStop'))
+      .toBeGreaterThan(h.calls.indexOf('lastResortChildTreeKill'));
+    expect(h.calls.indexOf('lastResortSupervisorStop')).toBeLessThan(h.calls.indexOf('spawnDaemon'));
     expect(h.counters.spawnDaemon).toBe(1);
   });
 });

@@ -823,6 +823,12 @@ export class WorkerService implements WorkerRef {
         chromaMcpManager: this.chromaMcpManager || undefined
       }),
       gracefulDeadlineMs: getPlatformTimeout(10000),
+      lastResortDeadlineMs: getPlatformTimeout(10000),
+      // Chroma gets the first bounded phase so it can snapshot and signal
+      // descendants while the root is alive. The sequencer always starts the
+      // supervisor phase next, even if MCP close never settles.
+      lastResortChildTreeKill: () => this.chromaMcpManager?.stop() ?? Promise.resolve(),
+      lastResortSupervisorStop: () => getSupervisor().stop(),
       restartHandoff: {
         port: getWorkerPort(),
         portFreeTimeoutMs: getPlatformTimeout(5000),

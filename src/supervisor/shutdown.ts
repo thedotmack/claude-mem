@@ -3,7 +3,14 @@ import { existsSync, readFileSync, rmSync } from 'fs';
 import { promisify } from 'util';
 import { logger } from '../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
-import { isPidAlive, waitForExit, type ManagedProcessRecord, type ProcessRegistry } from './process-registry.js';
+import {
+  isPidAlive,
+  verifyManagedProcessIdentity,
+  waitForExit,
+  type ManagedProcessRecord,
+  type ProcessRegistry,
+  type ProcessStartTokenReader,
+} from './process-registry.js';
 import { paths } from '../shared/paths.js';
 
 const execFileAsync = promisify(execFile);
@@ -13,6 +20,7 @@ export interface ShutdownCascadeOptions {
   registry: ProcessRegistry;
   currentPid?: number;
   pidFilePath?: string;
+  processStartTokenReader?: ProcessStartTokenReader;
 }
 
 export async function runShutdownCascade(options: ShutdownCascadeOptions): Promise<void> {
@@ -23,12 +31,31 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
     .filter(record => record.pid !== currentPid)
     .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
 
+  const verifiedRecords: ManagedProcessRecord[] = [];
   for (const record of childRecords) {
     if (!isPidAlive(record.pid)) {
       options.registry.unregister(record.id);
       continue;
     }
 
+    const identity = verifyManagedProcessIdentity(record, options.processStartTokenReader);
+    if (identity === 'mismatch') {
+      logger.warn('SYSTEM', 'Dropping stale child registry entry after PID reuse', {
+        pid: record.pid,
+        type: record.type
+      });
+      options.registry.unregister(record.id);
+      continue;
+    }
+    if (identity === 'unknown') {
+      logger.warn('SYSTEM', 'Preserving child process whose identity cannot be verified', {
+        pid: record.pid,
+        type: record.type
+      });
+      continue;
+    }
+
+    verifiedRecords.push(record);
     try {
       await signalProcess(record, 'SIGTERM');
     } catch (error: unknown) {
@@ -49,9 +76,31 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
     }
   }
 
-  await waitForExit(childRecords, 5000);
+  await waitForExit(verifiedRecords, 5000);
 
-  const survivors = childRecords.filter(record => isPidAlive(record.pid));
+  const survivors: ManagedProcessRecord[] = [];
+  for (const record of verifiedRecords) {
+    if (!isPidAlive(record.pid)) continue;
+
+    const identity = verifyManagedProcessIdentity(record, options.processStartTokenReader);
+    if (identity === 'mismatch') {
+      logger.warn('SYSTEM', 'Dropping stale child registry entry after PID reuse during shutdown', {
+        pid: record.pid,
+        type: record.type
+      });
+      options.registry.unregister(record.id);
+      continue;
+    }
+    if (identity === 'unknown') {
+      logger.warn('SYSTEM', 'Skipping SIGKILL because child process identity cannot be reverified', {
+        pid: record.pid,
+        type: record.type
+      });
+      continue;
+    }
+    survivors.push(record);
+  }
+
   for (const record of survivors) {
     try {
       await signalProcess(record, 'SIGKILL');
@@ -76,7 +125,24 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
   await waitForExit(survivors, 1000);
 
   for (const record of childRecords) {
-    options.registry.unregister(record.id);
+    if (!isPidAlive(record.pid)) {
+      options.registry.unregister(record.id);
+      continue;
+    }
+
+    const identity = verifyManagedProcessIdentity(record, options.processStartTokenReader);
+    if (identity === 'mismatch') {
+      options.registry.unregister(record.id);
+      continue;
+    }
+    const message = identity === 'unknown'
+      ? 'Child process identity remains unverified; preserving registry entry'
+      : 'Child process survived shutdown cascade; preserving registry entry';
+    logger.error('SYSTEM', message, {
+      pid: record.pid,
+      pgid: record.pgid,
+      type: record.type
+    });
   }
   for (const record of allRecords.filter(record => record.pid === currentPid)) {
     options.registry.unregister(record.id);
