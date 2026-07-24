@@ -403,8 +403,26 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
     }));
   });
 
-  it('keeps unscoped Chroma zero matches final without SQLite/FTS fallback', async () => {
-    const searchObservations = mock(() => []);
+  it('falls back to unscoped SQLite/FTS when unscoped Chroma returns zero matches', async () => {
+    const observation = {
+      id: 12,
+      memory_session_id: 'unscoped-memory-id',
+      project: 'search-project',
+      text: null,
+      type: 'discovery',
+      title: 'unscoped fallback observation',
+      subtitle: null,
+      facts: '[]',
+      narrative: 'unscoped fallback narrative',
+      concepts: '[]',
+      files_read: '[]',
+      files_modified: '[]',
+      prompt_number: 1,
+      discovery_tokens: 0,
+      created_at: new Date().toISOString(),
+      created_at_epoch: Date.now(),
+    };
+    const searchObservations = mock(() => [observation]);
     const searchSessions = mock(() => []);
     const searchUserPrompts = mock(() => []);
     const queryChroma = mock(() => Promise.resolve({
@@ -435,20 +453,85 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       format: 'json',
     }, telemetry);
 
-    expect(searchObservations).not.toHaveBeenCalled();
-    expect(searchSessions).not.toHaveBeenCalled();
-    expect(searchUserPrompts).not.toHaveBeenCalled();
+    expect(searchObservations).toHaveBeenCalledWith('legacy metadata', expect.objectContaining({}));
     expect(result).toEqual(expect.objectContaining({
-      observations: [],
-      sessions: [],
-      prompts: [],
-      totalResults: 0,
+      observations: [observation],
+      totalResults: 1,
     }));
     expect(telemetry).toEqual(expect.objectContaining({
-      result_count: 0,
-      search_strategy: 'chroma',
+      result_count: 1,
+      search_strategy: 'fts',
       chroma_available: true,
-      fallback_reason: 'none',
+      fallback_reason: 'chroma_error',
+    }));
+  });
+
+  it('falls back to FTS5 when Chroma returns candidates but none survive the date-range filter', async () => {
+    const observation = {
+      id: 13,
+      memory_session_id: 'old-memory-id',
+      project: 'search-project',
+      text: null,
+      type: 'discovery',
+      title: 'old glossary observation',
+      subtitle: null,
+      facts: '[]',
+      narrative: 'old glossary narrative',
+      concepts: '[]',
+      files_read: '[]',
+      files_modified: '[]',
+      prompt_number: 1,
+      discovery_tokens: 0,
+      created_at: new Date(0).toISOString(),
+      created_at_epoch: 0,
+    };
+    const searchObservations = mock(() => [observation]);
+    const searchSessions = mock(() => []);
+    const searchUserPrompts = mock(() => []);
+    // Chroma returns a non-empty candidate set (nearest-neighbor match on
+    // today's unrelated session content), but its created_at_epoch is
+    // "today" -- entirely outside the caller's requested historical
+    // dateRange, so it must be filtered out by the recency check.
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [999],
+      distances: [0.2],
+      metadatas: [{
+        sqlite_id: 999,
+        doc_type: 'observation',
+        project: 'search-project',
+        created_at_epoch: Date.now(),
+      }],
+    }));
+
+    const manager = new SearchManager(
+      {
+        searchObservations,
+        searchSessions,
+        searchUserPrompts,
+      } as any,
+      {
+        getObservationsByIds: mock(() => []),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+      } as any,
+      { queryChroma } as any,
+      {} as any,
+      {} as any,
+    );
+
+    const result = await manager.search({
+      query: 'glossary',
+      project: 'search-project',
+      dateRange: { start: '2020-01-01', end: '2020-12-31' },
+      format: 'json',
+    });
+
+    expect(searchObservations).toHaveBeenCalledWith('glossary', expect.objectContaining({
+      project: 'search-project',
+    }));
+    expect(result).toEqual(expect.objectContaining({
+      observations: [observation],
+      totalResults: 1,
     }));
   });
 });
