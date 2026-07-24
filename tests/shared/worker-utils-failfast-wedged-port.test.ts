@@ -32,6 +32,7 @@ function isPortListening(port: number, host: string = '127.0.0.1', timeoutMs: nu
 }
 
 mock.module('../../src/services/infrastructure/index.js', () => ({
+  ...realInfrastructureSnapshot,
   checkVersionMatch: () => Promise.resolve({
     matches: true,
     pluginVersion: '13.4.0',
@@ -41,19 +42,23 @@ mock.module('../../src/services/infrastructure/index.js', () => ({
 }));
 
 mock.module('../../src/services/infrastructure/ProcessManager.js', () => ({
+  ...realProcessManagerSnapshot,
   resolveWorkerRuntimePath: () => 'bun',
 }));
 
 mock.module('../../src/supervisor/index.js', () => ({
+  ...realSupervisorSnapshot,
   validateWorkerPidFile: validateWorkerPidFileMock,
   readOwnedWorkerPidInfo: () => null,
 }));
 
 mock.module('../../src/shared/spawn.js', () => ({
+  ...realSpawnSnapshot,
   spawnHidden: spawnHiddenMock,
 }));
 
 mock.module('../../src/shared/worker-spawn-gate.js', () => ({
+  ...realWorkerSpawnGateSnapshot,
   acquireSpawnLock: acquireSpawnLockMock,
   releaseSpawnLock: () => {},
 }));
