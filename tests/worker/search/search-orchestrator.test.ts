@@ -20,7 +20,7 @@ const observation = {
   created_at_epoch: 1735689600000,
 };
 
-describe('SearchOrchestrator platform-scoped Chroma zero fallback', () => {
+describe('SearchOrchestrator Chroma zero fallback', () => {
   it('normalizes date_from/date_to filters into dateRange for SQLite search', async () => {
     const searchObservations = mock(() => [observation]);
     const orchestrator = new SearchOrchestrator(
@@ -89,7 +89,7 @@ describe('SearchOrchestrator platform-scoped Chroma zero fallback', () => {
     expect(result.results.observations).toEqual([observation]);
   });
 
-  it('keeps unscoped Chroma zero matches final', async () => {
+  it('falls back to SQLiteStrategy when unscoped Chroma search returns no rows', async () => {
     const queryChroma = mock(() => Promise.resolve({ ids: [], distances: [], metadatas: [] }));
     const searchObservations = mock(() => [observation]);
     const orchestrator = new SearchOrchestrator(
@@ -113,9 +113,45 @@ describe('SearchOrchestrator platform-scoped Chroma zero fallback', () => {
       limit: 5,
     });
 
+    expect(searchObservations).toHaveBeenCalledWith('legacy docs', expect.objectContaining({
+      project: 'orchestrator-project',
+    }));
+    expect(result.usedChroma).toBe(false);
+    expect(result.strategy).toBe('sqlite');
+    expect(result.results.observations).toEqual([observation]);
+  });
+
+  it('keeps non-empty Chroma matches final', async () => {
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [21],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: 21, doc_type: 'observation', created_at_epoch: Date.now() }],
+    }));
+    const searchObservations = mock(() => [observation]);
+    const orchestrator = new SearchOrchestrator(
+      {
+        searchObservations,
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {
+        getObservationsByIds: mock(() => [observation]),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+      } as any,
+      { queryChroma } as any,
+    );
+
+    const result = await orchestrator.search({
+      query: 'legacy docs',
+      searchType: 'observations',
+      project: 'orchestrator-project',
+      limit: 5,
+    });
+
     expect(searchObservations).not.toHaveBeenCalled();
     expect(result.usedChroma).toBe(true);
     expect(result.strategy).toBe('chroma');
-    expect(result.results.observations).toHaveLength(0);
+    expect(result.results.observations).toEqual([observation]);
   });
 });
