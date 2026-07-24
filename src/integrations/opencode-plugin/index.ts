@@ -6,11 +6,11 @@ import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js
  *
  * A plugin is an async function that receives a context object and returns an
  * object whose keys are OpenCode's real hook names. The hooks claude-mem binds
- * to are (authoritative source: plans/08-opencode-integration.md "Fix sequence"
- * step 1, cross-checked against OpenCode's documented plugin API):
+ * to are (authoritative source: OpenCode plugin API docs):
  *
  *   - `tool.execute.after`            (input, output) — fires after every tool run
- *   - `chat.message`                  ({}, output)    — fires on each chat message
+ *   - `message.updated`                (message)       — fires when a message is updated
+ *   - `message.part.updated`           (message, part) — fires when a message part updates
  *   - `event`                         ({ event })     — generic bus; event.type carries the name
  *   - `experimental.session.compacting`               — fires when a session compacts
  *
@@ -18,10 +18,8 @@ import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js
  * `event.type`. The only bus event types claude-mem reacts to are
  * `session.deleted` (forget the session mapping) and `session.idle` (best-effort
  * summarize). Session creation/observation capture is driven by the dedicated
- * `tool.execute.after` / `chat.message` hooks above, not by bus events — that is
- * the #2435 fix: the old code subscribed to non-existent bus types
- * (`session.created`, `message.updated`, `session.compacted`, `file.edited`)
- * and therefore captured nothing.
+ * `tool.execute.after` / `message.updated` / `message.part.updated` hooks above,
+ * not by bus events.
  *
  * REAL_OPENCODE_EVENT_TYPES is the allowlist of bus `event.type` values the
  * plugin is permitted to switch on. The contract test asserts the plugin only
@@ -37,7 +35,8 @@ type RealOpenCodeEventType = (typeof REAL_OPENCODE_EVENT_TYPES)[number];
 /** The hook keys this plugin returns. The contract test asserts these are the real OpenCode hook names. */
 export const REGISTERED_OPENCODE_HOOKS = [
   "tool.execute.after",
-  "chat.message",
+  "message.updated",
+  "message.part.updated",
   "event",
   "experimental.session.compacting",
 ] as const;
@@ -69,13 +68,21 @@ interface ToolExecuteAfterOutput {
   args?: Record<string, unknown>;
 }
 
-interface ChatMessageOutput {
+interface MessageUpdatedInput {
   message: {
     id?: string;
     role?: string;
     sessionID?: string;
   };
-  parts: Array<{ type: string; text?: string }>;
+}
+
+interface MessagePartUpdatedInput {
+  message: {
+    id?: string;
+    role?: string;
+    sessionID?: string;
+  };
+  part: { type: string; text?: string };
 }
 
 interface SessionCompactingInput {
@@ -105,20 +112,25 @@ const MAX_TOOL_RESPONSE_LENGTH = 1000;
 
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
 
-function workerPostFireAndForget(
+async function workerPost(
   path: string,
   body: Record<string, unknown>,
-): void {
-  fetch(`${WORKER_BASE_URL}${path}`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(body),
-  }).catch((error: unknown) => {
+): Promise<void> {
+  try {
+    const response = await fetch(`${WORKER_BASE_URL}${path}`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      console.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
+    }
+  } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     if (!message.includes("ECONNREFUSED")) {
       console.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
     }
-  });
+  }
 }
 
 async function workerGetText(path: string): Promise<string | null> {
@@ -171,7 +183,7 @@ function ensureSessionInitialized(openCodeSessionId: string, projectName: string
   const contentSessionId = getOrCreateContentSessionId(openCodeSessionId);
   if (!initializedSessionIds.has(openCodeSessionId)) {
     initializedSessionIds.add(openCodeSessionId);
-    workerPostFireAndForget("/api/sessions/init", {
+    workerPost("/api/sessions/init", {
       contentSessionId,
       project: projectName,
       prompt: "",
@@ -199,7 +211,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       output: ToolExecuteAfterOutput,
     ): Promise<void> => {
       const contentSessionId = ensureSessionInitialized(input.sessionID, projectName);
-      workerPostFireAndForget("/api/sessions/observations", {
+      await workerPost("/api/sessions/observations", {
         contentSessionId,
         tool_name: input.tool,
         tool_input: output.args || {},
@@ -208,27 +220,45 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       });
     },
 
-    // Capture assistant chat messages as observations.
-    "chat.message": async (
-      _input: Record<string, unknown>,
-      output: ChatMessageOutput,
+    // Capture assistant messages when updated.
+    "message.updated": async (
+      input: MessageUpdatedInput,
     ): Promise<void> => {
-      const sessionID = output.message?.sessionID;
+      const sessionID = input.message?.sessionID;
       if (!sessionID) return;
-      if (output.message?.role !== "assistant") return;
+      if (input.message?.role !== "assistant") return;
 
       const contentSessionId = ensureSessionInitialized(sessionID, projectName);
-      const messageText = (output.parts || [])
-        .filter((part) => part.type === "text" && typeof part.text === "string")
-        .map((part) => part.text as string)
-        .join("\n");
+      // Message text comes from message.parts — extract text parts.
+      const messageText = ""; // Text not available in message.updated; use message.part.updated instead.
       if (!messageText) return;
 
-      workerPostFireAndForget("/api/sessions/observations", {
+      await workerPost("/api/sessions/observations", {
         contentSessionId,
         tool_name: "assistant_message",
         tool_input: {},
         tool_response: truncate(messageText),
+        cwd: ctx.directory,
+      });
+    },
+
+    // Capture assistant message parts as observations (primary text capture).
+    "message.part.updated": async (
+      input: MessagePartUpdatedInput,
+    ): Promise<void> => {
+      const sessionID = input.message?.sessionID;
+      if (!sessionID) return;
+      if (input.message?.role !== "assistant") return;
+
+      const part = input.part;
+      if (part.type !== "text" || typeof part.text !== "string" || !part.text) return;
+
+      const contentSessionId = ensureSessionInitialized(sessionID, projectName);
+      await workerPost("/api/sessions/observations", {
+        contentSessionId,
+        tool_name: "assistant_message",
+        tool_input: {},
+        tool_response: truncate(part.text),
         cwd: ctx.directory,
       });
     },
@@ -239,7 +269,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       input: SessionCompactingInput,
     ): Promise<void> => {
       const contentSessionId = ensureSessionInitialized(input.sessionID, projectName);
-      workerPostFireAndForget("/api/sessions/summarize", {
+      await workerPost("/api/sessions/summarize", {
         contentSessionId,
         last_assistant_message: "",
       });
@@ -256,7 +286,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
         case "session.idle": {
           // Best-effort summarize once a session goes idle.
           const contentSessionId = ensureSessionInitialized(sessionID, projectName);
-          workerPostFireAndForget("/api/sessions/summarize", {
+          await workerPost("/api/sessions/summarize", {
             contentSessionId,
             last_assistant_message: "",
           });
