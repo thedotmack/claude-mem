@@ -63,9 +63,26 @@ function findBun() {
     return 'bun';
   }
 
+  const bunInstall = typeof process.env.BUN_INSTALL === 'string' ? process.env.BUN_INSTALL.trim() : '';
+  const bunEnv = typeof process.env.BUN === 'string' ? process.env.BUN.trim() : '';
+  const bunPathEnv = typeof process.env.BUN_PATH === 'string' ? process.env.BUN_PATH.trim() : '';
+
+  // Explicit overrides + BUN_INSTALL (official installer) + well-known homes.
+  // Hook PATH from Git Bash often omits ~/.bun/bin (#3224).
   const bunPaths = IS_WINDOWS
-    ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
+    ? [
+        bunEnv,
+        bunPathEnv,
+        bunInstall ? join(bunInstall, 'bin', 'bun.exe') : '',
+        bunInstall ? join(bunInstall, 'bin', 'bun') : '',
+        bunInstall ? join(bunInstall, 'bun.exe') : '',
+        join(homedir(), '.bun', 'bin', 'bun.exe'),
+      ]
     : [
+        bunEnv,
+        bunPathEnv,
+        bunInstall ? join(bunInstall, 'bin', 'bun') : '',
+        bunInstall ? join(bunInstall, 'bun') : '',
         join(homedir(), '.bun', 'bin', 'bun'),
         '/usr/local/bin/bun',
         '/opt/homebrew/bin/bun',
@@ -73,7 +90,7 @@ function findBun() {
       ];
 
   for (const bunPath of bunPaths) {
-    if (existsSync(bunPath)) {
+    if (bunPath && existsSync(bunPath)) {
       return bunPath;
     }
   }
