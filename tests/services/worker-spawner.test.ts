@@ -1,8 +1,16 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, afterAll } from 'bun:test';
 import { readFileSync, mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
+// Real modules captured BEFORE mock.module so the mocks can (a) spread the
+// full export surface instead of leaking a partial stub into later test
+// files, and (b) be re-pointed at the real implementations in afterAll.
+// bun's mock.module has no unmock and persists for the rest of the process,
+// which previously broke e.g. health-monitor.test.ts when this file ran first.
+import * as RealProcessManager from '../../src/services/infrastructure/ProcessManager.js';
+import * as RealHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
+import * as RealSpawnGate from '../../src/shared/worker-spawn-gate.js';
 
 // Isolate the Windows spawn-cooldown marker (.worker-start-attempted) from the
 // real ~/.claude-mem so spawning in one test cannot cooldown-block the next.
@@ -28,11 +36,24 @@ const spawnGate = {
   releaseSpawnLock: mock(() => {}),
 };
 
-mock.module('../../src/services/infrastructure/ProcessManager.js', () => processManager);
-mock.module('../../src/services/infrastructure/HealthMonitor.js', () => healthMonitor);
-mock.module('../../src/shared/worker-spawn-gate.js', () => spawnGate);
+mock.module('../../src/services/infrastructure/ProcessManager.js', () => ({ ...RealProcessManager, ...processManager }));
+mock.module('../../src/services/infrastructure/HealthMonitor.js', () => ({ ...RealHealthMonitor, ...healthMonitor }));
+mock.module('../../src/shared/worker-spawn-gate.js', () => ({ ...RealSpawnGate, ...spawnGate }));
 
 const { ensureWorkerStarted } = await import('../../src/services/worker-spawner.js');
+
+afterAll(() => {
+  processManager.cleanStalePidFile.mockImplementation(RealProcessManager.cleanStalePidFile);
+  processManager.getPlatformTimeout.mockImplementation(RealProcessManager.getPlatformTimeout);
+  processManager.spawnDaemon.mockImplementation(RealProcessManager.spawnDaemon);
+  processManager.removePidFile.mockImplementation(RealProcessManager.removePidFile);
+  processManager.touchPidFile.mockImplementation(RealProcessManager.touchPidFile);
+  healthMonitor.isPortInUse.mockImplementation(RealHealthMonitor.isPortInUse);
+  healthMonitor.waitForHealth.mockImplementation(RealHealthMonitor.waitForHealth);
+  healthMonitor.waitForReadiness.mockImplementation(RealHealthMonitor.waitForReadiness);
+  spawnGate.acquireSpawnLock.mockImplementation(RealSpawnGate.acquireSpawnLock);
+  spawnGate.releaseSpawnLock.mockImplementation(RealSpawnGate.releaseSpawnLock);
+});
 
 type TimedProbe = (port: number, timeout: number) => Promise<boolean>;
 
