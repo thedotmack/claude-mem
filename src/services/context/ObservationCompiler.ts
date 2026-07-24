@@ -30,6 +30,11 @@ export function queryObservationsMulti(
 
   const projectPlaceholders = projects.map(() => '?').join(',');
 
+  // #3274: only the recency-injection window filters out subagent rows (agent_id
+  // non-null). On-demand queries (search/timeline/getObservationsByIds) stay
+  // unfiltered so subagent work is still retrievable.
+  const agentFilter = config.mainAgentOnly ? 'AND o.agent_id IS NULL' : '';
+
   return db.db.prepare(`
     SELECT
       o.id,
@@ -52,6 +57,7 @@ export function queryObservationsMulti(
     WHERE (o.project IN (${projectPlaceholders})
            OR o.merged_into_project IN (${projectPlaceholders}))
       AND (? IS NULL OR s.platform_source = ?)
+      ${agentFilter}
       AND type IN (${typePlaceholders})
       AND EXISTS (
         SELECT 1 FROM json_each(o.concepts)
