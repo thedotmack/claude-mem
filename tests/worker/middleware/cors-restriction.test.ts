@@ -68,14 +68,24 @@ describe('CORS Restriction', () => {
         res.json({ ok: true });
       });
 
-      testPort = 41000 + Math.floor(Math.random() * 10000);
-      await new Promise<void>((resolve) => {
-        server = app.listen(testPort, '127.0.0.1', resolve);
+      await new Promise<void>((resolve, reject) => {
+        const onError = (error: Error) => reject(error);
+        server = app.listen(0, '127.0.0.1', () => {
+          server.removeListener('error', onError);
+          const address = server.address();
+          if (!address || typeof address === 'string') {
+            reject(new Error('Test server did not expose an assigned port'));
+            return;
+          }
+          testPort = address.port;
+          resolve();
+        });
+        server.once('error', onError);
       });
     });
 
     afterEach(async () => {
-      if (server) {
+      if (server?.listening) {
         await new Promise<void>((resolve, reject) => {
           server.close(err => err ? reject(err) : resolve());
         });
