@@ -37,6 +37,11 @@ describe('AntigravityCliHooksInstaller - event mapping (official 5-event hooks.j
     expect(src).toContain("new Set(['PreToolUse', 'PostToolUse'])");
   });
 
+  it('emits bare forward-slashed hook paths (agy does not strip quotes; quoted paths break every hook)', () => {
+    expect(src).toContain('${formattedWorkerPath} hook antigravity-cli ${internalEvent}');
+    expect(src).not.toContain('"${formattedWorkerPath}"');
+  });
+
   it('dual-writes MCP config to both B0-confirmed candidate paths', () => {
     expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'antigravity', 'mcp_config.json')");
     expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'config', 'mcp_config.json')");
@@ -111,6 +116,34 @@ describe('antigravityCliAdapter - normalizeInput (flat payload, no event-name fi
       expect(result.toolName).toBe('AntigravityProvider');
       expect(result.toolInput).toEqual({ prompt: 'latest prompt' });
       expect(result.toolResponse).toEqual({ response: 'latest response' });
+    } finally {
+      rmSync(transcriptDir, { recursive: true, force: true });
+    }
+  });
+
+  it('strips agy wrapper tags, keeping only the <USER_REQUEST> content', () => {
+    const transcriptDir = mkdtempSync(join(tmpdir(), 'claude-mem-antigravity-'));
+    try {
+      const transcriptPath = join(transcriptDir, 'transcript.jsonl');
+      const wrapped =
+        '<USER_REQUEST>\nhi\n</USER_REQUEST>\n' +
+        '<ADDITIONAL_METADATA>\nThe current local time is: 2026-07-24T19:46:01+08:00.\n</ADDITIONAL_METADATA>\n' +
+        '<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection`.\n</USER_SETTINGS_CHANGE>';
+      writeFileSync(
+        transcriptPath,
+        JSON.stringify({ step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: wrapped }),
+      );
+
+      const result = antigravityCliAdapter.normalizeInput({
+        conversationId: 'conversation-xyz',
+        workspacePaths: ['/tmp/workspace'],
+        transcriptPath,
+        invocationNum: 1,
+        initialNumSteps: 1,
+      });
+
+      expect(result.prompt).toBe('hi');
+      expect(result.toolInput).toEqual({ prompt: 'hi' });
     } finally {
       rmSync(transcriptDir, { recursive: true, force: true });
     }

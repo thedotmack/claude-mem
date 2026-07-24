@@ -2,6 +2,18 @@ import type { PlatformAdapter } from '../types.js';
 import { AdapterRejectedInput, isValidCwd } from './errors.js';
 import fs from 'fs';
 
+// agy wraps the real user message in <USER_REQUEST>...</USER_REQUEST> and
+// appends injected <ADDITIONAL_METADATA> (local time) and <USER_SETTINGS_CHANGE>
+// (model switches) blocks. Keep only the genuine request text.
+function unwrapAgyUserInput(text: string): string {
+  const match = text.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/);
+  if (match) return match[1].trim();
+  return text
+    .replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/g, '')
+    .replace(/<USER_SETTINGS_CHANGE>[\s\S]*?<\/USER_SETTINGS_CHANGE>/g, '')
+    .trim();
+}
+
 // Antigravity transcript.jsonl lines: {step_index, source, type, content}.
 // The assistant's final text lives ONLY in type=PLANNER_RESPONSE nodes —
 // RUN_COMMAND/VIEW_FILE/etc. also carry source=MODEL, so filter by type.
@@ -21,13 +33,17 @@ function readLastTranscriptContent(
         const obj = JSON.parse(line);
         if (!obj || obj.type !== nodeType) continue;
         if (typeof obj.content === 'string' && obj.content.trim()) {
-          return obj.content.trim();
+          const text = obj.content.trim();
+          return nodeType === 'USER_INPUT' ? unwrapAgyUserInput(text) : text;
         }
         if (Array.isArray(obj.content)) {
           const textParts = obj.content
             .filter((c: any) => c && typeof c.text === 'string' && c.text.trim())
             .map((c: any) => c.text.trim());
-          if (textParts.length > 0) return textParts.join('\n');
+          if (textParts.length > 0) {
+            const text = textParts.join('\n');
+            return nodeType === 'USER_INPUT' ? unwrapAgyUserInput(text) : text;
+          }
         }
       } catch {}
     }
