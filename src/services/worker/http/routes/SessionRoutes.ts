@@ -607,7 +607,10 @@ export class SessionRoutes extends BaseRouteHandler {
         });
       }
 
-      await this.ensureGeneratorRunning(sessionDbId, 'init');
+      // Session initialization records durable context only.  Starting the SDK
+      // with no queued message opens an empty stream that can neither produce
+      // an observation nor reliably accept the first later event.  Ingestion
+      // starts the generator after it has durably queued that event.
 
       this.eventBroadcaster.broadcastSessionStarted(sessionDbId, session.project);
     } else {
