@@ -384,15 +384,6 @@ export class ClaudeProvider {
           }
           receivedTextResponse = true;
 
-          if (session.ignoreInitialObserverResponse) {
-            session.ignoreInitialObserverResponse = false;
-            session.conversationHistory.push({ role: 'assistant', content: textContent });
-            logger.debug('SDK', 'Discarded startup acknowledgement without source work', {
-              sessionId: session.sessionDbId,
-            });
-            continue;
-          }
-
           const tokensBeforeResponse = session.cumulativeInputTokens + session.cumulativeOutputTokens;
 
           const usage = message.message.usage;
@@ -553,19 +544,10 @@ export class ClaudeProvider {
       ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
 
-    // Startup acknowledgement has no source event. Its reply is discarded
-    // explicitly so it cannot settle the first queued event.
-    session.ignoreInitialObserverResponse = true;
-    session.conversationHistory.push({ role: 'user', content: initPrompt });
-    session.lastPromptSentAt = Date.now();
-    session.lastGeneratorSource = 'init';
-    yield {
-      type: 'user',
-      message: { role: 'user', content: initPrompt },
-      session_id: session.contentSessionId,
-      parent_tool_use_id: null,
-      isSynthetic: true,
-    };
+    // The Agent SDK only dispatches streamed stdin after the iterator closes.
+    // Each observer request therefore contains exactly one durable source
+    // message and then ends; a later hook starts its own request.
+    let includeInitialContext = true;
 
     for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
       session.pendingAgentId = message.agentId ?? null;
@@ -580,7 +562,7 @@ export class ClaudeProvider {
           session.lastPromptNumber = message.prompt_number;
         }
 
-        const obsPrompt = buildObservationPrompt({
+        const observationPrompt = buildObservationPrompt({
           id: 0, // Not used in prompt
           tool_name: message.tool_name!,
           tool_input: JSON.stringify(message.tool_input),
@@ -589,6 +571,10 @@ export class ClaudeProvider {
           cwd: message.cwd
         });
 
+        const obsPrompt = includeInitialContext
+          ? `${initPrompt}\n\n${observationPrompt}`
+          : observationPrompt;
+        includeInitialContext = false;
         session.conversationHistory.push({ role: 'user', content: obsPrompt });
 
         session.lastPromptSentAt = Date.now();
@@ -603,8 +589,9 @@ export class ClaudeProvider {
           parent_tool_use_id: null,
           isSynthetic: true
         };
+        return;
       } else if (message.type === 'summarize') {
-        const summaryPrompt = buildSummaryPrompt({
+        const summaryTemplate = buildSummaryPrompt({
           id: session.sessionDbId,
           memory_session_id: session.memorySessionId,
           project: session.project,
@@ -612,6 +599,10 @@ export class ClaudeProvider {
           last_assistant_message: message.last_assistant_message || ''
         }, mode);
 
+        const summaryPrompt = includeInitialContext
+          ? `${initPrompt}\n\n${summaryTemplate}`
+          : summaryTemplate;
+        includeInitialContext = false;
         session.conversationHistory.push({ role: 'user', content: summaryPrompt });
 
         session.lastPromptSentAt = Date.now();
@@ -626,6 +617,7 @@ export class ClaudeProvider {
           parent_tool_use_id: null,
           isSynthetic: true
         };
+        return;
       }
     }
   }

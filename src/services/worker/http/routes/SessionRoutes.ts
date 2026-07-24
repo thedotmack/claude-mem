@@ -607,7 +607,7 @@ export class SessionRoutes extends BaseRouteHandler {
         });
       }
 
-      await this.ensureGeneratorRunning(sessionDbId, 'init');
+      // Ingestion starts the SDK only after a durable source event is queued.
 
       this.eventBroadcaster.broadcastSessionStarted(sessionDbId, session.project);
     } else {
