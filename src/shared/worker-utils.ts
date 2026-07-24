@@ -201,8 +201,8 @@ export function workerHttpRequest(
   return fetch(url, init);
 }
 
-async function isWorkerHealthy(): Promise<boolean> {
-  const response = await workerHttpRequest('/api/health', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
+async function isWorkerHealthy(timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<boolean> {
+  const response = await workerHttpRequest('/api/health', { timeoutMs });
   return response.ok;
 }
 
@@ -436,21 +436,21 @@ async function warnIfVersionStillMismatched(expectedPluginVersion: string): Prom
   }
 }
 
-async function isWorkerPortAlive(): Promise<boolean> {
-  const { healthOk, pidStatus } = await inspectWorkerPort();
+async function isWorkerPortAlive(timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<boolean> {
+  const { healthOk, pidStatus } = await inspectWorkerPort(timeoutMs);
   if (!healthOk) return false;
   if (pidStatus === 'missing') return true;
   if (pidStatus === 'alive') return true;
   return false;
 }
 
-async function inspectWorkerPort(): Promise<{
+async function inspectWorkerPort(timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<{
   healthOk: boolean;
   pidStatus: ValidateWorkerPidStatus | null;
 }> {
   let healthy: boolean;
   try {
-    healthy = await isWorkerHealthy();
+    healthy = await isWorkerHealthy(timeoutMs);
   } catch (error: unknown) {
     logger.debug('SYSTEM', 'Worker health check threw', {
       error: error instanceof Error ? error.message : String(error),
@@ -464,6 +464,42 @@ async function inspectWorkerPort(): Promise<{
 }
 
 type WorkerAvailabilityOutcome = 'available' | 'retryable-failure' | 'final-failure';
+type OccupiedPortRecoveryOutcome = 'available' | 'released' | 'budget-exhausted';
+
+async function waitForOccupiedPortRecovery(
+  mode: 'lock-holder' | 'lock-loser',
+  timeoutMs: number = OCCUPIED_PORT_RECOVERY_GRACE_MS
+): Promise<OccupiedPortRecoveryOutcome> {
+  if (mode === 'lock-holder') {
+    if (await waitForWorkerReadiness(timeoutMs)) return 'available';
+    return (await isPortListening(getWorkerPort(), getWorkerHost())) ? 'budget-exhausted' : 'released';
+  }
+
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const remainingMs = timeoutMs - (Date.now() - start);
+    if (remainingMs <= 0) break;
+
+    if (!(await isPortListening(getWorkerPort(), getWorkerHost()))) {
+      return 'released';
+    }
+
+    if (await isWorkerPortAlive(Math.min(HEALTH_CHECK_TIMEOUT_MS, remainingMs))) {
+      const readyRemainingMs = timeoutMs - (Date.now() - start);
+      if (readyRemainingMs <= 0) {
+        return 'budget-exhausted';
+      }
+      const ready = await waitForWorkerReadiness(readyRemainingMs);
+      return ready ? 'available' : 'budget-exhausted';
+    }
+
+    const nextRemainingMs = timeoutMs - (Date.now() - start);
+    if (nextRemainingMs <= 0) break;
+    await new Promise<void>(resolve => setTimeout(resolve, Math.min(250, nextRemainingMs)));
+  }
+
+  return (await isPortListening(getWorkerPort(), getWorkerHost())) ? 'budget-exhausted' : 'released';
+}
 
 async function ensureWorkerAvailability(): Promise<WorkerAvailabilityOutcome> {
   const resolvedScript = resolveWorkerScript();
@@ -520,42 +556,25 @@ async function ensureWorkerAvailability(): Promise<WorkerAvailabilityOutcome> {
     }
   } else if (!workerPort.healthOk && await isPortListening(getWorkerPort(), getWorkerHost())) {
     const occupiedPortLockHeld = acquireSpawnLock();
-    if (occupiedPortLockHeld) {
-      releaseSpawnLock();
-      if (await waitForWorkerReadiness(OCCUPIED_PORT_RECOVERY_GRACE_MS)) {
-        return 'available';
-      }
-      logger.warn('SYSTEM', 'Worker port is occupied by an unhealthy listener; skipping lazy-spawn', {
-        host: getWorkerHost(),
-        port: getWorkerPort(),
-      });
-      return 'retryable-failure';
-    }
+    if (occupiedPortLockHeld) releaseSpawnLock();
 
-    let delayMs = 500;
-    for (let attempt = 1; attempt <= 6; attempt++) {
-      if (!(await isPortListening(getWorkerPort(), getWorkerHost()))) {
-        break;
-      }
-      if (await isWorkerPortAlive()) {
-        const ready = await waitForWorkerReadiness();
-        if (!ready) {
-          logger.warn('SYSTEM', 'Occupied worker port recovered liveness under another launcher but never became ready');
-          return 'retryable-failure';
+    const occupiedPortRecovery = await waitForOccupiedPortRecovery(
+      occupiedPortLockHeld ? 'lock-holder' : 'lock-loser'
+    );
+    if (occupiedPortRecovery === 'available') {
+      return 'available';
+    }
+    if (occupiedPortRecovery === 'budget-exhausted') {
+      logger.warn(
+        'SYSTEM',
+        occupiedPortLockHeld
+          ? 'Worker port is occupied by an unhealthy listener; skipping lazy-spawn'
+          : 'Occupied worker port never became healthy while another launcher held the spawn lock; skipping lazy-spawn',
+        {
+          host: getWorkerHost(),
+          port: getWorkerPort(),
         }
-        return 'available';
-      }
-      if (attempt < 6) {
-        await new Promise<void>(resolve => setTimeout(resolve, delayMs));
-        delayMs *= 2;
-      }
-    }
-
-    if (await isPortListening(getWorkerPort(), getWorkerHost())) {
-      logger.warn('SYSTEM', 'Occupied worker port never became healthy while another launcher held the spawn lock; skipping lazy-spawn', {
-        host: getWorkerHost(),
-        port: getWorkerPort(),
-      });
+      );
       return 'retryable-failure';
     }
   }

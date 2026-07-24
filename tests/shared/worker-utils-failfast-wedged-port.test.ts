@@ -200,20 +200,28 @@ describe('ensureWorkerRunning — fail fast on an unhealthy occupied port', () =
   it('returns false when another launcher restores liveness but the worker never becomes ready', async () => {
     const { server, port } = await listenOnEphemeralPort();
     process.env.CLAUDE_MEM_WORKER_PORT = String(port);
+    process.env.CLAUDE_MEM_HEALTH_TIMEOUT_MS = '800';
     process.env.CLAUDE_MEM_HOOK_READINESS_TIMEOUT_MS = '1000';
     acquireSpawnLockMock.mockImplementation(() => false);
     let requestCount = 0;
-    global.fetch = mock(() => {
+    global.fetch = mock((_url: string, init?: RequestInit) => {
       requestCount++;
-      if (requestCount < 3) return Promise.reject(new Error('health timeout'));
-      if (requestCount === 3) return Promise.resolve({ ok: true, status: 200 } as Response);
-      return Promise.reject(new Error('readiness timeout'));
+      if (requestCount === 1) return Promise.reject(new Error('health timeout'));
+      if (requestCount === 2) {
+        return new Promise<Response>(resolve => setTimeout(() => resolve({ ok: true, status: 200 } as Response), 500));
+      }
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('timed out', 'TimeoutError')), { once: true });
+      });
     });
 
     try {
       const { ensureWorkerRunning } = await importWorkerUtilsFresh();
+      const start = Date.now();
       expect(await ensureWorkerRunning()).toBe(false);
+      const elapsed = Date.now() - start;
       expect(spawnHiddenMock).not.toHaveBeenCalled();
+      expect(elapsed).toBeLessThan(1100);
     } finally {
       await new Promise<void>(resolve => server.close(() => resolve()));
     }
@@ -238,6 +246,48 @@ describe('ensureWorkerRunning — fail fast on an unhealthy occupied port', () =
       const elapsed = Date.now() - start;
       expect(spawnHiddenMock).not.toHaveBeenCalled();
       expect(elapsed).toBeLessThan(2500);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('lazy-spawns once when the occupied port releases during the lock-holder grace wait', async () => {
+    process.env.CLAUDE_MEM_WORKER_PORT = '37777';
+    process.env.CLAUDE_MEM_HEALTH_TIMEOUT_MS = '500';
+    process.env.CLAUDE_MEM_HOOK_READINESS_TIMEOUT_MS = '500';
+    let portChecks = 0;
+    isPortListeningMock.mockImplementation(() => Promise.resolve(portChecks++ === 0));
+    global.fetch = mock((_url: string, init?: RequestInit) => {
+      if (spawnHiddenMock.mock.calls.length > 0) return Promise.resolve({ ok: true, status: 200 } as Response);
+      return Promise.reject(new Error('health timeout'));
+    });
+
+    try {
+      const { ensureWorkerRunning } = await importWorkerUtilsFresh();
+      expect(await ensureWorkerRunning()).toBe(true);
+      expect(acquireSpawnLockMock).toHaveBeenCalledTimes(2);
+      expect(spawnHiddenMock).toHaveBeenCalledTimes(1);
+    } finally {
+    }
+  });
+
+  it('returns false within the occupied-port budget when another launcher holds the spawn lock and health hangs', async () => {
+    const { server, port } = await listenOnEphemeralPort();
+    process.env.CLAUDE_MEM_WORKER_PORT = String(port);
+    process.env.CLAUDE_MEM_HEALTH_TIMEOUT_MS = '500';
+    process.env.CLAUDE_MEM_HOOK_READINESS_TIMEOUT_MS = '500';
+    acquireSpawnLockMock.mockImplementation(() => false);
+    global.fetch = mock((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('timed out', 'TimeoutError')), { once: true });
+    }));
+
+    try {
+      const { ensureWorkerRunning } = await importWorkerUtilsFresh();
+      const start = Date.now();
+      expect(await ensureWorkerRunning()).toBe(false);
+      const elapsed = Date.now() - start;
+      expect(spawnHiddenMock).not.toHaveBeenCalled();
+      expect(elapsed).toBeLessThan(1500);
     } finally {
       await new Promise<void>(resolve => server.close(() => resolve()));
     }
