@@ -17,7 +17,7 @@
  * The fallback chain ORDER is contractual and must not change:
  *   1. ${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}   (host-injected env)
  *   2. (mcp only) $PWD/plugin, $PWD               (repo/dev checkout)
- *   3. cache directories (newest first via `ls -dt`)
+ *   3. enabled claude-mem marketplace cache directories (newest first via `ls -dt`)
  *   4. $_C/plugins/marketplaces/thedotmack/plugin (marketplace install)
  */
 
@@ -117,6 +117,14 @@ function candidateBlock(options: ShellTemplateOptions): string {
     const quoted = options.mcpExtraCandidates.map((candidate) => `"${candidate}"`).join(' ');
     lines.push(`printf '%s\\n' ${quoted};`);
   }
+
+  // Claude Code does not consistently inject CLAUDE_PLUGIN_ROOT for locally
+  // installed marketplaces. Resolve enabled claude-mem marketplace keys from
+  // settings before the legacy official cache fallback, so a separately
+  // installed candidate cannot silently launch the official plugin instead.
+  lines.push(
+    `node -e "const f=require('fs'),p=require('path'),o=require('os');const C=process.env.CLAUDE_CONFIG_DIR||p.join(o.homedir(),'.claude');try{const s=JSON.parse(f.readFileSync(p.join(C,'settings.json'),'utf8'));for(const [k,v] of Object.entries(s.enabledPlugins||{})){const m=/^claude-mem@([^/]+)$/.exec(k);if(m&&v!==false)console.log(p.join(C,'plugins','cache',m[1],'claude-mem'))}}catch{}" 2>/dev/null | while IFS= read -r _D; do ls -dt "$_D"/[0-9]*/ 2>/dev/null; done;`,
+  );
 
   const extraCacheRoots = isMcp && options.mcpExtraCacheRoots ? options.mcpExtraCacheRoots : [];
   const allGlobs = [...extraCacheRoots, '$_C/plugins/cache/thedotmack/claude-mem']

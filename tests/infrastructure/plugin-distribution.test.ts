@@ -215,6 +215,8 @@ describe('Plugin Distribution - Startup Root Resolution', () => {
   it('Claude hook commands should have config-dir based non-empty fallbacks', () => {
     for (const command of commandHooksFrom('plugin/hooks/hooks.json')) {
       expect(command).toContain('${CLAUDE_CONFIG_DIR:-$HOME/.claude}');
+      expect(command).toContain('enabledPlugins');
+      expect(command).toContain('claude-mem@');
       expect(command).toContain('while IFS= read -r _R');
       expect(command).toContain('$_C/plugins/marketplaces/thedotmack/plugin');
       expect(command).toContain('$_C/plugins/cache/thedotmack/claude-mem');
