@@ -24,8 +24,11 @@ interface AntigravityHookGroup {
   hooks: AntigravityHookEntry[];
 }
 
+// Official hooks.json schema (antigravity.google/docs/hooks): PreToolUse /
+// PostToolUse take matcher-wrapped groups; PreInvocation / PostInvocation /
+// Stop take a bare handler list (matcher is ignored for them).
 interface AntigravityHooksConfig {
-  [eventName: string]: AntigravityHookGroup[];
+  [eventName: string]: AntigravityHookGroup[] | AntigravityHookEntry[];
 }
 
 interface AntigravitySettingsJson {
@@ -39,6 +42,7 @@ interface AntigravitySettingsJson {
 // hook JSON schema, same GEMINI.md context file. Not a typo/leftover.
 const GEMINI_CONFIG_DIR = path.join(homedir(), '.gemini');
 const GEMINI_SETTINGS_PATH = path.join(GEMINI_CONFIG_DIR, 'settings.json');
+const GEMINI_HOOKS_CONFIG_PATH = path.join(GEMINI_CONFIG_DIR, 'config', 'hooks.json');
 const GEMINI_MD_PATH = path.join(GEMINI_CONFIG_DIR, 'GEMINI.md');
 
 // B0 found two real, genuinely ambiguous MCP config paths on a live machine —
@@ -64,13 +68,11 @@ const HOOK_TIMEOUT_MS = 10000;
 // 'session-complete' has no handler in src/cli/handlers/index.ts — it was
 // removed on purpose (see CHANGELOG.md:777) since the worker self-completes.
 const ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT: Record<string, string> = {
-  'SessionStart': 'context',
-  'BeforeAgent': 'session-init',
-  'AfterAgent': 'observation',
-  'BeforeTool': 'observation',
-  'AfterTool': 'observation',
-  'Notification': 'observation',
-  'PreCompress': 'summarize',
+  'PreInvocation': 'context',
+  'PreToolUse': 'observation',
+  'PostToolUse': 'observation',
+  'PostInvocation': 'observation',
+  'Stop': 'summarize',
 };
 
 function buildHookCommand(
@@ -83,21 +85,31 @@ function buildHookCommand(
     throw new Error(`Unknown Antigravity CLI event: ${antigravityEventName}`);
   }
 
-  const escapedBunPath = bunPath.replace(/\\/g, '\\\\');
-  const escapedWorkerPath = workerServicePath.replace(/\\/g, '\\\\');
+  // agy splits the command on spaces and does NOT strip quotes, so wrapping a
+  // path in "..." makes bun receive a literal quoted filename and fail with
+  // "File not found" (verified on a live install: quoted paths broke every hook
+  // with exit status 1). Emit bare, forward-slashed paths.
+  const formattedBunPath = bunPath.replace(/\\/g, '/');
+  const formattedWorkerPath = workerServicePath.replace(/\\/g, '/');
 
-  return `"${escapedBunPath}" "${escapedWorkerPath}" hook antigravity-cli ${internalEvent}`;
+  return `${formattedBunPath} ${formattedWorkerPath} hook antigravity-cli ${internalEvent}`;
+}
+
+const TOOL_MATCHER_EVENTS = new Set(['PreToolUse', 'PostToolUse']);
+
+function createHookEntry(hookCommand: string): AntigravityHookEntry {
+  return {
+    name: HOOK_NAME,
+    type: 'command',
+    command: hookCommand,
+    timeout: HOOK_TIMEOUT_MS,
+  };
 }
 
 function createHookGroup(hookCommand: string): AntigravityHookGroup {
   return {
     matcher: '*',
-    hooks: [{
-      name: HOOK_NAME,
-      type: 'command',
-      command: hookCommand,
-      timeout: HOOK_TIMEOUT_MS,
-    }],
+    hooks: [createHookEntry(hookCommand)],
   };
 }
 
@@ -124,42 +136,40 @@ function writeAntigravitySettings(settings: AntigravitySettingsJson): void {
   writeFileSync(GEMINI_SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n');
 }
 
-// Generic JSON-group merge — doesn't depend on event names, copied verbatim
-// from the removed GeminiCliHooksInstaller.ts.
-function mergeHooksIntoSettings(
-  existingSettings: AntigravitySettingsJson,
-  newHooks: AntigravityHooksConfig,
-): AntigravitySettingsJson {
-  const settings = { ...existingSettings };
-  if (!settings.hooks) {
-    settings.hooks = {};
-  }
+function writeAntigravityHooksConfig(hooksConfig: AntigravityHooksConfig): void {
+  const configDir = path.join(GEMINI_CONFIG_DIR, 'config');
+  mkdirSync(configDir, { recursive: true });
 
-  for (const [eventName, newGroups] of Object.entries(newHooks)) {
-    const existingGroups: AntigravityHookGroup[] = settings.hooks[eventName] ?? [];
-
-    for (const newGroup of newGroups) {
-      const existingGroupIndex = existingGroups.findIndex((group: AntigravityHookGroup) =>
-        group.hooks.some((hook: AntigravityHookEntry) => hook.name === HOOK_NAME)
-      );
-
-      if (existingGroupIndex >= 0) {
-        const existingGroup: AntigravityHookGroup = existingGroups[existingGroupIndex];
-        const hookIndex = existingGroup.hooks.findIndex((hook: AntigravityHookEntry) => hook.name === HOOK_NAME);
-        if (hookIndex >= 0) {
-          existingGroup.hooks[hookIndex] = newGroup.hooks[0];
-        } else {
-          existingGroup.hooks.push(newGroup.hooks[0]);
-        }
-      } else {
-        existingGroups.push(newGroup);
+  let existingData: Record<string, any> = {};
+  if (existsSync(GEMINI_HOOKS_CONFIG_PATH)) {
+    try {
+      const content = readFileSync(GEMINI_HOOKS_CONFIG_PATH, 'utf-8');
+      if (content.trim()) {
+        existingData = JSON.parse(content);
+      }
+    } catch (error) {
+      if (error instanceof Error) {
+        logger.error('WORKER', 'Corrupt JSON in Antigravity CLI hooks config', { path: GEMINI_HOOKS_CONFIG_PATH }, error);
       }
     }
-
-    settings.hooks[eventName] = existingGroups;
   }
 
-  return settings;
+  existingData[HOOK_NAME] = hooksConfig;
+  writeFileSync(GEMINI_HOOKS_CONFIG_PATH, JSON.stringify(existingData, null, 2) + '\n');
+}
+
+function removeAntigravityHooksFromHooksConfig(): void {
+  if (!existsSync(GEMINI_HOOKS_CONFIG_PATH)) return;
+  try {
+    const content = readFileSync(GEMINI_HOOKS_CONFIG_PATH, 'utf-8');
+    if (!content.trim()) return;
+    const data = JSON.parse(content);
+    if (data[HOOK_NAME]) {
+      delete data[HOOK_NAME];
+      writeFileSync(GEMINI_HOOKS_CONFIG_PATH, JSON.stringify(data, null, 2) + '\n');
+      console.log(`  Removed ${HOOK_NAME} entry from ${GEMINI_HOOKS_CONFIG_PATH}`);
+    }
+  } catch (e) {}
 }
 
 function setupGeminiMdContextSection(): void {
@@ -235,23 +245,25 @@ export async function installAntigravityCliHooks(): Promise<number> {
   console.log(`  Worker service: ${workerServicePath}`);
 
   try {
+    // Hooks live ONLY in ~/.gemini/config/hooks.json — agy never reads hook
+    // definitions from settings.json (verified on a live install; the old
+    // settings.json dual-write was dead weight and has been removed).
     const hooksConfig: AntigravityHooksConfig = {};
     for (const antigravityEvent of Object.keys(ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT)) {
       const command = buildHookCommand(bunPath, workerServicePath, antigravityEvent);
-      hooksConfig[antigravityEvent] = [createHookGroup(command)];
+      hooksConfig[antigravityEvent] = TOOL_MATCHER_EVENTS.has(antigravityEvent)
+        ? [createHookGroup(command)]
+        : [createHookEntry(command)];
     }
 
-    const existingSettings = readAntigravitySettings();
-    const mergedSettings = mergeHooksIntoSettings(existingSettings, hooksConfig);
-
-    writeAntigravityHooksAndSetupContext(mergedSettings);
+    writeAntigravityHooksAndSetupContext(hooksConfig);
     registerAntigravityMcp();
     setupRulesContextFile();
 
     console.log(`
 Installation complete!
 
-Hooks installed to:    ${GEMINI_SETTINGS_PATH}
+Hooks installed to:    ${GEMINI_HOOKS_CONFIG_PATH}
 MCP config installed to:
   ${ANTIGRAVITY_MCP_CONFIG_PATHS.join('\n  ')}
 Using unified CLI: bun worker-service.cjs hook antigravity-cli <event>
@@ -274,9 +286,9 @@ Context Injection:
   }
 }
 
-function writeAntigravityHooksAndSetupContext(mergedSettings: AntigravitySettingsJson): void {
-  writeAntigravitySettings(mergedSettings);
-  console.log(`  Merged hooks into ${GEMINI_SETTINGS_PATH}`);
+function writeAntigravityHooksAndSetupContext(hooksConfig: AntigravityHooksConfig): void {
+  writeAntigravityHooksConfig(hooksConfig);
+  console.log(`  Merged hooks into ${GEMINI_HOOKS_CONFIG_PATH}`);
 
   setupGeminiMdContextSection();
   console.log(`  Setup context injection in ${GEMINI_MD_PATH}`);
@@ -334,6 +346,8 @@ export function uninstallAntigravityCliHooks(): number {
       console.log('  No Antigravity CLI (Gemini-shared) settings found — nothing to uninstall.');
     }
 
+    removeAntigravityHooksFromHooksConfig();
+
     for (const mcpConfigPath of ANTIGRAVITY_MCP_CONFIG_PATHS) {
       const removed = removeClaudeMemFromMcpConfig(mcpConfigPath);
       if (removed) {
@@ -364,14 +378,17 @@ function removeAntigravityHooksFromSettings(): void {
 
   let removedCount = 0;
 
+  // Legacy cleanup: older installers dual-wrote matcher-wrapped groups into
+  // settings.json (agy never read them). Bare entries never existed here.
   for (const [eventName, groups] of Object.entries(settings.hooks)) {
-    const filteredGroups = groups
+    const filteredGroups = (groups as AntigravityHookGroup[])
       .map(group => {
+        if (!Array.isArray(group.hooks)) return group;
         const remainingHooks = group.hooks.filter(hook => hook.name !== HOOK_NAME);
         removedCount += group.hooks.length - remainingHooks.length;
         return { ...group, hooks: remainingHooks };
       })
-      .filter(group => group.hooks.length > 0);
+      .filter(group => !Array.isArray(group.hooks) || group.hooks.length > 0);
 
     if (filteredGroups.length > 0) {
       settings.hooks[eventName] = filteredGroups;
@@ -395,44 +412,28 @@ function removeAntigravityHooksFromSettings(): void {
 export function checkAntigravityCliHooksStatus(): number {
   console.log('\nClaude-Mem Antigravity CLI Status\n');
 
-  if (!existsSync(GEMINI_SETTINGS_PATH)) {
-    console.log('Antigravity CLI settings: Not found');
-    console.log(`  Expected at: ${GEMINI_SETTINGS_PATH}\n`);
-    console.log('No hooks installed. Run: claude-mem install --ide antigravity\n');
-    return 0;
-  }
-
-  let settings: AntigravitySettingsJson;
-  try {
-    settings = readAntigravitySettings();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (error instanceof Error) {
-      logger.error('WORKER', 'Failed to read Antigravity CLI settings', { path: GEMINI_SETTINGS_PATH }, error);
-    } else {
-      logger.error('WORKER', 'Failed to read Antigravity CLI settings', { path: GEMINI_SETTINGS_PATH }, new Error(String(error)));
-    }
-    console.log(`Antigravity CLI settings: ${message}\n`);
-    return 0;
-  }
-
-  const installedEvents: string[] = [];
-  if (settings.hooks) {
-    for (const [eventName, groups] of Object.entries(settings.hooks)) {
-      const hasClaudeMem = groups.some(group =>
-        group.hooks.some(hook => hook.name === HOOK_NAME)
-      );
-      if (hasClaudeMem) {
-        installedEvents.push(eventName);
+  let installedEvents: string[] = [];
+  if (existsSync(GEMINI_HOOKS_CONFIG_PATH)) {
+    try {
+      const content = readFileSync(GEMINI_HOOKS_CONFIG_PATH, 'utf-8');
+      const data = content.trim() ? JSON.parse(content) : {};
+      const hooksConfig = data[HOOK_NAME];
+      if (hooksConfig && typeof hooksConfig === 'object') {
+        installedEvents = Object.keys(hooksConfig).filter(k => k in ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT);
       }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.log(`Antigravity CLI hooks config: ${message}\n`);
+      return 0;
     }
   }
 
   if (installedEvents.length === 0) {
     console.log('Hooks: Not installed');
+    console.log(`  Expected at: ${GEMINI_HOOKS_CONFIG_PATH}`);
     console.log('Run: claude-mem install --ide antigravity\n');
   } else {
-    console.log(`Settings: ${GEMINI_SETTINGS_PATH}`);
+    console.log(`Hooks config: ${GEMINI_HOOKS_CONFIG_PATH}`);
     console.log(`Mode: Unified CLI (bun worker-service.cjs hook antigravity-cli)`);
     console.log(`Events: ${installedEvents.length} of ${Object.keys(ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT).length} mapped`);
     for (const event of installedEvents) {
@@ -485,7 +486,7 @@ Claude-Mem Antigravity CLI Integration
 Usage: claude-mem antigravity-cli <command>
 
 Commands:
-  install             Install hooks into ~/.gemini/settings.json + MCP config
+  install             Install hooks into ~/.gemini/config/hooks.json + MCP config
   uninstall           Remove claude-mem hooks/MCP entries (preserves other config)
   status              Check installation status
 

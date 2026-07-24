@@ -71,6 +71,21 @@ export const contextHandler: EventHandler = {
     const context = getProjectContext(cwd);
     const port = getWorkerPort();
 
+    if (input.sessionId) {
+      try {
+        await executeWithWorkerFallback(
+          '/api/sessions/init',
+          'POST',
+          {
+            contentSessionId: input.sessionId,
+            project: context.primary,
+            prompt: input.prompt && input.prompt.trim() ? input.prompt : '[session prompt]',
+            platformSource: input.platform ? normalizePlatformSource(input.platform) : undefined,
+          },
+        );
+      } catch (err) {}
+    }
+
     const settings = loadFromFileOnce();
     // Codex already receives the timeline through additionalContext. Repeating
     // it as systemMessage can push SessionStart stdout past Codex's hook-output
