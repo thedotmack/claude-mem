@@ -588,6 +588,27 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(transportCount).toBe(1);
   });
 
+  it('does not signal a prior PID whose identity expires before teardown', async () => {
+    const expiredPid = 99_785;
+    const identityResults = [true, false];
+    mockSupervisorRegistryEntries = [{
+      id: 'chroma-mcp',
+      pid: expiredPid,
+      type: 'chroma',
+      startedAt: '2026-01-01T00:00:00.000Z',
+    }];
+    ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(async () =>
+      identityResults.shift() ?? false
+    );
+
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(killTreeCalls).not.toContain(expiredPid);
+    expect(supervisorUnregisterCalls).toContain('chroma-mcp');
+    expect(transportCount).toBe(1);
+  });
+
   it('refuses to spawn when a live prior PID cannot be identified safely', async () => {
     const unknownPid = 99_779;
     mockSupervisorRegistryEntries = [{

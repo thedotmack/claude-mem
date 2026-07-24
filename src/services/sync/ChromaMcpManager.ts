@@ -954,14 +954,23 @@ export class ChromaMcpManager {
     logger.warn('CHROMA_MCP', 'Reaping chroma-mcp processes left by a prior worker generation', {
       pids: verifiedRecords.map(record => record.pid),
     });
-    for (const record of verifiedRecords) {
-      if (isPidAlive(record.pid)) {
-        await ChromaMcpManager.killProcessTree(record.pid);
-      }
-    }
-    await waitForExit(verifiedRecords, 1_000);
+    const teardownRecords = [...verifiedRecords].sort((left, right) =>
+      Number(left.id === CHROMA_SUPERVISOR_ID) - Number(right.id === CHROMA_SUPERVISOR_ID)
+    );
+    const termRecords = await ChromaMcpManager.signalRegisteredChromaProcesses(
+      teardownRecords,
+      dataDir,
+      'SIGTERM',
+    );
+    await waitForExit(termRecords, 500);
+    const killRecords = await ChromaMcpManager.signalRegisteredChromaProcesses(
+      termRecords,
+      dataDir,
+      'SIGKILL',
+    );
+    await waitForExit(killRecords, 1_000);
 
-    const survivors = verifiedRecords.filter(record => isPidAlive(record.pid));
+    const survivors = killRecords.filter(record => isPidAlive(record.pid));
     if (survivors.length > 0) {
       const message = `Prior chroma-mcp PID(s) ${survivors.map(record => record.pid).join(', ')} still alive after teardown; refusing to spawn a replacement`;
       recordChromaVectorSearchUnavailable(message);
@@ -988,6 +997,49 @@ export class ChromaMcpManager {
     }
 
     return 'unknown';
+  }
+
+  private static async signalRegisteredChromaProcesses(
+    records: ManagedProcessRecord[],
+    dataDir: string | null,
+    signal: NodeJS.Signals,
+  ): Promise<ManagedProcessRecord[]> {
+    const signaledRecords: ManagedProcessRecord[] = [];
+    for (const record of records) {
+      if (!isPidAlive(record.pid)) {
+        continue;
+      }
+
+      const identity = await ChromaMcpManager.identifyRegisteredChromaProcess(record, dataDir);
+      if (identity === 'mismatch') {
+        logger.warn('CHROMA_MCP', 'Dropping stale chroma-mcp registry entry after PID reuse during teardown', {
+          pid: record.pid,
+        });
+        getSupervisor().unregisterProcess(record.id);
+        continue;
+      }
+      if (identity === 'unknown') {
+        const message = `Unable to reverify prior chroma-mcp PID ${record.pid} before ${signal}; refusing to spawn a replacement`;
+        recordChromaVectorSearchUnavailable(message);
+        throw new ChromaUnavailableError(message);
+      }
+
+      try {
+        process.kill(record.pid, signal);
+      } catch (error) {
+        const code = error instanceof Error
+          ? (error as NodeJS.ErrnoException).code
+          : undefined;
+        if (code !== 'ESRCH') {
+          logger.debug('CHROMA_MCP', `Failed to ${signal} prior chroma-mcp PID ${record.pid}`, {
+            pid: record.pid,
+            code,
+          }, error);
+        }
+      }
+      signaledRecords.push(record);
+    }
+    return signaledRecords;
   }
 
   private async disposeActivePrewarm(): Promise<void> {
