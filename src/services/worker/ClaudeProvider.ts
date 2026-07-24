@@ -384,6 +384,15 @@ export class ClaudeProvider {
           }
           receivedTextResponse = true;
 
+          if (session.ignoreInitialObserverResponse) {
+            session.ignoreInitialObserverResponse = false;
+            session.conversationHistory.push({ role: 'assistant', content: textContent });
+            logger.debug('SDK', 'Discarded startup acknowledgement without source work', {
+              sessionId: session.sessionDbId,
+            });
+            continue;
+          }
+
           const tokensBeforeResponse = session.cumulativeInputTokens + session.cumulativeOutputTokens;
 
           const usage = message.message.usage;
@@ -544,12 +553,19 @@ export class ClaudeProvider {
       ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
 
-    // Do not submit an initialization-only turn.  A response to that turn can
-    // arrive after the first tool event is claimed, at which point it is
-    // indistinguishable from a response to the event and can settle the wrong
-    // batch.  Prefix the first real queued message instead, so every provider
-    // response has a durable source event (or summary) behind it.
-    let includeInitialContext = true;
+    // Startup acknowledgement has no source event. Its reply is discarded
+    // explicitly so it cannot settle the first queued event.
+    session.ignoreInitialObserverResponse = true;
+    session.conversationHistory.push({ role: 'user', content: initPrompt });
+    session.lastPromptSentAt = Date.now();
+    session.lastGeneratorSource = 'init';
+    yield {
+      type: 'user',
+      message: { role: 'user', content: initPrompt },
+      session_id: session.contentSessionId,
+      parent_tool_use_id: null,
+      isSynthetic: true,
+    };
 
     for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
       session.pendingAgentId = message.agentId ?? null;
@@ -564,7 +580,7 @@ export class ClaudeProvider {
           session.lastPromptNumber = message.prompt_number;
         }
 
-        const observationPrompt = buildObservationPrompt({
+        const obsPrompt = buildObservationPrompt({
           id: 0, // Not used in prompt
           tool_name: message.tool_name!,
           tool_input: JSON.stringify(message.tool_input),
@@ -572,11 +588,6 @@ export class ClaudeProvider {
           created_at_epoch: Date.now(),
           cwd: message.cwd
         });
-
-        const obsPrompt = includeInitialContext
-          ? `${initPrompt}\n\n${observationPrompt}`
-          : observationPrompt;
-        includeInitialContext = false;
 
         session.conversationHistory.push({ role: 'user', content: obsPrompt });
 
@@ -593,18 +604,13 @@ export class ClaudeProvider {
           isSynthetic: true
         };
       } else if (message.type === 'summarize') {
-        const summaryTemplate = buildSummaryPrompt({
+        const summaryPrompt = buildSummaryPrompt({
           id: session.sessionDbId,
           memory_session_id: session.memorySessionId,
           project: session.project,
           user_prompt: session.userPrompt,
           last_assistant_message: message.last_assistant_message || ''
         }, mode);
-
-        const summaryPrompt = includeInitialContext
-          ? `${initPrompt}\n\n${summaryTemplate}`
-          : summaryTemplate;
-        includeInitialContext = false;
 
         session.conversationHistory.push({ role: 'user', content: summaryPrompt });
 

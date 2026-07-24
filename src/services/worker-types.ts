@@ -60,6 +60,8 @@ export interface ActiveSession {
   pendingCompressionEvent?: Record<string, unknown> | null;
   /** Cumulative total_cost_usd from the SDK's latest result message — per-compression cost is the delta between results. */
   lastResultTotalCostUsd?: number | null;
+  /** Startup acknowledgement has no source event and must never settle one. */
+  ignoreInitialObserverResponse?: boolean;
 }
 
 export interface PendingMessage {
