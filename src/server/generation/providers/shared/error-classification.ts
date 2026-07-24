@@ -128,6 +128,24 @@ export function classifyHttpProviderError(input: ClassifyHttpInput): ServerClass
     });
   }
 
+  // litellm (behind OpenRouter) can fail to parse the downstream model's
+  // response and surface it as a body-level error inside a 200 envelope, e.g.
+  // `{ error: { code: 200, message: "Unable to get json response - Expecting
+  // value: line 45 column 1" } }`. Because the body-error path forwards the
+  // success status verbatim, none of the HTTP-status branches above match and
+  // it would otherwise fall through to `unrecoverable` and never retry. These
+  // are transient upstream hiccups that usually succeed on a retry, so detect
+  // the tell-tale litellm markers and route them to the retry loop.
+  // Kept marker-scoped on purpose: this classifier is shared with Gemini,
+  // which delivers genuine unrecoverable errors (FAILED_PRECONDITION, etc.)
+  // inside 200 envelopes that must stay non-transient.
+  if (lower.includes('unable to get json') || lower.includes('expecting value')) {
+    return new ServerClassifiedProviderError(
+      `${providerLabel} transient upstream parse failure (status ${status})`,
+      { kind: 'transient', cause },
+    );
+  }
+
   return new ServerClassifiedProviderError(
     `${providerLabel} API error (status ${status})`,
     { kind: 'unrecoverable', cause },
