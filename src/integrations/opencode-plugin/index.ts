@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { join } from "node:path";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
 
 /**
@@ -91,9 +92,11 @@ interface BusEvent {
 }
 
 function resolveWorkerPort(): string {
-  // Canonical resolution: CLAUDE_MEM_WORKER_PORT env override, else the
-  // UID-derived default — identical to the rest of the codebase (#2406).
-  return SettingsDefaultsManager.get("CLAUDE_MEM_WORKER_PORT");
+  const settingsPath = join(
+    SettingsDefaultsManager.get("CLAUDE_MEM_DATA_DIR"),
+    "settings.json",
+  );
+  return SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_WORKER_PORT;
 }
 
 function resolveWorkerHost(): string {
