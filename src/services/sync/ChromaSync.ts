@@ -10,7 +10,7 @@ import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 // the SDK bundle externals — fix the import chain.
 import type { SessionStore as SessionStoreType } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
-import { ChromaUnavailableError } from '../worker/search/errors.js';
+import { ChromaCorruptCollectionError, ChromaUnavailableError } from '../worker/search/errors.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import type * as SqliteFilesModule from '../sqlite/observations/files.js';
 
@@ -98,8 +98,30 @@ interface StoredUserPrompt {
 export class ChromaSync {
   private project: string;
   private collectionName: string;
-  private collectionCreated = false;
+  private collectionEnsuredGeneration = -1;
   private readonly BATCH_SIZE = 100;
+
+  /**
+   * Bumped when a corrupt collection is dropped so every live ChromaSync
+   * instance's ensureCollectionExists() cache is invalidated at once — a
+   * stale per-instance flag would otherwise write into the deleted
+   * collection.
+   */
+  private static collectionGeneration = 0;
+
+  /**
+   * Registered once at worker startup so a corrupt-collection drop during a
+   * live sync can re-derive the collection immediately through the existing
+   * backfill pipeline instead of waiting for the next worker start.
+   */
+  private static backfillStore: SessionStore | null = null;
+
+  /**
+   * Collections already re-derived once in this process. A second
+   * deterministic write failure on a freshly derived collection means Chroma
+   * itself is broken — surface the error instead of re-deriving in a loop.
+   */
+  private static rederivedCollections = new Set<string>();
 
   constructor(project: string) {
     this.project = project;
@@ -114,9 +136,13 @@ export class ChromaSync {
     return this.collectionName;
   }
 
+  static registerBackfillStore(store: SessionStore): void {
+    ChromaSync.backfillStore = store;
+  }
+
   // Public: cmem-sdk requires Chroma at construction. Plan §3 line 192.
   public async ensureCollectionExists(): Promise<void> {
-    if (this.collectionCreated) {
+    if (this.collectionEnsuredGeneration === ChromaSync.collectionGeneration) {
       return;
     }
 
@@ -133,11 +159,80 @@ export class ChromaSync {
       // Collection already exists - this is the expected path after first creation
     }
 
-    this.collectionCreated = true;
+    this.collectionEnsuredGeneration = ChromaSync.collectionGeneration;
 
     logger.debug('CHROMA_SYNC', 'Collection ready', {
       collection: this.collectionName
     });
+  }
+
+  /**
+   * Deterministic tool-level failures (chroma executed the tool and said no)
+   * mean the collection itself rejects writes. Availability failures
+   * (subprocess down, transport reset, connect backoff) don't — those
+   * already have reconnect handling and resolve without touching the
+   * collection.
+   */
+  private static isDeterministicToolError(error: unknown): boolean {
+    if (error instanceof ChromaUnavailableError) {
+      return false;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes('returned error:');
+  }
+
+  /**
+   * A deterministic write failure means the collection's HNSW segment is in
+   * a persistent failed state (issue #3202): every future write to it fails
+   * identically, and each attempt makes the chroma-mcp python subprocess
+   * replay its write-ahead log in memory (observed: ~20 GB physical
+   * footprint within 4 minutes). Retrying is incorrect — the index is fully
+   * derived from SQLite, so the correct operation is to recompute it: drop
+   * the collection, zero every project's watermarks (the collection is
+   * shared across projects) so the backfill pipeline re-derives every row,
+   * and invalidate all cached ensure-collection flags.
+   *
+   * The re-derivation runs immediately through the existing backfill
+   * pipeline when a store was registered at startup and no backfill is
+   * already in flight; otherwise the zeroed watermarks complete it on the
+   * next worker start. At most one re-derivation per collection per process:
+   * a second deterministic failure afterward means Chroma itself is broken,
+   * and that error must surface, not feed a drop/rebuild loop.
+   */
+  private async dropCorruptCollection(cause: Error): Promise<void> {
+    logger.error('CHROMA_SYNC', 'Deterministic write failure — collection is corrupt, dropping and re-deriving from SQLite', {
+      collection: this.collectionName,
+      project: this.project
+    }, cause);
+
+    const chromaMcp = ChromaMcpManager.getInstance();
+    await chromaMcp.callTool('chroma_delete_collection', {
+      collection_name: this.collectionName
+    });
+
+    // The collection is shared by every project (all live instances are
+    // constructed with 'claude-mem'), so dropping it invalidates every
+    // project's vectors — zero all watermarks, not just this instance's.
+    ChromaSyncState.resetAll();
+    ChromaSync.collectionGeneration += 1;
+
+    if (
+      ChromaSync.backfillStore &&
+      !ChromaSync.backfillInProgress &&
+      !ChromaSync.rederivedCollections.has(this.collectionName)
+    ) {
+      ChromaSync.rederivedCollections.add(this.collectionName);
+      const store = ChromaSync.backfillStore;
+      void ChromaSync.backfillAllProjects(store).catch((error) => {
+        logger.error('CHROMA_SYNC', 'Re-derivation backfill failed — collection rebuilds on next worker start', {
+          collection: this.collectionName
+        }, error instanceof Error ? error : new Error(String(error)));
+      });
+    } else {
+      logger.warn('CHROMA_SYNC', 'Collection dropped — re-derivation runs on next worker start', {
+        collection: this.collectionName
+      });
+    }
   }
 
   private formatObservationDocs(obs: StoredObservation): ChromaDocument[] {
@@ -277,10 +372,12 @@ export class ChromaSync {
    * Write `documents` to Chroma in BATCH_SIZE-sized batches.
    *
    * Returns the number of documents that were successfully written (or
-   * confirmed via delete+add reconcile). Per-batch failures are logged and the
-   * loop continues — we never throw — so callers must use the returned count
-   * to advance their watermark, otherwise an interrupted backfill can mark
-   * unsynced records as synced.
+   * confirmed via delete+add reconcile). Availability failures are logged and
+   * the loop continues, so callers must use the returned count to advance
+   * their watermark, otherwise an interrupted backfill can mark unsynced
+   * records as synced. A deterministic tool-level failure throws
+   * ChromaCorruptCollectionError after dropping the corrupt collection —
+   * retrying such a write is never correct (issue #3202).
    *
    * Visibility: promoted from `private` to `public` for cmem-sdk Phase 6.
    * The SDK indexes Postgres observations into Chroma using this same
@@ -394,12 +491,27 @@ export class ChromaSync {
               added: toAdd.length
             });
           } catch (reconcileError) {
+            if (ChromaSync.isDeterministicToolError(reconcileError)) {
+              const cause = reconcileError instanceof Error ? reconcileError : new Error(String(reconcileError));
+              await this.dropCorruptCollection(cause);
+              throw new ChromaCorruptCollectionError(
+                `Corrupt collection ${this.collectionName} dropped after deterministic reconcile failure; re-deriving from SQLite`,
+                cause
+              );
+            }
             logger.error('CHROMA_SYNC', 'Batch reconcile (update+add) failed — watermark will not advance for this batch', {
               collection: this.collectionName,
               batchStart: i,
               batchSize: batch.length
             }, reconcileError as Error);
           }
+        } else if (ChromaSync.isDeterministicToolError(error)) {
+          const cause = error instanceof Error ? error : new Error(String(error));
+          await this.dropCorruptCollection(cause);
+          throw new ChromaCorruptCollectionError(
+            `Corrupt collection ${this.collectionName} dropped after deterministic write failure; re-deriving from SQLite`,
+            cause
+          );
         } else {
           logger.error('CHROMA_SYNC', 'Batch add failed — watermark will not advance for this batch, continuing with remaining batches', {
             collection: this.collectionName,
@@ -996,7 +1108,7 @@ export class ChromaSync {
         errorMessage.includes('timed out'); 
 
       if (isConnectionError) {
-        this.collectionCreated = false;
+        this.collectionEnsuredGeneration = -1;
         logger.error('CHROMA_SYNC', 'Connection lost during query',
           { project: this.project, query }, error as Error);
         throw new Error(`Chroma query failed - connection lost: ${errorMessage}`);
@@ -1069,6 +1181,26 @@ export class ChromaSync {
    * to bound CPU and memory pressure from concurrent Chroma embedding operations.
    * A re-entrant guard prevents overlapping backfill runs from accumulating.
    */
+  /**
+   * Every project that has anything to sync. Observations, summaries, and
+   * prompts each reach Chroma through the backfill, and a project can have
+   * summaries or prompts without a single observation — discovering from
+   * observations alone silently strands those projects' rows.
+   * (session_summaries carries its own project column; prompts resolve
+   * theirs through sdk_sessions, the same join backfillPrompts uses.)
+   */
+  private static discoverProjects(store: SessionStore): { project: string }[] {
+    return store.db.prepare(`
+      SELECT DISTINCT project FROM (
+        SELECT project FROM observations
+        UNION
+        SELECT project FROM session_summaries
+        UNION
+        SELECT project FROM sdk_sessions
+      ) WHERE project IS NOT NULL AND project != ?
+    `).all('') as { project: string }[];
+  }
+
   static async backfillAllProjects(store: SessionStore): Promise<void> {
     if (ChromaSync.backfillInProgress) {
       logger.info('CHROMA_SYNC', 'Backfill already in progress, skipping duplicate run');
@@ -1079,9 +1211,7 @@ export class ChromaSync {
 
     ChromaSync.backfillInProgress = true;
     try {
-      const projects = store.db.prepare(
-        'SELECT DISTINCT project FROM observations WHERE project IS NOT NULL AND project != ?'
-      ).all('') as { project: string }[];
+      const projects = ChromaSync.discoverProjects(store);
 
       logger.info('CHROMA_SYNC', `Backfill check for ${projects.length} projects`);
 

@@ -175,5 +175,16 @@ export const ChromaSyncState = {
     }
     all[project] = current;
     persist();
+  },
+
+  /**
+   * Zero every project's watermarks. The Chroma collection is shared across
+   * projects, so dropping it invalidates all of them at once — a per-project
+   * reset would leave the other projects' rows stranded behind their old
+   * high watermarks.
+   */
+  resetAll(): void {
+    cache = {};
+    persist();
   }
 };
