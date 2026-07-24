@@ -466,26 +466,64 @@ async function inspectWorkerPort(timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): P
 type WorkerAvailabilityOutcome = 'available' | 'retryable-failure' | 'final-failure';
 type OccupiedPortRecoveryOutcome = 'available' | 'released' | 'budget-exhausted';
 
+function getRemainingTimeoutMs(start: number, timeoutMs: number): number {
+  return timeoutMs - (Date.now() - start);
+}
+
+async function probeWorkerPortWithinBudget(start: number, timeoutMs: number): Promise<boolean | null> {
+  const remainingMs = getRemainingTimeoutMs(start, timeoutMs);
+  if (remainingMs <= 0) return null;
+
+  return isPortListening(
+    getWorkerPort(),
+    getWorkerHost(),
+    Math.min(HEALTH_CHECK_TIMEOUT_MS, remainingMs)
+  );
+}
+
 async function waitForOccupiedPortRecovery(
   mode: 'lock-holder' | 'lock-loser',
   timeoutMs: number = OCCUPIED_PORT_RECOVERY_GRACE_MS
 ): Promise<OccupiedPortRecoveryOutcome> {
+  const start = Date.now();
+
   if (mode === 'lock-holder') {
-    if (await waitForWorkerReadiness(timeoutMs)) return 'available';
-    return (await isPortListening(getWorkerPort(), getWorkerHost())) ? 'budget-exhausted' : 'released';
+    while (Date.now() - start < timeoutMs) {
+      const readyRemainingMs = getRemainingTimeoutMs(start, timeoutMs);
+      if (readyRemainingMs <= 0) break;
+
+      try {
+        if (await isWorkerReady(Math.min(HEALTH_CHECK_TIMEOUT_MS, readyRemainingMs))) return 'available';
+      } catch (error: unknown) {
+        logger.debug('SYSTEM', 'Worker readiness check threw', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      const stillListening = await probeWorkerPortWithinBudget(start, timeoutMs);
+      if (stillListening === null) break;
+      if (!stillListening) return 'released';
+
+      const nextRemainingMs = getRemainingTimeoutMs(start, timeoutMs);
+      if (nextRemainingMs <= 0) break;
+      await new Promise<void>(resolve => setTimeout(resolve, Math.min(250, nextRemainingMs)));
+    }
+
+    return 'budget-exhausted';
   }
 
-  const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const remainingMs = timeoutMs - (Date.now() - start);
-    if (remainingMs <= 0) break;
-
-    if (!(await isPortListening(getWorkerPort(), getWorkerHost()))) {
+    const stillListening = await probeWorkerPortWithinBudget(start, timeoutMs);
+    if (stillListening === null) break;
+    if (!stillListening) {
       return 'released';
     }
 
+    const remainingMs = getRemainingTimeoutMs(start, timeoutMs);
+    if (remainingMs <= 0) break;
+
     if (await isWorkerPortAlive(Math.min(HEALTH_CHECK_TIMEOUT_MS, remainingMs))) {
-      const readyRemainingMs = timeoutMs - (Date.now() - start);
+      const readyRemainingMs = getRemainingTimeoutMs(start, timeoutMs);
       if (readyRemainingMs <= 0) {
         return 'budget-exhausted';
       }
@@ -493,12 +531,14 @@ async function waitForOccupiedPortRecovery(
       return ready ? 'available' : 'budget-exhausted';
     }
 
-    const nextRemainingMs = timeoutMs - (Date.now() - start);
+    const nextRemainingMs = getRemainingTimeoutMs(start, timeoutMs);
     if (nextRemainingMs <= 0) break;
     await new Promise<void>(resolve => setTimeout(resolve, Math.min(250, nextRemainingMs)));
   }
 
-  return (await isPortListening(getWorkerPort(), getWorkerHost())) ? 'budget-exhausted' : 'released';
+  const stillListening = await probeWorkerPortWithinBudget(start, timeoutMs);
+  if (stillListening === false) return 'released';
+  return 'budget-exhausted';
 }
 
 async function ensureWorkerAvailability(): Promise<WorkerAvailabilityOutcome> {

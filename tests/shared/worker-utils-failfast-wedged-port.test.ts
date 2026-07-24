@@ -77,6 +77,23 @@ function listenOnEphemeralPort(): Promise<{ server: net.Server; port: number }> 
   });
 }
 
+function waitForAbort(init?: RequestInit): Promise<Response> {
+  return new Promise<Response>((_resolve, reject) => {
+    if (!init?.signal) {
+      reject(new Error('missing abort signal'));
+      return;
+    }
+
+    const abort = () => reject(new DOMException('timed out', 'TimeoutError'));
+    if (init.signal.aborted) {
+      abort();
+      return;
+    }
+
+    init.signal.addEventListener('abort', abort, { once: true });
+  });
+}
+
 describe('ensureWorkerRunning — fail fast on an unhealthy occupied port', () => {
   const originalFetch = global.fetch;
   const originalPort = process.env.CLAUDE_MEM_WORKER_PORT;
@@ -215,9 +232,7 @@ describe('ensureWorkerRunning — fail fast on an unhealthy occupied port', () =
       if (requestCount === 2) {
         return new Promise<Response>(resolve => setTimeout(() => resolve({ ok: true, status: 200 } as Response), 500));
       }
-      return new Promise<Response>((_resolve, reject) => {
-        init?.signal?.addEventListener('abort', () => reject(new DOMException('timed out', 'TimeoutError')), { once: true });
-      });
+      return waitForAbort(init);
     });
 
     try {
@@ -239,9 +254,7 @@ describe('ensureWorkerRunning — fail fast on an unhealthy occupied port', () =
     global.fetch = mock((_url: string, init?: RequestInit) => {
       requestCount++;
       if (requestCount === 1) return Promise.reject(new Error('health timeout'));
-      return new Promise<Response>((_resolve, reject) => {
-        init?.signal?.addEventListener('abort', () => reject(new DOMException('timed out', 'TimeoutError')), { once: true });
-      });
+      return waitForAbort(init);
     });
 
     try {
@@ -251,6 +264,37 @@ describe('ensureWorkerRunning — fail fast on an unhealthy occupied port', () =
       const elapsed = Date.now() - start;
       expect(spawnHiddenMock).not.toHaveBeenCalled();
       expect(elapsed).toBeLessThan(2500);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('does not run a trailing occupied-port probe after the lock-holder grace budget expires', async () => {
+    const { server, port } = await listenOnEphemeralPort();
+    process.env.CLAUDE_MEM_WORKER_PORT = String(port);
+    process.env.CLAUDE_MEM_HEALTH_TIMEOUT_MS = '500';
+    process.env.CLAUDE_MEM_HOOK_READINESS_TIMEOUT_MS = '500';
+    let requestCount = 0;
+    let portChecks = 0;
+    isPortListeningMock.mockImplementation((_port: number, _host: string, timeoutMs: number = 500) => {
+      portChecks++;
+      if (portChecks === 1) return Promise.resolve(true);
+      return new Promise(resolve => setTimeout(() => resolve(true), timeoutMs));
+    });
+    global.fetch = mock((_url: string, init?: RequestInit) => {
+      requestCount++;
+      if (requestCount === 1) return Promise.reject(new Error('health timeout'));
+      return waitForAbort(init);
+    });
+
+    try {
+      const { ensureWorkerRunning } = await importWorkerUtilsFresh();
+      const start = Date.now();
+      expect(await ensureWorkerRunning()).toBe(false);
+      const elapsed = Date.now() - start;
+      expect(spawnHiddenMock).not.toHaveBeenCalled();
+      expect(isPortListeningMock).toHaveBeenCalledTimes(1);
+      expect(elapsed).toBeLessThan(900);
     } finally {
       await new Promise<void>(resolve => server.close(() => resolve()));
     }
@@ -282,9 +326,7 @@ describe('ensureWorkerRunning — fail fast on an unhealthy occupied port', () =
     process.env.CLAUDE_MEM_HEALTH_TIMEOUT_MS = '500';
     process.env.CLAUDE_MEM_HOOK_READINESS_TIMEOUT_MS = '500';
     acquireSpawnLockMock.mockImplementation(() => false);
-    global.fetch = mock((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
-      init?.signal?.addEventListener('abort', () => reject(new DOMException('timed out', 'TimeoutError')), { once: true });
-    }));
+    global.fetch = mock((_url: string, init?: RequestInit) => waitForAbort(init));
 
     try {
       const { ensureWorkerRunning } = await importWorkerUtilsFresh();
@@ -293,6 +335,65 @@ describe('ensureWorkerRunning — fail fast on an unhealthy occupied port', () =
       const elapsed = Date.now() - start;
       expect(spawnHiddenMock).not.toHaveBeenCalled();
       expect(elapsed).toBeLessThan(1500);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('recomputes the remaining occupied-port grace budget after a slow TCP probe', async () => {
+    const { server, port } = await listenOnEphemeralPort();
+    process.env.CLAUDE_MEM_WORKER_PORT = String(port);
+    process.env.CLAUDE_MEM_HEALTH_TIMEOUT_MS = '500';
+    process.env.CLAUDE_MEM_HOOK_READINESS_TIMEOUT_MS = '500';
+    acquireSpawnLockMock.mockImplementation(() => false);
+    let requestCount = 0;
+    let portChecks = 0;
+    isPortListeningMock.mockImplementation((_port: number, _host: string, timeoutMs: number = 500) => {
+      portChecks++;
+      if (portChecks === 1) return Promise.resolve(true);
+      return new Promise(resolve => setTimeout(() => resolve(true), Math.min(300, timeoutMs)));
+    });
+    global.fetch = mock((_url: string, init?: RequestInit) => {
+      requestCount++;
+      if (requestCount === 1) return Promise.reject(new Error('health timeout'));
+      return waitForAbort(init);
+    });
+
+    try {
+      const { ensureWorkerRunning } = await importWorkerUtilsFresh();
+      const start = Date.now();
+      expect(await ensureWorkerRunning()).toBe(false);
+      const elapsed = Date.now() - start;
+      expect(spawnHiddenMock).not.toHaveBeenCalled();
+      expect(isPortListeningMock).toHaveBeenCalledTimes(2);
+      expect(elapsed).toBeLessThan(700);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('does not run a trailing occupied-port probe after the lock-loser grace budget expires', async () => {
+    const { server, port } = await listenOnEphemeralPort();
+    process.env.CLAUDE_MEM_WORKER_PORT = String(port);
+    process.env.CLAUDE_MEM_HEALTH_TIMEOUT_MS = '500';
+    process.env.CLAUDE_MEM_HOOK_READINESS_TIMEOUT_MS = '500';
+    acquireSpawnLockMock.mockImplementation(() => false);
+    let requestCount = 0;
+    isPortListeningMock.mockImplementation((_port: number, _host: string, _timeoutMs: number = 500) => Promise.resolve(true));
+    global.fetch = mock((_url: string, init?: RequestInit) => {
+      requestCount++;
+      if (requestCount === 1) return Promise.reject(new Error('health timeout'));
+      return waitForAbort(init);
+    });
+
+    try {
+      const { ensureWorkerRunning } = await importWorkerUtilsFresh();
+      const start = Date.now();
+      expect(await ensureWorkerRunning()).toBe(false);
+      const elapsed = Date.now() - start;
+      expect(spawnHiddenMock).not.toHaveBeenCalled();
+      expect(isPortListeningMock).toHaveBeenCalledTimes(2);
+      expect(elapsed).toBeLessThan(900);
     } finally {
       await new Promise<void>(resolve => server.close(() => resolve()));
     }
@@ -308,9 +409,7 @@ describe('ensureWorkerRunning — fail fast on an unhealthy occupied port', () =
     global.fetch = mock((_url: string, init?: RequestInit) => {
       fetchCalls++;
       if (recovered) return Promise.resolve({ ok: true, status: 200 } as Response);
-      return new Promise<Response>((_resolve, reject) => {
-        init?.signal?.addEventListener('abort', () => reject(new DOMException('timed out', 'TimeoutError')), { once: true });
-      });
+      return waitForAbort(init);
     });
 
     try {
@@ -359,9 +458,7 @@ describe('ensureWorkerRunning — fail fast on an unhealthy occupied port', () =
     let released = false;
     global.fetch = mock((_url: string, init?: RequestInit) => {
       if (!released && spawnHiddenMock.mock.calls.length === 0) {
-        return new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener('abort', () => reject(new DOMException('timed out', 'TimeoutError')), { once: true });
-        });
+        return waitForAbort(init);
       }
       if (released && spawnHiddenMock.mock.calls.length === 0) {
         return Promise.reject(new Error('health timeout'));
