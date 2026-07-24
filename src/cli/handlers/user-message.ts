@@ -1,5 +1,3 @@
-
-import { basename } from 'path';
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import {
   executeWithWorkerFallback,
@@ -8,18 +6,22 @@ import {
 } from '../../shared/worker-utils.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { getProjectContext } from '../../utils/project-name.js';
 
 export const userMessageHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     const port = getWorkerPort();
-    const project = basename(input.cwd ?? process.cwd());
+    // Use the same project-key resolution as SessionStart/capture (#2663, #3194).
+    // Raw basename(cwd) fragments non-git subdir launches away from parent memory.
+    const context = getProjectContext(input.cwd ?? process.cwd());
+    const projectsParam = context.allProjects.join(',');
     const colorsParam = input.platform === 'claude-code' ? '&colors=true' : '';
     const platformSourceParam = input.platform
       ? `&platformSource=${encodeURIComponent(normalizePlatformSource(input.platform))}`
       : '';
 
     const result = await executeWithWorkerFallback<string>(
-      `/api/context/inject?project=${encodeURIComponent(project)}${colorsParam}${platformSourceParam}`,
+      `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${colorsParam}${platformSourceParam}`,
       'GET',
     );
 
