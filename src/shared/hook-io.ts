@@ -114,12 +114,12 @@ export function emitDiagnostic(line: string): void {
  * Uses console.log (not process.stdout.write) on purpose: the trailing newline
  * is what Claude Code's / Codex's hook parser expects.
  */
-export function emitModelContext(adapter: PlatformAdapter, result: HookResult): void {
+export function emitModelContext(adapter: PlatformAdapter, result: HookResult, rawInput?: unknown): void {
   if (moduleHasEmitted) {
     throw new Error('emitModelContext called twice');
   }
   moduleHasEmitted = true;
-  const output = adapter.formatOutput(result);
+  const output = adapter.formatOutput(result, rawInput);
   console.log(JSON.stringify(output));
 }
 
