@@ -12,9 +12,10 @@ import { ChromaCorruptCollectionError, ChromaUnavailableError } from '../../../s
 // error. Retrying such a write is never correct: each attempt makes the
 // chroma-mcp python replay its write-ahead log in memory (observed: ~20 GB
 // physical footprint within 4 minutes). The fix classifies the error at the
-// point of failure, drops the corrupt collection, zeroes the project's
-// watermarks so the existing backfill pipeline re-derives it from SQLite,
-// and surfaces a typed error instead of silently continuing.
+// point of failure, drops the corrupt collection, zeroes every project's
+// watermarks (the collection is shared across projects) so the existing
+// backfill pipeline re-derives it from SQLite, and surfaces a typed error
+// instead of silently continuing.
 
 const DETERMINISTIC_ERROR = new Error(
   'chroma-mcp tool "chroma_add_documents" returned error: Error executing tool chroma_add_documents: ' +
@@ -31,7 +32,7 @@ const chromaSyncStatics = ChromaSync as unknown as {
 
 const managerStatics = ChromaMcpManager as unknown as { instance: unknown };
 const realInstance = managerStatics.instance;
-const realReplace = ChromaSyncState.replace;
+const realResetAll = ChromaSyncState.resetAll;
 const realBackfillAllProjects = chromaSyncStatics.backfillAllProjects;
 
 type CallToolMock = ReturnType<typeof mock>;
@@ -55,17 +56,17 @@ beforeEach(() => {
   chromaSyncStatics.backfillInProgress = false;
   chromaSyncStatics.rederivedCollections.clear();
   chromaSyncStatics.backfillAllProjects = mock(async () => {});
-  (ChromaSyncState as { replace: typeof realReplace }).replace = mock(() => {});
+  (ChromaSyncState as { resetAll: typeof realResetAll }).resetAll = mock(() => {});
 });
 
 afterAll(() => {
   managerStatics.instance = realInstance;
-  (ChromaSyncState as { replace: typeof realReplace }).replace = realReplace;
+  (ChromaSyncState as { resetAll: typeof realResetAll }).resetAll = realResetAll;
   chromaSyncStatics.backfillAllProjects = realBackfillAllProjects;
 });
 
 describe('ChromaSync corrupt-collection handling', () => {
-  it('drops the collection, zeroes watermarks, and throws a typed error on a deterministic write failure', async () => {
+  it('drops the collection, zeroes all projects\' watermarks, and throws a typed error on a deterministic write failure', async () => {
     const callTool = installCallTool(async (toolName) => {
       if (toolName === 'chroma_add_documents') {
         throw DETERMINISTIC_ERROR;
@@ -77,12 +78,9 @@ describe('ChromaSync corrupt-collection handling', () => {
     await expect(sync.addDocuments([makeDoc('d1')])).rejects.toBeInstanceOf(ChromaCorruptCollectionError);
 
     expect(toolCalls(callTool, 'chroma_delete_collection')).toBe(1);
-    const replaceMock = ChromaSyncState.replace as CallToolMock;
-    expect(replaceMock.mock.calls.length).toBe(1);
-    expect(replaceMock.mock.calls[0]).toEqual([
-      'corrupt-drop',
-      { observations: 0, summaries: 0, prompts: 0 }
-    ]);
+    // The collection is shared across projects, so the drop must zero every
+    // project's watermarks, not just this instance's.
+    expect((ChromaSyncState.resetAll as CallToolMock).mock.calls.length).toBe(1);
   });
 
   it('does not treat availability errors as corruption', async () => {
@@ -97,7 +95,7 @@ describe('ChromaSync corrupt-collection handling', () => {
     expect(await sync.addDocuments([makeDoc('d1')])).toBe(0);
 
     expect(toolCalls(callTool, 'chroma_delete_collection')).toBe(0);
-    expect((ChromaSyncState.replace as CallToolMock).mock.calls.length).toBe(0);
+    expect((ChromaSyncState.resetAll as CallToolMock).mock.calls.length).toBe(0);
   });
 
   it('still reconciles duplicate-ID conflicts without dropping the collection', async () => {
@@ -180,6 +178,6 @@ describe('ChromaSync corrupt-collection handling', () => {
     expect((chromaSyncStatics.backfillAllProjects as CallToolMock).mock.calls.length).toBe(0);
     // The drop and watermark reset still happened — the next worker start
     // re-derives the collection.
-    expect((ChromaSyncState.replace as CallToolMock).mock.calls.length).toBe(1);
+    expect((ChromaSyncState.resetAll as CallToolMock).mock.calls.length).toBe(1);
   });
 });

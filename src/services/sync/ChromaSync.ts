@@ -188,8 +188,9 @@ export class ChromaSync {
    * replay its write-ahead log in memory (observed: ~20 GB physical
    * footprint within 4 minutes). Retrying is incorrect — the index is fully
    * derived from SQLite, so the correct operation is to recompute it: drop
-   * the collection, zero the project's watermarks so the backfill pipeline
-   * re-derives every row, and invalidate all cached ensure-collection flags.
+   * the collection, zero every project's watermarks (the collection is
+   * shared across projects) so the backfill pipeline re-derives every row,
+   * and invalidate all cached ensure-collection flags.
    *
    * The re-derivation runs immediately through the existing backfill
    * pipeline when a store was registered at startup and no backfill is
@@ -209,7 +210,10 @@ export class ChromaSync {
       collection_name: this.collectionName
     });
 
-    ChromaSyncState.replace(this.project, { observations: 0, summaries: 0, prompts: 0 });
+    // The collection is shared by every project (all live instances are
+    // constructed with 'claude-mem'), so dropping it invalidates every
+    // project's vectors — zero all watermarks, not just this instance's.
+    ChromaSyncState.resetAll();
     ChromaSync.collectionGeneration += 1;
 
     if (
