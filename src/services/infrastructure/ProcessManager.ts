@@ -2,7 +2,7 @@
 import path from 'path';
 import { homedir } from 'os';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, statSync, utimesSync, copyFileSync } from 'fs';
-import { execSync, spawnSync } from 'child_process';
+import { execFileSync, execSync, spawnSync } from 'child_process';
 import { spawnHidden } from '../../shared/spawn.js';
 import { logger } from '../../utils/logger.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
@@ -30,20 +30,31 @@ function isBunExecutablePath(executablePath: string | undefined | null): boolean
 }
 
 function lookupBinaryInPath(binaryName: string, platform: NodeJS.Platform): string | null {
-  const command = platform === 'win32' ? `where ${binaryName}` : `which ${binaryName}`;
+  const lookupCommand = platform === 'win32' ? 'where.exe' : 'which';
+  const lookupArgs = [binaryName];
 
   let output: string;
   try {
-    output = execSync(command, {
+    output = execFileSync(lookupCommand, lookupArgs, {
       stdio: ['ignore', 'pipe', 'ignore'],
       encoding: 'utf-8',
       windowsHide: true
     });
   } catch (error: unknown) {
     if (error instanceof Error) {
-      logger.debug('SYSTEM', `Binary lookup failed for ${binaryName}`, { command }, error);
+      logger.debug(
+        'SYSTEM',
+        `Binary lookup failed for ${binaryName}`,
+        { command: lookupCommand, args: lookupArgs },
+        error,
+      );
     } else {
-      logger.debug('SYSTEM', `Binary lookup failed for ${binaryName}`, { command }, new Error(String(error)));
+      logger.debug(
+        'SYSTEM',
+        `Binary lookup failed for ${binaryName}`,
+        { command: lookupCommand, args: lookupArgs },
+        new Error(String(error)),
+      );
     }
     return null;
   }

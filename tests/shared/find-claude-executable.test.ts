@@ -31,7 +31,12 @@ let realPaths: Map<string, string>;
 /** stdout of `which -a claude`; null = which fails. */
 let whichOutput: string | null;
 
-function installFakes(options: { settingsPath?: string; platform?: NodeJS.Platform; whereOutputs?: Record<string, string> } = {}): void {
+function installFakes(options: {
+  settingsPath?: string;
+  platform?: NodeJS.Platform;
+  /** Keys are where.exe argv names (e.g. `claude.cmd`), values are stdout. */
+  whereOutputs?: Record<string, string>;
+} = {}): void {
   _internals.platform = () => options.platform ?? 'darwin';
   _internals.homedir = () => '/home/tester';
   _internals.loadSettings = () => ({ CLAUDE_CODE_PATH: options.settingsPath ?? '' }) as ReturnType<typeof ORIGINALS.loadSettings>;
@@ -39,9 +44,6 @@ function installFakes(options: { settingsPath?: string; platform?: NodeJS.Platfo
   _internals.realpathSync = ((path: string) => realPaths.get(path) ?? path) as typeof ORIGINALS.realpathSync;
 
   _internals.execSync = ((command: string) => {
-    if (options.whereOutputs && command in options.whereOutputs) {
-      return options.whereOutputs[command];
-    }
     if (command === 'which -a claude' && whichOutput !== null) {
       return whichOutput;
     }
@@ -49,6 +51,14 @@ function installFakes(options: { settingsPath?: string; platform?: NodeJS.Platfo
   }) as typeof ORIGINALS.execSync;
 
   _internals.execFileSync = ((path: string, args: string[]) => {
+    if (path === 'where.exe') {
+      const name = args[0] ?? '';
+      if (options.whereOutputs && name in options.whereOutputs) {
+        return options.whereOutputs[name];
+      }
+      throw new Error(`not found: where.exe ${name}`);
+    }
+
     probeCalls.push({ path, args });
     const real = realPaths.get(path) ?? path;
     const cli = fakeClis.get(path) ?? fakeClis.get(real);
@@ -188,7 +198,7 @@ describe('findClaudeExecutable broken candidates', () => {
     installFakes({
       platform: 'win32',
       whereOutputs: {
-        'where claude': 'C:\\Users\\tester\\AppData\\Local\\AnthropicClaude\\claude.exe\r\nC:\\good\\claude.exe\r\n',
+        claude: 'C:\\Users\\tester\\AppData\\Local\\AnthropicClaude\\claude.exe\r\nC:\\good\\claude.exe\r\n',
       },
     });
     fakeClis.set('C:\\Users\\tester\\AppData\\Local\\AnthropicClaude\\claude.exe', { version: '0.0.0', supportsDontAsk: false, broken: true });
@@ -302,8 +312,8 @@ describe('findClaudeExecutable on Windows', () => {
     installFakes({
       platform: 'win32',
       whereOutputs: {
-        'where claude.cmd': 'C:\\old\\claude.cmd\r\n',
-        'where claude': 'C:\\new\\claude.exe\r\n',
+        'claude.cmd': 'C:\\old\\claude.cmd\r\n',
+        claude: 'C:\\new\\claude.exe\r\n',
       },
     });
     fakeClis.set('C:\\old\\claude.cmd', { version: '2.0.42', supportsDontAsk: false });
