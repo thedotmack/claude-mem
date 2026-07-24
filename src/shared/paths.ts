@@ -40,6 +40,10 @@ export const DATA_DIR = resolveDataDir();
 export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
 
 export const MARKETPLACE_ROOT = join(CLAUDE_CONFIG_DIR, 'plugins', 'marketplaces', 'thedotmack');
+// Claude sets this for an enabled marketplace plugin.  Keep MARKETPLACE_ROOT
+// for legacy discovery, but use the active root for runtime identity so a
+// candidate marketplace cannot be mistaken for the official installation.
+export const ACTIVE_PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || join(MARKETPLACE_ROOT, 'plugin');
 
 export const LOGS_DIR = join(DATA_DIR, 'logs');
 export const USER_SETTINGS_PATH = join(DATA_DIR, 'settings.json');

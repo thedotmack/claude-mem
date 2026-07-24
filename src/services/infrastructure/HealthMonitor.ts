@@ -4,7 +4,7 @@ import net from 'net';
 import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { MARKETPLACE_ROOT, USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { ACTIVE_PLUGIN_ROOT, USER_SETTINGS_PATH } from '../../shared/paths.js';
 
 function getWorkerHost(): string {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
@@ -128,7 +128,7 @@ export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 's
 
 export function getInstalledPluginVersion(): string {
   try {
-    const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
+    const packageJsonPath = path.join(ACTIVE_PLUGIN_ROOT, 'package.json');
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     return packageJson.version;
   } catch (error: unknown) {
