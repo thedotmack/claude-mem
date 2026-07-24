@@ -51,6 +51,12 @@ describe('Worker API Endpoints Integration', () => {
         authMethod: 'cli',
         lastInteraction: null,
       }),
+      getChromaCrashState: () => ({
+        count: 1,
+        lastExit: { timestamp: '2026-07-23T12:00:00.000Z', code: null, signal: 'SIGSEGV' },
+        chromaMcpVersion: '0.2.6',
+        dependencyOverrides: ['onnxruntime>=1.20', 'protobuf<7', 'chromadb==1.0.16'],
+      }),
     };
 
     testPort = 40000 + Math.floor(Math.random() * 10000);
@@ -255,6 +261,12 @@ describe('Worker API Endpoints Integration', () => {
             remediation: 'Install Claude Code CLI',
           },
         ],
+      });
+      expect(body.health.chroma).toEqual({
+        count: 1,
+        lastExit: { timestamp: '2026-07-23T12:00:00.000Z', code: null, signal: 'SIGSEGV' },
+        chromaMcpVersion: '0.2.6',
+        dependencyOverrides: ['onnxruntime>=1.20', 'protobuf<7', 'chromadb==1.0.16'],
       });
     });
 

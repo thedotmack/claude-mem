@@ -45,12 +45,27 @@ const CHROMA_MCP_PINNED_VERSION = '0.2.6';
 // `TypeError: Descriptors cannot be created directly` at chromadb import.
 // Capping below 7 lands on protobuf 6.x which opentelemetry tolerates.
 //
+// Why chromadb==1.0.16: chroma-mcp 0.2.6 declares chromadb>=1.0.16.
+// Pinning that floor keeps claude-mem's runtime closure reproducible.
+//
 // These pins are runtime-only (uvx --with) so we don't have to fork
 // chroma-mcp upstream — they apply only to claude-mem's spawned subprocess.
 const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
   'onnxruntime>=1.20',
   'protobuf<7',
+  'chromadb==1.0.16',
 ];
+
+export interface ChromaCrashState {
+  count: number;
+  lastExit: {
+    timestamp: string;
+    code: number | null;
+    signal: NodeJS.Signals | null;
+  } | null;
+  chromaMcpVersion: string;
+  dependencyOverrides: string[];
+}
 
 // Issue #2696 (revised): chroma-mcp is now spawned by invoking uvx DIRECTLY on
 // every platform — see ChromaMcpManager.resolveUvxCommand(). The previous
@@ -88,6 +103,8 @@ export class ChromaMcpManager {
   private readonly chromaWriterOwnerId = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
   private chromaWriterLock: { path: string; dataDir: string; ownerId: string } | null = null;
   private unexpectedCloseCleanup: Promise<void> | null = null;
+  private chromaCrashCount = 0;
+  private chromaLastExit: ChromaCrashState['lastExit'] = null;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
 
   private constructor() {}
@@ -251,7 +268,8 @@ export class ChromaMcpManager {
     logger.info('CHROMA_MCP', 'Connected to chroma-mcp successfully');
 
     const currentTransport = this.transport;
-    const currentTrackedPid = (this.transport as unknown as { _process?: ChildProcess })._process?.pid;
+    const currentProcess = (this.transport as unknown as { _process?: ChildProcess })._process;
+    const currentTrackedPid = currentProcess?.pid;
     this.transport.onclose = () => {
       if (this.transport !== currentTransport) {
         logger.debug('CHROMA_MCP', 'Ignoring stale onclose from previous transport');
@@ -264,7 +282,19 @@ export class ChromaMcpManager {
         logger.debug('CHROMA_MCP', 'Ignoring onclose from intentionally closed transport');
         return;
       }
-      logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff');
+      this.chromaCrashCount += 1;
+      this.chromaLastExit = {
+        timestamp: new Date().toISOString(),
+        code: currentProcess?.exitCode ?? null,
+        signal: currentProcess?.signalCode ?? null,
+      };
+      logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff', {
+        count: this.chromaCrashCount,
+        exitCode: this.chromaLastExit.code,
+        signalCode: this.chromaLastExit.signal,
+        chromaMcpVersion: CHROMA_MCP_PINNED_VERSION,
+        dependencyOverrides: [...CHROMA_MCP_DEP_OVERRIDES],
+      });
       this.connected = false;
       getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
       this.client = null;
@@ -277,6 +307,15 @@ export class ChromaMcpManager {
       // captured PID — best-effort; pgrep returns nothing if everything
       // already exited (#2313).
       this.scheduleUnexpectedCloseCleanup(currentTrackedPid);
+    };
+  }
+
+  getCrashState(): ChromaCrashState {
+    return {
+      count: this.chromaCrashCount,
+      lastExit: this.chromaLastExit ? { ...this.chromaLastExit } : null,
+      chromaMcpVersion: CHROMA_MCP_PINNED_VERSION,
+      dependencyOverrides: [...CHROMA_MCP_DEP_OVERRIDES],
     };
   }
 
