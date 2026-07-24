@@ -651,6 +651,13 @@ function copyPluginToMarketplace(): void {
   const allowedTopLevelEntries = [
     '.agents',
     '.codex-plugin',
+    // `.npmrc` carries the `allow-scripts` allowlist so a marketplace install on
+    // npm 11.16+/v12 does not abort with EALLOWSCRIPTS. npm strips `.npmrc` from
+    // published tarballs, so when this runs from the npm-published package the
+    // source `.npmrc` is absent and the copy is a no-op — the `allowScripts`
+    // field in the copied package.json is the load-bearing form there. When the
+    // installer runs from a git checkout, this lands the belt too.
+    '.npmrc',
     'plugin',
     'package.json',
     'package-lock.json',
