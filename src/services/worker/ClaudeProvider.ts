@@ -183,7 +183,6 @@ export class ClaudeProvider {
    */
   async runObserverCanary(): Promise<void> {
     let claudePath: string;
-    let receivedTextResponse = false;
     try {
       claudePath = findClaudeExecutable('SDK');
     } catch (error) {
@@ -231,6 +230,7 @@ export class ClaudeProvider {
 
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     const cwdTracker = { lastCwd: undefined as string | undefined };
+    let receivedTextResponse = false;
 
     // Find and validate Claude executable (shared utility, closes #2222)
     let claudePath: string;
