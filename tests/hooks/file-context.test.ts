@@ -12,6 +12,8 @@ import * as realSettingsDefaultsManager from '../../src/shared/SettingsDefaultsM
 import * as realWorkerUtils from '../../src/shared/worker-utils.js';
 import * as realProjectName from '../../src/utils/project-name.js';
 import * as realProjectFilter from '../../src/utils/project-filter.js';
+import * as realInfrastructure from '../../src/services/infrastructure/index.js';
+import * as realSupervisor from '../../src/supervisor/index.js';
 
 // Snapshot the real exports into plain objects NOW, before mock.module mutates
 // the live ESM namespace bindings. These snapshots are re-registered in afterAll.
@@ -19,6 +21,8 @@ const realSettingsSnapshot = { ...realSettingsDefaultsManager };
 const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 const realProjectNameSnapshot = { ...realProjectName };
 const realProjectFilterSnapshot = { ...realProjectFilter };
+const realInfrastructureSnapshot = { ...realInfrastructure };
+const realSupervisorSnapshot = { ...realSupervisor };
 
 mock.module('../../src/shared/SettingsDefaultsManager.js', () => ({
   SettingsDefaultsManager: {
@@ -51,6 +55,25 @@ mock.module('../../src/utils/project-name.js', () => ({
 
 mock.module('../../src/utils/project-filter.js', () => ({
   isProjectExcluded: () => false,
+}));
+
+// worker-utils gates every hook API call behind a real liveness check
+// (inspectWorkerPort -> validateWorkerPidFile + checkVersionMatch, raw sockets
+// and pid files that this handler test cannot satisfy through the fetch spy).
+// executeWithWorkerFallback runs via worker-utils' own local bindings, so the
+// worker-utils namespace mock above cannot reach it; present a live, matching
+// worker at the leaf modules instead, spreading the real exports so nothing else
+// worker-utils imports from them is dropped.
+mock.module('../../src/services/infrastructure/index.js', () => ({
+  ...realInfrastructureSnapshot,
+  checkVersionMatch: () => Promise.resolve({ matches: true, pluginVersion: 'unknown', workerVersion: 'unknown' }),
+  isPortListening: () => Promise.resolve(true),
+}));
+
+mock.module('../../src/supervisor/index.js', () => ({
+  ...realSupervisorSnapshot,
+  validateWorkerPidFile: () => 'alive',
+  readOwnedWorkerPidInfo: () => null,
 }));
 
 import { fileContextHandler } from '../../src/cli/handlers/file-context.js';
@@ -108,6 +131,8 @@ afterAll(() => {
   mock.module('../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
   mock.module('../../src/utils/project-name.js', () => realProjectNameSnapshot);
   mock.module('../../src/utils/project-filter.js', () => realProjectFilterSnapshot);
+  mock.module('../../src/services/infrastructure/index.js', () => realInfrastructureSnapshot);
+  mock.module('../../src/supervisor/index.js', () => realSupervisorSnapshot);
 });
 
 describe('fileContextHandler — #2094 (no Read mutation)', () => {

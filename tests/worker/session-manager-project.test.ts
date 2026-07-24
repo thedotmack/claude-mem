@@ -1,30 +1,25 @@
-import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import { logger } from '../../src/utils/logger.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import { processAgentResponse } from '../../src/services/worker/agents/ResponseProcessor.js';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
+import * as realWorkerService from '../../src/services/worker-service.js';
+import * as realWorkerUtils from '../../src/shared/worker-utils.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { StorageResult, WorkerRef } from '../../src/services/worker/agents/types.js';
 
+const realWorkerServiceSnapshot = { ...realWorkerService };
+const realWorkerUtilsSnapshot = { ...realWorkerUtils };
+
 mock.module('../../src/services/worker-service.js', () => ({
+  ...realWorkerServiceSnapshot,
   updateCursorContextForProject: () => Promise.resolve(),
 }));
 
 mock.module('../../src/shared/worker-utils.js', () => ({
+  ...realWorkerUtilsSnapshot,
   getWorkerPort: () => 37777,
-}));
-
-mock.module('../../src/services/domain/ModeManager.js', () => ({
-  ModeManager: {
-    getInstance: () => ({
-      getActiveMode: () => ({
-        name: 'code',
-        prompts: { init: 'init', observation: 'observation', summary: 'summary' },
-        observation_types: [{ id: 'discovery' }],
-        observation_concepts: [],
-      }),
-    }),
-  },
 }));
 
 const durableSessionTemplate = {
@@ -74,7 +69,19 @@ function initializeWithProject(
 let spies: ReturnType<typeof spyOn>[] = [];
 
 describe('SessionManager prompt project attribution', () => {
+  afterAll(() => {
+    mock.module('../../src/services/worker-service.js', () => realWorkerServiceSnapshot);
+    mock.module('../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
+  });
+
   beforeEach(() => {
+    const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
+    modeManager.activeMode = {
+      name: 'code',
+      prompts: { init: 'init', observation: 'observation', summary: 'summary' },
+      observation_types: [{ id: 'discovery' }],
+      observation_concepts: [],
+    };
     spies = [
       spyOn(logger, 'info').mockImplementation(() => {}),
       spyOn(logger, 'debug').mockImplementation(() => {}),
@@ -84,6 +91,8 @@ describe('SessionManager prompt project attribution', () => {
   });
 
   afterEach(() => {
+    const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
+    modeManager.activeMode = null;
     spies.forEach(spy => spy.mockRestore());
     mock.restore();
   });

@@ -1,6 +1,6 @@
-
 import { describe, it, expect, mock } from 'bun:test';
 import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
+import { ensureWorkerStarted } from '../../src/services/worker-spawner.js';
 
 const processManager = {
   cleanStalePidFile: mock(() => 'dead' as 'alive' | 'dead'),
@@ -20,13 +20,28 @@ const spawnGate = {
   releaseSpawnLock: mock(() => {}),
 };
 
-mock.module('../../src/services/infrastructure/ProcessManager.js', () => processManager);
-mock.module('../../src/services/infrastructure/HealthMonitor.js', () => healthMonitor);
-mock.module('../../src/shared/worker-spawn-gate.js', () => spawnGate);
-
-const { ensureWorkerStarted } = await import('../../src/services/worker-spawner.js');
+const isPidAliveMock = mock(() => false);
+const shouldSkipSpawnOnWindowsMock = mock(() => false);
+const markWorkerSpawnAttemptedMock = mock(() => {});
+const clearWorkerSpawnAttemptedMock = mock(() => {});
 
 type TimedProbe = (port: number, timeout: number) => Promise<boolean>;
+
+const workerStartDeps: NonNullable<Parameters<typeof ensureWorkerStarted>[2]> = {
+  cleanStalePidFile: processManager.cleanStalePidFile,
+  getPlatformTimeout: processManager.getPlatformTimeout,
+  spawnDaemon: processManager.spawnDaemon,
+  touchPidFile: processManager.touchPidFile,
+  isPortInUse: healthMonitor.isPortInUse,
+  waitForHealth: healthMonitor.waitForHealth,
+  waitForReadiness: healthMonitor.waitForReadiness,
+  acquireSpawnLock: spawnGate.acquireSpawnLock,
+  releaseSpawnLock: spawnGate.releaseSpawnLock,
+  isPidAlive: isPidAliveMock,
+  shouldSkipSpawnOnWindows: shouldSkipSpawnOnWindowsMock,
+  markWorkerSpawnAttempted: markWorkerSpawnAttemptedMock,
+  clearWorkerSpawnAttempted: clearWorkerSpawnAttemptedMock,
+};
 
 async function modelBaseLivePidResult(
   port: number,
@@ -50,6 +65,10 @@ async function modelBaseSpawnResult(
   return ready ? 'ready' : 'warming';
 }
 
+function runEnsureWorkerStarted(port: number, workerScriptPath: string) {
+  return ensureWorkerStarted(port, workerScriptPath, workerStartDeps);
+}
+
 function resetMocks(): void {
   processManager.cleanStalePidFile.mockReset();
   processManager.cleanStalePidFile.mockReturnValue('dead');
@@ -66,6 +85,12 @@ function resetMocks(): void {
   spawnGate.acquireSpawnLock.mockReset();
   spawnGate.acquireSpawnLock.mockReturnValue(true);
   spawnGate.releaseSpawnLock.mockReset();
+  isPidAliveMock.mockReset();
+  isPidAliveMock.mockReturnValue(false);
+  shouldSkipSpawnOnWindowsMock.mockReset();
+  shouldSkipSpawnOnWindowsMock.mockReturnValue(false);
+  markWorkerSpawnAttemptedMock.mockReset();
+  clearWorkerSpawnAttemptedMock.mockReset();
 }
 
 describe('ensureWorkerStarted startup readiness', () => {
@@ -84,7 +109,7 @@ describe('ensureWorkerStarted startup readiness', () => {
       becomesReadyOnlyAtReadinessBudget,
       becomesReadyOnlyAtReadinessBudget
     );
-    const result = await ensureWorkerStarted(port, import.meta.filename);
+    const result = await runEnsureWorkerStarted(port, import.meta.filename);
 
     expect(baseResult).toBe('warming');
     expect(result).toBe('ready');
@@ -108,7 +133,7 @@ describe('ensureWorkerStarted startup readiness', () => {
       becomesReadyOnlyAtReadinessBudget,
       becomesReadyOnlyAtReadinessBudget
     );
-    const result = await ensureWorkerStarted(port, import.meta.filename);
+    const result = await runEnsureWorkerStarted(port, import.meta.filename);
 
     expect(baseResult).toBe('warming');
     expect(result).toBe('ready');
@@ -127,7 +152,7 @@ describe('ensureWorkerStarted startup readiness', () => {
       return cleanChecks === 1 ? 'alive' : 'dead';
     });
 
-    const result = await ensureWorkerStarted(39003, import.meta.filename);
+    const result = await runEnsureWorkerStarted(39003, import.meta.filename);
 
     expect(result).toBe('dead');
     expect(healthMonitor.waitForReadiness).toHaveBeenCalledWith(39003, HOOK_TIMEOUTS.READINESS_WAIT);
@@ -138,7 +163,7 @@ describe('ensureWorkerStarted startup readiness', () => {
   it('returns dead when the spawned worker never becomes ready and no live worker remains', async () => {
     resetMocks();
 
-    const result = await ensureWorkerStarted(39004, import.meta.filename);
+    const result = await runEnsureWorkerStarted(39004, import.meta.filename);
 
     expect(result).toBe('dead');
     expect(healthMonitor.waitForHealth).toHaveBeenCalledWith(39004, 1000);
@@ -150,7 +175,7 @@ describe('ensureWorkerStarted startup readiness', () => {
     resetMocks();
     spawnGate.acquireSpawnLock.mockReturnValue(false);
 
-    const result = await ensureWorkerStarted(39005, import.meta.filename);
+    const result = await runEnsureWorkerStarted(39005, import.meta.filename);
 
     expect(result).toBe('dead');
     expect(processManager.spawnDaemon).not.toHaveBeenCalled();
@@ -161,7 +186,7 @@ describe('ensureWorkerStarted startup readiness', () => {
     resetMocks();
     healthMonitor.isPortInUse.mockResolvedValue(true);
 
-    const result = await ensureWorkerStarted(39006, import.meta.filename);
+    const result = await runEnsureWorkerStarted(39006, import.meta.filename);
 
     expect(result).toBe('dead');
     expect(healthMonitor.waitForHealth).toHaveBeenNthCalledWith(1, 39006, 1000);
@@ -174,7 +199,7 @@ describe('ensureWorkerStarted startup readiness', () => {
     resetMocks();
     processManager.spawnDaemon.mockReturnValue(undefined);
 
-    const result = await ensureWorkerStarted(39007, import.meta.filename);
+    const result = await runEnsureWorkerStarted(39007, import.meta.filename);
 
     expect(result).toBe('dead');
     expect(healthMonitor.waitForReadiness).not.toHaveBeenCalled();
@@ -183,15 +208,16 @@ describe('ensureWorkerStarted startup readiness', () => {
 });
 
 describe('ensureWorkerStarted validation guards', () => {
-
   it('returns "dead" when workerScriptPath is empty string', async () => {
-    const result = await ensureWorkerStarted(39001, '');
+    resetMocks();
+    const result = await runEnsureWorkerStarted(39001, '');
     expect(result).toBe('dead');
   });
 
   it('returns "dead" when workerScriptPath does not exist on disk', async () => {
+    resetMocks();
     const bogusPath = '/tmp/__claude-mem-test-nonexistent-worker-script.cjs';
-    const result = await ensureWorkerStarted(39002, bogusPath);
+    const result = await runEnsureWorkerStarted(39002, bogusPath);
     expect(result).toBe('dead');
   });
 });

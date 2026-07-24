@@ -5,8 +5,19 @@ import {
   waitForHealth,
   waitForPortFree,
   getRunningWorkerVersion,
-  checkVersionMatch
+  checkVersionMatch,
+  isPortListening
 } from '../../src/services/infrastructure/index.js';
+
+async function withPlatform<T>(platform: NodeJS.Platform, run: () => Promise<T>): Promise<T> {
+  const originalPlatform = process.platform;
+  Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+  try {
+    return await run();
+  } finally {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+  }
+}
 
 describe('HealthMonitor', () => {
   const originalFetch = global.fetch;
@@ -24,89 +35,97 @@ describe('HealthMonitor', () => {
   describe('isPortInUse', () => {
 
     it('should return true for occupied port (EADDRINUSE)', async () => {
-      const createServerMock = mock(() => ({
-        once: mock((event: string, cb: Function) => {
-          if (event === 'error') {
-            setTimeout(() => cb({ code: 'EADDRINUSE' }), 0);
-          }
-        }),
-        listen: mock(() => {})
-      }));
-      
-      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+      await withPlatform('linux', async () => {
+        const createServerMock = mock(() => ({
+          once: mock((event: string, cb: Function) => {
+            if (event === 'error') {
+              setTimeout(() => cb({ code: 'EADDRINUSE' }), 0);
+            }
+          }),
+          listen: mock(() => {})
+        }));
+        
+        const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
 
-      const result = await isPortInUse(37777);
+        const result = await isPortInUse(37777);
 
-      expect(result).toBe(true);
-      expect(net.createServer).toHaveBeenCalled();
-      
-      spy.mockRestore();
+        expect(result).toBe(true);
+        expect(net.createServer).toHaveBeenCalled();
+        
+        spy.mockRestore();
+      });
     });
 
     it('should return false for free port (listening succeeds)', async () => {
-      const closeMock = mock((cb: Function) => cb());
-      const createServerMock = mock(() => ({
-        once: mock((event: string, cb: Function) => {
-          if (event === 'listening') {
-            setTimeout(() => cb(), 0);
-          }
-        }),
-        listen: mock(() => {}),
-        close: closeMock
-      }));
-      
-      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+      await withPlatform('linux', async () => {
+        const closeMock = mock((cb: Function) => cb());
+        const createServerMock = mock(() => ({
+          once: mock((event: string, cb: Function) => {
+            if (event === 'listening') {
+              setTimeout(() => cb(), 0);
+            }
+          }),
+          listen: mock(() => {}),
+          close: closeMock
+        }));
+        
+        const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
 
-      const result = await isPortInUse(39999);
+        const result = await isPortInUse(39999);
 
-      expect(result).toBe(false);
-      expect(net.createServer).toHaveBeenCalled();
-      expect(closeMock).toHaveBeenCalled();
-      
-      spy.mockRestore();
+        expect(result).toBe(false);
+        expect(net.createServer).toHaveBeenCalled();
+        expect(closeMock).toHaveBeenCalled();
+        
+        spy.mockRestore();
+      });
     });
 
     it('should honor configured worker host when probing port occupancy', async () => {
-      process.env.CLAUDE_MEM_WORKER_HOST = '127.0.0.2';
-      const closeMock = mock((cb: Function) => cb());
-      const listenMock = mock(() => {});
-      const createServerMock = mock(() => ({
-        once: mock((event: string, cb: Function) => {
-          if (event === 'listening') {
-            setTimeout(() => cb(), 0);
-          }
-        }),
-        listen: listenMock,
-        close: closeMock
-      }));
+      await withPlatform('linux', async () => {
+        process.env.CLAUDE_MEM_WORKER_HOST = '127.0.0.2';
+        const closeMock = mock((cb: Function) => cb());
+        const listenMock = mock(() => {});
+        const createServerMock = mock(() => ({
+          once: mock((event: string, cb: Function) => {
+            if (event === 'listening') {
+              setTimeout(() => cb(), 0);
+            }
+          }),
+          listen: listenMock,
+          close: closeMock
+        }));
 
-      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+        const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
 
-      const result = await isPortInUse(37777);
+        const result = await isPortInUse(37777);
 
-      expect(result).toBe(false);
-      expect(listenMock).toHaveBeenCalledWith(37777, '127.0.0.2');
+        expect(result).toBe(false);
+        expect(listenMock).toHaveBeenCalledWith(37777, '127.0.0.2');
 
-      spy.mockRestore();
+        spy.mockRestore();
+      });
     });
 
     it('should return false for other socket errors', async () => {
-      const createServerMock = mock(() => ({
-        once: mock((event: string, cb: Function) => {
-          if (event === 'error') {
-            setTimeout(() => cb({ code: 'EACCES' }), 0);
-          }
-        }),
-        listen: mock(() => {})
-      }));
+      await withPlatform('linux', async () => {
+        const createServerMock = mock(() => ({
+          once: mock((event: string, cb: Function) => {
+            if (event === 'error') {
+              setTimeout(() => cb({ code: 'EACCES' }), 0);
+            }
+          }),
+          listen: mock(() => {})
+        }));
 
-      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+        const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
 
-      const result = await isPortInUse(37777);
+        const result = await isPortInUse(37777);
 
-      expect(result).toBe(false);
+        expect(result).toBe(false);
 
-      spy.mockRestore();
+        spy.mockRestore();
+      });
     });
 
     it('should fall through to socket probe on Windows when health check fails and port is actually in use (zombie port)', async () => {
@@ -172,6 +191,56 @@ describe('HealthMonitor', () => {
       } finally {
         Object.defineProperty(process, 'platform', { value: origPlatform, configurable: true });
       }
+    });
+  });
+
+  describe('isPortListening', () => {
+    it('returns true for a live TCP listener', async () => {
+      const server = net.createServer();
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+      const port = (server.address() as net.AddressInfo).port;
+
+      try {
+        expect(await isPortListening(port, '127.0.0.1')).toBe(true);
+      } finally {
+        await new Promise<void>(resolve => server.close(() => resolve()));
+      }
+    });
+
+    it('returns false for a closed port', async () => {
+      const server = net.createServer();
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+      const port = (server.address() as net.AddressInfo).port;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+
+      expect(await isPortListening(port, '127.0.0.1', 100)).toBe(false);
+    });
+
+    it('returns false when the probe socket times out', async () => {
+      const destroyMock = mock(() => {});
+      const onceMock = mock(() => {});
+      const timeoutMock = mock((_timeoutMs: number, cb: Function) => cb());
+      const spy = spyOn(net, 'createConnection').mockImplementation(() => ({
+        once: onceMock,
+        setTimeout: timeoutMock,
+        destroy: destroyMock,
+      } as any));
+
+      expect(await isPortListening(37777, '127.0.0.1', 100)).toBe(false);
+      expect(timeoutMock).toHaveBeenCalledWith(100, expect.any(Function));
+      expect(destroyMock).toHaveBeenCalled();
+
+      spy.mockRestore();
+    });
+
+    it('returns false when socket setup throws synchronously', async () => {
+      const spy = spyOn(net, 'createConnection').mockImplementation(() => {
+        throw new RangeError('ERR_SOCKET_BAD_PORT');
+      });
+
+      expect(await isPortListening(Number.NaN, '127.0.0.1')).toBe(false);
+
+      spy.mockRestore();
     });
   });
 
@@ -334,79 +403,87 @@ describe('HealthMonitor', () => {
 
   describe('waitForPortFree', () => {
     it('should return true immediately when port is already free', async () => {
-      const createServerMock = mock(() => ({
-        once: mock((event: string, cb: Function) => {
-          if (event === 'listening') setTimeout(() => cb(), 0);
-        }),
-        listen: mock(() => {}),
-        close: mock((cb: Function) => cb())
-      }));
-      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+      await withPlatform('linux', async () => {
+        const createServerMock = mock(() => ({
+          once: mock((event: string, cb: Function) => {
+            if (event === 'listening') setTimeout(() => cb(), 0);
+          }),
+          listen: mock(() => {}),
+          close: mock((cb: Function) => cb())
+        }));
+        const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
 
-      const start = Date.now();
-      const result = await waitForPortFree(39999, 5000);
-      const elapsed = Date.now() - start;
+        const start = Date.now();
+        const result = await waitForPortFree(39999, 5000);
+        const elapsed = Date.now() - start;
 
-      expect(result).toBe(true);
-      expect(elapsed).toBeLessThan(1000);
-      spy.mockRestore();
+        expect(result).toBe(true);
+        expect(elapsed).toBeLessThan(1000);
+        spy.mockRestore();
+      });
     });
 
     it('should timeout when port remains occupied', async () => {
-      const createServerMock = mock(() => ({
-        once: mock((event: string, cb: Function) => {
-          if (event === 'error') setTimeout(() => cb({ code: 'EADDRINUSE' }), 0);
-        }),
-        listen: mock(() => {})
-      }));
-      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+      await withPlatform('linux', async () => {
+        const createServerMock = mock(() => ({
+          once: mock((event: string, cb: Function) => {
+            if (event === 'error') setTimeout(() => cb({ code: 'EADDRINUSE' }), 0);
+          }),
+          listen: mock(() => {})
+        }));
+        const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
 
-      const start = Date.now();
-      const result = await waitForPortFree(37777, 1500);
-      const elapsed = Date.now() - start;
+        const start = Date.now();
+        const result = await waitForPortFree(37777, 1500);
+        const elapsed = Date.now() - start;
 
-      expect(result).toBe(false);
-      expect(elapsed).toBeGreaterThanOrEqual(1400);
-      expect(elapsed).toBeLessThan(2500);
-      spy.mockRestore();
+        expect(result).toBe(false);
+        expect(elapsed).toBeGreaterThanOrEqual(1400);
+        expect(elapsed).toBeLessThan(2500);
+        spy.mockRestore();
+      });
     });
 
     it('should succeed when port becomes free', async () => {
-      let callCount = 0;
-      const spy = spyOn(net, 'createServer').mockImplementation(() => ({
-        once: mock((event: string, cb: Function) => {
-          callCount++;
-          if (callCount < 3) {
-            if (event === 'error') setTimeout(() => cb({ code: 'EADDRINUSE' }), 0);
-          } else {
-            if (event === 'listening') setTimeout(() => cb(), 0);
-          }
-        }),
-        listen: mock(() => {}),
-        close: mock((cb: Function) => cb())
-      } as any));
+      await withPlatform('linux', async () => {
+        let callCount = 0;
+        const spy = spyOn(net, 'createServer').mockImplementation(() => ({
+          once: mock((event: string, cb: Function) => {
+            callCount++;
+            if (callCount < 3) {
+              if (event === 'error') setTimeout(() => cb({ code: 'EADDRINUSE' }), 0);
+            } else {
+              if (event === 'listening') setTimeout(() => cb(), 0);
+            }
+          }),
+          listen: mock(() => {}),
+          close: mock((cb: Function) => cb())
+        } as any));
 
-      const result = await waitForPortFree(37777, 5000);
+        const result = await waitForPortFree(37777, 5000);
 
-      expect(result).toBe(true);
-      expect(callCount).toBeGreaterThanOrEqual(3);
-      spy.mockRestore();
+        expect(result).toBe(true);
+        expect(callCount).toBeGreaterThanOrEqual(3);
+        spy.mockRestore();
+      });
     });
 
     it('should use default timeout when not specified', async () => {
-      const createServerMock = mock(() => ({
-        once: mock((event: string, cb: Function) => {
-          if (event === 'listening') setTimeout(() => cb(), 0);
-        }),
-        listen: mock(() => {}),
-        close: mock((cb: Function) => cb())
-      }));
-      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+      await withPlatform('linux', async () => {
+        const createServerMock = mock(() => ({
+          once: mock((event: string, cb: Function) => {
+            if (event === 'listening') setTimeout(() => cb(), 0);
+          }),
+          listen: mock(() => {}),
+          close: mock((cb: Function) => cb())
+        }));
+        const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
 
-      const result = await waitForPortFree(39999);
+        const result = await waitForPortFree(39999);
 
-      expect(result).toBe(true);
-      spy.mockRestore();
+        expect(result).toBe(true);
+        spy.mockRestore();
+      });
     });
   });
 });

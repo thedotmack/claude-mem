@@ -43,15 +43,19 @@ let successorUp = false;
 const spawnCalls: Array<{ command: string; args: string[] }> = [];
 
 mock.module('../../src/services/infrastructure/index.js', () => ({
+  ...realInfrastructureSnapshot,
   checkVersionMatch: () => Promise.resolve(versionMatchResult),
+  isPortListening: () => Promise.resolve(false),
 }));
 
 mock.module('../../src/supervisor/index.js', () => ({
+  ...realSupervisorSnapshot,
   validateWorkerPidFile: () => 'alive',
   readOwnedWorkerPidInfo: () => ownedPidInfo,
 }));
 
 mock.module('../../src/shared/spawn.js', () => ({
+  ...realSpawnSnapshot,
   spawnHidden: (command: string, args: string[]) => {
     spawnCalls.push({ command, args });
     successorUp = true;
