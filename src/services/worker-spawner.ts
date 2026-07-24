@@ -15,6 +15,7 @@ import {
   waitForHealth,
   waitForReadiness,
 } from './infrastructure/HealthMonitor.js';
+import { reclaimOrphanedPort } from './infrastructure/PortReclaim.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
 import { isPidAlive } from '../supervisor/process-registry.js';
 
@@ -125,8 +126,22 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker is now healthy');
       return ready ? 'ready' : 'warming';
     }
-    logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
-    return 'dead';
+    // Ghost-socket recovery (#3073): the port is held but no healthy worker
+    // answers — an orphaned/wedged daemon (or its surviving child tree) is
+    // pinning it. Previously we gave up with `dead` and the port stayed stuck
+    // until the OS released it, which blocks every subsequent restart. Instead
+    // reclaim the port, then fall through to spawn a fresh worker.
+    logger.warn('SYSTEM', 'Port in use but no healthy worker responded — attempting to reclaim it');
+    const reclaimed = await reclaimOrphanedPort(port);
+    if (!reclaimed) {
+      logger.error('SYSTEM', 'Port in use but worker not responding, and reclaim failed');
+      return 'dead';
+    }
+    // A stale Windows cooldown marker from the failed attempt must not now
+    // suppress the fresh spawn we just cleared the way for.
+    clearWorkerSpawnAttempted();
+    logger.info('SYSTEM', 'Reclaimed orphaned port — spawning a fresh worker');
+    // fall through to the spawn path below
   }
 
   if (shouldSkipSpawnOnWindows()) {

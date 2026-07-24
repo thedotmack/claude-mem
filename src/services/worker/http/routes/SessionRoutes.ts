@@ -275,6 +275,11 @@ export class SessionRoutes extends BaseRouteHandler {
       validateBody(SessionRoutes.summarizeByClaudeIdSchema),
       this.handleSummarizeByClaudeId.bind(this)
     );
+    app.post(
+      '/api/sessions/end',
+      validateBody(SessionRoutes.endByClaudeIdSchema),
+      this.handleEndByClaudeId.bind(this)
+    );
   }
 
   private static readonly sessionInitByClaudeIdSchema = z.object({
@@ -302,6 +307,11 @@ export class SessionRoutes extends BaseRouteHandler {
     contentSessionId: z.string().min(1),
     last_assistant_message: z.string().optional(),
     agentId: z.string().optional(),
+    platformSource: z.string().optional(),
+  }).passthrough();
+
+  private static readonly endByClaudeIdSchema = z.object({
+    contentSessionId: z.string().min(1),
     platformSource: z.string().optional(),
   }).passthrough();
 
@@ -342,6 +352,17 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     res.json({ status: 'queued' });
+  });
+
+  private handleEndByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    // SessionEnd (#3073): reap the tracked session for this Claude Code content
+    // session, if one is still live. deleteSession aborts any in-flight
+    // generator, reaps the SDK subprocess, and flushes — so a session that ends
+    // mid-generation no longer orphans its child process. A no-op when nothing
+    // is tracked (the common case: the generator already finished).
+    const { contentSessionId } = req.body;
+    const reaped = await this.sessionManager.endByContentSessionId(contentSessionId);
+    res.json({ status: 'ok', reaped });
   });
 
   private handleSummarizeByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
