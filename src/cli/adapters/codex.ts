@@ -116,7 +116,7 @@ export const codexAdapter: PlatformAdapter = {
       hookEventName: outputEvent,
     };
 
-    if (hookSpecific.additionalContext) {
+    if (typeof hookSpecific.additionalContext === 'string') {
       specific.additionalContext = hookSpecific.additionalContext;
     }
 

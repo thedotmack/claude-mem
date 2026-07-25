@@ -135,6 +135,30 @@ export class SessionMessageBuffer {
     return total;
   }
 
+  getMessagesByIds(sessionDbId: number, messageIds: number[]): PendingMessageWithId[] {
+    if (messageIds.length === 0) {
+      return [];
+    }
+
+    const lookup = new Map<number, PendingMessageWithId>();
+    for (const buffered of this.buffers.get(sessionDbId) ?? []) {
+      lookup.set(buffered.id, {
+        ...buffered.message,
+        _persistentId: buffered.id,
+        _originalTimestamp: buffered.enqueuedAt,
+      });
+    }
+
+    const messages: PendingMessageWithId[] = [];
+    for (const messageId of messageIds) {
+      const message = lookup.get(messageId);
+      if (message) {
+        messages.push(message);
+      }
+    }
+    return messages;
+  }
+
   peekTypes(sessionDbId: number): Array<{ message_type: string; tool_name: string | null }> {
     return (this.buffers.get(sessionDbId) ?? []).map(m => ({
       message_type: m.message.type,

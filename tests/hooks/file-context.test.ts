@@ -111,6 +111,55 @@ afterAll(() => {
 });
 
 describe('fileContextHandler — #2094 (no Read mutation)', () => {
+  it('skips file-context injection for subagent reads when agentId is present', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeObservationsResponse([{ id: 1, created_at_epoch: Date.now() + 60_000 }])
+    );
+
+    const result = await fileContextHandler.execute({
+      sessionId: 'sess',
+      agentId: 'subagent-1',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+
+    expect(result).toEqual({ continue: true, suppressOutput: true });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('still injects file context for the main session', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeObservationsResponse([{ id: 1, created_at_epoch: Date.now() + 60_000 }])
+    );
+
+    const result = await fileContextHandler.execute({
+      sessionId: 'sess',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+
+    expect(result.hookSpecificOutput?.additionalContext).toContain('prior observations');
+  });
+
+  it('does not skip when only agentType is present', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeObservationsResponse([{ id: 1, created_at_epoch: Date.now() + 60_000 }])
+    );
+
+    const result = await fileContextHandler.execute({
+      sessionId: 'sess',
+      agentType: 'worker',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+
+    expect(result.hookSpecificOutput?.additionalContext).toContain('prior observations');
+    expect(fetchSpy).toHaveBeenCalled();
+  });
+
   it('injects timeline context but never sets updatedInput on an unconstrained Read', async () => {
     const future = Date.now() + 60_000;
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(

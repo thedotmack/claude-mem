@@ -1,4 +1,19 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
+
+// Capture real exports before mock.module mutates the live namespace, then
+// re-register the snapshot in afterAll so the partial ModeManager stub (no
+// class prototype, no loadMode) does not leak into later test files (bun's
+// mock.module is process-global; mock.restore() does NOT undo it). A leaked
+// stub breaks tests/server/server-boot.test.ts, server-runtime-smoke and the
+// tests/sdk parser suites whenever the readdir-dependent file order runs them
+// after this file.
+import * as realModeManagerModule from '../../../src/services/domain/ModeManager.js';
+
+const realModeManagerSnapshot = { ...realModeManagerModule };
+
+afterAll(() => {
+  mock.module('../../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
+});
 
 mock.module('../../../src/services/domain/ModeManager.js', () => ({
   ModeManager: {

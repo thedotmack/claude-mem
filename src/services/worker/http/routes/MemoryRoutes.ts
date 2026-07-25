@@ -66,6 +66,11 @@ export class MemoryRoutes extends BaseRouteHandler {
       title: observation.title
     });
 
+    // Fire-and-forget cloud sync nudge — every local write must nudge
+    // (placed before the chroma branch so the chroma-disabled early return
+    // cannot skip it).
+    this.dbManager.getCloudSync()?.notify();
+
     if (!chromaSync) {
       logger.debug('CHROMA', 'ChromaDB sync skipped (chromaSync not available)', { id: result.id });
       res.json({

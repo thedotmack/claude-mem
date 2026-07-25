@@ -1,28 +1,277 @@
 
 import { logger } from '../../../utils/logger.js';
 import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
-import { classifyObserverOutput, previewOutput } from '../../../sdk/output-classifier.js';
-import { ingestSummary } from '../http/shared.js';
+import {
+  classifyObserverOutput,
+  isAuthFailureObserverOutput,
+  isQuotaLimitedObserverOutput,
+  previewOutput,
+} from '../../../sdk/output-classifier.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
-import type { ActiveSession } from '../../worker-types.js';
+import type { ActiveSession, PendingMessage } from '../../worker-types.js';
 import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
-import { instrument } from '../../telemetry/instrument.js';
 
-/**
- * Consecutive non-XML observer outputs tolerated before we kill and respawn the
- * SDK session (plan-11, #2485). Idle and prose both count; poisoned triggers an
- * immediate respawn regardless of the count.
- */
-export const INVALID_OUTPUT_RESPAWN_THRESHOLD = 3;
+type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input'>;
+
+export interface ObservationFileEvidence {
+  files_read: string[];
+  files_modified: string[];
+}
+
+const READ_TOOL_NAMES = new Set(['Read']);
+const WRITE_TOOL_NAMES = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'write_file']);
+const PATCH_TOOL_NAMES = new Set(['apply_patch']);
+
+export function extractObservationFileEvidence(messages: ReadonlyArray<ObservationFileEvidenceMessage>): ObservationFileEvidence {
+  const filesRead: string[] = [];
+  const filesModified: string[] = [];
+  const seenRead = new Set<string>();
+  const seenModified = new Set<string>();
+
+  for (const message of messages) {
+    if (message.type !== 'observation') {
+      continue;
+    }
+
+    const toolName = typeof message.tool_name === 'string' ? message.tool_name : '';
+    if (!toolName) {
+      continue;
+    }
+
+    if (READ_TOOL_NAMES.has(toolName)) {
+      for (const filePath of extractPathsFromToolInput(message.tool_input, 'read')) {
+        pushUnique(seenRead, filesRead, filePath);
+      }
+    }
+
+    if (WRITE_TOOL_NAMES.has(toolName)) {
+      for (const filePath of extractPathsFromToolInput(message.tool_input, 'write', toolName)) {
+        pushUnique(seenModified, filesModified, filePath);
+      }
+    }
+
+    if (PATCH_TOOL_NAMES.has(toolName)) {
+      for (const filePath of extractPatchPaths(message.tool_input)) {
+        pushUnique(seenModified, filesModified, filePath);
+      }
+    }
+  }
+
+  return {
+    files_read: filesRead,
+    files_modified: filesModified,
+  };
+}
+
+function pushUnique(seen: Set<string>, output: string[], filePath: string): void {
+  if (!seen.has(filePath)) {
+    seen.add(filePath);
+    output.push(filePath);
+  }
+}
+
+function normalizePathValue(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function maybeParseObject(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || !(trimmed.startsWith('{') || trimmed.startsWith('['))) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractPathsFromToolInput(
+  toolInput: unknown,
+  mode: 'read' | 'write',
+  toolName?: string
+): string[] {
+  const input = maybeParseObject(toolInput);
+  if (!input) {
+    return [];
+  }
+
+  const paths: string[] = [];
+  const directFields = mode === 'read'
+    ? ['file_path', 'filePath', 'notebook_path', 'notebookPath', 'filePaths']
+    : ['file_path', 'filePath', 'notebook_path', 'notebookPath', 'path', 'filePaths'];
+
+  for (const field of directFields) {
+    const value = input[field];
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        const path = normalizePathValue(entry);
+        if (path) {
+          paths.push(path);
+        }
+      }
+      continue;
+    }
+
+    const path = normalizePathValue(value);
+    if (path) {
+      paths.push(path);
+    }
+  }
+
+  if (mode === 'write') {
+    const edits = input.edits;
+    if (Array.isArray(edits)) {
+      for (const edit of edits) {
+        if (!edit || typeof edit !== 'object') {
+          continue;
+        }
+        const record = edit as Record<string, unknown>;
+        for (const field of ['file_path', 'filePath', 'notebook_path', 'notebookPath', 'path']) {
+          const path = normalizePathValue(record[field]);
+          if (path) {
+            paths.push(path);
+          }
+        }
+        const patch = normalizePathValue(record.patch);
+        if (patch && toolName === 'apply_patch') {
+          paths.push(...extractPatchPaths(patch));
+        }
+      }
+    }
+  }
+
+  return dedupeStable(paths);
+}
+
+function extractPatchPaths(toolInput: unknown): string[] {
+  const input = maybeParseObject(toolInput);
+  if (!input) {
+    return typeof toolInput === 'string' ? parsePatchFiles(toolInput) : [];
+  }
+
+  const patches: string[] = [];
+  const patch = normalizePathValue(input.patch);
+  if (patch) {
+    patches.push(patch);
+  }
+
+  const edits = input.edits;
+  if (Array.isArray(edits)) {
+    for (const edit of edits) {
+      if (typeof edit === 'string') {
+        patches.push(edit);
+        continue;
+      }
+      if (!edit || typeof edit !== 'object') {
+        continue;
+      }
+      const record = edit as Record<string, unknown>;
+      const nestedPatch = normalizePathValue(record.patch);
+      if (nestedPatch) {
+        patches.push(nestedPatch);
+      }
+    }
+  }
+
+  return dedupeStable(patches.flatMap(parsePatchFiles));
+}
+
+function parsePatchFiles(patch: string): string[] {
+  const files: string[] = [];
+  for (const line of patch.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('*** Update File: ')) {
+      files.push(trimmed.replace('*** Update File: ', '').trim());
+      continue;
+    }
+    if (trimmed.startsWith('*** Add File: ')) {
+      files.push(trimmed.replace('*** Add File: ', '').trim());
+      continue;
+    }
+    if (trimmed.startsWith('*** Delete File: ')) {
+      files.push(trimmed.replace('*** Delete File: ', '').trim());
+      continue;
+    }
+    if (trimmed.startsWith('*** Move to: ')) {
+      files.push(trimmed.replace('*** Move to: ', '').trim());
+      continue;
+    }
+    if (trimmed.startsWith('+++ ')) {
+      const filePath = trimmed.replace('+++ ', '').replace(/^b\//, '').trim();
+      if (filePath && filePath !== '/dev/null') {
+        files.push(filePath);
+      }
+    }
+  }
+  return dedupeStable(files);
+}
+
+function dedupeStable(values: string[]): string[] {
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const value of values) {
+    if (!value || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    deduped.push(value);
+  }
+  return deduped;
+}
+
+function sanitizeObservationFiles(
+  observations: ParsedObservation[],
+  fileEvidence: ObservationFileEvidence
+): ParsedObservation[] {
+  return observations.map(obs => ({
+    ...obs,
+    files_read: mergeFileLists(fileEvidence.files_read, obs.files_read),
+    files_modified: fileEvidence.files_modified,
+  }));
+}
+
+function mergeFileLists(primary: string[], secondary: string[]): string[] {
+  return dedupeStable([...primary, ...secondary]);
+}
+
+export interface ResponseContext {
+  project: string;
+  promptNumber: number;
+  pendingAgentId: string | null;
+  pendingAgentType: string | null;
+}
+
+export function snapshotResponseContext(session: ActiveSession): ResponseContext {
+  return {
+    project: session.project,
+    promptNumber: session.lastPromptNumber,
+    pendingAgentId: session.pendingAgentId ?? null,
+    pendingAgentType: session.pendingAgentType ?? null,
+  };
+}
 
 export async function processAgentResponse(
   text: string,
@@ -34,10 +283,12 @@ export async function processAgentResponse(
   originalTimestamp: number | null,
   agentName: string,
   projectRoot?: string,
-  modelId?: string
+  modelId?: string,
+  responseContext?: ResponseContext
 ): Promise<void> {
   const processingStartedAt = Date.now();
   session.lastGeneratorActivity = Date.now();
+  const context = responseContext ?? snapshotResponseContext(session);
 
   if (text) {
     session.conversationHistory.push({ role: 'assistant', content: text });
@@ -53,12 +304,52 @@ export async function processAgentResponse(
     'claude';
 
   if (!parsed.valid) {
-    // Classify the non-XML output so a dropped batch is VISIBLE, not silent
-    // (plan-11, #2485). Attach a preview for diagnostics.
+    if (isQuotaLimitedObserverOutput(text)) {
+      session.consecutiveInvalidOutputs = 0;
+
+      logger.warn('PARSER', `${agentName} returned quota-limit prose — pausing generator and preserving queued batch`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'prose',
+        preview: previewOutput(text),
+      });
+
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = 'quota:observer_text';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      return;
+    }
+
+    if (isAuthFailureObserverOutput(text)) {
+      session.consecutiveInvalidOutputs = 0;
+
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = 'auth:observer_text';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      logger.error('PARSER', `${agentName} authentication failed; run /login to preserve queued batch`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'prose',
+        remediation: '/login',
+        preview: previewOutput(text),
+      });
+      return;
+    }
+
+    // Classify the non-XML output so a dropped batch is visible, not silent.
+    // Ordinary idle/prose is a claimed no-op batch: confirm it and do not build
+    // any respawn debt from repeated skip acknowledgements.
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
-
-    session.consecutiveInvalidOutputs = (session.consecutiveInvalidOutputs ?? 0) + 1;
+    session.consecutiveInvalidOutputs = 0;
 
     logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
       sessionId: session.sessionDbId,
@@ -67,53 +358,8 @@ export async function processAgentResponse(
       consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
     });
 
-    // Recover from poison (plan-11, #2485): a poisoned closure string means the
-    // SDK session is wedged and will keep emitting garbage — respawn immediately.
-    // For idle/prose, only respawn after N consecutive invalid outputs so we
-    // don't churn the session on benign single-batch misses.
-    const mustRespawn =
-      outputClass === 'poisoned' ||
-      session.consecutiveInvalidOutputs >= INVALID_OUTPUT_RESPAWN_THRESHOLD;
-
-    if (mustRespawn) {
-      // Single instrumentation call: the local poison/respawn error line (full
-      // fidelity) and the scrubbed session_compressed rollup are one logical
-      // event. Respawn-gated telemetry ONLY (never per invalid output —
-      // volume). Closed enums and counts; the raw model output never leaves
-      // the box.
-      instrument(
-        'SESSION',
-        'error',
-        `${agentName} session poisoned — killing and respawning, pending messages preserved`,
-        {
-          sessionId: session.sessionDbId,
-          outputClass,
-          consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
-          threshold: INVALID_OUTPUT_RESPAWN_THRESHOLD,
-        },
-        {
-          event: 'session_compressed',
-          rollup: 'session',
-          sessionDbId: session.sessionDbId,
-          props: {
-            outcome: 'invalid_output',
-            invalid_output_class: outputClass,
-            consecutive_invalid_outputs: session.consecutiveInvalidOutputs,
-            respawn_triggered: true,
-            provider: providerName,
-            model: typeof modelId === 'string' && modelId ? modelId : 'unknown',
-            ide: session.platformSource,
-            hook: session.lastGeneratorSource,
-          },
-        }
-      );
-      await sessionManager.respawnPoisonedSession(session.sessionDbId);
-      return;
-    }
-
     // Plain-text skip responses are intentionally ignored. Re-queueing them
-    // creates an observer loop where the same low-signal batch is retried
-    // until the restart guard fires or the provider quota is exhausted.
+    // creates an observer loop where the same low-signal batch is retried.
     await sessionManager.confirmClaimedMessages(session.sessionDbId);
     session.earliestPendingTimestamp = null;
     return;
@@ -136,29 +382,32 @@ export async function processAgentResponse(
 
   const { observations, summary } = parsed;
   const summaryForStore = normalizeSummaryForStorage(summary);
+  const claimedMessages = sessionManager.getClaimedMessages(session.sessionDbId);
+  const fileEvidence = extractObservationFileEvidence(claimedMessages);
+  const sanitizedObservations = sanitizeObservationFiles(observations, fileEvidence);
 
   const sessionStore = dbManager.getSessionStore();
   sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId, getWorkerPort());
 
-  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {
+  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${sanitizedObservations.length} | hasSummary=${!!summaryForStore}`, {
     sessionId: session.sessionDbId,
     memorySessionId: session.memorySessionId
   });
 
-  const labeledObservations = observations.map(obs => ({
+  const labeledObservations = sanitizedObservations.map(obs => ({
     ...obs,
-    agent_type: session.pendingAgentType ?? null,
-    agent_id: session.pendingAgentId ?? null
+    agent_type: context.pendingAgentType,
+    agent_id: context.pendingAgentId
   }));
 
   let result: ReturnType<typeof sessionStore.storeObservations>;
   try {
     result = sessionStore.storeObservations(
       session.memorySessionId,
-      session.project,
+      context.project,
       labeledObservations,
       summaryForStore,
-      session.lastPromptNumber,
+      context.promptNumber,
       discoveryTokens,
       originalTimestamp ?? undefined,
       modelId
@@ -237,16 +486,6 @@ export async function processAgentResponse(
     });
   }
 
-  if (summary && (summary.skipped || session.lastSummaryStored)) {
-    await ingestSummary({
-      kind: 'parsed',
-      sessionDbId: session.sessionDbId,
-      messageId: -1,
-      contentSessionId: session.contentSessionId,
-      parsed: summary,
-    });
-  }
-
   await sessionManager.confirmClaimedMessages(session.sessionDbId);
   session.earliestPendingTimestamp = null;
   worker?.broadcastProcessingStatus?.();
@@ -254,14 +493,15 @@ export async function processAgentResponse(
   void notifyTelegram({
     observations: labeledObservations,
     observationIds: result.observationIds,
-    project: session.project,
+    project: context.project,
     memorySessionId: session.memorySessionId,
   });
 
   await syncAndBroadcastObservations(
-    observations,
+    labeledObservations,
     result,
     session,
+    context,
     dbManager,
     worker,
     agentName,
@@ -273,6 +513,7 @@ export async function processAgentResponse(
     summaryForStore,
     result,
     session,
+    context,
     dbManager,
     worker,
     agentName
@@ -304,11 +545,17 @@ async function syncAndBroadcastObservations(
   observations: ParsedObservation[],
   result: StorageResult,
   session: ActiveSession,
+  context: ResponseContext,
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
   agentName: string,
   projectRoot?: string
 ): Promise<void> {
+  const memorySessionId = session.memorySessionId;
+  if (!memorySessionId) {
+    return;
+  }
+
   // Dedupe observation IDs before sync/broadcast: storeObservations may collapse
   // multiple parsed observations onto the same row via content_hash, producing
   // duplicate IDs. Syncing them 1:1 triggers repeated Chroma "IDs already exist"
@@ -330,11 +577,12 @@ async function syncAndBroadcastObservations(
 
     dbManager.getChromaSync()?.syncObservation(
       obsId,
-      session.contentSessionId,
-      session.project,
+      memorySessionId,
+      context.project,
       obs,
-      session.lastPromptNumber,
-      result.createdAtEpoch
+      context.promptNumber,
+      result.createdAtEpoch,
+      session.platformSource
     ).then(() => {
       const chromaDuration = Date.now() - chromaStart;
       logger.debug('CHROMA', 'Observation synced', {
@@ -351,6 +599,8 @@ async function syncAndBroadcastObservations(
       }, error);
     });
 
+    dbManager.getCloudSync()?.notify();
+
     broadcastObservation(worker, {
       id: obsId,
       memory_session_id: session.memorySessionId,
@@ -365,8 +615,8 @@ async function syncAndBroadcastObservations(
       concepts: JSON.stringify(obs.concepts || []),
       files_read: JSON.stringify(obs.files_read || []),
       files_modified: JSON.stringify(obs.files_modified || []),
-      project: session.project,
-      prompt_number: session.lastPromptNumber,
+      project: context.project,
+      prompt_number: context.promptNumber,
       created_at_epoch: result.createdAtEpoch
     });
   }
@@ -385,11 +635,11 @@ async function syncAndBroadcastObservations(
     if (allFilePaths.length > 0) {
       updateFolderClaudeMdFiles(
         allFilePaths,
-        session.project,
+        context.project,
         getWorkerPort(),
         projectRoot
       ).catch(error => {
-        logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)', { project: session.project }, error as Error);
+        logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)', { project: context.project }, error as Error);
       });
     }
   }
@@ -400,6 +650,7 @@ async function syncAndBroadcastSummary(
   summaryForStore: { request: string; investigated: string; learned: string; completed: string; next_steps: string; notes: string | null } | null,
   result: StorageResult,
   session: ActiveSession,
+  context: ResponseContext,
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
   agentName: string
@@ -407,16 +658,21 @@ async function syncAndBroadcastSummary(
   if (!summaryForStore || !result.summaryId) {
     return;
   }
+  const memorySessionId = session.memorySessionId;
+  if (!memorySessionId) {
+    return;
+  }
 
   const chromaStart = Date.now();
 
   dbManager.getChromaSync()?.syncSummary(
     result.summaryId,
-    session.contentSessionId,
-    session.project,
+    memorySessionId,
+    context.project,
     summaryForStore,
-    session.lastPromptNumber,
-    result.createdAtEpoch
+    context.promptNumber,
+    result.createdAtEpoch,
+    session.platformSource
   ).then(() => {
     const chromaDuration = Date.now() - chromaStart;
     logger.debug('CHROMA', 'Summary synced', {
@@ -431,6 +687,8 @@ async function syncAndBroadcastSummary(
     }, error);
   });
 
+  dbManager.getCloudSync()?.notify();
+
   broadcastSummary(worker, {
     id: result.summaryId,
     session_id: session.contentSessionId,
@@ -441,12 +699,12 @@ async function syncAndBroadcastSummary(
     completed: summaryForStore!.completed,
     next_steps: summaryForStore!.next_steps,
     notes: summaryForStore!.notes,
-    project: session.project,
-    prompt_number: session.lastPromptNumber,
+    project: context.project,
+    prompt_number: context.promptNumber,
     created_at_epoch: result.createdAtEpoch
   });
 
-  updateCursorContextForProject(session.project, getWorkerPort()).catch(error => {
-    logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error as Error);
+  updateCursorContextForProject(context.project).catch(error => {
+    logger.warn('CURSOR', 'Context update failed (non-critical)', { project: context.project }, error as Error);
   });
 }

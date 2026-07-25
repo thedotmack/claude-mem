@@ -49,13 +49,3 @@ export interface StorageResult {
   summaryId: number | null;
   createdAtEpoch: number;
 }
-
-export const FALLBACK_ERROR_PATTERNS = [
-  '429',           // Rate limit
-  '500',           // Internal server error
-  '502',           // Bad gateway
-  '503',           // Service unavailable
-  'ECONNREFUSED',  // Connection refused
-  'ETIMEDOUT',     // Timeout
-  'fetch failed',  // Network failure
-] as const;

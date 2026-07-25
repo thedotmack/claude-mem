@@ -3,7 +3,7 @@ import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, renameSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { getWorkerPort } from '../../shared/worker-utils.js';
+import { getWorkerHost, getWorkerPort } from '../../shared/worker-utils.js';
 import { DATA_DIR } from '../../shared/paths.js';
 import { getBunAbsolutePath as findBunPath, getWorkerServiceAbsolutePath as findWorkerServicePath } from './install-paths.js';
 
@@ -115,7 +115,8 @@ function buildHookCommand(bunPath: string, workerServicePath: string, eventName:
 
   const hookCommand = eventToCommand[eventName] ?? 'observation';
 
-  return `"${bunPath}" "${workerServicePath}" hook windsurf ${hookCommand}`;
+  const callOperator = process.platform === 'win32' ? '& ' : '';
+  return `${callOperator}"${bunPath}" "${workerServicePath}" hook windsurf ${hookCommand}`;
 }
 
 function mergeAndWriteHooksJson(
@@ -266,11 +267,12 @@ async function fetchWindsurfContextFromWorker(
   projectName: string,
   workspaceRoot: string,
 ): Promise<boolean> {
-  const healthResponse = await fetch(`http://127.0.0.1:${port}/api/readiness`);
+  const workerUrl = `http://${getWorkerHost()}:${port}`;
+  const healthResponse = await fetch(`${workerUrl}/api/readiness`);
   if (!healthResponse.ok) return false;
 
   const contextResponse = await fetch(
-    `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`,
+    `${workerUrl}/api/context/inject?project=${encodeURIComponent(projectName)}`,
   );
   if (!contextResponse.ok) return false;
 

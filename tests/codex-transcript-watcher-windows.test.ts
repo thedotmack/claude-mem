@@ -8,10 +8,10 @@ const watcherSource = readFileSync(
 );
 
 describe('Codex transcript ingestion on Windows (#2192)', () => {
-  it('normalizes backslashes to forward slashes before passing the path to globSync', () => {
+  it('normalizes backslashes to forward slashes before passing the path to scanGlob', () => {
     expect(watcherSource).toContain('normalizeGlobPattern');
     expect(watcherSource).toContain("inputPath.replace(/\\\\/g, '/')");
-    expect(watcherSource).toMatch(/globSync\(this\.normalizeGlobPattern\(/);
+    expect(watcherSource).toMatch(/scanGlob\(this\.normalizeGlobPattern\(/);
   });
 
   it('exposes a public poke() on the file tailer so the recursive root watcher can prod it', () => {

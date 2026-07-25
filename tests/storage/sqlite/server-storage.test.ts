@@ -7,7 +7,6 @@ import {
   ProjectsRepository,
   SERVER_OWNED_TABLES,
   ServerSessionsRepository,
-  TeamsRepository,
   ensureServerStorageSchema
 } from '../../../src/storage/sqlite/index.js';
 import { parseJsonArray, parseJsonObject } from '../../../src/storage/sqlite/serde.js';
@@ -47,7 +46,6 @@ describe('server-owned sqlite storage boundary', () => {
       const sessions = new ServerSessionsRepository(db);
       const events = new AgentEventsRepository(db);
       const memories = new MemoryItemsRepository(db);
-      const teams = new TeamsRepository(db);
       const auth = new AuthRepository(db);
 
       const project = projects.create({
@@ -83,17 +81,17 @@ describe('server-owned sqlite storage boundary', () => {
         legacyTable: 'observations',
         legacyId: 42
       });
-      const team = teams.create({ name: 'Core' });
-      const member = teams.addMember({ teamId: team.id, userId: 'user-1', role: 'owner' });
+      const teamId = 'team-core';
+      db.prepare("INSERT INTO teams (id, name, created_at_epoch, updated_at_epoch) VALUES (?, 'Core', 0, 0)").run(teamId);
       const key = auth.createApiKey({
-        teamId: team.id,
+        teamId,
         projectId: project.id,
         name: 'placeholder',
         keyHash: 'hash-1',
         scopes: ['memory:read']
       });
       const audit = auth.createAuditLog({
-        teamId: team.id,
+        teamId,
         projectId: project.id,
         actorType: 'api_key',
         actorId: key.id,
@@ -105,7 +103,6 @@ describe('server-owned sqlite storage boundary', () => {
       expect(event.payload).toEqual({ type: 'learned' });
       expect(memory.facts).toEqual(['JSON text is decoded']);
       expect(source.legacyTable).toBe('observations');
-      expect(member.role).toBe('owner');
       expect(key.scopes).toEqual(['memory:read']);
       expect(audit.action).toBe('memory.read');
     });

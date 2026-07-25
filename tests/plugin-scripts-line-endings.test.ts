@@ -9,7 +9,6 @@ const SHEBANG_SCRIPTS = [
   'worker-service.cjs',
   'context-generator.cjs',
   'bun-runner.js',
-  'worker-cli.js',
 ];
 
 describe('plugin/scripts line endings (#1342)', () => {

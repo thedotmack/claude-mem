@@ -21,6 +21,7 @@ import { logger } from '../../utils/logger.js';
 import { requirePostgresServerAuth } from '../middleware/postgres-auth.js';
 import { EndSessionService } from '../services/EndSessionService.js';
 import { resolveServerSession } from './SessionsObservationsAdapter.js';
+import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
 
 const summarizeSchema = z.object({
   contentSessionId: z.string().min(1),
@@ -75,36 +76,7 @@ export class SessionsSummarizeAdapter implements RouteHandler {
       }
 
       try {
-        const session = await resolveServerSession({
-          pool: this.options.pool,
-          teamId,
-          projectId,
-          contentSessionId: parsed.data.contentSessionId,
-          platformSource: typeof parsed.data.platformSource === 'string' ? parsed.data.platformSource : null,
-          agentId: null,
-          agentType: null,
-        });
-
-        const result = await this.options.endSession.end({
-          sessionId: session.id,
-          projectId,
-          teamId,
-          source: 'http_post_api_sessions_summarize',
-          apiKeyId: req.authContext?.apiKeyId ?? null,
-          actorId: null,
-          sourceAdapter: 'claude-code-compat',
-        });
-        if (!result.session) {
-          res.status(404).json({ status: 'not_found', reason: 'session_not_found' });
-          return;
-        }
-        res.json({
-          status: 'queued',
-          sessionId: session.id,
-          serverSessionId: session.id,
-          generationJobId: result.outbox?.id ?? null,
-          transport: result.enqueueState,
-        });
+        await this.summarizeSession(req, res, parsed.data, teamId, projectId);
       } catch (error) {
         logger.error('SYSTEM', 'compat summarize adapter failed', {
           error: error instanceof Error ? error.message : String(error),
@@ -113,6 +85,50 @@ export class SessionsSummarizeAdapter implements RouteHandler {
         res.status(500).json({ status: 'error', reason: 'internal_error' });
       }
     }));
+  }
+
+  private async summarizeSession(
+    req: Request,
+    res: Response,
+    data: z.infer<typeof summarizeSchema>,
+    teamId: string,
+    projectId: string,
+  ): Promise<void> {
+    const platformSource = normalizePlatformSource(
+      typeof data.platformSource === 'string'
+        ? data.platformSource
+        : DEFAULT_PLATFORM_SOURCE,
+    );
+    const session = await resolveServerSession({
+      pool: this.options.pool,
+      teamId,
+      projectId,
+      contentSessionId: data.contentSessionId,
+      platformSource,
+      agentId: null,
+      agentType: null,
+    });
+
+    const result = await this.options.endSession.end({
+      sessionId: session.id,
+      projectId,
+      teamId,
+      source: 'http_post_api_sessions_summarize',
+      apiKeyId: req.authContext?.apiKeyId ?? null,
+      actorId: null,
+      sourceAdapter: 'claude-code-compat',
+    });
+    if (!result.session) {
+      res.status(404).json({ status: 'not_found', reason: 'session_not_found' });
+      return;
+    }
+    res.json({
+      status: 'queued',
+      sessionId: session.id,
+      serverSessionId: session.id,
+      generationJobId: result.outbox?.id ?? null,
+      transport: result.enqueueState,
+    });
   }
 
   private asyncHandler(fn: (req: Request, res: Response) => Promise<void> | void) {

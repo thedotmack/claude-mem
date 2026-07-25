@@ -10,7 +10,12 @@ import { classifyClaudeServerError } from '../../../src/server/generation/provid
 import {
   ClaudeObservationProvider,
 } from '../../../src/server/generation/providers/ClaudeObservationProvider.js';
-import { GeminiObservationProvider } from '../../../src/server/generation/providers/GeminiObservationProvider.js';
+import {
+  GeminiObservationProvider,
+  categorizeGeminiBadRequest,
+  classifyGeminiServerError,
+  type GeminiBadRequestCategory,
+} from '../../../src/server/generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../../../src/server/generation/providers/OpenRouterObservationProvider.js';
 import { buildServerGenerationPrompt } from '../../../src/server/generation/providers/shared/prompt-builder.js';
 import type { ServerGenerationContext } from '../../../src/server/generation/providers/shared/types.js';
@@ -92,6 +97,22 @@ describe('shared error classification', () => {
       providerLabel: 'Gemini',
     });
     expect(err.kind).toBe('quota_exhausted');
+  });
+
+  it('classifyHttpProviderError redacts fallback response bodies from message and cause', () => {
+    const rawBody = 'RAW_PROVIDER_BODY with credential sk-secret';
+    const err = classifyHttpProviderError({
+      status: 418,
+      bodyText: rawBody,
+      cause: new Error(`provider said ${rawBody}`),
+      providerLabel: 'Gemini',
+    });
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.message).toBe('Gemini API error (status 418)');
+    expect(err.message).not.toContain(rawBody);
+    expect(err.cause).toBeInstanceOf(Error);
+    expect((err.cause as Error).message).toContain('status 418');
+    expect((err.cause as Error).message).not.toContain(rawBody);
   });
 
   it('classifyClaudeServerError treats 529 as transient', () => {
@@ -194,6 +215,41 @@ describe('ClaudeObservationProvider', () => {
 });
 
 describe('GeminiObservationProvider', () => {
+  const closedBadRequestCategories = new Set<GeminiBadRequestCategory>([
+    'role_sequence',
+    'context_limit',
+    'model_unsupported',
+    'api_key',
+    'unknown_bad_request',
+  ]);
+
+  for (const [expectedCategory, bodyText] of [
+    ['role_sequence', 'Please ensure that multiturn requests alternate between user and model.'],
+    ['context_limit', 'Request contains 120000 tokens which exceeds the maximum token limit.'],
+    ['model_unsupported', 'Model gemini-example is not supported for generateContent.'],
+    ['api_key', 'API_KEY_INVALID: API key not valid.'],
+    ['unknown_bad_request', 'Invalid JSON payload received. Unknown name "foo".'],
+  ] as const) {
+    it(`classifies Gemini 400 as closed category ${expectedCategory}`, () => {
+      const rawBody = `${bodyText} RAW_PROVIDER_BODY`;
+      const category = categorizeGeminiBadRequest(rawBody);
+      const err = classifyGeminiServerError({
+        status: 400,
+        bodyText: rawBody,
+        cause: new Error(`Gemini API error: 400 - ${rawBody}`),
+      });
+
+      expect(category).toBe(expectedCategory);
+      expect(closedBadRequestCategories.has(category)).toBe(true);
+      expect(err.kind).toBe('unrecoverable');
+      expect(err.message).toBe(`Gemini bad request: ${expectedCategory}`);
+      expect(err.message).not.toContain('RAW_PROVIDER_BODY');
+      expect(err.cause).toBeInstanceOf(Error);
+      expect((err.cause as Error).message).toContain('status 400');
+      expect((err.cause as Error).message).not.toContain('RAW_PROVIDER_BODY');
+    });
+  }
+
   it('parses generateContent response into rawText', async () => {
     const fakeFetch = new FakeFetch(
       jsonResponse(200, {
@@ -206,6 +262,69 @@ describe('GeminiObservationProvider', () => {
     expect(result.rawText).toContain('<observation>');
     expect(result.tokensUsed).toBe(42);
     expect(result.providerLabel).toBe('gemini');
+  });
+
+  it('redacts raw Gemini 400 response body from top-level message and cause', async () => {
+    const rawBody = 'Please ensure that multiturn requests alternate between user and model. RAW_PROVIDER_BODY';
+    const fakeFetch = new FakeFetch(new Response(rawBody, { status: 400 }));
+    const provider = new GeminiObservationProvider({ apiKey: 'fake', fetchImpl: fakeFetch.fetch });
+
+    try {
+      await provider.generate(makeContext());
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ServerClassifiedProviderError);
+      const classified = error as ServerClassifiedProviderError;
+      expect(classified.kind).toBe('unrecoverable');
+      expect(classified.message).toBe('Gemini bad request: role_sequence');
+      expect(classified.message).not.toContain('RAW_PROVIDER_BODY');
+      expect(classified.cause).toBeInstanceOf(Error);
+      expect((classified.cause as Error).message).not.toContain('RAW_PROVIDER_BODY');
+    }
+  });
+
+  it('redacts raw Gemini non-400 response body from top-level message and cause', async () => {
+    const rawBody = 'RAW_PROVIDER_BODY with credential sk-secret';
+    const fakeFetch = new FakeFetch(new Response(rawBody, { status: 418 }));
+    const provider = new GeminiObservationProvider({ apiKey: 'fake', fetchImpl: fakeFetch.fetch });
+
+    try {
+      await provider.generate(makeContext());
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ServerClassifiedProviderError);
+      const classified = error as ServerClassifiedProviderError;
+      expect(classified.kind).toBe('unrecoverable');
+      expect(classified.message).toBe('Gemini API error (status 418)');
+      expect(classified.message).not.toContain(rawBody);
+      expect(classified.cause).toBeInstanceOf(Error);
+      expect((classified.cause as Error).message).toContain('status 418');
+      expect((classified.cause as Error).message).not.toContain(rawBody);
+    }
+  });
+
+  it('redacts raw Gemini response error message when HTTP status is OK', async () => {
+    const rawMessage = 'RAW_PROVIDER_BODY from data.error.message';
+    const fakeFetch = new FakeFetch(
+      jsonResponse(200, {
+        error: { status: 'FAILED_PRECONDITION', message: rawMessage },
+      }),
+    );
+    const provider = new GeminiObservationProvider({ apiKey: 'fake', fetchImpl: fakeFetch.fetch });
+
+    try {
+      await provider.generate(makeContext());
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ServerClassifiedProviderError);
+      const classified = error as ServerClassifiedProviderError;
+      expect(classified.kind).toBe('unrecoverable');
+      expect(classified.message).toBe('Gemini API error (status 200)');
+      expect(classified.message).not.toContain(rawMessage);
+      expect(classified.cause).toBeInstanceOf(Error);
+      expect((classified.cause as Error).message).toContain('status 200');
+      expect((classified.cause as Error).message).not.toContain(rawMessage);
+    }
   });
 });
 

@@ -32,3 +32,11 @@ export function resolveTierAlias(model: string, settings: SettingsDefaults): str
       return model;
   }
 }
+
+export function resolveSummaryTierModel(currentModel: string, settings: SettingsDefaults): string {
+  if (settings.CLAUDE_MEM_TIER_ROUTING_ENABLED === 'false') {
+    return currentModel;
+  }
+
+  return settings.CLAUDE_MEM_TIER_SUMMARY_MODEL || currentModel;
+}

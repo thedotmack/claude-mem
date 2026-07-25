@@ -1,5 +1,23 @@
 import { describe, it, expect } from 'bun:test';
-import { isNonBlockingHookInputError, isWorkerUnavailableError } from '../src/cli/hook-command.js';
+import { buildNoOpResult, isNonBlockingHookInputError, isWorkerUnavailableError } from '../src/cli/hook-command.js';
+
+describe('buildNoOpResult', () => {
+  it('attaches a valid SessionStart hookSpecificOutput for the context event (#2972)', () => {
+    const result = buildNoOpResult('context');
+
+    expect(result).toEqual({
+      continue: true,
+      suppressOutput: true,
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+    });
+  });
+
+  it('omits hookSpecificOutput for every other event', () => {
+    for (const event of ['session-init', 'observation', 'summarize', 'user-message', 'file-edit', 'file-context']) {
+      expect(buildNoOpResult(event)).toEqual({ continue: true, suppressOutput: true });
+    }
+  });
+});
 
 describe('isNonBlockingHookInputError', () => {
   it('classifies missing transcript paths as non-blocking hook input errors', () => {

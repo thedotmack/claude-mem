@@ -1,6 +1,7 @@
 import { dirname, join } from 'path';
 import { mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { resolveDataDir } from './paths.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * Cross-launcher spawn lockfile (Phase 4 of
@@ -28,12 +29,11 @@ import { resolveDataDir } from './paths.js';
 
 /**
  * A holder that hasn't finished spawning within this window is presumed dead
- * (crashed mid-spawn); its lock may be broken. The longest in-lock wait any
- * holder performs is the ~15s post-spawn port/health wait, which
- * getPlatformTimeout scales 2.0x on Windows to ~30s — so the staleness window
- * must clear 30s, not 15s. 60s keeps a 2x margin over that worst case.
+ * (crashed mid-spawn); its lock may be broken. The worker spawner can hold the
+ * lock through the platform-scaled readiness deadline, which is 60s on
+ * Windows. Keep a 30s margin so a readiness poll cannot outlive the lock.
  */
-const SPAWN_LOCK_STALE_MS = 60_000;
+const SPAWN_LOCK_STALE_MS = 90_000;
 
 /**
  * Resolved at call time (resolveDataDir consults CLAUDE_MEM_DATA_DIR / the
@@ -69,13 +69,15 @@ export function acquireSpawnLock(): boolean {
       writeFileSync(lockPath, payload, { flag: 'wx' });
       return true;
     } catch (error: unknown) {
-      const code = (error as NodeJS.ErrnoException)?.code;
+      const err = error instanceof Error ? error : new Error(String(error));
+      const code = (err as NodeJS.ErrnoException).code;
       if (code !== 'EEXIST') {
         // Not contention — the filesystem refused the lock outright (EACCES,
         // EROFS, ...). Fail OPEN: the lock is a collision guard, not a
         // correctness gate, and a broken lock mechanism must degrade to the
         // pre-lock behavior (spawn anyway), never suppress every spawn
         // forever. releaseSpawnLock() is a no-op when no file was written.
+        logger.warn('SYSTEM', 'Spawn lock write failed for a non-contention reason; failing open (spawning unlocked)', { lockPath, code }, err);
         return true;
       }
       if (attempt > 0) {

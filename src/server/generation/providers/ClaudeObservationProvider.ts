@@ -19,7 +19,7 @@ const ANTHROPIC_VERSION = '2023-06-01';
 // model (CLAUDE_MEM_MODEL in src/ui/viewer/constants/settings.ts and the
 // installer's model list) so a server with no explicit CLAUDE_MEM_SERVER_MODEL
 // generates against a valid model id instead of failing every job with a 404.
-export const DEFAULT_SERVER_CLAUDE_MODEL = 'claude-sonnet-4-6';
+export const DEFAULT_SERVER_CLAUDE_MODEL = 'claude-sonnet-5';
 const DEFAULT_MODEL = DEFAULT_SERVER_CLAUDE_MODEL;
 
 export interface ClaudeObservationProviderOptions {
@@ -72,24 +72,11 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
 
     let response: Response;
     try {
-      response = await this.fetchImpl(ANTHROPIC_API_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': this.apiKey,
-          'anthropic-version': ANTHROPIC_VERSION,
-        },
-        body: JSON.stringify({
-          model: this.model,
-          max_tokens: this.maxOutputTokens,
-          temperature: 0.3,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-        signal,
-      });
+      response = await this.postMessages(prompt, signal);
     } catch (networkError) {
+      const err = networkError instanceof Error ? networkError : new Error(String(networkError));
       throw classifyClaudeServerError({
-        cause: networkError,
+        cause: err,
       });
     }
 
@@ -107,9 +94,10 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
     try {
       data = (await response.json()) as AnthropicMessagesResponse;
     } catch (parseError) {
+      const err = parseError instanceof Error ? parseError : new Error(String(parseError));
       throw new ServerClassifiedProviderError('Anthropic returned invalid JSON', {
         kind: 'parse_error',
-        cause: parseError,
+        cause: err,
       });
     }
 
@@ -148,6 +136,24 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
       providerLabel: this.providerLabel,
       modelId: this.model,
     };
+  }
+
+  private postMessages(prompt: string, signal?: AbortSignal): Promise<Response> {
+    return this.fetchImpl(ANTHROPIC_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey,
+        'anthropic-version': ANTHROPIC_VERSION,
+      },
+      body: JSON.stringify({
+        model: this.model,
+        max_tokens: this.maxOutputTokens,
+        temperature: 0.3,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+      signal,
+    });
   }
 }
 
@@ -247,7 +253,12 @@ export function classifyClaudeServerError(input: ClassifyInput): ServerClassifie
 async function safeReadBody(response: Response): Promise<string> {
   try {
     return await response.text();
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SDK', 'Failed to read Anthropic error response body', {
+      provider: 'claude',
+      status: response.status,
+    }, err);
     return '';
   }
 }

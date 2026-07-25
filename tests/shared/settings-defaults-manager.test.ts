@@ -1,9 +1,10 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
+import { readFlatSettings } from '../../src/npx-cli/utils/settings.js';
 
 describe('SettingsDefaultsManager', () => {
   let tempDir: string;
@@ -268,6 +269,27 @@ describe('SettingsDefaultsManager', () => {
 
         expect(result).toBeDefined();
       });
+
+      it('should read BOM-prefixed flat settings through install helpers', () => {
+        writeFileSync(settingsPath, '\uFEFF' + JSON.stringify({
+          env: {
+            CLAUDE_MEM_PROVIDER: 'gemini',
+          },
+        }));
+
+        const result = readFlatSettings(settingsPath);
+
+        expect(result?.CLAUDE_MEM_PROVIDER).toBe('gemini');
+      });
+
+      it('should create defaults without leaving atomic temp files behind', () => {
+        expect(existsSync(settingsPath)).toBe(false);
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(existsSync(settingsPath)).toBe(true);
+        expect(readdirSync(tempDir).filter(name => name.endsWith('.tmp'))).toEqual([]);
+      });
     });
   });
 
@@ -343,16 +365,6 @@ describe('SettingsDefaultsManager', () => {
       const expectedPort = 37700 + ((process.getuid?.() ?? 77) % 100);
       expect(SettingsDefaultsManager.getInt('CLAUDE_MEM_WORKER_PORT')).toBe(expectedPort);
       expect(SettingsDefaultsManager.getInt('CLAUDE_MEM_CONTEXT_OBSERVATIONS')).toBe(50);
-    });
-  });
-
-  describe('getBool', () => {
-    it('should return true for "true" string', () => {
-      expect(SettingsDefaultsManager.getBool('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT')).toBe(true);
-    });
-
-    it('should return false for non-"true" string', () => {
-      expect(SettingsDefaultsManager.getBool('CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE')).toBe(false);
     });
   });
 

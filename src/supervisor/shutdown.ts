@@ -9,8 +9,6 @@ import { paths } from '../shared/paths.js';
 const execFileAsync = promisify(execFile);
 const PID_FILE = paths.workerPid();
 
-type TreeKillFn = (pid: number, signal?: string, callback?: (error?: Error | null) => void) => void;
-
 export interface ShutdownCascadeOptions {
   registry: ProcessRegistry;
   currentPid?: number;
@@ -98,13 +96,19 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
  * `worker status` report a healthy worker as not running. Deletion therefore
  * requires proof of ownership: the recorded pid must equal `currentPid`.
  *
+ * With `deleteIfDead` (the CLI stop/restart cleanup policy — see
+ * removePidFileIfOwner in ProcessManager.ts) a dead or missing recorded pid is
+ * also deleted: a pid-less file can't belong to a live successor
+ * (writePidFile always records a pid), so it is treated as a dead owner.
+ * Without it, only the caller's own file is ever deleted.
+ *
  * A missing file is a no-op. An unreadable/corrupt file cannot prove
  * ownership, so it is left in place (the safe default): readPidFile() and
  * validateWorkerPidFile() both treat unparseable files as ownerless, so a
  * leftover corrupt file never blocks a successor's boot and is cleaned up by
  * the next worker start.
  */
-export function removeOwnedPidFile(pidFilePath: string, currentPid: number): void {
+export function removeOwnedPidFile(pidFilePath: string, currentPid: number | null, deleteIfDead = false): void {
   if (!existsSync(pidFilePath)) return;
 
   let recordedPid: number | null = null;
@@ -112,14 +116,16 @@ export function removeOwnedPidFile(pidFilePath: string, currentPid: number): voi
     const parsed = JSON.parse(readFileSync(pidFilePath, 'utf-8')) as { pid?: unknown };
     recordedPid = typeof parsed.pid === 'number' ? parsed.pid : null;
   } catch (error: unknown) {
-    logger.debug('SYSTEM', 'PID file unreadable during shutdown — leaving it (cannot prove ownership)', {
+    logger.debug('SYSTEM', 'PID file unreadable — leaving it (cannot prove ownership)', {
       pidFilePath,
       error: error instanceof Error ? error.message : String(error)
     });
     return;
   }
 
-  if (recordedPid !== currentPid) {
+  const owned = currentPid !== null && recordedPid === currentPid;
+  const dead = recordedPid === null || !isPidAlive(recordedPid);
+  if (!owned && !(deleteIfDead && dead)) {
     logger.debug('SYSTEM', 'PID file not owned by this process — leaving it for its owner (restart successor?)', {
       pidFilePath,
       recordedPid,
@@ -132,9 +138,9 @@ export function removeOwnedPidFile(pidFilePath: string, currentPid: number): voi
     rmSync(pidFilePath, { force: true });
   } catch (error: unknown) {
     if (error instanceof Error) {
-      logger.debug('SYSTEM', 'Failed to remove PID file during shutdown', { pidFilePath }, error);
+      logger.debug('SYSTEM', 'Failed to remove PID file', { pidFilePath }, error);
     } else {
-      logger.warn('SYSTEM', 'Failed to remove PID file during shutdown (non-Error)', {
+      logger.warn('SYSTEM', 'Failed to remove PID file (non-Error)', {
         pidFilePath,
         error: String(error)
       });
@@ -190,26 +196,6 @@ async function signalProcess(record: ManagedProcessRecord, signal: 'SIGTERM' | '
     return;
   }
 
-  const treeKill = await loadTreeKill();
-  if (treeKill) {
-    await new Promise<void>((resolve, reject) => {
-      treeKill(pid, signal, (error) => {
-        if (!error) {
-          resolve();
-          return;
-        }
-
-        const errno = (error as NodeJS.ErrnoException).code;
-        if (errno === 'ESRCH') {
-          resolve();
-          return;
-        }
-        reject(error);
-      });
-    });
-    return;
-  }
-
   const args = ['/PID', String(pid), '/T'];
   if (signal === 'SIGKILL') {
     args.push('/F');
@@ -219,16 +205,4 @@ async function signalProcess(record: ManagedProcessRecord, signal: 'SIGTERM' | '
     timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND,
     windowsHide: true
   });
-}
-
-async function loadTreeKill(): Promise<TreeKillFn | null> {
-  const moduleName = 'tree-kill';
-
-  try {
-    const treeKillModule = await import(moduleName);
-    return (treeKillModule.default ?? treeKillModule) as TreeKillFn;
-  } catch (error: unknown) {
-    logger.debug('SYSTEM', 'tree-kill module not available, using fallback', {}, error instanceof Error ? error : undefined);
-    return null;
-  }
 }

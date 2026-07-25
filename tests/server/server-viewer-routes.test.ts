@@ -2,7 +2,7 @@
 //
 // #2552 — the Viewer UI + API compat layer must be reachable on the server
 // runtime. We register ServerViewerRoutes alongside a stub API route on the
-// SAME Express app (as ServerBetaService does) and assert:
+// SAME Express app (as ServerService does) and assert:
 //   - the viewer root `/` responds (HTML when built, 503 when not),
 //   - the static handler does NOT shadow a co-mounted API route.
 
@@ -42,7 +42,7 @@ describe('ServerViewerRoutes on the server runtime (#2552)', () => {
     ];
     server = new Server(baseOptions());
 
-    // Mirror ServerBetaService: register an API route BEFORE the viewer's
+    // Mirror ServerService: register an API route BEFORE the viewer's
     // static handler so we can prove the static handler does not swallow it.
     server.registerRoutes({
       setupRoutes(app) {

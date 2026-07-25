@@ -124,44 +124,18 @@ export async function runShutdownSequence(options: ShutdownSequenceOptions): Pro
   // Successor handoff — ONLY for restart; 'stop' and signal shutdowns stay
   // kill-only. The old worker spawns its replacement as its final act, after
   // its port is confirmed free, so the successor never races the corpse for
-  // the port. The hook recycle path (ensureWorkerRunning in
-  // src/shared/worker-utils.ts) waits for this successor instead of spawning
-  // its own. This runs inside flushResponseThen's flushed action, so it
-  // completes before that helper's process.exit(0).
+  // the port. CLI `claude-mem restart` is the caller. Hook version-mismatch
+  // recycles (ensureWorkerRunning in src/shared/worker-utils.ts) never reach
+  // this: they SIGKILL the stale worker and lazy-spawn the resolved version
+  // themselves, because this handoff runs the DYING install's resolver — a
+  // stale install would respawn its own version forever (#3378). This runs
+  // inside flushResponseThen's flushed action, so it completes before that
+  // helper's process.exit(0).
   if (options.reason !== 'restart') return;
 
   const handoff = options.restartHandoff;
   try {
-    const successorScript = handoff.resolveSuccessorScript();
-    const portFree = await handoff.waitForPortFree(handoff.port, handoff.portFreeTimeoutMs);
-    if (!portFree) {
-      logger.error('SYSTEM', 'Restart successor NOT spawned: port never freed after graceful shutdown — the next hook lazy-spawn is the safety net', {
-        port: handoff.port,
-        timeoutMs: handoff.portFreeTimeoutMs,
-      });
-      return;
-    }
-    // Same ordering as the CLI restart path (worker-service.ts `restart`
-    // case): port free → remove the now-ownerless PID file → spawn. Without
-    // the removal a fast-booting successor can still see this not-yet-exited
-    // process in the PID file and refuse to start as a "duplicate". The
-    // injected implementation is owner-or-dead guarded (Phase 5): it deletes
-    // only this dying worker's own file (or a dead pid's leftover), never a
-    // live successor's.
-    handoff.removePidFile();
-    const successorPid = handoff.spawnDaemon(successorScript, handoff.port);
-    if (successorPid === undefined) {
-      logger.error('SYSTEM', 'Restart successor spawn FAILED — the next hook lazy-spawn is the safety net', {
-        port: handoff.port,
-        script: successorScript,
-      });
-      return;
-    }
-    logger.info('SYSTEM', 'Restart successor spawned', {
-      pid: successorPid,
-      script: successorScript,
-      port: handoff.port,
-    });
+    await spawnRestartSuccessor(handoff);
   } catch (error: unknown) {
     // spawnDaemon can throw (supervisor assertCanSpawn refuses while its stop
     // cascade is still in flight after a deadline); the handoff must never
@@ -173,4 +147,43 @@ export async function runShutdownSequence(options: ShutdownSequenceOptions): Pro
       error instanceof Error ? error : new Error(String(error))
     );
   }
+}
+
+/**
+ * The restart handoff proper: wait for the dying worker's port to free, drop
+ * the now-ownerless PID file, then spawn the successor. Extracted from
+ * runShutdownSequence so its caller's try wraps a single call; every failure
+ * path logs and returns (the next hook lazy-spawn is the safety net).
+ */
+async function spawnRestartSuccessor(handoff: RestartHandoffDeps): Promise<void> {
+  const successorScript = handoff.resolveSuccessorScript();
+  const portFree = await handoff.waitForPortFree(handoff.port, handoff.portFreeTimeoutMs);
+  if (!portFree) {
+    logger.error('SYSTEM', 'Restart successor NOT spawned: port never freed after graceful shutdown — the next hook lazy-spawn is the safety net', {
+      port: handoff.port,
+      timeoutMs: handoff.portFreeTimeoutMs,
+    });
+    return;
+  }
+  // Same ordering as the CLI restart path (worker-service.ts `restart`
+  // case): port free → remove the now-ownerless PID file → spawn. Without
+  // the removal a fast-booting successor can still see this not-yet-exited
+  // process in the PID file and refuse to start as a "duplicate". The
+  // injected implementation is owner-or-dead guarded (Phase 5): it deletes
+  // only this dying worker's own file (or a dead pid's leftover), never a
+  // live successor's.
+  handoff.removePidFile();
+  const successorPid = handoff.spawnDaemon(successorScript, handoff.port);
+  if (successorPid === undefined) {
+    logger.error('SYSTEM', 'Restart successor spawn FAILED — the next hook lazy-spawn is the safety net', {
+      port: handoff.port,
+      script: successorScript,
+    });
+    return;
+  }
+  logger.info('SYSTEM', 'Restart successor spawned', {
+    pid: successorPid,
+    script: successorScript,
+    port: handoff.port,
+  });
 }

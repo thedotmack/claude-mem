@@ -138,6 +138,26 @@ describe('ChromaSearchStrategy', () => {
       expect(mockSessionStore.getUserPromptsByIds).toHaveBeenCalled();
     });
 
+    it('should pass platformSource through all SQLite hydration calls', async () => {
+      const options: StrategySearchOptions = {
+        query: 'test query',
+        platformSource: 'cursor',
+        limit: 10
+      };
+
+      await strategy.search(options);
+
+      expect(mockSessionStore.getObservationsByIds).toHaveBeenCalledWith([1], expect.objectContaining({
+        platformSource: 'cursor'
+      }));
+      expect(mockSessionStore.getSessionSummariesByIds).toHaveBeenCalledWith([2], expect.objectContaining({
+        platformSource: 'cursor'
+      }));
+      expect(mockSessionStore.getUserPromptsByIds).toHaveBeenCalledWith([3], expect.objectContaining({
+        platformSource: 'cursor'
+      }));
+    });
+
     it('should filter by doc_type when searchType is observations', async () => {
       const options: StrategySearchOptions = {
         query: 'test query',
@@ -194,7 +214,7 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
-        { project: 'my-project' }
+        { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }
       );
     });
 
@@ -210,7 +230,39 @@ describe('ChromaSearchStrategy', () => {
       expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
         'test query',
         100,
-        { $and: [{ doc_type: 'observation' }, { project: 'my-project' }] }
+        { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }] }
+      );
+    });
+
+    it('should include platformSource in Chroma where clause when specified', async () => {
+      const options: StrategySearchOptions = {
+        query: 'test query',
+        platformSource: 'cursor'
+      };
+
+      await strategy.search(options);
+
+      expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
+        'test query',
+        100,
+        { platform_source: 'cursor' }
+      );
+    });
+
+    it('should combine doc_type, project, and platformSource with $and when specified', async () => {
+      const options: StrategySearchOptions = {
+        query: 'test query',
+        searchType: 'observations',
+        project: 'my-project',
+        platformSource: 'cursor'
+      };
+
+      await strategy.search(options);
+
+      expect(mockChromaSync.queryChroma).toHaveBeenCalledWith(
+        'test query',
+        100,
+        { $and: [{ doc_type: 'observation' }, { $or: [{ project: 'my-project' }, { merged_into_project: 'my-project' }] }, { platform_source: 'cursor' }] }
       );
     });
 

@@ -1,19 +1,11 @@
 
 import express, { Request, Response, NextFunction, RequestHandler } from 'express';
-import cors from 'cors';
 import path from 'path';
 import { getPackageRoot } from '../../../shared/paths.js';
 import { logger } from '../../../utils/logger.js';
 
-export function createMiddleware(
-  summarizeRequestBody: (method: string, path: string, body: any) => string,
-  options: { includeCors?: boolean } = {}
-): RequestHandler[] {
+export function createMiddleware(): RequestHandler[] {
   const middlewares: RequestHandler[] = [];
-
-  if (options.includeCors !== false) {
-    middlewares.push(createCorsMiddleware());
-  }
 
   middlewares.push(express.json({ limit: '5mb' }));
 
@@ -49,20 +41,24 @@ export function createMiddleware(
 }
 
 export function createCorsMiddleware(): RequestHandler {
-  return cors({
-    origin: (origin, callback) => {
-      if (!origin ||
-          origin.startsWith('http://localhost:') ||
-          origin.startsWith('http://127.0.0.1:')) {
-        callback(null, true);
-      } else {
-        callback(new Error('CORS not allowed'));
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const origin = req.headers.origin;
+    if (origin) {
+      if (!origin.startsWith('http://localhost:') && !origin.startsWith('http://127.0.0.1:')) {
+        next(new Error('CORS not allowed'));
+        return;
       }
-    },
-    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-    credentials: false
-  });
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+    }
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,POST,PUT,PATCH,DELETE');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With');
+      res.status(204).end();
+      return;
+    }
+    next();
+  };
 }
 
 export function requireLocalhost(req: Request, res: Response, next: NextFunction): void {

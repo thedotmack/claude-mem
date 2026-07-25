@@ -2,33 +2,23 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import pg from 'pg';
-import { createHash, randomBytes } from 'crypto';
 import { Server } from '../../../src/services/server/Server.js';
 import { ServerV1PostgresRoutes } from '../../../src/server/routes/v1/ServerV1PostgresRoutes.js';
 import {
-  bootstrapServerBetaPostgresSchema,
+  bootstrapServerPostgresSchema,
   createPostgresStorageRepositories,
   type PostgresPoolClient,
   type PostgresStorageRepositories,
 } from '../../../src/storage/postgres/index.js';
-import { DisabledServerBetaQueueManager } from '../../../src/server/runtime/types.js';
+import { DisabledServerQueueManager } from '../../../src/server/runtime/types.js';
 import { logger } from '../../../src/utils/logger.js';
+import { quoteIdentifier, newApiKey } from '../../sdk/pg-isolation.js';
 
 // Phase 12 — integration tests for GET /v1/jobs (with admin payload guard),
 // POST /v1/jobs/:id/retry, POST /v1/jobs/:id/cancel. Postgres-gated; skipped
 // without CLAUDE_MEM_TEST_POSTGRES_URL.
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
-
-function quoteIdentifier(name: string): string {
-  return `"${name.replaceAll('"', '""')}"`;
-}
-
-function newApiKey(): { raw: string; hash: string } {
-  const raw = `cm_${randomBytes(24).toString('hex')}`;
-  const hash = createHash('sha256').update(raw).digest('hex');
-  return { raw, hash };
-}
 
 describe('Phase 12 — GET /v1/jobs + retry/cancel routes', () => {
   if (!testDatabaseUrl) {
@@ -62,7 +52,7 @@ describe('Phase 12 — GET /v1/jobs + retry/cancel routes', () => {
     schemaName = `cm_phase12_jobs_${crypto.randomUUID().replaceAll('-', '_')}`;
     await client.query(`CREATE SCHEMA ${quoteIdentifier(schemaName)}`);
     await client.query(`SET search_path TO ${quoteIdentifier(schemaName)}`);
-    await bootstrapServerBetaPostgresSchema(client);
+    await bootstrapServerPostgresSchema(client);
     pool.on('connect', (c) => {
       c.query(`SET search_path TO ${quoteIdentifier(schemaName)}`).catch(() => {});
     });
@@ -123,10 +113,8 @@ describe('Phase 12 — GET /v1/jobs + retry/cancel routes', () => {
     });
     server.registerRoutes(new ServerV1PostgresRoutes({
       pool: pool as never,
-      queueManager: new DisabledServerBetaQueueManager('disabled in tests'),
+      queueManager: new DisabledServerQueueManager('disabled in tests'),
       authMode: 'api-key',
-      runtime: 'server-beta',
-      sessionPolicy: 'per-event',
       getEventQueue: () => null,
       getSummaryQueue: () => null,
     }));

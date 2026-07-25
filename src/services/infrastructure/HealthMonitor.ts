@@ -1,16 +1,26 @@
 
-import path from 'path';
 import net from 'net';
-import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { MARKETPLACE_ROOT } from '../../shared/paths.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+
+function getWorkerHost(): string {
+  return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
+}
+
+// Bracket IPv6 literals so a `CLAUDE_MEM_WORKER_HOST` of `::1` yields a valid
+// `http://[::1]:port` URL instead of the malformed `http://::1:port`.
+function formatHostForUrl(host: string): string {
+  if (host.startsWith('[') && host.endsWith(']')) return host;
+  return host.includes(':') ? `[${host}]` : host;
+}
 
 async function httpRequestToWorker(
   port: number,
   endpointPath: string,
   method: string = 'GET'
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
-  const response = await fetch(`http://127.0.0.1:${port}${endpointPath}`, { method });
+  const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, { method });
   let body = '';
   try {
     body = await response.text();
@@ -29,19 +39,35 @@ export async function isPortInUse(port: number): Promise<boolean> {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 3000);
       try {
-        await fetch(`http://127.0.0.1:${port}/api/health`, { signal: controller.signal });
-        clearTimeout(timeoutId);
+        const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`, { signal: controller.signal });
+        // #2996: if fetch() succeeds (no exception), the port is in use regardless
+        // of HTTP status. A 404/500 from a wedged worker or unrelated local server
+        // still means the port is bound.
+        if (!response.ok) {
+          logger.debug('SYSTEM', 'Windows health check returned non-ok; port still considered in use', {
+            port,
+            status: response.status,
+          });
+        }
+        return true;
       } finally {
         clearTimeout(timeoutId);
       }
-      // #2996: if fetch() succeeds (no exception), the port is in use regardless of HTTP status.
-      // A 404/500 from a wedged worker or unrelated local server still means the port is bound.
-      return true;
     } catch (error) {
+      // fetch threw (ECONNREFUSED, timeout, etc.): the port may still be in
+      // use by a non-HTTP process (zombie worker, foreign service, etc.).
+      // Fall through to the net.createServer probe — only a definitive bind
+      // attempt can tell whether the port is truly free.
       if (error instanceof Error) {
-        logger.debug('SYSTEM', 'Windows health endpoint check failed, falling back to TCP probe', {}, error);
+        logger.debug('SYSTEM', 'Windows health check threw; falling through to socket probe', {
+          port,
+          message: error.message,
+        });
       } else {
-        logger.debug('SYSTEM', 'Windows health endpoint check failed, falling back to TCP probe', { error: String(error) });
+        logger.debug('SYSTEM', 'Windows health check threw; falling through to socket probe', {
+          port,
+          error: String(error),
+        });
       }
     }
 
@@ -72,6 +98,7 @@ export async function isPortInUse(port: number): Promise<boolean> {
   }
   return new Promise((resolve) => {
     const server = net.createServer();
+    const workerHost = getWorkerHost();
     server.once('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
         resolve(true);
@@ -82,7 +109,7 @@ export async function isPortInUse(port: number): Promise<boolean> {
     server.once('listening', () => {
       server.close(() => resolve(false));
     });
-    server.listen(port, '127.0.0.1');
+    server.listen(port, workerHost);
   });
 }
 
@@ -148,27 +175,9 @@ export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 's
   }
 }
 
-export function getInstalledPluginVersion(): string {
-  try {
-    const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-    return packageJson.version;
-  } catch (error: unknown) {
-    if (error instanceof Error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT' || code === 'EBUSY') {
-        logger.debug('SYSTEM', 'Could not read plugin version (shutdown race)', { code });
-        return 'unknown';
-      }
-      throw error;
-    }
-    throw error;
-  }
-}
-
 export async function getRunningWorkerVersion(port: number): Promise<string | null> {
   try {
-    const result = await httpRequestToWorker(port, '/api/version');
+    const result = await httpRequestToWorker(port, '/api/health');
     if (!result.ok) return null;
     const data = JSON.parse(result.body) as { version: string };
     return data.version;
@@ -184,8 +193,15 @@ export interface VersionCheckResult {
   workerVersion: string | null;
 }
 
-export async function checkVersionMatch(port: number): Promise<VersionCheckResult> {
-  const pluginVersion = getInstalledPluginVersion();
+/**
+ * Compare the live worker's self-reported version against expectedVersion —
+ * the version of the script the caller's resolveWorkerScript() oracle would
+ * spawn. The caller supplies it so detection and respawn can never consult
+ * different oracles (the 2026-07-22 restart storm). Either side unknown →
+ * matches, since a recycle could not change the outcome deterministically.
+ */
+export async function checkVersionMatch(port: number, expectedVersion: string | null): Promise<VersionCheckResult> {
+  const pluginVersion = expectedVersion ?? 'unknown';
   const workerVersion = await getRunningWorkerVersion(port);
 
   if (!workerVersion || pluginVersion === 'unknown') {

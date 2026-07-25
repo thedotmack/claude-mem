@@ -47,31 +47,40 @@ export async function captureCliEvent(
     }
 
     const apiKey = getTelemetryApiKey();
-    if (!apiKey) {
-      return;
-    }
-
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), CAPTURE_TIMEOUT_MS);
     try {
-      // Deliberately no $geoip_disable: the raw capture API geolocates from
-      // the request IP at ingest (coarse country/region/city; the IP itself is
-      // discarded), matching the worker transport (telemetry.ts).
-      await fetch(`${getTelemetryHost()}/capture/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          api_key: apiKey,
-          event,
-          distinct_id: getOrCreateInstallId(),
-          properties,
-        }),
-        signal: controller.signal,
-      });
+      await postCaptureEvent(apiKey, event, properties, controller.signal);
     } finally {
       clearTimeout(timer);
     }
   } catch {
     // Telemetry must never break or slow the CLI. Swallow everything.
   }
+}
+
+/**
+ * POST one event to the public ingestion endpoint.
+ *
+ * Deliberately no $geoip_disable: the raw capture API geolocates from the
+ * request IP at ingest (coarse country/region/city; the IP itself is
+ * discarded), matching the worker transport (telemetry.ts).
+ */
+async function postCaptureEvent(
+  apiKey: string,
+  event: string,
+  properties: Record<string, unknown>,
+  signal: AbortSignal
+): Promise<void> {
+  await fetch(`${getTelemetryHost()}/capture/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      api_key: apiKey,
+      event,
+      distinct_id: getOrCreateInstallId(),
+      properties,
+    }),
+    signal,
+  });
 }

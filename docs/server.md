@@ -41,7 +41,7 @@ that:
    live in Valkey, persisted by AOF.
 
 The legacy `claude-mem worker` runtime is **not** spawned in Docker. The
-container entrypoint runs `bun server-beta-service.cjs --daemon` (or
+container entrypoint runs `bun server-service.cjs --daemon` (or
 `worker start`) and never `bun worker-service.cjs`.
 
 ## Required environment variables
@@ -152,7 +152,7 @@ docker compose down -v
 
 ## End-to-end test
 
-`scripts/e2e-server-beta-docker.sh` brings up the full stack and verifies:
+`scripts/e2e-server-docker.sh` brings up the full stack and verifies:
 
 * `POST /v1/events?wait=true` returns a `generationJob` descriptor.
 * Restart of `claude-mem-server` and `claude-mem-worker` mid-stream does

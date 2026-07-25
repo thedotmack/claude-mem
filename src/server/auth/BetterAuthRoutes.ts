@@ -3,6 +3,7 @@
 import type { Application } from 'express';
 import type { Database } from 'bun:sqlite';
 import type { RouteHandler } from '../../services/server/Server.js';
+import { logger } from '../../utils/logger.js';
 
 type NodeHandler = ReturnType<typeof import('better-auth/node').toNodeHandler>;
 
@@ -32,6 +33,8 @@ export class BetterAuthRoutes implements RouteHandler {
         const handler = await getBetterAuthHandler(this.getDatabase());
         await handler(req, res);
       } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        logger.warn('HTTP', 'better-auth handler failed', { path: req.path }, err);
         next(error);
       }
     });

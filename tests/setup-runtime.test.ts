@@ -11,6 +11,10 @@ import {
   platformUvRemediation,
 } from '../src/npx-cli/install/setup-runtime';
 
+const SETUP_RUNTIME_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'npx-cli', 'install', 'setup-runtime.ts');
+const SHARED_SPAWN_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'shared', 'spawn.ts');
+const DOCTOR_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'npx-cli', 'commands', 'doctor.ts');
+
 function probeBunVersion(): string | null {
   try {
     const result = spawnSync('bun', ['--version'], {
@@ -149,5 +153,27 @@ describe('setup-runtime install marker', () => {
       expect(text.toLowerCase()).toContain('uv');
       expect(text).toContain('claude-mem install');
     });
+  });
+});
+
+describe('setup-runtime Windows spawn hygiene', () => {
+  it('does not use shell: IS_WINDOWS for bun/uv version probes', () => {
+    const source = readFileSync(SETUP_RUNTIME_SOURCE_PATH, 'utf-8');
+    const sharedSpawnSource = readFileSync(SHARED_SPAWN_SOURCE_PATH, 'utf-8');
+    expect(source).not.toContain('shell: IS_WINDOWS');
+    expect(source).toContain('buildSpawnSyncInvocation(command, args, options)');
+    expect(source).toContain('lookupWindowsCommand(command)');
+    expect(sharedSpawnSource).toContain("spawnSync('where', [command]");
+    expect(sharedSpawnSource).toContain('windowsHide: true');
+  });
+});
+
+describe('doctor marketplace runtime hygiene', () => {
+  it('checks the executable marketplace root marker, not only node_modules', () => {
+    const source = readFileSync(DOCTOR_SOURCE_PATH, 'utf-8');
+    expect(source).toContain("name: 'Marketplace runtime'");
+    expect(source).toContain('isInstallCurrent(marketplaceDir, readPluginVersion())');
+    expect(source).toContain('install marker missing');
+    expect(source).toContain('install marker stale');
   });
 });

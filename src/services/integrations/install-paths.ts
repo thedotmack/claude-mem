@@ -2,8 +2,8 @@
  * install-paths.ts — Rule B: installer-managed absolute-path bake helpers.
  *
  * See `CLAUDE.md` → "Spawn-Contract Resolution". Per-IDE config files that
- * claude-mem's own installers write (Cursor, Gemini, Windsurf, and the
- * MCP-only IDEs: Copilot CLI, Antigravity, Goose, Roo, Warp) MUST bake
+ * claude-mem's own installers write (Cursor, Windsurf, Antigravity CLI, and
+ * the MCP-only IDEs: Copilot CLI, Goose, Roo, Warp) MUST bake
  * absolute paths — those hosts perform NO `${CLAUDE_PLUGIN_ROOT}` shell
  * substitution on the `command`/`args` fields they exec. This module is the
  * single source of truth for resolving those absolute paths so each installer

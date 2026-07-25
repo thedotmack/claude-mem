@@ -30,6 +30,7 @@ const {
   removePidFile,
 } = await import('../../src/services/infrastructure/index.js');
 const { paths } = await import('../../src/shared/paths.js');
+const { getSupervisor } = await import('../../src/supervisor/index.js');
 
 // If an earlier test file already evaluated paths.ts, the module cache wins
 // and DATA_DIR stays frozen on that earlier value — the preload tripwire's
@@ -284,6 +285,85 @@ describe('GracefulShutdown', () => {
       await performGracefulShutdown(config);
 
       expect(callOrder).toEqual(['sessionManager', 'mcpClient', 'chromaMcpManager', 'dbManager']);
+    });
+
+    it('resolves on ERR_SERVER_NOT_RUNNING from server.close and still runs every remaining step (#3380)', async () => {
+      // Node's http.Server.close(cb) reports ERR_SERVER_NOT_RUNNING when the
+      // handle is not listening. An already-closed server is the desired end
+      // state — teardown (session drain, MCP close, chroma stop, db close,
+      // supervisor stop) must still run.
+      const mockServer = {
+        closeAllConnections: mock(() => {}),
+        close: mock((cb: (err?: Error) => void) => {
+          cb(Object.assign(new Error('Server is not running.'), { code: 'ERR_SERVER_NOT_RUNNING' }));
+        })
+      } as unknown as http.Server;
+
+      const mockSessionManager: ShutdownableService = {
+        shutdownAll: mock(async () => {})
+      };
+      const mockMcpClient: CloseableClient = {
+        close: mock(async () => {})
+      };
+      const mockDbManager: CloseableDatabase = {
+        close: mock(async () => {})
+      };
+      const mockChromaMcpManager = {
+        stop: mock(async () => {})
+      };
+
+      // Same module instance performGracefulShutdown uses — the spy calls
+      // through to the real (no-op against the temp registry) cascade.
+      const supervisorStopSpy = spyOn(getSupervisor(), 'stop');
+
+      try {
+        const config: GracefulShutdownConfig = {
+          server: mockServer,
+          sessionManager: mockSessionManager,
+          mcpClient: mockMcpClient,
+          dbManager: mockDbManager,
+          chromaMcpManager: mockChromaMcpManager
+        };
+
+        await expect(performGracefulShutdown(config)).resolves.toBeUndefined();
+
+        expect(mockSessionManager.shutdownAll).toHaveBeenCalledTimes(1);
+        expect(mockMcpClient.close).toHaveBeenCalledTimes(1);
+        expect(mockChromaMcpManager.stop).toHaveBeenCalledTimes(1);
+        expect(mockDbManager.close).toHaveBeenCalledTimes(1);
+        expect(supervisorStopSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        supervisorStopSpy.mockRestore();
+      }
+    }, 15000);
+
+    it('still rejects when server.close reports any other error code', async () => {
+      const mockServer = {
+        closeAllConnections: mock(() => {}),
+        close: mock((cb: (err?: Error) => void) => {
+          cb(Object.assign(new Error('bad handle'), { code: 'EBADF' }));
+        })
+      } as unknown as http.Server;
+
+      const mockSessionManager: ShutdownableService = {
+        shutdownAll: mock(async () => {})
+      };
+      const mockDbManager: CloseableDatabase = {
+        close: mock(async () => {})
+      };
+
+      const config: GracefulShutdownConfig = {
+        server: mockServer,
+        sessionManager: mockSessionManager,
+        dbManager: mockDbManager
+      };
+
+      await expect(performGracefulShutdown(config)).rejects.toThrow('bad handle');
+
+      // Only ERR_SERVER_NOT_RUNNING is tolerated — anything else keeps the
+      // existing fail-fast propagation.
+      expect(mockSessionManager.shutdownAll).not.toHaveBeenCalled();
+      expect(mockDbManager.close).not.toHaveBeenCalled();
     });
 
     it('should handle shutdown when PID file does not exist', async () => {

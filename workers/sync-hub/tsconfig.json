@@ -1,0 +1,25 @@
+{
+	"compilerOptions": {
+		"target": "es2024",
+		"lib": ["es2024"],
+		"module": "esnext",
+		"moduleResolution": "bundler",
+		"resolveJsonModule": true,
+		"allowJs": true,
+		"checkJs": false,
+		"noEmit": true,
+		"isolatedModules": true,
+		"allowSyntheticDefaultImports": true,
+		"forceConsistentCasingInFileNames": true,
+		"strict": true,
+		"skipLibCheck": true,
+		"types": []
+	},
+	"include": [
+		"src/**/*.ts",
+		"test/**/*.ts",
+		"canary/**/*.ts",
+		"vitest.config.ts",
+		"worker-configuration.d.ts"
+	]
+}

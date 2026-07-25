@@ -11,7 +11,10 @@ import { ClassifiedProviderError } from './provider-errors.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1/models';
+// v1beta is required: the current Gemini 3.x models and the Google-maintained
+// `-latest` aliases are only exposed under v1beta, and the retired v1-only 2.x
+// models 404 ("no longer available to new users") for freshly created API keys.
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 /**
  * Classify a Gemini fetch failure into ClassifiedProviderError. Called at
@@ -31,19 +34,22 @@ export function classifyGeminiError(input: {
   const lower = body.toLowerCase();
   const headers = input.headers;
   const retryAfterMs = headers ? parseRetryAfterMs(headers.get('retry-after')) : undefined;
+  const cause = status === undefined
+    ? input.cause
+    : new Error(`Gemini HTTP error (status ${status}${input.requestId ? `, request ${input.requestId}` : ''})`);
 
   // Quota exceeded — by body marker — even on 500 (Gemini quirk).
   if (lower.includes('quota exceeded') || lower.includes('resource_exhausted')) {
     return new ClassifiedProviderError(
       `Gemini quota exhausted${status !== undefined ? ` (status ${status})` : ''}`,
-      { kind: 'quota_exhausted', cause: input.cause },
+      { kind: 'quota_exhausted', cause },
     );
   }
 
   if (status === 429) {
     return new ClassifiedProviderError(
       'Gemini rate limit (429)',
-      { kind: 'rate_limit', cause: input.cause, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
+      { kind: 'rate_limit', cause, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
     );
   }
 
@@ -52,26 +58,27 @@ export function classifyGeminiError(input: {
     if (lower.includes('api key not valid') || lower.includes('api_key_invalid') || lower.includes('api key expired')) {
       return new ClassifiedProviderError(
         `Gemini auth invalid (status ${status})`,
-        { kind: 'auth_invalid', cause: input.cause },
+        { kind: 'auth_invalid', cause },
       );
     }
     return new ClassifiedProviderError(
       `Gemini auth error (status ${status})`,
-      { kind: 'auth_invalid', cause: input.cause },
+      { kind: 'auth_invalid', cause },
     );
   }
 
   if (status === 400) {
+    const category = categorizeGeminiBadRequest(body);
     return new ClassifiedProviderError(
-      `Gemini bad request (status 400)`,
-      { kind: 'unrecoverable', cause: input.cause },
+      `Gemini bad request: ${category}`,
+      { kind: 'unrecoverable', cause },
     );
   }
 
   if (status !== undefined && status >= 500 && status < 600) {
     return new ClassifiedProviderError(
       `Gemini upstream error (status ${status})`,
-      { kind: 'transient', cause: input.cause },
+      { kind: 'transient', cause },
     );
   }
 
@@ -84,34 +91,88 @@ export function classifyGeminiError(input: {
   }
 
   return new ClassifiedProviderError(
-    `Gemini API error: ${status}${body ? ` - ${body.substring(0, 200)}` : ''}`,
-    { kind: 'unrecoverable', cause: input.cause },
+    `Gemini API error (status ${status})`,
+    { kind: 'unrecoverable', cause },
   );
 }
 
+// Only models currently served to new API keys. The 2.x / 2.0 IDs were removed
+// because Google 404s them for freshly created keys, and bare `gemini-3-flash`
+// (no `-preview`) is not a real ID. `*-latest` are Google-maintained aliases
+// that track the current GA release, so they never go stale on new keys.
 export type GeminiModel =
-  | 'gemini-2.5-flash-lite'
-  | 'gemini-2.5-flash'
-  | 'gemini-2.5-pro'
-  | 'gemini-2.0-flash'
-  | 'gemini-2.0-flash-lite'
-  | 'gemini-3-flash'
+  | 'gemini-flash-latest'
+  | 'gemini-flash-lite-latest'
+  | 'gemini-3.5-flash'
+  | 'gemini-3.1-flash-lite'
   | 'gemini-3-flash-preview';
 
 const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
-  'gemini-2.5-flash-lite': 10,
-  'gemini-2.5-flash': 10,
-  'gemini-2.5-pro': 5,
-  'gemini-2.0-flash': 15,
-  'gemini-2.0-flash-lite': 30,
-  'gemini-3-flash': 10,
+  'gemini-flash-latest': 10,
+  'gemini-flash-lite-latest': 15,
+  'gemini-3.5-flash': 10,
+  'gemini-3.1-flash-lite': 15,
   'gemini-3-flash-preview': 5,
 };
 
 let lastRequestTime = 0;
 
-const DEFAULT_MAX_CONTEXT_MESSAGES = 20;
-const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;
+const GEMINI_EMPTY_HISTORY_FALLBACK = 'Continue the memory observation request.';
+
+export type GeminiBadRequestCategory =
+  | 'role_sequence'
+  | 'context_limit'
+  | 'model_unsupported'
+  | 'api_key'
+  | 'unknown_bad_request';
+
+export function categorizeGeminiBadRequest(bodyText: string): GeminiBadRequestCategory {
+  const lower = bodyText.toLowerCase();
+
+  if (
+    lower.includes('api key not valid') ||
+    lower.includes('api_key_invalid') ||
+    lower.includes('api key expired') ||
+    lower.includes('invalid api key')
+  ) {
+    return 'api_key';
+  }
+
+  if (
+    lower.includes('please ensure that multiturn requests alternate') ||
+    lower.includes('alternate between user and model') ||
+    lower.includes('first content should be with role') ||
+    (lower.includes('contents') && lower.includes('role') && (lower.includes('user') || lower.includes('model')))
+  ) {
+    return 'role_sequence';
+  }
+
+  if (
+    lower.includes('context limit') ||
+    lower.includes('context length') ||
+    lower.includes('too many tokens') ||
+    lower.includes('input is too long') ||
+    lower.includes('prompt is too long') ||
+    lower.includes('request payload size exceeds') ||
+    (lower.includes('token') && (lower.includes('exceed') || lower.includes('maximum') || lower.includes('limit')))
+  ) {
+    return 'context_limit';
+  }
+
+  if (
+    lower.includes('model not found') ||
+    lower.includes('model_unsupported') ||
+    lower.includes('unsupported model') ||
+    lower.includes('not supported for generatecontent') ||
+    lower.includes('not supported by this model') ||
+    (lower.includes('model') && lower.includes('not supported')) ||
+    (lower.includes('models/') && lower.includes('not found'))
+  ) {
+    return 'model_unsupported';
+  }
+
+  return 'unknown_bad_request';
+}
 
 async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled: boolean): Promise<void> {
   if (!rateLimitingEnabled) {
@@ -162,7 +223,6 @@ interface GeminiConfig {
 export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
   protected readonly providerName = 'Gemini';
   protected readonly syntheticIdPrefix = 'gemini';
-  protected readonly requireNonEmptyToTruncate = true;
   protected readonly forwardEmptyMessageResponse = false;
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
@@ -189,22 +249,74 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
       : null;
   }
 
-  protected truncateHistoryForGemini(history: ConversationMessage[]): ConversationMessage[] {
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const MAX_CONTEXT_MESSAGES = parseInt(settings.CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
-    const MAX_ESTIMATED_TOKENS = parseInt(settings.CLAUDE_MEM_GEMINI_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
-    return this.truncateHistory(history, MAX_CONTEXT_MESSAGES, MAX_ESTIMATED_TOKENS);
-  }
-
   private conversationToGeminiContents(history: ConversationMessage[]): GeminiContent[] {
-    return history.map(msg => ({
-      role: msg.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: msg.content }]
-    }));
+    const contents: GeminiContent[] = [];
+    let newestNonEmptyContent: string | null = null;
+
+    for (const msg of history) {
+      const trimmed = msg.content.trim();
+      if (trimmed.length > 0) {
+        newestNonEmptyContent = trimmed;
+      }
+    }
+
+    for (const msg of history) {
+      if (!msg.content.trim()) {
+        continue;
+      }
+
+      const role = msg.role === 'assistant' ? 'model' : 'user';
+
+      if (contents.length === 0 && role === 'model') {
+        continue;
+      }
+
+      const previous = contents[contents.length - 1];
+      if (previous?.role === role) {
+        previous.parts[0].text = `${previous.parts[0].text}\n\n${msg.content}`;
+      } else {
+        contents.push({
+          role,
+          parts: [{ text: msg.content }]
+        });
+      }
+    }
+
+    if (contents.length === 0) {
+      return [{
+        role: 'user',
+        parts: [{ text: newestNonEmptyContent ?? GEMINI_EMPTY_HISTORY_FALLBACK }]
+      }];
+    }
+
+    return contents;
   }
 
   protected async query(history: ConversationMessage[], config: GeminiConfig): Promise<ProviderQueryResult> {
     return this.queryGeminiMultiTurn(history, config.apiKey, config.model, config.rateLimitingEnabled);
+  }
+
+  private fetchGenerateContent(
+    url: string,
+    contents: GeminiContent[],
+    priorRequestId: string | null,
+    attemptSignal: AbortSignal
+  ): Promise<Response> {
+    return fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
+      },
+      body: JSON.stringify({
+        contents,
+        generationConfig: {
+          temperature: 0.3,  // Lower temperature for structured extraction
+          maxOutputTokens: 4096,
+        },
+      }),
+      signal: attemptSignal,
+    });
   }
 
   private async queryGeminiMultiTurn(
@@ -213,13 +325,11 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     model: GeminiModel,
     rateLimitingEnabled: boolean
   ): Promise<ProviderQueryResult> {
-    const truncatedHistory = this.truncateHistoryForGemini(history);
-    const contents = this.conversationToGeminiContents(truncatedHistory);
-    const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
+    const contents = this.conversationToGeminiContents(history);
+    const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
 
     logger.debug('SDK', `Querying Gemini multi-turn (${model})`, {
-      turns: truncatedHistory.length,
-      totalTurns: history.length,
+      turns: history.length,
       totalChars
     });
 
@@ -233,25 +343,12 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     const data = await withRetry<GeminiResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
-          },
-          body: JSON.stringify({
-            contents,
-            generationConfig: {
-              temperature: 0.3,  // Lower temperature for structured extraction
-              maxOutputTokens: 4096,
-            },
-          }),
-          signal: attemptSignal,
-        });
+        response = await this.fetchGenerateContent(url, contents, priorRequestId, attemptSignal);
       } catch (networkError: unknown) {
         // Network failures, aborts, DNS, etc.
+        const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         throw classifyGeminiError({
-          cause: networkError,
+          cause: err,
         });
       }
 
@@ -268,7 +365,7 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
           status: response.status,
           bodyText: errorBody,
           headers: response.headers,
-          cause: new Error(`Gemini API error: ${response.status} - ${errorBody}`),
+          cause: new Error(`Gemini API error (status ${response.status})`),
           ...(requestId ? { requestId } : {}),
         });
       }
@@ -298,15 +395,13 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
 
     const apiKey = settings.CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY') || '';
 
-    const defaultModel: GeminiModel = 'gemini-2.5-flash';
+    const defaultModel: GeminiModel = 'gemini-flash-latest';
     const configuredModel = settings.CLAUDE_MEM_GEMINI_MODEL || defaultModel;
     const validModels: GeminiModel[] = [
-      'gemini-2.5-flash-lite',
-      'gemini-2.5-flash',
-      'gemini-2.5-pro',
-      'gemini-2.0-flash',
-      'gemini-2.0-flash-lite',
-      'gemini-3-flash',
+      'gemini-flash-latest',
+      'gemini-flash-lite-latest',
+      'gemini-3.5-flash',
+      'gemini-3.1-flash-lite',
       'gemini-3-flash-preview',
     ];
 
