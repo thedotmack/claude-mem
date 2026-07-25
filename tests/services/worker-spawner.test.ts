@@ -176,6 +176,23 @@ describe('ensureWorkerStarted startup readiness', () => {
     expect(result).toBe('dead');
   });
 
+  it('keeps the PID file when a live PID is healthy but not ready yet', async () => {
+    resetMocks();
+    processManager.cleanStalePidFile.mockReturnValue('alive');
+    // Healthy (answers /api/health) but never ready (/api/readiness stays 503),
+    // i.e. a worker that is genuinely alive and still initializing.
+    healthMonitor.waitForHealth.mockResolvedValue(true);
+    healthMonitor.waitForReadiness.mockResolvedValue(false);
+
+    const result = await ensureWorkerStarted(39008, import.meta.filename);
+
+    expect(result).toBe('warming');
+    // Regression (#3224 follow-up): readiness timing out is not proof of a
+    // stale PID, so a healthy worker must keep ownership of its PID file.
+    expect(processManager.removePidFile).not.toHaveBeenCalled();
+    expect(processManager.spawnDaemon).not.toHaveBeenCalled();
+  });
+
   it('returns dead when the spawned worker never becomes ready and no live worker remains', async () => {
     resetMocks();
 

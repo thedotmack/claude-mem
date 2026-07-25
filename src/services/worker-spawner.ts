@@ -96,6 +96,15 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker became ready while waiting on live PID');
       return 'ready';
     }
+    // Readiness is not the staleness test. /api/readiness answers 503 while a
+    // worker is still initializing, so a healthy-but-slow worker would lose a
+    // perfectly valid PID file and leave lifecycle code without ownership.
+    // Health is the ownership signal, so probe it before clearing anything.
+    if (await waitForHealth(port, 1000)) {
+      clearWorkerSpawnAttempted();
+      logger.info('SYSTEM', 'Live PID answers health but is not ready yet, keeping its PID file');
+      return 'warming';
+    }
     // Port health is the source of truth (#3224): a "live" PID that never
     // answers /api/health is stale (dead process, PID reuse, or a non-worker).
     // Returning 'warming' here permanently blocks self-heal on Windows when the
