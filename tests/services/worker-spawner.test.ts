@@ -3,19 +3,25 @@ import { readFileSync, mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
+
+// Isolate the Windows spawn-cooldown marker (.worker-start-attempted) so a
+// spawn in one test cannot cooldown-block the next. The env var must be set
+// BEFORE the modules under test load: paths.ts freezes DATA_DIR on first
+// evaluation and ProcessManager freezes PID_FILE from it at import time, and
+// ESM hoists static imports above every statement. Hence the dynamic imports
+// below, matching the isolation pattern in process-manager.test.ts.
+const TEST_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-spawner-test-'));
+const PREVIOUS_DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR;
+process.env.CLAUDE_MEM_DATA_DIR = TEST_DATA_DIR;
+
 // Real modules captured BEFORE mock.module so the mocks can (a) spread the
 // full export surface instead of leaking a partial stub into later test
 // files, and (b) be re-pointed at the real implementations in afterAll.
 // bun's mock.module has no unmock and persists for the rest of the process,
 // which previously broke e.g. health-monitor.test.ts when this file ran first.
-import * as RealProcessManager from '../../src/services/infrastructure/ProcessManager.js';
-import * as RealHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
-import * as RealSpawnGate from '../../src/shared/worker-spawn-gate.js';
-
-// Isolate the Windows spawn-cooldown marker (.worker-start-attempted) from the
-// real ~/.claude-mem so spawning in one test cannot cooldown-block the next.
-const TEST_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-spawner-test-'));
-process.env.CLAUDE_MEM_DATA_DIR = TEST_DATA_DIR;
+const RealProcessManager = await import('../../src/services/infrastructure/ProcessManager.js');
+const RealHealthMonitor = await import('../../src/services/infrastructure/HealthMonitor.js');
+const RealSpawnGate = await import('../../src/shared/worker-spawn-gate.js');
 
 const processManager = {
   cleanStalePidFile: mock(() => 'dead' as 'alive' | 'dead'),
@@ -53,6 +59,11 @@ afterAll(() => {
   healthMonitor.waitForReadiness.mockImplementation(RealHealthMonitor.waitForReadiness);
   spawnGate.acquireSpawnLock.mockImplementation(RealSpawnGate.acquireSpawnLock);
   spawnGate.releaseSpawnLock.mockImplementation(RealSpawnGate.releaseSpawnLock);
+  if (PREVIOUS_DATA_DIR === undefined) {
+    delete process.env.CLAUDE_MEM_DATA_DIR;
+  } else {
+    process.env.CLAUDE_MEM_DATA_DIR = PREVIOUS_DATA_DIR;
+  }
 });
 
 type TimedProbe = (port: number, timeout: number) => Promise<boolean>;
