@@ -1,5 +1,6 @@
 import path from "path";
-import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, statSync } from "fs";
+import net from "net";
+import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, statSync, rmSync } from "fs";
 import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
@@ -397,23 +398,184 @@ async function fetchWorkerHealthVersion(): Promise<string | null> {
 }
 
 /**
+ * Can a listener actually take this port right now? This is the ONLY question
+ * that matters before spawning a successor, and the only one a connect probe
+ * cannot answer.
+ *
+ * On Windows a SIGKILL (TerminateProcess) can leave the listen socket alive in
+ * the kernel — netstat still shows LISTENING against the dead PID — while every
+ * connection to it is refused. In that state a connect probe reports "free" and
+ * bind() reports EADDRINUSE, forever. Only bind() is authoritative.
+ */
+async function isPortBindable(port: number): Promise<boolean> {
+  return new Promise<boolean>(resolve => {
+    let settled = false;
+    const done = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    let server: ReturnType<typeof net.createServer>;
+    try {
+      server = net.createServer();
+    } catch {
+      return done(false);
+    }
+    server.once('error', () => done(false));
+    server.once('listening', () => {
+      try {
+        server.close(() => done(true));
+      } catch {
+        done(true);
+      }
+    });
+    try {
+      server.listen(port, getWorkerHost());
+    } catch {
+      done(false);
+    }
+  });
+}
+
+/**
+ * A port is RELEASED when a successor could bind it — not merely when nothing
+ * answers on it. Exported so the wedge is directly testable and so every
+ * caller shares one oracle; the previous split (HTTP here, bind() in
+ * HealthMonitor.isPortInUse) is what let the two disagree indefinitely.
+ */
+export async function isWorkerPortReleased(port: number = getWorkerPort()): Promise<boolean> {
+  return isPortBindable(port);
+}
+
+/**
  * After SIGKILLing the stale worker, wait for the OS to release its listen
  * socket before lazy-spawning — the worker boot refuses to start while the
- * port is bound. A rejected connection is the port-free signal. Only called
- * once the stale process is confirmed dead (kill succeeded or ESRCH), so a
- * rejection here cannot be a live-but-stalled worker.
+ * port is bound. Only called once the stale process is confirmed dead (kill
+ * succeeded or ESRCH), so an unbindable port here is an orphaned socket, never
+ * a live-but-stalled worker.
  */
-async function waitForWorkerPortClosed(timeoutMs = 5000): Promise<boolean> {
+async function waitForWorkerPortReleased(timeoutMs = 5000): Promise<boolean> {
   const start = Date.now();
   for (;;) {
-    try {
-      await workerHttpRequest('/api/health', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
-    } catch {
-      return true;
-    }
+    if (await isWorkerPortReleased()) return true;
     if (Date.now() - start >= timeoutMs) return false;
     await new Promise<void>(resolve => setTimeout(resolve, 200));
   }
+}
+
+/**
+ * Ask the OS for a free loopback port by binding port 0 and reading back what
+ * it assigned. Returns null if even that fails.
+ */
+async function findFreeLoopbackPort(): Promise<number | null> {
+  return new Promise<number | null>(resolve => {
+    let settled = false;
+    const done = (value: number | null) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    let server: ReturnType<typeof net.createServer>;
+    try {
+      server = net.createServer();
+    } catch {
+      return done(null);
+    }
+    server.once('error', () => done(null));
+    server.once('listening', () => {
+      const address = server.address();
+      const assigned = address !== null && typeof address === 'object' ? address.port : null;
+      try {
+        server.close(() => done(assigned));
+      } catch {
+        done(assigned);
+      }
+    });
+    try {
+      server.listen(0, getWorkerHost());
+    } catch {
+      done(null);
+    }
+  });
+}
+
+/**
+ * Persist the worker port to the settings file the worker, the hooks, the MCP
+ * server and the CLI all read, so a port move is agreed by every participant
+ * rather than known only to whoever moved it. Atomic (tmp + rename) because
+ * concurrent hooks read this file constantly and must never observe a partial
+ * write. Also drops the in-process cache so the caller uses the new port
+ * immediately.
+ */
+function persistWorkerPort(port: number): boolean {
+  // Must be the SAME path getWorkerSettings() reads (getWorkerSettingsPath),
+  // not the module-level DATA_DIR — writing the relocated port anywhere else
+  // leaves every reader still pointed at the wedged one.
+  const dest = getWorkerSettingsPath();
+  const dir = path.dirname(dest);
+  const tmp = `${dest}.tmp`;
+  try {
+    let current: Record<string, unknown> = {};
+    try {
+      current = JSON.parse(readFileSync(dest, 'utf-8')) as Record<string, unknown>;
+    } catch {
+      // No settings file yet (or unreadable): write a fresh one carrying the port.
+    }
+    current.CLAUDE_MEM_WORKER_PORT = String(port);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(tmp, JSON.stringify(current, null, 2), 'utf-8');
+    renameSync(tmp, dest);
+    // Drop BOTH caches: getWorkerPort() reads cachedPort, and a later
+    // clearPortCache() would otherwise re-read the stale cachedSettings.
+    cachedSettings = null;
+    cachedPort = port;
+    return true;
+  } catch (error: unknown) {
+    logger.error('SYSTEM', 'Could not persist relocated worker port', { port },
+      error instanceof Error ? error : new Error(String(error)));
+    return false;
+  }
+}
+
+/**
+ * Drop the dead worker's PID file and supervisor entry. Both record the wedged
+ * port; leaving them behind makes the next boot adopt the wedge again and
+ * re-enter the loop this relocation exists to break. Best-effort: a failure
+ * here must never fail the hook.
+ */
+function clearStaleWorkerPidFile(): void {
+  for (const name of ['worker.pid', 'supervisor.json']) {
+    const target = path.join(DATA_DIR, name);
+    try {
+      if (existsSync(target)) rmSync(target, { force: true });
+    } catch (error: unknown) {
+      logger.debug('SYSTEM', 'Could not remove stale worker state file', {
+        file: name,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
+/**
+ * Escape an orphaned-listener wedge: the old port cannot be bound and never
+ * will be for this boot of Windows, so move to a port that can. Returns the new
+ * port, or null if no free port could be claimed or persisted.
+ */
+async function relocateWorkerPort(wedgedPort: number): Promise<number | null> {
+  const replacement = await findFreeLoopbackPort();
+  if (replacement === null || replacement === wedgedPort) {
+    logger.error('SYSTEM', 'Worker port is wedged and no free replacement port could be claimed', {
+      wedgedPort,
+    });
+    return null;
+  }
+  if (!persistWorkerPort(replacement)) return null;
+  logger.info('SYSTEM', 'Worker port was wedged by an orphaned listener — relocated', {
+    wedgedPort,
+    newPort: replacement,
+  });
+  return replacement;
 }
 
 /**
@@ -523,12 +685,24 @@ export async function ensureWorkerRunning(): Promise<boolean> {
         return false;
       }
     }
-    if (!(await waitForWorkerPortClosed())) {
-      logger.error('SYSTEM', 'Stale worker port still open after SIGKILL; skipping spawn this hook event', {
-        pid: stalePidInfo.pid,
-        port: getWorkerPort(),
-      });
-      return false;
+    if (!(await waitForWorkerPortReleased())) {
+      // The stale process is confirmed dead but its listen socket outlived it
+      // (Windows: LISTENING against a dead PID, connections refused, bind still
+      // EADDRINUSE). Waiting cannot clear this — the socket is owned by the
+      // kernel, not by anything we can signal — so retrying here just reproduces
+      // the failure on every subsequent hook. Move to a port we CAN bind.
+      const wedgedPort = getWorkerPort();
+      const newPort = await relocateWorkerPort(wedgedPort);
+      if (newPort === null) {
+        logger.error('SYSTEM', 'Stale worker port still bound after SIGKILL and could not relocate; skipping spawn this hook event', {
+          pid: stalePidInfo.pid,
+          port: wedgedPort,
+        });
+        return false;
+      }
+      // The dead worker's PID file still points at the wedged port; leaving it
+      // would make the next boot adopt the wedge again.
+      clearStaleWorkerPidFile();
     }
     // The killed worker's PID file is left behind; the successor's boot
     // removes it (validateWorkerPidFile returns 'stale' for a dead pid).
@@ -743,18 +917,21 @@ export async function recordWorkerUnreachable(): Promise<number> {
         threshold_tripped: true,
       });
     }
-    // #2292 fix: BLOCKING_FEEDBACK. emitBlockingError flushes the Phase 2
-    // stderr buffer (so preceding logger.warn lines also surface) and writes
-    // via the bypass channel + exits 2. Previously this raw process.stderr.write
-    // was swallowed by hookCommand's blanket no-op, so the user/model never saw it.
+    // #2292 gave this path visibility by exiting 2 — but on a UserPromptSubmit
+    // hook exit 2 BLOCKS the prompt, so an unreachable memory worker took the
+    // user's Claude session down with it (2026-07-26: 70 consecutive hooks, every
+    // prompt refused). Memory injection is an augmentation; losing it must
+    // degrade the session, never stop it. Surface the same message on the same
+    // bypass channel, then let the hook exit 0 and the caller fall back.
     emitBlockingError(
-      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`
+      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks. Memory injection is disabled until it recovers; your prompt is unaffected.`,
+      { skipExit: true }
     );
   }
   return next.consecutiveFailures;
 }
 
-function resetWorkerFailureCounter(): void {
+export function resetWorkerFailureCounter(): void {
   const state = readHookFailureState();
   if (state.consecutiveFailures === 0) return;
   writeHookFailureStateAtomic({ consecutiveFailures: 0, lastFailureAt: 0 });
