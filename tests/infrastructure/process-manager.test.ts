@@ -22,14 +22,12 @@ const {
   removePidFile,
   removePidFileIfOwner,
   getPlatformTimeout,
-  parseElapsedTime,
-  isProcessAlive,
   cleanStalePidFile,
   isPidFileRecent,
   touchPidFile,
   spawnDaemon,
+  buildWindowsDaemonStartCommand,
   resolveWorkerRuntimePath,
-  runOneTimeChromaMigration,
   captureProcessStartToken,
   verifyPidFileOwnership,
 } = await import('../../src/services/infrastructure/index.js');
@@ -243,32 +241,6 @@ describe('ProcessManager', () => {
     });
   });
 
-  describe('parseElapsedTime', () => {
-    it('should parse MM:SS format', () => {
-      expect(parseElapsedTime('05:30')).toBe(5);
-      expect(parseElapsedTime('00:45')).toBe(0);
-      expect(parseElapsedTime('59:59')).toBe(59);
-    });
-
-    it('should parse HH:MM:SS format', () => {
-      expect(parseElapsedTime('01:30:00')).toBe(90);
-      expect(parseElapsedTime('02:15:30')).toBe(135);
-      expect(parseElapsedTime('00:05:00')).toBe(5);
-    });
-
-    it('should parse DD-HH:MM:SS format', () => {
-      expect(parseElapsedTime('1-00:00:00')).toBe(1440);  
-      expect(parseElapsedTime('2-12:30:00')).toBe(3630);  
-      expect(parseElapsedTime('0-01:00:00')).toBe(60);    
-    });
-
-    it('should return -1 for empty or invalid input', () => {
-      expect(parseElapsedTime('')).toBe(-1);
-      expect(parseElapsedTime('   ')).toBe(-1);
-      expect(parseElapsedTime('invalid')).toBe(-1);
-    });
-  });
-
   describe('getPlatformTimeout', () => {
     const originalPlatform = process.platform;
 
@@ -434,30 +406,6 @@ describe('ProcessManager', () => {
       });
 
       expect(resolved).toBeNull();
-    });
-  });
-
-  describe('isProcessAlive', () => {
-    it('should return true for the current process', () => {
-      expect(isProcessAlive(process.pid)).toBe(true);
-    });
-
-    it('should return false for a non-existent PID', () => {
-      expect(isProcessAlive(2147483647)).toBe(false);
-    });
-
-    it('should return true for PID 0 (Windows WMIC sentinel)', () => {
-      expect(isProcessAlive(0)).toBe(true);
-    });
-
-    it('should return false for negative PIDs', () => {
-      expect(isProcessAlive(-1)).toBe(false);
-      expect(isProcessAlive(-999)).toBe(false);
-    });
-
-    it('should return false for non-integer PIDs', () => {
-      expect(isProcessAlive(1.5)).toBe(false);
-      expect(isProcessAlive(NaN)).toBe(false);
     });
   });
 
@@ -726,6 +674,46 @@ describe('ProcessManager', () => {
     });
   });
 
+  describe('buildWindowsDaemonStartCommand (#3195)', () => {
+    // Windows PowerShell 5.1 (powershell.exe, which spawnDaemon invokes via
+    // -EncodedCommand) builds the native command line for Start-Process by
+    // joining -ArgumentList elements with spaces WITHOUT quoting them. The
+    // single quotes in the PS source only delimit the PS string literal; they
+    // never reach the child. So the script path must carry its own embedded
+    // double quotes or a spaced %USERPROFILE% splits it into multiple argv
+    // entries and bun dies with "Module not found".
+    it('embeds double quotes around a script path containing spaces', () => {
+      const runtimePath = String.raw`C:\Users\Test User\.bun\bin\bun.exe`;
+      const scriptPath = String.raw`C:\Users\Test User\.claude\plugins\marketplaces\thedotmack\plugin\scripts\worker-service.cjs`;
+
+      const command = buildWindowsDaemonStartCommand(runtimePath, scriptPath);
+
+      expect(command).toBe(
+        `Start-Process -FilePath '${runtimePath}' -ArgumentList @('"${scriptPath}"','--daemon') -WindowStyle Hidden`
+      );
+    });
+
+    it('keeps --daemon as its own ArgumentList element', () => {
+      const command = buildWindowsDaemonStartCommand(
+        String.raw`C:\bun\bun.exe`,
+        String.raw`C:\plugin\worker-service.cjs`
+      );
+
+      expect(command).toContain(`,'--daemon')`);
+    });
+
+    it('still doubles single quotes for PowerShell string escaping', () => {
+      const command = buildWindowsDaemonStartCommand(
+        String.raw`C:\Users\O'Brien\.bun\bin\bun.exe`,
+        String.raw`C:\Users\O'Brien\plugin\scripts\worker-service.cjs`
+      );
+
+      expect(command).toBe(
+        `Start-Process -FilePath 'C:\\Users\\O''Brien\\.bun\\bin\\bun.exe' -ArgumentList @('"C:\\Users\\O''Brien\\plugin\\scripts\\worker-service.cjs"','--daemon') -WindowStyle Hidden`
+      );
+    });
+  });
+
   describe('SIGHUP handling', () => {
     it('should have SIGHUP listeners registered (integration check)', () => {
       if (process.platform === 'win32') return;
@@ -747,48 +735,6 @@ describe('ProcessManager', () => {
 
       // Verify the non-daemon path: SIGHUP should trigger shutdown (covered by registerSignalHandlers)
       // This is a logic verification test — actual signal delivery is tested manually
-    });
-  });
-
-  describe('runOneTimeChromaMigration', () => {
-    let testDataDir: string;
-
-    beforeEach(() => {
-      testDataDir = path.join(tmpdir(), `claude-mem-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-      mkdirSync(testDataDir, { recursive: true });
-    });
-
-    afterEach(() => {
-      rmSync(testDataDir, { recursive: true, force: true });
-    });
-
-    it('should wipe chroma directory and write marker file', () => {
-      const chromaDir = path.join(testDataDir, 'chroma');
-      mkdirSync(chromaDir, { recursive: true });
-      writeFileSync(path.join(chromaDir, 'test-data.bin'), 'fake chroma data');
-
-      runOneTimeChromaMigration(testDataDir);
-
-      expect(existsSync(chromaDir)).toBe(false);
-      expect(existsSync(path.join(testDataDir, '.chroma-cleaned-v10.3'))).toBe(true);
-    });
-
-    it('should skip when marker file already exists (idempotent)', () => {
-      writeFileSync(path.join(testDataDir, '.chroma-cleaned-v10.3'), 'already done');
-
-      const chromaDir = path.join(testDataDir, 'chroma');
-      mkdirSync(chromaDir, { recursive: true });
-      writeFileSync(path.join(chromaDir, 'important.bin'), 'should survive');
-
-      runOneTimeChromaMigration(testDataDir);
-
-      expect(existsSync(chromaDir)).toBe(true);
-      expect(existsSync(path.join(chromaDir, 'important.bin'))).toBe(true);
-    });
-
-    it('should handle missing chroma directory gracefully', () => {
-      expect(() => runOneTimeChromaMigration(testDataDir)).not.toThrow();
-      expect(existsSync(path.join(testDataDir, '.chroma-cleaned-v10.3'))).toBe(true);
     });
   });
 });

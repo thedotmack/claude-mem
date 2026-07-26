@@ -26,7 +26,7 @@ export class PrivacyCheckValidator {
     sessionDbId: number,
     additionalContext?: Record<string, any>
   ): PromptPrivacyDecision {
-    const userPrompt = store.getUserPrompt(contentSessionId, promptNumber);
+    const userPrompt = store.getUserPrompt(contentSessionId, promptNumber, sessionDbId);
 
     if (userPrompt === null) {
       logger.warn(

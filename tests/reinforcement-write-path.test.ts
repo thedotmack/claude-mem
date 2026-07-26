@@ -2,9 +2,20 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../src/services/sqlite/SessionStore.js';
-import { storeObservation } from '../src/services/sqlite/observations/store.js';
 import { reinforceObservation, observationStrength } from '../src/services/reinforcement/persist.js';
-import type { ObservationInput } from '../src/services/sqlite/observations/types.js';
+
+// The standalone storeObservation() helper is gone — SessionStore owns every
+// observation write now, so the write path is exercised through its methods.
+type ObservationInput = {
+  type: string;
+  title: string | null;
+  subtitle: string | null;
+  facts: string[];
+  narrative: string | null;
+  concepts: string[];
+  files_read: string[];
+  files_modified: string[];
+};
 
 const DAY = 86_400_000;
 const obs = (over: Partial<ObservationInput> = {}): ObservationInput => ({
@@ -46,38 +57,38 @@ describe('Phase 1c — reinforcement on the write path', () => {
   afterEach(() => store.db.close());
 
   it('seeds reinforcement_dates with the creation day on insert', () => {
-    const { id } = storeObservation(store.db, 's1', 'proj', obs(), 1, 0, day1);
+    const { id } = store.storeObservation('s1', 'proj', obs(), 1, 0, day1);
     expect(datesOf(store, id)).toEqual(['2026-06-10']);
     const last = (store.db.prepare('SELECT last_reinforced FROM observations WHERE id=?').get(id) as { last_reinforced: string }).last_reinforced;
     expect(last).toBe('2026-06-10');
   });
 
   it('reinforces (not drops) an exact-duplicate observation from a later day', () => {
-    const first = storeObservation(store.db, 's1', 'proj', obs(), 1, 0, day1);
-    const second = storeObservation(store.db, 's1', 'proj', obs(), 2, 0, day2);
+    const first = store.storeObservation('s1', 'proj', obs(), 1, 0, day1);
+    const second = store.storeObservation('s1', 'proj', obs(), 2, 0, day2);
     // Same content_hash → same row, no new insert.
     expect(second.id).toBe(first.id);
     expect(datesOf(store, first.id)).toEqual(['2026-06-10', '2026-06-12']);
   });
 
   it('same-day duplicate is an idempotent no-op', () => {
-    const first = storeObservation(store.db, 's1', 'proj', obs(), 1, 0, day1);
-    storeObservation(store.db, 's1', 'proj', obs(), 2, 0, day1);
+    const first = store.storeObservation('s1', 'proj', obs(), 1, 0, day1);
+    store.storeObservation('s1', 'proj', obs(), 2, 0, day1);
     expect(datesOf(store, first.id)).toEqual(['2026-06-10']);
   });
 
   it('reinforced duplicate has higher strength than a single-event note', () => {
     const today = new Date('2026-06-12T12:00:00Z');
-    const a = storeObservation(store.db, 's1', 'proj', obs({ title: 'a', narrative: 'a' }), 1, 0, day1);
-    const b = storeObservation(store.db, 's1', 'proj', obs({ title: 'b', narrative: 'b' }), 1, 0, day1);
-    storeObservation(store.db, 's1', 'proj', obs({ title: 'b', narrative: 'b' }), 2, 0, day2); // reinforce b
+    const a = store.storeObservation('s1', 'proj', obs({ title: 'a', narrative: 'a' }), 1, 0, day1);
+    const b = store.storeObservation('s1', 'proj', obs({ title: 'b', narrative: 'b' }), 1, 0, day1);
+    store.storeObservation('s1', 'proj', obs({ title: 'b', narrative: 'b' }), 2, 0, day2); // reinforce b
     expect(observationStrength(store.db, b.id, today)).toBeGreaterThan(
       observationStrength(store.db, a.id, today),
     );
   });
 
   it('reinforceObservation can be called directly (retrieval-feedback path)', () => {
-    const { id } = storeObservation(store.db, 's1', 'proj', obs(), 1, 0, day1);
+    const { id } = store.storeObservation('s1', 'proj', obs(), 1, 0, day1);
     const changed = reinforceObservation(store.db, id, new Date(day2));
     expect(changed).toBe(true);
     expect(datesOf(store, id)).toEqual(['2026-06-10', '2026-06-12']);
@@ -85,10 +96,9 @@ describe('Phase 1c — reinforcement on the write path', () => {
     expect(reinforceObservation(store.db, 9999, new Date(day2))).toBe(false);
   });
 
-  // Regression: the worker writes observer output through the SessionStore
-  // *methods* (storeObservations / storeObservationsAndMarkComplete), NOT the
-  // standalone storeObservation() above. Live testing found those paths were
-  // unseeded — organic observations landed with NULL reinforcement_dates.
+  // Regression: the worker writes observer output through the batch method,
+  // not the single-observation one. Live testing found that path unseeded —
+  // organic observations landed with NULL reinforcement_dates.
   it('SessionStore.storeObservations (the worker batch path) seeds reinforcement', () => {
     const { observationIds } = store.storeObservations(
       's1',
@@ -108,11 +118,4 @@ describe('Phase 1c — reinforcement on the write path', () => {
     }
   });
 
-  it('SessionStore.storeObservation (method) seeds and reinforces on exact dup', () => {
-    const first = store.storeObservation('s1', 'proj', obs({ title: 'm', narrative: 'm' }), 1, 0, day1);
-    expect(datesOf(store, first.id)).toEqual(['2026-06-10']);
-    const again = store.storeObservation('s1', 'proj', obs({ title: 'm', narrative: 'm' }), 2, 0, day2);
-    expect(again.id).toBe(first.id);
-    expect(datesOf(store, first.id)).toEqual(['2026-06-10', '2026-06-12']);
-  });
 });

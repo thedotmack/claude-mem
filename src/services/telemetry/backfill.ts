@@ -1,5 +1,6 @@
 import { join } from 'path';
 import { mkdirSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
 import { PostHog } from 'posthog-node';
 import type { Database } from 'bun:sqlite';
 import { resolveDataDir } from '../../shared/paths.js';
@@ -17,6 +18,7 @@ import {
   getTelemetryHost,
   buildBaseProperties,
   buildPersonSet,
+  asMs,
 } from './common.js';
 
 /**
@@ -59,6 +61,34 @@ const BACKFILL_NAMESPACE = '8a9c2f4e-31b7-5d68-9c4a-f02e6d5b8a17';
 
 const BACKFILL_MARKER_FILENAME = 'backfill.json';
 
+function uuidBytes(uuid: string): Buffer {
+  return Buffer.from(uuid.replaceAll('-', ''), 'hex');
+}
+
+function formatUuid(bytes: Buffer): string {
+  const hex = bytes.toString('hex');
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20, 32),
+  ].join('-');
+}
+
+function uuidV5(name: string, namespace: string): string {
+  const bytes = createHash('sha1')
+    .update(uuidBytes(namespace))
+    .update(name, 'utf8')
+    .digest()
+    .subarray(0, 16);
+
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+  return formatUuid(bytes);
+}
+
 /**
  * Schema version of the backfill payload. Bump this whenever the rollup gains
  * keys that already-backfilled installs must receive (a marker written by an
@@ -83,16 +113,6 @@ export const BACKFILL_VERSION = 2;
  * 'other' so the backfill vocabulary is identical to live telemetry.
  */
 const STAT_TYPE_BUCKETS = new Set(['bugfix', 'discovery', 'decision', 'refactor']);
-
-/**
- * Epoch columns hold mixed units historically: a few hundred legacy rows were
- * written in seconds, everything since in milliseconds. Normalize to ms in
- * SQL before any date math (same rule as install-stats.ts — and note it must
- * be applied INSIDE aggregate functions like MIN, never outside).
- */
-function asMs(col: string): string {
-  return `CASE WHEN ${col} < 1000000000000 THEN ${col} * 1000 ELSE ${col} END`;
-}
 
 /** YYYY-MM-DD (UTC) for an epoch-milliseconds instant. */
 export function utcDayString(epochMs: number): string {
@@ -143,7 +163,9 @@ function isBackfillComplete(): boolean {
     if (marker === null) return false;
     const version = typeof marker.version === 'number' ? marker.version : 1;
     return version >= BACKFILL_VERSION;
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'Backfill marker read failed; treating backfill as complete to avoid duplicate sends', {}, err);
     return true;
   }
 }
@@ -207,7 +229,7 @@ export function collectDailyRollups(
 
   // obs_type_* — closed vocabulary via STAT_TYPE_BUCKETS, zero-filled for any
   // day that has observations (matches live context_injected event shape).
-  try {
+  const collectObsTypeCounts = (): void => {
     const f = frag('created_at_epoch');
     const rows = db
       .query(
@@ -221,6 +243,9 @@ export function collectDailyRollups(
       const bucket = row.type && STAT_TYPE_BUCKETS.has(row.type) ? row.type : 'other';
       add(row.day, `obs_type_${bucket}`, row.c);
     }
+  };
+  try {
+    collectObsTypeCounts();
   } catch {
     // Missing table/column — skip.
   }
@@ -254,7 +279,7 @@ export function collectDailyRollups(
 
   // session_completed_count / session_failed_count — closed status enum;
   // 'active' rows are counted by session_count only.
-  try {
+  const collectSessionStatusCounts = (): void => {
     const f = frag('started_at_epoch');
     const rows = db
       .query(
@@ -265,13 +290,16 @@ export function collectDailyRollups(
       if (row.status === 'completed') add(row.day, 'session_completed_count', row.c);
       else if (row.status === 'failed') add(row.day, 'session_failed_count', row.c);
     }
+  };
+  try {
+    collectSessionStatusCounts();
   } catch {
     // Missing table/column — skip.
   }
 
   // sessions_{claude,codex,gemini,other_platform}_count — platform_source is
   // user-influenceable; bucket in JS to the closed enum, never ship raw.
-  try {
+  const collectPlatformCounts = (): void => {
     const f = frag('started_at_epoch');
     const rows = db
       .query(
@@ -285,6 +313,9 @@ export function collectDailyRollups(
           : 'other_platform';
       add(row.day, `sessions_${platform}_count`, row.c);
     }
+  };
+  try {
+    collectPlatformCounts();
   } catch {
     // platform_source arrives via migration — skip.
   }
@@ -338,7 +369,7 @@ export function collectDailyRollups(
   // across many sessions). Generation-side cost (cost_usd / tokens_input /
   // tokens_output from session_compressed) is NOT recoverable here — it was
   // never persisted to SQLite — and is intentionally absent from the backfill.
-  try {
+  const collectReadTokenSums = (): void => {
     const f = frag('created_at_epoch');
     const rows = db
       .query(
@@ -348,6 +379,9 @@ export function collectDailyRollups(
       )
       .all(...params) as Array<{ day: string; read_tokens: number }>;
     for (const row of rows) add(row.day, 'read_tokens', row.read_tokens);
+  };
+  try {
+    collectReadTokenSums();
   } catch {
     // observations.text missing on a partially-migrated install — skip; the
     // savings derivation below simply won't fire for these days.
@@ -369,7 +403,7 @@ export function collectDailyRollups(
   // project_count — cross-table distinct in ONE query (UNION dedupes the
   // same project appearing in both tables on the same day; summing per-table
   // distincts would multi-count).
-  try {
+  const collectProjectCounts = (): void => {
     const fo = frag('created_at_epoch');
     const fs = frag('started_at_epoch');
     const rows = db
@@ -382,6 +416,9 @@ export function collectDailyRollups(
       )
       .all(...params) as Array<{ day: string; c: number }>;
     for (const row of rows) add(row.day, 'project_count', row.c);
+  };
+  try {
+    collectProjectCounts();
   } catch {
     // Either table missing — skip.
   }
@@ -439,7 +476,7 @@ export function findFirstActivityEpochMs(db: Database): number | null {
  * (toDate(timestamp), event, distinct_id, uuid).
  */
 export function deterministicEventUuid(installId: string, event: string, day: string): string {
-  return Bun.randomUUIDv5(`${installId}|${event}|${day}`, BACKFILL_NAMESPACE);
+  return uuidV5(`${installId}|${event}|${day}`, BACKFILL_NAMESPACE);
 }
 
 /**
@@ -520,125 +557,128 @@ export function buildBackfillEvents(
  *  3. build events
  *  4. CLAUDE_MEM_TELEMETRY_DEBUG=1   -> stderr dry-run, NO send, NO marker
  *  5. zero events                    -> write marker, return
- *  6. no API key                     -> return (vestigial: the embedded key is never falsy)
- *  7. dedicated historicalMigration client, single-batch sizing
- *  8. on('error') latch + capture all + await shutdown() (the ONLY delivery barrier)
- *  9. marker ONLY on clean shutdown with zero emitted errors
+ *  6. dedicated historicalMigration client, single-batch sizing
+ *  7. on('error') latch + capture all + await shutdown() (the ONLY delivery barrier)
+ *  8. marker ONLY on clean shutdown with zero emitted errors
  */
 export async function runHistoricalBackfill(db: Database): Promise<void> {
   try {
-    if (isBackfillComplete()) return;
-
-    if (!resolveTelemetryConsent(process.env, loadTelemetryConfig())) return;
-
-    const nowMs = Date.now();
-    const lastFullDay = utcDayString(nowMs - BACKFILL_LAG_MS);
-    const installId = getOrCreateInstallId();
-    const events = buildBackfillEvents(db, installId, nowMs);
-
-    if (process.env.CLAUDE_MEM_TELEMETRY_DEBUG === '1') {
-      // Dry-run: print the exact payload to stderr (debug mode is a human in
-      // the foreground — same convention as captureEvent), send nothing,
-      // write no marker. Intentionally re-runs on every debug worker start.
-      const days = events
-        .filter(e => e.event === 'historical_activity')
-        .map(e => e.timestamp.toISOString().slice(0, 10));
-      const dayRange = days.length > 0 ? `${days[0]}..${days[days.length - 1]}` : '(none)';
-      process.stderr.write(
-        `[telemetry-backfill] dry-run: ${events.length} events, days ${dayRange}, lastFullDay ${lastFullDay}\n`
-      );
-      for (const e of events) {
-        process.stderr.write(
-          '[telemetry-backfill] ' +
-            JSON.stringify({
-              event: e.event,
-              timestamp: e.timestamp.toISOString(),
-              uuid: e.uuid,
-              properties: e.properties,
-            }) +
-            '\n'
-        );
-      }
-      return;
-    }
-
-    if (events.length === 0) {
-      // Fresh installs land here: nothing pre-telemetry exists, and live
-      // telemetry covers them from day 0 — latch so we never rescan.
-      writeBackfillMarker({
-        completedAt: new Date().toISOString(),
-        throughDay: lastFullDay,
-        eventCount: 0,
-        installId,
-        version: BACKFILL_VERSION,
-      });
-      return;
-    }
-
-    if (!getTelemetryApiKey()) return;
-
-    // Dedicated short-lived client — the live singleton lacks
-    // historicalMigration and its shutdown latch must stay untouched. The
-    // 5000s make flushAt unreachable (no swallowed background flushes) and
-    // keep the whole backfill in ONE request at shutdown, with no silent
-    // queue-cap drops for multi-year installs.
-    const client = new PostHog(getTelemetryApiKey(), {
-      host: getTelemetryHost(),
-      historicalMigration: true,
-      flushAt: 5000,
-      maxBatchSize: 5000,
-      maxQueueSize: 5000,
-      disableGeoip: false,
-    });
-
-    // shutdown() swallows fetch errors internally; the public error emitter
-    // is the only delivery-failure signal.
-    const errors: unknown[] = [];
-    client.on('error', (err: unknown) => {
-      errors.push(err);
-    });
-
-    for (const e of events) {
-      client.capture({
-        distinctId: installId,
-        event: e.event,
-        properties: e.properties,
-        timestamp: e.timestamp,
-        uuid: e.uuid,
-      });
-    }
-
-    // shutdown() is the only delivery barrier: it joins pending capture
-    // promises, then loops flush until the queue drains. A bare flush() can
-    // resolve while captures are still un-enqueued.
-    await client.shutdown();
-
-    if (errors.length === 0) {
-      writeBackfillMarker({
-        completedAt: new Date().toISOString(),
-        throughDay: lastFullDay,
-        eventCount: events.length,
-        installId,
-        version: BACKFILL_VERSION,
-      });
-      logger.info('SYSTEM', 'Telemetry historical backfill complete', {
-        eventCount: events.length,
-        throughDay: lastFullDay,
-      });
-    } else {
-      // No marker: the next worker start retries with byte-identical events
-      // (deterministic uuid + noon-UTC timestamps make the retry dedupable).
-      logger.warn('SYSTEM', 'Telemetry historical backfill delivery errored; will retry on next worker start', {
-        eventCount: events.length,
-        errorCount: errors.length,
-      });
-    }
+    await executeHistoricalBackfill(db);
   } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
     logger.error(
       'SYSTEM',
       'Telemetry historical backfill failed (non-blocking)',
       {},
-      error instanceof Error ? error : new Error(String(error))
+      err
     );
+  }
+}
+
+/** Gate sequence + delivery for runHistoricalBackfill (see its JSDoc). */
+async function executeHistoricalBackfill(db: Database): Promise<void> {
+  if (isBackfillComplete()) return;
+
+  if (!resolveTelemetryConsent(process.env, loadTelemetryConfig())) return;
+
+  const nowMs = Date.now();
+  const lastFullDay = utcDayString(nowMs - BACKFILL_LAG_MS);
+  const installId = getOrCreateInstallId();
+  const events = buildBackfillEvents(db, installId, nowMs);
+
+  if (process.env.CLAUDE_MEM_TELEMETRY_DEBUG === '1') {
+    // Dry-run: print the exact payload to stderr (debug mode is a human in
+    // the foreground — same convention as captureEvent), send nothing,
+    // write no marker. Intentionally re-runs on every debug worker start.
+    const days = events
+      .filter(e => e.event === 'historical_activity')
+      .map(e => e.timestamp.toISOString().slice(0, 10));
+    const dayRange = days.length > 0 ? `${days[0]}..${days[days.length - 1]}` : '(none)';
+    process.stderr.write(
+      `[telemetry-backfill] dry-run: ${events.length} events, days ${dayRange}, lastFullDay ${lastFullDay}\n`
+    );
+    for (const e of events) {
+      process.stderr.write(
+        '[telemetry-backfill] ' +
+          JSON.stringify({
+            event: e.event,
+            timestamp: e.timestamp.toISOString(),
+            uuid: e.uuid,
+            properties: e.properties,
+          }) +
+          '\n'
+      );
+    }
+    return;
+  }
+
+  if (events.length === 0) {
+    // Fresh installs land here: nothing pre-telemetry exists, and live
+    // telemetry covers them from day 0 — latch so we never rescan.
+    writeBackfillMarker({
+      completedAt: new Date().toISOString(),
+      throughDay: lastFullDay,
+      eventCount: 0,
+      installId,
+      version: BACKFILL_VERSION,
+    });
+    return;
+  }
+
+  // Dedicated short-lived client — the live singleton lacks
+  // historicalMigration and its shutdown latch must stay untouched. The
+  // 5000s make flushAt unreachable (no swallowed background flushes) and
+  // keep the whole backfill in ONE request at shutdown, with no silent
+  // queue-cap drops for multi-year installs.
+  const client = new PostHog(getTelemetryApiKey(), {
+    host: getTelemetryHost(),
+    historicalMigration: true,
+    flushAt: 5000,
+    maxBatchSize: 5000,
+    maxQueueSize: 5000,
+    disableGeoip: false,
+  });
+
+  // shutdown() swallows fetch errors internally; the public error emitter
+  // is the only delivery-failure signal.
+  const errors: unknown[] = [];
+  client.on('error', (err: unknown) => {
+    errors.push(err);
+  });
+
+  for (const e of events) {
+    client.capture({
+      distinctId: installId,
+      event: e.event,
+      properties: e.properties,
+      timestamp: e.timestamp,
+      uuid: e.uuid,
+    });
+  }
+
+  // shutdown() is the only delivery barrier: it joins pending capture
+  // promises, then loops flush until the queue drains. A bare flush() can
+  // resolve while captures are still un-enqueued.
+  await client.shutdown();
+
+  if (errors.length === 0) {
+    writeBackfillMarker({
+      completedAt: new Date().toISOString(),
+      throughDay: lastFullDay,
+      eventCount: events.length,
+      installId,
+      version: BACKFILL_VERSION,
+    });
+    logger.info('SYSTEM', 'Telemetry historical backfill complete', {
+      eventCount: events.length,
+      throughDay: lastFullDay,
+    });
+  } else {
+    // No marker: the next worker start retries with byte-identical events
+    // (deterministic uuid + noon-UTC timestamps make the retry dedupable).
+    logger.warn('SYSTEM', 'Telemetry historical backfill delivery errored; will retry on next worker start', {
+      eventCount: events.length,
+      errorCount: errors.length,
+    });
   }
 }

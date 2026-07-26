@@ -1,17 +1,19 @@
 import * as p from '@clack/prompts';
-import pc from 'picocolors';
+import { styleText } from 'node:util';
 import { randomUUID } from 'crypto';
 import { spawnSync } from 'child_process';
 import { loadTelemetryConfig, saveTelemetryConfig } from '../../services/telemetry/consent.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
-import { spawnHidden } from '../../shared/spawn.js';
+import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { parseJsonWithBom, writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
+import { formatHostForUrl } from '../../shared/worker-utils.js';
 import {
   ensureBun,
   ensureUv,
@@ -20,7 +22,7 @@ import {
   isInstallCurrent,
 } from '../install/setup-runtime.js';
 import { playBanner } from '../banner.js';
-import { normalizeRuntimeFlag, planServerRuntimeInstall } from './server-runtime-setup.js';
+import { normalizeRuntimeFlag } from './server-runtime-setup.js';
 import { ErrorSeverity } from '../install/error-taxonomy.js';
 import {
   createInstallSummary,
@@ -55,19 +57,27 @@ function detectInstallMethod(): string {
  * Claude Code releases, so this is key for diagnosing installs whose worker
  * never starts. Missing binary or timeout → undefined (dropped by scrubber).
  */
+function readClaudeCodeVersionOutput(): string | undefined {
+  const command = process.platform === 'win32'
+    ? (lookupWindowsCommand('claude') ?? 'claude.cmd')
+    : 'claude';
+  const invocation = buildSpawnSyncInvocation(command, ['--version'], {
+    timeout: 5000,
+    encoding: 'utf-8',
+  });
+  const result = spawnSync(invocation.command, invocation.args, invocation.options);
+  const output = (result.stdout ?? '').trim();
+  if (!output) return undefined;
+  // "2.0.14 (Claude Code)" → "2.0.14"
+  return output.split(/\s+/)[0].slice(0, 40) || undefined;
+}
+
 function detectClaudeCodeVersion(): string | undefined {
   try {
-    const result = spawnSync('claude', ['--version'], {
-      timeout: 5000,
-      windowsHide: true,
-      shell: process.platform === 'win32',
-      encoding: 'utf-8',
-    });
-    const output = (result.stdout ?? '').trim();
-    if (!output) return undefined;
-    // "2.0.14 (Claude Code)" → "2.0.14"
-    return output.split(/\s+/)[0].slice(0, 40) || undefined;
-  } catch {
+    return readClaudeCodeVersionOutput();
+  } catch (error: unknown) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    console.warn('[install] Could not detect Claude Code version:', err);
     return undefined;
   }
 }
@@ -101,7 +111,7 @@ function startHeartbeat(message: (msg: string) => void, label: string): () => vo
   const started = Date.now();
   const timer = setInterval(() => {
     const elapsed = Math.round((Date.now() - started) / 1000);
-    message(`${label} ${pc.dim(`(${elapsed}s — still working)`)}`);
+    message(`${label} ${styleText('dim', `(${elapsed}s — still working)`)}`);
   }, 1000);
   return () => clearInterval(timer);
 }
@@ -150,6 +160,7 @@ import {
   writeJsonFileAtomic,
 } from '../utils/paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
+import { readFlatSettings } from '../utils/settings.js';
 import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
 import { detectInstalledIDEs } from './ide-detection.js';
 
@@ -287,7 +298,7 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
     case 'claude-code': {
       return {
         title: 'Claude Code: registering plugin',
-        task: async () => `Claude Code: plugin registered ${pc.green('OK')}`,
+        task: async () => `Claude Code: plugin registered ${styleText('green', 'OK')}`,
       };
     }
 
@@ -301,31 +312,14 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
           const { result: cursorResult, output: hooksOutput } = await bufferConsole(() => installCursorHooks('user'));
           if (cursorResult !== 0) {
             recordFailure('Cursor: hook installation failed', hooksOutput);
-            return `Cursor: hook installation failed ${pc.red('FAIL')}`;
+            return `Cursor: hook installation failed ${styleText('red', 'FAIL')}`;
           }
           message('Configuring Cursor MCP…');
           const { result: mcpResult } = await bufferConsole(async () => configureCursorMcp('user'));
           if (mcpResult === 0) {
-            return `Cursor: hooks + MCP installed ${pc.green('OK')}`;
+            return `Cursor: hooks + MCP installed ${styleText('green', 'OK')}`;
           }
-          return `Cursor: hooks installed; MCP setup failed — run \`npx claude-mem cursor mcp\` ${pc.yellow('!')}`;
-        },
-      };
-    }
-
-    case 'gemini-cli': {
-      return {
-        title: 'Gemini CLI: installing hooks',
-        task: async (message) => {
-          message('Loading Gemini CLI installer…');
-          const { installGeminiCliHooks } = await import('../../services/integrations/GeminiCliHooksInstaller.js');
-          message('Installing Gemini CLI hooks…');
-          const { result, output } = await bufferConsole(() => installGeminiCliHooks());
-          if (result !== 0) {
-            recordFailure('Gemini CLI: hook installation failed', output);
-            return `Gemini CLI: hook installation failed ${pc.red('FAIL')}`;
-          }
-          return `Gemini CLI: hooks installed ${pc.green('OK')}`;
+          return `Cursor: hooks installed; MCP setup failed — run \`npx claude-mem cursor mcp\` ${styleText('yellow', '!')}`;
         },
       };
     }
@@ -340,9 +334,9 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
           const { result, output } = await bufferConsole(() => installOpenCodeIntegration());
           if (result !== 0) {
             recordFailure('OpenCode: plugin installation failed', output);
-            return `OpenCode: plugin installation failed ${pc.red('FAIL')}`;
+            return `OpenCode: plugin installation failed ${styleText('red', 'FAIL')}`;
           }
-          return `OpenCode: plugin installed ${pc.green('OK')}`;
+          return `OpenCode: plugin installed ${styleText('green', 'OK')}`;
         },
       };
     }
@@ -357,9 +351,9 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
           const { result, output } = await bufferConsole(() => installWindsurfHooks());
           if (result !== 0) {
             recordFailure('Windsurf: hook installation failed', output);
-            return `Windsurf: hook installation failed ${pc.red('FAIL')}`;
+            return `Windsurf: hook installation failed ${styleText('red', 'FAIL')}`;
           }
-          return `Windsurf: hooks installed ${pc.green('OK')}`;
+          return `Windsurf: hooks installed ${styleText('green', 'OK')}`;
         },
       };
     }
@@ -374,9 +368,9 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
           const { result, output } = await bufferConsole(() => installOpenClawIntegration());
           if (result !== 0) {
             recordFailure('OpenClaw: plugin installation failed', output);
-            return `OpenClaw: plugin installation failed ${pc.red('FAIL')}`;
+            return `OpenClaw: plugin installation failed ${styleText('red', 'FAIL')}`;
           }
-          return `OpenClaw: plugin installed ${pc.green('OK')}`;
+          return `OpenClaw: plugin installed ${styleText('green', 'OK')}`;
         },
       };
     }
@@ -391,15 +385,31 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
           const { result, output } = await bufferConsole(() => installCodexCli(marketplaceDirectory()));
           if (result !== 0) {
             recordFailure('Codex CLI: integration setup failed', output);
-            return `Codex CLI: integration setup failed ${pc.red('FAIL')}`;
+            return `Codex CLI: integration setup failed ${styleText('red', 'FAIL')}`;
           }
-          return `Codex CLI: hooks marketplace registered ${pc.green('OK')}`;
+          return `Codex CLI: hooks marketplace registered ${styleText('green', 'OK')}`;
+        },
+      };
+    }
+
+    case 'antigravity': {
+      return {
+        title: 'Antigravity: installing hooks + MCP',
+        task: async (message) => {
+          message('Loading Antigravity CLI installer…');
+          const { installAntigravityCliHooks } = await import('../../services/integrations/AntigravityCliHooksInstaller.js');
+          message('Installing Antigravity hooks + MCP…');
+          const { result, output } = await bufferConsole(() => installAntigravityCliHooks());
+          if (result !== 0) {
+            recordFailure('Antigravity: hooks + MCP installation failed', output);
+            return `Antigravity: hooks + MCP installation failed ${styleText('red', 'FAIL')}`;
+          }
+          return `Antigravity: hooks + MCP installed ${styleText('green', 'OK')}`;
         },
       };
     }
 
     case 'copilot-cli':
-    case 'antigravity':
     case 'goose':
     case 'roo-code':
     case 'warp': {
@@ -413,28 +423,20 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
           const { MCP_IDE_INSTALLERS } = await import('../../services/integrations/McpIntegrations.js');
           const mcpInstaller = MCP_IDE_INSTALLERS[ideId];
           if (!mcpInstaller) {
-            return `${ideLabel}: MCP installer not found ${pc.yellow('!')}`;
+            return `${ideLabel}: MCP installer not found ${styleText('yellow', '!')}`;
           }
           message(`Configuring ${ideLabel} MCP…`);
           const { result, output } = await bufferConsole(() => mcpInstaller());
           if (result !== 0) {
             recordFailure(`${ideLabel}: MCP integration failed`, output);
-            return `${ideLabel}: MCP integration failed ${pc.red('FAIL')}`;
+            return `${ideLabel}: MCP integration failed ${styleText('red', 'FAIL')}`;
           }
-          return `${ideLabel}: MCP integration installed ${pc.green('OK')}`;
+          return `${ideLabel}: MCP integration installed ${styleText('green', 'OK')}`;
         },
       };
     }
 
     default: {
-      const allIDEs = detectInstalledIDEs();
-      const ide = allIDEs.find((i) => i.id === ideId);
-      if (ide && !ide.supported) {
-        return {
-          title: `${ide.label}: skipping`,
-          task: async () => `${ide.label}: support coming soon ${pc.yellow('!')}`,
-        };
-      }
       return null;
     }
   }
@@ -504,6 +506,7 @@ function applyClaudeCodePathSetupIfNeeded(): void {
     try {
       existing = readFileSync(configFile, 'utf-8');
     } catch (error: unknown) {
+      // [ANTI-PATTERN IGNORED]: the failure is already surfaced to the user via the interactive-aware log.warn wrapper below (p.log.warn in a TTY, console.warn otherwise); a raw console call here would double-print.
       log.warn(`Could not read ${configFile}: ${error instanceof Error ? error.message : String(error)}`);
     }
   } else {
@@ -523,6 +526,7 @@ function applyClaudeCodePathSetupIfNeeded(): void {
       writeFileSync(configFile, existing + block, 'utf-8');
       log.success(`Added Claude Code to PATH in ${configFile}`);
     } catch (error: unknown) {
+      // [ANTI-PATTERN IGNORED]: the failure is already surfaced to the user via the interactive-aware log.warn wrapper below (p.log.warn in a TTY, console.warn otherwise), together with the manual remediation command.
       log.warn(`Could not update ${configFile}: ${error instanceof Error ? error.message : String(error)}`);
       log.info(`Run manually: echo '${exportLine}' >> ${configFile}`);
       return;
@@ -536,6 +540,7 @@ async function installClaudeCode(): Promise<boolean> {
   const command = IS_WINDOWS
     ? 'powershell -ExecutionPolicy ByPass -c "irm https://claude.ai/install.ps1 | iex"'
     : 'curl -fsSL https://claude.ai/install.sh | bash';
+  const installShell = IS_WINDOWS ? (process.env.ComSpec ?? 'cmd.exe') : '/bin/bash';
 
   const spinner = isInteractive ? p.spinner() : null;
   spinner?.start('Installing Claude Code (this can take a few minutes — downloading the native build)…');
@@ -543,7 +548,7 @@ async function installClaudeCode(): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let captured = '';
     const child = spawnHidden(command, [], {
-      shell: IS_WINDOWS ? (process.env.ComSpec ?? 'cmd.exe') : '/bin/bash',
+      shell: installShell,
       stdio: spinner ? ['inherit', 'pipe', 'pipe'] : 'inherit',
     });
 
@@ -572,6 +577,7 @@ async function installClaudeCode(): Promise<boolean> {
         try {
           applyClaudeCodePathSetupIfNeeded();
         } catch (error: unknown) {
+          // [ANTI-PATTERN IGNORED]: the failure is already surfaced to the user via the interactive-aware log.warn wrapper below (p.log.warn in a TTY, console.warn otherwise); PATH setup is best-effort after a successful install.
           log.warn(`Could not auto-apply PATH setup: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
@@ -614,11 +620,10 @@ async function promptForIDESelection(): Promise<string[]> {
 
   const options = detectedIDEs.map((ide) => {
     const detectedTag = ide.detected ? ' [detected]' : '';
-    const hint = ide.supported ? `${ide.hint}${detectedTag}` : `coming soon${detectedTag}`;
     return {
       value: ide.id,
       label: ide.label,
-      hint,
+      hint: `${ide.hint}${detectedTag}`,
     };
   });
 
@@ -678,6 +683,19 @@ function copyPluginToCache(version: string): void {
   rmSync(cachePath, { recursive: true, force: true });
   ensureDirectoryExists(cachePath);
   cpSync(sourcePluginDirectory, cachePath, { recursive: true, force: true });
+}
+
+function writeMarketplaceInstallMarkers(
+  marketplaceDir: string,
+  version: string,
+  bunVersion: string,
+  uvVersion: string,
+): void {
+  writeInstallMarker(marketplaceDir, version, bunVersion, uvVersion);
+  // Hooks execute from marketplace/plugin, and Codex caches only that nested
+  // directory. Keep the runtime marker beside the package.json the hook reads
+  // so SessionStart does not report a completed install as missing.
+  writeInstallMarker(join(marketplaceDir, 'plugin'), version, bunVersion, uvVersion);
 }
 
 /**
@@ -743,19 +761,29 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
 function mergeSettings(updates: Record<string, string>): boolean {
   const path = USER_SETTINGS_PATH;
   try {
-    let current: Record<string, unknown> = {};
+    // Read the FULL document so we can write it back intact. The
+    // Claude-Code-style settings.json wraps env vars in a top-level `env`
+    // block and exposes peer keys at the root (hooks, permissions,
+    // apiKeyHelper, model, statusLine, etc.). readFlatSettings unwraps the
+    // env subtree for reads, but writing that flattened view back as the
+    // entire file silently drops every non-env top-level key — destroying
+    // user configuration that disableClaudeAutoMemory + writeJsonFileAtomic
+    // had carefully written.
+    //
+    // Track whether the file uses the env-nested shape so we mutate only the
+    // relevant subtree and preserve every other top-level key on write.
+    let document: Record<string, unknown> = {};
+    let envNested = false;
     if (existsSync(path)) {
       try {
-        const raw = readFileSync(path, 'utf-8');
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object' && parsed.env && typeof parsed.env === 'object') {
-          current = { ...parsed.env };
-        } else if (parsed && typeof parsed === 'object') {
-          current = { ...parsed };
+        const parsed = parseJsonWithBom(readFileSync(path, 'utf-8'));
+        if (parsed && typeof parsed === 'object') {
+          document = parsed as Record<string, unknown>;
+          envNested = typeof document.env === 'object' && document.env !== null;
         }
       } catch (parseError: unknown) {
         console.warn('[install] Failed to parse existing settings.json, starting from empty:', parseError instanceof Error ? parseError.message : String(parseError));
-        current = {};
+        document = {};
       }
     } else {
       const dir = dirname(path);
@@ -764,11 +792,14 @@ function mergeSettings(updates: Record<string, string>): boolean {
       }
     }
 
+    const target = envNested
+      ? (document.env as Record<string, unknown>)
+      : document;
     for (const [key, value] of Object.entries(updates)) {
-      current[key] = value;
+      target[key] = value;
     }
 
-    writeFileSync(path, JSON.stringify(current, null, 2), 'utf-8');
+    writeSettingsJsonAtomic(path, document);
     return true;
   } catch (error: unknown) {
     log.error(`Failed to write settings to ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -779,17 +810,21 @@ function mergeSettings(updates: Record<string, string>): boolean {
 type ProviderId = 'claude' | 'gemini' | 'openrouter';
 type ClaudeAccessMode = 'subscription' | 'api-key';
 type ClaudeApiMode = 'direct' | 'gateway';
-type RuntimeId = 'worker' | 'server-beta';
+// Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
+// enums, `server-beta-worker` lockedBy marker) are intentionally preserved in
+// the source code; runtime-selector dual-accepts both `'server'` and
+// `'server-beta'` settings values, but the installer writes the new canonical
+// form `'server'` going forward (settings keys: CLAUDE_MEM_SERVER_{URL,
+// API_KEY,PROJECT_ID}).
+type RuntimeId = 'worker' | 'server';
 
 function readRawStoredAuthMethod(): 'subscription' | 'api-key' | 'gateway' | undefined {
   try {
-    if (!existsSync(USER_SETTINGS_PATH)) return undefined;
-    const raw = JSON.parse(readFileSync(USER_SETTINGS_PATH, 'utf-8')) as Record<string, unknown>;
-    const flat = (raw.env && typeof raw.env === 'object' ? raw.env : raw) as Record<string, unknown>;
-    const value = flat.CLAUDE_MEM_CLAUDE_AUTH_METHOD;
+    const value = readFlatSettings(USER_SETTINGS_PATH)?.CLAUDE_MEM_CLAUDE_AUTH_METHOD;
     if (value === 'subscription' || value === 'api-key' || value === 'gateway') return value;
     return undefined;
   } catch {
+    // [ANTI-PATTERN IGNORED]: settings.json is optional and may be absent or hand-edited into invalid JSON; falling back to env-based auth detection in resolveClaudeAuthMethod is the designed recovery.
     return undefined;
   }
 }
@@ -816,9 +851,9 @@ async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
       log.error(`Unknown --runtime: ${options.runtime}. Allowed: worker, server`);
       process.exit(1);
     }
-    if (requested === 'server-beta') {
+    if (requested === 'server') {
       await setupServerRuntimeNonInteractive(options);
-      return 'server-beta';
+      return 'server';
     }
     mergeSettings({ CLAUDE_MEM_RUNTIME: 'worker' });
     return 'worker';
@@ -833,7 +868,7 @@ async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
     message: 'Which runtime should claude-mem start after install?',
     options: [
       { value: 'worker', label: 'Worker', hint: 'stable compatibility path' },
-      { value: 'server-beta', label: 'Server (beta)', hint: 'REST V1, API keys, team-ready storage' },
+      { value: 'server', label: 'Server (beta)', hint: 'REST V1, API keys, team-ready storage' },
     ],
     initialValue: 'worker',
   });
@@ -847,47 +882,39 @@ async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
     CLAUDE_MEM_RUNTIME: selected,
   });
 
-  if (selected === 'server-beta') {
-    await maybeBootstrapServerBetaApiKey();
+  if (selected === 'server') {
+    await maybeBootstrapServerApiKey();
   }
   return selected;
 }
 
-// #2543 — execute the server-runtime install plan. Pure planning lives in
-// server-runtime-setup.ts (unit-tested); this function performs the side
-// effects the plan describes. Docker stack bring-up is config-only here (we log
-// the command an operator must run / a CI provisioner executes); key generation
-// reuses the same bootstrap path as the interactive flow (createServerApiKey +
-// DEFAULT_LOCAL_API_KEY_SCOPES via server-beta-bootstrap), and the IDE MCP
+// #2543 — set up the server runtime non-interactively. Docker stack bring-up
+// is config-only here (we log the command an operator must run / a CI
+// provisioner executes); key generation reuses the same bootstrap path as the
+// interactive flow (createServerApiKey via server-bootstrap), and the IDE MCP
 // config target is recorded in settings so hooks resolve the server runtime.
 async function setupServerRuntimeNonInteractive(options: InstallOptions): Promise<void> {
   const serverBaseUrl = (options.serverUrl ?? '').trim() || DEFAULT_SERVER_RUNTIME_BASE_URL;
-  const hasDatabaseUrl = Boolean((process.env.CLAUDE_MEM_SERVER_DATABASE_URL ?? '').trim());
-  const plan = planServerRuntimeInstall({ serverBaseUrl, hasDatabaseUrl });
 
-  mergeSettings(plan.settings);
-
-  if (plan.bringUpDockerStack) {
-    log.info(
-      'Server runtime selected. Bring up the bundled stack with '
-        + '`docker compose up -d postgres valkey claude-mem-server claude-mem-worker` '
-        + `(pg + redis/valkey). The server listens at ${serverBaseUrl}.`,
-    );
-  }
+  mergeSettings({ CLAUDE_MEM_RUNTIME: 'server', CLAUDE_MEM_SERVER_URL: serverBaseUrl });
 
   log.info(
-    `IDE MCP config target for the server runtime: ${plan.mcpServerConfig.type} ${plan.mcpServerConfig.url}`,
+    'Server runtime selected. Bring up the bundled stack with '
+      + '`docker compose up -d postgres valkey claude-mem-server claude-mem-worker` '
+      + `(pg + redis/valkey). The server listens at ${serverBaseUrl}.`,
   );
 
-  if (plan.generateApiKey) {
-    await maybeBootstrapServerBetaApiKey();
-  }
-  for (const note of plan.notes) {
-    log.warn(note);
-  }
+  // The server mounts its MCP endpoint at `<baseUrl>/mcp` over HTTP (vs. the
+  // worker's stdio transport); trailing slashes are trimmed so we never emit
+  // `http://host//mcp`.
+  log.info(
+    `IDE MCP config target for the server runtime: http ${serverBaseUrl.replace(/\/+$/, '')}/mcp`,
+  );
+
+  await maybeBootstrapServerApiKey();
 }
 
-async function maybeBootstrapServerBetaApiKey(): Promise<void> {
+async function maybeBootstrapServerApiKey(): Promise<void> {
   // Only attempt if Postgres is configured. Without DATABASE_URL we cannot
   // reach the api_keys table — the operator must configure the server first
   // and rerun `claude-mem server keys rotate`.
@@ -899,24 +926,29 @@ async function maybeBootstrapServerBetaApiKey(): Promise<void> {
     return;
   }
   try {
-    const { bootstrapServerBetaApiKey, persistServerBetaSettings } = await import(
-      '../../services/hooks/server-beta-bootstrap.js'
-    );
-    const result = await bootstrapServerBetaApiKey();
-    persistServerBetaSettings(USER_SETTINGS_PATH, {
-      apiKey: result.rawKey,
-      projectId: result.projectId,
-    });
-    log.info(
-      `Provisioned local hook API key (project=${result.projectId.slice(0, 8)}…). `
-        + 'Settings saved with mode 0600.',
-    );
+    await bootstrapAndPersistServerApiKey();
   } catch (error: unknown) {
+    // [ANTI-PATTERN IGNORED]: the failure is already surfaced to the user via the interactive-aware log.warn wrapper below (p.log.warn in a TTY, console.warn otherwise), including the manual remediation command.
     log.warn(
-      `Failed to bootstrap server-beta API key: ${error instanceof Error ? error.message : String(error)}. `
+      `Failed to bootstrap server API key: ${error instanceof Error ? error.message : String(error)}. `
         + 'Hooks will fall back to the worker until you run `npx claude-mem server keys rotate`.',
     );
   }
+}
+
+async function bootstrapAndPersistServerApiKey(): Promise<void> {
+  const { bootstrapServerApiKey, persistServerSettings } = await import(
+    '../../services/hooks/server-bootstrap.js'
+  );
+  const result = await bootstrapServerApiKey();
+  persistServerSettings(USER_SETTINGS_PATH, {
+    apiKey: result.rawKey,
+    projectId: result.projectId,
+  });
+  log.info(
+    `Provisioned local hook API key (project=${result.projectId.slice(0, 8)}…). `
+      + 'Settings saved with mode 0600.',
+  );
 }
 
 async function promptProvider(options: InstallOptions): Promise<ProviderId> {
@@ -1000,6 +1032,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
           new URL(value);
           return undefined;
         } catch {
+          // [ANTI-PATTERN IGNORED]: a URL parse failure here just means the user typed an invalid gateway URL; the recovery is the inline validation message the prompt displays on every attempt.
           return 'Enter a valid URL, for example http://localhost:4000';
         }
       },
@@ -1154,8 +1187,8 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
 async function promptClaudeModel(options: InstallOptions): Promise<void> {
   const allowed = new Set([
     'claude-haiku-4-5-20251001',
-    'claude-sonnet-4-6',
-    'claude-opus-4-7',
+    'claude-sonnet-5',
+    'claude-opus-4-8',
   ]);
   const allowCustomModel = resolveClaudeAuthMethod() === 'gateway';
 
@@ -1210,8 +1243,8 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
     message: 'Which Claude model should claude-mem use to compress observations?\nThis runs whenever you and Claude touch a file — keep it cheap and fast.',
     options: [
       { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (recommended — fast, cheap, great for compression)' },
-      { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6 (balanced quality and cost)' },
-      { value: 'claude-opus-4-7', label: 'Opus 4.7 (highest quality, most expensive)' },
+      { value: 'claude-sonnet-5', label: 'Sonnet 5 (balanced quality and cost)' },
+      { value: 'claude-opus-4-8', label: 'Opus 4.8 (highest quality, most expensive)' },
     ],
     initialValue,
   });
@@ -1247,41 +1280,50 @@ interface StoredSignup {
   sent: boolean;
 }
 
+function parseStoredSignup(): StoredSignup | null {
+  const flat = readFlatSettings(USER_SETTINGS_PATH);
+  if (!flat) return null;
+  const email = typeof flat.CLAUDE_MEM_ONLINE_SIGNUP_EMAIL === 'string' ? flat.CLAUDE_MEM_ONLINE_SIGNUP_EMAIL : '';
+  if (!email) return null;
+  return {
+    email,
+    note: typeof flat.CLAUDE_MEM_ONLINE_SIGNUP_NOTE === 'string' ? flat.CLAUDE_MEM_ONLINE_SIGNUP_NOTE : '',
+    sent: flat.CLAUDE_MEM_ONLINE_SIGNUP_SENT === 'true',
+  };
+}
+
 function readStoredSignup(): StoredSignup | null {
   try {
-    if (!existsSync(USER_SETTINGS_PATH)) return null;
-    const raw = JSON.parse(readFileSync(USER_SETTINGS_PATH, 'utf-8')) as Record<string, unknown>;
-    const flat = (raw.env && typeof raw.env === 'object' ? raw.env : raw) as Record<string, unknown>;
-    const email = typeof flat.CLAUDE_MEM_ONLINE_SIGNUP_EMAIL === 'string' ? flat.CLAUDE_MEM_ONLINE_SIGNUP_EMAIL : '';
-    if (!email) return null;
-    return {
-      email,
-      note: typeof flat.CLAUDE_MEM_ONLINE_SIGNUP_NOTE === 'string' ? flat.CLAUDE_MEM_ONLINE_SIGNUP_NOTE : '',
-      sent: flat.CLAUDE_MEM_ONLINE_SIGNUP_SENT === 'true',
-    };
+    return parseStoredSignup();
   } catch {
+    // [ANTI-PATTERN IGNORED]: settings.json is optional and may be missing or hand-edited into invalid JSON; treating that as "no stored signup" simply re-asks the opt-in, the designed recovery for this never-blocking marketing flow.
     return null;
   }
+}
+
+async function postSignup(payload: { email: string; note: string; version: string }, signal: AbortSignal): Promise<boolean> {
+  const res = await fetch(SIGNUP_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: payload.email,
+      note: payload.note,
+      version: payload.version,
+      platform: process.platform,
+      source: 'npx-installer',
+    }),
+    signal,
+  });
+  return res.ok;
 }
 
 async function submitOnlineSignup(payload: { email: string; note: string; version: string }): Promise<boolean> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5000);
   try {
-    const res = await fetch(SIGNUP_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email: payload.email,
-        note: payload.note,
-        version: payload.version,
-        platform: process.platform,
-        source: 'npx-installer',
-      }),
-      signal: controller.signal,
-    });
-    return res.ok;
+    return await postSignup(payload, controller.signal);
   } catch {
+    // [ANTI-PATTERN IGNORED]: network/timeout failures of this optional waitlist POST are expected offline; the caller persists the email locally and retries silently on the next install run.
     return false;
   } finally {
     clearTimeout(timer);
@@ -1304,7 +1346,7 @@ async function promptTelemetryOptIn(): Promise<void> {
   const existing = loadTelemetryConfig();
   if (existing?.enabled !== undefined) return;
 
-  p.log.message(pc.dim(
+  p.log.message(styleText('dim', 
     'Anonymous install ID only — no prompts, file paths, code, or project names, ever.\n'
     + 'Details: https://docs.claude-mem.ai/telemetry · Change anytime: claude-mem telemetry disable',
   ));
@@ -1341,7 +1383,7 @@ async function promptCmemOnlineOptIn(version: string): Promise<void> {
 
   p.note(
     [
-      pc.bold(pc.cyan('New! CMEM Online: every mem everywhere all at once.')),
+      styleText(['bold', 'cyan'], 'New! CMEM Online: every mem everywhere all at once.'),
       '',
       "Share your email and we'll send you a link. We're rolling this out to our",
       'top users first, then everyone ASAP.',
@@ -1384,9 +1426,9 @@ async function promptCmemOnlineOptIn(version: string): Promise<void> {
     CLAUDE_MEM_ONLINE_SIGNUP_SENT: ok ? 'true' : 'false',
   });
   if (ok) {
-    spin.stop(`You're on the list — we'll email ${pc.cyan(email)} your CMEM Online link.`);
+    spin.stop(`You're on the list — we'll email ${styleText('cyan', email)} your CMEM Online link.`);
   } else {
-    spin.stop(pc.yellow(`Saved ${email} — we'll finish signing you up next time you run the installer.`));
+    spin.stop(styleText('yellow', `Saved ${email} — we'll finish signing you up next time you run the installer.`));
   }
 }
 
@@ -1408,10 +1450,11 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   try {
     await runInstallCommandInner(options, summary);
   } catch (error: unknown) {
-    if (error instanceof InstallAbortError) {
-      // error.category.id is OUR taxonomy id (error-taxonomy.ts), never a message.
+    const err = error instanceof Error ? error : new Error(String(error));
+    if (err instanceof InstallAbortError) {
+      // err.category.id is OUR taxonomy id (error-taxonomy.ts), never a message.
       await captureCliEvent('install_failed', {
-        error_category: error.category.id,
+        error_category: err.category.id,
         interactive: isInteractive,
         install_method: detectInstallMethod(),
         claude_code_version: detectClaudeCodeVersion(),
@@ -1420,15 +1463,15 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
       // remediation headline and exit non-zero. ABORT must never reach the
       // "Installation Complete" path.
       flushSummary(summary, (line) => (isInteractive ? p.log.message(line) : console.error(`  ${line}`)));
-      const headline = `Installation Aborted: ${error.category.id}`;
+      const headline = `Installation Aborted: ${err.category.id}`;
       if (isInteractive) {
         p.log.error(headline);
-        p.log.error(error.remediation);
-        p.outro(pc.red('claude-mem installation aborted.'));
+        p.log.error(err.remediation);
+        p.outro(styleText('red', 'claude-mem installation aborted.'));
       } else {
         console.error(`\n  ${headline}`);
-        console.error(`  ${error.remediation}`);
-        console.error(`  ${error.message}`);
+        console.error(`  ${err.remediation}`);
+        console.error(`  ${err.message}`);
       }
       process.exit(1);
     }
@@ -1446,7 +1489,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
 
   if (isInteractive) {
     await playBanner();
-    p.intro(pc.bgCyan(pc.black(' claude-mem install ')));
+    p.intro(styleText(['bgCyan', 'black'], ' claude-mem install '));
   } else {
     console.log('claude-mem install');
   }
@@ -1465,12 +1508,12 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     }
   }
 
-  const dot = pc.dim('·');
-  const segments = [`${pc.bold('claude-mem')} ${pc.cyan(`v${version}`)}`];
+  const dot = styleText('dim', '·');
+  const segments = [`${styleText('bold', 'claude-mem')} ${styleText('cyan', `v${version}`)}`];
   if (existingVersion && existingVersion !== version) {
-    segments.push(`installed ${pc.yellow(`v${existingVersion}`)}`);
+    segments.push(`installed ${styleText('yellow', `v${existingVersion}`)}`);
   } else if (existingVersion) {
-    segments.push(pc.dim('reinstall'));
+    segments.push(styleText('dim', 'reinstall'));
   }
   log.info(segments.join(` ${dot} `));
 
@@ -1495,10 +1538,6 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     selectedIDEs = [options.ide];
     const allIDEs = detectInstalledIDEs();
     const match = allIDEs.find((i) => i.id === options.ide);
-    if (match && !match.supported) {
-      log.error(`Support for ${match.label} coming soon.`);
-      process.exit(1);
-    }
     if (!match) {
       log.error(`Unknown IDE: ${options.ide}`);
       log.info(`Available IDEs: ${allIDEs.map((i) => i.id).join(', ')}`);
@@ -1530,12 +1569,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       shutdownSpinner?.start('Stopping running worker (so we can overwrite cleanly)…');
       try {
         const result = await shutdownWorkerAndWait(installPort, 10000);
+        const stopMessage = result.workerWasRunning ? 'Stopped running worker before overwrite.' : 'No worker running — proceeding.';
         if (shutdownSpinner) {
-          shutdownSpinner.stop(
-            result.workerWasRunning
-              ? 'Stopped running worker before overwrite.'
-              : 'No worker running — proceeding.',
-          );
+          shutdownSpinner.stop(stopMessage);
         } else if (result.workerWasRunning) {
           log.info('Stopped running worker before overwrite.');
         }
@@ -1555,28 +1591,28 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
         task: async (message) => {
           message(`Caching v${version}...`);
           copyPluginToCache(version);
-          return `Plugin cached (v${version}) ${pc.green('OK')}`;
+          return `Plugin cached (v${version}) ${styleText('green', 'OK')}`;
         },
       },
       {
         title: 'Registering marketplace',
         task: async () => {
           registerMarketplace();
-          return `Marketplace registered ${pc.green('OK')}`;
+          return `Marketplace registered ${styleText('green', 'OK')}`;
         },
       },
       {
         title: 'Registering plugin',
         task: async () => {
           registerPlugin(version);
-          return `Plugin registered ${pc.green('OK')}`;
+          return `Plugin registered ${styleText('green', 'OK')}`;
         },
       },
       {
         title: 'Enabling plugin in Claude settings',
         task: async () => {
           enablePluginInClaudeSettings();
-          return `Plugin enabled ${pc.green('OK')}`;
+          return `Plugin enabled ${styleText('green', 'OK')}`;
         },
       },
       {
@@ -1599,7 +1635,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             }
             writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
           }
-          return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${pc.green('OK')}`;
+          writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion);
+          return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
         },
       },
     ];
@@ -1610,7 +1647,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
         task: async (message) => {
           message('Copying to marketplace directory...');
           copyPluginToMarketplace();
-          return `Plugin files copied ${pc.green('OK')}`;
+          return `Plugin files copied ${styleText('green', 'OK')}`;
         },
       });
       tasks.push({
@@ -1623,10 +1660,16 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
           const stopHeartbeat = startHeartbeat(message, 'Running npm install…');
           try {
             await runNpmInstallInMarketplace(summary);
+            writeMarketplaceInstallMarkers(
+              marketplaceDirectory(),
+              version,
+              installedBunVersion ?? 'unknown',
+              installedUvVersion ?? 'unknown',
+            );
           } finally {
             stopHeartbeat();
           }
-          return `Dependencies installed ${pc.green('OK')}`;
+          return `Dependencies installed ${styleText('green', 'OK')}`;
         },
       });
     }
@@ -1656,10 +1699,12 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     } catch (error: unknown) {
       // Don't fail the install over this — WARN_CONTINUE via the central handler.
       autoMemoryStatus = 'failed';
+      const err = error instanceof Error ? error : new Error(String(error));
+      // [ANTI-PATTERN IGNORED]: recorded via installerError(WARN_CONTINUE) and flushed after the spinners; a direct console call would be clobbered by the clack UI.
       installerError(ErrorSeverity.WARN_CONTINUE, {
         component: 'auto-memory',
         phase: 'post-ide',
-        cause: error,
+        cause: err,
       }, summary);
     }
   } else if (autoMemoryChoice === 'leave-enabled') {
@@ -1671,14 +1716,14 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // `claude-mem server start`), NOT the worker-service spawner. Skip the
   // worker-only autostart entirely so the server runtime never invokes the
   // worker path (#2543).
-  const autoStartSkipped = !isInteractive || options.noAutoStart || selectedRuntime === 'server-beta';
+  const autoStartSkipped = !isInteractive || options.noAutoStart || selectedRuntime === 'server';
 
   await runTasks([
     {
-      title: selectedRuntime === 'server-beta' ? 'Starting server beta daemon' : 'Starting worker daemon',
+      title: selectedRuntime === 'server' ? 'Starting server daemon' : 'Starting worker daemon',
       task: async (message) => {
-        if (selectedRuntime === 'server-beta') {
-          return `Server runtime selected — start it with ${pc.bold('npx claude-mem server start')} ${pc.dim('(or via Docker compose)')}`;
+        if (selectedRuntime === 'server') {
+          return `Server runtime selected — start it with ${styleText('bold', 'npx claude-mem server start')} ${styleText('dim', '(or via Docker compose)')}`;
         }
         if (autoStartSkipped) {
           return isInteractive
@@ -1689,17 +1734,17 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
         const marketplaceScriptPath = join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs');
         const cacheScriptPath = join(pluginCacheDirectory(version), 'scripts', 'worker-service.cjs');
         const scriptPath = existsSync(marketplaceScriptPath) ? marketplaceScriptPath : cacheScriptPath;
-        // selectedRuntime is narrowed to 'worker' here: the server-beta case
+        // selectedRuntime is narrowed to 'worker' here: the server case
         // returned above and never reaches the worker-service spawner.
         message(`Spawning worker on port ${port}...`);
         workerStartResult = await ensureWorkerStarted(port, scriptPath);
         switch (workerStartResult) {
           case 'ready':
-            return `Worker ready at http://localhost:${port} ${pc.green('OK')}`;
+            return `Worker ready at http://localhost:${port} ${styleText('green', 'OK')}`;
           case 'warming':
-            return `Worker starting on port ${port} — finishing in background ${pc.yellow('⏳')}`;
+            return `Worker starting on port ${port} — finishing in background ${styleText('yellow', '⏳')}`;
           case 'dead':
-            return `Worker did not start — try \`npx claude-mem start\` manually ${pc.yellow('!')}`;
+            return `Worker did not start — try \`npx claude-mem start\` manually ${styleText('yellow', '!')}`;
         }
       },
     },
@@ -1712,21 +1757,21 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   const hasFailures = summary.failedIDEs.length > 0;
   const installStatus = hasFailures ? 'Installation Partial' : 'Installation Complete';
   const summaryLines = [
-    `Version:     ${pc.cyan(version)}`,
-    `Plugin dir:  ${pc.cyan(marketplaceDir)}`,
-    `IDEs:        ${pc.cyan(selectedIDEs.join(', '))}`,
+    `Version:     ${styleText('cyan', version)}`,
+    `Plugin dir:  ${styleText('cyan', marketplaceDir)}`,
+    `IDEs:        ${styleText('cyan', selectedIDEs.join(', '))}`,
   ];
   if (autoMemoryStatus === 'disabled') {
-    summaryLines.push(`Auto-memory: ${pc.cyan('disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
+    summaryLines.push(`Auto-memory: ${styleText('cyan', 'disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
   } else if (autoMemoryStatus === 'already-disabled') {
-    summaryLines.push(`Auto-memory: ${pc.cyan('already disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
+    summaryLines.push(`Auto-memory: ${styleText('cyan', 'already disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
   } else if (autoMemoryStatus === 'left-enabled') {
-    summaryLines.push(`Auto-memory: ${pc.cyan('left enabled')} (native Claude Code memory preserved)`);
+    summaryLines.push(`Auto-memory: ${styleText('cyan', 'left enabled')} (native Claude Code memory preserved)`);
   } else if (autoMemoryStatus === 'failed') {
-    summaryLines.push(`Auto-memory: ${pc.red('write failed')} (see warning above)`);
+    summaryLines.push(`Auto-memory: ${styleText('red', 'write failed')} (see warning above)`);
   }
   if (failedIDEs.length > 0) {
-    summaryLines.push(`Failed:      ${pc.red(failedIDEs.join(', '))}`);
+    summaryLines.push(`Failed:      ${styleText('red', failedIDEs.join(', '))}`);
   }
 
   if (isInteractive) {
@@ -1740,6 +1785,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // spinners and summary note (a live print would be clobbered by clack).
   flushSummary(summary, (line) => (isInteractive ? p.log.message(line) : console.log(`  ${line}`)));
 
+  const workerHost = getSetting('CLAUDE_MEM_WORKER_HOST');
+  const workerUrlHost = formatHostForUrl(workerHost);
   const workerPort = getSetting('CLAUDE_MEM_WORKER_PORT');
 
   let actualPort: number | string = workerPort;
@@ -1752,7 +1799,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     const healthSpinner = isInteractive ? p.spinner() : null;
     healthSpinner?.start(`Verifying worker on port ${workerPort}…`);
     try {
-      const healthResponse = await fetch(`http://127.0.0.1:${workerPort}/api/health`, {
+      const healthResponse = await fetch(`http://${workerUrlHost}:${workerPort}/api/health`, {
         signal: AbortSignal.timeout(3000),
       });
       if (healthResponse.ok) {
@@ -1778,60 +1825,38 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
 
   const finalWorkerState = workerStartResult as WorkerStartResult;
   const workerAlive = finalWorkerState !== 'dead' || workerReady;
-  const runtimeLabel = selectedRuntime === 'server-beta' ? 'Server beta' : 'Worker';
-  const runtimeStartCommand = selectedRuntime === 'server-beta' ? 'npx claude-mem server start' : 'npx claude-mem start';
+  const runtimeLabel = selectedRuntime === 'server' ? 'Server' : 'Worker';
+  const runtimeStartCommand = selectedRuntime === 'server' ? 'npx claude-mem server start' : 'npx claude-mem start';
+  const workerBaseUrl = `http://${workerUrlHost}:${actualPort}`;
+  const configuredWorkerBaseUrl = `http://${workerUrlHost}:${workerPort}`;
   const workerHeadline = autoStartSkipped
-    ? `${pc.yellow('!')} ${runtimeLabel} autostart skipped — start it manually with ${pc.bold(runtimeStartCommand)}`
+    ? `${styleText('yellow', '!')} ${runtimeLabel} autostart skipped — start it manually with ${styleText('bold', runtimeStartCommand)}`
     : workerReady || finalWorkerState === 'ready'
-      ? `${pc.green('✓')} ${runtimeLabel} running at ${pc.underline(`http://localhost:${actualPort}`)}`
-      : `${pc.yellow('⏳')} ${runtimeLabel} starting at ${pc.underline(`http://localhost:${actualPort}`)} — give it ~30s, then refresh`;
-  const nextSteps = autoStartSkipped
-    ? [
-        workerHeadline,
-        ``,
-        `${pc.bold('First success:')} once the worker is running, keep ${pc.underline(`http://localhost:${workerPort}`)} open in a browser, then open Claude Code in any project. Observations stream in as Claude reads, edits, and runs commands.`,
-        ``,
-        `${pc.bold('Two paths from here:')}`,
-        `  ${pc.cyan('A.')} Just start working. Memory builds passively from your first prompt. (Recommended.)`,
-        `  ${pc.cyan('B.')} Front-load it: open Claude Code and run ${pc.bold('/learn-codebase')} to ingest the whole repo (~5 min, optional).`,
-        ``,
-        `Memory injection starts on your second session in a project.`,
-        `Everything stays in ${pc.cyan('~/.claude-mem')} on this machine.`,
-        ``,
-        `${pc.dim('How it works: /how-it-works   ·   Disable first-session hint: CLAUDE_MEM_WELCOME_HINT_ENABLED=false')}`,
-        `${pc.dim('Note: close all Claude Code sessions before uninstalling, or ~/.claude-mem will be recreated by active hooks.')}`,
-      ]
+      ? `${styleText('green', '✓')} ${runtimeLabel} running at ${styleText('underline', workerBaseUrl)}`
+      : `${styleText('yellow', '⏳')} ${runtimeLabel} starting at ${styleText('underline', workerBaseUrl)} — give it ~30s, then refresh`;
+  const nextStepsHeadline = autoStartSkipped || workerAlive
+    ? workerHeadline
+    : `${styleText('yellow', '!')} Worker not yet ready on port ${styleText('cyan', String(workerPort))} -- still starting up; check ${styleText('bold', 'claude-mem status')} later, or start manually: ${styleText('bold', 'npx claude-mem start')}`;
+  const firstSuccessOpener = autoStartSkipped
+    ? `once the worker is running, keep ${styleText('underline', configuredWorkerBaseUrl)} open in a browser`
     : workerAlive
-    ? [
-        workerHeadline,
-        ``,
-        `${pc.bold('First success:')} keep that URL open in a browser, then open Claude Code in any project. Observations stream in as Claude reads, edits, and runs commands.`,
-        ``,
-        `${pc.bold('Two paths from here:')}`,
-        `  ${pc.cyan('A.')} Just start working. Memory builds passively from your first prompt. (Recommended.)`,
-        `  ${pc.cyan('B.')} Front-load it: open Claude Code and run ${pc.bold('/learn-codebase')} to ingest the whole repo (~5 min, optional).`,
-        ``,
-        `Memory injection starts on your second session in a project.`,
-        `Everything stays in ${pc.cyan('~/.claude-mem')} on this machine.`,
-        ``,
-        `${pc.dim('How it works: /how-it-works   ·   Disable first-session hint: CLAUDE_MEM_WELCOME_HINT_ENABLED=false')}`,
-        `${pc.dim('Note: close all Claude Code sessions before uninstalling, or ~/.claude-mem will be recreated by active hooks.')}`,
-      ]
-    : [
-        `${pc.yellow('!')} Worker not yet ready on port ${pc.cyan(String(workerPort))} -- still starting up; check ${pc.bold('claude-mem status')} later, or start manually: ${pc.bold('npx claude-mem start')}`,
-        ``,
-        `${pc.bold('First success:')} keep ${pc.underline(`http://localhost:${workerPort}`)} open in a browser, then open Claude Code in any project. Observations stream in as Claude reads, edits, and runs commands.`,
-        ``,
-        `${pc.bold('Two paths from here:')}`,
-        `  ${pc.cyan('A.')} Just start working. Memory builds passively from your first prompt. (Recommended.)`,
-        `  ${pc.cyan('B.')} Front-load it: open Claude Code and run ${pc.bold('/learn-codebase')} to ingest the whole repo (~5 min, optional).`,
-        ``,
-        `Memory injection starts on your second session in a project.`,
-        `Everything stays in ${pc.cyan('~/.claude-mem')} on this machine.`,
-        ``,
-        `${pc.dim('How it works: /how-it-works   ·   Disable first-session hint: CLAUDE_MEM_WELCOME_HINT_ENABLED=false')}`,
-        `${pc.dim('Note: close all Claude Code sessions before uninstalling, or ~/.claude-mem will be recreated by active hooks.')}`,
-      ];
+      ? 'keep that URL open in a browser'
+      : `keep ${styleText('underline', configuredWorkerBaseUrl)} open in a browser`;
+  const nextSteps = [
+    nextStepsHeadline,
+    ``,
+    `${styleText('bold', 'First success:')} ${firstSuccessOpener}, then open Claude Code in any project. Observations stream in as Claude reads, edits, and runs commands.`,
+    ``,
+    `${styleText('bold', 'Two paths from here:')}`,
+    `  ${styleText('cyan', 'A.')} Just start working. Memory builds passively from your first prompt. (Recommended.)`,
+    `  ${styleText('cyan', 'B.')} Front-load it: open Claude Code and run ${styleText('bold', '/learn-codebase')} to ingest the whole repo (~5 min, optional).`,
+    ``,
+    `Memory injection starts on your second session in a project.`,
+    `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine.`,
+    ``,
+    `${styleText('dim', 'How it works: /how-it-works   ·   Disable first-session hint: CLAUDE_MEM_WELCOME_HINT_ENABLED=false')}`,
+    `${styleText('dim', 'Note: close all Claude Code sessions before uninstalling, or ~/.claude-mem will be recreated by active hooks.')}`,
+  ];
 
   if (isInteractive) {
     p.note(nextSteps.join('\n'), 'Next Steps');
@@ -1839,9 +1864,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     // the product is installed and working, never as a gate in front of it.
     await promptTelemetryOptIn();
     if (failedIDEs.length > 0) {
-      p.outro(pc.yellow('claude-mem installed with some IDE setup failures.'));
+      p.outro(styleText('yellow', 'claude-mem installed with some IDE setup failures.'));
     } else {
-      p.outro(pc.green('claude-mem installed successfully!'));
+      p.outro(styleText('green', 'claude-mem installed successfully!'));
     }
   } else {
     console.log('\n  Next Steps');
@@ -1872,25 +1897,30 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   }, { person: true });
 }
 
-export async function runRepairCommand(): Promise<void> {
+async function runRepairCommandInner(summary: InstallSummary): Promise<void> {
   const version = readPluginVersion();
   const cacheDir = pluginCacheDirectory(version);
+  const marketplaceDir = marketplaceDirectory();
+  let bunVersion = 'unknown';
+  let uvVersion = 'unknown';
 
   if (isInteractive) {
-    p.intro(pc.bgCyan(pc.black(' claude-mem repair ')));
+    p.intro(styleText(['bgCyan', 'black'], ' claude-mem repair '));
   } else {
     console.log('claude-mem repair');
   }
-  log.info(`Version: ${pc.cyan(version)}`);
+  log.info(`Version: ${styleText('cyan', version)}`);
 
   await runTasks([
     {
       title: 'Setting up runtime',
       task: async (message) => {
         message('Checking Bun…');
-        const { version: bunVersion } = await ensureBun();
+        const bun = await ensureBun(summary);
+        bunVersion = bun.version;
         message('Checking uv…');
-        const { version: uvVersion } = await ensureUv();
+        const uv = await ensureUv(summary);
+        uvVersion = uv.version;
         // Repair must regenerate the cache if it was wiped (e.g. user ran
         // `rm -rf ~/.claude/plugins/cache`). Without this, bun install would
         // fail immediately with no package.json to install against.
@@ -1899,17 +1929,59 @@ export async function runRepairCommand(): Promise<void> {
           copyPluginToCache(version);
         }
         message('Reinstalling plugin dependencies…');
-        const { bunPath } = await ensureBun();
+        const { bunPath } = bun;
         await installPluginDependencies(cacheDir, bunPath);
         writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
-        return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${pc.green('OK')}`;
+        return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
+      },
+    },
+    {
+      title: 'Repairing marketplace runtime',
+      task: async (message) => {
+        message('Repopulating marketplace root from npm package…');
+        copyPluginToMarketplace();
+        message('Reinstalling marketplace dependencies…');
+        const stopHeartbeat = startHeartbeat(message, 'Running npm install…');
+        try {
+          await runNpmInstallInMarketplace(summary);
+          writeMarketplaceInstallMarkers(marketplaceDir, version, bunVersion, uvVersion);
+        } finally {
+          stopHeartbeat();
+        }
+        return `Marketplace runtime ready ${styleText('green', 'OK')}`;
       },
     },
   ]);
 
+  flushSummary(summary, (line) => (isInteractive ? p.log.message(line) : console.log(`  ${line}`)));
+
   if (isInteractive) {
-    p.outro(pc.green('claude-mem repair complete.'));
+    p.outro(styleText('green', 'claude-mem repair complete.'));
   } else {
     console.log('claude-mem repair complete.');
+  }
+}
+
+export async function runRepairCommand(): Promise<void> {
+  const summary = createInstallSummary();
+  try {
+    await runRepairCommandInner(summary);
+  } catch (error: unknown) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    if (err instanceof InstallAbortError) {
+      flushSummary(summary, (line) => (isInteractive ? p.log.message(line) : console.error(`  ${line}`)));
+      const headline = `Repair Aborted: ${err.category.id}`;
+      if (isInteractive) {
+        p.log.error(headline);
+        p.log.error(err.remediation);
+        p.outro(styleText('red', 'claude-mem repair aborted.'));
+      } else {
+        console.error(`\n  ${headline}`);
+        console.error(`  ${err.remediation}`);
+        console.error(`  ${err.message}`);
+      }
+      process.exit(1);
+    }
+    throw error;
   }
 }

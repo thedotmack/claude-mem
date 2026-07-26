@@ -17,6 +17,9 @@ export async function shutdownWorkerAndWait(
     });
     workerWasRunning = true;
   } catch {
+    // [ANTI-PATTERN IGNORED]: connection failure here is the expected outcome when no worker is
+    // listening on the port (port probe); recovery is reporting workerWasRunning=false so the
+    // installer skips the shutdown wait.
     return { workerWasRunning: false };
   }
 
@@ -29,6 +32,9 @@ export async function shutdownWorkerAndWait(
         signal: AbortSignal.timeout(1000),
       });
     } catch (err) {
+      // [ANTI-PATTERN IGNORED]: a failed health poll (non-timeout) is the expected signal that
+      // the worker finished shutting down and the port is closed; recovery is exiting the poll
+      // loop successfully.
       if (err instanceof Error && err.name === 'AbortError') continue;
       return { workerWasRunning };
     }

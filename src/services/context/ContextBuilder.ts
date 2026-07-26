@@ -1,19 +1,20 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { unlinkSync } from 'fs';
-import { SessionStore } from '../sqlite/SessionStore.js';
+import { existsSync, unlinkSync } from 'fs';
+import { Database } from 'bun:sqlite';
+import { DB_PATH } from '../../shared/paths.js';
 import { recordSurfaced } from '../reinforcement/persist.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
+import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
 
 import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
 import { loadContextConfig } from './ContextConfigLoader.js';
 import { calculateTokenEconomics } from './TokenCalculator.js';
 import {
-  queryObservations,
   queryObservationsMulti,
-  querySummaries,
   querySummariesMulti,
   getPriorSessionMessages,
   prepareSummariesForTimeline,
@@ -37,9 +38,17 @@ const VERSION_MARKER_PATH = path.join(
   '.install-version'
 );
 
-function initializeDatabase(): SessionStore | null {
+function initializeDatabase(): Database | null {
   try {
-    return new SessionStore();
+    if (!existsSync(DB_PATH)) return null;
+    const db = new Database(DB_PATH, { readonly: true, create: false });
+    try {
+      db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+      return db;
+    } catch (error) {
+      db.close();
+      throw error;
+    }
   } catch (error: unknown) {
     if (error instanceof Error && (error as NodeJS.ErrnoException).code === 'ERR_DLOPEN_FAILED') {
       try {
@@ -55,6 +64,33 @@ function initializeDatabase(): SessionStore | null {
       return null;
     }
     throw error;
+  }
+}
+
+/**
+ * Surfacing counts are soft signal, not correctness. The read connection above
+ * is deliberately read-only and has to survive a missing database or an
+ * EXCLUSIVE lock held by the worker (tests/context/context-builder-readonly),
+ * so the Phase 4 write-back gets its own short-lived writable connection with a
+ * tight busy timeout instead. Every failure is swallowed: a missed count costs
+ * a little ranking accuracy, never an injection.
+ */
+const SURFACING_WRITE_TIMEOUT_MS = 250;
+
+function recordSurfacedBestEffort(observationIds: number[]): void {
+  if (observationIds.length === 0) return;
+
+  let writable: Database | null = null;
+  try {
+    writable = new Database(DB_PATH, { readonly: false, create: false });
+    writable.run(`PRAGMA busy_timeout = ${SURFACING_WRITE_TIMEOUT_MS}`);
+    recordSurfaced(writable, observationIds);
+  } catch (error: unknown) {
+    logger.debug('DB', 'Surfacing count skipped', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    writable?.close();
   }
 }
 
@@ -176,18 +212,19 @@ export async function generateContextWithStats(
     config.sessionCount = 999999;
   }
 
-  const db = initializeDatabase();
-  if (!db) {
+  const rawDb = initializeDatabase();
+  if (!rawDb) {
     return { text: '', stats: null };
   }
 
   try {
-    const observations = projects.length > 1
-      ? queryObservationsMulti(db, projects, config)
-      : queryObservations(db, project, config);
-    const summaries = projects.length > 1
-      ? querySummariesMulti(db, projects, config)
-      : querySummaries(db, project, config);
+    const db = { db: rawDb };
+    const platformSource = input?.platformSource
+      ? normalizePlatformSource(input.platformSource)
+      : undefined;
+    const queryProjects = projects.length > 1 ? projects : [project];
+    const observations = queryObservationsMulti(db, queryProjects, config, platformSource);
+    const summaries = querySummariesMulti(db, queryProjects, config, platformSource);
 
     if (observations.length === 0 && summaries.length === 0) {
       return { text: renderEmptyState(project, forHuman), stats: null };
@@ -207,12 +244,12 @@ export async function generateContextWithStats(
     // previews (forHuman) or full dumps — so relevance_count reflects genuine
     // context delivery and can feed back into ranking.
     if (!forHuman && !input?.full) {
-      recordSurfaced(db.db, observations.map(o => o.id));
+      recordSurfacedBestEffort(observations.map(o => o.id));
     }
 
     return { text: output, stats: buildInjectStats(observations, summaries, Boolean(input?.full)) };
   } finally {
-    db.close();
+    rawDb.close();
   }
 }
 

@@ -1,6 +1,5 @@
 🌐 Ini adalah terjemahan otomatis. Koreksi dari komunitas sangat dipersilakan!
 
----
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
@@ -11,46 +10,51 @@
     </picture>
   </a>
   <br>
+  <a href="https://vercel.com/open-source-program">
+    <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" />
+  </a>
 </h1>
 
 <p align="center">
-  <a href="README.zh.md">🇨🇳 中文</a> •
-  <a href="README.zh-tw.md">🇹🇼 繁體中文</a> •
-  <a href="README.ja.md">🇯🇵 日本語</a> •
-  <a href="README.pt-br.md">🇧🇷 Português</a> •
-  <a href="README.ko.md">🇰🇷 한국어</a> •
-  <a href="README.es.md">🇪🇸 Español</a> •
-  <a href="README.de.md">🇩🇪 Deutsch</a> •
-  <a href="README.fr.md">🇫🇷 Français</a>
-  <a href="README.he.md">🇮🇱 עברית</a> •
-  <a href="README.ar.md">🇸🇦 العربية</a> •
-  <a href="README.ru.md">🇷🇺 Русский</a> •
-  <a href="README.pl.md">🇵🇱 Polski</a> •
-  <a href="README.cs.md">🇨🇿 Čeština</a> •
-  <a href="README.nl.md">🇳🇱 Nederlands</a> •
-  <a href="README.tr.md">🇹🇷 Türkçe</a> •
-  <a href="README.uk.md">🇺🇦 Українська</a> •
-  <a href="README.vi.md">🇻🇳 Tiếng Việt</a> •
-  <a href="README.id.md">🇮🇩 Indonesia</a> •
-  <a href="README.th.md">🇹🇭 ไทย</a> •
-  <a href="README.hi.md">🇮🇳 हिन्दी</a> •
-  <a href="README.bn.md">🇧🇩 বাংলা</a> •
-  <a href="README.ur.md">🇵🇰 اردو</a> •
-  <a href="README.ro.md">🇷🇴 Română</a> •
-  <a href="README.sv.md">🇸🇪 Svenska</a> •
-  <a href="README.it.md">🇮🇹 Italiano</a> •
-  <a href="README.el.md">🇬🇷 Ελληνικά</a> •
-  <a href="README.hu.md">🇭🇺 Magyar</a> •
-  <a href="README.fi.md">🇫🇮 Suomi</a> •
-  <a href="README.da.md">🇩🇰 Dansk</a> •
-  <a href="README.no.md">🇳🇴 Norsk</a>
+  <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
+  <a href="docs/i18n/README.zh-tw.md">🇹🇼 繁體中文</a> •
+  <a href="docs/i18n/README.ja.md">🇯🇵 日本語</a> •
+  <a href="docs/i18n/README.pt.md">🇵🇹 Português</a> •
+  <a href="docs/i18n/README.pt-br.md">🇧🇷 Português</a> •
+  <a href="docs/i18n/README.ko.md">🇰🇷 한국어</a> •
+  <a href="docs/i18n/README.es.md">🇪🇸 Español</a> •
+  <a href="docs/i18n/README.de.md">🇩🇪 Deutsch</a> •
+  <a href="docs/i18n/README.fr.md">🇫🇷 Français</a> •
+  <a href="docs/i18n/README.he.md">🇮🇱 עברית</a> •
+  <a href="docs/i18n/README.ar.md">🇸🇦 العربية</a> •
+  <a href="docs/i18n/README.ru.md">🇷🇺 Русский</a> •
+  <a href="docs/i18n/README.pl.md">🇵🇱 Polski</a> •
+  <a href="docs/i18n/README.cs.md">🇨🇿 Čeština</a> •
+  <a href="docs/i18n/README.nl.md">🇳🇱 Nederlands</a> •
+  <a href="docs/i18n/README.tr.md">🇹🇷 Türkçe</a> •
+  <a href="docs/i18n/README.uk.md">🇺🇦 Українська</a> •
+  <a href="docs/i18n/README.vi.md">🇻🇳 Tiếng Việt</a> •
+  <a href="docs/i18n/README.tl.md">🇵🇭 Tagalog</a> •
+  <a href="docs/i18n/README.id.md">🇮🇩 Indonesia</a> •
+  <a href="docs/i18n/README.th.md">🇹🇭 ไทย</a> •
+  <a href="docs/i18n/README.hi.md">🇮🇳 हिन्दी</a> •
+  <a href="docs/i18n/README.bn.md">🇧🇩 বাংলা</a> •
+  <a href="docs/i18n/README.ur.md">🇵🇰 اردو</a> •
+  <a href="docs/i18n/README.ro.md">🇷🇴 Română</a> •
+  <a href="docs/i18n/README.sv.md">🇸🇪 Svenska</a> •
+  <a href="docs/i18n/README.it.md">🇮🇹 Italiano</a> •
+  <a href="docs/i18n/README.el.md">🇬🇷 Ελληνικά</a> •
+  <a href="docs/i18n/README.hu.md">🇭🇺 Magyar</a> •
+  <a href="docs/i18n/README.fi.md">🇫🇮 Suomi</a> •
+  <a href="docs/i18n/README.da.md">🇩🇰 Dansk</a> •
+  <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
 </p>
 
 <h4 align="center">Sistem kompresi memori persisten yang dibangun untuk <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/version-13.4.0-green.svg" alt="Version">
@@ -75,13 +79,40 @@
 
 <br>
 
-<p align="center">
-  <a href="https://github.com/thedotmack/claude-mem">
-    <picture>
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/cm-preview.gif" alt="Claude-Mem Preview" width="800">
-    </picture>
-  </a>
-</p>
+<table align="center">
+  <tr>
+    <td align="center">
+      <a href="https://github.com/thedotmack/claude-mem">
+        <picture>
+          <img
+            src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/cm-preview.gif"
+            alt="Claude-Mem Preview"
+            width="500"
+          >
+        </picture>
+      </a>
+    </td>
+    <td align="center">
+      <a href="https://www.star-history.com/#thedotmack/claude-mem&Date">
+        <picture>
+          <source
+            media="(prefers-color-scheme: dark)"
+            srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&theme=dark&legend=top-left"
+          />
+          <source
+            media="(prefers-color-scheme: light)"
+            srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left"
+          />
+          <img
+            alt="Star History Chart"
+            src="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left"
+            width="500"
+          />
+        </picture>
+      </a>
+    </td>
+  </tr>
+</table>
 
 <p align="center">
   <a href="#mulai-cepat">Mulai Cepat</a> •
@@ -101,28 +132,57 @@
 
 ## Mulai Cepat
 
-Mulai sesi Claude Code baru di terminal dan masukkan perintah berikut:
+Instal dengan satu perintah:
 
+```bash
+npx claude-mem install
 ```
-> /plugin marketplace add thedotmack/claude-mem
 
-> /plugin install claude-mem
+Atau instal untuk OpenCode:
+
+```bash
+npx claude-mem install --ide opencode
+```
+
+Atau instal untuk Antigravity CLI ([panduan pengaturan](https://docs.claude-mem.ai/antigravity-cli/setup)):
+
+```bash
+npx claude-mem install --ide antigravity
+```
+
+Atau instal dari plugin marketplace di dalam Claude Code:
+
+```bash
+/plugin marketplace add thedotmack/claude-mem
+
+/plugin install claude-mem
 ```
 
 Restart Claude Code. Konteks dari sesi sebelumnya akan secara otomatis muncul di sesi baru.
+
+> **Catatan:** Claude-Mem juga dipublikasikan di npm, tetapi `npm install -g claude-mem` hanya menginstal **SDK/library saja** — ini tidak mendaftarkan plugin hooks atau menyiapkan layanan worker. Selalu instal melalui `npx claude-mem install` atau perintah `/plugin` di atas.
+
+### 🦞 OpenClaw Gateway
+
+Instal claude-mem sebagai plugin memori persisten pada gateway [OpenClaw](https://openclaw.ai) dengan satu perintah:
+
+```bash
+curl -fsSL https://install.cmem.ai/openclaw.sh | bash
+```
+
+Installer ini menangani dependensi, pengaturan plugin, konfigurasi penyedia AI, startup worker, dan feed observasi real-time opsional ke Telegram, Discord, Slack, dan lainnya. Lihat [Panduan Integrasi OpenClaw](https://docs.claude-mem.ai/openclaw-integration) untuk detail.
 
 **Fitur Utama:**
 
 - 🧠 **Memori Persisten** - Konteks bertahan di seluruh sesi
 - 📊 **Progressive Disclosure** - Pengambilan memori berlapis dengan visibilitas biaya token
 - 🔍 **Pencarian Berbasis Skill** - Query riwayat proyek Anda dengan mem-search skill
-- 🖥️ **Web Viewer UI** - Stream memori real-time di http://localhost:37777
+- 🖥️ **Web Viewer UI** - Stream memori real-time di URL worker yang dicetak saat startup
 - 💻 **Claude Desktop Skill** - Cari memori dari percakapan Claude Desktop
 - 🔒 **Kontrol Privasi** - Gunakan tag `<private>` untuk mengecualikan konten sensitif dari penyimpanan
 - ⚙️ **Konfigurasi Konteks** - Kontrol yang detail atas konteks apa yang diinjeksikan
 - 🤖 **Operasi Otomatis** - Tidak memerlukan intervensi manual
-- 🔗 **Kutipan** - Referensi observasi masa lalu dengan ID (akses melalui http://localhost:37777/api/observation/{id} atau lihat semua di web viewer di http://localhost:37777)
-- 🧪 **Beta Channel** - Coba fitur eksperimental seperti Endless Mode melalui peralihan versi
+- 🔗 **Kutipan** - Referensi observasi masa lalu dengan ID melalui worker API atau lihat semua di web viewer
 
 ---
 
@@ -135,7 +195,6 @@ Restart Claude Code. Konteks dari sesi sebelumnya akan secara otomatis muncul di
 - **[Panduan Instalasi](https://docs.claude-mem.ai/installation)** - Mulai cepat & instalasi lanjutan
 - **[Panduan Penggunaan](https://docs.claude-mem.ai/usage/getting-started)** - Bagaimana Claude-Mem bekerja secara otomatis
 - **[Alat Pencarian](https://docs.claude-mem.ai/usage/search-tools)** - Query riwayat proyek Anda dengan bahasa alami
-- **[Fitur Beta](https://docs.claude-mem.ai/beta-features)** - Coba fitur eksperimental seperti Endless Mode
 
 ### Praktik Terbaik
 
@@ -156,6 +215,7 @@ Restart Claude Code. Konteks dari sesi sebelumnya akan secara otomatis muncul di
 
 - **[Konfigurasi](https://docs.claude-mem.ai/configuration)** - Variabel environment & pengaturan
 - **[Pengembangan](https://docs.claude-mem.ai/development)** - Membangun, testing, kontribusi
+- **[Release Branches](https://docs.claude-mem.ai/branches)** - Alur branch stable, core-dev, dan community-edge
 - **[Pemecahan Masalah](https://docs.claude-mem.ai/troubleshooting)** - Masalah umum & solusi
 
 ---
@@ -166,7 +226,7 @@ Restart Claude Code. Konteks dari sesi sebelumnya akan secara otomatis muncul di
 
 1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 skrip hook)
 2. **Smart Install** - Pemeriksa dependensi yang di-cache (skrip pre-hook, bukan lifecycle hook)
-3. **Worker Service** - HTTP API di port 37777 dengan web viewer UI dan 10 endpoint pencarian, dikelola oleh Bun
+3. **Worker Service** - HTTP API lokal dengan web viewer UI dan endpoint pencarian, dikelola oleh Bun
 4. **SQLite Database** - Menyimpan sesi, observasi, ringkasan
 5. **mem-search Skill** - Query bahasa alami dengan progressive disclosure
 6. **Chroma Vector Database** - Pencarian hybrid semantik + keyword untuk pengambilan konteks yang cerdas
@@ -175,46 +235,51 @@ Lihat [Ringkasan Arsitektur](https://docs.claude-mem.ai/architecture/overview) u
 
 ---
 
-## mem-search Skill
+## Alat Pencarian MCP
 
-Claude-Mem menyediakan pencarian cerdas melalui mem-search skill yang secara otomatis dipanggil saat Anda bertanya tentang pekerjaan masa lalu:
+Claude-Mem menyediakan pencarian memori cerdas melalui **4 alat MCP** yang mengikuti pola alur kerja **3 lapis** yang hemat token:
+
+**Alur Kerja 3 Lapis:**
+
+1. **`search`** - Dapatkan indeks ringkas dengan ID (~50-100 token/hasil)
+2. **`timeline`** - Dapatkan konteks kronologis di sekitar hasil yang menarik
+3. **`get_observations`** - Ambil detail lengkap HANYA untuk ID yang telah difilter (~500-1.000 token/hasil)
 
 **Cara Kerja:**
-- Tanya saja secara alami: *"Apa yang kita lakukan sesi terakhir?"* atau *"Apakah kita sudah memperbaiki bug ini sebelumnya?"*
-- Claude secara otomatis memanggil mem-search skill untuk menemukan konteks yang relevan
+- Claude menggunakan alat MCP untuk mencari memori Anda
+- Mulai dengan `search` untuk mendapatkan indeks hasil
+- Gunakan `timeline` untuk melihat apa yang terjadi di sekitar observasi tertentu
+- Gunakan `get_observations` untuk mengambil detail lengkap untuk ID yang relevan
+- **Penghematan token ~10x** dengan memfilter sebelum mengambil detail
 
-**Operasi Pencarian yang Tersedia:**
+**Alat MCP yang Tersedia:**
 
-1. **Search Observations** - Pencarian teks lengkap di seluruh observasi
-2. **Search Sessions** - Pencarian teks lengkap di seluruh ringkasan sesi
-3. **Search Prompts** - Cari permintaan pengguna mentah
-4. **By Concept** - Temukan berdasarkan tag konsep (discovery, problem-solution, pattern, dll.)
-5. **By File** - Temukan observasi yang mereferensikan file tertentu
-6. **By Type** - Temukan berdasarkan tipe (decision, bugfix, feature, refactor, discovery, change)
-7. **Recent Context** - Dapatkan konteks sesi terbaru untuk sebuah proyek
-8. **Timeline** - Dapatkan timeline terpadu dari konteks di sekitar titik waktu tertentu
-9. **Timeline by Query** - Cari observasi dan dapatkan konteks timeline di sekitar kecocokan terbaik
-10. **API Help** - Dapatkan dokumentasi API pencarian
+1. **`search`** - Cari indeks memori dengan query teks lengkap, filter berdasarkan tipe/tanggal/proyek
+2. **`timeline`** - Dapatkan konteks kronologis di sekitar observasi atau query tertentu
+3. **`get_observations`** - Ambil detail observasi lengkap berdasarkan ID (selalu batch beberapa ID)
 
-**Contoh Query Bahasa Alami:**
+**Contoh Penggunaan:**
 
-```
-"What bugs did we fix last session?"
-"How did we implement authentication?"
-"What changes were made to worker-service.ts?"
-"Show me recent work on this project"
-"What was happening when we added the viewer UI?"
+```typescript
+// Langkah 1: Cari untuk indeks
+search(query="authentication bug", type="bugfix", limit=10)
+
+// Langkah 2: Tinjau indeks, identifikasi ID yang relevan (mis., #123, #456)
+
+// Langkah 3: Ambil detail lengkap
+get_observations(ids=[123, 456])
 ```
 
 Lihat [Panduan Alat Pencarian](https://docs.claude-mem.ai/usage/search-tools) untuk contoh detail.
 
 ---
 
-## Fitur Beta
+## Release Branches
 
-Claude-Mem menawarkan **beta channel** dengan fitur eksperimental seperti **Endless Mode** (arsitektur memori biomimetik untuk sesi yang diperpanjang). Beralih antara versi stabil dan beta dari web viewer UI di http://localhost:37777 → Settings.
-
-Lihat **[Dokumentasi Fitur Beta](https://docs.claude-mem.ai/beta-features)** untuk detail tentang Endless Mode dan cara mencobanya.
+Rilis stabil dikirim dari `main` dan dipublikasikan ke npm. `core-dev` dan
+`community-edge` adalah branch yang dijalankan dari source untuk perbaikan reliabilitas awal dan
+integrasi komunitas. Lihat **[Release Branches](https://docs.claude-mem.ai/branches)**
+untuk alur branch dan instruksi menjalankan versi non-stable.
 
 ---
 
@@ -227,6 +292,17 @@ Lihat **[Dokumentasi Fitur Beta](https://docs.claude-mem.ai/beta-features)** unt
 - **SQLite 3**: Untuk penyimpanan persisten (terbundel)
 
 ---
+### Catatan Pengaturan Windows
+
+Jika Anda melihat error seperti:
+
+```powershell
+npm : The term 'npm' is not recognized as the name of a cmdlet
+```
+
+Pastikan Node.js dan npm sudah terinstal dan ditambahkan ke PATH Anda. Unduh installer Node.js terbaru dari https://nodejs.org dan restart terminal Anda setelah instalasi.
+
+---
 
 ## Konfigurasi
 
@@ -234,6 +310,45 @@ Pengaturan dikelola di `~/.claude-mem/settings.json` (otomatis dibuat dengan def
 
 Lihat **[Panduan Konfigurasi](https://docs.claude-mem.ai/configuration)** untuk semua pengaturan dan contoh yang tersedia.
 
+### Konfigurasi Mode & Bahasa
+
+Claude-Mem mendukung beberapa mode alur kerja dan bahasa melalui pengaturan `CLAUDE_MEM_MODE`.
+
+Opsi ini mengontrol keduanya:
+- Perilaku alur kerja (mis. code, chill, investigation)
+- Bahasa yang digunakan dalam observasi yang dihasilkan
+
+#### Cara Konfigurasi
+
+Edit file pengaturan Anda di `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_MODE": "code--zh"
+}
+```
+
+Mode didefinisikan di `plugin/modes/`. Untuk melihat semua mode yang tersedia secara lokal:
+
+```bash
+ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
+```
+
+#### Mode yang Tersedia
+
+| Mode | Deskripsi |
+|------------|-------------------------|
+| `code` | Mode Bahasa Inggris default |
+| `code--zh` | Mode Bahasa Mandarin Sederhana |
+| `code--ja` | Mode Bahasa Jepang |
+
+Mode khusus bahasa mengikuti pola `code--[lang]` di mana `[lang]` adalah kode bahasa ISO 639-1 (mis., `zh` untuk Mandarin, `ja` untuk Jepang, `es` untuk Spanyol).
+
+> Catatan: `code--zh` (Mandarin Sederhana) sudah terintegrasi secara bawaan — tidak diperlukan instalasi tambahan atau pembaruan plugin.
+
+#### Setelah Mengubah Mode
+
+Restart Claude Code untuk menerapkan konfigurasi mode baru.
 ---
 
 ## Pengembangan
@@ -269,30 +384,38 @@ Kontribusi sangat dipersilakan! Silakan:
 4. Perbarui dokumentasi
 5. Kirim Pull Request
 
+Claude-Mem dikirim dari tiga branch: `main` (stable), `core-dev`, dan
+`community-edge`. Hanya `main` yang dipublikasikan ke npm; yang lainnya dijalankan dari
+source. Lihat [Release Branches](https://docs.claude-mem.ai/branches) untuk
+strategi dan instruksi menjalankan secara lokal.
+
 Lihat [Panduan Pengembangan](https://docs.claude-mem.ai/development) untuk alur kerja kontribusi.
 
 ---
 
-## License
+## Lisensi
 
-This project is licensed under the **Apache License 2.0** (Apache-2.0).
+Claude-Mem dilisensikan di bawah Apache License 2.0.
 
-Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
+Kami memilih Apache-2.0 karena memori agentik yang tahan lama seharusnya mudah untuk disematkan dalam
+alat pengembang, agen lokal, server MCP, sistem enterprise, stack robotika,
+dan production agent harness.
 
-See the [LICENSE](LICENSE) file for full details.
+Lihat file [LICENSE](LICENSE) untuk detail lengkap. Lihat [docs/license.md](docs/license.md)
+dan [docs/ip-boundary.md](docs/ip-boundary.md) untuk cakupan lisensi dan batas
+open/commercial.
 
-Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
-
-**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
+**Catatan tentang Ragtime**: Direktori `ragtime/` dilisensikan di bawah **Apache License 2.0**. Lihat [ragtime/LICENSE](ragtime/LICENSE) untuk detail.
 
 ---
-
 
 ## Dukungan
 
 - **Dokumentasi**: [docs/](docs/)
 - **Issues**: [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
 - **Repositori**: [github.com/thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)
+- **Akun X Resmi**: [@Claude_Memory](https://x.com/Claude_Memory)
+- **Discord Resmi**: [Gabung Discord](https://discord.com/invite/J4wttp9vDu)
 - **Penulis**: Alex Newman ([@thedotmack](https://github.com/thedotmack))
 
 ---
@@ -300,3 +423,9 @@ Apache-2.0 allows broad use, modification, distribution, and commercial use, sub
 **Built with Claude Agent SDK** | **Works with Claude Code** | **Made with TypeScript**
 
 ---
+
+### Bagaimana dengan CMEM?
+
+CMEM adalah token yang dibuat oleh pihak ketiga tetapi secara resmi diakui oleh pencipta Claude-Mem (Alex Newman, @thedotmack). Token ini berperan sebagai katalisator komunitas untuk pertumbuhan dan wahana untuk membawa CMEM kepada para developer dan pekerja pengetahuan yang paling membutuhkannya.
+
+Official BASE CA: 0x76b1967eec0ccaeb001bbbb2b40dc4badba31ba3

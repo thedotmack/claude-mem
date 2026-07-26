@@ -2,8 +2,8 @@
  * install-paths.ts — Rule B: installer-managed absolute-path bake helpers.
  *
  * See `CLAUDE.md` → "Spawn-Contract Resolution". Per-IDE config files that
- * claude-mem's own installers write (Cursor, Gemini, Windsurf, and the
- * MCP-only IDEs: Copilot CLI, Antigravity, Goose, Roo, Warp) MUST bake
+ * claude-mem's own installers write (Cursor, Windsurf, Antigravity CLI, and
+ * the MCP-only IDEs: Copilot CLI, Goose, Roo, Warp) MUST bake
  * absolute paths — those hosts perform NO `${CLAUDE_PLUGIN_ROOT}` shell
  * substitution on the `command`/`args` fields they exec. This module is the
  * single source of truth for resolving those absolute paths so each installer
@@ -71,11 +71,6 @@ export function getMcpServerAbsolutePath(): string | null {
 /** Absolute path to the bundled worker service (`worker-service.cjs`), or null. */
 export function getWorkerServiceAbsolutePath(): string | null {
   return resolvePluginScript('worker-service.cjs');
-}
-
-/** Absolute path to the version-check script (`version-check.js`), or null. */
-export function getVersionCheckAbsolutePath(): string | null {
-  return resolvePluginScript('version-check.js');
 }
 
 /**

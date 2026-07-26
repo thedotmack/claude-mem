@@ -1,7 +1,7 @@
 
 import path from 'path';
 import { existsSync, readFileSync } from 'fs';
-import { SessionStore } from '../sqlite/SessionStore.js';
+import type { Database } from 'bun:sqlite';
 import { rankByStrength, poolSize } from '../reinforcement/rank.js';
 import { logger } from '../../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
@@ -16,87 +16,13 @@ import type {
 } from './types.js';
 import { SUMMARY_LOOKAHEAD } from './types.js';
 
-export function queryObservations(
-  db: SessionStore,
-  project: string,
-  config: ContextConfig
-): Observation[] {
-  const typeArray = Array.from(config.observationTypes);
-  const typePlaceholders = typeArray.map(() => '?').join(',');
-  const conceptArray = Array.from(config.observationConcepts);
-  const conceptPlaceholders = conceptArray.map(() => '?').join(',');
-
-  const pool = db.db.prepare(`
-    SELECT
-      o.id,
-      o.memory_session_id,
-      COALESCE(s.platform_source, 'claude') as platform_source,
-      o.type,
-      o.title,
-      o.subtitle,
-      o.narrative,
-      o.facts,
-      o.concepts,
-      o.files_read,
-      o.files_modified,
-      o.discovery_tokens,
-      o.created_at,
-      o.created_at_epoch,
-      o.reinforcement_dates,
-      o.relevance_count
-    FROM observations o
-    LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE (o.project = ? OR o.merged_into_project = ?)
-      AND type IN (${typePlaceholders})
-      AND EXISTS (
-        SELECT 1 FROM json_each(o.concepts)
-        WHERE value IN (${conceptPlaceholders})
-      )
-    ORDER BY o.created_at_epoch DESC
-    LIMIT ?
-  `).all(
-    project,
-    project,
-    ...typeArray,
-    ...conceptArray,
-    poolSize(config.totalObservationCount)
-  ) as Observation[];
-
-  // Phase 2: re-rank the recency-ordered pool by recency·(1+α·strength) and keep
-  // the configured count. With CLAUDE_MEM_REINFORCE_ALPHA=0 this is identical to
-  // the legacy "top-N most recent" selection.
-  return rankByStrength(pool, config.totalObservationCount);
-}
-
-export function querySummaries(
-  db: SessionStore,
-  project: string,
-  config: ContextConfig
-): SessionSummary[] {
-  return db.db.prepare(`
-    SELECT
-      ss.id,
-      ss.memory_session_id,
-      COALESCE(s.platform_source, 'claude') as platform_source,
-      ss.request,
-      ss.investigated,
-      ss.learned,
-      ss.completed,
-      ss.next_steps,
-      ss.created_at,
-      ss.created_at_epoch
-    FROM session_summaries ss
-    LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
-    WHERE (ss.project = ? OR ss.merged_into_project = ?)
-    ORDER BY ss.created_at_epoch DESC
-    LIMIT ?
-  `).all(project, project, config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
-}
+type DatabaseOwner = { db: Database };
 
 export function queryObservationsMulti(
-  db: SessionStore,
+  db: DatabaseOwner,
   projects: string[],
-  config: ContextConfig
+  config: ContextConfig,
+  platformSource?: string
 ): Observation[] {
   const typeArray = Array.from(config.observationTypes);
   const typePlaceholders = typeArray.map(() => '?').join(',');
@@ -128,6 +54,7 @@ export function queryObservationsMulti(
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     WHERE (o.project IN (${projectPlaceholders})
            OR o.merged_into_project IN (${projectPlaceholders}))
+      AND (? IS NULL OR s.platform_source = ?)
       AND type IN (${typePlaceholders})
       AND EXISTS (
         SELECT 1 FROM json_each(o.concepts)
@@ -138,30 +65,38 @@ export function queryObservationsMulti(
   `).all(
     ...projects,
     ...projects,
+    platformSource ?? null,
+    platformSource ?? null,
     ...typeArray,
     ...conceptArray,
     poolSize(config.totalObservationCount)
   ) as Observation[];
 
-  // Phase 2: strength-weighted re-rank (see queryObservations).
+  // Phase 2: re-rank the recency-ordered pool by recency·(1+α·strength) and keep
+  // the configured count. With CLAUDE_MEM_REINFORCE_ALPHA=0 this is identical to
+  // the legacy "top-N most recent" selection.
   return rankByStrength(pool, config.totalObservationCount);
 }
 
-export function countObservationsByProjects(db: SessionStore, projects: string[]): number {
+export function countObservationsByProjects(db: DatabaseOwner, projects: string[], platformSource?: string): number {
   if (projects.length === 0) return 0;
   const projectPlaceholders = projects.map(() => '?').join(',');
   const row = db.db.prepare(`
-    SELECT COUNT(*) as count FROM observations
-    WHERE project IN (${projectPlaceholders})
-       OR merged_into_project IN (${projectPlaceholders})
-  `).get(...projects, ...projects) as { count: number } | undefined;
+    SELECT COUNT(*) as count
+    FROM observations o
+    LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+    WHERE (o.project IN (${projectPlaceholders})
+       OR o.merged_into_project IN (${projectPlaceholders}))
+      AND (? IS NULL OR s.platform_source = ?)
+  `).get(...projects, ...projects, platformSource ?? null, platformSource ?? null) as { count: number } | undefined;
   return row?.count ?? 0;
 }
 
 export function querySummariesMulti(
-  db: SessionStore,
+  db: DatabaseOwner,
   projects: string[],
-  config: ContextConfig
+  config: ContextConfig,
+  platformSource?: string
 ): SessionSummary[] {
   const projectPlaceholders = projects.map(() => '?').join(',');
 
@@ -182,9 +117,16 @@ export function querySummariesMulti(
     LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
     WHERE (ss.project IN (${projectPlaceholders})
            OR ss.merged_into_project IN (${projectPlaceholders}))
+      AND (? IS NULL OR s.platform_source = ?)
     ORDER BY ss.created_at_epoch DESC
     LIMIT ?
-  `).all(...projects, ...projects, config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
+  `).all(
+    ...projects,
+    ...projects,
+    platformSource ?? null,
+    platformSource ?? null,
+    config.sessionCount + SUMMARY_LOOKAHEAD
+  ) as SessionSummary[];
 }
 
 export function cwdToDashed(cwd: string): string {
@@ -230,20 +172,20 @@ function findLastAssistantMessage(lines: string[]): string {
 
 export function extractPriorMessages(transcriptPath: string): PriorMessages {
   try {
-    if (!existsSync(transcriptPath)) return { userMessage: '', assistantMessage: '' };
+    if (!existsSync(transcriptPath)) return { assistantMessage: '' };
     const content = readFileSync(transcriptPath, 'utf-8').trim();
-    if (!content) return { userMessage: '', assistantMessage: '' };
+    if (!content) return { assistantMessage: '' };
 
     const lines = content.split('\n').filter(line => line.trim());
     const lastAssistantMessage = findLastAssistantMessage(lines);
-    return { userMessage: '', assistantMessage: lastAssistantMessage };
+    return { assistantMessage: lastAssistantMessage };
   } catch (error) {
     if (error instanceof Error) {
       logger.failure('WORKER', 'Failed to extract prior messages from transcript', { transcriptPath }, error);
     } else {
       logger.warn('WORKER', 'Failed to extract prior messages from transcript', { transcriptPath, error: String(error) });
     }
-    return { userMessage: '', assistantMessage: '' };
+    return { assistantMessage: '' };
   }
 }
 
@@ -254,12 +196,12 @@ export function getPriorSessionMessages(
   cwd: string
 ): PriorMessages {
   if (!config.showLastMessage || observations.length === 0) {
-    return { userMessage: '', assistantMessage: '' };
+    return { assistantMessage: '' };
   }
 
   const priorSessionObs = observations.find(obs => obs.memory_session_id !== currentSessionId);
   if (!priorSessionObs) {
-    return { userMessage: '', assistantMessage: '' };
+    return { assistantMessage: '' };
   }
 
   const priorSessionId = priorSessionObs.memory_session_id;

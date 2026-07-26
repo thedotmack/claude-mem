@@ -96,12 +96,13 @@ export async function notifyTelegram(input: TelegramNotifyInput): Promise<void> 
       const text = formatMessage(obs, project, memorySessionId, observationId);
       await postOne(botToken, chatId, text);
     } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
       logger.warn('TELEGRAM', 'Failed to send Telegram notification', {
         observationId,
         project,
         memorySessionId,
         type: obs.type,
-      }, error as Error);
+      }, err);
     }
   }
 }

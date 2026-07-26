@@ -124,22 +124,27 @@ export class ServerJobQueue<TPayload extends object = object> {
     return this.queue;
   }
 
+  private async addToQueue(jobId: string, payload: TPayload, options?: JobsOptions): Promise<void> {
+    await (this.getQueue().add as (
+      name: string,
+      data: TPayload,
+      opts?: JobsOptions
+    ) => Promise<unknown>)(this.name, payload, {
+      ...this.defaultJobOptions,
+      ...options,
+      jobId
+    });
+  }
+
   async add(jobId: string, payload: TPayload, options?: JobsOptions): Promise<void> {
     if (jobId.includes(':')) {
       throw new Error(`server job ID must not contain ':' (got ${jobId})`);
     }
     try {
-      await (this.getQueue().add as (
-        name: string,
-        data: TPayload,
-        opts?: JobsOptions
-      ) => Promise<unknown>)(this.name, payload, {
-        ...this.defaultJobOptions,
-        ...options,
-        jobId
-      });
+      await this.addToQueue(jobId, payload, options);
     } catch (error) {
-      throw this.toRedisUnavailableError(error);
+      const err = error instanceof Error ? error : new Error(String(error));
+      throw this.toRedisUnavailableError(err);
     }
   }
 
@@ -147,7 +152,8 @@ export class ServerJobQueue<TPayload extends object = object> {
     try {
       return (await this.getQueue().getJob(jobId)) as Job<TPayload> | null | undefined;
     } catch (error) {
-      throw this.toRedisUnavailableError(error);
+      const err = error instanceof Error ? error : new Error(String(error));
+      throw this.toRedisUnavailableError(err);
     }
   }
 
@@ -155,28 +161,34 @@ export class ServerJobQueue<TPayload extends object = object> {
     try {
       await this.getQueue().remove(jobId);
     } catch (error) {
-      throw this.toRedisUnavailableError(error);
+      const err = error instanceof Error ? error : new Error(String(error));
+      throw this.toRedisUnavailableError(err);
     }
+  }
+
+  private async readCounts(): Promise<ServerJobCounts> {
+    const counts = await this.getQueue().getJobCounts(
+      'waiting',
+      'active',
+      'delayed',
+      'failed',
+      'completed'
+    );
+    return {
+      waiting: counts.waiting ?? 0,
+      active: counts.active ?? 0,
+      delayed: counts.delayed ?? 0,
+      failed: counts.failed ?? 0,
+      completed: counts.completed ?? 0
+    };
   }
 
   async getCounts(): Promise<ServerJobCounts> {
     try {
-      const counts = await this.getQueue().getJobCounts(
-        'waiting',
-        'active',
-        'delayed',
-        'failed',
-        'completed'
-      );
-      return {
-        waiting: counts.waiting ?? 0,
-        active: counts.active ?? 0,
-        delayed: counts.delayed ?? 0,
-        failed: counts.failed ?? 0,
-        completed: counts.completed ?? 0
-      };
+      return await this.readCounts();
     } catch (error) {
-      throw this.toRedisUnavailableError(error);
+      const err = error instanceof Error ? error : new Error(String(error));
+      throw this.toRedisUnavailableError(err);
     }
   }
 
@@ -349,7 +361,9 @@ export class ServerJobQueue<TPayload extends object = object> {
       try {
         await this.queueEvents.close();
       } catch (error) {
-        errors.push(error instanceof Error ? error : new Error(String(error)));
+        const err = error instanceof Error ? error : new Error(String(error));
+        logger.warn('QUEUE', `${this.name} failed to close QueueEvents`, { queue: this.name }, err);
+        errors.push(err);
       }
       this.queueEvents = null;
     }
@@ -357,7 +371,9 @@ export class ServerJobQueue<TPayload extends object = object> {
       try {
         await this.worker.close();
       } catch (error) {
-        errors.push(error instanceof Error ? error : new Error(String(error)));
+        const err = error instanceof Error ? error : new Error(String(error));
+        logger.warn('QUEUE', `${this.name} failed to close worker`, { queue: this.name }, err);
+        errors.push(err);
       }
       this.worker = null;
       this.started = false;
@@ -366,7 +382,9 @@ export class ServerJobQueue<TPayload extends object = object> {
       try {
         await this.queue.close();
       } catch (error) {
-        errors.push(error instanceof Error ? error : new Error(String(error)));
+        const err = error instanceof Error ? error : new Error(String(error));
+        logger.warn('QUEUE', `${this.name} failed to close queue`, { queue: this.name }, err);
+        errors.push(err);
       }
       this.queue = null;
     }

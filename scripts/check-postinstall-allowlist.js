@@ -44,7 +44,6 @@ const ALLOWLIST = new Set([
   'tree-sitter-kotlin',
   'tree-sitter-swift',
   'tree-sitter-php',
-  'tree-sitter-elixir',
   'tree-sitter-scala',
   'tree-sitter-bash',
   'tree-sitter-haskell',

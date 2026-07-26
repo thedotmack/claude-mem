@@ -40,14 +40,6 @@ export function renderAgentLegend(): string[] {
   ];
 }
 
-export function renderAgentColumnKey(): string[] {
-  return [];
-}
-
-export function renderAgentContextIndex(): string[] {
-  return [];
-}
-
 export function renderAgentContextEconomics(
   economics: TokenEconomics,
   config: ContextConfig
@@ -77,10 +69,6 @@ export function renderAgentDayHeader(day: string): string[] {
   return [
     `### ${day}`,
   ];
-}
-
-export function renderAgentFileHeader(_file: string): string[] {
-  return [];
 }
 
 function compactTime(time: string): string {

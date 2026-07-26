@@ -3,7 +3,7 @@ import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
-import { CorpusStore } from '../../knowledge/CorpusStore.js';
+import { CorpusStore, CORPUS_NAME_PATTERN, CORPUS_NAME_ERROR } from '../../knowledge/CorpusStore.js';
 import { CorpusBuilder } from '../../knowledge/CorpusBuilder.js';
 import { KnowledgeAgent } from '../../knowledge/KnowledgeAgent.js';
 import type { CorpusFilter } from '../../knowledge/types.js';
@@ -37,7 +37,11 @@ const positiveIntegerLike = z.preprocess((value) => {
 }, z.number().int().positive().optional());
 
 const buildCorpusSchema = z.object({
-  name: z.string().min(1),
+  // Validate the raw name — do NOT .trim() first, or a padded name like
+  // " bad " would be silently normalized to "bad" and accepted instead of
+  // rejected. CORPUS_NAME_PATTERN already disallows whitespace, so surrounding
+  // spaces correctly fail here and return a 400.
+  name: z.string().min(1).regex(CORPUS_NAME_PATTERN, CORPUS_NAME_ERROR),
   description: z.string().optional(),
   project: z.string().optional(),
   types: stringArrayLike.refine(
@@ -56,8 +60,6 @@ const queryCorpusSchema = z.object({
   question: z.string().trim().min(1),
 }).passthrough();
 
-const emptyBodySchema = z.object({}).passthrough();
-
 export class CorpusRoutes extends BaseRouteHandler {
   constructor(
     private corpusStore: CorpusStore,
@@ -72,10 +74,18 @@ export class CorpusRoutes extends BaseRouteHandler {
     app.get('/api/corpus', this.handleListCorpora.bind(this));
     app.get('/api/corpus/:name', this.handleGetCorpus.bind(this));
     app.delete('/api/corpus/:name', this.handleDeleteCorpus.bind(this));
-    app.post('/api/corpus/:name/rebuild', validateBody(emptyBodySchema), this.handleRebuildCorpus.bind(this));
-    app.post('/api/corpus/:name/prime', validateBody(emptyBodySchema), this.handlePrimeCorpus.bind(this));
+    app.post('/api/corpus/:name/rebuild', this.handleRebuildCorpus.bind(this));
+    app.post('/api/corpus/:name/prime', this.handlePrimeCorpus.bind(this));
     app.post('/api/corpus/:name/query', validateBody(queryCorpusSchema), this.handleQueryCorpus.bind(this));
-    app.post('/api/corpus/:name/reprime', validateBody(emptyBodySchema), this.handleReprimeCorpus.bind(this));
+    app.post('/api/corpus/:name/reprime', this.handleReprimeCorpus.bind(this));
+  }
+
+  private corpusNotFound(res: Response, name: string): void {
+    res.status(404).json({
+      error: `Corpus "${name}" not found`,
+      fix: 'Check the corpus name or build a new one',
+      available: this.corpusStore.list().map(c => c.name)
+    });
   }
 
   private handleBuildCorpus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
@@ -111,11 +121,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     const corpus = this.corpusStore.read(name);
 
     if (!corpus) {
-      res.status(404).json({
-        error: `Corpus "${name}" not found`,
-        fix: 'Check the corpus name or build a new one',
-        available: this.corpusStore.list().map(c => c.name)
-      });
+      this.corpusNotFound(res, name);
       return;
     }
 
@@ -128,11 +134,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     const existed = this.corpusStore.delete(name);
 
     if (!existed) {
-      res.status(404).json({
-        error: `Corpus "${name}" not found`,
-        fix: 'Check the corpus name or build a new one',
-        available: this.corpusStore.list().map(c => c.name)
-      });
+      this.corpusNotFound(res, name);
       return;
     }
 
@@ -144,11 +146,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     const existingCorpus = this.corpusStore.read(name);
 
     if (!existingCorpus) {
-      res.status(404).json({
-        error: `Corpus "${name}" not found`,
-        fix: 'Check the corpus name or build a new one',
-        available: this.corpusStore.list().map(c => c.name)
-      });
+      this.corpusNotFound(res, name);
       return;
     }
 
@@ -163,11 +161,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     const corpus = this.corpusStore.read(name);
 
     if (!corpus) {
-      res.status(404).json({
-        error: `Corpus "${name}" not found`,
-        fix: 'Check the corpus name or build a new one',
-        available: this.corpusStore.list().map(c => c.name)
-      });
+      this.corpusNotFound(res, name);
       return;
     }
 
@@ -180,11 +174,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     const corpus = this.corpusStore.read(name);
 
     if (!corpus) {
-      res.status(404).json({
-        error: `Corpus "${name}" not found`,
-        fix: 'Check the corpus name or build a new one',
-        available: this.corpusStore.list().map(c => c.name)
-      });
+      this.corpusNotFound(res, name);
       return;
     }
 
@@ -198,11 +188,7 @@ export class CorpusRoutes extends BaseRouteHandler {
     const corpus = this.corpusStore.read(name);
 
     if (!corpus) {
-      res.status(404).json({
-        error: `Corpus "${name}" not found`,
-        fix: 'Check the corpus name or build a new one',
-        available: this.corpusStore.list().map(c => c.name)
-      });
+      this.corpusNotFound(res, name);
       return;
     }
 

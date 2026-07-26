@@ -167,6 +167,44 @@ describe('SearchRoutes Welcome Hint', () => {
       '/path/worktree',
       '/path/parent',
       '/path/worktree',
+      null,
+      null,
+    );
+  });
+
+  it('threads normalized platformSource into observation count and context generation', async () => {
+    countQueryStub = mock(() => ({ count: 2 }));
+    prepareStub = mock(() => ({ get: countQueryStub }));
+    mockSessionStore = { db: { prepare: prepareStub } };
+    mockSearchManager = { getSessionStore: () => mockSessionStore };
+
+    const routes = new SearchRoutes(mockSearchManager);
+    const handler = captureContextInjectHandler(routes);
+
+    const res = createMockRes();
+    const req = {
+      query: { projects: '/path/parent,/path/worktree', platform_source: 'Cursor' },
+      body: { platformSource: 'codex' },
+      get: (name: string) => name.toLowerCase() === 'x-platform-source' ? 'claude' : undefined,
+    } as unknown as Request;
+
+    handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(countQueryStub).toHaveBeenCalledWith(
+      '/path/parent',
+      '/path/worktree',
+      '/path/parent',
+      '/path/worktree',
+      'cursor',
+      'cursor',
+    );
+    expect(generateContextStub).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projects: ['/path/parent', '/path/worktree'],
+        platformSource: 'cursor',
+      }),
+      false,
     );
   });
 

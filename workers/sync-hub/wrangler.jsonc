@@ -1,0 +1,94 @@
+/**
+ * Sync Hub — per-user ordered op log (Phase 1 of the two-lane sync plan).
+ *
+ * Stateless front Worker (src/index.ts) + one SQLite-backed Durable Object per
+ * user (src/do/SyncHub.ts). Config uses the newer `exports` flow (the declared
+ * successor to `migrations`) — see plan Phase 0.1 / open decision 3.
+ */
+{
+	"name": "sync-hub",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-07-14",
+	"exports": {
+		"SyncHub": {
+			"type": "durable-object",
+			"storage": "sqlite"
+		}
+	},
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "SYNC_HUB",
+				"class_name": "SyncHub"
+			}
+		]
+	},
+	"kv_namespaces": [
+		{
+			"binding": "AUTH_CACHE",
+			// Created via Cloudflare MCP: kv_namespace_create("sync-hub-AUTH_CACHE").
+			// Local dev and vitest use a local simulator and ignore this id.
+			// Also holds the kill-switch flag under the `control:` key prefix
+			// (src/kill-switch.ts documents why it shares this namespace).
+			"id": "f8b295652fed47d7ab7f739460443111"
+		}
+	],
+	// Two crons, dispatched on event.cron in src/index.ts's scheduled handler
+	// (both activated automatically by `wrangler deploy`):
+	//   "7 * * * *"   — hourly watchdog (plan Phase 5 task 1). Minute 7, not 0:
+	//                   gives the GraphQL adaptive datasets a few minutes of
+	//                   ingest headroom past each hour boundary and dodges the
+	//                   top-of-hour cron stampede.
+	//   "*/5 * * * *" — control-plane uptime probe (launch Phase 5 task 4,
+	//                   src/control-plane-probe.ts): pages Discord when the
+	//                   DB-backed TOKEN_VERIFY_URL stops answering 401/403+JSON
+	//                   for a bogus token (the Jul 20–22 silent-Supabase-pause
+	//                   failure mode). Anti-flap policy + silencing: DEPLOY.md §7.
+	"triggers": {
+		"crons": ["7 * * * *", "*/5 * * * *"]
+	},
+	"vars": {
+		// Implemented Pro verifier dependency. Deploy and canary this route first;
+		// activate SyncHub only after the production route passes token/user binding.
+		"TOKEN_VERIFY_URL": "https://cmem.ai/api/pro/sync/verify",
+		// Positive-verdict cache TTL. Runtime clamps this to exactly 60 seconds:
+		// Cloudflare KV's minimum and the public token-rotation bound coincide.
+		"AUTH_CACHE_TTL_SECONDS": "60",
+		// Stateless Worker -> Pro projection endpoint. The companion bearer
+		// credential is the CMEM_INTERNAL_PROJECTOR_SECRET Worker secret.
+		"INTERNAL_PROJECTOR_URL": "https://cmem.ai/api/internal/sync/project",
+
+		// --- Kill switch (src/kill-switch.ts) ---------------------------------
+		// Per-isolate cache TTL (ms) for the kill-switch KV read. Empty ⇒ the
+		// 30 s code default. Tests/local e2e set 0 for per-request freshness.
+		"KILL_SWITCH_CACHE_MS": "",
+
+		// --- Watchdog (src/watchdog.ts) ---------------------------------------
+		// Account tag (32-hex account id) for the GraphQL Analytics query.
+		// Required for the watchdog to run; empty ⇒ the watchdog
+		// logs a skip (never a false alert). (DEPLOY.md)
+		// The companion secrets ANALYTICS_API_TOKEN and DISCORD_WEBHOOK_URL are
+		// set via `wrangler secret put` (typed in src/secrets.d.ts).
+		"ACCOUNT_ID": "b68923b1c0a9c2840648102da88ba9d4",
+		// Durable Object namespace id of SyncHub — narrows the periodic-groups
+		// query (that dataset has no scriptName dimension). Empty ⇒ account-wide
+		// periodic metrics, which is correct while sync-hub is the account's
+		// only DO namespace. How to fetch the id: DEPLOY.md.
+		"WATCHDOG_DO_NAMESPACE_ID": "",
+		// Script name filter for the invocations dataset. Empty ⇒ "sync-hub".
+		"WATCHDOG_SCRIPT_NAME": "",
+		// Threshold overrides (hourly, fleet-wide). Empty ⇒ the code defaults
+		// in src/watchdog.ts, where each number's derivation is documented.
+		"WATCHDOG_REQUESTS_ALERT": "",
+		"WATCHDOG_REQUESTS_KILL": "",
+		"WATCHDOG_DURATION_ALERT_GBS": "",
+		"WATCHDOG_DURATION_KILL_GBS": "",
+		"WATCHDOG_ROWS_WRITTEN_ALERT": "",
+		"WATCHDOG_ROWS_WRITTEN_KILL": "",
+		"WATCHDOG_ROWS_READ_ALERT": "",
+		"WATCHDOG_ROWS_READ_KILL": ""
+	},
+	"observability": {
+		"enabled": true
+	}
+}

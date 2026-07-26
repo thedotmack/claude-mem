@@ -12,7 +12,13 @@ import {
   DEFAULT_LOCAL_API_KEY_SCOPES,
 } from '../../src/server/auth/sqlite-api-key-service.js';
 import { requireServerAuth } from '../../src/server/middleware/auth.js';
-import { AuthRepository, ProjectsRepository, TeamsRepository } from '../../src/storage/sqlite/index.js';
+import { AuthRepository, ProjectsRepository, ensureServerStorageSchema } from '../../src/storage/sqlite/index.js';
+
+function seedTeam(db: Database, id: string): string {
+  ensureServerStorageSchema(db);
+  db.prepare("INSERT INTO teams (id, name, created_at_epoch, updated_at_epoch) VALUES (?, 'Core', 0, 0)").run(id);
+  return id;
+}
 
 describe('server API key auth', () => {
   let db: Database;
@@ -254,11 +260,11 @@ describe('server API key auth', () => {
   });
 
   it('middleware requires a scoped bearer API key outside local-dev fallback', () => {
-    const team = new TeamsRepository(db).create({ name: 'Core' });
+    const teamId = seedTeam(db, 'team-core');
     const project = new ProjectsRepository(db).create({ name: 'Project' });
     const created = createServerApiKey(db, {
       name: 'Write key',
-      teamId: team.id,
+      teamId,
       projectId: project.id,
       scopes: ['memories:write'],
     });
@@ -285,7 +291,7 @@ describe('server API key auth', () => {
     expect(req.authContext).toMatchObject({
       mode: 'api-key',
       apiKeyId: created.record.id,
-      teamId: team.id,
+      teamId,
       projectId: project.id,
       scopes: ['memories:write'],
     });
@@ -296,11 +302,11 @@ describe('server API key auth', () => {
     // shipped from the Windows-canary line) send raw API keys via X-Api-Key
     // instead of "Authorization: Bearer ...". The middleware accepts either
     // so the server-beta runtime works with both client shapes out of the box.
-    const team = new TeamsRepository(db).create({ name: 'Core' });
+    const teamId = seedTeam(db, 'team-core');
     const project = new ProjectsRepository(db).create({ name: 'Project' });
     const created = createServerApiKey(db, {
       name: 'XApiKey client',
-      teamId: team.id,
+      teamId,
       projectId: project.id,
       scopes: ['memories:write'],
     });
@@ -327,7 +333,7 @@ describe('server API key auth', () => {
     expect(req.authContext).toMatchObject({
       mode: 'api-key',
       apiKeyId: created.record.id,
-      teamId: team.id,
+      teamId,
       projectId: project.id,
       scopes: ['memories:write'],
     });
@@ -336,16 +342,16 @@ describe('server API key auth', () => {
   it('middleware prefers Bearer over X-Api-Key when both are present', () => {
     // Defense-in-depth: if a client sends both, Bearer wins. Avoids surprises
     // where an unrelated X-Api-Key sneaks in via a proxy or a stale env var.
-    const team = new TeamsRepository(db).create({ name: 'Core' });
+    const teamId = seedTeam(db, 'team-core');
     const bearerKey = createServerApiKey(db, {
       name: 'Bearer key',
-      teamId: team.id,
+      teamId,
       projectId: null,
       scopes: ['memories:write'],
     });
     const xApiKeyKey = createServerApiKey(db, {
       name: 'X-Api-Key key',
-      teamId: team.id,
+      teamId,
       projectId: null,
       scopes: ['memories:write'],
     });

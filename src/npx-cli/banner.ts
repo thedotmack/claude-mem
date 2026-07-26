@@ -33,7 +33,9 @@ function getFrames(): string[] {
   try {
     const raw = inflateRawSync(Buffer.from(BANNER.compressed, 'base64')).toString('utf8');
     frames = raw.split(FRAME_SEP).filter(Boolean);
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    console.warn('claude-mem: banner frame decoding failed, skipping banner:', err);
     frames = [];
   }
   return frames;

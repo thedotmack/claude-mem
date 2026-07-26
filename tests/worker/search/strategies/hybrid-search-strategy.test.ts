@@ -102,8 +102,6 @@ describe('HybridSearchStrategy', () => {
     };
 
     mockSessionSearch = {
-      findByConcept: mock(() => [mockObservation1, mockObservation2, mockObservation3]),
-      findByType: mock(() => [mockObservation1, mockObservation2]),
       findByFile: mock(() => ({
         observations: [mockObservation1, mockObservation2],
         sessions: [mockSession]
@@ -111,210 +109,6 @@ describe('HybridSearchStrategy', () => {
     };
 
     strategy = new HybridSearchStrategy(mockChromaSync, mockSessionStore, mockSessionSearch);
-  });
-
-  describe('canHandle', () => {
-    it('should return true when concepts filter is present', () => {
-      const options: StrategySearchOptions = {
-        concepts: ['test-concept']
-      };
-      expect(strategy.canHandle(options)).toBe(true);
-    });
-
-    it('should return true when files filter is present', () => {
-      const options: StrategySearchOptions = {
-        files: ['/path/to/file.ts']
-      };
-      expect(strategy.canHandle(options)).toBe(true);
-    });
-
-    it('should return true when type and query are present', () => {
-      const options: StrategySearchOptions = {
-        type: 'decision',
-        query: 'semantic query'
-      };
-      expect(strategy.canHandle(options)).toBe(true);
-    });
-
-    it('should return true when strategyHint is hybrid', () => {
-      const options: StrategySearchOptions = {
-        strategyHint: 'hybrid'
-      };
-      expect(strategy.canHandle(options)).toBe(true);
-    });
-
-    it('should return false for query-only (no filters)', () => {
-      const options: StrategySearchOptions = {
-        query: 'semantic query'
-      };
-      expect(strategy.canHandle(options)).toBe(false);
-    });
-
-    it('should return false for filter-only without Chroma', () => {
-      const strategyNoChroma = new HybridSearchStrategy(null as any, mockSessionStore, mockSessionSearch);
-
-      const options: StrategySearchOptions = {
-        concepts: ['test-concept']
-      };
-      expect(strategyNoChroma.canHandle(options)).toBe(false);
-    });
-  });
-
-  describe('search', () => {
-    it('should return empty result for generic hybrid search without query', async () => {
-      const options: StrategySearchOptions = {
-        concepts: ['test-concept']
-      };
-
-      const result = await strategy.search(options);
-
-      expect(result.results.observations).toHaveLength(0);
-      expect(result.strategy).toBe('hybrid');
-    });
-
-    it('should return empty result for generic hybrid search (use specific methods)', async () => {
-      const options: StrategySearchOptions = {
-        query: 'test query'
-      };
-
-      const result = await strategy.search(options);
-
-      expect(result.results.observations).toHaveLength(0);
-    });
-  });
-
-  describe('findByConcept', () => {
-    it('should combine metadata + semantic results', async () => {
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      const result = await strategy.findByConcept('test-concept', options);
-
-      expect(mockSessionSearch.findByConcept).toHaveBeenCalledWith('test-concept', expect.any(Object));
-      expect(mockChromaSync.queryChroma).toHaveBeenCalledWith('test-concept', expect.any(Number));
-      expect(result.usedChroma).toBe(true);
-      expect(result.strategy).toBe('hybrid');
-    });
-
-    it('should preserve semantic ranking order from Chroma', async () => {
-
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      const result = await strategy.findByConcept('test-concept', options);
-
-      expect(result.results.observations.length).toBeGreaterThan(0);
-      expect(result.results.observations[0].id).toBe(2);
-    });
-
-    it('should only include observations that match both metadata and Chroma', async () => {
-      mockChromaSync.queryChroma = mock(() => Promise.resolve({
-        ids: [2, 4, 5],
-        distances: [0.1, 0.2, 0.3],
-        metadatas: []
-      }));
-
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      const result = await strategy.findByConcept('test-concept', options);
-
-      expect(result.results.observations).toHaveLength(1);
-      expect(result.results.observations[0].id).toBe(2);
-    });
-
-    it('should return empty when no metadata matches', async () => {
-      mockSessionSearch.findByConcept = mock(() => []);
-
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      const result = await strategy.findByConcept('nonexistent-concept', options);
-
-      expect(result.results.observations).toHaveLength(0);
-      expect(mockChromaSync.queryChroma).not.toHaveBeenCalled(); 
-    });
-
-    it('should propagate Chroma error (fail-fast, no silent fallback)', async () => {
-      mockChromaSync.queryChroma = mock(() => Promise.reject(new Error('Chroma failed')));
-
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      await expect(
-        strategy.findByConcept('test-concept', options)
-      ).rejects.toThrow('Chroma failed');
-    });
-  });
-
-  describe('findByType', () => {
-    it('should find observations by type with semantic ranking', async () => {
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      const result = await strategy.findByType('decision', options);
-
-      expect(mockSessionSearch.findByType).toHaveBeenCalledWith('decision', expect.any(Object));
-      expect(mockChromaSync.queryChroma).toHaveBeenCalled();
-      expect(result.usedChroma).toBe(true);
-    });
-
-    it('should handle array of types', async () => {
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      await strategy.findByType(['decision', 'bugfix'], options);
-
-      expect(mockSessionSearch.findByType).toHaveBeenCalledWith(['decision', 'bugfix'], expect.any(Object));
-      expect(mockChromaSync.queryChroma).toHaveBeenCalledWith('decision, bugfix', expect.any(Number));
-    });
-
-    it('should preserve Chroma ranking order for types', async () => {
-      mockChromaSync.queryChroma = mock(() => Promise.resolve({
-        ids: [2, 1], // Chroma order
-        distances: [0.1, 0.2],
-        metadatas: []
-      }));
-
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      const result = await strategy.findByType('decision', options);
-
-      expect(result.results.observations[0].id).toBe(2);
-    });
-
-    it('should propagate Chroma error (fail-fast, no silent fallback)', async () => {
-      mockChromaSync.queryChroma = mock(() => Promise.reject(new Error('Chroma unavailable')));
-
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      await expect(
-        strategy.findByType('bugfix', options)
-      ).rejects.toThrow('Chroma unavailable');
-    });
-
-    it('should return empty when no metadata matches', async () => {
-      mockSessionSearch.findByType = mock(() => []);
-
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      const result = await strategy.findByType('nonexistent', options);
-
-      expect(result.results.observations).toHaveLength(0);
-    });
   });
 
   describe('findByFile', () => {
@@ -341,6 +135,22 @@ describe('HybridSearchStrategy', () => {
       expect(result.sessions[0].id).toBe(1);
     });
 
+    it('should preserve platformSource through by-file metadata search and hydration', async () => {
+      const options: StrategySearchOptions = {
+        limit: 10,
+        platformSource: 'cursor'
+      };
+
+      await strategy.findByFile('/path/to/file.ts', options);
+
+      expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/path/to/file.ts', expect.objectContaining({
+        platformSource: 'cursor'
+      }));
+      expect(mockSessionStore.getObservationsByIds).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({
+        platformSource: 'cursor'
+      }));
+    });
+
     it('should apply semantic ranking only to observations', async () => {
       mockChromaSync.queryChroma = mock(() => Promise.resolve({
         ids: [2, 1], // Chroma ranking for observations
@@ -356,6 +166,24 @@ describe('HybridSearchStrategy', () => {
 
       expect(result.observations[0].id).toBe(2);
       expect(result.usedChroma).toBe(true);
+    });
+
+    it('falls back to scoped SQLite file observation matches when platform-scoped Chroma ranks zero ids', async () => {
+      mockChromaSync.queryChroma = mock(() => Promise.resolve({
+        ids: [],
+        distances: [],
+        metadatas: []
+      }));
+
+      const result = await strategy.findByFile('/path/to/file.ts', {
+        limit: 10,
+        platformSource: 'cursor'
+      });
+
+      expect(mockSessionStore.getObservationsByIds).not.toHaveBeenCalled();
+      expect(result.usedChroma).toBe(false);
+      expect(result.observations.map(obs => obs.id)).toEqual([1, 2]);
+      expect(result.sessions).toEqual([mockSession]);
     });
 
     it('should return usedChroma: false when no observations to rank', async () => {
@@ -384,12 +212,6 @@ describe('HybridSearchStrategy', () => {
       await expect(
         strategy.findByFile('/path/to/file.ts', options)
       ).rejects.toThrow('Chroma down');
-    });
-  });
-
-  describe('strategy name', () => {
-    it('should have name "hybrid"', () => {
-      expect(strategy.name).toBe('hybrid');
     });
   });
 });

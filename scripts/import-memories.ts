@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync } from 'fs';
+import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../src/shared/paths.js';
 
-const WORKER_PORT = process.env.CLAUDE_MEM_WORKER_PORT || 37777;
-const WORKER_URL = `http://127.0.0.1:${WORKER_PORT}`;
+const workerSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+const WORKER_HOST = process.env.CLAUDE_MEM_WORKER_HOST || workerSettings.CLAUDE_MEM_WORKER_HOST;
+const WORKER_PORT = process.env.CLAUDE_MEM_WORKER_PORT || workerSettings.CLAUDE_MEM_WORKER_PORT;
+const WORKER_URL = `http://${WORKER_HOST}:${WORKER_PORT}`;
 
 async function importMemories(inputFile: string) {
   if (!existsSync(inputFile)) {

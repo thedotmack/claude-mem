@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { resolveDataDir } from '../../shared/paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
+import { logger } from '../../utils/logger.js';
 
 export type TelemetryConfig = {
   /** Explicit user decision. Absent = no decision recorded; the opt-out default applies. */
@@ -72,6 +73,22 @@ export function resolveTelemetryConsent(
   return explainTelemetryConsent(env, config).enabled;
 }
 
+/**
+ * Error-tracking kill-switch, INDEPENDENT of the analytics consent chain above.
+ *
+ * `CLAUDE_MEM_TELEMETRY_ERRORS=0` (or 'false'/'off') disables real exception
+ * capture ($exception with redacted message/stack) WITHOUT touching analytics:
+ * an operator who is fine with anonymous counters but not error text can opt out
+ * of just the error path. Defaults ON whenever telemetry consent is on — error
+ * capture is always additionally gated by the normal consent chain upstream, so
+ * "consent off" already implies "no errors". Pure — no I/O.
+ */
+export function isErrorTelemetryEnabled(env: NodeJS.ProcessEnv): boolean {
+  const value = env.CLAUDE_MEM_TELEMETRY_ERRORS?.toLowerCase();
+  if (value === '0' || value === 'false' || value === 'off') return false;
+  return true;
+}
+
 /** Absolute path of telemetry.json inside the claude-mem data dir. */
 export function getTelemetryConfigPath(): string {
   return join(resolveDataDir(), TELEMETRY_CONFIG_FILENAME);
@@ -82,22 +99,25 @@ export function getTelemetryConfigPath(): string {
  * missing, corrupt, or malformed — never throws.
  */
 export function loadTelemetryConfig(): TelemetryConfig | null {
+  let raw: Partial<TelemetryConfig> | null;
   try {
-    const raw = readJsonSafe<Partial<TelemetryConfig> | null>(getTelemetryConfigPath(), null);
-    if (!raw || typeof raw !== 'object') return null;
-    if (typeof raw.installId !== 'string') return null;
-    // enabled may be absent (no decision recorded — default applies), but a
-    // present non-boolean value means the file is malformed.
-    if (raw.enabled !== undefined && typeof raw.enabled !== 'boolean') return null;
-    return {
-      enabled: raw.enabled,
-      installId: raw.installId,
-      decidedAt: typeof raw.decidedAt === 'string' ? raw.decidedAt : '',
-    };
-  } catch {
+    raw = readJsonSafe<Partial<TelemetryConfig> | null>(getTelemetryConfigPath(), null);
+  } catch (error) {
     // Corrupt JSON — treat as no recorded consent
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'Telemetry: corrupt telemetry.json; treating as no recorded consent', undefined, err);
     return null;
   }
+  if (!raw || typeof raw !== 'object') return null;
+  if (typeof raw.installId !== 'string') return null;
+  // enabled may be absent (no decision recorded — default applies), but a
+  // present non-boolean value means the file is malformed.
+  if (raw.enabled !== undefined && typeof raw.enabled !== 'boolean') return null;
+  return {
+    enabled: raw.enabled,
+    installId: raw.installId,
+    decidedAt: typeof raw.decidedAt === 'string' ? raw.decidedAt : '',
+  };
 }
 
 export function saveTelemetryConfig(config: TelemetryConfig): void {

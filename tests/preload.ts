@@ -41,6 +41,18 @@ if (!process.env.CLAUDE_MEM_DATA_DIR) {
 export type PostHogConstructorCall = { apiKey: string; options: Record<string, unknown> };
 export const postHogConstructorCalls: PostHogConstructorCall[] = [];
 export const postHogCaptureCalls: Array<Record<string, unknown>> = [];
+/**
+ * Records captureException(error, distinctId, additionalProperties) calls so
+ * Phase 3 error-capture tests can assert on the $exception payload (redacted
+ * message/stack, $process_person_profile:false, occurrence_count) without a
+ * real client. Mirrors postHogCaptureCalls. Reset per-file like the others.
+ */
+export type PostHogExceptionCall = {
+  error: unknown;
+  distinctId?: string;
+  additionalProperties?: Record<string | number, unknown>;
+};
+export const postHogExceptionCalls: PostHogExceptionCall[] = [];
 
 /**
  * Behavior knob for the mock below. When `emitErrorOnShutdown` is set, the
@@ -62,6 +74,13 @@ mock.module('posthog-node', () => ({
     }
     capture(payload: Record<string, unknown>): void {
       postHogCaptureCalls.push(payload);
+    }
+    captureException(
+      error: unknown,
+      distinctId?: string,
+      additionalProperties?: Record<string | number, unknown>
+    ): void {
+      postHogExceptionCalls.push({ error, distinctId, additionalProperties });
     }
     on(event: string, handler: (...args: unknown[]) => void): () => void {
       (this.handlers[event] ??= []).push(handler);

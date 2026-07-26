@@ -1,10 +1,9 @@
 import { join, dirname, basename, sep } from 'path';
 import { homedir } from 'os';
 import { existsSync, mkdirSync, readFileSync } from 'fs';
-import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
-import { logger } from '../utils/logger.js';
+import { parseJsonWithBom } from './atomic-json.js';
 
 function getDirname(): string {
   if (typeof __dirname !== 'undefined') {
@@ -15,19 +14,40 @@ function getDirname(): string {
 
 const _dirname = getDirname();
 
+/**
+ * Expand a leading `~/` (or a bare `~`) to the user's home directory.
+ *
+ * Node's `path.join` / `fs` do NOT expand `~` — only the shell does. So a
+ * literal `~/.claude-mem` read from `settings.json` or an env var is treated
+ * as a *relative* path, creating a directory literally named `~` in the
+ * process cwd. claude-mem workers inherit the cwd of whatever spawned them
+ * (subagents pinned to a subdirectory, a plugin-install dir, etc.), so a
+ * `~`-prefixed DATA_DIR scattered stray `~/.claude-mem/` trees across the
+ * workspace. Expanding here keeps every downstream path absolute regardless
+ * of how the value was written.
+ */
+export function expandHome(p: string): string {
+  if (typeof p !== 'string' || p.length === 0) return p;
+  if (p === '~') return homedir();
+  if (p.startsWith('~/')) return join(homedir(), p.slice(2));
+  // A `~user/...` form is intentionally left untouched — resolving another
+  // user's home is out of scope and platform-dependent.
+  return p;
+}
+
 export function resolveDataDir(): string {
   if (process.env.CLAUDE_MEM_DATA_DIR) {
-    return process.env.CLAUDE_MEM_DATA_DIR;
+    return expandHome(process.env.CLAUDE_MEM_DATA_DIR);
   }
 
   const defaultDataDir = join(homedir(), '.claude-mem');
   const settingsPath = join(defaultDataDir, 'settings.json');
   try {
     if (existsSync(settingsPath)) {
-      const raw = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-      const settings = raw.env ?? raw; 
+      const raw = parseJsonWithBom<Record<string, any>>(readFileSync(settingsPath, 'utf-8'));
+      const settings = raw.env ?? raw;
       if (settings.CLAUDE_MEM_DATA_DIR) {
-        return settings.CLAUDE_MEM_DATA_DIR;
+        return expandHome(settings.CLAUDE_MEM_DATA_DIR);
       }
     }
   } catch {
@@ -42,96 +62,50 @@ export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir()
 
 export const MARKETPLACE_ROOT = join(CLAUDE_CONFIG_DIR, 'plugins', 'marketplaces', 'thedotmack');
 
-export const ARCHIVES_DIR = join(DATA_DIR, 'archives');
 export const LOGS_DIR = join(DATA_DIR, 'logs');
-export const TRASH_DIR = join(DATA_DIR, 'trash');
-export const BACKUPS_DIR = join(DATA_DIR, 'backups');
-export const MODES_DIR = join(DATA_DIR, 'modes');
 export const USER_SETTINGS_PATH = join(DATA_DIR, 'settings.json');
 export const DB_PATH = join(DATA_DIR, 'claude-mem.db');
-export const VECTOR_DB_DIR = join(DATA_DIR, 'vector-db');
 
 export const OBSERVER_SESSIONS_DIR = join(DATA_DIR, 'observer-sessions');
 
 export const OBSERVER_SESSIONS_PROJECT = basename(OBSERVER_SESSIONS_DIR);
 
-export const CLAUDE_SETTINGS_PATH = join(CLAUDE_CONFIG_DIR, 'settings.json');
-export const CLAUDE_COMMANDS_DIR = join(CLAUDE_CONFIG_DIR, 'commands');
-export const CLAUDE_MD_PATH = join(CLAUDE_CONFIG_DIR, 'CLAUDE.md');
-
-export function getProjectArchiveDir(projectName: string): string {
-  return join(ARCHIVES_DIR, projectName);
-}
-
-export function getWorkerSocketPath(sessionId: number): string {
-  return join(DATA_DIR, `worker-${sessionId}.sock`);
-}
-
 export function ensureDir(dirPath: string): void {
   mkdirSync(dirPath, { recursive: true });
-}
-
-export function ensureAllDataDirs(): void {
-  ensureDir(DATA_DIR);
-  ensureDir(ARCHIVES_DIR);
-  ensureDir(LOGS_DIR);
-  ensureDir(TRASH_DIR);
-  ensureDir(BACKUPS_DIR);
-  ensureDir(MODES_DIR);
-}
-
-export function ensureModesDir(): void {
-  ensureDir(MODES_DIR);
-}
-
-export function ensureAllClaudeDirs(): void {
-  ensureDir(CLAUDE_CONFIG_DIR);
-  ensureDir(CLAUDE_COMMANDS_DIR);
-}
-
-export function getCurrentProjectName(): string {
-  try {
-    const gitRoot = execSync('git rev-parse --show-toplevel', {
-      cwd: process.cwd(),
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'ignore'],
-      windowsHide: true
-    }).trim();
-    return basename(dirname(gitRoot)) + '/' + basename(gitRoot);
-  } catch (error: unknown) {
-    logger.debug('SYSTEM', 'Git root detection failed, using cwd basename', {
-      cwd: process.cwd()
-    }, error instanceof Error ? error : new Error(String(error)));
-    const cwd = process.cwd();
-    return basename(dirname(cwd)) + '/' + basename(cwd);
-  }
 }
 
 export function getPackageRoot(): string {
   return join(_dirname, '..');
 }
 
-export function getPackageCommandsDir(): string {
-  const packageRoot = getPackageRoot();
-  return join(packageRoot, 'commands');
-}
-
-export function createBackupFilename(originalPath: string): string {
-  const timestamp = new Date()
-    .toISOString()
-    .replace(/[:.]/g, '-')
-    .replace('T', '_')
-    .slice(0, 19);
-
-  return `${originalPath}.backup.${timestamp}`;
+/**
+ * Expand a leading `~` / `~/` (or `~\` on Windows) to the user's home dir.
+ *
+ * User-typed config paths like `~/.local/bin/claude` are never expanded by the
+ * shell when passed programmatically to existsSync/posix_spawn, so a literal
+ * `~` reaches the syscall and fails with ENOENT. Every other home-relative path
+ * in the codebase is built with join(homedir(), ...); this brings user-supplied
+ * ones onto the same footing. Non-tilde paths are returned unchanged.
+ *
+ * `home` is injectable so callers behind a homedir() test seam stay testable.
+ */
+export function expandTilde(filePath: string, home: string = homedir()): string {
+  if (filePath === '~') return home;
+  if (filePath.startsWith('~/') || filePath.startsWith('~\\')) {
+    return join(home, filePath.slice(2));
+  }
+  return filePath;
 }
 
 export const paths = {
   dataDir: () => DATA_DIR,
   workerPid: () => join(DATA_DIR, 'worker.pid'),
-  serverBetaPid: () => join(DATA_DIR, '.server-beta.pid'),
-  serverBetaPort: () => join(DATA_DIR, '.server-beta.port'),
-  serverBetaRuntime: () => join(DATA_DIR, '.server-beta.runtime.json'),
+  // Phase 1b: identifier renamed to `server*`; the on-disk file basenames
+  // remain `.server-beta.*` so existing installations keep finding their
+  // pid/port/runtime state. Plan §1d will migrate the basenames.
+  serverPid: () => join(DATA_DIR, '.server-beta.pid'),
+  serverPort: () => join(DATA_DIR, '.server-beta.port'),
+  serverRuntime: () => join(DATA_DIR, '.server-beta.runtime.json'),
   settings: () => join(DATA_DIR, 'settings.json'),
   database: () => join(DATA_DIR, 'claude-mem.db'),
   chroma: () => join(DATA_DIR, 'chroma'),
@@ -142,10 +116,4 @@ export const paths = {
   supervisorRegistry: () => join(DATA_DIR, 'supervisor.json'),
   envFile: () => join(DATA_DIR, '.env'),
   logsDir: () => LOGS_DIR,
-  archives: () => ARCHIVES_DIR,
-  trash: () => TRASH_DIR,
-  backups: () => BACKUPS_DIR,
-  modes: () => MODES_DIR,
-  vectorDb: () => VECTOR_DB_DIR,
-  observerSessions: () => OBSERVER_SESSIONS_DIR,
 } as const;

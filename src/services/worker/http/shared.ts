@@ -3,53 +3,13 @@ import { logger } from '../../../utils/logger.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionEventBroadcaster } from '../events/SessionEventBroadcaster.js';
-import type { ParsedSummary } from '../../../sdk/parser.js';
-import { stripMemoryTagsFromJson } from '../../../utils/tag-stripping.js';
+import { stripMemoryTags } from '../../../utils/tag-stripping.js';
 import { isProjectExcluded } from '../../../utils/project-filter.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import { getProjectContext } from '../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../shared/platform-source.js';
 import { PrivacyCheckValidator } from '../validation/PrivacyCheckValidator.js';
-import { EventEmitter } from 'events';
-
-export interface SummaryStoredEvent {
-  sessionId: string;
-  messageId: number;
-}
-
-class IngestEventBus extends EventEmitter {
-  private readonly recentStored = new Map<string, { event: SummaryStoredEvent; at: number }>();
-  private static readonly RECENT_EVENT_TTL_MS = 60_000;
-
-  constructor() {
-    super();
-    this.setMaxListeners(0);
-    this.on('summaryStoredEvent', (evt: SummaryStoredEvent) => {
-      this.recentStored.set(evt.sessionId, { event: evt, at: Date.now() });
-      this.evictExpiredStored();
-    });
-  }
-
-  takeRecentSummaryStored(sessionId: string): SummaryStoredEvent | undefined {
-    const entry = this.recentStored.get(sessionId);
-    if (!entry) return undefined;
-    if (Date.now() - entry.at > IngestEventBus.RECENT_EVENT_TTL_MS) {
-      this.recentStored.delete(sessionId);
-      return undefined;
-    }
-    return entry.event;
-  }
-
-  private evictExpiredStored(): void {
-    const cutoff = Date.now() - IngestEventBus.RECENT_EVENT_TTL_MS;
-    for (const [key, entry] of this.recentStored) {
-      if (entry.at < cutoff) this.recentStored.delete(key);
-    }
-  }
-}
-
-export const ingestEventBus = new IngestEventBus();
 
 interface IngestContext {
   sessionManager: SessionManager;
@@ -129,7 +89,7 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   let promptNumber: number;
   try {
     sessionDbId = store.createSDKSession(payload.contentSessionId, project, '', undefined, platformSource);
-    promptNumber = store.getPromptNumberFromUserPrompts(payload.contentSessionId);
+    promptNumber = store.getPromptNumberFromUserPrompts(payload.contentSessionId, sessionDbId);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.error('INGEST', 'Observation session resolution failed', {
@@ -152,10 +112,10 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   }
 
   const cleanedToolInput = payload.toolInput !== undefined
-    ? stripMemoryTagsFromJson(JSON.stringify(payload.toolInput))
+    ? stripMemoryTags(JSON.stringify(payload.toolInput))
     : '{}';
   const cleanedToolResponse = payload.toolResponse !== undefined
-    ? stripMemoryTagsFromJson(JSON.stringify(payload.toolResponse))
+    ? stripMemoryTags(JSON.stringify(payload.toolResponse))
     : '{}';
 
   await sessionManager.queueObservation(sessionDbId, {
@@ -179,94 +139,4 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   eventBroadcaster.broadcastObservationQueued(sessionDbId);
 
   return { ok: true, sessionDbId };
-}
-
-export interface PromptPayload {
-  contentSessionId: string;
-  prompt: string;
-  cwd?: string;
-  platformSource?: string;
-  promptNumber?: number;
-}
-
-export function ingestPrompt(payload: PromptPayload): IngestResult {
-  const { dbManager } = requireContext();
-
-  if (!payload.contentSessionId) {
-    return { ok: false, reason: 'missing contentSessionId', status: 400 };
-  }
-  if (typeof payload.prompt !== 'string') {
-    return { ok: false, reason: 'missing prompt text', status: 400 };
-  }
-
-  const platformSource = normalizePlatformSource(payload.platformSource);
-  const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
-  const project = cwd.trim() ? getProjectContext(cwd).primary : '';
-
-  try {
-    const store = dbManager.getSessionStore();
-    const sessionDbId = store.createSDKSession(payload.contentSessionId, project, payload.prompt, undefined, platformSource);
-    return { ok: true, sessionDbId };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { ok: false, reason: message, status: 500 };
-  }
-}
-
-export type SummaryPayload =
-  | {
-      kind: 'queue';
-      contentSessionId: string;
-      lastAssistantMessage?: string;
-      platformSource?: string;
-      cwd?: string;
-    }
-  | {
-      kind: 'parsed';
-      sessionDbId: number;
-      messageId: number;
-      contentSessionId: string;
-      parsed: ParsedSummary;
-    };
-
-export async function ingestSummary(payload: SummaryPayload): Promise<IngestResult> {
-  if (payload.kind === 'queue') {
-    const { sessionManager, dbManager, ensureGeneratorRunning } = requireContext();
-
-    if (!payload.contentSessionId) {
-      return { ok: false, reason: 'missing contentSessionId', status: 400 };
-    }
-
-    const platformSource = normalizePlatformSource(payload.platformSource);
-    const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
-    const project = cwd.trim() ? getProjectContext(cwd).primary : '';
-
-    let sessionDbId: number;
-    try {
-      sessionDbId = dbManager.getSessionStore().createSDKSession(payload.contentSessionId, project, '', undefined, platformSource);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return { ok: false, reason: message, status: 500 };
-    }
-
-    await sessionManager.queueSummarize(sessionDbId, payload.lastAssistantMessage);
-    await ensureGeneratorRunning?.(sessionDbId, 'summarize');
-
-    return { ok: true, sessionDbId };
-  }
-
-  if (payload.parsed.skipped) {
-    ingestEventBus.emit('summaryStoredEvent', {
-      sessionId: payload.contentSessionId,
-      messageId: payload.messageId,
-    } satisfies SummaryStoredEvent);
-    return { ok: true, sessionDbId: payload.sessionDbId, messageId: payload.messageId };
-  }
-
-  ingestEventBus.emit('summaryStoredEvent', {
-    sessionId: payload.contentSessionId,
-    messageId: payload.messageId,
-  } satisfies SummaryStoredEvent);
-
-  return { ok: true, sessionDbId: payload.sessionDbId, messageId: payload.messageId };
 }

@@ -2,11 +2,21 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../src/services/sqlite/SessionStore.js';
-import { storeObservation } from '../src/services/sqlite/observations/store.js';
 import { recordSurfaced } from '../src/services/reinforcement/persist.js';
 import { blendedScore } from '../src/services/reinforcement/rank.js';
 import { DEFAULT_TUNABLES } from '../src/services/reinforcement/strength.js';
-import type { ObservationInput } from '../src/services/sqlite/observations/types.js';
+
+// SessionStore owns observation writes; this mirrors the shape it accepts.
+type ObservationInput = {
+  type: string;
+  title: string | null;
+  subtitle: string | null;
+  facts: string[];
+  narrative: string | null;
+  concepts: string[];
+  files_read: string[];
+  files_modified: string[];
+};
 
 const obs = (over: Partial<ObservationInput> = {}): ObservationInput => ({
   type: 'discovery',
@@ -50,8 +60,8 @@ describe('Phase 4 — surfacing observability', () => {
     afterEach(() => store.db.close());
 
     it('bumps relevance_count for each surfaced id, repeatable', () => {
-      const a = storeObservation(store.db, 's1', 'proj', obs({ title: 'a', narrative: 'a' }), 1, 0, 1750000000000);
-      const b = storeObservation(store.db, 's1', 'proj', obs({ title: 'b', narrative: 'b' }), 1, 0, 1750000000000);
+      const a = store.storeObservation('s1', 'proj', obs({ title: 'a', narrative: 'a' }), 1, 0, 1750000000000);
+      const b = store.storeObservation('s1', 'proj', obs({ title: 'b', narrative: 'b' }), 1, 0, 1750000000000);
       expect(countOf(store, a.id)).toBe(0);
 
       recordSurfaced(store.db, [a.id, b.id]);

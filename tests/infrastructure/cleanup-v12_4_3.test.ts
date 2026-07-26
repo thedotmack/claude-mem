@@ -6,7 +6,7 @@ import path from 'path';
 import { tmpdir } from 'os';
 import { Database } from 'bun:sqlite';
 import { runOneTimeV12_4_3Cleanup } from '../../src/services/infrastructure/CleanupV12_4_3.js';
-import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
+import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { OBSERVER_SESSIONS_PROJECT } from '../../src/shared/paths.js';
 import { logger } from '../../src/utils/logger.js';
 
@@ -26,38 +26,39 @@ function restoreLogger(): void {
   loggerSpies = [];
 }
 
-function seedDatabase(dbPath: string, opts: { observerSessions: number; stuckCount: number }): { observerSessionDbIds: number[]; keepSessionDbId: number } {
-  const seed = new ClaudeMemDatabase(dbPath);
-  const db = seed.db;
-  const now = new Date().toISOString();
-  const epoch = Date.now();
+function makeObservation(title: string) {
+  return {
+    type: 'discovery',
+    title,
+    subtitle: null,
+    facts: [],
+    narrative: title,
+    concepts: [],
+    files_read: [],
+    files_modified: [],
+  };
+}
 
-  const insertSession = db.prepare(
-    `INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch)
-     VALUES (?, ?, ?, ?, ?)`
-  );
-  const insertPrompt = db.prepare(
-    `INSERT INTO user_prompts (content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
-     VALUES (?, 1, ?, ?, ?)`
-  );
-  const insertObservation = db.prepare(
-    `INSERT INTO observations (memory_session_id, project, type, text, created_at, created_at_epoch)
-     VALUES (?, ?, 'discovery', ?, ?, ?)`
-  );
+function seedDatabase(dbPath: string, opts: { observerSessions: number; stuckCount: number }): { observerSessionDbIds: number[]; keepSessionDbId: number } {
+  const store = new SessionStore(dbPath);
+  const epoch = Date.now();
 
   const observerSessionDbIds: number[] = [];
   for (let i = 0; i < opts.observerSessions; i++) {
-    const result = insertSession.run(`obs-content-${i}`, `obs-memory-${i}`, OBSERVER_SESSIONS_PROJECT, now, epoch);
-    observerSessionDbIds.push(Number(result.lastInsertRowid));
-    insertPrompt.run(`obs-content-${i}`, `prompt ${i}`, now, epoch);
-    insertObservation.run(`obs-memory-${i}`, OBSERVER_SESSIONS_PROJECT, `obs ${i}`, now, epoch);
+    const sessionDbId = store.createSDKSession(`obs-content-${i}`, OBSERVER_SESSIONS_PROJECT, `prompt ${i}`);
+    // Cascade rows depend on memory_session_id being set: createSDKSession inserts NULL.
+    store.updateMemorySessionId(sessionDbId, `obs-memory-${i}`);
+    observerSessionDbIds.push(sessionDbId);
+    store.saveUserPrompt(`obs-content-${i}`, 1, `prompt ${i}`);
+    store.storeObservation(`obs-memory-${i}`, OBSERVER_SESSIONS_PROJECT, makeObservation(`obs ${i}`));
   }
 
-  const keepResult = insertSession.run('keep-content', 'keep-memory', 'real-project', now, epoch);
-  const keepSessionDbId = Number(keepResult.lastInsertRowid);
-  insertPrompt.run('keep-content', 'survives', now, epoch);
+  const keepSessionDbId = store.createSDKSession('keep-content', 'real-project', 'survives');
+  store.updateMemorySessionId(keepSessionDbId, 'keep-memory');
+  store.saveUserPrompt('keep-content', 1, 'survives');
 
-  const insertPending = db.prepare(
+  // pending_messages has no SessionStore store method — seed via the raw handle.
+  const insertPending = store.db.prepare(
     `INSERT INTO pending_messages (session_db_id, content_session_id, message_type, status, created_at_epoch)
      VALUES (?, 'keep-content', 'observation', 'processing', ?)`
   );
@@ -65,7 +66,7 @@ function seedDatabase(dbPath: string, opts: { observerSessions: number; stuckCou
     insertPending.run(keepSessionDbId, epoch);
   }
 
-  seed.close();
+  store.close();
   return { observerSessionDbIds, keepSessionDbId };
 }
 

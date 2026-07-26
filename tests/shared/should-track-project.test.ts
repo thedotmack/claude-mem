@@ -1,11 +1,22 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import { OBSERVER_SESSIONS_DIR } from '../../src/shared/paths.js';
 import { normalize } from 'path';
+
+// Snapshot the real module BEFORE mock.module mutates the live namespace, then
+// re-register it in afterAll. bun's mock.module is process-global and
+// mock.restore() does NOT undo it, so this partial hook-settings stub would
+// otherwise leak into other test files in the same `bun test` run.
+import * as realHookSettings from '../../src/shared/hook-settings.js';
+const realHookSettingsSnapshot = { ...realHookSettings };
 
 // Mock loadFromFileOnce to avoid real file I/O and settings-dependent results
 mock.module('../../src/shared/hook-settings.js', () => ({
   loadFromFileOnce: () => ({ CLAUDE_MEM_EXCLUDED_PROJECTS: '' }),
 }));
+
+afterAll(() => {
+  mock.module('../../src/shared/hook-settings.js', () => realHookSettingsSnapshot);
+});
 
 // Import after mock so the module picks up the mocked dependency
 const { shouldTrackProject } = await import('../../src/shared/should-track-project.js');

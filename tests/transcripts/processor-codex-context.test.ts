@@ -137,7 +137,7 @@ describe('TranscriptEventProcessor AGENTS context', () => {
 
     expect(writeAgentsCalls).toHaveLength(1);
     expect(writeAgentsCalls[0].agentsPath).toBe(agentsPath);
-    expect(workerHttpRequestCalls).toContain('/api/context/inject?projects=repo-project');
+    expect(workerHttpRequestCalls).toContain('/api/context/inject?projects=repo-project&platformSource=codex');
     expect(writeAgentsCalls[0].content).toBe('injected-context');
   });
 });

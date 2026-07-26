@@ -28,7 +28,7 @@ export PATH="/usr/local/bun/bin:/usr/local/share/npm-global/bin:$PATH"
 export CLAUDE_MEM_DOCKER=1
 export CLAUDE_MEM_RUNTIME="${CLAUDE_MEM_RUNTIME:-server-beta}"
 
-SERVER_BETA_SCRIPT="/opt/claude-mem/scripts/server-beta-service.cjs"
+SERVER_BETA_SCRIPT="/opt/claude-mem/scripts/server-service.cjs"
 
 # Mode selection:
 #   CLAUDE_MEM_CONTAINER_MODE=server (default) — HTTP server-beta, no worker

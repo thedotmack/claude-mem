@@ -87,12 +87,10 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'chroma_available',
   'fallback_reason',
   // session_compressed trust signals — booleans, counters, and our own
-  // closed enums (invalid_output_class: xml | idle | prose | poisoned, where
-  // 'xml' means XML-shaped output that still failed to parse; abort_reason:
-  // idle | shutdown | overflow | restart_guard | quota | poisoned | none).
+  // closed enums (invalid_output_class: xml | idle | prose, where 'xml' means
+  // XML-shaped output that still failed to parse; abort_reason:
+  // idle | shutdown | overflow | restart_guard | quota | none).
   // Never model output, never raw abort strings.
-  'fabrication_detected',
-  'fabricated_count',
   'invalid_output_class',
   'consecutive_invalid_outputs',
   'respawn_triggered',
@@ -138,9 +136,67 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'sessions_gemini_count',
   'sessions_other_platform_count',
   'subagent_obs_count',
+  // Rollup events emitted by TelemetryBuffer (buffer.ts) — aggregate fields
+  // that replace the high-volume per-event stream with 5-minute windows.
+  // observer_turn_rollup aggregation fields:
+  'total_tokens_input',
+  'total_tokens_output',
+  'total_cost_usd',
+  'avg_duration_ms',
+  'avg_compression_ms',
+  'outcomes_ok',
+  'outcomes_error',
+  'outcomes_aborted',
+  'outcomes_invalid_output',
+  'top_model',
+  'window_start_ts',
+  // Phase 2 per-session rollup: rollup_reason is a closed enum
+  // (session_end | worker_shutdown | safety_flush) explaining why the session's
+  // single observer_turn_rollup was emitted; window_seq is the partial-flush
+  // sequence number (0 for a normal one-shot session, incrementing only when a
+  // long-lived session trips the safety sweep). Enum + integer only.
+  'rollup_reason',
+  'window_seq',
+  // context_injected_rollup aggregation fields:
+  'total_tokens',
+  'avg_tokens',
+  // Per-session/window observation volume folded into the rollups so the
+  // context-cache-value and observation-type metrics survive the retirement of
+  // the legacy per-occurrence streams. observations_created (generation side,
+  // observer_turn_rollup) pairs with total_cost_usd to derive cost-per-obs;
+  // total_observations_injected (injection side, context_injected_rollup) is the
+  // cache-reuse count; total_tokens_saved_vs_naive is the windowed savings sum.
+  // The obs_type_* family is already whitelisted above (shared key names).
+  'observations_created',
+  'total_observations_injected',
+  'total_tokens_saved_vs_naive',
 ]);
 
 const MAX_STRING_LENGTH = 200;
+
+/**
+ * Copies whitelisted primitive values from props into scrubbed, truncating
+ * strings to MAX_STRING_LENGTH. Extracted so scrubProperties' try stays small.
+ */
+function copyAllowedProperties(
+  props: Record<string, unknown>,
+  scrubbed: Record<string, string | number | boolean>
+): void {
+  if (!props || typeof props !== 'object') return;
+  for (const key of Object.keys(props)) {
+    if (!ALLOWED_PROPERTY_KEYS.has(key)) continue;
+    const value = props[key];
+    if (typeof value === 'string') {
+      scrubbed[key] = value.length > MAX_STRING_LENGTH ? value.slice(0, MAX_STRING_LENGTH) : value;
+    } else if (typeof value === 'number' && Number.isFinite(value)) {
+      scrubbed[key] = value;
+    } else if (typeof value === 'boolean') {
+      scrubbed[key] = value;
+    }
+    // Everything else (objects, arrays, functions, null, undefined,
+    // NaN/Infinity, symbols, bigints) is dropped silently.
+  }
+}
 
 /**
  * Filters properties down to whitelisted keys with primitive values only.
@@ -152,20 +208,7 @@ export function scrubProperties(
 ): Record<string, string | number | boolean> {
   const scrubbed: Record<string, string | number | boolean> = {};
   try {
-    if (!props || typeof props !== 'object') return scrubbed;
-    for (const key of Object.keys(props)) {
-      if (!ALLOWED_PROPERTY_KEYS.has(key)) continue;
-      const value = props[key];
-      if (typeof value === 'string') {
-        scrubbed[key] = value.length > MAX_STRING_LENGTH ? value.slice(0, MAX_STRING_LENGTH) : value;
-      } else if (typeof value === 'number' && Number.isFinite(value)) {
-        scrubbed[key] = value;
-      } else if (typeof value === 'boolean') {
-        scrubbed[key] = value;
-      }
-      // Everything else (objects, arrays, functions, null, undefined,
-      // NaN/Infinity, symbols, bigints) is dropped silently.
-    }
+    copyAllowedProperties(props, scrubbed);
   } catch {
     // Never throw from the scrubber — worst case we send fewer properties
   }

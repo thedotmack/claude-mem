@@ -4,15 +4,21 @@ import {
   isPortInUse,
   waitForHealth,
   waitForPortFree,
-  getInstalledPluginVersion,
+  getRunningWorkerVersion,
   checkVersionMatch
 } from '../../src/services/infrastructure/index.js';
 
 describe('HealthMonitor', () => {
   const originalFetch = global.fetch;
+  const originalWorkerHost = process.env.CLAUDE_MEM_WORKER_HOST;
 
   afterEach(() => {
     global.fetch = originalFetch;
+    if (originalWorkerHost === undefined) {
+      delete process.env.CLAUDE_MEM_WORKER_HOST;
+    } else {
+      process.env.CLAUDE_MEM_WORKER_HOST = originalWorkerHost;
+    }
   });
 
   describe('isPortInUse', () => {
@@ -60,6 +66,30 @@ describe('HealthMonitor', () => {
       spy.mockRestore();
     });
 
+    it('should honor configured worker host when probing port occupancy', async () => {
+      process.env.CLAUDE_MEM_WORKER_HOST = '127.0.0.2';
+      const closeMock = mock((cb: Function) => cb());
+      const listenMock = mock(() => {});
+      const createServerMock = mock(() => ({
+        once: mock((event: string, cb: Function) => {
+          if (event === 'listening') {
+            setTimeout(() => cb(), 0);
+          }
+        }),
+        listen: listenMock,
+        close: closeMock
+      }));
+
+      const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+
+      const result = await isPortInUse(37777);
+
+      expect(result).toBe(false);
+      expect(listenMock).toHaveBeenCalledWith(37777, '127.0.0.2');
+
+      spy.mockRestore();
+    });
+
     it('should return false for other socket errors', async () => {
       const createServerMock = mock(() => ({
         once: mock((event: string, cb: Function) => {
@@ -69,14 +99,79 @@ describe('HealthMonitor', () => {
         }),
         listen: mock(() => {})
       }));
-      
+
       const spy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
 
       const result = await isPortInUse(37777);
 
       expect(result).toBe(false);
-      
+
       spy.mockRestore();
+    });
+
+    it('should fall through to socket probe on Windows when health check fails and port is actually in use (zombie port)', async () => {
+      // Simulate a zombie process: the port is occupied but does not serve HTTP.
+      // fetch for /api/health throws, then net.createServer hits EADDRINUSE.
+      const origPlatform = process.platform;
+      try {
+        Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+
+        global.fetch = mock(() => Promise.reject(new Error('fetch failed')));
+
+        const createServerMock = mock(() => ({
+          once: mock((event: string, cb: Function) => {
+            if (event === 'error') {
+              setTimeout(() => cb({ code: 'EADDRINUSE' }), 0);
+            }
+          }),
+          listen: mock(() => {}),
+        }));
+
+        const netSpy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+
+        const result = await isPortInUse(37777);
+
+        expect(result).toBe(true);
+        expect(global.fetch).toHaveBeenCalled();
+        expect(net.createServer).toHaveBeenCalled();
+
+        netSpy.mockRestore();
+      } finally {
+        Object.defineProperty(process, 'platform', { value: origPlatform, configurable: true });
+      }
+    });
+
+    it('should fall through to socket probe on Windows when health check fails and port is actually free', async () => {
+      const origPlatform = process.platform;
+      try {
+        Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+
+        global.fetch = mock(() => Promise.reject(new Error('ECONNREFUSED')));
+
+        const closeMock = mock((cb: Function) => cb());
+        const createServerMock = mock(() => ({
+          once: mock((event: string, cb: Function) => {
+            if (event === 'listening') {
+              setTimeout(() => cb(), 0);
+            }
+          }),
+          listen: mock(() => {}),
+          close: closeMock,
+        }));
+
+        const netSpy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+
+        const result = await isPortInUse(39999);
+
+        expect(result).toBe(false);
+        expect(global.fetch).toHaveBeenCalled();
+        expect(net.createServer).toHaveBeenCalled();
+        expect(closeMock).toHaveBeenCalled();
+
+        netSpy.mockRestore();
+      } finally {
+        Object.defineProperty(process, 'platform', { value: origPlatform, configurable: true });
+      }
     });
   });
 
@@ -143,6 +238,20 @@ describe('HealthMonitor', () => {
       expect(calls[0][0]).toBe('http://127.0.0.1:37777/api/health');
     });
 
+    it('should honor configured worker host when polling health', async () => {
+      process.env.CLAUDE_MEM_WORKER_HOST = 'localhost';
+      const fetchMock = mock(() => Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve('')
+      } as unknown as Response));
+      global.fetch = fetchMock;
+
+      await waitForHealth(37777, 1000);
+
+      expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:37777/api/health');
+    });
+
     it('should use default timeout when not specified', async () => {
       global.fetch = mock(() => Promise.resolve({
         ok: true,
@@ -156,60 +265,70 @@ describe('HealthMonitor', () => {
     });
   });
 
-  describe('getInstalledPluginVersion', () => {
-    it('should return a valid semver string', () => {
-      const version = getInstalledPluginVersion();
-
-      if (version !== 'unknown') {
-        expect(version).toMatch(/^\d+\.\d+\.\d+/);
-      }
-    });
-
-    it('should not throw on ENOENT (graceful degradation)', () => {
-      expect(() => getInstalledPluginVersion()).not.toThrow();
-    });
-  });
-
   describe('checkVersionMatch', () => {
-    it('should assume match when worker version is unavailable', async () => {
+    it('reads the running worker version from /api/health, not /api/version', async () => {
+      const fetchMock = mock(() => Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(JSON.stringify({ version: '13.10.1' }))
+      } as unknown as Response));
+      global.fetch = fetchMock;
+
+      const version = await getRunningWorkerVersion(37777);
+
+      expect(version).toBe('13.10.1');
+      expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:37777/api/health');
+    });
+
+    it('assumes match when the worker version is unavailable', async () => {
       global.fetch = mock(() => Promise.reject(new Error('ECONNREFUSED')));
 
-      const result = await checkVersionMatch(39999);
+      const result = await checkVersionMatch(39999, '13.12.0');
 
       expect(result.matches).toBe(true);
       expect(result.workerVersion).toBeNull();
     });
 
-    it('should detect version mismatch', async () => {
+    it('assumes match when the caller-supplied expected version is unknown', async () => {
       global.fetch = mock(() => Promise.resolve({
         ok: true,
         status: 200,
-        text: () => Promise.resolve(JSON.stringify({ version: '0.0.0-definitely-wrong' }))
+        text: () => Promise.resolve(JSON.stringify({ version: '13.11.0' }))
       } as unknown as Response));
 
-      const result = await checkVersionMatch(37777);
-
-      const pluginVersion = getInstalledPluginVersion();
-      if (pluginVersion !== 'unknown' && pluginVersion !== '0.0.0-definitely-wrong') {
-        expect(result.matches).toBe(false);
-      }
-    });
-
-    it('should detect version match', async () => {
-      const pluginVersion = getInstalledPluginVersion();
-      if (pluginVersion === 'unknown') return; 
-
-      global.fetch = mock(() => Promise.resolve({
-        ok: true,
-        status: 200,
-        text: () => Promise.resolve(JSON.stringify({ version: pluginVersion }))
-      } as unknown as Response));
-
-      const result = await checkVersionMatch(37777);
+      const result = await checkVersionMatch(37777, null);
 
       expect(result.matches).toBe(true);
-      expect(result.pluginVersion).toBe(pluginVersion);
-      expect(result.workerVersion).toBe(pluginVersion);
+      expect(result.pluginVersion).toBe('unknown');
+      expect(result.workerVersion).toBe('13.11.0');
+    });
+
+    it('detects a mismatch against the caller-supplied expected version', async () => {
+      global.fetch = mock(() => Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(JSON.stringify({ version: '13.11.0' }))
+      } as unknown as Response));
+
+      const result = await checkVersionMatch(37777, '13.12.0');
+
+      expect(result.matches).toBe(false);
+      expect(result.pluginVersion).toBe('13.12.0');
+      expect(result.workerVersion).toBe('13.11.0');
+    });
+
+    it('detects a match against the caller-supplied expected version', async () => {
+      global.fetch = mock(() => Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(JSON.stringify({ version: '13.12.0' }))
+      } as unknown as Response));
+
+      const result = await checkVersionMatch(37777, '13.12.0');
+
+      expect(result.matches).toBe(true);
+      expect(result.pluginVersion).toBe('13.12.0');
+      expect(result.workerVersion).toBe('13.12.0');
     });
   });
 

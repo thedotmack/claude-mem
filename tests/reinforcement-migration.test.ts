@@ -30,11 +30,17 @@ describe('Phase 1a — reinforcement columns migration', () => {
     expect(cols.has('last_reinforced')).toBe(true);
   });
 
-  it('records schema version 33', () => {
-    const row = store.db
-      .prepare('SELECT version FROM schema_versions WHERE version = ?')
-      .get(33) as { version: number } | undefined;
-    expect(row?.version).toBe(33);
+  it('adds relevance_count for surfacing counts', () => {
+    expect(observationColumns(store.db).has('relevance_count')).toBe(true);
+  });
+
+  it('records schema versions 50 (reinforcement) and 51 (surfacing)', () => {
+    for (const version of [50, 51]) {
+      const row = store.db
+        .prepare('SELECT version FROM schema_versions WHERE version = ?')
+        .get(version) as { version: number } | undefined;
+      expect(row?.version).toBe(version);
+    }
   });
 
   it('is idempotent — re-opening the same db does not error or duplicate', () => {
@@ -43,7 +49,7 @@ describe('Phase 1a — reinforcement columns migration', () => {
     expect(() => new SessionStore(db)).not.toThrow();
     const versions = db
       .prepare('SELECT COUNT(*) as n FROM schema_versions WHERE version = ?')
-      .get(33) as { n: number };
+      .get(50) as { n: number };
     expect(versions.n).toBe(1);
   });
 

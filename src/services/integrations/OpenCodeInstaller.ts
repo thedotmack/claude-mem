@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlinkSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE, injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
-import { getWorkerPort } from '../../shared/worker-utils.js';
+import { getWorkerHost, getWorkerPort } from '../../shared/worker-utils.js';
 
 const OPENCODE_PLUGIN_CONFIG_PATH = './plugins/claude-mem.js';
 
@@ -178,48 +178,20 @@ export function injectContextIntoAgentsMd(contextContent: string): number {
   }
 }
 
-export async function syncContextToAgentsMd(
-  port: number,
-  project: string,
-): Promise<void> {
-  try {
-    await fetchAndInjectOpenCodeContext(port, project);
-  } catch (error) {
-    if (error instanceof Error) {
-      logger.debug('WORKER', 'Worker not available during context sync', {}, error);
-    } else {
-      logger.debug('WORKER', 'Worker not available during context sync', {}, new Error(String(error)));
-    }
-  }
-}
-
 async function fetchRealContextFromWorker(): Promise<string | null> {
+  const workerHost = getWorkerHost();
   const workerPort = getWorkerPort();
-  const healthResponse = await fetch(`http://127.0.0.1:${workerPort}/api/readiness`);
+  const workerUrl = `http://${workerHost}:${workerPort}`;
+  const healthResponse = await fetch(`${workerUrl}/api/readiness`);
   if (!healthResponse.ok) return null;
 
   const contextResponse = await fetch(
-    `http://127.0.0.1:${workerPort}/api/context/inject?project=opencode`,
+    `${workerUrl}/api/context/inject?project=opencode`,
   );
   if (!contextResponse.ok) return null;
 
   const realContext = await contextResponse.text();
   return realContext && realContext.trim() ? realContext : null;
-}
-
-async function fetchAndInjectOpenCodeContext(port: number, project: string): Promise<void> {
-  const response = await fetch(
-    `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}`,
-  );
-  if (!response.ok) return;
-
-  const contextText = await response.text();
-  if (contextText && contextText.trim()) {
-    const injectResult = injectContextIntoAgentsMd(contextText);
-    if (injectResult !== 0) {
-      logger.warn('OPENCODE', 'Failed to inject context into AGENTS.md during sync');
-    }
-  }
 }
 
 function writeOrRemoveCleanedAgentsMd(agentsMdPath: string, trimmedContent: string): void {

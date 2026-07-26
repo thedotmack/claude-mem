@@ -13,7 +13,7 @@ const NODE_MODULES_DIRNAME = 'node_modules';
 
 function findBun() {
   const pathCheck = IS_WINDOWS
-    ? spawnSync('where bun', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], shell: true })
+    ? spawnSync('where', ['bun'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
     : spawnSync('which', ['bun'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {

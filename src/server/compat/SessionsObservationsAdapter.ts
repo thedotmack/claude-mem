@@ -26,6 +26,7 @@ import { logger } from '../../utils/logger.js';
 import { requirePostgresServerAuth } from '../middleware/postgres-auth.js';
 import { IngestEventsService } from '../services/IngestEventsService.js';
 import type { CreatePostgresAgentEventInput } from '../../storage/postgres/agent-events.js';
+import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
 
 const COMPAT_SOURCE_ADAPTER = 'claude-code-compat';
 const COMPAT_EVENT_TYPE = 'tool_use';
@@ -84,61 +85,7 @@ export class SessionsObservationsAdapter implements RouteHandler {
       }
 
       try {
-        const session = await resolveServerSession({
-          pool: this.options.pool,
-          teamId,
-          projectId,
-          contentSessionId: parsed.data.contentSessionId,
-          platformSource: typeof parsed.data.platformSource === 'string' ? parsed.data.platformSource : null,
-          agentId: typeof parsed.data.agentId === 'string' ? parsed.data.agentId : null,
-          agentType: typeof parsed.data.agentType === 'string' ? parsed.data.agentType : null,
-        });
-
-        const toolUseId = typeof parsed.data.tool_use_id === 'string'
-          ? parsed.data.tool_use_id
-          : (typeof parsed.data.toolUseId === 'string' ? parsed.data.toolUseId : null);
-
-        const input: CreatePostgresAgentEventInput = {
-          projectId,
-          teamId,
-          serverSessionId: session.id,
-          sourceAdapter: COMPAT_SOURCE_ADAPTER,
-          sourceEventId: toolUseId,
-          eventType: COMPAT_EVENT_TYPE,
-          // #2560 — persist platform_source on the event row (not just inside
-          // payload) so plan-09 scoping/queries can filter by platform.
-          platformSource: typeof parsed.data.platformSource === 'string' ? parsed.data.platformSource : null,
-          payload: {
-            contentSessionId: parsed.data.contentSessionId,
-            tool_name: parsed.data.tool_name,
-            tool_input: parsed.data.tool_input ?? null,
-            tool_response: parsed.data.tool_response ?? null,
-            cwd: parsed.data.cwd ?? null,
-            platformSource: parsed.data.platformSource ?? null,
-            agentId: parsed.data.agentId ?? null,
-            agentType: parsed.data.agentType ?? null,
-            toolUseId,
-          },
-          metadata: { compat: 'sessions/observations' },
-          occurredAt: new Date(),
-        };
-
-        const result = await this.options.ingestEvents.ingestOne(input, {
-          source: 'http_post_api_sessions_observations',
-          apiKeyId: req.authContext?.apiKeyId ?? null,
-          actorId: null,
-          sourceAdapter: COMPAT_SOURCE_ADAPTER,
-        });
-        // Legacy response shape — older clients only check `status`.
-        res.json({
-          status: 'queued',
-          observationCount: 1,
-          sessionId: session.id,
-          serverSessionId: session.id,
-          eventId: result.event.id,
-          generationJobId: result.outbox?.id ?? null,
-          transport: result.enqueueState,
-        });
+        await this.ingestCompatObservation(req, res, parsed.data, teamId, projectId);
       } catch (error) {
         logger.error('SYSTEM', 'compat observations adapter failed', {
           error: error instanceof Error ? error.message : String(error),
@@ -149,6 +96,77 @@ export class SessionsObservationsAdapter implements RouteHandler {
     }));
   }
 
+  // Body of the legacy observations route — translates the legacy payload
+  // into a Server beta agent_event and delegates to IngestEventsService.
+  private async ingestCompatObservation(
+    req: Request,
+    res: Response,
+    data: z.infer<typeof observationsSchema>,
+    teamId: string,
+    projectId: string,
+  ): Promise<void> {
+    const platformSource = normalizePlatformSource(
+      typeof data.platformSource === 'string'
+        ? data.platformSource
+        : DEFAULT_PLATFORM_SOURCE,
+    );
+    const session = await resolveServerSession({
+      pool: this.options.pool,
+      teamId,
+      projectId,
+      contentSessionId: data.contentSessionId,
+      platformSource,
+      agentId: typeof data.agentId === 'string' ? data.agentId : null,
+      agentType: typeof data.agentType === 'string' ? data.agentType : null,
+    });
+
+    const toolUseId = typeof data.tool_use_id === 'string'
+      ? data.tool_use_id
+      : (typeof data.toolUseId === 'string' ? data.toolUseId : null);
+
+    const input: CreatePostgresAgentEventInput = {
+      projectId,
+      teamId,
+      serverSessionId: session.id,
+      sourceAdapter: COMPAT_SOURCE_ADAPTER,
+      sourceEventId: toolUseId,
+      eventType: COMPAT_EVENT_TYPE,
+      // #2560 — persist platform_source on the event row (not just inside
+      // payload) so plan-09 scoping/queries can filter by platform.
+      platformSource,
+      payload: {
+        contentSessionId: data.contentSessionId,
+        tool_name: data.tool_name,
+        tool_input: data.tool_input ?? null,
+        tool_response: data.tool_response ?? null,
+        cwd: data.cwd ?? null,
+        platformSource,
+        agentId: data.agentId ?? null,
+        agentType: data.agentType ?? null,
+        toolUseId,
+      },
+      metadata: { compat: 'sessions/observations' },
+      occurredAt: new Date(),
+    };
+
+    const result = await this.options.ingestEvents.ingestOne(input, {
+      source: 'http_post_api_sessions_observations',
+      apiKeyId: req.authContext?.apiKeyId ?? null,
+      actorId: null,
+      sourceAdapter: COMPAT_SOURCE_ADAPTER,
+    });
+    // Legacy response shape — older clients only check `status`.
+    res.json({
+      status: 'queued',
+      observationCount: 1,
+      sessionId: session.id,
+      serverSessionId: session.id,
+      eventId: result.event.id,
+      generationJobId: result.outbox?.id ?? null,
+      transport: result.enqueueState,
+    });
+  }
+
   private asyncHandler(fn: (req: Request, res: Response) => Promise<void> | void) {
     return (req: Request, res: Response, next: (err?: unknown) => void): void => {
       Promise.resolve(fn(req, res)).catch(next);
@@ -157,15 +175,15 @@ export class SessionsObservationsAdapter implements RouteHandler {
 }
 
 /**
- * Look up an existing server_session by (project, team, externalSessionId)
- * or create one if missing. Idempotent: re-issuing for the same content
- * session returns the existing row.
+ * Look up an existing server_session by platform-scoped
+ * (project, team, externalSessionId) or create one if missing. Idempotent:
+ * re-issuing for the same platform/content session returns the existing row.
  *
  * Concurrent compat callers can race here — both observe `existing===null`
  * and both call `repo.create`, where the second will hit one of two unique
- * constraints (`(project_id, idempotency_key)` covered by ON CONFLICT, or
- * `(project_id, external_session_id)` which is NOT covered). Catch the
- * unique-violation and re-fetch so the caller never sees a 500.
+ * constraints (`(project_id, idempotency_key)` covered by ON CONFLICT, or a
+ * platform-scoped external_session_id index). Catch the unique-violation and
+ * re-fetch so the caller never sees a 500.
  */
 export async function resolveServerSession(input: {
   pool: PostgresPool;
@@ -177,34 +195,41 @@ export async function resolveServerSession(input: {
   agentType: string | null;
 }): Promise<{ id: string; projectId: string; teamId: string }> {
   const repo = new PostgresServerSessionsRepository(input.pool);
+  const platformSource = input.platformSource
+    ? normalizePlatformSource(input.platformSource)
+    : null;
   const existing = await repo.findByExternalIdForScope({
     externalSessionId: input.contentSessionId,
     projectId: input.projectId,
     teamId: input.teamId,
+    platformSource,
   });
   if (existing) {
     return { id: existing.id, projectId: existing.projectId, teamId: existing.teamId };
   }
+  const createInput = {
+    projectId: input.projectId,
+    teamId: input.teamId,
+    externalSessionId: input.contentSessionId,
+    contentSessionId: input.contentSessionId,
+    agentId: input.agentId,
+    agentType: input.agentType,
+    platformSource,
+  };
   try {
-    const created = await repo.create({
-      projectId: input.projectId,
-      teamId: input.teamId,
-      externalSessionId: input.contentSessionId,
-      contentSessionId: input.contentSessionId,
-      agentId: input.agentId,
-      agentType: input.agentType,
-      platformSource: input.platformSource,
-    });
+    const created = await repo.create(createInput);
     return { id: created.id, projectId: created.projectId, teamId: created.teamId };
   } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
     // Postgres unique_violation. A concurrent compat call inserted the row
-    // for this (project, external_session_id) before we could; re-fetch
-    // and return that row instead of bubbling a 500 to the legacy client.
-    if ((error as { code?: string } | null)?.code === '23505') {
+    // for this platform-scoped external session before we could; re-fetch and
+    // return that row instead of bubbling a 500 to the legacy client.
+    if ((err as Error & { code?: string }).code === '23505') {
       const racedRow = await repo.findByExternalIdForScope({
         externalSessionId: input.contentSessionId,
         projectId: input.projectId,
         teamId: input.teamId,
+        platformSource,
       });
       if (racedRow) {
         return { id: racedRow.id, projectId: racedRow.projectId, teamId: racedRow.teamId };
