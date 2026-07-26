@@ -94,6 +94,7 @@ interface MiniMaxConfig {
   apiKey: string;
   model: MiniMaxModel;
   apiUrl: string;
+  abortSignal?: AbortSignal;
 }
 
 const CHARS_PER_TOKEN_ESTIMATE = 4;
@@ -121,6 +122,10 @@ export class MiniMaxProvider extends OpenAICompatibleProvider<MiniMaxConfig> {
 
   protected missingApiKeyError(): Error {
     return new Error('MiniMax API key not configured. Set CLAUDE_MEM_MINIMAX_API_KEY in settings or MINIMAX_API_KEY environment variable.');
+  }
+
+  protected prepareSessionExtras(session: ActiveSession, config: MiniMaxConfig): void {
+    config.abortSignal = session.abortController.signal;
   }
 
   protected estimateTokens(text: string): number {
@@ -187,7 +192,10 @@ export class MiniMaxProvider extends OpenAICompatibleProvider<MiniMaxConfig> {
         });
       }
       return responseData;
-    }, { label: `MiniMax ${config.model}` });
+    }, {
+      label: `MiniMax ${config.model}`,
+      abortSignal: config.abortSignal,
+    });
 
     const content = data.choices?.[0]?.message?.content ?? '';
     if (!content) {

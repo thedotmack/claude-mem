@@ -77,4 +77,28 @@ describe('MiniMaxProvider', () => {
     expect(classifyMiniMaxError({ status: 401, cause: new Error('auth') }).kind).toBe('auth_invalid');
     expect(classifyMiniMaxError({ status: 503, cause: new Error('temporary') }).kind).toBe('transient');
   });
+
+  it('stops retries when the active session is aborted', async () => {
+    let fetchCalls = 0;
+    global.fetch = mock(() => {
+      fetchCalls += 1;
+      return Promise.resolve(new Response('temporary', { status: 503 }));
+    });
+
+    const provider = new MiniMaxProvider({} as never, {} as never);
+    const abortController = new AbortController();
+    const config = {
+      apiKey: 'test-key',
+      model: 'MiniMax-M3',
+      apiUrl: 'https://api.minimax.io/v1/chat/completions',
+    };
+    (provider as any).prepareSessionExtras({ abortController }, config);
+
+    const query = (provider as any).query([], config);
+    setTimeout(() => abortController.abort(), 10);
+
+    await expect(query).rejects.toThrow('Aborted');
+    await Bun.sleep(150);
+    expect(fetchCalls).toBe(1);
+  });
 });

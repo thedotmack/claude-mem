@@ -18,6 +18,7 @@ import {
 } from '../../../src/server/generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../../../src/server/generation/providers/OpenRouterObservationProvider.js';
 import { MiniMaxObservationProvider } from '../../../src/server/generation/providers/MiniMaxObservationProvider.js';
+import { buildServerGenerationProviderFromEnv } from '../../../src/server/runtime/create-server-service.js';
 import { buildServerGenerationPrompt } from '../../../src/server/generation/providers/shared/prompt-builder.js';
 import type { ServerGenerationContext } from '../../../src/server/generation/providers/shared/types.js';
 
@@ -151,6 +152,19 @@ describe('buildServerGenerationPrompt', () => {
     expect(result.prompt).toContain('<generation_job_id>job-1</generation_job_id>');
     expect(result.prompt).toContain('<server_session_id>session-x</server_session_id>');
     expect(result.prompt).toContain('<project_name>demo</project_name>');
+  });
+});
+
+describe('server provider configuration', () => {
+  it('uses MiniMax settings persisted by the installer when server env is unset', () => {
+    const provider = buildServerGenerationProviderFromEnv({}, {
+      CLAUDE_MEM_PROVIDER: 'minimax',
+      CLAUDE_MEM_MINIMAX_API_KEY: 'test-key',
+      CLAUDE_MEM_MINIMAX_MODEL: 'MiniMax-M2.7',
+      CLAUDE_MEM_MINIMAX_BASE_URL: 'https://api.minimaxi.com/v1',
+    });
+
+    expect(provider).toBeInstanceOf(MiniMaxObservationProvider);
   });
 });
 
