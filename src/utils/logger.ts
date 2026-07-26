@@ -79,16 +79,22 @@ class Logger {
   private level: LogLevel | null = null;
   private useColor: boolean;
   private logFilePath: string | null = null;
-  private logFileInitialized: boolean = false;
+  private logFileDate: string | null = null;
 
   constructor() {
     this.useColor = process.stdout.isTTY ?? false;
     // Don't initialize log file in constructor - do it lazily to avoid circular dependency
   }
 
+  // Re-resolves the log path whenever the date changes so long-running
+  // daemons roll onto the new day's file instead of appending to the file
+  // named for their start date forever (#3415). The date string doubles as
+  // the "already initialized for today" cache, so same-day calls stay a
+  // cheap comparison.
   private ensureLogFileInitialized(): void {
-    if (this.logFileInitialized) return;
-    this.logFileInitialized = true;
+    const date = new Date().toISOString().split('T')[0];
+    if (this.logFileDate === date) return;
+    this.logFileDate = date;
 
     try {
       const logsDir = paths.logsDir();
@@ -97,7 +103,6 @@ class Logger {
         mkdirSync(logsDir, { recursive: true });
       }
 
-      const date = new Date().toISOString().split('T')[0];
       this.logFilePath = join(logsDir, `claude-mem-${date}.log`);
     } catch (error: unknown) {
       console.error('[LOGGER] Failed to initialize log file:', error instanceof Error ? error.message : String(error));
