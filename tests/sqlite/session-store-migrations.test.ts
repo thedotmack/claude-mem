@@ -942,6 +942,7 @@ describe('SessionStore migrations', () => {
         fullObservationField: 'narrative',
         showLastSummary: true,
         showLastMessage: false,
+        mainAgentOnly: true,
       };
       const injected = queryObservationsMulti(migrated, ['proj-v49'], config);
       expect(injected.map(obs => obs.title)).toEqual(['MIXED_CONCEPTS']);

@@ -438,6 +438,7 @@ describe('concept exact-match injection (#3379)', () => {
     fullObservationField: 'narrative',
     showLastSummary: true,
     showLastMessage: false,
+    mainAgentOnly: true,
   };
 
   it('excludes a row whose stored concept carries a "keyword: description" prefix', () => {
