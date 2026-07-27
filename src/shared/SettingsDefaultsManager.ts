@@ -64,6 +64,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_TENANT: string;
   CLAUDE_MEM_CHROMA_DATABASE: string;
   CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: string;
+  CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: string;  // chroma-mcp embedding function for new collections
   // Worker-native cloud sync. Active ⇔ TOKEN, USER_ID, and HUB_URL are all
   // non-empty — there is no separate enabled flag. HUB_URL points at the
   // two-lane sync hub (workers/sync-hub); while it is empty, sync is OFF
@@ -158,6 +159,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_TENANT: 'default_tenant',
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
     CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: '120000',
+    // Embedding function used when creating the Chroma collection. 'default' is
+    // all-MiniLM-L6-v2 (English-tuned). Non-English users can set 'multilingual'
+    // for markedly better recall at the same 384 dimensions. Applies to new
+    // collections only — changing it requires re-indexing.
+    CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: 'default',
     // Worker-native cloud sync: credentials come from cmem.ai → Connect.
     CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
     CLAUDE_MEM_CLOUD_SYNC_USER_ID: '',
