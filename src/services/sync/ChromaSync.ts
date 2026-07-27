@@ -95,8 +95,6 @@ interface StoredUserPrompt {
   platform_source: string;
 }
 
-const MALFORMED_LIST_FIELD_PREVIEW_CHARS = 100;
-
 function parseStringListField(
   rawValue: string | null | undefined,
   fieldName: 'facts' | 'concepts',
@@ -114,15 +112,14 @@ function parseStringListField(
         rowId,
         parsedType: typeof parsed,
       });
-      return typeof parsed === 'string' && parsed.trim() ? [parsed] : [];
+      return rawValue.trim() ? [rawValue] : [];
     }
     return parsed.filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
   } catch (error) {
     logger.warn('CHROMA_SYNC', 'Malformed observation list field, using plain string fallback', {
       fieldName,
       rowId,
-      preview: rawValue.slice(0, MALFORMED_LIST_FIELD_PREVIEW_CHARS),
-      error: error instanceof Error ? error.message : String(error),
+      errorName: error instanceof Error ? error.name : 'NonError',
     });
     return rawValue.trim() ? [rawValue] : [];
   }

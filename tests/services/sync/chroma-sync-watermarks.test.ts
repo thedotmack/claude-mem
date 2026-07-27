@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -50,6 +50,7 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
 
 import { ChromaSync } from '../../../src/services/sync/ChromaSync.js';
 import { ChromaSyncState } from '../../../src/services/sync/ChromaSyncState.js';
+import { logger } from '../../../src/utils/logger.js';
 
 afterAll(() => {
   mock.module('../../../src/services/sync/ChromaMcpManager.js', () => realChromaMcpManagerSnapshot);
@@ -273,5 +274,39 @@ describe('ChromaSync watermark gap persistence', () => {
     ))).toBe(true);
     expect(ChromaSyncState.get(project).observations).toBe(1);
     expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
+  });
+
+  it('preserves JSON-looking plain-string list fields without logging raw memory content', async () => {
+    const secretFact = 'TREX_SECRET_OBSERVATION_TOKEN_9f3a7c_DO_NOT_LOG';
+    const jsonLookingFact = `{"note":"${secretFact}"}`;
+    const jsonScalarConcept = '"数字化改造"';
+    const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+    const rowId = 1;
+    const cjkRow = {
+      ...makeObservationRow(rowId, project),
+      facts: jsonLookingFact,
+      concepts: jsonScalarConcept,
+      narrative: 'json-looking fallback row',
+    };
+    ChromaSyncState.replace(project, {
+      observations: 0,
+      summaries: 0,
+      prompts: 0,
+      pending: {},
+    });
+    const sync = new ChromaSync(project);
+
+    try {
+      await sync.ensureBackfilled(project, makeStoreFromRows(project, [cjkRow]));
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    expect(addDocumentPayloads.flatMap(payload => payload.documents)).toContain(jsonLookingFact);
+    expect(addDocumentPayloads.flatMap(payload => payload.metadatas).some(metadata => (
+      metadata.concepts === jsonScalarConcept
+    ))).toBe(true);
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(secretFact);
+    expect(ChromaSyncState.get(project).observations).toBe(rowId);
   });
 });
