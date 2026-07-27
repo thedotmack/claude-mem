@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
-import { CLAUDE_CONFIG_DIR, OBSERVER_SESSIONS_DIR } from '../../src/shared/paths.js';
+import { CLAUDE_CONFIG_DIR, MARKETPLACE_ROOT, OBSERVER_SESSIONS_DIR } from '../../src/shared/paths.js';
 import { join, normalize } from 'path';
 
 // Snapshot the real module BEFORE mock.module mutates the live namespace, then
@@ -72,6 +72,13 @@ describe('shouldTrackProject — path normalization', () => {
 
     expect(shouldTrackProject(pluginVersionDir)).toBe(false);
     expect(shouldTrackProject(join(pluginVersionDir, PLUGIN_RUNTIME_DIR_NAME, PLUGIN_SCRIPTS_DIR_NAME))).toBe(false);
+  });
+
+  it('returns false when cwd is inside the marketplace plugin runtime', () => {
+    const marketplacePluginDir = join(MARKETPLACE_ROOT, PLUGIN_RUNTIME_DIR_NAME);
+
+    expect(shouldTrackProject(marketplacePluginDir)).toBe(false);
+    expect(shouldTrackProject(join(marketplacePluginDir, PLUGIN_SCRIPTS_DIR_NAME))).toBe(false);
   });
 
   it('returns true for an unrelated project path', () => {
