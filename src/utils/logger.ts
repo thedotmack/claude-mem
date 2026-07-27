@@ -94,7 +94,6 @@ class Logger {
   private ensureLogFileInitialized(): void {
     const date = new Date().toISOString().split('T')[0];
     if (this.logFileDate === date) return;
-    this.logFileDate = date;
 
     try {
       const logsDir = paths.logsDir();
@@ -104,6 +103,7 @@ class Logger {
       }
 
       this.logFilePath = join(logsDir, `claude-mem-${date}.log`);
+      this.logFileDate = date;
     } catch (error: unknown) {
       console.error('[LOGGER] Failed to initialize log file:', error instanceof Error ? error.message : String(error));
       this.logFilePath = null;
