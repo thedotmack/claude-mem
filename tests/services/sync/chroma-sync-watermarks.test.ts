@@ -8,6 +8,7 @@ const realChromaMcpManagerSnapshot = { ...realChromaMcpManager };
 
 let existingObservationIds = new Set<number>();
 const addDocumentCalls: string[][] = [];
+const addDocumentPayloads: Array<{ ids: string[]; documents: string[]; metadatas: Array<Record<string, unknown>> }> = [];
 
 mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
   ChromaMcpManager: {
@@ -33,6 +34,11 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
 
         if (toolName === 'chroma_add_documents') {
           addDocumentCalls.push((args.ids as string[]) ?? []);
+          addDocumentPayloads.push({
+            ids: (args.ids as string[]) ?? [],
+            documents: (args.documents as string[]) ?? [],
+            metadatas: (args.metadatas as Array<Record<string, unknown>>) ?? [],
+          });
           return {};
         }
 
@@ -138,6 +144,7 @@ describe('ChromaSync watermark gap persistence', () => {
     process.env.CLAUDE_MEM_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-watermarks-'));
     existingObservationIds = new Set<number>();
     addDocumentCalls.length = 0;
+    addDocumentPayloads.length = 0;
     ChromaSyncState.replace(project, { observations: 0, summaries: 0, prompts: 0, pending: {} });
   });
 
@@ -235,5 +242,36 @@ describe('ChromaSync watermark gap persistence', () => {
     expect(ChromaSyncState.get(project).observations).toBe(1);
     expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
     expect(addDocumentCalls.some(batch => batch.includes('obs_1_fact_100'))).toBe(true);
+  });
+
+  it('backfills CJK plain-string facts and concepts without JSON parse failure', async () => {
+    const cjkFact = '用户身份定位——轻量数字化改造枢纽';
+    const cjkConcept = '数字化改造';
+    const cjkRow = {
+      ...makeObservationRow(1, project),
+      title: '观察: 用户身份定位',
+      facts: cjkFact,
+      concepts: cjkConcept,
+      narrative: '项目记录包含中文叙述',
+      text: '中文观察正文',
+    };
+    ChromaSyncState.replace(project, {
+      observations: 0,
+      summaries: 0,
+      prompts: 0,
+      pending: {},
+    });
+    const sync = new ChromaSync(project);
+
+    await sync.ensureBackfilled(project, makeStoreFromRows(project, [cjkRow]));
+
+    const writtenIds = addDocumentCalls.flat();
+    expect(writtenIds).toContain('obs_1_fact_0');
+    expect(addDocumentPayloads.flatMap(payload => payload.documents)).toContain(cjkFact);
+    expect(addDocumentPayloads.flatMap(payload => payload.metadatas).some(metadata => (
+      metadata.concepts === cjkConcept
+    ))).toBe(true);
+    expect(ChromaSyncState.get(project).observations).toBe(1);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
   });
 });
