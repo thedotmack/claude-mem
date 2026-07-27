@@ -17,7 +17,7 @@ import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
-import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
+import { handleGeneratorExit, type GeneratorExitOutcome } from '../../session/GeneratorExitHandler.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
@@ -66,6 +66,8 @@ export class SessionRoutes extends BaseRouteHandler {
     super();
   }
 
+  private readonly rescueCompletions = new Map<number, Promise<GeneratorExitOutcome>>();
+
   private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return 'openrouter';
@@ -73,9 +75,9 @@ export class SessionRoutes extends BaseRouteHandler {
     return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
   }
 
-  public async ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
+  public async ensureGeneratorRunning(sessionDbId: number, source: string): Promise<boolean> {
     const session = this.sessionManager.getSession(sessionDbId);
-    if (!session) return;
+    if (!session) return false;
 
     const selectedProvider = this.getSelectedProvider();
 
@@ -91,7 +93,7 @@ export class SessionRoutes extends BaseRouteHandler {
               status: claudeStatus.kind,
               message: claudeStatus.message,
             });
-            return;
+            return false;
           }
 
           try {
@@ -112,13 +114,22 @@ export class SessionRoutes extends BaseRouteHandler {
               source,
               error: classified.message,
             }, err);
-            return;
+            return false;
           }
         }
       }
       await this.applyTierRouting(session);
+      if (source === 'summarize-rescue') {
+        let resolveRescueCompletion!: (outcome: GeneratorExitOutcome) => void;
+        const rescueCompletion = new Promise<GeneratorExitOutcome>(resolve => {
+          resolveRescueCompletion = resolve;
+        });
+        this.rescueCompletions.set(sessionDbId, rescueCompletion);
+        await this.startGeneratorWithProvider(session, selectedProvider, source, resolveRescueCompletion);
+        return true;
+      }
       await this.startGeneratorWithProvider(session, selectedProvider, source);
-      return;
+      return true;
     }
 
     if (session.currentProvider && session.currentProvider !== selectedProvider) {
@@ -131,12 +142,14 @@ export class SessionRoutes extends BaseRouteHandler {
       // Let current generator finish naturally, next one will use new provider
       // The shared conversationHistory ensures context is preserved
     }
+    return false;
   }
 
   private async startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
     provider: 'claude' | 'gemini' | 'openrouter',
-    source: string
+    source: string,
+    resolveRescueCompletion?: (outcome: GeneratorExitOutcome) => void,
   ): Promise<void> {
     if (!session) return;
 
@@ -232,11 +245,16 @@ export class SessionRoutes extends BaseRouteHandler {
           if (session.currentProvider === provider) {
             session.currentProvider = null;
           }
+          resolveRescueCompletion?.('not-started');
           return;
         }
 
         const reason = session.abortReason ?? null;
         session.abortReason = null;  // consume the reason
+        const abortCategory = (reason ?? '').split(':')[0];
+        const rescueOutcome = source === 'summarize-rescue'
+          ? (abortCategory === 'auth' || abortCategory === 'quota' ? 'preserved' : 'handled')
+          : undefined;
         if (reason !== null) {
           // Abort accounting lives HERE, where the reason is consumed — the
           // ONLY point every abort flow (idle / shutdown / overflow / quota)
@@ -254,7 +272,17 @@ export class SessionRoutes extends BaseRouteHandler {
         await handleGeneratorExit(session, reason, {
           sessionManager: this.sessionManager,
           completionHandler: this.completionHandler,
+          restartGenerator: async () => {
+            const launched = await this.ensureGeneratorRunning(session.sessionDbId, 'summarize-rescue');
+            if (!launched) return 'not-started';
+            const rescueCompletion = this.rescueCompletions.get(session.sessionDbId);
+            if (!rescueCompletion) return 'not-started';
+            const outcome = await rescueCompletion;
+            this.rescueCompletions.delete(session.sessionDbId);
+            return outcome;
+          },
         });
+        resolveRescueCompletion?.(rescueOutcome ?? 'handled');
       });
     session.generatorPromise = generatorPromise;
   }
