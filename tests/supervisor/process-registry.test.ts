@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import { createProcessRegistry, isPidAlive, normalizeSpawnSdkArgs } from '../../src/supervisor/process-registry.js';
+import { OBSERVER_SESSIONS_DIR } from '../../src/shared/paths.js';
+import { createProcessRegistry, isPidAlive, normalizeSpawnSdkArgs, normalizeSpawnSdkCwd } from '../../src/supervisor/process-registry.js';
 
 function makeTempDir(): string {
   return path.join(tmpdir(), `claude-mem-supervisor-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -381,6 +382,13 @@ describe('supervisor ProcessRegistry', () => {
         'session-123',
         '--no-session-persistence',
       ]);
+    });
+  });
+
+  describe('normalizeSpawnSdkCwd', () => {
+    it('jails SDK subprocess cwd to the observer sessions directory (#3357)', () => {
+      expect(normalizeSpawnSdkCwd('/tmp/user-project')).toBe(OBSERVER_SESSIONS_DIR);
+      expect(normalizeSpawnSdkCwd(undefined)).toBe(OBSERVER_SESSIONS_DIR);
     });
   });
 
