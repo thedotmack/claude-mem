@@ -471,4 +471,72 @@ describe('SettingsDefaultsManager', () => {
       expect(result.CLAUDE_MEM_WORKER_PORT).toBe('33333'); 
     });
   });
+
+  describe('CLAUDE_MEM_WORKER_HOST localhost normalization (#2992)', () => {
+    // On modern Windows resolvers 'localhost' resolves IPv6-first while
+    // server.listen(port, 'localhost') binds ::1 only, so a 'localhost'
+    // host value can put the hook client and the worker on different
+    // loopback families. The manager pins it to the IPv4 loopback.
+    let originalHostEnv: string | undefined;
+
+    beforeEach(() => {
+      originalHostEnv = process.env.CLAUDE_MEM_WORKER_HOST;
+      delete process.env.CLAUDE_MEM_WORKER_HOST;
+    });
+
+    afterEach(() => {
+      if (originalHostEnv === undefined) {
+        delete process.env.CLAUDE_MEM_WORKER_HOST;
+      } else {
+        process.env.CLAUDE_MEM_WORKER_HOST = originalHostEnv;
+      }
+    });
+
+    it('should normalize a file value of localhost to 127.0.0.1', () => {
+      writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_WORKER_HOST: 'localhost' }));
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      expect(result.CLAUDE_MEM_WORKER_HOST).toBe('127.0.0.1');
+    });
+
+    it('should normalize an env override of localhost to 127.0.0.1', () => {
+      process.env.CLAUDE_MEM_WORKER_HOST = 'localhost';
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      expect(result.CLAUDE_MEM_WORKER_HOST).toBe('127.0.0.1');
+    });
+
+    it('should normalize localhost through get() when set via env', () => {
+      process.env.CLAUDE_MEM_WORKER_HOST = 'localhost';
+
+      expect(SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_HOST')).toBe('127.0.0.1');
+    });
+
+    it('should normalize when env overrides are skipped', () => {
+      writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_WORKER_HOST: 'localhost' }));
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+      expect(result.CLAUDE_MEM_WORKER_HOST).toBe('127.0.0.1');
+    });
+
+    it('should pass through non-localhost hosts unchanged', () => {
+      writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_WORKER_HOST: '0.0.0.0' }));
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      expect(result.CLAUDE_MEM_WORKER_HOST).toBe('0.0.0.0');
+    });
+
+    it('should not rewrite the settings file when normalizing', () => {
+      const content = JSON.stringify({ CLAUDE_MEM_WORKER_HOST: 'localhost' }, null, 2);
+      writeFileSync(settingsPath, content);
+
+      SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      expect(readFileSync(settingsPath, 'utf-8')).toBe(content);
+    });
+  });
 });
