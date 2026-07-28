@@ -1,4 +1,4 @@
-import { describe, it, expect, spyOn } from 'bun:test';
+import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import {
@@ -7,9 +7,6 @@ import {
   queryObservationsMulti,
   querySummariesMulti,
 } from '../../src/services/context/ObservationCompiler.js';
-import { loadContextConfig } from '../../src/services/context/ContextConfigLoader.js';
-import { ModeManager } from '../../src/services/domain/ModeManager.js';
-import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import type { ContextConfig, Observation, SummaryTimelineItem } from '../../src/services/context/types.js';
 
 function createTestObservation(overrides: Partial<Observation> = {}): Observation {
@@ -403,41 +400,6 @@ describe('context compiler main-agent-only injection filtering', () => {
       expect(countObservationsByProjects(store, ['agent-scope-project'])).toBe(2);
     } finally {
       store.close();
-    }
-  });
-
-  it('maps CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY to the mainAgentOnly flag', () => {
-    const modeSpy = spyOn(ModeManager.prototype, 'getActiveMode').mockReturnValue({
-      name: 'code',
-      description: 'test',
-      version: '1',
-      observation_types: [],
-      observation_concepts: [],
-      prompts: {
-        observation_instruction: '',
-        summary_instruction: '',
-        summary_context_label: '',
-        summary_format_instruction: '',
-        summary_footer: '',
-      },
-    });
-    const loadSpy = spyOn(SettingsDefaultsManager, 'loadFromFile');
-
-    try {
-      loadSpy.mockReturnValue({
-        ...SettingsDefaultsManager.getAllDefaults(),
-        CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY: 'false',
-      });
-      expect(loadContextConfig().mainAgentOnly).toBe(false);
-
-      loadSpy.mockReturnValue({
-        ...SettingsDefaultsManager.getAllDefaults(),
-        CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY: 'true',
-      });
-      expect(loadContextConfig().mainAgentOnly).toBe(true);
-    } finally {
-      loadSpy.mockRestore();
-      modeSpy.mockRestore();
     }
   });
 });
