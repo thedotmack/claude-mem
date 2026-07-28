@@ -85,6 +85,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
       'CLAUDE_MEM_OPENROUTER_API_KEY',
+      'CLAUDE_MEM_OPENROUTER_BASE_URL',
       'CLAUDE_MEM_OPENROUTER_MODEL',
       'CLAUDE_MEM_OPENROUTER_SITE_URL',
       'CLAUDE_MEM_OPENROUTER_APP_NAME',
@@ -239,6 +240,15 @@ export class SettingsRoutes extends BaseRouteHandler {
       } catch (error) {
         logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENROUTER_SITE_URL, error: error instanceof Error ? error.message : String(error) });
         return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_SITE_URL must be a valid URL' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_OPENROUTER_BASE_URL) {
+      try {
+        new URL(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
+      } catch (error) {
+        logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENROUTER_BASE_URL, error: error instanceof Error ? error.message : String(error) });
+        return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_BASE_URL must be a valid URL' };
       }
     }
 
