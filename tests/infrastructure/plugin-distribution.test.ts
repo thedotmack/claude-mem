@@ -584,6 +584,28 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  it('keeps runtime hooks fail-open when the resolved command exits non-zero (#3412)', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-command-fail-'));
+    const pluginRoot = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0');
+    mkdirSync(path.join(pluginRoot, 'scripts'), { recursive: true });
+    writeFileSync(path.join(pluginRoot, 'scripts', 'bun-runner.js'), 'process.exit(7);\n');
+    writeFileSync(path.join(pluginRoot, 'scripts', 'worker-service.cjs'), '');
+
+    try {
+      const parsed = readJson('plugin/hooks/hooks.json');
+      const runtimeCommand = hookCommandByPath(parsed, 'UserPromptSubmit.0.0')!;
+      const runtimeResult = spawnSync('bash', ['-c', runtimeCommand], {
+        env: { PATH: process.env.PATH ?? '', HOME: home },
+        encoding: 'utf-8',
+      });
+
+      expect(runtimeResult.status).toBe(0);
+      expect(runtimeResult.stderr ?? '').toContain('claude-mem: hook command failed (exit 7)');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('Spawn-Contract Templating - Rule B installers bake absolute paths', () => {
