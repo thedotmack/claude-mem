@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import {
@@ -9,6 +9,7 @@ import {
 } from '../../src/services/context/ObservationCompiler.js';
 import { loadContextConfig } from '../../src/services/context/ContextConfigLoader.js';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
+import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import type { ContextConfig, Observation, SummaryTimelineItem } from '../../src/services/context/types.js';
 
 function createTestObservation(overrides: Partial<Observation> = {}): Observation {
@@ -407,6 +408,20 @@ describe('context compiler main-agent-only injection filtering', () => {
 
   it('maps CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY to the mainAgentOnly flag', () => {
     ModeManager.getInstance().loadMode('code');
+    const loadSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(
+      (_settingsPath, applyEnvOverrides = true) => {
+        const settings = { ...SettingsDefaultsManager.getAllDefaults() };
+        if (!applyEnvOverrides) {
+          return settings;
+        }
+        for (const key of Object.keys(settings) as Array<keyof typeof settings>) {
+          if (process.env[key] !== undefined) {
+            settings[key] = process.env[key]!;
+          }
+        }
+        return settings;
+      },
+    );
     const original = process.env.CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY;
     try {
       process.env.CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY = 'false';
@@ -415,6 +430,7 @@ describe('context compiler main-agent-only injection filtering', () => {
       delete process.env.CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY;
       expect(loadContextConfig().mainAgentOnly).toBe(true);
     } finally {
+      loadSpy.mockRestore();
       if (original === undefined) {
         delete process.env.CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY;
       } else {
