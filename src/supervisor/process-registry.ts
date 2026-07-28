@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import { logger } from '../utils/logger.js';
 import { sanitizeEnv } from './env-sanitizer.js';
-import { paths } from '../shared/paths.js';
+import { OBSERVER_SESSIONS_DIR, paths } from '../shared/paths.js';
 // Moved to shared/ so kill-process-tree.ts can use it without closing an
 // import cycle (process-registry already imports kill-process-tree). Re-exported
 // here so every existing caller keeps its import path.
@@ -615,6 +615,10 @@ export function normalizeSpawnSdkArgs(args: string[], extraArgs: string[] = []):
   return filteredArgs;
 }
 
+export function normalizeSpawnSdkCwd(_cwd: string | undefined): string {
+  return OBSERVER_SESSIONS_DIR;
+}
+
 export function spawnSdkProcess(
   sessionDbId: number,
   options: SpawnSdkOptions
@@ -624,11 +628,12 @@ export function spawnSdkProcess(
   const useCmdWrapper = process.platform === 'win32' && options.command.endsWith('.cmd');
   const env = sanitizeEnv(options.env ?? process.env);
   const filteredArgs = normalizeSpawnSdkArgs(options.args, options.extraArgs);
+  const cwd = normalizeSpawnSdkCwd(options.cwd);
 
   const isWin = process.platform === 'win32';
   const child = useCmdWrapper
     ? spawnHidden('cmd.exe', ['/d', '/c', options.command, ...filteredArgs], {
-        cwd: options.cwd,
+        cwd,
         env,
         detached: !isWin,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -636,7 +641,7 @@ export function spawnSdkProcess(
         windowsHide: true,
       })
     : spawnHidden(options.command, filteredArgs, {
-        cwd: options.cwd,
+        cwd,
         env,
         detached: !isWin,
         stdio: ['pipe', 'pipe', 'pipe'],
