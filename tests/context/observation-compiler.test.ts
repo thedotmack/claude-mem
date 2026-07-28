@@ -407,7 +407,20 @@ describe('context compiler main-agent-only injection filtering', () => {
   });
 
   it('maps CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY to the mainAgentOnly flag', () => {
-    ModeManager.getInstance().loadMode('code');
+    const modeSpy = spyOn(ModeManager.prototype, 'getActiveMode').mockReturnValue({
+      name: 'code',
+      description: 'test',
+      version: '1',
+      observation_types: [],
+      observation_concepts: [],
+      prompts: {
+        observation_instruction: '',
+        summary_instruction: '',
+        summary_context_label: '',
+        summary_format_instruction: '',
+        summary_footer: '',
+      },
+    });
     const loadSpy = spyOn(SettingsDefaultsManager, 'loadFromFile');
 
     try {
@@ -424,6 +437,7 @@ describe('context compiler main-agent-only injection filtering', () => {
       expect(loadContextConfig().mainAgentOnly).toBe(true);
     } finally {
       loadSpy.mockRestore();
+      modeSpy.mockRestore();
     }
   });
 });
