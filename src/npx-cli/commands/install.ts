@@ -14,6 +14,7 @@ import { parseJsonWithBom, writeJsonFileAtomic as writeSettingsJsonAtomic } from
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
 import { formatHostForUrl } from '../../shared/worker-utils.js';
+import { isHttpUrl } from '../../shared/openrouter-base-url.js';
 import {
   ensureBun,
   ensureUv,
@@ -1276,12 +1277,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
         validate: (v?: string) => {
           const value = v?.trim() ?? '';
           if (!value) return 'Base URL required';
-          try {
-            new URL(value);
-            return undefined;
-          } catch {
-            return 'Enter a valid URL, for example http://localhost:1234/v1';
-          }
+          return isHttpUrl(value) ? undefined : 'Enter an HTTP(S) URL, for example http://localhost:1234/v1';
         },
       });
 

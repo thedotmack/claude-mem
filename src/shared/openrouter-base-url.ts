@@ -35,6 +35,15 @@
 export const DEFAULT_OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 const CHAT_COMPLETIONS_PATH = '/chat/completions';
+const HTTP_URL_PROTOCOLS = new Set(['http:', 'https:']);
+
+export function isHttpUrl(value: string): boolean {
+  try {
+    return HTTP_URL_PROTOCOLS.has(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Resolve the chat-completions endpoint from an optional configured base URL.
@@ -49,6 +58,10 @@ export function resolveOpenRouterChatCompletionsUrl(baseUrl: string | undefined 
   const trimmed = (baseUrl ?? '').trim();
   if (!trimmed) {
     return DEFAULT_OPENROUTER_API_URL;
+  }
+
+  if (!isHttpUrl(trimmed)) {
+    throw new Error('OpenRouter base URL must use http or https');
   }
 
   // Normalize trailing slashes so `.../v1/` and `.../v1` behave identically.

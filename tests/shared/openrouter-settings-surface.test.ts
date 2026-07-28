@@ -26,7 +26,7 @@ describe('OpenRouter custom endpoint settings surface (#3188)', () => {
     const routeSource = readFileSync('src/services/worker/http/routes/SettingsRoutes.ts', 'utf-8');
 
     expect(routeSource).toContain(`'${OPENROUTER_BASE_URL_KEY}'`);
-    expect(routeSource).toContain(`${OPENROUTER_BASE_URL_KEY} must be a valid URL`);
+    expect(routeSource).toContain(`${OPENROUTER_BASE_URL_KEY} must be an HTTP(S) URL`);
   });
 
   it('surfaces custom OpenAI-compatible endpoint setup in the installer', () => {

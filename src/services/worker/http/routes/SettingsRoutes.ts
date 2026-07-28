@@ -13,6 +13,7 @@ import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsMana
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from '../../../../shared/atomic-json.js';
+import { isHttpUrl } from '../../../../shared/openrouter-base-url.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
@@ -244,11 +245,9 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
 
     if (settings.CLAUDE_MEM_OPENROUTER_BASE_URL) {
-      try {
-        new URL(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
-      } catch (error) {
-        logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENROUTER_BASE_URL, error: error instanceof Error ? error.message : String(error) });
-        return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_BASE_URL must be a valid URL' };
+      if (!isHttpUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)) {
+        logger.debug('SETTINGS', 'Invalid OpenRouter base URL protocol', { url: settings.CLAUDE_MEM_OPENROUTER_BASE_URL });
+        return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_BASE_URL must be an HTTP(S) URL' };
       }
     }
 

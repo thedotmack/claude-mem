@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   DEFAULT_OPENROUTER_API_URL,
+  isHttpUrl,
   resolveOpenRouterChatCompletionsUrl,
 } from '../../src/shared/openrouter-base-url.js';
 
@@ -61,5 +62,19 @@ describe('resolveOpenRouterChatCompletionsUrl', () => {
   it('matches the /chat/completions suffix case-insensitively', () => {
     const mixed = 'https://x.example.com/v1/Chat/Completions';
     expect(resolveOpenRouterChatCompletionsUrl(mixed)).toBe(mixed);
+  });
+
+  it('only accepts HTTP(S) URLs for custom endpoints', () => {
+    expect(isHttpUrl('https://api.deepseek.com')).toBe(true);
+    expect(isHttpUrl('http://localhost:1234/v1')).toBe(true);
+    expect(isHttpUrl('ftp://example.com/v1')).toBe(false);
+    expect(isHttpUrl('file:///tmp/openrouter')).toBe(false);
+    expect(isHttpUrl('not a url')).toBe(false);
+  });
+
+  it('rejects unsupported custom endpoint protocols before fetch', () => {
+    expect(() => resolveOpenRouterChatCompletionsUrl('ftp://example.com/v1')).toThrow(
+      'OpenRouter base URL must use http or https',
+    );
   });
 });
