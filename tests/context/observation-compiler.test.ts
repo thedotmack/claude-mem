@@ -408,34 +408,22 @@ describe('context compiler main-agent-only injection filtering', () => {
 
   it('maps CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY to the mainAgentOnly flag', () => {
     ModeManager.getInstance().loadMode('code');
-    const loadSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(
-      (_settingsPath, applyEnvOverrides = true) => {
-        const settings = { ...SettingsDefaultsManager.getAllDefaults() };
-        if (!applyEnvOverrides) {
-          return settings;
-        }
-        for (const key of Object.keys(settings) as Array<keyof typeof settings>) {
-          if (process.env[key] !== undefined) {
-            settings[key] = process.env[key]!;
-          }
-        }
-        return settings;
-      },
-    );
-    const original = process.env.CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY;
+    const loadSpy = spyOn(SettingsDefaultsManager, 'loadFromFile');
+
     try {
-      process.env.CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY = 'false';
+      loadSpy.mockReturnValue({
+        ...SettingsDefaultsManager.getAllDefaults(),
+        CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY: 'false',
+      });
       expect(loadContextConfig().mainAgentOnly).toBe(false);
 
-      delete process.env.CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY;
+      loadSpy.mockReturnValue({
+        ...SettingsDefaultsManager.getAllDefaults(),
+        CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY: 'true',
+      });
       expect(loadContextConfig().mainAgentOnly).toBe(true);
     } finally {
       loadSpy.mockRestore();
-      if (original === undefined) {
-        delete process.env.CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY;
-      } else {
-        process.env.CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY = original;
-      }
     }
   });
 });
