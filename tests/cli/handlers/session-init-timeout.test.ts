@@ -50,4 +50,61 @@ describe('sessionInitHandler request timeout', () => {
     expect(new TextDecoder().decode(result.stdout)).toBe('');
     expect(result.exitCode).toBe(0);
   });
+
+  it('passes the dedicated session-init timeout to the server runtime request (#3434)', () => {
+    const env = { ...process.env };
+    delete env.CLAUDE_MEM_INTERNAL;
+    const script = `
+      const serverCalls = [];
+      const { sessionInitHandler, setSessionInitDependenciesForTesting } = await import('./src/cli/handlers/session-init.ts');
+      setSessionInitDependenciesForTesting({
+        loadFromFileOnce: () => ({
+          CLAUDE_MEM_EXCLUDED_PROJECTS: '',
+          CLAUDE_MEM_RUNTIME: 'server',
+          CLAUDE_MEM_SEMANTIC_INJECT: 'false',
+          CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: '5',
+        }),
+        resolveRuntimeContext: () => ({
+          runtime: 'server',
+          projectId: 'server-project-1',
+          serverBaseUrl: 'http://server.test',
+          client: {
+            startSession: async (input, options) => {
+              serverCalls.push({ input, options });
+              return { session: { id: 'server-session-1' } };
+            },
+          },
+        }),
+        shouldTrackProject: () => true,
+        getSessionInitRequestTimeoutMs: () => ${SESSION_INIT_REQUEST_TIMEOUT_MS},
+        executeWithWorkerFallback: async () => {
+          throw new Error('worker fallback should not be called in server success path');
+        },
+        isWorkerFallback: () => false,
+        logServerFallback: () => {},
+      });
+      await sessionInitHandler.execute({
+        sessionId: 'server-session-init-timeout',
+        cwd: '/tmp/server-session-init-timeout-test',
+        platform: 'claude-code',
+        prompt: 'Please initialize the server runtime without blocking the prompt loop.',
+      });
+      if (serverCalls.length !== 1) throw new Error('server startSession count mismatch: ' + serverCalls.length);
+      if (serverCalls[0].options?.timeoutMs !== ${SESSION_INIT_REQUEST_TIMEOUT_MS}) {
+        throw new Error('server timeout mismatch: ' + JSON.stringify(serverCalls[0].options));
+      }
+    `;
+
+    const result = Bun.spawnSync({
+      cmd: [process.execPath, '--eval', script],
+      cwd: process.cwd(),
+      env,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    expect(new TextDecoder().decode(result.stderr)).toBe('');
+    expect(new TextDecoder().decode(result.stdout)).toBe('');
+    expect(result.exitCode).toBe(0);
+  });
 });

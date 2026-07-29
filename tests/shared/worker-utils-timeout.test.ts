@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
+import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
 // Eagerly evaluate src/shared/paths.ts BEFORE any per-test env override:
 // paths.ts freezes its DATA_DIR const at first evaluation, and without this
 // import the dynamic `import('../../src/shared/worker-utils.js')` calls
@@ -114,5 +115,39 @@ describe('worker-utils API timeout resolution', () => {
     workerUtils.clearPortCache();
 
     expect(workerUtils.getSessionInitRequestTimeoutMs()).toBe(1500);
+  });
+
+  it('does not scale the session-init default above the host hook cap on Windows (#3434)', async () => {
+    const settings = SettingsDefaultsManager.getAllDefaults();
+    settings.CLAUDE_MEM_DATA_DIR = tempDir;
+    settings.CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS = String(HOOK_TIMEOUTS.SESSION_INIT_REQUEST);
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+
+    const workerUtils = await import('../../src/shared/worker-utils.js');
+    workerUtils.clearPortCache();
+
+    expect(workerUtils.getSessionInitRequestTimeoutMs()).toBe(HOOK_TIMEOUTS.SESSION_INIT_REQUEST);
+    expect(workerUtils.getSessionInitRequestTimeoutMs()).toBeLessThan(HOOK_TIMEOUTS.SESSION_INIT_HOOK_CAP);
+  });
+
+  it('rejects session-init overrides that exceed the host hook cap (#3434)', async () => {
+    writeSettings('45000');
+    process.env.CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS = String(HOOK_TIMEOUTS.SESSION_INIT_HOOK_CAP + 1000);
+
+    const workerUtils = await import('../../src/shared/worker-utils.js');
+    const loggerModule = await import('../../src/utils/logger.js');
+    const warnSpy = spyOn(loggerModule.logger, 'warn').mockImplementation(() => {});
+
+    workerUtils.clearPortCache();
+
+    expect(workerUtils.getSessionInitRequestTimeoutMs()).toBe(HOOK_TIMEOUTS.SESSION_INIT_REQUEST);
+    expect(warnSpy).toHaveBeenCalledWith(
+      'SYSTEM',
+      'Invalid CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS, using default',
+      expect.objectContaining({
+        value: String(HOOK_TIMEOUTS.SESSION_INIT_HOOK_CAP + 1000),
+        max: HOOK_TIMEOUTS.SESSION_INIT_REQUEST_MAX,
+      })
+    );
   });
 });

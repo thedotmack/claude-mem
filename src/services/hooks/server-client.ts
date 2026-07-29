@@ -60,6 +60,10 @@ export interface ServerClientConfig {
   timeoutMs?: number;
 }
 
+export interface ServerRequestOptions {
+  timeoutMs?: number;
+}
+
 export interface ServerStartSessionRequest {
   projectId: string;
   externalSessionId?: string | null;
@@ -206,9 +210,12 @@ export class ServerClient {
     this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
-  async startSession(input: ServerStartSessionRequest): Promise<ServerStartSessionResponse> {
+  async startSession(
+    input: ServerStartSessionRequest,
+    options: ServerRequestOptions = {},
+  ): Promise<ServerStartSessionResponse> {
     const body = this.buildStartSessionPayload(input);
-    return this.request<ServerStartSessionResponse>('POST', '/v1/sessions/start', body);
+    return this.request<ServerStartSessionResponse>('POST', '/v1/sessions/start', body, options);
   }
 
   async recordEvent(input: ServerRecordEventRequest): Promise<ServerRecordEventResponse> {
@@ -344,6 +351,7 @@ export class ServerClient {
     method: 'GET' | 'POST',
     path: string,
     body?: unknown,
+    options: ServerRequestOptions = {},
   ): Promise<T> {
     if (!this.apiKey || !this.apiKey.trim()) {
       throw new ServerClientError(
@@ -365,8 +373,9 @@ export class ServerClient {
     }
 
     let response: Response;
+    const timeoutMs = options.timeoutMs ?? this.timeoutMs;
     try {
-      response = await fetchWithTimeout(url, init, this.timeoutMs);
+      response = await fetchWithTimeout(url, init, timeoutMs);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       const isTimeout = /timed out|timeout/i.test(message);

@@ -47,7 +47,10 @@ const HOOK_READINESS_TIMEOUT_MS = readTimeoutEnv(
 );
 
 const API_REQUEST_TIMEOUT_BOUNDS = { min: 500, max: 300000 } as const;
-const SESSION_INIT_REQUEST_TIMEOUT_BOUNDS = { min: 500, max: 60000 } as const;
+const SESSION_INIT_REQUEST_TIMEOUT_BOUNDS = {
+  min: 500,
+  max: HOOK_TIMEOUTS.SESSION_INIT_REQUEST_MAX,
+} as const;
 
 export async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs: number): Promise<Response> {
   try {
@@ -165,7 +168,7 @@ export function getSessionInitRequestTimeoutMs(): number {
 
   cachedSessionInitRequestTimeoutMs = readSettingsBackedTimeout(
     'CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS',
-    getTimeout(HOOK_TIMEOUTS.SESSION_INIT_REQUEST),
+    HOOK_TIMEOUTS.SESSION_INIT_REQUEST,
     SESSION_INIT_REQUEST_TIMEOUT_BOUNDS
   );
   return cachedSessionInitRequestTimeoutMs;
