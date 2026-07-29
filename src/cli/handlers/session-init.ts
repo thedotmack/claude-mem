@@ -88,7 +88,15 @@ export const sessionInitHandler: EventHandler = {
     // value. Legacy `'server-beta'` is normalized inside `selectRuntime()`.
     if (runtime.runtime === 'server') {
       try {
-        await startServerSession(runtime, input, sessionId, platformSource, project, prompt);
+        await startServerSession(
+          runtime,
+          input,
+          sessionId,
+          platformSource,
+          project,
+          prompt,
+          dependencies.getSessionInitRequestTimeoutMs(),
+        );
         // Server does not currently support the same context-injection
         // protocol as the worker. Skip semantic injection in server mode
         // until the server context endpoint exists.
@@ -188,6 +196,7 @@ async function startServerSession(
   platformSource: string,
   project: string,
   prompt: string,
+  timeoutMs: number,
 ): Promise<void> {
   await runtime.client.startSession({
     projectId: runtime.projectId,
@@ -197,6 +206,8 @@ async function startServerSession(
     agentType: input.agentType ?? null,
     platformSource,
     metadata: { project, prompt },
+  }, {
+    timeoutMs,
   });
   logger.info('HOOK', 'session-init: server session started', {
     contentSessionId: sessionId,

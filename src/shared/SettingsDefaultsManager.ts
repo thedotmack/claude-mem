@@ -138,7 +138,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
     CLAUDE_MEM_API_TIMEOUT_MS: String(getTimeout(HOOK_TIMEOUTS.API_REQUEST)),
-    CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS: String(getTimeout(HOOK_TIMEOUTS.SESSION_INIT_REQUEST)),
+    CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS: String(HOOK_TIMEOUTS.SESSION_INIT_REQUEST),
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
     // Deliberate divergence from the installer prompt: the interactive
     // provider prompt defaults to 'cmem' (the hosted observer), but headless
