@@ -32,6 +32,8 @@ const TRANSCRIPT_WATCHER = {
   source: 'src/services/transcripts/transcript-watcher-entry.ts'
 };
 
+const SESSION_INIT_HOOK_TIMEOUT_SECONDS = 15;
+
 function stripHardcodedDirname(filePath) {
   let content = fs.readFileSync(filePath, 'utf-8');
   const before = content.length;
@@ -107,7 +109,10 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
         // the top of every session. Let `start` speak for itself.
         'SessionStart.0.0': claudeHook(['start']),
         'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
-        'UserPromptSubmit.0.0': claudeHook(['hook', 'claude-code', 'session-init']),
+        'UserPromptSubmit.0.0': {
+          command: claudeHook(['hook', 'claude-code', 'session-init']),
+          timeout: SESSION_INIT_HOOK_TIMEOUT_SECONDS,
+        },
         'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
         'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
         'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
@@ -117,7 +122,10 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
       kind: 'hooks',
       commands: {
         'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context'], { startupVersionCheck: true }),
-        'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
+        'UserPromptSubmit.0.0': {
+          ...codexHookPair(['hook', 'codex', 'session-init']),
+          timeout: SESSION_INIT_HOOK_TIMEOUT_SECONDS,
+        },
         'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
         'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
         'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
@@ -200,7 +208,7 @@ async function verifyShellTemplateCanonical() {
           entry.command = expectedCommand;
           dirty = true;
         }
-        if (typeof expected !== 'string') {
+        if (typeof expected !== 'string' && Object.prototype.hasOwnProperty.call(expected, 'commandWindows')) {
           const actualWindows = entry?.commandWindows ?? null;
           if (actualWindows !== expected.commandWindows) {
             if (!writeMode || !entry) {
@@ -210,6 +218,18 @@ async function verifyShellTemplateCanonical() {
               );
             }
             entry.commandWindows = expected.commandWindows;
+            dirty = true;
+          }
+        }
+        if (typeof expected !== 'string') {
+          if (Object.prototype.hasOwnProperty.call(expected, 'timeout') && entry?.timeout !== expected.timeout) {
+            if (!writeMode || !entry) {
+              throw new Error(
+                `Hand-edited timeout detected in ${filePath} (${dottedPath}). It no longer matches scripts/build-hooks.js. ` +
+                `Regenerate via \`node scripts/build-hooks.js --write-shell-templates\` after an intentional generator change.`
+              );
+            }
+            entry.timeout = expected.timeout;
             dirty = true;
           }
         }

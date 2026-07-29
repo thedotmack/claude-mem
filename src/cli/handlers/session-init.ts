@@ -5,6 +5,7 @@
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import {
   executeWithWorkerFallback as defaultExecuteWithWorkerFallback,
+  getSessionInitRequestTimeoutMs as defaultGetSessionInitRequestTimeoutMs,
   isWorkerFallback as defaultIsWorkerFallback,
 } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
@@ -36,6 +37,7 @@ interface SemanticContextResponse {
 
 const defaultDependencies = {
   executeWithWorkerFallback: defaultExecuteWithWorkerFallback,
+  getSessionInitRequestTimeoutMs: defaultGetSessionInitRequestTimeoutMs,
   isWorkerFallback: defaultIsWorkerFallback,
   loadFromFileOnce: defaultLoadFromFileOnce,
   resolveRuntimeContext: defaultResolveRuntimeContext,
@@ -119,6 +121,7 @@ export const sessionInitHandler: EventHandler = {
         prompt,
         platformSource,
       },
+      { timeoutMs: dependencies.getSessionInitRequestTimeoutMs() },
     );
 
     if (dependencies.isWorkerFallback(initResult)) {
