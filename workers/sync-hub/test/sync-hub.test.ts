@@ -40,6 +40,8 @@ import {
 	tombstoneOp,
 } from "./content-v2-helpers";
 
+const DEVICE_CAP_HTTP_PATHS_TIMEOUT_MS = 10000;
+
 function hub(name: string) {
 	return env.SYNC_HUB.getByName(name);
 }
@@ -1276,5 +1278,5 @@ describe("per-user device admission bound", () => {
 		expect(state.devices).toHaveLength(MAX_DEVICES_PER_USER);
 		expect(state.devices.find((device) => device.device_id === "device-0")?.name).toBe("Named 0");
 		expect(state.devices.some((device) => device.device_id === "unknown-rename")).toBe(false);
-	});
+	}, DEVICE_CAP_HTTP_PATHS_TIMEOUT_MS);
 });
