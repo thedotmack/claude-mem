@@ -27,8 +27,14 @@ const REQUIRED_MARKETPLACE_FILES = [
   path.join('plugin', 'skills', 'mem-search', 'SKILL.md'),
 ];
 const WINDOWS_CODEX_EXTENSIONS = new Set(['.cmd', '.exe', '.bat', '.com']);
+const MACOS_CODEX_BUNDLE_PATHS = [
+  '/Applications/ChatGPT.app/Contents/Resources/codex',
+  '/Applications/Codex.app/Contents/Resources/codex',
+];
 
 function commandExists(command: string): boolean {
+  if (path.isAbsolute(command)) return existsSync(command);
+
   try {
     if (process.platform === 'win32') {
       execFileSync('where.exe', [command], { stdio: 'ignore', windowsHide: true });
@@ -110,20 +116,31 @@ function lookupCodexOnWindows(): string | null {
     ?? null;
 }
 
+export function lookupCodexOnMacOS(
+  commandInPath: (command: string) => boolean = commandExists,
+  fileExists: (candidate: string) => boolean = existsSync,
+): string | null {
+  if (commandInPath('codex')) return 'codex';
+  return MACOS_CODEX_BUNDLE_PATHS.find(fileExists) ?? null;
+}
+
 export function resolveCodexCommand(
   platform: NodeJS.Platform = process.platform,
   windowsLookup: () => string | null = lookupCodexOnWindows,
+  macOSLookup: () => string | null = lookupCodexOnMacOS,
 ): string {
-  if (platform !== 'win32') return 'codex';
-  return windowsLookup() ?? 'codex.cmd';
+  if (platform === 'win32') return windowsLookup() ?? 'codex.cmd';
+  if (platform === 'darwin') return macOSLookup() ?? 'codex';
+  return 'codex';
 }
 
 export function resolveCodexSpawnInvocation(
   args: string[],
   platform: NodeJS.Platform = process.platform,
   windowsLookup: () => string | null = lookupCodexOnWindows,
+  macOSLookup: () => string | null = lookupCodexOnMacOS,
 ): SpawnSyncInvocation {
-  const resolvedCommand = resolveCodexCommand(platform, windowsLookup);
+  const resolvedCommand = resolveCodexCommand(platform, windowsLookup, macOSLookup);
   return buildSpawnSyncInvocation(resolvedCommand, args, {
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -433,7 +450,7 @@ const cleanupLegacyCodexTranscriptAgentsContext = disableCodexTranscriptAgentsCo
 export async function installCodexCli(marketplaceRootOverride?: string): Promise<number> {
   console.log('\nInstalling Claude-Mem for Codex CLI (native hooks)...\n');
 
-  if (!commandExists('codex')) {
+  if (!commandExists(resolveCodexCommand())) {
     console.error('Codex CLI was not found on PATH.');
     console.error('Install Codex, then run: npx claude-mem@latest install');
     return 1;
@@ -494,7 +511,7 @@ export function uninstallCodexCli(): number {
   }
 
   try {
-    if (commandExists('codex')) {
+    if (commandExists(resolveCodexCommand())) {
       runCodex(['plugin', 'marketplace', 'remove', MARKETPLACE_NAME]);
     } else {
       console.log('  Codex CLI not found; skipping marketplace removal.');

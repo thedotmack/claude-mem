@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
 import {
   codexSpawn,
+  lookupCodexOnMacOS,
   resolveCodexCommand,
   resolveCodexSpawnInvocation,
 } from '../../../src/services/integrations/CodexCliInstaller.js';
@@ -115,7 +116,7 @@ describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', (
 
   it('uses bare codex on non-Windows platforms', () => {
     expect(resolveCodexCommand('linux')).toBe('codex');
-    expect(resolveCodexCommand('darwin')).toBe('codex');
+    expect(resolveCodexCommand('darwin', () => null, () => null)).toBe('codex');
   });
 
   it('codexSpawn is exported and invokable (no crash on a bogus codex)', () => {
@@ -128,5 +129,40 @@ describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', (
     expect(result).toBeDefined();
     // status is a number when the binary ran; error is set when not found.
     expect(result.status !== undefined || result.error !== undefined).toBe(true);
+  });
+});
+
+describe('macOS Codex Desktop bundle resolution', () => {
+  const chatGptBundledCodex = '/Applications/ChatGPT.app/Contents/Resources/codex';
+  const legacyBundledCodex = '/Applications/Codex.app/Contents/Resources/codex';
+
+  it('keeps a standalone codex from PATH as the first choice', () => {
+    expect(lookupCodexOnMacOS(() => true, () => true)).toBe('codex');
+  });
+
+  it('prefers the current ChatGPT app bundle when both app bundles exist', () => {
+    expect(lookupCodexOnMacOS(
+      () => false,
+      () => true,
+    )).toBe(chatGptBundledCodex);
+  });
+
+  it('supports the legacy Codex app bundle when ChatGPT is absent', () => {
+    expect(lookupCodexOnMacOS(
+      () => false,
+      (candidate) => candidate === legacyBundledCodex,
+    )).toBe(legacyBundledCodex);
+  });
+
+  it('passes the bundled CLI path through the shared spawn resolver', () => {
+    const invocation = resolveCodexSpawnInvocation(
+      ['--version'],
+      'darwin',
+      () => null,
+      () => chatGptBundledCodex,
+    );
+
+    expect(invocation.command).toBe(chatGptBundledCodex);
+    expect(invocation.args).toEqual(['--version']);
   });
 });
