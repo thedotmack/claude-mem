@@ -38,7 +38,10 @@
  */
 
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
-import { OBSERVER_SESSIONS_DIR } from '../shared/paths.js';
+import {
+  OBSERVER_CLAUDE_CONFIG_DIR,
+  OBSERVER_SESSIONS_DIR,
+} from '../shared/paths.js';
 import { recordObserverToolAttempt } from '../utils/observer-audit.js';
 import { logger } from '../utils/logger.js';
 
@@ -115,7 +118,9 @@ export function buildHardenedSdkOptions(input: HardenedSdkOptionsInput): Options
   return {
     model: input.model,
     cwd: input.cwd ?? OBSERVER_SESSIONS_DIR,
-    env: input.env,
+    // Keep resume-capable SDK transcripts, but persist them under claude-mem's
+    // own data directory so Claude Desktop does not index them as user sessions.
+    env: { ...input.env, CLAUDE_CONFIG_DIR: OBSERVER_CLAUDE_CONFIG_DIR },
     pathToClaudeCodeExecutable: input.pathToClaudeCodeExecutable,
     ...(input.abortController ? { abortController: input.abortController } : {}),
     ...(input.resume ? { resume: input.resume } : {}),
