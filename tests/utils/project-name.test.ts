@@ -3,6 +3,13 @@ import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { homedir } from 'os';
 import { getProjectName, getProjectContext } from '../../src/utils/project-name.js';
 
+const CLAUDE_PROJECT_DIR_ENV = 'CLAUDE_PROJECT_DIR';
+const ANCHORED_PROJECT_DIR_NAME = 'anchored-project';
+const SDK_TEMP_DIR_NAME = 'T';
+const CLAUDE_PROJECT_TEMP_PREFIX = 'cm-claude-project-dir-';
+const REPO_NESTED_DIR = ['packages', 'sdk-session'];
+const GIT_INIT_ARGS = ['init', '-q'];
+
 describe('getProjectName', () => {
   describe('tilde expansion', () => {
     it('resolves bare ~ to home directory basename', () => {
@@ -91,6 +98,62 @@ describe('getProjectName', () => {
       // A path that does not exist (and therefore cannot be in a repo) must
       // fall back to basename(cwd) rather than throwing or returning a root.
       expect(getProjectName('/no/such/dir/standalone-folder')).toBe('standalone-folder');
+    });
+  });
+
+  describe('#3437 — Claude project dir anchors SDK/subagent sessions', () => {
+    let tmp: string;
+    let repoRoot: string;
+    let nestedRepoDir: string;
+    let sdkTempDir: string;
+    let savedClaudeProjectDir: string | undefined;
+
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, realpathSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      savedClaudeProjectDir = process.env[CLAUDE_PROJECT_DIR_ENV];
+      tmp = realpathSync(mkdtempSync(join(tmpdir(), CLAUDE_PROJECT_TEMP_PREFIX)));
+      repoRoot = join(tmp, ANCHORED_PROJECT_DIR_NAME);
+      nestedRepoDir = join(repoRoot, ...REPO_NESTED_DIR);
+      sdkTempDir = join(tmp, SDK_TEMP_DIR_NAME);
+      mkdirSync(nestedRepoDir, { recursive: true });
+      mkdirSync(sdkTempDir, { recursive: true });
+      execFileSync('git', GIT_INIT_ARGS, { cwd: repoRoot });
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+
+      if (savedClaudeProjectDir !== undefined) {
+        process.env[CLAUDE_PROJECT_DIR_ENV] = savedClaudeProjectDir;
+      } else {
+        delete process.env[CLAUDE_PROJECT_DIR_ENV];
+      }
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('uses CLAUDE_PROJECT_DIR instead of an SDK temp cwd', () => {
+      process.env[CLAUDE_PROJECT_DIR_ENV] = repoRoot;
+
+      expect(getProjectName(sdkTempDir)).toBe(ANCHORED_PROJECT_DIR_NAME);
+      expect(getProjectName(sdkTempDir)).not.toBe(SDK_TEMP_DIR_NAME);
+    });
+
+    it('resolves CLAUDE_PROJECT_DIR through its git root when it points at a subdirectory', () => {
+      process.env[CLAUDE_PROJECT_DIR_ENV] = nestedRepoDir;
+
+      expect(getProjectName(sdkTempDir)).toBe(ANCHORED_PROJECT_DIR_NAME);
+    });
+
+    it('anchors getProjectContext to CLAUDE_PROJECT_DIR for write-path callers', () => {
+      process.env[CLAUDE_PROJECT_DIR_ENV] = repoRoot;
+
+      const ctx = getProjectContext(sdkTempDir);
+      expect(ctx.primary).toBe(ANCHORED_PROJECT_DIR_NAME);
+      expect(ctx.allProjects).toEqual([ANCHORED_PROJECT_DIR_NAME]);
     });
   });
 
