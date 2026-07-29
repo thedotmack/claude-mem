@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
 import {
   codexSpawn,
+  isExecutableFile,
   lookupCodexOnMacOS,
   resolveCodexCommand,
   resolveCodexSpawnInvocation,
@@ -135,6 +136,13 @@ describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', (
 describe('macOS Codex Desktop bundle resolution', () => {
   const chatGptBundledCodex = '/Applications/ChatGPT.app/Contents/Resources/codex';
   const legacyBundledCodex = '/Applications/Codex.app/Contents/Resources/codex';
+
+  it('rejects bundle files that are not executable', () => {
+    expect(isExecutableFile(chatGptBundledCodex, () => {
+      throw new Error('EACCES');
+    })).toBe(false);
+    expect(isExecutableFile(chatGptBundledCodex, () => {})).toBe(true);
+  });
 
   it('keeps a standalone codex from PATH as the first choice', () => {
     expect(lookupCodexOnMacOS(() => true, () => true)).toBe('codex');

@@ -5,7 +5,14 @@ import {
   spawnSync,
   type SpawnSyncReturns,
 } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'fs';
 import { fileURLToPath } from 'url';
 import { logger } from '../../utils/logger.js';
 import { paths } from '../../shared/paths.js';
@@ -32,8 +39,20 @@ const MACOS_CODEX_BUNDLE_PATHS = [
   '/Applications/Codex.app/Contents/Resources/codex',
 ];
 
+export function isExecutableFile(
+  candidate: string,
+  access: (path: string, mode: number) => void = accessSync,
+): boolean {
+  try {
+    access(candidate, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function commandExists(command: string): boolean {
-  if (path.isAbsolute(command)) return existsSync(command);
+  if (path.isAbsolute(command)) return isExecutableFile(command);
 
   try {
     if (process.platform === 'win32') {
@@ -118,10 +137,10 @@ function lookupCodexOnWindows(): string | null {
 
 export function lookupCodexOnMacOS(
   commandInPath: (command: string) => boolean = commandExists,
-  fileExists: (candidate: string) => boolean = existsSync,
+  candidateAvailable: (candidate: string) => boolean = isExecutableFile,
 ): string | null {
   if (commandInPath('codex')) return 'codex';
-  return MACOS_CODEX_BUNDLE_PATHS.find(fileExists) ?? null;
+  return MACOS_CODEX_BUNDLE_PATHS.find((candidate) => candidateAvailable(candidate)) ?? null;
 }
 
 export function resolveCodexCommand(
