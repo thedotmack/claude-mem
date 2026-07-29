@@ -47,6 +47,9 @@ const defaultDependencies = {
 
 let dependencies = defaultDependencies;
 
+const SESSION_INIT_SERVER_TIMEOUT_DIVISOR = 2;
+const SESSION_INIT_MIN_REMAINING_TIMEOUT_MS = 500;
+
 export function setSessionInitDependenciesForTesting(
   overrides: Partial<typeof defaultDependencies> = {},
 ): void {
@@ -84,6 +87,8 @@ export const sessionInitHandler: EventHandler = {
       String(settings.CLAUDE_MEM_SEMANTIC_INJECT).toLowerCase() === 'true';
 
     const runtime = dependencies.resolveRuntimeContext();
+    const sessionInitStartedAt = Date.now();
+    const sessionInitTimeoutMs = dependencies.getSessionInitRequestTimeoutMs();
     // Phase 1a (cmem-sdk rename): `runtime.runtime` is the canonical `'server'`
     // value. Legacy `'server-beta'` is normalized inside `selectRuntime()`.
     if (runtime.runtime === 'server') {
@@ -95,7 +100,7 @@ export const sessionInitHandler: EventHandler = {
           platformSource,
           project,
           prompt,
-          dependencies.getSessionInitRequestTimeoutMs(),
+          getServerSessionInitTimeoutMs(sessionInitTimeoutMs),
         );
         // Server does not currently support the same context-injection
         // protocol as the worker. Skip semantic injection in server mode
@@ -119,6 +124,15 @@ export const sessionInitHandler: EventHandler = {
     }
 
     logger.debug('HOOK', 'session-init: Calling /api/sessions/init', { contentSessionId: sessionId, project });
+    const initTimeoutMs = getRemainingSessionInitTimeoutMs(sessionInitStartedAt, sessionInitTimeoutMs);
+    if (initTimeoutMs < SESSION_INIT_MIN_REMAINING_TIMEOUT_MS) {
+      logger.warn('HOOK', 'session-init: skipping worker fallback because timeout budget is exhausted', {
+        contentSessionId: sessionId,
+        project,
+        remainingMs: initTimeoutMs,
+      });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
 
     const initResult = await dependencies.executeWithWorkerFallback<SessionInitResponse>(
       '/api/sessions/init',
@@ -129,7 +143,7 @@ export const sessionInitHandler: EventHandler = {
         prompt,
         platformSource,
       },
-      { timeoutMs: dependencies.getSessionInitRequestTimeoutMs() },
+      { timeoutMs: initTimeoutMs },
     );
 
     if (dependencies.isWorkerFallback(initResult)) {
@@ -159,14 +173,24 @@ export const sessionInitHandler: EventHandler = {
 
     if (semanticInject && prompt && prompt.length >= 20 && prompt !== '[media prompt]') {
       const limit = settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT || '5';
-      const semanticResult = await dependencies.executeWithWorkerFallback<SemanticContextResponse>(
-        '/api/context/semantic',
-        'POST',
-        { q: prompt, project, limit, platformSource },
-      );
-      if (!dependencies.isWorkerFallback(semanticResult) && semanticResult?.context) {
-        logger.debug('HOOK', `Semantic injection: ${semanticResult.count} observations for prompt`, { sessionId: sessionDbId, count: semanticResult.count });
-        additionalContext = semanticResult.context;
+      const semanticTimeoutMs = getRemainingSessionInitTimeoutMs(sessionInitStartedAt, sessionInitTimeoutMs);
+      if (semanticTimeoutMs < SESSION_INIT_MIN_REMAINING_TIMEOUT_MS) {
+        logger.warn('HOOK', 'session-init: skipping semantic injection because timeout budget is exhausted', {
+          contentSessionId: sessionId,
+          project,
+          remainingMs: semanticTimeoutMs,
+        });
+      } else {
+        const semanticResult = await dependencies.executeWithWorkerFallback<SemanticContextResponse>(
+          '/api/context/semantic',
+          'POST',
+          { q: prompt, project, limit, platformSource },
+          { timeoutMs: semanticTimeoutMs },
+        );
+        if (!dependencies.isWorkerFallback(semanticResult) && semanticResult?.context) {
+          logger.debug('HOOK', `Semantic injection: ${semanticResult.count} observations for prompt`, { sessionId: sessionDbId, count: semanticResult.count });
+          additionalContext = semanticResult.context;
+        }
       }
     }
 
@@ -219,4 +243,15 @@ function parseSemanticInjectLimit(value: string | number): number {
   const parsed = typeof value === 'number' ? value : Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return 5;
   return parsed;
+}
+
+function getServerSessionInitTimeoutMs(timeoutMs: number): number {
+  return Math.max(
+    SESSION_INIT_MIN_REMAINING_TIMEOUT_MS,
+    Math.floor(timeoutMs / SESSION_INIT_SERVER_TIMEOUT_DIVISOR),
+  );
+}
+
+function getRemainingSessionInitTimeoutMs(startedAt: number, timeoutMs: number): number {
+  return Math.max(0, timeoutMs - (Date.now() - startedAt));
 }
