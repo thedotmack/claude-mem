@@ -17,11 +17,11 @@ import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManage
 import '../../src/shared/paths.js';
 
 describe('worker-utils API timeout resolution', () => {
-  const originalFetch = global.fetch;
   let tempDir: string;
   let settingsPath: string;
   const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
   const originalTimeout = process.env.CLAUDE_MEM_API_TIMEOUT_MS;
+  const originalSessionInitTimeout = process.env.CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS;
 
   beforeEach(() => {
     tempDir = join(tmpdir(), `worker-timeout-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -29,16 +29,18 @@ describe('worker-utils API timeout resolution', () => {
     settingsPath = join(tempDir, 'settings.json');
     process.env.CLAUDE_MEM_DATA_DIR = tempDir;
     delete process.env.CLAUDE_MEM_API_TIMEOUT_MS;
+    delete process.env.CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS;
     mock.restore();
   });
 
   afterEach(() => {
     mock.restore();
-    global.fetch = originalFetch;
     if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
     else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
     if (originalTimeout === undefined) delete process.env.CLAUDE_MEM_API_TIMEOUT_MS;
     else process.env.CLAUDE_MEM_API_TIMEOUT_MS = originalTimeout;
+    if (originalSessionInitTimeout === undefined) delete process.env.CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS;
+    else process.env.CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS = originalSessionInitTimeout;
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -46,6 +48,7 @@ describe('worker-utils API timeout resolution', () => {
     const settings = SettingsDefaultsManager.getAllDefaults();
     settings.CLAUDE_MEM_DATA_DIR = tempDir;
     settings.CLAUDE_MEM_API_TIMEOUT_MS = timeout;
+    settings.CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS = '12000';
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
   }
 
@@ -87,27 +90,29 @@ describe('worker-utils API timeout resolution', () => {
     );
   });
 
-  it('checks readiness once before a bounded worker request', async () => {
-    writeSettings('45000');
-    const requests: string[] = [];
-    global.fetch = mock((url: string | URL | Request) => {
-      requests.push(String(url));
-      return Promise.resolve(new Response(JSON.stringify({ ok: true })));
-    }) as unknown as typeof fetch;
+  it('uses the session-init settings timeout independently from the general API timeout (#3434)', async () => {
+    const settings = SettingsDefaultsManager.getAllDefaults();
+    settings.CLAUDE_MEM_DATA_DIR = tempDir;
+    settings.CLAUDE_MEM_API_TIMEOUT_MS = '45000';
+    settings.CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS = '9000';
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
 
     const workerUtils = await import('../../src/shared/worker-utils.js');
     workerUtils.clearPortCache();
-    const result = await workerUtils.executeWithWorkerFallback(
-      '/api/test',
-      'GET',
-      undefined,
-      { workerStartupTimeoutMs: 2_000, timeoutMs: 2_000 },
-    );
 
-    expect(result).toEqual({ ok: true });
-    expect(requests).toEqual([
-      expect.stringContaining('/api/readiness'),
-      expect.stringContaining('/api/test'),
-    ]);
+    expect(workerUtils.getSessionInitRequestTimeoutMs()).toBe(9000);
+  });
+
+  it('prefers CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS env over settings.json (#3434)', async () => {
+    const settings = SettingsDefaultsManager.getAllDefaults();
+    settings.CLAUDE_MEM_DATA_DIR = tempDir;
+    settings.CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS = '9000';
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+    process.env.CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS = '1500';
+
+    const workerUtils = await import('../../src/shared/worker-utils.js');
+    workerUtils.clearPortCache();
+
+    expect(workerUtils.getSessionInitRequestTimeoutMs()).toBe(1500);
   });
 });

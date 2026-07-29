@@ -48,6 +48,7 @@ const HOOK_READINESS_TIMEOUT_MS = readTimeoutEnv(
 );
 
 const API_REQUEST_TIMEOUT_BOUNDS = { min: 500, max: 300000 } as const;
+const SESSION_INIT_REQUEST_TIMEOUT_BOUNDS = { min: 500, max: 60000 } as const;
 
 export async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs: number): Promise<Response> {
   try {
@@ -69,6 +70,7 @@ let cachedPort: number | null = null;
 let cachedHost: string | null = null;
 let cachedSettings: SettingsDefaults | null = null;
 let cachedApiRequestTimeoutMs: number | null = null;
+let cachedSessionInitRequestTimeoutMs: number | null = null;
 
 function getWorkerSettingsPath(): string {
   return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
@@ -157,11 +159,25 @@ export function getWorkerApiRequestTimeoutMs(): number {
   return cachedApiRequestTimeoutMs;
 }
 
+export function getSessionInitRequestTimeoutMs(): number {
+  if (cachedSessionInitRequestTimeoutMs !== null) {
+    return cachedSessionInitRequestTimeoutMs;
+  }
+
+  cachedSessionInitRequestTimeoutMs = readSettingsBackedTimeout(
+    'CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS',
+    getTimeout(HOOK_TIMEOUTS.SESSION_INIT_REQUEST),
+    SESSION_INIT_REQUEST_TIMEOUT_BOUNDS
+  );
+  return cachedSessionInitRequestTimeoutMs;
+}
+
 export function clearPortCache(): void {
   cachedPort = null;
   cachedHost = null;
   cachedSettings = null;
   cachedApiRequestTimeoutMs = null;
+  cachedSessionInitRequestTimeoutMs = null;
 }
 
 export function formatHostForUrl(host: string): string {
