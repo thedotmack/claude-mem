@@ -15,6 +15,18 @@ function formatHostForUrl(host: string): string {
   return host.includes(':') ? `[${host}]` : host;
 }
 
+// A refused connection surfaces differently per runtime: Bun's fetch throws
+// code 'ConnectionRefused' ("Unable to connect..."), Node's undici throws
+// TypeError 'fetch failed' with the ECONNREFUSED only on error.cause — so a
+// message.includes('ECONNREFUSED') check matches neither.
+export function isConnectionRefusedError(error: unknown): boolean {
+  const err = error as { code?: unknown; cause?: { code?: unknown } };
+  if (err?.code === 'ECONNREFUSED' || err?.code === 'ConnectionRefused') return true;
+  if (err?.cause?.code === 'ECONNREFUSED') return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('ECONNREFUSED');
+}
+
 async function httpRequestToWorker(
   port: number,
   endpointPath: string,
@@ -136,7 +148,7 @@ export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 's
     }
     return true;
   } catch (error) {
-    if (error instanceof Error && error.message?.includes('ECONNREFUSED')) {
+    if (error instanceof Error && isConnectionRefusedError(error)) {
       logger.debug('SYSTEM', 'Worker already stopped', {}, error);
       return false;
     }
