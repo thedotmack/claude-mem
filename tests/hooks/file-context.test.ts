@@ -33,7 +33,16 @@ mock.module('../../src/shared/SettingsDefaultsManager.js', () => ({
 
 mock.module('../../src/shared/worker-utils.js', () => ({
   ensureWorkerRunning: () => Promise.resolve(true),
+  executeWithWorkerFallback: async (apiPath: string, method: string, body?: unknown) => {
+    const response = await globalThis.fetch(`http://127.0.0.1:37777${apiPath}`, {
+      method,
+      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    return response.json();
+  },
   getWorkerPort: () => 37777,
+  isWorkerFallback: () => false,
   workerHttpRequest: (apiPath: string, options?: any) => {
     const url = `http://127.0.0.1:37777${apiPath}`;
     return globalThis.fetch(url, {
