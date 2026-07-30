@@ -103,20 +103,20 @@ export class DataRoutes extends BaseRouteHandler {
   }
 
   private handleGetObservations = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getObservations(offset, limit, project, platformSource);
+    const { offset, limit, project, platformSource, contentSessionId } = this.parsePaginationParams(req);
+    const result = this.paginationHelper.getObservations(offset, limit, project, platformSource, contentSessionId);
     res.json(result);
   });
 
   private handleGetSummaries = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getSummaries(offset, limit, project, platformSource);
+    const { offset, limit, project, platformSource, contentSessionId } = this.parsePaginationParams(req);
+    const result = this.paginationHelper.getSummaries(offset, limit, project, platformSource, contentSessionId);
     res.json(result);
   });
 
   private handleGetPrompts = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project, platformSource } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getPrompts(offset, limit, project, platformSource);
+    const { offset, limit, project, platformSource, contentSessionId } = this.parsePaginationParams(req);
+    const result = this.paginationHelper.getPrompts(offset, limit, project, platformSource, contentSessionId);
     res.json(result);
   });
 
@@ -347,13 +347,14 @@ export class DataRoutes extends BaseRouteHandler {
     res.json({ isProcessing, queueDepth });
   });
 
-  private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; platformSource?: string } {
+  private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; platformSource?: string; contentSessionId?: string } {
     const offset = parseInt(req.query.offset as string, 10) || 0;
-    const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100); 
+    const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100);
     const project = req.query.project as string | undefined;
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const contentSessionId = req.query.contentSessionId as string | undefined;
 
-    return { offset, limit, project, platformSource };
+    return { offset, limit, project, platformSource, contentSessionId };
   }
 
   private handleImport = this.wrapHandler((req: Request, res: Response): void => {
