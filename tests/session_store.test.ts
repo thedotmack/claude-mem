@@ -215,4 +215,25 @@ describe('SessionStore', () => {
     expect(stored).not.toBeNull();
     expect(stored?.created_at_epoch).toBe(pastTimestamp);
   });
+
+  it('lists all sessions for the catalog, newest first, excluding empty projects', () => {
+    store.createSDKSession('content-old', 'proj-a', 'first');
+    store.db.prepare(`UPDATE sdk_sessions SET started_at_epoch = 1000 WHERE content_session_id = 'content-old'`).run();
+    store.createSDKSession('content-new', 'proj-b', 'second');
+    store.db.prepare(`UPDATE sdk_sessions SET started_at_epoch = 2000 WHERE content_session_id = 'content-new'`).run();
+
+    const sessions = store.getAllSessions();
+
+    expect(sessions.map(s => s.content_session_id)).toEqual(['content-new', 'content-old']);
+    expect(sessions[0]).toMatchObject({ project: 'proj-b', platform_source: 'claude', started_at_epoch: 2000 });
+  });
+
+  it('filters the session catalog by platform source', () => {
+    store.createSDKSession('content-claude', 'proj-a', 'a', undefined, 'claude');
+    store.createSDKSession('content-codex', 'proj-a', 'b', undefined, 'codex');
+
+    const claudeSessions = store.getAllSessions('claude');
+
+    expect(claudeSessions.map(s => s.content_session_id)).toEqual(['content-claude']);
+  });
 });

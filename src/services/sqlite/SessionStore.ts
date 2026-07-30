@@ -2096,6 +2096,40 @@ export class SessionStore {
     };
   }
 
+  getAllSessions(platformSource?: string): Array<{
+    content_session_id: string;
+    project: string;
+    platform_source: string;
+    started_at_epoch: number;
+  }> {
+    const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : undefined;
+    let query = `
+      SELECT
+        content_session_id,
+        project,
+        COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
+        started_at_epoch
+      FROM sdk_sessions
+      WHERE project IS NOT NULL AND project != ''
+        AND project != ?
+    `;
+    const params: SQLQueryBindings[] = [OBSERVER_SESSIONS_PROJECT];
+
+    if (normalizedPlatformSource) {
+      query += ' AND COALESCE(platform_source, ?) = ?';
+      params.push(DEFAULT_PLATFORM_SOURCE, normalizedPlatformSource);
+    }
+
+    query += ' ORDER BY started_at_epoch DESC';
+
+    return this.db.prepare(query).all(...params) as Array<{
+      content_session_id: string;
+      project: string;
+      platform_source: string;
+      started_at_epoch: number;
+    }>;
+  }
+
   getLatestUserPrompt(contentSessionId: string, sessionDbId?: number): LatestPromptResult | undefined {
     const resolvedSessionDbId = this.resolvePromptSessionDbId(contentSessionId, sessionDbId);
     const whereClause = resolvedSessionDbId !== null ? 'up.session_db_id = ?' : 'up.content_session_id = ?';
