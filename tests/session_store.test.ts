@@ -236,4 +236,43 @@ describe('SessionStore', () => {
 
     expect(claudeSessions.map(s => s.content_session_id)).toEqual(['content-claude']);
   });
+
+  it('includes custom_title and a combined item_count across observations/summaries/prompts', () => {
+    const sessionDbId = store.createSDKSession('content-counts', 'proj-counts', 'first', 'My Custom Title');
+    store.ensureMemorySessionIdRegistered(sessionDbId, 'mem-counts');
+    store.db.prepare(`
+      INSERT INTO observations (memory_session_id, project, type, title, created_at, created_at_epoch)
+      VALUES ('mem-counts', 'proj-counts', 'discovery', 'obs 1', '2026-07-20T00:00:00.000Z', 1752969600000)
+    `).run();
+    store.db.prepare(`
+      INSERT INTO observations (memory_session_id, project, type, title, created_at, created_at_epoch)
+      VALUES ('mem-counts', 'proj-counts', 'discovery', 'obs 2', '2026-07-20T00:00:00.000Z', 1752969600000)
+    `).run();
+    store.db.prepare(`
+      INSERT INTO session_summaries (memory_session_id, project, request, created_at, created_at_epoch)
+      VALUES ('mem-counts', 'proj-counts', 'a summary', '2026-07-20T00:00:00.000Z', 1752969600000)
+    `).run();
+    store.db.prepare(`
+      INSERT INTO user_prompts (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
+      VALUES (?, 'content-counts', 1, 'a prompt', '2026-07-20T00:00:00.000Z', 1752969600000)
+    `).run(sessionDbId);
+
+    const sessions = store.getAllSessions();
+    const row = sessions.find(s => s.content_session_id === 'content-counts');
+
+    expect(row).toBeDefined();
+    expect(row!.custom_title).toBe('My Custom Title');
+    expect(row!.item_count).toBe(4);
+  });
+
+  it('reports item_count 0 and custom_title null for a session with no content and no title', () => {
+    store.createSDKSession('content-empty', 'proj-empty', 'first');
+
+    const sessions = store.getAllSessions();
+    const row = sessions.find(s => s.content_session_id === 'content-empty');
+
+    expect(row).toBeDefined();
+    expect(row!.custom_title).toBeNull();
+    expect(row!.item_count).toBe(0);
+  });
 });

@@ -46,7 +46,9 @@ export interface SessionCatalogEntry {
   content_session_id: string;
   project: string;
   platform_source: string;
+  custom_title: string | null;
   started_at_epoch: number;
+  item_count: number;
 }
 
 export type FeedItem =

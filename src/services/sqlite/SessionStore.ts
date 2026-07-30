@@ -2100,33 +2100,43 @@ export class SessionStore {
     content_session_id: string;
     project: string;
     platform_source: string;
+    custom_title: string | null;
     started_at_epoch: number;
+    item_count: number;
   }> {
     const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : undefined;
     let query = `
       SELECT
-        content_session_id,
-        project,
-        COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
-        started_at_epoch
-      FROM sdk_sessions
-      WHERE project IS NOT NULL AND project != ''
-        AND project != ?
+        s.content_session_id,
+        s.project,
+        COALESCE(s.platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
+        s.custom_title,
+        s.started_at_epoch,
+        (
+          (SELECT COUNT(*) FROM observations o WHERE o.memory_session_id = s.memory_session_id)
+          + (SELECT COUNT(*) FROM session_summaries ss WHERE ss.memory_session_id = s.memory_session_id)
+          + (SELECT COUNT(*) FROM user_prompts up WHERE up.session_db_id = s.id)
+        ) as item_count
+      FROM sdk_sessions s
+      WHERE s.project IS NOT NULL AND s.project != ''
+        AND s.project != ?
     `;
     const params: SQLQueryBindings[] = [OBSERVER_SESSIONS_PROJECT];
 
     if (normalizedPlatformSource) {
-      query += ' AND COALESCE(platform_source, ?) = ?';
+      query += ' AND COALESCE(s.platform_source, ?) = ?';
       params.push(DEFAULT_PLATFORM_SOURCE, normalizedPlatformSource);
     }
 
-    query += ' ORDER BY started_at_epoch DESC';
+    query += ' ORDER BY s.started_at_epoch DESC';
 
     return this.db.prepare(query).all(...params) as Array<{
       content_session_id: string;
       project: string;
       platform_source: string;
+      custom_title: string | null;
       started_at_epoch: number;
+      item_count: number;
     }>;
   }
 
