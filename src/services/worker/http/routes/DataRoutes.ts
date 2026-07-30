@@ -18,6 +18,7 @@ import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
 import { assertCanonicalDecimal, type ContentKind } from '../../../sync/CanonicalContent.js';
+import type { CloudSync } from '../../../sync/CloudSync.js';
 
 const integerArrayLike = z.preprocess((value) => {
   if (Array.isArray(value)) return value;
@@ -231,7 +232,49 @@ export class DataRoutes extends BaseRouteHandler {
     this.deleteSyncedContent(req, res, 'prompt', 'user_prompts');
   });
 
-  /** Production deletion surface: tombstone enqueue and row delete are one transaction. */
+  /** Pure safety check: can this row be deleted right now without stranding a replica? No mutation. */
+  private assertRowDeletable(
+    cloudSync: CloudSync | null,
+    store: ReturnType<DatabaseManager['getSessionStore']>,
+    kind: ContentKind,
+    originLocalId: string,
+  ): { ok: true } | { ok: false; status: number; error: string } {
+    if (cloudSync?.isConfigured()) {
+      if (!cloudSync.status().deviceId) {
+        return { ok: false, status: 503, error: 'cloud sync identity unavailable; refusing an unreplicated delete' };
+      }
+      return { ok: true };
+    }
+    // A row with an acknowledged entity head must never be silently deleted
+    // while its sync identity is unavailable: that would strand replicas.
+    const acknowledged = store.db.prepare(`
+      SELECT 1 AS found FROM sync_entity_heads
+      WHERE kind = ? AND origin_local_id = ? LIMIT 1
+    `).get(kind, originLocalId) as { found: number } | undefined;
+    if (acknowledged) {
+      return { ok: false, status: 503, error: 'cloud sync unavailable; refusing an unreplicated delete' };
+    }
+    return { ok: true };
+  }
+
+  /** Mutation only — caller must have already called assertRowDeletable for this row. */
+  private commitRowDelete(
+    cloudSync: CloudSync | null,
+    store: ReturnType<DatabaseManager['getSessionStore']>,
+    kind: ContentKind,
+    table: 'observations' | 'session_summaries' | 'user_prompts',
+    originLocalId: string,
+  ): string | null {
+    if (cloudSync?.isConfigured()) {
+      return cloudSync.queueDelete(kind, originLocalId);
+    }
+    store.db.prepare(
+      `DELETE FROM ${table} WHERE id = ? AND origin_device_id IS NULL`
+    ).run(originLocalId);
+    return null;
+  }
+
+  /** Production deletion surface: safety check and row delete for a single content row. */
   private deleteSyncedContent(
     req: Request,
     res: Response,
@@ -257,28 +300,13 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     const cloudSync = this.dbManager.getCloudSync();
-    let entityRev: string | null = null;
-    if (cloudSync?.isConfigured()) {
-      if (!cloudSync.status().deviceId) {
-        res.status(503).json({ error: 'cloud sync identity unavailable; refusing an unreplicated delete' });
-        return;
-      }
-      entityRev = cloudSync.queueDelete(kind, originLocalId);
-    } else {
-      // A row with an acknowledged entity head must never be silently deleted
-      // while its sync identity is unavailable: that would strand replicas.
-      const acknowledged = store.db.prepare(`
-        SELECT 1 AS found FROM sync_entity_heads
-        WHERE kind = ? AND origin_local_id = ? LIMIT 1
-      `).get(kind, originLocalId) as { found: number } | undefined;
-      if (acknowledged) {
-        res.status(503).json({ error: 'cloud sync unavailable; refusing an unreplicated delete' });
-        return;
-      }
-      store.db.prepare(
-        `DELETE FROM ${table} WHERE id = ? AND origin_device_id IS NULL`
-      ).run(originLocalId);
+    const check = this.assertRowDeletable(cloudSync, store, kind, originLocalId);
+    if (!check.ok) {
+      res.status(check.status).json({ error: check.error });
+      return;
     }
+
+    const entityRev = this.commitRowDelete(cloudSync, store, kind, table, originLocalId);
 
     res.json({ success: true, id: originLocalId, kind, entity_rev: entityRev });
   }
