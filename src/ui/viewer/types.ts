@@ -42,6 +42,13 @@ export interface UserPrompt {
   created_at_epoch: number;
 }
 
+export interface SessionCatalogEntry {
+  content_session_id: string;
+  project: string;
+  platform_source: string;
+  started_at_epoch: number;
+}
+
 export type FeedItem =
   | (Observation & { itemType: 'observation' })
   | (Summary & { itemType: 'summary' })
@@ -53,6 +60,7 @@ export interface StreamEvent {
   summaries?: Summary[];
   prompts?: UserPrompt[];
   projects?: string[];
+  sessions?: SessionCatalogEntry[];
   observation?: Observation;
   summary?: Summary;
   prompt?: UserPrompt;
