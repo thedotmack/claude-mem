@@ -2,19 +2,25 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Show each card's session ID in the viewer, add a session filter dropdown next to the existing project filter, and let the user delete all content (observations, summaries, prompts, and the session row itself) for a selected session.
+**Goal:** Show each card's session ID in the viewer, replace the flat card feed's main view with collapsible session cards (one per session, grouped, name + full ID + live item count) that link to a per-session detail page showing that session's cards, and let the user delete all content for a session (observations, summaries, prompts, and the session row itself) from a per-card menu.
 
-**Architecture:** The canonical session key used for filtering/deletion is `content_session_id` (the Claude Code CLI session id), not `sdk_sessions.id`. This deviates from the committed spec (`docs/superpowers/specs/2026-07-30-session-id-viewer-design.md`), which proposed the numeric `sdk_sessions.id`. During planning it became clear the numeric id can't flow through live SSE events without extra plumbing (observations/summaries/prompts don't carry it, and there's no cheap way to add it without a join per live event), whereas `content_session_id` is **already present** on every summary and prompt row today, and only needs one additional SELECT column for observations (`sdk_sessions` is already joined in that query). This keeps the approved UX identical (native `<select>`, full ID on cards, 8-char truncation in the dropdown, confirm-before-delete, live SSE-backed session list matching the project list) while requiring less new plumbing and no risk of a delete button referencing a session id the frontend never received.
+**Architecture:** The canonical session key used for filtering/deletion is `content_session_id` (the Claude Code CLI session id), not `sdk_sessions.id`. This deviates from the committed spec (`docs/superpowers/specs/2026-07-30-session-id-viewer-design.md`), which proposed the numeric `sdk_sessions.id`. During planning it became clear the numeric id can't flow through live SSE events without extra plumbing (observations/summaries/prompts don't carry it, and there's no cheap way to add it without a join per live event), whereas `content_session_id` is **already present** on every summary and prompt row today, and only needs one additional SELECT column for observations (`sdk_sessions` is already joined in that query).
+
+**Mid-execution redesign (after Tasks 1-7 shipped):** the frontend UX originally specced (a session filter `<select>` next to the project dropdown, a delete button beside it, a session-ID badge on every card) was replaced with a session-card + detail-page design: the main view becomes a list of one card per session (not per observation/summary/prompt), each showing a name, full ID, and item count, with a 3-dot menu (Open/Delete). Opening a session navigates to `/?session=<content_session_id>` — a real, bookmarkable URL via `history.pushState`, not a new dependency or backend route (the server already serves `/` unconditionally; query strings don't affect Express path matching) — which reuses the existing `Feed`/`ObservationCard`/`SummaryCard`/`PromptCard` components, scoped to that one session via the `contentSessionId` pagination filter Tasks 2 and 6 already built. Everything from Tasks 1-7 is unaffected and still used, just consumed differently: Task 2's backend pagination filter now powers the detail page instead of a main-view dropdown; Task 6's bulk-delete endpoint now powers the per-card menu's Delete action instead of a header button; Task 7's `SessionCatalogEntry` type gains two fields (below) for the card's name and count. The per-card session-ID badge (old Task 11) is dropped as redundant — the session card's own header already shows the full ID once per session, so showing it again on every individual card underneath would be repetitive without adding information.
 
 **Tech Stack:** Bun, TypeScript, Express, bun:sqlite, React (function components), esbuild. Backend tests use `bun:test` under `tests/`. There is no frontend component test setup in this repo (no RTL/vitest) — frontend tasks are verified by building and manually exercising the dev viewer (final task).
 
 ## Global Constraints
 
-- Session ID display: full ID on cards (all three card types), first-8-characters + hover-title in the session filter dropdown.
-- Session filter is a native `<select>`, matching the existing project filter exactly (not a custom dropdown).
-- Deleting a session removes ALL its content (observations, summaries, prompts) AND the `sdk_sessions` row itself.
-- Session delete requires a confirmation dialog before proceeding.
-- The session list is populated live via SSE (initial full catalog + incremental additions), mirroring the existing project list — never a one-off fetch that goes stale.
+- Session ID display: full ID on cards (all three card types, via Task 1 — already shipped), and full ID on each session card's header (name + ID), not truncated.
+- Session card name: the session's `custom_title` if set, else the project name.
+- Session card shows a live item count styled as "N memories" (1 → "1 memory"), summing observations + summaries + prompts for that session.
+- No separate session filter `<select>` and no per-card session-ID badge on individual cards — superseded by the session-card redesign. The existing project filter `<select>` stays, filtering which session cards are shown.
+- Session cards do not expand inline. Clicking the card body, or the card menu's "Open" action, navigates to that session's detail page.
+- Session detail page navigation uses a real URL (`/?session=<content_session_id>`, via `history.pushState`/`popstate`, no router library) so back/forward/refresh/sharing all work; the detail page reuses the existing `Feed` component and card components unchanged.
+- Each session card has a 3-dot menu — a small custom popover (click-outside or Escape closes it), not a native `<select>` — with "Open" and "Delete" actions.
+- Deleting a session removes ALL its content (observations, summaries, prompts) AND the `sdk_sessions` row itself, behind a confirmation dialog before proceeding.
+- The session list is populated live via SSE (initial full catalog + incremental additions/count updates), mirroring the existing project list — never a one-off fetch that goes stale.
 - Canonical session key for filtering/deletion: `content_session_id` (string), not the numeric `sdk_sessions.id` — see Architecture note above.
 - No new abstractions beyond what's needed: reuse the existing single-row cloud-sync delete safety logic (extracted into two small shared helpers) rather than inventing a new sync-safety mechanism.
 
@@ -1158,16 +1164,163 @@ git commit -m "feat(viewer): add SessionCatalogEntry type and /api/sessions endp
 
 ---
 
-### Task 8: `useSSE.ts` — live session catalog
+### Task 8: Backend — `item_count` + `custom_title` on the session catalog
+
+**Files:**
+- Modify: `src/services/sqlite/SessionStore.ts` (`getAllSessions` method)
+- Modify: `src/ui/viewer/types.ts` (`SessionCatalogEntry`)
+- Test: `tests/session_store.test.ts` (extend)
+
+**Interfaces:**
+- Produces: `SessionStore.getAllSessions()` rows gain `custom_title: string | null` and `item_count: number` (observations + summaries + prompts for that session). `SessionCatalogEntry` (frontend) matches the new shape. Consumed by Task 9 (`useSSE.ts`) and Task 10 (`SessionCard.tsx`).
+- No route changes needed: `GET /api/sessions` (Task 4) already passes `getAllSessions()`'s return value straight through, so the richer shape flows automatically.
+
+- [ ] **Step 1: Write the failing tests**
+
+Add to `tests/session_store.test.ts` (inside the existing `describe('SessionStore', ...)` block, alongside the Task 3 tests for `getAllSessions`):
+
+```typescript
+  it('includes custom_title and a combined item_count across observations/summaries/prompts', () => {
+    const sessionDbId = store.createSDKSession('content-counts', 'proj-counts', 'first', 'My Custom Title');
+    store.ensureMemorySessionIdRegistered(sessionDbId, 'mem-counts');
+    store.db.prepare(`
+      INSERT INTO observations (memory_session_id, project, type, title, created_at, created_at_epoch)
+      VALUES ('mem-counts', 'proj-counts', 'discovery', 'obs 1', '2026-07-20T00:00:00.000Z', 1752969600000)
+    `).run();
+    store.db.prepare(`
+      INSERT INTO observations (memory_session_id, project, type, title, created_at, created_at_epoch)
+      VALUES ('mem-counts', 'proj-counts', 'discovery', 'obs 2', '2026-07-20T00:00:00.000Z', 1752969600000)
+    `).run();
+    store.db.prepare(`
+      INSERT INTO session_summaries (memory_session_id, project, request, created_at, created_at_epoch)
+      VALUES ('mem-counts', 'proj-counts', 'a summary', '2026-07-20T00:00:00.000Z', 1752969600000)
+    `).run();
+    store.db.prepare(`
+      INSERT INTO user_prompts (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
+      VALUES (?, 'content-counts', 1, 'a prompt', '2026-07-20T00:00:00.000Z', 1752969600000)
+    `).run(sessionDbId);
+
+    const sessions = store.getAllSessions();
+    const row = sessions.find(s => s.content_session_id === 'content-counts');
+
+    expect(row).toBeDefined();
+    expect(row!.custom_title).toBe('My Custom Title');
+    expect(row!.item_count).toBe(4);
+  });
+
+  it('reports item_count 0 and custom_title null for a session with no content and no title', () => {
+    store.createSDKSession('content-empty', 'proj-empty', 'first');
+
+    const sessions = store.getAllSessions();
+    const row = sessions.find(s => s.content_session_id === 'content-empty');
+
+    expect(row).toBeDefined();
+    expect(row!.custom_title).toBeNull();
+    expect(row!.item_count).toBe(0);
+  });
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `bun test tests/session_store.test.ts`
+Expected: FAIL — `row!.custom_title` and `row!.item_count` are `undefined` (properties don't exist on the current return shape).
+
+- [ ] **Step 3: Replace `getAllSessions` with the richer query**
+
+In `src/services/sqlite/SessionStore.ts`, replace the existing `getAllSessions` method (added in Task 3) entirely with:
+
+```typescript
+  getAllSessions(platformSource?: string): Array<{
+    content_session_id: string;
+    project: string;
+    platform_source: string;
+    custom_title: string | null;
+    started_at_epoch: number;
+    item_count: number;
+  }> {
+    const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : undefined;
+    let query = `
+      SELECT
+        s.content_session_id,
+        s.project,
+        COALESCE(s.platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
+        s.custom_title,
+        s.started_at_epoch,
+        (
+          (SELECT COUNT(*) FROM observations o WHERE o.memory_session_id = s.memory_session_id)
+          + (SELECT COUNT(*) FROM session_summaries ss WHERE ss.memory_session_id = s.memory_session_id)
+          + (SELECT COUNT(*) FROM user_prompts up WHERE up.session_db_id = s.id)
+        ) as item_count
+      FROM sdk_sessions s
+      WHERE s.project IS NOT NULL AND s.project != ''
+        AND s.project != ?
+    `;
+    const params: SQLQueryBindings[] = [OBSERVER_SESSIONS_PROJECT];
+
+    if (normalizedPlatformSource) {
+      query += ' AND COALESCE(s.platform_source, ?) = ?';
+      params.push(DEFAULT_PLATFORM_SOURCE, normalizedPlatformSource);
+    }
+
+    query += ' ORDER BY s.started_at_epoch DESC';
+
+    return this.db.prepare(query).all(...params) as Array<{
+      content_session_id: string;
+      project: string;
+      platform_source: string;
+      custom_title: string | null;
+      started_at_epoch: number;
+      item_count: number;
+    }>;
+  }
+```
+
+The three correlated subqueries each hit an existing index (`idx_observations_sdk_session` on `memory_session_id`, `idx_session_summaries_sdk_session` on `memory_session_id`, `idx_user_prompts_session` on `session_db_id`), so this stays fast at catalog scale.
+
+- [ ] **Step 4: Update the frontend `SessionCatalogEntry` type**
+
+In `src/ui/viewer/types.ts`, replace the `SessionCatalogEntry` interface (added in Task 7):
+
+```typescript
+export interface SessionCatalogEntry {
+  content_session_id: string;
+  project: string;
+  platform_source: string;
+  custom_title: string | null;
+  started_at_epoch: number;
+  item_count: number;
+}
+```
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+Run: `bun test tests/session_store.test.ts`
+Expected: PASS
+
+- [ ] **Step 6: Type-check**
+
+Run: `npm run typecheck`
+Expected: no errors (nothing constructs a `SessionCatalogEntry` object literal yet — `useSSE.ts` doesn't touch it until Task 9 — so this is a safe additive type change).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/services/sqlite/SessionStore.ts src/ui/viewer/types.ts tests/session_store.test.ts
+git commit -m "feat(viewer): add item_count and custom_title to the session catalog"
+```
+
+---
+
+### Task 9: `useSSE.ts` — live session catalog with count tracking
 
 **Files:**
 - Modify: `src/ui/viewer/hooks/useSSE.ts`
 
 **Interfaces:**
-- Consumes: `SessionCatalogEntry`, `StreamEvent.sessions` from Task 7.
-- Produces: `useSSE()` return value gains `sessions: SessionCatalogEntry[]` and `removeSession: (contentSessionId: string) => void`. Consumed by Task 9 (`App.tsx`).
+- Consumes: the richer `SessionCatalogEntry` shape from Task 8.
+- Produces: `useSSE()` return value gains `sessions: SessionCatalogEntry[]` and `removeSession: (contentSessionId: string) => void`, unchanged in shape from before, but the session list is now kept accurate as items stream in (a brand-new session starts at `item_count: 1`; a session already known has its count incremented, not duplicated). Consumed by Task 11 (`App.tsx`).
 
-- [ ] **Step 1: Add `sessions` state, `addSessionIfNew`, and `removeSession`**
+- [ ] **Step 1: Add `sessions` state, `touchSession`, and `removeSession`**
 
 In `src/ui/viewer/hooks/useSSE.ts`, update the imports and add the new state (after line 10):
 
@@ -1192,8 +1345,31 @@ export function useSSE() {
     setProjects(prev => prev.includes(project) ? prev : [...prev, project]);
   };
 
-  const addSessionIfNew = (entry: SessionCatalogEntry) => {
-    setSessions(prev => prev.some(s => s.content_session_id === entry.content_session_id) ? prev : [...prev, entry]);
+  const touchSession = (item: {
+    content_session_id: string;
+    project: string;
+    platform_source: string;
+    created_at_epoch: number;
+  }) => {
+    setSessions(prev => {
+      const existingIndex = prev.findIndex(s => s.content_session_id === item.content_session_id);
+      if (existingIndex === -1) {
+        return [
+          ...prev,
+          {
+            content_session_id: item.content_session_id,
+            project: item.project,
+            platform_source: item.platform_source,
+            custom_title: null,
+            started_at_epoch: item.created_at_epoch,
+            item_count: 1
+          }
+        ];
+      }
+      const next = [...prev];
+      next[existingIndex] = { ...next[existingIndex], item_count: next[existingIndex].item_count + 1 };
+      return next;
+    });
   };
 
   const removeSession = (contentSessionId: string) => {
@@ -1201,7 +1377,7 @@ export function useSSE() {
   };
 ```
 
-- [ ] **Step 2: Populate `sessions` from `initial_load` and append on new items**
+- [ ] **Step 2: Populate `sessions` from `initial_load` and touch on new items**
 
 In the `eventSource.onmessage` switch (lines 50-89), update each case:
 
@@ -1220,11 +1396,11 @@ In the `eventSource.onmessage` switch (lines 50-89), update each case:
             if (data.observation) {
               console.log('[SSE] New observation:', data.observation.id);
               addProjectIfNew(data.observation.project);
-              addSessionIfNew({
+              touchSession({
                 content_session_id: data.observation.content_session_id,
                 project: data.observation.project,
                 platform_source: data.observation.platform_source || 'claude',
-                started_at_epoch: data.observation.created_at_epoch
+                created_at_epoch: data.observation.created_at_epoch
               });
               setObservations(prev => [data.observation!, ...prev]);
             }
@@ -1234,11 +1410,11 @@ In the `eventSource.onmessage` switch (lines 50-89), update each case:
             if (data.summary) {
               console.log('[SSE] New summary:', data.summary.id);
               addProjectIfNew(data.summary.project);
-              addSessionIfNew({
+              touchSession({
                 content_session_id: data.summary.session_id,
                 project: data.summary.project,
                 platform_source: data.summary.platform_source || 'claude',
-                started_at_epoch: data.summary.created_at_epoch
+                created_at_epoch: data.summary.created_at_epoch
               });
               setSummaries(prev => [data.summary!, ...prev]);
             }
@@ -1248,11 +1424,11 @@ In the `eventSource.onmessage` switch (lines 50-89), update each case:
             if (data.prompt) {
               console.log('[SSE] New prompt:', data.prompt.id);
               addProjectIfNew(data.prompt.project);
-              addSessionIfNew({
+              touchSession({
                 content_session_id: data.prompt.content_session_id,
                 project: data.prompt.project,
                 platform_source: data.prompt.platform_source || 'claude',
-                started_at_epoch: data.prompt.created_at_epoch
+                created_at_epoch: data.prompt.created_at_epoch
               });
               setPrompts(prev => [data.prompt!, ...prev]);
             }
@@ -1295,20 +1471,357 @@ Expected: no errors.
 
 ```bash
 git add src/ui/viewer/hooks/useSSE.ts
-git commit -m "feat(viewer): track live session catalog in useSSE"
+git commit -m "feat(viewer): track live session catalog with item counts in useSSE"
 ```
 
 ---
 
-### Task 9: `usePagination.ts` + `App.tsx` — session filter wiring
+### Task 10: `SessionCard.tsx` + `SessionCardMenu.tsx` components
+
+Two new, self-contained presentational components — no wiring into `App.tsx` yet (that's Task 11). Both type-check standalone since their props are fully specified here.
+
+**Files:**
+- Create: `src/ui/viewer/components/SessionCard.tsx`
+- Create: `src/ui/viewer/components/SessionCardMenu.tsx`
+- Modify: `src/ui/viewer-template.html` (new CSS)
+
+**Interfaces:**
+- Consumes: `SessionCatalogEntry` (Task 8), `formatDate` from `src/ui/viewer/utils/formatters.ts` (existing).
+- Produces: `<SessionCard session={SessionCatalogEntry} onOpen={() => void} onDelete={() => void} />`. Consumed by Task 11 (`App.tsx`).
+
+- [ ] **Step 1: Create `SessionCardMenu.tsx`**
+
+Create `src/ui/viewer/components/SessionCardMenu.tsx`:
+
+```typescript
+import React, { useEffect, useRef } from 'react';
+
+interface SessionCardMenuProps {
+  onClose: () => void;
+  onOpen: () => void;
+  onDelete: () => void;
+}
+
+export function SessionCardMenu({ onClose, onOpen, onDelete }: SessionCardMenuProps) {
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        onClose();
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [onClose]);
+
+  return (
+    <div className="session-card-menu" ref={menuRef} onClick={e => e.stopPropagation()}>
+      <button className="session-card-menu-item" onClick={() => { onClose(); onOpen(); }}>
+        Open
+      </button>
+      <button className="session-card-menu-item session-card-menu-item--danger" onClick={() => { onClose(); onDelete(); }}>
+        Delete
+      </button>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 2: Create `SessionCard.tsx`**
+
+Create `src/ui/viewer/components/SessionCard.tsx`:
+
+```typescript
+import React, { useState } from 'react';
+import { SessionCatalogEntry } from '../types';
+import { formatDate } from '../utils/formatters';
+import { SessionCardMenu } from './SessionCardMenu';
+
+interface SessionCardProps {
+  session: SessionCatalogEntry;
+  onOpen: () => void;
+  onDelete: () => void;
+}
+
+export function SessionCard({ session, onOpen, onDelete }: SessionCardProps) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const name = session.custom_title || session.project;
+  const date = formatDate(session.started_at_epoch);
+  const memoriesLabel = session.item_count === 1 ? '1 memory' : `${session.item_count} memories`;
+
+  return (
+    <div
+      className="session-card"
+      onClick={onOpen}
+      role="button"
+      tabIndex={0}
+      onKeyDown={e => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+    >
+      <div className="session-card-header">
+        <div className="session-card-title-group">
+          <span className="session-card-name">{name}</span>
+          <span className="session-card-id" title={session.content_session_id}>
+            {session.content_session_id}
+          </span>
+        </div>
+        <div className="session-card-actions">
+          <span className="session-card-count">{memoriesLabel}</span>
+          <button
+            className="session-card-menu-trigger"
+            onClick={e => {
+              e.stopPropagation();
+              setMenuOpen(prev => !prev);
+            }}
+            aria-label="Session actions"
+            title="Session actions"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <circle cx="12" cy="5" r="1.5"></circle>
+              <circle cx="12" cy="12" r="1.5"></circle>
+              <circle cx="12" cy="19" r="1.5"></circle>
+            </svg>
+          </button>
+          {menuOpen && (
+            <SessionCardMenu
+              onClose={() => setMenuOpen(false)}
+              onOpen={onOpen}
+              onDelete={onDelete}
+            />
+          )}
+        </div>
+      </div>
+      <div className="session-card-meta">
+        <span className="session-card-project">{session.project}</span>
+        <span className="session-card-date">{date}</span>
+      </div>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 3: Add the CSS**
+
+In `src/ui/viewer-template.html`, add this block right before the closing `</style>` tag:
+
+```css
+    .session-list {
+      flex: 1;
+      overflow-y: scroll;
+      height: 100vh;
+      padding: 24px 18px;
+      display: flex;
+      justify-content: center;
+    }
+
+    .session-list-content {
+      max-width: 650px;
+      width: 100%;
+    }
+
+    .session-card {
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 12px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      position: relative;
+    }
+
+    .session-card:hover {
+      border-color: var(--color-border-focus);
+      background: var(--color-bg-card-hover);
+    }
+
+    .session-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .session-card-title-group {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .session-card-name {
+      font-weight: 600;
+      font-size: 15px;
+      color: var(--color-text-title);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .session-card-id {
+      font-family: 'Monaspace Radon', 'Monaco', 'Menlo', monospace;
+      font-size: 11px;
+      color: var(--color-text-muted);
+      opacity: 0.75;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .session-card-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+      position: relative;
+    }
+
+    .session-card-count {
+      font-size: 12px;
+      color: var(--color-text-secondary);
+      white-space: nowrap;
+    }
+
+    .session-card-menu-trigger {
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      color: var(--color-text-secondary);
+      transition: all 0.15s ease;
+    }
+
+    .session-card-menu-trigger:hover {
+      background: var(--color-bg-card-hover);
+      border-color: var(--color-border-primary);
+      color: var(--color-text-primary);
+    }
+
+    .session-card-menu {
+      position: absolute;
+      top: 100%;
+      right: 0;
+      margin-top: 4px;
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      overflow: hidden;
+      z-index: 10;
+      min-width: 120px;
+    }
+
+    .session-card-menu-item {
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 8px 14px;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--color-text-primary);
+    }
+
+    .session-card-menu-item:hover {
+      background: var(--color-bg-card-hover);
+    }
+
+    .session-card-menu-item--danger {
+      color: #dc2626;
+    }
+
+    .session-card-menu-item--danger:hover {
+      background: rgba(220, 38, 38, 0.1);
+    }
+
+    .session-card-meta {
+      display: flex;
+      gap: 12px;
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--color-text-muted);
+    }
+
+    .session-detail-header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--color-border-primary);
+    }
+
+    .session-detail-back {
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      padding: 8px 14px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--color-text-secondary);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .session-detail-back:hover {
+      background: var(--color-bg-card-hover);
+      border-color: var(--color-border-focus);
+      color: var(--color-text-primary);
+    }
+
+    .session-detail-id {
+      font-family: 'Monaspace Radon', 'Monaco', 'Menlo', monospace;
+      font-size: 12px;
+      color: var(--color-text-muted);
+    }
+```
+
+- [ ] **Step 4: Type-check**
+
+Run: `npx tsc --noEmit -p src/ui/viewer/tsconfig.json`
+Expected: no errors (both components are self-contained; nothing imports them yet, which is fine — an unused-export is not a type error).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/ui/viewer/components/SessionCard.tsx src/ui/viewer/components/SessionCardMenu.tsx src/ui/viewer-template.html
+git commit -m "feat(viewer): add SessionCard and SessionCardMenu components"
+```
+
+---
+
+### Task 11: `App.tsx` routing + `SessionDetailPage.tsx`
+
+The main view becomes a list of `SessionCard`s (project-filtered); opening one navigates (via `history.pushState`, `?session=<id>` in the URL) to a new `SessionDetailPage` that reuses the existing `Feed` unchanged, scoped to that session via the `contentSessionId` pagination filter (Task 2). This is where `App.tsx`'s current per-project pagination logic relocates to (scoped to a session instead), and where `SessionCard`/`SessionCardMenu` (Task 10) get wired in.
 
 **Files:**
 - Modify: `src/ui/viewer/hooks/usePagination.ts`
 - Modify: `src/ui/viewer/App.tsx`
+- Create: `src/ui/viewer/components/SessionDetailPage.tsx`
 
 **Interfaces:**
-- Consumes: `sessions`/`removeSession` from Task 8; `contentSessionId` pagination param from Task 2; `API_ENDPOINTS.SESSIONS` from Task 7.
-- Produces: `App.tsx` state `currentSessionFilter`, `isDeletingSession`, handler `handleSessionFilterChange`, `handleDeleteSession` — consumed by Task 10 (`Header.tsx` props).
+- Consumes: `sessions`/`removeSession` from Task 9; `SessionCard`/`SessionCardMenu` from Task 10; `contentSessionId` pagination param from Task 2; `API_ENDPOINTS.SESSIONS` from Task 7; `Feed` (existing, unchanged).
+- Produces: `SessionDetailPage({ contentSessionId, observations, summaries, prompts, onBack })` — a full page reusing `Feed`.
 
 - [ ] **Step 1: Add session-filter awareness to `usePagination.ts`**
 
@@ -1407,33 +1920,148 @@ export function usePagination(currentFilter: string, currentSessionFilter: strin
 }
 ```
 
-- [ ] **Step 2: Wire session state, filtering, and delete into `App.tsx`**
+- [ ] **Step 2: Create `SessionDetailPage.tsx`**
 
-In `src/ui/viewer/App.tsx`, update state, `matchesSelection`, `usePagination` call, the filter-reset effect, and add the delete handler:
+Create `src/ui/viewer/components/SessionDetailPage.tsx`:
 
 ```typescript
-export function App() {
-  const [currentFilter, setCurrentFilter] = useState('');
-  const [currentSessionFilter, setCurrentSessionFilter] = useState('');
-  const [isDeletingSession, setIsDeletingSession] = useState(false);
-  const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
-  const [logsModalOpen, setLogsModalOpen] = useState(false);
-  const [welcomeDismissed, setWelcomeDismissed] = useState<boolean>(getStoredWelcomeDismissed);
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { Feed } from './Feed';
+import { usePagination } from '../hooks/usePagination';
+import { Observation, Summary, UserPrompt } from '../types';
+import { mergeAndDeduplicateByProject } from '../utils/data';
+
+interface SessionDetailPageProps {
+  contentSessionId: string;
+  observations: Observation[];
+  summaries: Summary[];
+  prompts: UserPrompt[];
+  onBack: () => void;
+}
+
+export function SessionDetailPage({ contentSessionId, observations, summaries, prompts, onBack }: SessionDetailPageProps) {
   const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
 
+  const pagination = usePagination('', contentSessionId);
+
+  const matchesSession = useCallback((item: { content_session_id?: string; session_id?: string }) => {
+    const itemSessionId = item.content_session_id ?? item.session_id;
+    return itemSessionId === contentSessionId;
+  }, [contentSessionId]);
+
+  const allObservations = useMemo(() => {
+    const live = observations.filter(matchesSession);
+    const paginated = paginatedObservations.filter(matchesSession);
+    return mergeAndDeduplicateByProject(live, paginated);
+  }, [observations, paginatedObservations, matchesSession]);
+
+  const allSummaries = useMemo(() => {
+    const live = summaries.filter(matchesSession);
+    const paginated = paginatedSummaries.filter(matchesSession);
+    return mergeAndDeduplicateByProject(live, paginated);
+  }, [summaries, paginatedSummaries, matchesSession]);
+
+  const allPrompts = useMemo(() => {
+    const live = prompts.filter(matchesSession);
+    const paginated = paginatedPrompts.filter(matchesSession);
+    return mergeAndDeduplicateByProject(live, paginated);
+  }, [prompts, paginatedPrompts, matchesSession]);
+
+  const handleLoadMore = useCallback(async () => {
+    try {
+      const [newObservations, newSummaries, newPrompts] = await Promise.all([
+        pagination.observations.loadMore(),
+        pagination.summaries.loadMore(),
+        pagination.prompts.loadMore()
+      ]);
+
+      if (newObservations.length > 0) {
+        setPaginatedObservations(prev => [...prev, ...newObservations]);
+      }
+      if (newSummaries.length > 0) {
+        setPaginatedSummaries(prev => [...prev, ...newSummaries]);
+      }
+      if (newPrompts.length > 0) {
+        setPaginatedPrompts(prev => [...prev, ...newPrompts]);
+      }
+    } catch (error) {
+      console.error('Failed to load more data:', error);
+    }
+  }, [pagination.observations, pagination.summaries, pagination.prompts]);
+
+  useEffect(() => {
+    setPaginatedObservations([]);
+    setPaginatedSummaries([]);
+    setPaginatedPrompts([]);
+    handleLoadMore();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contentSessionId]);
+
+  return (
+    <>
+      <div className="session-detail-header">
+        <button className="session-detail-back" onClick={onBack}>
+          ← Back to sessions
+        </button>
+        <span className="session-detail-id" title={contentSessionId}>{contentSessionId}</span>
+      </div>
+      <Feed
+        observations={allObservations}
+        summaries={allSummaries}
+        prompts={allPrompts}
+        onLoadMore={handleLoadMore}
+        isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
+        hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
+      />
+    </>
+  );
+}
+```
+
+- [ ] **Step 3: Rewrite `App.tsx`**
+
+Replace the full contents of `src/ui/viewer/App.tsx`:
+
+```typescript
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { Header } from './components/Header';
+import { SessionCard } from './components/SessionCard';
+import { SessionDetailPage } from './components/SessionDetailPage';
+import { ContextSettingsModal } from './components/ContextSettingsModal';
+import { LogsDrawer } from './components/LogsModal';
+import { WelcomeCard, getStoredWelcomeDismissed, setStoredWelcomeDismissed } from './components/WelcomeCard';
+import { useSSE } from './hooks/useSSE';
+import { useSettings } from './hooks/useSettings';
+import { useTheme } from './hooks/useTheme';
+import { SessionCatalogEntry } from './types';
+import { API_ENDPOINTS } from './constants/api';
+
+type Route = { view: 'list' } | { view: 'session'; contentSessionId: string };
+
+function routeFromLocation(): Route {
+  const params = new URLSearchParams(window.location.search);
+  const sessionId = params.get('session');
+  return sessionId ? { view: 'session', contentSessionId: sessionId } : { view: 'list' };
+}
+
+export function App() {
+  const [currentFilter, setCurrentFilter] = useState('');
+  const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
+  const [logsModalOpen, setLogsModalOpen] = useState(false);
+  const [welcomeDismissed, setWelcomeDismissed] = useState<boolean>(getStoredWelcomeDismissed);
+  const [route, setRoute] = useState<Route>(routeFromLocation);
+
   const { observations, summaries, prompts, projects, sessions, removeSession, isProcessing, queueDepth } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { preference, setThemePreference } = useTheme();
-  const pagination = usePagination(currentFilter, currentSessionFilter);
 
-  const matchesSelection = useCallback((item: { project: string; content_session_id?: string; session_id?: string }) => {
-    const projectMatches = !currentFilter || item.project === currentFilter;
-    const itemSessionId = item.content_session_id ?? item.session_id;
-    const sessionMatches = !currentSessionFilter || itemSessionId === currentSessionFilter;
-    return projectMatches && sessionMatches;
-  }, [currentFilter, currentSessionFilter]);
+  useEffect(() => {
+    const onPopState = () => setRoute(routeFromLocation());
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
 
   useEffect(() => {
     if (currentFilter && !projects.includes(currentFilter)) {
@@ -1441,74 +2069,55 @@ export function App() {
     }
   }, [projects, currentFilter]);
 
-  useEffect(() => {
-    if (currentSessionFilter && !sessions.some(s => s.content_session_id === currentSessionFilter)) {
-      setCurrentSessionFilter('');
-    }
-  }, [sessions, currentSessionFilter]);
-```
+  const navigateToSession = useCallback((contentSessionId: string) => {
+    const url = `${window.location.pathname}?session=${encodeURIComponent(contentSessionId)}`;
+    window.history.pushState({}, '', url);
+    setRoute({ view: 'session', contentSessionId });
+  }, []);
 
-Update the reset-on-filter-change effect (previously `}, [currentFilter]);`):
+  const navigateToList = useCallback(() => {
+    window.history.pushState({}, '', window.location.pathname);
+    setRoute({ view: 'list' });
+  }, []);
 
-```typescript
-  useEffect(() => {
-    setPaginatedObservations([]);
-    setPaginatedSummaries([]);
-    setPaginatedPrompts([]);
-    handleLoadMore();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentFilter, currentSessionFilter]);
-```
-
-Add the delete handler (after `toggleLogsModal`, before `handleLoadMore` or anywhere in the component body before the `return`):
-
-```typescript
-  const handleDeleteSession = useCallback(async () => {
-    if (!currentSessionFilter) return;
-    const entry = sessions.find(s => s.content_session_id === currentSessionFilter);
-    const label = entry ? `${entry.project} (${currentSessionFilter.slice(0, 8)})` : currentSessionFilter;
+  const handleDeleteSession = useCallback(async (session: SessionCatalogEntry) => {
     const confirmed = window.confirm(
-      `Delete all content for session ${label}? This removes every observation, summary, and prompt from this session and cannot be undone.`
+      `Delete all content for session ${session.content_session_id}? This removes every observation, summary, and prompt from this session and cannot be undone.`
     );
     if (!confirmed) return;
 
-    setIsDeletingSession(true);
-    try {
-      const params = entry ? `?platformSource=${encodeURIComponent(entry.platform_source)}` : '';
-      const response = await fetch(`${API_ENDPOINTS.SESSIONS}/${encodeURIComponent(currentSessionFilter)}${params}`, {
-        method: 'DELETE'
-      });
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        console.error('[Session Delete] Failed:', body);
-        return;
-      }
-      removeSession(currentSessionFilter);
-      setCurrentSessionFilter('');
-    } finally {
-      setIsDeletingSession(false);
+    const params = `?platformSource=${encodeURIComponent(session.platform_source)}`;
+    const response = await fetch(`${API_ENDPOINTS.SESSIONS}/${encodeURIComponent(session.content_session_id)}${params}`, {
+      method: 'DELETE'
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      console.error('[Session Delete] Failed:', body);
+      return;
     }
-  }, [currentSessionFilter, sessions, removeSession]);
-```
+    removeSession(session.content_session_id);
+  }, [removeSession]);
 
-Add the `API_ENDPOINTS` import at the top of `App.tsx` (it isn't imported there yet):
+  const toggleContextPreview = useCallback(() => {
+    setContextPreviewOpen(prev => !prev);
+  }, []);
 
-```typescript
-import { API_ENDPOINTS } from './constants/api';
-```
+  const toggleLogsModal = useCallback(() => {
+    setLogsModalOpen(prev => !prev);
+  }, []);
 
-Finally, pass the new props to `<Header />` (Task 10 adds them to `HeaderProps`):
+  const visibleSessions = useMemo(() => {
+    return sessions
+      .filter(s => !currentFilter || s.project === currentFilter)
+      .sort((a, b) => b.started_at_epoch - a.started_at_epoch);
+  }, [sessions, currentFilter]);
 
-```typescript
+  return (
+    <>
       <Header
         projects={projects}
         currentFilter={currentFilter}
         onFilterChange={setCurrentFilter}
-        sessions={sessions}
-        currentSessionFilter={currentSessionFilter}
-        onSessionFilterChange={setCurrentSessionFilter}
-        onDeleteSession={handleDeleteSession}
-        isDeletingSession={isDeletingSession}
         isProcessing={isProcessing}
         queueDepth={queueDepth}
         themePreference={preference}
@@ -1519,241 +2128,80 @@ Finally, pass the new props to `<Header />` (Task 10 adds them to `HeaderProps`)
           setWelcomeDismissed(false);
         }}
       />
-```
 
-Also update the three `allObservations`/`allSummaries`/`allPrompts` `useMemo` dependency arrays — they already depend on `matchesSelection`, which now also depends on `currentSessionFilter`, so no further change is needed there (the existing `[observations, paginatedObservations, matchesSelection]` etc. dependency arrays pick it up transitively through the `matchesSelection` reference changing).
-
-- [ ] **Step 3: Type-check**
-
-Run: `npx tsc --noEmit -p src/ui/viewer/tsconfig.json`
-Expected: errors referencing `HeaderProps` not yet accepting the new props — expected until Task 10. Confirm the *only* errors are in `App.tsx`'s `<Header ... />` call about excess/missing props on `HeaderProps`, nothing else.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add src/ui/viewer/hooks/usePagination.ts src/ui/viewer/App.tsx
-git commit -m "feat(viewer): wire session filter state, pagination, and delete handler into App"
-```
-
----
-
-### Task 10: `Header.tsx` — session dropdown + delete button
-
-**Files:**
-- Modify: `src/ui/viewer/components/Header.tsx`
-- Modify: `src/ui/viewer-template.html` (delete button styling)
-
-**Interfaces:**
-- Consumes: `sessions`, `currentSessionFilter`, `onSessionFilterChange`, `onDeleteSession`, `isDeletingSession` props from Task 9.
-
-- [ ] **Step 1: Extend `HeaderProps` and render the session dropdown + delete button**
-
-In `src/ui/viewer/components/Header.tsx`, update imports and props:
-
-```typescript
-import React from 'react';
-import { ThemeToggle } from './ThemeToggle';
-import { ThemePreference } from '../hooks/useTheme';
-import { GitHubStarsButton } from './GitHubStarsButton';
-import { useSpinningFavicon } from '../hooks/useSpinningFavicon';
-import { SessionCatalogEntry } from '../types';
-
-interface HeaderProps {
-  projects: string[];
-  currentFilter: string;
-  onFilterChange: (filter: string) => void;
-  sessions: SessionCatalogEntry[];
-  currentSessionFilter: string;
-  onSessionFilterChange: (sessionId: string) => void;
-  onDeleteSession: () => void;
-  isDeletingSession: boolean;
-  isProcessing: boolean;
-  queueDepth: number;
-  themePreference: ThemePreference;
-  onThemeChange: (theme: ThemePreference) => void;
-  onContextPreviewToggle: () => void;
-  onShowHelp?: () => void;
-}
-
-export function Header({
-  projects,
-  currentFilter,
-  onFilterChange,
-  sessions,
-  currentSessionFilter,
-  onSessionFilterChange,
-  onDeleteSession,
-  isDeletingSession,
-  isProcessing,
-  queueDepth,
-  themePreference,
-  onThemeChange,
-  onContextPreviewToggle,
-  onShowHelp
-}: HeaderProps) {
-```
-
-Render the session `<select>` and delete button right after the existing project `<select>` (after line 91, `</select>`, before `<ThemeToggle`):
-
-```typescript
-        <select
-          value={currentFilter}
-          onChange={e => onFilterChange(e.target.value)}
-        >
-          <option value="">All Projects</option>
-          {projects.map(project => (
-            <option key={project} value={project}>{project}</option>
-          ))}
-        </select>
-        <select
-          value={currentSessionFilter}
-          onChange={e => onSessionFilterChange(e.target.value)}
-        >
-          <option value="">All Sessions</option>
-          {sessions.map(session => (
-            <option
-              key={session.content_session_id}
-              value={session.content_session_id}
-              title={session.content_session_id}
-            >
-              {session.content_session_id.slice(0, 8)} · {session.project}
-            </option>
-          ))}
-        </select>
-        <button
-          className="settings-btn danger"
-          onClick={onDeleteSession}
-          disabled={!currentSessionFilter || isDeletingSession}
-          title={currentSessionFilter ? 'Delete this session' : 'Select a session to delete'}
-          aria-label="Delete selected session"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="3 6 5 6 21 6"></polyline>
-            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-            <line x1="10" y1="11" x2="10" y2="17"></line>
-            <line x1="14" y1="11" x2="14" y2="17"></line>
-          </svg>
-        </button>
-        <ThemeToggle
-          preference={themePreference}
-          onThemeChange={onThemeChange}
+      {route.view === 'list' ? (
+        <div className="session-list">
+          <div className="session-list-content">
+            {visibleSessions.map(session => (
+              <SessionCard
+                key={session.content_session_id}
+                session={session}
+                onOpen={() => navigateToSession(session.content_session_id)}
+                onDelete={() => handleDeleteSession(session)}
+              />
+            ))}
+            {visibleSessions.length === 0 && (
+              <div style={{ textAlign: 'center', padding: '40px', color: '#8b949e' }}>
+                No sessions to display
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <SessionDetailPage
+          contentSessionId={route.contentSessionId}
+          observations={observations}
+          summaries={summaries}
+          prompts={prompts}
+          onBack={navigateToList}
         />
+      )}
+
+      {!welcomeDismissed && (
+        <WelcomeCard onDismiss={() => setWelcomeDismissed(true)} />
+      )}
+
+      <ContextSettingsModal
+        isOpen={contextPreviewOpen}
+        onClose={toggleContextPreview}
+        settings={settings}
+        onSave={saveSettings}
+        isSaving={isSaving}
+        saveStatus={saveStatus}
+      />
+
+      <button
+        className="console-toggle-btn"
+        onClick={toggleLogsModal}
+        title="Toggle Console"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="4 17 10 11 4 5"></polyline>
+          <line x1="12" y1="19" x2="20" y2="19"></line>
+        </svg>
+      </button>
+
+      <LogsDrawer
+        isOpen={logsModalOpen}
+        onClose={toggleLogsModal}
+      />
+    </>
+  );
+}
 ```
 
-- [ ] **Step 2: Style the disabled and danger-hover states for the delete button**
+Note what's gone from the old `App.tsx`: `paginatedObservations`/`paginatedSummaries`/`paginatedPrompts` state, the top-level `usePagination(currentFilter)` call, `matchesSelection`, and the `mergeAndDeduplicateByProject`-based `allObservations`/`allSummaries`/`allPrompts` — all of that relocated into `SessionDetailPage.tsx` (Step 2), scoped to one session instead of one project. `Header` no longer receives any session-related props — it's unchanged from before Task 9 ever touched it (project filter only).
 
-In `src/ui/viewer-template.html`, add right after the `.settings-btn.active` rule (after line 429):
-
-```css
-    .settings-btn:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
-      transform: none;
-      box-shadow: none;
-    }
-
-    .settings-btn.danger:hover:not(:disabled) {
-      background: rgba(220, 38, 38, 0.1);
-      border-color: rgba(220, 38, 38, 0.4);
-      color: #dc2626;
-    }
-```
-
-- [ ] **Step 3: Type-check**
-
-Run: `npx tsc --noEmit -p src/ui/viewer/tsconfig.json`
-Expected: no errors (this resolves the `HeaderProps` mismatch flagged at the end of Task 9).
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add src/ui/viewer/components/Header.tsx src/ui/viewer-template.html
-git commit -m "feat(viewer): add session filter dropdown and delete button to Header"
-```
-
----
-
-### Task 11: Card badges — session ID on Observation/Summary/Prompt cards
-
-**Files:**
-- Modify: `src/ui/viewer/components/ObservationCard.tsx`
-- Modify: `src/ui/viewer/components/SummaryCard.tsx`
-- Modify: `src/ui/viewer/components/PromptCard.tsx`
-- Modify: `src/ui/viewer-template.html` (`.card-session-id` / `.summary-session-id-badge` styles)
-
-**Interfaces:**
-- Consumes: `Observation.content_session_id` (Task 1), `Summary.session_id` and `UserPrompt.content_session_id` (already existed).
-
-- [ ] **Step 1: Add the badge to `ObservationCard.tsx`**
-
-In `src/ui/viewer/components/ObservationCard.tsx`, add the badge to `.card-header-left` (after the `card-project` span, before the `merged_into_project` block, i.e. after line 51):
-
-```typescript
-          <span className="card-project">{observation.project}</span>
-          <span className="card-session-id" title={observation.content_session_id}>
-            {observation.content_session_id}
-          </span>
-          {observation.merged_into_project && (
-```
-
-- [ ] **Step 2: Add the badge to `SummaryCard.tsx`**
-
-In `src/ui/viewer/components/SummaryCard.tsx`, add to `.summary-badge-row` (after the `summary-project-badge` span, i.e. after line 27):
-
-```typescript
-          <span className="summary-project-badge">{summary.project}</span>
-          <span className="summary-session-id-badge" title={summary.session_id}>
-            {summary.session_id}
-          </span>
-        </div>
-```
-
-- [ ] **Step 3: Add the badge to `PromptCard.tsx`**
-
-In `src/ui/viewer/components/PromptCard.tsx`, add to `.card-header-left` (after the `card-project` span, i.e. after line 20):
-
-```typescript
-          <span className="card-project">{prompt.project}</span>
-          <span className="card-session-id" title={prompt.content_session_id}>
-            {prompt.content_session_id}
-          </span>
-        </div>
-```
-
-- [ ] **Step 4: Add the CSS**
-
-In `src/ui/viewer-template.html`, add right after the `.card-merged-badge` rule (after line 850):
-
-```css
-    .card-session-id {
-      color: var(--color-text-muted);
-      font-size: 9px;
-      opacity: 0.75;
-      font-family: 'Monaspace Radon', 'Monaco', 'Menlo', monospace;
-    }
-```
-
-Add right after the `[data-theme="dark"] .summary-project-badge` rule (after line 912):
-
-```css
-    .summary-session-id-badge {
-      font-family: 'Monaspace Radon', 'Monaco', 'Menlo', monospace;
-      font-size: 9px;
-      color: var(--color-text-muted);
-      opacity: 0.75;
-    }
-```
-
-- [ ] **Step 5: Type-check**
+- [ ] **Step 4: Type-check**
 
 Run: `npx tsc --noEmit -p src/ui/viewer/tsconfig.json`
 Expected: no errors.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add src/ui/viewer/components/ObservationCard.tsx src/ui/viewer/components/SummaryCard.tsx src/ui/viewer/components/PromptCard.tsx src/ui/viewer-template.html
-git commit -m "feat(viewer): display session ID badge on observation, summary, and prompt cards"
+git add src/ui/viewer/hooks/usePagination.ts src/ui/viewer/App.tsx src/ui/viewer/components/SessionDetailPage.tsx
+git commit -m "feat(viewer): replace card feed with session-card list + session detail page routing"
 ```
 
 ---
@@ -1767,30 +2215,34 @@ There is no automated frontend test harness in this repo for the viewer (Tasks 7
 - [ ] **Step 1: Run the full backend test suite**
 
 Run: `bun test`
-Expected: PASS (everything from Tasks 1-6, plus no regressions elsewhere).
+Expected: PASS (everything from Tasks 1-8, plus no regressions elsewhere).
 
 - [ ] **Step 2: Build and sync the plugin**
 
 Run: `npm run build-and-sync`
 Expected: builds successfully, restarts the worker, no build errors from the viewer bundle (esbuild) or the backend TypeScript.
 
-- [ ] **Step 3: Open the viewer and verify session IDs render**
+- [ ] **Step 3: Open the viewer and verify the session list**
 
-Open `http://localhost:37777` in a browser. For each of an observation card, a summary card, and a prompt card: confirm a small session-ID badge is visible next to the project badge, and that it's the full ID (not truncated).
+Open `http://localhost:37777` in a browser. Confirm the main view shows one card per session (not per observation/summary/prompt), each with a name (project name, unless a session has a custom title), its full session ID, and an "N memories" count. Confirm the existing project filter dropdown in the header still works and narrows the session-card list to one project.
 
-- [ ] **Step 4: Verify the session filter dropdown**
+- [ ] **Step 4: Verify navigation**
 
-Confirm a second dropdown ("All Sessions") appears next to the project dropdown, with entries labeled as `xxxxxxxx · project-name` (8-char prefix). Hover an option and confirm the browser tooltip shows the full session ID. Select a session and confirm the feed narrows to only that session's cards. Select a project AND a session together and confirm both filters apply (AND, not OR).
+Click a session card's body (not the 3-dot menu) — confirm it navigates to a detail page showing that session's observation/summary/prompt cards (same look as the old feed), with a "← Back to sessions" button. Confirm the browser URL now reads `?session=<the-session-id>`. Click Back — confirm it returns to the session list and the URL loses the query param. Use the browser's back/forward buttons instead of the in-app Back button — confirm they also work. Reload the page while on a session's detail URL — confirm it opens directly into that session's detail page (not the list).
 
-- [ ] **Step 5: Verify delete**
+- [ ] **Step 5: Verify the 3-dot menu**
 
-With no session selected, confirm the trash-icon button next to the session dropdown is disabled. Select a session, click delete, confirm the browser `confirm()` dialog appears naming the session. Cancel it — confirm nothing changes. Click delete again and accept — confirm the cards for that session disappear from the feed, the session filter resets to "All Sessions", and the deleted session's entry is gone from the dropdown without a page reload. Reload the page and confirm the session still doesn't reappear (i.e. it was actually deleted from the database, not just hidden client-side).
+Click a session card's 3-dot button — confirm a small menu appears with "Open" and "Delete", and clicking elsewhere on the page (or pressing Escape) closes it without navigating or deleting. Click "Open" — confirm it navigates the same as clicking the card body.
 
-- [ ] **Step 6: Verify live behavior**
+- [ ] **Step 6: Verify delete**
 
-Start a new Claude Code session in a project claude-mem is tracking, and let it produce at least one observation. Confirm the new session appears in the session dropdown without reloading the viewer page (live SSE-driven addition, matching how new projects already appear live).
+Open a session card's 3-dot menu and click "Delete" — confirm a browser `confirm()` dialog appears naming the session. Cancel it — confirm nothing changes. Delete again and accept — confirm the session card disappears from the list without a page reload. Reload the page and confirm it still doesn't reappear (i.e. it was actually deleted from the database, not just hidden client-side).
 
-- [ ] **Step 7: Report results**
+- [ ] **Step 7: Verify live behavior**
+
+Start a new Claude Code session in a project claude-mem is tracking, and let it produce at least one observation. Confirm a new session card appears in the list without reloading the viewer page, starting at "1 memory"; if that same session produces a second observation shortly after, confirm the existing card's count updates to "2 memories" instead of a duplicate card appearing.
+
+- [ ] **Step 8: Report results**
 
 If any manual check fails, note exactly which step and what was observed instead — do not mark this task complete on a failing check.
 
@@ -1798,6 +2250,13 @@ If any manual check fails, note exactly which step and what was observed instead
 
 ## Self-Review Notes
 
-- **Spec coverage:** Every item from the approved design (`docs/superpowers/specs/2026-07-30-session-id-viewer-design.md`) is covered: card display (Task 11), session filter dropdown behaving like the project filter (Tasks 9-10), delete button next to the dropdown with confirmation (Tasks 9-10, 6), deletes all content + the `sdk_sessions` row (Task 6), live SSE-backed session list (Tasks 4, 8). The one deliberate deviation (canonical key is `content_session_id`, not `sdk_sessions.id`) is called out in the Architecture section and does not change any user-facing behavior described in the spec.
+**Original plan (Tasks 1-7 execution):**
+- **Spec coverage:** Every item from the originally approved design (`docs/superpowers/specs/2026-07-30-session-id-viewer-design.md`) was covered by the original Task 1-12 plan. Tasks 1-7 (backend + types) shipped exactly as planned and are unaffected by the mid-execution redesign below.
 - **Placeholder scan:** no TBD/TODO markers; every step has complete, concrete code.
-- **Type consistency:** `Observation.content_session_id`, `Summary.session_id`, `UserPrompt.content_session_id` are used consistently across PaginationHelper (Tasks 1-2), SSE payload types (Task 1), `useSSE.ts` (Task 8), `App.tsx`'s `matchesSelection` (Task 9), and the three card components (Task 11). `assertRowDeletable`/`commitRowDelete` signatures (Task 5) match their call sites in both `deleteSyncedContent` (Task 5) and the bulk handler (Task 6).
+- **Type consistency:** `Observation.content_session_id`, `Summary.session_id`, `UserPrompt.content_session_id` are used consistently across `PaginationHelper` (Tasks 1-2), SSE payload types (Task 1), and `SessionCatalogEntry` (Tasks 7-8). `assertRowDeletable`/`commitRowDelete` signatures (Task 5) match their call sites in both `deleteSyncedContent` (Task 5) and the bulk handler (Task 6).
+
+**Revised plan (Tasks 8-12, session-card + detail-page redesign):**
+- **Spec coverage:** the user's revised request is covered end to end — session cards with name + full ID + count replacing the flat feed as the main view (Tasks 8, 10, 11), 3-dot menu with Open/Delete (Task 10), Open navigates via a real URL to a per-session detail page reusing the existing card components (Task 11), Delete reuses the existing confirm-then-`DELETE /api/sessions/:contentSessionId` flow (Task 11, backed by Task 6), project filter retained (Task 11), live SSE-driven session list including count updates (Tasks 8-9). Per the user's own fallback ("if we can't find an appropriate name we can skip that"), a name was found and used ("N memories") — no skip needed.
+- **Placeholder scan:** no TBD/TODO markers in Tasks 8-12; every step has complete, concrete code including all CSS and full component/file bodies (`App.tsx` and `SessionDetailPage.tsx` given in full, not diffs, since the restructuring touches most of the file).
+- **Type consistency:** the richer `SessionCatalogEntry` (Task 8: adds `custom_title`, `item_count`) is constructed consistently in exactly two places — `useSSE.ts`'s `touchSession` (Task 9, for live-streamed items, `item_count` starts at 1 and increments) and the backend `getAllSessions` SQL (Task 8, for the initial catalog and any full reload) — both produce the same six fields. `SessionCard`/`SessionCardMenu` (Task 10) and `App.tsx`/`SessionDetailPage` (Task 11) reference `SessionCatalogEntry` fields (`content_session_id`, `project`, `platform_source`, `custom_title`, `started_at_epoch`, `item_count`) consistently with the Task 8 definition. `usePagination`'s two-argument signature (Task 11) matches its only two call sites: unused in the new `App.tsx` (list view needs no pagination) and used in `SessionDetailPage.tsx` with `('', contentSessionId)`.
+- **Scope check:** Task 12 (verification) was updated to check the new UX end to end rather than the old dropdown; nothing from the old Tasks 9-11 (dropdown, Header delete button, per-card badge) survives, and the plan's Architecture section explains why each piece was dropped or repurposed instead of silently vanishing.
