@@ -2391,6 +2391,182 @@
         transform: translateX(16px);
       }
     }
+
+    .session-list {
+      flex: 1;
+      overflow-y: scroll;
+      height: 100vh;
+      padding: 24px 18px;
+      display: flex;
+      justify-content: center;
+    }
+
+    .session-list-content {
+      max-width: 650px;
+      width: 100%;
+    }
+
+    .session-card {
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 12px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      position: relative;
+    }
+
+    .session-card:hover {
+      border-color: var(--color-border-focus);
+      background: var(--color-bg-card-hover);
+    }
+
+    .session-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .session-card-title-group {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .session-card-name {
+      font-weight: 600;
+      font-size: 15px;
+      color: var(--color-text-title);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .session-card-id {
+      font-family: 'Monaspace Radon', 'Monaco', 'Menlo', monospace;
+      font-size: 11px;
+      color: var(--color-text-muted);
+      opacity: 0.75;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .session-card-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+      position: relative;
+    }
+
+    .session-card-count {
+      font-size: 12px;
+      color: var(--color-text-secondary);
+      white-space: nowrap;
+    }
+
+    .session-card-menu-trigger {
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      color: var(--color-text-secondary);
+      transition: all 0.15s ease;
+    }
+
+    .session-card-menu-trigger:hover {
+      background: var(--color-bg-card-hover);
+      border-color: var(--color-border-primary);
+      color: var(--color-text-primary);
+    }
+
+    .session-card-menu {
+      position: absolute;
+      top: 100%;
+      right: 0;
+      margin-top: 4px;
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      overflow: hidden;
+      z-index: 10;
+      min-width: 120px;
+    }
+
+    .session-card-menu-item {
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 8px 14px;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--color-text-primary);
+    }
+
+    .session-card-menu-item:hover {
+      background: var(--color-bg-card-hover);
+    }
+
+    .session-card-menu-item--danger {
+      color: #dc2626;
+    }
+
+    .session-card-menu-item--danger:hover {
+      background: rgba(220, 38, 38, 0.1);
+    }
+
+    .session-card-meta {
+      display: flex;
+      gap: 12px;
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--color-text-muted);
+    }
+
+    .session-detail-header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--color-border-primary);
+    }
+
+    .session-detail-back {
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      padding: 8px 14px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--color-text-secondary);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .session-detail-back:hover {
+      background: var(--color-bg-card-hover);
+      border-color: var(--color-border-focus);
+      color: var(--color-text-primary);
+    }
+
+    .session-detail-id {
+      font-family: 'Monaspace Radon', 'Monaco', 'Menlo', monospace;
+      font-size: 12px;
+      color: var(--color-text-muted);
+    }
   </style>
 </head>
 
