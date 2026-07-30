@@ -1327,11 +1327,11 @@ function usePaginationFor<TItem extends DataItem>(
   });
 
   const offsetRef = useRef(0);
-  const lastSelectionKeyRef = useRef(`${currentFilter} ${currentSessionFilter}`);
+  const lastSelectionKeyRef = useRef(`${currentFilter} ${currentSessionFilter}`);
   const stateRef = useRef(state);
 
   const loadMore = useCallback(async (): Promise<TItem[]> => {
-    const selectionKey = `${currentFilter} ${currentSessionFilter}`;
+    const selectionKey = `${currentFilter} ${currentSessionFilter}`;
     const filterChanged = lastSelectionKeyRef.current !== selectionKey;
 
     if (filterChanged) {
