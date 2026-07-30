@@ -174,6 +174,12 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
       expect(command.indexOf(cachePath)).toBeLessThan(command.indexOf(marketplacesPath));
     }
   });
+
+  it('should not spawn a login shell to rebuild PATH on every Claude hook (#3190)', () => {
+    for (const command of commandHooksFrom('plugin/hooks/hooks.json')) {
+      expect(command).not.toContain('SHELL -lc');
+    }
+  });
 });
 
 describe('Plugin Distribution - Startup Root Resolution', () => {

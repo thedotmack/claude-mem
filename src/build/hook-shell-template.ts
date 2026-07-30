@@ -58,9 +58,9 @@ export interface ShellTemplateOptions {
   mcpExtraCacheRoots?: string[];
 }
 
-const CLAUDE_CODE_PATH_PRELUDE = `export PATH="$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH";`;
-
-const CLAUDE_CODE_SETUP_PATH_PRELUDE =
+// Prepend common tool locations without spawning a login shell on every hook
+// invocation. Setup already used this shape; runtime hooks now match (#3190).
+const CLAUDE_CODE_HOOK_PATH_PRELUDE =
   'export PATH="$HOME/.nvm/versions/node/v$(ls \\"$HOME/.nvm/versions/node\\" 2>/dev/null | ' +
   "sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\";";
 
@@ -72,9 +72,8 @@ const CODEX_CLI_PATH_PRELUDE =
 function pathPrelude(host: ShellTemplateHost): string {
   switch (host) {
     case 'claude-code':
-      return CLAUDE_CODE_PATH_PRELUDE;
     case 'claude-code-setup':
-      return CLAUDE_CODE_SETUP_PATH_PRELUDE;
+      return CLAUDE_CODE_HOOK_PATH_PRELUDE;
     case 'codex-cli':
       // Trailing space is intentional: join() adds one more → double space
       // before `_C=`, matching the hand-authored codex-hooks.json.
