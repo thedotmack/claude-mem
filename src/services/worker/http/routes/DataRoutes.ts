@@ -98,6 +98,7 @@ export class DataRoutes extends BaseRouteHandler {
     app.get('/api/stats', this.handleGetStats.bind(this));
     app.get('/api/projects', this.handleGetProjects.bind(this));
     app.get('/api/sessions', this.handleGetSessions.bind(this));
+    app.delete('/api/sessions/:contentSessionId', this.handleDeleteSession.bind(this));
 
     app.get('/api/processing-status', this.handleGetProcessingStatus.bind(this));
 
@@ -374,6 +375,73 @@ export class DataRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
     res.json({ sessions: store.getAllSessions(platformSource) });
+  });
+
+  private handleDeleteSession = this.wrapHandler((req: Request, res: Response): void => {
+    const contentSessionId = this.toStringParam(req.params.contentSessionId);
+    if (!contentSessionId) {
+      this.badRequest(res, 'contentSessionId is required');
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+
+    const sessionRow = store.db.prepare(`
+      SELECT id, memory_session_id
+      FROM sdk_sessions
+      WHERE content_session_id = ?
+        AND (? IS NULL OR COALESCE(platform_source, 'claude') = ?)
+    `).get(contentSessionId, platformSource ?? null, platformSource ?? null) as
+      { id: number; memory_session_id: string | null } | undefined;
+
+    if (!sessionRow) {
+      this.notFound(res, `Session ${contentSessionId} not found`);
+      return;
+    }
+
+    type ChildRow = { kind: ContentKind; table: 'observations' | 'session_summaries' | 'user_prompts'; id: string };
+    const childRows: ChildRow[] = [];
+
+    if (sessionRow.memory_session_id) {
+      const observations = store.db.prepare(
+        `SELECT CAST(id AS TEXT) AS id FROM observations WHERE memory_session_id = ? AND origin_device_id IS NULL`
+      ).all(sessionRow.memory_session_id) as Array<{ id: string }>;
+      childRows.push(...observations.map(row => ({ kind: 'observation' as ContentKind, table: 'observations' as const, id: row.id })));
+
+      const summaries = store.db.prepare(
+        `SELECT CAST(id AS TEXT) AS id FROM session_summaries WHERE memory_session_id = ? AND origin_device_id IS NULL`
+      ).all(sessionRow.memory_session_id) as Array<{ id: string }>;
+      childRows.push(...summaries.map(row => ({ kind: 'summary' as ContentKind, table: 'session_summaries' as const, id: row.id })));
+    }
+
+    const prompts = store.db.prepare(
+      `SELECT CAST(id AS TEXT) AS id FROM user_prompts WHERE session_db_id = ? AND origin_device_id IS NULL`
+    ).all(sessionRow.id) as Array<{ id: string }>;
+    childRows.push(...prompts.map(row => ({ kind: 'prompt' as ContentKind, table: 'user_prompts' as const, id: row.id })));
+
+    const cloudSync = this.dbManager.getCloudSync();
+
+    // Pre-flight: validate every row can be safely deleted BEFORE mutating any of them.
+    for (const row of childRows) {
+      const check = this.assertRowDeletable(cloudSync, store, row.kind, row.id);
+      if (!check.ok) {
+        res.status(check.status).json({ error: check.error });
+        return;
+      }
+    }
+
+    const deletedCounts = { observations: 0, summaries: 0, prompts: 0 };
+    for (const row of childRows) {
+      this.commitRowDelete(cloudSync, store, row.kind, row.table, row.id);
+      if (row.kind === 'observation') deletedCounts.observations++;
+      else if (row.kind === 'summary') deletedCounts.summaries++;
+      else deletedCounts.prompts++;
+    }
+
+    store.db.prepare(`DELETE FROM sdk_sessions WHERE id = ?`).run(sessionRow.id);
+
+    res.json({ success: true, contentSessionId, deletedCounts });
   });
 
   private handleGetProcessingStatus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
