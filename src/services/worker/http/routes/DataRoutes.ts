@@ -432,14 +432,39 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     const deletedCounts = { observations: 0, summaries: 0, prompts: 0 };
-    for (const row of childRows) {
-      this.commitRowDelete(cloudSync, store, row.kind, row.table, row.id);
+    const countRow = (row: ChildRow) => {
       if (row.kind === 'observation') deletedCounts.observations++;
       else if (row.kind === 'summary') deletedCounts.summaries++;
       else deletedCounts.prompts++;
-    }
+    };
 
-    store.db.prepare(`DELETE FROM sdk_sessions WHERE id = ?`).run(sessionRow.id);
+    if (cloudSync?.isConfigured()) {
+      // Each row's tombstone-enqueue + delete is already atomic on its own
+      // (CloudSync.queueDelete wraps itself in a transaction). A failure
+      // partway through this loop fails loud via wrapHandler's error
+      // response rather than reporting false success, and the operation is
+      // safely retriable: re-issuing DELETE on the same contentSessionId
+      // re-queries the remaining un-deleted rows and finishes the job,
+      // since childRows is recomputed fresh on every call.
+      for (const row of childRows) {
+        this.commitRowDelete(cloudSync, store, row.kind, row.table, row.id);
+        countRow(row);
+      }
+      store.db.prepare(`DELETE FROM sdk_sessions WHERE id = ?`).run(sessionRow.id);
+    } else {
+      // No cloud sync in play here, so nothing in this branch needs its own
+      // inner transaction — wrap the whole batch in one so a mid-loop
+      // failure rolls back everything instead of leaving a partially
+      // deleted session.
+      const deleteAll = store.db.transaction(() => {
+        for (const row of childRows) {
+          this.commitRowDelete(cloudSync, store, row.kind, row.table, row.id);
+          countRow(row);
+        }
+        store.db.prepare(`DELETE FROM sdk_sessions WHERE id = ?`).run(sessionRow.id);
+      });
+      deleteAll();
+    }
 
     res.json({ success: true, contentSessionId, deletedCounts });
   });

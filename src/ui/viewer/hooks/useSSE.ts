@@ -33,6 +33,9 @@ export function useSSE() {
             content_session_id: item.content_session_id,
             project: item.project,
             platform_source: item.platform_source,
+            // Live SSE payloads don't carry custom_title; a session discovered this way shows its
+            // project name until the next full catalog load (initial_load), which does carry it.
+            // Acceptable — narrow, self-correcting gap.
             custom_title: null,
             started_at_epoch: item.created_at_epoch,
             item_count: 1
