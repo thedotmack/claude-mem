@@ -96,6 +96,7 @@ export class DataRoutes extends BaseRouteHandler {
 
     app.get('/api/stats', this.handleGetStats.bind(this));
     app.get('/api/projects', this.handleGetProjects.bind(this));
+    app.get('/api/sessions', this.handleGetSessions.bind(this));
 
     app.get('/api/processing-status', this.handleGetProcessingStatus.bind(this));
 
@@ -339,6 +340,12 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     res.json(store.getProjectCatalog());
+  });
+
+  private handleGetSessions = this.wrapHandler((req: Request, res: Response): void => {
+    const store = this.dbManager.getSessionStore();
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    res.json({ sessions: store.getAllSessions(platformSource) });
   });
 
   private handleGetProcessingStatus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
