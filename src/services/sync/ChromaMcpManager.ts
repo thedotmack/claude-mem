@@ -29,6 +29,8 @@ const RECONNECT_BACKOFF_MS = 10_000;
 const CHROMA_WRITER_LOCK_FILENAME = '.claude-mem-chroma-writer.lock';
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
 const CHROMA_OUTPUT_TAIL_MAX_CHARS = 2048;
+const DEFAULT_MAX_PENDING_MUTATIONS = 5_000;
+const CHROMA_MUTATION_TOOL_PATTERN = /^chroma_(?:add|create|delete|modify|update|upsert)_/;
 
 const CHROMA_MCP_PINNED_VERSION = '0.2.6';
 
@@ -88,9 +90,20 @@ export class ChromaMcpManager {
   private readonly chromaWriterOwnerId = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
   private chromaWriterLock: { path: string; dataDir: string; ownerId: string } | null = null;
   private unexpectedCloseCleanup: Promise<void> | null = null;
+  private mutationTail: Promise<void> = Promise.resolve();
+  private pendingMutationCalls = 0;
+  private readonly maxPendingMutationCalls: number;
+  private readonly serializeMutations: boolean;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
 
-  private constructor() {}
+  private constructor() {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const configuredLimit = Number.parseInt(settings.CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS, 10);
+    this.maxPendingMutationCalls = Number.isInteger(configuredLimit) && configuredLimit > 0
+      ? configuredLimit
+      : DEFAULT_MAX_PENDING_MUTATIONS;
+    this.serializeMutations = (settings.CLAUDE_MEM_CHROMA_MODE || 'local') !== 'remote';
+  }
 
   static getInstance(): ChromaMcpManager {
     if (!ChromaMcpManager.instance) {
@@ -688,6 +701,15 @@ export class ChromaMcpManager {
   }
 
   async callTool(toolName: string, toolArguments: Record<string, unknown>): Promise<unknown> {
+    if (!this.serializeMutations || !ChromaMcpManager.isMutationTool(toolName)) {
+      return this.callToolUnqueued(toolName, toolArguments);
+    }
+
+    return this.enqueueMutation(() => this.callToolUnqueued(toolName, toolArguments), toolName);
+  }
+
+  private async callToolUnqueued(toolName: string, toolArguments: Record<string, unknown>): Promise<unknown> {
+    const callGeneration = this.connectionGeneration;
     await this.ensureConnected();
 
     logger.debug('CHROMA_MCP', `Calling tool: ${toolName}`, {
@@ -705,12 +727,19 @@ export class ChromaMcpManager {
         error: transportError instanceof Error ? transportError.message : String(transportError)
       });
 
+      if (callGeneration !== this.connectionGeneration) {
+        throw new ChromaMcpConnectionCancelledError('chroma-mcp call cancelled during shutdown');
+      }
+
       // Tree-kill the dying subprocess before reconnect. Previously this path
       // just nulled the handle, which on Linux leaks the uv/python/chroma-mcp
       // descendants every time a transport error happens (#2313).
       await this.disposeCurrentSubprocess();
 
       try {
+        if (callGeneration !== this.connectionGeneration) {
+          throw new ChromaMcpConnectionCancelledError('chroma-mcp call cancelled during shutdown');
+        }
         await this.ensureConnected();
         result = await this.client!.callTool({
           name: toolName,
@@ -749,6 +778,41 @@ export class ChromaMcpManager {
       }
       return null;
     }
+  }
+
+  private async enqueueMutation<T>(operation: () => Promise<T>, toolName: string): Promise<T> {
+    if (this.pendingMutationCalls >= this.maxPendingMutationCalls) {
+      const message = `Chroma mutation queue is full (${this.pendingMutationCalls}/${this.maxPendingMutationCalls}); deferring "${toolName}" to a later backfill`;
+      logger.warn('CHROMA_MCP', message, {
+        toolName,
+        pendingMutations: this.pendingMutationCalls,
+        maxPendingMutations: this.maxPendingMutationCalls
+      });
+      throw new ChromaUnavailableError(message);
+    }
+
+    this.pendingMutationCalls += 1;
+    const enqueuedGeneration = this.connectionGeneration;
+    const run = this.mutationTail
+      .catch(() => undefined)
+      .then(async () => {
+        if (enqueuedGeneration !== this.connectionGeneration) {
+          throw new ChromaMcpConnectionCancelledError('queued chroma-mcp mutation cancelled during shutdown');
+        }
+        return operation();
+      });
+
+    this.mutationTail = run.then(() => undefined, () => undefined);
+
+    try {
+      return await run;
+    } finally {
+      this.pendingMutationCalls -= 1;
+    }
+  }
+
+  private static isMutationTool(toolName: string): boolean {
+    return CHROMA_MUTATION_TOOL_PATTERN.test(toolName);
   }
 
   async isHealthy(): Promise<boolean> {
