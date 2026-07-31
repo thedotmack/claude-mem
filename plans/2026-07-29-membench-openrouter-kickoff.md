@@ -1,179 +1,192 @@
-# MemBench — Handoff Doc
+# MemBench × OpenRouter — Kickoff 🚀
 
-**Purpose:** everything a fresh Claude Code session needs to build MemBench.
-Written 2026-07-29, revised to center the fork-and-measure loop below.
+**For:** a fresh Claude Code session building MemBench from scratch.
+**Updated:** 2026-07-29 · **TL;DR version:** `plans/membench/OVERVIEW.md`
+
+**One question:** which model writes memory that actually helps later?
 
 ---
 
-## 1. The core loop (this is the benchmark)
+## 1. The loop (this IS the benchmark) 🔁
 
-> Take a transcript. Run claude-mem through it — parallel-hit all the models to get
-> every observation-set variant. Fork the session, perform a task, and see how many
-> tokens were used to perform that task, and whether the task was done successfully
-> or not.
-
-Concretely, per corpus item:
+> Take a transcript. All models observe it in parallel. Fork the session per
+> variant. Same task in every fork. Count tokens. Check success.
 
 ```
-                          ┌─ model A ─→ observations_A ─→ fork ─→ task ─→ {tokens_A, success_A}
-transcript ─→ obs prompt ─┼─ model B ─→ observations_B ─→ fork ─→ task ─→ {tokens_B, success_B}
-   (one)      (parallel)  ├─ model C ─→ observations_C ─→ fork ─→ task ─→ {tokens_C, success_C}
-                          └─ controls ──────────────────→ fork ─→ task ─→ {tokens_∅, success_∅}
+transcript ──→ all models observe it (parallel, via OpenRouter)
+                        │
+                        ▼
+        one fork per model's observation set
+        + 3 controls: none · oracle · shuffled
+                        │
+                        ▼
+        every fork performs the SAME task
+                        │
+                        ▼
+        📊 tokens used  +  ✅/❌ success
 ```
 
-1. **Transcript in.** A real working session (repo state pinned at the commit the
-   session ended on).
-2. **Parallel observation generation.** The same transcript + the production
-   observation prompt (`src/sdk/prompts.ts`) hits every candidate model via
-   OpenRouter concurrently. Each model yields its observation-set variant.
-3. **Fork the session.** For each variant: a fresh executor session on the same repo
-   at the same pinned state, with that variant injected in claude-mem's normal
-   context format (`/api/context/inject` shape). Same task prompt for every fork.
-4. **Perform the task.** Executor runs to completion, uninterrupted.
-5. **Measure two things.**
-   - **Tokens used** to perform the task (input + output; cost in dollars alongside).
-   - **Task success** — done or not, against a per-task, pre-written, mechanically
-     checkable definition wherever possible (tests pass / behavior present), judge
-     call only where it can't be mechanical.
+Step by step:
 
-The claim being tested: better observations → the fork finishes the same task with
-fewer tokens and/or higher success. The independent variable is *which model wrote
-the memory*; everything else is identical across forks.
+1. 📜 **Transcript in** — real session, repo pinned at the commit it ended on
+2. 🤖 **Parallel observe** — same transcript + production obs prompt
+   (`src/sdk/prompts.ts`) → every model, concurrently → one observation set each
+3. 🍴 **Fork** — fresh executor per variant, same repo state, memory injected in
+   claude-mem's normal format (`/api/context/inject` shape)
+4. 🏃 **Task** — identical prompt in every fork, runs to completion
+5. 📏 **Measure** — tokens used (+ $) and success (pre-written pass/fail check;
+   mechanical where possible, judge only where it can't be)
 
-**Controls per corpus item (these make the numbers mean something):**
-- **No-memory fork** — the floor. Every model's tokens/success is read against this.
-- **Oracle fork** — hand-written ideal notes; the ceiling. "Model X captured 71% of
-  the oracle's token savings" is the calibrated headline.
-- **Shuffled fork** — observations from a *different* transcript, to prove effects
-  come from content, not from "any plausible context primes the executor."
+**Claim under test:** better observations → same task done in fewer tokens
+and/or more successes. Only variable = who wrote the memory.
 
-Replication: executors are stochastic — k runs per fork (k≥3), report mean ± spread.
+## 2. Controls (what makes it believable) 🧪
 
-## 2. What ships (the runnable benchmark)
-
-The deliverable is not a report — it's a **runnable artifact**: transcripts, tasks,
-and the harness, such that anyone (including Alex Atallah's team) can execute the
-whole thing and reproduce the table.
-
-- **Corpus:** `corpus/<item-id>/` containing `transcript.*` (sanitized session),
-  `repo.lock` (repo URL + pinned commit), `task.md` (the task prompt), `success.md`
-  or `check.sh` (the pass/fail definition), provenance notes. Versioned and frozen
-  (content-hashed) per release.
-- **Harness:** one command runs the loop end-to-end —
-  generate variants (parallel, OpenRouter) → build forks → run tasks → emit
-  `results.jsonl` (one row per fork-run: item, model, run, tokens_in/out, cost_usd,
-  success, duration) + `summary.json` → render the scoreboard table.
-- **Artifacts per run:** every fork's full transcript and diff retained, so any
-  number can be audited down to the run that produced it.
-- Package shape: `membench/` in this repo, mirroring `swebench/`'s conventions
-  (Bun + TS, zero runtime deps, mock-provider offline tests, JSONL artifacts).
-
-## 3. Metrics
-
-**Primary (the scoreboard):**
-| Per model | Meaning |
+| Fork | Proves |
 |---|---|
-| Success rate | share of fork-runs completing the task, vs no-memory floor |
-| Tokens to done | mean tokens on successful runs, vs floor and oracle |
-| % of oracle savings | (floor − model) / (floor − oracle) on tokens |
-| Cost | real dollars (OpenRouter `usage.cost`) — observation-side and execution-side |
+| 🚫 **No memory** | the floor — what memory has to beat |
+| 🎯 **Oracle** (hand-written perfect notes) | the ceiling — "model X captured 71% of possible savings" |
+| 🔀 **Shuffled** (notes from a *different* session) | value comes from content, not "any context primes the agent" |
 
-**Diagnostics (recorded, never headlined):** observation count, observation tokens,
-parse/structure notes, turns, per-task breakdowns. Count and value are different
-metrics — count is a covariate here, full stop. XML/structure adherence is plumbing:
-if a model can't emit parseable observations from the prompt alone, use provider
-structured-output/JSON modes so its *content* competes anyway, and report the
-accommodation per row.
+Plus: **k≥3 runs per fork** (executors are stochastic) → report mean ± spread.
 
-## 4. Corpus sourcing (transcripts and tasks)
+## 3. Metrics 📊
 
-- **Transcripts:** claude-mem's own DB (`~/.claude-mem/claude-mem.db`) and Claude
-  Code transcript files — real sessions, sanitized (secrets/PII) before freezing.
-- **Tasks:** strongest source is **hindsight** — pick transcript/task pairs where the
-  *actual next session* on that project defines the task ("the future already
-  happened"), which kills task-authorship bias. Where the DB lacks a clean pair,
-  author the follow-up task but derive it from the repo's real next commit/issue
-  when possible. Every task states its success check at authoring time, before any
-  model runs.
-- Start small (5–10 items) to shake out the harness and produce Alex's cost numbers;
-  grow the corpus once the loop is proven.
+**Scoreboard (the story):**
 
-## 5. Partnership context (facts)
+| Metric | Meaning |
+|---|---|
+| ✅ Success rate | vs no-memory floor |
+| 🪙 Tokens to done | successful runs only, vs floor + oracle |
+| 🎯 % of oracle savings | `(floor − model) / (floor − oracle)` |
+| 💸 Cost | real dollars via OpenRouter `usage.cost` — obs side + exec side |
 
-- **Alex Atallah (OpenRouter co-founder) is donating credits** (X DM, Jul 26). His
-  asks: (1) **cite OpenRouter** in what's published; (2) **a cost estimate** — owed,
-  first deliverable. The loop makes this concrete: cost per corpus item =
-  N_models × (observation pass) + (N_models + 3 controls) × k runs × (executor pass).
-  Run 2–3 items end-to-end, read real `usage.cost` off every call, extrapolate, and
-  price the executor side both ways (through OpenRouter vs Claude Code defaults).
-- Strategic timing: Stripe reportedly exploring a ~$10B OpenRouter acquisition
-  (PYMNTS 2026).
-- Positioning: recall benchmarks (LongMemEval, LoCoMo) test finding planted facts.
-  MemBench tests whether the right things get written down and whether they make
-  future work cheaper and more successful. Different category; claude-mem is uniquely
-  positioned — it has real consecutive-session production data, a production
-  injection pipeline, and 50M+ sessions of fleet telemetry to corroborate lab
-  numbers.
+**Diagnostics (recorded, never headlined):** obs count · obs tokens · parse
+notes · turns · per-task splits.
 
-## 6. Candidate model pool (via OpenRouter)
+⚠️ **Count ≠ value.** Count is a covariate, full stop.
+⚠️ **XML adherence = plumbing.** If a model can't emit parseable XML from the
+prompt, use structured-output/JSON mode so its *content* still competes — note
+the accommodation per row. We benchmark what models *notice*, not tag discipline.
 
-`anthropic/claude-sonnet-4-6` · `anthropic/claude-haiku-4-5` (fleet-dominant, ~66%
-of sessions) · `qwen/qwen3.6-27b` · `deepseek/deepseek-v4-flash` (fleet
-over-performer) · `openai/gpt-oss-20b`/`120b` · `xiaomi/mimo-v2-flash:free`
-(current claude-mem OpenRouter default — 0% observer success in fleet data, so
-benchmarking it is also a product decision). Optionally 1–2 locally-served models
-for the constrained-decoding comparison. Pool, not a locked slate.
+## 4. What ships 📦
 
-## 7. Assets and constraints
+Not a report — a **runnable artifact**. Anyone (incl. OpenRouter's team) can
+re-run the whole thing and reproduce the table.
 
-- **Use production surfaces, don't reimplement:** observation prompt
-  (`src/sdk/prompts.ts`), parser (`src/sdk/parser.ts`), OpenRouter provider
-  conventions (`src/services/worker/OpenRouterProvider.ts`), injection format
-  (`/api/context/inject`).
-- **Reusable infra:** `swebench/` package on this branch — standalone OpenRouter
-  client with retry + real `usage.cost` capture, config resolution, process runner,
-  JSONL artifact pattern, mock-provider offline test pattern. Same package shape for
-  `membench/`.
-- **This remote environment blocks `openrouter.ai` and `huggingface.co`** (proxy 403),
-  no Docker. Build + offline-test here; all live inference (including the cost
-  probe) runs on a networked machine with the claude-mem worker up.
-- **Telemetry corroboration sources** (never score, only corroborate):
-  `observer_turn_rollup` (correct per-session source), `session_compressed` (fires
-  per pipeline *operation*, not per session — analysis trap, don't repeat),
-  `context_injected` (`tokens_saved_vs_naive`). Known caveats: ~20% field coverage
-  on counts, ~13% `unknown` model attribution, model-name fragmentation needs a
-  normalization map.
+- 📦 **Corpus** — `corpus/<item-id>/` with:
+  `transcript.*` (sanitized) · `repo.lock` (URL + pinned commit) · `task.md` ·
+  `check.sh` / `success.md` (pass/fail, written BEFORE any model runs) ·
+  provenance. Frozen + content-hashed per release.
+- ⚙️ **Harness** — `membench/` package, one command = full loop →
+  `results.jsonl` (one row per fork-run: item, model, run, tokens, cost,
+  success, duration) + `summary.json` + scoreboard render.
+- 🧾 **Audit trail** — every fork's full transcript + diff retained.
+- 🏗️ Package shape mirrors `swebench/`: Bun + TS, zero runtime deps,
+  mock-provider offline tests, JSONL artifacts.
 
-## 8. Design notes that informed the loop (background, not binding)
+## 5. Corpus sourcing 🌱
 
-A sequential-thinking pass played five designs through end-to-end (full analysis in
-this file's git history, commit `743946e`; older spec drafts in `plans/membench/` —
-reference material from a stressed session, not the plan). What survived and is
-folded in above: hindsight task-sourcing beats authored tasks; executor runs are the
-binding cost → a cheap **memory-only probe** (can an agent holding *only* the
-observation set answer what the task needs? scored correct/absent/**misleading**) is
-available as a screening layer before expensive fork runs and as a mechanism
-explainer; **misleading memory** (fabricated note → executor trusts it → wrong
-output) is worth tracking as a first-class outcome; multi-session compounding chains
-are the flagship *second* experiment once the single-fork loop separates models.
+- 📜 **Transcripts:** claude-mem's own DB (`~/.claude-mem/claude-mem.db`) +
+  Claude Code transcript files. Sanitize (secrets/PII) before freezing.
+- 🎯 **Tasks — hindsight first:** best tasks come from what the user *actually
+  did next* on that project (session N+1 defines the task). No authorship bias —
+  reality wrote the task. Fallback: author it, but derive from the repo's real
+  next commit/issue.
+- ✅ Success check written at authoring time, before any model runs.
+- 🌰 Start with **5–10 items** → shake out harness + get cost numbers → grow.
 
-## 9. Integrity commitments
+## 6. The OpenRouter deal 🤝
 
-1. Every published number reproducible from the open harness + corpus.
-2. All results published, **including where Claude models lose.**
-3. No silent metric or corpus changes; versioned everything.
-4. OpenRouter cited.
+- **Alex Atallah (OpenRouter co-founder) is donating credits** (X DM, Jul 26)
+- His asks: 1️⃣ **cite OpenRouter** in everything published · 2️⃣ **cost
+  estimate** — WE OWE THIS FIRST
+- 💸 Cost formula per corpus item:
+  `N_models × (obs pass) + (N_models + 3 controls) × k runs × (executor pass)`
+- How: run 2–3 items end-to-end → read real `usage.cost` off every call →
+  extrapolate → price executor side BOTH ways (through OpenRouter vs Claude
+  Code defaults) → send Alex the table
+- ⏰ Timing: Stripe reportedly eyeing ~$10B OpenRouter acquisition (PYMNTS 2026)
+- 🗺️ Positioning: recall benchmarks (LongMemEval, LoCoMo) = finding planted
+  facts. MemBench = did the right things get *written down*, and did they make
+  future work cheaper/better. Different category.
+
+## 7. Why claude-mem is uniquely positioned 🥇
+
+- Only system with **real session N → N+1 production data** (hindsight tasks)
+- Benchmarks the **actual product pipeline**, not a toy re-implementation
+- **50M+ sessions** of fleet telemetry to corroborate lab numbers
+
+## 8. Model pool (via OpenRouter) 🤖
+
+Pool, not locked slate:
+
+| Model | Why |
+|---|---|
+| `anthropic/claude-sonnet-4-6` | frontier |
+| `anthropic/claude-haiku-4-5` | fleet-dominant (~66% of sessions) |
+| `qwen/qwen3.6-27b` | open-weight mid |
+| `deepseek/deepseek-v4-flash` | fleet over-performer |
+| `openai/gpt-oss-20b` / `120b` | open-weight |
+| `xiaomi/mimo-v2-flash:free` | current claude-mem default — 0% observer success in fleet 👀 (product decision too) |
+| + 1–2 local models | optional: constrained-decoding comparison |
+
+## 9. Build with, not around 🔧
+
+**Use production surfaces, don't reimplement:**
+- Obs prompt → `src/sdk/prompts.ts`
+- Parser → `src/sdk/parser.ts`
+- OpenRouter conventions → `src/services/worker/OpenRouterProvider.ts`
+- Injection format → `/api/context/inject`
+
+**Steal from `swebench/`** (this branch): OpenRouter client w/ retry + real
+`usage.cost` capture · config resolution · process runner · JSONL artifacts ·
+mock-provider offline test pattern.
+
+## 10. Environment gotchas ⚠️
+
+- 🚧 **This remote env BLOCKS `openrouter.ai` + `huggingface.co`** (proxy 403),
+  no Docker → build + offline-test here, **live inference on Alex's machine**
+  (with claude-mem worker running)
+- 📊 Telemetry corroboration (never scores): `observer_turn_rollup` = correct
+  per-session source · `session_compressed` fires **per operation, NOT per
+  session** (known analysis trap!) · `context_injected` has
+  `tokens_saved_vs_naive`
+- Telemetry caveats: ~20% field coverage on counts · ~13% `unknown` model ·
+  name fragmentation needs a normalization map
+
+## 11. Background (informed the loop, not binding) 📚
+
+Five designs were played through end-to-end (git history of this file, commit
+`743946e`; older specs in `plans/membench/` = reference from a stressed session,
+not the plan). What survived, already folded in above:
+
+- 🕰️ Hindsight task-sourcing > authored tasks
+- 💰 Executor runs = the binding cost → optional cheap **memory-only probe**
+  (agent gets ONLY the obs set, answers what the task needs; scored
+  correct/absent/**misleading**) as a screening layer + mechanism explainer
+- 🤥 **Misleading memory** (fabricated note → executor trusts it → wrong
+  output) = first-class outcome worth tracking
+- 🔗 Multi-session compounding chains = flagship experiment #2, AFTER the
+  single-fork loop separates models
+
+## 12. Integrity (non-negotiable) 🔒
+
+1. Every published number reproducible from open harness + corpus
+2. Publish everything — **including where Claude models lose**
+3. No silent metric/corpus changes; version everything
+4. OpenRouter cited
 
 ---
 
-### Paste-ready kickoff prompt for the new session
+## Kickoff prompt (paste into new session) ▶️
 
-> Read `plans/2026-07-29-membench-openrouter-kickoff.md`. Build the §1 loop as a
-> runnable benchmark per §2: `membench/` package mirroring `swebench/` conventions —
-> corpus format, parallel observation generation via OpenRouter, session forks with
-> injected variants + the three controls, task execution, `results.jsonl` +
-> scoreboard. Offline-test everything with mock providers (live inference happens on
-> my machine, not in this environment). Start with a 5-item corpus sourced per §4.
-> First deliverable after the harness dry-runs: the cost-estimate table for Alex
-> Atallah (§5), priced both executor-routing ways. Surface decisions needing my
-> input as you hit them.
+> Read `plans/2026-07-29-membench-openrouter-kickoff.md`. Build the §1 loop as
+> a runnable benchmark per §4: `membench/` package mirroring `swebench/`
+> conventions — corpus format, parallel observation generation via OpenRouter,
+> session forks with injected variants + the three controls, task execution,
+> `results.jsonl` + scoreboard. Offline-test everything with mock providers
+> (live inference happens on my machine, not in this environment). Start with a
+> 5-item corpus sourced per §5. First deliverable after the harness dry-runs:
+> the cost-estimate table for Alex Atallah (§6), priced both executor-routing
+> ways. Surface decisions needing my input as you hit them.
