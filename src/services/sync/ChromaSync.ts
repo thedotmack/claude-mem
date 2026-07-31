@@ -12,6 +12,7 @@ import type { SessionStore as SessionStoreType } from '../sqlite/SessionStore.js
 import { logger } from '../../utils/logger.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import type * as SqliteFilesModule from '../sqlite/observations/files.js';
 
 type SessionStore = SessionStoreType;
@@ -121,9 +122,19 @@ export class ChromaSync {
     }
 
     const chromaMcp = ChromaMcpManager.getInstance();
+    // Request the configured EF at creation time (e5 migration, plan Change
+    // 3). chroma-mcp persists it into the collection configuration, so the
+    // name only matters for NEW collections; existing ones keep whatever EF
+    // they were created with. 'default' reproduces the pre-migration MiniLM
+    // behavior. Note: chromadb's stock ST EF adds no query:/passage: e5
+    // prefixes — the pilot measured plain e5 AHEAD of prefixed (+3 pp), so
+    // prefixes are deliberately NOT added anywhere in the e5 path.
+    const embeddingFunctionName =
+      SettingsDefaultsManager.get('CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION') || 'default';
     try {
       await chromaMcp.callTool('chroma_create_collection', {
-        collection_name: this.collectionName
+        collection_name: this.collectionName,
+        embedding_function_name: embeddingFunctionName
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

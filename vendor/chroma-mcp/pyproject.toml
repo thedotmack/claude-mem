@@ -1,0 +1,61 @@
+[project]
+name = "chroma-mcp"
+version = "0.2.6"
+description = "Chroma MCP Server - Vector Database Integration for LLM Applications"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+
+keywords = ["chroma", "mcp", "vector-database", "llm", "embeddings"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Software Development :: Libraries :: Python Modules"
+]
+dependencies = [
+    "chromadb>=1.0.16",
+    "cohere>=5.14.2",
+    "httpx>=0.28.1",
+    "mcp[cli]==1.6.0",
+    "openai>=1.70.0",
+    "pillow>=11.1.0",
+    "python-dotenv>=0.19.0",
+    # claude-mem fork: required (not optional) so the `e5-multilingual`
+    # embedding-function factory in server.py can construct
+    # SentenceTransformerEmbeddingFunction without a separate install step.
+    "sentence-transformers>=4.1.0",
+    "typing-extensions>=4.13.1",
+    "voyageai>=0.3.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/chroma-core/chroma-mcp"
+Documentation = "https://github.com/chroma-core/chroma-mcp#readme"
+Issues = "https://github.com/chroma-core/chroma-mcp/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+chroma-mcp = "chroma_mcp:main"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.3.5",
+    "pytest-asyncio>=0.26.0",
+    "pytest-cov>=4.1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+select = ["E", "F", "B", "I"]
+ignore = []
+line-length = 100
