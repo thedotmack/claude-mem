@@ -559,6 +559,43 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     }
   },
   {
+    name: 'facts',
+    description: 'List active semantic facts — durable project knowledge distilled from observations (compact, ~30 tokens/line). Params: project, kind, query (FTS over facts), limit',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: 'Filter by project name' },
+        kind: { type: 'string', description: 'Filter by fact kind: project_convention, architecture, environment, user_preference, decision_rationale' },
+        query: { type: 'string', description: 'Full-text search over facts' },
+        limit: { type: 'number', description: 'Max results (default 50)' }
+      },
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      return await callWorker('/api/facts', { query: args });
+    }
+  },
+  {
+    name: 'get_facts',
+    description: 'Fetch full details for semantic fact IDs (including source observation provenance). Actively recalling a fact strengthens its memory trace. Params: ids (array of fact IDs, required), project',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: {
+          type: 'array',
+          items: { type: 'number' },
+          description: 'Array of fact IDs to fetch (required)'
+        },
+        project: { type: 'string', description: 'Filter by project name' }
+      },
+      required: ['ids'],
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      return await callWorker('/api/facts/batch', { body: args });
+    }
+  },
+  {
     name: 'session_start_context',
     description: 'Render the exact worker-mode SessionStart context for a project. Calls /api/context/inject and returns the same text hooks inject at startup. Params: project OR projects, platformSource, full, colors.',
     inputSchema: {

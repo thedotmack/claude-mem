@@ -23,6 +23,7 @@ export type Component =
   | 'CLOUD_SYNC'
   | 'CONFIG'
   | 'CONSOLE'
+  | 'CONSOLIDATION'
   | 'CURSOR'
   | 'DB'
   | 'DEDUP'

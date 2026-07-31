@@ -20,6 +20,8 @@ import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
 import { dedupJudgeEnabled, applyDedupJudge } from '../../reinforcement/dedup-judge.js';
+import { supersedeObservation } from '../../reinforcement/persist.js';
+import { maybeConsolidate } from '../../reinforcement/consolidation-judge.js';
 
 type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input'>;
 
@@ -405,9 +407,16 @@ export async function processAgentResponse(
   // into existing rows (reinforce instead of insert). Default off; fully
   // defensive — any failure stores the original batch unchanged.
   let observationsToStore = labeledObservations;
+  const conflicts: Array<{ observation: (typeof labeledObservations)[number]; targetId: number; rationale: string }> = [];
   if (dedupJudgeEnabled() && labeledObservations.length > 0) {
     try {
-      observationsToStore = await applyDedupJudge(sessionStore.db, labeledObservations, context.project);
+      observationsToStore = await applyDedupJudge(
+        sessionStore.db,
+        labeledObservations,
+        context.project,
+        undefined,
+        (info) => conflicts.push(info),
+      );
     } catch (error) {
       logger.warn('DEDUP', 'Dedup pass failed — storing all observations', {}, error instanceof Error ? error : new Error(String(error)));
     }
@@ -430,12 +439,39 @@ export async function processAgentResponse(
     session.pendingAgentType = null;
   }
 
+  // Phase 6 — reconsolidation: a kept observation that contradicted an existing
+  // one supersedes it now that it has a real id (observationIds align with the
+  // kept batch order). Best-effort: a missed supersession leaves both rows
+  // visible, which is the pre-Phase-6 behaviour.
+  for (const conflict of conflicts) {
+    try {
+      const keptIndex = observationsToStore.indexOf(conflict.observation);
+      const newId = keptIndex >= 0 ? result.observationIds[keptIndex] : undefined;
+      if (newId == null) continue;
+      if (supersedeObservation(sessionStore.db, conflict.targetId, newId)) {
+        logger.info('DEDUP', `#${conflict.targetId} superseded by #${newId} | ${conflict.rationale}`);
+      }
+    } catch (error) {
+      logger.warn('DEDUP', 'Supersede failed — both rows kept', {}, error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
   logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
     sessionId: session.sessionDbId,
     memorySessionId: session.memorySessionId
   });
 
   session.lastSummaryStored = result.summaryId !== null;
+
+  // Semantic memory layer (opt-in): after a session's summary is stored,
+  // episodes are distilled into durable semantic facts. Fire-and-forget and
+  // fully defensive — consolidation costs one LLM call per run and must never
+  // disturb the storage pipeline.
+  if (result.summaryId !== null) {
+    void maybeConsolidate(sessionStore.db, context.project).catch((error) => {
+      logger.warn('CONSOLIDATION', 'Consolidation trigger failed', { project: context.project }, error instanceof Error ? error : new Error(String(error)));
+    });
+  }
 
   // Telemetry: counts, enums, and REAL usage only (lastUsage is never an
   // estimate — providers leave it null when the API gave no usage split).

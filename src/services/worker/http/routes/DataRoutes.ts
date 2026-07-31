@@ -16,6 +16,9 @@ import { validateBody } from '../middleware/validateBody.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
+import { recordRetrieved } from '../../../reinforcement/persist.js';
+import { getFactsByIds, recordFactsRetrieved } from '../../../sqlite/facts/store.js';
+import { consolidationEnabled, runConsolidation } from '../../../reinforcement/consolidation-judge.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
 import { assertCanonicalDecimal, type ContentKind } from '../../../sync/CanonicalContent.js';
 
@@ -60,6 +63,16 @@ const sdkSessionsBatchSchema = z.object({
   memorySessionIds: stringArrayLike,
 }).passthrough();
 
+const factsBatchSchema = z.object({
+  ids: integerArrayLike,
+  project: z.string().optional(),
+}).passthrough();
+
+const factsConsolidateSchema = z.object({
+  project: z.string().min(1),
+  force: z.boolean().optional(),
+}).passthrough();
+
 const importSchema = z.object({
   sessions: z.array(z.unknown()).optional(),
   summaries: z.array(z.unknown()).optional(),
@@ -87,6 +100,9 @@ export class DataRoutes extends BaseRouteHandler {
     app.get('/api/observation/:id', this.handleGetObservationById.bind(this));
     app.get('/api/observations/by-file', this.handleGetObservationsByFile.bind(this));
     app.post('/api/observations/batch', validateBody(observationsBatchSchema), this.handleGetObservationsByIds.bind(this));
+    app.get('/api/facts', this.handleGetFacts.bind(this));
+    app.post('/api/facts/batch', validateBody(factsBatchSchema), this.handleGetFactsByIds.bind(this));
+    app.post('/api/facts/consolidate', validateBody(factsConsolidateSchema), this.handleConsolidateFacts.bind(this));
     app.get('/api/session/:id', this.handleGetSessionById.bind(this));
     app.post('/api/sdk-sessions/batch', validateBody(sdkSessionsBatchSchema), this.handleGetSdkSessionsByIds.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
@@ -173,7 +189,100 @@ export class DataRoutes extends BaseRouteHandler {
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
     const observations = store.getObservationsByIds(ids, { orderBy, limit, project, platformSource });
 
+    // ACT-R retrieval practice: the agent actively recalled these memories, so
+    // their traces get a real reinforcement date (same-day idempotent — a chatty
+    // agent can't inflate a note by re-fetching it). Best-effort: a missed
+    // reinforcement costs a little ranking accuracy, never a response.
+    try {
+      recordRetrieved(store.db, observations.map(o => o.id));
+    } catch (error) {
+      logger.debug('DB', 'Retrieval reinforcement skipped', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
     res.json(observations);
+  });
+
+  /**
+   * Semantic memory layer — compact listing of active facts for the MCP
+   * `facts` tool (~30 tokens/line). Optional `query` runs the facts FTS
+   * index; `kind` filters by fact kind. MCP-shaped response, like /api/search.
+   */
+  private handleGetFacts = this.wrapHandler((req: Request, res: Response): void => {
+    const project = DataRoutes.firstString(req.query.project);
+    const query = DataRoutes.firstString(req.query.query) ?? DataRoutes.firstString(req.query.q);
+    const kind = DataRoutes.firstString(req.query.kind);
+    const parsedLimit = parseInt(DataRoutes.firstString(req.query.limit) ?? '', 10);
+    const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 100) : 50;
+
+    const search = this.dbManager.getSessionSearch();
+    const facts = search.searchFacts(query, { project, kind, limit });
+
+    const lines: string[] = [];
+    lines.push(facts.length > 0 ? `${facts.length} active fact(s)` : 'No active facts');
+    lines.push('');
+    for (const fact of facts) {
+      lines.push(`#${fact.id} [${fact.kind}] ${fact.fact}`);
+    }
+
+    res.json({
+      content: [{
+        type: 'text' as const,
+        text: lines.join('\n')
+      }]
+    });
+  });
+
+  /**
+   * Semantic memory layer — full fact rows by id for the MCP `get_facts`
+   * tool. Retrieval practice: actively recalling a fact appends a real
+   * reinforcement date (same-day idempotent), mirroring
+   * /api/observations/batch. Best-effort: a missed reinforcement costs a
+   * little ranking accuracy, never a response.
+   */
+  private handleGetFactsByIds = this.wrapHandler((req: Request, res: Response): void => {
+    const { ids, project } = req.body as z.infer<typeof factsBatchSchema>;
+
+    if (ids.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+    let facts = getFactsByIds(store.db, ids);
+    if (project) {
+      facts = facts.filter(f => f.project === project);
+    }
+
+    try {
+      recordFactsRetrieved(store.db, facts.map(f => f.id));
+    } catch (error) {
+      logger.debug('DB', 'Fact retrieval reinforcement skipped', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    res.json(facts);
+  });
+
+  /**
+   * Semantic memory layer — manual consolidation trigger for a project.
+   * Throttled unless `force` is set; still master-gated by
+   * CLAUDE_MEM_CONSOLIDATION_ENABLED. Never throws: a failed pass reports as
+   * a NOOP summary.
+   */
+  private handleConsolidateFacts = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { project, force } = req.body as z.infer<typeof factsConsolidateSchema>;
+
+    if (!consolidationEnabled()) {
+      res.json({ ran: false, reason: 'CLAUDE_MEM_CONSOLIDATION_ENABLED is not true', added: 0, updated: 0, deleted: 0, noop: false, rejected: [] });
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const summary = await runConsolidation(store.db, project, undefined, new Date(), { force: force === true });
+    res.json(summary);
   });
 
   private handleGetSessionById = this.wrapHandler((req: Request, res: Response): void => {

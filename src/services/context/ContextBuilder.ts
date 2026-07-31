@@ -5,16 +5,18 @@ import { existsSync, unlinkSync } from 'fs';
 import { Database } from 'bun:sqlite';
 import { DB_PATH } from '../../shared/paths.js';
 import { recordSurfaced } from '../reinforcement/persist.js';
+import { recordFactSurfaced } from '../sqlite/facts/store.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
 
-import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
+import type { ContextInput, ContextConfig, Observation, SemanticFact, SessionSummary } from './types.js';
 import { loadContextConfig } from './ContextConfigLoader.js';
 import { calculateTokenEconomics } from './TokenCalculator.js';
 import {
   queryObservationsMulti,
+  queryActiveFactsMulti,
   querySummariesMulti,
   getPriorSessionMessages,
   prepareSummariesForTimeline,
@@ -22,6 +24,7 @@ import {
   getFullObservationIds,
 } from './ObservationCompiler.js';
 import { renderHeader } from './sections/HeaderRenderer.js';
+import { renderFactsBlock } from './sections/FactsRenderer.js';
 import { renderTimeline } from './sections/TimelineRenderer.js';
 import { shouldShowSummary, renderSummaryFields } from './sections/SummaryRenderer.js';
 import { renderPreviouslySection, renderFooter } from './sections/FooterRenderer.js';
@@ -77,14 +80,15 @@ function initializeDatabase(): Database | null {
  */
 const SURFACING_WRITE_TIMEOUT_MS = 250;
 
-function recordSurfacedBestEffort(observationIds: number[]): void {
-  if (observationIds.length === 0) return;
+function recordSurfacedBestEffort(observationIds: number[], factIds: number[] = []): void {
+  if (observationIds.length === 0 && factIds.length === 0) return;
 
   let writable: Database | null = null;
   try {
     writable = new Database(DB_PATH, { readonly: false, create: false });
     writable.run(`PRAGMA busy_timeout = ${SURFACING_WRITE_TIMEOUT_MS}`);
-    recordSurfaced(writable, observationIds);
+    if (observationIds.length > 0) recordSurfaced(writable, observationIds);
+    if (factIds.length > 0) recordFactSurfaced(writable, factIds);
   } catch (error: unknown) {
     logger.debug('DB', 'Surfacing count skipped', {
       error: error instanceof Error ? error.message : String(error),
@@ -102,6 +106,7 @@ function buildContextOutput(
   project: string,
   observations: Observation[],
   summaries: SessionSummary[],
+  facts: SemanticFact[],
   config: ContextConfig,
   cwd: string,
   sessionId: string | undefined,
@@ -112,6 +117,9 @@ function buildContextOutput(
   const economics = calculateTokenEconomics(observations);
 
   output.push(...renderHeader(project, economics, config, forHuman));
+
+  // Semantic memory layer: durable knowledge sits above the episode timeline.
+  output.push(...renderFactsBlock(facts));
 
   const displaySummaries = summaries.slice(0, config.sessionCount);
   const summariesForTimeline = prepareSummariesForTimeline(displaySummaries, summaries);
@@ -225,8 +233,9 @@ export async function generateContextWithStats(
     const queryProjects = projects.length > 1 ? projects : [project];
     const observations = queryObservationsMulti(db, queryProjects, config, platformSource);
     const summaries = querySummariesMulti(db, queryProjects, config, platformSource);
+    const facts = queryActiveFactsMulti(db, queryProjects, config);
 
-    if (observations.length === 0 && summaries.length === 0) {
+    if (observations.length === 0 && summaries.length === 0 && facts.length === 0) {
       return { text: renderEmptyState(project, forHuman), stats: null };
     }
 
@@ -234,6 +243,7 @@ export async function generateContextWithStats(
       project,
       observations,
       summaries,
+      facts,
       config,
       cwd,
       input?.session_id,
@@ -244,7 +254,7 @@ export async function generateContextWithStats(
     // previews (forHuman) or full dumps — so relevance_count reflects genuine
     // context delivery and can feed back into ranking.
     if (!forHuman && !input?.full) {
-      recordSurfacedBestEffort(observations.map(o => o.id));
+      recordSurfacedBestEffort(observations.map(o => o.id), facts.map(f => f.id));
     }
 
     return { text: output, stats: buildInjectStats(observations, summaries, Boolean(input?.full)) };

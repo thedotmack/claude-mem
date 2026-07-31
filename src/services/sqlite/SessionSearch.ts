@@ -15,6 +15,7 @@ import {
 } from './types.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
 import { applySqliteConnectionPragmas } from './connection.js';
+import type { SemanticFactRow } from './facts/store.js';
 
 export class SessionSearch {
   private db: Database;
@@ -34,9 +35,72 @@ export class SessionSearch {
     this._fts5Available = this.isFts5Available();
 
     this.ensureFTSTables();
+    this.ensureFactsFTSTable();
   }
 
   private _fts5Available: boolean;
+
+  /**
+   * Semantic memory layer — facts get their own FTS5 table (separate guard
+   * from ensureFTSTables, whose early-return on existing observations_fts
+   * would otherwise strand databases created before schema v53). Skipped
+   * silently on pre-v53 databases and platforms without FTS5.
+   */
+  private ensureFactsFTSTable(): void {
+    const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('semantic_facts', 'semantic_facts_fts')").all() as TableNameRow[];
+    const names = new Set(tables.map(t => t.name));
+
+    if (!names.has('semantic_facts') || names.has('semantic_facts_fts')) {
+      return;
+    }
+
+    if (!this._fts5Available) {
+      return;
+    }
+
+    try {
+      this.createFactsFTSTableAndTriggers();
+      logger.info('DB', 'Created semantic_facts_fts table');
+    } catch (error) {
+      logger.warn('DB', 'semantic_facts FTS creation failed — fact search unavailable', {}, error instanceof Error ? error : undefined);
+    }
+  }
+
+  private createFactsFTSTableAndTriggers(): void {
+    this.db.run(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS semantic_facts_fts USING fts5(
+        fact,
+        kind,
+        content='semantic_facts',
+        content_rowid='id'
+      );
+    `);
+
+    this.db.run(`
+      INSERT INTO semantic_facts_fts(rowid, fact, kind)
+      SELECT id, fact, kind
+      FROM semantic_facts;
+    `);
+
+    this.db.run(`
+      CREATE TRIGGER IF NOT EXISTS semantic_facts_ai AFTER INSERT ON semantic_facts BEGIN
+        INSERT INTO semantic_facts_fts(rowid, fact, kind)
+        VALUES (new.id, new.fact, new.kind);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS semantic_facts_ad AFTER DELETE ON semantic_facts BEGIN
+        INSERT INTO semantic_facts_fts(semantic_facts_fts, rowid, fact, kind)
+        VALUES('delete', old.id, old.fact, old.kind);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS semantic_facts_au AFTER UPDATE ON semantic_facts BEGIN
+        INSERT INTO semantic_facts_fts(semantic_facts_fts, rowid, fact, kind)
+        VALUES('delete', old.id, old.fact, old.kind);
+        INSERT INTO semantic_facts_fts(rowid, fact, kind)
+        VALUES (new.id, new.fact, new.kind);
+      END;
+    `);
+  }
 
   private ensureFTSTables(): void {
     const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all() as TableNameRow[];
@@ -361,6 +425,73 @@ export class SessionSearch {
 
     logger.warn('DB', 'Text search unavailable: ChromaDB disabled and FTS5 not available');
     return [];
+  }
+
+  /**
+   * Semantic memory layer — fact search over `semantic_facts_fts`. Active
+   * facts only by default (superseded/invalidated rows stay searchable
+   * history but drop out, like they drop out of injection). Without a query,
+   * lists active facts newest-first (the MCP `facts` tool's compact listing).
+   */
+  searchFacts(
+    query: string | undefined,
+    options: { project?: string; limit?: number; offset?: number; kind?: string } = {},
+  ): SemanticFactRow[] {
+    const params: any[] = [];
+    const { limit = 50, offset = 0 } = options;
+
+    const conditions: string[] = ['f.superseded_by IS NULL', 'f.invalidated_at IS NULL'];
+    if (options.project) {
+      conditions.push('f.project = ?');
+      params.push(options.project);
+    }
+    if (options.kind) {
+      conditions.push('f.kind = ?');
+      params.push(options.kind);
+    }
+    const whereClause = conditions.join(' AND ');
+
+    if (!query) {
+      const sql = `
+        SELECT f.*
+        FROM semantic_facts f
+        WHERE ${whereClause}
+        ORDER BY f.created_at_epoch DESC
+        LIMIT ? OFFSET ?
+      `;
+      params.push(limit, offset);
+      try {
+        return this.db.prepare(sql).all(...params) as SemanticFactRow[];
+      } catch {
+        return []; // pre-v53 database
+      }
+    }
+
+    if (!this._fts5Available) {
+      logger.warn('DB', 'Fact text search unavailable: FTS5 not available');
+      return [];
+    }
+
+    const sql = `
+      SELECT f.*
+      FROM semantic_facts f
+      JOIN semantic_facts_fts ON semantic_facts_fts.rowid = f.id
+      WHERE semantic_facts_fts MATCH ?
+        AND ${whereClause}
+      ORDER BY semantic_facts_fts.rank ASC
+      LIMIT ? OFFSET ?
+    `;
+
+    const escapedQuery = '"' + query.replace(/"/g, '""') + '"';
+    params.unshift(escapedQuery);
+    params.push(limit, offset);
+
+    try {
+      return this.db.prepare(sql).all(...params) as SemanticFactRow[];
+    } catch (error) {
+      logger.warn('DB', 'FTS5 fact search failed', {}, error instanceof Error ? error : undefined);
+      return [];
+    }
   }
 
   findByConcept(concept: string, options: SearchOptions = {}): ObservationSearchResult[] {
