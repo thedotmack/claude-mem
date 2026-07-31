@@ -32,10 +32,14 @@ Step by step:
 2. 🤖 **Parallel observe** — same transcript + production obs prompt
    (`src/sdk/prompts.ts`) → every model, concurrently → one observation set each
 3. 🍴 **Fork** — fresh executor per variant, same repo state, memory injected in
-   claude-mem's normal format (`/api/context/inject` shape)
+   claude-mem's normal format (`/api/context/inject` shape) **AND** the variant
+   loaded into a claude-mem worker so the **mem-search skill works live** in the
+   fork (search burden is a metric — see §3)
 4. 🏃 **Task** — identical prompt in every fork, runs to completion
-5. 📏 **Measure** — tokens used (+ $) and success (pre-written pass/fail check;
-   mechanical where possible, judge only where it can't be)
+5. 📏 **Measure** — tokens used (+ $), success (pre-written pass/fail check;
+   mechanical where possible, judge only where it can't be), **mem-search calls**
+   (`search`/`timeline`/`get_observations` per run), **drift flag** (scope check
+   of the diff vs `task.md`)
 
 **Claim under test:** better observations → same task done in fewer tokens
 and/or more successes. Only variable = who wrote the memory.
@@ -60,9 +64,15 @@ Plus: **k≥3 runs per fork** (executors are stochastic) → report mean ± spre
 | 🪙 Tokens to done | successful runs only, vs floor + oracle |
 | 🎯 % of oracle savings | `(floor − model) / (floor − oracle)` |
 | 💸 Cost | real dollars via OpenRouter `usage.cost` — obs side + exec side |
+| 🔍 Search burden | mem-search calls per run, by observer model — high burden = injected memory wasn't sufficient/well-prioritized, the executor had to dig |
+| 🌀 Drift rate | share of runs doing out-of-scope work (new features / unexpected work), judge-flagged vs `task.md` — check correlation with misleading/fabricated observations |
 
 **Diagnostics (recorded, never headlined):** obs count · obs tokens · parse
 notes · turns · per-task splits.
+
+**Research questions → metrics map:** see `plans/membench/README.md` ("The
+questions we're answering") — the harness must emit `mem_search_calls` and
+`drift_flag` per row in `results.jsonl` to answer Q3–Q5.
 
 ⚠️ **Count ≠ value.** Count is a covariate, full stop.
 ⚠️ **XML adherence = plumbing.** If a model can't emit parseable XML from the
