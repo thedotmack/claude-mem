@@ -90,7 +90,7 @@ Everything else (obs count, XML parsing, tags) = diagnostics. Not the story.
 2. Paste the kickoff prompt (bottom of
    `plans/2026-07-29-membench-openrouter-kickoff.md`)
 3. It builds `membench/` + 5-item corpus, offline-tested
-4. Live cost probe runs on **your machine** (this remote env blocks openrouter.ai)
+4. Live cost probe runs on **a local machine** (remote Claude Code envs block openrouter.ai)
 5. Send Alex the cost table 💸
 
 ## Don't forget ⚠️

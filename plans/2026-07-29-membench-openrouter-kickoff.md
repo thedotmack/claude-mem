@@ -1,7 +1,7 @@
 # MemBench × OpenRouter — Kickoff 🚀
 
-**For:** a fresh Claude Code session building MemBench from scratch.
-**Updated:** 2026-07-29 · **TL;DR version:** `plans/membench/OVERVIEW.md`
+**For:** anyone building MemBench from scratch.
+**TL;DR version:** `plans/membench/README.md`
 
 **One question:** which model writes memory that actually helps later?
 
@@ -149,15 +149,16 @@ Pool, not locked slate:
 - OpenRouter conventions → `src/services/worker/OpenRouterProvider.ts`
 - Injection format → `/api/context/inject`
 
-**Steal from `swebench/`** (this branch): OpenRouter client w/ retry + real
-`usage.cost` capture · config resolution · process runner · JSONL artifacts ·
-mock-provider offline test pattern.
+**Steal from the `swebench/` package in this repo:** OpenRouter client w/ retry
++ real `usage.cost` capture · config resolution · process runner · JSONL
+artifacts · mock-provider offline test pattern.
 
 ## 10. Environment gotchas ⚠️
 
-- 🚧 **This remote env BLOCKS `openrouter.ai` + `huggingface.co`** (proxy 403),
-  no Docker → build + offline-test here, **live inference on Alex's machine**
-  (with claude-mem worker running)
+- 🚧 **Remote Claude Code environments block `openrouter.ai` + `huggingface.co`**
+  (network policy, proxy 403) and lack Docker → build + offline-test in remote
+  sessions; **run all live inference on a local machine** (with the claude-mem
+  worker running)
 - 📊 Telemetry corroboration (never scores): `observer_turn_rollup` = correct
   per-session source · `session_compressed` fires **per operation, NOT per
   session** (known analysis trap!) · `context_injected` has
@@ -165,20 +166,19 @@ mock-provider offline test pattern.
 - Telemetry caveats: ~20% field coverage on counts · ~13% `unknown` model ·
   name fragmentation needs a normalization map
 
-## 11. Background (informed the loop, not binding) 📚
+## 11. Design principles + future extensions 📚
 
-Five designs were played through end-to-end (git history of this file, commit
-`743946e`; older specs in `plans/membench/` = reference from a stressed session,
-not the plan). What survived, already folded in above:
-
-- 🕰️ Hindsight task-sourcing > authored tasks
-- 💰 Executor runs = the binding cost → optional cheap **memory-only probe**
+- 🕰️ Hindsight task-sourcing > authored tasks (real next-session work defines
+  the task; nobody's imagination biases it)
+- 💰 Executor runs are the binding cost → optional cheap **memory-only probe**
   (agent gets ONLY the obs set, answers what the task needs; scored
-  correct/absent/**misleading**) as a screening layer + mechanism explainer
+  correct/absent/**misleading**) as a screening layer before expensive fork
+  runs, and as a mechanism explainer
 - 🤥 **Misleading memory** (fabricated note → executor trusts it → wrong
   output) = first-class outcome worth tracking
-- 🔗 Multi-session compounding chains = flagship experiment #2, AFTER the
-  single-fork loop separates models
+- 🔗 Multi-session compounding chains (each model's memory feeds its own next
+  episode; measure decision drift over episodes) = flagship experiment #2,
+  AFTER the single-fork loop separates models
 
 ## 12. Integrity (non-negotiable) 🔒
 
@@ -196,7 +196,7 @@ not the plan). What survived, already folded in above:
 > conventions — corpus format, parallel observation generation via OpenRouter,
 > session forks with injected variants + the three controls, task execution,
 > `results.jsonl` + scoreboard. Offline-test everything with mock providers
-> (live inference happens on my machine, not in this environment). Start with a
+> (live inference happens on my local machine, not in a remote session). Start with a
 > 5-item corpus sourced per §5. First deliverable after the harness dry-runs:
 > the cost-estimate table for Alex Atallah (§6), priced both executor-routing
 > ways. Surface decisions needing my input as you hit them.
