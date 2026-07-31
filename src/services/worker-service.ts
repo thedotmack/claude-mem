@@ -823,6 +823,41 @@ export class WorkerService implements WorkerRef {
         chromaMcpManager: this.chromaMcpManager || undefined
       }),
       gracefulDeadlineMs: getPlatformTimeout(10000),
+      // Backstop for the chroma-mcp tree-kill that performGracefulShutdown runs
+      // second-to-last, behind the session drain. Idempotent, so it is safe to
+      // run while the abandoned graceful promise is still in flight on the
+      // deadline path: ChromaMcpManager.stop() memoizes, so a concurrent caller
+      // joins the teardown already running rather than starting a second one,
+      // and once no client/transport/prewarm child is left it early-returns.
+      //
+      // Chroma only, and deliberately so: this hook runs BEFORE the restart
+      // handoff (the successor must not race a live predecessor chroma for the
+      // writer lock), and the supervisor cascade cannot safely run there —
+      // it holds the spawn gate for its whole duration. That half is
+      // reapProcessRegistry below.
+      reapSubprocesses: async () => {
+        if (this.chromaMcpManager) {
+          await this.chromaMcpManager.stop({ terminal: true });
+        }
+      },
+      // The rest of the managed children (SDK trees, mcp servers), reaped after
+      // the handoff. Idempotent: Supervisor.stop() memoizes via stopPromise, so
+      // this is safe even while the abandoned performGracefulShutdown is still
+      // in flight toward the same call.
+      reapProcessRegistry: () => getSupervisor().stop(),
+      reapDeadlineMs: getPlatformTimeout(5000),
+      // Must clear the cascade's own waits or the reap truncates mid-kill and
+      // skips its unregister/persist pass. POSIX needs ~6s (waitForExit 5s +
+      // 1s). Windows is worse and not fixed-boundable: signalProcess shells out
+      // to taskkill per child with a 10s timeout (HOOK_TIMEOUTS.
+      // POWERSHELL_COMMAND), sequentially, so worst case scales with the number
+      // of stubborn children. 10s here (20s on Windows via getPlatformTimeout)
+      // covers the realistic case — taskkill typically returns in <1s — and
+      // costs nothing when the cascade finishes early, since this is a ceiling
+      // rather than a sleep. A pathological Windows cascade is deliberately
+      // truncated: the children have already been signaled by then, and the
+      // successor's startup pruneDeadEntries() repairs the registry.
+      reapRegistryDeadlineMs: getPlatformTimeout(10000),
       restartHandoff: {
         port: getWorkerPort(),
         portFreeTimeoutMs: getPlatformTimeout(5000),

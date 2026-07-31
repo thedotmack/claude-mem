@@ -159,6 +159,13 @@ describe('GracefulShutdown', () => {
       expect(callOrder.indexOf('mcpClient.close')).toBeLessThan(callOrder.indexOf('dbManager.close'));
 
       expect(callOrder.indexOf('chromaMcpManager.stop')).toBeLessThan(callOrder.indexOf('dbManager.close'));
+
+      // Production wiring, not just the seam: this is a process-exit teardown,
+      // so chroma must be stopped TERMINALLY. Without the flag,
+      // ChromaMcpManager's transport-error retry can reconnect during the
+      // remaining teardown and spawn a replacement subprocess tree that the
+      // imminent process.exit() orphans to init.
+      expect(mockChromaMcpManager.stop).toHaveBeenCalledWith({ terminal: true });
     }, 15000);
 
     it('should remove its OWN PID file during shutdown (owner guard)', async () => {

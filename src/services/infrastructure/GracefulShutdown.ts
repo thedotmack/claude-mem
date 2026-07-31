@@ -16,7 +16,13 @@ export interface CloseableDatabase {
 }
 
 export interface StoppableService {
-  stop(): Promise<void>;
+  /**
+   * `terminal` marks this as a process-exit teardown: the service must not
+   * rebuild itself afterwards. ChromaMcpManager uses it to stop its
+   * transport-error retry from spawning a replacement subprocess tree that the
+   * imminent process.exit() would orphan.
+   */
+  stop(options?: { terminal?: boolean }): Promise<void>;
 }
 
 export interface GracefulShutdownConfig {
@@ -44,7 +50,7 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
 
   if (config.chromaMcpManager) {
     logger.info('SHUTDOWN', 'Stopping Chroma MCP connection...');
-    await config.chromaMcpManager.stop();
+    await config.chromaMcpManager.stop({ terminal: true });
     logger.info('SHUTDOWN', 'Chroma MCP connection stopped');
   }
 

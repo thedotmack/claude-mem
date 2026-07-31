@@ -95,6 +95,15 @@ export class ChromaMcpManager {
   private readonly maxPendingMutationCalls: number;
   private readonly serializeMutations: boolean;
   private acceptingLocalMutations = true;
+  /**
+   * Terminal latch set by stop({ terminal: true }). Those callers are abandoning
+   * this instance for good (worker shutdown, or reset() which then nulls the
+   * singleton), so once it is set, ensureConnected() must refuse rather than
+   * spawn a replacement tree — see the note on stop().
+   */
+  private stopped: boolean = false;
+  /** Memoized stop() run, so concurrent callers share one teardown. */
+  private stopPromise: Promise<void> | null = null;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
 
   private constructor() {
@@ -114,6 +123,14 @@ export class ChromaMcpManager {
   }
 
   private async ensureConnected(): Promise<void> {
+    // Refuse once stop() has latched: this instance is being torn down and the
+    // process is about to exit, so spawning a replacement tree here would leak
+    // it to init. Reached via callTool()'s transport-error retry when session
+    // work is still draining as chroma goes away. Throwing (rather than
+    // returning) keeps the existing ChromaUnavailableError contract that
+    // callers already handle as "chroma is not usable right now".
+    this.assertNotStopped();
+
     await this.waitForUnexpectedCloseCleanup();
 
     if (this.connected && this.client) {
@@ -129,6 +146,15 @@ export class ChromaMcpManager {
       await this.connecting;
       return;
     }
+
+    // Re-check immediately before the spawn. The check at the top of this method
+    // is separated from here by at least one await, and stop({ terminal: true })
+    // can land inside that window — the call would then resume with a stale
+    // "not stopped" reading and connectInternal() would capture the POST-bump
+    // generation, so #3462's cancellation guards see nothing wrong either. This
+    // is the last latch check before connectInternal() starts; from there the
+    // generation guards cover its own awaits, including the two spawn sites.
+    this.assertNotStopped();
 
     this.connecting = this.connectInternal();
     try {
@@ -147,6 +173,20 @@ export class ChromaMcpManager {
       throw error;
     } finally {
       this.connecting = null;
+    }
+  }
+
+  /**
+   * Refuse work once stop({ terminal: true }) has latched: this instance is
+   * permanently abandoned — the worker is exiting, or reset() has dropped the
+   * singleton — so spawning a replacement tree here would leak it (to init, on
+   * the shutdown path). Throwing (rather than returning) keeps the existing
+   * ChromaUnavailableError contract that callers already handle as "chroma is
+   * not usable right now" — see the note on stop().
+   */
+  private assertNotStopped(): void {
+    if (this.stopped) {
+      throw new ChromaUnavailableError('chroma-mcp is shutting down');
     }
   }
 
@@ -1005,9 +1045,61 @@ export class ChromaMcpManager {
    * accumulate across reconnects or worker restarts. Matches the tree-kill
    * pattern from shutdown.ts (Principle 5: OS-supervised teardown).
    */
-  async stop(): Promise<void> {
+  async stop(options: { terminal?: boolean } = {}): Promise<void> {
     this.acceptingLocalMutations = false;
+
+    // Two properties the worker's shutdown path depends on:
+    //
+    // 1. `terminal: true` latches so ensureConnected() refuses afterwards.
+    //    The connectionGeneration guards added in #3462 cancel calls that were
+    //    already in flight when stop() bumped the generation, but a call that
+    //    ARRIVES after the bump captures the new generation and passes every
+    //    one of them; acceptingLocalMutations catches only mutation tools in
+    //    local mode. So a read (or isHealthy()'s chroma_list_collections) still
+    //    reaches connectInternal() and spawns a REPLACEMENT tree, which the
+    //    imminent process.exit() orphans — stopping chroma would create the very
+    //    leak it is meant to prevent. ensureConnected() therefore checks the
+    //    latch both on entry and again immediately before it spawns, since those
+    //    two points are separated by an await the latch can land inside.
+    // 2. The run is memoized so concurrent callers share one teardown. The
+    //    worker's shutdown backstop can call stop() while the abandoned
+    //    performGracefulShutdown reaches the same call; without this, two
+    //    disposers interleave over the same client/transport/lock fields and an
+    //    older one can clear state the newer one just established.
+    //
+    // The latch is OPT-IN because a plain stop() must stay reusable for reads:
+    // ensureConnected() after stop() must spawn a fresh transport (pinned by
+    // "stop() disposes state including any pending connecting promise" in
+    // tests/services/sync/chroma-mcp-manager-singleton.test.ts). Note that only
+    // reads recover: local mutations stay rejected either way, since #3462
+    // clears acceptingLocalMutations above and never restores it.
+    //
+    // Only callers abandoning this instance for good pass terminal: true — the worker's
+    // shutdown paths, which exit the process immediately after, and reset(),
+    // which drops the singleton so a retained reference must not reconnect.
+    if (options.terminal) {
+      this.stopped = true;
+    }
+
+    // Bump on EVERY call, not only the one that owns the teardown. A plain
+    // stop() is reusable, so a connection can be established while an earlier
+    // teardown is still in flight; that connection captured the generation the
+    // first stop() set, and a later caller returning the memoized promise below
+    // would otherwise never invalidate it. Bumping here also cancels sooner than
+    // stopInternal() could, since it happens before any await.
     this.connectionGeneration += 1;
+
+    if (this.stopPromise) {
+      return this.stopPromise;
+    }
+    this.stopPromise = this.stopInternal().finally(() => {
+      this.stopPromise = null;
+    });
+    return this.stopPromise;
+  }
+
+  private async stopInternal(): Promise<void> {
+    // connectionGeneration is bumped by stop() before this runs.
     await this.waitForUnexpectedCloseCleanup();
 
     if (!this.client && !this.transport && !this.activePrewarmChild) {
@@ -1159,7 +1251,10 @@ export class ChromaMcpManager {
    */
   static async reset(): Promise<void> {
     if (ChromaMcpManager.instance) {
-      await ChromaMcpManager.instance.stop();
+      // Terminal: the singleton is dropped on the next line, so any caller
+      // still holding this reference must not be able to reconnect it into a
+      // subprocess tree nothing owns any more.
+      await ChromaMcpManager.instance.stop({ terminal: true });
     }
     ChromaMcpManager.instance = null;
   }
