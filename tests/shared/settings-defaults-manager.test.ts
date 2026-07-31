@@ -471,4 +471,29 @@ describe('SettingsDefaultsManager', () => {
       expect(result.CLAUDE_MEM_WORKER_PORT).toBe('33333'); 
     });
   });
+
+  describe('CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION (e5 migration)', () => {
+    it('defaults to e5-multilingual', () => {
+      const defaults = SettingsDefaultsManager.getAllDefaults();
+      expect(defaults.CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION).toBe('e5-multilingual');
+    });
+
+    it('is honored from settings.json (loadFromFile drops keys absent from DEFAULTS)', () => {
+      writeFileSync(settingsPath, JSON.stringify({
+        CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: 'default', // rollback value
+      }));
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+      expect(result.CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION).toBe('default');
+    });
+
+    it('keeps the e5 default when the key is absent from settings.json', () => {
+      writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_MODEL: 'x' }));
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+
+      expect(result.CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION).toBe('e5-multilingual');
+    });
+  });
 });

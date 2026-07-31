@@ -75,6 +75,10 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_TENANT: string;
   CLAUDE_MEM_CHROMA_DATABASE: string;
   CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: string;
+  // Embedding function requested at chroma_create_collection time.
+  // 'e5-multilingual' is registered by the vendored chroma-mcp fork
+  // (vendor/chroma-mcp); 'default' = upstream MiniLM (rollback path).
+  CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: string;
   // Worker-native cloud sync. Active ⇔ TOKEN, USER_ID, and HUB_URL are all
   // non-empty — there is no separate enabled flag. HUB_URL points at the
   // two-lane sync hub (workers/sync-hub); while it is empty, sync is OFF
@@ -177,7 +181,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_API_KEY: '',
     CLAUDE_MEM_CHROMA_TENANT: 'default_tenant',
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
-    CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: '120000',
+    CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: '300000',  // First prewarm downloads torch+transformers+chromadb (~600 MB–1 GB); was 120000
+    // EF baked into NEW cm__* collections at creation. Existing collections
+    // keep their persisted EF — switching this requires the Change-4 reindex
+    // (delete cm__* + reset backfill watermarks). Rollback: set to 'default'.
+    CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: 'e5-multilingual',
     // Worker-native cloud sync: credentials come from cmem.ai → Connect.
     CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
     CLAUDE_MEM_CLOUD_SYNC_USER_ID: '',

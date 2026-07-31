@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import path from 'node:path';
 
 // Capture real exports before mock.module mutates the live namespace, then
 // re-register the snapshots in afterAll so these mocks do not leak into later
@@ -119,7 +120,12 @@ afterAll(() => {
 function expectLauncherPrefixBeforeMode(args: string[], mode: 'http' | 'persistent') {
   const fromIdx = args.indexOf('--from');
   expect(fromIdx).toBeGreaterThan(-1);
-  expect(args[fromIdx + 1]).toBe('chroma-mcp==0.2.6');
+  // e5 migration: chroma-mcp is launched from the vendored fork, resolved to
+  // an ABSOLUTE path by walking up from the module dir (the spawned uvx runs
+  // with cwd=os.homedir(), so a relative path would misresolve).
+  const fromSpec = args[fromIdx + 1];
+  expect(fromSpec.endsWith(['vendor', 'chroma-mcp'].join(path.sep))).toBe(true);
+  expect(path.isAbsolute(fromSpec)).toBe(true);
   expect(args[fromIdx + 2]).toBe('chroma-mcp');
   expect(args[fromIdx + 3]).toBe('--client-type');
   expect(args[fromIdx + 4]).toBe(mode);
@@ -127,6 +133,9 @@ function expectLauncherPrefixBeforeMode(args: string[], mode: 'http' | 'persiste
     '--python', '3.13',
     '--with', 'onnxruntime>=1.20',
     '--with', 'protobuf<7',
+    // Lets even the STOCK PyPI chroma-mcp serve an existing e5 collection via
+    // chromadb's persisted sentence_transformer EF config (build_from_config).
+    '--with', 'sentence-transformers>=4.1.0',
   ]);
 }
 
