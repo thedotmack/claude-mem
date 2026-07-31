@@ -83,7 +83,11 @@ export const contextHandler: EventHandler = {
     const normalizedPlatformSource = input.platform
       ? normalizePlatformSource(input.platform)
       : undefined;
-    const platformSourceParam = input.platform
+    // Unified-memory mode: CLAUDE_MEM_CONTEXT_PLATFORM_FILTER=false drops the
+    // platform filter, so a Kimi session also sees Claude-Code-era memories
+    // against the same DB (and vice versa). Default keeps upstream siloing.
+    const platformFilterEnabled = settings.CLAUDE_MEM_CONTEXT_PLATFORM_FILTER !== 'false';
+    const platformSourceParam = input.platform && platformFilterEnabled
       ? `&platformSource=${encodeURIComponent(normalizedPlatformSource!)}`
       : '';
     const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}`;
