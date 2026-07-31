@@ -605,6 +605,7 @@ async function syncAndBroadcastObservations(
       id: obsId,
       memory_session_id: session.memorySessionId,
       session_id: session.contentSessionId,
+      content_session_id: session.contentSessionId,
       platform_source: session.platformSource,
       type: obs.type,
       title: obs.title,

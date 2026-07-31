@@ -89,11 +89,13 @@ export class ViewerRoutes extends BaseRouteHandler {
     this.sseBroadcaster.addClient(res);
 
     const projectCatalog = this.dbManager.getSessionStore().getProjectCatalog();
+    const sessions = this.dbManager.getSessionStore().getAllSessions();
     this.sseBroadcaster.broadcast({
       type: 'initial_load',
       projects: projectCatalog.projects,
       sources: projectCatalog.sources,
       projectsBySource: projectCatalog.projectsBySource,
+      sessions,
       timestamp: Date.now()
     });
 
