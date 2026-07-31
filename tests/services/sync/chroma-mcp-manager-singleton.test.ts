@@ -539,6 +539,17 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(transportInstances.length).toBe(1);
   });
 
+  it('rejects local mutations that arrive after shutdown without reconnecting', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.stop();
+    await expect(mgr.callTool('chroma_add_documents', { ids: ['late'] }))
+      .rejects.toThrow('unavailable after shutdown begins');
+
+    expect(transportInstances.length).toBe(0);
+    expect(prewarmSpawnCalls.length).toBe(0);
+  });
+
   it('stop() ignores close-triggered onclose from an intentionally closed transport', async () => {
     transportCloseEmitsOnclose = true;
     const mgr = ChromaMcpManager.getInstance();

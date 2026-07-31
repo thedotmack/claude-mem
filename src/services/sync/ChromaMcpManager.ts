@@ -94,6 +94,7 @@ export class ChromaMcpManager {
   private pendingMutationCalls = 0;
   private readonly maxPendingMutationCalls: number;
   private readonly serializeMutations: boolean;
+  private acceptingLocalMutations = true;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
 
   private constructor() {
@@ -704,6 +705,9 @@ export class ChromaMcpManager {
     if (!this.serializeMutations || !ChromaMcpManager.isMutationTool(toolName)) {
       return this.callToolUnqueued(toolName, toolArguments);
     }
+    if (!this.acceptingLocalMutations) {
+      throw new ChromaUnavailableError('Local Chroma mutations are unavailable after shutdown begins');
+    }
 
     return this.enqueueMutation(() => this.callToolUnqueued(toolName, toolArguments), toolName);
   }
@@ -1002,6 +1006,7 @@ export class ChromaMcpManager {
    * pattern from shutdown.ts (Principle 5: OS-supervised teardown).
    */
   async stop(): Promise<void> {
+    this.acceptingLocalMutations = false;
     this.connectionGeneration += 1;
     await this.waitForUnexpectedCloseCleanup();
 
