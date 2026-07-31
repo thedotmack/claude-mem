@@ -54,3 +54,12 @@ reports/
 
 # Throwaway scripts used to prove behavior by hand (not part of distribution)
 sandbox/
+
+# memory-eval harness artifacts (machine-specific)
+scripts/memory-eval/reports/
+scripts/memory-eval/.gold-cache.json
+scripts/memory-eval/gold.json
+scripts/memory-eval/pilot/embeddings.npz
+scripts/memory-eval/pilot/observations.jsonl
+scripts/memory-eval/pilot/e5-top5.json
+scripts/memory-eval/pilot/pilot-results.json
