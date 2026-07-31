@@ -339,6 +339,25 @@ Exact duplicates are always folded — that is a free content-hash comparison. T
 }
 ```
 
+### Semantic Memory Layer
+
+Episodes melt into knowledge: an opt-in consolidation job periodically distills new observations into durable, session-agnostic **semantic facts** ("tests run via `bun test`"). Active facts are injected above the observations timeline as a compact `## Project Knowledge` block, searchable via the MCP `facts` / `get_facts` tools.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_CONSOLIDATION_ENABLED` | `false` | Opt-in master switch. Each consolidation run costs one LLM call (using `CLAUDE_MEM_MODEL`), so it is off by default |
+| `CLAUDE_MEM_CONSOLIDATE_MIN_INTERVAL_HOURS` | `12` | Per-project throttle: minimum hours between consolidation runs |
+| `CLAUDE_MEM_CONSOLIDATE_MIN_OBSERVATIONS` | `20` | Per-project throttle: minimum new observations since the last run |
+| `CLAUDE_MEM_FACTS_INJECT_COUNT` | `15` | Cap on the `## Project Knowledge` block rendered above the timeline |
+
+Consolidation verdicts can add, update (the old fact is superseded and hands half its reinforcement history to the successor), or delete (a tombstone — rows are never physically removed). Every new or updated fact must cite the observations it was distilled from; uncited verdicts are discarded. The whole pass is defensive — any failure degrades to a no-op.
+
+```json
+{
+  "CLAUDE_MEM_CONSOLIDATION_ENABLED": "true"
+}
+```
+
 ## Customization
 
 Settings can be customized in `~/.claude-mem/settings.json`.
