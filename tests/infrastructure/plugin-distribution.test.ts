@@ -585,12 +585,12 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     const newestBin = installFakeNvmNode(home, '20.11.0');
     const prelude = claudePathPreludeFrom(commandHooksFrom('plugin/hooks/hooks.json')[0]);
     try {
-      const { status, stdout } = shellEval(`${prelude} command -v node`, {
+      const { status, stdout } = shellEval(`${prelude} printf '%s' "$PATH"`, {
         HOME: home,
         PATH: '/usr/bin:/bin',
       });
       expect(status).toBe(0);
-      expect((stdout ?? '').trim()).toBe(`${newestBin}/node`);
+      expect((stdout ?? '').split(':')[0]).toBe(newestBin);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
