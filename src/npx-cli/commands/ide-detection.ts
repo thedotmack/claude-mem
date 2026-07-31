@@ -95,6 +95,12 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'hooks + MCP integration',
     },
     {
+      id: 'kimi',
+      label: 'Kimi Code',
+      detected: existsSync(join(home, '.kimi-code')) || isCommandInPath('kimi'),
+      hint: 'hooks + MCP integration',
+    },
+    {
       id: 'goose',
       label: 'Goose',
       detected:

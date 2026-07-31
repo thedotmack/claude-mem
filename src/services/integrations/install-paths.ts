@@ -30,8 +30,15 @@ function firstExisting(candidates: string[]): string | null {
 /**
  * Absolute path to the installed plugin root (the directory that contains
  * `scripts/`). Probes, in order: CLAUDE_PLUGIN_ROOT env, PLUGIN_ROOT env,
- * the Claude marketplace cache root, then the current working directory's
- * `plugin/` (repo/dev checkout) and the cwd itself.
+ * the current working directory's `plugin/` (repo/dev checkout), the cwd
+ * itself, then the Claude marketplace cache root.
+ *
+ * A dev checkout wins over the marketplace copy on purpose: the marketplace
+ * clone is refreshed/reset by plugin-update machinery, which silently reverts
+ * baked hook commands to the last released build (bit us on Kimi hooks —
+ * 2026-07-28). End-user `npx claude-mem install` runs from an arbitrary cwd
+ * with no `plugin/` next to it, so the marketplace fallback still applies
+ * there.
  *
  * Returns null when no candidate contains `scripts/` — callers surface a
  * "could not find" install error.
@@ -40,9 +47,9 @@ export function getPluginRootAbsolutePath(): string | null {
   const candidates = [
     process.env.CLAUDE_PLUGIN_ROOT,
     process.env.PLUGIN_ROOT,
-    path.join(MARKETPLACE_ROOT, 'plugin'),
     path.join(process.cwd(), 'plugin'),
     process.cwd(),
+    path.join(MARKETPLACE_ROOT, 'plugin'),
   ].filter((value): value is string => Boolean(value));
 
   for (const candidate of candidates) {

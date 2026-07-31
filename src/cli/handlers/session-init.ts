@@ -146,6 +146,29 @@ export const sessionInitHandler: EventHandler = {
 
     let additionalContext = '';
 
+    // Kimi Code DISCARDS SessionStart hook results (verified in the installed
+    // CLI source, 0.29.1: triggerSessionStart() awaits the trigger and never
+    // reads the result; additionalContext is not in its hook schema at all).
+    // The only channel that reaches the model is UserPromptSubmit: stdout text
+    // (or a JSON `message` field) is appended to context. So the memory block
+    // rides the session's FIRST prompt — promptNumber === 1. (An earlier
+    // revision keyed on contextInjected === false, but the observer session is
+    // finalized on idle after every batch, so EVERY prompt looked "first" and
+    // the whole block re-injected each time.)
+    if (input.platform === 'kimi' && initResult.promptNumber === 1) {
+      const projectsParam = getProjectContext(cwd).allProjects.join(',');
+      // Same unified-memory switch as the SessionStart context handler:
+      // with the platform filter disabled the param must not be sent at all,
+      // otherwise Kimi sessions see only Kimi-era observations again.
+      const platformFilterEnabled = settings.CLAUDE_MEM_CONTEXT_PLATFORM_FILTER !== 'false';
+      const platformSourceParam = platformFilterEnabled ? '&platformSource=kimi' : '';
+      const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}`;
+      const contextResult = await dependencies.executeWithWorkerFallback<string>(apiPath, 'GET');
+      if (!dependencies.isWorkerFallback(contextResult) && typeof contextResult === 'string' && contextResult.trim()) {
+        additionalContext = contextResult.trim();
+      }
+    }
+
     if (semanticInject && prompt && prompt.length >= 20 && prompt !== '[media prompt]') {
       const limit = settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT || '5';
       const semanticResult = await dependencies.executeWithWorkerFallback<SemanticContextResponse>(
@@ -155,7 +178,9 @@ export const sessionInitHandler: EventHandler = {
       );
       if (!dependencies.isWorkerFallback(semanticResult) && semanticResult?.context) {
         logger.debug('HOOK', `Semantic injection: ${semanticResult.count} observations for prompt`, { sessionId: sessionDbId, count: semanticResult.count });
-        additionalContext = semanticResult.context;
+        additionalContext = additionalContext
+          ? `${additionalContext}\n\n${semanticResult.context}`
+          : semanticResult.context;
       }
     }
 
