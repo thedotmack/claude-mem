@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'fs';
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, chmodSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import path from 'path';
@@ -36,6 +36,23 @@ function commandHookEntriesFrom(relativePath: string): any[] {
 function mcpStartupCommandFrom(relativePath: string): string {
   const parsed = readJson(relativePath);
   return parsed.mcpServers['mcp-search'].args[1];
+}
+
+/** PATH export through the first `; _C=` marker in Claude hook commands. */
+function claudePathPreludeFrom(command: string): string {
+  const marker = '; _C=';
+  const end = command.indexOf(marker);
+  expect(end).toBeGreaterThan(0);
+  return command.slice(0, end + 1);
+}
+
+function installFakeNvmNode(home: string, version: string): string {
+  const nodeBin = path.join(home, '.nvm', 'versions', 'node', `v${version}`, 'bin');
+  mkdirSync(nodeBin, { recursive: true });
+  const nodePath = path.join(nodeBin, 'node');
+  writeFileSync(nodePath, '#!/bin/sh\necho "fake-node"\n');
+  chmodSync(nodePath, 0o755);
+  return nodeBin;
 }
 
 describe('Plugin Distribution - Skills', () => {
@@ -178,6 +195,13 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
   it('should not spawn a login shell to rebuild PATH on every Claude hook (#3190)', () => {
     for (const command of commandHooksFrom('plugin/hooks/hooks.json')) {
       expect(command).not.toContain('SHELL -lc');
+    }
+  });
+
+  it('should encode NVM ls quotes for nested export PATH (#3190)', () => {
+    for (const command of commandHooksFrom('plugin/hooks/hooks.json')) {
+      // hooks.json stores \" so bash sees ls "$HOME/.nvm/versions/node" inside $(...)
+      expect(command).toMatch(/ls \\"\$HOME\/\.nvm\/versions\/node\\"/);
     }
   });
 });
@@ -550,6 +574,23 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
       });
       expect(result.status).not.toBe(0);
       expect(result.stderr ?? '').toMatch(/claude-mem: .* not found/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('prepends the highest NVM node bin to PATH without login shell (#3190)', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-nvm-only-'));
+    installFakeNvmNode(home, '18.20.0');
+    const newestBin = installFakeNvmNode(home, '20.11.0');
+    const prelude = claudePathPreludeFrom(commandHooksFrom('plugin/hooks/hooks.json')[0]);
+    try {
+      const { status, stdout } = shellEval(`${prelude} command -v node`, {
+        HOME: home,
+        PATH: '/usr/bin:/bin',
+      });
+      expect(status).toBe(0);
+      expect((stdout ?? '').trim()).toBe(`${newestBin}/node`);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
