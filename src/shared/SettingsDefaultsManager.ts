@@ -34,6 +34,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CONTEXT_FULL_COUNT: string;
   CLAUDE_MEM_CONTEXT_FULL_FIELD: string;
   CLAUDE_MEM_CONTEXT_SESSION_COUNT: string;
+  CLAUDE_MEM_CONTEXT_PLATFORM_FILTER: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: string;
   CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: string;
@@ -50,6 +51,16 @@ export interface SettingsDefaults {
   CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: string;
   CLAUDE_MEM_SEMANTIC_INJECT: string;        
   CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: string;  
+  // Semantic memory layer: episode→fact consolidation (opt-in, default off)
+  // and the `## Project Knowledge` injection block cap.
+  CLAUDE_MEM_CONSOLIDATION_ENABLED: string;
+  // Semantic dedup judge (opt-in, default off): LLM verdicts
+  // ADD/INCREMENT/FLAG_CONFLICT per observation batch. Lives here (not env-only)
+  // so settings.json can enable it — loadFromFile drops keys absent from DEFAULTS.
+  CLAUDE_MEM_DEDUP_JUDGE_ENABLED: string;
+  CLAUDE_MEM_CONSOLIDATE_MIN_INTERVAL_HOURS: string;
+  CLAUDE_MEM_CONSOLIDATE_MIN_OBSERVATIONS: string;
+  CLAUDE_MEM_FACTS_INJECT_COUNT: string;
   CLAUDE_MEM_TIER_ROUTING_ENABLED: string;
   CLAUDE_MEM_TIER_SIMPLE_MODEL: string;
   CLAUDE_MEM_TIER_SUMMARY_MODEL: string;
@@ -128,6 +139,10 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CONTEXT_FULL_COUNT: '0',
     CLAUDE_MEM_CONTEXT_FULL_FIELD: 'narrative',
     CLAUDE_MEM_CONTEXT_SESSION_COUNT: '10',
+    // When 'false', context injection ignores platform_source — observations
+    // are shared across all clients (Claude Code, Kimi, Codex…) against one
+    // unified memory. Default 'true' keeps upstream's per-platform siloing.
+    CLAUDE_MEM_CONTEXT_PLATFORM_FILTER: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
     CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'true',
@@ -144,6 +159,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: '[]',  // #2400 — JSON array of glob patterns; when a folder matches AND its generated CLAUDE.md would be empty/skeleton, skip injection (avoids polluting non-content dirs with empty skeletons). Default [] preserves existing behavior.
     CLAUDE_MEM_SEMANTIC_INJECT: 'false',             // Inject relevant past observations on every UserPromptSubmit (experimental, disabled by default)
     CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: '5',           // Top-N most relevant observations to inject per prompt
+    CLAUDE_MEM_CONSOLIDATION_ENABLED: 'false',       // Distill episodes into durable semantic facts (one LLM call per run, opt-in)
+    CLAUDE_MEM_DEDUP_JUDGE_ENABLED: 'false',         // Semantic dedup judge per observation batch (one LLM call per kept observation, opt-in)
+    CLAUDE_MEM_CONSOLIDATE_MIN_INTERVAL_HOURS: '12', // Per-project throttle: min hours between consolidation runs
+    CLAUDE_MEM_CONSOLIDATE_MIN_OBSERVATIONS: '20',   // Per-project throttle: min new observations since the last run
+    CLAUDE_MEM_FACTS_INJECT_COUNT: '15',             // Cap on the `## Project Knowledge` facts block above the timeline
     CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',         // Route observations to models by complexity
     CLAUDE_MEM_TIER_SIMPLE_MODEL: 'haiku', // Portable tier alias — works across Direct API, Bedrock, Vertex, Azure (see #1463)
     CLAUDE_MEM_TIER_SUMMARY_MODEL: '',                // Empty = use default model for summaries
