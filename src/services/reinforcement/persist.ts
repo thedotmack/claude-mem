@@ -7,6 +7,7 @@ import {
   parseReinforcementDates,
   effectiveStrength,
   readTunables,
+  MAX_REINFORCEMENT_HISTORY,
 } from './strength.js';
 
 /**
@@ -47,6 +48,63 @@ export function reinforceObservation(db: Database, id: number, today: Date = new
     next[next.length - 1],
     id,
   );
+  return true;
+}
+
+/**
+ * Phase 5 — retrieval practice. When the agent actually recalls observations
+ * (MCP `get_observations` → /api/observations/batch), the act of retrieval
+ * strengthens the memory trace — this is the single most robust finding in
+ * memory science (testing effect). Unlike passive surfacing (recordSurfaced,
+ * which only bumps a count), active recall appends a real reinforcement date.
+ * Same-day idempotent via appendReinforcement, so a chatty agent cannot inflate
+ * a note by re-fetching it within one day.
+ *
+ * Returns how many rows were changed (missing rows and same-day no-ops don't).
+ */
+export function recordRetrieved(db: Database, ids: number[], today: Date = new Date()): number {
+  let changed = 0;
+  for (const id of ids) {
+    if (reinforceObservation(db, id, today)) changed++;
+  }
+  return changed;
+}
+
+/**
+ * Phase 6 — reconsolidation. Human memory is rewritten on every recall; here a
+ * new observation that CONTRADICTS an existing one (dedup judge verdict
+ * FLAG_CONFLICT) supersedes it:
+ *   - the old row is marked `superseded_by = newId` — it drops out of context
+ *     injection and dedup candidacy, but stays in the DB (searchable history,
+ *     right-to-audit; nothing is deleted);
+ *   - the older half of the old row's reinforcement dates is transferred to the
+ *     new row, so the corrected fact inherits part of the trace's strength
+ *     instead of starting cold.
+ *
+ * No-op (returns false) when either row is missing or the old row is already
+ * superseded — the first supersession wins, no chains.
+ */
+export function supersedeObservation(db: Database, oldId: number, newId: number): boolean {
+  const rows = db
+    .prepare('SELECT id, reinforcement_dates, superseded_by FROM observations WHERE id IN (?, ?)')
+    .all(oldId, newId) as Array<{ id: number; reinforcement_dates: string | null; superseded_by: number | null }>;
+  const oldRow = rows.find(r => r.id === oldId);
+  const newRow = rows.find(r => r.id === newId);
+  if (!oldRow || !newRow || oldRow.superseded_by != null) return false;
+
+  const oldDates = parseReinforcementDates(oldRow.reinforcement_dates);
+  const inherited = oldDates.slice(0, Math.ceil(oldDates.length / 2));
+  const merged = Array.from(
+    new Set([...inherited, ...parseReinforcementDates(newRow.reinforcement_dates)]),
+  ).sort();
+  const trimmed = merged.slice(-MAX_REINFORCEMENT_HISTORY);
+
+  db.prepare('UPDATE observations SET reinforcement_dates = ?, last_reinforced = ? WHERE id = ?').run(
+    JSON.stringify(trimmed),
+    trimmed[trimmed.length - 1] ?? null,
+    newId,
+  );
+  db.prepare('UPDATE observations SET superseded_by = ? WHERE id = ?').run(newId, oldId);
   return true;
 }
 

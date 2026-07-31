@@ -123,6 +123,8 @@ export class SessionStore {
     this.normalizeConceptTags();
     this.addObservationReinforcementColumns();
     this.ensureObservationRelevanceCountColumn();
+    this.ensureObservationSupersededByColumn();
+    this.ensureSemanticFactsTable();
   }
 
   /**
@@ -181,6 +183,91 @@ export class SessionStore {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(51, new Date().toISOString());
+  }
+
+  /**
+   * Phase 6 — reconsolidation (version 52).
+   *
+   * Guarantees the `superseded_by` column exists so a new observation that
+   * contradicts an existing one (dedup judge FLAG_CONFLICT) can mark the old row
+   * as superseded. Superseded rows drop out of context injection and dedup
+   * candidacy but stay in the DB as searchable history. Idempotent.
+   */
+  private ensureObservationSupersededByColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(52) as SchemaVersion | undefined;
+    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasColumn = columns.some(col => col.name === 'superseded_by');
+
+    if (applied && hasColumn) return;
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE observations ADD COLUMN superseded_by INTEGER');
+      logger.debug('DB', 'Added superseded_by column to observations table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(52, new Date().toISOString());
+  }
+
+  /**
+   * Semantic memory layer (version 53).
+   *
+   * Episodes melt into durable knowledge: `semantic_facts` holds short,
+   * session-agnostic facts consolidated from observations (see
+   * src/services/reinforcement/consolidation.ts). The ACT-R strength columns
+   * mirror the observations table so the reinforcement engine applies as-is;
+   * `superseded_by` / `invalidated_at` are the UPDATE / DELETE verdict
+   * tombstones (rows are never physically deleted), and the
+   * `valid_from` / `valid_to` pair is the bi-temporal record of when the fact
+   * held true in the world (vs `created_at` / `invalidated_at`, which track
+   * when the system learned it). `content_hash` is UNIQUE per project — free
+   * dedup on insert.
+   *
+   * `semantic_consolidation_state` is the per-project throttle ledger for the
+   * consolidation job (last run time + observation watermark).
+   *
+   * Idempotent — the sqlite_master check is the real guard, the version row is
+   * bookkeeping.
+   */
+  private ensureSemanticFactsTable(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(53) as SchemaVersion | undefined;
+    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'semantic_facts'").all() as TableNameRow[];
+    const hasTable = tables.length > 0;
+
+    if (applied && hasTable) return;
+
+    if (!hasTable) {
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS semantic_facts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          fact TEXT NOT NULL,
+          source_observation_ids TEXT NOT NULL DEFAULT '[]',
+          reinforcement_dates TEXT,
+          last_reinforced TEXT,
+          relevance_count INTEGER DEFAULT 0,
+          superseded_by INTEGER,
+          invalidated_at TEXT,
+          valid_from TEXT,
+          valid_to TEXT,
+          content_hash TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          updated_at_epoch INTEGER NOT NULL
+        )
+      `);
+      this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_facts_project_content_hash ON semantic_facts(project, content_hash)');
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS semantic_consolidation_state (
+          project TEXT PRIMARY KEY,
+          last_run_at_epoch INTEGER NOT NULL,
+          last_observation_id INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+      logger.debug('DB', 'Created semantic_facts table (semantic memory layer)');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(53, new Date().toISOString());
   }
 
   private getIndexColumns(indexName: string): string[] {

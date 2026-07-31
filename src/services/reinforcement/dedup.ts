@@ -9,8 +9,9 @@ import { reinforceObservation } from './persist.js';
  * Ported from the webdev memory vault's `mem add` pipeline. When a new
  * observation arrives, shortlist semantically-near existing observations, ask an
  * LLM for a verdict, and either keep it (ADD), fold it into the matching note by
- * reinforcing that note instead of writing a duplicate (INCREMENT), or surface a
- * contradiction for review (FLAG_CONFLICT).
+ * reinforcing that note instead of writing a duplicate (INCREMENT), or mark the
+ * contradicted note as superseded by the new one (FLAG_CONFLICT —
+ * reconsolidation, see persist.ts `supersedeObservation`).
  *
  * The LLM call is injected as a `JudgeFn` so this module is provider-agnostic
  * and unit-testable; the exact content-hash short-circuit is handled upstream by
@@ -101,6 +102,7 @@ export function findDedupCandidates(
       WHERE observations_fts MATCH ?
         AND o.project = ?
         AND o.type = ?
+        AND o.superseded_by IS NULL
         ${opts.excludeId != null ? 'AND o.id != ?' : ''}
       ORDER BY bm25(observations_fts)
       LIMIT ?

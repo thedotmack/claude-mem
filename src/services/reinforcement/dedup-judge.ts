@@ -73,12 +73,17 @@ interface JudgeableObservation {
  * actually insert: ADD + FLAG_CONFLICT are kept; INCREMENT folds into the
  * existing row (reinforced inside judgeObservation) and is dropped. Defensive —
  * a failing judge keeps the observation.
+ *
+ * FLAG_CONFLICT rows are reported via `onConflict` so the caller can mark the
+ * contradicted row as superseded once the new row has been inserted and has an
+ * id (reconsolidation — see persist.ts `supersedeObservation`).
  */
 export async function applyDedupJudge<T extends JudgeableObservation>(
   db: Database,
   observations: T[],
   project: string,
   judge: JudgeFn = createSdkJudge(),
+  onConflict?: (info: { observation: T; targetId: number; rationale: string }) => void,
 ): Promise<T[]> {
   const kept: T[] = [];
   for (const obs of observations) {
@@ -90,8 +95,9 @@ export async function applyDedupJudge<T extends JudgeableObservation>(
         logger.info('DEDUP', `Semantic duplicate → reinforced #${res.targetId}, skipping insert | ${res.rationale}`);
         continue;
       }
-      if (res.action === 'FLAG_CONFLICT') {
-        logger.warn('DEDUP', `Observation conflicts with #${res.targetId} | ${res.rationale}`);
+      if (res.action === 'FLAG_CONFLICT' && res.targetId != null) {
+        logger.warn('DEDUP', `Observation conflicts with #${res.targetId} — will supersede after insert | ${res.rationale}`);
+        onConflict?.({ observation: obs, targetId: res.targetId, rationale: res.rationale });
       }
       kept.push(obs);
     } catch (error) {
