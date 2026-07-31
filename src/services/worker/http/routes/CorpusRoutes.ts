@@ -47,7 +47,10 @@ export class CorpusRoutes extends BaseRouteHandler {
       return;
     }
 
-    const { name, description, project, types, concepts, files, query, date_start, date_end, limit } = req.body;
+    const { name, description, project, types, concepts, files, query, limit } = req.body;
+    // MCP clients send camelCase (dateStart/dateEnd); accept both conventions
+    const date_start = req.body.date_start ?? req.body.dateStart;
+    const date_end = req.body.date_end ?? req.body.dateEnd;
 
     const filter: CorpusFilter = {};
     if (project) filter.project = project;
@@ -61,8 +64,17 @@ export class CorpusRoutes extends BaseRouteHandler {
 
     const corpus = await this.corpusBuilder.build(name, description || '', filter);
 
-    // Return stats without the full observations array
+    // Return stats without the full observations array.
+    // An empty corpus is a valid response but almost always means a filter mismatch,
+    // so surface a warning instead of a clean success.
     const { observations, ...metadata } = corpus;
+    if (metadata.stats.observation_count === 0) {
+      res.json({
+        ...metadata,
+        warning: 'Corpus created with 0 observations: no filter matched. Check dateStart/dateEnd, project, types and query.'
+      });
+      return;
+    }
     res.json(metadata);
   });
 
@@ -136,8 +148,17 @@ export class CorpusRoutes extends BaseRouteHandler {
 
     const corpus = await this.corpusBuilder.build(name, existingCorpus.description, existingCorpus.filter);
 
-    // Return stats without the full observations array
+    // Return stats without the full observations array.
+    // Same empty-corpus warning as handleBuildCorpus: a rebuild that matches
+    // nothing must not look like a clean success.
     const { observations, ...metadata } = corpus;
+    if (metadata.stats.observation_count === 0) {
+      res.json({
+        ...metadata,
+        warning: 'Corpus rebuilt with 0 observations: no filter matched. Check the stored filter (dateStart/dateEnd, project, types, query).'
+      });
+      return;
+    }
     res.json(metadata);
   });
 
