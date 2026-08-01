@@ -766,6 +766,7 @@ describe('ResponseProcessor', () => {
         expect.objectContaining({ skipReason: 'routine op', outputClass: 'xml' })
       );
       expect(mockSessionManager.confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(mockStoreObservations).not.toHaveBeenCalled();
       expect(session.lastSummaryStored).toBe(false);
     });
   });

@@ -212,6 +212,12 @@ describe('describeObserverOutputShape and formatEmptyOutputReason (#3454)', () =
     expect(r.blockKinds).toContain('other');
   });
 
+  it('totality: array of primitives does not throw', () => {
+    expect(() => describeObserverOutputShape([1, 'raw', true, undefined])).not.toThrow();
+    const r = describeObserverOutputShape([1, 'raw', true, undefined]);
+    expect(r.blockKinds).toEqual(['other']);
+  });
+
   it('totality: array with plain object (no type) does not throw', () => {
     expect(() => describeObserverOutputShape([{}])).not.toThrow();
     const r = describeObserverOutputShape([{}]);
