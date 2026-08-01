@@ -344,6 +344,43 @@ describe('GracefulShutdown', () => {
       }
     }, 15000);
 
+    // The deadline in runShutdownSequence does not cancel this promise. If this
+    // sequence could reach getSupervisor().stop() on a restart — finishing just
+    // before expiry, or resuming just after — stopPromise would be set and
+    // assertCanSpawn() would refuse the successor spawn, turning a restart into
+    // a worker that never comes back. deferSupervisorStop removes the race by
+    // construction: runShutdownSequence owns the cascade, after the handoff.
+    it('defers the supervisor cascade so a restart can never take the spawn gate', async () => {
+      const mockServer = {
+        closeAllConnections: mock(() => {}),
+        close: mock((cb: (err?: Error) => void) => { cb(); })
+      } as unknown as http.Server;
+      const mockSessionManager: ShutdownableService = {
+        shutdownAll: mock(async () => {})
+      };
+      const mockChromaMcpManager = {
+        stop: mock(async () => {})
+      };
+
+      const supervisorStopSpy = spyOn(getSupervisor(), 'stop');
+
+      try {
+        await expect(performGracefulShutdown({
+          server: mockServer,
+          sessionManager: mockSessionManager,
+          chromaMcpManager: mockChromaMcpManager,
+          deferSupervisorStop: true
+        })).resolves.toBeUndefined();
+
+        // Every other teardown step still ran — only the cascade is deferred.
+        expect(mockSessionManager.shutdownAll).toHaveBeenCalledTimes(1);
+        expect(mockChromaMcpManager.stop).toHaveBeenCalledWith({ terminal: true });
+        expect(supervisorStopSpy).not.toHaveBeenCalled();
+      } finally {
+        supervisorStopSpy.mockRestore();
+      }
+    }, 15000);
+
     it('still rejects when server.close reports any other error code', async () => {
       const mockServer = {
         closeAllConnections: mock(() => {}),

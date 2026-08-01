@@ -820,7 +820,12 @@ export class WorkerService implements WorkerRef {
         sessionManager: this.sessionManager,
         mcpClient: this.mcpClient,
         dbManager: this.dbManager,
-        chromaMcpManager: this.chromaMcpManager || undefined
+        chromaMcpManager: this.chromaMcpManager || undefined,
+        // On a restart the cascade belongs after the successor handoff — see
+        // reapProcessRegistry below. Deferring also keeps this sequence off the
+        // supervisor spawn gate, which it could otherwise take on either side
+        // of the deadline and refuse the successor.
+        deferSupervisorStop: reason === 'restart'
       }),
       gracefulDeadlineMs: getPlatformTimeout(10000),
       // Backstop for the chroma-mcp tree-kill that performGracefulShutdown runs
@@ -841,10 +846,22 @@ export class WorkerService implements WorkerRef {
         }
       },
       // The rest of the managed children (SDK trees, mcp servers), reaped after
-      // the handoff. Idempotent: Supervisor.stop() memoizes via stopPromise, so
-      // this is safe even while the abandoned performGracefulShutdown is still
-      // in flight toward the same call.
-      reapProcessRegistry: () => getSupervisor().stop(),
+      // the handoff. Idempotent: Supervisor.stop() memoizes via stopPromise.
+      //
+      // preserveRegistryForSuccessor once a successor has been launched: it may
+      // register itself in the shared supervisor.json at any point, and this
+      // cascade's registry writes rewrite that file wholesale from this dying
+      // worker's boot-time snapshot — erasing the successor's record. Passed
+      // through from the handoff result rather than from `reason`, so a restart
+      // whose spawn failed still cleans up after itself.
+      //
+      // In the normal restart path this is the first stop() caller, because
+      // deferSupervisorStop keeps the graceful sequence away from it — which
+      // matters, since stop() memoizes and a second caller's options are
+      // ignored.
+      reapProcessRegistry: (successorSpawned: boolean) => getSupervisor().stop({
+        preserveRegistryForSuccessor: successorSpawned
+      }),
       reapDeadlineMs: getPlatformTimeout(5000),
       // Must clear the cascade's own waits or the reap truncates mid-kill and
       // skips its unregister/persist pass. POSIX needs ~6s (waitForExit 5s +

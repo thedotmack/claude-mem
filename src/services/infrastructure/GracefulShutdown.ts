@@ -31,6 +31,19 @@ export interface GracefulShutdownConfig {
   mcpClient?: CloseableClient;
   dbManager?: CloseableDatabase;
   chromaMcpManager?: StoppableService;
+  /**
+   * Restart only: skip the supervisor cascade here and leave it to
+   * runShutdownSequence, which runs it AFTER the successor handoff.
+   *
+   * This sequence runs under a hard deadline that does not cancel it — on
+   * expiry the caller proceeds while this promise keeps going. Reaching
+   * getSupervisor().stop() at any point around that boundary sets stopPromise,
+   * and assertCanSpawn() then refuses the successor spawn, turning a restart
+   * into a worker that never comes back. Deferring makes that unreachable by
+   * construction rather than by timing: on a restart this function never takes
+   * the spawn gate, whether it finishes early, late, or is abandoned mid-drain.
+   */
+  deferSupervisorStop?: boolean;
 }
 
 export async function performGracefulShutdown(config: GracefulShutdownConfig): Promise<void> {
@@ -58,7 +71,9 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
     await config.dbManager.close();
   }
 
-  await getSupervisor().stop();
+  if (!config.deferSupervisorStop) {
+    await getSupervisor().stop();
+  }
 
   logger.info('SYSTEM', 'Worker shutdown complete');
 }

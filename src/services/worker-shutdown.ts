@@ -83,8 +83,13 @@ export interface ShutdownSequenceOptions {
    * chroma. Split from reapSubprocesses because it must run AFTER the restart
    * handoff: it holds the supervisor's spawn gate for its duration, so running
    * it first can make the successor spawn fail. See the call site.
+   *
+   * `successorSpawned` reports whether the handoff attempt successfully
+   * launched a successor process. Once it has, that successor may register
+   * itself in supervisor.json at any point, so this cascade must not write to
+   * the file. If the launch failed, normal cleanup applies.
    */
-  reapProcessRegistry: () => Promise<void>;
+  reapProcessRegistry: (successorSpawned: boolean) => Promise<void>;
   /**
    * Budget for reapSubprocesses — a chroma tree-kill is ~200ms, not 40s. Kept
    * tight because this one runs BEFORE the handoff and so delays the successor.
@@ -198,14 +203,23 @@ export async function runShutdownSequence(options: ShutdownSequenceOptions): Pro
   // stale install would respawn its own version forever (#3378). This runs
   // inside flushResponseThen's flushed action, so it completes before that
   // helper's process.exit(0).
+  // Whether spawnDaemon() returned a pid for a successor process. NOT proof
+  // that the successor is live, registered, or has touched supervisor.json —
+  // only that a launch happened, after which it may register at any moment.
+  // That is the point at which this worker must stop writing. If the launch
+  // failed, it remains the sole known writer and cleans up as it always did.
+  let successorSpawned = false;
+
   if (options.reason === 'restart') {
     const handoff = options.restartHandoff;
     try {
-      await spawnRestartSuccessor(handoff);
+      successorSpawned = await spawnRestartSuccessor(handoff);
     } catch (error: unknown) {
-      // spawnDaemon can throw (supervisor assertCanSpawn refuses while its stop
-      // cascade is still in flight after a deadline); the handoff must never
-      // turn the dying worker's exit into an unhandled rejection.
+      // spawnDaemon can still throw if something else concurrently started a
+      // supervisor stop (assertCanSpawn refuses while stopPromise is set); the
+      // handoff must never turn the dying worker's exit into an unhandled
+      // rejection. deferSupervisorStop rules out this sequence's own graceful
+      // path as that "something else".
       logger.error(
         'SYSTEM',
         'Restart successor handoff threw — the next hook lazy-spawn is the safety net',
@@ -226,21 +240,42 @@ export async function runShutdownSequence(options: ShutdownSequenceOptions): Pro
   // iterates only this worker's own children and cannot signal its replacement.
   // ProcessRegistry.getAll() is in-memory after a once-guarded initialize()
   // (process-registry.ts), so the successor's own records — written to the
-  // shared supervisor.json on its boot — are invisible here and cannot be
-  // killed by this cascade either.
+  // shared supervisor.json on its boot — are invisible here and are not
+  // signalled by this cascade. (Not an absolute guarantee: a stale child record
+  // whose pid the OS has since recycled onto the successor would still be
+  // signalled. That hazard predates this ordering and applies to any pid-based
+  // teardown here.)
   //
-  // Known trade-off: because this now runs after the successor has started,
-  // the cascade's unregister/persist writes can clobber supervisor.json with
-  // this dying worker's stale view, including erasing the successor's own
-  // freshly-written 'worker' record. It does NOT kill the successor (whose
-  // registry is a separate process-local map), and the file is corrected on
-  // the successor's next registry write — but that is not guaranteed to be
-  // prompt if the successor sits idle, so supervisor.json can under-report for
-  // a while. Accepted as the lesser evil: the alternative ordering can refuse
-  // the successor spawn outright, which loses the worker entirely.
-  if (outcome !== 'graceful') {
+  // On a restart this is the ONLY cascade: performGracefulShutdown defers its
+  // own (deferSupervisorStop), so ownership of the restart-path cascade lives
+  // here and it always runs after the handoff — including on the fully graceful
+  // outcome, where it is not a backstop but the sequence's own teardown step.
+  //
+  // That single invariant is what keeps the successor spawnable. The deadline
+  // does not cancel the graceful promise, so if that promise could still reach
+  // getSupervisor().stop() it would set stopPromise on either side of the
+  // boundary — finishing just before expiry, or resuming just after — and
+  // assertCanSpawn() would refuse the handoff. Deferring removes the race
+  // instead of trying to out-time it.
+  //
+  // Preserve mode is gated on a successor process having been LAUNCHED, not
+  // merely on this being a restart. All three handoff failure paths (port never
+  // freed, spawnDaemon returned undefined, spawnDaemon threw) leave this worker
+  // as the sole known writer, so suppressing writes there would strand its own
+  // records with nothing to prune them — a regression against the pre-existing
+  // behavior, where the graceful path cleaned up before exit.
+  //
+  // Once a successor is launched, the cascade signals this worker's children
+  // without writing to a file that successor may claim at any moment. What it
+  // leaves behind is normally pruned by the successor's 30s health check —
+  // normally, not always: that repair needs a successor which stayed up, and
+  // pid reuse can make a dead record look alive, so the file can over-report
+  // stale processes for a while. Accepted direction of error, against erasing a
+  // live worker's record.
+  if (options.reason === 'restart' || outcome !== 'graceful') {
     await reapUnderDeadline(
-      options.reapProcessRegistry, 'registry cascade', options.reapRegistryDeadlineMs, options, outcome
+      () => options.reapProcessRegistry(successorSpawned),
+      'registry cascade', options.reapRegistryDeadlineMs, options, outcome
     );
   }
 }
@@ -259,13 +294,23 @@ async function reapUnderDeadline(
   label: string,
   deadlineMs: number,
   options: ShutdownSequenceOptions,
-  outcome: 'graceful-error' | 'deadline'
+  outcome: 'graceful' | 'graceful-error' | 'deadline'
 ): Promise<void> {
-  logger.warn('SYSTEM', `Graceful shutdown did not reach ${label} — reaping directly`, {
-    outcome,
-    reason: options.reason,
-    reapDeadlineMs: deadlineMs,
-  });
+  // On a graceful restart this is not a backstop: the graceful sequence deferred
+  // the cascade to here on purpose, so "did not reach" would be a false alarm.
+  if (outcome === 'graceful') {
+    logger.info('SYSTEM', `Running ${label} after the restart handoff`, {
+      outcome,
+      reason: options.reason,
+      reapDeadlineMs: deadlineMs,
+    });
+  } else {
+    logger.warn('SYSTEM', `Graceful shutdown did not reach ${label} — reaping directly`, {
+      outcome,
+      reason: options.reason,
+      reapDeadlineMs: deadlineMs,
+    });
+  }
 
   let reapTimer: ReturnType<typeof setTimeout> | undefined;
   const reapDeadline = new Promise<'deadline'>((resolve) => {
@@ -310,7 +355,7 @@ async function reapUnderDeadline(
  * runShutdownSequence so its caller's try wraps a single call; every failure
  * path logs and returns (the next hook lazy-spawn is the safety net).
  */
-async function spawnRestartSuccessor(handoff: RestartHandoffDeps): Promise<void> {
+async function spawnRestartSuccessor(handoff: RestartHandoffDeps): Promise<boolean> {
   const successorScript = handoff.resolveSuccessorScript();
   const portFree = await handoff.waitForPortFree(handoff.port, handoff.portFreeTimeoutMs);
   if (!portFree) {
@@ -318,7 +363,7 @@ async function spawnRestartSuccessor(handoff: RestartHandoffDeps): Promise<void>
       port: handoff.port,
       timeoutMs: handoff.portFreeTimeoutMs,
     });
-    return;
+    return false;
   }
   // Same ordering as the CLI restart path (worker-service.ts `restart`
   // case): port free → remove the now-ownerless PID file → spawn. Without
@@ -334,11 +379,12 @@ async function spawnRestartSuccessor(handoff: RestartHandoffDeps): Promise<void>
       port: handoff.port,
       script: successorScript,
     });
-    return;
+    return false;
   }
   logger.info('SYSTEM', 'Restart successor spawned', {
     pid: successorPid,
     script: successorScript,
     port: handoff.port,
   });
+  return true;
 }

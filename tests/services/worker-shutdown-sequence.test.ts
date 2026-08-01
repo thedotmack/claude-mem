@@ -25,6 +25,8 @@ interface Harness {
     spawnDaemon: number;
   };
   spawnArgs: Array<{ scriptPath: string; port: number }>;
+  /** successorSpawned as seen by each reapProcessRegistry call. */
+  preserveFlags: boolean[];
 }
 
 function makeHarness(overrides: {
@@ -42,6 +44,7 @@ function makeHarness(overrides: {
 } = {}): Harness {
   const guard = { shuttingDown: false };
   const calls: string[] = [];
+  const preserveFlags: boolean[] = [];
   const counters = {
     beforeGraceful: 0,
     graceful: 0,
@@ -77,9 +80,10 @@ function makeHarness(overrides: {
     },
     reapDeadlineMs: overrides.reapDeadlineMs ?? 1000,
     reapRegistryDeadlineMs: overrides.reapRegistryDeadlineMs ?? 1000,
-    reapProcessRegistry: () => {
+    reapProcessRegistry: (successorSpawned: boolean) => {
       counters.reapProcessRegistry++;
       calls.push('reapProcessRegistry');
+      preserveFlags.push(successorSpawned);
       return overrides.reapProcessRegistry ? overrides.reapProcessRegistry() : Promise.resolve();
     },
     restartHandoff: {
@@ -107,7 +111,7 @@ function makeHarness(overrides: {
     },
   };
 
-  return { options, guard, calls, counters, spawnArgs };
+  return { options, guard, calls, counters, spawnArgs, preserveFlags };
 }
 
 describe('runShutdownSequence — re-entrancy guard', () => {
@@ -306,12 +310,64 @@ describe('runShutdownSequence — registry cascade backstop', () => {
     expect(h.counters.spawnDaemon).toBe(0);
   });
 
-  it('does NOT reap the registry when the graceful sequence completed', async () => {
-    const h = makeHarness({ reason: 'restart' });
+  // Non-restart shutdowns still own their cascade inside performGracefulShutdown
+  // (deferSupervisorStop is restart-only), so a completed graceful sequence has
+  // already reaped and this must stay a pure backstop.
+  it('does NOT reap the registry when a non-restart graceful sequence completed', async () => {
+    const h = makeHarness({ reason: 'stop' });
 
     await runShutdownSequence(h.options);
 
     expect(h.counters.reapProcessRegistry).toBe(0);
+  });
+
+  // Restart is the exception: the graceful sequence defers its cascade so this
+  // one always runs, after the handoff, even on the graceful outcome. Keeping
+  // it off the spawn gate is the whole point — see deferSupervisorStop.
+  it('DOES reap the registry on a graceful restart, after the handoff', async () => {
+    const h = makeHarness({ reason: 'restart' });
+
+    await runShutdownSequence(h.options);
+
+    expect(h.counters.reapProcessRegistry).toBe(1);
+    expect(h.calls.indexOf('reapProcessRegistry')).toBeGreaterThan(h.calls.indexOf('spawnDaemon'));
+  });
+
+  // Registry preservation is gated on a successor process having been launched.
+  // Every handoff failure path leaves this worker as the sole known writer, so
+  // suppressing its writes there would strand its own records with nothing left
+  // to prune them.
+  it('preserves the registry once a successor process is launched', async () => {
+    const h = makeHarness({ reason: 'restart' });
+
+    await runShutdownSequence(h.options);
+
+    expect(h.preserveFlags).toEqual([true]);
+  });
+
+  it('does NOT preserve the registry when the port never freed', async () => {
+    const h = makeHarness({ reason: 'restart', portFree: false });
+
+    await runShutdownSequence(h.options);
+
+    expect(h.counters.spawnDaemon).toBe(0);
+    expect(h.preserveFlags).toEqual([false]);
+  });
+
+  it('does NOT preserve the registry when spawnDaemon returns no pid', async () => {
+    const h = makeHarness({ reason: 'restart', spawnResult: undefined });
+
+    await runShutdownSequence(h.options);
+
+    expect(h.preserveFlags).toEqual([false]);
+  });
+
+  it('does NOT preserve the registry when the successor spawn throws', async () => {
+    const h = makeHarness({ reason: 'restart', spawnThrows: true });
+
+    await runShutdownSequence(h.options);
+
+    expect(h.preserveFlags).toEqual([false]);
   });
 
   it('still reaps the registry when the successor spawn throws', async () => {
