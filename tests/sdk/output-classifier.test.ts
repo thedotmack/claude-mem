@@ -156,7 +156,7 @@ describe('hasClosedObservationBlock', () => {
       {
         name: 'summary-then-sibling-drift',
         raw: '<summary><notes>n</notes></summary>\n<observation><kind>x</kind><detail>y</detail></observation>',
-        expected: true,
+        expected: false,
         parsedValid: false,
       },
       {

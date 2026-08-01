@@ -98,33 +98,12 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
 
 /**
  * Detect a closed observation block in the literal form matched by
- * parseObservationBlocks. Bare mentions, attributed roots, and summary-shaped
- * false positives are intentionally excluded.
- *
- * Mirrors the invariant in parseAgentXml: the parser examines observation blocks
- * only when the first match of /<(observation|summary)\b/i is "observation". An
- * <observation> block nested inside a <summary> span is never examined (the first
- * match finds "summary" first), so it cannot produce schema drift. Returns true
- * only for closed <observation>...</observation> blocks that are NOT contained
- * within any <summary>...</summary> span.
+ * parseObservationBlocks. The parser examines observation blocks only when the
+ * first root match is "observation"; summary-first output is handled by the
+ * summary parser and cannot produce schema drift here.
  */
 export function hasClosedObservationBlock(raw: unknown): boolean {
   if (typeof raw !== 'string') return false;
-  const obsRegex = /<observation>([\s\S]*?)<\/observation>/g;
-  let obsMatch;
-  while ((obsMatch = obsRegex.exec(raw)) !== null) {
-    const obsStart = obsMatch.index;
-    const obsEnd = obsMatch.index + obsMatch[0].length;
-    const sumRegex = /<summary>([\s\S]*?)<\/summary>/g;
-    let nested = false;
-    let sumMatch;
-    while ((sumMatch = sumRegex.exec(raw)) !== null) {
-      if (obsStart >= sumMatch.index && obsEnd <= sumMatch.index + sumMatch[0].length) {
-        nested = true;
-        break;
-      }
-    }
-    if (!nested) return true;
-  }
-  return false;
+  const firstRoot = /<(observation|summary)\b/i.exec(raw);
+  return firstRoot?.[1].toLowerCase() === 'observation' && /<observation>([\s\S]*?)<\/observation>/.test(raw);
 }
