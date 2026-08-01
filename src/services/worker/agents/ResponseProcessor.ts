@@ -285,7 +285,8 @@ export async function processAgentResponse(
   agentName: string,
   projectRoot?: string,
   modelId?: string,
-  responseContext?: ResponseContext
+  responseContext?: ResponseContext,
+  emptyOutputReason?: string
 ): Promise<void> {
   const processingStartedAt = Date.now();
   session.lastGeneratorActivity = Date.now();
@@ -356,7 +357,7 @@ export async function processAgentResponse(
       sessionId: session.sessionDbId,
       outputClass,
       preview,
-      consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+      ...(outputClass === 'idle' && emptyOutputReason ? { emptyOutputReason } : {}),
     });
 
     // Plain-text skip responses are intentionally ignored. Re-queueing them
@@ -382,6 +383,15 @@ export async function processAgentResponse(
   }
 
   const { observations, summary } = parsed;
+
+  if (observations.length === 0 && summary?.skipped) {
+    logger.info('PARSER', `${agentName} returned an in-grammar no-op — confirming batch with nothing to store`, {
+      sessionId: session.sessionDbId,
+      outputClass: 'xml',
+      skipReason: summary.skip_reason ?? null,
+    });
+  }
+
   const summaryForStore = normalizeSummaryForStorage(summary);
   const claimedMessages = sessionManager.getClaimedMessages(session.sessionDbId);
   const fileEvidence = extractObservationFileEvidence(claimedMessages);

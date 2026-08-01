@@ -565,6 +565,151 @@ describe('ResponseProcessor', () => {
     });
   });
 
+  describe('empty-turn diagnostics (#3454)', () => {
+    it('reproduction: idle WARN at base had no emptyOutputReason; head adds it for non-text-blocks-only', async () => {
+      // Load the reproduction fixture to confirm the reported symptom
+      const reproPath = 'D:\\Repos\\.claude\\pr-sweep\\claude-mem-PR-TARGET-3454-REPRO.txt';
+      const reproContent = readFileSync(reproPath, 'utf-8');
+      // Fixture records: preview= (empty) and consecutiveInvalidOutputs=0
+      expect(reproContent).toContain('preview=');
+      expect(reproContent).not.toContain('emptyOutputReason');
+
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession();
+
+      // Drive with emptyOutputReason as head would compute for a tool_use-only message
+      await processAgentResponse(
+        '',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent',
+        undefined,
+        undefined,
+        undefined,
+        'non-text-blocks-only(tool_use)'
+      );
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/returned non-XML idle response/),
+        expect.objectContaining({ outputClass: 'idle', emptyOutputReason: 'non-text-blocks-only(tool_use)' })
+      );
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+    });
+
+    it('fault: consecutiveInvalidOutputs is removed from the non-XML WARN payload', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession();
+
+      await processAgentResponse(
+        '',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.any(String),
+        expect.not.objectContaining({ consecutiveInvalidOutputs: expect.anything() })
+      );
+    });
+
+    it('negative-space: prose turn does not receive emptyOutputReason even when argument is supplied', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession();
+
+      await processAgentResponse(
+        'Skipping — nothing to record here.',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent',
+        undefined,
+        undefined,
+        undefined,
+        'blank-text'
+      );
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/non-XML prose response/),
+        expect.objectContaining({ outputClass: 'prose' })
+      );
+      // prose must NOT carry emptyOutputReason
+      const warnCall = (logger.warn as any).mock.calls.find(
+        (c: any[]) => typeof c[1] === 'string' && c[1].includes('non-XML prose response')
+      );
+      expect(warnCall).toBeDefined();
+      expect(warnCall[2]).not.toHaveProperty('emptyOutputReason');
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+
+    it('fault (row 6): in-grammar skip_summary emits INFO no-op line without short-circuiting', async () => {
+      mockStoreObservations.mockImplementation(() => ({
+        observationIds: [],
+        summaryId: null,
+        createdAtEpoch: 1700000000000,
+      } as StorageResult));
+      (mockDbManager.getSessionStore as any) = () => ({
+        storeObservations: mockStoreObservations,
+        ensureMemorySessionIdRegistered: mock(() => {}),
+        getSessionById: mock(() => ({ memory_session_id: 'memory-session-456' })),
+      });
+
+      const session = createMockSession();
+
+      await processAgentResponse(
+        '<skip_summary reason="routine op"/>',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(logger.info).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/returned an in-grammar no-op/),
+        expect.objectContaining({ skipReason: 'routine op', outputClass: 'xml' })
+      );
+      expect(mockSessionManager.confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.lastSummaryStored).toBe(false);
+    });
+  });
+
   describe('parsing summary from XML response', () => {
     it('should parse summary from response', async () => {
       const session = createMockSession();
