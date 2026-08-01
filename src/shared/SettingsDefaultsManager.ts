@@ -5,6 +5,20 @@ import { homedir, hostname } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 
+// A fresh settings.json is seeded with EVERY default (see loadFromFile), and
+// persisted values then win over DEFAULTS. So any install created after the
+// Telegram notifier shipped (#2084) has that era's trigger list frozen on
+// disk, and adding a type to the default list can never reach it — the new
+// type would silently never notify. Rewrite the one exact legacy value to the
+// current default; any other list is user-customized and is left untouched.
+//
+// This cannot distinguish a user who deliberately set exactly 'security_alert'
+// from the seeded default — they read identically. Such a user is migrated and
+// starts receiving `sensitive` notifications, which is the recoverable side of
+// the trade: it is opt-out via this same key, whereas the alternative leaves
+// the feature dead on arrival for every pre-existing install.
+const LEGACY_TELEGRAM_TRIGGER_TYPES = 'security_alert';
+
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
@@ -244,6 +258,22 @@ export class SettingsDefaultsManager {
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error instanceof Error ? error.message : String(error));
           // Continue with in-memory migration even if write fails
+        }
+      }
+
+      if (flatSettings.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES === LEGACY_TELEGRAM_TRIGGER_TYPES) {
+        flatSettings = {
+          ...flatSettings,
+          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: this.DEFAULTS.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES,
+        };
+
+        try {
+          writeJsonFileAtomic(settingsPath, flatSettings);
+          // stderr, never stdout — same JSON-on-stdout contract as above.
+          console.warn('[SETTINGS] Migrated Telegram trigger types off the legacy default:', settingsPath);
+        } catch (error: unknown) {
+          console.warn('[SETTINGS] Failed to migrate Telegram trigger types:', settingsPath, error instanceof Error ? error.message : String(error));
+          // Continue with the in-memory migration even if the write fails
         }
       }
 
