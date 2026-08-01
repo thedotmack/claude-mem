@@ -225,21 +225,8 @@ async function runServerKeysRotateCommand(): Promise<void> {
     cleanupPersisted = false;
   }
   if (!cleanupPersisted) {
-    let retryMarkerPersisted = false;
-    try {
-      retryMarkerPersisted = persistServerSettings(settingsPath, {
-        apiKey: result.rawKey,
-        projectId: result.projectId,
-        previousApiKeyId: result.apiKeyId,
-      });
-    } catch {
-      retryMarkerPersisted = false;
-    }
-    if (!retryMarkerPersisted) {
-      console.error(styleText('red', 'The new API key is active, but its retry marker could not be saved. Repair settings.json before rotating again.'));
-      process.exit(1);
-    }
-    console.error('The new API key is active; its ID was saved for the next rotation retry.');
+    console.error(styleText('red', 'The new API key is active, but its cleanup marker could not be removed from settings.json.'));
+    console.error('Repair settings.json and retry; the existing pending marker will be resolved without minting another key.');
     process.exit(1);
   }
   console.log(JSON.stringify({
