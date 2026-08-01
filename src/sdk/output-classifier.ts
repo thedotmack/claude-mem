@@ -65,6 +65,7 @@ export function describeObserverOutputShape(content: unknown): ObserverOutputSha
 
     const kindsSet = new Set<string>();
     let hasTextBlock = false;
+    let joined = '';
 
     for (const element of content) {
       let kind = 'other';
@@ -79,6 +80,12 @@ export function describeObserverOutputShape(content: unknown): ObserverOutputSha
       kindsSet.add(kind);
       if (kind === 'text') {
         hasTextBlock = true;
+        try {
+          const txt = (element as any).text;
+          if (typeof txt === 'string') {
+            joined += (joined ? '\n' : '') + txt;
+          }
+        } catch { /* skip elements with throwing text getter */ }
       }
     }
 
@@ -86,22 +93,6 @@ export function describeObserverOutputShape(content: unknown): ObserverOutputSha
 
     if (!hasTextBlock) {
       return { shape: 'non-text-blocks-only', blockKinds };
-    }
-
-    // collect text block content
-    let joined = '';
-    for (const element of content) {
-      try {
-        const t = element != null ? (element as any).type : undefined;
-        if (t === 'text') {
-          const txt = (element as any).text;
-          if (typeof txt === 'string') {
-            joined += (joined ? '\n' : '') + txt;
-          }
-        }
-      } catch {
-        // skip elements with throwing getters
-      }
     }
 
     return {
