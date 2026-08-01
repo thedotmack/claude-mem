@@ -197,9 +197,10 @@ const killTreeCalls: number[] = [];
 const deadPids = new Set<number>();
 let execSyncCalls = 0;
 const prewarmSpawnCalls: Array<{ command: string; args: string[]; child: FakeChildProcess }> = [];
-let prewarmSpawnBehavior: 'success' | 'timeout' | 'failure' = 'success';
+let prewarmSpawnBehavior: 'success' | 'timeout' | 'failure' | 'pending' = 'success';
 let prewarmStdout = '';
 let prewarmStderr = '';
+let releasePendingPrewarm: (() => void) | null = null;
 
 mock.module('../../../src/supervisor/index.ts', () => ({
   getSupervisor: () => ({
@@ -230,6 +231,8 @@ mock.module('child_process', () => {
           child.finish(0);
         } else if (prewarmSpawnBehavior === 'failure') {
           child.finish(1);
+        } else if (prewarmSpawnBehavior === 'pending') {
+          releasePendingPrewarm = () => child.finish(0);
         }
       });
       return child;
@@ -323,6 +326,7 @@ function resetState(): void {
   prewarmSpawnBehavior = 'success';
   prewarmStdout = '';
   prewarmStderr = '';
+  releasePendingPrewarm = null;
   prewarmKillEmitsClose = true;
   transportCloseEmitsOnclose = false;
   transportKillEmitsOnclose = false;
@@ -640,6 +644,61 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     await mgr.callTool('chroma_list_collections', { limit: 1 });
 
     expect(transportInstances.length).toBe(2);
+  });
+
+  it('[reproduction] Rechecks newer provenance after prewarm while holding the writer lock', async () => {
+    prewarmSpawnBehavior = 'pending';
+    const mgr = ChromaMcpManager.getInstance();
+
+    const pendingCall = mgr.callTool('chroma_list_collections', { limit: 1 });
+    await waitForCondition(() => prewarmSpawnCalls.length === 1 && releasePendingPrewarm !== null);
+
+    writeChromaStoreRecord({ writerEpoch: 2, claudeMemVersion: '13.99.0' });
+    releasePendingPrewarm?.();
+
+    await expect(pendingCall).rejects.toThrow(/epoch 2.*epoch 1/);
+    expect(transportInstances.length).toBe(0);
+    expect(existsSync(chromaWriterLockPath())).toBe(false);
+    expect(getDependencyStatus('chroma')).toMatchObject({
+      dependency: 'chroma',
+      kind: 'vector_search_unavailable',
+      message: expect.stringContaining('epoch 2'),
+    });
+    expect(JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8')).writerEpoch).toBe(2);
+  });
+
+  it('Failed MCP handshake preserves the previous store record', async () => {
+    writeChromaStoreRecord({ writerEpoch: 0, updatedAt: '2026-01-01T00:00:00.000Z' });
+    const before = readFileSync(chromaStoreRecordPath(), 'utf-8');
+    connectImpl = async () => {
+      throw new Error('handshake failed');
+    };
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('handshake failed');
+    expect(existsSync(chromaWriterLockPath())).toBe(false);
+    expect(readFileSync(chromaStoreRecordPath(), 'utf-8')).toBe(before);
+  });
+
+  it('Cancelled MCP handshake preserves the previous store record byte-for-byte', async () => {
+    writeChromaStoreRecord({ writerEpoch: 0, updatedAt: '2026-01-01T00:00:00.000Z' });
+    const before = readFileSync(chromaStoreRecordPath(), 'utf-8');
+    rejectPendingConnectOnTransportClose = true;
+    let connectStarted = false;
+    connectImpl = async () => new Promise<void>((_resolve, reject) => {
+      connectStarted = true;
+      pendingConnectReject = reject;
+    });
+    const mgr = ChromaMcpManager.getInstance();
+
+    const pendingCall = mgr.callTool('chroma_list_collections', { limit: 1 });
+    await waitForCondition(() => connectStarted && pendingConnectReject !== null && transportInstances.length === 1);
+    const stopPromise = mgr.stop();
+
+    await expect(pendingCall).rejects.toThrow('connection cancelled during shutdown');
+    await stopPromise;
+    expect(existsSync(chromaWriterLockPath())).toBe(false);
+    expect(readFileSync(chromaStoreRecordPath(), 'utf-8')).toBe(before);
   });
 
   it('classifies missing uvx before spawning chroma-mcp transport', async () => {

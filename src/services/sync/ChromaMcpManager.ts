@@ -191,29 +191,7 @@ export class ChromaMcpManager {
     // last written by a newer epoch than this runtime.  The reader never
     // creates the data dir — acquireChromaWriterLock() retains that right.
     if (localChromaDataDir) {
-      const stored = ChromaMcpManager.readChromaStoreRecord(localChromaDataDir);
-      if (stored.kind === 'damaged') {
-        logger.warn('CHROMA_MCP', 'Chroma store record is damaged; connecting anyway', {
-          dataDir: localChromaDataDir,
-          reason: stored.reason,
-        });
-      } else if (stored.kind === 'valid' && stored.record.writerEpoch > CHROMA_WRITER_EPOCH) {
-        // Strip non-printables and cap each field so injected control characters
-        // or outsized strings cannot propagate through the health map to API responses.
-        const sanitizeField = (s: string) => s.replace(/[^\x20-\x7E]/g, '').slice(0, 80);
-        const version = sanitizeField(stored.record.claudeMemVersion);
-        const ts = sanitizeField(stored.record.updatedAt);
-        const writerDesc = version
-          ? `claude-mem ${version}${ts ? ` at ${ts}` : ''}`
-          : ts || 'an unknown version';
-        const message =
-          `Chroma data dir ${path.resolve(localChromaDataDir)} was last written by epoch ` +
-          `${stored.record.writerEpoch} (${writerDesc}); this writer is epoch ${CHROMA_WRITER_EPOCH}. ` +
-          `Upgrade claude-mem to match the version that last wrote this store, ` +
-          `or configure a distinct CLAUDE_MEM_DATA_DIR.`;
-        recordChromaVectorSearchUnavailable(message);
-        throw new ChromaUnavailableError(message);
-      }
+      ChromaMcpManager.assertChromaStoreCompatible(localChromaDataDir);
     }
 
     const commandArgs = this.buildCommandArgs(localChromaDataDir);
@@ -249,7 +227,7 @@ export class ChromaMcpManager {
     try {
       if (localChromaDataDir) {
         this.acquireChromaWriterLock(localChromaDataDir);
-        ChromaMcpManager.writeChromaStoreRecord(localChromaDataDir);
+        ChromaMcpManager.assertChromaStoreCompatible(localChromaDataDir);
       }
 
       this.transport = new StdioClientTransport({
@@ -310,6 +288,10 @@ export class ChromaMcpManager {
       throw connectionError;
     }
     clearTimeout(timeoutId!);
+
+    if (localChromaDataDir) {
+      ChromaMcpManager.writeChromaStoreRecord(localChromaDataDir);
+    }
 
     this.connected = true;
     this.registerManagedProcess();
@@ -624,6 +606,36 @@ export class ChromaMcpManager {
         updatedAt: typeof candidate.updatedAt === 'string' ? candidate.updatedAt : '',
       },
     };
+  }
+
+  private static assertChromaStoreCompatible(dataDir: string): void {
+    const stored = ChromaMcpManager.readChromaStoreRecord(dataDir);
+    if (stored.kind === 'damaged') {
+      logger.warn('CHROMA_MCP', 'Chroma store record is damaged; connecting anyway', {
+        dataDir,
+        reason: stored.reason,
+      });
+      return;
+    }
+    if (stored.kind !== 'valid' || stored.record.writerEpoch <= CHROMA_WRITER_EPOCH) {
+      return;
+    }
+
+    // Strip non-printables and cap each field so injected control characters
+    // or outsized strings cannot propagate through the health map to API responses.
+    const sanitizeField = (s: string) => s.replace(/[^\x20-\x7E]/g, '').slice(0, 80);
+    const version = sanitizeField(stored.record.claudeMemVersion);
+    const ts = sanitizeField(stored.record.updatedAt);
+    const writerDesc = version
+      ? `claude-mem ${version}${ts ? ` at ${ts}` : ''}`
+      : ts || 'an unknown version';
+    const message =
+      `Chroma data dir ${path.resolve(dataDir)} was last written by epoch ` +
+      `${stored.record.writerEpoch} (${writerDesc}); this writer is epoch ${CHROMA_WRITER_EPOCH}. ` +
+      `Upgrade claude-mem to match the version that last wrote this store, ` +
+      `or configure a distinct CLAUDE_MEM_DATA_DIR.`;
+    recordChromaVectorSearchUnavailable(message);
+    throw new ChromaUnavailableError(message);
   }
 
   private static writeChromaStoreRecord(dataDir: string): void {
