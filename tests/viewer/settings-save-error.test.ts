@@ -136,6 +136,27 @@ describe('describeSaveFailure', () => {
     await expect(describeSaveFailure(response)).resolves.toBe('\u2717 Error: ValidationError');
   });
 
+  it('extracts and clamps an error field when the JSON body exceeds the read cap', async () => {
+    const response = new Response(JSON.stringify({ error: 'X'.repeat(70000) }), {
+      status: 400,
+      statusText: 'Bad Request',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const result = await describeSaveFailure(response);
+    const msgPart = result.slice('\u2717 Error: '.length);
+    expect([...msgPart].length).toBe(SAVE_ERROR_MAX_CHARS);
+    expect(msgPart).toBe(`${'X'.repeat(SAVE_ERROR_MAX_CHARS - 1)}\u2026`);
+  });
+
+  it('times out a response without a readable body', async () => {
+    const result = await describeSaveFailure({
+      status: 502,
+      statusText: 'Bad Gateway',
+      text: () => new Promise<string>(() => {})
+    });
+    expect(result).toBe('\u2717 Error: Bad Gateway');
+  });
+
   it('600-char body with \\n and \\u0007 is clamped to SAVE_ERROR_MAX_CHARS code points and ends with \u2026', async () => {
     const long = 'A'.repeat(100) + '\n' + '\u0007' + 'B'.repeat(500);
     const body = JSON.stringify({ error: long });

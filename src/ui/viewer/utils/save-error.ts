@@ -11,7 +11,17 @@ export interface SaveErrorResponse {
 
 async function readResponseText(response: SaveErrorResponse): Promise<string> {
   if (!response.body) {
-    return response.text();
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        response.text(),
+        new Promise<string>(resolve => {
+          timeoutId = setTimeout(() => resolve(''), SAVE_ERROR_BODY_READ_TIMEOUT_MS);
+        }),
+      ]);
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+    }
   }
 
   const reader = response.body.getReader();
@@ -19,33 +29,48 @@ async function readResponseText(response: SaveErrorResponse): Promise<string> {
   let bytesRead = 0;
   let raw = '';
 
-  while (bytesRead < SAVE_ERROR_MAX_BODY_BYTES) {
-    let timedOut = false;
-    const timeout = new Promise<{ done: true; value: undefined }>(resolve => {
-      setTimeout(() => {
-        timedOut = true;
-        resolve({ done: true, value: undefined });
-      }, SAVE_ERROR_BODY_READ_TIMEOUT_MS);
-    });
-    const next = await Promise.race([reader.read(), timeout]);
-    if (next.done || next.value === undefined) {
-      if (timedOut) {
-        void reader.cancel().catch(() => {});
+  try {
+    while (bytesRead < SAVE_ERROR_MAX_BODY_BYTES) {
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      const next = await Promise.race([
+        reader.read(),
+        new Promise<null>(resolve => {
+          timeoutId = setTimeout(() => resolve(null), SAVE_ERROR_BODY_READ_TIMEOUT_MS);
+        }),
+      ]);
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      if (next === null) {
+        await reader.cancel().catch(() => {});
+        break;
       }
-      break;
-    }
+      if (next.done || next.value === undefined) {
+        break;
+      }
 
-    const remaining = SAVE_ERROR_MAX_BODY_BYTES - bytesRead;
-    const chunk = next.value.subarray(0, remaining);
-    bytesRead += chunk.byteLength;
-    raw += decoder.decode(chunk, { stream: bytesRead < SAVE_ERROR_MAX_BODY_BYTES });
-    if (chunk.byteLength < next.value.byteLength) {
-      void reader.cancel().catch(() => {});
-      break;
+      const remaining = SAVE_ERROR_MAX_BODY_BYTES - bytesRead;
+      const chunk = next.value.subarray(0, remaining);
+      bytesRead += chunk.byteLength;
+      raw += decoder.decode(chunk, { stream: bytesRead < SAVE_ERROR_MAX_BODY_BYTES });
+      if (chunk.byteLength < next.value.byteLength) {
+        await reader.cancel().catch(() => {});
+        break;
+      }
     }
+  } finally {
+    reader.releaseLock();
   }
 
   return raw + decoder.decode();
+}
+
+function extractTruncatedStringField(raw: string, field: 'error' | 'message'): string | null {
+  const match = raw.match(new RegExp(`"${field}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)`, 's'));
+  if (!match) return null;
+  try {
+    return JSON.parse(`"${match[1]}"`) as string;
+  } catch {
+    return null;
+  }
 }
 
 export async function describeSaveFailure(response: SaveErrorResponse): Promise<string> {
@@ -64,6 +89,14 @@ export async function describeSaveFailure(response: SaveErrorResponse): Promise<
     }
   } catch {
     parsed = null;
+  }
+
+  if (parsed === null && raw.length >= SAVE_ERROR_MAX_BODY_BYTES) {
+    const truncatedError = extractTruncatedStringField(raw, 'error');
+    const truncatedMessage = extractTruncatedStringField(raw, 'message');
+    if (truncatedError !== null || truncatedMessage !== null) {
+      parsed = { error: truncatedError, message: truncatedMessage };
+    }
   }
 
   let message: string | null = null;
