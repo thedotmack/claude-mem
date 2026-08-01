@@ -392,7 +392,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
   it('recovers a reporter-shaped schema drift by requeueing and aborting the observer', async () => {
     const driftedResponse = `<observation>
   <kind>final-phase-1-verification-complete</kind>
-  <detail>All source files verified: Task 5 report (306 lines).</detail>
+  <detail>All source files verified: Task 5 report (306 lines), commit diff …</detail>
 </observation>`;
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(12, 'do the thing', 1);
@@ -538,5 +538,64 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(sm.getMessageBuffer().getPendingCount(15)).toBe(0);
     expect(session.consecutiveInvalidOutputs).toBe(0);
     expect(session.abortController.signal.aborted).toBe(false);
+  });
+
+  it('confirms a summary containing a nested observation example without aborting', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(16, 'do the thing', 1);
+    session.memorySessionId = 'mem-16';
+    session.consecutiveInvalidOutputs = 0;
+    await queueAndClaimOne(sm, 16);
+
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+
+    await processAgentResponse(
+      '<summary><notes>Example output: <observation><kind>example</kind></observation></notes></summary>',
+      session,
+      makeDbManager(),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'TestAgent',
+    );
+
+    expect(confirmSpy).toHaveBeenCalledWith(16);
+    expect(resetSpy).not.toHaveBeenCalled();
+    expect(sm.getMessageBuffer().getPendingCount(16)).toBe(0);
+    expect(session.consecutiveInvalidOutputs).toBe(0);
+    expect(session.abortController.signal.aborted).toBe(false);
+  });
+
+  it('removes all drifted history entries when the provider appended before processAgentResponse', async () => {
+    const driftedResponse = '<observation><kind>drift</kind><detail>wrong schema</detail></observation>';
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(17, 'do the thing', 1);
+    session.memorySessionId = 'mem-17';
+
+    session.conversationHistory.push({ role: 'user', content: 'observe' });
+    session.conversationHistory.push({ role: 'assistant', content: driftedResponse });
+    await queueAndClaimOne(sm, 17);
+
+    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+
+    await processAgentResponse(
+      driftedResponse,
+      session,
+      makeDbManager(),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'TestAgent',
+    );
+
+    expect(session.conversationHistory.every(m => m.content !== driftedResponse)).toBe(true);
+    expect(session.conversationHistory).toHaveLength(1);
+    expect(session.conversationHistory[0].role).toBe('user');
+    expect(resetSpy).toHaveBeenCalledWith(17);
+    expect(session.consecutiveInvalidOutputs).toBe(1);
+    expect(session.abortController.signal.aborted).toBe(true);
   });
 });

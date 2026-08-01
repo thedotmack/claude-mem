@@ -351,17 +351,22 @@ export async function processAgentResponse(
       const preview = previewOutput(text);
       session.consecutiveInvalidOutputs += 1;
 
-      const lastMessage = session.conversationHistory.at(-1);
-      if (lastMessage?.role === 'assistant' && lastMessage.content === text) {
-        session.conversationHistory.pop();
+      while (session.conversationHistory.length > 0) {
+        const tail = session.conversationHistory.at(-1)!;
+        if (tail.role === 'assistant' && tail.content === text) {
+          session.conversationHistory.pop();
+        } else {
+          break;
+        }
       }
 
       if (session.consecutiveInvalidOutputs < MAX_CONSECUTIVE_SCHEMA_DRIFTS) {
-        logger.error('PARSER', `${agentName} returned observer schema drift; resetting queued batch`, {
+        logger.error('PARSER', `${agentName} returned observer schema drift; removing malformed turn and resetting batch for retry`, {
           sessionId: session.sessionDbId,
           outputClass,
           preview,
           consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+          remediation: 'update the observer prompt if drift persists across sessions',
         });
 
         await sessionManager.resetProcessingToPending(session.sessionDbId);
@@ -375,11 +380,12 @@ export async function processAgentResponse(
         return;
       }
 
-      logger.error('PARSER', `${agentName} observer schema drift did not clear across respawns; dropping queued batch`, {
+      logger.error('PARSER', `${agentName} observer schema drift did not clear across respawns; dropping queued batch — restart the session or update the observer prompt to recover`, {
         sessionId: session.sessionDbId,
         outputClass,
         preview,
         consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+        remediation: 'restart the observer session or update the observer prompt',
       });
       session.consecutiveInvalidOutputs = 0;
       await sessionManager.confirmClaimedMessages(session.sessionDbId);

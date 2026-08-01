@@ -142,6 +142,12 @@ describe('hasClosedObservationBlock', () => {
         parsedValid: false,
       },
       {
+        name: 'summary with nested observation',
+        raw: '<summary><notes>Example: <observation><kind>example</kind></observation></notes></summary>',
+        expected: false,
+        parsedValid: false,
+      },
+      {
         name: 'skip summary',
         raw: '<skip_summary reason="nothing to do"/>',
         expected: false,
@@ -153,10 +159,7 @@ describe('hasClosedObservationBlock', () => {
 
     for (const shape of shapes) {
       const parsed = parseAgentXml(shape.raw);
-      const parserBlockShape = /<observation>[\s\S]*?<\/observation>/.test(shape.raw);
-
-      expect(parserBlockShape, shape.name).toBe(shape.expected);
-      expect(hasClosedObservationBlock(shape.raw), shape.name).toBe(parserBlockShape);
+      expect(hasClosedObservationBlock(shape.raw), shape.name).toBe(shape.expected);
       expect(parsed.valid, shape.name).toBe(shape.parsedValid);
     }
   });

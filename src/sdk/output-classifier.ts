@@ -100,7 +100,15 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
  * Detect a closed observation block in the literal form matched by
  * parseObservationBlocks. Bare mentions, attributed roots, and summary-shaped
  * false positives are intentionally excluded.
+ *
+ * Mirrors parseAgentXml's first-root gate: if the first root is <summary> or
+ * <skip_summary>, the parser processes it as a summary and never examines any
+ * nested <observation> blocks. A nested block inside a rejected <summary> is
+ * not schema drift; return false so the caller stays on the confirm path.
  */
 export function hasClosedObservationBlock(raw: unknown): boolean {
-  return typeof raw === 'string' && /<observation>[\s\S]*?<\/observation>/.test(raw);
+  if (typeof raw !== 'string') return false;
+  const firstRoot = /<(observation|summary|skip_summary)\b/i.exec(raw);
+  if (!firstRoot || firstRoot[1].toLowerCase() !== 'observation') return false;
+  return /<observation>[\s\S]*?<\/observation>/.test(raw);
 }
