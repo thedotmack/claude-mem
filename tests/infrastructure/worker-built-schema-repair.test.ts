@@ -5,6 +5,7 @@ import path from 'path';
 import net from 'net';
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { replayV7RebuildOnSummaries } from '../fixtures/session-store-v7-fixture.js';
 
 const REPO_ROOT = path.resolve(import.meta.dir, '../..');
 const WORKER_SOURCE = path.join(REPO_ROOT, 'src/services/worker-service.ts');
@@ -31,6 +32,10 @@ const SKIP_REASON: string | null =
   !esbuildModule ? `esbuild not available: ${esbuildLoadError}` :
   null;
 
+if (SKIP_REASON) {
+  console.log(`[worker-built-schema-repair] SKIP: ${SKIP_REASON}`);
+}
+
 async function findFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = net.createServer();
@@ -46,40 +51,7 @@ function seedDamagedDb(dbPath: string): void {
   const db = new Database(dbPath);
   try {
     new SessionStore(db);
-
-    db.run('BEGIN');
-    db.run(`
-      CREATE TABLE session_summaries_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        memory_session_id TEXT NOT NULL,
-        project TEXT NOT NULL,
-        request TEXT,
-        investigated TEXT,
-        learned TEXT,
-        completed TEXT,
-        next_steps TEXT,
-        files_read TEXT,
-        files_edited TEXT,
-        notes TEXT,
-        prompt_number INTEGER,
-        created_at TEXT NOT NULL,
-        created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
-      )
-    `);
-    db.run(`
-      INSERT INTO session_summaries_new
-      SELECT id, memory_session_id, project, request, investigated, learned,
-             completed, next_steps, files_read, files_edited, notes,
-             prompt_number, created_at, created_at_epoch
-      FROM session_summaries
-    `);
-    db.run('DROP TABLE session_summaries');
-    db.run('ALTER TABLE session_summaries_new RENAME TO session_summaries');
-    db.run(`CREATE INDEX idx_session_summaries_sdk_session ON session_summaries(memory_session_id)`);
-    db.run(`CREATE INDEX idx_session_summaries_project ON session_summaries(project)`);
-    db.run(`CREATE INDEX idx_session_summaries_created ON session_summaries(created_at_epoch DESC)`);
-    db.run('COMMIT');
+    replayV7RebuildOnSummaries(db);
   } finally {
     db.close();
   }
@@ -122,13 +94,7 @@ async function pollReadiness(port: number, timeoutMs: number): Promise<boolean> 
 }
 
 describe('worker-built-schema-repair (#3446)', () => {
-  it('a worker bundled from head source boots against a damaged DB and repairs discovery_tokens', async () => {
-    if (SKIP_REASON) {
-      console.log(`DIAGNOSTIC SKIP: ${SKIP_REASON}`);
-      expect(SKIP_REASON).toBeString();
-      return;
-    }
-
+  it.skipIf(SKIP_REASON !== null)('a worker bundled from head source boots against a damaged DB and repairs discovery_tokens', async () => {
     const bundleDir = mkdtempSync(path.join(tmpdir(), 'claude-mem-wbundle-'));
     const dataDir = mkdtempSync(path.join(tmpdir(), 'claude-mem-wdata-'));
     const bundlePath = path.join(bundleDir, 'worker-service.cjs');

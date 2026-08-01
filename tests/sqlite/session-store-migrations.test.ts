@@ -1,6 +1,8 @@
-import { describe, it, expect, afterEach } from 'bun:test';
+import { describe, it, expect, afterEach, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { logger } from '../../src/utils/logger.js';
+import { replayV7RebuildOnSummaries } from '../fixtures/session-store-v7-fixture.js';
 import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
 import { SQLITE_BUSY_TIMEOUT_MS, SQLITE_JOURNAL_SIZE_LIMIT_BYTES } from '../../src/services/sqlite/connection.js';
 import { queryObservationsMulti } from '../../src/services/context/ObservationCompiler.js';
@@ -979,52 +981,6 @@ describe('SessionStore migrations', () => {
   });
 
   describe('v11 discovery_tokens column repair (#3446)', () => {
-    // Replay the pre-13.12.0 v7 rebuild against session_summaries, reproducing
-    // the damage from issue #3446 (issue Step 4 of the five-step sweep).
-    // Uses the same 14-column literal as SessionStore.ts:1101-1131.
-    // Leaves schema_versions untouched so row 11 stays stamped.
-    function replayV7RebuildOnSummaries(db: Database): void {
-      db.run('BEGIN');
-      db.run(`
-        CREATE TABLE session_summaries_new (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          memory_session_id TEXT NOT NULL,
-          project TEXT NOT NULL,
-          request TEXT,
-          investigated TEXT,
-          learned TEXT,
-          completed TEXT,
-          next_steps TEXT,
-          files_read TEXT,
-          files_edited TEXT,
-          notes TEXT,
-          prompt_number INTEGER,
-          created_at TEXT NOT NULL,
-          created_at_epoch INTEGER NOT NULL,
-          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
-        )
-      `);
-      db.run(`
-        INSERT INTO session_summaries_new
-        SELECT id, memory_session_id, project, request, investigated, learned,
-               completed, next_steps, files_read, files_edited, notes,
-               prompt_number, created_at, created_at_epoch
-        FROM session_summaries
-      `);
-      db.run('DROP TABLE session_summaries');
-      db.run('ALTER TABLE session_summaries_new RENAME TO session_summaries');
-      db.run(`
-        CREATE INDEX idx_session_summaries_sdk_session ON session_summaries(memory_session_id)
-      `);
-      db.run(`
-        CREATE INDEX idx_session_summaries_project ON session_summaries(project)
-      `);
-      db.run(`
-        CREATE INDEX idx_session_summaries_created ON session_summaries(created_at_epoch DESC)
-      `);
-      db.run('COMMIT');
-    }
-
     it('repairs drifted session_summaries.discovery_tokens on next construction so storeSummary succeeds', () => {
       const db = new Database(':memory:');
       try {
@@ -1184,6 +1140,54 @@ describe('SessionStore migrations', () => {
         expect(v11CountAfterSecond).toBe(v11CountAfterFirst);
         expect(v11CountAfterFirst).toBe(1);
       } finally {
+        db.close();
+      }
+    });
+
+    it('logger.warn fires for drift (v11 stamp present, column absent); logger.debug does not', () => {
+      const db = new Database(':memory:');
+      const warnSpy = spyOn(logger, 'warn');
+      const debugSpy = spyOn(logger, 'debug');
+      try {
+        new SessionStore(db);
+        replayV7RebuildOnSummaries(db);
+        warnSpy.mockClear();
+        debugSpy.mockClear();
+
+        new SessionStore(db);
+
+        const warnCalls = warnSpy.mock.calls.filter(c => String(c[1]).includes('#3446'));
+        expect(warnCalls.length).toBeGreaterThan(0);
+        const debugCalls = debugSpy.mock.calls.filter(c => String(c[1]).includes('discovery_tokens'));
+        expect(debugCalls.length).toBe(0);
+      } finally {
+        warnSpy.mockRestore();
+        debugSpy.mockRestore();
+        db.close();
+      }
+    });
+
+    it('logger.debug fires (no warn) on first-time v11 application on legacy pre-v11 DB', () => {
+      const db = new Database(':memory:');
+      const warnSpy = spyOn(logger, 'warn');
+      const debugSpy = spyOn(logger, 'debug');
+      try {
+        new SessionStore(db);
+        db.run('ALTER TABLE observations DROP COLUMN discovery_tokens');
+        db.run('ALTER TABLE session_summaries DROP COLUMN discovery_tokens');
+        db.run('DELETE FROM schema_versions WHERE version = 11');
+        warnSpy.mockClear();
+        debugSpy.mockClear();
+
+        new SessionStore(db);
+
+        const warnCalls = warnSpy.mock.calls.filter(c => String(c[1]).includes('#3446'));
+        expect(warnCalls.length).toBe(0);
+        const debugCalls = debugSpy.mock.calls.filter(c => String(c[1]).includes('discovery_tokens'));
+        expect(debugCalls.length).toBeGreaterThan(0);
+      } finally {
+        warnSpy.mockRestore();
+        debugSpy.mockRestore();
         db.close();
       }
     });
