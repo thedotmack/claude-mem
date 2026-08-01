@@ -124,6 +124,16 @@ describe('persistServerSettings: missing-file creation', () => {
   });
 });
 
+describe('persistServerSettings: rotation retry marker', () => {
+  it('retains the previous key id for a retry and clears it after successful rotation', () => {
+    persistServerSettings(settingsPath, { ...VALUES, previousApiKeyId: 'old-key-id' });
+    expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID).toBe('old-key-id');
+
+    persistServerSettings(settingsPath, VALUES);
+    expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID).toBeUndefined();
+  });
+});
+
 describe('canPersistServerSettings: rotation up-front guard', () => {
   it('returns false for corrupt JSON, proving rotation will refuse before revoking the old key', () => {
     const corruptBytes = '{"CLAUDE_MEM_SERVER_API_KEY":"cmem_oldkey"';

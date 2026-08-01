@@ -1442,7 +1442,11 @@ export class CloudSync {
   private persistDeviceId(deviceId: string): void {
     let settings: Record<string, unknown>;
     if (existsSync(this.settingsPath)) {
-      settings = parseJsonWithBom<Record<string, unknown>>(readFileSync(this.settingsPath, 'utf-8'));
+      const parsed = parseJsonWithBom<unknown>(readFileSync(this.settingsPath, 'utf-8'));
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('settings.json is not a JSON object');
+      }
+      settings = parsed as Record<string, unknown>;
     } else {
       settings = { ...SettingsDefaultsManager.getAllDefaults() };
     }

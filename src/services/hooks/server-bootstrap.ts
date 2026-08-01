@@ -170,7 +170,7 @@ export function canPersistServerSettings(settingsPath: string): boolean {
 
 export function persistServerSettings(
   settingsPath: string,
-  values: { apiKey: string; projectId: string; serverBaseUrl?: string },
+  values: { apiKey: string; projectId: string; serverBaseUrl?: string; previousApiKeyId?: string | null },
 ): boolean {
   const dir = dirname(settingsPath);
   if (!existsSync(dir)) {
@@ -220,6 +220,11 @@ export function persistServerSettings(
   flat.CLAUDE_MEM_SERVER_PROJECT_ID = values.projectId;
   if (values.serverBaseUrl) {
     flat.CLAUDE_MEM_SERVER_URL = values.serverBaseUrl;
+  }
+  if (values.previousApiKeyId) {
+    flat.CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID = values.previousApiKeyId;
+  } else {
+    delete flat.CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID;
   }
 
   // Write the full document (via the atomic temp-file+rename writer), then

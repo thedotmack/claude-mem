@@ -38,11 +38,14 @@ function readSelectedRuntime(): InstallRuntimeId {
   }
 }
 
-function clearServerRuntimeSettings(keys: readonly string[]): void {
-  if (!existsSync(USER_SETTINGS_PATH)) return;
+export function clearServerRuntimeSettings(
+  keys: readonly string[],
+  settingsPath: string = USER_SETTINGS_PATH,
+): void {
+  if (!existsSync(settingsPath)) return;
   let document: Record<string, unknown>;
   try {
-    const parsed = readJsonFileWithBom<unknown>(USER_SETTINGS_PATH);
+    const parsed = readJsonFileWithBom<unknown>(settingsPath);
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return;
     document = parsed as Record<string, unknown>;
   } catch (error: unknown) {
@@ -59,7 +62,7 @@ function clearServerRuntimeSettings(keys: readonly string[]): void {
   }
   if (changed) {
     try {
-      writeSettingsJsonAtomic(USER_SETTINGS_PATH, document);
+      writeSettingsJsonAtomic(settingsPath, document);
     } catch (error: unknown) {
       console.warn('[uninstall] Could not write settings during server runtime cleanup:', error instanceof Error ? error.message : String(error));
     }

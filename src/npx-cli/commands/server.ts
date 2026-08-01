@@ -142,8 +142,12 @@ async function runServerKeysRotateCommand(): Promise<void> {
     // Phase 1d: read the new canonical key first, fall back to the
     // legacy `CLAUDE_MEM_SERVER_BETA_API_KEY` so rotations work for
     // both fresh installs and pre-rename installs.
+    const previousKeyId = flat?.CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID;
+    if (typeof previousKeyId === 'string' && previousKeyId.length > 0) {
+      previousApiKeyId = previousKeyId;
+    }
     const previousKey = flat?.CLAUDE_MEM_SERVER_API_KEY ?? flat?.CLAUDE_MEM_SERVER_BETA_API_KEY;
-    if (typeof previousKey === 'string' && previousKey.length > 0) {
+    if (!previousApiKeyId && typeof previousKey === 'string' && previousKey.length > 0) {
       previousApiKeyId = await lookupApiKeyIdByPlaintext(previousKey);
     }
   } catch {
@@ -159,6 +163,7 @@ async function runServerKeysRotateCommand(): Promise<void> {
         if (!persistServerSettings(settingsPath, {
           apiKey: next.rawKey,
           projectId: next.projectId,
+          previousApiKeyId,
         })) {
           throw new Error('settings.json could not be updated');
         }
@@ -174,6 +179,16 @@ async function runServerKeysRotateCommand(): Promise<void> {
       console.error('Repair or restore the file, then re-run this command.');
     }
     process.exit(1);
+  }
+  try {
+    if (!persistServerSettings(settingsPath, {
+      apiKey: result.rawKey,
+      projectId: result.projectId,
+    })) {
+      console.error('The new API key is active, but its cleanup marker could not be removed from settings.json.');
+    }
+  } catch {
+    console.error('The new API key is active, but its cleanup marker could not be removed from settings.json.');
   }
   console.log(JSON.stringify({
     rotated: true,

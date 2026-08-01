@@ -8,7 +8,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
@@ -1415,6 +1415,15 @@ describe('CloudSync', () => {
 
       const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
       expect(persisted.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID).toBe(deviceId);
+    });
+
+    it('disables sync instead of treating a root array as a writable settings document', () => {
+      writeFileSync(settingsPath, '["sentinel"]');
+      const { impl } = makeFetchMock();
+      const sync = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '' });
+
+      expect(sync.status().deviceId).toBe('');
+      expect(readFileSync(settingsPath, 'utf-8')).toBe('["sentinel"]');
     });
   });
 

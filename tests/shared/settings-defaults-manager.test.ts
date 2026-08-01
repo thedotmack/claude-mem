@@ -217,8 +217,8 @@ describe('SettingsDefaultsManager', () => {
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
         expect(result.CLAUDE_MEM_MODEL).toBe('nested-model');
-        expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
-      });
+      expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
+    });
 
       it('should auto-migrate file from nested to flat schema', () => {
         const nestedSettings = {
@@ -497,7 +497,21 @@ describe('SettingsDefaultsManager', () => {
 
       const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-      expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
+        expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
+      });
+
+    it('preserves a nested setting named env during flattening', () => {
+      writeFileSync(settingsPath, JSON.stringify({
+        theme: 'dark',
+        env: { env: 'keep-me', CLAUDE_MEM_MODEL: 'nested-model' },
+      }));
+
+      SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      const migrated = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      expect(migrated.theme).toBe('dark');
+      expect(migrated.env).toBe('keep-me');
+      expect(migrated.CLAUDE_MEM_MODEL).toBe('nested-model');
     });
 
     it('should prioritize env var over default', () => {

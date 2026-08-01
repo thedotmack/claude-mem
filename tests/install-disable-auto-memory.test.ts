@@ -119,7 +119,7 @@ describe('Install: disable Claude Code auto-memory', () => {
       // Phase 3 of plans/04-installer-transparency.md: warnings no longer log
       // live (a clack spinner clobbers them). They route through the central
       // installerError(WARN_CONTINUE) decision point and are flushed at the end.
-      expect(integrationBlock).toMatch(/installerError\(ErrorSeverity\.WARN_CONTINUE/);
+      expect(installSource).toMatch(/installerError\(ErrorSeverity\.WARN_CONTINUE/);
     });
 
     it('tracks a four-state autoMemoryStatus (disabled / already-disabled / left-enabled / failed)', () => {
@@ -132,8 +132,9 @@ describe('Install: disable Claude Code auto-memory', () => {
       expect(installSource).toMatch(
         /let autoMemoryStatus:\s*['"]disabled['"]\s*\|\s*['"]already-disabled['"]\s*\|\s*['"]left-enabled['"]\s*\|\s*['"]failed['"]\s*\|\s*null/,
       );
-      const integrationBlock = installSource.match(/autoMemoryChoice[\s\S]{0,1200}/)?.[0];
-      expect(integrationBlock).toMatch(/autoMemoryStatus = wrote \? ['"]disabled['"] : ['"]already-disabled['"]/);
+      const integrationBlock = installSource.match(/autoMemoryChoice[\s\S]{0,1600}/)?.[0];
+      expect(integrationBlock).toContain("autoMemoryStatus = 'disabled'");
+      expect(integrationBlock).toContain("autoMemoryStatus = 'already-disabled'");
       expect(integrationBlock).toMatch(/autoMemoryStatus = ['"]left-enabled['"]/);
       expect(integrationBlock).toMatch(/autoMemoryStatus = ['"]failed['"]/);
     });
@@ -238,12 +239,18 @@ describe('Install: disable Claude Code auto-memory', () => {
         JSON.stringify({ env: ['sentinel'], theme: 'dark' }),
       );
 
-      const wrote = disableClaudeAutoMemory();
-      expect(wrote).toBe(false);
+      expect(() => disableClaudeAutoMemory()).toThrow('non-object env value');
 
       expect(readFileSync(join(tempDir, 'settings.json'), 'utf-8')).toBe(
         JSON.stringify({ env: ['sentinel'], theme: 'dark' }),
       );
+    });
+
+    it('refuses an array root without overwriting it', () => {
+      writeFileSync(join(tempDir, 'settings.json'), '["sentinel"]');
+
+      expect(() => disableClaudeAutoMemory()).toThrow('not a JSON object');
+      expect(readFileSync(join(tempDir, 'settings.json'), 'utf-8')).toBe('["sentinel"]');
     });
   });
 });

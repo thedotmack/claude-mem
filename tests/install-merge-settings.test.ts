@@ -27,6 +27,14 @@ describe('mergeSettings: corrupt-document write refusal', () => {
     expect(readFileSync(settingsPath, 'utf-8')).toBe(corruptBytes);
   });
 
+  it('does not collapse a multi-key partial document into the requested key', () => {
+    const corruptBytes = '{"CLAUDE_MEM_MODEL":"claude-opus-4-8","CLAUDE_MEM_PROVIDER":"gemini"';
+    writeFileSync(settingsPath, corruptBytes, 'utf-8');
+
+    expect(mergeSettings({ CLAUDE_MEM_WORKER_PORT: '37779' }, settingsPath)).toBe(false);
+    expect(readFileSync(settingsPath, 'utf-8')).toBe(corruptBytes);
+  });
+
   it('returns false and leaves bytes exact for an empty file (parse failure)', () => {
     writeFileSync(settingsPath, '', 'utf-8');
 
@@ -165,5 +173,14 @@ describe('mergeSettings: missing-file creation', () => {
     expect(result).toBe(true);
     const written = JSON.parse(readFileSync(deepPath, 'utf-8'));
     expect(written.CLAUDE_MEM_WORKER_PORT).toBe('37779');
+  });
+
+  it('returns false when the settings parent cannot be created or written', () => {
+    const blockedParent = join(tempDir, 'blocked');
+    writeFileSync(blockedParent, 'not a directory', 'utf-8');
+    const blockedPath = join(blockedParent, 'settings.json');
+
+    expect(mergeSettings({ CLAUDE_MEM_WORKER_PORT: '37779' }, blockedPath)).toBe(false);
+    expect(readFileSync(blockedParent, 'utf-8')).toBe('not a directory');
   });
 });
