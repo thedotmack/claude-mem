@@ -16,6 +16,10 @@ describe('describeSaveFailure', () => {
         statusText: 'Bad Request',
         headers: { 'Content-Type': 'application/json' }
       });
+      const baseMessage = response.status === 401 ? 'Unauthorized' : response.statusText;
+      expect(baseMessage).toBe('Bad Request');
+      expect(reproRaw).toContain('CLAUDE_MEM_GEMINI_MODEL');
+      expect(baseMessage).not.toContain('CLAUDE_MEM_GEMINI_MODEL');
       const result = await describeSaveFailure(response);
       expect(result).toBe(
         '\u2717 Error: CLAUDE_MEM_GEMINI_MODEL must be one of: gemini-flash-latest, gemini-flash-lite-latest, gemini-3.5-flash, gemini-3.1-flash-lite, gemini-3-flash-preview'
@@ -146,6 +150,44 @@ describe('describeSaveFailure', () => {
 
     expect(result).toBe('\u2717 Error: partial body');
     expect(Date.now() - startedAt).toBeLessThan(2000);
+  });
+
+  it('cancels a response stream that reaches the exact byte cap', async () => {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(64 * 1024));
+      },
+      cancel() {
+        cancelled = true;
+      }
+    });
+    await expect(describeSaveFailure({
+      status: 502,
+      statusText: 'Bad Gateway',
+      body: stream,
+      text: async () => 'unreachable'
+    })).resolves.toBe('\u2717 Error: Bad Gateway');
+    expect(cancelled).toBe(true);
+  });
+
+  it('cancels a response stream that yields an empty chunk forever', async () => {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array());
+      },
+      cancel() {
+        cancelled = true;
+      }
+    });
+    await expect(describeSaveFailure({
+      status: 502,
+      statusText: 'Bad Gateway',
+      body: stream,
+      text: async () => 'unreachable'
+    })).resolves.toBe('\u2717 Error: Bad Gateway');
+    expect(cancelled).toBe(true);
   });
 
   it('malformed validation issues cannot reject the failure formatter', async () => {
@@ -301,8 +343,8 @@ describe('describeSaveFailure', () => {
     expect(result).toBe('\u2717 Error: Bad Request');
   });
 
-  it('{error:"\\n\\t  "} (whitespace-only error) enters recovery block and uses statusText', async () => {
-    const body = JSON.stringify({ error: '\n\t  ' });
+  it('{error,message: whitespace-only} enters recovery block and uses statusText', async () => {
+    const body = JSON.stringify({ error: '\n\t  ', message: ' \t ' });
     const response = new Response(body, {
       status: 400,
       statusText: 'Bad Request',

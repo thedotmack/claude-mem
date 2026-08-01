@@ -63,9 +63,13 @@ async function readResponseText(response: SaveErrorResponse): Promise<string> {
 
       const remaining = SAVE_ERROR_MAX_BODY_BYTES - bytesRead;
       const chunk = next.value.subarray(0, remaining);
+      if (chunk.byteLength === 0) {
+        await cancelReader(reader);
+        break;
+      }
       bytesRead += chunk.byteLength;
       raw += decoder.decode(chunk, { stream: bytesRead < SAVE_ERROR_MAX_BODY_BYTES });
-      if (chunk.byteLength < next.value.byteLength) {
+      if (bytesRead >= SAVE_ERROR_MAX_BODY_BYTES || chunk.byteLength < next.value.byteLength) {
         await cancelReader(reader);
         break;
       }
@@ -115,8 +119,8 @@ export async function describeSaveFailure(response: SaveErrorResponse): Promise<
 
   let message: string | null = null;
   if (parsed !== null) {
-    const err = typeof parsed.error === 'string' && parsed.error.length > 0 ? parsed.error : null;
-    const msg = typeof parsed.message === 'string' && parsed.message.length > 0 ? parsed.message : null;
+    const err = typeof parsed.error === 'string' && parsed.error.trim().length > 0 ? parsed.error : null;
+    const msg = typeof parsed.message === 'string' && parsed.message.trim().length > 0 ? parsed.message : null;
     const issues = parsed.issues;
 
     if (err !== null && msg !== null && err !== msg) {
