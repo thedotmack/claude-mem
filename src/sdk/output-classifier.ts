@@ -104,6 +104,7 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
  */
 export function hasClosedObservationBlock(raw: unknown): boolean {
   if (typeof raw !== 'string') return false;
+  if (/<skip_summary(?:\s+reason="[^"]*")?\s*\/>/.test(raw)) return false;
   const firstRoot = /<(observation|summary)\b/i.exec(raw);
   return firstRoot?.[1].toLowerCase() === 'observation' && /<observation>([\s\S]*?)<\/observation>/.test(raw);
 }

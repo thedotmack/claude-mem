@@ -418,6 +418,8 @@ export async function processAgentResponse(
     return;
   }
 
+  const consecutiveInvalidOutputs = session.consecutiveInvalidOutputs;
+
   // Valid parse — clear the invalid-output counter so transient misses don't
   // accumulate toward a respawn across a healthy session.
   session.consecutiveInvalidOutputs = 0;
@@ -505,6 +507,7 @@ export async function processAgentResponse(
     hook: session.lastGeneratorSource,
     endpoint_class: session.endpointClass,
     compression_ms: compressionMs,
+    consecutive_invalid_outputs: consecutiveInvalidOutputs,
     observation_type: labeledObservations.length > 0 ? dominantType : undefined,
     obs_type_bugfix: typeCounts.bugfix,
     obs_type_discovery: typeCounts.discovery,
