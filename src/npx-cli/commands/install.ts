@@ -772,8 +772,10 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
   }, summary);
 }
 
-function mergeSettings(updates: Record<string, string>): boolean {
-  const path = USER_SETTINGS_PATH;
+export function mergeSettings(
+  updates: Record<string, string>,
+  settingsPath: string = USER_SETTINGS_PATH,
+): boolean {
   try {
     // Read the FULL document so we can write it back intact. The
     // Claude-Code-style settings.json wraps env vars in a top-level `env`
@@ -786,21 +788,39 @@ function mergeSettings(updates: Record<string, string>): boolean {
     //
     // Track whether the file uses the env-nested shape so we mutate only the
     // relevant subtree and preserve every other top-level key on write.
+    // When the existing file can't be parsed or isn't a non-array object,
+    // refuse the write and leave the bytes untouched.
     let document: Record<string, unknown> = {};
     let envNested = false;
-    if (existsSync(path)) {
+    if (existsSync(settingsPath)) {
+      let parsed: unknown;
       try {
-        const parsed = parseJsonWithBom(readFileSync(path, 'utf-8'));
-        if (parsed && typeof parsed === 'object') {
-          document = parsed as Record<string, unknown>;
-          envNested = typeof document.env === 'object' && document.env !== null;
-        }
+        parsed = parseJsonWithBom(readFileSync(settingsPath, 'utf-8'));
       } catch (parseError: unknown) {
-        console.warn('[install] Failed to parse existing settings.json, starting from empty:', parseError instanceof Error ? parseError.message : String(parseError));
-        document = {};
+        console.warn(
+          '[install] Failed to parse existing settings.json, leaving file unchanged:',
+          parseError instanceof Error ? parseError.message : String(parseError),
+        );
+        return false;
       }
+      if (
+        parsed === null ||
+        typeof parsed !== 'object' ||
+        Array.isArray(parsed)
+      ) {
+        console.warn(
+          '[install] Existing settings.json is not a JSON object, leaving file unchanged.',
+        );
+        return false;
+      }
+      document = parsed as Record<string, unknown>;
+      // Select nested mode only when env is a non-null, non-array object.
+      envNested =
+        document.env !== null &&
+        typeof document.env === 'object' &&
+        !Array.isArray(document.env);
     } else {
-      const dir = dirname(path);
+      const dir = dirname(settingsPath);
       if (!existsSync(dir)) {
         mkdirSync(dir, { recursive: true });
       }
@@ -825,7 +845,7 @@ function mergeSettings(updates: Record<string, string>): boolean {
     }
     return true;
   } catch (error: unknown) {
-    log.error(`Failed to write settings to ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    log.error(`Failed to write settings to ${settingsPath}: ${error instanceof Error ? error.message : String(error)}`);
     return false;
   }
 }
