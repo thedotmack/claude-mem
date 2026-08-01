@@ -226,4 +226,15 @@ describe('describeObserverOutputShape and formatEmptyOutputReason (#3454)', () =
     const r = describeObserverOutputShape([evil]);
     expect(r.blockKinds).toContain('other');
   });
+
+  it('totality: block with throwing text getter does not throw (Preservation Invariant 2)', () => {
+    const block = Object.defineProperties({}, {
+      type: { get() { return 'text'; }, enumerable: true },
+      text: { get() { throw new Error('boom'); }, enumerable: true },
+    });
+    expect(() => describeObserverOutputShape([block])).not.toThrow();
+    const r = describeObserverOutputShape([block]);
+    expect(r.blockKinds).toContain('text');
+    expect(r.shape).toBe('blank-text');
+  });
 });

@@ -1,5 +1,6 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
 import { logger } from '../../../src/utils/logger.js';
 
 // Capture real exports before mock.module mutates the live namespace, then
@@ -567,11 +568,10 @@ describe('ResponseProcessor', () => {
 
   describe('empty-turn diagnostics (#3454)', () => {
     it('reproduction: idle WARN at base had no emptyOutputReason; head adds it for non-text-blocks-only', async () => {
-      // Load the reproduction fixture to confirm the reported symptom
-      const reproPath = 'D:\\Repos\\.claude\\pr-sweep\\claude-mem-PR-TARGET-3454-REPRO.txt';
+      const reproPath = join(import.meta.dir, '../../fixtures/observer-empty-turn-repro-3454.txt');
       const reproContent = readFileSync(reproPath, 'utf-8');
-      // Fixture records: preview= (empty) and consecutiveInvalidOutputs=0
-      expect(reproContent).toContain('preview=');
+      expect(reproContent).toContain('consecutiveInvalidOutputs=0');
+      expect(reproContent).toContain('outputClass=idle');
       expect(reproContent).not.toContain('emptyOutputReason');
 
       const confirmClaimedMessages = mock(() => Promise.resolve(0));
@@ -583,7 +583,6 @@ describe('ResponseProcessor', () => {
 
       const session = createMockSession();
 
-      // Drive with emptyOutputReason as head would compute for a tool_use-only message
       await processAgentResponse(
         '',
         session,
@@ -604,6 +603,10 @@ describe('ResponseProcessor', () => {
         expect.stringMatching(/returned non-XML idle response/),
         expect.objectContaining({ outputClass: 'idle', emptyOutputReason: 'non-text-blocks-only(tool_use)' })
       );
+      const warnCall = (logger.warn as any).mock.calls.find(
+        (c: any[]) => typeof c[1] === 'string' && c[1].includes('non-XML idle response')
+      );
+      expect(warnCall[2]).not.toHaveProperty('consecutiveInvalidOutputs');
       expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
     });
 
