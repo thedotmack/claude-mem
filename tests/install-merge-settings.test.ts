@@ -4,9 +4,6 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { mergeSettings } from '../src/npx-cli/commands/install.js';
 
-// All tests pass an explicit temporary path to mergeSettings; no test
-// touches the real ~/.claude-mem or ~/.claude (preload.ts data-dir tripwire).
-
 let tempDir: string;
 let settingsPath: string;
 
@@ -21,7 +18,6 @@ afterEach(() => {
 
 describe('mergeSettings: corrupt-document write refusal', () => {
   it('returns false and leaves the truncated bytes exact (reproduction of #3080)', () => {
-    // Minimal partial bytes from the reporter-derived truncated settings file.
     const corruptBytes = '{"CLAUDE_MEM_MODEL":"claude-opus-4-8"';
     writeFileSync(settingsPath, corruptBytes, 'utf-8');
 
@@ -29,6 +25,25 @@ describe('mergeSettings: corrupt-document write refusal', () => {
 
     expect(result).toBe(false);
     expect(readFileSync(settingsPath, 'utf-8')).toBe(corruptBytes);
+  });
+
+  it('returns false and leaves bytes exact for an empty file (parse failure)', () => {
+    writeFileSync(settingsPath, '', 'utf-8');
+
+    const result = mergeSettings({ CLAUDE_MEM_WORKER_PORT: '37779' }, settingsPath);
+
+    expect(result).toBe(false);
+    expect(readFileSync(settingsPath, 'utf-8')).toBe('');
+  });
+
+  it('returns false and leaves bytes exact for a whitespace-only file (parse failure)', () => {
+    const original = '   \n\t  ';
+    writeFileSync(settingsPath, original, 'utf-8');
+
+    const result = mergeSettings({ CLAUDE_MEM_WORKER_PORT: '37779' }, settingsPath);
+
+    expect(result).toBe(false);
+    expect(readFileSync(settingsPath, 'utf-8')).toBe(original);
   });
 });
 
@@ -128,8 +143,6 @@ describe('mergeSettings: nested-env merge preservation', () => {
 
 describe('mergeSettings: env-array routing boundary', () => {
   it('treats {"env":["sentinel"],"theme":"dark"} as flat; array and theme remain; requested setting is written at root', () => {
-    // An array-valued env must not select nested routing. The update goes to
-    // the root record; the original env value (["sentinel"]) is preserved.
     const original = { env: ['sentinel'], theme: 'dark' };
     writeFileSync(settingsPath, JSON.stringify(original), 'utf-8');
 
@@ -145,7 +158,6 @@ describe('mergeSettings: env-array routing boundary', () => {
 
 describe('mergeSettings: missing-file creation', () => {
   it('creates the parent directory and writes a flat settings document when no file or parent exists', () => {
-    // Use a path nested under a non-existent subdirectory inside tempDir.
     const deepPath = join(tempDir, 'nested', 'subdir', 'settings.json');
 
     const result = mergeSettings({ CLAUDE_MEM_WORKER_PORT: '37779' }, deepPath);

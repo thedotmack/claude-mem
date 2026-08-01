@@ -798,7 +798,8 @@ export function mergeSettings(
         parsed = parseJsonWithBom(readFileSync(settingsPath, 'utf-8'));
       } catch (parseError: unknown) {
         console.warn(
-          '[install] Failed to parse existing settings.json, leaving file unchanged:',
+          '[install] Failed to parse existing settings.json, leaving file unchanged.',
+          'Repair or restore the file and rerun the installer:',
           parseError instanceof Error ? parseError.message : String(parseError),
         );
         return false;
@@ -810,6 +811,7 @@ export function mergeSettings(
       ) {
         console.warn(
           '[install] Existing settings.json is not a JSON object, leaving file unchanged.',
+          'Repair or restore the file and rerun the installer.',
         );
         return false;
       }

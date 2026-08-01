@@ -137,13 +137,28 @@ export function persistServerSettings(
 
   let existing: Record<string, unknown> = {};
   if (existsSync(settingsPath)) {
+    let parsed: unknown;
     try {
-      existing = readJsonFileWithBom<Record<string, unknown>>(settingsPath);
+      parsed = readJsonFileWithBom<unknown>(settingsPath);
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
-      logger.warn('HOOK', 'Failed to read existing settings file; starting fresh', { settingsPath }, err);
-      existing = {};
+      logger.warn(
+        'HOOK',
+        'Failed to read existing settings file; leaving file unchanged. Repair or restore the file and rerun the installer.',
+        { settingsPath },
+        err,
+      );
+      return;
     }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      logger.warn(
+        'HOOK',
+        'Existing settings file is not a JSON object; leaving file unchanged. Repair or restore the file and rerun the installer.',
+        { settingsPath },
+      );
+      return;
+    }
+    existing = parsed as Record<string, unknown>;
   }
   // Settings file format: support both the flat shape (modern) and the
   // env-nested shape (Claude-Code-style: { env: {...}, hooks: [...], ... }).
@@ -152,9 +167,13 @@ export function persistServerSettings(
   // place. We then write the full `existing` document below (NOT `flat`), so
   // non-env top-level keys (hooks, permissions, apiKeyHelper, ...) survive.
   // Writing `flat` back as the whole file silently dropped them (data loss).
-  const flat = (existing.env && typeof existing.env === 'object'
-    ? existing.env
-    : existing) as Record<string, unknown>;
+  const flat = (
+    existing.env !== null &&
+    typeof existing.env === 'object' &&
+    !Array.isArray(existing.env)
+      ? existing.env
+      : existing
+  ) as Record<string, unknown>;
 
   // Phase 1d: write the new canonical settings keys. Legacy
   // `CLAUDE_MEM_SERVER_BETA_*` keys are dual-accepted by reads in

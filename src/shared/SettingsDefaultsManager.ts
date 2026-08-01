@@ -248,7 +248,7 @@ export class SettingsDefaultsManager {
       const settings = parseJsonWithBom<Record<string, any>>(settingsData);
 
       let flatSettings = settings;
-      if (settings.env && typeof settings.env === 'object') {
+      if (settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env)) {
         flatSettings = settings.env;
 
         try {

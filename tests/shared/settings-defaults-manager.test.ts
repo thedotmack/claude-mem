@@ -235,6 +235,19 @@ describe('SettingsDefaultsManager', () => {
         expect(parsed.env).toBeUndefined();
         expect(parsed.CLAUDE_MEM_MODEL).toBe('migrated-model');
       });
+
+      it('should not overwrite the settings file when env is an array containing ["sentinel"]', () => {
+        const original = JSON.stringify({ env: ['sentinel'], CLAUDE_MEM_MODEL: 'keep-me' });
+        writeFileSync(settingsPath, original);
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        const after = readFileSync(settingsPath, 'utf-8');
+        const parsed = JSON.parse(after);
+        expect(Array.isArray(parsed)).toBe(false);
+        expect(parsed.env).toEqual(['sentinel']);
+        expect(parsed.CLAUDE_MEM_MODEL).toBe('keep-me');
+      });
     });
 
     // A fresh settings.json is seeded with every default, so installs created
