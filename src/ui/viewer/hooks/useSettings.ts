@@ -10,6 +10,7 @@ export interface SubmitSettingsDependencies {
   setSettings: (settings: Settings) => void;
   setSaveStatus: (status: string) => void;
   setIsSaving: (isSaving: boolean) => void;
+  setStatusTimeout?: (callback: () => void, delay: number) => void;
 }
 
 export async function submitSettings(
@@ -33,10 +34,30 @@ export async function submitSettings(
   if (result.success) {
     deps.setSettings(newSettings);
     deps.setSaveStatus('✓ Saved');
-    setTimeout(() => deps.setSaveStatus(''), TIMING.SAVE_STATUS_DISPLAY_DURATION_MS);
+    (deps.setStatusTimeout ?? setTimeout)(
+      () => deps.setSaveStatus(''),
+      TIMING.SAVE_STATUS_DISPLAY_DURATION_MS,
+    );
   } else {
     deps.setSaveStatus(`✗ Error: ${result.error}`);
   }
+}
+
+export async function saveSettings(
+  newSettings: Settings,
+  deps: SubmitSettingsDependencies,
+): Promise<void> {
+  deps.setIsSaving(true);
+  deps.setSaveStatus('Saving...');
+
+  try {
+    await submitSettings(newSettings, deps);
+  } catch (error) {
+    console.error('Failed to save settings:', error);
+    deps.setSaveStatus(`✗ Error: ${error instanceof Error ? error.message : 'Network error'}`);
+  }
+
+  deps.setIsSaving(false);
 }
 
 export function useSettings() {
@@ -60,24 +81,15 @@ export function useSettings() {
       });
   }, []);
 
-  const saveSettings = async (newSettings: Settings) => {
-    setIsSaving(true);
-    setSaveStatus('Saving...');
-
-    try {
-      await submitSettings(newSettings, {
-        fetchImpl: fetch,
-        setSettings,
-        setSaveStatus,
-        setIsSaving,
-      });
-    } catch (error) {
-      console.error('Failed to save settings:', error);
-      setSaveStatus(`✗ Error: ${error instanceof Error ? error.message : 'Network error'}`);
-    }
-
-    setIsSaving(false);
+  return {
+    settings,
+    saveSettings: (newSettings: Settings) => saveSettings(newSettings, {
+      fetchImpl: fetch,
+      setSettings,
+      setSaveStatus,
+      setIsSaving,
+    }),
+    isSaving,
+    saveStatus,
   };
-
-  return { settings, saveSettings, isSaving, saveStatus };
 }

@@ -9,6 +9,20 @@ export interface SaveErrorResponse {
   body?: ReadableStream<Uint8Array> | null;
 }
 
+async function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      reader.cancel().catch(() => {}),
+      new Promise<void>(resolve => {
+        timeoutId = setTimeout(resolve, SAVE_ERROR_BODY_READ_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
+}
+
 async function readResponseText(response: SaveErrorResponse): Promise<string> {
   if (!response.body) {
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -40,7 +54,7 @@ async function readResponseText(response: SaveErrorResponse): Promise<string> {
       ]);
       if (timeoutId !== undefined) clearTimeout(timeoutId);
       if (next === null) {
-        await reader.cancel().catch(() => {});
+        await cancelReader(reader);
         break;
       }
       if (next.done || next.value === undefined) {
@@ -52,12 +66,12 @@ async function readResponseText(response: SaveErrorResponse): Promise<string> {
       bytesRead += chunk.byteLength;
       raw += decoder.decode(chunk, { stream: bytesRead < SAVE_ERROR_MAX_BODY_BYTES });
       if (chunk.byteLength < next.value.byteLength) {
-        await reader.cancel().catch(() => {});
+        await cancelReader(reader);
         break;
       }
     }
   } finally {
-    reader.releaseLock();
+    try { reader.releaseLock(); } catch {}
   }
 
   return raw + decoder.decode();
@@ -91,7 +105,7 @@ export async function describeSaveFailure(response: SaveErrorResponse): Promise<
     parsed = null;
   }
 
-  if (parsed === null && raw.length >= SAVE_ERROR_MAX_BODY_BYTES) {
+  if (parsed === null && new TextEncoder().encode(raw).byteLength >= SAVE_ERROR_MAX_BODY_BYTES) {
     const truncatedError = extractTruncatedStringField(raw, 'error');
     const truncatedMessage = extractTruncatedStringField(raw, 'message');
     if (truncatedError !== null || truncatedMessage !== null) {

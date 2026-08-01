@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { saveStatusClass } from '../../src/ui/viewer/components/ContextSettingsModal';
-import { submitSettings } from '../../src/ui/viewer/hooks/useSettings';
+import { saveSettings, submitSettings } from '../../src/ui/viewer/hooks/useSettings';
 import { describeSaveFailure, SAVE_ERROR_MAX_CHARS } from '../../src/ui/viewer/utils/save-error';
 
 const REPRO_PATH = join(import.meta.dir, '../fixtures/settings-save-error-repro.json');
@@ -208,14 +208,34 @@ describe('describeSaveFailure', () => {
     const statuses: string[] = [];
     let saved = false;
     const deps = {
-      fetchImpl: async () => new Response(JSON.stringify({ success: false, error: 'boom' }), { status: 200 }),
+      fetchImpl: async () => new Response(JSON.stringify({ success: true }), { status: 200 }),
       setSettings: () => { saved = true; },
       setSaveStatus: (status: string) => statuses.push(status),
       setIsSaving: () => {},
+      setStatusTimeout: (callback: () => void) => callback(),
     };
     await submitSettings({} as never, deps);
-    expect(statuses).toEqual(['\u2717 Error: boom']);
-    expect(saved).toBe(false);
+    expect(statuses).toEqual(['\u2713 Saved', '']);
+    expect(saved).toBe(true);
+
+    await submitSettings({} as never, {
+      ...deps,
+      fetchImpl: async () => new Response(JSON.stringify({ success: false, error: 'boom' }), { status: 200 }),
+    });
+    expect(statuses).toEqual(['\u2713 Saved', '', '\u2717 Error: boom']);
+  });
+
+  it('keeps a rejected production fetch inside the outer saveSettings catch', async () => {
+    const statuses: string[] = [];
+    let saving = false;
+    await saveSettings({} as never, {
+      fetchImpl: async () => { throw new Error('network down'); },
+      setSettings: () => {},
+      setSaveStatus: status => statuses.push(status),
+      setIsSaving: value => { saving = value; },
+    });
+    expect(statuses).toEqual(['Saving...', '✗ Error: network down']);
+    expect(saving).toBe(false);
   });
 
   it('{message:"rate limit exceeded"} uses message field when error is absent', async () => {
