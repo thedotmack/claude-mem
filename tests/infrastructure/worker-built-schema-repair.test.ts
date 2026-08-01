@@ -93,6 +93,21 @@ async function pollReadiness(port: number, timeoutMs: number): Promise<boolean> 
   return false;
 }
 
+async function removeTempDir(dirPath: string): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (true) {
+    try {
+      rmSync(dirPath, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      if (Date.now() >= deadline || !(err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'EBUSY')) {
+        throw err;
+      }
+      await new Promise<void>(resolve => setTimeout(resolve, 100));
+    }
+  }
+}
+
 describe('worker-built-schema-repair (#3446)', () => {
   it.skipIf(SKIP_REASON !== null)('a worker bundled from head source boots against a damaged DB and repairs discovery_tokens', async () => {
     const bundleDir = mkdtempSync(path.join(tmpdir(), 'claude-mem-wbundle-'));
@@ -101,6 +116,8 @@ describe('worker-built-schema-repair (#3446)', () => {
     const dbPath = path.join(dataDir, 'claude-mem.db');
     const port = await findFreePort();
     let proc: ReturnType<typeof Bun.spawn> | null = null;
+    let closeLogWriter: (() => Promise<void>) | null = null;
+    let drainPromise: Promise<void> | null = null;
     let assertionError: unknown = null;
 
     try {
@@ -157,6 +174,7 @@ describe('worker-built-schema-repair (#3446)', () => {
 
       const logFile = Bun.file(path.join(dataDir, 'worker.log'));
       const logWriter = logFile.writer();
+      closeLogWriter = async () => { await logWriter.end(); };
 
       proc = Bun.spawn(
         ['bun', bundlePath, '--daemon'],
@@ -187,7 +205,8 @@ describe('worker-built-schema-repair (#3446)', () => {
             try { logWriter.flush(); } catch {}
           }
         };
-        drainStderr().catch(() => {});
+        drainPromise = drainStderr();
+        drainPromise.catch(() => {});
       }
 
       const healthy = await pollHealth(port, 30000);
@@ -213,6 +232,48 @@ describe('worker-built-schema-repair (#3446)', () => {
         expect(healthy).toBe(true);
         expect(ready).toBe(true);
 
+        const importResponse = await fetch(`http://127.0.0.1:${port}/api/import`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessions: [{
+              content_session_id: 'built-worker-content',
+              memory_session_id: 'built-worker-schema-repair',
+              project: dataDir,
+              platform_source: 'claude',
+              user_prompt: 'schema repair',
+              started_at: new Date().toISOString(),
+              started_at_epoch: Date.now(),
+              completed_at: null,
+              completed_at_epoch: null,
+              status: 'completed',
+            }],
+            summaries: [{
+              memory_session_id: 'built-worker-schema-repair',
+              project: dataDir,
+              request: 'built worker summary insert',
+              investigated: 'schema repair',
+              learned: 'the repaired column is writable',
+              completed: 'worker boot',
+              next_steps: null,
+              files_read: null,
+              files_edited: null,
+              notes: null,
+              prompt_number: 1,
+              discovery_tokens: 7,
+              created_at: new Date().toISOString(),
+              created_at_epoch: Date.now(),
+            }],
+          }),
+        });
+        const importBodyText = await importResponse.text();
+        if (!importResponse.ok) {
+          throw new Error(`Built worker summary import failed (${importResponse.status}): ${importBodyText}`);
+        }
+        const importBody = JSON.parse(importBodyText) as { success: boolean; stats: { summariesImported: number } };
+        expect(importBody.success).toBe(true);
+        expect(importBody.stats.summariesImported).toBe(1);
+
         try {
           await fetch(`http://127.0.0.1:${port}/api/admin/shutdown`, {
             method: 'POST',
@@ -231,6 +292,8 @@ describe('worker-built-schema-repair (#3446)', () => {
         try {
           const colNames = (postBoot.query('PRAGMA table_info(session_summaries)').all() as Array<{ name: string }>).map(c => c.name);
           expect(colNames).toContain('discovery_tokens');
+          const summary = postBoot.prepare('SELECT request, discovery_tokens FROM session_summaries WHERE memory_session_id = ?').get('built-worker-schema-repair') as { request: string; discovery_tokens: number } | undefined;
+          expect(summary).toEqual({ request: 'built worker summary insert', discovery_tokens: 7 });
         } finally {
           postBoot.close();
         }
@@ -245,8 +308,14 @@ describe('worker-built-schema-repair (#3446)', () => {
           new Promise<void>(r => setTimeout(r, 3000)),
         ]);
       }
-      rmSync(bundleDir, { recursive: true, force: true });
-      rmSync(dataDir, { recursive: true, force: true });
+      try {
+        if (drainPromise !== null) await drainPromise;
+      } catch {}
+      try {
+        if (closeLogWriter !== null) await closeLogWriter();
+      } catch {}
+      await removeTempDir(bundleDir);
+      await removeTempDir(dataDir);
     }
 
     if (assertionError !== null) {

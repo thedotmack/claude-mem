@@ -1335,7 +1335,7 @@ export class SessionStore {
       if (!obsHasDiscoveryTokens) {
         this.db.run('ALTER TABLE observations ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
         if (alreadyStamped) {
-          logger.warn('DB', 'Repaired missing discovery_tokens column on observations (v11 stamp present, column absent — #3446); observations written while drifted were not recorded and cannot be recovered');
+          logger.warn('DB', 'Repaired missing discovery_tokens column on observations (v11 stamp present, column absent — #3446); observations written while drifted were not stored, so transcript replay may be required');
         } else {
           logger.debug('DB', 'Added discovery_tokens column to observations table');
         }
@@ -1348,7 +1348,7 @@ export class SessionStore {
       if (!sumHasDiscoveryTokens) {
         this.db.run('ALTER TABLE session_summaries ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
         if (alreadyStamped) {
-          logger.warn('DB', 'Repaired missing discovery_tokens column on session_summaries (v11 stamp present, column absent — #3446); summaries written while drifted were not recorded and cannot be recovered');
+          logger.warn('DB', 'Repaired missing discovery_tokens column on session_summaries (v11 stamp present, column absent — #3446); summaries written while drifted were not stored, so transcript replay may be required');
         } else {
           logger.debug('DB', 'Added discovery_tokens column to session_summaries table');
         }
