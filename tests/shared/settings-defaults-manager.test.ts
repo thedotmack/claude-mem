@@ -240,13 +240,14 @@ describe('SettingsDefaultsManager', () => {
         const original = JSON.stringify({ env: ['sentinel'], CLAUDE_MEM_MODEL: 'keep-me' });
         writeFileSync(settingsPath, original);
 
-        SettingsDefaultsManager.loadFromFile(settingsPath);
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
         const after = readFileSync(settingsPath, 'utf-8');
         const parsed = JSON.parse(after);
         expect(Array.isArray(parsed)).toBe(false);
         expect(parsed.env).toEqual(['sentinel']);
         expect(parsed.CLAUDE_MEM_MODEL).toBe('keep-me');
+        expect(result.CLAUDE_MEM_MODEL).toBe('keep-me');
       });
     });
 

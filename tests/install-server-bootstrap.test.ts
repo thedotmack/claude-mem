@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { persistServerSettings } from '../src/services/hooks/server-bootstrap.js';
+import { persistServerSettings, canPersistServerSettings } from '../src/services/hooks/server-bootstrap.js';
 
 const VALUES = { apiKey: 'cmem_testkey', projectId: 'proj-test' };
 
@@ -19,32 +19,35 @@ afterEach(() => {
 });
 
 describe('persistServerSettings: corrupt-document write refusal', () => {
-  it('leaves bytes exact and does not write when file has corrupt JSON', () => {
+  it('returns false and leaves bytes exact when file has corrupt JSON', () => {
     const corruptBytes = '{"CLAUDE_MEM_MODEL":"claude-opus-4-8"';
     writeFileSync(settingsPath, corruptBytes, 'utf-8');
 
-    persistServerSettings(settingsPath, VALUES);
+    const result = persistServerSettings(settingsPath, VALUES);
 
+    expect(result).toBe(false);
     expect(readFileSync(settingsPath, 'utf-8')).toBe(corruptBytes);
   });
 });
 
 describe('persistServerSettings: non-record write refusal', () => {
-  it('leaves bytes exact and does not write for a root null', () => {
+  it('returns false and leaves bytes exact for a root null', () => {
     const original = 'null';
     writeFileSync(settingsPath, original, 'utf-8');
 
-    persistServerSettings(settingsPath, VALUES);
+    const result = persistServerSettings(settingsPath, VALUES);
 
+    expect(result).toBe(false);
     expect(readFileSync(settingsPath, 'utf-8')).toBe(original);
   });
 
-  it('leaves bytes exact and does not write for a root array', () => {
+  it('returns false and leaves bytes exact for a root array', () => {
     const original = '["sentinel"]';
     writeFileSync(settingsPath, original, 'utf-8');
 
-    persistServerSettings(settingsPath, VALUES);
+    const result = persistServerSettings(settingsPath, VALUES);
 
+    expect(result).toBe(false);
     expect(readFileSync(settingsPath, 'utf-8')).toBe(original);
   });
 });
@@ -109,13 +112,45 @@ describe('persistServerSettings: env-array routing boundary', () => {
 });
 
 describe('persistServerSettings: missing-file creation', () => {
-  it('creates the parent directory and writes a flat document when no file exists', () => {
+  it('creates the parent directory, writes a flat document, and returns true', () => {
     const deepPath = join(tempDir, 'nested', 'subdir', 'settings.json');
 
-    persistServerSettings(deepPath, VALUES);
+    const result = persistServerSettings(deepPath, VALUES);
 
+    expect(result).toBe(true);
     const written = JSON.parse(readFileSync(deepPath, 'utf-8'));
     expect(written.CLAUDE_MEM_SERVER_API_KEY).toBe('cmem_testkey');
     expect(written.CLAUDE_MEM_SERVER_PROJECT_ID).toBe('proj-test');
+  });
+});
+
+describe('canPersistServerSettings: rotation up-front guard', () => {
+  it('returns false for corrupt JSON, proving rotation will refuse before revoking the old key', () => {
+    const corruptBytes = '{"CLAUDE_MEM_SERVER_API_KEY":"cmem_oldkey"';
+    writeFileSync(settingsPath, corruptBytes, 'utf-8');
+
+    const result = canPersistServerSettings(settingsPath);
+
+    expect(result).toBe(false);
+    expect(readFileSync(settingsPath, 'utf-8')).toBe(corruptBytes);
+  });
+
+  it('returns false for a root array', () => {
+    writeFileSync(settingsPath, '["sentinel"]', 'utf-8');
+    expect(canPersistServerSettings(settingsPath)).toBe(false);
+  });
+
+  it('returns false for a root null', () => {
+    writeFileSync(settingsPath, 'null', 'utf-8');
+    expect(canPersistServerSettings(settingsPath)).toBe(false);
+  });
+
+  it('returns true when the file is missing', () => {
+    expect(canPersistServerSettings(settingsPath)).toBe(true);
+  });
+
+  it('returns true for a valid JSON object', () => {
+    writeFileSync(settingsPath, '{"CLAUDE_MEM_SERVER_API_KEY":"cmem_oldkey"}', 'utf-8');
+    expect(canPersistServerSettings(settingsPath)).toBe(true);
   });
 });

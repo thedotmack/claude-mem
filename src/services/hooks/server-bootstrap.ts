@@ -27,7 +27,7 @@ import { createHash, randomBytes } from 'crypto';
 import { chmodSync, existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { logger } from '../../utils/logger.js';
-import { readJsonFileWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
+import { readJsonFileWithBom, selectSettingsTarget, writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { createPostgresPool, type PostgresPool } from '../../storage/postgres/pool.js';
 import { parsePostgresConfig } from '../../storage/postgres/config.js';
 import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
@@ -126,10 +126,20 @@ export async function rotateServerApiKey(options: RotateOptions = {}): Promise<B
   }
 }
 
+export function canPersistServerSettings(settingsPath: string): boolean {
+  if (!existsSync(settingsPath)) return true;
+  try {
+    const parsed = readJsonFileWithBom<unknown>(settingsPath);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
+
 export function persistServerSettings(
   settingsPath: string,
   values: { apiKey: string; projectId: string; serverBaseUrl?: string },
-): void {
+): boolean {
   const dir = dirname(settingsPath);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
@@ -148,7 +158,7 @@ export function persistServerSettings(
         { settingsPath },
         err,
       );
-      return;
+      return false;
     }
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
       logger.warn(
@@ -156,7 +166,7 @@ export function persistServerSettings(
         'Existing settings file is not a JSON object; leaving file unchanged. Repair or restore the file and rerun the installer.',
         { settingsPath },
       );
-      return;
+      return false;
     }
     existing = parsed as Record<string, unknown>;
   }
@@ -167,13 +177,7 @@ export function persistServerSettings(
   // place. We then write the full `existing` document below (NOT `flat`), so
   // non-env top-level keys (hooks, permissions, apiKeyHelper, ...) survive.
   // Writing `flat` back as the whole file silently dropped them (data loss).
-  const flat = (
-    existing.env !== null &&
-    typeof existing.env === 'object' &&
-    !Array.isArray(existing.env)
-      ? existing.env
-      : existing
-  ) as Record<string, unknown>;
+  const flat = selectSettingsTarget(existing);
 
   // Phase 1d: write the new canonical settings keys. Legacy
   // `CLAUDE_MEM_SERVER_BETA_*` keys are dual-accepted by reads in
@@ -198,6 +202,7 @@ export function persistServerSettings(
   } catch {
     // Non-POSIX filesystems may reject chmod; settings file remains readable.
   }
+  return true;
 }
 
 export function createRawApiKey(): string {

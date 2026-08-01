@@ -82,14 +82,14 @@ describe('Cursor MCP Configuration', () => {
       expect(config.mcpServers['claude-mem'].args).toEqual([newPath]);
     });
 
-    it('recovers from corrupt mcp.json', () => {
+    it('throws on corrupt mcp.json and leaves bytes unchanged', () => {
       mkdirSync(join(tempDir, '.cursor'), { recursive: true });
-      writeFileSync(mcpJsonPath, 'not valid json {{{{');
+      const corruptBytes = 'not valid json {{{{';
+      writeFileSync(mcpJsonPath, corruptBytes);
 
-      configureCursorMcp(mcpJsonPath, mcpServerPath);
+      expect(() => configureCursorMcp(mcpJsonPath, mcpServerPath)).toThrow();
 
-      const config: CursorMcpConfig = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
-      expect(config.mcpServers['claude-mem']).toBeDefined();
+      expect(readFileSync(mcpJsonPath, 'utf-8')).toBe(corruptBytes);
     });
 
     it('handles mcp.json with missing mcpServers key', () => {

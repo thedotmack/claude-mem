@@ -120,13 +120,22 @@ async function runServerKeysRotateCommand(): Promise<void> {
     console.error('Configure Postgres first, then re-run this command.');
     process.exit(1);
   }
-  const { rotateServerApiKey, persistServerSettings } = await import(
+  const { rotateServerApiKey, persistServerSettings, canPersistServerSettings } = await import(
     '../../services/hooks/server-bootstrap.js'
   );
   const { SettingsDefaultsManager } = await import('../../shared/SettingsDefaultsManager.js');
   const { join } = await import('path');
 
   const settingsPath = join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
+
+  // Up-front writability check: refuse before revoking the old key so a
+  // corrupt or non-object settings file never causes credential loss.
+  if (!canPersistServerSettings(settingsPath)) {
+    console.error(styleText('red', 'Cannot rotate: existing settings.json is corrupt or not a JSON object.'));
+    console.error('Repair or restore the file, then re-run this command.');
+    process.exit(1);
+  }
+
   let previousApiKeyId: string | null = null;
   try {
     const flat = readFlatSettings(settingsPath);
@@ -142,10 +151,15 @@ async function runServerKeysRotateCommand(): Promise<void> {
   }
 
   const result = await rotateServerApiKey({ previousApiKeyId });
-  persistServerSettings(settingsPath, {
+  const persisted = persistServerSettings(settingsPath, {
     apiKey: result.rawKey,
     projectId: result.projectId,
   });
+  if (!persisted) {
+    console.error(styleText('red', 'Key rotated in database but settings.json could not be updated.'));
+    console.error(`New API key ID: ${result.apiKeyId}. Repair settings.json and update CLAUDE_MEM_SERVER_API_KEY manually.`);
+    process.exit(1);
+  }
   console.log(JSON.stringify({
     rotated: true,
     apiKeyId: result.apiKeyId,

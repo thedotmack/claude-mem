@@ -45,7 +45,7 @@ import { existsSync, readFileSync } from 'fs';
 import { hostname } from 'os';
 import { randomUUID } from 'crypto';
 import { logger } from '../../utils/logger.js';
-import { parseJsonWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
+import { parseJsonWithBom, selectSettingsTarget, writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import {
@@ -1448,9 +1448,7 @@ export class CloudSync {
     }
     // Settings files are flat post-migration, but tolerate the legacy nested
     // {env:{...}} shape rather than writing a mixed schema.
-    const target = settings.env && typeof settings.env === 'object'
-      ? settings.env as Record<string, unknown>
-      : settings;
+    const target = selectSettingsTarget(settings);
     target.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID = deviceId;
     writeJsonFileAtomic(this.settingsPath, settings);
   }

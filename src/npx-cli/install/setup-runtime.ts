@@ -46,7 +46,7 @@ function userHasOptedOutOfVectorSearch(): boolean {
   }
   if (!raw || typeof raw !== 'object') return false;
   const record = raw as Record<string, unknown>;
-  const envBlock = (record.env && typeof record.env === 'object')
+  const envBlock = (record.env && typeof record.env === 'object' && !Array.isArray(record.env))
     ? (record.env as Record<string, unknown>)
     : {};
   const value = record.CLAUDE_MEM_DISABLE_VECTOR_SEARCH ?? envBlock.CLAUDE_MEM_DISABLE_VECTOR_SEARCH;

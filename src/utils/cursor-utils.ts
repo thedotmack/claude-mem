@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from '
 import { join } from 'path';
 import { logger } from './logger.js';
 import { toBmpSafe } from './bmp-safe.js';
+import { readJsonSafe } from './json-utils.js';
 
 export interface CursorProjectRegistry {
   [projectName: string]: {
@@ -91,20 +92,9 @@ export function configureCursorMcp(mcpJsonPath: string, mcpServerScriptPath: str
   const dir = join(mcpJsonPath, '..');
   mkdirSync(dir, { recursive: true });
 
-  let config: CursorMcpConfig = { mcpServers: {} };
-  if (existsSync(mcpJsonPath)) {
-    try {
-      config = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
-      if (!config.mcpServers) {
-        config.mcpServers = {};
-      }
-    } catch (error) {
-      logger.error('CONFIG', 'Failed to read MCP config, starting fresh', {
-        file: mcpJsonPath,
-        error: error instanceof Error ? error.message : String(error)
-      });
-      config = { mcpServers: {} };
-    }
+  const config = readJsonSafe<CursorMcpConfig>(mcpJsonPath, { mcpServers: {} });
+  if (!config.mcpServers) {
+    config.mcpServers = {};
   }
 
   config.mcpServers['claude-mem'] = {

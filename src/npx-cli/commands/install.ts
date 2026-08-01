@@ -10,7 +10,7 @@ import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { parseJsonWithBom, writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
+import { parseJsonWithBom, selectSettingsTarget, writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
 import { formatHostForUrl } from '../../shared/worker-utils.js';
@@ -240,7 +240,7 @@ function enablePluginInClaudeSettings(): void {
  */
 export function disableClaudeAutoMemory(): boolean {
   const settings = readJsonSafe<Record<string, any>>(claudeSettingsPath(), {});
-  const env = (settings.env && typeof settings.env === 'object') ? settings.env : {};
+  const env = (settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env)) ? settings.env : {};
 
   if (env.CLAUDE_CODE_DISABLE_AUTO_MEMORY === '1') {
     return false;
@@ -791,7 +791,6 @@ export function mergeSettings(
     // When the existing file can't be parsed or isn't a non-array object,
     // refuse the write and leave the bytes untouched.
     let document: Record<string, unknown> = {};
-    let envNested = false;
     if (existsSync(settingsPath)) {
       let parsed: unknown;
       try {
@@ -816,11 +815,6 @@ export function mergeSettings(
         return false;
       }
       document = parsed as Record<string, unknown>;
-      // Select nested mode only when env is a non-null, non-array object.
-      envNested =
-        document.env !== null &&
-        typeof document.env === 'object' &&
-        !Array.isArray(document.env);
     } else {
       const dir = dirname(settingsPath);
       if (!existsSync(dir)) {
@@ -828,9 +822,7 @@ export function mergeSettings(
       }
     }
 
-    const target = envNested
-      ? (document.env as Record<string, unknown>)
-      : document;
+    const target = selectSettingsTarget(document);
     for (const [key, value] of Object.entries(updates)) {
       target[key] = value;
     }
@@ -993,14 +985,21 @@ async function bootstrapAndPersistServerApiKey(): Promise<void> {
     '../../services/hooks/server-bootstrap.js'
   );
   const result = await bootstrapServerApiKey();
-  persistServerSettings(USER_SETTINGS_PATH, {
+  const persisted = persistServerSettings(USER_SETTINGS_PATH, {
     apiKey: result.rawKey,
     projectId: result.projectId,
   });
-  log.info(
-    `Provisioned local hook API key (project=${result.projectId.slice(0, 8)}…). `
-      + 'Settings saved with mode 0600.',
-  );
+  if (persisted) {
+    log.info(
+      `Provisioned local hook API key (project=${result.projectId.slice(0, 8)}…). `
+        + 'Settings saved with mode 0600.',
+    );
+  } else {
+    console.warn(
+      '[install] Server API key provisioned but settings.json could not be updated. '
+        + 'Repair or restore ~/.claude-mem/settings.json and rerun the installer.',
+    );
+  }
 }
 
 /**
