@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, spyOn } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { saveStatusClass } from '../../src/ui/viewer/components/ContextSettingsModal';
@@ -233,6 +233,27 @@ describe('describeSaveFailure', () => {
     expect(msgPart).not.toMatch(/[\u0000-\u001f\u007f]/);
     expect([...msgPart].length).toBe(SAVE_ERROR_MAX_CHARS);
     expect(msgPart.endsWith('\u2026')).toBe(true);
+  });
+
+  it('logs only the bounded diagnostic instead of the raw response body', async () => {
+    const consoleErrorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const rawSecret = 'internal-secret-' + 'x'.repeat(70000);
+      const result = await describeSaveFailure(new Response(JSON.stringify({ error: 'short diagnostic', details: rawSecret }), {
+        status: 400,
+        statusText: 'Bad Request',
+        headers: { 'Content-Type': 'application/json' },
+      }));
+
+      expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
+      const logged = consoleErrorSpy.mock.calls[0] as unknown[];
+      expect(logged[1]).toBe(400);
+      expect(logged[2]).toBe('short diagnostic');
+      expect(logged.join(' ')).not.toContain('internal-secret-');
+      expect(result).toContain('\u2717 Error:');
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 
   it('structural proof: 200 response.ok guard prevents describeSaveFailure (invariant 5)', async () => {

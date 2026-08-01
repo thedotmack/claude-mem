@@ -174,7 +174,7 @@ export async function describeSaveFailure(response: SaveErrorResponse): Promise<
     normalized = [...normalized].slice(0, SAVE_ERROR_MAX_CHARS - 1).join('') + '\u2026';
   }
 
-  console.error('Settings save failed:', response.status, raw);
+  console.error('Settings save failed:', response.status, normalized);
 
   return `\u2717 Error: ${normalized}`;
 }
