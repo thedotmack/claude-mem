@@ -485,7 +485,7 @@ export function ContextSettingsModal({
         {/* Footer with Save button */}
         <div className="modal-footer">
           <div className="save-status">
-            {saveStatus && <span className={saveStatus.includes('✓') ? 'success' : saveStatus.includes('✗') ? 'error' : ''}>{saveStatus}</span>}
+            {saveStatus && <span className={saveStatus.includes('✗') ? 'error' : saveStatus.includes('✓') ? 'success' : ''}>{saveStatus}</span>}
           </div>
           <button
             className="save-btn"

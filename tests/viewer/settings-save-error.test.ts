@@ -217,7 +217,7 @@ describe('describeSaveFailure', () => {
     expect(result).toBe('\u2717 Error: Bad Request');
   });
 
-  it('{error:"value \u2713 rejected"} strips \u2713 from server message to prevent styling conflict', async () => {
+  it('{error:"value \u2713 rejected"} preserves \u2713 in output; styling fix is at ContextSettingsModal:488', async () => {
     const body = JSON.stringify({ error: 'value \u2713 rejected' });
     const response = new Response(body, {
       status: 400,
@@ -225,7 +225,7 @@ describe('describeSaveFailure', () => {
       headers: { 'Content-Type': 'application/json' }
     });
     const result = await describeSaveFailure(response);
-    expect(result).toBe('\u2717 Error: value rejected');
+    expect(result).toBe('\u2717 Error: value \u2713 rejected');
   });
 
   it('clamps on code points not code units: surrogate pair at boundary is not split', async () => {

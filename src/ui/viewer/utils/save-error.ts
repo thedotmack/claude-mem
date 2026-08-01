@@ -57,7 +57,7 @@ export async function describeSaveFailure(response: SaveErrorResponse): Promise<
     }
   }
 
-  const ctrlChars = /[\s\u0000-\u001f\u007f\u2713\u2717]+/g;
+  const ctrlChars = /[\s\u0000-\u001f\u007f]+/g;
   const normalize = (s: string) => s.replace(ctrlChars, ' ').trim();
   let normalized = normalize(message);
 
