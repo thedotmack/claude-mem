@@ -3,6 +3,7 @@ import { Settings } from '../types';
 import { DEFAULT_SETTINGS } from '../constants/settings';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
+import { describeSaveFailure } from '../utils/save-error';
 
 export function useSettings() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -33,7 +34,7 @@ export function useSettings() {
     });
 
     if (!response.ok) {
-      setSaveStatus(`✗ Error: ${response.status === 401 ? 'Unauthorized' : response.statusText}`);
+      setSaveStatus(await describeSaveFailure(response));
       setIsSaving(false);
       return;
     }
