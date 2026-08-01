@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { mergeSettings } from '../src/npx-cli/commands/install.js';
+import { enablePluginInClaudeSettings, mergeSettings } from '../src/npx-cli/commands/install.js';
 
 let tempDir: string;
 let settingsPath: string;
@@ -182,5 +182,23 @@ describe('mergeSettings: missing-file creation', () => {
 
     expect(mergeSettings({ CLAUDE_MEM_WORKER_PORT: '37779' }, blockedPath)).toBe(false);
     expect(readFileSync(blockedParent, 'utf-8')).toBe('not a directory');
+  });
+});
+
+describe('enablePluginInClaudeSettings: document-shape refusal', () => {
+  it('refuses a root array without replacing its bytes', () => {
+    const original = '["sentinel"]';
+    writeFileSync(settingsPath, original, 'utf-8');
+
+    expect(() => enablePluginInClaudeSettings(settingsPath)).toThrow();
+    expect(readFileSync(settingsPath, 'utf-8')).toBe(original);
+  });
+
+  it('refuses an enabledPlugins array without replacing its bytes', () => {
+    const original = JSON.stringify({ enabledPlugins: ['sentinel'] });
+    writeFileSync(settingsPath, original, 'utf-8');
+
+    expect(() => enablePluginInClaudeSettings(settingsPath)).toThrow();
+    expect(readFileSync(settingsPath, 'utf-8')).toBe(original);
   });
 });

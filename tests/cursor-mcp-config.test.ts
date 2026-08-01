@@ -92,6 +92,24 @@ describe('Cursor MCP Configuration', () => {
       expect(readFileSync(mcpJsonPath, 'utf-8')).toBe(corruptBytes);
     });
 
+    it('throws on a root array and leaves bytes unchanged', () => {
+      mkdirSync(join(tempDir, '.cursor'), { recursive: true });
+      const original = '["sentinel"]';
+      writeFileSync(mcpJsonPath, original);
+
+      expect(() => configureCursorMcp(mcpJsonPath, mcpServerPath)).toThrow();
+      expect(readFileSync(mcpJsonPath, 'utf-8')).toBe(original);
+    });
+
+    it('throws on an mcpServers array and leaves bytes unchanged', () => {
+      mkdirSync(join(tempDir, '.cursor'), { recursive: true });
+      const original = JSON.stringify({ mcpServers: ['sentinel'] });
+      writeFileSync(mcpJsonPath, original);
+
+      expect(() => configureCursorMcp(mcpJsonPath, mcpServerPath)).toThrow();
+      expect(readFileSync(mcpJsonPath, 'utf-8')).toBe(original);
+    });
+
     it('handles mcp.json with missing mcpServers key', () => {
       mkdirSync(join(tempDir, '.cursor'), { recursive: true });
       writeFileSync(mcpJsonPath, '{}');

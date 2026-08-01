@@ -123,10 +123,7 @@ async function runServerKeysRotateCommand(): Promise<void> {
   const { rotateServerApiKey, persistServerSettings, canPersistServerSettings } = await import(
     '../../services/hooks/server-bootstrap.js'
   );
-  const { SettingsDefaultsManager } = await import('../../shared/SettingsDefaultsManager.js');
-  const { join } = await import('path');
-
-  const settingsPath = join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
+  const { USER_SETTINGS_PATH: settingsPath } = await import('../../shared/paths.js');
 
   // Up-front writability check: refuse before revoking the old key so a
   // corrupt or non-object settings file never causes credential loss.
@@ -180,15 +177,32 @@ async function runServerKeysRotateCommand(): Promise<void> {
     }
     process.exit(1);
   }
+  let cleanupPersisted = false;
   try {
-    if (!persistServerSettings(settingsPath, {
+    cleanupPersisted = persistServerSettings(settingsPath, {
       apiKey: result.rawKey,
       projectId: result.projectId,
-    })) {
-      console.error('The new API key is active, but its cleanup marker could not be removed from settings.json.');
-    }
+    });
   } catch {
-    console.error('The new API key is active, but its cleanup marker could not be removed from settings.json.');
+    cleanupPersisted = false;
+  }
+  if (!cleanupPersisted) {
+    let retryMarkerPersisted = false;
+    try {
+      retryMarkerPersisted = persistServerSettings(settingsPath, {
+        apiKey: result.rawKey,
+        projectId: result.projectId,
+        previousApiKeyId: result.apiKeyId,
+      });
+    } catch {
+      retryMarkerPersisted = false;
+    }
+    if (!retryMarkerPersisted) {
+      console.error(styleText('red', 'The new API key is active, but its retry marker could not be saved. Repair settings.json before rotating again.'));
+      process.exit(1);
+    }
+    console.error('The new API key is active; its ID was saved for the next rotation retry.');
+    process.exit(1);
   }
   console.log(JSON.stringify({
     rotated: true,

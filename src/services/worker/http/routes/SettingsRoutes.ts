@@ -12,7 +12,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
-import { parseJsonWithBom, writeJsonFileAtomic } from '../../../../shared/atomic-json.js';
+import { parseJsonWithBom, selectSettingsTarget, writeJsonFileAtomic } from '../../../../shared/atomic-json.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
@@ -62,7 +62,15 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (existsSync(settingsPath)) {
       const settingsData = readFileSync(settingsPath, 'utf-8');
       try {
-        settings = parseJsonWithBom(settingsData);
+        const parsed = parseJsonWithBom<unknown>(settingsData);
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          res.status(500).json({
+            success: false,
+            error: 'Settings file is not a JSON object. Repair or restore the file and rerun the worker.'
+          });
+          return;
+        }
+        settings = parsed as Record<string, unknown>;
       } catch (parseError) {
         const normalizedParseError = parseError instanceof Error ? parseError : new Error(String(parseError));
         logger.error('HTTP', 'Failed to parse settings file', { settingsPath }, normalizedParseError);
@@ -106,9 +114,10 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
     ];
 
+    const target = selectSettingsTarget(settings);
     for (const key of settingKeys) {
       if (req.body[key] !== undefined) {
-        settings[key] = req.body[key];
+        target[key] = req.body[key];
       }
     }
 
@@ -116,8 +125,8 @@ export class SettingsRoutes extends BaseRouteHandler {
     // to existsSync/posix_spawn (no shell), where a literal `~` fails with
     // ENOENT and silently breaks all memory capture. Store the resolved path so
     // the resolver never sees the tilde.
-    if (typeof settings.CLAUDE_CODE_PATH === 'string' && settings.CLAUDE_CODE_PATH) {
-      settings.CLAUDE_CODE_PATH = expandTilde(settings.CLAUDE_CODE_PATH);
+    if (typeof target.CLAUDE_CODE_PATH === 'string' && target.CLAUDE_CODE_PATH) {
+      target.CLAUDE_CODE_PATH = expandTilde(target.CLAUDE_CODE_PATH);
     }
 
     writeJsonFileAtomic(settingsPath, settings);

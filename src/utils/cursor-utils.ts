@@ -94,7 +94,11 @@ export function configureCursorMcp(mcpJsonPath: string, mcpServerScriptPath: str
 
   let config: CursorMcpConfig;
   try {
-    config = readJsonSafe<CursorMcpConfig>(mcpJsonPath, { mcpServers: {} });
+    const parsed = readJsonSafe<unknown>(mcpJsonPath, { mcpServers: {} });
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Cursor MCP config is not a JSON object');
+    }
+    config = parsed as CursorMcpConfig;
   } catch (error) {
     logger.error('CONFIG', 'Failed to read Cursor MCP config; repair or remove mcp.json before retrying', {
       file: mcpJsonPath,
@@ -102,8 +106,10 @@ export function configureCursorMcp(mcpJsonPath: string, mcpServerScriptPath: str
     });
     throw error;
   }
-  if (!config.mcpServers) {
+  if (config.mcpServers === undefined) {
     config.mcpServers = {};
+  } else if (config.mcpServers === null || typeof config.mcpServers !== 'object' || Array.isArray(config.mcpServers)) {
+    throw new Error('Cursor MCP config has a non-object mcpServers value');
   }
 
   config.mcpServers['claude-mem'] = {

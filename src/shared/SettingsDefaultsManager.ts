@@ -248,10 +248,15 @@ export class SettingsDefaultsManager {
       const settings = parseJsonWithBom<Record<string, any>>(settingsData);
 
       let flatSettings = settings;
-      if (settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env)) {
+      const nestedEnv = settings.env;
+      const hasClaudeSetting = nestedEnv
+        && typeof nestedEnv === 'object'
+        && !Array.isArray(nestedEnv)
+        && Object.keys(nestedEnv).some(key => key.startsWith('CLAUDE_'));
+      if (hasClaudeSetting) {
         flatSettings = { ...settings };
         delete flatSettings.env;
-        Object.assign(flatSettings, settings.env);
+        Object.assign(flatSettings, nestedEnv);
 
         try {
           writeJsonFileAtomic(settingsPath, flatSettings);

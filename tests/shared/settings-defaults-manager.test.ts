@@ -253,6 +253,22 @@ describe('SettingsDefaultsManager', () => {
         expect(parsed.CLAUDE_MEM_MODEL).toBe('keep-me');
         expect(result.CLAUDE_MEM_MODEL).toBe('keep-me');
       });
+
+      it('should preserve an object-valued env setting across repeated loads', () => {
+        const nestedValue = { enabled: true, sources: ['local'] };
+        writeFileSync(settingsPath, JSON.stringify({
+          env: {
+            env: nestedValue,
+            CLAUDE_MEM_MODEL: 'nested-model',
+          },
+        }));
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).env).toEqual(nestedValue);
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).env).toEqual(nestedValue);
+      });
     });
 
     // A fresh settings.json is seeded with every default, so installs created
