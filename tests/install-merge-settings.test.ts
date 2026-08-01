@@ -161,6 +161,21 @@ describe('mergeSettings: nested-env merge preservation', () => {
     expect(written.env).toEqual(original.env);
     expect(written.CLAUDE_MEM_MODEL).toBe('claude-opus-4-8');
   });
+
+  it('keeps nested claude-mem settings nested beside unrelated root Claude settings', () => {
+    const original = {
+      CLAUDE_CODE_MAX_OUTPUT_CHARS: '12000',
+      env: { CLAUDE_MEM_MODEL: 'claude-opus-4-5', KEEP_ME: 'yes' },
+    };
+    writeFileSync(settingsPath, JSON.stringify(original), 'utf-8');
+
+    expect(mergeSettings({ CLAUDE_MEM_MODEL: 'claude-opus-4-8' }, settingsPath)).toBe(true);
+
+    const written = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    expect(written.CLAUDE_CODE_MAX_OUTPUT_CHARS).toBe('12000');
+    expect(written.CLAUDE_MEM_MODEL).toBeUndefined();
+    expect(written.env).toEqual({ CLAUDE_MEM_MODEL: 'claude-opus-4-8', KEEP_ME: 'yes' });
+  });
 });
 
 describe('mergeSettings: env-array routing boundary', () => {

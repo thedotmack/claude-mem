@@ -94,6 +94,22 @@ describe('persistServerSettings: nested-env merge preservation', () => {
     expect(written.env.CLAUDE_MEM_RUNTIME).toBe('server');
     expect(written.env.EXISTING_VAR).toBe('keep-me');
   });
+
+  it('keeps API keys in nested env beside unrelated root Claude settings', () => {
+    const original = {
+      CLAUDE_CODE_MAX_OUTPUT_CHARS: '12000',
+      env: { CLAUDE_MEM_RUNTIME: 'server' },
+    };
+    writeFileSync(settingsPath, JSON.stringify(original, null, 2), 'utf-8');
+
+    persistServerSettings(settingsPath, VALUES);
+
+    const written = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    expect(written.CLAUDE_CODE_MAX_OUTPUT_CHARS).toBe('12000');
+    expect(written.CLAUDE_MEM_SERVER_API_KEY).toBeUndefined();
+    expect(written.env.CLAUDE_MEM_SERVER_API_KEY).toBe('cmem_testkey');
+    expect(written.env.CLAUDE_MEM_SERVER_PROJECT_ID).toBe('proj-test');
+  });
 });
 
 describe('persistServerSettings: env-array routing boundary', () => {

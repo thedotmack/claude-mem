@@ -37,6 +37,7 @@ describe('SettingsRoutes settings document writes', () => {
   it('updates nested env settings in place and preserves the document shape', async () => {
     writeFileSync(settingsPath, JSON.stringify({
       theme: 'dark',
+      CLAUDE_CODE_MAX_OUTPUT_CHARS: '12000',
       env: {
         CLAUDE_MEM_MODEL: 'old-model',
         KEEP_ME: 'yes',
@@ -57,6 +58,7 @@ describe('SettingsRoutes settings document writes', () => {
       expect(response.status).toBe(200);
       const written = JSON.parse(readFileSync(settingsPath, 'utf-8'));
       expect(written.theme).toBe('dark');
+      expect(written.CLAUDE_CODE_MAX_OUTPUT_CHARS).toBe('12000');
       expect(written.env.CLAUDE_MEM_MODEL).toBe('new-model');
       expect(written.env.KEEP_ME).toBe('yes');
       expect(written.CLAUDE_MEM_MODEL).toBeUndefined();

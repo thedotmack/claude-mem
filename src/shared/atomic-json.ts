@@ -52,8 +52,8 @@ export function isNestedSettingsDocument(document: Record<string, unknown>): boo
   if (nestedEnv === null || typeof nestedEnv !== 'object' || Array.isArray(nestedEnv)) {
     return false;
   }
-  const hasRootClaudeSetting = Object.keys(document).some(key => key.startsWith('CLAUDE_'));
-  return !hasRootClaudeSetting && Object.keys(nestedEnv).some(key => key.startsWith('CLAUDE_'));
+  const hasRootClaudeMemSetting = Object.keys(document).some(key => key.startsWith('CLAUDE_MEM_'));
+  return !hasRootClaudeMemSetting && Object.keys(nestedEnv).some(key => key.startsWith('CLAUDE_'));
 }
 
 export function selectSettingsTarget(document: Record<string, unknown>): Record<string, unknown> {
