@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { saveStatusClass } from '../../src/ui/viewer/components/ContextSettingsModal';
+import { submitSettings } from '../../src/ui/viewer/hooks/useSettings';
 import { describeSaveFailure, SAVE_ERROR_MAX_CHARS } from '../../src/ui/viewer/utils/save-error';
 
 const REPRO_PATH = join(import.meta.dir, '../fixtures/settings-save-error-repro.json');
@@ -186,6 +187,35 @@ describe('describeSaveFailure', () => {
       text: async () => JSON.stringify({ success: true })
     });
     expect(wouldBeWrong).toStartWith('\u2717 Error:');
+  });
+
+  it('runs the production submitSettings failure branch with a mocked fetch', async () => {
+    const statuses: string[] = [];
+    let saving = true;
+    await submitSettings({} as never, {
+      fetchImpl: async () => new Response(reproRaw, { status: 400, statusText: 'Bad Request' }),
+      setSettings: () => {},
+      setSaveStatus: status => statuses.push(status),
+      setIsSaving: value => { saving = value; },
+    });
+    expect(statuses).toEqual([
+      '\u2717 Error: CLAUDE_MEM_GEMINI_MODEL must be one of: gemini-flash-latest, gemini-flash-lite-latest, gemini-3.5-flash, gemini-3.1-flash-lite, gemini-3-flash-preview',
+    ]);
+    expect(saving).toBe(false);
+  });
+
+  it('keeps the production success and 2xx-error branches separate from the extractor', async () => {
+    const statuses: string[] = [];
+    let saved = false;
+    const deps = {
+      fetchImpl: async () => new Response(JSON.stringify({ success: false, error: 'boom' }), { status: 200 }),
+      setSettings: () => { saved = true; },
+      setSaveStatus: (status: string) => statuses.push(status),
+      setIsSaving: () => {},
+    };
+    await submitSettings({} as never, deps);
+    expect(statuses).toEqual(['\u2717 Error: boom']);
+    expect(saved).toBe(false);
   });
 
   it('{message:"rate limit exceeded"} uses message field when error is absent', async () => {
