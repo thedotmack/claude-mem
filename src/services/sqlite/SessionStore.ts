@@ -1323,23 +1323,36 @@ export class SessionStore {
   }
 
   private ensureDiscoveryTokensColumn(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(11) as SchemaVersion | undefined;
-    if (applied) return;
+    // Not gated on schema_versions row 11: a pre-13.12.0 v7 rebuild can drop
+    // the column while leaving row 11 intact (#3446), so affected DBs have that
+    // version row but not the column. The PRAGMA checks are the real guard;
+    // version 11 is recorded for bookkeeping only.
+    const alreadyStamped = !!(this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(11) as SchemaVersion | undefined);
 
     const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
-    const obsHasDiscoveryTokens = observationsInfo.some(col => col.name === 'discovery_tokens');
-
-    if (!obsHasDiscoveryTokens) {
-      this.db.run('ALTER TABLE observations ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
-      logger.debug('DB', 'Added discovery_tokens column to observations table');
+    if (observationsInfo.length > 0) {
+      const obsHasDiscoveryTokens = observationsInfo.some(col => col.name === 'discovery_tokens');
+      if (!obsHasDiscoveryTokens) {
+        this.db.run('ALTER TABLE observations ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
+        if (alreadyStamped) {
+          logger.warn('DB', 'Repaired missing discovery_tokens column on observations (v11 stamp present, column absent — #3446)');
+        } else {
+          logger.debug('DB', 'Added discovery_tokens column to observations table');
+        }
+      }
     }
 
     const summariesInfo = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
-    const sumHasDiscoveryTokens = summariesInfo.some(col => col.name === 'discovery_tokens');
-
-    if (!sumHasDiscoveryTokens) {
-      this.db.run('ALTER TABLE session_summaries ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
-      logger.debug('DB', 'Added discovery_tokens column to session_summaries table');
+    if (summariesInfo.length > 0) {
+      const sumHasDiscoveryTokens = summariesInfo.some(col => col.name === 'discovery_tokens');
+      if (!sumHasDiscoveryTokens) {
+        this.db.run('ALTER TABLE session_summaries ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
+        if (alreadyStamped) {
+          logger.warn('DB', 'Repaired missing discovery_tokens column on session_summaries (v11 stamp present, column absent — #3446)');
+        } else {
+          logger.debug('DB', 'Added discovery_tokens column to session_summaries table');
+        }
+      }
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(11, new Date().toISOString());
