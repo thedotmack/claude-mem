@@ -1,10 +1,15 @@
 import { describe, it, expect } from 'bun:test';
 import {
   classifyObserverOutput,
+  hasClosedObservationBlock,
   isAuthFailureObserverOutput,
   isQuotaLimitedObserverOutput,
   previewOutput,
 } from '../../src/sdk/output-classifier.js';
+import { parseAgentXml } from '../../src/sdk/parser.js';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
+
+ModeManager.getInstance().loadMode('code');
 
 describe('classifyObserverOutput (plan-11 #2485)', () => {
   it('classifies valid <observation> XML as xml', () => {
@@ -94,6 +99,66 @@ describe('isAuthFailureObserverOutput', () => {
     expect(isAuthFailureObserverOutput('No observations to record.')).toBe(false);
     expect(isAuthFailureObserverOutput('Please run /login in the observed project instructions.')).toBe(false);
     expect(isAuthFailureObserverOutput('The project authentication guide says to run /login before testing.')).toBe(false);
+  });
+});
+
+describe('hasClosedObservationBlock', () => {
+  it('matches the parser block shape across observer output variants', () => {
+    const shapes = [
+      {
+        name: 'reporter drift block',
+        raw: '<observation><kind>final-phase-1-verification-complete</kind><detail>All source files verified.</detail></observation>',
+        expected: true,
+        parsedValid: false,
+      },
+      {
+        name: 'valid observation',
+        raw: '<observation><type>discovery</type><title>Real finding</title></observation>',
+        expected: true,
+        parsedValid: true,
+      },
+      {
+        name: 'bare mention',
+        raw: 'I cannot continue <observation>',
+        expected: false,
+        parsedValid: false,
+      },
+      {
+        name: 'attributed root',
+        raw: '<observation type="discovery"><title>Attributed root</title></observation>',
+        expected: false,
+        parsedValid: false,
+      },
+      {
+        name: 'fenced drift block',
+        raw: '```xml\n<observation><kind>drift</kind></observation>\n```',
+        expected: true,
+        parsedValid: false,
+      },
+      {
+        name: 'summary false positive',
+        raw: '<summary><notes>no sub-tags</notes></summary>',
+        expected: false,
+        parsedValid: false,
+      },
+      {
+        name: 'skip summary',
+        raw: '<skip_summary reason="nothing to do"/>',
+        expected: false,
+        parsedValid: true,
+      },
+      { name: 'empty', raw: '', expected: false, parsedValid: false },
+      { name: 'prose', raw: 'No observations to record.', expected: false, parsedValid: false },
+    ];
+
+    for (const shape of shapes) {
+      const parsed = parseAgentXml(shape.raw);
+      const parserBlockShape = /<observation>[\s\S]*?<\/observation>/.test(shape.raw);
+
+      expect(parserBlockShape, shape.name).toBe(shape.expected);
+      expect(hasClosedObservationBlock(shape.raw), shape.name).toBe(parserBlockShape);
+      expect(parsed.valid, shape.name).toBe(shape.parsedValid);
+    }
   });
 });
 

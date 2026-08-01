@@ -3,6 +3,7 @@ import { logger } from '../../../utils/logger.js';
 import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
 import {
   classifyObserverOutput,
+  hasClosedObservationBlock,
   isAuthFailureObserverOutput,
   isQuotaLimitedObserverOutput,
   previewOutput,
@@ -30,6 +31,7 @@ export interface ObservationFileEvidence {
 const READ_TOOL_NAMES = new Set(['Read']);
 const WRITE_TOOL_NAMES = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'write_file']);
 const PATCH_TOOL_NAMES = new Set(['apply_patch']);
+const MAX_CONSECUTIVE_SCHEMA_DRIFTS = 3;
 
 export function extractObservationFileEvidence(messages: ReadonlyArray<ObservationFileEvidenceMessage>): ObservationFileEvidence {
   const filesRead: string[] = [];
@@ -341,6 +343,47 @@ export async function processAgentResponse(
         remediation: '/login',
         preview: previewOutput(text),
       });
+      return;
+    }
+
+    if (hasClosedObservationBlock(text)) {
+      const outputClass = classifyObserverOutput(text);
+      const preview = previewOutput(text);
+      session.consecutiveInvalidOutputs += 1;
+
+      const lastMessage = session.conversationHistory.at(-1);
+      if (lastMessage?.role === 'assistant' && lastMessage.content === text) {
+        session.conversationHistory.pop();
+      }
+
+      if (session.consecutiveInvalidOutputs < MAX_CONSECUTIVE_SCHEMA_DRIFTS) {
+        logger.error('PARSER', `${agentName} returned observer schema drift; resetting queued batch`, {
+          sessionId: session.sessionDbId,
+          outputClass,
+          preview,
+          consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+        });
+
+        await sessionManager.resetProcessingToPending(session.sessionDbId);
+        session.abortReason = 'drift:observer_schema';
+        try {
+          session.abortController.abort();
+        } catch {
+          // best-effort; AbortController.abort() should not throw in normal use.
+        }
+        worker?.broadcastProcessingStatus?.();
+        return;
+      }
+
+      logger.error('PARSER', `${agentName} observer schema drift did not clear across respawns; dropping queued batch`, {
+        sessionId: session.sessionDbId,
+        outputClass,
+        preview,
+        consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+      });
+      session.consecutiveInvalidOutputs = 0;
+      await sessionManager.confirmClaimedMessages(session.sessionDbId);
+      session.earliestPendingTimestamp = null;
       return;
     }
 

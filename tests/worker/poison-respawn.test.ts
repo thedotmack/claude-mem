@@ -1,10 +1,13 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import { logger } from '../../src/utils/logger.js';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import { processAgentResponse } from '../../src/services/worker/agents/ResponseProcessor.js';
 import { handleGeneratorExit } from '../../src/services/worker/session/GeneratorExitHandler.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { WorkerRef } from '../../src/services/worker/agents/types.js';
+
+ModeManager.getInstance().loadMode('code');
 
 function makeDbManager(storeObservations = mock(() => ({ observationIds: [], summaryId: null, createdAtEpoch: 0 }))): DatabaseManager {
   return {
@@ -41,6 +44,13 @@ async function queueAndClaimOne(sm: SessionManager, sessionDbId: number): Promis
   const claimed = await iterator.next();
   expect(claimed.done).toBe(false);
   expect(sm.getMessageBuffer().getPendingCount(sessionDbId)).toBe(1);
+  await iterator.return?.();
+}
+
+async function claimPending(sm: SessionManager, sessionDbId: number): Promise<void> {
+  const iterator = sm.getMessageIterator(sessionDbId);
+  const claimed = await iterator.next();
+  expect(claimed.done).toBe(false);
   await iterator.return?.();
 }
 
@@ -377,5 +387,156 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
 
     expect(skipSm.getMessageBuffer().getPendingCount(4)).toBe(0);
     expect(quotaSm.getMessageBuffer().getPendingCount(5)).toBe(1);
+  });
+
+  it('recovers a reporter-shaped schema drift by requeueing and aborting the observer', async () => {
+    const driftedResponse = `<observation>
+  <kind>final-phase-1-verification-complete</kind>
+  <detail>All source files verified: Task 5 report (306 lines).</detail>
+</observation>`;
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(12, 'do the thing', 1);
+    session.memorySessionId = 'mem-12';
+    session.earliestPendingTimestamp = 123;
+    session.conversationHistory.push({ role: 'assistant', content: 'previous response' });
+    const historyLengthBefore = session.conversationHistory.length;
+    const tailBefore = session.conversationHistory.at(-1)?.content;
+    await queueAndClaimOne(sm, 12);
+
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+    const worker = makeWorker();
+
+    await processAgentResponse(
+      driftedResponse,
+      session,
+      makeDbManager(),
+      sm,
+      worker,
+      0,
+      null,
+      'TestAgent',
+    );
+
+    expect(resetSpy).toHaveBeenCalledWith(12);
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(sm.getMessageBuffer().getPendingCount(12)).toBe(1);
+    expect(session.consecutiveInvalidOutputs).toBe(1);
+    expect(session.abortReason).toBe('drift:observer_schema');
+    expect(session.abortController.signal.aborted).toBe(true);
+    expect(worker.broadcastProcessingStatus).toHaveBeenCalled();
+    expect(session.earliestPendingTimestamp).toBe(123);
+    expect(session.conversationHistory).toHaveLength(historyLengthBefore);
+    expect(session.conversationHistory.at(-1)?.content).toBe(tailBefore);
+    expect(logger.error).toHaveBeenCalledWith(
+      'PARSER',
+      expect.stringContaining('schema drift'),
+      expect.objectContaining({
+        sessionId: 12,
+        outputClass: 'xml',
+        consecutiveInvalidOutputs: 1,
+      }),
+    );
+  });
+
+  it('drops the batch on the third drift without aborting again', async () => {
+    const driftedResponse = '<observation><kind>drift</kind><detail>still invalid</detail></observation>';
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(13, 'do the thing', 1);
+    session.memorySessionId = 'mem-13';
+    await queueAndClaimOne(sm, 13);
+
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (attempt > 1) {
+        session.abortController = new AbortController();
+        await claimPending(sm, 13);
+      }
+
+      resetSpy.mockClear();
+
+      await processAgentResponse(
+        driftedResponse,
+        session,
+        makeDbManager(),
+        sm,
+        makeWorker(),
+        0,
+        null,
+        'TestAgent',
+      );
+
+      if (attempt < 3) {
+        expect(resetSpy).toHaveBeenCalledTimes(1);
+        expect(session.abortController.signal.aborted).toBe(true);
+        expect(session.consecutiveInvalidOutputs).toBe(attempt);
+      } else {
+        expect(resetSpy).not.toHaveBeenCalled();
+      }
+    }
+
+    expect(confirmSpy).toHaveBeenCalledWith(13);
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(sm.getMessageBuffer().getPendingCount(13)).toBe(0);
+    expect(session.consecutiveInvalidOutputs).toBe(0);
+    expect(session.abortController.signal.aborted).toBe(false);
+    expect(logger.error).toHaveBeenCalledWith(
+      'PARSER',
+      expect.stringContaining('did not clear across respawns'),
+      expect.objectContaining({ consecutiveInvalidOutputs: 3 }),
+    );
+  });
+
+  it('preserves the active session and buffer for a drift generator exit', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(14, 'do the thing', 1);
+    session.memorySessionId = 'mem-14';
+    session.currentProvider = 'claude';
+    session.generatorPromise = Promise.resolve();
+    await queueAndClaimOne(sm, 14);
+    const pendingCountBefore = sm.getMessageBuffer().getPendingCount(14);
+
+    const finalizeSession = mock(() => Promise.resolve());
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+
+    await handleGeneratorExit(session, 'drift:observer_schema', {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+    });
+
+    expect(finalizeSession).not.toHaveBeenCalled();
+    expect(removeSpy).not.toHaveBeenCalled();
+    expect(sm.getSession(14)).toBe(session);
+    expect(sm.getMessageBuffer().getPendingCount(14)).toBe(pendingCountBefore);
+  });
+
+  it('confirms a summary-shaped false positive without aborting', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(15, 'do the thing', 1);
+    session.memorySessionId = 'mem-15';
+    session.consecutiveInvalidOutputs = 2;
+    await queueAndClaimOne(sm, 15);
+
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+
+    await processAgentResponse(
+      '<summary><notes>no recognized summary fields</notes></summary>',
+      session,
+      makeDbManager(),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'TestAgent',
+    );
+
+    expect(confirmSpy).toHaveBeenCalledWith(15);
+    expect(resetSpy).not.toHaveBeenCalled();
+    expect(sm.getMessageBuffer().getPendingCount(15)).toBe(0);
+    expect(session.consecutiveInvalidOutputs).toBe(0);
+    expect(session.abortController.signal.aborted).toBe(false);
   });
 });

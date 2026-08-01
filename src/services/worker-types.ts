@@ -24,11 +24,7 @@ export interface ActiveSession {
   conversationHistory: ConversationMessage[];  
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
   consecutiveRestarts: number;
-  /**
-   * Legacy invalid-output counter. Ordinary non-XML observer output is now
-   * confirmed as a no-op and resets this to 0 so skip acknowledgements never
-   * accumulate respawn debt.
-   */
+  /** Consecutive observer schema drifts before the worker gives up on the batch. */
   consecutiveInvalidOutputs: number;
   forceInit?: boolean;
   idleTimedOut?: boolean;  
@@ -37,7 +33,7 @@ export interface ActiveSession {
   lastSummaryStored?: boolean;
   pendingAgentId?: string | null;
   pendingAgentType?: string | null;
-  abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | string | null;
+  abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | 'drift' | string | null;
   respawnTimer?: ReturnType<typeof setTimeout>;
   /** When the latest compression prompt was dispatched to the model — telemetry compression_ms. */
   lastPromptSentAt?: number | null;

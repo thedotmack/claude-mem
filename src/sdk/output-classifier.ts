@@ -95,3 +95,12 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
     /\/login\b.{0,40}\b(?:to\s+authenticate|again|to\s+continue|and\s+retry|reauthenticate|credentials|provider|claude)\b/.test(text)
   );
 }
+
+/**
+ * Detect a closed observation block in the literal form matched by
+ * parseObservationBlocks. Bare mentions, attributed roots, and summary-shaped
+ * false positives are intentionally excluded.
+ */
+export function hasClosedObservationBlock(raw: unknown): boolean {
+  return typeof raw === 'string' && /<observation>[\s\S]*?<\/observation>/.test(raw);
+}

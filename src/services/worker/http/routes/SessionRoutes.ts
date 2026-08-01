@@ -18,6 +18,7 @@ import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsMana
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
+import { normalizeAbortReason } from '../../session/abort-reason.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
@@ -33,24 +34,6 @@ import { isClassified } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
-
-/**
- * Collapse session.abortReason onto a closed telemetry enum. The raw value can
- * carry free text after a colon (e.g. 'quota:<provider message>') — never emit
- * it verbatim. Unknown or absent reasons map to 'none'.
- */
-function normalizeAbortReason(
-  reason: string | null | undefined
-): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'none' {
-  switch ((reason ?? '').split(':')[0]) {
-    case 'idle': return 'idle';
-    case 'shutdown': return 'shutdown';
-    case 'overflow': return 'overflow';
-    case 'restart-guard': return 'restart_guard';
-    case 'quota': return 'quota';
-    default: return 'none';
-  }
-}
 
 export class SessionRoutes extends BaseRouteHandler {
   constructor(
