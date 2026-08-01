@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'fs';
+import { chmodSync, readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import path from 'path';
@@ -459,6 +459,13 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
   }
 
+  const shellPath = (value: string) => {
+    if (process.platform !== 'win32') return value;
+    return value
+      .replace(/\\/g, '/')
+      .replace(/^([A-Za-z]):\//, (_, drive: string) => `/${drive.toLowerCase()}/`);
+  };
+
   const claudeCommands = () => {
     const parsed = readJson('plugin/hooks/hooks.json');
     return Object.entries(RULE_A_EXPECTATIONS['plugin/hooks/hooks.json']).map(
@@ -475,13 +482,59 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     try {
       for (const { command } of claudeCommands()) {
         const { stdout } = shellEval(instrument(command), {
-          CLAUDE_PLUGIN_ROOT: root,
-          HOME: mkdtempSync(path.join(tmpdir(), 'cm-home-')),
+          CLAUDE_PLUGIN_ROOT: shellPath(root),
+          HOME: shellPath(mkdtempSync(path.join(tmpdir(), 'cm-home-'))),
         });
-        expect(stdout).toContain(`RESOLVED=${root}`);
+        expect(stdout).toContain(`RESOLVED=${shellPath(root)}`);
       }
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('skips login-shell and cache discovery when CLAUDE_PLUGIN_ROOT is valid (#3449)', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'cm-root-'));
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
+    const bin = mkdtempSync(path.join(tmpdir(), 'cm-bin-'));
+    const loginShellMarker = path.join(home, 'login-shell-ran');
+    const cacheScanMarker = path.join(home, 'cache-sort-ran');
+    mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    for (const file of ['version-check.js', 'bun-runner.js', 'worker-service.cjs']) {
+      writeFileSync(path.join(root, 'scripts', file), '');
+    }
+    writeFileSync(
+      path.join(bin, 'marker-shell'),
+      '#!/bin/sh\nprintf touched > "$LOGIN_SHELL_MARKER"\nprintf %s "$PATH"\n'
+    );
+    writeFileSync(
+      path.join(bin, 'sort'),
+      '#!/bin/sh\nprintf touched > "$CACHE_SCAN_MARKER"\nexit 97\n'
+    );
+    writeFileSync(path.join(bin, 'node'), '#!/bin/sh\nexit 0\n');
+    chmodSync(path.join(bin, 'marker-shell'), 0o755);
+    chmodSync(path.join(bin, 'sort'), 0o755);
+    chmodSync(path.join(bin, 'node'), 0o755);
+
+    try {
+      for (const { command } of claudeCommands()) {
+        const { status, stdout, stderr } = shellEval(instrument(command), {
+          CLAUDE_PLUGIN_ROOT: shellPath(root),
+          HOME: shellPath(home),
+          SHELL: 'marker-shell',
+          LOGIN_SHELL_MARKER: shellPath(loginShellMarker),
+          CACHE_SCAN_MARKER: shellPath(cacheScanMarker),
+          PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
+        });
+        expect(status).toBe(0);
+        expect(stderr).toBe('');
+        expect(stdout).toContain(`RESOLVED=${shellPath(root)}`);
+        expect(existsSync(loginShellMarker)).toBe(false);
+        expect(existsSync(cacheScanMarker)).toBe(false);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+      rmSync(bin, { recursive: true, force: true });
     }
   });
 
@@ -494,10 +547,10 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     writeFileSync(path.join(cacheRoot, 'scripts', 'worker-service.cjs'), '');
     try {
       for (const { command } of claudeCommands()) {
-        const { stdout } = shellEval(instrument(command), { HOME: home });
+        const { stdout } = shellEval(instrument(command), { HOME: shellPath(home) });
         // The version-sort producer yields a trailing slash; the hook trims it
         // via _R="${_R%/}".
-        expect(stdout).toContain(`RESOLVED=${cacheRoot}`);
+        expect(stdout).toContain(`RESOLVED=${shellPath(cacheRoot)}`);
       }
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -525,8 +578,8 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     utimesSync(newRoot, past, past);
     try {
       for (const { command } of claudeCommands()) {
-        const { stdout } = shellEval(instrument(command), { HOME: home });
-        expect(stdout).toContain(`RESOLVED=${newRoot}`);
+        const { stdout } = shellEval(instrument(command), { HOME: shellPath(home) });
+        expect(stdout).toContain(`RESOLVED=${shellPath(newRoot)}`);
       }
     } finally {
       rmSync(home, { recursive: true, force: true });
