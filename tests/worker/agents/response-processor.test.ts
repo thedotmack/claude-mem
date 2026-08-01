@@ -625,6 +625,8 @@ describe('ResponseProcessor', () => {
     it('reproduction: idle WARN at base had no emptyOutputReason; head adds it for non-text-blocks-only', async () => {
       const reproPath = join(import.meta.dir, '../../fixtures/observer-empty-turn-repro-3454.txt');
       const reproContent = readFileSync(reproPath, 'utf-8');
+      const previewMatch = /\bpreview=([^,}]*)/.exec(reproContent);
+      expect(previewMatch?.[1]).toBe('');
       expect(reproContent).toContain('consecutiveInvalidOutputs=0');
       expect(reproContent).toContain('outputClass=idle');
       expect(reproContent).not.toContain('emptyOutputReason');
