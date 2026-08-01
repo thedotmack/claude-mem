@@ -1,4 +1,4 @@
-﻿import { describe, it, expect } from 'bun:test';
+import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { describeSaveFailure, SAVE_ERROR_MAX_CHARS } from '../../src/ui/viewer/utils/save-error';
@@ -20,11 +20,13 @@ describe('describeSaveFailure', () => {
       );
     });
 
-    it('base formula from useSettings.ts:36 yields generic status, not the server message', () => {
-      const res = { status: 400, statusText: 'Bad Request' };
-      const baseStatus = `\u2717 Error: ${res.status === 401 ? 'Unauthorized' : res.statusText}`;
-      expect(baseStatus).toBe('\u2717 Error: Bad Request');
-      expect(baseStatus).not.toContain('CLAUDE_MEM_GEMINI_MODEL');
+    it('head wires useSettings.ts to describeSaveFailure (regression guard)', () => {
+      const source = readFileSync(
+        join(import.meta.dir, '../../src/ui/viewer/hooks/useSettings.ts'),
+        'utf-8'
+      );
+      expect(source).not.toContain("response.status === 401 ? 'Unauthorized' : response.statusText");
+      expect(source).toContain('describeSaveFailure');
     });
   });
 
@@ -107,7 +109,7 @@ describe('describeSaveFailure', () => {
     expect(result).toBe('\u2717 Error: Service Unavailable');
   });
 
-  it('600-char body with \\n and \\u0007 is clamped to SAVE_ERROR_MAX_CHARS and ends with \u2026', async () => {
+  it('600-char body with \\n and \\u0007 is clamped to SAVE_ERROR_MAX_CHARS code points and ends with \u2026', async () => {
     const long = 'A'.repeat(100) + '\n' + '\u0007' + 'B'.repeat(500);
     const body = JSON.stringify({ error: long });
     const response = new Response(body, {
@@ -119,17 +121,128 @@ describe('describeSaveFailure', () => {
     expect(SAVE_ERROR_MAX_CHARS).toBe(240);
     const msgPart = result.slice('\u2717 Error: '.length);
     expect(msgPart).not.toMatch(/[\u0000-\u001f\u007f]/);
-    expect(msgPart.length).toBe(SAVE_ERROR_MAX_CHARS);
+    expect([...msgPart].length).toBe(SAVE_ERROR_MAX_CHARS);
     expect(msgPart.endsWith('\u2026')).toBe(true);
   });
 
-  it('200 response.ok is true so !response.ok guard does not fire (invariant 5 witness)', () => {
-    const response = new Response(JSON.stringify({ success: false, error: 'boom' }), {
+  it('structural proof: 200 response.ok guard prevents describeSaveFailure (invariant 5)', async () => {
+    const response200 = new Response(JSON.stringify({ success: false, error: 'boom' }), {
       status: 200,
       statusText: 'OK',
       headers: { 'Content-Type': 'application/json' }
     });
-    expect(response.ok).toBe(true);
+    expect(response200.ok).toBe(true);
+    const wouldBeWrong = await describeSaveFailure({
+      status: 200,
+      statusText: 'OK',
+      text: async () => JSON.stringify({ success: true })
+    });
+    expect(wouldBeWrong).toStartWith('\u2717 Error:');
+  });
+
+  it('{message:"rate limit exceeded"} uses message field when error is absent', async () => {
+    const body = JSON.stringify({ message: 'rate limit exceeded' });
+    const response = new Response(body, {
+      status: 429,
+      statusText: 'Too Many Requests',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const result = await describeSaveFailure(response);
+    expect(result).toBe('\u2717 Error: rate limit exceeded');
+  });
+
+  it('{error:"Duplicate key",message:"Duplicate key"} uses error field when err === msg', async () => {
+    const body = JSON.stringify({ error: 'Duplicate key', message: 'Duplicate key' });
+    const response = new Response(body, {
+      status: 409,
+      statusText: 'Conflict',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const result = await describeSaveFailure(response);
+    expect(result).toBe('\u2717 Error: Duplicate key');
+  });
+
+  it('{success:false,foo:1} (JSON object with no error/message) falls back to statusText', async () => {
+    const body = JSON.stringify({ success: false, foo: 1 });
+    const response = new Response(body, {
+      status: 400,
+      statusText: 'Bad Request',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const result = await describeSaveFailure(response);
+    expect(result).toBe('\u2717 Error: Bad Request');
+  });
+
+  it('[{error:"nope"}] (array body) is not a plain object and falls back to statusText', async () => {
+    const body = JSON.stringify([{ error: 'nope' }]);
+    const response = new Response(body, {
+      status: 400,
+      statusText: 'Bad Request',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const result = await describeSaveFailure(response);
+    expect(result).toBe('\u2717 Error: Bad Request');
+  });
+
+  it('{error:"\\n\\t  "} (whitespace-only error) enters recovery block and uses statusText', async () => {
+    const body = JSON.stringify({ error: '\n\t  ' });
+    const response = new Response(body, {
+      status: 400,
+      statusText: 'Bad Request',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const result = await describeSaveFailure(response);
+    expect(result).toBe('\u2717 Error: Bad Request');
+  });
+
+  it('{error:"\\u0007"} at 401 with empty statusText uses Unauthorized from recovery', async () => {
+    const body = JSON.stringify({ error: '\u0007' });
+    const response = new Response(body, {
+      status: 401,
+      statusText: '',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const result = await describeSaveFailure(response);
+    expect(result).toBe('\u2717 Error: Unauthorized');
+  });
+
+  it('{issues:[...]} without error field falls back to statusText', async () => {
+    const body = JSON.stringify({ issues: [{ path: ['x'], message: 'invalid' }] });
+    const response = new Response(body, {
+      status: 400,
+      statusText: 'Bad Request',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const result = await describeSaveFailure(response);
+    expect(result).toBe('\u2717 Error: Bad Request');
+  });
+
+  it('{error:"value \u2713 rejected"} strips \u2713 from server message to prevent styling conflict', async () => {
+    const body = JSON.stringify({ error: 'value \u2713 rejected' });
+    const response = new Response(body, {
+      status: 400,
+      statusText: 'Bad Request',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const result = await describeSaveFailure(response);
+    expect(result).toBe('\u2717 Error: value rejected');
+  });
+
+  it('clamps on code points not code units: surrogate pair at boundary is not split', async () => {
+    const astral = '\u{1F4A9}';
+    const body = JSON.stringify({ error: 'A'.repeat(238) + astral + 'B'.repeat(10) });
+    const response = new Response(body, {
+      status: 400,
+      statusText: 'Bad Request',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const result = await describeSaveFailure(response);
+    const msgPart = result.slice('\u2717 Error: '.length);
+    expect([...msgPart].length).toBe(SAVE_ERROR_MAX_CHARS);
+    expect(msgPart.endsWith('\u2026')).toBe(true);
+    const encoded = new TextEncoder().encode(msgPart);
+    const decoded = new TextDecoder().decode(encoded);
+    expect(decoded).toBe(msgPart);
   });
 });
 

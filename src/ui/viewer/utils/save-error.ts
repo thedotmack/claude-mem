@@ -1,4 +1,4 @@
-﻿export const SAVE_ERROR_MAX_CHARS = 240;
+export const SAVE_ERROR_MAX_CHARS = 240;
 
 export interface SaveErrorResponse {
   status: number;
@@ -57,7 +57,7 @@ export async function describeSaveFailure(response: SaveErrorResponse): Promise<
     }
   }
 
-  const ctrlChars = /[\s\u0000-\u001f\u007f]+/g;
+  const ctrlChars = /[\s\u0000-\u001f\u007f\u2713\u2717]+/g;
   const normalize = (s: string) => s.replace(ctrlChars, ' ').trim();
   let normalized = normalize(message);
 
@@ -70,8 +70,8 @@ export async function describeSaveFailure(response: SaveErrorResponse): Promise<
     }
   }
 
-  if (normalized.length > SAVE_ERROR_MAX_CHARS) {
-    normalized = normalized.slice(0, SAVE_ERROR_MAX_CHARS - 1) + '\u2026';
+  if ([...normalized].length > SAVE_ERROR_MAX_CHARS) {
+    normalized = [...normalized].slice(0, SAVE_ERROR_MAX_CHARS - 1).join('') + '\u2026';
   }
 
   console.error('Settings save failed:', response.status, raw);
