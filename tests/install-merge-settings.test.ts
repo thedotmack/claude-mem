@@ -176,6 +176,20 @@ describe('mergeSettings: nested-env merge preservation', () => {
     expect(written.CLAUDE_MEM_MODEL).toBeUndefined();
     expect(written.env).toEqual({ CLAUDE_MEM_MODEL: 'claude-opus-4-8', KEEP_ME: 'yes' });
   });
+
+  it('keeps an existing flat claude-mem setting at the root when env has only Claude Code settings', () => {
+    const original = {
+      CLAUDE_MEM_MODEL: 'claude-opus-4-5',
+      env: { CLAUDE_CODE_PATH: '~/bin/claude' },
+    };
+    writeFileSync(settingsPath, JSON.stringify(original), 'utf-8');
+
+    expect(mergeSettings({ CLAUDE_MEM_MODEL: 'claude-opus-4-8' }, settingsPath)).toBe(true);
+
+    const written = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    expect(written.CLAUDE_MEM_MODEL).toBe('claude-opus-4-8');
+    expect(written.env).toEqual({ CLAUDE_CODE_PATH: '~/bin/claude' });
+  });
 });
 
 describe('mergeSettings: env-array routing boundary', () => {
