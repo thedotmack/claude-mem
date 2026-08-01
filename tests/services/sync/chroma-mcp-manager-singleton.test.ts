@@ -369,6 +369,23 @@ function writeChromaWriterLock(pid: number, ownerId: string): void {
   }, null, 2));
 }
 
+function chromaStoreRecordPath(): string {
+  return path.join(mockedChromaDir, '.claude-mem-chroma-store.json');
+}
+
+function writeChromaStoreRecord(partial: Record<string, unknown>): void {
+  mkdirSync(mockedChromaDir, { recursive: true });
+  writeFileSync(chromaStoreRecordPath(), JSON.stringify({
+    writerEpoch: 1,
+    chromaMcpVersion: '0.2.6',
+    depOverrides: ['onnxruntime>=1.20', 'protobuf<7'],
+    clientType: 'persistent',
+    claudeMemVersion: '0.0.0-dev',
+    updatedAt: new Date().toISOString(),
+    ...partial,
+  }, null, 2));
+}
+
 describe('ChromaMcpManager singleton enforcement (#2313)', () => {
   beforeEach(async () => {
     await ChromaMcpManager.reset();
@@ -821,6 +838,157 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     const connectLog = logEntries.find(entry => entry.message === 'Connecting to chroma-mcp via MCP stdio');
     expect(connectLog?.meta?.args).toContain('--client-type http');
     expect(connectLog?.meta?.args).not.toContain('--data-dir');
+  });
+});
+
+describe('ChromaMcpManager store record (refs #3012)', () => {
+  beforeEach(async () => {
+    await ChromaMcpManager.reset();
+    resetState();
+  });
+
+  it('[reproduction] Newer-epoch store record refuses the local writer', async () => {
+    // Seed a record stamped with epoch 2 (strictly above the shipped CHROMA_WRITER_EPOCH = 1).
+    // Record JSON: {"writerEpoch":2,...}
+    writeChromaStoreRecord({ writerEpoch: 2 });
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
+      .rejects.toThrow(/epoch 2.*epoch 1|epoch 1.*epoch 2/);
+
+    expect(transportInstances.length).toBe(0);
+    expect(existsSync(chromaWriterLockPath())).toBe(false);
+    const chromaStatus = getDependencyStatus('chroma');
+    expect(chromaStatus).not.toBeNull();
+    expect(chromaStatus?.dependency).toBe('chroma');
+    expect(chromaStatus?.kind).toBe('vector_search_unavailable');
+    expect(chromaStatus?.message ?? '').toContain('epoch 2');
+    expect(chromaStatus?.message ?? '').toContain('epoch 1');
+  });
+
+  it('Equal-epoch store record connects and refreshes provenance', async () => {
+    const before = new Date(Date.now() - 1000).toISOString();
+    writeChromaStoreRecord({ writerEpoch: 1, updatedAt: before });
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(1);
+    expect(existsSync(chromaStoreRecordPath())).toBe(true);
+    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
+    expect(record.writerEpoch).toBe(1);
+    expect(record.updatedAt > before).toBe(true);
+  });
+
+  it('Missing store record on an existing installation connects and stamps', async () => {
+    expect(existsSync(chromaStoreRecordPath())).toBe(false);
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(1);
+    expect(existsSync(chromaStoreRecordPath())).toBe(true);
+    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
+    expect(record.writerEpoch).toBe(1);
+  });
+
+  it('Malformed store record fails open and is rewritten', async () => {
+    mkdirSync(mockedChromaDir, { recursive: true });
+    writeFileSync(chromaStoreRecordPath(), 'not-json-{{{{');
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(1);
+    const warn = logEntries.find(e => e.message === 'Chroma store record is damaged; connecting anyway');
+    expect(warn).toBeDefined();
+    expect(existsSync(chromaStoreRecordPath())).toBe(true);
+    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
+    expect(record.writerEpoch).toBe(1);
+  });
+
+  it('Older-epoch store record connects and upgrades the epoch', async () => {
+    writeChromaStoreRecord({ writerEpoch: 0 });
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(1);
+    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
+    expect(record.writerEpoch).toBe(1);
+  });
+
+  it('Remote Chroma mode writes and reads no store record', async () => {
+    mockedSettings = { CLAUDE_MEM_CHROMA_MODE: 'remote' };
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(existsSync(chromaStoreRecordPath())).toBe(false);
+    expect(existsSync(chromaWriterLockPath())).toBe(false);
+    const connectLog = logEntries.find(entry => entry.message === 'Connecting to chroma-mcp via MCP stdio');
+    expect(connectLog?.meta?.args).toContain('--client-type http');
+    expect(connectLog?.meta?.args).not.toContain('--data-dir');
+  });
+
+  it('Writer lock live-owner refusal unchanged', async () => {
+    writeChromaWriterLock(process.pid, 'other-worker-owner');
+    writeChromaStoreRecord({ writerEpoch: 1 });
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('already owned by PID');
+
+    expect(transportInstances.length).toBe(0);
+    expect(getDependencyStatus('chroma')).toMatchObject({
+      dependency: 'chroma',
+      kind: 'vector_search_unavailable',
+      message: expect.stringContaining('already owned by PID'),
+    });
+  });
+
+  it('Writer lock stale reap unchanged', async () => {
+    const stalePid = 999_998_312;
+    deadPids.add(stalePid);
+    writeChromaWriterLock(stalePid, 'dead-worker-owner');
+    writeChromaStoreRecord({ writerEpoch: 1 });
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    const lock = JSON.parse(readFileSync(chromaWriterLockPath(), 'utf-8'));
+    expect(lock.pid).toBe(process.pid);
+    expect(lock.ownerId).not.toBe('dead-worker-owner');
+    expect(transportInstances.length).toBe(1);
+    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
+    expect(record.writerEpoch).toBe(1);
+  });
+
+  it('stop() releases the lock and preserves the store record', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    expect(existsSync(chromaStoreRecordPath())).toBe(true);
+
+    await mgr.stop();
+
+    expect(existsSync(chromaWriterLockPath())).toBe(false);
+    expect(existsSync(chromaStoreRecordPath())).toBe(true);
+    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
+    expect(record.writerEpoch).toBe(1);
+  });
+
+  it('Store record carries launcher provenance', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(existsSync(chromaStoreRecordPath())).toBe(true);
+    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
+    expect(record.chromaMcpVersion).toBe('0.2.6');
+    expect(record.depOverrides).toEqual(['onnxruntime>=1.20', 'protobuf<7']);
+    expect(record.clientType).toBe('persistent');
+    expect(typeof record.claudeMemVersion).toBe('string');
+    expect(record.claudeMemVersion.length).toBeGreaterThan(0);
   });
 });
 
