@@ -88,7 +88,8 @@ interface ChromaWriterLockPayload {
 interface ChromaStoreRecord {
   writerEpoch: number;
   chromaMcpVersion: string;
-  depOverrides: string[];
+  // depOverrides is written for diagnostic provenance but not parsed back —
+  // element types are unchecked and the field never participates in any predicate.
   clientType: string;
   claudeMemVersion: string;
   updatedAt: string;
@@ -197,9 +198,14 @@ export class ChromaMcpManager {
           reason: stored.reason,
         });
       } else if (stored.kind === 'valid' && stored.record.writerEpoch > CHROMA_WRITER_EPOCH) {
-        const writerDesc = stored.record.claudeMemVersion
-          ? `claude-mem ${stored.record.claudeMemVersion}${stored.record.updatedAt ? ` at ${stored.record.updatedAt}` : ''}`
-          : stored.record.updatedAt || 'an unknown version';
+        // Strip non-printables and cap each field so injected control characters
+        // or outsized strings cannot propagate through the health map to API responses.
+        const sanitizeField = (s: string) => s.replace(/[^\x20-\x7E]/g, '').slice(0, 80);
+        const version = sanitizeField(stored.record.claudeMemVersion);
+        const ts = sanitizeField(stored.record.updatedAt);
+        const writerDesc = version
+          ? `claude-mem ${version}${ts ? ` at ${ts}` : ''}`
+          : ts || 'an unknown version';
         const message =
           `Chroma data dir ${path.resolve(localChromaDataDir)} was last written by epoch ` +
           `${stored.record.writerEpoch} (${writerDesc}); this writer is epoch ${CHROMA_WRITER_EPOCH}. ` +
@@ -541,6 +547,7 @@ export class ChromaMcpManager {
 
   private static readChromaWriterLock(lockPath: string): ChromaWriterLockPayload | null {
     try {
+      if (!fs.statSync(lockPath).isFile()) return null;
       const raw = JSON.parse(fs.readFileSync(lockPath, 'utf-8')) as Partial<ChromaWriterLockPayload>;
       if (
         typeof raw.pid !== 'number' ||
@@ -580,6 +587,9 @@ export class ChromaMcpManager {
     let raw: string;
     try {
       const stat = fs.statSync(recordPath);
+      if (!stat.isFile()) {
+        return { kind: 'damaged', reason: 'record path is not a regular file' };
+      }
       if (stat.size > CHROMA_STORE_RECORD_MAX_BYTES) {
         return { kind: 'damaged', reason: `record size ${stat.size} exceeds limit ${CHROMA_STORE_RECORD_MAX_BYTES}` };
       }
@@ -609,7 +619,6 @@ export class ChromaMcpManager {
       record: {
         writerEpoch: candidate.writerEpoch as number,
         chromaMcpVersion: typeof candidate.chromaMcpVersion === 'string' ? candidate.chromaMcpVersion : '',
-        depOverrides: Array.isArray(candidate.depOverrides) ? candidate.depOverrides as string[] : [],
         clientType: typeof candidate.clientType === 'string' ? candidate.clientType : '',
         claudeMemVersion: typeof candidate.claudeMemVersion === 'string' ? candidate.claudeMemVersion : '',
         updatedAt: typeof candidate.updatedAt === 'string' ? candidate.updatedAt : '',
@@ -621,7 +630,9 @@ export class ChromaMcpManager {
     const normalizedDataDir = path.resolve(dataDir);
     const recordPath = path.join(normalizedDataDir, CHROMA_STORE_RECORD_FILENAME);
     const tmp = `${recordPath}.tmp`;
-    const record: ChromaStoreRecord = {
+    // depOverrides is written for diagnostic provenance but not typed on ChromaStoreRecord
+    // (see interface comment) — the write payload intentionally extends beyond the read type.
+    const record = {
       writerEpoch: CHROMA_WRITER_EPOCH,
       chromaMcpVersion: CHROMA_MCP_PINNED_VERSION,
       depOverrides: [...CHROMA_MCP_DEP_OVERRIDES],

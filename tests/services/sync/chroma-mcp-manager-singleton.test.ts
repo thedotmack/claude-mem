@@ -937,6 +937,21 @@ describe('ChromaMcpManager store record (refs #3012)', () => {
     expect(warn?.meta?.reason).toContain('exceeds');
   });
 
+  it('Store record at a non-file path fails open (POSIX only)', async () => {
+    // FIFOs don't exist on Windows; statSync().isFile() is the guard being tested.
+    if (process.platform === 'win32') return;
+    mkdirSync(mockedChromaDir, { recursive: true });
+    realChildProcess.execSync(`mkfifo '${chromaStoreRecordPath()}'`);
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(1);
+    const warn = logEntries.find(e => e.message === 'Chroma store record is damaged; connecting anyway');
+    expect(warn).toBeDefined();
+    expect(warn?.meta?.reason).toContain('not a regular file');
+  });
+
   it('Record write failure logs and continues without aborting the connection', async () => {
     // Block the temp-file path so writeFileSync throws EISDIR.
     mkdirSync(path.join(mockedChromaDir, '.claude-mem-chroma-store.json.tmp'), { recursive: true });
