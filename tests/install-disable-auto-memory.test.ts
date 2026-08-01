@@ -232,21 +232,18 @@ describe('Install: disable Claude Code auto-memory', () => {
       expect(raw).not.toMatch(/"CLAUDE_CODE_DISABLE_AUTO_MEMORY":\s*true/);
     });
 
-    it('replaces a non-object env value with a fresh env block', () => {
-      // Defensive: if settings.env is malformed (string, null, array), the helper
-      // still has to land on a valid object containing the env var.
+    it('refuses a non-object env value without overwriting it', () => {
       writeFileSync(
         join(tempDir, 'settings.json'),
-        JSON.stringify({ env: 'not-an-object', theme: 'dark' }),
+        JSON.stringify({ env: ['sentinel'], theme: 'dark' }),
       );
 
       const wrote = disableClaudeAutoMemory();
-      expect(wrote).toBe(true);
+      expect(wrote).toBe(false);
 
-      const settings = JSON.parse(readFileSync(join(tempDir, 'settings.json'), 'utf-8'));
-      expect(settings.theme).toBe('dark');
-      expect(typeof settings.env).toBe('object');
-      expect(settings.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
+      expect(readFileSync(join(tempDir, 'settings.json'), 'utf-8')).toBe(
+        JSON.stringify({ env: ['sentinel'], theme: 'dark' }),
+      );
     });
   });
 });

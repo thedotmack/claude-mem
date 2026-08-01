@@ -103,6 +103,24 @@ export async function bootstrapServerApiKey(
   }
 }
 
+export async function revokeServerApiKey(
+  apiKeyId: string,
+  pool?: PostgresPool,
+): Promise<void> {
+  const closePool = pool === undefined;
+  const activePool = pool ?? buildPoolFromEnv();
+  try {
+    await activePool.query(
+      `UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`,
+      [apiKeyId],
+    );
+  } finally {
+    if (closePool) {
+      await activePool.end().catch(() => undefined);
+    }
+  }
+}
+
 export interface RotateOptions {
   previousApiKeyId?: string | null;
   pool?: PostgresPool;
@@ -114,14 +132,23 @@ export async function rotateServerApiKey(options: RotateOptions = {}): Promise<B
   const pool = options.pool ?? buildPoolFromEnv();
   try {
     const result = await bootstrapServerApiKey({ pool, closePool: false });
-    if (options.beforeRevoke) {
-      await options.beforeRevoke(result);
-    }
-    if (options.previousApiKeyId) {
-      await pool.query(
-        `UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`,
-        [options.previousApiKeyId],
-      );
+    let beforeRevokeCompleted = options.beforeRevoke === undefined;
+    try {
+      if (options.beforeRevoke) {
+        await options.beforeRevoke(result);
+        beforeRevokeCompleted = true;
+      }
+      if (options.previousApiKeyId) {
+        await pool.query(
+          `UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`,
+          [options.previousApiKeyId],
+        );
+      }
+    } catch (error) {
+      if (!beforeRevokeCompleted) {
+        await revokeServerApiKey(result.apiKeyId, pool).catch(() => undefined);
+      }
+      throw error;
     }
     return result;
   } finally {

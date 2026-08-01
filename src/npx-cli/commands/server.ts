@@ -151,6 +151,7 @@ async function runServerKeysRotateCommand(): Promise<void> {
   }
 
   let result: Awaited<ReturnType<typeof rotateServerApiKey>>;
+  let settingsPersisted = false;
   try {
     result = await rotateServerApiKey({
       previousApiKeyId,
@@ -161,11 +162,17 @@ async function runServerKeysRotateCommand(): Promise<void> {
         })) {
           throw new Error('settings.json could not be updated');
         }
+        settingsPersisted = true;
       },
     });
   } catch {
-    console.error(styleText('red', 'Cannot rotate: settings.json was not updated, so the existing API key remains active.'));
-    console.error('Repair or restore the file, then re-run this command.');
+    if (settingsPersisted) {
+      console.error(styleText('red', 'A new API key was saved, but revoking the previous key failed.'));
+      console.error('Retry the rotation after confirming Postgres is available.');
+    } else {
+      console.error(styleText('red', 'Cannot rotate: settings.json was not updated, so the existing API key remains active.'));
+      console.error('Repair or restore the file, then re-run this command.');
+    }
     process.exit(1);
   }
   console.log(JSON.stringify({
