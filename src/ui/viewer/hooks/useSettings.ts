@@ -84,7 +84,7 @@ export function useSettings() {
   return {
     settings,
     saveSettings: (newSettings: Settings) => saveSettings(newSettings, {
-      fetchImpl: fetch,
+      fetchImpl: fetch.bind(globalThis) as typeof fetch,
       setSettings,
       setSaveStatus,
       setIsSaving,
