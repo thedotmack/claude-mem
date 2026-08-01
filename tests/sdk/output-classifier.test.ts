@@ -103,6 +103,11 @@ describe('isAuthFailureObserverOutput', () => {
 });
 
 describe('hasClosedObservationBlock', () => {
+  it('rejects non-string input without inspecting it', () => {
+    expect(hasClosedObservationBlock(null)).toBe(false);
+    expect(hasClosedObservationBlock({})).toBe(false);
+  });
+
   it('matches the parser block shape across observer output variants', () => {
     const shapes = [
       {
@@ -156,7 +161,7 @@ describe('hasClosedObservationBlock', () => {
       {
         name: 'summary-then-sibling-drift',
         raw: '<summary><notes>n</notes></summary>\n<observation><kind>x</kind><detail>y</detail></observation>',
-        expected: false,
+        expected: true,
         parsedValid: false,
       },
       {

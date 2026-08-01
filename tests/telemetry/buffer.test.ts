@@ -154,6 +154,16 @@ describe('flushSession() — observer_turn_rollup', () => {
     expect(p.obs_type_other).toBe(1);
   });
 
+  it('carries the maximum consecutive schema-drift count into the rollup', () => {
+    const SID = 8;
+    telemetryBuffer.record('session_compressed', SID, { outcome: 'ok', consecutive_invalid_outputs: 1 });
+    telemetryBuffer.record('session_compressed', SID, { outcome: 'ok', consecutive_invalid_outputs: 2 });
+
+    expect(telemetryBuffer.flushSession(SID, 'session_end')).toBe(true);
+    const p = (postHogCaptureCalls[0] as { properties: Record<string, unknown> }).properties;
+    expect(p.consecutive_invalid_outputs).toBe(2);
+  });
+
   it('covers all outcome buckets correctly', () => {
     const SID = 7;
     telemetryBuffer.record('session_compressed', SID, { outcome: 'ok' });

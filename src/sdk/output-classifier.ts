@@ -97,14 +97,29 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
 }
 
 /**
- * Detect a closed observation block in the literal form matched by
- * parseObservationBlocks. The parser examines observation blocks only when the
- * first root match is "observation"; summary-first output is handled by the
- * summary parser and cannot produce schema drift here.
+ * Detect a direct closed observation block that the parser can inspect after
+ * excluding observations contained by a summary. A summary-first response can
+ * still contain a sibling observation, so the scan is independent of root order.
  */
 export function hasClosedObservationBlock(raw: unknown): boolean {
   if (typeof raw !== 'string') return false;
   if (/<skip_summary(?:\s+reason="[^"]*")?\s*\/>/.test(raw)) return false;
-  const firstRoot = /<(observation|summary)\b/i.exec(raw);
-  return firstRoot?.[1].toLowerCase() === 'observation' && /<observation>([\s\S]*?)<\/observation>/.test(raw);
+  const observationRegex = /<observation>([\s\S]*?)<\/observation>/g;
+  let observationMatch;
+  while ((observationMatch = observationRegex.exec(raw)) !== null) {
+    const observationStart = observationMatch.index;
+    const observationEnd = observationStart + observationMatch[0].length;
+    const summaryRegex = /<summary>([\s\S]*?)<\/summary>/g;
+    let nestedInSummary = false;
+    let summaryMatch;
+    while ((summaryMatch = summaryRegex.exec(raw)) !== null) {
+      const summaryEnd = summaryMatch.index + summaryMatch[0].length;
+      if (observationStart >= summaryMatch.index && observationEnd <= summaryEnd) {
+        nestedInSummary = true;
+        break;
+      }
+    }
+    if (!nestedInSummary) return true;
+  }
+  return false;
 }
