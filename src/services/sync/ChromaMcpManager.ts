@@ -13,7 +13,7 @@ import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { captureProcessStartToken, isPidAlive } from '../../supervisor/process-registry.js';
-import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable, CHROMA_VECTOR_SEARCH_REMEDIATION } from '../../shared/dependency-health.js';
+import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
 
 const execFileAsync = promisify(execFile);
@@ -32,6 +32,9 @@ const CHROMA_STORE_RECORD_FILENAME = '.claude-mem-chroma-store.json';
 // longer safely follow a newer one's store layout. Deliberately not tied to
 // the package version so routine releases do not trigger spurious refusals.
 const CHROMA_WRITER_EPOCH = 1;
+// Size cap for the store record. A legitimate record is a small JSON envelope;
+// anything larger is damaged or adversarially written and must fail open.
+const CHROMA_STORE_RECORD_MAX_BYTES = 64 * 1024;
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
 const CHROMA_OUTPUT_TAIL_MAX_CHARS = 2048;
 const DEFAULT_MAX_PENDING_MUTATIONS = 5_000;
@@ -194,10 +197,14 @@ export class ChromaMcpManager {
           reason: stored.reason,
         });
       } else if (stored.kind === 'valid' && stored.record.writerEpoch > CHROMA_WRITER_EPOCH) {
+        const writerDesc = stored.record.claudeMemVersion
+          ? `claude-mem ${stored.record.claudeMemVersion}${stored.record.updatedAt ? ` at ${stored.record.updatedAt}` : ''}`
+          : stored.record.updatedAt || 'an unknown version';
         const message =
           `Chroma data dir ${path.resolve(localChromaDataDir)} was last written by epoch ` +
-          `${stored.record.writerEpoch}; this writer is epoch ${CHROMA_WRITER_EPOCH} and cannot ` +
-          `safely open a store written by a newer version. ${CHROMA_VECTOR_SEARCH_REMEDIATION}`;
+          `${stored.record.writerEpoch} (${writerDesc}); this writer is epoch ${CHROMA_WRITER_EPOCH}. ` +
+          `Upgrade claude-mem to match the version that last wrote this store, ` +
+          `or configure a distinct CLAUDE_MEM_DATA_DIR.`;
         recordChromaVectorSearchUnavailable(message);
         throw new ChromaUnavailableError(message);
       }
@@ -572,6 +579,10 @@ export class ChromaMcpManager {
     const recordPath = path.join(path.resolve(dataDir), CHROMA_STORE_RECORD_FILENAME);
     let raw: string;
     try {
+      const stat = fs.statSync(recordPath);
+      if (stat.size > CHROMA_STORE_RECORD_MAX_BYTES) {
+        return { kind: 'damaged', reason: `record size ${stat.size} exceeds limit ${CHROMA_STORE_RECORD_MAX_BYTES}` };
+      }
       raw = fs.readFileSync(recordPath, 'utf-8');
     } catch (error) {
       const errno = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;

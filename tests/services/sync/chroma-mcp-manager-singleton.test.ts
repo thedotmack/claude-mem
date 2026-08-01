@@ -849,12 +849,12 @@ describe('ChromaMcpManager store record (refs #3012)', () => {
 
   it('[reproduction] Newer-epoch store record refuses the local writer', async () => {
     // Seed a record stamped with epoch 2 (strictly above the shipped CHROMA_WRITER_EPOCH = 1).
-    // Record JSON: {"writerEpoch":2,...}
-    writeChromaStoreRecord({ writerEpoch: 2 });
+    // Record JSON: {"writerEpoch":2,"claudeMemVersion":"13.99.0",...}
+    writeChromaStoreRecord({ writerEpoch: 2, claudeMemVersion: '13.99.0' });
     const mgr = ChromaMcpManager.getInstance();
 
     await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
-      .rejects.toThrow(/epoch 2.*epoch 1|epoch 1.*epoch 2/);
+      .rejects.toThrow(/epoch 2.*epoch 1/);
 
     expect(transportInstances.length).toBe(0);
     expect(existsSync(chromaWriterLockPath())).toBe(false);
@@ -862,8 +862,12 @@ describe('ChromaMcpManager store record (refs #3012)', () => {
     expect(chromaStatus).not.toBeNull();
     expect(chromaStatus?.dependency).toBe('chroma');
     expect(chromaStatus?.kind).toBe('vector_search_unavailable');
+    // Message must name both epochs and the recorded writer identity.
     expect(chromaStatus?.message ?? '').toContain('epoch 2');
     expect(chromaStatus?.message ?? '').toContain('epoch 1');
+    expect(chromaStatus?.message ?? '').toContain('13.99.0');
+    // Remediation is attached separately; not concatenated into the message.
+    expect(chromaStatus?.message ?? '').not.toContain('Stop the other');
   });
 
   it('Equal-epoch store record connects and refreshes provenance', async () => {
@@ -905,6 +909,44 @@ describe('ChromaMcpManager store record (refs #3012)', () => {
     expect(existsSync(chromaStoreRecordPath())).toBe(true);
     const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
     expect(record.writerEpoch).toBe(1);
+  });
+
+  it('Store record with non-integer writerEpoch fails open and is rewritten', async () => {
+    writeChromaStoreRecord({ writerEpoch: 'two' });
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(1);
+    const warn = logEntries.find(e => e.message === 'Chroma store record is damaged; connecting anyway');
+    expect(warn).toBeDefined();
+    const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
+    expect(record.writerEpoch).toBe(1);
+  });
+
+  it('Oversized store record fails open without parsing', async () => {
+    mkdirSync(mockedChromaDir, { recursive: true });
+    writeFileSync(chromaStoreRecordPath(), 'x'.repeat(65 * 1024));
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(1);
+    const warn = logEntries.find(e => e.message === 'Chroma store record is damaged; connecting anyway');
+    expect(warn).toBeDefined();
+    expect(warn?.meta?.reason).toContain('exceeds');
+  });
+
+  it('Record write failure logs and continues without aborting the connection', async () => {
+    // Block the temp-file path so writeFileSync throws EISDIR.
+    mkdirSync(path.join(mockedChromaDir, '.claude-mem-chroma-store.json.tmp'), { recursive: true });
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(1);
+    const warn = logEntries.find(e => e.message === 'Failed to write Chroma store record; connecting anyway');
+    expect(warn).toBeDefined();
   });
 
   it('Older-epoch store record connects and upgrades the epoch', async () => {
@@ -950,7 +992,10 @@ describe('ChromaMcpManager store record (refs #3012)', () => {
     const stalePid = 999_998_312;
     deadPids.add(stalePid);
     writeChromaWriterLock(stalePid, 'dead-worker-owner');
-    writeChromaStoreRecord({ writerEpoch: 1 });
+    // Seed a record with an old updatedAt so we can confirm the record was
+    // refreshed after the reap, not just left at the seeded value.
+    const staleUpdatedAt = new Date(Date.now() - 5000).toISOString();
+    writeChromaStoreRecord({ writerEpoch: 1, updatedAt: staleUpdatedAt });
     const mgr = ChromaMcpManager.getInstance();
 
     await mgr.callTool('chroma_list_collections', { limit: 1 });
@@ -961,6 +1006,8 @@ describe('ChromaMcpManager store record (refs #3012)', () => {
     expect(transportInstances.length).toBe(1);
     const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
     expect(record.writerEpoch).toBe(1);
+    // Confirm the record was actually written after the reap, not just left at the seed.
+    expect(record.updatedAt > staleUpdatedAt).toBe(true);
   });
 
   it('stop() releases the lock and preserves the store record', async () => {
