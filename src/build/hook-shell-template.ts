@@ -59,7 +59,9 @@ export interface ShellTemplateOptions {
 }
 
 const CLAUDE_CODE_PATH_PRELUDE =
-  `command -v node >/dev/null 2>&1 || { [ -n "\${SHELL:-}" ] && ` +
+  `command -v node >/dev/null 2>&1 && ` +
+  `node -e 'const v=process.versions.node.split(".").map(Number);process.exit(v[0]>20||v[0]===20&&v[1]>=12?0:1)' >/dev/null 2>&1 || ` +
+  `{ [ -n "\${SHELL:-}" ] && ` +
   `export PATH="$("$SHELL" -lc 'printf %s "$PATH"' 2>/dev/null):$PATH"; };`;
 
 const CLAUDE_CODE_SETUP_PATH_PRELUDE =

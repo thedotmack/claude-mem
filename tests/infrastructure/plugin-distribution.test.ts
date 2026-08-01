@@ -516,7 +516,9 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     chmodSync(path.join(bin, 'node'), 0o755);
 
     try {
-      for (const { command } of claudeCommands()) {
+      for (const { dottedPath, command } of claudeCommands()) {
+        rmSync(loginShellMarker, { force: true });
+        rmSync(cacheScanMarker, { force: true });
         const { status, stdout, stderr } = shellEval(instrument(command), {
           CLAUDE_PLUGIN_ROOT: shellPath(root),
           HOME: shellPath(home),
@@ -529,12 +531,69 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
         expect(stderr).toBe('');
         expect(stdout).toContain(`RESOLVED=${shellPath(root)}`);
         expect(existsSync(loginShellMarker)).toBe(false);
-        expect(existsSync(cacheScanMarker)).toBe(false);
+        // Setup has a separate NVM-version prelude whose expected `sort` is
+        // unrelated to plugin-root cache discovery.
+        if (dottedPath !== 'Setup.0.0') {
+          expect(existsSync(cacheScanMarker)).toBe(false);
+        }
       }
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });
       rmSync(bin, { recursive: true, force: true });
+    }
+  });
+
+  it('refreshes PATH when the inherited Node is below the supported minimum', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'cm-root-'));
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
+    const inheritedBin = mkdtempSync(path.join(tmpdir(), 'cm-node-old-'));
+    const managedBin = mkdtempSync(path.join(tmpdir(), 'cm-node-managed-'));
+    const loginShellMarker = path.join(home, 'login-shell-ran');
+    const managedNodeMarker = path.join(home, 'managed-node-ran');
+    mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    for (const file of ['version-check.js', 'bun-runner.js', 'worker-service.cjs']) {
+      writeFileSync(path.join(root, 'scripts', file), '');
+    }
+    writeFileSync(path.join(inheritedBin, 'node'), '#!/bin/sh\nexit 1\n');
+    writeFileSync(
+      path.join(managedBin, 'node'),
+      '#!/bin/sh\nprintf touched > "$MANAGED_NODE_MARKER"\nexit 0\n'
+    );
+    writeFileSync(
+      path.join(inheritedBin, 'marker-shell'),
+      '#!/bin/sh\nprintf touched > "$LOGIN_SHELL_MARKER"\nprintf %s "$MANAGED_PATH"\n'
+    );
+    chmodSync(path.join(inheritedBin, 'node'), 0o755);
+    chmodSync(path.join(managedBin, 'node'), 0o755);
+    chmodSync(path.join(inheritedBin, 'marker-shell'), 0o755);
+
+    try {
+      for (const { dottedPath, command } of claudeCommands()) {
+        if (dottedPath === 'Setup.0.0') continue;
+        rmSync(loginShellMarker, { force: true });
+        rmSync(managedNodeMarker, { force: true });
+        const probeManagedNode = `${instrument(command)}; node -e ''`;
+        const { status, stdout, stderr } = shellEval(probeManagedNode, {
+          CLAUDE_PLUGIN_ROOT: shellPath(root),
+          HOME: shellPath(home),
+          SHELL: shellPath(path.join(inheritedBin, 'marker-shell')),
+          LOGIN_SHELL_MARKER: shellPath(loginShellMarker),
+          MANAGED_NODE_MARKER: shellPath(managedNodeMarker),
+          MANAGED_PATH: shellPath(managedBin),
+          PATH: `${inheritedBin}${path.delimiter}${process.env.PATH ?? ''}`,
+        });
+        expect(status).toBe(0);
+        expect(stderr).toBe('');
+        expect(stdout).toContain(`RESOLVED=${shellPath(root)}`);
+        expect(existsSync(loginShellMarker)).toBe(true);
+        expect(existsSync(managedNodeMarker)).toBe(true);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+      rmSync(inheritedBin, { recursive: true, force: true });
+      rmSync(managedBin, { recursive: true, force: true });
     }
   });
 
