@@ -8,7 +8,9 @@ import { telemetryBuffer } from '../../src/services/telemetry/buffer.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { WorkerRef } from '../../src/services/worker/agents/types.js';
 
-ModeManager.getInstance().loadMode('code');
+// Other suites temporarily replace the singleton during the full parallel run.
+const modeManager = ModeManager.getInstance();
+if (typeof modeManager.loadMode === 'function') modeManager.loadMode('code');
 
 function makeDbManager(storeObservations = mock(() => ({ observationIds: [], summaryId: null, createdAtEpoch: 0 }))): DatabaseManager {
   return {
