@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { saveStatusClass } from '../../src/ui/viewer/components/ContextSettingsModal';
 import { describeSaveFailure, SAVE_ERROR_MAX_CHARS } from '../../src/ui/viewer/utils/save-error';
 
 const REPRO_PATH = join(import.meta.dir, '../fixtures/settings-save-error-repro.json');
@@ -107,6 +108,32 @@ describe('describeSaveFailure', () => {
     const result = await describeSaveFailure(fakeResponse);
     expect(result).toStartWith('\u2717 Error: ');
     expect(result).toBe('\u2717 Error: Service Unavailable');
+  });
+
+  it('bounded body read returns a partial JSON body when the stream never closes', async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(JSON.stringify({ error: 'partial body' })));
+      }
+    });
+    const startedAt = Date.now();
+    const result = await describeSaveFailure({
+      status: 502,
+      statusText: 'Bad Gateway',
+      body: stream,
+      text: async () => 'unreachable'
+    });
+
+    expect(result).toBe('\u2717 Error: partial body');
+    expect(Date.now() - startedAt).toBeLessThan(2000);
+  });
+
+  it('malformed validation issues cannot reject the failure formatter', async () => {
+    const response = new Response(JSON.stringify({ error: 'ValidationError', issues: [null] }), {
+      status: 400,
+      statusText: 'Bad Request'
+    });
+    await expect(describeSaveFailure(response)).resolves.toBe('\u2717 Error: ValidationError');
   });
 
   it('600-char body with \\n and \\u0007 is clamped to SAVE_ERROR_MAX_CHARS code points and ends with \u2026', async () => {
@@ -226,6 +253,11 @@ describe('describeSaveFailure', () => {
     });
     const result = await describeSaveFailure(response);
     expect(result).toBe('\u2717 Error: value \u2713 rejected');
+  });
+
+  it('error styling wins when an error message contains the success glyph', () => {
+    expect(saveStatusClass('\u2717 Error: value \u2713 rejected')).toBe('error');
+    expect(saveStatusClass('\u2713 Saved')).toBe('success');
   });
 
   it('clamps on code points not code units: surrogate pair at boundary is not split', async () => {

@@ -13,6 +13,10 @@ interface ContextSettingsModalProps {
   saveStatus: string;
 }
 
+export function saveStatusClass(saveStatus: string): string {
+  return saveStatus.includes('✗') ? 'error' : saveStatus.includes('✓') ? 'success' : '';
+}
+
 function CollapsibleSection({
   title,
   description,
@@ -485,7 +489,7 @@ export function ContextSettingsModal({
         {/* Footer with Save button */}
         <div className="modal-footer">
           <div className="save-status">
-            {saveStatus && <span className={saveStatus.includes('✗') ? 'error' : saveStatus.includes('✓') ? 'success' : ''}>{saveStatus}</span>}
+            {saveStatus && <span className={saveStatusClass(saveStatus)}>{saveStatus}</span>}
           </div>
           <button
             className="save-btn"
