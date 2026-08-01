@@ -142,10 +142,10 @@ export async function describeSaveFailure(response: SaveErrorResponse): Promise<
   }
 
   if (message === null) {
-    if (response.statusText.length > 0) {
-      message = response.statusText;
-    } else if (response.status === 401) {
+    if (response.status === 401) {
       message = 'Unauthorized';
+    } else if (response.statusText.length > 0) {
+      message = response.statusText;
     } else {
       message = `HTTP ${response.status}`;
     }
