@@ -50,6 +50,16 @@ describe('describeSaveFailure', () => {
     expect(result).toBe('\u2717 Error: Unauthorized');
   });
 
+  it('401 with a blank body and custom statusText still uses the stable Unauthorized fallback', async () => {
+    const response = new Response(JSON.stringify({ error: '   ' }), {
+      status: 401,
+      statusText: 'Proxy Unauthorized',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const result = await describeSaveFailure(response);
+    expect(result).toBe('\u2717 Error: Unauthorized');
+  });
+
   it('401 with {error:"Unauthorized",message:"Missing API key (...)"} includes both parts', async () => {
     const body = JSON.stringify({
       error: 'Unauthorized',

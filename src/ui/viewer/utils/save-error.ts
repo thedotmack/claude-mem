@@ -156,11 +156,13 @@ export async function describeSaveFailure(response: SaveErrorResponse): Promise<
   let normalized = normalize(message);
 
   if (normalized.length === 0) {
-    if (response.statusText.length > 0) {
+    if (response.status === 401) {
+      normalized = 'Unauthorized';
+    } else if (response.statusText.length > 0) {
       normalized = normalize(response.statusText);
     }
     if (normalized.length === 0) {
-      normalized = response.status === 401 ? 'Unauthorized' : `HTTP ${response.status}`;
+      normalized = `HTTP ${response.status}`;
     }
   }
 
