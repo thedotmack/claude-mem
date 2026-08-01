@@ -92,7 +92,16 @@ export function configureCursorMcp(mcpJsonPath: string, mcpServerScriptPath: str
   const dir = join(mcpJsonPath, '..');
   mkdirSync(dir, { recursive: true });
 
-  const config = readJsonSafe<CursorMcpConfig>(mcpJsonPath, { mcpServers: {} });
+  let config: CursorMcpConfig;
+  try {
+    config = readJsonSafe<CursorMcpConfig>(mcpJsonPath, { mcpServers: {} });
+  } catch (error) {
+    logger.error('CONFIG', 'Failed to read Cursor MCP config; repair or remove mcp.json before retrying', {
+      file: mcpJsonPath,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    throw error;
+  }
   if (!config.mcpServers) {
     config.mcpServers = {};
   }

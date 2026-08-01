@@ -222,6 +222,8 @@ describe('SettingsDefaultsManager', () => {
 
       it('should auto-migrate file from nested to flat schema', () => {
         const nestedSettings = {
+          theme: 'dark',
+          permissions: { defaultMode: 'auto' },
           env: {
             CLAUDE_MEM_MODEL: 'migrated-model',
           },
@@ -234,6 +236,8 @@ describe('SettingsDefaultsManager', () => {
         const parsed = JSON.parse(content);
         expect(parsed.env).toBeUndefined();
         expect(parsed.CLAUDE_MEM_MODEL).toBe('migrated-model');
+        expect(parsed.theme).toBe('dark');
+        expect(parsed.permissions).toEqual({ defaultMode: 'auto' });
       });
 
       it('should not overwrite the settings file when env is an array containing ["sentinel"]', () => {

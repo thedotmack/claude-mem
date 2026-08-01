@@ -106,19 +106,24 @@ export async function bootstrapServerApiKey(
 export interface RotateOptions {
   previousApiKeyId?: string | null;
   pool?: PostgresPool;
+  beforeRevoke?: (result: BootstrapResult) => void | Promise<void>;
 }
 
 export async function rotateServerApiKey(options: RotateOptions = {}): Promise<BootstrapResult> {
   const closePool = options.pool === undefined;
   const pool = options.pool ?? buildPoolFromEnv();
   try {
+    const result = await bootstrapServerApiKey({ pool, closePool: false });
+    if (options.beforeRevoke) {
+      await options.beforeRevoke(result);
+    }
     if (options.previousApiKeyId) {
       await pool.query(
         `UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`,
         [options.previousApiKeyId],
       );
     }
-    return await bootstrapServerApiKey({ pool, closePool: false });
+    return result;
   } finally {
     if (closePool) {
       await pool.end().catch(() => undefined);

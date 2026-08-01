@@ -150,14 +150,22 @@ async function runServerKeysRotateCommand(): Promise<void> {
     // ignore — we'll just generate a new key without revoking the old one
   }
 
-  const result = await rotateServerApiKey({ previousApiKeyId });
-  const persisted = persistServerSettings(settingsPath, {
-    apiKey: result.rawKey,
-    projectId: result.projectId,
-  });
-  if (!persisted) {
-    console.error(styleText('red', 'Key rotated in database but settings.json could not be updated.'));
-    console.error(`New API key ID: ${result.apiKeyId}. Repair settings.json and update CLAUDE_MEM_SERVER_API_KEY manually.`);
+  let result: Awaited<ReturnType<typeof rotateServerApiKey>>;
+  try {
+    result = await rotateServerApiKey({
+      previousApiKeyId,
+      beforeRevoke: next => {
+        if (!persistServerSettings(settingsPath, {
+          apiKey: next.rawKey,
+          projectId: next.projectId,
+        })) {
+          throw new Error('settings.json could not be updated');
+        }
+      },
+    });
+  } catch {
+    console.error(styleText('red', 'Cannot rotate: settings.json was not updated, so the existing API key remains active.'));
+    console.error('Repair or restore the file, then re-run this command.');
     process.exit(1);
   }
   console.log(JSON.stringify({

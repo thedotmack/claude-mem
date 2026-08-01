@@ -249,7 +249,8 @@ export class SettingsDefaultsManager {
 
       let flatSettings = settings;
       if (settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env)) {
-        flatSettings = settings.env;
+        flatSettings = { ...settings, ...settings.env };
+        delete flatSettings.env;
 
         try {
           writeJsonFileAtomic(settingsPath, flatSettings);
