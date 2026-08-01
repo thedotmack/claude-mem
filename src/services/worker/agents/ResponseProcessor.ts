@@ -371,17 +371,6 @@ export async function processAgentResponse(
   // accumulate toward a respawn across a healthy session.
   session.consecutiveInvalidOutputs = 0;
 
-  if (!session.memorySessionId) {
-    logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {
-      sessionId: session.sessionDbId
-    });
-    // Reset any claimed-but-undelivered messages back to pending so they don't
-    // count as "in progress" and trigger a respawn loop while we wait for the
-    // memory session id to appear. The next generator pass will re-claim them.
-    await sessionManager.resetProcessingToPending(session.sessionDbId);
-    return;
-  }
-
   const { observations, summary } = parsed;
 
   if (observations.length === 0 && summary?.skipped) {
@@ -393,6 +382,17 @@ export async function processAgentResponse(
     await sessionManager.confirmClaimedMessages(session.sessionDbId);
     session.earliestPendingTimestamp = null;
     session.lastSummaryStored = false;
+    return;
+  }
+
+  if (!session.memorySessionId) {
+    logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {
+      sessionId: session.sessionDbId
+    });
+    // Reset any claimed-but-undelivered messages back to pending so they don't
+    // count as "in progress" and trigger a respawn loop while we wait for the
+    // memory session id to appear. The next generator pass will re-claim them.
+    await sessionManager.resetProcessingToPending(session.sessionDbId);
     return;
   }
 

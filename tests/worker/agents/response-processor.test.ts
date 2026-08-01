@@ -215,6 +215,7 @@ describe('ResponseProcessor', () => {
     it('confirms an empty skip summary without opening the storage path', async () => {
       const session = createMockSession();
       const confirmSpy = spyOn(mockSessionManager, 'confirmClaimedMessages');
+      const resetSpy = spyOn(mockSessionManager, 'resetProcessingToPending');
 
       await processAgentResponse(
         '<skip_summary reason="all_events_private" />',
@@ -228,8 +229,42 @@ describe('ResponseProcessor', () => {
       );
 
       expect(confirmSpy).toHaveBeenCalledWith(session.sessionDbId);
+      expect(resetSpy).not.toHaveBeenCalled();
       expect(mockStoreObservations).not.toHaveBeenCalled();
       expect(session.earliestPendingTimestamp).toBeNull();
+    });
+
+    it('confirms an empty skip before memory-session initialization', async () => {
+      const session = createMockSession({
+        memorySessionId: null,
+        earliestPendingTimestamp: Date.now() - 10000,
+        lastSummaryStored: true,
+      });
+      const confirmSpy = spyOn(mockSessionManager, 'confirmClaimedMessages');
+      const resetSpy = spyOn(mockSessionManager, 'resetProcessingToPending');
+
+      await processAgentResponse(
+        '<skip_summary reason="all_events_private" />',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent',
+      );
+
+      expect(confirmSpy).toHaveBeenCalledTimes(1);
+      expect(confirmSpy).toHaveBeenCalledWith(session.sessionDbId);
+      expect(resetSpy).not.toHaveBeenCalled();
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(session.lastSummaryStored).toBe(false);
+      expect(logger.info).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/returned an in-grammar no-op/),
+        expect.objectContaining({ skipReason: 'all_events_private', outputClass: 'xml' }),
+      );
     });
 
     it('should parse single observation from response', async () => {
