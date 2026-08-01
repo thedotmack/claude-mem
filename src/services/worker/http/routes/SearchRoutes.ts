@@ -12,6 +12,7 @@ import { groupByDate } from '../../../../shared/timeline-formatting.js';
 import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
@@ -384,6 +385,22 @@ export class SearchRoutes extends BaseRouteHandler {
       return;
     }
 
+    // Chroma is single-writer per data dir, so a secondary worker instance
+    // (e.g. the Kimi-dedicated worker on 37791) runs with Chroma disabled —
+    // leaving it with FTS-only search that cannot answer multi-word or
+    // cross-language queries (observed live 2026-08-01: Russian prompts got
+    // count:0 while the main worker answered them via e5). Both instances
+    // share the same SQLite and the same Chroma dir, so forward the semantic
+    // query to the main worker, which owns the vector index.
+    if (SettingsDefaultsManager.get('CLAUDE_MEM_CHROMA_ENABLED').trim().toLowerCase() === 'false') {
+      const forwarded = await this.forwardSemanticToMainWorker(req.body ?? { q: query, project, limit });
+      if (forwarded !== null) {
+        res.json(forwarded);
+        return;
+      }
+      // fall through to local FTS on forwarding failure
+    }
+
     let result: any;
     try {
       result = await this.searchManager.search({
@@ -417,6 +434,42 @@ export class SearchRoutes extends BaseRouteHandler {
 
     res.json({ context: lines.join('\n'), count: observations.length });
   });
+
+  /**
+   * Forward a semantic-context query to the main (Chroma-owning) worker when
+   * this instance runs with Chroma disabled. Returns the parsed JSON body, or
+   * null on any failure (caller falls back to local FTS). Peer URL defaults
+   * to the UID-derived default worker port and is overridable via
+   * CLAUDE_MEM_MAIN_WORKER_URL (env) for exotic layouts.
+   */
+  private async forwardSemanticToMainWorker(body: unknown): Promise<unknown | null> {
+    try {
+      // The main worker's port comes from settings.json — WITHOUT env
+      // overrides: this daemon itself carries CLAUDE_MEM_WORKER_PORT=37791 in
+      // env, and applying overrides would point the forward back at itself
+      // (recursive self-forward until timeout — observed live 2026-08-01).
+      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, false);
+      const mainPort = settings.CLAUDE_MEM_WORKER_PORT;
+      const base = process.env.CLAUDE_MEM_MAIN_WORKER_URL ?? `http://127.0.0.1:${mainPort}`;
+      if (base.includes(`:${getWorkerPort()}`)) return null; // never self-forward
+      const response = await fetch(`${base}/api/context/semantic`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body ?? {}),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) {
+        logger.warn('HTTP', `Semantic forwarding to main worker failed: HTTP ${response.status}`);
+        return null;
+      }
+      return await response.json();
+    } catch (error) {
+      logger.warn('HTTP', 'Semantic forwarding to main worker failed, falling back to local FTS', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
 
   private queryWithPlatformSource(req: Request): Record<string, any> {
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
