@@ -391,6 +391,14 @@ export async function processAgentResponse(
         consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
         remediation: 'restart the observer session or update the observer prompt',
       });
+      telemetryBuffer.record('session_compressed', session.sessionDbId, {
+        outcome: 'invalid_output',
+        model: session.lastModelId ?? 'unknown',
+        abort_reason: 'drift',
+        consecutive_invalid_outputs: session.consecutiveInvalidOutputs,
+        hook: session.lastGeneratorSource,
+        ide: session.platformSource,
+      });
       session.consecutiveInvalidOutputs = 0;
       await sessionManager.confirmClaimedMessages(session.sessionDbId);
       session.earliestPendingTimestamp = null;

@@ -4,6 +4,7 @@ import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import { processAgentResponse } from '../../src/services/worker/agents/ResponseProcessor.js';
 import { handleGeneratorExit } from '../../src/services/worker/session/GeneratorExitHandler.js';
+import { telemetryBuffer } from '../../src/services/telemetry/buffer.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { WorkerRef } from '../../src/services/worker/agents/types.js';
 
@@ -448,6 +449,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
 
     const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
     const resetSpy = spyOn(sm, 'resetProcessingToPending');
+    const telemetrySpy = spyOn(telemetryBuffer, 'record');
 
     for (let attempt = 1; attempt <= 3; attempt++) {
       if (attempt > 1) {
@@ -482,6 +484,15 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(sm.getMessageBuffer().getPendingCount(13)).toBe(0);
     expect(session.consecutiveInvalidOutputs).toBe(0);
     expect(session.abortController.signal.aborted).toBe(false);
+    expect(telemetrySpy).toHaveBeenCalledWith(
+      'session_compressed',
+      13,
+      expect.objectContaining({
+        outcome: 'invalid_output',
+        abort_reason: 'drift',
+        consecutive_invalid_outputs: 3,
+      }),
+    );
     expect(logger.error).toHaveBeenCalledWith(
       'PARSER',
       expect.stringContaining('did not clear across respawns'),

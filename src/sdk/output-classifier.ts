@@ -109,7 +109,7 @@ export function hasClosedObservationBlock(raw: unknown): boolean {
   while ((observationMatch = observationRegex.exec(raw)) !== null) {
     const observationStart = observationMatch.index;
     const observationEnd = observationStart + observationMatch[0].length;
-    const summaryRegex = /<summary>([\s\S]*?)<\/summary>/g;
+    const summaryRegex = /<summary\b[^>]*>([\s\S]*?)<\/summary>/gi;
     let nestedInSummary = false;
     let summaryMatch;
     while ((summaryMatch = summaryRegex.exec(raw)) !== null) {

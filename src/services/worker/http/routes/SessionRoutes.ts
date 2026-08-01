@@ -230,6 +230,7 @@ export class SessionRoutes extends BaseRouteHandler {
             provider,
             model: session.lastModelId ?? 'unknown',
             abort_reason: normalizeAbortReason(reason),
+            consecutive_invalid_outputs: session.consecutiveInvalidOutputs,
             hook: session.lastGeneratorSource,
             ide: session.platformSource,
           });

@@ -153,6 +153,18 @@ describe('hasClosedObservationBlock', () => {
         parsedValid: false,
       },
       {
+        name: 'attributed summary with nested observation',
+        raw: '<summary kind="example"><notes>Example: <observation><kind>example</kind></observation></notes></summary>',
+        expected: false,
+        parsedValid: false,
+      },
+      {
+        name: 'case-variant summary with nested observation',
+        raw: '<SUMMARY><notes>Example: <observation><kind>example</kind></observation></notes></SUMMARY>',
+        expected: false,
+        parsedValid: false,
+      },
+      {
         name: 'skip summary',
         raw: '<skip_summary reason="nothing to do"/>',
         expected: false,
