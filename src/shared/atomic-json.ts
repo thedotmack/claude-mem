@@ -47,14 +47,19 @@ export function ensureDirectoryExists(directoryPath: string): void {
  * crash mid-write leaves either the old contents or the new contents, never a
  * truncated file.
  */
+export function isNestedSettingsDocument(document: Record<string, unknown>): boolean {
+  const nestedEnv = document.env;
+  if (nestedEnv === null || typeof nestedEnv !== 'object' || Array.isArray(nestedEnv)) {
+    return false;
+  }
+  const hasRootClaudeSetting = Object.keys(document).some(key => key.startsWith('CLAUDE_'));
+  return !hasRootClaudeSetting && Object.keys(nestedEnv).some(key => key.startsWith('CLAUDE_'));
+}
+
 export function selectSettingsTarget(document: Record<string, unknown>): Record<string, unknown> {
-  return (
-    document.env !== null &&
-    typeof document.env === 'object' &&
-    !Array.isArray(document.env)
-      ? document.env
-      : document
-  ) as Record<string, unknown>;
+  return isNestedSettingsDocument(document)
+    ? document.env as Record<string, unknown>
+    : document;
 }
 
 export function writeJsonFileAtomic(filepath: string, data: any): void {

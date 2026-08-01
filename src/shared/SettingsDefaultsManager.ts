@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir, hostname } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
-import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
+import { isNestedSettingsDocument, parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 
 // A fresh settings.json is seeded with EVERY default (see loadFromFile), and
 // persisted values then win over DEFAULTS. So any install created after the
@@ -248,12 +248,8 @@ export class SettingsDefaultsManager {
       const settings = parseJsonWithBom<Record<string, any>>(settingsData);
 
       let flatSettings = settings;
-      const nestedEnv = settings.env;
-      const hasClaudeSetting = nestedEnv
-        && typeof nestedEnv === 'object'
-        && !Array.isArray(nestedEnv)
-        && Object.keys(nestedEnv).some(key => key.startsWith('CLAUDE_'));
-      if (hasClaudeSetting) {
+      const nestedEnv = isNestedSettingsDocument(settings) ? settings.env as Record<string, unknown> : undefined;
+      if (nestedEnv !== undefined) {
         flatSettings = { ...settings };
         delete flatSettings.env;
         Object.assign(flatSettings, nestedEnv);

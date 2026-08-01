@@ -147,6 +147,20 @@ describe('mergeSettings: nested-env merge preservation', () => {
     expect(written.env.CLAUDE_MEM_MODEL).toBe('claude-opus-4-8');
     expect(written.env.EXISTING_ENV_VAR).toBe('keep-me');
   });
+
+  it('keeps an object-valued flat env setting at the root after migration', () => {
+    const original = {
+      env: { enabled: true, sources: ['local'] },
+      CLAUDE_MEM_MODEL: 'claude-opus-4-5',
+    };
+    writeFileSync(settingsPath, JSON.stringify(original), 'utf-8');
+
+    expect(mergeSettings({ CLAUDE_MEM_MODEL: 'claude-opus-4-8' }, settingsPath)).toBe(true);
+
+    const written = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    expect(written.env).toEqual(original.env);
+    expect(written.CLAUDE_MEM_MODEL).toBe('claude-opus-4-8');
+  });
 });
 
 describe('mergeSettings: env-array routing boundary', () => {

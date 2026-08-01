@@ -33,10 +33,17 @@ describe('Cursor Project Registry', () => {
       expect(registry).toEqual({});
     });
 
-    it('returns empty object when registry file is corrupt JSON', () => {
+    it('throws when registry file is corrupt JSON', () => {
       writeFileSync(registryFile, 'not valid json {{{');
-      const registry = readCursorRegistry(registryFile);
-      expect(registry).toEqual({});
+      expect(() => readCursorRegistry(registryFile)).toThrow();
+    });
+
+    it('refuses to replace corrupt bytes during registration', () => {
+      const original = 'not valid json {{{';
+      writeFileSync(registryFile, original);
+
+      expect(() => registerCursorProject(registryFile, 'project', '/path')).toThrow();
+      expect(readFileSync(registryFile, 'utf-8')).toBe(original);
     });
 
     it('returns parsed registry when file exists', () => {

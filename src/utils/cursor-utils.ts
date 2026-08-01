@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from '
 import { join } from 'path';
 import { logger } from './logger.js';
 import { toBmpSafe } from './bmp-safe.js';
+import { parseJsonWithBom } from '../shared/atomic-json.js';
 import { readJsonSafe } from './json-utils.js';
 
 export interface CursorProjectRegistry {
@@ -23,15 +24,19 @@ export interface CursorMcpConfig {
 }
 
 export function readCursorRegistry(registryFile: string): CursorProjectRegistry {
+  if (!existsSync(registryFile)) return {};
   try {
-    if (!existsSync(registryFile)) return {};
-    return JSON.parse(readFileSync(registryFile, 'utf-8'));
+    const parsed = parseJsonWithBom<unknown>(readFileSync(registryFile, 'utf-8'));
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Cursor project registry is not a JSON object');
+    }
+    return parsed as CursorProjectRegistry;
   } catch (error) {
     logger.error('CONFIG', 'Failed to read Cursor registry, using empty registry', {
       file: registryFile,
       error: error instanceof Error ? error.message : String(error)
     });
-    return {};
+    throw error;
   }
 }
 
