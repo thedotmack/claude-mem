@@ -8,6 +8,7 @@ import { abortCategoryOf, PRESERVING_ABORT_CATEGORIES } from './abort-reason.js'
 export interface GeneratorExitDependencies {
   sessionManager: SessionManager;
   completionHandler: SessionCompletionHandler;
+  ensureGeneratorRunning?: (sessionDbId: number, source: string) => void | Promise<void>;
 }
 
 /**
@@ -44,10 +45,23 @@ export async function handleGeneratorExit(
 
   const abortCategory = abortCategoryOf(reason);
   if (PRESERVING_ABORT_CATEGORIES.has(abortCategory as 'quota' | 'auth' | 'drift')) {
+    const pendingCount = sessionManager.getMessageBuffer().getPendingCount(sessionDbId);
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
-      pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
+      pendingCount,
     });
+
+    if (abortCategory === 'drift' && pendingCount > 0 && deps.ensureGeneratorRunning) {
+      queueMicrotask(() => {
+        const current = sessionManager.getSession(sessionDbId);
+        if (!current || current.generatorPromise) return;
+        void Promise.resolve(deps.ensureGeneratorRunning!(sessionDbId, 'schema-drift-retry')).catch(error => {
+          logger.error('SESSION', 'Schema-drift retry could not restart the generator', {
+            sessionId: sessionDbId,
+          }, error instanceof Error ? error : new Error(String(error)));
+        });
+      });
+    }
     return;
   }
 

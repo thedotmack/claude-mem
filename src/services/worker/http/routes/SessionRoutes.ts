@@ -238,6 +238,7 @@ export class SessionRoutes extends BaseRouteHandler {
         await handleGeneratorExit(session, reason, {
           sessionManager: this.sessionManager,
           completionHandler: this.completionHandler,
+          ensureGeneratorRunning: (sessionDbId, retrySource) => this.ensureGeneratorRunning(sessionDbId, retrySource),
         });
       });
     session.generatorPromise = generatorPromise;

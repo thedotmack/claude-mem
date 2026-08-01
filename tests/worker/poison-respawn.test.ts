@@ -523,6 +523,25 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(sm.getMessageBuffer().getPendingCount(14)).toBe(pendingCountBefore);
   });
 
+  it('restarts a drift generator when pending work remains after exit', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(18, 'do the thing', 1);
+    session.memorySessionId = 'mem-18';
+    session.currentProvider = 'claude';
+    session.generatorPromise = Promise.resolve();
+    await queueAndClaimOne(sm, 18);
+
+    const ensureGeneratorRunning = mock(() => Promise.resolve());
+    await handleGeneratorExit(session, 'drift:observer_schema', {
+      sessionManager: sm,
+      completionHandler: { finalizeSession: mock(() => Promise.resolve()) } as any,
+      ensureGeneratorRunning,
+    });
+    await Promise.resolve();
+
+    expect(ensureGeneratorRunning).toHaveBeenCalledWith(18, 'schema-drift-retry');
+  });
+
   it('confirms a summary-shaped false positive without aborting', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(15, 'do the thing', 1);
