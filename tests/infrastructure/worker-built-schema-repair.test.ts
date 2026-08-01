@@ -119,6 +119,7 @@ describe('worker-built-schema-repair (#3446)', () => {
     let closeLogWriter: (() => Promise<void>) | null = null;
     let drainPromise: Promise<void> | null = null;
     let assertionError: unknown = null;
+    let cleanupError: unknown = null;
 
     try {
       await esbuildModule!.build({
@@ -314,12 +315,23 @@ describe('worker-built-schema-repair (#3446)', () => {
       try {
         if (closeLogWriter !== null) await closeLogWriter();
       } catch {}
-      await removeTempDir(bundleDir);
-      await removeTempDir(dataDir);
+      try {
+        await removeTempDir(bundleDir);
+      } catch (err) {
+        cleanupError ??= err;
+      }
+      try {
+        await removeTempDir(dataDir);
+      } catch (err) {
+        cleanupError ??= err;
+      }
     }
 
     if (assertionError !== null) {
       throw assertionError;
+    }
+    if (cleanupError !== null) {
+      throw cleanupError;
     }
   }, 90000);
 });
