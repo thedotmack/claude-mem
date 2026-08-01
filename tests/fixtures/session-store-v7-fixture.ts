@@ -1,8 +1,5 @@
 import { Database } from 'bun:sqlite';
 
-// Replays the pre-13.12.0 v7 rebuild against session_summaries, producing the
-// damaged state from issue #3446: discovery_tokens absent, schema_versions row
-// 11 still stamped. Uses the same 14-column literal as SessionStore.ts:1101-1131.
 export function replayV7RebuildOnSummaries(db: Database): void {
   db.run('BEGIN');
   db.run(`
