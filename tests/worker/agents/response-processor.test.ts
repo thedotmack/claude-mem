@@ -212,6 +212,26 @@ describe('ResponseProcessor', () => {
   }
 
   describe('parsing observations from XML response', () => {
+    it('confirms an empty skip summary without opening the storage path', async () => {
+      const session = createMockSession();
+      const confirmSpy = spyOn(mockSessionManager, 'confirmClaimedMessages');
+
+      await processAgentResponse(
+        '<skip_summary reason="all_events_private" />',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent',
+      );
+
+      expect(confirmSpy).toHaveBeenCalledWith(session.sessionDbId);
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(session.earliestPendingTimestamp).toBeNull();
+    });
+
     it('should parse single observation from response', async () => {
       const session = createMockSession({ project: 'repo-b/worktree' });
       const responseText = `

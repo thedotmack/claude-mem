@@ -390,6 +390,10 @@ export async function processAgentResponse(
       outputClass: 'xml',
       skipReason: summary.skip_reason ?? null,
     });
+    await sessionManager.confirmClaimedMessages(session.sessionDbId);
+    session.earliestPendingTimestamp = null;
+    session.lastSummaryStored = false;
+    return;
   }
 
   const summaryForStore = normalizeSummaryForStorage(summary);
