@@ -592,8 +592,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     );
 
     expect(session.conversationHistory.every(m => m.content !== driftedResponse)).toBe(true);
-    expect(session.conversationHistory).toHaveLength(1);
-    expect(session.conversationHistory[0].role).toBe('user');
+    expect(session.conversationHistory).toHaveLength(0);
     expect(resetSpy).toHaveBeenCalledWith(17);
     expect(session.consecutiveInvalidOutputs).toBe(1);
     expect(session.abortController.signal.aborted).toBe(true);

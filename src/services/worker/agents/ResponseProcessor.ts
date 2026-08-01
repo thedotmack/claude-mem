@@ -360,6 +360,10 @@ export async function processAgentResponse(
         }
       }
 
+      if (session.conversationHistory.length > 0 && session.conversationHistory.at(-1)?.role === 'user') {
+        session.conversationHistory.pop();
+      }
+
       if (session.consecutiveInvalidOutputs < MAX_CONSECUTIVE_SCHEMA_DRIFTS) {
         logger.error('PARSER', `${agentName} returned observer schema drift; removing malformed turn and resetting batch for retry`, {
           sessionId: session.sessionDbId,

@@ -153,6 +153,18 @@ describe('hasClosedObservationBlock', () => {
         expected: false,
         parsedValid: true,
       },
+      {
+        name: 'summary-then-sibling-drift',
+        raw: '<summary><notes>n</notes></summary>\n<observation><kind>x</kind><detail>y</detail></observation>',
+        expected: true,
+        parsedValid: false,
+      },
+      {
+        name: 'non-self-closing-skip_summary-then-drift',
+        raw: '<skip_summary>ignored content</skip_summary>\n<observation><kind>x</kind></observation>',
+        expected: true,
+        parsedValid: false,
+      },
       { name: 'empty', raw: '', expected: false, parsedValid: false },
       { name: 'prose', raw: 'No observations to record.', expected: false, parsedValid: false },
     ];
