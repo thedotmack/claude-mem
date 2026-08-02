@@ -156,7 +156,7 @@ interface SSENewObservationEvent {
 
 type ConnectionState = "disconnected" | "connected" | "reconnecting";
 
-const DETAILED_FEED_TYPES = new Set(["security_alert", "security_note", "bugfix", "decision"]);
+const DETAILED_FEED_TYPES = new Set(["security_alert", "security_note", "sensitive", "bugfix", "decision"]);
 const COMPACT_FEED_MAX_CHARS = 900;
 const DETAILED_FEED_MAX_CHARS = 2200;
 const DETAILED_FACT_LIMIT = 5;
