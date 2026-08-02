@@ -22,19 +22,30 @@ Confirm only its length. Preserve every unrelated setting and keep
 SyncHub requires claude-mem **>= 13.12.0**. Self-update before anything else,
 since older builds have no `/api/sync/*` routes and every later step will fail.
 
+Resolve the marketplace from `CLAUDE_CONFIG_DIR` — the same root the plugin's
+own launcher uses — so this updates the checkout that is actually active:
+
 ```bash
-DIR="$HOME/.claude/plugins/marketplaces/thedotmack"
-V=$(node -pe "require('$DIR/plugin/.claude-plugin/plugin.json').version" 2>/dev/null || echo 0.0.0)
-if [ "$(printf '%s\n13.12.0\n' "$V" | sort -V | head -1)" != "13.12.0" ]; then
-  echo "claude-mem $V < 13.12.0 — updating"
-  git -C "$DIR" pull --ff-only
+DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/thedotmack"
+# Exits 0 when the installed manifest is >= 13.12.0. Compared in node (already
+# required below) so there is no dependency on `sort -V`.
+supported() {
+  node -e "const v=require('$DIR/plugin/.claude-plugin/plugin.json').version.split('.').map(Number);process.exit(v[0]>13||(v[0]===13&&v[1]>=12)?0:1)" 2>/dev/null
+}
+if ! supported; then
+  echo "claude-mem is older than 13.12.0 — updating"
+  git -C "$DIR" pull --ff-only || true
 fi
+# Re-read the manifest: the pull may have just fixed it.
+supported || echo "STOP: still older than 13.12.0"
 ```
 
 If the pull advances the clone, the worker restart in step 4 loads the new
-build. If it cannot fast-forward (local changes) or `$V` is still `< 13.12.0`
-afterward, stop and tell the user to update the plugin manually — do not try
-SyncHub against an unsupported build.
+build. Re-run `supported` **after** the pull rather than reusing the version
+read before it. If that final check still fails — the clone could not
+fast-forward, is not a git checkout, or the manifest is missing — stop and tell
+the user to update the plugin manually. Do not try SyncHub against an
+unsupported build.
 
 ## 1. Check status
 
