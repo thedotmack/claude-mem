@@ -244,6 +244,17 @@ describe('findClaudeExecutable explicit CLAUDE_CODE_PATH', () => {
     installFakes({ settingsPath: '/missing/claude' });
     expect(() => findClaudeExecutable('SDK')).toThrow(/does not exist/);
   });
+
+  it('expands a leading ~ so a tilde path resolves instead of dying with ENOENT', () => {
+    // The reported failure: `~/.local/bin/claude` hits existsSync/posix_spawn
+    // verbatim and fails ENOENT. Home is /home/tester in the fakes.
+    installFakes({ settingsPath: '~/.local/bin/claude' });
+    fakeClis.set('/home/tester/.local/bin/claude', { version: '2.1.176', supportsDontAsk: true });
+
+    expect(findClaudeExecutable('SDK')).toBe('/home/tester/.local/bin/claude');
+    // Every spawn must see the expanded path, never the literal tilde.
+    expect(probeCalls.every((call) => call.path === '/home/tester/.local/bin/claude')).toBe(true);
+  });
 });
 
 describe('findClaudeExecutable caching', () => {

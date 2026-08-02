@@ -99,7 +99,13 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
           trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
           notFoundMessage: 'claude-mem: version-check.js not found',
         }),
-        'SessionStart.0.0': claudeHook(['start'], { trailingJson: { continue: true, suppressOutput: true } }),
+        // `start` already emits its own single, valid status JSON via
+        // buildStatusOutput ({"continue":true,"status":"ready","suppressOutput":true}).
+        // Appending a trailingJson echo would print a SECOND JSON object on
+        // stdout — two concatenated documents are invalid JSON, so Claude Code
+        // fails to parse them, ignores suppressOutput, and dumps the raw text at
+        // the top of every session. Let `start` speak for itself.
+        'SessionStart.0.0': claudeHook(['start']),
         'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
         'UserPromptSubmit.0.0': claudeHook(['hook', 'claude-code', 'session-init']),
         'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
@@ -159,15 +165,25 @@ async function verifyShellTemplateCanonical() {
 
   const manifest = shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand);
 
+  // The regeneration mode the mismatch errors point at: after an intentional
+  // generator change, rewrite the committed launcher strings from the same
+  // manifest the verifier checks, so the two can never drift.
+  const writeMode = process.argv.includes('--write-shell-templates');
+
   for (const [filePath, spec] of Object.entries(manifest)) {
     const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    let dirty = false;
     if (spec.kind === 'mcp') {
       const actual = parsed.mcpServers?.['mcp-search']?.args?.[1] ?? '';
       if (actual !== spec.command) {
-        throw new Error(
-          `Hand-edited shell string detected in ${filePath} (mcp-search). It no longer matches src/build/hook-shell-template.ts. ` +
-          `Update the generator (and this manifest) instead of hand-editing the launcher.`
-        );
+        if (!writeMode) {
+          throw new Error(
+            `Hand-edited shell string detected in ${filePath} (mcp-search). It no longer matches src/build/hook-shell-template.ts. ` +
+            `Regenerate via \`node scripts/build-hooks.js --write-shell-templates\` after an intentional generator change.`
+          );
+        }
+        parsed.mcpServers['mcp-search'].args[1] = spec.command;
+        dirty = true;
       }
     } else {
       for (const [dottedPath, expected] of Object.entries(spec.commands)) {
@@ -175,21 +191,33 @@ async function verifyShellTemplateCanonical() {
         const expectedCommand = typeof expected === 'string' ? expected : expected.command;
         const actual = entry?.command ?? null;
         if (actual !== expectedCommand) {
-          throw new Error(
-            `Hand-edited shell string detected in ${filePath} (${dottedPath}). It no longer matches src/build/hook-shell-template.ts. ` +
-            `Regenerate via the canonical generator instead of hand-editing the command.`
-          );
+          if (!writeMode || !entry) {
+            throw new Error(
+              `Hand-edited shell string detected in ${filePath} (${dottedPath}). It no longer matches src/build/hook-shell-template.ts. ` +
+              `Regenerate via \`node scripts/build-hooks.js --write-shell-templates\` after an intentional generator change.`
+            );
+          }
+          entry.command = expectedCommand;
+          dirty = true;
         }
         if (typeof expected !== 'string') {
           const actualWindows = entry?.commandWindows ?? null;
           if (actualWindows !== expected.commandWindows) {
-            throw new Error(
-              `Hand-edited Windows shell string detected in ${filePath} (${dottedPath}). It no longer matches src/build/hook-shell-template.ts. ` +
-              `Regenerate via the canonical generator instead of hand-editing commandWindows.`
-            );
+            if (!writeMode || !entry) {
+              throw new Error(
+                `Hand-edited Windows shell string detected in ${filePath} (${dottedPath}). It no longer matches src/build/hook-shell-template.ts. ` +
+                `Regenerate via \`node scripts/build-hooks.js --write-shell-templates\` after an intentional generator change.`
+              );
+            }
+            entry.commandWindows = expected.commandWindows;
+            dirty = true;
           }
         }
       }
+    }
+    if (dirty) {
+      fs.writeFileSync(filePath, JSON.stringify(parsed, null, 2) + '\n');
+      console.log(`  ✏️  Regenerated shell templates in ${filePath}`);
     }
   }
 

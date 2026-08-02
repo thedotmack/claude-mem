@@ -36,3 +36,9 @@ jobs:
       # Build only — the build-and-sync script also runs marketplace sync + worker
       # restart from a hardcoded ~/.claude/plugins path that doesn't exist on CI.
       - run: npm run build
+
+      # Covers the Windows-only bun resolver path that Linux CI skips.
+      - shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
+          & $bun test tests/bun-runner.test.ts

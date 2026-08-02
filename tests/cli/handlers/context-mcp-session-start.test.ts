@@ -15,10 +15,11 @@ const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 const mcpCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
 const workerCalls: Array<{ path: string; method: string }> = [];
 let mcpMode: 'success' | 'throw' | 'error' = 'success';
+let contextShowTerminalOutput = 'false';
 
 mock.module('../../../src/shared/hook-settings.js', () => ({
   loadFromFileOnce: () => ({
-    CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'false',
+    CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: contextShowTerminalOutput,
   }),
 }));
 
@@ -65,6 +66,7 @@ beforeEach(() => {
   mcpCalls.length = 0;
   workerCalls.length = 0;
   mcpMode = 'success';
+  contextShowTerminalOutput = 'false';
   loggerSpies.forEach(spy => spy.mockRestore());
   loggerSpies = [
     spyOn(logger, 'debug').mockImplementation(() => {}),
@@ -101,6 +103,27 @@ describe('contextHandler Codex SessionStart MCP path', () => {
       },
     }]);
     expect(workerCalls).toHaveLength(0);
+  });
+
+  it('does not duplicate Codex context into systemMessage when terminal output is enabled', async () => {
+    contextShowTerminalOutput = 'true';
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+
+    const result = await contextHandler.execute({
+      sessionId: 'session-mcp-context-terminal-output',
+      cwd: '/tmp/repo',
+      platform: 'codex',
+    });
+
+    expect(result.hookSpecificOutput?.additionalContext).toBe('context from mcp');
+    expect(result.systemMessage).toBeUndefined();
+    expect(mcpCalls).toEqual([{
+      name: 'session_start_context',
+      args: {
+        projects: ['parent-project', 'repo-project'],
+        platformSource: 'codex',
+      },
+    }]);
   });
 
   it('falls back to worker HTTP when the MCP call fails', async () => {

@@ -137,8 +137,9 @@ export async function installCursorHooks(target: CursorInstallTarget): Promise<n
 
   const escapedWorkerPath = workerServicePath.replace(/\\/g, '\\\\');
 
+  const callOperator = process.platform === 'win32' ? '& ' : '';
   const makeHookCommand = (command: string) => {
-    return `"${escapedBunPath}" "${escapedWorkerPath}" hook cursor ${command}`;
+    return `${callOperator}"${escapedBunPath}" "${escapedWorkerPath}" hook cursor ${command}`;
   };
 
   console.log(`  Using Bun runtime: ${bunPath}`);

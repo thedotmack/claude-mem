@@ -1,7 +1,7 @@
 
 import path from 'path';
 import { existsSync, readFileSync } from 'fs';
-import { SessionStore } from '../sqlite/SessionStore.js';
+import type { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
@@ -15,8 +15,10 @@ import type {
 } from './types.js';
 import { SUMMARY_LOOKAHEAD } from './types.js';
 
+type DatabaseOwner = { db: Database };
+
 export function queryObservationsMulti(
-  db: SessionStore,
+  db: DatabaseOwner,
   projects: string[],
   config: ContextConfig,
   platformSource?: string
@@ -68,7 +70,7 @@ export function queryObservationsMulti(
   ) as Observation[];
 }
 
-export function countObservationsByProjects(db: SessionStore, projects: string[], platformSource?: string): number {
+export function countObservationsByProjects(db: DatabaseOwner, projects: string[], platformSource?: string): number {
   if (projects.length === 0) return 0;
   const projectPlaceholders = projects.map(() => '?').join(',');
   const row = db.db.prepare(`
@@ -83,7 +85,7 @@ export function countObservationsByProjects(db: SessionStore, projects: string[]
 }
 
 export function querySummariesMulti(
-  db: SessionStore,
+  db: DatabaseOwner,
   projects: string[],
   config: ContextConfig,
   platformSource?: string

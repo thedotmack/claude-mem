@@ -59,6 +59,7 @@ describe('parseAgentXml — observations', () => {
 
     expect(result).toHaveLength(1);
     expect(result[0].title).toBeNull();
+    expect(result[0].type).toBe('bugfix');
     expect(result[0].narrative).toBe('Patched the null pointer dereference in session handler.');
   });
 
@@ -143,6 +144,18 @@ describe('parseAgentXml — observations', () => {
 
     expect(result).toHaveLength(1);
     expect(result[0].type).toBe('bugfix');
+  });
+
+  it('preserves a reporter-shaped unsupported observation type', () => {
+    const xml = `<observation>
+      <type>code</type>
+      <title>Reporter-shaped unsupported type</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('code');
   });
 
   it('returns a fail-fast result when no observation/summary blocks are present', () => {
@@ -242,5 +255,63 @@ Trailing prose.`;
     // Narrative should still contain the inner ``` markers — i.e. the
     // stripper did not eat them.
     expect(result.observations[0].narrative).toContain('```');
+  });
+});
+
+describe('parseAgentXml — concept normalization (#3379)', () => {
+  it('truncates a prefixed concept at the first colon', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <title>Prefixed concept tag</title>
+      <concepts><concept>gotcha: some long description</concept></concepts>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].concepts).toEqual(['gotcha']);
+  });
+
+  it('leaves a bare concept unchanged', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <title>Bare concept tag</title>
+      <concepts><concept>gotcha</concept></concepts>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].concepts).toEqual(['gotcha']);
+  });
+
+  it('still drops a concept equal to the observation type, bare or prefixed', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <title>Type echoed as concept</title>
+      <concepts>
+        <concept>discovery</concept>
+        <concept>discovery: echoed with a description</concept>
+        <concept>pattern</concept>
+      </concepts>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].concepts).toEqual(['pattern']);
+  });
+
+  it('drops concepts that become empty after truncation', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <title>Leading-colon concept</title>
+      <concepts><concept>: only a description</concept></concepts>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].concepts).toEqual([]);
   });
 });

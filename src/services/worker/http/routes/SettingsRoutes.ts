@@ -3,7 +3,7 @@ import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import path from 'path';
 import { readFileSync, existsSync, renameSync, mkdirSync } from 'fs';
-import { getPackageRoot, paths } from '../../../../shared/paths.js';
+import { getPackageRoot, paths, expandTilde } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsManager } from '../../SettingsManager.js';
 import { ModeManager } from '../../../domain/ModeManager.js';
@@ -112,6 +112,14 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
+    // Persist CLAUDE_CODE_PATH with any leading `~` expanded: it's fed straight
+    // to existsSync/posix_spawn (no shell), where a literal `~` fails with
+    // ENOENT and silently breaks all memory capture. Store the resolved path so
+    // the resolver never sees the tilde.
+    if (typeof settings.CLAUDE_CODE_PATH === 'string' && settings.CLAUDE_CODE_PATH) {
+      settings.CLAUDE_CODE_PATH = expandTilde(settings.CLAUDE_CODE_PATH);
+    }
+
     writeJsonFileAtomic(settingsPath, settings);
 
     clearPortCache();
@@ -148,9 +156,9 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
 
     if (settings.CLAUDE_MEM_GEMINI_MODEL) {
-      const validGeminiModels = ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-3-flash-preview'];
+      const validGeminiModels = ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-3-flash-preview'];
       if (!validGeminiModels.includes(settings.CLAUDE_MEM_GEMINI_MODEL)) {
-        return { valid: false, error: 'CLAUDE_MEM_GEMINI_MODEL must be one of: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-3-flash-preview' };
+        return { valid: false, error: 'CLAUDE_MEM_GEMINI_MODEL must be one of: gemini-flash-latest, gemini-flash-lite-latest, gemini-3.5-flash, gemini-3.1-flash-lite, gemini-3-flash-preview' };
       }
     }
 

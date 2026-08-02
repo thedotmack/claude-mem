@@ -8,6 +8,7 @@ import { logger } from '../../utils/logger.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { removeOwnedPidFile } from '../../supervisor/shutdown.js';
 import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../supervisor/index.js';
+import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
 import { paths } from '../../shared/paths.js';
 
 const DATA_DIR = paths.dataDir();
@@ -192,7 +193,8 @@ type CwdClassification =
 function gitQuery(cwd: string, args: string[]): string | null {
   const r = spawnSync('git', ['-C', cwd, ...args], {
     encoding: 'utf8',
-    timeout: 5000
+    timeout: 5000,
+    windowsHide: true
   });
   if (r.status !== 0) return null;
   return (r.stdout ?? '').trim();
@@ -313,13 +315,32 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: s
       const updObs     = db.prepare('UPDATE observations      SET project = ? WHERE memory_session_id = ?');
       const updSum     = db.prepare('UPDATE session_summaries SET project = ? WHERE memory_session_id = ?');
 
+      // Two-lane sync (plan Phase 3 task 2): this remap runs on its OWN DB
+      // connection, so it cannot reach CloudSync.notify() — emitRemapProject
+      // does the pure-SQL rev bump (R = 1+MAX per the SyncApply contract),
+      // re-nulls synced_at on native rows, and queues the remap_project
+      // mutation op inside the same transaction; the worker's next startup
+      // drain or notify() picks it up. Pre-migration DBs (no sync lane yet)
+      // take the legacy plain-UPDATE path.
+      const syncLane = hasSyncLane(db);
+
       let sessionN = 0, obsN = 0, sumN = 0;
       const tx = db.transaction(() => {
         for (const t of targets) {
           sessionN += updSession.run(t.newProject, t.sessionId).changes;
           if (t.memorySessionId) {
-            obsN += updObs.run(t.newProject, t.memorySessionId).changes;
-            sumN += updSum.run(t.newProject, t.memorySessionId).changes;
+            if (syncLane) {
+              const remap = emitRemapProject(
+                db,
+                { memory_session_id: t.memorySessionId },
+                { project: t.newProject }
+              );
+              obsN += remap.observations;
+              sumN += remap.summaries;
+            } else {
+              obsN += updObs.run(t.newProject, t.memorySessionId).changes;
+              sumN += updSum.run(t.newProject, t.memorySessionId).changes;
+            }
           }
         }
       });
@@ -334,6 +355,18 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: s
   } finally {
     db.close();
   }
+}
+
+export function buildWindowsDaemonStartCommand(runtimePath: string, scriptPath: string): string {
+  const psSingleQuote = (value: string) => value.replace(/'/g, "''");
+  // Windows PowerShell 5.1 joins -ArgumentList elements with spaces WITHOUT
+  // quoting them when it builds the child's native command line, so a script
+  // path under a spaced %USERPROFILE% splits into multiple argv entries and
+  // bun exits instantly with "Module not found" (#3195). Embedding literal
+  // double quotes inside the single-quoted PS string keeps the path a single
+  // argument. -FilePath is safe as-is: it is a single-string parameter and
+  // never goes through that join.
+  return `Start-Process -FilePath '${psSingleQuote(runtimePath)}' -ArgumentList @('"${psSingleQuote(scriptPath)}"','--daemon') -WindowStyle Hidden`;
 }
 
 export function spawnDaemon(
@@ -359,7 +392,7 @@ export function spawnDaemon(
   }
 
   if (process.platform === 'win32') {
-    const psScript = `Start-Process -FilePath '${runtimePath.replace(/'/g, "''")}' -ArgumentList @('${scriptPath.replace(/'/g, "''")}','--daemon') -WindowStyle Hidden`;
+    const psScript = buildWindowsDaemonStartCommand(runtimePath, scriptPath);
     const encodedCommand = Buffer.from(psScript, 'utf16le').toString('base64');
 
     try {

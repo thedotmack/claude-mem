@@ -31,7 +31,7 @@ const WINDOWS_CODEX_EXTENSIONS = new Set(['.cmd', '.exe', '.bat', '.com']);
 function commandExists(command: string): boolean {
   try {
     if (process.platform === 'win32') {
-      execFileSync('where', [command], { stdio: 'ignore' });
+      execFileSync('where.exe', [command], { stdio: 'ignore', windowsHide: true });
     } else {
       execFileSync('which', [command], { stdio: 'ignore' });
     }
@@ -90,7 +90,7 @@ function resolvePluginMarketplaceRoot(preferredRoot?: string): string {
 function lookupCodexOnWindows(): string | null {
   let stdout: string;
   try {
-    stdout = execFileSync('where', ['codex'], {
+    stdout = execFileSync('where.exe', ['codex'], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
@@ -158,18 +158,6 @@ function runCodex(args: string[]): void {
   if (result.status !== 0) {
     const exitCode = result.status ?? 'unknown';
     throw new Error(`codex ${args.join(' ')} failed with exit code ${exitCode}${stderr ? `: ${stderr}` : ''}`);
-  }
-}
-
-function runCodexBestEffort(args: string[], successMessage: string, failureMessage: string): boolean {
-  try {
-    runCodex(args);
-    console.log(`  ${successMessage}`);
-    return true;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(`  ${failureMessage}: ${message}`);
-    return false;
   }
 }
 
@@ -467,11 +455,8 @@ function performCodexInstall(marketplaceRootOverride?: string): number {
   console.log(`  Registering Codex plugin marketplace: ${marketplaceRoot}`);
   registerCodexMarketplace(marketplaceRoot);
   enableCodexPluginConfig();
-  runCodexBestEffort(
-    ['plugin', 'marketplace', 'upgrade', MARKETPLACE_NAME],
-    'Refreshed Codex marketplace and installed plugin cache.',
-    'Could not refresh Codex marketplace cache; reinstall or upgrade claude-mem from /plugins if Codex still uses old MCP config',
-  );
+  runCodex(['plugin', 'add', CODEX_PLUGIN_ID]);
+  console.log('  Installed Codex plugin cache.');
   if (!cleanupLegacyCodexAgentsMdContext()) {
     console.warn(`  Native Codex hooks registered, but failed to remove legacy AGENTS.md context from ${CODEX_AGENTS_MD_PATH}.`);
   }

@@ -27,7 +27,7 @@ import { existsSync, realpathSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from './paths.js';
+import { USER_SETTINGS_PATH, expandTilde } from './paths.js';
 import { logger, type Component } from '../utils/logger.js';
 
 /**
@@ -284,21 +284,28 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
 
   // --- 1. Explicit configured path ----------------------------------------
   if (settings.CLAUDE_CODE_PATH) {
-    if (!_internals.existsSync(settings.CLAUDE_CODE_PATH)) {
+    // A user who types `~/.local/bin/claude` in settings.json expects the shell
+    // convention, but nothing here runs through a shell — existsSync and
+    // posix_spawn take the string verbatim, so a literal `~` fails with ENOENT.
+    // Expand it defensively at read time so both the existence check and every
+    // probe spawn see a real absolute path (SettingsRoutes also normalizes on
+    // write; this covers files edited by hand).
+    const configuredPath = expandTilde(settings.CLAUDE_CODE_PATH, _internals.homedir());
+    if (!_internals.existsSync(configuredPath)) {
       throw new Error(
         `CLAUDE_CODE_PATH is set to "${settings.CLAUDE_CODE_PATH}" but the file does not exist.`
       );
     }
 
-    const probe = probeCandidate(settings.CLAUDE_CODE_PATH);
+    const probe = probeCandidate(configuredPath);
     if (probe.kind === 'capable') {
-      logger.info(logComponent, `Using configured CLAUDE_CODE_PATH: ${settings.CLAUDE_CODE_PATH} (${probe.version})`);
+      logger.info(logComponent, `Using configured CLAUDE_CODE_PATH: ${configuredPath} (${probe.version})`);
       cachedResolution = {
-        path: settings.CLAUDE_CODE_PATH,
+        path: configuredPath,
         version: probe.version,
         expiresAtMs: Date.now() + RESOLUTION_CACHE_TTL_MS,
       };
-      return settings.CLAUDE_CODE_PATH;
+      return configuredPath;
     }
     if (probe.kind === 'incompatible') {
       throw new Error(
@@ -306,7 +313,7 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
         `it rejects flags every memory agent spawn requires (${probe.detail}). ${updateInstructions()}`
       );
     }
-    if (looksLikeDesktopAppPath(settings.CLAUDE_CODE_PATH)) {
+    if (looksLikeDesktopAppPath(configuredPath)) {
       throw new Error(
         `Found desktop app at "${settings.CLAUDE_CODE_PATH}" but it doesn't support headless mode. ` +
         `Install Claude Code CLI: npm install -g @anthropic-ai/claude-code`

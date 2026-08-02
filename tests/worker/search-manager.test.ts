@@ -2,6 +2,35 @@ import { describe, it, expect, mock } from 'bun:test';
 import { SearchManager } from '../../src/services/worker/SearchManager.js';
 
 describe('SearchManager platform-scoped Chroma hydration', () => {
+  it('normalizes date_from/date_to filters into dateRange for worker search', async () => {
+    const searchObservations = mock(() => []);
+    const manager = new SearchManager(
+      {
+        searchObservations,
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {} as any,
+      null,
+      {} as any,
+      {} as any,
+    );
+
+    await manager.search({
+      type: 'observations',
+      date_from: '2025-01-01',
+      date_to: '2025-01-31',
+      format: 'json',
+    });
+
+    expect(searchObservations).toHaveBeenCalledWith(undefined, expect.objectContaining({
+      dateRange: {
+        start: '2025-01-01',
+        end: '2025-01-31',
+      },
+    }));
+  });
+
   it('passes platformSource into Chroma observation where filter and SQLite hydration', async () => {
     const observation = {
       id: 5,

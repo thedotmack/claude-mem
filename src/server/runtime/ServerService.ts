@@ -821,6 +821,7 @@ function spawnServerDaemon(port: number): number | undefined {
   const child = spawn(process.execPath, [scriptPath, '--daemon'], {
     detached: true,
     stdio: 'ignore',
+    windowsHide: true,
     // Strip host CLI bleed-through (CLAUDE_CODE_*, including EFFORT_LEVEL) and
     // Anthropic credentials before handing env to the detached daemon. The
     // daemon re-reads credentials from ~/.claude-mem/.env at SDK spawn time.

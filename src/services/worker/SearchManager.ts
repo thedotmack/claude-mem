@@ -274,14 +274,20 @@ export class SearchManager {
       normalized.type = normalized.type.split(',').map((s: string) => s.trim()).filter(Boolean);
     }
 
-    if (normalized.dateStart || normalized.dateEnd) {
+    const dateStart = normalized.dateStart ?? normalized.date_start ?? normalized.date_from;
+    const dateEnd = normalized.dateEnd ?? normalized.date_end ?? normalized.date_to;
+    if (dateStart || dateEnd) {
       normalized.dateRange = {
-        start: normalized.dateStart,
-        end: normalized.dateEnd
+        start: dateStart,
+        end: dateEnd
       };
-      delete normalized.dateStart;
-      delete normalized.dateEnd;
     }
+    delete normalized.dateStart;
+    delete normalized.dateEnd;
+    delete normalized.date_start;
+    delete normalized.date_end;
+    delete normalized.date_from;
+    delete normalized.date_to;
 
     if (normalized.isFolder === 'true') {
       normalized.isFolder = true;
@@ -301,6 +307,44 @@ export class SearchManager {
     delete normalized.platform_source;
 
     return normalized;
+  }
+
+  /**
+   * Reconcile the overloaded `type` param with `obs_type`.
+   *
+   * `type` is used two ways: as a document-category selector
+   * ('observations' | 'sessions' | 'prompts'), and — per the MCP schema, which
+   * documents it as "filter by observation type" — as an observation-type
+   * filter. The real observation-type filter is `obs_type`, which reaches
+   * SQLite as a `type IN (...)` condition with no allowlist, so custom types
+   * work through it. But a custom `type` value matched no category, turned off
+   * every collection, and returned nothing.
+   *
+   * Resolution: if every `type` value is a known category, use it as the
+   * category selector (unchanged behavior). Otherwise treat it as an alias for
+   * `obs_type` (merged with any explicit obs_type), and scope the search to
+   * observations — the only category obs_type applies to.
+   */
+  private resolveTypeFilters(type: any, obs_type: any): { category: any; effectiveObsType: any } {
+    const CATEGORY_TYPES = ['observations', 'sessions', 'prompts'];
+
+    if (type == null) {
+      return { category: type, effectiveObsType: obs_type };
+    }
+
+    const typeValues = Array.isArray(type) ? type : [type];
+    const isCategorySelector = typeValues.length > 0 && typeValues.every(t => CATEGORY_TYPES.includes(t));
+
+    if (isCategorySelector) {
+      return { category: type, effectiveObsType: obs_type };
+    }
+
+    const existingObsType = Array.isArray(obs_type)
+      ? obs_type
+      : (obs_type != null ? [obs_type] : []);
+    const mergedObsType = Array.from(new Set([...existingObsType, ...typeValues]));
+
+    return { category: 'observations', effectiveObsType: mergedObsType };
   }
 
   /**
@@ -382,8 +426,9 @@ export class SearchManager {
       }
 
       if (obsIds.length > 0) {
-        const obsOptions = { ...options, type: obs_type, concepts, files };
+        const obsOptions = { ...options, type: obs_type, concepts, files, orderBy: 'relevance' };
         observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
+        observations.sort((a, b) => obsIds.indexOf(a.id) - obsIds.indexOf(b.id));
       }
       if (sessionIds.length > 0) {
         sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, {
@@ -433,13 +478,23 @@ export class SearchManager {
     let platformScopedChromaZeroFallback = false;
     let chromaFailureReason: { message: string; isConnectionError: boolean } | null = null;
 
-    const searchObservations = !type || type === 'observations';
-    const searchSessions = !type || type === 'sessions';
-    const searchPrompts = !type || type === 'prompts';
+    // `type` historically doubles as a document-category selector
+    // ('observations' | 'sessions' | 'prompts'). But it is documented in the
+    // MCP schema as "filter by observation type", so callers routinely pass a
+    // custom observation type (e.g. 'bugfix') here. Left as-is, such a value
+    // matches none of the three categories, zeroes every collection boolean,
+    // and returns nothing. Reconcile the two meanings: when `type` is not one
+    // of the known categories, treat it as an alias for `obs_type` and scope
+    // the search to observations, so the documented behavior actually holds.
+    const { category, effectiveObsType } = this.resolveTypeFilters(type, obs_type);
+
+    const searchObservations = !category || category === 'observations';
+    const searchSessions = !category || category === 'sessions';
+    const searchPrompts = !category || category === 'prompts';
 
     if (!query) {
       logger.debug('SEARCH', 'Filter-only query (no query text), using direct SQLite filtering', { enablesDateFilters: true });
-      const obsOptions = { ...options, type: obs_type, concepts, files };
+      const obsOptions = { ...options, type: effectiveObsType, concepts, files };
       if (searchObservations) {
         observations = this.sessionSearch.searchObservations(undefined, obsOptions);
       }
@@ -453,14 +508,14 @@ export class SearchManager {
     // PATH 2: CHROMA SEMANTIC SEARCH (query text + Chroma available)
     else if (this.chromaSync) {
       let chromaSucceeded = false;
-      logger.debug('SEARCH', 'Using ChromaDB semantic search', { typeFilter: type || 'all' });
+      logger.debug('SEARCH', 'Using ChromaDB semantic search', { typeFilter: category || 'all' });
 
       const whereFilters: Array<Record<string, any>> = [];
-      if (type === 'observations') {
+      if (category === 'observations') {
         whereFilters.push({ doc_type: 'observation' });
-      } else if (type === 'sessions') {
+      } else if (category === 'sessions') {
         whereFilters.push({ doc_type: 'session_summary' });
-      } else if (type === 'prompts') {
+      } else if (category === 'prompts') {
         whereFilters.push({ doc_type: 'user_prompt' });
       }
 
@@ -484,7 +539,7 @@ export class SearchManager {
           : { $and: whereFilters };
 
       try {
-        const chromaOutcome = await this.performChromaSemanticSearch(query, whereFilter, options, { obs_type, concepts, files, searchObservations, searchSessions, searchPrompts });
+        const chromaOutcome = await this.performChromaSemanticSearch(query, whereFilter, options, { obs_type: effectiveObsType, concepts, files, searchObservations, searchSessions, searchPrompts });
         chromaSucceeded = true;
         ({ observations, sessions, prompts, platformScopedChromaZeroFallback } = chromaOutcome);
       } catch (chromaError) {
@@ -497,7 +552,7 @@ export class SearchManager {
         chromaFailed = true;
 
         if (searchObservations) {
-          observations = this.sessionSearch.searchObservations(query, { ...options, type: obs_type, concepts, files });
+          observations = this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
         }
         if (searchSessions) {
           sessions = this.sessionSearch.searchSessions(query, options);
@@ -512,7 +567,7 @@ export class SearchManager {
       logger.debug('SEARCH', 'ChromaDB not initialized — falling back to FTS5 keyword search', {});
       try {
         if (searchObservations) {
-          observations = this.sessionSearch.searchObservations(query, { ...options, type: obs_type, concepts, files });
+          observations = this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
         }
         if (searchSessions) {
           sessions = this.sessionSearch.searchSessions(query, options);

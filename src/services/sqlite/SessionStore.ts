@@ -1,4 +1,5 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite';
+import { randomUUID } from 'crypto';
 import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
@@ -17,6 +18,12 @@ import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources }
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
 import { applySqliteConnectionPragmas } from './connection.js';
+import {
+  assertCanonicalDecimal,
+  incrementCanonicalDecimal,
+  validateCanonicalMutation,
+  type CanonicalMutation,
+} from '../sync/CanonicalContent.js';
 
 interface IndexColumnInfo {
   seqno: number;
@@ -106,6 +113,13 @@ export class SessionStore {
     this.ensureSDKSessionsPlatformContentIdentity();
     this.ensureUserPromptsSessionDbId();
     this.ensurePendingMessagesSessionToolUniqueIndex();
+    this.ensureSyncedAtColumns();
+    this.ensureSyncOriginColumns();
+    this.ensureSyncOutbox();
+    this.ensureSyncEntityLedger();
+    this.ensureSyncRevisionTextAffinity();
+    this.initializeSyncHubLaunchBaseline();
+    this.normalizeConceptTags();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -441,6 +455,436 @@ export class SessionStore {
     }
   }
 
+  private ensureSyncedAtColumns(): void {
+    // Not gated on a schema_versions row: the community-edge line already
+    // consumed versions 36-38 without adding synced_at, so affected DBs have
+    // those version rows but not the columns. The PRAGMA checks are the real
+    // guard; version 39 is recorded for bookkeeping only.
+    for (const table of ['observations', 'session_summaries', 'user_prompts']) {
+      const tableInfo = this.db.query(`PRAGMA table_info(${table})`).all() as TableColumnInfo[];
+      const hasSyncedAt = tableInfo.some(col => col.name === 'synced_at');
+
+      if (!hasSyncedAt) {
+        this.db.run(`ALTER TABLE ${table} ADD COLUMN synced_at INTEGER`);
+        logger.debug('DB', `Added synced_at column to ${table} table`);
+      }
+
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_${table}_unsynced ON ${table}(id) WHERE synced_at IS NULL`);
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(39, new Date().toISOString());
+  }
+
+  /**
+   * Two-lane sync origins (version 41): every synced table learns where a row
+   * came from. Native rows keep the origin columns NULL (NULL = this device);
+   * rows applied from the sync hub carry the origin device's id and that
+   * device's local rowid, and the partial unique index makes re-applying the
+   * same remote op an upsert instead of a duplicate (kind is implicit per
+   * table, so the index needs only the device/local pair). `sync_rev` is the
+   * entity revision used by the mutation-op rev guard (SyncApply); it starts
+   * at 1 for every existing and native row. `sync_state` is the pull cursor
+   * store (`cursor`, `epoch`) — advanced inside the same transaction as row
+   * application for crash-safe exactly-once (see SyncApply.applyOps).
+   *
+   * Same shape as ensureSyncedAtColumns: the PRAGMA checks are the real
+   * guard; version 41 is recorded for bookkeeping only.
+   */
+  private ensureSyncOriginColumns(): void {
+    for (const table of ['observations', 'session_summaries', 'user_prompts']) {
+      const tableInfo = this.db.query(`PRAGMA table_info(${table})`).all() as TableColumnInfo[];
+      const columnNames = new Set(tableInfo.map(col => col.name));
+
+      if (!columnNames.has('origin_device_id')) {
+        this.db.run(`ALTER TABLE ${table} ADD COLUMN origin_device_id TEXT`);
+        logger.debug('DB', `Added origin_device_id column to ${table} table`);
+      }
+      if (!columnNames.has('origin_local_id')) {
+        this.db.run(`ALTER TABLE ${table} ADD COLUMN origin_local_id TEXT`);
+        logger.debug('DB', `Added origin_local_id column to ${table} table`);
+      }
+      if (!columnNames.has('sync_rev')) {
+        this.db.run(`ALTER TABLE ${table} ADD COLUMN sync_rev TEXT NOT NULL DEFAULT '1'`);
+        logger.debug('DB', `Added sync_rev column to ${table} table`);
+      }
+
+      this.db.run(`
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_${table}_origin
+        ON ${table}(origin_device_id, origin_local_id)
+        WHERE origin_device_id IS NOT NULL
+      `);
+    }
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS sync_state (
+        k TEXT PRIMARY KEY,
+        v TEXT
+      )
+    `);
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(41, new Date().toISOString());
+  }
+
+  /**
+   * Mutation outbox (version 42): durable queue for the four mutation sites
+   * (custom title, prompt→session repair, the two project remaps). Each row
+   * is one `kind='mutation'` op for the sync hub: `op_uuid` is the op's
+   * origin_id — minted ONCE at enqueue time and reused on every push retry
+   * (the hub dedupes on (origin_device, kind, origin_id, rev)); `rev` follows
+   * the REV MINTING RULES in SyncApply.ts; `body` is the mutation envelope
+   * JSON. The push drain (CloudSync.drainMutations) DELETEs rows on ack —
+   * unlike the row tables, outbox rows are pure queue entries, not data.
+   *
+   * Same shape as ensureSyncOriginColumns: CREATE IF NOT EXISTS is the real
+   * guard; version 42 is recorded for bookkeeping only.
+   */
+  private ensureSyncOutbox(): void {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS sync_outbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        op_uuid TEXT NOT NULL UNIQUE,
+        rev TEXT NOT NULL DEFAULT '1',
+        body TEXT NOT NULL,
+        canonical_body TEXT,
+        operation_sha256 TEXT,
+        created_at_epoch INTEGER NOT NULL
+      )
+    `);
+
+    const columns = new Set(
+      (this.db.query('PRAGMA table_info(sync_outbox)').all() as TableColumnInfo[]).map(column => column.name)
+    );
+    if (!columns.has('canonical_body')) {
+      this.db.run('ALTER TABLE sync_outbox ADD COLUMN canonical_body TEXT');
+    }
+    if (!columns.has('operation_sha256')) {
+      this.db.run('ALTER TABLE sync_outbox ADD COLUMN operation_sha256 TEXT');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(42, new Date().toISOString());
+  }
+
+  /**
+   * Canonical uint64 revision storage (version 46). SQLite INTEGER tops out
+   * at signed int64, so INTEGER affinity silently converts larger decimal
+   * strings to REAL and destroys their exact value. Keep every row/content
+   * revision as canonical decimal TEXT instead.
+   *
+   * v41 and the original v42 created INTEGER-affinity columns. SQLite cannot
+   * alter a column's declared type in place, so each affected column is
+   * replaced transactionally with ADD/COPY/DROP/RENAME. This leaves the
+   * tables themselves (and therefore their indexes, triggers, and foreign
+   * keys) intact. The PRAGMA affinity checks are the real idempotency guard;
+   * the version row is bookkeeping only.
+   *
+   * A legacy REAL value is already rounded and cannot be recovered. Refuse
+   * the upgrade loudly instead of freezing scientific notation as a fake
+   * revision. Every copied INTEGER/TEXT value is also validated as a
+   * positive canonical uint64 before any schema change commits.
+   */
+  private ensureSyncRevisionTextAffinity(): void {
+    const targets = [
+      { table: 'observations', column: 'sync_rev', temporary: 'sync_rev_text_v46' },
+      { table: 'session_summaries', column: 'sync_rev', temporary: 'sync_rev_text_v46' },
+      { table: 'user_prompts', column: 'sync_rev', temporary: 'sync_rev_text_v46' },
+      { table: 'sync_outbox', column: 'rev', temporary: 'rev_text_v46' },
+    ] as const;
+
+    const columnInfo = (table: string, column: string): TableColumnInfo | undefined =>
+      (this.db.query(`PRAGMA table_info(${table})`).all() as TableColumnInfo[])
+        .find(info => info.name === column);
+    const isText = (info: TableColumnInfo | undefined): boolean =>
+      info?.type.trim().toUpperCase() === 'TEXT';
+    const applied = this.db.prepare(
+      'SELECT version FROM schema_versions WHERE version = ?'
+    ).get(46) as SchemaVersion | undefined;
+
+    if (applied && targets.every(target => isText(columnInfo(target.table, target.column)))) {
+      return;
+    }
+
+    const tx = this.db.transaction(() => {
+      for (const target of targets) {
+        const columns = this.db.query(`PRAGMA table_info(${target.table})`).all() as TableColumnInfo[];
+        const source = columns.find(info => info.name === target.column);
+        if (!source) {
+          throw new Error(`schema v46: missing ${target.table}.${target.column}`);
+        }
+
+        for (const raw of this.db.query(`
+          SELECT CAST(id AS TEXT) AS row_id,
+                 typeof(${target.column}) AS storage_type,
+                 CAST(${target.column} AS TEXT) AS revision
+          FROM ${target.table}
+        `).iterate()) {
+          const row = raw as { row_id: string; storage_type: string; revision: string | null };
+          if (row.storage_type === 'real') {
+            throw new Error(
+              `schema v46: ${target.table}.${target.column} row ${row.row_id} is REAL and unrecoverably rounded`
+            );
+          }
+          if (row.storage_type !== 'integer' && row.storage_type !== 'text') {
+            throw new Error(
+              `schema v46: ${target.table}.${target.column} row ${row.row_id} has unsupported ${row.storage_type} storage`
+            );
+          }
+          try {
+            assertCanonicalDecimal(row.revision, { positive: true });
+          } catch {
+            throw new Error(
+              `schema v46: ${target.table}.${target.column} row ${row.row_id} is not a positive canonical uint64 revision`
+            );
+          }
+        }
+
+        if (isText(source)) continue;
+        if (columns.some(info => info.name === target.temporary)) {
+          throw new Error(`schema v46: unexpected temporary column ${target.table}.${target.temporary}`);
+        }
+
+        this.db.run(
+          `ALTER TABLE ${target.table} ADD COLUMN ${target.temporary} TEXT NOT NULL DEFAULT '1'`
+        );
+        this.db.run(
+          `UPDATE ${target.table} SET ${target.temporary} = CAST(${target.column} AS TEXT)`
+        );
+        const mismatch = this.db.prepare(`
+          SELECT CAST(id AS TEXT) AS row_id
+          FROM ${target.table}
+          WHERE ${target.temporary} <> CAST(${target.column} AS TEXT)
+          LIMIT 1
+        `).get() as { row_id: string } | undefined;
+        if (mismatch) {
+          throw new Error(
+            `schema v46: failed to copy ${target.table}.${target.column} row ${mismatch.row_id} exactly`
+          );
+        }
+        this.db.run(`ALTER TABLE ${target.table} DROP COLUMN ${target.column}`);
+        this.db.run(
+          `ALTER TABLE ${target.table} RENAME COLUMN ${target.temporary} TO ${target.column}`
+        );
+      }
+
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)')
+        .run(46, new Date().toISOString());
+    });
+    tx();
+  }
+
+  /**
+   * Canonical-v2 entity heads and durable tombstone queue. Revisions remain
+   * decimal TEXT so a remote value is never rounded through a JS number.
+   */
+  private ensureSyncEntityLedger(): void {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS sync_entity_heads (
+        entity_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('observation', 'summary', 'prompt')),
+        origin_device_id TEXT NOT NULL,
+        origin_local_id TEXT NOT NULL,
+        entity_rev TEXT NOT NULL,
+        operation_sha256 TEXT NOT NULL,
+        deleted INTEGER NOT NULL CHECK (deleted IN (0, 1)),
+        updated_at_epoch INTEGER NOT NULL
+      )
+    `);
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS sync_content_outbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('observation', 'summary', 'prompt')),
+        origin_local_id TEXT NOT NULL,
+        entity_rev TEXT NOT NULL,
+        body TEXT NOT NULL,
+        operation_sha256 TEXT NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
+        created_at_epoch INTEGER NOT NULL,
+        UNIQUE(entity_id, entity_rev)
+      )
+    `);
+    const contentColumns = new Set(
+      (this.db.query('PRAGMA table_info(sync_content_outbox)').all() as TableColumnInfo[]).map(column => column.name)
+    );
+    if (!contentColumns.has('deleted')) {
+      this.db.run('ALTER TABLE sync_content_outbox ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0');
+      this.db.run(`
+        UPDATE sync_content_outbox
+        SET deleted = CASE WHEN json_extract(body, '$.deleted') = 1 THEN 1 ELSE 0 END
+      `);
+    }
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS sync_dead_letter (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        lane TEXT NOT NULL CHECK (lane IN ('content', 'mutation')),
+        queue_key TEXT NOT NULL,
+        kind TEXT,
+        origin_local_id TEXT,
+        entity_rev TEXT,
+        reason TEXT NOT NULL,
+        raw_body TEXT,
+        created_at_epoch INTEGER NOT NULL,
+        UNIQUE(lane, queue_key, entity_rev, reason)
+      )
+    `);
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)')
+      .run(44, new Date().toISOString());
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)')
+      .run(45, new Date().toISOString());
+  }
+
+
+  /**
+   * One-time launch boundary (v47) plus its durable revision exclusions
+   * (v48). This product line has no released cloud corpus to migrate, so the
+   * exact native revisions present at launch are a local-only baseline. The
+   * exclusion ledger survives Hub epoch changes; if one of those rows is
+   * edited later, its higher revision is eligible for ordinary sync/rebuild.
+   * Fresh databases run this while empty.
+   */
+  private initializeSyncHubLaunchBaseline(): void {
+    const tables = [
+      { table: 'observations', kind: 'observation' },
+      { table: 'session_summaries', kind: 'summary' },
+      { table: 'user_prompts', kind: 'prompt' },
+    ] as const;
+    const exclusionTableExisted = this.db.prepare(`
+      SELECT 1 AS present FROM sqlite_master
+      WHERE type = 'table' AND name = 'sync_launch_exclusions'
+    `).get() !== undefined;
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS sync_launch_exclusions (
+        kind TEXT NOT NULL CHECK (kind IN ('observation', 'summary', 'prompt')),
+        origin_local_id TEXT NOT NULL,
+        through_rev TEXT NOT NULL,
+        PRIMARY KEY (kind, origin_local_id)
+      )
+    `);
+
+    const applied = this.db.prepare(
+      'SELECT version, applied_at FROM schema_versions WHERE version = ?'
+    ).get(47) as { version: number; applied_at: string } | undefined;
+
+    if (!applied) {
+      const now = Date.now();
+      const tx = this.db.transaction(() => {
+        // Recompute if a migration fixture deliberately removes v47. In a
+        // real pre-v47 database this table is newly created and already empty.
+        this.db.run('DELETE FROM sync_launch_exclusions');
+        for (const { table, kind } of tables) {
+          this.db.prepare(`
+            INSERT INTO sync_launch_exclusions (kind, origin_local_id, through_rev)
+            SELECT ?, CAST(id AS TEXT), CAST(sync_rev AS TEXT)
+            FROM ${table}
+            WHERE origin_device_id IS NULL
+          `).run(kind);
+          this.db.prepare(`
+            UPDATE ${table} SET synced_at = ?
+            WHERE synced_at IS NULL AND origin_device_id IS NULL
+          `).run(now);
+        }
+        this.db.run('DELETE FROM sync_outbox');
+        this.db.run('DELETE FROM sync_content_outbox');
+        this.db.run('DELETE FROM sync_dead_letter');
+        // Adopt the launch Hub as a genuinely first epoch. Retaining a cursor
+        // or epoch from a pre-launch test Hub would make SyncApply interpret
+        // the first connection as a rebuild. Parked mutations belong to that
+        // discarded test log, so pre-launch sync_state is stale control-plane
+        // state; the exclusion ledger above is the only boundary state kept.
+        this.db.run('DELETE FROM sync_state');
+        const appliedAt = new Date(now).toISOString();
+        this.db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)').run(47, appliedAt);
+        this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(48, appliedAt);
+      });
+      tx();
+      return;
+    }
+
+    // Repair databases that ran the earlier v47 implementation before the
+    // explicit exclusion ledger existed. v47 stamped the launch baseline at
+    // its applied_at millisecond. Rows still stamped at/before that boundary
+    // are the excluded launch revisions; NULL or later stamps are post-launch
+    // writes/acks and must remain eligible for an epoch rebuild.
+    const exclusionsApplied = this.db.prepare(
+      'SELECT version FROM schema_versions WHERE version = ?'
+    ).get(48) as SchemaVersion | undefined;
+    if (exclusionsApplied && exclusionTableExisted) return;
+    const boundaryMs = Date.parse(applied.applied_at);
+    if (!Number.isSafeInteger(boundaryMs) || boundaryMs < 0) {
+      throw new Error(`schema v48: invalid v47 applied_at ${applied.applied_at}`);
+    }
+    const repair = this.db.transaction(() => {
+      for (const { table, kind } of tables) {
+        this.db.prepare(`
+          INSERT OR IGNORE INTO sync_launch_exclusions (kind, origin_local_id, through_rev)
+          SELECT ?, CAST(id AS TEXT), CAST(sync_rev AS TEXT)
+          FROM ${table}
+          WHERE origin_device_id IS NULL
+            AND synced_at > 0
+            AND synced_at <= ?
+        `).run(kind, boundaryMs);
+      }
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)')
+        .run(48, new Date().toISOString());
+    });
+    repair();
+  }
+
+  // v49 (#3379): the context-injection query matches concepts exactly
+  // (ObservationCompiler `WHERE value IN (...)`), so historical rows written
+  // as "keyword: description" never matched. Truncate each stored concept at
+  // the first ':' and trim; the parser now enforces the same shape on write.
+  //
+  // `json_valid` guard: a non-JSON concepts value containing ':' would make
+  // json_each throw and abort the whole constructor migration chain (worker
+  // never initializes — the #3378 failure class). Invalid-JSON rows are
+  // equally unreadable before and after v49 for every json_each reader, so
+  // skipping them changes no behavior; this is an explicit domain-state
+  // check, not error swallowing.
+  //
+  // Corrected NATIVE rows must re-sync: the row body changed, so bump
+  // sync_rev and re-null synced_at (mirroring requeuePromptSync) — the next
+  // drain re-pushes the corrected body at the higher rev and replicas apply
+  // it via the rev guard. Replica rows (origin_device_id NOT NULL) are
+  // normalized locally only; their repair travels from THEIR origin device.
+  private normalizeConceptTags(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(49) as SchemaVersion | undefined;
+    if (applied) return;
+
+    let changedCount = 0;
+    const tx = this.db.transaction(() => {
+      const affected = this.db.prepare(`
+        SELECT CAST(id AS TEXT) AS id, origin_device_id, CAST(sync_rev AS TEXT) AS sync_rev
+        FROM observations
+        WHERE concepts LIKE '%:%' AND json_valid(concepts)
+      `).all() as Array<{ id: string; origin_device_id: string | null; sync_rev: string }>;
+      changedCount = affected.length;
+
+      this.db.run(`
+        UPDATE observations
+        SET concepts = (
+          SELECT json_group_array(
+            CASE WHEN instr(value, ':') > 0
+                 THEN trim(substr(value, 1, instr(value, ':') - 1))
+                 ELSE value END)
+          FROM json_each(observations.concepts))
+        WHERE concepts LIKE '%:%' AND json_valid(concepts)
+      `);
+
+      for (const row of affected) {
+        if (row.origin_device_id !== null) continue;
+        const nextRev = incrementCanonicalDecimal(row.sync_rev);
+        this.db.prepare(`
+          UPDATE observations SET sync_rev = ?, synced_at = NULL
+          WHERE id = ? AND origin_device_id IS NULL
+        `).run(nextRev, row.id);
+      }
+
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(49, new Date().toISOString());
+    });
+    tx();
+    logger.debug('DB', `Normalized prefixed concept tags in ${changedCount} observations (v49)`);
+  }
+
   private dropDeadPendingMessagesColumns(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(31) as SchemaVersion | undefined;
 
@@ -586,9 +1030,57 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(6, new Date().toISOString());
   }
 
+  // #3378: legacy DBs contain child rows whose memory_session_id has no
+  // sdk_sessions parent (written historically while foreign_keys was OFF).
+  // The v7/v9 rebuilds copy those children into a freshly created table via
+  // INSERT ... SELECT with foreign_keys = ON (the connection pragma; these
+  // rebuilds, unlike v21/v33/v34, never disable it), so a single orphan
+  // aborts the whole constructor migration chain with 'FOREIGN KEY
+  // constraint failed' and the worker never reports ready. Orphaned children
+  // are live user data served by context injection — the missing side is the
+  // parent, so create a minimal completed stub session per orphaned
+  // memory_session_id immediately before the copy, mirroring
+  // SyncApply.ensureSessionForMemoryId (INSERT ... ON CONFLICT DO NOTHING;
+  // content_session_id falls back to the memory id). COUNT-then-INSERT for
+  // the log figure, per the bun:sqlite `.run().changes` trap documented in
+  // SyncApply.ts.
+  private repairOrphanedSessionParents(childTable: 'observations' | 'session_summaries'): void {
+    const orphaned = (this.db.prepare(`
+      SELECT COUNT(DISTINCT c.memory_session_id) AS n
+      FROM ${childTable} c
+      WHERE c.memory_session_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM sdk_sessions s WHERE s.memory_session_id = c.memory_session_id)
+    `).get() as { n: number }).n;
+    if (orphaned === 0) return;
+
+    this.db.run(`
+      INSERT INTO sdk_sessions
+        (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+      SELECT
+        c.memory_session_id,
+        c.memory_session_id,
+        MIN(c.project),
+        MIN(c.created_at),
+        MIN(c.created_at_epoch),
+        'completed'
+      FROM ${childTable} c
+      WHERE c.memory_session_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM sdk_sessions s WHERE s.memory_session_id = c.memory_session_id)
+      GROUP BY c.memory_session_id
+      ON CONFLICT DO NOTHING
+    `);
+    logger.warn('DB', `Created ${orphaned} stub sdk_sessions parent(s) for orphaned ${childTable} rows before rebuild (#3378)`);
+  }
+
   private removeSessionSummariesUniqueConstraint(): void {
     const summariesIndexes = this.db.query('PRAGMA index_list(session_summaries)').all() as IndexInfo[];
-    const hasUniqueConstraint = summariesIndexes.some(idx => idx.unique === 1 && idx.origin !== 'pk');
+    // Only table-level UNIQUE constraints (PRAGMA origin 'u' — the v7 target,
+    // `memory_session_id TEXT UNIQUE`) require the rebuild; they cannot be
+    // dropped any other way. Explicitly created unique indexes (origin 'c',
+    // e.g. v41's ux_session_summaries_origin) were never this migration's
+    // concern — matching them here would retrigger the rebuild on every boot
+    // and silently drop every post-v7 column.
+    const hasUniqueConstraint = summariesIndexes.some(idx => idx.unique === 1 && idx.origin === 'u');
 
     if (!hasUniqueConstraint) {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(7, new Date().toISOString());
@@ -598,6 +1090,10 @@ export class SessionStore {
     logger.debug('DB', 'Removing UNIQUE constraint from session_summaries.memory_session_id');
 
     this.db.run('BEGIN TRANSACTION');
+
+    // The copy below runs with foreign_keys = ON; repair orphaned parents
+    // first or a single orphan aborts the migration chain (#3378).
+    this.repairOrphanedSessionParents('session_summaries');
 
     this.db.run('DROP TABLE IF EXISTS session_summaries_new');
 
@@ -690,6 +1186,10 @@ export class SessionStore {
     logger.debug('DB', 'Making observations.text nullable');
 
     this.db.run('BEGIN TRANSACTION');
+
+    // The copy below runs with foreign_keys = ON; repair orphaned parents
+    // first or a single orphan aborts the migration chain (#3378).
+    this.repairOrphanedSessionParents('observations');
 
     this.db.run('DROP TABLE IF EXISTS observations_new');
 
@@ -1388,6 +1888,95 @@ export class SessionStore {
       SET memory_session_id = ?
       WHERE id = ?
     `).run(memorySessionId, sessionDbId);
+    if (memorySessionId) this.requeuePromptSync(sessionDbId);
+  }
+
+  /**
+   * Enqueue one mutation op for the sync hub (kind='mutation'). The op UUID
+   * is minted HERE, once, and stored with the queued op — CloudSync's drain
+   * reuses it on every push retry so the hub's
+   * (origin_device, kind, origin_id, rev) index dedupes replays (REV MINTING
+   * RULES, SyncApply.ts). Pure SQL, no notify(): callers on the worker
+   * connection nudge CloudSync themselves; the startup drain catches the
+   * rest.
+   */
+  private enqueueMutationOp(rev: string | number, body: CanonicalMutation): void {
+    // set_prompt_session records NULL as the durable "this device" marker;
+    // validate the exact mutation shape/UTF-8 bounds with a temporary valid
+    // device id before appending. CloudSync substitutes the resolved device
+    // id exactly once when it snapshots the canonical wire operation.
+    const candidate = JSON.parse(JSON.stringify(body)) as Record<string, unknown>;
+    if (candidate.op === 'set_prompt_session') {
+      const target = candidate.target as Record<string, unknown> | undefined;
+      if (target?.origin_device_id === null) target.origin_device_id = 'self';
+    }
+    validateCanonicalMutation(candidate);
+    this.db.prepare(`
+      INSERT INTO sync_outbox (op_uuid, rev, body, created_at_epoch)
+      VALUES (?, ?, ?, ?)
+    `).run(randomUUID(), String(rev), JSON.stringify(body), Date.now());
+  }
+
+  /**
+   * Prompt→session repair as an ordered sync op (plan Phase 3 task 2):
+   * prompts are captured (and pushed) before the SDK session registers its
+   * memory_session_id, so their first push carries NULL join fields. Once
+   * the mapping lands, each affected NATIVE prompt row gets sync_rev bumped
+   * by 1 with synced_at re-nulled — the next flush re-pushes the corrected
+   * row body at the higher rev (replicas apply it via the row-op rev guard),
+   * and a set_prompt_session mutation op is enqueued at that same post-bump
+   * rev (SyncApply REV MINTING RULES) so replicas that already hold the
+   * rev-1 row link it to the session even before the corrected row op lands.
+   * target.origin_device_id is stored as NULL ("this device") — CloudSync's
+   * drain substitutes its resolved device id at push time, keeping device
+   * identity single-sourced (see DEVICE IDENTITY in SyncApply.ts).
+   *
+   * Replica prompt rows (origin_device_id NOT NULL) are untouched: their
+   * repair travels through the log from THEIR origin device.
+   *
+   * This bump-then-repush ordering is also what made CloudSync's old
+   * stampGuard unnecessary: the drain stamps synced_at only where the acked
+   * rev still equals the row's sync_rev, so a registration landing while a
+   * POST is in flight leaves the row unsynced and it re-pushes corrected.
+   */
+  private requeuePromptSync(sessionDbId: number): void {
+    const session = this.db.prepare(`
+      SELECT memory_session_id, project, content_session_id, platform_source
+      FROM sdk_sessions WHERE id = ?
+    `).get(sessionDbId) as {
+      memory_session_id: string | null;
+      project: string | null;
+      content_session_id: string | null;
+      platform_source: string | null;
+    } | undefined;
+    if (!session?.memory_session_id) return;
+
+    const tx = this.db.transaction(() => {
+      const prompts = this.db.prepare(`
+        SELECT CAST(id AS TEXT) AS id, CAST(sync_rev AS TEXT) AS sync_rev FROM user_prompts
+        WHERE session_db_id = ? AND origin_device_id IS NULL
+      `).all(sessionDbId) as Array<{ id: string; sync_rev: string }>;
+      if (prompts.length === 0) return;
+
+      for (const prompt of prompts) {
+        const nextRev = incrementCanonicalDecimal(prompt.sync_rev);
+        this.db.prepare(`
+          UPDATE user_prompts SET sync_rev = ?, synced_at = NULL
+          WHERE id = ? AND origin_device_id IS NULL
+        `).run(nextRev, prompt.id);
+        this.enqueueMutationOp(nextRev, {
+          op: 'set_prompt_session',
+          target: { origin_device_id: null, origin_local_id: prompt.id },
+          fields: {
+            memory_session_id: session.memory_session_id,
+            project: session.project,
+            content_session_id: session.content_session_id,
+            platform_source: session.platform_source,
+          },
+        });
+      }
+    });
+    tx();
   }
 
   markSessionCompleted(sessionDbId: number): void {
@@ -1417,6 +2006,7 @@ export class SessionStore {
       this.db.prepare(`
         UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?
       `).run(memorySessionId, sessionDbId);
+      this.requeuePromptSync(sessionDbId);
 
       logger.info('DB', 'Registered memory_session_id before storage (FK fix)', {
         sessionDbId,
@@ -1637,8 +2227,8 @@ export class SessionStore {
     const additionalConditions: string[] = [];
 
     if (project) {
-      additionalConditions.push('o.project = ?');
-      params.push(project);
+      additionalConditions.push('(o.project = ? OR o.merged_into_project = ?)');
+      params.push(project, project);
     }
 
     if (platformSource) {
@@ -1797,6 +2387,9 @@ export class SessionStore {
     const nowEpoch = now.getTime();
     const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : DEFAULT_PLATFORM_SOURCE;
     const storedUserPrompt = normalizeStoredPromptText(userPrompt);
+    if (customTitle) {
+      this.validateSetTitleMutation(contentSessionId, normalizedPlatformSource, customTitle);
+    }
 
     const existing = this.db.prepare(`
       SELECT id, platform_source
@@ -1813,10 +2406,21 @@ export class SessionStore {
         `).run(project, existing.id);
       }
       if (customTitle) {
-        this.db.prepare(`
-          UPDATE sdk_sessions SET custom_title = ?
-          WHERE id = ? AND custom_title IS NULL
-        `).run(customTitle, existing.id);
+        // SELECT-then-UPDATE, never a decision on `.run().changes`
+        // (bun:sqlite reports unreliable `changes` after RETURNING statements
+        // on this connection — see the note in SyncApply.applySetTitle). The
+        // set_title op is emitted only when the NULL-guarded fill actually
+        // landed, mirroring what replicas will apply.
+        const current = this.db.prepare(
+          'SELECT custom_title FROM sdk_sessions WHERE id = ?'
+        ).get(existing.id) as { custom_title: string | null } | undefined;
+        if (current && current.custom_title === null) {
+          this.db.prepare(`
+            UPDATE sdk_sessions SET custom_title = ?
+            WHERE id = ? AND custom_title IS NULL
+          `).run(customTitle, existing.id);
+          this.enqueueSetTitleOp(contentSessionId, normalizedPlatformSource, customTitle);
+        }
       }
       return existing.id;
     }
@@ -1827,7 +2431,39 @@ export class SessionStore {
       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'active')
     `).run(contentSessionId, project, normalizedPlatformSource, storedUserPrompt, customTitle || null, now.toISOString(), nowEpoch);
 
+    if (customTitle) {
+      this.enqueueSetTitleOp(contentSessionId, normalizedPlatformSource, customTitle);
+    }
+
     return Number(result.lastInsertRowid);
+  }
+
+  /**
+   * Custom-title mutation op (plan Phase 3 task 2). sdk_sessions rows do not
+   * sync, so there is no sync_rev to bump and no synced_at to null — the
+   * title travels ONLY as a set_title mutation op. Per the SyncApply REV
+   * MINTING RULES, set_title always emits rev 1 (rev is not consulted on
+   * apply; titles converge by hub-log order plus parking), and the target is
+   * the (platform_source, content_session_id) identity because no
+   * memory_session_id is registered at session-creation time.
+   */
+  private enqueueSetTitleOp(contentSessionId: string, platformSource: string, customTitle: string): void {
+    const mutation = this.validateSetTitleMutation(contentSessionId, platformSource, customTitle);
+    this.enqueueMutationOp('1', mutation);
+  }
+
+  private validateSetTitleMutation(
+    contentSessionId: string,
+    platformSource: string,
+    customTitle: string,
+  ): CanonicalMutation {
+    const mutation: CanonicalMutation = {
+      op: 'set_title',
+      target: { content_session_id: contentSessionId, platform_source: platformSource },
+      fields: { custom_title: customTitle },
+    };
+    validateCanonicalMutation(mutation);
+    return mutation;
   }
 
   saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sessionDbId?: number): number {
@@ -2083,8 +2719,8 @@ export class SessionStore {
     const additionalConditions: string[] = [];
 
     if (project) {
-      additionalConditions.push('ss.project = ?');
-      params.push(project);
+      additionalConditions.push('(ss.project = ? OR ss.merged_into_project = ?)');
+      params.push(project, project);
     }
 
     if (platformSource) {
@@ -2122,7 +2758,7 @@ export class SessionStore {
     const { orderBy = 'date_desc', limit, project, platformSource } = options;
     const preserveIdOrder = orderBy === 'relevance';
     const orderClause = preserveIdOrder ? '' : `ORDER BY up.created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
-    const limitClause = limit ? `LIMIT ${limit}` : '';
+    const limitClause = limit && !preserveIdOrder ? `LIMIT ${limit}` : '';
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
     const additionalConditions: string[] = [];
@@ -2158,7 +2794,8 @@ export class SessionStore {
     if (!preserveIdOrder) return rows;
 
     const rowMap = new Map(rows.map(r => [r.id, r]));
-    return ids.map(id => rowMap.get(id)).filter((r): r is UserPromptRecord => !!r);
+    const ordered = ids.map(id => rowMap.get(id)).filter((r): r is UserPromptRecord => !!r);
+    return limit ? ordered.slice(0, limit) : ordered;
   }
 
   getTimelineAroundTimestamp(
@@ -2188,13 +2825,18 @@ export class SessionStore {
     prompts: any[];
   } {
     const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : undefined;
-    const buildScope = (rowAlias: string, sessionAlias: string): { clause: string; params: any[] } => {
+    const buildScope = (rowAlias: string, sessionAlias: string, includeMergedProject: boolean = false): { clause: string; params: any[] } => {
       const conditions: string[] = [];
       const params: any[] = [];
 
       if (project) {
-        conditions.push(`${rowAlias}.project = ?`);
-        params.push(project);
+        if (includeMergedProject) {
+          conditions.push(`(${rowAlias}.project = ? OR ${rowAlias}.merged_into_project = ?)`);
+          params.push(project, project);
+        } else {
+          conditions.push(`${rowAlias}.project = ?`);
+          params.push(project);
+        }
       }
 
       if (normalizedPlatformSource) {
@@ -2207,8 +2849,8 @@ export class SessionStore {
         params
       };
     };
-    const observationScope = buildScope('o', 'src');
-    const summaryScope = buildScope('ss', 'src');
+    const observationScope = buildScope('o', 'src', true);
+    const summaryScope = buildScope('ss', 'src', true);
     const promptScope = buildScope('s', 's');
 
     let startEpoch: number;

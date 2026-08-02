@@ -1,12 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
+
+// Snapshot the real module BEFORE mock.module mutates the live namespace, then
+// re-register it in afterAll. bun's mock.module is process-global and
+// mock.restore() does NOT undo it, so this partial worker-utils stub would
+// otherwise leak into other test files in the same `bun test` run.
+import * as realWorkerUtils from '../../src/shared/worker-utils.js';
+const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 
 mock.module('../../src/shared/worker-utils.js', () => ({
   fetchWithTimeout: async (url: string, init: RequestInit, _timeoutMs: number) => {
     return globalThis.fetch(url, init);
   },
 }));
+
+afterAll(() => {
+  mock.module('../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
+});
 
 import {
   ServerClient,

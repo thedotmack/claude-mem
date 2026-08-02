@@ -39,7 +39,7 @@ Claude-mem supports Google's Gemini API as an alternative to the Claude Agent SD
 |---------|--------|---------|-------------|
 | `CLAUDE_MEM_PROVIDER` | `claude`, `gemini` | `claude` | AI provider for observation extraction |
 | `CLAUDE_MEM_GEMINI_API_KEY` | string | — | Your Gemini API key |
-| `CLAUDE_MEM_GEMINI_MODEL` | `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `gemini-3-flash-preview` | `gemini-2.5-flash-lite` | Gemini model to use |
+| `CLAUDE_MEM_GEMINI_MODEL` | `gemini-flash-latest`, `gemini-flash-lite-latest`, `gemini-3.5-flash`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview` | `gemini-flash-latest` | Gemini model to use |
 | `CLAUDE_MEM_GEMINI_BILLING_ENABLED` | `true`, `false` | `false` | Skip rate limiting if billing is enabled on Google Cloud |
 
 ### Using the Settings UI
@@ -60,7 +60,7 @@ Edit `~/.claude-mem/settings.json`:
 {
   "CLAUDE_MEM_PROVIDER": "gemini",
   "CLAUDE_MEM_GEMINI_API_KEY": "your-api-key-here",
-  "CLAUDE_MEM_GEMINI_MODEL": "gemini-2.5-flash-lite",
+  "CLAUDE_MEM_GEMINI_MODEL": "gemini-flash-latest",
   "CLAUDE_MEM_GEMINI_BILLING_ENABLED": "true"
 }
 ```
@@ -77,9 +77,15 @@ The settings file takes precedence over the environment variable.
 
 | Model | Free Tier RPM | Notes |
 |-------|--------------|-------|
-| `gemini-2.5-flash-lite` | 10 | Default, recommended for free tier (highest RPM) |
-| `gemini-2.5-flash` | 5 | Higher capability, lower rate limit |
-| `gemini-3-flash-preview` | 5 | Latest model, lower rate limit |
+| `gemini-flash-latest` | 10 | **Default.** Google alias that always tracks the current GA Flash model |
+| `gemini-flash-lite-latest` | 15 | Google alias that always tracks the current GA Flash-Lite model |
+| `gemini-3.5-flash` | 10 | Pinned GA Flash model |
+| `gemini-3.1-flash-lite` | 15 | Pinned GA Flash-Lite model |
+| `gemini-3-flash-preview` | 5 | Preview model, lower rate limit |
+
+<Note>
+The older `gemini-2.5-*` and `gemini-2.0-*` model IDs were removed: Google returns `404 NOT_FOUND` ("no longer available to new users") for these when called with a freshly created API key. The `-latest` aliases are recommended because they never go stale as Google rotates GA models.
+</Note>
 
 ## Provider Switching
 
@@ -130,8 +136,8 @@ Google has two rate limit tiers for free usage:
 
 | Model | RPM | TPM |
 |-------|-----|-----|
-| gemini-2.5-flash-lite | 10 | 250K |
-| gemini-2.5-flash | 5 | 250K |
+| gemini-flash-latest / gemini-3.5-flash | 10 | 250K |
+| gemini-flash-lite-latest / gemini-3.1-flash-lite | 15 | 250K |
 | gemini-3-flash-preview | 5 | 250K |
 
 Claude-mem enforces these limits automatically with built-in delays between requests. Processing may be slower but stays within limits.
@@ -140,8 +146,8 @@ Claude-mem enforces these limits automatically with built-in delays between requ
 
 | Model | RPM | TPM |
 |-------|-----|-----|
-| gemini-2.5-flash-lite | 4,000 | 4M |
-| gemini-2.5-flash | 1,000 | 1M |
+| gemini-flash-lite-latest / gemini-3.1-flash-lite | 4,000 | 4M |
+| gemini-flash-latest / gemini-3.5-flash | 1,000 | 1M |
 | gemini-3-flash-preview | 1,000 | 1M |
 
 <Tip>

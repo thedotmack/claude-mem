@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import path from 'path';
@@ -295,6 +295,24 @@ describe('Plugin Distribution - Setup Hook (#1547)', () => {
   });
 });
 
+describe('Plugin Distribution - Non-blocking bookkeeping hooks (#3206)', () => {
+  it('runs observation, file context, and summarization asynchronously', () => {
+    const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
+
+    const postToolUse = parsed.hooks.PostToolUse[0].hooks[0];
+    const preToolUse = parsed.hooks.PreToolUse[0].hooks[0];
+    const stop = parsed.hooks.Stop[0].hooks[0];
+
+    expect(postToolUse.command).toContain('observation');
+    expect(postToolUse.async).toBe(true);
+    expect(preToolUse.command).toContain('file-context');
+    expect(preToolUse.async).toBe(true);
+    expect(stop.command).toContain('summarize');
+    expect(stop.async).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Spawn-contract templating (plans/02-spawn-contract-templating.md)
 // ---------------------------------------------------------------------------
@@ -335,7 +353,13 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
       trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
       notFoundMessage: 'claude-mem: version-check.js not found',
     }),
-    'SessionStart.0.0': claudeHook(['start'], { trailingJson: { continue: true, suppressOutput: true } }),
+    // `start` already prints its own single, valid status JSON
+    // (buildStatusOutput → {"continue":true,"status":"ready","suppressOutput":true}),
+    // so NO trailingJson echo is appended — a second echoed object would
+    // concatenate two JSON documents on stdout, which Claude Code cannot parse,
+    // causing it to ignore suppressOutput and render the raw JSON at the top of
+    // every session.
+    'SessionStart.0.0': claudeHook(['start']),
     'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
     'UserPromptSubmit.0.0': claudeHook(['hook', 'claude-code', 'session-init']),
     'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
@@ -471,8 +495,38 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     try {
       for (const { command } of claudeCommands()) {
         const { stdout } = shellEval(instrument(command), { HOME: home });
-        // ls -dt yields a trailing slash; the hook trims it via _R="${_R%/}".
+        // The version-sort producer yields a trailing slash; the hook trims it
+        // via _R="${_R%/}".
         expect(stdout).toContain(`RESOLVED=${cacheRoot}`);
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers the highest cache version over the newest mtime and skips .orphaned_at dirs (2026-07-22 restart storm)', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
+    const cacheBase = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
+    const makeVersion = (version: string) => {
+      const root = path.join(cacheBase, version);
+      mkdirSync(path.join(root, 'scripts'), { recursive: true });
+      for (const file of ['version-check.js', 'bun-runner.js', 'worker-service.cjs']) {
+        writeFileSync(path.join(root, 'scripts', file), '');
+      }
+      return root;
+    };
+    // The storm layout: the OLD version dir carries the .orphaned_at stamp and
+    // the newest mtime; the NEW version dir is older by mtime. The resolver
+    // must pick the new version anyway.
+    const oldRoot = makeVersion('13.11.0');
+    writeFileSync(path.join(oldRoot, '.orphaned_at'), String(Date.now()));
+    const newRoot = makeVersion('13.12.0');
+    const past = new Date(Date.now() - 600_000);
+    utimesSync(newRoot, past, past);
+    try {
+      for (const { command } of claudeCommands()) {
+        const { stdout } = shellEval(instrument(command), { HOME: home });
+        expect(stdout).toContain(`RESOLVED=${newRoot}`);
       }
     } finally {
       rmSync(home, { recursive: true, force: true });

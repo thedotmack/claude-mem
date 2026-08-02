@@ -34,12 +34,33 @@ function findBun() {
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
     if (IS_WINDOWS) {
-      const bunCmdPath = pathCheck.stdout.split('\n').find(line => line.trim().endsWith('bun.cmd'));
+      const bunPaths = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      const firstBunPath = bunPaths.find(line => {
+        const lowerPath = line.toLowerCase();
+        return lowerPath.endsWith('bun.exe') || lowerPath.endsWith('bun.cmd');
+      });
+      const firstBunDir = firstBunPath ? dirname(firstBunPath).toLowerCase() : null;
+      const firstInstallPaths = firstBunDir
+        ? bunPaths.filter(line => dirname(line).toLowerCase() === firstBunDir)
+        : [];
+      const bunExePath = firstInstallPaths.find(line => line.toLowerCase().endsWith('bun.exe'));
+      if (bunExePath) {
+        return bunExePath;
+      }
+      const bunCmdPath = firstInstallPaths.find(line => line.toLowerCase().endsWith('bun.cmd'));
       if (bunCmdPath) {
-        return bunCmdPath.trim();
+        return bunCmdPath;
+      }
+      // The official installer ships bun.exe only (no bun.cmd shim). Return
+      // the resolved absolute path instead of falling through to the bare
+      // name: resolving a bare `bun` later relies on the child's PATH, which
+      // cmd.exe drops entirely when it exceeds ~8191 chars (issue #3196).
+      const firstWherePath = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).find(Boolean);
+      if (firstWherePath) {
+        return firstWherePath;
       }
     }
-    return 'bun'; 
+    return 'bun';
   }
 
   const bunPaths = IS_WINDOWS
@@ -136,7 +157,15 @@ const spawnOptions = {
 let spawnCmd = bunPath;
 let spawnArgs = args;
 
-if (IS_WINDOWS) {
+// Only .cmd/.bat shims need cmd.exe; a resolved bun.exe must be spawned
+// directly. Routing it through `shell: true` breaks when the environment
+// grows past cmd.exe's ~8191-char per-variable limit (e.g. a long PATH,
+// which these hooks double via the login-shell prepend): cmd silently
+// sees an empty PATH and fails with `"bun" is not recognized` even though
+// `where bun` succeeded moments earlier (issue #3196).
+const needsCmdShell = IS_WINDOWS && /\.(cmd|bat)$/i.test(bunPath);
+
+if (needsCmdShell) {
   const quote = (s) => `"${String(s).replace(/"/g, '\\"')}"`;
   spawnOptions.shell = true;
   spawnCmd = [bunPath, ...args].map(quote).join(' ');

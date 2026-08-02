@@ -4,6 +4,192 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.13.0] - 2026-08-02
+
+## Sensitive observation type
+
+Adds a ninth observation type to the code mode: **`sensitive`** — information that isn't quite private, but that you wouldn't want leaking into further content development in the wrong context. Internal URLs, unreleased plans, personal details, business metrics, client or partner names.
+
+These fire a **Telegram notification** by default, the same way `security_alert` does.
+
+### Configuring
+
+Notifications are controlled by `CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES` in `~/.claude-mem/settings.json`. The default is now `security_alert,sensitive`. Set the key to any comma-separated list of types, or to an empty string to turn notifications off entirely.
+
+Existing installs are migrated automatically: if your trigger list is still the old default of exactly `security_alert`, it is rewritten to include `sensitive`. A customized list is left untouched. Without this migration the new type would never have notified on any existing install, because a fresh `settings.json` is seeded with every default and persisted values win on load.
+
+If you had deliberately set your trigger list to exactly `security_alert` and want it to stay that way, set it to something explicitly different after upgrading — the migration cannot distinguish that case from the seeded default.
+
+### Also in this release
+
+- **Observer prompt fix.** The `type_guidance` prompt still described "6 options" and never listed `security_alert` or `security_note` from #2084. That string is the only type prose the observer model sees — the per-type `description` fields are never injected into any prompt — so those types have been under-emitted since April. It now enumerates all nine.
+- Corpus filters, the OpenClaw detailed feed, and the weekly-digests legend all recognize the new type.
+- BMP-safe fallback for the new emoji, so injected context can't contribute a surrogate pair (the #2787 failure class).
+- Built plugin artifacts are regenerated, picking up the chroma concurrent-write fix from #3462 that had not yet been built into the shipped bundles.
+
+**Full changelog**: https://github.com/thedotmack/claude-mem/compare/v13.12.4...v13.13.0
+
+## [13.12.4] - 2026-07-23
+
+Four root-cause fixes from the post-v13.12.2 issue batch.
+
+## Fixes
+
+### Shutdown teardown no longer skipped on a non-listening server handle (#3380)
+`performGracefulShutdown` treated Node's `ERR_SERVER_NOT_RUNNING` from `server.close()` as fatal in step 1, which skipped session drain, MCP close, Chroma stop, DB close, and supervisor stop — the Windows port-hold symptom. An already-closed server now counts as closed (explicit code check, everything else still rejects), and `Server.listen()` assigns the handle only once actually listening, so a failed bind can no longer leave a stale non-listening handle for shutdown to trip on. (#3387)
+
+### Concept tags participate in context injection again (#3379)
+The observer prompt's own guidance format taught the model to emit `keyword: description` concept tags, which the exact-match injection SQL silently excluded — observations tagged that way never surfaced. Concepts are now truncated at the first colon at the parse boundary, the producer prompts in all four modes require bare keywords, and migration v49 backfills stored rows — requeueing corrected native rows for cloud re-push (sync_rev bump + synced_at reset, mirroring the prompt-repair convention) and guarded by `json_valid` so a malformed row cannot abort boot. The injection query itself is unchanged. (#3389)
+
+### Background init no longer aborts on orphaned rows; adoption race and logging fixed (#3378)
+The v7/v9 table-rebuild migrations copy child tables with foreign keys enforced, so historical orphaned observations/summaries (no `sdk_sessions` parent) threw `FOREIGN KEY constraint failed` in the SessionStore constructor and the worker never reported ready. A pin-down test proved the site red→green; the fix repairs stub parents in-place before both rebuild copies — orphaned rows are user data and are never deleted. Also: adoption errors now log as real text instead of `[object Object]`, and the worktree-adoption kick moved after DB init so its write connection no longer races boot migrations (`database is locked`). Complements the stale-worker recycle fix shipped in 13.12.3. (#3390)
+
+### Maintainer directives no longer ship to end users (#3381)
+Root CLAUDE.md's `Local Status Notes` and `Daily Maintenance` sections — including an autonomous upgrade-and-commit directive — shipped verbatim to every marketplace git-clone install and were obeyed by end-user Claude instances (the #2537 `.npmignore` guard only covers the npm tarball, see #3359). Those sections now live in gitignored `CLAUDE.local.md`; tracked CLAUDE.md keeps only contributor content, and the maintainer sync copies the slim file over any stale marketplace copy. (#3391)
+
+## Verification
+Full suite 2539 pass / 0 fail, tsc clean, anti-pattern sweep over the round's diff clean, worker restart cycle at 13.12.4 shows none of the fixed failure signatures.
+
+## [13.12.3] - 2026-07-23
+
+## Hotfix: self-perpetuating stale-worker recycle loop (#3378)
+
+**The bug.** On a version mismatch, hooks asked the running (stale) worker to restart itself — and the dying worker spawned its successor using its *own install's* code and resolver. A ≤13.11.0 worker would respawn its own version, re-bind the worker port before the hook's correctly-resolved lazy-spawn could, and the mismatch recurred on every prompt, forever. One report measured **2,424 recycles in a single day**, with every `UserPromptSubmit` ending in a ~40s hook timeout. Because the buggy handoff ran inside the *old* install's process, fixing the new version's resolver alone could never break the loop.
+
+**The fix.** Hooks no longer delegate the recycle to the corpse. On version mismatch the hook now:
+
+1. reads the owner-verified worker PID file,
+2. `SIGKILL`s the stale worker — the only teardown guaranteed to execute zero stale-version code,
+3. waits for the port to actually close, and
+4. spawns the resolved installed version itself, via the existing lazy-spawn path and the single version oracle.
+
+The dying-worker successor handoff now serves only CLI-initiated `claude-mem restart`, where the running install *is* the resolved install.
+
+**If you're currently stuck in the loop:** just update. The first hook that runs after this version installs will kill the resident stale worker and take over — no manual cleanup needed.
+
+**Not addressed in this release** (still open): the `FOREIGN KEY constraint failed` background-init error also reported in #3378, and the Windows stale-socket port hold in #3380.
+
+## [13.12.2] - 2026-07-23
+
+**54 community bug-fix PRs merged in one pass.** Every open PR in the repo (157 total) was evaluated against a strict rubric — now codified in [`docs/merge-rubric.md`](https://github.com/thedotmack/claude-mem/blob/main/docs/merge-rubric.md): root-cause corrections only, with no guards, circuit breakers, fallbacks, retries, fail-open modes, self-healing machinery, truncation, or bolt-on second systems.
+
+### Windows
+- Zombie-held worker ports now detected correctly, ending infinite startup-failure loops (#3356)
+- Console-flash sweep: `windowsHide` on every remaining live spawn path — git, npm, IDE detection, Codex installer, worker wrapper, taskkill, MCP launcher (#3335, #3320, #3319, #3305, #2921)
+- `bun.exe` resolved to its absolute path and spawned directly, skipping `cmd.exe` (which silently drops >8191-char PATH) (#3235, #3247)
+- Worker ESM main detection via `pathToFileURL` (#3318); UTF-8 BOM tolerated in settings JSON read (#3307)
+- `Start-Process` argument quoting survives spaced profile paths (#3293); `codex.cmd` shim quoting fixed (#3220)
+- PowerShell call operator (`&`) added to Cursor/Windsurf hook commands (#2507)
+- Missing Windows credential treated as absent instead of a spurious read failure (#3265); tests run on Windows via `fileURLToPath` (#3312)
+
+### Search & data integrity
+- Semantic search preserves Chroma relevance ranking instead of silently reordering by recency (#3325)
+- `type=<custom>` and non-category `type` filters no longer return empty results (#3281); `date_from`/`date_to` honored in worker searches (#3201)
+- Merged-project records hydrate correctly on semantic-search ID lookups and worktree adoption patches Chroma by typed doc targets (#3342)
+- `getUserPromptsByIds` applies `limit` after relevance reordering (#3347)
+- Chroma watermark gaps persist across bootstrap and live sync — no more permanently stranded rows (#3364); duplicate IDs reconciled in place, stopping unbounded index growth (#3268)
+- Custom observation types preserved instead of being misclassified as `bugfix` (#3185); `files_modified` is now evidence-gated from actual write/edit tool events (#3180)
+- Tool payloads no longer double-encoded in observation prompts (#3150)
+- Context generation opens SQLite strictly read-only under concurrent sessions (#3233)
+- MCP `tools/list` advertises only tools that work in the active runtime (#3065); `search` routes to the Postgres-backed `/v1/search` in server runtime when it can serve the query faithfully (#3082)
+
+### Worker & providers
+- `CLAUDE_MEM_MAX_CONCURRENT_AGENTS` actually enforced via atomic slot reservations (#3294)
+- Observations attributed to the current prompt's project after repo/worktree switches (#3237); claimed batches preserved on auth-failure prose instead of being deleted (#3236)
+- Worker startup waits through cold and concurrent readiness windows (#3238)
+- Observer thinking disabled so thinking-only skips can't trigger harness re-prompts (#3256); observer SDK sessions no longer pollute the user's project transcript tree (#2942)
+- `CLAUDE_MEM_TIER_SUMMARY_MODEL` honored on OpenAI-compatible providers (#3257)
+- Stale default model ids updated: Sonnet/Opus (#3187) and retired Gemini models (#3283)
+- `__IMPORTANT` MCP tool renamed `important_workflow` so strict clients can load the server (#3295); tsconfig `moduleResolution` moved to `bundler` for TS 6 (#3296)
+
+### Hooks, context & installers
+- `CLAUDE_MEM_EXCLUDED_PROJECTS` honored on session-start injection (#3358); subagents without MCP tools skip file-context injection (#3341)
+- `~` expanded in `CLAUDE_MEM_DATA_DIR` (#3350) and `CLAUDE_CODE_PATH` (#3275); Homebrew `uvx` path shared with the worker preflight (#3276)
+- SessionStart no longer dumps raw JSON at the top of every session (#3282); Codex no longer receives a duplicate context payload (#3241) and transcripts continue after archival (#3223)
+- Worktree compound keys preserved from subdirectories (#3304)
+- Azure AI Foundry auth env preserved through the SDK sanitizer (#3314); invalid corpus names return 400 instead of 500 (#3251)
+- Codex plugin cache actually installs during setup — best-effort wrapper deleted, fail-fast (#3066)
+- `mergeSettings` and server bootstrap no longer destroy top-level settings keys (#2928, #2929)
+- version-bump skill frontmatter name matches its directory (#3313)
+
+### Docs
+- New [`docs/merge-rubric.md`](https://github.com/thedotmack/claude-mem/blob/main/docs/merge-rubric.md) — the acceptance bar for bug-fix PRs, distilled from this sweep.
+
+Thanks to everyone who contributed fixes: @rodboev, @stantheman0128, @huiihao, @jamincollins, @quinnmacro, @justindeisler, @davertor, @BBD-Resources, @povesma, @laihenyi, @LPdsgn, @KJJisBetter, @Steaeavean, @XX888QM, @rapidtackgithub, @SamuelZ12, @DNA, @girish-kanjiyani7, @E0993599799, @eslonaguiar, @desmond-rai, @Reese-max, @Wasabi-221, @mic2112, @yaw-sh, @derrickchwong, @SaadSharif4, @katsugtgz, @manoi-bms, @percy-raskova, @ShiroKSH, @eralpozcan, @anupamme, @SejiL, @remten341, @danscMax, @jamesdsizemore, and the PostHog bot fleet.
+
+## [13.12.1] - 2026-07-23
+
+## Critical fix: worker restart storm
+
+Fixes an infinite worker restart loop triggered by plugin upgrades. The worker-script resolver ranked plugin cache directories by **mtime**, so when Claude Code stamped a superseded version dir with `.orphaned_at` (bumping its mtime), every restart respawned the **old** version while hooks on the new version kept demanding a restart — spawning hundreds of processes until the host machine exhausted its process table.
+
+All four resolvers (worker successor, MCP launcher, Codex Windows launcher, POSIX hook prelude) now rank cache dirs by **version** — never mtime — skip orphan-stamped dirs, and share one deterministic version oracle with the staleness detector (`checkVersionMatch`), making the restart loop structurally impossible.
+
+**Recommended upgrade for all users.** Note: the vulnerable resolver is the one running *during* an upgrade, so machines are protected from the next upgrade onward.
+
+Details: #3371
+
+## [13.12.0] - 2026-07-22
+
+## Two-Lane Cloud Sync (cmem.ai Pro)
+
+This release ships the complete two-lane sync architecture between your local claude-mem database and the cmem.ai sync hub (PR #3333):
+
+- **Per-user Durable Object sync hub** — a Cloudflare Worker (`workers/sync-hub`) serving isolated HTTP push/pull lanes per user (Phase 1)
+- **Client apply path + schema migration v41** — deterministic application of remote changes into the local SQLite store (Phase 2)
+- **Hub push/pull transport + mutation outbox** — local mutations queue durably and survive offline periods and retries (Phase 3)
+- **Advisory WebSocket speed layer** — near-real-time sync nudges; correctness never depends on the socket staying up (Phase 4)
+- **Guardrails + monitoring** — kill switch, watchdog, canary, and a full sync-matrix E2E suite (Phase 5)
+- **Canonical v2 projection pipeline** and SyncHub-only client cutover
+- Hardened verifier authentication on the sync hub
+
+**Sync is OFF by default.** `CLAUDE_MEM_CLOUD_SYNC_HUB_URL` defaults to empty — nothing leaves your machine unless you configure a hub URL (see the `cloud-sync` skill or https://docs.claude-mem.ai/cloud-sync).
+
+### Fixes
+
+- Restored process-global `mock.module` cleanup that broke CI under Linux readdir ordering
+
+## [13.11.0] - 2026-07-13
+
+## Worker-native cloud sync (PR #3182)
+
+The standalone `cloud-sync.mjs` daemon is retired. The worker now syncs memories itself — every local write nudges a background flusher that drains unsynced rows to cmem.ai, with no separate process to install or babysit.
+
+**New:**
+- `CloudSync` flusher: write-site nudges, 1.5s debounce coalescing write bursts, single-flight flush, 200-row/2MB pages, 30s request timeout, capped exponential backoff on failure
+- `GET /api/sync/status` — pending counts per kind, last flush time, last error
+- `/cloud-sync` skill — status checks, first-run credential migration from the legacy `.cloud-sync.env`, daemon retirement, and worker restart runbook
+
+**Fixed:**
+- Prompts now join through `sdk_sessions` to push their real `memory_session_id`/`project` instead of an unresolvable fallback — cloud-side prompt-to-session views (Summary ⇄ Prompt toggle, Replay) can now actually find their prompt
+- Schema v40 self-repair: on upgrade, every previously-synced prompt (including ones uploaded by the legacy daemon) is re-queued and re-pushed through the fixed mapper; a backfill lane header suppresses realtime broadcast storms during that re-push
+- Closed a race where a session's memory id registering while its prompt's upload was still in flight could leave that prompt permanently mis-keyed in the cloud — the stamp is now guarded per row and re-pushes with the corrected mapping instead
+
+**Migration:** fully automatic and backward compatible. Existing standalone cloud-sync users are migrated on first `/cloud-sync` run after upgrading; installs with no cloud sync configured are unaffected.
+
+## [13.10.3-community-edge.0] - 2026-07-09
+
+Community edge release for integrated batches 4-9. See PR #3172
+    and plans/2026-07-07-community-edge-batches-4-9-integration.md.
+
+## [13.10.2] - 2026-07-05
+
+Patch release focused on cross-platform stability and worker/runtime correctness.
+
+## Fixes
+- **Worker host**: clients now honor `CLAUDE_MEM_WORKER_HOST` (the address the server actually binds), with IPv6 literals bracketed correctly in health checks and display URLs.
+- **Worker identity**: cache/marketplace/MCP/CLI/restart launches converge on one worker bundle (stops version-skew from two builds on one port).
+- **Windows**: centralized spawn shims remove the `shell:true` footgun; codex hooks emit a Windows-executable command instead of a POSIX-only one.
+- **Install**: `repair` now restores the marketplace runtime root (not just the cache); ships the `plugin/sqlite` runtime modules that were causing `MODULE_NOT_FOUND` on clean installs.
+- **SQLite/settings**: atomic settings writes, `busy_timeout` to avoid `SQLITE_BUSY` under concurrent worker/hook access, a migration column re-check, and removal of an index create that could crash boot on legacy duplicate rows.
+- **Supervisor**: preserves `HTTPS_PROXY` and Bedrock/Vertex skip-auth env for the SDK subprocess.
+- **Worktree**: relative `gitdir:` pointers resolved correctly.
+
+## Docs
+- New Release Branches guide (main / core-dev / community-edge) with instructions for running the non-stable lines locally.
+
+Deliberately excluded: client-side observer truncation (kept out per #3096) and project-identity re-keying (kept the #2663 repo-root key).
+
 ## [13.10.1] - 2026-07-04
 
 ## Fixes

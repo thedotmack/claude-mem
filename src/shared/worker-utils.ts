@@ -6,7 +6,7 @@ import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
-import { validateWorkerPidFile } from "../supervisor/index.js";
+import { validateWorkerPidFile, readOwnedWorkerPidInfo } from "../supervisor/index.js";
 import { emitBlockingError } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
 import { checkVersionMatch } from "../services/infrastructure/index.js";
@@ -216,49 +216,126 @@ function candidateWorkerScriptPath(root: string): string {
   return path.join(pluginRoot, 'scripts', 'worker-service.cjs');
 }
 
-function cacheWorkerScriptCandidates(): string[] {
-  const pluginsRoot = path.dirname(path.dirname(MARKETPLACE_ROOT));
-  const cacheRoot = path.join(pluginsRoot, 'cache', 'thedotmack', 'claude-mem');
+export interface WorkerScriptCandidate {
+  scriptPath: string;
+  version: string | null;
+}
+
+/**
+ * Descending version order for worker-script candidates: numeric
+ * major.minor.patch, release ahead of prerelease at the same base, reverse
+ * lexical tiebreak. The inline resolvers in src/build/hook-shell-template.ts
+ * embed this same ordering — every resolver ranking candidates identically is
+ * the invariant that makes restart storms impossible, so keep them in
+ * lockstep.
+ */
+export function compareVersionsDescending(a: string, b: string): number {
+  const parseBase = (version: string): [number, number, number] => {
+    const parts = version.split('-')[0].split('.');
+    return [parseInt(parts[0], 10) || 0, parseInt(parts[1], 10) || 0, parseInt(parts[2], 10) || 0];
+  };
+  const [aMajor, aMinor, aPatch] = parseBase(a);
+  const [bMajor, bMinor, bPatch] = parseBase(b);
+  if (bMajor !== aMajor) return bMajor - aMajor;
+  if (bMinor !== aMinor) return bMinor - aMinor;
+  if (bPatch !== aPatch) return bPatch - aPatch;
+  const aIsPrerelease = a.includes('-') ? 1 : 0;
+  const bIsPrerelease = b.includes('-') ? 1 : 0;
+  if (aIsPrerelease !== bIsPrerelease) return aIsPrerelease - bIsPrerelease;
+  return a < b ? 1 : a > b ? -1 : 0;
+}
+
+export function cacheWorkerScriptCandidates(
+  cacheRoot: string = path.join(path.dirname(path.dirname(MARKETPLACE_ROOT)), 'cache', 'thedotmack', 'claude-mem')
+): WorkerScriptCandidate[] {
   try {
     return readdirSync(cacheRoot)
       .filter(name => /^\d/.test(name))
       .map(name => path.join(cacheRoot, name))
-      .filter(candidate => {
+      .filter(versionDir => {
         try {
-          return statSync(candidate).isDirectory();
+          if (!statSync(versionDir).isDirectory()) return false;
         } catch {
           return false;
         }
+        // Claude Code stamps superseded cache versions with .orphaned_at when
+        // a new version installs. An orphaned dir must never outrank the live
+        // install: the 2026-07-22 restart storm happened because the stamp
+        // bumped the OLD dir's mtime and the then mtime-ordered resolver
+        // respawned 13.11.0 under a 13.12.0 plugin indefinitely.
+        return !existsSync(path.join(versionDir, '.orphaned_at'));
       })
-      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
-      .map(candidateWorkerScriptPath);
+      .map(versionDir => ({
+        scriptPath: candidateWorkerScriptPath(versionDir),
+        version: path.basename(versionDir),
+      }));
   } catch {
     return [];
   }
 }
 
+function readPackageVersion(packageJsonPath: string): string | null {
+  try {
+    const parsed = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as { version?: unknown };
+    return typeof parsed.version === 'string' ? parsed.version : null;
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') {
+      logger.debug('SYSTEM', 'Could not read package version for worker resolution', { packageJsonPath, code });
+    }
+    return null;
+  }
+}
+
 /**
- * Canonical worker-script resolver. The opt-in override exists for local
- * testing; otherwise mirror the host hook resolver's cache-before-marketplace
- * order so cache, marketplace, MCP, and worker restart launches converge on a
- * single worker identity.
+ * Canonical worker-script resolver AND the single version oracle: the version
+ * returned here is what hooks compare the live worker against
+ * (checkVersionMatch) and what every spawner — hook lazy-spawn, MCP server,
+ * dying-worker restart handoff — launches. Detection and respawn consulting
+ * different oracles is what made the 2026-07-22 restart storm possible.
+ *
+ * Highest version wins. Array.prototype.sort is stable, so equal versions
+ * preserve the cache → marketplace → cwd precedence, and versionless
+ * candidates rank behind every versioned one. The opt-in override exists for
+ * local testing.
  */
-export function resolveWorkerScriptPath(): string | null {
+export function resolveWorkerScript(): WorkerScriptCandidate | null {
   const override = process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH?.trim();
   if (override) {
-    if (existsSync(override)) return override;
+    if (existsSync(override)) return { scriptPath: override, version: null };
     logger.debug('SYSTEM', 'Ignoring missing CLAUDE_MEM_WORKER_SCRIPT_PATH override', { override });
   }
 
-  const candidates = [
+  const candidates: WorkerScriptCandidate[] = [
     ...cacheWorkerScriptCandidates(),
-    candidateWorkerScriptPath(path.join(MARKETPLACE_ROOT, 'plugin')),
-    path.join(process.cwd(), 'plugin', 'scripts', 'worker-service.cjs'),
+    {
+      scriptPath: candidateWorkerScriptPath(path.join(MARKETPLACE_ROOT, 'plugin')),
+      version: readPackageVersion(path.join(MARKETPLACE_ROOT, 'package.json')),
+    },
+    {
+      scriptPath: path.join(process.cwd(), 'plugin', 'scripts', 'worker-service.cjs'),
+      version: readPackageVersion(path.join(process.cwd(), 'package.json')),
+    },
   ];
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
-  }
-  return null;
+
+  return selectWorkerScript(candidates);
+}
+
+export function selectWorkerScript(candidates: WorkerScriptCandidate[]): WorkerScriptCandidate | null {
+  const installed = candidates.filter(candidate => existsSync(candidate.scriptPath));
+  if (installed.length === 0) return null;
+
+  installed.sort((a, b) => {
+    if (a.version === null && b.version === null) return 0;
+    if (a.version === null) return 1;
+    if (b.version === null) return -1;
+    return compareVersionsDescending(a.version, b.version);
+  });
+  return installed[0];
+}
+
+export function resolveWorkerScriptPath(): string | null {
+  return resolveWorkerScript()?.scriptPath ?? null;
 }
 
 async function waitForWorkerPort(options: { attempts: number; backoffMs: number }): Promise<boolean> {
@@ -320,27 +397,23 @@ async function fetchWorkerHealthVersion(): Promise<string | null> {
 }
 
 /**
- * After POSTing /api/admin/restart, the OLD worker spawns its own successor
- * once its port closes (runShutdownSequence in src/services/worker-shutdown.ts;
- * plans/2026-06-10-worker-restart-single-source-of-truth.md). Wait for that
- * successor — a worker answering /api/health with the installed plugin's
- * version — instead of immediately lazy-spawning into the dying worker
- * (the old behavior, which caused the spawn ping-pong).
+ * After SIGKILLing the stale worker, wait for the OS to release its listen
+ * socket before lazy-spawning — the worker boot refuses to start while the
+ * port is bound. A rejected connection is the port-free signal. Only called
+ * once the stale process is confirmed dead (kill succeeded or ESRCH), so a
+ * rejection here cannot be a live-but-stalled worker.
  */
-async function waitForRecycledWorker(
-  pluginVersion: string,
-  timeoutMs: number = HOOK_READINESS_TIMEOUT_MS
-): Promise<boolean> {
+async function waitForWorkerPortClosed(timeoutMs = 5000): Promise<boolean> {
   const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const observedVersion = await fetchWorkerHealthVersion();
-    if (observedVersion === pluginVersion) return true;
-
-    const remainingMs = timeoutMs - (Date.now() - start);
-    if (remainingMs <= 0) break;
-    await new Promise<void>(resolve => setTimeout(resolve, Math.min(500, remainingMs)));
+  for (;;) {
+    try {
+      await workerHttpRequest('/api/health', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
+    } catch {
+      return true;
+    }
+    if (Date.now() - start >= timeoutMs) return false;
+    await new Promise<void>(resolve => setTimeout(resolve, 200));
   }
-  return false;
 }
 
 /**
@@ -378,19 +451,28 @@ async function isWorkerPortAlive(): Promise<boolean> {
 }
 
 export async function ensureWorkerRunning(): Promise<boolean> {
-  // Installed-plugin version captured when the alive branch runs, so every
+  // Resolve ONCE and use the result for both the staleness check and the
+  // (re)spawn script below. Detection and spawn sharing this single oracle
+  // is what guarantees a mismatch clears in one recycle instead of
+  // ping-ponging (the 2026-07-22 restart storm: detection read the
+  // marketplace package.json while the spawner took the newest-mtime cache
+  // dir, and the two disagreed forever).
+  const resolvedScript = resolveWorkerScript();
+
+  // Resolved version captured when the alive branch runs, so every
   // post-readiness path below can run the one-shot amplifier check
   // (warnIfVersionStillMismatched). Stays null when no worker was alive
   // (plain cold-start lazy-spawn — no recycle happened, nothing to amplify)
-  // or when the plugin version is unreadable ('unknown').
+  // or when the resolved version is unreadable ('unknown').
   let expectedPluginVersion: string | null = null;
 
   if (await isWorkerPortAlive()) {
-    // A worker is already alive. If it is a DIFFERENT version than the
-    // installed plugin (e.g. the user upgraded but the previous worker is
-    // still squatting the port), recycle it so the current version takes
-    // over — otherwise the stale worker keeps serving indefinitely.
-    const { matches, pluginVersion, workerVersion } = await checkVersionMatch(getWorkerPort());
+    // A worker is already alive. If it is a DIFFERENT version than the one
+    // this resolution would spawn (e.g. the user upgraded but the previous
+    // worker is still squatting the port), recycle it so the resolved
+    // version takes over — otherwise the stale worker keeps serving
+    // indefinitely.
+    const { matches, pluginVersion, workerVersion } = await checkVersionMatch(getWorkerPort(), resolvedScript?.version ?? null);
     if (pluginVersion !== 'unknown') {
       expectedPluginVersion = pluginVersion;
     }
@@ -406,53 +488,55 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       return true;
     }
 
-    logger.info('SYSTEM', 'Worker version mismatch — recycling stale worker', {
+    logger.info('SYSTEM', 'Worker version mismatch — killing stale worker', {
       pluginVersion,
       workerVersion,
     });
-    // Only the restart POST itself can throw here (the waits below swallow
-    // their own probe errors); on failure skip the successor wait and fall
-    // through to lazy-spawn.
-    let restartRequested = false;
+    // The stale worker must never run its own replacement. The previous
+    // design (POST /api/admin/restart, then the dying worker spawns its
+    // successor) executed the OLD install's handoff code: a ≤13.11.0 worker
+    // resolves the successor script from its own install dir, respawns its
+    // own version, and re-binds the port before this hook's lazy-spawn — so
+    // the mismatch recurs on every hook forever (#3378: 2,424 recycles in
+    // one machine-day). SIGKILL is the only teardown guaranteed to run zero
+    // stale-version code; the lazy-spawn below, using this install's
+    // resolver, is then the only spawner.
+    const stalePidInfo = readOwnedWorkerPidInfo();
+    if (stalePidInfo === null || stalePidInfo.port !== getWorkerPort()) {
+      logger.error('SYSTEM', 'Stale worker is serving the port but the PID file does not identify it; kill the claude-mem worker process manually', {
+        port: getWorkerPort(),
+        pidFilePid: stalePidInfo?.pid ?? null,
+        pidFilePort: stalePidInfo?.port ?? null,
+      });
+      return false;
+    }
     try {
-      await workerHttpRequest('/api/admin/restart', {
-        method: 'POST',
-        timeoutMs: HEALTH_CHECK_TIMEOUT_MS,
-      });
-      restartRequested = true;
+      process.kill(stalePidInfo.pid, 'SIGKILL');
     } catch (error: unknown) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      logger.debug('SYSTEM', 'Worker restart request failed; falling through to lazy-spawn', {}, err);
-    }
-    if (restartRequested) {
-      // Do NOT lazy-spawn immediately after the POST — the old worker is
-      // still dying and owns the port, so a spawn here races the corpse (the
-      // observed restart ping-pong). The dying worker spawns its own
-      // successor once its port closes (worker-shutdown.ts; see
-      // plans/2026-06-10-worker-restart-single-source-of-truth.md); wait for
-      // that successor and only fall through to lazy-spawn as the safety net
-      // when it never appears.
-      if (await waitForRecycledWorker(pluginVersion)) {
-        const ready = await waitForWorkerReadiness();
-        if (!ready) {
-          logger.warn('SYSTEM', 'Recycled worker appeared but did not become ready; skipping hook API call');
-          return false;
-        }
-        if (expectedPluginVersion !== null) {
-          await warnIfVersionStillMismatched(expectedPluginVersion);
-        }
-        return true;
+      // ESRCH: it exited between the health probe and the kill — the port is
+      // free (or about to be) either way.
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
+        logger.error('SYSTEM', 'Could not kill stale worker', {
+          pid: stalePidInfo.pid,
+          port: stalePidInfo.port,
+        }, error instanceof Error ? error : new Error(String(error)));
+        return false;
       }
-      logger.warn('SYSTEM', 'No successor worker appeared after recycle; falling through to lazy-spawn', {
-        pluginVersion,
-        workerVersion,
-      });
     }
+    if (!(await waitForWorkerPortClosed())) {
+      logger.error('SYSTEM', 'Stale worker port still open after SIGKILL; skipping spawn this hook event', {
+        pid: stalePidInfo.pid,
+        port: getWorkerPort(),
+      });
+      return false;
+    }
+    // The killed worker's PID file is left behind; the successor's boot
+    // removes it (validateWorkerPidFile returns 'stale' for a dead pid).
     // Fall through to (re)spawn + readiness wait below.
   }
 
   const runtimePath = resolveWorkerRuntimePath();
-  const scriptPath = resolveWorkerScriptPath();
+  const scriptPath = resolvedScript?.scriptPath ?? null;
 
   if (!runtimePath) {
     logger.warn('SYSTEM', 'Cannot lazy-spawn worker: Bun runtime not found on PATH');
@@ -466,7 +550,8 @@ export async function ensureWorkerRunning(): Promise<boolean> {
   // Spawn gate (worker-spawn-gate.ts): only ONE gated launcher — hook, MCP
   // server, or the CLI restart fallback — may spawn at a time. (The dying
   // worker's restart handoff in worker-shutdown.ts is deliberately NOT gated:
-  // it is the primary spawner on restart, and hooks wait for its successor.)
+  // it is the spawner for CLI-initiated restarts. Hook version recycles never
+  // trigger it — they SIGKILL the stale worker and spawn here.)
   // Losing the lock never fails the hook; the loser skips its spawn and waits
   // for the winner's worker on the existing port/readiness waits below. The
   // winner holds the lock through the port-open wait (the spawn isn't "done"

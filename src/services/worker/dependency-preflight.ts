@@ -3,6 +3,7 @@ import os from 'os';
 import fs from 'fs';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { findClaudeExecutable as defaultFindClaudeExecutable } from '../../shared/find-claude-executable.js';
+import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
 import { logger } from '../../utils/logger.js';
 import {
   clearDependencyStatus,
@@ -71,17 +72,6 @@ function pathSeparatorFor(platform: NodeJS.Platform): string {
   return platform === 'win32' ? ';' : ':';
 }
 
-function uvxBinDirs(options: Required<Pick<WorkerDependencyPreflightOptions, 'homedir' | 'isFile'>>, env: Record<string, string>): string[] {
-  const override = env.CLAUDE_MEM_CHROMA_UVX_PATH;
-  const dirs = [
-    override,
-    path.join(options.homedir(), '.local', 'bin'),
-    path.join(options.homedir(), '.cargo', 'bin'),
-  ].filter((dir): dir is string => Boolean(dir));
-
-  return dirs.map(dir => options.isFile(dir) ? path.dirname(dir) : dir);
-}
-
 function effectiveUvxEnv(options: WorkerDependencyPreflightOptions): Record<string, string> {
   const platform = options.platform ?? process.platform;
   const pathExists = options.pathExists ?? defaultPathExists;
@@ -92,7 +82,12 @@ function effectiveUvxEnv(options: WorkerDependencyPreflightOptions): Record<stri
   const separator = pathSeparatorFor(platform);
   const currentPathEntries = (env[pathKey] ?? '').split(separator).filter(Boolean);
   const have = new Set(currentPathEntries.map(entry => platform === 'win32' ? entry.toLowerCase() : entry));
-  const additions = uvxBinDirs({ homedir, isFile }, env).filter(dir => {
+  const additions = getUvxBinDirs({
+    homedir,
+    isFile,
+    override: env.CLAUDE_MEM_CHROMA_UVX_PATH,
+    platform,
+  }).filter(dir => {
     if (!pathExists(dir)) return false;
     const key = platform === 'win32' ? dir.toLowerCase() : dir;
     return !have.has(key);

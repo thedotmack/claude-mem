@@ -1,0 +1,26 @@
+{
+	"name": "sync-hub",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev",
+		"start": "wrangler dev",
+		"e2e:serve": "node test/run-miniflare-pro-e2e.mjs",
+		"test": "vitest run --exclude \"test/ws.test.ts\"",
+		"test:ws": "vitest run --maxWorkers=1 --no-isolate test/ws.test.ts",
+		"lint": "eslint .",
+		"cf-typegen": "wrangler types --strict-vars=false"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "^0.18.6",
+		"esbuild": "^0.28.1",
+		"eslint": "^10.7.0",
+		"miniflare": "^4.20260714.0",
+		"typescript": "^5.9.3",
+		"typescript-eslint": "^8.64.0",
+		"vitest": "^4.1.10",
+		"wrangler": "^4.112.0"
+	}
+}

@@ -7,7 +7,11 @@ export type {
   StorageResult,
 } from './types.js';
 
-export { processAgentResponse } from './ResponseProcessor.js';
+export {
+  processAgentResponse,
+  snapshotResponseContext,
+  type ResponseContext,
+} from './ResponseProcessor.js';
 
 export { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 

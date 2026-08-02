@@ -567,6 +567,30 @@ sqlite3 ~/.claude-mem/claude-mem.db "
    sqlite3 ~/.claude-mem/claude-mem.db "VACUUM;"
    ```
 
+### Windows: `"bun" is not recognized` Hook Errors
+
+**Symptoms**: Every hook fails on Windows with:
+
+```
+SessionStart:startup hook error
+Failed with non-blocking status code: ""bun"" is not recognized as an internal or external command
+```
+
+(or the localized equivalent), even though `bun --version` works fine in any terminal and `where bun` resolves correctly.
+
+**Cause**: cmd.exe silently drops environment variables longer than ~8,191 characters. The hooks prepend the login-shell PATH to the inherited PATH, which can double it past that limit — inside cmd.exe the PATH is then empty, so a bare `bun` command cannot be resolved even though `where.exe` (which uses Win32 APIs and has no such limit) finds it. This only reproduces when the combined PATH exceeds the limit, which is why the same setup works on machines with a shorter PATH.
+
+**Solutions**:
+
+1. Update claude-mem — the launcher now resolves the absolute `bun.exe` path and spawns it directly without cmd.exe.
+
+2. Check your PATH length; if it is near or above ~4,000 characters it will exceed the cmd.exe limit once doubled:
+   ```powershell
+   $env:Path.Length
+   ```
+
+3. Trim duplicate or dead PATH entries (Windows merges the machine and user PATH, and many installers add both).
+
 ### Dependencies Not Installing
 
 **Symptoms**: SessionStart hook fails with "module not found" errors.

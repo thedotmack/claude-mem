@@ -498,8 +498,35 @@ const TOTAL_PROCESS_HARD_CAP = 10;
 const SLOT_RECHECK_INTERVAL_MS = 5_000;
 const slotWaiters: Array<() => void> = [];
 
+/**
+ * Slots granted by waitForSlot() that are not yet visible as registry
+ * records. Registration only happens after spawn() returns a PID, and the
+ * caller has a wide await gap (OAuth refresh) between the grant and the
+ * spawn. Without a reservation, every concurrent caller observes the same
+ * stale count and all of them spawn (#3287: 9 agents against a max of 2).
+ */
+let reservedSlots = 0;
+
+export interface SlotReservation {
+  /** Frees the reserved slot. Idempotent: calls after the first are no-ops. */
+  release(): void;
+}
+
+function takeSlotReservation(): SlotReservation {
+  reservedSlots += 1;
+  let released = false;
+  return {
+    release(): void {
+      if (released) return;
+      released = true;
+      reservedSlots -= 1;
+      notifySlotAvailable();
+    },
+  };
+}
+
 function getActiveSdkCount(): number {
-  return getProcessRegistry().getAll().filter(record => record.type === 'sdk').length;
+  return getProcessRegistry().getAll().filter(record => record.type === 'sdk').length + reservedSlots;
 }
 
 function notifySlotAvailable(): void {
@@ -507,14 +534,22 @@ function notifySlotAvailable(): void {
   if (waiter) waiter();
 }
 
-export async function waitForSlot(maxConcurrent: number, signal?: AbortSignal): Promise<void> {
+/**
+ * Waits until an SDK agent slot is free, then reserves it. The count check
+ * and the reservation happen in the same synchronous block, so no concurrent
+ * caller can be granted the same slot. The caller must release the returned
+ * reservation once the spawned process is registered (the registry record
+ * takes over the accounting) or when the spawn fails or never happens:
+ * a leaked reservation would occupy the slot until the worker restarts.
+ */
+export async function waitForSlot(maxConcurrent: number, signal?: AbortSignal): Promise<SlotReservation> {
   getProcessRegistry().pruneDeadEntries();
   const activeCount = getActiveSdkCount();
   if (activeCount >= TOTAL_PROCESS_HARD_CAP) {
     throw new Error(`Hard cap exceeded: ${activeCount} processes in registry (cap=${TOTAL_PROCESS_HARD_CAP}). Refusing to spawn more.`);
   }
 
-  if (activeCount < maxConcurrent) return;
+  if (activeCount < maxConcurrent) return takeSlotReservation();
 
   if (signal?.aborted) {
     throw new Error('waitForSlot aborted before queuing');
@@ -522,7 +557,7 @@ export async function waitForSlot(maxConcurrent: number, signal?: AbortSignal): 
 
   logger.info('PROCESS', `Pool limit reached (${activeCount}/${maxConcurrent}), waiting for slot...`);
 
-  return new Promise<void>((resolve, reject) => {
+  return new Promise<SlotReservation>((resolve, reject) => {
     let recheckTimer: ReturnType<typeof setInterval> | null = null;
     let abortHandler: (() => void) | null = null;
     const cleanup = () => {
@@ -541,7 +576,7 @@ export async function waitForSlot(maxConcurrent: number, signal?: AbortSignal): 
 
       if (count < maxConcurrent) {
         cleanup();
-        resolve();
+        resolve(takeSlotReservation());
       } else {
         slotWaiters.push(onSlot);
       }
@@ -583,9 +618,34 @@ export interface SpawnedSdkProcess {
 export interface SpawnSdkOptions {
   command: string;
   args: string[];
+  extraArgs?: string[];
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
+}
+
+export function normalizeSpawnSdkArgs(args: string[], extraArgs: string[] = []): string[] {
+  const filteredArgs: string[] = [];
+  for (const arg of args) {
+    if (arg === '') {
+      // The SDK encodes optional flag/value pairs as `--flag ''` when the
+      // value is absent. Strip the whole pair, but only when the preceding
+      // token is a long option so positional args are left untouched.
+      if (filteredArgs.length > 0 && filteredArgs[filteredArgs.length - 1].startsWith('--')) {
+        filteredArgs.pop();
+      }
+      continue;
+    }
+    filteredArgs.push(arg);
+  }
+
+  for (const extraArg of extraArgs) {
+    if (extraArg !== '') {
+      filteredArgs.push(extraArg);
+    }
+  }
+
+  return filteredArgs;
 }
 
 export function spawnSdkProcess(
@@ -596,17 +656,7 @@ export function spawnSdkProcess(
 
   const useCmdWrapper = process.platform === 'win32' && options.command.endsWith('.cmd');
   const env = sanitizeEnv(options.env ?? process.env);
-
-  const filteredArgs: string[] = [];
-  for (const arg of options.args) {
-    if (arg === '') {
-      if (filteredArgs.length > 0 && filteredArgs[filteredArgs.length - 1].startsWith('--')) {
-        filteredArgs.pop();
-      }
-      continue;
-    }
-    filteredArgs.push(arg);
-  }
+  const filteredArgs = normalizeSpawnSdkArgs(options.args, options.extraArgs);
 
   const isWin = process.platform === 'win32';
   const child = useCmdWrapper
@@ -728,7 +778,7 @@ function sigtermDuplicateSdkProcess(record: ManagedProcessRecord, sessionDbId: n
   });
 }
 
-export function createSdkSpawnFactory(sessionDbId: number) {
+export function createSdkSpawnFactory(sessionDbId: number, slotReservation?: SlotReservation, extraArgs: string[] = []) {
   return (spawnOptions: SpawnSdkOptions): SpawnedSdkProcess => {
     const registry = getProcessRegistry();
 
@@ -751,7 +801,20 @@ export function createSdkSpawnFactory(sessionDbId: number) {
       }
     }
 
-    const result = spawnSdkProcess(sessionDbId, spawnOptions);
+    let result: ReturnType<typeof spawnSdkProcess>;
+    try {
+      result = spawnSdkProcess(sessionDbId, {
+        ...spawnOptions,
+        extraArgs: [...(spawnOptions.extraArgs ?? []), ...extraArgs],
+      });
+    } finally {
+      // The waitForSlot() reservation is consumed here: on success the
+      // process is now a registry record (registered inside spawnSdkProcess)
+      // and takes over the slot accounting; on failure the slot goes back to
+      // the pool. Both statements above are synchronous, so no other caller
+      // can observe the reservation and the record at the same time.
+      slotReservation?.release();
+    }
     if (!result) {
       throw new Error(`Failed to spawn SDK subprocess for session ${sessionDbId}`);
     }

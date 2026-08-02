@@ -44,7 +44,7 @@ function mockGeminiConfig() {
   loadFromFileSpy.mockImplementation(() => ({
     ...SettingsDefaultsManager.getAllDefaults(),
     CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
-    CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',
+    CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'false',
     CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test',
   }));
@@ -100,14 +100,14 @@ describe('GeminiProvider', () => {
     loadFromFileSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
       ...SettingsDefaultsManager.getAllDefaults(),
       CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
-      CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',
+      CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',
       CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: rateLimitingEnabled,
       CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test',
     }));
 
     getSpy = spyOn(SettingsDefaultsManager, 'get').mockImplementation((key: string) => {
       if (key === 'CLAUDE_MEM_GEMINI_API_KEY') return 'test-api-key';
-      if (key === 'CLAUDE_MEM_GEMINI_MODEL') return 'gemini-2.5-flash-lite';
+      if (key === 'CLAUDE_MEM_GEMINI_MODEL') return 'gemini-flash-latest';
       if (key === 'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED') return rateLimitingEnabled;
       if (key === 'CLAUDE_MEM_DATA_DIR') return '/tmp/claude-mem-test';
       return SettingsDefaultsManager.getAllDefaults()[key as keyof ReturnType<typeof SettingsDefaultsManager.getAllDefaults>] ?? '';
@@ -144,7 +144,8 @@ describe('GeminiProvider', () => {
 
     mockDbManager = {
       getSessionStore: () => mockSessionStore,
-      getChromaSync: () => mockChromaSync
+      getChromaSync: () => mockChromaSync,
+      getCloudSync: () => null
     } as unknown as DatabaseManager;
 
     const mockPendingMessageStore = {
@@ -156,6 +157,7 @@ describe('GeminiProvider', () => {
 
     mockSessionManager = {
       getMessageIterator: async function* () { yield* []; },
+      getClaimedMessages: mock(() => []),
       confirmClaimedMessages: mock(() => Promise.resolve(0)),
       resetProcessingToPending: mock(() => Promise.resolve(0)),
       getMessageBuffer: () => mockPendingMessageStore,
@@ -203,7 +205,7 @@ describe('GeminiProvider', () => {
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
     const url = (global.fetch as any).mock.calls[0][0];
-    expect(url).toContain('https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash-lite:generateContent');
+    expect(url).toContain('https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent');
     expect(url).toContain('key=test-api-key');
   });
 
@@ -326,6 +328,48 @@ describe('GeminiProvider', () => {
     expect(mockStoreObservations).toHaveBeenCalled();
     expect(mockSyncObservation).toHaveBeenCalled();
     expect(session.cumulativeInputTokens).toBeGreaterThan(0);
+  });
+
+  it('stores a deferred init response under the original prompt project after the live session advances', async () => {
+    const session = makeSession({
+      project: 'repo-a',
+      userPrompt: 'prompt 1',
+      lastPromptNumber: 1,
+    });
+    const observationXml = `
+      <observation>
+        <type>discovery</type>
+        <title>Late init response</title>
+        <narrative>Should stay on the original prompt project.</narrative>
+        <facts></facts>
+        <concepts></concepts>
+        <files_read></files_read>
+        <files_modified></files_modified>
+      </observation>
+    `;
+
+    let resolveFetch!: (response: Response) => void;
+    global.fetch = mock(() => new Promise<Response>(resolve => {
+      resolveFetch = resolve;
+    }));
+
+    const pending = agent.startSession(session);
+    await Promise.resolve();
+
+    session.project = 'repo-b/worktree';
+    session.userPrompt = 'prompt 2';
+    session.lastPromptNumber = 2;
+
+    resolveFetch(new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: observationXml }] } }],
+      usageMetadata: { totalTokenCount: 50 }
+    })));
+
+    await pending;
+
+    const [, project, , , promptNumber] = mockStoreObservations.mock.calls[0];
+    expect(project).toBe('repo-a');
+    expect(promptNumber).toBe(1);
   });
 
   it('should throw on rate limit (429) error — no Claude fallback (#2087)', async () => {
@@ -457,18 +501,21 @@ describe('GeminiProvider', () => {
   });
 
   describe('gemini-3-flash-preview model support', () => {
-    it('should accept gemini-3-flash-preview as a valid model', async () => {
+    it('should accept only currently-available models (no retired 2.x IDs)', async () => {
       const validModels = [
-        'gemini-2.5-flash-lite',
-        'gemini-2.5-flash',
-        'gemini-2.5-pro',
-        'gemini-2.0-flash',
-        'gemini-2.0-flash-lite',
+        'gemini-flash-latest',
+        'gemini-flash-lite-latest',
+        'gemini-3.5-flash',
+        'gemini-3.1-flash-lite',
         'gemini-3-flash-preview'
       ];
 
       expect(validModels.every(m => typeof m === 'string')).toBe(true);
       expect(validModels).toContain('gemini-3-flash-preview');
+      // Retired IDs that 404 for new API keys must not be selectable.
+      expect(validModels).not.toContain('gemini-2.5-flash-lite');
+      expect(validModels).not.toContain('gemini-2.5-flash');
+      expect(validModels).not.toContain('gemini-2.0-flash');
     });
 
     it('should have rate limit defined for gemini-3-flash-preview', async () => {

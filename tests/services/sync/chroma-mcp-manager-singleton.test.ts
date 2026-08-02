@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 // Capture real exports before mock.module mutates the live namespace, then
 // re-register the snapshots in afterAll so these mocks do not leak into later
@@ -10,14 +13,31 @@ import * as realPaths from '../../../src/shared/paths.js';
 import * as realLogger from '../../../src/utils/logger.js';
 import * as realSupervisor from '../../../src/supervisor/index.ts';
 import * as realEnvSanitizer from '../../../src/supervisor/env-sanitizer.js';
+import * as realSdkClientStdio from '@modelcontextprotocol/sdk/client/stdio.js';
+import * as realSdkClientIndex from '@modelcontextprotocol/sdk/client/index.js';
 const realSettingsSnapshot = { ...realSettingsDefaultsManager };
 const realPathsSnapshot = { ...realPaths };
 const realLoggerSnapshot = { ...realLogger };
 const realSupervisorSnapshot = { ...realSupervisor };
 const realEnvSanitizerSnapshot = { ...realEnvSanitizer };
+const realSdkClientStdioSnapshot = { ...realSdkClientStdio };
+const realSdkClientIndexSnapshot = { ...realSdkClientIndex };
 const realChildProcess = require('node:child_process');
 const realProcessPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 const originalPrewarmTimeout = process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS;
+const tempRoots: string[] = [];
+let mockedChromaDir = '';
+let mockedCombinedCertPath = '';
+let mockedSettings: Record<string, string> = {};
+
+function resetMockedChromaPaths(): void {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'claude-mem-chroma-manager-'));
+  tempRoots.push(root);
+  mockedChromaDir = path.join(root, 'chroma');
+  mockedCombinedCertPath = path.join(root, 'combined-certs.pem');
+}
+
+resetMockedChromaPaths();
 
 // Singleton enforcement regression coverage for issue #2313.
 //
@@ -104,7 +124,7 @@ mock.module('@modelcontextprotocol/sdk/client/stdio.js', () => ({
 }));
 
 let connectImpl: (transport: FakeTransport) => Promise<void> = async () => {};
-let callToolImpl: () => Promise<unknown> = async () => ({
+let callToolImpl: (request?: { name: string; arguments?: Record<string, unknown> }) => Promise<unknown> = async () => ({
   content: [{ type: 'text', text: '{}' }],
 });
 
@@ -113,8 +133,8 @@ class FakeClient {
   async connect(transport: FakeTransport): Promise<void> {
     await connectImpl(transport);
   }
-  async callTool(): Promise<unknown> {
-    return await callToolImpl();
+  async callTool(request?: { name: string; arguments?: Record<string, unknown> }): Promise<unknown> {
+    return await callToolImpl(request);
   }
   async close(): Promise<void> {
     this.closed = true;
@@ -129,15 +149,18 @@ mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
   SettingsDefaultsManager: {
     get: () => '',
     getInt: () => 0,
-    loadFromFile: () => ({}),
+    loadFromFile: () => ({
+      CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: '5000',
+      ...mockedSettings,
+    }),
   },
 }));
 
 mock.module('../../../src/shared/paths.js', () => ({
   USER_SETTINGS_PATH: '/tmp/fake-settings.json',
   paths: {
-    chroma: () => '/tmp/fake-chroma',
-    combinedCerts: () => '/tmp/fake-combined-certs.pem',
+    chroma: () => mockedChromaDir,
+    combinedCerts: () => mockedCombinedCertPath,
   },
 }));
 
@@ -171,6 +194,7 @@ mock.module('../../../src/utils/logger.js', () => ({
 
 // Track tree-kill invocations and the transport whose subprocess was killed.
 const killTreeCalls: number[] = [];
+const deadPids = new Set<number>();
 let execSyncCalls = 0;
 const prewarmSpawnCalls: Array<{ command: string; args: string[]; child: FakeChildProcess }> = [];
 let prewarmSpawnBehavior: 'success' | 'timeout' | 'failure' = 'success';
@@ -234,6 +258,14 @@ mock.module('child_process', () => {
 // the test runner if the synthetic PID happens to collide with a real one.
 const realProcessKill = process.kill.bind(process);
 const stubbedProcessKill = ((pid: number, signal?: string | number) => {
+  if (signal === 0 && deadPids.has(pid)) {
+    const error = new Error('ESRCH') as NodeJS.ErrnoException;
+    error.code = 'ESRCH';
+    throw error;
+  }
+  if (signal === 0) {
+    return true;
+  }
   killTreeCalls.push(pid);
   if (transportKillEmitsOnclose) {
     const transport = transportInstances.find(instance => instance._process.pid === pid);
@@ -269,6 +301,14 @@ afterAll(() => {
   mock.module('../../../src/supervisor/index.ts', () => realSupervisorSnapshot);
   mock.module('../../../src/supervisor/env-sanitizer.js', () => realEnvSanitizerSnapshot);
   mock.module('child_process', () => realChildProcess);
+  // The MCP SDK mocks must be re-registered too: leaking FakeClient (no
+  // listTools, canned callTool) breaks tests/server/mcp/recall-mcp-server.test.ts
+  // whenever the readdir-dependent file order runs it after this file.
+  mock.module('@modelcontextprotocol/sdk/client/stdio.js', () => realSdkClientStdioSnapshot);
+  mock.module('@modelcontextprotocol/sdk/client/index.js', () => realSdkClientIndexSnapshot);
+  for (const root of tempRoots.splice(0)) {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 function resetState(): void {
@@ -276,6 +316,7 @@ function resetState(): void {
   transportInstances.length = 0;
   prewarmSpawnCalls.length = 0;
   killTreeCalls.length = 0;
+  deadPids.clear();
   logEntries.length = 0;
   execSyncCalls = 0;
   nextFakePid = 100_000;
@@ -289,6 +330,8 @@ function resetState(): void {
   pendingConnectReject = null;
   connectImpl = async () => {};
   callToolImpl = async () => ({ content: [{ type: 'text', text: '{}' }] });
+  mockedSettings = {};
+  resetMockedChromaPaths();
   ChromaMcpManager.setUvxAvailabilityProbeForTesting(() => true);
   resetDependencyStatusesForTesting();
   if (originalPrewarmTimeout === undefined) {
@@ -311,6 +354,21 @@ async function waitForCondition(predicate: () => boolean): Promise<void> {
   throw new Error('Timed out waiting for test condition');
 }
 
+function chromaWriterLockPath(): string {
+  return path.join(mockedChromaDir, '.claude-mem-chroma-writer.lock');
+}
+
+function writeChromaWriterLock(pid: number, ownerId: string): void {
+  mkdirSync(mockedChromaDir, { recursive: true });
+  writeFileSync(chromaWriterLockPath(), JSON.stringify({
+    pid,
+    ownerId,
+    dataDir: mockedChromaDir,
+    acquiredAt: new Date().toISOString(),
+    startToken: null,
+  }, null, 2));
+}
+
 describe('ChromaMcpManager singleton enforcement (#2313)', () => {
   beforeEach(async () => {
     await ChromaMcpManager.reset();
@@ -330,6 +388,64 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     expect(transportCount).toBe(1);
     expect(prewarmSpawnCalls.length).toBe(1);
+  });
+
+  it('serializes Chroma mutations while leaving read-only queries responsive', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    const mutationReleases: Array<() => void> = [];
+    let activeMutations = 0;
+    let maxActiveMutations = 0;
+
+    callToolImpl = async request => {
+      if (request?.name === 'chroma_add_documents') {
+        activeMutations += 1;
+        maxActiveMutations = Math.max(maxActiveMutations, activeMutations);
+        await new Promise<void>(resolve => mutationReleases.push(resolve));
+        activeMutations -= 1;
+      }
+      return { content: [{ type: 'text', text: '{}' }] };
+    };
+
+    const firstMutation = mgr.callTool('chroma_add_documents', { ids: ['one'] });
+    await waitForCondition(() => mutationReleases.length === 1);
+    const secondMutation = mgr.callTool('chroma_add_documents', { ids: ['two'] });
+    await Promise.resolve();
+
+    expect(mutationReleases.length).toBe(1);
+    await expect(mgr.callTool('chroma_query_documents', { query_texts: ['still responsive'] })).resolves.toEqual({});
+
+    mutationReleases[0]();
+    await waitForCondition(() => mutationReleases.length === 2);
+    mutationReleases[1]();
+    await Promise.all([firstMutation, secondMutation]);
+
+    expect(maxActiveMutations).toBe(1);
+  });
+
+  it('bounds the pending mutation queue and leaves rejected writes for backfill', async () => {
+    mockedSettings = {
+      CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: '2',
+    };
+    const mgr = ChromaMcpManager.getInstance();
+    const mutationReleases: Array<() => void> = [];
+
+    callToolImpl = async request => {
+      if (request?.name === 'chroma_add_documents') {
+        await new Promise<void>(resolve => mutationReleases.push(resolve));
+      }
+      return { content: [{ type: 'text', text: '{}' }] };
+    };
+
+    const firstMutation = mgr.callTool('chroma_add_documents', { ids: ['one'] });
+    await waitForCondition(() => mutationReleases.length === 1);
+    const secondMutation = mgr.callTool('chroma_add_documents', { ids: ['two'] });
+
+    await expect(mgr.callTool('chroma_add_documents', { ids: ['three'] })).rejects.toThrow('mutation queue is full (2/2)');
+
+    mutationReleases[0]();
+    await waitForCondition(() => mutationReleases.length === 2);
+    mutationReleases[1]();
+    await Promise.all([firstMutation, secondMutation]);
   });
 
   it('kills the prior subprocess tree before a reconnect spawn', async () => {
@@ -399,6 +515,39 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     // a stale one).
     await mgr.callTool('chroma_list_collections', { limit: 1 });
     expect(transportInstances.length).toBe(2);
+  });
+
+  it('does not reconnect an active mutation after shutdown starts', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    let rejectMutation: ((error: Error) => void) | null = null;
+    callToolImpl = async request => {
+      if (request?.name === 'chroma_add_documents') {
+        return new Promise((_resolve, reject) => {
+          rejectMutation = reject;
+        });
+      }
+      return { content: [{ type: 'text', text: '{}' }] };
+    };
+
+    const pendingMutation = mgr.callTool('chroma_add_documents', { ids: ['one'] });
+    await waitForCondition(() => rejectMutation !== null && transportInstances.length === 1);
+
+    await mgr.stop();
+    rejectMutation?.(new Error('Connection closed'));
+
+    await expect(pendingMutation).rejects.toThrow('call cancelled during shutdown');
+    expect(transportInstances.length).toBe(1);
+  });
+
+  it('rejects local mutations that arrive after shutdown without reconnecting', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.stop();
+    await expect(mgr.callTool('chroma_add_documents', { ids: ['late'] }))
+      .rejects.toThrow('unavailable after shutdown begins');
+
+    expect(transportInstances.length).toBe(0);
+    expect(prewarmSpawnCalls.length).toBe(0);
   });
 
   it('stop() ignores close-triggered onclose from an intentionally closed transport', async () => {
@@ -564,6 +713,114 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect((stderrTail as string).length).toBeLessThanOrEqual(2048);
     expect(stderrTail).toContain('stderr-tail-marker');
     expect(stderrTail).not.toContain('head-');
+  });
+
+  it('holds a writer lock for local persistent Chroma and releases it on stop()', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(existsSync(chromaWriterLockPath())).toBe(true);
+    const lock = JSON.parse(readFileSync(chromaWriterLockPath(), 'utf-8'));
+    expect(lock).toMatchObject({
+      pid: process.pid,
+      dataDir: path.resolve(mockedChromaDir),
+    });
+    expect(typeof lock.ownerId).toBe('string');
+    expect(getDependencyStatus('chroma')).toBeNull();
+
+    await mgr.stop();
+
+    expect(existsSync(chromaWriterLockPath())).toBe(false);
+  });
+
+  it('keeps the writer lock until unexpected-close tree cleanup finishes', async () => {
+    const managerForTesting = ChromaMcpManager as unknown as typeof ChromaMcpManager & {
+      killProcessTree: (pid: number) => Promise<void>;
+    };
+    const originalKillProcessTree = managerForTesting.killProcessTree;
+    const cleanupStartedForPids: number[] = [];
+    let finishCleanup: (() => void) | null = null;
+
+    managerForTesting.killProcessTree = async (pid: number) => {
+      cleanupStartedForPids.push(pid);
+      await new Promise<void>((resolve) => {
+        finishCleanup = resolve;
+      });
+    };
+
+    try {
+      const mgr = ChromaMcpManager.getInstance();
+
+      await mgr.callTool('chroma_list_collections', { limit: 1 });
+      expect(existsSync(chromaWriterLockPath())).toBe(true);
+
+      const firstPid = transportInstances[0]._process.pid;
+      transportInstances[0].onclose?.();
+
+      await waitForCondition(() => cleanupStartedForPids.includes(firstPid));
+      expect(existsSync(chromaWriterLockPath())).toBe(true);
+
+      finishCleanup?.();
+      await waitForCondition(() => !existsSync(chromaWriterLockPath()));
+    } finally {
+      finishCleanup?.();
+      managerForTesting.killProcessTree = originalKillProcessTree;
+    }
+  });
+
+  it('refuses to open a second local writer for a live Chroma data dir owner', async () => {
+    writeChromaWriterLock(process.pid, 'other-worker-owner');
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('already owned by PID');
+
+    expect(transportInstances.length).toBe(0);
+    expect(getDependencyStatus('chroma')).toMatchObject({
+      dependency: 'chroma',
+      kind: 'vector_search_unavailable',
+      message: expect.stringContaining('already owned by PID'),
+    });
+  });
+
+  it('replaces a stale Chroma writer lock whose PID is dead', async () => {
+    const stalePid = 999_998_311;
+    deadPids.add(stalePid);
+    writeChromaWriterLock(stalePid, 'dead-worker-owner');
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    const lock = JSON.parse(readFileSync(chromaWriterLockPath(), 'utf-8'));
+    expect(lock.pid).toBe(process.pid);
+    expect(lock.ownerId).not.toBe('dead-worker-owner');
+    expect(transportInstances.length).toBe(1);
+  });
+
+  it('preserves remote mutation concurrency', async () => {
+    mockedSettings = {
+      CLAUDE_MEM_CHROMA_MODE: 'remote',
+    };
+    const mgr = ChromaMcpManager.getInstance();
+    const mutationReleases: Array<() => void> = [];
+    callToolImpl = async request => {
+      if (request?.name === 'chroma_add_documents') {
+        await new Promise<void>(resolve => mutationReleases.push(resolve));
+      }
+      return { content: [{ type: 'text', text: '{}' }] };
+    };
+
+    const firstMutation = mgr.callTool('chroma_add_documents', { ids: ['one'] });
+    const secondMutation = mgr.callTool('chroma_add_documents', { ids: ['two'] });
+    await waitForCondition(() => mutationReleases.length === 2);
+
+    mutationReleases.forEach(release => release());
+    await Promise.all([firstMutation, secondMutation]);
+
+    expect(existsSync(chromaWriterLockPath())).toBe(false);
+    const connectLog = logEntries.find(entry => entry.message === 'Connecting to chroma-mcp via MCP stdio');
+    expect(connectLog?.meta?.args).toContain('--client-type http');
+    expect(connectLog?.meta?.args).not.toContain('--data-dir');
   });
 });
 

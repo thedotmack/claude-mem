@@ -10,7 +10,7 @@ import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
+import { parseJsonWithBom, writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
 import { formatHostForUrl } from '../../shared/worker-utils.js';
@@ -685,6 +685,19 @@ function copyPluginToCache(version: string): void {
   cpSync(sourcePluginDirectory, cachePath, { recursive: true, force: true });
 }
 
+function writeMarketplaceInstallMarkers(
+  marketplaceDir: string,
+  version: string,
+  bunVersion: string,
+  uvVersion: string,
+): void {
+  writeInstallMarker(marketplaceDir, version, bunVersion, uvVersion);
+  // Hooks execute from marketplace/plugin, and Codex caches only that nested
+  // directory. Keep the runtime marker beside the package.json the hook reads
+  // so SessionStart does not report a completed install as missing.
+  writeInstallMarker(join(marketplaceDir, 'plugin'), version, bunVersion, uvVersion);
+}
+
 /**
  * Install marketplace dependencies, strict-first.
  *
@@ -748,13 +761,29 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
 function mergeSettings(updates: Record<string, string>): boolean {
   const path = USER_SETTINGS_PATH;
   try {
-    let current: Record<string, unknown> = {};
+    // Read the FULL document so we can write it back intact. The
+    // Claude-Code-style settings.json wraps env vars in a top-level `env`
+    // block and exposes peer keys at the root (hooks, permissions,
+    // apiKeyHelper, model, statusLine, etc.). readFlatSettings unwraps the
+    // env subtree for reads, but writing that flattened view back as the
+    // entire file silently drops every non-env top-level key — destroying
+    // user configuration that disableClaudeAutoMemory + writeJsonFileAtomic
+    // had carefully written.
+    //
+    // Track whether the file uses the env-nested shape so we mutate only the
+    // relevant subtree and preserve every other top-level key on write.
+    let document: Record<string, unknown> = {};
+    let envNested = false;
     if (existsSync(path)) {
       try {
-        current = { ...readFlatSettings(path) };
+        const parsed = parseJsonWithBom(readFileSync(path, 'utf-8'));
+        if (parsed && typeof parsed === 'object') {
+          document = parsed as Record<string, unknown>;
+          envNested = typeof document.env === 'object' && document.env !== null;
+        }
       } catch (parseError: unknown) {
         console.warn('[install] Failed to parse existing settings.json, starting from empty:', parseError instanceof Error ? parseError.message : String(parseError));
-        current = {};
+        document = {};
       }
     } else {
       const dir = dirname(path);
@@ -763,11 +792,14 @@ function mergeSettings(updates: Record<string, string>): boolean {
       }
     }
 
+    const target = envNested
+      ? (document.env as Record<string, unknown>)
+      : document;
     for (const [key, value] of Object.entries(updates)) {
-      current[key] = value;
+      target[key] = value;
     }
 
-    writeSettingsJsonAtomic(path, current);
+    writeSettingsJsonAtomic(path, document);
     return true;
   } catch (error: unknown) {
     log.error(`Failed to write settings to ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -1155,8 +1187,8 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
 async function promptClaudeModel(options: InstallOptions): Promise<void> {
   const allowed = new Set([
     'claude-haiku-4-5-20251001',
-    'claude-sonnet-4-6',
-    'claude-opus-4-7',
+    'claude-sonnet-5',
+    'claude-opus-4-8',
   ]);
   const allowCustomModel = resolveClaudeAuthMethod() === 'gateway';
 
@@ -1211,8 +1243,8 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
     message: 'Which Claude model should claude-mem use to compress observations?\nThis runs whenever you and Claude touch a file — keep it cheap and fast.',
     options: [
       { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (recommended — fast, cheap, great for compression)' },
-      { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6 (balanced quality and cost)' },
-      { value: 'claude-opus-4-7', label: 'Opus 4.7 (highest quality, most expensive)' },
+      { value: 'claude-sonnet-5', label: 'Sonnet 5 (balanced quality and cost)' },
+      { value: 'claude-opus-4-8', label: 'Opus 4.8 (highest quality, most expensive)' },
     ],
     initialValue,
   });
@@ -1603,6 +1635,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             }
             writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
           }
+          writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion);
           return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
         },
       },
@@ -1627,7 +1660,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
           const stopHeartbeat = startHeartbeat(message, 'Running npm install…');
           try {
             await runNpmInstallInMarketplace(summary);
-            writeInstallMarker(
+            writeMarketplaceInstallMarkers(
               marketplaceDirectory(),
               version,
               installedBunVersion ?? 'unknown',
@@ -1911,7 +1944,7 @@ async function runRepairCommandInner(summary: InstallSummary): Promise<void> {
         const stopHeartbeat = startHeartbeat(message, 'Running npm install…');
         try {
           await runNpmInstallInMarketplace(summary);
-          writeInstallMarker(marketplaceDir, version, bunVersion, uvVersion);
+          writeMarketplaceInstallMarkers(marketplaceDir, version, bunVersion, uvVersion);
         } finally {
           stopHeartbeat();
         }

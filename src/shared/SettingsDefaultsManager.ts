@@ -1,9 +1,23 @@
 
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { homedir, hostname } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
+
+// A fresh settings.json is seeded with EVERY default (see loadFromFile), and
+// persisted values then win over DEFAULTS. So any install created after the
+// Telegram notifier shipped (#2084) has that era's trigger list frozen on
+// disk, and adding a type to the default list can never reach it — the new
+// type would silently never notify. Rewrite the one exact legacy value to the
+// current default; any other list is user-customized and is left untouched.
+//
+// This cannot distinguish a user who deliberately set exactly 'security_alert'
+// from the seeded default — they read identically. Such a user is migrated and
+// starts receiving `sensitive` notifications, which is the recoverable side of
+// the trade: it is opt-out via this same key, whereas the alternative leaves
+// the feature dead on arrival for every pre-existing install.
+const LEGACY_TELEGRAM_TRIGGER_TYPES = 'security_alert';
 
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
@@ -64,6 +78,17 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_TENANT: string;
   CLAUDE_MEM_CHROMA_DATABASE: string;
   CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: string;
+  CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: string;
+  // Worker-native cloud sync. Active ⇔ TOKEN, USER_ID, and HUB_URL are all
+  // non-empty — there is no separate enabled flag. HUB_URL points at the
+  // two-lane sync hub (workers/sync-hub); while it is empty, sync is OFF
+  // entirely (the old per-kind cmem.ai lane was deleted in the hub cutover).
+  CLAUDE_MEM_CLOUD_SYNC_TOKEN: string;
+  CLAUDE_MEM_CLOUD_SYNC_USER_ID: string;
+  CLAUDE_MEM_CLOUD_SYNC_HUB_URL: string;
+  CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: string;
+  CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: string;
+  CLAUDE_MEM_CLOUD_SYNC_WS: string;    // advisory WebSocket speed layer (Phase 4) — 'false' = HTTP polling only
   CLAUDE_MEM_TELEGRAM_ENABLED: string;
   CLAUDE_MEM_TELEGRAM_BOT_TOKEN: string;
   CLAUDE_MEM_TELEGRAM_CHAT_ID: string;
@@ -99,7 +124,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_PROVIDER: 'claude',  // Default to Claude
     CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',  // Default to logged-in Claude SDK auth (not API key)
     CLAUDE_MEM_GEMINI_API_KEY: '',  // Empty by default, can be set via UI or env
-    CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',  // Default Gemini model (highest free tier RPM)
+    CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',  // Google-maintained alias → current GA Flash model (stays valid for new API keys)
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',  // Rate limiting ON by default for free tier users
     CLAUDE_MEM_OPENROUTER_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',  // Default OpenRouter model (free tier)
@@ -148,10 +173,18 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_TENANT: 'default_tenant',
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
     CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: '120000',
+    CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: '5000', // Bound burst imports without changing normal live indexing
+    // Worker-native cloud sync: credentials come from cmem.ai → Connect.
+    CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
+    CLAUDE_MEM_CLOUD_SYNC_USER_ID: '',
+    CLAUDE_MEM_CLOUD_SYNC_HUB_URL: '',  // sync-hub base URL (e.g. https://sync.cmem.ai). Empty = sync OFF
+    CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',      // Minted at first CloudSync start, then persisted back here
+    CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: hostname(),  // Human-readable label for the cmem.ai Devices panel
+    CLAUDE_MEM_CLOUD_SYNC_WS: 'true',  // Advisory WebSocket speed layer (plan Phase 4). 'false' = HTTP polling only — sync stays fully correct, just poll-latency (prime directive #2)
     CLAUDE_MEM_TELEGRAM_ENABLED: 'true',
     CLAUDE_MEM_TELEGRAM_BOT_TOKEN: '',
     CLAUDE_MEM_TELEGRAM_CHAT_ID: '',
-    CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert',
+    CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert,sensitive',
     CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS: '',
     CLAUDE_MEM_QUEUE_ENGINE: 'sqlite',
     CLAUDE_MEM_REDIS_URL: '',
@@ -225,6 +258,22 @@ export class SettingsDefaultsManager {
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error instanceof Error ? error.message : String(error));
           // Continue with in-memory migration even if write fails
+        }
+      }
+
+      if (flatSettings.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES === LEGACY_TELEGRAM_TRIGGER_TYPES) {
+        flatSettings = {
+          ...flatSettings,
+          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: this.DEFAULTS.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES,
+        };
+
+        try {
+          writeJsonFileAtomic(settingsPath, flatSettings);
+          // stderr, never stdout — same JSON-on-stdout contract as above.
+          console.warn('[SETTINGS] Migrated Telegram trigger types off the legacy default:', settingsPath);
+        } catch (error: unknown) {
+          console.warn('[SETTINGS] Failed to migrate Telegram trigger types:', settingsPath, error instanceof Error ? error.message : String(error));
+          // Continue with the in-memory migration even if the write fails
         }
       }
 

@@ -19,7 +19,7 @@ const ANTHROPIC_VERSION = '2023-06-01';
 // model (CLAUDE_MEM_MODEL in src/ui/viewer/constants/settings.ts and the
 // installer's model list) so a server with no explicit CLAUDE_MEM_SERVER_MODEL
 // generates against a valid model id instead of failing every job with a 404.
-export const DEFAULT_SERVER_CLAUDE_MODEL = 'claude-sonnet-4-6';
+export const DEFAULT_SERVER_CLAUDE_MODEL = 'claude-sonnet-5';
 const DEFAULT_MODEL = DEFAULT_SERVER_CLAUDE_MODEL;
 
 export interface ClaudeObservationProviderOptions {

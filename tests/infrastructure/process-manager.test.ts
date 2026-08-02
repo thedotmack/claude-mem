@@ -26,6 +26,7 @@ const {
   isPidFileRecent,
   touchPidFile,
   spawnDaemon,
+  buildWindowsDaemonStartCommand,
   resolveWorkerRuntimePath,
   captureProcessStartToken,
   verifyPidFileOwnership,
@@ -670,6 +671,46 @@ describe('ProcessManager', () => {
       const isFailure = (pid: number | undefined) => pid === undefined;
       expect(isFailure(windowsSuccessSentinel)).toBe(false);
       expect(isFailure(failureSentinel)).toBe(true);
+    });
+  });
+
+  describe('buildWindowsDaemonStartCommand (#3195)', () => {
+    // Windows PowerShell 5.1 (powershell.exe, which spawnDaemon invokes via
+    // -EncodedCommand) builds the native command line for Start-Process by
+    // joining -ArgumentList elements with spaces WITHOUT quoting them. The
+    // single quotes in the PS source only delimit the PS string literal; they
+    // never reach the child. So the script path must carry its own embedded
+    // double quotes or a spaced %USERPROFILE% splits it into multiple argv
+    // entries and bun dies with "Module not found".
+    it('embeds double quotes around a script path containing spaces', () => {
+      const runtimePath = String.raw`C:\Users\Test User\.bun\bin\bun.exe`;
+      const scriptPath = String.raw`C:\Users\Test User\.claude\plugins\marketplaces\thedotmack\plugin\scripts\worker-service.cjs`;
+
+      const command = buildWindowsDaemonStartCommand(runtimePath, scriptPath);
+
+      expect(command).toBe(
+        `Start-Process -FilePath '${runtimePath}' -ArgumentList @('"${scriptPath}"','--daemon') -WindowStyle Hidden`
+      );
+    });
+
+    it('keeps --daemon as its own ArgumentList element', () => {
+      const command = buildWindowsDaemonStartCommand(
+        String.raw`C:\bun\bun.exe`,
+        String.raw`C:\plugin\worker-service.cjs`
+      );
+
+      expect(command).toContain(`,'--daemon')`);
+    });
+
+    it('still doubles single quotes for PowerShell string escaping', () => {
+      const command = buildWindowsDaemonStartCommand(
+        String.raw`C:\Users\O'Brien\.bun\bin\bun.exe`,
+        String.raw`C:\Users\O'Brien\plugin\scripts\worker-service.cjs`
+      );
+
+      expect(command).toBe(
+        `Start-Process -FilePath 'C:\\Users\\O''Brien\\.bun\\bin\\bun.exe' -ArgumentList @('"C:\\Users\\O''Brien\\plugin\\scripts\\worker-service.cjs"','--daemon') -WindowStyle Hidden`
+      );
     });
   });
 

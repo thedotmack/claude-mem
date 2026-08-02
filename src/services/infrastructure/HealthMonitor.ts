@@ -1,10 +1,8 @@
 
-import path from 'path';
 import net from 'net';
-import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { MARKETPLACE_ROOT, USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
 function getWorkerHost(): string {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
@@ -34,17 +32,38 @@ async function httpRequestToWorker(
 
 export async function isPortInUse(port: number): Promise<boolean> {
   if (process.platform === 'win32') {
+    // Fast path: HTTP health check. A live claude-mem worker responds to
+    // /api/health, so this is the cheapest non-disruptive probe for the
+    // common case (worker is running and healthy).
     try {
       const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`);
-      return response.ok;
+      if (response.ok) return true;
+      // Non-ok response: port is reachable but the worker is unhealthy.
+      // Fall through to the net.createServer check below so we still report
+      // the port as in-use rather than falsely claiming it is free.
+      logger.debug('SYSTEM', 'Windows health check returned non-ok; falling through to socket probe', {
+        port,
+        status: response.status,
+      });
     } catch (error) {
+      // fetch threw (ECONNREFUSED, timeout, etc.): the port may still be in
+      // use by a non-HTTP process (zombie worker, foreign service, etc.).
+      // Fall through to the net.createServer probe — only a definitive bind
+      // attempt can tell whether the port is truly free.
       if (error instanceof Error) {
-        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', {}, error);
+        logger.debug('SYSTEM', 'Windows health check threw; falling through to socket probe', {
+          port,
+          message: error.message,
+        });
       } else {
-        logger.debug('SYSTEM', 'Windows health check failed (port not in use)', { error: String(error) });
+        logger.debug('SYSTEM', 'Windows health check threw; falling through to socket probe', {
+          port,
+          error: String(error),
+        });
       }
-      return false;
     }
+    // Fall through: the HTTP probe was inconclusive. Use the POSIX
+    // net.createServer() approach to definitively check port occupancy.
   }
 
   return new Promise((resolve) => {
@@ -126,24 +145,6 @@ export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 's
   }
 }
 
-export function getInstalledPluginVersion(): string {
-  try {
-    const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-    return packageJson.version;
-  } catch (error: unknown) {
-    if (error instanceof Error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT' || code === 'EBUSY') {
-        logger.debug('SYSTEM', 'Could not read plugin version (shutdown race)', { code });
-        return 'unknown';
-      }
-      throw error;
-    }
-    throw error;
-  }
-}
-
 export async function getRunningWorkerVersion(port: number): Promise<string | null> {
   try {
     const result = await httpRequestToWorker(port, '/api/health');
@@ -162,8 +163,15 @@ export interface VersionCheckResult {
   workerVersion: string | null;
 }
 
-export async function checkVersionMatch(port: number): Promise<VersionCheckResult> {
-  const pluginVersion = getInstalledPluginVersion();
+/**
+ * Compare the live worker's self-reported version against expectedVersion —
+ * the version of the script the caller's resolveWorkerScript() oracle would
+ * spawn. The caller supplies it so detection and respawn can never consult
+ * different oracles (the 2026-07-22 restart storm). Either side unknown →
+ * matches, since a recycle could not change the outcome deterministically.
+ */
+export async function checkVersionMatch(port: number, expectedVersion: string | null): Promise<VersionCheckResult> {
+  const pluginVersion = expectedVersion ?? 'unknown';
   const workerVersion = await getRunningWorkerVersion(port);
 
   if (!workerVersion || pluginVersion === 'unknown') {
