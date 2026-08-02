@@ -41,7 +41,21 @@ checkout, restart, and re-read `/api/health`:
 DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/thedotmack"
 git -C "$DIR" pull --ff-only
 curl -s -X POST "http://127.0.0.1:${PORT}/api/admin/restart"
+START=$(date +%s)
+# Poll for the successor; do not read health once. The restart endpoint acks
+# before the outgoing worker releases the listener, so an immediate read is
+# answered by the process being replaced and still reports the pre-update
+# build. Accept a reading only once its uptime is shorter than the time since
+# the restart was requested — that is what proves it is the new process.
+for _ in $(seq 1 15); do
+  sleep 2
+  curl -s -m 2 "http://127.0.0.1:${PORT}/api/health" \
+    | CMEM_SINCE=$(( $(date +%s) - START )) node -pe 'const j=JSON.parse(require("fs").readFileSync(0,"utf8"));if(!(j.uptime<+process.env.CMEM_SINCE))process.exit(1);j.version+" "+j.workerPath' 2>/dev/null && break
+done
 ```
+
+Connection failures and 503s during that window are expected, not a diagnosis —
+there is a real gap between the old worker exiting and the new one listening.
 
 If `/api/health` still reports an older version after that restart, the launcher
 is starting a stale cached copy — `workerPath` names the offending file, and
