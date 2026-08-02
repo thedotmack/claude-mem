@@ -17,6 +17,25 @@ the three connection values issued by **cmem.ai → Connect**.
 Confirm only its length. Preserve every unrelated setting and keep
 `~/.claude-mem/settings.json` mode `0600`.
 
+## 0. Ensure a SyncHub-capable build
+
+SyncHub requires claude-mem **>= 13.12.0**. Self-update before anything else,
+since older builds have no `/api/sync/*` routes and every later step will fail.
+
+```bash
+DIR="$HOME/.claude/plugins/marketplaces/thedotmack"
+V=$(node -pe "require('$DIR/plugin/.claude-plugin/plugin.json').version" 2>/dev/null || echo 0.0.0)
+if [ "$(printf '%s\n13.12.0\n' "$V" | sort -V | head -1)" != "13.12.0" ]; then
+  echo "claude-mem $V < 13.12.0 — updating"
+  git -C "$DIR" pull --ff-only
+fi
+```
+
+If the pull advances the clone, the worker restart in step 4 loads the new
+build. If it cannot fast-forward (local changes) or `$V` is still `< 13.12.0`
+afterward, stop and tell the user to update the plugin manually — do not try
+SyncHub against an unsupported build.
+
 ## 1. Check status
 
 Resolve the worker port and query the always-registered status route:
