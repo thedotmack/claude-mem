@@ -7,15 +7,18 @@ import { getSdkProcessForSession, ensureSdkProcessExit } from '../../../supervis
 export interface GeneratorExitDependencies {
   sessionManager: SessionManager;
   completionHandler: SessionCompletionHandler;
+  conversationHistoryCheckpoint: number;
 }
 
 /**
  * Post-generator-exit handler.
  *
  * The generator's message iterator only ends on abort (idle / shutdown) or when
- * the SDK stream throws, so most exits mean this session is done. Quota exits
- * are different: claimed work has already been reset to pending, so leave the
- * session and in-RAM buffer alive for a later generator start.
+ * the SDK stream throws, so most exits mean this session is done. Quota/auth
+ * exits are different: claimed work has already been reset to pending, so
+ * leave the session and in-RAM buffer alive for a later generator start. A
+ * fresh Claude generator replays that buffer, so discard history appended by
+ * the failed attempt before it can accumulate across retries.
  *
  * For non-quota exits we do NOT respawn on remaining buffered work: the old
  * respawn-on-pending loop, driven by the durable pending_messages queue, was the
@@ -30,7 +33,7 @@ export async function handleGeneratorExit(
   reason: ActiveSession['abortReason'],
   deps: GeneratorExitDependencies
 ): Promise<void> {
-  const { sessionManager, completionHandler } = deps;
+  const { sessionManager, completionHandler, conversationHistoryCheckpoint } = deps;
   const sessionDbId = session.sessionDbId;
 
   const tracked = getSdkProcessForSession(sessionDbId);
@@ -39,13 +42,21 @@ export async function handleGeneratorExit(
   }
 
   session.generatorPromise = null;
+  const exitedProvider = session.currentProvider;
   session.currentProvider = null;
 
   const abortCategory = (reason ?? '').split(':')[0];
   if (abortCategory === 'quota' || abortCategory === 'auth') {
+    let rolledBackHistoryCount = 0;
+    if (exitedProvider === 'claude' && conversationHistoryCheckpoint < session.conversationHistory.length) {
+      rolledBackHistoryCount = session.conversationHistory.length - conversationHistoryCheckpoint;
+      session.conversationHistory.length = conversationHistoryCheckpoint;
+    }
+
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
+      rolledBackHistoryCount,
     });
     return;
   }
