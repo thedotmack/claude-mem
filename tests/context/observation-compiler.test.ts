@@ -155,6 +155,7 @@ describe('context compiler platform scoping', () => {
     fullObservationField: 'narrative',
     showLastSummary: true,
     showLastMessage: false,
+    mainAgentOnly: true,
   };
 
   function seed(
@@ -295,6 +296,114 @@ describe('context compiler platform scoping', () => {
   });
 });
 
+describe('context compiler main-agent-only injection filtering', () => {
+  const baseConfig: ContextConfig = {
+    totalObservationCount: 20,
+    fullObservationCount: 3,
+    sessionCount: 20,
+    showReadTokens: true,
+    showWorkTokens: true,
+    showSavingsAmount: true,
+    showSavingsPercent: true,
+    observationTypes: new Set(['discovery']),
+    observationConcepts: new Set(['agent-scope']),
+    fullObservationField: 'narrative',
+    showLastSummary: true,
+    showLastMessage: false,
+    mainAgentOnly: true,
+  };
+
+  function seedObs(
+    store: SessionStore,
+    input: {
+      project: string;
+      contentSessionId: string;
+      memorySessionId: string;
+      title: string;
+      agentId: string | null;
+      createdAtEpoch: number;
+    },
+  ): void {
+    const sessionDbId = store.createSDKSession(
+      input.contentSessionId,
+      input.project,
+      'prompt',
+      undefined,
+      'claude',
+    );
+    store.ensureMemorySessionIdRegistered(sessionDbId, input.memorySessionId);
+    store.storeObservation(
+      input.memorySessionId,
+      input.project,
+      {
+        type: 'discovery',
+        title: input.title,
+        subtitle: null,
+        facts: [],
+        narrative: 'agent scope narrative',
+        concepts: ['agent-scope'],
+        files_read: [],
+        files_modified: [],
+        agent_id: input.agentId,
+      },
+      1,
+      0,
+      input.createdAtEpoch,
+    );
+  }
+
+  function seedMix(store: SessionStore, project: string): void {
+    seedObs(store, {
+      project,
+      contentSessionId: 'main-session',
+      memorySessionId: 'main-memory',
+      title: 'MAIN_OBS',
+      agentId: null,
+      createdAtEpoch: 1_700_000_000_000,
+    });
+    seedObs(store, {
+      project,
+      contentSessionId: 'sub-session',
+      memorySessionId: 'sub-memory',
+      title: 'SUB_OBS',
+      agentId: 'agent-42',
+      createdAtEpoch: 1_700_000_001_000,
+    });
+  }
+
+  it('excludes subagent observations from the injection window when mainAgentOnly is true (default)', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      seedMix(store, 'agent-scope-project');
+
+      const observations = queryObservationsMulti(store, ['agent-scope-project'], baseConfig);
+      expect(observations.map(obs => obs.title)).toEqual(['MAIN_OBS']);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('includes subagent observations when mainAgentOnly is false (backward compat) and leaves the count query unfiltered', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      seedMix(store, 'agent-scope-project');
+
+      const observations = queryObservationsMulti(
+        store,
+        ['agent-scope-project'],
+        { ...baseConfig, mainAgentOnly: false },
+      );
+      expect(observations.map(obs => obs.title).sort()).toEqual(['MAIN_OBS', 'SUB_OBS']);
+
+      // Guard the "don't over-filter" constraint: the count query has no
+      // agent_id filter, so it still sees both main and subagent rows.
+      expect(countObservationsByProjects(store, ['agent-scope-project'])).toBe(2);
+    } finally {
+      store.close();
+    }
+  });
+});
+
 describe('concept exact-match injection (#3379)', () => {
   const config: ContextConfig = {
     totalObservationCount: 20,
@@ -309,6 +418,7 @@ describe('concept exact-match injection (#3379)', () => {
     fullObservationField: 'narrative',
     showLastSummary: true,
     showLastMessage: false,
+    mainAgentOnly: true,
   };
 
   it('excludes a row whose stored concept carries a "keyword: description" prefix', () => {

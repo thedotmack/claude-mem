@@ -27,6 +27,7 @@ export interface ContextConfig {
   fullObservationField: 'narrative' | 'facts';
   showLastSummary: boolean;
   showLastMessage: boolean;
+  mainAgentOnly: boolean;
 }
 
 export interface Observation {
