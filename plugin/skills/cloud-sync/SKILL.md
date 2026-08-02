@@ -28,16 +28,19 @@ own launcher uses — so this updates the checkout that is actually active:
 ```bash
 DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/thedotmack"
 # Exits 0 when the installed manifest is >= 13.12.0. Compared in node (already
-# required below) so there is no dependency on `sort -V`.
+# required below) so there is no dependency on `sort -V`. The path travels
+# through the environment rather than the script text, so a config directory
+# containing a quote cannot corrupt the check into a false "unsupported".
 supported() {
-  node -e "const v=require('$DIR/plugin/.claude-plugin/plugin.json').version.split('.').map(Number);process.exit(v[0]>13||(v[0]===13&&v[1]>=12)?0:1)" 2>/dev/null
+  CMEM_MANIFEST="$DIR/plugin/.claude-plugin/plugin.json" node -e 'const v=require(process.env.CMEM_MANIFEST).version.split(".").map(Number);process.exit(v[0]>13||(v[0]===13&&v[1]>=12)?0:1)' 2>/dev/null
 }
 if ! supported; then
   echo "claude-mem is older than 13.12.0 — updating"
   git -C "$DIR" pull --ff-only || true
 fi
-# Re-read the manifest: the pull may have just fixed it.
-supported || echo "STOP: still older than 13.12.0"
+# Re-read the manifest: the pull may have just fixed it. Exit nonzero if not,
+# so an unsupported build stops the run instead of falling through to step 1.
+supported || { echo "STOP: claude-mem is still older than 13.12.0"; exit 1; }
 ```
 
 If the pull advances the clone, the worker restart in step 4 loads the new
