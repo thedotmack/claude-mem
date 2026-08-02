@@ -72,6 +72,27 @@ export function resolveWorkerRuntimePath(options: RuntimeResolverOptions = {}): 
   return result;
 }
 
+function bunInstallBinCandidates(
+  bunInstall: string | undefined,
+  platform: NodeJS.Platform
+): (string | undefined)[] {
+  const root = bunInstall?.trim();
+  if (!root) return [];
+
+  if (platform === 'win32') {
+    return [
+      path.join(root, 'bin', 'bun.exe'),
+      path.join(root, 'bin', 'bun'),
+      path.join(root, 'bun.exe'),
+    ];
+  }
+
+  return [
+    path.join(root, 'bin', 'bun'),
+    path.join(root, 'bun'),
+  ];
+}
+
 function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): string | null {
   const platform = options.platform ?? process.platform;
   const execPath = options.execPath ?? process.execPath;
@@ -85,10 +106,14 @@ function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): stri
   const pathExists = options.pathExists ?? existsSync;
   const lookupInPath = options.lookupInPath ?? lookupBinaryInPath;
 
+  // Order: explicit overrides, BUN_INSTALL (official installer), then well-known
+  // home/local paths, then PATH. Hook environments (Git Bash) often omit ~/.bun/bin
+  // from PATH even when Bun is installed (#3224).
   const candidatePaths: (string | undefined)[] = platform === 'win32'
     ? [
         env.BUN,
         env.BUN_PATH,
+        ...bunInstallBinCandidates(env.BUN_INSTALL, platform),
         path.join(homeDirectory, '.bun', 'bin', 'bun.exe'),
         path.join(homeDirectory, '.bun', 'bin', 'bun'),
         env.USERPROFILE ? path.join(env.USERPROFILE, '.bun', 'bin', 'bun.exe') : undefined,
@@ -98,6 +123,7 @@ function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): stri
     : [
         env.BUN,
         env.BUN_PATH,
+        ...bunInstallBinCandidates(env.BUN_INSTALL, platform),
         path.join(homeDirectory, '.bun', 'bin', 'bun'),
         '/usr/local/bin/bun',
         '/opt/homebrew/bin/bun',
@@ -386,7 +412,7 @@ export function spawnDaemon(
   if (!runtimePath) {
     logger.error(
       'SYSTEM',
-      'Bun runtime not found — install from https://bun.sh and ensure it is on PATH or set BUN env var. The worker daemon requires Bun because it uses bun:sqlite.'
+      'Bun runtime not found — install from https://bun.sh and ensure it is on PATH, under ~/.bun/bin, or set BUN / BUN_PATH / BUN_INSTALL. The worker daemon requires Bun because it uses bun:sqlite.'
     );
     return undefined;
   }

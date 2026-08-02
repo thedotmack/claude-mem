@@ -539,7 +539,7 @@ export async function ensureWorkerRunning(): Promise<boolean> {
   const scriptPath = resolvedScript?.scriptPath ?? null;
 
   if (!runtimePath) {
-    logger.warn('SYSTEM', 'Cannot lazy-spawn worker: Bun runtime not found on PATH');
+    logger.warn('SYSTEM', 'Cannot lazy-spawn worker: Bun runtime not found (PATH, BUN/BUN_PATH/BUN_INSTALL, or ~/.bun/bin)');
     return false;
   }
   if (!scriptPath) {

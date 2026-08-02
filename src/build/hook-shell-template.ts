@@ -58,16 +58,19 @@ export interface ShellTemplateOptions {
   mcpExtraCacheRoots?: string[];
 }
 
-const CLAUDE_CODE_PATH_PRELUDE = `export PATH="$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH";`;
+// Prepend Bun install locations before the login-shell PATH probe. Git Bash
+// hook environments often omit ~/.bun/bin even when Bun is installed (#3224).
+const CLAUDE_CODE_PATH_PRELUDE =
+  `export PATH="\${BUN_INSTALL:+$BUN_INSTALL/bin:}$HOME/.bun/bin:$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH";`;
 
 const CLAUDE_CODE_SETUP_PATH_PRELUDE =
-  'export PATH="$HOME/.nvm/versions/node/v$(ls \\"$HOME/.nvm/versions/node\\" 2>/dev/null | ' +
+  'export PATH="${BUN_INSTALL:+$BUN_INSTALL/bin:}$HOME/.bun/bin:$HOME/.nvm/versions/node/v$(ls \\"$HOME/.nvm/versions/node\\" 2>/dev/null | ' +
   "sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\";";
 
 const CODEX_CLI_PATH_PRELUDE =
   `_HP=$(printenv PATH 2>/dev/null || true); ` +
   `if [ -z "$_HP" ] && [ -n "\${SHELL:-}" ]; then _HP=$("$SHELL" -lc 'printf %s "$PATH"' 2>/dev/null || true); fi; ` +
-  `_HP=$(printf '%s' "$_HP" | tr ' ' ':'); export PATH="\${_HP:+$_HP:}$PATH"; `;
+  `_HP=$(printf '%s' "$_HP" | tr ' ' ':'); export PATH="\${BUN_INSTALL:+$BUN_INSTALL/bin:}$HOME/.bun/bin:\${_HP:+$_HP:}$PATH"; `;
 
 function pathPrelude(host: ShellTemplateHost): string {
   switch (host) {
@@ -102,11 +105,13 @@ function fileExistsClause(options: ShellTemplateOptions): string {
  * producer subshell is still writing the remaining candidate lines; the next
  * `printf`/`ls` then writes to a broken pipe, which Cygwin reports as EACCES
  * ("printf: write error: Permission denied") instead of EPIPE — surfacing as a
- * hook failure (issues #2707, #2709). Instead the loop drains every candidate
- * (only a handful) and a `_F` guard prints the FIRST match exactly once, so the
- * producer always completes and no broken-pipe write ever happens. The first
- * match still wins, so the contractual fallback ORDER is unchanged. This is
- * POSIX-clean (no bashisms), so the `mcp` host's `sh -c` loop is fixed too.
+ * hook failure (issues #2707, #2709, #3224). Instead the loop drains every
+ * candidate (only a handful) and a `_F` guard prints the FIRST match exactly
+ * once, so the producer always completes and no broken-pipe write ever happens.
+ * The producer group's stderr is also silenced (`2>/dev/null`) so any residual
+ * MSYS EPIPE noise cannot mask the real hook failure. The first match still
+ * wins, so the contractual fallback ORDER is unchanged. This is POSIX-clean
+ * (no bashisms), so the `mcp` host's `sh -c` loop is fixed too.
  */
 function candidateBlock(options: ShellTemplateOptions): string {
   const isMcp = options.host === 'mcp';
@@ -150,7 +155,7 @@ function candidateBlock(options: ShellTemplateOptions): string {
   const fileClause = fileExistsClause(options);
 
   return (
-    `_F=; _P=$({ ${lines.join(' ')} } | while IFS= read -r _R; do` +
+    `_F=; _P=$({ ${lines.join(' ')} } 2>/dev/null | while IFS= read -r _R; do` +
     `${trimAssignment} [ -d "$_R/plugin/scripts" ] && _Q="$_R/plugin" || _Q="$_R"; ` +
     `${fileClause} && [ -z "$_F" ] && { _F=1; printf '%s\\n' "$_Q"; }; done);`
   );

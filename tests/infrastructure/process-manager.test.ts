@@ -312,16 +312,19 @@ describe('ProcessManager', () => {
     });
 
     it('should look up Bun on non-Windows when caller is Node (e.g. MCP server)', () => {
+      // path.join follows the host OS separator even when platform:'linux' is
+      // injected, so expect the host-joined form (Windows CI runs this too).
+      const expected = path.join('/home/alice', '.bun', 'bin', 'bun');
       const resolved = resolveWorkerRuntimePath({
         platform: 'linux',
         execPath: '/usr/bin/node',
         env: {} as NodeJS.ProcessEnv,
         homeDirectory: '/home/alice',
-        pathExists: candidatePath => candidatePath === '/home/alice/.bun/bin/bun',
+        pathExists: candidatePath => candidatePath === expected,
         lookupInPath: () => null
       });
 
-      expect(resolved).toBe('/home/alice/.bun/bin/bun');
+      expect(resolved).toBe(expected);
     });
 
     it('should preserve bare BUN env command on non-Windows so spawn resolves it via PATH', () => {
@@ -382,6 +385,38 @@ describe('ProcessManager', () => {
       });
 
       expect(resolved).toBe('C:\\tools\\bun.exe');
+    });
+
+    it('should resolve Bun from BUN_INSTALL on Windows when PATH is empty (#3224)', () => {
+      // path.join follows the host OS separator even when platform:'win32' is
+      // injected, so expect the host-joined form (Linux CI / T-Rex runs this too).
+      const expected = path.join('D:\\custom\\bun-root', 'bin', 'bun.exe');
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'win32',
+        execPath: 'C:\\Program Files\\nodejs\\node.exe',
+        env: { BUN_INSTALL: 'D:\\custom\\bun-root' } as NodeJS.ProcessEnv,
+        homeDirectory: 'C:\\Users\\alice',
+        pathExists: candidatePath => candidatePath === expected,
+        lookupInPath: () => null
+      });
+
+      expect(resolved).toBe(expected);
+    });
+
+    it('should resolve Bun from BUN_INSTALL on Linux when PATH is empty (#3224)', () => {
+      // path.join follows the host OS separator even when platform:'linux' is
+      // injected, so expect the host-joined form (Windows CI runs this too).
+      const expected = path.join('/opt/bun', 'bin', 'bun');
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'linux',
+        execPath: '/usr/bin/node',
+        env: { BUN_INSTALL: '/opt/bun' } as NodeJS.ProcessEnv,
+        homeDirectory: '/home/alice',
+        pathExists: candidatePath => candidatePath === expected,
+        lookupInPath: () => null
+      });
+
+      expect(resolved).toBe(expected);
     });
 
     it('should fall back to PATH lookup when no Bun candidate exists', () => {

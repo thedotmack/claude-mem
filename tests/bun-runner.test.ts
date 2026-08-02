@@ -71,6 +71,12 @@ describe('bun-runner.js findBun: DEP0190 regression guard (#1503)', () => {
     }
     expect(source).toContain("spawnSync('which', ['bun']");
   });
+
+  it('probes BUN_INSTALL and ~/.bun when Bun is not on PATH (#3224)', () => {
+    expect(source).toContain('process.env.BUN_INSTALL');
+    expect(source).toContain("join(homedir(), '.bun', 'bin', 'bun.exe')");
+    expect(source).toContain("join(homedir(), '.bun', 'bin', 'bun')");
+  });
 });
 
 const windowsDescribe = process.platform === 'win32' ? describe : describe.skip;
