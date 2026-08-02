@@ -22,40 +22,40 @@ Confirm only its length. Preserve every unrelated setting and keep
 SyncHub requires claude-mem **>= 13.12.0**. Self-update before anything else,
 since older builds have no `/api/sync/*` routes and every later step will fail.
 
-Resolve the marketplace from `CLAUDE_CONFIG_DIR` — the same root the plugin's
-own launcher uses — so this updates the checkout that is actually active:
-
-```bash
-DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/thedotmack"
-# Exits 0 when the installed manifest is >= 13.12.0. Compared in node (already
-# required below) so there is no dependency on `sort -V`. The path travels
-# through the environment rather than the script text, so a config directory
-# containing a quote cannot corrupt the check into a false "unsupported".
-supported() {
-  CMEM_MANIFEST="$DIR/plugin/.claude-plugin/plugin.json" node -e 'const v=require(process.env.CMEM_MANIFEST).version.split(".").map(Number);process.exit(v[0]>13||(v[0]===13&&v[1]>=12)?0:1)' 2>/dev/null
-}
-if ! supported; then
-  echo "claude-mem is older than 13.12.0 — updating"
-  git -C "$DIR" pull --ff-only || true
-fi
-# Re-read the manifest: the pull may have just fixed it. Exit nonzero if not,
-# so an unsupported build stops the run instead of falling through to step 1.
-supported || { echo "STOP: claude-mem is still older than 13.12.0"; exit 1; }
-```
-
-If the pull advances the clone, the worker restart in step 4 loads the new
-build. Re-run `supported` **after** the pull rather than reusing the version
-read before it. If that final check still fails — the clone could not
-fast-forward, is not a git checkout, or the manifest is missing — stop and tell
-the user to update the plugin manually. Do not try SyncHub against an
-unsupported build.
-
-## 1. Check status
-
-Resolve the worker port and query the always-registered status route:
+Do not judge this from a manifest on disk. The launcher prefers a *cached*
+plugin over the marketplace checkout, so an up-to-date marketplace clone can sit
+next to an older cached build that is the one actually serving. Ask the running
+worker instead — `/api/health` reports both its version and the path it was
+loaded from:
 
 ```bash
 PORT="${CLAUDE_MEM_WORKER_PORT:-$(node -e "const fs=require('fs'),p=require('path'),os=require('os');const uid=(typeof process.getuid==='function'?process.getuid():77);const fallback=String(37700+(uid%100));try{const s=JSON.parse(fs.readFileSync(p.join(os.homedir(),'.claude-mem','settings.json'),'utf-8'));process.stdout.write(String(s.CLAUDE_MEM_WORKER_PORT||fallback));}catch{process.stdout.write(fallback);}" 2>/dev/null)}"
+curl -s "http://127.0.0.1:${PORT}/api/health"
+# {"status":"ok","version":"13.12.4","workerPath":"…/plugin/scripts/worker-service.cjs"}
+```
+
+Version **>= 13.12.0** → go to step 1. Otherwise update the marketplace
+checkout, restart, and re-read `/api/health`:
+
+```bash
+DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/thedotmack"
+git -C "$DIR" pull --ff-only
+curl -s -X POST "http://127.0.0.1:${PORT}/api/admin/restart"
+```
+
+If `/api/health` still reports an older version after that restart, the launcher
+is starting a stale cached copy — `workerPath` names the offending file, and
+cached builds live under
+`${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/thedotmack/claude-mem/<version>`.
+Report the running version and `workerPath`, and stop. Never continue to step 1
+against a build below 13.12.0: its `/api/sync/*` routes do not exist, so every
+later check would misreport.
+
+## 1. Check status
+
+Reusing `$PORT` from step 0, query the always-registered status route:
+
+```bash
 curl -s "http://127.0.0.1:${PORT}/api/sync/status"
 ```
 
