@@ -15,6 +15,7 @@ import { getUptimeSeconds } from '../../shared/uptime.js';
 import { snapshotDependencyHealth, type DependencyHealthSnapshot } from '../../shared/dependency-health.js';
 import { globalRateLimitStore } from '../worker/RateLimitStore.js';
 import type { ObservationQueueHealth } from '../../server/queue/queue-health-types.js';
+import { clearWindowsListenSocketInherit } from '../../shared/windows-listen-socket.js';
 
 const INSTRUCTIONS_BASE_DIR: string = path.resolve(__dirname, '../skills/mem-search');
 const INSTRUCTIONS_OPERATIONS_DIR: string = path.join(INSTRUCTIONS_BASE_DIR, 'operations');
@@ -150,6 +151,9 @@ export class Server {
         // failed bind (e.g. EADDRINUSE) must never leave a non-listening
         // handle behind for graceful shutdown to trip on.
         this.server = server;
+        // #3300: stop Windows children from inheriting the listen socket so a
+        // crashed daemon's port frees instead of staying LISTENING under a dead PID.
+        clearWindowsListenSocketInherit(server);
         logger.info('SYSTEM', 'HTTP server started', { host, port, pid: process.pid });
         resolve();
       };
