@@ -88,8 +88,8 @@ export function recordFileContextInjection(
   const filePath = sessionFilePath(sessionId);
   const storeDir = join(resolveDataDir(), DEDUPE_SUBDIR);
   try {
-    const firstWriteForSession = !existsSync(filePath);
     mkdirSync(storeDir, { recursive: true });
+    const firstWriteForSession = !existsSync(filePath);
     if (firstWriteForSession) pruneStaleSessions(storeDir);
     const seen = readSeen(filePath);
     seen[resolvedPath] = newestObservationEpoch;
