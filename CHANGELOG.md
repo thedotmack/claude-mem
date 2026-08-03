@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.13.1] - 2026-08-03
+
+## What’s new
+
+- Adds an interactive `/mode-creator` workflow that turns a user’s domain and note-taking needs into a custom claude-mem mode.
+- Guides capture-type and tag design, including specialized suggestions when standard code mode is a useful baseline.
+- Installs custom modes in durable user storage and reports the active mode in startup context.
+- Adds optional tag-triggered Telegram notifications with guided bot configuration and verification.
+- Includes mode-authoring and Telegram references, secure helper scripts, documentation, distribution coverage, and runtime tests.
+
+## Compatibility
+
+This patch release has no intended breaking changes.
+
 ## [13.13.0] - 2026-08-02
 
 ## Sensitive observation type
