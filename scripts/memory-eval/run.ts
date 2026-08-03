@@ -9,6 +9,7 @@
  *   bun scripts/memory-eval/run.ts fit-d [--grid 0.2..1.0] [--step 0.1] [--limit N]
  *   bun scripts/memory-eval/run.ts mutation-test
  *   bun scripts/memory-eval/run.ts erasure-test
+ *   bun scripts/memory-eval/run.ts retention-sweep [--apply]
  *
  * Hard rules: the production DB is only ever opened READONLY; mutations run on
  * temp copies; LLM judge calls go through createSdkJudge with a disk cache and
@@ -17,6 +18,10 @@
 
 import { DB_PATH } from '../../src/shared/paths.js';
 import { supersedeObservation } from '../../src/services/reinforcement/persist.js';
+import { eraseObservationCascade } from '../../src/services/reinforcement/erasure.js';
+import {
+  readRetentionPolicy, runRetentionSweep, RETENTION_REASON,
+} from '../../src/services/reinforcement/retention.js';
 import { parseReinforcementDates, isoDay } from '../../src/services/reinforcement/strength.js';
 import { queryObservationsMulti } from '../../src/services/context/ObservationCompiler.js';
 import type { ContextConfig } from '../../src/services/context/types.js';
@@ -403,6 +408,29 @@ async function cmdErasureTest(): Promise<void> {
     checks.push({ name: 'observation absent from FTS search after erasure', pass: !ftsAfter.includes(target.id), detail: `hits after: ${ftsAfter.length}` });
     checks.push({ name: 'observation absent from injection pool after erasure', pass: poolBefore.includes(target.id) && !poolAfter.includes(target.id), detail: `pool ${poolBefore.length} → ${poolAfter.length}` });
 
+    // --- erasure cascade (G5): hard delete removes rows tombstoned BY it ---
+    const pair = copy.db.prepare(`
+      SELECT id FROM observations
+      WHERE superseded_by IS NULL AND id != ?
+      ORDER BY id DESC LIMIT 2
+    `).all(target.id) as Array<{ id: number }>;
+    if (pair.length === 2) {
+      const [successor, original] = pair;
+      const linked = supersedeObservation(copy.db, original.id, successor.id);
+      checks.push({ name: `cascade: supersede link #${original.id} → #${successor.id} established`, pass: linked, detail: '' });
+      const erased = eraseObservationCascade(copy.db, successor.id);
+      const remaining = copy.db.prepare(
+        'SELECT COUNT(*) AS n FROM observations WHERE id IN (?, ?)',
+      ).get(successor.id, original.id) as { n: number };
+      checks.push({
+        name: `cascade: erasing #${successor.id} also removed its tombstone #${original.id}`,
+        pass: erased.cascaded === 1 && remaining.n === 0,
+        detail: `deletedIds=${JSON.stringify(erased.deletedIds)}`,
+      });
+    } else {
+      report.note('fewer than 2 active observations — cascade check skipped');
+    }
+
     // --- fact erasure ---
     const factRows = copy.db.prepare(`
       SELECT id, project, fact FROM semantic_facts
@@ -476,6 +504,77 @@ async function cmdErasureTest(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// retention-sweep (audit G2) — dry-run on the readonly prod DB, --apply on a
+// temp copy only. The production DB is NEVER swept from this harness.
+// ---------------------------------------------------------------------------
+
+async function cmdRetentionSweep(flags: Flags): Promise<void> {
+  const apply = Boolean(flags.apply);
+  const policy = readRetentionPolicy();
+  const report = new Report();
+
+  let result;
+  let auditRows = 0;
+  if (apply) {
+    const copy = copyDbToTemp();
+    report.note(`APPLY ran on temp copy ${copy.path}; production DB opened readonly only`);
+    try {
+      // Applies pending migrations (e.g. the v54 audit table) to the copy.
+      const { SessionStore } = await import('../../src/services/sqlite/SessionStore.js');
+      new SessionStore(copy.db);
+      result = runRetentionSweep(copy.db, policy, { dryRun: false });
+      auditRows = (copy.db.prepare(
+        'SELECT COUNT(*) AS n FROM deleted_observations WHERE batch_id = ?',
+      ).get(result.batchId) as { n: number }).n;
+    } finally {
+      copy.cleanup();
+    }
+  } else {
+    const db = openReadonlyDb();
+    try {
+      result = runRetentionSweep(db, policy, { dryRun: true });
+    } finally {
+      db.close();
+    }
+  }
+
+  report.json.command = 'retention-sweep';
+  report.json.mode = apply ? 'apply (temp copy)' : 'dry-run (readonly prod)';
+  report.json.policy = policy;
+  report.json.scanned = result.scanned;
+  report.json.candidates = result.candidates;
+  report.json.deleted = result.deleted;
+  report.json.batchId = result.batchId;
+  if (apply) report.json.auditRows = auditRows;
+
+  report.line(`## Retention sweep — ${apply ? 'APPLY on temp DB copy' : 'dry-run (readonly production DB)'}`);
+  report.line();
+  report.line(`- policy: enabled=${policy.enabled}, minAgeDays=${policy.minAgeDays}, minStrength=${policy.minStrength}, maxDeletesPerRun=${policy.maxDeletesPerRun}`);
+  report.line(`- prefilter rows scanned (old + never surfaced + not superseded): ${result.scanned}`);
+  report.line(`- candidates (strength < ${policy.minStrength}, <2 reinforcement dates): **${result.candidates.length}**`);
+  if (apply) {
+    report.line(`- deleted: **${result.deleted}** (batch \`${result.batchId}\`, reason '${RETENTION_REASON}')`);
+    report.line(`- audit rows in deleted_observations: ${auditRows}`);
+  } else {
+    report.line(`- nothing mutated; re-run with \`--apply\` to execute on a temp copy`);
+  }
+  report.line();
+  if (result.candidates.length > 0) {
+    report.line(`| id | age (days) | strength |`);
+    report.line(`| --- | --- | --- |`);
+    for (const c of result.candidates.slice(0, 50)) {
+      report.line(`| #${c.id} | ${c.ageDays} | ${c.strength.toFixed(4)} |`);
+    }
+    if (result.candidates.length > 50) report.line(`| … | ${result.candidates.length - 50} more | |`);
+  }
+
+  const { mdPath } = report.write('retention-sweep');
+  console.log(`retention-sweep (${apply ? 'apply/temp-copy' : 'dry-run'}): ${result.candidates.length} candidate(s), scanned ${result.scanned}`);
+  if (apply) console.log(`  deleted ${result.deleted} on temp copy, audit rows: ${auditRows}, batch ${result.batchId}`);
+  console.log(`report: ${mdPath}`);
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -489,6 +588,8 @@ commands:
   fit-d [--grid 0.2..1.0] [--step 0.1] [--limit N]
   mutation-test                              supersede e2e on a temp DB copy
   erasure-test                               erasure + provenance on a temp DB copy
+  retention-sweep [--apply]                  retention policy dry-run (readonly prod);
+                                             --apply executes on a temp DB copy
 `;
 
 async function main(): Promise<void> {
@@ -500,6 +601,7 @@ async function main(): Promise<void> {
     case 'fit-d': return cmdFitD(flags);
     case 'mutation-test': return cmdMutationTest();
     case 'erasure-test': return cmdErasureTest();
+    case 'retention-sweep': return cmdRetentionSweep(flags);
     default:
       console.log(USAGE);
       if (command) process.exitCode = 1;

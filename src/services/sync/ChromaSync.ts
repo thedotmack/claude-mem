@@ -439,6 +439,48 @@ export class ChromaSync {
     return written;
   }
 
+  /**
+   * Tombstone documents by id (retention sweep / erasure). Fail-soft like
+   * addDocuments: a Chroma outage logs and returns 0 — the SQLite audit table
+   * remains the source of truth, and orphaned vectors can be reconciled on
+   * the next full reindex.
+   */
+  public async removeDocuments(ids: string[]): Promise<number> {
+    if (ids.length === 0) return 0;
+
+    try {
+      await this.ensureCollectionExists();
+    } catch (error) {
+      logger.warn('CHROMA_SYNC', 'Chroma unavailable before delete; skipping tombstone', {
+        collection: this.collectionName,
+        requested: ids.length,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return 0;
+    }
+
+    const chromaMcp = ChromaMcpManager.getInstance();
+    let removed = 0;
+    for (let i = 0; i < ids.length; i += this.BATCH_SIZE) {
+      const batch = ids.slice(i, i + this.BATCH_SIZE);
+      try {
+        await chromaMcp.callTool('chroma_delete_documents', {
+          collection_name: this.collectionName,
+          ids: batch
+        });
+        removed += batch.length;
+      } catch (error) {
+        logger.warn('CHROMA_SYNC', 'Batch delete failed — continuing with remaining batches', {
+          collection: this.collectionName,
+          batchStart: i,
+          batchSize: batch.length,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+    return removed;
+  }
+
   async syncObservation(
     observationId: number,
     memorySessionId: string,

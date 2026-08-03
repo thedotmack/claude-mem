@@ -75,6 +75,14 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CONSOLIDATE_MIN_INTERVAL_HOURS: string;
   CLAUDE_MEM_CONSOLIDATE_MIN_OBSERVATIONS: string;
   CLAUDE_MEM_FACTS_INJECT_COUNT: string;
+  // Retention sweep (opt-in, default off): age/strength-threshold deletion of
+  // stale observations into the deleted_observations audit table. Lives here
+  // (not env-only) so settings.json can enable it — loadFromFile drops keys
+  // absent from DEFAULTS.
+  CLAUDE_MEM_RETENTION_ENABLED: string;
+  CLAUDE_MEM_RETENTION_MIN_AGE_DAYS: string;
+  CLAUDE_MEM_RETENTION_MIN_STRENGTH: string;
+  CLAUDE_MEM_RETENTION_MAX_DELETES_PER_RUN: string;
   CLAUDE_MEM_TIER_ROUTING_ENABLED: string;
   CLAUDE_MEM_TIER_SIMPLE_MODEL: string;
   CLAUDE_MEM_TIER_SUMMARY_MODEL: string;
@@ -183,6 +191,10 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CONSOLIDATE_MIN_INTERVAL_HOURS: '12', // Per-project throttle: min hours between consolidation runs
     CLAUDE_MEM_CONSOLIDATE_MIN_OBSERVATIONS: '20',   // Per-project throttle: min new observations since the last run
     CLAUDE_MEM_FACTS_INJECT_COUNT: '15',             // Cap on the `## Project Knowledge` facts block above the timeline
+    CLAUDE_MEM_RETENTION_ENABLED: 'false',           // Retention sweep master switch (audit G2 — opt-in, apply gated on this)
+    CLAUDE_MEM_RETENTION_MIN_AGE_DAYS: '90',         // Candidates: observations older than this
+    CLAUDE_MEM_RETENTION_MIN_STRENGTH: '0.05',       // Candidates: ACT-R effectiveStrength below this
+    CLAUDE_MEM_RETENTION_MAX_DELETES_PER_RUN: '500', // Safety cap per sweep run
     CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',         // Route observations to models by complexity
     CLAUDE_MEM_TIER_SIMPLE_MODEL: 'haiku', // Portable tier alias — works across Direct API, Bedrock, Vertex, Azure (see #1463)
     CLAUDE_MEM_TIER_SUMMARY_MODEL: '',                // Empty = use default model for summaries

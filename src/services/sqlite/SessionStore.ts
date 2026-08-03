@@ -125,6 +125,7 @@ export class SessionStore {
     this.ensureObservationRelevanceCountColumn();
     this.ensureObservationSupersededByColumn();
     this.ensureSemanticFactsTable();
+    this.ensureDeletedObservationsTable();
   }
 
   /**
@@ -268,6 +269,44 @@ export class SessionStore {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(53, new Date().toISOString());
+  }
+
+  /**
+   * Retention policy audit trail (version 54).
+   *
+   * Deletion is a SEPARATE explicit policy, never a decay side-effect (memory
+   * review C3/C10 — plans/2026-07-31-memory-review-audit.md G2). The retention
+   * sweep (src/services/reinforcement/retention.ts) never hard-deletes: every
+   * removed observation lands here first as a full row snapshot, so a
+   * retention mistake is auditable and restorable. `reason` names the policy
+   * that deleted the row (currently always 'retention-sweep'); `batch_id`
+   * groups one sweep run. Idempotent — the sqlite_master check is the real
+   * guard, the version row is bookkeeping.
+   */
+  private ensureDeletedObservationsTable(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(54) as SchemaVersion | undefined;
+    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'deleted_observations'").all() as TableNameRow[];
+    const hasTable = tables.length > 0;
+
+    if (applied && hasTable) return;
+
+    if (!hasTable) {
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS deleted_observations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          observation_id INTEGER NOT NULL,
+          snapshot_json TEXT NOT NULL,
+          deleted_at TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          batch_id TEXT NOT NULL
+        )
+      `);
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_deleted_observations_observation_id ON deleted_observations(observation_id)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_deleted_observations_batch_id ON deleted_observations(batch_id)');
+      logger.debug('DB', 'Created deleted_observations table (retention audit trail)');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(54, new Date().toISOString());
   }
 
   private getIndexColumns(indexName: string): string[] {

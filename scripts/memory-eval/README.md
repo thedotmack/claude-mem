@@ -12,6 +12,7 @@ bun scripts/memory-eval/run.ts eval [--d D] [--ranker recency|actr|both] [--retr
 bun scripts/memory-eval/run.ts fit-d [--grid 0.2..1.0] [--step 0.1] [--limit N]
 bun scripts/memory-eval/run.ts mutation-test
 bun scripts/memory-eval/run.ts erasure-test
+bun scripts/memory-eval/run.ts retention-sweep [--apply]
 ```
 
 ## Declared scoring target (правило 3)
@@ -54,7 +55,19 @@ LLM-вызовы — только через `createSdkJudge()` и только 
 `SessionStore.storeObservation` → `supersedeObservation` → старый выпадает из
 `queryObservationsMulti`, новый наследует старшую половину `reinforcement_dates`.
 Erasure: `DELETE` observation/факта → отсутствие в FTS (`SessionSearch`) и в
-инъекционном пуле; provenance: резолв `source_observation_ids` активного факта.
+инъекционном пуле; каскад G5: `eraseObservationCascade(successor)` сносит и его
+tombstone (`superseded_by`-цепочка); provenance: резолв `source_observation_ids`
+активного факта.
+
+## Retention sweep (G2)
+
+`retention-sweep` — CLI-путь политики удаления (та же логика, что
+`POST /api/maintenance/retention-sweep`, модуль `src/services/reinforcement/retention.ts`).
+Без флагов — dry-run на readonly прод-БД: только отчёт-кандидаты (возраст/сила/кап).
+`--apply` выполняет sweep на **временной копии** (миграции догоняются через
+`SessionStore`) и проверяет, что удалённые строки легли в `deleted_observations`
+одним `batch_id`. Прод-БД из харнесса не sweept'ится никогда; политика opt-in
+(`CLAUDE_MEM_RETENTION_ENABLED`, default off).
 
 ## Hybrid retrieval
 
