@@ -10,6 +10,7 @@ import { statSync } from 'fs';
 import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { getProjectContext } from '../../utils/project-name.js';
+import { wasFileContextInjected, recordFileContextInjection } from './file-context-dedupe.js';
 
 const FILE_READ_GATE_MIN_BYTES = 1_500;
 
@@ -252,16 +253,29 @@ async function buildFileContextTimeline(input: NormalizedHookInput, filePath: st
     return null;
   }
 
-  if (fileMtimeMs > 0) {
-    const newestObservationMs = Math.max(...data.observations.map(o => o.created_at_epoch));
-    if (fileMtimeMs >= newestObservationMs) {
-      logger.debug('HOOK', 'File modified since last observation, skipping context injection', {
-        filePath: relativePath,
-        fileMtimeMs,
-        newestObservationMs,
-      });
-      return null;
-    }
+  const newestObservationMs = Math.max(...data.observations.map(o => o.created_at_epoch));
+
+  if (fileMtimeMs > 0 && fileMtimeMs >= newestObservationMs) {
+    logger.debug('HOOK', 'File modified since last observation, skipping context injection', {
+      filePath: relativePath,
+      fileMtimeMs,
+      newestObservationMs,
+    });
+    return null;
+  }
+
+  // #3480 — skip re-injecting the same still-valid timeline for a file already
+  // surfaced this session. Re-injects only when a newer observation has landed.
+  // ponytail: read-before-write, so two concurrent Reads of the same file in one
+  // session can still double-inject — acceptable; the common repeated-Read case
+  // (sequential) is deduped. Tighten with a lock only if that ever matters.
+  if (wasFileContextInjected(input.sessionId, absolutePath, newestObservationMs)) {
+    logger.debug('HOOK', 'File context already surfaced this session, skipping re-injection', {
+      filePath: relativePath,
+      sessionId: input.sessionId,
+      newestObservationMs,
+    });
+    return null;
   }
 
   const dedupedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT);
@@ -269,5 +283,7 @@ async function buildFileContextTimeline(input: NormalizedHookInput, filePath: st
     return null;
   }
 
-  return formatFileTimeline(dedupedObservations, filePath);
+  const timeline = formatFileTimeline(dedupedObservations, filePath);
+  recordFileContextInjection(input.sessionId, absolutePath, newestObservationMs);
+  return timeline;
 }

@@ -81,10 +81,18 @@ function makeObservationsResponse(observations: Array<{ id: number; created_at_e
   );
 }
 
+let prevDataDir: string | undefined;
+
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), 'file-context-test-'));
   testFile = join(tmpDir, 'test.md');
   writeFileSync(testFile, PADDING);
+
+  // #3480 — the per-(session,file) dedupe store persists under DATA_DIR. Point
+  // it at a fresh per-test dir so each test starts with an empty store and the
+  // real ~/.claude-mem is never touched.
+  prevDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+  process.env.CLAUDE_MEM_DATA_DIR = join(tmpDir, 'data');
 
   loggerSpies = [
     spyOn(logger, 'info').mockImplementation(() => {}),
@@ -100,6 +108,8 @@ afterEach(() => {
     fetchSpy.mockRestore();
     fetchSpy = null;
   }
+  if (prevDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+  else process.env.CLAUDE_MEM_DATA_DIR = prevDataDir;
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 });
 
@@ -328,6 +338,84 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
     expect(pathParams).toContain(absoluteForm);
     expect(pathParams).toContain('test.md'); // cwd-relative form
     expect(pathParams.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('injects once per (session, file) — a second unchanged Read is deduped (#3480)', async () => {
+    const future = Date.now() + 60_000;
+    // mockImplementation (not mockResolvedValue): each call needs a FRESH
+    // Response — a Response body can only be consumed once.
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(makeObservationsResponse([{ id: 1, created_at_epoch: future }]))
+    );
+
+    const first = await fileContextHandler.execute({
+      sessionId: 'sess-dedupe',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+    expect(first.hookSpecificOutput?.additionalContext).toContain('prior observations');
+
+    const second = await fileContextHandler.execute({
+      sessionId: 'sess-dedupe',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+    expect(second.continue).toBe(true);
+    expect(second.hookSpecificOutput).toBeUndefined();
+  });
+
+  it('re-injects when a NEW observation is recorded since the last injection (#3480)', async () => {
+    const first_epoch = Date.now() + 60_000;
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(makeObservationsResponse([{ id: 1, created_at_epoch: first_epoch }]))
+    );
+    const first = await fileContextHandler.execute({
+      sessionId: 'sess-new-obs',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+    expect(first.hookSpecificOutput?.additionalContext).toContain('prior observations');
+
+    // A newer observation lands → re-injection is expected, not deduped.
+    fetchSpy.mockRestore();
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(makeObservationsResponse([
+        { id: 1, created_at_epoch: first_epoch },
+        { id: 2, created_at_epoch: first_epoch + 30_000, title: 'Fresh observation' },
+      ]))
+    );
+    const second = await fileContextHandler.execute({
+      sessionId: 'sess-new-obs',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+    expect(second.hookSpecificOutput?.additionalContext).toContain('prior observations');
+  });
+
+  it('dedupe is scoped per session — a different session still gets its injection (#3480)', async () => {
+    const future = Date.now() + 60_000;
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(makeObservationsResponse([{ id: 1, created_at_epoch: future }]))
+    );
+
+    await fileContextHandler.execute({
+      sessionId: 'sess-A',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+
+    const other = await fileContextHandler.execute({
+      sessionId: 'sess-B',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+    expect(other.hookSpecificOutput?.additionalContext).toContain('prior observations');
   });
 
   it('skips directories before querying file history', async () => {
