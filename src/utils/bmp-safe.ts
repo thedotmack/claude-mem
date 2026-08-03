@@ -23,6 +23,7 @@ const ASTRAL_FALLBACKS: Record<string, string> = {
   '🔵': '○', // discovery
   '🚨': '⚠', // security_alert
   '🔐': '⚷', // security_note
+  '🤫': '⊘', // sensitive
   '🛠': '⚒', // tool/build
   '🔍': '⌕', // search/discovery
   '🎯': '◎', // session

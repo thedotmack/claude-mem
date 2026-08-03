@@ -100,6 +100,7 @@ export class ChromaSync {
   private project: string;
   private collectionName: string;
   private collectionCreated = false;
+  private collectionCreation: Promise<void> | null = null;
   private readonly BATCH_SIZE = 100;
 
   constructor(project: string) {
@@ -121,6 +122,15 @@ export class ChromaSync {
       return;
     }
 
+    if (!this.collectionCreation) {
+      this.collectionCreation = this.createCollection().finally(() => {
+        this.collectionCreation = null;
+      });
+    }
+    await this.collectionCreation;
+  }
+
+  private async createCollection(): Promise<void> {
     const chromaMcp = ChromaMcpManager.getInstance();
     // Request the configured EF at creation time (e5 migration, plan Change
     // 3). chroma-mcp persists it into the collection configuration, so the

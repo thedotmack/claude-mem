@@ -5,6 +5,20 @@ import { homedir, hostname } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 
+// A fresh settings.json is seeded with EVERY default (see loadFromFile), and
+// persisted values then win over DEFAULTS. So any install created after the
+// Telegram notifier shipped (#2084) has that era's trigger list frozen on
+// disk, and adding a type to the default list can never reach it — the new
+// type would silently never notify. Rewrite the one exact legacy value to the
+// current default; any other list is user-customized and is left untouched.
+//
+// This cannot distinguish a user who deliberately set exactly 'security_alert'
+// from the seeded default — they read identically. Such a user is migrated and
+// starts receiving `sensitive` notifications, which is the recoverable side of
+// the trade: it is opt-out via this same key, whereas the alternative leaves
+// the feature dead on arrival for every pre-existing install.
+const LEGACY_TELEGRAM_TRIGGER_TYPES = 'security_alert';
+
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
@@ -79,6 +93,7 @@ export interface SettingsDefaults {
   // 'e5-multilingual' is registered by the vendored chroma-mcp fork
   // (vendor/chroma-mcp); 'default' = upstream MiniLM (rollback path).
   CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: string;
+  CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: string;
   // Worker-native cloud sync. Active ⇔ TOKEN, USER_ID, and HUB_URL are all
   // non-empty — there is no separate enabled flag. HUB_URL points at the
   // two-lane sync hub (workers/sync-hub); while it is empty, sync is OFF
@@ -186,6 +201,7 @@ export class SettingsDefaultsManager {
     // keep their persisted EF — switching this requires the Change-4 reindex
     // (delete cm__* + reset backfill watermarks). Rollback: set to 'default'.
     CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: 'e5-multilingual',
+    CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: '5000', // Bound burst imports without changing normal live indexing
     // Worker-native cloud sync: credentials come from cmem.ai → Connect.
     CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
     CLAUDE_MEM_CLOUD_SYNC_USER_ID: '',
@@ -196,7 +212,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TELEGRAM_ENABLED: 'true',
     CLAUDE_MEM_TELEGRAM_BOT_TOKEN: '',
     CLAUDE_MEM_TELEGRAM_CHAT_ID: '',
-    CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert',
+    CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert,sensitive',
     CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS: '',
     CLAUDE_MEM_QUEUE_ENGINE: 'sqlite',
     CLAUDE_MEM_REDIS_URL: '',
@@ -270,6 +286,22 @@ export class SettingsDefaultsManager {
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error instanceof Error ? error.message : String(error));
           // Continue with in-memory migration even if write fails
+        }
+      }
+
+      if (flatSettings.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES === LEGACY_TELEGRAM_TRIGGER_TYPES) {
+        flatSettings = {
+          ...flatSettings,
+          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: this.DEFAULTS.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES,
+        };
+
+        try {
+          writeJsonFileAtomic(settingsPath, flatSettings);
+          // stderr, never stdout — same JSON-on-stdout contract as above.
+          console.warn('[SETTINGS] Migrated Telegram trigger types off the legacy default:', settingsPath);
+        } catch (error: unknown) {
+          console.warn('[SETTINGS] Failed to migrate Telegram trigger types:', settingsPath, error instanceof Error ? error.message : String(error));
+          // Continue with the in-memory migration even if the write fails
         }
       }
 

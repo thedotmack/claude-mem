@@ -124,7 +124,7 @@ mock.module('@modelcontextprotocol/sdk/client/stdio.js', () => ({
 }));
 
 let connectImpl: (transport: FakeTransport) => Promise<void> = async () => {};
-let callToolImpl: () => Promise<unknown> = async () => ({
+let callToolImpl: (request?: { name: string; arguments?: Record<string, unknown> }) => Promise<unknown> = async () => ({
   content: [{ type: 'text', text: '{}' }],
 });
 
@@ -133,8 +133,8 @@ class FakeClient {
   async connect(transport: FakeTransport): Promise<void> {
     await connectImpl(transport);
   }
-  async callTool(): Promise<unknown> {
-    return await callToolImpl();
+  async callTool(request?: { name: string; arguments?: Record<string, unknown> }): Promise<unknown> {
+    return await callToolImpl(request);
   }
   async close(): Promise<void> {
     this.closed = true;
@@ -149,7 +149,10 @@ mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
   SettingsDefaultsManager: {
     get: () => '',
     getInt: () => 0,
-    loadFromFile: () => ({ ...mockedSettings }),
+    loadFromFile: () => ({
+      CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: '5000',
+      ...mockedSettings,
+    }),
   },
 }));
 
@@ -387,6 +390,64 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(prewarmSpawnCalls.length).toBe(1);
   });
 
+  it('serializes Chroma mutations while leaving read-only queries responsive', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    const mutationReleases: Array<() => void> = [];
+    let activeMutations = 0;
+    let maxActiveMutations = 0;
+
+    callToolImpl = async request => {
+      if (request?.name === 'chroma_add_documents') {
+        activeMutations += 1;
+        maxActiveMutations = Math.max(maxActiveMutations, activeMutations);
+        await new Promise<void>(resolve => mutationReleases.push(resolve));
+        activeMutations -= 1;
+      }
+      return { content: [{ type: 'text', text: '{}' }] };
+    };
+
+    const firstMutation = mgr.callTool('chroma_add_documents', { ids: ['one'] });
+    await waitForCondition(() => mutationReleases.length === 1);
+    const secondMutation = mgr.callTool('chroma_add_documents', { ids: ['two'] });
+    await Promise.resolve();
+
+    expect(mutationReleases.length).toBe(1);
+    await expect(mgr.callTool('chroma_query_documents', { query_texts: ['still responsive'] })).resolves.toEqual({});
+
+    mutationReleases[0]();
+    await waitForCondition(() => mutationReleases.length === 2);
+    mutationReleases[1]();
+    await Promise.all([firstMutation, secondMutation]);
+
+    expect(maxActiveMutations).toBe(1);
+  });
+
+  it('bounds the pending mutation queue and leaves rejected writes for backfill', async () => {
+    mockedSettings = {
+      CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: '2',
+    };
+    const mgr = ChromaMcpManager.getInstance();
+    const mutationReleases: Array<() => void> = [];
+
+    callToolImpl = async request => {
+      if (request?.name === 'chroma_add_documents') {
+        await new Promise<void>(resolve => mutationReleases.push(resolve));
+      }
+      return { content: [{ type: 'text', text: '{}' }] };
+    };
+
+    const firstMutation = mgr.callTool('chroma_add_documents', { ids: ['one'] });
+    await waitForCondition(() => mutationReleases.length === 1);
+    const secondMutation = mgr.callTool('chroma_add_documents', { ids: ['two'] });
+
+    await expect(mgr.callTool('chroma_add_documents', { ids: ['three'] })).rejects.toThrow('mutation queue is full (2/2)');
+
+    mutationReleases[0]();
+    await waitForCondition(() => mutationReleases.length === 2);
+    mutationReleases[1]();
+    await Promise.all([firstMutation, secondMutation]);
+  });
+
   it('kills the prior subprocess tree before a reconnect spawn', async () => {
     const mgr = ChromaMcpManager.getInstance();
 
@@ -454,6 +515,39 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     // a stale one).
     await mgr.callTool('chroma_list_collections', { limit: 1 });
     expect(transportInstances.length).toBe(2);
+  });
+
+  it('does not reconnect an active mutation after shutdown starts', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    let rejectMutation: ((error: Error) => void) | null = null;
+    callToolImpl = async request => {
+      if (request?.name === 'chroma_add_documents') {
+        return new Promise((_resolve, reject) => {
+          rejectMutation = reject;
+        });
+      }
+      return { content: [{ type: 'text', text: '{}' }] };
+    };
+
+    const pendingMutation = mgr.callTool('chroma_add_documents', { ids: ['one'] });
+    await waitForCondition(() => rejectMutation !== null && transportInstances.length === 1);
+
+    await mgr.stop();
+    rejectMutation?.(new Error('Connection closed'));
+
+    await expect(pendingMutation).rejects.toThrow('call cancelled during shutdown');
+    expect(transportInstances.length).toBe(1);
+  });
+
+  it('rejects local mutations that arrive after shutdown without reconnecting', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.stop();
+    await expect(mgr.callTool('chroma_add_documents', { ids: ['late'] }))
+      .rejects.toThrow('unavailable after shutdown begins');
+
+    expect(transportInstances.length).toBe(0);
+    expect(prewarmSpawnCalls.length).toBe(0);
   });
 
   it('stop() ignores close-triggered onclose from an intentionally closed transport', async () => {
@@ -703,11 +797,25 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(transportInstances.length).toBe(1);
   });
 
-  it('does not acquire a local writer lock in remote Chroma mode', async () => {
-    mockedSettings = { CLAUDE_MEM_CHROMA_MODE: 'remote' };
+  it('preserves remote mutation concurrency', async () => {
+    mockedSettings = {
+      CLAUDE_MEM_CHROMA_MODE: 'remote',
+    };
     const mgr = ChromaMcpManager.getInstance();
+    const mutationReleases: Array<() => void> = [];
+    callToolImpl = async request => {
+      if (request?.name === 'chroma_add_documents') {
+        await new Promise<void>(resolve => mutationReleases.push(resolve));
+      }
+      return { content: [{ type: 'text', text: '{}' }] };
+    };
 
-    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    const firstMutation = mgr.callTool('chroma_add_documents', { ids: ['one'] });
+    const secondMutation = mgr.callTool('chroma_add_documents', { ids: ['two'] });
+    await waitForCondition(() => mutationReleases.length === 2);
+
+    mutationReleases.forEach(release => release());
+    await Promise.all([firstMutation, secondMutation]);
 
     expect(existsSync(chromaWriterLockPath())).toBe(false);
     const connectLog = logEntries.find(entry => entry.message === 'Connecting to chroma-mcp via MCP stdio');
