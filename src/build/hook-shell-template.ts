@@ -61,7 +61,7 @@ export interface ShellTemplateOptions {
 // Prepend common tool locations without spawning a login shell on every hook
 // invocation. Setup already used this shape; runtime hooks now match (#3190).
 const CLAUDE_CODE_HOOK_PATH_PRELUDE =
-  'export PATH="$HOME/.nvm/versions/node/v$(ls \\"$HOME/.nvm/versions/node\\" 2>/dev/null | ' +
+  'export PATH="$HOME/.nvm/versions/node/v$(ls "$HOME/.nvm/versions/node" 2>/dev/null | ' +
   "sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\";";
 
 const CODEX_CLI_PATH_PRELUDE =
