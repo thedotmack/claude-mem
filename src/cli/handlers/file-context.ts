@@ -214,7 +214,12 @@ async function buildFileContextTimeline(input: NormalizedHookInput, filePath: st
 
   const context = getProjectContext(input.cwd);
   const cwd = input.cwd || process.cwd();
-  const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
+  // path.resolve normalizes dot-segments (`a/../b` -> `b`) for BOTH absolute and
+  // relative inputs, so `/p/src/../src/f.ts` and `/p/src/f.ts` collapse to one
+  // canonical dedupe key instead of two. It ignores `cwd` when `filePath` is
+  // already absolute, so absolute inputs are still honored verbatim (minus the
+  // redundant `.`/`..` segments).
+  const absolutePath = path.resolve(cwd, filePath);
   const relativePath = path.relative(cwd, absolutePath).split(path.sep).join("/");
 
   // #2691 — PostToolUse stores whatever path form the observer recorded

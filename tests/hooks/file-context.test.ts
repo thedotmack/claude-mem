@@ -436,4 +436,58 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
     expect(result.hookSpecificOutput).toBeUndefined();
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+
+  it('isolates sessions whose ids differ only in path-sanitized chars (#3486)', async () => {
+    const future = Date.now() + 60_000;
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(makeObservationsResponse([{ id: 1, created_at_epoch: future }]))
+    );
+
+    // "a.b" and "a:b" are DISTINCT sessions that both collapse to "a_b" under a
+    // naive char-replace scheme. The second session must still get its injection.
+    await fileContextHandler.execute({
+      sessionId: 'a.b',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+
+    const other = await fileContextHandler.execute({
+      sessionId: 'a:b',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+    expect(other.hookSpecificOutput?.additionalContext).toContain('prior observations');
+  });
+
+  it('dedupes dot-segment path aliases of the same file in a session (#3486)', async () => {
+    const future = Date.now() + 60_000;
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(makeObservationsResponse([{ id: 1, created_at_epoch: future }]))
+    );
+
+    const subDir = join(tmpDir, 'sub');
+    mkdirSync(subDir);
+    // Raw string keeps the `..` segment (path.join would collapse it) so the
+    // alias and the canonical path name the SAME file via different spellings.
+    const aliasPath = `${subDir}/../test.md`;
+
+    const first = await fileContextHandler.execute({
+      sessionId: 'sess-alias',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+    expect(first.hookSpecificOutput?.additionalContext).toContain('prior observations');
+
+    const second = await fileContextHandler.execute({
+      sessionId: 'sess-alias',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: aliasPath },
+    });
+    expect(second.continue).toBe(true);
+    expect(second.hookSpecificOutput).toBeUndefined();
+  });
 });

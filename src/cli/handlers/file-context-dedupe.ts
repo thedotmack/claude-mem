@@ -6,6 +6,7 @@
 // resolved file path to the newest observation epoch that was injected for it.
 // A repeated Read of the same unchanged file is skipped unless a NEWER
 // observation has been recorded since the last injection.
+import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { resolveDataDir } from '../../shared/paths.js';
@@ -19,9 +20,12 @@ const SESSION_FILE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 type SeenMap = Record<string, number>;
 
 function sessionFilePath(sessionId: string): string {
-  // Session ids are UUID-ish, but sanitize defensively against path traversal /
-  // separators so a hostile value can never escape the store directory.
-  const safeId = sessionId.replace(/[^A-Za-z0-9_-]/g, '_');
+  // Hash the COMPLETE session id: a char-replace scheme (e.g. `[^A-Za-z0-9_-] -> _`)
+  // is not injective, so distinct ids like `a.b` and `a:b` would collide on the
+  // same store file and cross-suppress each other's injection. A sha256 hex digest
+  // is collision-resistant, fixed-length, path-safe, and can never escape the store
+  // directory (no separators / traversal), regardless of how hostile the input is.
+  const safeId = createHash('sha256').update(sessionId).digest('hex');
   return join(resolveDataDir(), DEDUPE_SUBDIR, `${safeId}.json`);
 }
 
