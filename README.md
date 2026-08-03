@@ -242,7 +242,7 @@ Claude-Mem provides intelligent memory search through **4 MCP tools** following 
 
 1. **`search`** - Get compact index with IDs (~50-100 tokens/result)
 2. **`timeline`** - Get chronological context around interesting results
-3. **`get_observations`** - Fetch full details ONLY for filtered IDs (~500-1,000 tokens/result)
+3. **`get_observations`** - Fetch compact details ONLY for filtered IDs (useful content only; no raw storage JSON)
 
 **How It Works:**
 - Claude uses MCP tools to search your memory

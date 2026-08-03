@@ -36,9 +36,18 @@ describe('MCP tool inputSchema declarations', () => {
   it('get_observations still declares ids (regression check)', async () => {
     const src = await Bun.file(mcpServerPath).text();
 
-    const getObsSection = src.slice(src.indexOf("name: 'get_observations'"));
+    const getObsSection = src.slice(
+      src.indexOf("name: 'get_observations'"),
+      src.indexOf("name: 'session_start_context'"),
+    );
     expect(getObsSection).toContain("ids:");
+    expect(getObsSection).toContain("orderBy:");
+    expect(getObsSection).toContain("limit:");
+    expect(getObsSection).toContain("project:");
+    expect(getObsSection).toContain("platformSource:");
     expect(getObsSection).toContain("required:");
+    expect(getObsSection).toContain('formatJson: formatObservationDetails');
+    expect(getObsSection).not.toContain('JSON.stringify');
   });
 
   it('session_start_context exposes worker SessionStart renderer parameters', async () => {
