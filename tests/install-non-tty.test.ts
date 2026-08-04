@@ -288,9 +288,12 @@ describe('Install Non-TTY Support', () => {
         codexInstallerSource.indexOf('export async function installCodexCli'),
         codexInstallerSource.indexOf('export function uninstallCodexCli'),
       );
+      // Bounded by the plugin-list verification rather than the success banner:
+      // that verification legitimately returns 1, and this assertion is only
+      // about the two legacy-cleanup branches staying warn-only.
       const cleanupFailureRegion = installRegion.slice(
         installRegion.indexOf('if (!cleanupLegacyCodexAgentsMdContext())'),
-        installRegion.indexOf('Installation complete!'),
+        installRegion.indexOf('if (!verifyCodexPluginLoaded())'),
       );
       expect(cleanupFailureRegion).toContain('console.warn');
       expect(cleanupFailureRegion).not.toContain('return 1');

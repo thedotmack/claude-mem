@@ -565,7 +565,16 @@ function performCodexInstall(marketplaceRootOverride?: string): number {
     console.warn(`  Native Codex hooks registered, but failed to disable legacy transcript AGENTS.md context in ${CODEX_TRANSCRIPT_WATCH_CONFIG_PATH}.`);
   }
 
-  verifyCodexPluginLoaded();
+  if (!verifyCodexPluginLoaded()) {
+    console.error(`
+Installation failed: Codex does not list ${CODEX_PLUGIN_ID}.
+
+Codex will not load the plugin, so no memory context will be injected.
+Inspect the plugin and marketplace state with:
+  codex plugin list
+`);
+    return 1;
+  }
 
   console.log(`
 Installation complete!
@@ -589,23 +598,30 @@ For a fresh setup, the supported entry point is:
 /**
  * Surface a failed install instead of reporting success into a void: a plugin
  * that Codex cannot list will silently never inject context.
+ *
+ * Returns false only when Codex positively reported the plugin as absent — that
+ * is a real installation failure. An unusable `plugin list` (spawn error,
+ * non-zero exit) means the state is unknown, not broken; the install steps
+ * themselves succeeded, so that warns and continues rather than failing an
+ * otherwise-good install on an unrelated CLI hiccup.
  */
-function verifyCodexPluginLoaded(): void {
-  const result = codexSpawn(['plugin', 'list']);
+export function verifyCodexPluginLoaded(spawn: (args: string[]) => SpawnSyncReturns<string> = codexSpawn): boolean {
+  const result = spawn(['plugin', 'list']);
   const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`.trim();
 
   if (result.error || result.status !== 0) {
     console.warn('  Could not verify the Codex plugin list. Check with: codex plugin list');
     if (output) console.warn(`  ${output.split('\n')[0]}`);
-    return;
+    return true;
   }
 
   if (!output.includes(CODEX_PLUGIN_ID)) {
-    console.warn(`  Codex did not list ${CODEX_PLUGIN_ID} after install. Check with: codex plugin list`);
-    return;
+    console.error(`  Codex did not list ${CODEX_PLUGIN_ID} after install.`);
+    return false;
   }
 
   console.log(`  Verified Codex lists ${CODEX_PLUGIN_ID}.`);
+  return true;
 }
 
 export function uninstallCodexCli(): number {
