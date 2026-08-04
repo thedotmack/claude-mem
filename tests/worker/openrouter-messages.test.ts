@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, spyOn, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import { OpenRouterProvider } from '../../src/services/worker/OpenRouterProvider.js';
 import { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
@@ -53,6 +53,16 @@ describe('OpenRouterProvider conversation normalization', () => {
 });
 
 describe('OpenRouterProvider request guard', () => {
+  let originalFetch: typeof fetch;
+
+  beforeEach(() => {
+    originalFetch = global.fetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
   it('posts at least one message even when history is blank', async () => {
     spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
       ...SettingsDefaultsManager.getAllDefaults(),
