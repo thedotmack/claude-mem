@@ -150,4 +150,53 @@ describe('worker-unreachable fail-loud latch', () => {
     expect(new TextDecoder().decode(second.stderr)).not.toContain('claude-mem worker unreachable');
     expect(readState(dataDir)).toEqual({ consecutiveFailures: 2, lastFailureAt: 1 });
   });
+
+  it('waits through recovery lock contention so the next outage can escalate', async () => {
+    const dataDir = createStateDir({
+      consecutiveFailures: 2,
+      lastFailureAt: 1,
+      thresholdTripped: true,
+    });
+    const lockPath = join(dataDir, 'state', 'hook-failures.lock');
+    const readyPath = join(dataDir, 'reset-ready');
+    writeFileSync(lockPath, JSON.stringify({ pid: -1, token: 'test-barrier' }), 'utf-8');
+    const source = `
+      const { __resetWorkerFailureCounterForTesting } = await import(${JSON.stringify(WORKER_UTILS_URL)});
+      await Bun.write(${JSON.stringify(readyPath)}, 'ready');
+      await __resetWorkerFailureCounterForTesting();
+    `;
+    const recovery = Bun.spawn([process.execPath, '-e', source], {
+      cwd: REPO_ROOT,
+      env: {
+        ...process.env,
+        CLAUDE_MEM_DATA_DIR: dataDir,
+        CLAUDE_CONFIG_DIR: dataDir,
+        CLAUDE_MEM_TELEMETRY: '0',
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    const readyDeadline = Date.now() + 5_000;
+    while (!(await Bun.file(readyPath).exists()) && Date.now() <= readyDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(await Bun.file(readyPath).exists()).toBe(true);
+    await new Promise(resolve => setTimeout(resolve, 1_200));
+    unlinkSync(lockPath);
+
+    expect(await recovery.exited).toBe(0);
+    expect(readState(dataDir)).toEqual({
+      consecutiveFailures: 0,
+      lastFailureAt: 0,
+      thresholdTripped: false,
+    });
+
+    expect(recordFailure(dataDir, 2).exitCode).toBe(0);
+    const thresholdFailure = recordFailure(dataDir, 2);
+    expect(thresholdFailure.exitCode).toBe(2);
+    expect(new TextDecoder().decode(thresholdFailure.stderr)).toContain(
+      'claude-mem worker unreachable for 2 consecutive hooks.'
+    );
+  });
 });

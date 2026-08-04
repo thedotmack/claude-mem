@@ -631,6 +631,7 @@ const FAIL_LOUD_DEFAULT_THRESHOLD = 3;
 const HOOK_FAILURE_LOCK_WAIT_MS = 1_000;
 const HOOK_FAILURE_LOCK_RETRY_MS = 10;
 const HOOK_FAILURE_LOCK_STALE_MS = 5_000;
+const HOOK_FAILURE_RESET_LOCK_WAIT_MS = HOOK_FAILURE_LOCK_STALE_MS + HOOK_FAILURE_LOCK_WAIT_MS;
 
 function getStateDir(): string {
   return path.join(DATA_DIR, 'state');
@@ -644,12 +645,12 @@ function getHookFailuresLockPath(): string {
   return path.join(getStateDir(), 'hook-failures.lock');
 }
 
-async function acquireHookFailureLock(): Promise<string | null> {
+async function acquireHookFailureLock(waitMs = HOOK_FAILURE_LOCK_WAIT_MS): Promise<string | null> {
   const stateDir = getStateDir();
   const lockPath = getHookFailuresLockPath();
   const token = randomUUID();
   const payload = JSON.stringify({ pid: process.pid, token });
-  const deadline = Date.now() + HOOK_FAILURE_LOCK_WAIT_MS;
+  const deadline = Date.now() + waitMs;
 
   while (Date.now() <= deadline) {
     try {
@@ -698,7 +699,7 @@ async function acquireHookFailureLock(): Promise<string | null> {
 
   logger.warn('SYSTEM', 'Timed out waiting for hook-failure lock; skipping failure-state update', {
     lockPath,
-    waitMs: HOOK_FAILURE_LOCK_WAIT_MS,
+    waitMs,
   });
   return null;
 }
@@ -855,7 +856,10 @@ export async function recordWorkerUnreachable(): Promise<number> {
 }
 
 async function resetWorkerFailureCounter(): Promise<void> {
-  const lockToken = await acquireHookFailureLock();
+  // Recovery must outwait this lock's stale threshold. Returning after the
+  // shorter failure-path bound can leave thresholdTripped set and suppress
+  // the first escalation of the next outage.
+  const lockToken = await acquireHookFailureLock(HOOK_FAILURE_RESET_LOCK_WAIT_MS);
   if (lockToken === null) return;
   try {
     const state = readHookFailureState();
