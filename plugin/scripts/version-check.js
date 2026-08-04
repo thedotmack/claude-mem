@@ -144,7 +144,13 @@ if (!ROOT) process.exit(0);
 ensurePluginDependencies(ROOT);
 
 function emitUpgradeHint(message) {
-  if (process.env.CLAUDE_MEM_CODEX_HOOK === '1') {
+  // Plain-text mode: the Codex SessionStart hook captures this on stdout and
+  // forwards it to the context hook as CLAUDE_MEM_UPGRADE_NOTICE, so the notice
+  // and the memory injection share one JSON document instead of the version
+  // check suppressing the injection entirely.
+  if (process.env.CLAUDE_MEM_VERSION_CHECK_PLAIN === '1') {
+    console.log(message);
+  } else if (process.env.CLAUDE_MEM_CODEX_HOOK === '1') {
     console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',

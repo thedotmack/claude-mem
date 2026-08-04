@@ -67,9 +67,28 @@ function assertCodexMarketplaceRoot(root: string): string {
   return resolved;
 }
 
+/**
+ * The durable, claude-mem-owned marketplace location.
+ *
+ * Codex records the marketplace source as an absolute path in config.toml and
+ * re-reads it on every launch. Registering a transient directory (an npx cache
+ * entry, a git worktree, a temp clone) therefore breaks permanently the moment
+ * that directory goes away — and a dead source makes Codex refuse to load ANY
+ * marketplace, not just this one. Always prefer the stable path.
+ */
+export function stableMarketplaceRoot(): string {
+  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(homedir(), '.claude');
+  return path.join(configDir, 'plugins', 'marketplaces', 'thedotmack');
+}
+
 function resolvePluginMarketplaceRoot(preferredRoot?: string): string {
   if (preferredRoot) {
     return assertCodexMarketplaceRoot(preferredRoot);
+  }
+
+  const stableRoot = stableMarketplaceRoot();
+  if (missingMarketplaceFiles(stableRoot).length === 0) {
+    return path.resolve(stableRoot);
   }
 
   const candidates = [
@@ -81,7 +100,11 @@ function resolvePluginMarketplaceRoot(preferredRoot?: string): string {
 
   for (const candidate of candidates) {
     const resolved = findAncestorWithCodexMarketplace(candidate);
-    if (resolved && missingMarketplaceFiles(resolved).length === 0) return resolved;
+    if (resolved && missingMarketplaceFiles(resolved).length === 0) {
+      console.warn(`  Registering Codex marketplace from ${resolved} because ${stableRoot} is not populated.`);
+      console.warn('  If that directory is removed, re-run: npx claude-mem@latest install');
+      return resolved;
+    }
   }
 
   throw new Error('Could not locate a Codex marketplace root with .agents/plugins/marketplace.json and plugin/.codex-plugin/plugin.json. Run npx claude-mem@latest install from the package or repo root.');
@@ -167,7 +190,85 @@ function isMarketplaceDifferentSourceError(error: unknown): boolean {
     || message.includes(`marketplace \`${MARKETPLACE_NAME}\` is already added from a different source`);
 }
 
+/**
+ * Read a `[marketplaces.<name>]` entry out of Codex's config.toml.
+ *
+ * Returns null when the marketplace is not registered. `source` is null when
+ * the entry exists but declares no source.
+ */
+export function readRegisteredMarketplace(
+  content: string,
+  marketplaceName: string,
+): { source: string | null; sourceType: string | null } | null {
+  const lines = content.split('\n');
+  const headerIndex = lines.findIndex((line) => {
+    const trimmed = line.trim();
+    return trimmed === `[marketplaces.${marketplaceName}]`
+      || trimmed === `[marketplaces."${marketplaceName}"]`;
+  });
+  if (headerIndex === -1) return null;
+
+  let source: string | null = null;
+  let sourceType: string | null = null;
+  for (let index = headerIndex + 1; index < lines.length; index += 1) {
+    if (/^\s*\[/.test(lines[index])) break;
+    const sourceMatch = lines[index].match(/^\s*source\s*=\s*"(.*)"\s*$/);
+    if (sourceMatch) source = sourceMatch[1];
+    const typeMatch = lines[index].match(/^\s*source_type\s*=\s*"(.*)"\s*$/);
+    if (typeMatch) sourceType = typeMatch[1];
+  }
+  return { source, sourceType };
+}
+
+/**
+ * A registered local marketplace whose directory has been deleted or gutted.
+ *
+ * Only `local` sources are checked: git/npm sources are fetched into a cache,
+ * so their `source` is a URL that will never exist on disk and must not be
+ * mistaken for a broken path.
+ */
+export function isStaleLocalMarketplace(
+  entry: { source: string | null; sourceType: string | null } | null,
+  isUsableRoot: (root: string) => boolean,
+): boolean {
+  if (!entry?.source) return false;
+  if (entry.sourceType !== null && entry.sourceType !== 'local') return false;
+  return !isUsableRoot(entry.source);
+}
+
+function isUsableMarketplaceRoot(root: string): boolean {
+  return existsSync(root) && missingMarketplaceFiles(root).length === 0;
+}
+
+/**
+ * Codex refuses to load ANY marketplace while one registered source is
+ * unreadable — `codex plugin list` hard-errors and every plugin silently stops
+ * loading, claude-mem included. Drop a stale registration before re-adding so
+ * a moved or deleted checkout self-heals instead of wedging the whole CLI.
+ */
+function repairStaleMarketplaceRegistration(): void {
+  if (!existsSync(CODEX_CONFIG_PATH)) return;
+
+  let entry: ReturnType<typeof readRegisteredMarketplace>;
+  try {
+    entry = readRegisteredMarketplace(readFileSync(CODEX_CONFIG_PATH, 'utf-8'), MARKETPLACE_NAME);
+  } catch (error) {
+    logger.warn('WORKER', 'Could not read Codex config while checking for a stale marketplace', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+
+  if (!isStaleLocalMarketplace(entry, isUsableMarketplaceRoot)) return;
+
+  console.warn(`  Codex marketplace ${MARKETPLACE_NAME} points at ${entry?.source}, which is missing or incomplete.`);
+  console.warn('  Removing the stale registration so Codex can load plugins again.');
+  runCodex(['plugin', 'marketplace', 'remove', MARKETPLACE_NAME]);
+}
+
 function registerCodexMarketplace(marketplaceRoot: string): void {
+  repairStaleMarketplaceRegistration();
+
   try {
     runCodex(['plugin', 'marketplace', 'add', marketplaceRoot]);
     return;
@@ -464,6 +565,8 @@ function performCodexInstall(marketplaceRootOverride?: string): number {
     console.warn(`  Native Codex hooks registered, but failed to disable legacy transcript AGENTS.md context in ${CODEX_TRANSCRIPT_WATCH_CONFIG_PATH}.`);
   }
 
+  verifyCodexPluginLoaded();
+
   console.log(`
 Installation complete!
 
@@ -473,11 +576,36 @@ Plugin source:     ${marketplaceRoot}
 Next steps:
   1. Open Codex CLI in your project
   2. Restart any running Codex sessions so native hooks are loaded
+  3. Approve the claude-mem hooks when Codex prompts you to trust them.
+     Codex will not run them until you do, and memory context will be
+     missing from your sessions until then. Verify with: codex plugin list
 
 For a fresh setup, the supported entry point is:
   npx claude-mem@latest install
 `);
   return 0;
+}
+
+/**
+ * Surface a failed install instead of reporting success into a void: a plugin
+ * that Codex cannot list will silently never inject context.
+ */
+function verifyCodexPluginLoaded(): void {
+  const result = codexSpawn(['plugin', 'list']);
+  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`.trim();
+
+  if (result.error || result.status !== 0) {
+    console.warn('  Could not verify the Codex plugin list. Check with: codex plugin list');
+    if (output) console.warn(`  ${output.split('\n')[0]}`);
+    return;
+  }
+
+  if (!output.includes(CODEX_PLUGIN_ID)) {
+    console.warn(`  Codex did not list ${CODEX_PLUGIN_ID} after install. Check with: codex plugin list`);
+    return;
+  }
+
+  console.log(`  Verified Codex lists ${CODEX_PLUGIN_ID}.`);
 }
 
 export function uninstallCodexCli(): number {

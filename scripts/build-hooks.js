@@ -75,13 +75,17 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
     trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
     extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
   });
+  // version-check runs in plain-text mode and its message is handed to the
+  // context hook via CLAUDE_MEM_UPGRADE_NOTICE. Printing the version JSON and
+  // skipping the context hook (the previous behavior) meant a stale install
+  // marker silently replaced every session's memory injection with a one-line
+  // nag; Codex only accepts one JSON document, so the notice has to travel
+  // inside the context hook's payload rather than alongside it.
   const codexStartupHook = () => buildShellCommand({
     host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
     trailingCommand: [
-      '_V=$(CLAUDE_MEM_CODEX_HOOK=1 node "$_P/scripts/version-check.js" || true);',
-      'if [ -n "$_V" ]; then printf \'%s\\n\' "$_V"; else',
-      'CLAUDE_MEM_CODEX_HOOK=1', ...ccTrailing('hook', 'codex', 'context'),
-      '; fi',
+      '_V=$(CLAUDE_MEM_VERSION_CHECK_PLAIN=1 node "$_P/scripts/version-check.js" || true);',
+      'CLAUDE_MEM_CODEX_HOOK=1 CLAUDE_MEM_UPGRADE_NOTICE="$_V"', ...ccTrailing('hook', 'codex', 'context'),
     ],
     notFoundMessage: 'claude-mem: plugin scripts not found',
   });

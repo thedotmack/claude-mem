@@ -108,6 +108,30 @@ describe('Plugin Distribution - Codex Marketplace', () => {
     expect(Object.keys(codexHooks).sort()).toEqual(['hooks']);
   });
 
+  it('fires SessionStart on compact so a compacted Codex session keeps its memory', () => {
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    expect(codexHooks.hooks.SessionStart[0].matcher.split('|')).toContain('compact');
+  });
+
+  it('always reaches the context hook after the version check', () => {
+    // The startup hook used to print the version-check output and exit, so a
+    // stale install marker replaced the whole memory injection with a nag.
+    // Both the POSIX and Windows variants must still invoke `hook codex context`.
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    const entry = codexHooks.hooks.SessionStart[0].hooks[0];
+
+    for (const variant of [entry.command, entry.commandWindows]) {
+      expect(variant).toContain('version-check.js');
+      expect(variant).toContain('CLAUDE_MEM_VERSION_CHECK_PLAIN');
+      expect(variant).toContain('CLAUDE_MEM_UPGRADE_NOTICE');
+      expect(variant).toContain('codex');
+      expect(variant).toContain('context');
+    }
+    // The POSIX branch must not short-circuit around the context invocation.
+    expect(entry.command).not.toContain('if [ -n "$_V" ]');
+    expect(entry.commandWindows).not.toContain('process.exit(0)}const workerArgs');
+  });
+
   it('sets the Codex hook marker on every Codex command', () => {
     for (const command of commandHooksFrom('plugin/hooks/codex-hooks.json')) {
       expect(command).toContain('CLAUDE_MEM_CODEX_HOOK=1');
@@ -337,13 +361,14 @@ const codexHook = (tail: string[]) => buildShellCommand({
   trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
   extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
 });
+// version-check runs in plain-text mode and its message rides along to the
+// context hook in CLAUDE_MEM_UPGRADE_NOTICE, so a stale install marker no
+// longer replaces the session's memory injection with a one-line nag.
 const codexStartupHook = () => buildShellCommand({
   host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
   trailingCommand: [
-    '_V=$(CLAUDE_MEM_CODEX_HOOK=1 node "$_P/scripts/version-check.js" || true);',
-    'if [ -n "$_V" ]; then printf \'%s\\n\' "$_V"; else',
-    'CLAUDE_MEM_CODEX_HOOK=1', ...ccTrailing('hook', 'codex', 'context'),
-    '; fi',
+    '_V=$(CLAUDE_MEM_VERSION_CHECK_PLAIN=1 node "$_P/scripts/version-check.js" || true);',
+    'CLAUDE_MEM_CODEX_HOOK=1 CLAUDE_MEM_UPGRADE_NOTICE="$_V"', ...ccTrailing('hook', 'codex', 'context'),
   ],
   notFoundMessage: 'claude-mem: plugin scripts not found',
 });
