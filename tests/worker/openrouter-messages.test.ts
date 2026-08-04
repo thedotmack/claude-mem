@@ -14,15 +14,20 @@ class TestOpenRouterProvider extends OpenRouterProvider {
 
 describe('OpenRouterProvider conversation normalization', () => {
   let provider: TestOpenRouterProvider;
+  let settingsSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
-    spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+    settingsSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
       ...SettingsDefaultsManager.getAllDefaults(),
       CLAUDE_MEM_OPENROUTER_API_KEY: 'test-api-key',
       CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',
     }));
 
     provider = new TestOpenRouterProvider({} as DatabaseManager, {} as SessionManager);
+  });
+
+  afterEach(() => {
+    settingsSpy.mockRestore();
   });
 
   it('drops empty history entries instead of sending an empty messages array', () => {
@@ -54,6 +59,7 @@ describe('OpenRouterProvider conversation normalization', () => {
 
 describe('OpenRouterProvider request guard', () => {
   let originalFetch: typeof fetch;
+  let settingsSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
     originalFetch = global.fetch;
@@ -61,10 +67,11 @@ describe('OpenRouterProvider request guard', () => {
 
   afterEach(() => {
     global.fetch = originalFetch;
+    settingsSpy?.mockRestore();
   });
 
   it('posts at least one message even when history is blank', async () => {
-    spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+    settingsSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
       ...SettingsDefaultsManager.getAllDefaults(),
       CLAUDE_MEM_OPENROUTER_API_KEY: 'test-api-key',
       CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',
