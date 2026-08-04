@@ -74,7 +74,8 @@ describe('#2292 — fail-loud diagnostic is no longer swallowed', () => {
     expect(implementation).toContain('const lockToken = await acquireHookFailureLock()');
     expect(implementation).toContain('next.consecutiveFailures >= threshold && !next.thresholdTripped');
     expect(implementation).not.toContain('next.consecutiveFailures === threshold');
-    expect(implementation.indexOf('writeHookFailureStateAtomic(next)'))
+    expect(implementation).toContain('shouldEscalate = shouldEscalate && statePersisted');
+    expect(implementation.indexOf('const statePersisted = writeHookFailureStateAtomic(next)'))
       .toBeLessThan(implementation.indexOf("await captureCliEvent('hook_failed'"));
     expect(implementation.indexOf('releaseHookFailureLock(lockToken)'))
       .toBeLessThan(implementation.indexOf("await captureCliEvent('hook_failed'"));

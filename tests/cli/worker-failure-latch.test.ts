@@ -135,4 +135,19 @@ describe('worker-unreachable fail-loud latch', () => {
     expect(state.consecutiveFailures).toBeGreaterThanOrEqual(3);
     expect(state.consecutiveFailures).toBeLessThanOrEqual(8);
   });
+
+  it('degrades without blocking when the latch cannot be persisted', () => {
+    const dataDir = createStateDir({ consecutiveFailures: 2, lastFailureAt: 1 });
+    const statePath = join(dataDir, 'state', 'hook-failures.json');
+    mkdirSync(`${statePath}.tmp`);
+
+    const first = recordFailure(dataDir, 3);
+    const second = recordFailure(dataDir, 3);
+
+    expect(first.exitCode).toBe(0);
+    expect(second.exitCode).toBe(0);
+    expect(new TextDecoder().decode(first.stderr)).not.toContain('claude-mem worker unreachable');
+    expect(new TextDecoder().decode(second.stderr)).not.toContain('claude-mem worker unreachable');
+    expect(readState(dataDir)).toEqual({ consecutiveFailures: 2, lastFailureAt: 1 });
+  });
 });

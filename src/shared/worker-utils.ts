@@ -743,7 +743,7 @@ function readHookFailureState(): HookFailureState {
   }
 }
 
-function writeHookFailureStateAtomic(state: HookFailureState): void {
+function writeHookFailureStateAtomic(state: HookFailureState): boolean {
   const stateDir = getStateDir();
   const dest = getHookFailuresPath();
   const tmp = `${dest}.tmp`;
@@ -753,10 +753,12 @@ function writeHookFailureStateAtomic(state: HookFailureState): void {
     }
     writeFileSync(tmp, JSON.stringify(state), 'utf-8');
     renameSync(tmp, dest);
+    return true;
   } catch (error: unknown) {
     logger.debug('SYSTEM', 'Failed to persist hook-failure counter', {
       error: error instanceof Error ? error.message : String(error),
     });
+    return false;
   }
 }
 
@@ -818,7 +820,8 @@ export async function recordWorkerUnreachable(): Promise<number> {
     const threshold = getFailLoudThreshold();
     shouldEscalate = next.consecutiveFailures >= threshold && !next.thresholdTripped;
     if (shouldEscalate) next.thresholdTripped = true;
-    writeHookFailureStateAtomic(next);
+    const statePersisted = writeHookFailureStateAtomic(next);
+    shouldEscalate = shouldEscalate && statePersisted;
   } finally {
     releaseHookFailureLock(lockToken);
   }
