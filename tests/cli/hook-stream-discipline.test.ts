@@ -65,14 +65,16 @@ describe('#2292 — fail-loud diagnostic is no longer swallowed', () => {
     expect(src).not.toMatch(/process\.stderr\.write\(\s*\n\s*`claude-mem worker unreachable/);
   });
 
-  it('blocks only when the failure streak first reaches the threshold', () => {
+  it('persists a one-time latch before blocking at or beyond the threshold', () => {
     const src = readFileSync(join(REPO_ROOT, 'src', 'shared', 'worker-utils.ts'), 'utf-8');
     const start = src.indexOf('export async function recordWorkerUnreachable');
     const end = src.indexOf('function resetWorkerFailureCounter', start);
     const implementation = src.slice(start, end);
 
-    expect(implementation).toContain('if (next.consecutiveFailures === threshold)');
-    expect(implementation).not.toContain('next.consecutiveFailures >= threshold');
+    expect(implementation).toContain('next.consecutiveFailures >= threshold && !next.thresholdTripped');
+    expect(implementation).not.toContain('next.consecutiveFailures === threshold');
+    expect(implementation.indexOf('writeHookFailureStateAtomic({ ...next, thresholdTripped: true })'))
+      .toBeLessThan(implementation.indexOf("await captureCliEvent('hook_failed'"));
   });
 });
 

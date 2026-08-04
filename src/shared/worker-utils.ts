@@ -623,6 +623,7 @@ export async function ensureWorkerAliveOnce(): Promise<boolean> {
 interface HookFailureState {
   consecutiveFailures: number;
   lastFailureAt: number;
+  thresholdTripped: boolean;
 }
 
 const FAIL_LOUD_DEFAULT_THRESHOLD = 3;
@@ -644,6 +645,10 @@ function parseHookFailureState(raw: string): HookFailureState {
     lastFailureAt: typeof parsed.lastFailureAt === 'number' && Number.isFinite(parsed.lastFailureAt)
       ? parsed.lastFailureAt
       : 0,
+    // Backward-compatible migration: state files written before this field
+    // existed must still escalate once if their count already exceeds a
+    // subsequently lowered threshold.
+    thresholdTripped: parsed.thresholdTripped === true,
   };
 }
 
@@ -655,7 +660,7 @@ function readHookFailureState(): HookFailureState {
     // absent (ENOENT) on every hook run until the first worker failure, so
     // logging here would fire on effectively every healthy invocation; the
     // recovery is the zeroed default state below.
-    return { consecutiveFailures: 0, lastFailureAt: 0 };
+    return { consecutiveFailures: 0, lastFailureAt: 0, thresholdTripped: false };
   }
 }
 
@@ -721,14 +726,18 @@ export async function recordWorkerUnreachable(): Promise<number> {
   const next: HookFailureState = {
     consecutiveFailures: state.consecutiveFailures + 1,
     lastFailureAt: Date.now(),
+    thresholdTripped: state.thresholdTripped,
   };
   writeHookFailureStateAtomic(next);
 
   const threshold = getFailLoudThreshold();
-  if (next.consecutiveFailures === threshold) {
+  if (next.consecutiveFailures >= threshold && !next.thresholdTripped) {
     // hook_failed distress signal. Gated to the failure that JUST reached the
-    // threshold (`===`, not `>=`) so one worker outage cannot permanently
-    // block every later prompt. MUST be awaited BEFORE emitBlockingError — it calls
+    // threshold, or the first failure after a configuration change lowered it.
+    // Persist the latch before telemetry or exit so one worker outage cannot
+    // permanently block every later prompt.
+    writeHookFailureStateAtomic({ ...next, thresholdTripped: true });
+    // MUST be awaited BEFORE emitBlockingError — it calls
     // process.exit(2) immediately, which would kill a fire-and-forget POST
     // mid-flight. captureCliEvent never throws and is hard-capped at 2s, so
     // this cannot hang the fail-loud path. Closed-enum/count props only —
@@ -753,8 +762,12 @@ export async function recordWorkerUnreachable(): Promise<number> {
 
 function resetWorkerFailureCounter(): void {
   const state = readHookFailureState();
-  if (state.consecutiveFailures === 0) return;
-  writeHookFailureStateAtomic({ consecutiveFailures: 0, lastFailureAt: 0 });
+  if (state.consecutiveFailures === 0 && !state.thresholdTripped) return;
+  writeHookFailureStateAtomic({ consecutiveFailures: 0, lastFailureAt: 0, thresholdTripped: false });
+}
+
+export function __resetWorkerFailureCounterForTesting(): void {
+  resetWorkerFailureCounter();
 }
 
 const WORKER_FALLBACK_BRAND: unique symbol = Symbol.for('claude-mem/worker-fallback');
