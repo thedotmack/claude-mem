@@ -279,9 +279,13 @@ export function buildCodexWindowsCommand(
   ];
 
   if (options.startupVersionCheck) {
+    // Mirrors the POSIX branch: run version-check in plain-text mode and hand
+    // the message to the context hook via CLAUDE_MEM_UPGRADE_NOTICE. Printing
+    // it and exiting (the previous behavior) suppressed the memory injection
+    // entirely whenever the install marker was stale.
     parts.push(
-      "const v=c.spawnSync(process.execPath,[p.join(R,'scripts','version-check.js')],{encoding:'utf8',env});",
-      "if(v.stdout&&v.stdout.trim()){process.stdout.write(v.stdout);if(!v.stdout.endsWith('\\n'))process.stdout.write('\\n');process.exit(0)}",
+      "const v=c.spawnSync(process.execPath,[p.join(R,'scripts','version-check.js')],{encoding:'utf8',env:{...env,CLAUDE_MEM_VERSION_CHECK_PLAIN:'1'}});",
+      "if(v.stdout&&v.stdout.trim()){env.CLAUDE_MEM_UPGRADE_NOTICE=v.stdout.trim()}",
     );
   }
 

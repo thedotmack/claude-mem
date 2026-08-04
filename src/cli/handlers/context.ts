@@ -35,7 +35,15 @@ async function requestSessionStartContext(args: {
     });
     return null;
   }
-  return result.text.trim();
+  // An empty body is a miss, not a successful fetch. Returning '' here would be
+  // treated as context by the caller and suppress the HTTP fallback, so a
+  // half-working MCP server silently left Codex with no memory at all.
+  const text = result.text.trim();
+  if (!text) {
+    logger.warn('HOOK', 'MCP session_start_context returned empty context; falling back to worker HTTP');
+    return null;
+  }
+  return text;
 }
 
 async function fetchSessionStartContextViaMcp(args: {
@@ -53,9 +61,28 @@ async function fetchSessionStartContextViaMcp(args: {
   }
 }
 
+/**
+ * Upgrade notice handed over by the Codex SessionStart hook.
+ *
+ * That hook runs version-check.js first. It used to print the version message
+ * *instead of* invoking this handler, so a stale install marker silently
+ * replaced the entire memory injection with a one-line nag. The hook now always
+ * runs the context handler and passes the message through this variable so both
+ * survive in the single JSON document Codex accepts.
+ */
+function readUpgradeNotice(): string {
+  return (process.env.CLAUDE_MEM_UPGRADE_NOTICE ?? '').trim();
+}
+
+function withUpgradeNotice(additionalContext: string, notice: string): string {
+  if (!notice) return additionalContext;
+  return additionalContext ? `${notice}\n\n${additionalContext}` : notice;
+}
+
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     const cwd = input.cwd ?? process.cwd();
+    const upgradeNotice = readUpgradeNotice();
 
     // Honor CLAUDE_MEM_EXCLUDED_PROJECTS on the inject/read path too. The
     // write path (ingestObservation) already skips excluded projects, but the
@@ -90,7 +117,10 @@ export const contextHandler: EventHandler = {
     const colorApiPath = input.platform === 'claude-code' ? `${apiPath}&colors=true` : apiPath;
 
     const emptyResult: HookResult = {
-      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext: withUpgradeNotice('', upgradeNotice),
+      },
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
 
@@ -165,7 +195,7 @@ export const contextHandler: EventHandler = {
     return {
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
-        additionalContext
+        additionalContext: withUpgradeNotice(additionalContext, upgradeNotice)
       },
       systemMessage
     };
