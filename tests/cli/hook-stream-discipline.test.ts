@@ -64,6 +64,16 @@ describe('#2292 — fail-loud diagnostic is no longer swallowed', () => {
     expect(src).toContain('emitBlockingError(');
     expect(src).not.toMatch(/process\.stderr\.write\(\s*\n\s*`claude-mem worker unreachable/);
   });
+
+  it('blocks only when the failure streak first reaches the threshold', () => {
+    const src = readFileSync(join(REPO_ROOT, 'src', 'shared', 'worker-utils.ts'), 'utf-8');
+    const start = src.indexOf('export async function recordWorkerUnreachable');
+    const end = src.indexOf('function resetWorkerFailureCounter', start);
+    const implementation = src.slice(start, end);
+
+    expect(implementation).toContain('if (next.consecutiveFailures === threshold)');
+    expect(implementation).not.toContain('next.consecutiveFailures >= threshold');
+  });
 });
 
 describe('worker-unavailable transient path stays quiet (exit 0)', () => {
