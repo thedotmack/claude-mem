@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { pathToFileURL } from 'url';
@@ -47,7 +47,7 @@ function recordFailure(dataDir: string, threshold: number): ReturnType<typeof Bu
 function resetFailureState(dataDir: string): ReturnType<typeof Bun.spawnSync> {
   const source = `
     const { __resetWorkerFailureCounterForTesting } = await import(${JSON.stringify(WORKER_UTILS_URL)});
-    __resetWorkerFailureCounterForTesting();
+    await __resetWorkerFailureCounterForTesting();
   `;
   return Bun.spawnSync([process.execPath, '-e', source], {
     cwd: REPO_ROOT,
@@ -97,5 +97,42 @@ describe('worker-unreachable fail-loud latch', () => {
       lastFailureAt: 0,
       thresholdTripped: false,
     });
+  });
+
+  it('allows only one concurrent process to claim the latch', async () => {
+    const dataDir = createStateDir({ consecutiveFailures: 2, lastFailureAt: 1 });
+    const lockPath = join(dataDir, 'state', 'hook-failures.lock');
+    writeFileSync(lockPath, JSON.stringify({ pid: -1, token: 'test-barrier' }), 'utf-8');
+    const source = `
+      const { recordWorkerUnreachable } = await import(${JSON.stringify(WORKER_UTILS_URL)});
+      await recordWorkerUnreachable();
+    `;
+    const options = {
+      cwd: REPO_ROOT,
+      env: {
+        ...process.env,
+        CLAUDE_MEM_DATA_DIR: dataDir,
+        CLAUDE_CONFIG_DIR: dataDir,
+        CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '3',
+        CLAUDE_MEM_TELEMETRY: '0',
+      },
+      stdout: 'pipe' as const,
+      stderr: 'pipe' as const,
+    };
+
+    const workers = Array.from({ length: 6 }, () => Bun.spawn([process.execPath, '-e', source], options));
+    await new Promise(resolve => setTimeout(resolve, 200));
+    unlinkSync(lockPath);
+
+    const exits = await Promise.all(workers.map(worker => worker.exited));
+    const errors = await Promise.all(workers.map(worker => new Response(worker.stderr).text()));
+
+    expect(exits.filter(exit => exit === 2)).toHaveLength(1);
+    expect(exits.filter(exit => exit === 0)).toHaveLength(5);
+    expect(errors.join('').match(/claude-mem worker unreachable/g)?.length).toBe(1);
+    const state = readState(dataDir);
+    expect(state.thresholdTripped).toBe(true);
+    expect(state.consecutiveFailures).toBeGreaterThanOrEqual(3);
+    expect(state.consecutiveFailures).toBeLessThanOrEqual(8);
   });
 });

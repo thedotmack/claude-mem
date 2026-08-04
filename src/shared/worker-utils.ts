@@ -1,5 +1,6 @@
 import path from "path";
-import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, statSync } from "fs";
+import { randomUUID } from "crypto";
+import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, statSync, unlinkSync } from "fs";
 import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
@@ -627,6 +628,9 @@ interface HookFailureState {
 }
 
 const FAIL_LOUD_DEFAULT_THRESHOLD = 3;
+const HOOK_FAILURE_LOCK_WAIT_MS = 1_000;
+const HOOK_FAILURE_LOCK_RETRY_MS = 10;
+const HOOK_FAILURE_LOCK_STALE_MS = 5_000;
 
 function getStateDir(): string {
   return path.join(DATA_DIR, 'state');
@@ -634,6 +638,81 @@ function getStateDir(): string {
 
 function getHookFailuresPath(): string {
   return path.join(getStateDir(), 'hook-failures.json');
+}
+
+function getHookFailuresLockPath(): string {
+  return path.join(getStateDir(), 'hook-failures.lock');
+}
+
+async function acquireHookFailureLock(): Promise<string | null> {
+  const stateDir = getStateDir();
+  const lockPath = getHookFailuresLockPath();
+  const token = randomUUID();
+  const payload = JSON.stringify({ pid: process.pid, token });
+  const deadline = Date.now() + HOOK_FAILURE_LOCK_WAIT_MS;
+
+  while (Date.now() <= deadline) {
+    try {
+      mkdirSync(stateDir, { recursive: true });
+      writeFileSync(lockPath, payload, { flag: 'wx' });
+      return token;
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'EEXIST') {
+        logger.warn('SYSTEM', 'Hook-failure lock unavailable; skipping failure-state update', {
+          lockPath,
+          code,
+        }, err);
+        return null;
+      }
+
+      let mtimeMs: number;
+      try {
+        mtimeMs = statSync(lockPath).mtimeMs;
+      } catch {
+        continue;
+      }
+
+      if (Date.now() - mtimeMs > HOOK_FAILURE_LOCK_STALE_MS) {
+        let recheckedMtimeMs: number;
+        try {
+          recheckedMtimeMs = statSync(lockPath).mtimeMs;
+        } catch {
+          continue;
+        }
+        if (recheckedMtimeMs === mtimeMs) {
+          try {
+            unlinkSync(lockPath);
+            continue;
+          } catch {
+            // Another stale-lock breaker won, or the filesystem refused the
+            // removal. Retry within the bounded wait instead of failing loud.
+          }
+        }
+      }
+
+      await new Promise(resolve => setTimeout(resolve, HOOK_FAILURE_LOCK_RETRY_MS));
+    }
+  }
+
+  logger.warn('SYSTEM', 'Timed out waiting for hook-failure lock; skipping failure-state update', {
+    lockPath,
+    waitMs: HOOK_FAILURE_LOCK_WAIT_MS,
+  });
+  return null;
+}
+
+function releaseHookFailureLock(token: string): void {
+  const lockPath = getHookFailuresLockPath();
+  try {
+    const lock = JSON.parse(readFileSync(lockPath, 'utf-8')) as { token?: unknown };
+    if (lock.token !== token) return;
+    unlinkSync(lockPath);
+  } catch {
+    // Missing, unreadable, or foreign lock: never remove a lock this process
+    // cannot prove it owns. Stale locks self-heal during acquisition.
+  }
 }
 
 function parseHookFailureState(raw: string): HookFailureState {
@@ -722,21 +801,33 @@ export function getActiveHookType(): TelemetryHookType | null {
 }
 
 export async function recordWorkerUnreachable(): Promise<number> {
-  const state = readHookFailureState();
-  const next: HookFailureState = {
-    consecutiveFailures: state.consecutiveFailures + 1,
-    lastFailureAt: Date.now(),
-    thresholdTripped: state.thresholdTripped,
-  };
-  writeHookFailureStateAtomic(next);
+  const lockToken = await acquireHookFailureLock();
+  if (lockToken === null) {
+    return readHookFailureState().consecutiveFailures;
+  }
 
-  const threshold = getFailLoudThreshold();
-  if (next.consecutiveFailures >= threshold && !next.thresholdTripped) {
-    // hook_failed distress signal. Gated to the failure that JUST reached the
-    // threshold, or the first failure after a configuration change lowered it.
-    // Persist the latch before telemetry or exit so one worker outage cannot
-    // permanently block every later prompt.
-    writeHookFailureStateAtomic({ ...next, thresholdTripped: true });
+  let next: HookFailureState;
+  let shouldEscalate = false;
+  try {
+    const state = readHookFailureState();
+    next = {
+      consecutiveFailures: state.consecutiveFailures + 1,
+      lastFailureAt: Date.now(),
+      thresholdTripped: state.thresholdTripped,
+    };
+    const threshold = getFailLoudThreshold();
+    shouldEscalate = next.consecutiveFailures >= threshold && !next.thresholdTripped;
+    if (shouldEscalate) next.thresholdTripped = true;
+    writeHookFailureStateAtomic(next);
+  } finally {
+    releaseHookFailureLock(lockToken);
+  }
+
+  if (shouldEscalate) {
+    // hook_failed distress signal. The inter-process lock above makes the
+    // read/check/latch/write transition exclusive, and the latched state is
+    // durable before telemetry or exit. The lock is deliberately released
+    // before either side effect.
     // MUST be awaited BEFORE emitBlockingError — it calls
     // process.exit(2) immediately, which would kill a fire-and-forget POST
     // mid-flight. captureCliEvent never throws and is hard-capped at 2s, so
@@ -760,14 +851,20 @@ export async function recordWorkerUnreachable(): Promise<number> {
   return next.consecutiveFailures;
 }
 
-function resetWorkerFailureCounter(): void {
-  const state = readHookFailureState();
-  if (state.consecutiveFailures === 0 && !state.thresholdTripped) return;
-  writeHookFailureStateAtomic({ consecutiveFailures: 0, lastFailureAt: 0, thresholdTripped: false });
+async function resetWorkerFailureCounter(): Promise<void> {
+  const lockToken = await acquireHookFailureLock();
+  if (lockToken === null) return;
+  try {
+    const state = readHookFailureState();
+    if (state.consecutiveFailures === 0 && !state.thresholdTripped) return;
+    writeHookFailureStateAtomic({ consecutiveFailures: 0, lastFailureAt: 0, thresholdTripped: false });
+  } finally {
+    releaseHookFailureLock(lockToken);
+  }
 }
 
-export function __resetWorkerFailureCounterForTesting(): void {
-  resetWorkerFailureCounter();
+export async function __resetWorkerFailureCounterForTesting(): Promise<void> {
+  await resetWorkerFailureCounter();
 }
 
 const WORKER_FALLBACK_BRAND: unique symbol = Symbol.for('claude-mem/worker-fallback');
@@ -812,7 +909,7 @@ export async function executeWithWorkerFallback<T = unknown>(
   const response = await workerHttpRequest(url, init);
   if (!response.ok) {
     const text = await response.text().catch(() => '');
-    resetWorkerFailureCounter();
+    await resetWorkerFailureCounter();
     if (response.status === 429 || response.status >= 500) {
       logger.warn('SYSTEM', `Worker API ${method} ${url} returned ${response.status}; skipping hook API call`, {
         body: text.substring(0, 200),
@@ -829,7 +926,7 @@ export async function executeWithWorkerFallback<T = unknown>(
     return parsed as T;
   }
 
-  resetWorkerFailureCounter();
+  await resetWorkerFailureCounter();
   const text = await response.text();
   if (text.length === 0) return undefined as unknown as T;
   try {
