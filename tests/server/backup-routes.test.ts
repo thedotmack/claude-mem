@@ -66,3 +66,86 @@ describe('BackupRoutes export', () => {
     expect(zip.getEntry('claude-mem.db')!.getData().toString()).toBe('fake-db-content');
   });
 });
+
+describe('BackupRoutes import', () => {
+  let server: InstanceType<typeof Server> | null = null;
+
+  afterEach(async () => {
+    if (server?.getHttpServer()) {
+      try { await server.close(); } catch { /* ignore */ }
+    }
+    server = null;
+  });
+
+  async function startServer(restartWorker: () => Promise<void>) {
+    const { Server } = await import('../../src/services/server/Server.js');
+    server = new Server(baseOptions());
+    server.registerRoutes(new BackupRoutes(restartWorker));
+    server.finalizeRoutes();
+    const port = 44000 + Math.floor(Math.random() * 9000);
+    await server.listen(port, '127.0.0.1');
+    return port;
+  }
+
+  it('rejects a malformed zip with 400 and does not touch disk', async () => {
+    mkdirSync(paths.dataDir(), { recursive: true });
+    const port = await startServer(() => Promise.resolve());
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/backup/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip' },
+      body: Buffer.from('this is not a zip file'),
+    });
+
+    expect(res.status).toBe(400);
+    expect(existsSync(path.join(paths.dataDir(), 'claude-mem.db.importing'))).toBe(false);
+  });
+
+  it('rejects a valid zip with zero recognized entries', async () => {
+    mkdirSync(paths.dataDir(), { recursive: true });
+    const port = await startServer(() => Promise.resolve());
+
+    const zip = new AdmZip();
+    zip.addFile('unrelated-file.txt', Buffer.from('hello'));
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/backup/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip' },
+      body: zip.toBuffer(),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('stages allowlisted entries, backs up existing files, and triggers a restart', async () => {
+    mkdirSync(paths.dataDir(), { recursive: true });
+    writeFileSync(paths.database(), 'old-db');
+    writeFileSync(paths.settings(), '{"old":true}');
+
+    let restartCalled = false;
+    const port = await startServer(() => { restartCalled = true; return Promise.resolve(); });
+
+    const zip = new AdmZip();
+    zip.addFile('claude-mem.db', Buffer.from('new-db'));
+    zip.addFile('settings.json', Buffer.from('{"new":true}'));
+    // Zip-slip attempt: this entry's own path must be ignored — only its
+    // basename ("settings.json") is meaningful, and that basename is already
+    // present above, so this must not create anything outside DATA_DIR.
+    zip.addFile('../../evil.txt', Buffer.from('should never land on disk'));
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/backup/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip' },
+      body: zip.toBuffer(),
+    });
+
+    expect(res.status).toBe(200);
+    expect(restartCalled).toBe(true);
+    expect(existsSync(path.join(paths.dataDir(), 'claude-mem.db.importing'))).toBe(true);
+    expect(existsSync(path.join(paths.dataDir(), 'settings.json.importing'))).toBe(true);
+    expect(existsSync(path.join(paths.dataDir(), '..', 'evil.txt'))).toBe(false);
+
+    const backupDirs = require('fs').readdirSync(path.join(paths.dataDir(), 'backups'));
+    expect(backupDirs.some((d: string) => d.startsWith('backup-restore-'))).toBe(true);
+  });
+});

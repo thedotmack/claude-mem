@@ -1,10 +1,12 @@
 import express, { Request, Response } from 'express';
-import { existsSync, readFileSync } from 'fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
+import path from 'path';
 import AdmZip from 'adm-zip';
 import { paths } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import type { RouteHandler } from '../../../server/Server.js';
+import { stagePendingSwap } from '../../../infrastructure/PendingSwap.js';
 
 export const BACKUP_ALLOWLIST = [
   'claude-mem.db',
@@ -33,6 +35,11 @@ export class BackupRoutes extends BaseRouteHandler implements RouteHandler {
 
   setupRoutes(app: express.Application): void {
     app.get('/api/backup/export', this.handleExport.bind(this));
+    app.post(
+      '/api/backup/import',
+      express.raw({ type: 'application/zip', limit: '50mb' }),
+      this.handleImport.bind(this)
+    );
   }
 
   private handleExport = this.wrapHandler((_req: Request, res: Response): void => {
@@ -53,4 +60,56 @@ export class BackupRoutes extends BaseRouteHandler implements RouteHandler {
 
     logger.info('SYSTEM', 'Backup export downloaded', { filename });
   });
+
+  private handleImport = this.wrapHandler((req: Request, res: Response): void => {
+    let zip: AdmZip;
+    try {
+      zip = new AdmZip(req.body as Buffer);
+    } catch {
+      res.status(400).json({ error: 'not a valid zip file' });
+      return;
+    }
+
+    const matched = zip.getEntries().filter(entry =>
+      (BACKUP_ALLOWLIST as readonly string[]).includes(path.basename(entry.entryName))
+    );
+
+    if (matched.length === 0) {
+      res.status(400).json({ error: "zip doesn't contain a recognized claude-mem backup file" });
+      return;
+    }
+
+    this.backupExistingFiles(matched.map(e => path.basename(e.entryName)));
+
+    for (const entry of matched) {
+      const basename = path.basename(entry.entryName);
+      stagePendingSwap(basename, entry.getData());
+    }
+
+    logger.info('SYSTEM', 'Backup import staged, triggering restart', {
+      staged: matched.map(e => path.basename(e.entryName)),
+    });
+
+    res.json({ success: true, staged: matched.map(e => path.basename(e.entryName)) });
+
+    // Fire after the response is sent — the client should see success before
+    // the worker starts tearing itself down for the restart.
+    void this.restartWorker();
+  });
+
+  private backupExistingFiles(basenames: string[]): void {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupDir = path.join(paths.dataDir(), 'backups', `backup-restore-${timestamp}`);
+    let createdDir = false;
+
+    for (const basename of basenames) {
+      const sourcePath = pathForBasename(basename);
+      if (!existsSync(sourcePath)) continue;
+      if (!createdDir) {
+        mkdirSync(backupDir, { recursive: true });
+        createdDir = true;
+      }
+      copyFileSync(sourcePath, path.join(backupDir, basename));
+    }
+  }
 }
