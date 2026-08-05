@@ -31,6 +31,24 @@ Or via environment variable:
 export CLAUDE_MEM_MODE="code--fr"
 ```
 
+The active mode is shown in the startup context injected into each new session, for example:
+
+```text
+Mode: Code Development (code)
+```
+
+## Creating a Custom Mode
+
+Run `/mode-creator` to design a domain-specific note system through an interactive interview. It helps choose observation types and concept tags, writes and validates the mode, installs it under `~/.claude-mem/modes/`, activates it, optionally configures Telegram alerts, restarts the worker, and verifies the active mode in startup context.
+
+Custom modes in the data directory are durable across plugin upgrades. The worker searches user modes before bundled modes, while inherited custom modes can still use a bundled parent such as `code`:
+
+```text
+~/.claude-mem/modes/code--architecture-practice.json
+```
+
+Avoid editing files inside the plugin cache because a plugin update can replace them.
+
 ## Available Modes
 
 ### Code Mode (Default)

@@ -719,6 +719,9 @@ async function buildHooks() {
     ]);
     const requiredDistributionFiles = [
       'plugin/skills/mem-search/SKILL.md',
+      'plugin/skills/mode-creator/SKILL.md',
+      'plugin/skills/mode-creator/scripts/install-mode.mjs',
+      'plugin/skills/mode-creator/scripts/configure-telegram.mjs',
       'plugin/skills/smart-explore/SKILL.md',
       'plugin/skills/how-it-works/SKILL.md',
       'plugin/skills/how-it-works/onboarding-explainer.md',
