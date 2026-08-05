@@ -71,7 +71,10 @@ describe('createRecallMcpServer', () => {
       arguments: { projectId: 'p1', query: 'hello', limit: 9999 },
     });
     expect(calls.search[0]).toEqual({ projectId: 'p1', query: 'hello', limit: 100 });
-    expect(JSON.parse(textOf(res)).observations).toHaveLength(2);
+    expect(textOf(res)).toContain('# 2 observations');
+    expect(textOf(res)).toContain('## #o1');
+    expect(textOf(res)).toContain('alpha');
+    expect(textOf(res)).not.toContain('"observations"');
     await client.close();
   });
 
@@ -81,7 +84,7 @@ describe('createRecallMcpServer', () => {
     const res = await client.callTool({ name: 'context', arguments: { projectId: 'p1', query: 'hi' } });
     expect(calls.context).toHaveLength(1);
     expect(calls.search).toHaveLength(0);
-    expect(JSON.parse(textOf(res)).context).toBe('alpha\n\nbeta');
+    expect(textOf(res)).toBe('alpha\n\n---\n\nbeta');
     await client.close();
   });
 

@@ -90,8 +90,9 @@ get_observations(ids=[11131, 10942])
 - `orderBy` (string, optional) - "date_desc" (default), "date_asc"
 - `limit` (number, optional) - Max observations to return
 - `project` (string, optional) - Project name filter
+- `platformSource` (string, optional) - Platform filter such as "claude", "codex", or "cursor"
 
-**Returns:** Complete observation objects with title, subtitle, narrative, facts, concepts, files (~500-1000 tokens each)
+**Returns:** Compact Markdown with the useful observation content: ID, type, time, title, subtitle, narrative, facts, concepts, and files. Storage/sync metadata and duplicate legacy fields are omitted.
 
 ## Examples
 
@@ -122,10 +123,10 @@ get_observations(ids=[11131, 10942, 10855], orderBy="date_desc")
 ## Why This Workflow?
 
 - **Search index:** ~50-100 tokens per result
-- **Full observation:** ~500-1000 tokens each
+- **Observation details:** Content-sized compact Markdown with no raw JSON or storage metadata overhead
 - **Batch fetch:** 1 HTTP request vs N individual requests
 - **10x token savings** by filtering before fetching
 
 ## Knowledge Agents
 
-Want synthesized answers instead of raw records? Use `/knowledge-agent` to build a queryable corpus from your observation history. The knowledge agent reads all matching observations and answers questions conversationally.
+Want synthesized answers across many records? Use `/knowledge-agent` to build a queryable corpus from your observation history. The knowledge agent reads all matching observations and answers questions conversationally.

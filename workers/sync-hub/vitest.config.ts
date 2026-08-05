@@ -26,6 +26,12 @@
  *                    → 401 {error} JSON — the HEALTHY answer the
  *                      control-plane probe expects (src/control-plane-probe.ts)
  *
+ * The projector mock (projector.test) is additionally scripted by `user_id`;
+ * see the table inside mockOutbound. Two of those users exist purely to drive
+ * the lease-retention contract end-to-end through SELF:
+ *   ffffffff-… → always 502 (gateway ⇒ lease RETAINED ⇒ projection_busy)
+ *   eeeeeeee-… → always truncated 200 (terminal ⇒ lease RELEASED)
+ *
  * Phase 5 adds two more outbound targets, dispatched by hostname:
  *   - api.cloudflare.com/client/v4/graphql → mock GraphQL Analytics API,
  *     scripted by the `accountTag` variable in the request body (see
@@ -177,7 +183,12 @@ async function mockOutbound(request: Request): Promise<Response> {
 		}
 		const mode = url.searchParams.get("mode");
 		if (mode === "network") throw new Error("simulated projection network failure");
+		// Application statuses from Pro's own handler ⇒ the Hub RELEASES the lease.
 		if (mode === "retryable") return new Response("retry later", { status: 503 });
+		if (mode === "server-error") return new Response("handler exploded", { status: 500 });
+		// Gateway statuses ⇒ the handler never answered, so the Hub RETAINS it.
+		if (mode === "gateway-502") return new Response("bad gateway", { status: 502 });
+		if (mode === "gateway-504") return new Response("gateway timeout", { status: 504 });
 		if (mode === "truncated") return new Response('{"protocol_version":1', { status: 200 });
 		const body = await request.json() as { epoch?: unknown; through_seq?: unknown; user_id?: unknown };
 		if (mode === "mismatch") {
@@ -222,7 +233,19 @@ async function mockOutbound(request: Request): Promise<Response> {
 			&& !failedProjectorUsers.has(body.user_id)
 		) {
 			failedProjectorUsers.add(body.user_id);
-			return new Response("simulated first projection failure", { status: 503 });
+			// 502, not 503: only a GATEWAY status is ambiguous enough for the Hub
+			// to keep fencing, which is what this user's test exercises.
+			return new Response("simulated first projection failure", { status: 502 });
+		}
+		// Always-502: an AMBIGUOUS gateway failure, so the Hub keeps its fencing
+		// lease and the next push for this user is a real `projection_busy`.
+		if (body.user_id === "ffffffff-ffff-4fff-8fff-ffffffffffff") {
+			return new Response("projector gateway permanently unavailable", { status: 502 });
+		}
+		// Always-truncated 200: a TERMINAL, locally decided failure, so the Hub
+		// releases the lease and the very next push re-acquires it.
+		if (body.user_id === "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee") {
+			return new Response('{"protocol_version":1', { status: 200 });
 		}
 		return Response.json({
 			protocol_version: 1,

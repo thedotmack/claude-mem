@@ -38,6 +38,10 @@ import {
   type ServerRuntimeContext,
 } from '../services/hooks/runtime-selector.js';
 import { normalizePlatformSource } from '../shared/platform-source.js';
+import {
+  formatObservationContext,
+  formatObservationDetails,
+} from '../shared/observation-mcp-formatting.js';
 import { getAdvertisedMcpToolsForRuntime } from './mcp-tool-visibility.js';
 
 let mcpServerDirResolutionFailed = false;
@@ -71,7 +75,12 @@ function errorIfWorkerScriptMissing(): void {
 
 async function callWorker(
   endpoint: string,
-  opts: { query?: Record<string, any>; body?: Record<string, any>; text?: boolean } = {}
+  opts: {
+    query?: Record<string, any>;
+    body?: Record<string, any>;
+    text?: boolean;
+    formatJson?: (payload: unknown) => string;
+  } = {}
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint });
 
@@ -104,7 +113,9 @@ async function callWorker(
       return { content: [{ type: 'text' as const, text: await response.text() }] };
     }
     if (opts.body) {
-      return { content: [{ type: 'text' as const, text: JSON.stringify(await response.json(), null, 2) }] };
+      const payload = await response.json();
+      const text = opts.formatJson ? opts.formatJson(payload) : JSON.stringify(payload, null, 2);
+      return { content: [{ type: 'text' as const, text }] };
     }
     return await response.json() as { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
   } catch (error: unknown) {
@@ -196,6 +207,15 @@ function formatJsonResult(payload: unknown): { content: Array<{ type: 'text'; te
     content: [{
       type: 'text' as const,
       text: JSON.stringify(payload, null, 2),
+    }],
+  };
+}
+
+function formatTextResult(text: string): { content: Array<{ type: 'text'; text: string }> } {
+  return {
+    content: [{
+      type: 'text' as const,
+      text,
     }],
   };
 }
@@ -313,7 +333,7 @@ const handleObservationSearch = wrapHandler('observation_search', async (args: O
     ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
   };
   const response = await ctx.client.searchObservations(request);
-  return formatJsonResult(response);
+  return formatTextResult(formatObservationDetails(response));
 });
 
 interface ObservationContextArgs {
@@ -336,7 +356,7 @@ const handleObservationContext = wrapHandler('observation_context', async (args:
     ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
   };
   const response = await ctx.client.contextObservations(request);
-  return formatJsonResult(response);
+  return formatTextResult(response.context.trim() || formatObservationContext(response));
 });
 
 interface ObservationGenerationStatusArgs {
@@ -442,7 +462,7 @@ const tools = [
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
 3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
-NEVER fetch full details without filtering first. 10x token savings.`,
+NEVER fetch full details without filtering first. Detail output is compact Markdown with storage metadata omitted.`,
     inputSchema: {
       type: 'object',
       properties: {}
@@ -464,9 +484,9 @@ NEVER fetch full details without filtering first. 10x token savings.`,
 
 3. **Fetch** - Get full details ONLY for relevant IDs
    \`get_observations(ids=[...])\`  # ALWAYS batch for 2+ items
-   Returns: Complete details (~500-1000 tokens/result)
+   Returns: Compact details with no raw JSON or storage metadata
 
-**Why:** 10x token savings. Never fetch full details without filtering first.`
+**Why:** Progressive disclosure keeps recall focused. Never fetch full details without filtering first.`
       }]
     })
   },
@@ -516,7 +536,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
           query: args.query,
           ...(args.limit !== undefined ? { limit: args.limit } : {}),
         };
-        return formatJsonResult(await sb.client.searchObservations(request));
+        return formatTextResult(formatObservationDetails(await sb.client.searchObservations(request)));
       }
       return await callWorker('/api/search', { query: args });
     }
@@ -541,7 +561,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'get_observations',
-    description: 'Step 3: Fetch full details for filtered IDs. Params: ids (array of observation IDs, required), orderBy, limit, project',
+    description: 'Step 3: Fetch compact observation details for filtered IDs. Returns useful memory content as Markdown without raw storage metadata. Params: ids (array of observation IDs, required), orderBy, limit, project, platformSource',
     inputSchema: {
       type: 'object',
       properties: {
@@ -549,13 +569,31 @@ NEVER fetch full details without filtering first. 10x token savings.`,
           type: 'array',
           items: { type: 'number' },
           description: 'Array of observation IDs to fetch (required)'
-        }
+        },
+        orderBy: {
+          type: 'string',
+          enum: ['date_desc', 'date_asc'],
+          description: 'Sort order (default: date_desc)',
+        },
+        limit: {
+          type: 'number',
+          minimum: 1,
+          description: 'Maximum observations to return',
+        },
+        project: { type: 'string', description: 'Filter by project name' },
+        platformSource: {
+          type: 'string',
+          description: "Filter by platform source (e.g. claude, codex, cursor)",
+        },
       },
       required: ['ids'],
       additionalProperties: true
     },
     handler: async (args: any) => {
-      return await callWorker('/api/observations/batch', { body: args });
+      return await callWorker('/api/observations/batch', {
+        body: args,
+        formatJson: formatObservationDetails,
+      });
     }
   },
   {
@@ -622,7 +660,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'observation_search',
-    description: 'Full-text search across generated observations using the server\'s GIN tsvector index (Phase 1). Calls /v1/search. Server runtime only. Params: query (required), projectId (optional), platformSource, limit (default 20, max 100).',
+    description: 'Full-text search across generated observations using the server\'s GIN tsvector index. Returns compact Markdown without raw storage metadata. Server runtime only. Params: query (required), projectId (optional), platformSource, limit (default 20, max 100).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -638,7 +676,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'observation_context',
-    description: 'Get top-N relevant observations for context injection. Returns matched observations AND a pre-joined context string suitable for prompt injection. Calls /v1/context. Server runtime only.',
+    description: 'Get top-N relevant observations as pre-joined plain-text context suitable for prompt injection. Omits the duplicate raw observation records. Server runtime only.',
     inputSchema: {
       type: 'object',
       properties: {

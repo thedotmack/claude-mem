@@ -57,8 +57,8 @@ Fetch full details only for relevant observations:
 get_observations(ids=[123, 456, 789])
 ```
 
-**Returns:** Complete observation details (narrative, facts, files, concepts)
-**Cost:** ~500-1000 tokens per observation
+**Returns:** Compact Markdown containing narrative, facts, files, and concepts. Internal storage/sync fields and duplicate legacy text are omitted.
+**Cost:** Observation content plus small Markdown framing; no raw JSON metadata overhead
 **Purpose:** Deep dive on specific, validated items
 
 ### Why This Works
@@ -137,7 +137,7 @@ Fetch complete observation details by IDs. **Always batch multiple IDs in a sing
 - `limit` - Maximum observations to return
 - `project` - Filter by project name
 
-**Returns:** Complete observation details including narrative, facts, files, concepts
+**Returns:** Compact Markdown with narrative, facts, files, and concepts—never a raw database row.
 
 **Example:**
 ```
@@ -280,7 +280,7 @@ query='"user auth" AND (JWT OR session) NOT deprecated'
 |-----------|-------------------|
 | search (index) | 50-100 |
 | timeline (per observation) | 100-200 |
-| get_observations (full details) | 500-1,000 |
+| get_observations (compact details) | Content size + small Markdown framing |
 
 **Example Comparison:**
 

@@ -20,6 +20,10 @@ import {
   type CallToolResult,
   type Tool,
 } from '@modelcontextprotocol/sdk/types.js';
+import {
+  formatObservationContext,
+  formatObservationDetails,
+} from '../../shared/observation-mcp-formatting.js';
 import { logger } from '../../utils/logger.js';
 
 export interface RecallBackend {
@@ -40,7 +44,7 @@ const TOOLS: Tool[] = [
   {
     name: 'search',
     description:
-      'Full-text search your claude-mem memory for a project. Returns matching observations (most relevant first).',
+      'Full-text search your claude-mem memory for a project. Returns matching observations as compact Markdown (most relevant first).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -54,7 +58,7 @@ const TOOLS: Tool[] = [
   {
     name: 'context',
     description:
-      'Like search, but also returns a concatenated context string ready to inject into a prompt.',
+      'Return matching memory as plain-text context ready to inject into a prompt.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -67,7 +71,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'recent',
-    description: 'List the most recent observations for a project (newest first).',
+    description: 'List the most recent observations for a project as compact Markdown (newest first).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -92,8 +96,8 @@ function requireString(args: Record<string, unknown>, key: string): string {
   return value;
 }
 
-function jsonResult(payload: unknown): CallToolResult {
-  return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
+function textResult(text: string): CallToolResult {
+  return { content: [{ type: 'text', text }] };
 }
 
 // Dispatches a single tool call to the backend. Throws on unknown tools or
@@ -109,7 +113,7 @@ async function dispatchToolCall(
       query: requireString(args, 'query'),
       limit: clampLimit(args.limit, SEARCH_LIMIT),
     });
-    return jsonResult({ observations });
+    return textResult(formatObservationDetails(observations));
   }
   if (name === 'context') {
     const observations = await backend.context({
@@ -117,18 +121,14 @@ async function dispatchToolCall(
       query: requireString(args, 'query'),
       limit: clampLimit(args.limit, CONTEXT_LIMIT),
     });
-    const context = observations
-      .map((o) => (o as { content?: unknown }).content)
-      .filter((t): t is string => typeof t === 'string' && t.length > 0)
-      .join('\n\n');
-    return jsonResult({ observations, context });
+    return textResult(formatObservationContext(observations));
   }
   if (name === 'recent') {
     const observations = await backend.recent({
       projectId: requireString(args, 'projectId'),
       limit: clampLimit(args.limit, RECENT_LIMIT),
     });
-    return jsonResult({ observations });
+    return textResult(formatObservationDetails(observations));
   }
   throw new Error(`Unknown tool: ${name}`);
 }

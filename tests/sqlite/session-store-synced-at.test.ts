@@ -224,6 +224,7 @@ describe('SessionStore SyncHub launch baseline', () => {
         prompts: 1,
         mutations: 0,
         tombstones: 0,
+        content: 0,
       });
 
       // The exclusion is revision-bounded, not a permanent row-id ban. A

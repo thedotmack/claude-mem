@@ -65,9 +65,12 @@ describe('CloudSyncRoutes — GET /api/sync/status', () => {
     const status: CloudSyncStatus = {
       configured: true,
       deviceId: 'device-fixture',
-      pending: { observations: 0, summaries: 0, prompts: 0, mutations: 0, tombstones: 0 },
+      pending: { observations: 0, summaries: 0, prompts: 0, mutations: 0, tombstones: 0, content: 0 },
       quarantine: { count: 0, latestReason: null },
       lastFlushAt: 1751990400000,
+      lastProgressAt: 1751990400000,
+      flushing: false,
+      nextRetryAt: null,
       lastError: null,
       hub: {
         checkedAt: 1751990400100,
@@ -93,6 +96,49 @@ describe('CloudSyncRoutes — GET /api/sync/status', () => {
     expect(statusSpy).not.toHaveBeenCalled(); // implicit 200
   });
 
+  // Plan Phase 5: with a real backlog `lastFlushAt` stays null for a long
+  // time — the route has to carry enough to tell "draining" from "wedged"
+  // without that field, or every slow drain reads as a failure.
+  it('passes through the draining shape: lastProgressAt/flushing/nextRetryAt and the live content backlog', async () => {
+    const status: CloudSyncStatus = {
+      configured: true,
+      deviceId: 'device-fixture',
+      pending: { observations: 0, summaries: 0, prompts: 0, mutations: 0, tombstones: 4, content: 2500 },
+      quarantine: { count: 0, latestReason: null },
+      lastFlushAt: null,          // never once fully clean — expected with a backlog
+      lastProgressAt: 1751990399000, // ...but batches ARE landing
+      flushing: true,
+      nextRetryAt: 1751990430000,
+      lastError: 'sync hub push 503: {"error":"projection_busy"}',
+      hub: {
+        checkedAt: 1751990400100,
+        reachable: true,
+        epoch: '10',
+        headSeq: '2700',
+        projectedSeq: '900',
+        error: null,
+      },
+    };
+    const mockDbManager = {
+      getCloudSync: () => ({ statusWithHubProbe: mock(async () => status) }),
+    };
+    const handler = buildHandler(new CloudSyncRoutes(mockDbManager as any));
+
+    const { req, res, jsonSpy } = createMockReqRes();
+    await invoke(handler, req, res, jsonSpy);
+
+    const payload = (jsonSpy.mock.calls[0] as unknown[])[0] as Record<string, unknown>;
+    expect(payload).toEqual(status);
+    expect(payload.lastFlushAt).toBeNull();
+    expect(payload.lastProgressAt).toBe(1751990399000);
+    expect(payload.flushing).toBe(true);
+    expect(payload.nextRetryAt).toBe(1751990430000);
+    // The backlog that used to be invisible: pending.observations reads 0
+    // because the rows are already snapshotted into the content outbox.
+    expect((payload.pending as Record<string, number>).observations).toBe(0);
+    expect((payload.pending as Record<string, number>).content).toBe(2500);
+  });
+
   it('returns {configured: false} with 200 (not 500) when no service exists', async () => {
     const mockDbManager = {
       getCloudSync: () => null,
@@ -113,9 +159,12 @@ describe('CloudSyncRoutes — GET /api/sync/status', () => {
         statusWithHubProbe: async () => ({
           configured: true,
           deviceId: 'device-fixture',
-          pending: { observations: 0, summaries: 0, prompts: 0, mutations: 0, tombstones: 0 },
+          pending: { observations: 0, summaries: 0, prompts: 0, mutations: 0, tombstones: 0, content: 0 },
           quarantine: { count: 0, latestReason: null },
           lastFlushAt: null,
+          lastProgressAt: null,
+          flushing: false,
+          nextRetryAt: null,
           lastError: null,
           hub: {
             checkedAt: 1751990400100,
