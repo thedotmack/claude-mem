@@ -377,8 +377,40 @@ export class SearchManager {
     let prompts: UserPromptSearchResult[] = [];
     let platformScopedChromaZeroFallback = false;
 
-    const chromaResults = await this.queryChroma(query, 100, whereFilter);
-    logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
+    const chromaResultsRaw = await this.queryChroma(query, 100, whereFilter);
+    logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResultsRaw.ids.length });
+
+    // G4: optional relevance floor on the vector channel. e5 vectors are
+    // normalize_embeddings=true, so l2² = 2·(1 − cos); the cap follows.
+    // (Same rule as ChromaSearchStrategy.applySimilarityFloor — this manager
+    // path is what /api/context/semantic actually uses.)
+    const minSim: number | undefined =
+      typeof options.minSimilarity === 'number' && options.minSimilarity > 0
+        ? options.minSimilarity
+        : undefined;
+    const chromaResults = minSim !== undefined
+      ? (() => {
+          const cap = 2 * (1 - minSim);
+          const ids: number[] = [];
+          const distances: number[] = [];
+          const metadatas: any[] = [];
+          let dropped = 0;
+          for (let i = 0; i < chromaResultsRaw.ids.length; i++) {
+            const d = chromaResultsRaw.distances?.[i];
+            if (d === undefined || d <= cap) {
+              ids.push(chromaResultsRaw.ids[i]);
+              distances.push(d ?? NaN);
+              metadatas.push(chromaResultsRaw.metadatas?.[i]);
+            } else {
+              dropped++;
+            }
+          }
+          if (dropped > 0) {
+            logger.debug('SEARCH', `Similarity floor ${minSim} dropped ${dropped} weak hit(s)`);
+          }
+          return { ids, distances, metadatas };
+        })()
+      : chromaResultsRaw;
 
     if (chromaResults.ids.length > 0) {
       const { dateRange } = options;
