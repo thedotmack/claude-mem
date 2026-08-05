@@ -497,11 +497,8 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 	});
 
 	it.each([
-		["network", "projection_upstream_unreachable"],
 		["retryable", "projection_upstream_503"],
-		["truncated", "projection_response_not_json"],
-		["mismatch", "projection_response_mismatch"],
-	])("retains the full lease after ambiguous/retryable projection mode %s", async (mode, expectedError) => {
+	])("retains the full lease after ambiguous projection mode %s", async (mode, expectedError) => {
 		const userId = `projection-retain-${mode}`;
 		const stub = hub(userId);
 		const pushed = ok(await stub.pushOps("dev-a", [await observationOp("1")]));
@@ -509,9 +506,6 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 		const result = await drainProjection(projectionEnv(mode), userId, pushed.head_seq, {
 			now: () => startedAt,
 			fetchTimeoutMs: 100,
-			...(mode === "network" ? {
-				fetchImpl: async () => { throw new Error("simulated network disconnect"); },
-			} : {}),
 		});
 		expect(result).toMatchObject({ ok: false, error: expectedError, retryable: true });
 		expect((await stub.getProjectionState()).projected_seq).toBe("0");
@@ -525,6 +519,264 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 		);
 		expect(successor.acquired).toBe(true);
 		await stub.releaseProjectionLease(successor.lease_token!);
+	});
+
+	// Terminal, LOCALLY decided failures: the exchange is provably over, so the
+	// fence protects nothing and only livelocks the next push for 90s.
+	it.each([
+		["network", "projection_upstream_unreachable"],
+		["truncated", "projection_response_not_json"],
+		["mismatch", "projection_response_mismatch"],
+	])("releases the lease immediately after terminal projection mode %s", async (mode, expectedError) => {
+		const userId = `projection-terminal-${mode}`;
+		const stub = hub(userId);
+		const pushed = ok(await stub.pushOps("dev-a", [await observationOp("1")]));
+		const startedAt = 10_000;
+		const result = await drainProjection(projectionEnv(mode), userId, pushed.head_seq, {
+			now: () => startedAt,
+			fetchTimeoutMs: 100,
+			...(mode === "network" ? {
+				fetchImpl: async () => { throw new Error("simulated network disconnect"); },
+			} : {}),
+		});
+		expect(result).toMatchObject({ ok: false, error: expectedError, retryable: true });
+		// The checkpoint is provably unmoved — releasing early never acks anything.
+		expect((await stub.getProjectionState()).projected_seq).toBe("0");
+		const successor = await stub.acquireProjectionLease(pushed.head_seq, startedAt + 1);
+		expect(successor.acquired).toBe(true);
+		await stub.releaseProjectionLease(successor.lease_token!);
+	});
+
+	it("releases the lease when a page overflows the byte budget before any request is sent", async () => {
+		const userId = "projection-terminal-page-too-large";
+		const realStub = hub(userId);
+		const pushed = ok(await realStub.pushOps("dev-a", [await observationOp("1")]));
+		const startedAt = 50_000;
+		let fetchCalls = 0;
+		const oversizeStub = {
+			getProjectionState: () => realStub.getProjectionState(),
+			acquireProjectionLease: (targetSeq: string, now?: number) => (
+				now === undefined
+					? realStub.acquireProjectionLease(targetSeq)
+					: realStub.acquireProjectionLease(targetSeq, now)
+			),
+			getProjectionPage: async (
+				leaseToken: string,
+				targetSeq: string,
+				projectionUserId: string,
+				maxOps: number,
+				maxBytes: number,
+				now?: number,
+			) => {
+				const page = now === undefined
+					? await realStub.getProjectionPage(leaseToken, targetSeq, projectionUserId, maxOps, maxBytes)
+					: await realStub.getProjectionPage(leaseToken, targetSeq, projectionUserId, maxOps, maxBytes, now);
+				// Only the Worker-side backstop can see this: a page the DO's own
+				// byte budget passed but that serializes above the wire cap.
+				return {
+					...page,
+					ops: page.ops.map((op) => ({ ...op, body: "x".repeat(PROJECTION_PAGE_MAX_BYTES) })),
+				};
+			},
+			heartbeatProjectionLease: (leaseToken: string, now?: number) => (
+				now === undefined
+					? realStub.heartbeatProjectionLease(leaseToken)
+					: realStub.heartbeatProjectionLease(leaseToken, now)
+			),
+			releaseProjectionLease: (leaseToken: string) => realStub.releaseProjectionLease(leaseToken),
+			recordProjectionFailure: (code: string, now?: number) => (
+				now === undefined
+					? realStub.recordProjectionFailure(code)
+					: realStub.recordProjectionFailure(code, now)
+			),
+		};
+		const oversizeEnv = {
+			SYNC_HUB: { getByName: () => oversizeStub },
+			INTERNAL_PROJECTOR_URL: "https://projection-cases.test/api/internal/sync/project?mode=success",
+			CMEM_INTERNAL_PROJECTOR_SECRET: "test-projector-secret",
+		} as unknown as Env;
+
+		const result = await drainProjection(oversizeEnv, userId, pushed.head_seq, {
+			now: () => startedAt,
+			fetchTimeoutMs: 100,
+			fetchImpl: async () => { fetchCalls++; return Response.json({}); },
+		});
+		expect(result).toMatchObject({ ok: false, error: "projection_page_too_large", retryable: true });
+		expect(fetchCalls).toBe(0); // nothing upstream can be applying
+		expect((await realStub.getProjectionState()).projected_seq).toBe("0");
+		const successor = await realStub.acquireProjectionLease(pushed.head_seq, startedAt + 1);
+		expect(successor.acquired).toBe(true);
+		await realStub.releaseProjectionLease(successor.lease_token!);
+	});
+
+	it("releases the lease between pages when the client disconnects, keeping checkpointed progress", async () => {
+		const userId = "projection-client-disconnect";
+		const stub = hub(userId);
+		// 101 ops ⇒ two pages at PROJECTION_PAGE_MAX_OPS=100, so the drain reaches
+		// a between-pages boundary — the only place a disconnect may release.
+		const ops = await Promise.all(
+			Array.from({ length: 101 }, (_, index) => observationOp(String(index + 1))),
+		);
+		const pushed = ok(await stub.pushOps("dev-a", ops));
+		const startedAt = 60_000;
+		const controller = new AbortController();
+		let pages = 0;
+
+		const result = await drainProjection(projectionEnv("success"), userId, pushed.head_seq, {
+			now: () => startedAt,
+			fetchTimeoutMs: 100,
+			clientSignal: controller.signal,
+			fetchImpl: async (_input, init) => {
+				pages++;
+				// The client's own timeout fires while page 1 is upstream — exactly
+				// the live incident's shape (30s client abort < 45s hub deadline).
+				controller.abort();
+				const request = JSON.parse(String(init?.body)) as { epoch: string; through_seq: string };
+				return Response.json({
+					protocol_version: 1,
+					epoch: request.epoch,
+					projected_through_seq: request.through_seq,
+				});
+			},
+		});
+
+		expect(result).toMatchObject({
+			ok: false,
+			error: "projection_client_disconnected",
+			retryable: true,
+		});
+		// Page 1 was NOT abandoned: the fenced CAS persisted it per page.
+		expect(pages).toBe(1);
+		const state = await stub.getProjectionState();
+		expect(state.projected_seq).toBe("100");
+		expect(state.head_seq).toBe(pushed.head_seq);
+		// ...and the lease is already free for the next push.
+		const successor = await stub.acquireProjectionLease(pushed.head_seq, startedAt + 1);
+		expect(successor.acquired).toBe(true);
+		await stub.releaseProjectionLease(successor.lease_token!);
+	});
+
+	it("never takes a lease at all when the client has already disconnected", async () => {
+		const userId = "projection-preflight-disconnect";
+		const stub = hub(userId);
+		const pushed = ok(await stub.pushOps("dev-a", [await observationOp("1")]));
+		const startedAt = 70_000;
+		let fetchCalls = 0;
+		const result = await drainProjection(projectionEnv("success"), userId, pushed.head_seq, {
+			now: () => startedAt,
+			fetchTimeoutMs: 100,
+			clientSignal: AbortSignal.abort(),
+			fetchImpl: async () => { fetchCalls++; return Response.json({}); },
+		});
+		expect(result).toMatchObject({ ok: false, error: "projection_client_disconnected" });
+		expect(fetchCalls).toBe(0);
+		const successor = await stub.acquireProjectionLease(pushed.head_seq, startedAt);
+		expect(successor.acquired).toBe(true);
+		await stub.releaseProjectionLease(successor.lease_token!);
+	});
+
+	it("keeps the fence through a client disconnect while an upstream request is in flight", async () => {
+		const userId = "projection-disconnect-midflight";
+		const stub = hub(userId);
+		const pushed = ok(await stub.pushOps("dev-a", [await observationOp("1")]));
+		const startedAt = 80_000;
+		const controller = new AbortController();
+
+		// The client gives up, then OUR deadline fires: the Pro handler may have
+		// ignored cancellation, so this must still hold the full lease.
+		const result = await drainProjection(projectionEnv("success"), userId, pushed.head_seq, {
+			now: () => startedAt,
+			fetchTimeoutMs: 10,
+			clientSignal: controller.signal,
+			fetchImpl: (_input, init) => new Promise((_resolve, reject) => {
+				controller.abort();
+				init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+			}),
+		});
+
+		expect(result).toMatchObject({ ok: false, error: "projection_upstream_timeout", retryable: true });
+		expect((await stub.acquireProjectionLease(
+			pushed.head_seq,
+			startedAt + PROJECTION_LEASE_MS - 1,
+		)).acquired).toBe(false);
+		const successor = await stub.acquireProjectionLease(
+			pushed.head_seq,
+			startedAt + PROJECTION_LEASE_MS,
+		);
+		expect(successor.acquired).toBe(true);
+		await stub.releaseProjectionLease(successor.lease_token!);
+	});
+
+	it("names the predecessor drain failure and the remaining lease TTL on projection_busy", async () => {
+		const userId = "projection-busy-diagnostics";
+		const stub = hub(userId);
+		const pushed = ok(await stub.pushOps("dev-a", [await observationOp("1")]));
+		const startedAt = 90_000;
+		// An ambiguous failure that retains the lease...
+		const retained = await drainProjection(projectionEnv("retryable"), userId, pushed.head_seq, {
+			now: () => startedAt,
+			fetchTimeoutMs: 100,
+		});
+		expect(retained).toMatchObject({ ok: false, error: "projection_upstream_503" });
+
+		// ...is readable by the very next caller, which now gets projection_busy.
+		const busy = await drainProjection(projectionEnv("success"), userId, pushed.head_seq, {
+			now: () => startedAt + 30_000,
+			fetchTimeoutMs: 100,
+		});
+		expect(busy).toMatchObject({
+			ok: false,
+			error: "projection_busy",
+			retryAfterSeconds: 60,
+		});
+
+		const lease = await stub.acquireProjectionLease(pushed.head_seq, startedAt + 30_000);
+		expect(lease.acquired).toBe(false);
+		expect(lease.last_error).toBe("projection_upstream_503");
+		expect(lease.last_error_at).toBe(String(startedAt));
+		expect(lease.retry_after_ms).toBe(60_000);
+		expect(lease.lease_expires_at).toBe(String(startedAt + PROJECTION_LEASE_MS));
+	});
+
+	it("never lets an attempt that held no lease overwrite the predecessor breadcrumb", async () => {
+		const userId = "projection-breadcrumb-integrity";
+		const stub = hub(userId);
+		const pushed = ok(await stub.pushOps("dev-a", [await observationOp("1")]));
+		const startedAt = 100_000;
+
+		// The real fencing cause: ambiguous failure, lease retained for the full 90s.
+		expect(await drainProjection(projectionEnv("retryable"), userId, pushed.head_seq, {
+			now: () => startedAt,
+			fetchTimeoutMs: 100,
+		})).toMatchObject({ ok: false, error: "projection_upstream_503" });
+
+		// None of the following take the lease, so none of them may claim
+		// authorship of the contention they merely observed.
+		expect(await drainProjection(projectionEnv("success"), userId, pushed.head_seq, {
+			now: () => startedAt + 500,
+			fetchTimeoutMs: 100,
+		})).toMatchObject({ ok: false, error: "projection_busy" });
+
+		expect(await drainProjection(projectionEnv("success"), userId, pushed.head_seq, {
+			now: () => startedAt + 1_000,
+			fetchTimeoutMs: 100,
+			clientSignal: AbortSignal.abort(),
+		})).toMatchObject({ ok: false, error: "projection_client_disconnected" });
+
+		const unconfigured = {
+			...env,
+			INTERNAL_PROJECTOR_URL: "",
+			CMEM_INTERNAL_PROJECTOR_SECRET: "",
+		} as Env;
+		expect(await drainProjection(unconfigured, userId, pushed.head_seq, {
+			now: () => startedAt + 2_000,
+		})).toMatchObject({ ok: false, error: "projection_not_configured" });
+
+		// The breadcrumb still names the request that actually holds the fence.
+		const lease = await stub.acquireProjectionLease(pushed.head_seq, startedAt + 3_000);
+		expect(lease.acquired).toBe(false);
+		expect(lease.last_error).toBe("projection_upstream_503");
+		expect(lease.last_error_at).toBe(String(startedAt));
 	});
 
 	it("keeps an AbortSignal-ignoring delayed HTTP predecessor fenced through 90s, then safely replays", async () => {
@@ -672,6 +924,11 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 				releaseCalls++;
 				await realStub.releaseProjectionLease(leaseToken);
 			},
+			recordProjectionFailure: (code: string, now?: number) => (
+				now === undefined
+					? realStub.recordProjectionFailure(code)
+					: realStub.recordProjectionFailure(code, now)
+			),
 		};
 		const ambiguousEnv = {
 			SYNC_HUB: { getByName: () => proxyStub },
@@ -757,9 +1014,20 @@ describe("front Worker durability and repair", () => {
 		const failure = await first.json() as { durable: boolean; head_seq: string; projected_seq: string };
 		expect(failure).toMatchObject({ durable: true, head_seq: "1", projected_seq: "0" });
 
+		// The ambiguous failure carries no Retry-After: the Hub cannot know when
+		// an upstream that may still be applying will finish.
+		expect(first.headers.get("Retry-After")).toBeNull();
+
 		const busy = await SELF.fetch(`${base}/v1/sync/ops`, { method: "POST", headers, body: requestBody });
 		expect(busy.status).toBe(503);
 		expect(await busy.json()).toMatchObject({ error: "projection_busy", durable: true, retryable: true });
+		// projection_busy is pure lease contention, so its wait IS knowable.
+		const retryAfter = busy.headers.get("Retry-After");
+		expect(retryAfter).not.toBeNull();
+		const retryAfterSeconds = Number(retryAfter);
+		expect(Number.isInteger(retryAfterSeconds)).toBe(true);
+		expect(retryAfterSeconds).toBeGreaterThan(0);
+		expect(retryAfterSeconds).toBeLessThanOrEqual(PROJECTION_LEASE_MS / 1000);
 
 		const stub = hub(userId);
 		const expired = await stub.acquireProjectionLease(
@@ -778,6 +1046,83 @@ describe("front Worker durability and repair", () => {
 		expect(success.acked[0].seq).toBe(failure.head_seq);
 		expect(success.acked[0].operation_sha256).toBe(op.operation_sha256);
 		expect(success.projected_seq).toBe(success.head_seq);
+	});
+
+	it("lets the very next push acquire the lease after a terminal failure releases it early", async () => {
+		// Always-truncated projector ⇒ projection_response_not_json, a terminal,
+		// locally decided failure. Before Phase 3 the second push here would have
+		// been starved with `projection_busy` for the full 90s lease.
+		const terminalUser = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+		const terminalHeaders = {
+			...headers,
+			Authorization: `Bearer valid-for:${terminalUser}`,
+			"X-User-Id": terminalUser,
+		};
+		const requestBody = JSON.stringify({
+			protocol_version: 2,
+			ops: [await observationOp("1", "1", "dev-http")],
+		});
+
+		const first = await SELF.fetch(`${base}/v1/sync/ops`, {
+			method: "POST", headers: terminalHeaders, body: requestBody,
+		});
+		expect(first.status).toBe(503);
+		expect(await first.json()).toMatchObject({
+			error: "projection_response_not_json",
+			durable: true,
+			retryable: true,
+		});
+
+		// Immediately — no lease expiry, no sleep, no backoff.
+		const second = await SELF.fetch(`${base}/v1/sync/ops`, {
+			method: "POST", headers: terminalHeaders, body: requestBody,
+		});
+		expect(second.status).toBe(503);
+		const secondBody = await second.json() as { error: string };
+		expect(secondBody.error).not.toBe("projection_busy");
+		expect(secondBody.error).toBe("projection_response_not_json");
+		expect(second.headers.get("Retry-After")).toBeNull();
+	});
+
+	it("never acks un-projected ops on any push response path", async () => {
+		// Always-503 projector ⇒ an ambiguous failure that retains the lease, so
+		// this user exercises BOTH non-200 push paths back to back.
+		const wedgedUser = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+		const wedgedHeaders = {
+			...headers,
+			Authorization: `Bearer valid-for:${wedgedUser}`,
+			"X-User-Id": wedgedUser,
+		};
+		const requestBody = JSON.stringify({
+			protocol_version: 2,
+			ops: [await observationOp("1", "1", "dev-http")],
+		});
+
+		const failed = await SELF.fetch(`${base}/v1/sync/ops`, {
+			method: "POST", headers: wedgedHeaders, body: requestBody,
+		});
+		expect(failed.status).toBe(503);
+		const failedBody = await failed.json() as Record<string, unknown>;
+		expect(failedBody.error).toBe("projection_upstream_503");
+		// The ops ARE durable, but nothing is acked while projection lags.
+		expect(failedBody).not.toHaveProperty("acked");
+		expect(failedBody.durable).toBe(true);
+		expect(failedBody.head_seq).toBe("1");
+		expect(failedBody.projected_seq).toBe("0");
+
+		const busy = await SELF.fetch(`${base}/v1/sync/ops`, {
+			method: "POST", headers: wedgedHeaders, body: requestBody,
+		});
+		expect(busy.status).toBe(503);
+		const busyBody = await busy.json() as Record<string, unknown>;
+		expect(busyBody.error).toBe("projection_busy");
+		expect(busyBody).not.toHaveProperty("acked");
+		expect(Number(busy.headers.get("Retry-After"))).toBeLessThanOrEqual(PROJECTION_LEASE_MS / 1000);
+
+		// The Hub's own view agrees: still un-projected, so 200 was never owed.
+		const state = await hub(wedgedUser).getProjectionState();
+		expect(state.head_seq).toBe("1");
+		expect(state.projected_seq).toBe("0");
 	});
 
 	it("drains the scheduled repair endpoint to the authoritative head", async () => {

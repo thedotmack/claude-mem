@@ -26,6 +26,12 @@
  *                    → 401 {error} JSON — the HEALTHY answer the
  *                      control-plane probe expects (src/control-plane-probe.ts)
  *
+ * The projector mock (projector.test) is additionally scripted by `user_id`;
+ * see the table inside mockOutbound. Two of those users exist purely to drive
+ * the lease-retention contract end-to-end through SELF:
+ *   ffffffff-… → always 503 (ambiguous ⇒ lease RETAINED ⇒ projection_busy)
+ *   eeeeeeee-… → always truncated 200 (terminal ⇒ lease RELEASED)
+ *
  * Phase 5 adds two more outbound targets, dispatched by hostname:
  *   - api.cloudflare.com/client/v4/graphql → mock GraphQL Analytics API,
  *     scripted by the `accountTag` variable in the request body (see
@@ -223,6 +229,16 @@ async function mockOutbound(request: Request): Promise<Response> {
 		) {
 			failedProjectorUsers.add(body.user_id);
 			return new Response("simulated first projection failure", { status: 503 });
+		}
+		// Always-503: an AMBIGUOUS failure, so the Hub keeps its fencing lease and
+		// the next push for this user is a real `projection_busy` (Retry-After).
+		if (body.user_id === "ffffffff-ffff-4fff-8fff-ffffffffffff") {
+			return new Response("projector permanently unavailable", { status: 503 });
+		}
+		// Always-truncated 200: a TERMINAL, locally decided failure, so the Hub
+		// releases the lease and the very next push re-acquires it.
+		if (body.user_id === "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee") {
+			return new Response('{"protocol_version":1', { status: 200 });
 		}
 		return Response.json({
 			protocol_version: 1,

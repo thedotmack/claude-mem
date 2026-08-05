@@ -78,6 +78,25 @@ function canonicalSuccess(
 }
 
 /**
+ * The hub's real back-pressure envelope for the projection failure family
+ * (workers/sync-hub handlePushOps): `{error, durable, retryable, head_seq,
+ * projected_seq}` under a 503. `durable: true` means the ops are already in
+ * the hub's ordered log — it still carries no per-op acks, so the client must
+ * not stamp anything on it.
+ */
+const PROJECTION_BUSY_BODY = JSON.stringify({
+  error: 'projection_busy',
+  durable: true,
+  retryable: true,
+  head_seq: '2700',
+  projected_seq: '900',
+});
+
+function projectionBusy(headers: Record<string, string> = {}): Response {
+  return new Response(PROJECTION_BUSY_BODY, { status: 503, headers });
+}
+
+/**
  * Mock hub: records every request and, by default, acks every pushed op with
  * sequential seqs — the real hub acks all-or-refuses. `handler(callNumber)`
  * may return a Response to send instead, or an Error to throw (network
@@ -522,7 +541,7 @@ describe('CloudSync', () => {
     expect(pendingCount('observations')).toBe(0);
 
     const status = sync.status();
-    expect(status.pending).toEqual({ observations: 0, summaries: 0, prompts: 0, mutations: 0, tombstones: 0 });
+    expect(status.pending).toEqual({ observations: 0, summaries: 0, prompts: 0, mutations: 0, tombstones: 0, content: 0 });
     expect(status.lastFlushAt).not.toBeNull();
     expect(status.lastError).toBeNull();
   });
@@ -563,7 +582,7 @@ describe('CloudSync', () => {
     expect(calls[0].headers.get('X-User-Id')).toBe('user-42');
     expect(calls[0].headers.get('X-Device-Id')).toBe('device-fixture');
     expect(calls[0].headers.get('X-Device-Name')).toBe('test-host');
-    expect(status.pending).toEqual({ observations: 0, summaries: 0, prompts: 0, mutations: 0, tombstones: 0 });
+    expect(status.pending).toEqual({ observations: 0, summaries: 0, prompts: 0, mutations: 0, tombstones: 0, content: 0 });
     expect(status.hub).toMatchObject({
       reachable: true,
       epoch: '18446744073709551615',
@@ -1471,12 +1490,17 @@ describe('CloudSync', () => {
       expect(sync.status().lastError).toBeNull();
     });
 
-    /** Hub that only ever errors, with or without the mode header. */
+    /**
+     * Hub that only ever errors, with or without the mode header. The body is
+     * the hub's real projection-failure envelope rather than an opaque string:
+     * the client parses that envelope now, so a plain-text body would quietly
+     * stop exercising the path under test.
+     */
     function makeErrorFetch(mode: string | null, status = 503) {
       const impl = (async () => {
         const headers: Record<string, string> = {};
         if (mode !== null) headers['X-Sync-Mode'] = mode;
-        return new Response('hub down', { status, headers });
+        return new Response(PROJECTION_BUSY_BODY, { status, headers });
       }) as typeof fetch;
       return impl;
     }
@@ -1506,6 +1530,240 @@ describe('CloudSync', () => {
 
       expect(modes).toEqual([]);
       expect(pendingCount('observations')).toBe(1);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Plan 2026-08-04 Phases 4-5: hub back-pressure (`projection_busy`) must
+  // degrade into a slow drain, not a livelock. The gap that made the live
+  // incident possible was that every failure test here failed on the FIRST
+  // POST, so a flush that acked some batches and then failed had no coverage
+  // at all — and that is exactly the case whose backoff was being doubled.
+  // ---------------------------------------------------------------------------
+  describe('back-pressure, partial progress, and honest backoff', () => {
+    /** A hub that is permanently lease-blocked. */
+    const busyFetch = (async () => projectionBusy()) as typeof fetch;
+
+    it('keeps every acked batch when a LATER batch 503s, and reports draining rather than wedged', async () => {
+      for (let i = 0; i < 450; i++) seedObservation({ title: `obs ${i}` });
+
+      // Batch 1 acks; batch 2 hits projection_busy. The 450-row case above
+      // only ever covered [200, 200, 50] with every POST succeeding.
+      const { impl, calls } = makeFetchMock(call => call === 2 ? projectionBusy() : undefined);
+      const sync = makeCloudSync(impl, {}, { backoffInitialMs: 60_000, backoffMaxMs: 600_000 });
+
+      await sync.flush();
+
+      expect(calls.map(c => c.parsed.ops.length)).toEqual([200, 200]);
+      // The acked batch stays acked; the failed one stays queued, unstamped.
+      expect(pendingCount('observations')).toBe(250);
+
+      const status = sync.status();
+      // Never once fully clean, so lastFlushAt is still null — with a real
+      // backlog that is expected for a long time and is NOT a failure signal.
+      expect(status.lastFlushAt).toBeNull();
+      // ...but progress is provably being made. This is the draining/wedged
+      // discriminator the status route previously could not express.
+      expect(status.lastProgressAt).not.toBeNull();
+      expect(status.flushing).toBe(false);
+      expect(status.nextRetryAt).not.toBeNull();
+      expect(status.lastError).toContain('projection_busy');
+      // The backlog parked in the content outbox used to be invisible: the
+      // 200 unacked snapshots are already out of `pending.observations`'s
+      // reach in the sense that they are counted separately here.
+      expect(status.pending.content).toBe(200);
+      expect(status.pending.tombstones).toBe(0);
+
+      sync.stop();
+    });
+
+    it('does not double the backoff when the flush made partial progress', async () => {
+      for (let i = 0; i < 450; i++) seedObservation({ title: `obs ${i}` });
+
+      // Call 1 fails outright → zero progress → the ladder advances to rung 2
+      // (60 s). Call 2 (next flush) acks 200 ops; call 3 then 503s. That
+      // second flush DID make progress, so it must re-arm on rung 1.
+      const { impl, calls } = makeFetchMock(call =>
+        (call === 1 || call === 3) ? projectionBusy() : undefined
+      );
+      const sync = makeCloudSync(impl, {}, { backoffInitialMs: 30_000, backoffMaxMs: 600_000 });
+
+      await sync.flush();
+      expect(calls.length).toBe(1);
+      const firstRetryAt = sync.status().nextRetryAt!;
+      expect(firstRetryAt - Date.now()).toBeGreaterThan(25_000);
+      expect(firstRetryAt - Date.now()).toBeLessThanOrEqual(30_000);
+
+      await sleep(30); // so a re-armed timer is provably a NEW one
+
+      await sync.flush();
+      expect(calls.length).toBe(3);
+      const secondRetryAt = sync.status().nextRetryAt!;
+      // Re-armed at all: the partial-progress reset cleared the pending timer.
+      expect(secondRetryAt).toBeGreaterThan(firstRetryAt);
+      // And re-armed on rung 1. Without the reset this would be 60 s out, and
+      // the next failure 120 s, which is how a backlog decayed to one batch
+      // per 10 minutes.
+      expect(secondRetryAt - Date.now()).toBeGreaterThan(25_000);
+      expect(secondRetryAt - Date.now()).toBeLessThanOrEqual(30_000);
+
+      expect(pendingCount('observations')).toBe(250);
+      sync.stop();
+    });
+
+    it('a durable:true 503 stamps nothing — acknowledgment state is byte-identical', async () => {
+      seedFrozenAckState();
+      const before = ackDurabilityState();
+
+      const sync = makeCloudSync(busyFetch, {}, { backoffInitialMs: 60_000 });
+      await sync.flush();
+
+      // `durable: true` proves the hub HAS the bytes, but the 503 carries no
+      // per-op acks, so there is nothing to stamp against. The livelock guard
+      // requires forward progress to come only from acks; re-pushing is free
+      // because identical (entity_id, entity_rev) replays reuse the sequence.
+      expect(ackDurabilityState()).toEqual(before);
+      expect(sync.status().lastProgressAt).toBeNull();
+      expect(sync.status().lastError).toContain('projection_busy');
+      sync.stop();
+    });
+
+    it('waits the hub-supplied Retry-After instead of climbing the blind ladder', async () => {
+      seedObservation();
+      // Phase 2 ships this header valued at the remaining projection-lease
+      // TTL. It is optional: every other test here omits it and still passes.
+      const impl = (async () => projectionBusy({ 'Retry-After': '90' })) as typeof fetch;
+      const sync = makeCloudSync(impl, {}, { backoffInitialMs: 1_000, backoffMaxMs: 45_000 });
+
+      const armedFrom = Date.now();
+      await sync.flush();
+
+      // 90 s exceeds backoffMaxMs so it clamps there — the point is that it is
+      // nowhere near the 1 s first rung the ladder would otherwise have used.
+      const nextRetryAt = sync.status().nextRetryAt!;
+      expect(nextRetryAt - armedFrom).toBeGreaterThan(40_000);
+      expect(nextRetryAt - Date.now()).toBeLessThanOrEqual(45_000);
+      expect(pendingCount('observations')).toBe(1);
+      sync.stop();
+    });
+
+    it('clamps an absurd Retry-After up to the configured first rung (never a hot loop)', async () => {
+      seedObservation();
+      const impl = (async () => projectionBusy({ 'Retry-After': '0' })) as typeof fetch;
+      const sync = makeCloudSync(impl, {}, { backoffInitialMs: 5_000, backoffMaxMs: 45_000 });
+
+      const armedFrom = Date.now();
+      await sync.flush();
+
+      const nextRetryAt = sync.status().nextRetryAt!;
+      expect(nextRetryAt - armedFrom).toBeGreaterThan(4_000);
+      expect(nextRetryAt - Date.now()).toBeLessThanOrEqual(5_000);
+      sync.stop();
+    });
+
+    /** AbortSignal.timeout is opaque, so record the deadlines it is asked for. */
+    async function recordAbortDeadlines(run: () => Promise<unknown>): Promise<number[]> {
+      const requested: number[] = [];
+      const originalTimeout = AbortSignal.timeout;
+      (AbortSignal as unknown as { timeout: (ms: number) => AbortSignal }).timeout = (ms: number) => {
+        requested.push(ms);
+        return originalTimeout.call(AbortSignal, ms);
+      };
+      try {
+        await run();
+      } finally {
+        (AbortSignal as unknown as { timeout: typeof originalTimeout }).timeout = originalTimeout;
+      }
+      return requested;
+    }
+
+    it('defaults the PUSH deadline above the hub projector timeout and lease', async () => {
+      seedObservation();
+      const { impl } = makeFetchMock();
+      const requested = await recordAbortDeadlines(() => makeCloudSync(impl).flush());
+
+      expect(requested.length).toBeGreaterThan(0);
+      // PROJECTION_FETCH_TIMEOUT_MS is 45_000 per projector page and
+      // PROJECTION_LEASE_MS is 90_000. The old 30 s default guaranteed the
+      // client aborted first, orphaning a lease that then 503s every other
+      // push for that user until it expires.
+      for (const ms of requested) expect(ms).toBeGreaterThan(90_000);
+    });
+
+    it('gives the status probe its own short deadline, independent of the push deadline', async () => {
+      const impl = (async () => Response.json({
+        protocol_version: 2,
+        epoch: '1',
+        head_seq: '0',
+        projected_seq: '0',
+      })) as typeof fetch;
+      // An explicitly ABSURD push deadline: the probe must not inherit it.
+      const sync = makeCloudSync(impl, {}, { requestTimeoutMs: 600_000 });
+
+      const requested = await recordAbortDeadlines(() => sync.statusWithHubProbe());
+
+      expect(requested).toHaveLength(1);
+      // The probe is awaited by CloudSyncRoutes on a synchronous HTTP route
+      // and the /cloud-sync skill curls it with no --max-time, so this
+      // deadline is exactly how long `GET /api/sync/status` can hang when the
+      // hub is blackholed — the moment a user is most likely to ask for it.
+      expect(requested[0]).toBeLessThanOrEqual(15_000);
+      expect(requested[0]).toBeLessThan(600_000);
+      expect(sync.status().hub.reachable).toBe(true);
+    });
+
+    it('honours an explicit statusProbeTimeoutMs and never leaks it into pushes', async () => {
+      seedObservation();
+      const { impl } = makeFetchMock();
+      const sync = makeCloudSync(impl, {}, {
+        requestTimeoutMs: 111_000,
+        statusProbeTimeoutMs: 2_000,
+      });
+
+      const pushDeadlines = await recordAbortDeadlines(() => sync.flush());
+      expect(pushDeadlines).toEqual([111_000]);
+
+      const probeDeadlines = await recordAbortDeadlines(() => sync.statusWithHubProbe());
+      expect(probeDeadlines).toEqual([2_000]);
+    });
+
+    it('a transport failure in the mutation lane dead-letters nothing', async () => {
+      store.createSDKSession('sess-a', 'proj-x', 'p', 'title a', 'claude');
+      store.createSDKSession('sess-b', 'proj-x', 'p', 'title b', 'claude');
+      expect(outboxRows().length).toBe(2);
+
+      const sync = makeCloudSync(busyFetch, {}, { backoffInitialMs: 60_000 });
+      await sync.flush();
+
+      // quarantineMutation DELETEs the row and dead-letters it with the
+      // failure text as its "reason". An HTTP 503 says nothing about these
+      // rows' bytes, so routing transport failures there is silent data loss.
+      expect(db.prepare('SELECT COUNT(*) AS n FROM sync_dead_letter').get()).toEqual({ n: 0 });
+      expect(outboxRows().length).toBe(2); // still queued for the retry
+      expect(sync.status().quarantine.count).toBe(0);
+      expect(sync.status().pending.mutations).toBe(2);
+      sync.stop();
+    });
+
+    it('still dead-letters a row whose OWN bytes are unusable while the push is failing', async () => {
+      db.prepare(`
+        INSERT INTO sync_outbox (op_uuid, rev, body, created_at_epoch)
+        VALUES ('77777777-7777-4777-8777-777777777777', 1, 'not json', 1)
+      `).run();
+      store.createSDKSession('sess-good', 'proj-x', 'p', 'exact title', 'claude');
+
+      const sync = makeCloudSync(busyFetch, {}, { backoffInitialMs: 60_000 });
+      await sync.flush();
+
+      const dead = db.prepare(
+        "SELECT reason FROM sync_dead_letter WHERE lane = 'mutation'"
+      ).all() as Array<{ reason: string }>;
+      expect(dead.length).toBe(1);
+      expect(dead[0].reason).toBe('mutation body is not JSON');
+      // No HTTP status is ever a dead-letter reason.
+      expect(dead.some(d => /sync hub push|503/.test(d.reason))).toBe(false);
+      expect(outboxRows().length).toBe(1); // the valid mutation survives
+      sync.stop();
     });
   });
 });

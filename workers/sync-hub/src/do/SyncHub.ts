@@ -110,6 +110,18 @@ export interface ProjectionLease {
 	head_seq: string;
 	projected_seq: string;
 	target_seq: string;
+	/**
+	 * Busy diagnostics — populated ONLY when `acquired` is false because a live
+	 * incumbent lease is still held. Everything here is read straight out of the
+	 * `meta` table (no outbound I/O: anti-pattern #3), so the stateless front
+	 * Worker can emit a truthful `Retry-After` and can name the drain failure
+	 * that opened a `projection_busy` streak. Never consulted by the lease
+	 * protocol itself — observability only.
+	 */
+	lease_expires_at?: string;
+	retry_after_ms?: number;
+	last_error?: string | null;
+	last_error_at?: string | null;
 }
 
 export interface ProjectionPage {
@@ -648,6 +660,12 @@ export class SyncHub extends DurableObject<Env> {
 				head_seq: head,
 				projected_seq: projected,
 				target_seq: target,
+				// The caller turns these into `Retry-After` and a structured log
+				// line; the branch condition above already proves expiry > now.
+				lease_expires_at: existingExpiry,
+				retry_after_ms: Number(BigInt(existingExpiry) - BigInt(nowValue)),
+				last_error: this.metaOptional("projection_last_error"),
+				last_error_at: this.metaOptional("projection_last_error_at"),
 			};
 		}
 		const token = crypto.randomUUID();
@@ -761,6 +779,23 @@ export class SyncHub extends DurableObject<Env> {
 			this.setMeta("projection_lease_expires_at", this.leaseExpiry(this.leaseNow(now)));
 		});
 		return this.getProjectionState();
+	}
+
+	/**
+	 * Observability breadcrumb, never consulted by the lease protocol. The front
+	 * Worker records the drain failure code here; the NEXT caller that finds the
+	 * lease still held reads it back through acquireProjectionLease() so a
+	 * `projection_busy` streak can name the failure that opened it. Total by
+	 * construction — a breadcrumb write must never convert a clean drain failure
+	 * into an exception.
+	 */
+	recordProjectionFailure(code: string, now = Date.now()): void {
+		const normalized = typeof code === "string" && code.length > 0 ? code.slice(0, 120) : "unknown";
+		const at = Number.isSafeInteger(now) && now >= 0 ? String(now) : "0";
+		this.ctx.storage.transactionSync(() => {
+			this.setMeta("projection_last_error", normalized);
+			this.setMeta("projection_last_error_at", at);
+		});
 	}
 
 	releaseProjectionLease(leaseToken: string): void {

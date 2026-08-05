@@ -23,13 +23,17 @@ Resolve the worker port and query the always-registered status route:
 
 ```bash
 PORT="${CLAUDE_MEM_WORKER_PORT:-$(node -e "const fs=require('fs'),p=require('path'),os=require('os');const uid=(typeof process.getuid==='function'?process.getuid():77);const fallback=String(37700+(uid%100));try{const s=JSON.parse(fs.readFileSync(p.join(os.homedir(),'.claude-mem','settings.json'),'utf-8'));process.stdout.write(String(s.CLAUDE_MEM_WORKER_PORT||fallback));}catch{process.stdout.write(fallback);}" 2>/dev/null)}"
-curl -s "http://127.0.0.1:${PORT}/api/sync/status"
+curl -s --max-time 20 "http://127.0.0.1:${PORT}/api/sync/status"
 ```
+
+The route makes a live Hub probe, so it is not instant. It bounds that probe
+itself; `--max-time` is belt-and-braces so a wedged worker cannot block you.
 
 - `configured: true` and `hub.reachable: true` → the worker completed an
   authenticated `GET /v1/sync/status` against SyncHub. Report `deviceId`,
-  pending counts, `lastFlushAt`, `lastError`, and the Hub head/checkpoint;
-  stop unless the user asked to replace the connection.
+  pending counts, `lastFlushAt`, `lastProgressAt`, `lastError`, and the Hub
+  head/checkpoint, then classify the drain per §5; stop unless the user asked
+  to replace the connection.
 - `configured: true` and `hub.reachable: false` → report `hub.error` and say
   the SyncHub connection is not verified. A zero pending count or
   `lastError: null` is not success because an empty queue performs no push.
@@ -100,8 +104,30 @@ Connect**. Never include the token.
 
 ## 5. Report
 
-Report device id, pending counts, last successful flush, Hub reachability and
-checkpoint, and any Hub/flush error. End with this privacy note:
+Report device id, pending counts (including `pending.content`, the live
+snapshots waiting on an ack — a backlog can sit entirely there while
+`pending.observations` reads 0), Hub reachability and checkpoint, and any
+Hub/flush error.
+
+Classify the drain before reporting. **`lastFlushAt: null` is not a failure.**
+It is set only after a flush that drains every lane with zero errors, so any
+account with a real backlog will show `null` there for a long time while
+syncing perfectly well. The field that separates the states is
+`lastProgressAt` — the last time a batch was actually acked and stamped.
+
+| State | Shape | What to say |
+|---|---|---|
+| **Done** | `lastFlushAt` non-null, every `pending.*` 0, `lastError: null`, `hub.projectedSeq === hub.headSeq` | Fully synced. |
+| **Draining** | `lastProgressAt` recent (or `flushing: true`), pending counts falling between two checks | Working through a backlog. Give the counts, `nextRetryAt`, and the Hub `headSeq`/`projectedSeq` gap. Do not call this an error, even with a non-null `lastError` — a retryable `projection_busy` is back-pressure, and the next attempt is already scheduled. |
+| **Wedged** | `lastProgressAt` null or unchanged across two checks minutes apart, pending counts flat, same `lastError` each time | Report `lastError`, `nextRetryAt`, and the `headSeq`/`projectedSeq` gap, and say the drain is not making progress. |
+
+To tell draining from wedged, poll the status route twice about a minute
+apart and compare `lastProgressAt` and the pending totals. One sample cannot
+distinguish them. Do not advise restarting the worker to "unstick" a drain:
+each restart buys one batch and discards a backoff that exists to respect the
+Hub's projection lease.
+
+End with this privacy note:
 
 > Cloud sync uploads your observation narratives and full prompt text to your
 > cmem.ai account.

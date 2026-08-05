@@ -78,13 +78,48 @@ The Hub heartbeats immediately before the bounded fetch and performs the token
 check plus checkpoint compare-and-set in one synchronous transaction. A stale
 request cannot checkpoint after a successor acquires a new token.
 
-If a fetch times out/aborts, fails at the network, returns a retryable status,
-or yields a truncated, invalid, or ambiguous response, the Hub deliberately
-keeps the 90-second lease until its natural expiry. The upstream handler may
-have ignored cancellation and may still be applying the request. Early lease
-release is allowed only after a valid response has been checkpointed, an
-authoritative checkpoint already proves the target complete, or Pro returns
-its deterministic nonretryable 409 outcome.
+Failure paths split into two classes, and the split is load-bearing. **Only the
+genuinely ambiguous class keeps the lease.** Holding the fence for a failure the
+Hub decided locally does not protect anything — it just makes every other push
+for that user return `503 projection_busy` for the rest of the 90 seconds.
+
+**Retains the full 90-second lease (ambiguous — the upstream may still be
+applying):**
+
+| Outcome | Why it is ambiguous |
+|---|---|
+| `projection_upstream_timeout` | Our 45s response-body deadline fired. The Pro handler may have ignored cancellation and may still be mid-apply (this is what the 45/60/90 fence exists for). A client disconnect never shortens this one. |
+| in-flight abort | Same request, same reasoning. |
+| `projection_upstream_<status>` (non-409) | The request reached Pro and Pro errored. That does not prove the handler applied nothing. |
+| `projection_page_empty`, unexpected throw | Unclassified. Fail safe: fence. |
+
+**Releases the lease immediately (terminal, locally decided — the exchange is
+provably over):**
+
+| Outcome | Why release is safe |
+|---|---|
+| `projection_page_too_large` | The request was never sent. |
+| `projection_upstream_unreachable` | The fetch rejected on its own, not on our deadline; no upstream deadline is still running. |
+| `projection_response_not_json` | A complete body arrived and is garbage. |
+| `projection_response_mismatch` | A complete, well-formed response answering a different epoch/through_seq. |
+| `projection_client_disconnected` | Checked **only** between pages or before the lease is taken, so no request can be in flight by construction. |
+| `projection_upstream_409` | Pro's deterministic nonretryable rejection. |
+| checkpointed valid response / target already complete | The work is done. |
+
+In every releasing case the checkpoint is provably unmoved (or fully advanced),
+so early release never acks anything. Correctness does not depend on the split:
+the checkpoint compare-and-set is fenced by the lease token, so even a late
+predecessor cannot advance the checkpoint after a successor acquires a fresh
+token. The split is a liveness property — it decides how fast a backlog drains,
+not whether it drains correctly.
+
+A `projection_busy` response carries `Retry-After` set to the incumbent lease's
+remaining TTL (never more than 90). The other projection 503s carry no
+`Retry-After`: their wait is unknowable, and a wrong hint is worse than none.
+Each drain failure that actually held the lease is also recorded in the DO's
+`meta` table, so a `projection_busy` log line names the failure that opened the
+streak (`predecessor_error`) alongside `lease_age_ms` and `projection_lag_ops`.
+Attempts that never acquired the lease deliberately do not overwrite it.
 
 A public push returns 200 only after the Hub's authoritative `projected_seq`
 covers the committed `head_seq`. Retryable projection failures after a durable

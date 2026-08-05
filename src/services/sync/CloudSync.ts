@@ -66,6 +66,54 @@ const BATCH = 200;
 const MAX_BODY_BYTES = 4_000_000;
 // Hub cap: ≤500 ops per POST /v1/sync/ops request.
 const MAX_OPS_PER_PUSH = 500;
+/**
+ * Default abort deadline for PUSHES ONLY (`POST /v1/sync/ops`).
+ *
+ * Chosen to sit above the hub's whole projection fence, not merely above one
+ * page of it:
+ *   PROJECTION_FETCH_TIMEOUT_MS = 45_000  (per projector page — projection-protocol.ts:5)
+ *   PROJECTION_LEASE_MS         = 90_000  (do/SyncHub.ts — the lease a push holds)
+ *   CLIENT_REQUEST_TIMEOUT_MS   = 120_000 (here)
+ *
+ * The old 30_000 was strictly shorter than a single 45 s page, so the client
+ * gave up on essentially every slow push while the hub was still legitimately
+ * working. That is the harmful case: the hub keeps the 90 s lease with nobody
+ * waiting on it, and every other push for that user 503s `projection_busy`
+ * for the rest of it.
+ *
+ * What makes a long client deadline safe is NOT that the lease has expired by
+ * the time we abort — it has not. The hub renews the lease
+ * (`heartbeatProjectionLease`) immediately before every page, so a push still
+ * paging at t=120 s holds a lease good until roughly t+90 s. Safety comes
+ * from the hub side: it refuses to take a lease at all for an
+ * already-departed client, and between pages — the only points where no
+ * upstream request can still be applying — it checks `request.signal` and
+ * releases the lease early with `projection_client_disconnected`. A longer
+ * client deadline simply makes the client stop being the one who gives up
+ * first, so that path is taken far less often.
+ *
+ * 120 s is an upper bound on a hung socket, not an expected latency: healthy
+ * pushes return in milliseconds, the drain is single-flight and off the write
+ * path, and the backoff ladder still governs retries.
+ */
+const CLIENT_REQUEST_TIMEOUT_MS = 120_000;
+
+/**
+ * Default abort deadline for the read-only status probe
+ * (`GET /v1/sync/status`).
+ *
+ * Deliberately independent of, and far below, CLIENT_REQUEST_TIMEOUT_MS. The
+ * probe does no projection work, takes no lease, and has none of the
+ * projector fence's reasons to wait — it is a cheap authenticated GET. It is
+ * also the one sync call on a SYNCHRONOUS request path:
+ * CloudSyncRoutes awaits statusWithHubProbe() before answering
+ * `GET /api/sync/status`, and the /cloud-sync skill curls that with no
+ * --max-time. Inheriting the push deadline would mean a blackholed hub (dead
+ * DNS, captive portal) hangs the status route for two full minutes — on
+ * exactly the surface a user reaches for when sync is already broken, and
+ * doubled by the skill's advice to sample the route twice.
+ */
+const STATUS_PROBE_TIMEOUT_MS = 10_000;
 const EMPTY_PUSH_REQUEST_BYTES = Buffer.byteLength(
   JSON.stringify({ protocol_version: 2, ops: [] }),
   'utf8',
@@ -74,6 +122,77 @@ const EMPTY_PUSH_REQUEST_BYTES = Buffer.byteLength(
 /** Exact encoded request bytes from the sum of serialized op wrapper bytes. */
 function pushRequestBytes(opBytes: number, opCount: number): number {
   return EMPTY_PUSH_REQUEST_BYTES + opBytes + Math.max(0, opCount - 1);
+}
+
+/**
+ * `Retry-After` per RFC 9110: either delta-seconds or an HTTP-date. Anything
+ * else (absent, blank, unparseable) yields null and the caller falls back to
+ * the exponential ladder — the header is advisory, never required.
+ */
+function parseRetryAfterMs(value: string | null, now: number): number | null {
+  if (value === null) return null;
+  const trimmed = value.trim();
+  if (trimmed === '') return null;
+  if (/^\d+$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    if (!Number.isFinite(seconds)) return null;
+    return seconds * 1000;
+  }
+  const at = Date.parse(trimmed);
+  if (Number.isNaN(at)) return null;
+  return Math.max(0, at - now);
+}
+
+/**
+ * A non-2xx `POST /v1/sync/ops` response, parsed instead of stringified.
+ *
+ * The hub has always sent `{error, durable, retryable, head_seq,
+ * projected_seq}` on the projection failure family (workers/sync-hub
+ * handlePushOps), and emits `Retry-After` on `projection_busy` valued at the
+ * remaining projection-lease TTL. Every field here is read defensively: an
+ * older hub, a plain-text edge 500, or an HTML error page simply leaves them
+ * null and the drain degrades to exactly the previous behaviour.
+ *
+ * `durable: true` says the ops are already in the hub's ordered log. It does
+ * NOT license stamping: a 503 carries no per-op acks, so there is nothing to
+ * stamp against, and the livelock guard requires forward progress to come
+ * only from acks. Re-pushing is safe — identical (entity_id, entity_rev) with
+ * a matching sha re-acks with the existing sequence.
+ */
+class HubPushError extends Error {
+  readonly status: number;
+  readonly code: string | null;
+  readonly retryable: boolean | null;
+  readonly durable: boolean | null;
+  readonly headSeq: string | null;
+  readonly projectedSeq: string | null;
+  readonly retryAfterMs: number | null;
+
+  constructor(
+    status: number,
+    rawBody: string,
+    retryAfterHeader: string | null,
+    now: number = Date.now(),
+  ) {
+    // Message shape is load-bearing for operators and for lastError:
+    // `sync hub push <status>: <first 200 bytes of body>`.
+    super(`sync hub push ${status}: ${rawBody.slice(0, 200)}`);
+    this.name = 'HubPushError';
+    this.status = status;
+    let envelope: Record<string, unknown> | null = null;
+    try {
+      const parsed = JSON.parse(rawBody) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        envelope = parsed as Record<string, unknown>;
+      }
+    } catch { /* not JSON — every field stays null */ }
+    this.code = typeof envelope?.error === 'string' ? envelope.error : null;
+    this.retryable = typeof envelope?.retryable === 'boolean' ? envelope.retryable : null;
+    this.durable = typeof envelope?.durable === 'boolean' ? envelope.durable : null;
+    this.headSeq = typeof envelope?.head_seq === 'string' ? envelope.head_seq : null;
+    this.projectedSeq = typeof envelope?.projected_seq === 'string' ? envelope.projected_seq : null;
+    this.retryAfterMs = parseRetryAfterMs(retryAfterHeader, now);
+  }
 }
 type LocalRow = Record<string, unknown> & { id: string; sync_rev: string };
 type OpBody = Record<string, unknown>;
@@ -328,16 +447,63 @@ export interface CloudSyncOptions {
   /** First retry delay after a failed flush; doubles up to backoffMaxMs. */
   backoffInitialMs?: number;
   backoffMaxMs?: number;
-  /** Per-request timeout — a hub POST can never hang the drain. */
+  /**
+   * Per-request timeout — a hub POST can never hang the drain.
+   *
+   * MUST stay above the hub's own projection deadlines or the client becomes
+   * the thing that breaks the push: the hub allows each projector page
+   * `PROJECTION_FETCH_TIMEOUT_MS = 45_000`
+   * (workers/sync-hub/src/projection-protocol.ts:5) and a 200-op batch pages
+   * at `PROJECTION_PAGE_MAX_OPS = 100`, so one legitimate push can work for
+   * two of those. The old 30 s default was strictly shorter than a single
+   * page deadline, so the client always aborted first — and an abort while
+   * the hub still holds its `PROJECTION_LEASE_MS = 90_000` projection lease
+   * orphans that lease, which 503s `projection_busy` at every other push for
+   * the same user until it expires. See CLIENT_REQUEST_TIMEOUT_MS.
+   *
+   * Applies to pushes only. The status probe has its own, much shorter
+   * deadline — see statusProbeTimeoutMs.
+   */
   requestTimeoutMs?: number;
+  /**
+   * Per-request timeout for the read-only `GET /v1/sync/status` probe.
+   * Separate from requestTimeoutMs on purpose: the probe does no projection
+   * work, and unlike the drain it runs on a synchronous HTTP route, so its
+   * deadline is a user-visible hang. See STATUS_PROBE_TIMEOUT_MS.
+   */
+  statusProbeTimeoutMs?: number;
 }
 
 export interface CloudSyncStatus {
   configured: boolean;
   deviceId: string;
-  pending: { observations: number; summaries: number; prompts: number; mutations: number; tombstones: number };
+  pending: {
+    observations: number;
+    summaries: number;
+    prompts: number;
+    mutations: number;
+    tombstones: number;
+    /**
+     * Live (non-tombstone) sync_content_outbox rows: frozen snapshots that
+     * have been materialized but not yet acked. Without this a backlog parked
+     * in the content outbox is invisible — the row-level `observations` count
+     * reads 0 because the rows were already snapshotted.
+     */
+    content: number;
+  };
   quarantine: { count: number; latestReason: string | null };
+  /** Last fully clean flush (every lane drained, zero throws). */
   lastFlushAt: number | null;
+  /**
+   * Last time ANY batch was acked and stamped. With a large backlog this
+   * moves long before `lastFlushAt` ever becomes non-null, so
+   * `lastProgressAt` advancing is what separates "draining" from "wedged".
+   */
+  lastProgressAt: number | null;
+  /** True while a drain is in flight right now. */
+  flushing: boolean;
+  /** When the backoff timer will re-flush, or null when none is armed. */
+  nextRetryAt: number | null;
   lastError: string | null;
   hub: {
     checkedAt: number | null;
@@ -362,6 +528,7 @@ export class CloudSync {
   private readonly backoffInitialMs: number;
   private readonly backoffMaxMs: number;
   private readonly requestTimeoutMs: number;
+  private readonly statusProbeTimeoutMs: number;
 
   /** '' when unconfigured or when device-id resolution failed closed. */
   private deviceId = '';
@@ -372,6 +539,12 @@ export class CloudSync {
   private flushAgainRequested = false;
   private stopped = false;
   private lastFlushAt: number | null = null;
+  /** Wall clock of the last acked+stamped batch (partial-progress marker). */
+  private lastProgressAt: number | null = null;
+  /** Ops acked since process start — a slow drain still increments this. */
+  private opsAckedTotal = 0;
+  /** Wall clock the armed retry timer will fire at, or null when unarmed. */
+  private nextRetryAt: number | null = null;
   private lastError: string | null = null;
   private hubStatus: CloudSyncStatus['hub'] = {
     checkedAt: null,
@@ -414,7 +587,8 @@ export class CloudSync {
     this.fastDebounceMs = options.fastDebounceMs ?? 250;
     this.backoffInitialMs = options.backoffInitialMs ?? 30_000;
     this.backoffMaxMs = options.backoffMaxMs ?? 600_000;
-    this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? CLIENT_REQUEST_TIMEOUT_MS;
+    this.statusProbeTimeoutMs = options.statusProbeTimeoutMs ?? STATUS_PROBE_TIMEOUT_MS;
     this.nextBackoffMs = this.backoffInitialMs;
 
     if (this.isConfigured()) {
@@ -518,6 +692,7 @@ export class CloudSync {
       return;
     }
     this.flushing = true;
+    const ackedAtStart = this.opsAckedTotal;
     try {
       do {
         this.flushAgainRequested = false;
@@ -535,10 +710,29 @@ export class CloudSync {
       const err = error instanceof Error ? error : new Error(String(error));
       this.lastError = err.message;
       // Rows stay NULL — retried by the backoff timer below and on next notify().
+      // NOTE: nothing is stamped here even when the hub reported
+      // `durable: true`. A 503 carries no per-op acks, so there is no tuple to
+      // stamp against, and re-pushing is free (idempotent replay reuses the
+      // existing sequence).
+      const hubError = error instanceof HubPushError ? error : null;
+      const opsAckedThisFlush = this.opsAckedTotal - ackedAtStart;
+      const retryInMs = this.scheduleRetry(this.retryDelayHint(hubError));
       logger.warn('CLOUD_SYNC', 'Cloud sync flush failed; unsynced rows remain queued', {
-        retryInMs: this.nextBackoffMs,
+        retryInMs,
+        // Partial-progress bookkeeping: a drain that acked batches before
+        // dying is slow, not wedged. Zero here across consecutive flushes is
+        // the wedge signature.
+        opsAckedThisFlush,
+        opsAckedTotal: this.opsAckedTotal,
+        lastProgressAt: this.lastProgressAt,
+        httpStatus: hubError?.status ?? null,
+        hubErrorCode: hubError?.code ?? null,
+        retryable: hubError?.retryable ?? null,
+        durable: hubError?.durable ?? null,
+        headSeq: hubError?.headSeq ?? null,
+        projectedSeq: hubError?.projectedSeq ?? null,
+        retryAfterMs: hubError?.retryAfterMs ?? null,
       }, err);
-      this.scheduleRetry();
     } finally {
       this.flushing = false;
     }
@@ -554,9 +748,13 @@ export class CloudSync {
         prompts: this.countPending('user_prompts'),
         mutations: this.countPendingMutations(),
         tombstones: this.countPendingTombstones(),
+        content: this.countPendingContent(),
       },
       quarantine: this.quarantineStatus(),
       lastFlushAt: this.lastFlushAt,
+      lastProgressAt: this.lastProgressAt,
+      flushing: this.flushing,
+      nextRetryAt: this.nextRetryAt,
       lastError: this.lastError,
       hub: { ...this.hubStatus },
     };
@@ -586,7 +784,9 @@ export class CloudSync {
           'X-Device-Id': this.deviceId,
           ...(this.deviceName ? { 'X-Device-Name': this.deviceName } : {}),
         },
-        signal: AbortSignal.timeout(this.requestTimeoutMs),
+        // NOT requestTimeoutMs: this probe is awaited by a synchronous HTTP
+        // route, so its deadline is how long `GET /api/sync/status` can hang.
+        signal: AbortSignal.timeout(this.statusProbeTimeoutMs),
       });
       checkedAt = Date.now();
       const syncMode = response.headers.get('X-Sync-Mode');
@@ -716,6 +916,7 @@ export class CloudSync {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
     }
+    this.nextRetryAt = null;
   }
 
   // -------------------------------------------------------------------------
@@ -779,61 +980,83 @@ export class CloudSync {
         bufBytes = 0;
       };
       for (const row of rows) {
-        try {
-          let op: WireOp;
-          if (row.canonical_body !== null || row.operation_sha256 !== null) {
-            if (row.canonical_body === null || row.operation_sha256 === null) {
-              throw new Error('partial canonical mutation snapshot');
-            }
-            op = { body: row.canonical_body, operation_sha256: row.operation_sha256 };
-            parseCanonicalOperation(op);
-          } else {
-            let parsed: unknown;
-            try {
-              parsed = JSON.parse(row.body);
-            } catch {
-              throw new Error('mutation body is not JSON');
-            }
-            if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-              throw new Error('mutation body must be an object');
-            }
-            const body = parsed as OpBody;
-            if (body.op === 'set_prompt_session' && typeof body.target === 'object' && body.target !== null) {
-              const target = body.target as Record<string, unknown>;
-              if (target.origin_device_id == null) target.origin_device_id = this.deviceId;
-            }
-            op = buildMutationOperation({
-              originDeviceId: this.deviceId,
-              mutationId: row.op_uuid,
-              entityRev: row.rev,
-              mutation: body as unknown as Parameters<typeof buildMutationOperation>[0]['mutation'],
-            });
-            // First accepted serialization is frozen before its first send.
-            this.db.prepare(`
-              UPDATE sync_outbox
-              SET canonical_body = ?, operation_sha256 = ?
-              WHERE id = ? AND canonical_body IS NULL AND operation_sha256 IS NULL
-            `).run(op.body, op.operation_sha256, row.id);
-          }
-          const size = Buffer.byteLength(JSON.stringify(op), 'utf8');
-          if (buf.length > 0 && (
-            pushRequestBytes(bufBytes + size, buf.length + 1) > MAX_BODY_BYTES
-            || buf.length >= MAX_OPS_PER_PUSH
-          )) {
-            await send();
-            if (this.stopped) return;
-          }
-          buf.push(op);
-          bufBytes += size;
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error);
-          this.quarantineMutation(row, reason);
+        // Serialization is the ONLY quarantinable step: prepareMutationOp
+        // dead-letters exactly the row whose own bytes are unusable.
+        const prepared = this.prepareMutationOp(row);
+        if (prepared === null) continue;
+        // The page flush lives OUTSIDE that try on purpose. A transport
+        // failure (HTTP 503, socket reset, abort) is nothing to do with this
+        // row — routing it into quarantineMutation would DELETE an innocent,
+        // fully valid mutation and dead-letter it with the HTTP error as its
+        // "reason", i.e. silent data loss on every mid-page hub hiccup. It
+        // throws out to flush()'s backoff instead, exactly like the
+        // already-correct end-of-page send below.
+        if (buf.length > 0 && (
+          pushRequestBytes(bufBytes + prepared.size, buf.length + 1) > MAX_BODY_BYTES
+          || buf.length >= MAX_OPS_PER_PUSH
+        )) {
+          await send();
+          if (this.stopped) return;
         }
+        buf.push(prepared.op);
+        bufBytes += prepared.size;
       }
       await send();
       if (this.stopped) return;
       // Loop re-SELECTs: acked ops were DELETEd (and a page of nothing but
       // dropped-unparseable rows made progress via those DELETEs).
+    }
+  }
+
+  /**
+   * Freeze one outbox row into its canonical wire op, or quarantine it.
+   *
+   * Deliberately does NO I/O: everything that can throw in here is a property
+   * of this row's own stored bytes, which is the only failure a dead-letter
+   * may describe. Returns null when the row was quarantined.
+   */
+  private prepareMutationOp(row: MutationOutboxRow): { op: WireOp; size: number } | null {
+    try {
+      let op: WireOp;
+      if (row.canonical_body !== null || row.operation_sha256 !== null) {
+        if (row.canonical_body === null || row.operation_sha256 === null) {
+          throw new Error('partial canonical mutation snapshot');
+        }
+        op = { body: row.canonical_body, operation_sha256: row.operation_sha256 };
+        parseCanonicalOperation(op);
+      } else {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(row.body);
+        } catch {
+          throw new Error('mutation body is not JSON');
+        }
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          throw new Error('mutation body must be an object');
+        }
+        const body = parsed as OpBody;
+        if (body.op === 'set_prompt_session' && typeof body.target === 'object' && body.target !== null) {
+          const target = body.target as Record<string, unknown>;
+          if (target.origin_device_id == null) target.origin_device_id = this.deviceId;
+        }
+        op = buildMutationOperation({
+          originDeviceId: this.deviceId,
+          mutationId: row.op_uuid,
+          entityRev: row.rev,
+          mutation: body as unknown as Parameters<typeof buildMutationOperation>[0]['mutation'],
+        });
+        // First accepted serialization is frozen before its first send.
+        this.db.prepare(`
+          UPDATE sync_outbox
+          SET canonical_body = ?, operation_sha256 = ?
+          WHERE id = ? AND canonical_body IS NULL AND operation_sha256 IS NULL
+        `).run(op.body, op.operation_sha256, row.id);
+      }
+      return { op, size: Buffer.byteLength(JSON.stringify(op), 'utf8') };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.quarantineMutation(row, reason);
+      return null;
     }
   }
 
@@ -932,7 +1155,25 @@ export class CloudSync {
     if (this.stopped) return;
     this.validatePushResponse(response, ops);
     this.stampAcked(response.acked, ops);
+    this.recordProgress(response.acked.length);
     this.emitHeadSeq(response.head_seq);
+  }
+
+  /**
+   * One batch is durably acked and stamped — that is real forward progress,
+   * even if a later batch in the same flush dies.
+   *
+   * Copied from the pull lane's per-page reset (SyncClient.pullOnce clears
+   * failStreak/failCursor/backoffMs after each applied page): before this,
+   * `resetBackoff()` had exactly one caller on the fully clean path, so a
+   * flush that pushed six batches and failed on the seventh doubled its
+   * backoff identically to one that pushed nothing — which is how a large
+   * backlog decayed to one batch per 10 minutes.
+   */
+  private recordProgress(opsAcked: number): void {
+    this.opsAckedTotal += opsAcked;
+    this.lastProgressAt = Date.now();
+    this.resetBackoff();
   }
 
   private async pushOps(ops: WireOp[]): Promise<PushResponse> {
@@ -965,8 +1206,12 @@ export class CloudSync {
       this.emitSyncMode(syncMode);
     }
     if (!res.ok) {
-      const body = (await res.text().catch(() => '')).slice(0, 200);
-      throw new Error(`sync hub push ${res.status}: ${body}`);
+      // Parsed, not merely truncated: the hub's projection failure family
+      // carries {error, durable, retryable, head_seq, projected_seq} and may
+      // carry Retry-After (the remaining projection-lease TTL). Those decide
+      // how long to wait; they never decide to stamp.
+      const raw = await res.text().catch(() => '');
+      throw new HubPushError(res.status, raw, res.headers.get('Retry-After'));
     }
     let parsed: unknown;
     try {
@@ -1307,6 +1552,23 @@ export class CloudSync {
     }
   }
 
+  /**
+   * Live (non-tombstone) frozen snapshots waiting on an ack. Complement of
+   * countPendingTombstones, so the two together are the whole content outbox.
+   * Without this a real backlog is invisible: drainKind snapshots rows into
+   * the outbox before pushing, and `pending.observations` counts only rows
+   * whose synced_at is still NULL in the source table.
+   */
+  private countPendingContent(): number {
+    try {
+      return (this.db.prepare(
+        'SELECT COUNT(*) AS n FROM sync_content_outbox WHERE deleted = 0'
+      ).get() as { n: number }).n;
+    } catch {
+      return 0;
+    }
+  }
+
   private quarantineStatus(): { count: number; latestReason: string | null } {
     try {
       const count = (this.db.prepare(
@@ -1391,20 +1653,55 @@ export class CloudSync {
     });
   }
 
-  private scheduleRetry(): void {
-    if (this.stopped || this.retryTimer) return;
-    const delay = this.nextBackoffMs;
-    this.nextBackoffMs = Math.min(this.nextBackoffMs * 2, this.backoffMaxMs);
+  /**
+   * How long the hub itself says to wait, or undefined to use the ladder.
+   * This is not a second retry ladder: it only supplies the delay for the one
+   * scheduleRetry() timer that has always existed.
+   */
+  private retryDelayHint(error: HubPushError | null): number | undefined {
+    if (!error) return undefined;
+    if (error.retryAfterMs !== null) {
+      // The hub knows exactly how much of its projection lease is left, which
+      // beats guessing by doubling. Clamped both ways so a bogus or hostile
+      // header can neither hot-loop the drain nor park it past backoffMaxMs.
+      return Math.min(Math.max(error.retryAfterMs, this.backoffInitialMs), this.backoffMaxMs);
+    }
+    // Explicitly non-retryable (bad request, device limit): retrying sooner
+    // cannot help, so wait the maximum rather than climbing to it.
+    if (error.retryable === false) return this.backoffMaxMs;
+    return undefined;
+  }
+
+  /**
+   * Arm the single retry timer. Returns the armed delay, or null when nothing
+   * was armed (stopped, or a timer is already pending).
+   */
+  private scheduleRetry(delayOverrideMs?: number): number | null {
+    if (this.stopped || this.retryTimer) return null;
+    let delay: number;
+    if (delayOverrideMs === undefined) {
+      delay = this.nextBackoffMs;
+      this.nextBackoffMs = Math.min(this.nextBackoffMs * 2, this.backoffMaxMs);
+    } else {
+      // The hub named a wait — honour it and leave the ladder alone. Doubling
+      // on top of an authoritative Retry-After is the blind behaviour this
+      // replaces.
+      delay = delayOverrideMs;
+    }
     const timer = setTimeout(() => {
       this.retryTimer = null;
+      this.nextRetryAt = null;
       void this.flush();
     }, delay);
     (timer as { unref?: () => void }).unref?.();
     this.retryTimer = timer;
+    this.nextRetryAt = Date.now() + delay;
+    return delay;
   }
 
   private resetBackoff(): void {
     this.nextBackoffMs = this.backoffInitialMs;
+    this.nextRetryAt = null;
     if (this.retryTimer) {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;

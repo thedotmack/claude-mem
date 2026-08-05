@@ -32,7 +32,7 @@
  */
 
 import { CONTROL_PLANE_PROBE_CRON, runControlPlaneProbe } from "./control-plane-probe";
-import type { PushOp } from "./do/SyncHub";
+import type { ProjectionLease, ProjectionState, PushOp } from "./do/SyncHub";
 import {
 	DEVICE_LIMIT_ERROR,
 	INVALID_OPS_PREFIX,
@@ -81,6 +81,15 @@ const DEFAULT_CACHE_TTL_SECONDS = 60;
 const MAX_OPS_PER_PUSH = 500; // mirrors the getChanges page cap
 const MAX_PUSH_BODY_BYTES = 8_000_000;
 const CANONICAL_DECIMAL = /^(?:0|[1-9][0-9]*)$/;
+
+/**
+ * `projection_busy` is pure lease contention, so the honest wait is the
+ * incumbent lease's remaining TTL — never longer than the lease itself.
+ * Scoped to the projection family only: degraded auth 503s stay bare, because
+ * their wait is unknowable and a wrong hint is worse than none.
+ */
+const RETRY_AFTER_HEADER = "Retry-After";
+const PROJECTION_RETRY_AFTER_MAX_SECONDS = Math.ceil(PROJECTION_LEASE_MS / 1000);
 
 /**
  * Pro declares a 60-second maximum duration. Abort the complete response-body
@@ -347,16 +356,30 @@ async function handlePushOps(
 		if ("refused" in result) {
 			return errorResponse(result.error === DEVICE_LIMIT_ERROR ? 409 : 400, result.error);
 		}
-		const projection = await drainProjection(env, userId, result.head_seq);
+		// request.signal aborts when the client gives up (its own timeout is
+		// strictly shorter than our projector deadline). drainProjection uses it
+		// to hand the lease straight to the next push at the first point where
+		// no upstream request can still be applying — never mid-flight.
+		const projection = await drainProjection(env, userId, result.head_seq, {
+			clientSignal: request.signal,
+		});
 		if (!projection.ok) {
-			return json(projection.httpStatus, {
+			const failure = json(projection.httpStatus, {
 				error: projection.error,
 				durable: true,
 				retryable: projection.retryable,
 				head_seq: result.head_seq,
 				projected_seq: projection.projectedSeq,
 			});
+			// Header-setting idiom copied from the kill switch's X-Sync-Mode stamp.
+			if (projection.retryAfterSeconds !== undefined) {
+				failure.headers.set(RETRY_AFTER_HEADER, String(projection.retryAfterSeconds));
+			}
+			return failure;
 		}
+		// The push contract: 200 ONLY once projected_seq covers head_seq, which
+		// drainProjection's success result proves. Nothing above acks un-projected
+		// ops — every failure path returns its error body without `acked`.
 		return json(200, { ...result, projected_seq: projection.projectedSeq });
 	} catch (e) {
 		return mapHubError(e);
@@ -527,6 +550,11 @@ interface DrainFailure {
 	projectedSeq: string;
 	httpStatus: 409 | 503;
 	retryable: boolean;
+	/**
+	 * Remaining incumbent-lease TTL in whole seconds. Set for `projection_busy`
+	 * only — the one failure whose wait the Hub actually knows.
+	 */
+	retryAfterSeconds?: number;
 }
 
 type DrainResult = DrainSuccess | DrainFailure;
@@ -591,21 +619,108 @@ export interface ProjectionDrainDependencies {
 	fetchImpl?: ProjectionFetch;
 	/** Test seam for deterministic Durable Object lease timestamps. */
 	now?: () => number;
+	/**
+	 * The inbound request's signal. It aborts when the client stops waiting —
+	 * which, with a 30s client timeout against a 45s projector deadline, is the
+	 * common case. Checked ONLY at points where no upstream request can still
+	 * be in flight (see the abort checks below); an aborted client never
+	 * shortens the fence around an ambiguous in-flight projection.
+	 */
+	clientSignal?: AbortSignal;
 }
 
 function projectionNow(dependencies: ProjectionDrainDependencies): number | undefined {
 	return dependencies.now?.();
 }
 
+/** Whole-second `Retry-After`, clamped to (0, PROJECTION_LEASE_MS]. */
+function leaseRetryAfterSeconds(lease: ProjectionLease): number {
+	const remainingMs = lease.retry_after_ms;
+	if (remainingMs === undefined || !Number.isFinite(remainingMs) || remainingMs <= 0) {
+		return PROJECTION_RETRY_AFTER_MAX_SECONDS;
+	}
+	return Math.min(PROJECTION_RETRY_AFTER_MAX_SECONDS, Math.max(1, Math.ceil(remainingMs / 1000)));
+}
+
+function projectionLagOps(headSeq: string, projectedSeq: string): string {
+	if (!CANONICAL_DECIMAL.test(headSeq) || !CANONICAL_DECIMAL.test(projectedSeq)) return "unknown";
+	const lag = BigInt(headSeq) - BigInt(projectedSeq);
+	return lag > 0n ? lag.toString(10) : "0";
+}
+
+/**
+ * The one log line that makes a `projection_busy` streak diagnosable: it names
+ * the drain failure that opened the streak (recorded by the previous drain via
+ * recordProjectionFailure), how long the incumbent lease has held, and how far
+ * behind the projection actually is. Without the predecessor code a streak is
+ * indistinguishable from healthy contention, which is what made the live
+ * incident take an hour to characterize.
+ */
+function logProjectionBusy(
+	userId: string,
+	lease: ProjectionLease,
+	state: ProjectionState,
+	retryAfterSeconds: number,
+): void {
+	const remainingMs = lease.retry_after_ms;
+	console.warn("sync-hub projection_busy:", JSON.stringify({
+		event: "projection_busy",
+		user_id: userId,
+		predecessor_error: lease.last_error ?? null,
+		predecessor_at: lease.last_error_at ?? null,
+		// Elapsed since the incumbent lease was last acquired or heartbeat-renewed.
+		lease_age_ms: remainingMs === undefined ? null : PROJECTION_LEASE_MS - remainingMs,
+		lease_remaining_ms: remainingMs ?? null,
+		lease_expires_at: lease.lease_expires_at ?? null,
+		retry_after_seconds: retryAfterSeconds,
+		epoch: state.epoch,
+		head_seq: state.head_seq,
+		projected_seq: state.projected_seq,
+		projection_lag_ops: projectionLagOps(state.head_seq, state.projected_seq),
+	}));
+}
+
+/** Out-parameter: did this attempt actually take the lease? */
+interface DrainTrace {
+	leaseAcquired: boolean;
+}
+
 /**
  * Drain one user's authoritative Hub checkpoint through targetSeq. The DO
  * only leases/pages/CAS-advances; all outbound I/O remains in this Worker.
+ *
+ * Wraps the drain so a failure leaves a durable breadcrumb in the DO's `meta`
+ * table — but ONLY if this attempt actually held the lease. An attempt that
+ * never acquired it (`projection_busy`, `projection_not_configured`, a
+ * preflight client disconnect) did no work under the fence and therefore
+ * cannot be the cause of anyone's contention. Letting one of those overwrite
+ * the breadcrumb would make the next `projection_busy` name a request that
+ * never held the lease while the real fencing cause is erased — precisely the
+ * misdiagnosis this breadcrumb exists to prevent.
  */
 export async function drainProjection(
 	env: Env,
 	userId: string,
 	targetSeq: string,
 	dependencies: ProjectionDrainDependencies = {},
+): Promise<DrainResult> {
+	const trace: DrainTrace = { leaseAcquired: false };
+	const result = await runProjectionDrain(env, userId, targetSeq, dependencies, trace);
+	if (!result.ok && trace.leaseAcquired) {
+		const at = projectionNow(dependencies);
+		const stub = env.SYNC_HUB.getByName(userId);
+		if (at === undefined) await stub.recordProjectionFailure(result.error);
+		else await stub.recordProjectionFailure(result.error, at);
+	}
+	return result;
+}
+
+async function runProjectionDrain(
+	env: Env,
+	userId: string,
+	targetSeq: string,
+	dependencies: ProjectionDrainDependencies,
+	trace: DrainTrace,
 ): Promise<DrainResult> {
 	const stub = env.SYNC_HUB.getByName(userId);
 	let state = await stub.getProjectionState();
@@ -621,6 +736,17 @@ export async function drainProjection(
 			retryable: true,
 		};
 	}
+	if (dependencies.clientSignal?.aborted) {
+		// Nobody is waiting and nothing has been leased yet. Taking a 90s lease
+		// for a departed client is exactly how the next push gets livelocked.
+		return {
+			ok: false,
+			error: "projection_client_disconnected",
+			projectedSeq: state.projected_seq,
+			httpStatus: 503,
+			retryable: true,
+		};
+	}
 	const acquiredAt = projectionNow(dependencies);
 	const lease = acquiredAt === undefined
 		? await stub.acquireProjectionLease(targetSeq)
@@ -630,16 +756,21 @@ export async function drainProjection(
 		if (decimalAtLeast(state.projected_seq, targetSeq)) {
 			return { ok: true, projectedSeq: state.projected_seq };
 		}
+		const retryAfterSeconds = leaseRetryAfterSeconds(lease);
+		logProjectionBusy(userId, lease, state, retryAfterSeconds);
 		return {
 			ok: false,
 			error: "projection_busy",
 			projectedSeq: state.projected_seq,
 			httpStatus: 503,
 			retryable: true,
+			retryAfterSeconds,
 		};
 	}
 
 	const token = lease.lease_token;
+	// From here on this attempt owns the fence, so its failures are breadcrumb-worthy.
+	trace.leaseAcquired = true;
 	let releaseLeaseEarly = false;
 	try {
 		for (;;) {
@@ -651,6 +782,22 @@ export async function drainProjection(
 				// is safe to release immediately.
 				releaseLeaseEarly = true;
 				return { ok: true, projectedSeq: state.projected_seq };
+			}
+			if (dependencies.clientSignal?.aborted) {
+				// Between pages: the previous page either checkpointed or never
+				// started, so no upstream request can still be applying. The
+				// client has stopped waiting, so continuing would only orphan the
+				// lease for the rest of PROJECTION_LEASE_MS while every other push
+				// for this user 503s with projection_busy. Whatever pages already
+				// checkpointed are kept — the fenced CAS persists per page.
+				releaseLeaseEarly = true;
+				return {
+					ok: false,
+					error: "projection_client_disconnected",
+					projectedSeq: state.projected_seq,
+					httpStatus: 503,
+					retryable: true,
+				};
 			}
 			const pageAt = projectionNow(dependencies);
 			const page = pageAt === undefined
@@ -686,6 +833,10 @@ export async function drainProjection(
 				ops: page.ops,
 			});
 			if (encoder.encode(requestBody).length > PROJECTION_PAGE_MAX_BYTES) {
+				// Terminal and locally decided: the request was never sent, so no
+				// upstream can be applying. Retaining the fence here would block
+				// every other push for 90s to protect work that does not exist.
+				releaseLeaseEarly = true;
 				return {
 					ok: false,
 					error: "projection_page_too_large",
@@ -714,6 +865,10 @@ export async function drainProjection(
 				);
 			} catch (error) {
 				if (error instanceof Error && error.message === "projection_upstream_timeout") {
+					// THE ambiguous case (DEPLOY.md:79-84): our deadline fired, but
+					// the Pro handler may have ignored cancellation and may still be
+					// applying. Keep the fence for the full PROJECTION_LEASE_MS —
+					// never shorten this one, including on client disconnect.
 					return {
 						ok: false,
 						error: error.message,
@@ -722,6 +877,13 @@ export async function drainProjection(
 						retryable: true,
 					};
 				}
+				// The fetch rejected on its own rather than on our deadline. This
+				// covers connect-time failures AND a reset while reading the body,
+				// so delivery is not strictly disproven — but unlike the timeout
+				// there is no live upstream deadline still running, and the fenced
+				// CAS makes a late checkpoint impossible anyway. Classified
+				// terminal: release rather than orphan the lease.
+				releaseLeaseEarly = true;
 				return {
 					ok: false,
 					error: "projection_upstream_unreachable",
@@ -743,6 +905,9 @@ export async function drainProjection(
 						retryable: false,
 					};
 				}
+				// Ambiguous, like the timeout: a non-409 error status says the
+				// request reached Pro and something went wrong there, which does
+				// not prove the handler applied nothing. Keep the fence.
 				return {
 					ok: false,
 					error: `projection_upstream_${response.status}`,
@@ -753,6 +918,9 @@ export async function drainProjection(
 			}
 			let projected: unknown;
 			try { projected = JSON.parse(response.bodyText); } catch {
+				// A complete body arrived and it is garbage. The exchange is over,
+				// so nothing upstream remains capable of mutating the projection.
+				releaseLeaseEarly = true;
 				return {
 					ok: false,
 					error: "projection_response_not_json",
@@ -767,6 +935,10 @@ export async function drainProjection(
 				|| result.epoch !== page.epoch
 				|| result.projected_through_seq !== page.through_seq
 			) {
+				// A complete, well-formed response that answers a different
+				// question. Deterministic and final for this attempt — the
+				// checkpoint is provably unmoved, so release rather than fence.
+				releaseLeaseEarly = true;
 				return {
 					ok: false,
 					error: "projection_response_mismatch",
