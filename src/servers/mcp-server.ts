@@ -395,6 +395,133 @@ async function handleSessionStartContext(
   });
 }
 
+/**
+ * Fetch a worker JSON endpoint that is NOT MCP-shaped (structured audit/query
+ * APIs) and throw with the worker's error text on non-2xx. The audit tools
+ * render their own compact text from the payload.
+ */
+async function fetchWorkerJson(endpoint: string, query: Record<string, any> = {}): Promise<any> {
+  const searchParams = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null) {
+      searchParams.append(key, String(value));
+    }
+  }
+  const suffix = searchParams.size > 0 ? `?${searchParams}` : '';
+  const response = await workerHttpRequest(`${endpoint}${suffix}`);
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Worker API error (${response.status}): ${errorText}`);
+  }
+  return await response.json();
+}
+
+function toolError(error: unknown): { content: Array<{ type: 'text'; text: string }>; isError: true } {
+  logger.error('SYSTEM', '← Worker API error', { endpoint: 'facts audit' }, error instanceof Error ? error : new Error(String(error)));
+  return {
+    content: [{
+      type: 'text' as const,
+      text: `Error calling Worker API: ${error instanceof Error ? error.message : String(error)}`
+    }],
+    isError: true as const
+  };
+}
+
+/**
+ * Provenance audit (audit G6): fact one line, sources as a list, supersession
+ * chain status. The worker returns structured JSON; the compact render lives
+ * here so the HTTP endpoint stays machine-readable.
+ */
+async function handleFactProvenance(
+  args: { id?: number },
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  const id = args?.id;
+  if (typeof id !== 'number' || !Number.isInteger(id) || id <= 0) {
+    return {
+      content: [{ type: 'text' as const, text: 'fact_provenance: "id" (fact id) is required' }],
+      isError: true,
+    };
+  }
+
+  try {
+    const audit = await fetchWorkerJson(`/api/facts/${id}/provenance`);
+    const f = audit.fact;
+    const lines: string[] = [];
+    lines.push(`#${f.id} [${f.kind}] ${f.fact} — ${f.status} (valid ${f.valid_from ?? '?'} → ${f.valid_to ?? 'now'})`);
+    lines.push('');
+    if (audit.provenance.length === 0) {
+      lines.push(`Sources: none${audit.note ? ` (${audit.note})` : ''}`);
+    } else {
+      lines.push(`Sources (${audit.provenance.length}):`);
+      for (const s of audit.provenance) {
+        lines.push(`  #${s.id} [${s.type ?? '?'}] ${s.title ?? '(untitled)'} @ ${s.created_at ?? '?'}${s.stale ? ' — STALE (superseded)' : ''}`);
+      }
+    }
+    const chain = audit.supersession.superseded_by_chain as Array<{ id: number; status: string }>;
+    lines.push(chain.length > 0
+      ? `Superseded by: ${chain.map(c => `#${c.id} (${c.status})`).join(' → ')}`
+      : 'Superseded by: none (active head)');
+    const replaces = audit.supersession.replaces as Array<{ id: number }>;
+    if (replaces.length > 0) {
+      lines.push(`Replaces: ${replaces.map(r => `#${r.id}`).join(', ')}${audit.supersession.replaces_chain_continues ? ' (chain continues)' : ''}`);
+    }
+    return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+  } catch (error) {
+    return toolError(error);
+  }
+}
+
+/**
+ * Temporal belief query (audit G6): "true on <date>", grouped by today's
+ * status — active / superseded later / invalidated later.
+ */
+async function handleFactsAt(
+  args: { ts?: string | number; project?: string; limit?: number },
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  if (args?.ts === undefined || args?.ts === null || args.ts === '') {
+    return {
+      content: [{ type: 'text' as const, text: 'facts_at: "ts" (ISO 8601 date or epoch ms) is required' }],
+      isError: true,
+    };
+  }
+  if (typeof args?.project !== 'string' || args.project.trim().length === 0) {
+    return {
+      content: [{ type: 'text' as const, text: 'facts_at: "project" is required' }],
+      isError: true,
+    };
+  }
+
+  try {
+    const data = await fetchWorkerJson('/api/facts/at', {
+      ts: args.ts,
+      project: args.project,
+      limit: args.limit,
+    });
+    const facts = data.facts as Array<{ id: number; kind: string; fact: string; valid_from: string | null; valid_to: string | null; status: string }>;
+    const lines: string[] = [];
+    lines.push(facts.length > 0
+      ? `True on ${data.date} (project: ${data.project}) — ${facts.length} fact(s)`
+      : `Nothing believed on ${data.date} (project: ${data.project})`);
+    const groups: Array<[string, string]> = [
+      ['active', 'Still active'],
+      ['superseded_later', 'Superseded later'],
+      ['invalidated_later', 'Invalidated later'],
+    ];
+    for (const [status, heading] of groups) {
+      const group = facts.filter(f => f.status === status);
+      if (group.length === 0) continue;
+      lines.push('');
+      lines.push(`${heading}:`);
+      for (const f of group) {
+        lines.push(`#${f.id} [${f.kind}] ${f.fact} (valid ${f.valid_from ?? '?'} → ${f.valid_to ?? 'now'})`);
+      }
+    }
+    return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+  } catch (error) {
+    return toolError(error);
+  }
+}
+
 const handleObservationGenerationStatus = wrapHandler('observation_generation_status', async (args: ObservationGenerationStatusArgs) => {
   const ctx = requireServerForObservationTool('observation_generation_status');
   const jobId = (args?.jobId ?? args?.job_id ?? '').trim();
@@ -594,6 +721,34 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       return await callWorker('/api/facts/batch', { body: args });
     }
+  },
+  {
+    name: 'fact_provenance',
+    description: 'Provenance audit for one semantic fact — where this belief came from: source observations (stale-flagged), supersession chain up to the active successor, and what it replaced. Params: id (fact ID, required)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Fact ID to audit (required)' }
+      },
+      required: ['id'],
+      additionalProperties: true
+    },
+    handler: async (args: any) => handleFactProvenance(args ?? {}),
+  },
+  {
+    name: 'facts_at',
+    description: 'Temporal belief query — which facts were true at a past moment ("what did I believe then"), including rows superseded or invalidated since, grouped by today\'s status. Params: ts (ISO 8601 date or epoch ms, required), project (required), limit',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ts: { type: ['string', 'number'], description: 'Point in time: ISO 8601 date or epoch ms (required)' },
+        project: { type: 'string', description: 'Project name (required)' },
+        limit: { type: 'number', description: 'Max results (default 50)' }
+      },
+      required: ['ts', 'project'],
+      additionalProperties: true
+    },
+    handler: async (args: any) => handleFactsAt(args ?? {}),
   },
   {
     name: 'session_start_context',

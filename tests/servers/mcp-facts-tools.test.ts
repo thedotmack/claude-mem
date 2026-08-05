@@ -42,3 +42,46 @@ describe('Semantic memory layer — MCP facts tools', () => {
     expect(src).toContain('consolidationEnabled');
   });
 });
+
+describe('Provenance audit + temporal query (audit G6) — MCP tools', () => {
+  it('fact_provenance requires id and fetches the provenance endpoint', async () => {
+    const src = await Bun.file(mcpServerPath).text();
+
+    expect(src).toContain("name: 'fact_provenance'");
+    const section = src.slice(src.indexOf("name: 'fact_provenance'"), src.indexOf("name: 'facts_at'"));
+    expect(section).toContain('id:');
+    expect(section).toContain("required: ['id']");
+    expect(section).toContain('handleFactProvenance');
+    // Compact render: fact line, sources list, chain status.
+    expect(src).toContain('/api/facts/${id}/provenance');
+    expect(src).toContain('Superseded by:');
+    expect(src).toContain('STALE (superseded)');
+  });
+
+  it('facts_at requires ts + project and fetches the temporal endpoint', async () => {
+    const src = await Bun.file(mcpServerPath).text();
+
+    expect(src).toContain("name: 'facts_at'");
+    const section = src.slice(src.indexOf("name: 'facts_at'"), src.indexOf("name: 'session_start_context'"));
+    expect(section).toContain('ts:');
+    expect(section).toContain('project:');
+    expect(section).toContain('limit:');
+    expect(section).toContain("required: ['ts', 'project']");
+    expect(section).toContain('handleFactsAt');
+    // Grouped render by today's status.
+    expect(src).toContain("'/api/facts/at'");
+    expect(src).toContain('Still active');
+    expect(src).toContain('Superseded later');
+    expect(src).toContain('Invalidated later');
+  });
+
+  it('worker exposes the read-only audit endpoints', async () => {
+    const src = await Bun.file(dataRoutesPath).text();
+
+    expect(src).toContain("app.get('/api/facts/:id/provenance'");
+    expect(src).toContain("app.get('/api/facts/at'");
+    expect(src).toContain('getFactProvenance');
+    expect(src).toContain('getFactsAt');
+    expect(src).toContain('parseTemporalTs');
+  });
+});
