@@ -18,6 +18,7 @@ import { logger } from '../utils/logger.js';
 import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
 import { openConfiguredSqliteDatabase } from './sqlite/connection.js';
+import { applyPendingSwaps } from './infrastructure/PendingSwap.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
@@ -837,6 +838,7 @@ export class WorkerService implements WorkerRef {
         // runShutdownSequence seam (`removePidFile: () => void`) unchanged.
         removePidFile: () => removePidFileIfOwner(process.pid),
         spawnDaemon,
+        applyPendingSwaps,
       },
     });
   }

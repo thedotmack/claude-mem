@@ -47,6 +47,15 @@ export interface RestartHandoffDeps {
    */
   removePidFile: () => void;
   spawnDaemon: (scriptPath: string, port: number) => number | undefined;
+  /**
+   * Optional hook run after the dying worker's port is confirmed free (so any
+   * open db connection is guaranteed closed by then) and before the successor
+   * spawns. The Backup & Restore feature (BackupRoutes.ts) uses this to
+   * rename staged `.importing` files over the real db/wal/shm/settings files
+   * atomically, at the one point in the restart sequence where nothing holds
+   * them open.
+   */
+  applyPendingSwaps?: () => void;
 }
 
 export interface ShutdownSequenceOptions {
@@ -165,13 +174,7 @@ async function spawnRestartSuccessor(handoff: RestartHandoffDeps): Promise<void>
     });
     return;
   }
-  // Same ordering as the CLI restart path (worker-service.ts `restart`
-  // case): port free → remove the now-ownerless PID file → spawn. Without
-  // the removal a fast-booting successor can still see this not-yet-exited
-  // process in the PID file and refuse to start as a "duplicate". The
-  // injected implementation is owner-or-dead guarded (Phase 5): it deletes
-  // only this dying worker's own file (or a dead pid's leftover), never a
-  // live successor's.
+  handoff.applyPendingSwaps?.();
   handoff.removePidFile();
   const successorPid = handoff.spawnDaemon(successorScript, handoff.port);
   if (successorPid === undefined) {
