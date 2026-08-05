@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Feed } from './Feed';
+import { CategoryFilter } from './CategoryFilter';
 import { usePagination } from '../hooks/usePagination';
 import { Observation, Summary, UserPrompt } from '../types';
-import { mergeAndDeduplicateByProject } from '../utils/data';
+import { mergeAndDeduplicateByProject, buildFeedItems } from '../utils/data';
+import { categoryOf, countByCategory } from '../utils/category';
 
 interface SessionDetailPageProps {
   contentSessionId: string;
@@ -42,6 +44,32 @@ export function SessionDetailPage({ contentSessionId, observations, summaries, p
     return mergeAndDeduplicateByProject(live, paginated);
   }, [prompts, paginatedPrompts, matchesSession]);
 
+  const allItems = useMemo(
+    () => buildFeedItems(allObservations, allSummaries, allPrompts),
+    [allObservations, allSummaries, allPrompts]
+  );
+
+  const [activeCategories, setActiveCategories] = useState<Set<string>>(new Set());
+
+  const categoryCounts = useMemo(() => countByCategory(allItems), [allItems]);
+
+  const filteredItems = useMemo(() => {
+    if (activeCategories.size === 0) return allItems;
+    return allItems.filter(item => activeCategories.has(categoryOf(item)));
+  }, [allItems, activeCategories]);
+
+  const toggleCategory = useCallback((category: string) => {
+    setActiveCategories(prev => {
+      const next = new Set(prev);
+      if (next.has(category)) {
+        next.delete(category);
+      } else {
+        next.add(category);
+      }
+      return next;
+    });
+  }, []);
+
   const handleLoadMore = useCallback(async () => {
     try {
       const [newObservations, newSummaries, newPrompts] = await Promise.all([
@@ -68,9 +96,12 @@ export function SessionDetailPage({ contentSessionId, observations, summaries, p
     setPaginatedObservations([]);
     setPaginatedSummaries([]);
     setPaginatedPrompts([]);
+    setActiveCategories(new Set());
     handleLoadMore();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contentSessionId]);
+
+  const anyHasMore = pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore;
 
   return (
     <>
@@ -80,13 +111,19 @@ export function SessionDetailPage({ contentSessionId, observations, summaries, p
         </button>
         <span className="session-detail-id" title={contentSessionId}>{contentSessionId}</span>
       </div>
+      <CategoryFilter
+        categoryCounts={categoryCounts}
+        activeCategories={activeCategories}
+        onToggle={toggleCategory}
+        filteredCount={filteredItems.length}
+        totalCount={allItems.length}
+        totalIsPartial={anyHasMore}
+      />
       <Feed
-        observations={allObservations}
-        summaries={allSummaries}
-        prompts={allPrompts}
+        items={filteredItems}
         onLoadMore={handleLoadMore}
         isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
-        hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
+        hasMore={anyHasMore}
       />
     </>
   );
