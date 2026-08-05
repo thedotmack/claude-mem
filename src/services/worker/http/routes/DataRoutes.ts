@@ -18,6 +18,7 @@ import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
 import { recordRetrieved } from '../../../reinforcement/persist.js';
 import { getFactsByIds, recordFactsRetrieved } from '../../../sqlite/facts/store.js';
+import { getFactProvenance, getFactsAt, parseTemporalTs } from '../../../sqlite/facts/audit.js';
 import { consolidationEnabled, runConsolidation } from '../../../reinforcement/consolidation-judge.js';
 import {
   readRetentionPolicy, runRetentionSweep, observationChromaDocIds,
@@ -110,6 +111,8 @@ export class DataRoutes extends BaseRouteHandler {
     app.get('/api/observations/by-file', this.handleGetObservationsByFile.bind(this));
     app.post('/api/observations/batch', validateBody(observationsBatchSchema), this.handleGetObservationsByIds.bind(this));
     app.get('/api/facts', this.handleGetFacts.bind(this));
+    app.get('/api/facts/at', this.handleGetFactsAt.bind(this));
+    app.get('/api/facts/:id/provenance', this.handleGetFactProvenance.bind(this));
     app.post('/api/facts/batch', validateBody(factsBatchSchema), this.handleGetFactsByIds.bind(this));
     app.post('/api/facts/consolidate', validateBody(factsConsolidateSchema), this.handleConsolidateFacts.bind(this));
     app.post('/api/maintenance/retention-sweep', validateBody(retentionSweepSchema), this.handleRetentionSweep.bind(this));
@@ -275,6 +278,60 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     res.json(facts);
+  });
+
+  /**
+   * Provenance audit (audit G6) — "where did this belief come from": the fact
+   * row, its source observations (stale-flagged when superseded), the
+   * supersession chain up to the active head, and the rows it replaced.
+   * Read-only.
+   */
+  private handleGetFactProvenance = this.wrapHandler((req: Request, res: Response): void => {
+    const id = this.parseIntParam(req, res, 'id');
+    if (id === null) return;
+
+    const store = this.dbManager.getSessionStore();
+    const report = getFactProvenance(store.db, id);
+    if (!report) {
+      this.notFound(res, `fact #${id} not found`);
+      return;
+    }
+
+    res.json(report);
+  });
+
+  /**
+   * Temporal belief query (audit G6) — facts that were true at `ts` (epoch ms
+   * or ISO 8601), including rows superseded or invalidated since ("what did
+   * we believe then"). Each row carries its status as of today. Read-only.
+   */
+  private handleGetFactsAt = this.wrapHandler((req: Request, res: Response): void => {
+    const project = DataRoutes.firstString(req.query.project);
+    if (!project) {
+      this.badRequest(res, 'project query parameter is required');
+      return;
+    }
+
+    const ts = parseTemporalTs(DataRoutes.firstString(req.query.ts));
+    if (ts === null) {
+      this.badRequest(res, 'ts query parameter is required and must be epoch ms or an ISO 8601 date');
+      return;
+    }
+
+    const includeActive = DataRoutes.firstString(req.query.includeActive) !== 'false';
+    const parsedLimit = parseInt(DataRoutes.firstString(req.query.limit) ?? '', 10);
+    const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : undefined;
+
+    const store = this.dbManager.getSessionStore();
+    const facts = getFactsAt(store.db, project, ts, { includeActive, limit });
+
+    res.json({
+      project,
+      ts,
+      date: new Date(ts).toISOString(),
+      count: facts.length,
+      facts,
+    });
   });
 
   /**
