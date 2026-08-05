@@ -141,6 +141,40 @@ describe('ChromaMcpManager spawn env (hf-xet gotcha)', () => {
   });
 });
 
+describe('ChromaMcpManager spawn env (torch thread cap)', () => {
+  it('caps torch threads from settings (default 4) and mirrors to MKL/TORCH vars', () => {
+    delete process.env.OMP_NUM_THREADS;
+    // The file-level mock makes SettingsDefaultsManager.get return '' — stub
+    // the thread key so the cap value under test actually flows.
+    mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
+      SettingsDefaultsManager: {
+        get: (key: string) => (key === 'CLAUDE_MEM_TORCH_NUM_THREADS' ? '4' : ''),
+        getInt: () => 0,
+        loadFromFile: () => ({}),
+      },
+    }));
+
+    const env = internals.getUvxPreflightEnv();
+
+    expect(env.OMP_NUM_THREADS).toBe('4');
+    expect(env.MKL_NUM_THREADS).toBe('4');
+    expect(env.TORCH_NUM_THREADS).toBe('4');
+
+    mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
+      SettingsDefaultsManager: { get: () => '', getInt: () => 0, loadFromFile: () => ({}) },
+    }));
+  });
+
+  it('respects an explicit OMP_NUM_THREADS from the user env', () => {
+    process.env.OMP_NUM_THREADS = '8';
+
+    const env = internals.getUvxPreflightEnv();
+
+    expect(env.OMP_NUM_THREADS).toBe('8');
+    delete process.env.OMP_NUM_THREADS;
+  });
+});
+
 describe('vendored chroma-mcp fork deltas (static guards)', () => {
   const serverPy = () => fs.readFileSync(FORK_SERVER_PY, 'utf-8');
 

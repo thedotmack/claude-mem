@@ -1479,6 +1479,17 @@ export class ChromaMcpManager {
     // vendor/chroma-mcp/README.md). Force plain HTTPS for the ~476 MB
     // e5-small model download. Explicit user setting wins.
     if (!baseEnv.HF_HUB_DISABLE_XET) baseEnv.HF_HUB_DISABLE_XET = '1';
+
+    // Cap torch's CPU parallelism: by default torch grabs every core, which
+    // is what made the e5 reindex pin the machine at 255% CPU (user report,
+    // 2026-07-31). Batch embedding gets ~2x slower but the host stays
+    // responsive; interactive single-doc embedding is unaffected. Explicit
+    // user env always wins over the settings-file value.
+    if (!baseEnv.OMP_NUM_THREADS) {
+      baseEnv.OMP_NUM_THREADS = SettingsDefaultsManager.get('CLAUDE_MEM_TORCH_NUM_THREADS');
+    }
+    if (!baseEnv.MKL_NUM_THREADS) baseEnv.MKL_NUM_THREADS = baseEnv.OMP_NUM_THREADS;
+    if (!baseEnv.TORCH_NUM_THREADS) baseEnv.TORCH_NUM_THREADS = baseEnv.OMP_NUM_THREADS;
     return baseEnv;
   }
 

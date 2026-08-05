@@ -103,6 +103,7 @@ export interface SettingsDefaults {
   // (vendor/chroma-mcp); 'default' = upstream MiniLM (rollback path).
   CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: string;
   CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: string;
+  CLAUDE_MEM_TORCH_NUM_THREADS: string;
   // Worker-native cloud sync. Active ⇔ TOKEN, USER_ID, and HUB_URL are all
   // non-empty — there is no separate enabled flag. HUB_URL points at the
   // two-lane sync hub (workers/sync-hub); while it is empty, sync is OFF
@@ -216,6 +217,7 @@ export class SettingsDefaultsManager {
     // (delete cm__* + reset backfill watermarks). Rollback: set to 'default'.
     CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: 'e5-multilingual',
     CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: '5000', // Bound burst imports without changing normal live indexing
+    CLAUDE_MEM_TORCH_NUM_THREADS: '4',  // torch CPU cap for the chroma-mcp embedder (default = all cores, which pinned the host at 255% during the e5 reindex)
     // Worker-native cloud sync: credentials come from cmem.ai → Connect.
     CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
     CLAUDE_MEM_CLOUD_SYNC_USER_ID: '',
