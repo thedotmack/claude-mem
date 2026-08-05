@@ -92,6 +92,15 @@ const RETRY_AFTER_HEADER = "Retry-After";
 const PROJECTION_RETRY_AFTER_MAX_SECONDS = Math.ceil(PROJECTION_LEASE_MS / 1000);
 
 /**
+ * Upstream statuses that a GATEWAY produces when Pro's handler never answered,
+ * so the handler may still be applying. Same ambiguity as an outright timeout ⇒
+ * these keep the fencing lease. Every other non-409 status came from Pro's own
+ * application code, which proves the handler returned. See the release/retain
+ * split at the `!response.ok` branch in the drain loop.
+ */
+const GATEWAY_AMBIGUOUS_STATUSES = new Set([502, 504]);
+
+/**
  * Pro declares a 60-second maximum duration. Abort the complete response-body
  * read at 45 seconds while the Hub holds a 90-second fencing lease:
  * Hub abort (45s) < Pro platform ceiling (60s) < Hub lease (90s).
@@ -905,9 +914,28 @@ async function runProjectionDrain(
 						retryable: false,
 					};
 				}
-				// Ambiguous, like the timeout: a non-409 error status says the
-				// request reached Pro and something went wrong there, which does
-				// not prove the handler applied nothing. Keep the fence.
+				// Split by WHO produced the status, not by whether it is retryable.
+				//
+				// An application status from Pro's own handler proves the handler
+				// RETURNED. Nothing upstream is still running, so the 90s fence
+				// protects against nothing and merely stalls the drain — this is
+				// the failure mode the live backlog incident reproduced. Release.
+				//
+				// A gateway status (502/504) means the upstream never answered, so
+				// Pro's handler may still be applying, exactly like a timeout.
+				// Those keep the fence. Do not "simplify" this into a blanket
+				// release: 502/504 are shaped like projection_upstream_timeout,
+				// not like a handler response.
+				//
+				// Retention was never deduplication in any case — it only delays
+				// the retry, since the successor re-sends the identical
+				// (from_seq_exclusive, through_seq] range once the lease expires.
+				// The checkpoint itself is protected by the lease-token-fenced CAS
+				// in advanceProjectionCheckpoint, and every op carries `seq` plus
+				// `operation_sha256`, so a correct projector upserts a repeat.
+				if (!GATEWAY_AMBIGUOUS_STATUSES.has(response.status)) {
+					releaseLeaseEarly = true;
+				}
 				return {
 					ok: false,
 					error: `projection_upstream_${response.status}`,

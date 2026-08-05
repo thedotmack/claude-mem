@@ -496,8 +496,11 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 		)).rejects.toThrow(/strictly shorter/);
 	});
 
+	// Gateway statuses mean Pro's handler never answered, so it may still be
+	// applying — the same ambiguity as an outright timeout.
 	it.each([
-		["retryable", "projection_upstream_503"],
+		["gateway-502", "projection_upstream_502"],
+		["gateway-504", "projection_upstream_504"],
 	])("retains the full lease after ambiguous projection mode %s", async (mode, expectedError) => {
 		const userId = `projection-retain-${mode}`;
 		const stub = hub(userId);
@@ -521,12 +524,16 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 		await stub.releaseProjectionLease(successor.lease_token!);
 	});
 
-	// Terminal, LOCALLY decided failures: the exchange is provably over, so the
-	// fence protects nothing and only livelocks the next push for 90s.
+	// Terminal failures: the exchange is provably over — either the Hub decided
+	// locally, or Pro's own application code returned a status, which proves its
+	// handler finished. The fence protects nothing and only livelocks the next
+	// push for 90s.
 	it.each([
 		["network", "projection_upstream_unreachable"],
 		["truncated", "projection_response_not_json"],
 		["mismatch", "projection_response_mismatch"],
+		["server-error", "projection_upstream_500"],
+		["retryable", "projection_upstream_503"],
 	])("releases the lease immediately after terminal projection mode %s", async (mode, expectedError) => {
 		const userId = `projection-terminal-${mode}`;
 		const stub = hub(userId);
@@ -712,12 +719,12 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 		const stub = hub(userId);
 		const pushed = ok(await stub.pushOps("dev-a", [await observationOp("1")]));
 		const startedAt = 90_000;
-		// An ambiguous failure that retains the lease...
-		const retained = await drainProjection(projectionEnv("retryable"), userId, pushed.head_seq, {
+		// An ambiguous gateway failure that retains the lease...
+		const retained = await drainProjection(projectionEnv("gateway-502"), userId, pushed.head_seq, {
 			now: () => startedAt,
 			fetchTimeoutMs: 100,
 		});
-		expect(retained).toMatchObject({ ok: false, error: "projection_upstream_503" });
+		expect(retained).toMatchObject({ ok: false, error: "projection_upstream_502" });
 
 		// ...is readable by the very next caller, which now gets projection_busy.
 		const busy = await drainProjection(projectionEnv("success"), userId, pushed.head_seq, {
@@ -732,7 +739,7 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 
 		const lease = await stub.acquireProjectionLease(pushed.head_seq, startedAt + 30_000);
 		expect(lease.acquired).toBe(false);
-		expect(lease.last_error).toBe("projection_upstream_503");
+		expect(lease.last_error).toBe("projection_upstream_502");
 		expect(lease.last_error_at).toBe(String(startedAt));
 		expect(lease.retry_after_ms).toBe(60_000);
 		expect(lease.lease_expires_at).toBe(String(startedAt + PROJECTION_LEASE_MS));
@@ -744,11 +751,11 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 		const pushed = ok(await stub.pushOps("dev-a", [await observationOp("1")]));
 		const startedAt = 100_000;
 
-		// The real fencing cause: ambiguous failure, lease retained for the full 90s.
-		expect(await drainProjection(projectionEnv("retryable"), userId, pushed.head_seq, {
+		// The real fencing cause: ambiguous gateway failure, lease retained 90s.
+		expect(await drainProjection(projectionEnv("gateway-502"), userId, pushed.head_seq, {
 			now: () => startedAt,
 			fetchTimeoutMs: 100,
-		})).toMatchObject({ ok: false, error: "projection_upstream_503" });
+		})).toMatchObject({ ok: false, error: "projection_upstream_502" });
 
 		// None of the following take the lease, so none of them may claim
 		// authorship of the contention they merely observed.
@@ -775,7 +782,7 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 		// The breadcrumb still names the request that actually holds the fence.
 		const lease = await stub.acquireProjectionLease(pushed.head_seq, startedAt + 3_000);
 		expect(lease.acquired).toBe(false);
-		expect(lease.last_error).toBe("projection_upstream_503");
+		expect(lease.last_error).toBe("projection_upstream_502");
 		expect(lease.last_error_at).toBe(String(startedAt));
 	});
 
@@ -1006,7 +1013,7 @@ describe("front Worker durability and repair", () => {
 		"Content-Type": "application/json",
 	};
 
-	it("keeps a retryable provider failure fenced, then duplicate replay projects after lease expiry", async () => {
+	it("keeps a gateway provider failure fenced, then duplicate replay projects after lease expiry", async () => {
 		const op = await observationOp("1", "1", "dev-http");
 		const requestBody = JSON.stringify({ protocol_version: 2, ops: [op] });
 		const first = await SELF.fetch(`${base}/v1/sync/ops`, { method: "POST", headers, body: requestBody });
@@ -1014,8 +1021,8 @@ describe("front Worker durability and repair", () => {
 		const failure = await first.json() as { durable: boolean; head_seq: string; projected_seq: string };
 		expect(failure).toMatchObject({ durable: true, head_seq: "1", projected_seq: "0" });
 
-		// The ambiguous failure carries no Retry-After: the Hub cannot know when
-		// an upstream that may still be applying will finish.
+		// The ambiguous gateway failure carries no Retry-After: the Hub cannot
+		// know when an upstream that may still be applying will finish.
 		expect(first.headers.get("Retry-After")).toBeNull();
 
 		const busy = await SELF.fetch(`${base}/v1/sync/ops`, { method: "POST", headers, body: requestBody });
@@ -1085,8 +1092,8 @@ describe("front Worker durability and repair", () => {
 	});
 
 	it("never acks un-projected ops on any push response path", async () => {
-		// Always-503 projector ⇒ an ambiguous failure that retains the lease, so
-		// this user exercises BOTH non-200 push paths back to back.
+		// Always-502 projector ⇒ an ambiguous gateway failure that retains the
+		// lease, so this user exercises BOTH non-200 push paths back to back.
 		const wedgedUser = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 		const wedgedHeaders = {
 			...headers,
@@ -1103,7 +1110,7 @@ describe("front Worker durability and repair", () => {
 		});
 		expect(failed.status).toBe(503);
 		const failedBody = await failed.json() as Record<string, unknown>;
-		expect(failedBody.error).toBe("projection_upstream_503");
+		expect(failedBody.error).toBe("projection_upstream_502");
 		// The ops ARE durable, but nothing is acked while projection lags.
 		expect(failedBody).not.toHaveProperty("acked");
 		expect(failedBody.durable).toBe(true);
