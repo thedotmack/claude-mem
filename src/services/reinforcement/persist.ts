@@ -114,13 +114,18 @@ export function supersedeObservation(db: Database, oldId: number, newId: number)
  * β·log1p(count) self-reinforcement of notes that keep proving useful enough to
  * surface. Pure count signal — does NOT touch reinforcement_dates (surfacing is
  * not the same as the world re-confirming the fact). No-op on empty input.
+ *
+ * Also stamps last_surfaced (v55, memory grounding Layer 2): the freshness of
+ * this stamp is echo condition 2 — a near-duplicate observation written shortly
+ * after A surfaced is likely the agent retelling its own memory, not the world
+ * re-confirming it (see detectEcho in ./dedup.ts).
  */
-export function recordSurfaced(db: Database, ids: number[]): void {
+export function recordSurfaced(db: Database, ids: number[], today: Date = new Date()): void {
   if (ids.length === 0) return;
   const placeholders = ids.map(() => '?').join(',');
   db.prepare(
-    `UPDATE observations SET relevance_count = COALESCE(relevance_count, 0) + 1 WHERE id IN (${placeholders})`,
-  ).run(...ids);
+    `UPDATE observations SET relevance_count = COALESCE(relevance_count, 0) + 1, last_surfaced = ? WHERE id IN (${placeholders})`,
+  ).run(isoDay(today), ...ids);
 }
 
 /** Current ACT-R strength of one observation (0 if no history / missing). */

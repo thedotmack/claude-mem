@@ -20,6 +20,7 @@ import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
 import { dedupJudgeEnabled, applyDedupJudge } from '../../reinforcement/dedup-judge.js';
+import { detectEcho } from '../../reinforcement/dedup.js';
 import { supersedeObservation } from '../../reinforcement/persist.js';
 import { maybeConsolidate } from '../../reinforcement/consolidation-judge.js';
 
@@ -403,10 +404,38 @@ export async function processAgentResponse(
     agent_id: context.pendingAgentId
   }));
 
+  // Memory grounding (Layer 2): echo detection. An observation that retells a
+  // recently-injected memory with no new tool evidence is marked echo_of — it
+  // is stored without a reinforcement seed, excluded from injection and dedup
+  // candidacy, and skipped by the judge below so the echoed note is NOT
+  // reinforced. Runs even when the LLM judge is off: it needs only the FTS
+  // shortlist, no LLM call. Defensive like the judge — failures store as-is.
+  let echoCount = 0;
+  const echoCheckedObservations = labeledObservations.map(obs => {
+    try {
+      const echoOf = detectEcho(sessionStore.db, {
+        project: context.project,
+        type: obs.type,
+        title: obs.title,
+        narrative: obs.narrative,
+        files_read: obs.files_read,
+        files_modified: obs.files_modified,
+      });
+      if (echoOf == null) return obs;
+      echoCount++;
+      return { ...obs, echo_of: echoOf };
+    } catch {
+      return obs;
+    }
+  });
+  if (echoCount > 0) {
+    logger.info('DEDUP', `Echo detection: ${echoCount}/${labeledObservations.length} observation(s) retell recently-injected memory — stored without reinforcement seed`);
+  }
+
   // Phase 3 (opt-in): semantic dedup judge. Folds near-duplicate observations
   // into existing rows (reinforce instead of insert). Default off; fully
   // defensive — any failure stores the original batch unchanged.
-  let observationsToStore = labeledObservations;
+  let observationsToStore = echoCheckedObservations;
   const conflicts: Array<{ observation: (typeof labeledObservations)[number]; targetId: number; rationale: string }> = [];
   if (dedupJudgeEnabled() && labeledObservations.length > 0) {
     try {

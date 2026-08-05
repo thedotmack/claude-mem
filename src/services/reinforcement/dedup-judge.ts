@@ -66,6 +66,8 @@ interface JudgeableObservation {
   type: string;
   title: string | null;
   narrative: string | null;
+  /** Echo marker (memory grounding, Layer 2) — set upstream by detectEcho. */
+  echo_of?: number | null;
 }
 
 /**
@@ -87,6 +89,13 @@ export async function applyDedupJudge<T extends JudgeableObservation>(
 ): Promise<T[]> {
   const kept: T[] = [];
   for (const obs of observations) {
+    // Echo rows (memory grounding, Layer 2) are stored but never judged: an
+    // INCREMENT here would reinforce the very note the echo retells, letting
+    // memory confirm itself. Skipping the judge is what breaks the loop.
+    if (obs.echo_of != null) {
+      kept.push(obs);
+      continue;
+    }
     const input = { project, type: obs.type, title: obs.title, narrative: obs.narrative };
     try {
       const shortlist = findDedupCandidates(db, input);

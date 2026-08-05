@@ -126,6 +126,7 @@ export class SessionStore {
     this.ensureObservationSupersededByColumn();
     this.ensureSemanticFactsTable();
     this.ensureDeletedObservationsTable();
+    this.ensureObservationEchoColumns();
   }
 
   /**
@@ -307,6 +308,44 @@ export class SessionStore {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(54, new Date().toISOString());
+  }
+
+  /**
+   * Memory grounding — echo detection (version 55).
+   *
+   * Breaks the compounding-fiction loop (plans/2026-08-05-memory-grounding.md):
+   * the agent must no longer be able to "confirm" its own memory by retelling
+   * it. Two columns:
+   *   - last_surfaced: ISO `YYYY-MM-DD` of the most recent context injection
+   *     that included the row (written by the existing recordSurfaced path in
+   *     ContextBuilder). Freshness of this stamp is echo condition 2.
+   *   - echo_of: id of the near-duplicate observation this row echoes (set when
+   *     all three echo conditions hold — see detectEcho in
+   *     src/services/reinforcement/dedup.ts). Echo rows are stored for audit
+   *     but carry no reinforcement seed and are excluded from the injection
+   *     pool and dedup candidacy, exactly like superseded rows.
+   *
+   * Idempotent — the PRAGMA checks are the real guard, the version row is
+   * bookkeeping.
+   */
+  private ensureObservationEchoColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(55) as SchemaVersion | undefined;
+    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasLastSurfaced = columns.some(col => col.name === 'last_surfaced');
+    const hasEchoOf = columns.some(col => col.name === 'echo_of');
+
+    if (applied && hasLastSurfaced && hasEchoOf) return;
+
+    if (!hasLastSurfaced) {
+      this.db.run('ALTER TABLE observations ADD COLUMN last_surfaced TEXT');
+      logger.debug('DB', 'Added last_surfaced column to observations table');
+    }
+    if (!hasEchoOf) {
+      this.db.run('ALTER TABLE observations ADD COLUMN echo_of INTEGER');
+      logger.debug('DB', 'Added echo_of column to observations table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(55, new Date().toISOString());
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -2788,6 +2827,13 @@ export class SessionStore {
       agent_type?: string | null;
       agent_id?: string | null;
       metadata?: string | null;
+      /**
+       * Echo marker (memory grounding, Layer 2): id of the near-duplicate
+       * observation this row retells. Echo rows are stored WITHOUT a
+       * reinforcement seed (reinforcement_dates / last_reinforced stay NULL)
+       * and are excluded from injection and dedup candidacy.
+       */
+      echo_of?: number | null;
     }>,
     summary: {
       request: string;
@@ -2814,8 +2860,8 @@ export class SessionStore {
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-         generated_by_model, metadata, reinforcement_dates, last_reinforced)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         generated_by_model, metadata, reinforcement_dates, last_reinforced, echo_of)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(memory_session_id, content_hash) DO NOTHING
         RETURNING id
       `);
@@ -2825,6 +2871,9 @@ export class SessionStore {
 
       for (const observation of observations) {
         const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+        // Echo rows (memory grounding, Layer 2) are stored for audit but get no
+        // reinforcement seed — an echo must never gain ACT-R strength.
+        const isEcho = observation.echo_of != null;
         const inserted = obsStmt.get(
           memorySessionId,
           project,
@@ -2845,8 +2894,9 @@ export class SessionStore {
           timestampEpoch,
           generatedByModel || null,
           observation.metadata ?? null,
-          seed.dates,
-          seed.lastReinforced
+          isEcho ? null : seed.dates,
+          isEcho ? null : seed.lastReinforced,
+          observation.echo_of ?? null
         ) as { id: number } | null;
 
         if (inserted) {

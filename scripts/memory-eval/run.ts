@@ -10,6 +10,7 @@
  *   bun scripts/memory-eval/run.ts mutation-test
  *   bun scripts/memory-eval/run.ts erasure-test
  *   bun scripts/memory-eval/run.ts retention-sweep [--apply]
+ *   bun scripts/memory-eval/run.ts groundedness
  *
  * Hard rules: the production DB is only ever opened READONLY; mutations run on
  * temp copies; LLM judge calls go through createSdkJudge with a disk cache and
@@ -36,6 +37,7 @@ import {
 import { ftsPool, hybridPool, recentBlockIds, rankPool, type PoolRow, type RankerName } from './lib/retrieve.js';
 import { CachedJudge } from './lib/judge.js';
 import { buildGold } from './lib/gold.js';
+import { computeGroundedness } from './lib/groundedness.js';
 
 const K = 5;
 const POOL_LIMIT = 50;
@@ -575,6 +577,62 @@ async function cmdRetentionSweep(flags: Flags): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// groundedness (memory grounding, Layer 3) — readonly on the production DB
+// ---------------------------------------------------------------------------
+
+async function cmdGroundedness(): Promise<void> {
+  const report = new Report();
+  const db = openReadonlyDb();
+  let result;
+  try {
+    result = computeGroundedness(db);
+  } finally {
+    db.close();
+  }
+
+  const pct = (x: number | null) => (x === null ? 'n/a' : (x * 100).toFixed(1) + '%');
+
+  report.json.command = 'groundedness';
+  report.json.result = result;
+
+  report.line(`## Groundedness (memory grounding, Layer 3)`);
+  report.line();
+  report.line(
+    `- observations with tool evidence: **${pct(result.observations.pct)}** ` +
+    `(${result.observations.withToolEvidence}/${result.observations.active} active observations name a file read or modified)`,
+  );
+  if (result.facts) {
+    const f = result.facts;
+    report.line(
+      `- facts fully grounded in tool evidence: **${pct(f.pct)}** ` +
+      `(${f.allSourcesGrounded}/${f.withSources} active facts with sources have ALL source observations carrying tool evidence` +
+      `${f.sourceless > 0 ? `; ${f.sourceless} fact(s) have no recorded sources` : ''})`,
+    );
+  } else {
+    report.line(`- facts: n/a (semantic_facts table absent — pre-v53 schema)`);
+  }
+  if (result.echo.available) {
+    report.line(`- echo-flagged observations: **${result.echo.total}** total since Layer 2 shipped`);
+    if (result.echo.byMonth.length > 0) {
+      report.line();
+      report.line(`| month | observations | echoes | echo share |`);
+      report.line(`| --- | --- | --- | --- |`);
+      for (const m of result.echo.byMonth) {
+        report.line(`| ${m.month} | ${m.observations} | ${m.echoes} | ${(m.pct * 100).toFixed(1)}% |`);
+      }
+    }
+  } else {
+    report.line(`- echo-flagged observations: n/a (pre-v55 schema — Layer 2 has not run on this DB yet)`);
+  }
+
+  const { mdPath } = report.write('groundedness');
+  console.log(`groundedness: observations with tool evidence ${pct(result.observations.pct)} (${result.observations.withToolEvidence}/${result.observations.active})`);
+  console.log(`  facts fully grounded: ${result.facts ? pct(result.facts.pct) : 'n/a'}`);
+  console.log(`  echo-flagged: ${result.echo.available ? result.echo.total : 'n/a (pre-v55 schema)'}`);
+  console.log(`report: ${mdPath}`);
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -590,6 +648,8 @@ commands:
   erasure-test                               erasure + provenance on a temp DB copy
   retention-sweep [--apply]                  retention policy dry-run (readonly prod);
                                              --apply executes on a temp DB copy
+  groundedness                               tool-evidence / fact-grounding / echo metrics
+                                             (readonly prod)
 `;
 
 async function main(): Promise<void> {
@@ -602,6 +662,7 @@ async function main(): Promise<void> {
     case 'mutation-test': return cmdMutationTest();
     case 'erasure-test': return cmdErasureTest();
     case 'retention-sweep': return cmdRetentionSweep(flags);
+    case 'groundedness': return cmdGroundedness();
     default:
       console.log(USAGE);
       if (command) process.exitCode = 1;
