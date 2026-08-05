@@ -13,6 +13,7 @@ bun scripts/memory-eval/run.ts fit-d [--grid 0.2..1.0] [--step 0.1] [--limit N]
 bun scripts/memory-eval/run.ts mutation-test
 bun scripts/memory-eval/run.ts erasure-test
 bun scripts/memory-eval/run.ts retention-sweep [--apply]
+bun scripts/memory-eval/run.ts filter-eval [--limit N] [--worker URL]
 ```
 
 ## Declared scoring target (правило 3)
@@ -74,6 +75,17 @@ tombstone (`superseded_by`-цепочка); provenance: резолв `source_obs
 Chroma на этой машине частично отключён, поэтому `--retrieval hybrid` fail-soft:
 таймаут 8с / любая ошибка Chroma → откат на FTS-пул с пометкой `NOTE: hybrid: ...`
 в отчёте.
+
+## filter-eval (LLM relevance filter, вариант C)
+
+Замер LLM-фильтра keep/drop поверх **живого воркера** (`--worker`, default
+`http://127.0.0.1:37777`): top-5 кандидатов берётся через `/api/search?type=observations&format=json`
+— тот же SearchManager-путь, что обслуживает прод-инъекцию `/api/context/semantic`.
+Судья (`CachedJudge.filterCandidates`, 1 вызов на запрос, промпт: title + narrative≤300
+символов, строгий JSON `{"verdicts":[...]}`, парсер fail-open как в dedup) решает, что
+реально инъектировалось бы. Метрики: recall-preservation (gold-хит в top-5 пережил
+фильтр), keep-rate, abstention на 10 заведомо-шумовых запросах, стоимость вызовов.
+Порог рекомендации зафиксирован в коде: opt-in только при recall-preservation ≥ 95%.
 
 ## Отчёты
 

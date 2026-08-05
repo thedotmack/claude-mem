@@ -11,6 +11,7 @@
  *   bun scripts/memory-eval/run.ts erasure-test
  *   bun scripts/memory-eval/run.ts retention-sweep [--apply]
  *   bun scripts/memory-eval/run.ts groundedness
+ *   bun scripts/memory-eval/run.ts filter-eval [--limit N] [--worker URL]
  *
  * Hard rules: the production DB is only ever opened READONLY; mutations run on
  * temp copies; LLM judge calls go through createSdkJudge with a disk cache and
@@ -633,6 +634,200 @@ async function cmdGroundedness(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// filter-eval — LLM relevance filter over the live semantic-injection path
+// ---------------------------------------------------------------------------
+
+const FILTER_WORKER_DEFAULT = 'http://127.0.0.1:37777';
+const FILTER_K = 5;
+const FILTER_CONCURRENCY = 3;
+
+/** Deliberately absurd queries — a perfect filter injects nothing for these. */
+const NOISE_QUERIES = [
+  'фиолетовые облака на марсе танцуют вальс под аккордеон',
+  'how to teach a goldfish to compile rust while juggling pineapples',
+  'квантовая запутанность борща в микроволновке Наполеона',
+  'the mitochondria of typescript is the powerhouse of the webpack cell',
+  'почему гусеницы отклонили мой пул-реквест в галактику андромеды',
+  'deploying a kubernetes cluster inside a dream about fluorescent bagels',
+  'семантика полупроводников в поэзии шаманов плейстоцена',
+  'refactor the moon landing to use dependency injection and grapes',
+  'кроссворд из нейтрино для подводной лодки в степях уганды',
+  'streaming blockchain pancakes over a dial-up modem made of cheese',
+];
+
+interface SemanticCandidate {
+  id: number;
+  title: string | null;
+  narrative: string | null;
+}
+
+/** Fail-open wrapper: a broken judge disables the filter, never the injection. */
+async function safeFilter(judge: CachedJudge, promptText: string, candidates: SemanticCandidate[], notes: string[]): Promise<boolean[]> {
+  if (candidates.length === 0) return [];
+  try {
+    return await judge.filterCandidates(promptText, candidates);
+  } catch (error) {
+    notes.push(`judge failed (${error instanceof Error ? error.message : String(error)}) — kept all ${candidates.length} candidates`);
+    return Array.from({ length: candidates.length }, () => true);
+  }
+}
+
+/**
+ * Top-k observations from the live worker's semantic search — the same
+ * SearchManager path that backs /api/context/semantic (the production
+ * injection route), but JSON-shaped so ids survive. No project ⇒ global
+ * search, mirroring the project-less queryChroma fallback.
+ */
+async function semanticTopK(workerBase: string, query: string, project: string | null, k: number): Promise<SemanticCandidate[]> {
+  const params = new URLSearchParams({
+    query,
+    type: 'observations',
+    format: 'json',
+    limit: String(k),
+  });
+  if (project) params.set('project', project);
+  const res = await fetch(`${workerBase}/api/search?${params}`, { signal: AbortSignal.timeout(20_000) });
+  if (!res.ok) throw new Error(`worker /api/search HTTP ${res.status}`);
+  const body = (await res.json()) as { observations?: Array<{ id: number; title: string | null; narrative: string | null }> };
+  return (body.observations ?? []).slice(0, k).map(o => ({ id: o.id, title: o.title, narrative: o.narrative }));
+}
+
+interface FilterQueryResult {
+  promptId: number;
+  project: string;
+  candidateIds: number[];
+  keptIds: number[];
+  goldHitBefore: boolean;
+  goldHitAfter: boolean;
+}
+
+async function cmdFilterEval(flags: Flags): Promise<void> {
+  const gold = loadGold();
+  const limit = flagInt(flags, 'limit', 100);
+  const workerBase = String(flags.worker ?? FILTER_WORKER_DEFAULT);
+  const items = gold.items.filter(i => i.relevantIds.length > 0).slice(0, limit);
+  const judge = new CachedJudge();
+  const report = new Report();
+  report.note(`retrieval: live worker ${workerBase} /api/search (same SearchManager path as /api/context/semantic)`);
+  report.note(`gold scoring target: ${gold.judgeUsed ? 'judge-confirmed ids' : 'session-linkage ids (gold built --no-judge)'}`);
+
+  // --- gold queries: hit-rate before vs after the filter ---
+  const results: FilterQueryResult[] = [];
+  let next = 0;
+  let done = 0;
+  async function workerLoop(): Promise<void> {
+    while (next < items.length) {
+      const item = items[next++];
+      const project = item.project || null;
+      let candidates: SemanticCandidate[] = [];
+      try {
+        candidates = await semanticTopK(workerBase, item.promptText, project, FILTER_K);
+      } catch (error) {
+        report.note(`prompt #${item.promptId}: worker fetch failed (${error instanceof Error ? error.message : String(error)}) — counted as 0 candidates`);
+      }
+      const keep = await safeFilter(judge, item.promptText, candidates, report.notes);
+      const keptIds = candidates.filter((_, i) => keep[i]).map(c => c.id);
+      const goldIds = new Set(item.relevantIds);
+      results.push({
+        promptId: item.promptId,
+        project: item.project,
+        candidateIds: candidates.map(c => c.id),
+        keptIds,
+        goldHitBefore: candidates.some(c => goldIds.has(c.id)),
+        goldHitAfter: keptIds.some(id => goldIds.has(id)),
+      });
+      done++;
+      if (done % 10 === 0 || done === items.length) console.log(`filter-eval: ${done}/${items.length} gold queries done (judge calls spent: ${judge.callsSpent})`);
+    }
+  }
+  await Promise.all(Array.from({ length: FILTER_CONCURRENCY }, workerLoop));
+
+  const withHit = results.filter(r => r.goldHitBefore);
+  const recallPreservation = withHit.length
+    ? withHit.filter(r => r.goldHitAfter).length / withHit.length
+    : 1;
+  const droppedGold = withHit.filter(r => !r.goldHitAfter).map(r => r.promptId);
+  const totalCandidates = results.reduce((a, r) => a + r.candidateIds.length, 0);
+  const totalKept = results.reduce((a, r) => a + r.keptIds.length, 0);
+  const keepRate = totalCandidates ? totalKept / totalCandidates : 1;
+
+  // --- abstention: absurd queries should inject nothing after the filter ---
+  const noise: Array<{ query: string; before: number; after: number }> = [];
+  let noiseNext = 0;
+  async function noiseLoop(): Promise<void> {
+    while (noiseNext < NOISE_QUERIES.length) {
+      const q = NOISE_QUERIES[noiseNext++];
+      let candidates: SemanticCandidate[] = [];
+      try {
+        candidates = await semanticTopK(workerBase, q, null, FILTER_K);
+      } catch (error) {
+        report.note(`noise query "${q.slice(0, 40)}…": worker fetch failed (${error instanceof Error ? error.message : String(error)})`);
+      }
+      const keep = await safeFilter(judge, q, candidates, report.notes);
+      noise.push({ query: q, before: candidates.length, after: keep.filter(Boolean).length });
+      console.log(`filter-eval: noise ${noise.length}/${NOISE_QUERIES.length} (before=${candidates.length} after=${keep.filter(Boolean).length})`);
+    }
+  }
+  await Promise.all(Array.from({ length: FILTER_CONCURRENCY }, noiseLoop));
+  const noiseBefore = noise.reduce((a, n) => a + n.before, 0);
+  const noiseAfter = noise.reduce((a, n) => a + n.after, 0);
+
+  // --- recommendation (thresholds fixed before the run) ---
+  const noiseSuppressed = noiseBefore === 0 ? null : 1 - noiseAfter / noiseBefore;
+  const recommend = recallPreservation >= 0.95 && (noiseSuppressed === null || noiseSuppressed >= 0.5);
+
+  const pct = (x: number) => (x * 100).toFixed(1) + '%';
+  report.json.command = 'filter-eval';
+  report.json.config = { k: FILTER_K, workerBase, queries: items.length, noiseQueries: NOISE_QUERIES.length, concurrency: FILTER_CONCURRENCY, goldBuiltWithJudge: gold.judgeUsed };
+  report.json.gold = {
+    queries: results.length,
+    queriesWithGoldHitInTopK: withHit.length,
+    hitRateAtKBefore: results.length ? Number((withHit.length / results.length).toFixed(3)) : 0,
+    recallPreservation: Number(recallPreservation.toFixed(3)),
+    keepRate: Number(keepRate.toFixed(3)),
+    avgKeptPerQuery: results.length ? Number((totalKept / results.length).toFixed(2)) : 0,
+    totalCandidates,
+    totalKept,
+    droppedGoldPromptIds: droppedGold,
+  };
+  report.json.abstention = {
+    injectedBefore: noiseBefore,
+    injectedAfter: noiseAfter,
+    suppression: noiseSuppressed === null ? null : Number(noiseSuppressed.toFixed(3)),
+    perQuery: noise,
+  };
+  report.json.judge = { callsSpent: judge.callsSpent, cacheHits: judge.cacheHits };
+  report.json.recommendation = recommend ? 'enable opt-in' : 'do not enable';
+
+  report.line(`## filter-eval — LLM relevance filter on the live semantic path (k=${FILTER_K})`);
+  report.line();
+  report.line(`- gold queries: ${results.length} (worker \`${workerBase}\`, project-scoped per gold record)`);
+  report.line(`- gold hit-rate@${FILTER_K} before filtering: **${pct(results.length ? withHit.length / results.length : 0)}** (${withHit.length}/${results.length})`);
+  report.line(`- **recall-preservation: ${pct(recallPreservation)}** — of the ${withHit.length} queries with a gold hit in top-${FILTER_K}, ${withHit.length - droppedGold.length} kept it after filtering`);
+  if (droppedGold.length > 0) report.line(`- gold hits dropped by the filter: ${droppedGold.length} (prompt ids: ${droppedGold.join(', ')})`);
+  report.line(`- **keep-rate: ${pct(keepRate)}** of candidates kept (${totalKept}/${totalCandidates}); avg ${results.length ? (totalKept / results.length).toFixed(2) : 0}/${FILTER_K} per query`);
+  report.line(`- **abstention:** noise queries would inject **${noiseBefore}** candidates without the filter vs **${noiseAfter}** with it${noiseSuppressed === null ? ' (worker returned nothing even unfiltered)' : ` (suppression ${pct(noiseSuppressed)})`}`);
+  report.line(`- **judge calls spent: ${judge.callsSpent}** (cache hits: ${judge.cacheHits})`);
+  report.line();
+  report.line(`| noise query | before | after |`);
+  report.line(`| --- | --- | --- |`);
+  for (const n of noise) report.line(`| ${n.query.slice(0, 60)} | ${n.before} | ${n.after} |`);
+  report.line();
+  report.line(`## Recommendation`);
+  report.line();
+  if (recommend) {
+    report.line(`**Enable as opt-in.** Recall-preservation ${pct(recallPreservation)} ≥ 95% while the filter suppresses noise injections${noiseSuppressed === null ? '' : ` by ${pct(noiseSuppressed)}`} and keeps only ${pct(keepRate)} of e5 top-${FILTER_K} candidates. Cost: 1 cached LLM call per injected query.`);
+  } else {
+    report.line(`**Do not enable.** ${recallPreservation < 0.95 ? `Recall-preservation ${pct(recallPreservation)} is below the 95% bar — the filter drops real gold hits (prompt ids: ${droppedGold.join(', ')}).` : `Noise suppression is too weak (${noiseSuppressed === null ? 'n/a' : pct(noiseSuppressed)}) to justify an extra LLM call per query.`}`);
+  }
+
+  const { mdPath } = report.write('filter-eval');
+  console.log(`filter-eval: recall-preservation ${pct(recallPreservation)}, keep-rate ${pct(keepRate)}, abstention ${noiseBefore}→${noiseAfter}, judge calls spent ${judge.callsSpent}`);
+  console.log(`recommendation: ${recommend ? 'enable opt-in' : 'do not enable'}`);
+  console.log(`report: ${mdPath}`);
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -650,6 +845,8 @@ commands:
                                              --apply executes on a temp DB copy
   groundedness                               tool-evidence / fact-grounding / echo metrics
                                              (readonly prod)
+  filter-eval [--limit N] [--worker URL]     LLM relevance filter over the live worker's
+                                             semantic top-5 (LLM judge, spends quota)
 `;
 
 async function main(): Promise<void> {
@@ -663,6 +860,7 @@ async function main(): Promise<void> {
     case 'erasure-test': return cmdErasureTest();
     case 'retention-sweep': return cmdRetentionSweep(flags);
     case 'groundedness': return cmdGroundedness();
+    case 'filter-eval': return cmdFilterEval(flags);
     default:
       console.log(USAGE);
       if (command) process.exitCode = 1;

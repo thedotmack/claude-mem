@@ -109,6 +109,36 @@ export class CachedJudge {
     return Math.max(0, Math.min(items.length, n));
   }
 
+  /**
+   * Relevance filter (variant C): keep/drop verdict per candidate, in candidate
+   * order. Fail-open — an unparseable answer keeps every candidate, matching the
+   * defensive posture of the dedup judge.
+   */
+  async filterCandidates(promptText: string, candidates: Array<{ id: number; title: string | null; narrative: string | null }>): Promise<boolean[]> {
+    if (candidates.length === 0) return [];
+    const payload = promptText + '|' + candidates.map(c => c.id).join(',');
+    const listed = candidates
+      .map((c, i) => `${i + 1}. ${(c.title ?? '').slice(0, 120)}: ${(c.narrative ?? '').slice(0, 300)}`)
+      .join('\n');
+    const prompt = [
+      'You are a relevance filter for a developer-memory system. Below is a real user prompt',
+      'from a coding session and the candidate memory observations a semantic retriever wants',
+      'to inject as context. For EACH candidate decide "keep" (genuinely relevant — it would',
+      'help answer the prompt or continue that work) or "drop" (off-topic, would only add',
+      'noise). When in doubt, drop. Reply with JSON only:',
+      `{"verdicts": ["keep"|"drop", ...]} — exactly ${candidates.length} verdicts, in candidate order.`,
+      '',
+      'USER PROMPT:',
+      '"""',
+      promptText.slice(0, 2000),
+      '"""',
+      '',
+      'CANDIDATE OBSERVATIONS:',
+      listed,
+    ].join('\n');
+    return this.ask<boolean[]>('filter', payload, prompt, answer => parseKeepDropVerdicts(answer, candidates.length));
+  }
+
   private save(): void {
     writeFileSync(JUDGE_CACHE_PATH, JSON.stringify({ version: 1, entries: this.entries } satisfies CacheFile, null, 2));
   }
@@ -128,4 +158,21 @@ function parseIdArray(answer: string): number[] {
 function parseRelevanceCount(answer: string): number {
   const m = answer.match(/"relevant"\s*:\s*(\d+)/);
   return m ? Number(m[1]) : 0;
+}
+
+/**
+ * Parse the filter judge's keep/drop verdicts. Defensive (same posture as the
+ * dedup judge): extract the "verdicts" array from anywhere in the answer,
+ * tolerate prose around the JSON and case/quote variations, and fail OPEN —
+ * any unrecoverable shape keeps every candidate (filter disabled), never the
+ * other way round. Exported for tests.
+ */
+export function parseKeepDropVerdicts(answer: string, count: number): boolean[] {
+  const keepAll = () => Array.from({ length: count }, () => true);
+  if (count <= 0) return [];
+  const m = answer.match(/"verdicts"\s*:\s*\[([^\]]*)\]/i);
+  if (!m) return keepAll();
+  const tokens = m[1].match(/"?(keep|drop)"?/gi);
+  if (!tokens || tokens.length !== count) return keepAll();
+  return tokens.map(t => t.replace(/"/g, '').toLowerCase() === 'keep');
 }
