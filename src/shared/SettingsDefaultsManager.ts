@@ -65,6 +65,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: string;
   CLAUDE_MEM_SEMANTIC_INJECT: string;        
   CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: string;  
+  CLAUDE_MEM_SEMANTIC_INJECT_MIN_SCORE: string;
   // Semantic memory layer: episode→fact consolidation (opt-in, default off)
   // and the `## Project Knowledge` injection block cap.
   CLAUDE_MEM_CONSOLIDATION_ENABLED: string;
@@ -186,6 +187,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: '[]',  // #2400 — JSON array of glob patterns; when a folder matches AND its generated CLAUDE.md would be empty/skeleton, skip injection (avoids polluting non-content dirs with empty skeletons). Default [] preserves existing behavior.
     CLAUDE_MEM_SEMANTIC_INJECT: 'false',             // Inject relevant past observations on every UserPromptSubmit (experimental, disabled by default)
     CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: '5',           // Top-N most relevant observations to inject per prompt
+    CLAUDE_MEM_SEMANTIC_INJECT_MIN_SCORE: '0.35',    // Cosine-similarity floor for injected vector hits (0 = off); guards experience-following on weak matches
     CLAUDE_MEM_CONSOLIDATION_ENABLED: 'false',       // Distill episodes into durable semantic facts (one LLM call per run, opt-in)
     CLAUDE_MEM_DEDUP_JUDGE_ENABLED: 'false',         // Semantic dedup judge per observation batch (one LLM call per kept observation, opt-in)
     CLAUDE_MEM_CONSOLIDATE_MIN_INTERVAL_HOURS: '12', // Per-project throttle: min hours between consolidation runs

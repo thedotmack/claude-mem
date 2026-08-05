@@ -403,6 +403,12 @@ export class SearchRoutes extends BaseRouteHandler {
 
     let result: any;
     try {
+      // G4: relevance floor on the vector channel — weak semantic matches are
+      // how stale/misaligned experience gets replayed into the prompt
+      // (experience-following, C10 of the literature review).
+      const minScoreRaw = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)
+        .CLAUDE_MEM_SEMANTIC_INJECT_MIN_SCORE;
+      const minSimilarity = Number(minScoreRaw);
       result = await this.searchManager.search({
         query,
         type: 'observations',
@@ -410,6 +416,7 @@ export class SearchRoutes extends BaseRouteHandler {
         limit: String(limit),
         format: 'json',
         ...(platformSource ? { platformSource } : {}),
+        ...(Number.isFinite(minSimilarity) && minSimilarity > 0 ? { minSimilarity } : {}),
       });
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));

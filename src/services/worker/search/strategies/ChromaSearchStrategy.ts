@@ -56,7 +56,8 @@ export class ChromaSearchStrategy {
 
     return await this.executeChromaSearch(query, whereFilter, {
       searchObservations, searchSessions, searchPrompts,
-      obsType, concepts, files, orderBy, limit, project, platformSource, dateRange
+      obsType, concepts, files, orderBy, limit, project, platformSource, dateRange,
+      minSimilarity: options.minSimilarity
     });
   }
 
@@ -75,6 +76,7 @@ export class ChromaSearchStrategy {
       project?: string;
       platformSource?: string;
       dateRange?: DateRange;
+      minSimilarity?: number;
     }
   ): Promise<StrategySearchResult> {
     const chromaResults = await this.chromaSync.queryChroma(
@@ -83,7 +85,14 @@ export class ChromaSearchStrategy {
       whereFilter
     );
 
-    if (chromaResults.ids.length === 0) {
+    // Optional relevance floor (G4): drop vector hits below the cosine
+    // similarity threshold. e5 vectors are normalize_embeddings=true, so
+    // l2² = 2·(1 − cos) and the distance cap follows directly.
+    const filtered = options.minSimilarity !== undefined && options.minSimilarity > 0
+      ? this.applySimilarityFloor(chromaResults, 2 * (1 - options.minSimilarity))
+      : chromaResults;
+
+    if (filtered.ids.length === 0) {
       return {
         results: { observations: [], sessions: [], prompts: [] },
         usedChroma: true,
@@ -91,7 +100,7 @@ export class ChromaSearchStrategy {
       };
     }
 
-    const recentItems = this.filterByRecency(chromaResults, options.dateRange);
+    const recentItems = this.filterByRecency(filtered, options.dateRange);
     const categorized = this.categorizeByDocType(recentItems, options);
 
     let observations: ObservationSearchResult[] = [];
@@ -175,6 +184,34 @@ export class ChromaSearchStrategy {
       return filters[0];
     }
     return { $and: filters };
+  }
+
+  /**
+   * Keep only hits within the l2² distance cap, preserving id/distance/
+   * metadata alignment. Documents carry no distance (defensive) stay.
+   */
+  private applySimilarityFloor(
+    chromaResults: { ids: number[]; distances: number[]; metadatas: any[] },
+    maxDistanceSquared: number
+  ): { ids: number[]; distances: number[]; metadatas: any[] } {
+    const ids: number[] = [];
+    const distances: number[] = [];
+    const metadatas: any[] = [];
+    let dropped = 0;
+    for (let i = 0; i < chromaResults.ids.length; i++) {
+      const d = chromaResults.distances?.[i];
+      if (d === undefined || d <= maxDistanceSquared) {
+        ids.push(chromaResults.ids[i]);
+        distances.push(d ?? NaN);
+        metadatas.push(chromaResults.metadatas?.[i]);
+      } else {
+        dropped++;
+      }
+    }
+    if (dropped > 0) {
+      logger.debug('SEARCH', `ChromaSearchStrategy: similarity floor dropped ${dropped} weak hit(s)`);
+    }
+    return { ids, distances, metadatas };
   }
 
   private filterByRecency(chromaResults: {
