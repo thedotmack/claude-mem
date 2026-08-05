@@ -2,6 +2,7 @@
 
 import { Database } from 'bun:sqlite';
 import { reinforceObservation } from './persist.js';
+import { isoDay } from './strength.js';
 
 /**
  * Phase 3 — semantic dedup judge (opt-in).
@@ -103,6 +104,7 @@ export function findDedupCandidates(
         AND o.project = ?
         AND o.type = ?
         AND o.superseded_by IS NULL
+        AND o.echo_of IS NULL
         ${opts.excludeId != null ? 'AND o.id != ?' : ''}
       ORDER BY bm25(observations_fts)
       LIMIT ?
@@ -113,6 +115,61 @@ export function findDedupCandidates(
     ) as DedupCandidate[];
   } catch {
     return []; // FTS unavailable / malformed query → no candidates, fail open to ADD
+  }
+}
+
+/**
+ * Memory grounding, Layer 2 — echo detection (plans/2026-08-05-memory-grounding.md).
+ *
+ * An echo is an observation that merely retells the agent's own injected memory
+ * back to it — the compounding-fiction loop ("it worked today" → memory → "it
+ * reliably works"). A new observation B echoes an existing observation A when
+ * ALL three conditions hold:
+ *   1. A is a semantically-near existing observation (the same FTS shortlist
+ *      the dedup judge uses — condition 1 reuses findDedupCandidates);
+ *   2. A was recently injected into context — its `last_surfaced` stamp (v55,
+ *      written by recordSurfaced) is within ECHO_LAST_SURFACED_WINDOW_DAYS;
+ *   3. B carries no new tool evidence — empty files_read AND files_modified
+ *      (v1 proxy: file evidence is what the observer can already attach
+ *      reliably; documented as a heuristic, not proof of grounding).
+ *
+ * Returns the echoed observation's id (best-ranked fresh candidate) or null.
+ * The caller stores the echo with echo_of set and NO reinforcement seed; the
+ * echo never reaches the LLM judge, so A is NOT reinforced by B — memory can
+ * no longer confirm itself. Fail-open to null (store normally): a missing v55
+ * column or FTS hiccup must never block a write.
+ */
+
+/** Condition 2 freshness window, in days. A note injected longer ago than this
+ * is unlikely to be the direct source of a retelling, so no echo is flagged. */
+export const ECHO_LAST_SURFACED_WINDOW_DAYS = 30;
+
+export function detectEcho(
+  db: Database,
+  obs: DedupObservationInput & { files_read?: string[]; files_modified?: string[] },
+  opts: { today?: Date; excludeId?: number } = {},
+): number | null {
+  try {
+    // Condition 3: any new tool evidence means this is a fresh observation of
+    // the world, not a retelling.
+    if ((obs.files_read?.length ?? 0) > 0 || (obs.files_modified?.length ?? 0) > 0) return null;
+
+    // Condition 1: a semantically-near existing observation must exist.
+    const shortlist = findDedupCandidates(db, obs, { excludeId: opts.excludeId });
+    if (shortlist.length === 0) return null;
+
+    // Condition 2: the near observation was injected recently (last_surfaced is
+    // an ISO YYYY-MM-DD day stamp, so lexicographic compare is chronological).
+    const today = opts.today ?? new Date();
+    const cutoff = isoDay(new Date(today.getTime() - ECHO_LAST_SURFACED_WINDOW_DAYS * 86_400_000));
+    const stmt = db.prepare('SELECT last_surfaced FROM observations WHERE id = ?');
+    for (const candidate of shortlist) {
+      const row = stmt.get(candidate.id) as { last_surfaced: string | null } | undefined;
+      if (row?.last_surfaced != null && row.last_surfaced >= cutoff) return candidate.id;
+    }
+    return null;
+  } catch {
+    return null;
   }
 }
 

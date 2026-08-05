@@ -17,6 +17,22 @@ describe('buildObservationPrompt', () => {
     expect(prompt).toContain('Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection');
     expect(prompt).toContain('Never reply with prose such as "Skipping", "No substantive tool executions"');
   });
+
+  it('carries the grounding rules (memory grounding, Layer 1)', () => {
+    const prompt = buildObservationPrompt({
+      id: 1,
+      tool_name: 'exec_command',
+      tool_input: JSON.stringify({ cmd: 'pwd' }),
+      tool_output: JSON.stringify({ output: '/repo' }),
+      created_at_epoch: Date.now(),
+      cwd: '/repo',
+    });
+
+    expect(prompt).toContain('GROUNDING RULES');
+    expect(prompt).toContain('anchored to a concrete reality artifact');
+    expect(prompt).toContain('Intent or expectation without an outcome is NOT an observation');
+    expect(prompt).toContain('must quote the artifact it rests on');
+  });
 });
 
 describe('buildObservationPrompt oversized field truncation (#2468)', () => {

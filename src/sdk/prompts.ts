@@ -149,6 +149,11 @@ export function buildObservationPrompt(obs: Observation): string {
 
 If a <parameters> or <outcome> block above contains an "<elided chars=... />" marker, that field was truncated to fit the observer's context window. Describe only what you can see in the kept portion and do not infer details about the elided range.
 
+GROUNDING RULES (an observation must be anchored to reality, not to intent):
+- Write an observation ONLY when it is anchored to a concrete reality artifact visible in the <parameters>/<outcome> above: command output, an exit code, a diff, error text, or file content.
+- Intent or expectation without an outcome is NOT an observation. If the tool use only shows something being planned ("expected to…", "preparing to…", "about to…") and no result is visible yet, return an empty response.
+- Every <fact> must quote the artifact it rests on (file path, command, exit status, error message) — never paraphrase intent as an accomplished fact.
+
 Return either one or more <observation>...</observation> blocks, or an empty response if this tool use should be skipped.
 Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection count as durable discoveries and should be recorded.
 Never reply with prose such as "Skipping", "No substantive tool executions", or any explanation outside XML. Non-XML text is discarded.`;

@@ -106,6 +106,7 @@ export function queryObservationsMulti(
            OR o.merged_into_project IN (${projectPlaceholders}))
       AND (? IS NULL OR s.platform_source = ?)
       AND o.superseded_by IS NULL
+      AND o.echo_of IS NULL
       AND type IN (${typePlaceholders})
       AND EXISTS (
         SELECT 1 FROM json_each(o.concepts)
