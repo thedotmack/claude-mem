@@ -36,7 +36,7 @@ const COLLECTED_FIELDS = [
   'is_ci            whether running in CI',
   'endpoint         which claude-mem search route (our route names)',
   'ide              installer IDE choice (claude-code / cursor / ...)',
-  'provider         LLM provider choice (claude / gemini / openrouter)',
+  'provider         LLM provider choice (claude / gemini / openrouter / minimax)',
   'runtime_mode     worker or server',
   'trigger          start or heartbeat',
   'count            integer volume (e.g. observations stored)',

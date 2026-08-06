@@ -3,6 +3,8 @@
 import { existsSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { ModeManager } from '../../services/domain/ModeManager.js';
+import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { getSharedPostgresPool, SERVER_POSTGRES_SCHEMA_VERSION } from '../../storage/postgres/index.js';
 import { bootstrapServerPostgresSchema } from '../../storage/postgres/schema.js';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
@@ -12,6 +14,7 @@ import { ActiveServerGenerationWorkerManager } from './ActiveServerGenerationWor
 import { ClaudeObservationProvider } from '../generation/providers/ClaudeObservationProvider.js';
 import { GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../generation/providers/OpenRouterObservationProvider.js';
+import { MiniMaxObservationProvider } from '../generation/providers/MiniMaxObservationProvider.js';
 import type { ServerGenerationProvider } from '../generation/providers/shared/types.js';
 import { ServerService } from './ServerService.js';
 import {
@@ -239,11 +242,17 @@ function buildGenerationWorkerManager(
   });
 }
 
-function buildServerGenerationProviderFromEnv(): ServerGenerationProvider | null {
-  const provider = (process.env.CLAUDE_MEM_SERVER_PROVIDER ?? '').trim().toLowerCase();
+export function buildServerGenerationProviderFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  storedSettings: Partial<SettingsDefaults> | undefined = loadStoredGenerationSettings(),
+): ServerGenerationProvider | null {
+  const provider = (
+    env.CLAUDE_MEM_SERVER_PROVIDER
+    ?? (storedSettings?.CLAUDE_MEM_PROVIDER === 'minimax' ? 'minimax' : '')
+  ).trim().toLowerCase();
   if (!provider) return null;
   try {
-    return instantiateServerGenerationProvider(provider);
+    return instantiateServerGenerationProvider(provider, env, storedSettings);
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     // Surface the construction failure so operators can see why generation is
@@ -253,30 +262,54 @@ function buildServerGenerationProviderFromEnv(): ServerGenerationProvider | null
   }
 }
 
-function instantiateServerGenerationProvider(provider: string): ServerGenerationProvider | null {
+function loadStoredGenerationSettings(): Partial<SettingsDefaults> | undefined {
+  if (!existsSync(USER_SETTINGS_PATH)) return undefined;
+  return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, false);
+}
+
+function instantiateServerGenerationProvider(
+  provider: string,
+  env: NodeJS.ProcessEnv,
+  storedSettings?: Partial<SettingsDefaults>,
+): ServerGenerationProvider | null {
   if (provider === 'claude' || provider === 'anthropic') {
-    const apiKey = process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
+    const apiKey = env.ANTHROPIC_API_KEY ?? env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
     if (!apiKey) return null;
     const opts: { apiKey: string; model?: string } = { apiKey };
-    if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+    if (env.CLAUDE_MEM_SERVER_MODEL) opts.model = env.CLAUDE_MEM_SERVER_MODEL;
     return new ClaudeObservationProvider(opts);
   }
   if (provider === 'gemini') {
-    const apiKey = process.env.GEMINI_API_KEY ?? process.env.CLAUDE_MEM_GEMINI_API_KEY ?? '';
+    const apiKey = env.GEMINI_API_KEY ?? env.CLAUDE_MEM_GEMINI_API_KEY ?? '';
     if (!apiKey) return null;
     const opts: { apiKey: string; model?: string } = { apiKey };
-    if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+    if (env.CLAUDE_MEM_SERVER_MODEL) opts.model = env.CLAUDE_MEM_SERVER_MODEL;
     return new GeminiObservationProvider(opts);
   }
   if (provider === 'openrouter') {
-    const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '';
+    const apiKey = env.OPENROUTER_API_KEY ?? env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '';
     if (!apiKey) return null;
     const opts: { apiKey: string; model?: string; baseUrl?: string } = { apiKey };
-    if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+    if (env.CLAUDE_MEM_SERVER_MODEL) opts.model = env.CLAUDE_MEM_SERVER_MODEL;
     // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL.
-    const baseUrl = process.env.CLAUDE_MEM_OPENROUTER_BASE_URL ?? process.env.OPENROUTER_BASE_URL;
+    const baseUrl = env.CLAUDE_MEM_OPENROUTER_BASE_URL ?? env.OPENROUTER_BASE_URL;
     if (baseUrl) opts.baseUrl = baseUrl;
     return new OpenRouterObservationProvider(opts);
+  }
+  if (provider === 'minimax') {
+    const apiKey = env.MINIMAX_API_KEY
+      ?? env.CLAUDE_MEM_MINIMAX_API_KEY
+      ?? storedSettings?.CLAUDE_MEM_MINIMAX_API_KEY
+      ?? '';
+    if (!apiKey) return null;
+    const opts: { apiKey: string; model?: string; baseUrl?: string } = { apiKey };
+    const model = env.CLAUDE_MEM_SERVER_MODEL ?? storedSettings?.CLAUDE_MEM_MINIMAX_MODEL;
+    if (model) opts.model = model;
+    const baseUrl = env.CLAUDE_MEM_MINIMAX_BASE_URL
+      ?? env.MINIMAX_BASE_URL
+      ?? storedSettings?.CLAUDE_MEM_MINIMAX_BASE_URL;
+    if (baseUrl) opts.baseUrl = baseUrl;
+    return new MiniMaxObservationProvider(opts);
   }
   return null;
 }

@@ -17,6 +17,8 @@ import {
   type GeminiBadRequestCategory,
 } from '../../../src/server/generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../../../src/server/generation/providers/OpenRouterObservationProvider.js';
+import { MiniMaxObservationProvider } from '../../../src/server/generation/providers/MiniMaxObservationProvider.js';
+import { buildServerGenerationProviderFromEnv } from '../../../src/server/runtime/create-server-service.js';
 import { buildServerGenerationPrompt } from '../../../src/server/generation/providers/shared/prompt-builder.js';
 import type { ServerGenerationContext } from '../../../src/server/generation/providers/shared/types.js';
 
@@ -150,6 +152,19 @@ describe('buildServerGenerationPrompt', () => {
     expect(result.prompt).toContain('<generation_job_id>job-1</generation_job_id>');
     expect(result.prompt).toContain('<server_session_id>session-x</server_session_id>');
     expect(result.prompt).toContain('<project_name>demo</project_name>');
+  });
+});
+
+describe('server provider configuration', () => {
+  it('uses MiniMax settings persisted by the installer when server env is unset', () => {
+    const provider = buildServerGenerationProviderFromEnv({}, {
+      CLAUDE_MEM_PROVIDER: 'minimax',
+      CLAUDE_MEM_MINIMAX_API_KEY: 'test-key',
+      CLAUDE_MEM_MINIMAX_MODEL: 'MiniMax-M2.7',
+      CLAUDE_MEM_MINIMAX_BASE_URL: 'https://api.minimaxi.com/v1',
+    });
+
+    expect(provider).toBeInstanceOf(MiniMaxObservationProvider);
   });
 });
 
@@ -404,5 +419,41 @@ describe('OpenRouterObservationProvider', () => {
     await provider.generate(makeContext());
     const body = JSON.parse(String(capturing.lastInit?.body)) as { model?: string };
     expect(body.model).toBe('deepseek-chat');
+  });
+});
+
+describe('MiniMaxObservationProvider', () => {
+  it('uses the global default endpoint and returns OpenAI-style content', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, {
+        model: 'MiniMax-M3',
+        choices: [{ message: { content: '<observation><type>x</type><title>o</title></observation>' } }],
+        usage: { total_tokens: 42 },
+      }),
+    );
+    const provider = new MiniMaxObservationProvider({ apiKey: 'fake', fetchImpl: capturing.fetch });
+    const result = await provider.generate(makeContext());
+
+    expect(capturing.lastUrl).toBe('https://api.minimax.io/v1/chat/completions');
+    expect(result.rawText).toContain('<observation>');
+    expect(result.tokensUsed).toBe(42);
+    expect(result.providerLabel).toBe('minimax');
+  });
+
+  it('supports the China endpoint and configured model', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
+    );
+    const provider = new MiniMaxObservationProvider({
+      apiKey: 'fake',
+      baseUrl: 'https://api.minimaxi.com/v1',
+      model: 'MiniMax-M2.7',
+      fetchImpl: capturing.fetch,
+    });
+    await provider.generate(makeContext());
+
+    expect(capturing.lastUrl).toBe('https://api.minimaxi.com/v1/chat/completions');
+    const body = JSON.parse(String(capturing.lastInit?.body)) as { model?: string };
+    expect(body.model).toBe('MiniMax-M2.7');
   });
 });
