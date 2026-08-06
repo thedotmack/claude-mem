@@ -9,18 +9,21 @@ import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.
 import type { WorkerRef } from '../../src/services/worker/agents/types.js';
 
 beforeEach(() => {
-  spyOn(ModeManager.prototype, 'getActiveMode').mockImplementation(() => ({
-    name: 'code',
-    description: 'mock mode',
-    version: '1.0.0',
-    prompts: {
-      init: 'init prompt',
-      observation: 'obs prompt',
-      summary: 'summary prompt',
-    },
-    observation_types: [{ id: 'discovery' }, { id: 'bugfix' }, { id: 'refactor' }],
-    observation_concepts: [],
-  }) as ModeConfig);
+  spyOn(ModeManager, 'getInstance').mockImplementation(() => ({
+    getActiveMode: () => ({
+      name: 'code',
+      description: 'mock mode',
+      version: '1.0.0',
+      prompts: {
+        init: 'init prompt',
+        observation: 'obs prompt',
+        summary: 'summary prompt',
+      },
+      observation_types: [{ id: 'discovery' }, { id: 'bugfix' }, { id: 'refactor' }],
+      observation_concepts: [],
+    }),
+    loadMode: () => {},
+  }) as unknown as ModeManager);
 });
 
 function makeDbManager(storeObservations = mock(() => ({ observationIds: [], summaryId: null, createdAtEpoch: 0 }))): DatabaseManager {
