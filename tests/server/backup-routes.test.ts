@@ -1,5 +1,5 @@
 // tests/server/backup-routes.test.ts
-import { describe, it, expect, afterEach, afterAll } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import path from 'path';
 import { tmpdir } from 'os';
@@ -147,5 +147,95 @@ describe('BackupRoutes import', () => {
 
     const backupDirs = require('fs').readdirSync(path.join(paths.dataDir(), 'backups'));
     expect(backupDirs.some((d: string) => d.startsWith('backup-restore-'))).toBe(true);
+  });
+});
+
+describe('BackupRoutes standalone file import', () => {
+  let server: InstanceType<typeof Server> | null = null;
+
+  // The "BackupRoutes import" describe above shares this file's module-level
+  // TEST_DATA_DIR and its last test intentionally leaves *.importing staging
+  // artifacts on disk (that's what it's asserting). Clear them here so this
+  // describe's own "no staging occurred" assertions aren't polluted by state
+  // left over from an earlier, unrelated describe block.
+  beforeEach(() => {
+    for (const basename of BACKUP_ALLOWLIST) {
+      const stray = path.join(paths.dataDir(), `${basename}.importing`);
+      if (existsSync(stray)) rmSync(stray, { force: true });
+    }
+  });
+
+  afterEach(async () => {
+    if (server?.getHttpServer()) {
+      try { await server.close(); } catch { /* ignore */ }
+    }
+    server = null;
+  });
+
+  async function startServer() {
+    const { Server } = await import('../../src/services/server/Server.js');
+    server = new Server(baseOptions());
+    server.registerRoutes(new BackupRoutes(() => Promise.resolve()));
+    server.finalizeRoutes();
+    const port = 45000 + Math.floor(Math.random() * 9000);
+    await server.listen(port, '127.0.0.1');
+    return port;
+  }
+
+  it('writes settings.json directly, no restart, no staging', async () => {
+    mkdirSync(paths.dataDir(), { recursive: true });
+    const port = await startServer();
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/backup/import/file?name=settings.json`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: Buffer.from('{"imported":true}'),
+    });
+
+    expect(res.status).toBe(200);
+    expect(require('fs').readFileSync(paths.settings(), 'utf-8')).toBe('{"imported":true}');
+    expect(existsSync(path.join(paths.dataDir(), 'settings.json.importing'))).toBe(false);
+  });
+
+  it('rejects malformed JSON for settings.json without writing', async () => {
+    mkdirSync(paths.dataDir(), { recursive: true });
+    writeFileSync(paths.settings(), '{"original":true}');
+    const port = await startServer();
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/backup/import/file?name=settings.json`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: Buffer.from('{not valid json'),
+    });
+
+    expect(res.status).toBe(400);
+    expect(require('fs').readFileSync(paths.settings(), 'utf-8')).toBe('{"original":true}');
+  });
+
+  it('rejects an unrecognized name parameter', async () => {
+    mkdirSync(paths.dataDir(), { recursive: true });
+    const port = await startServer();
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/backup/import/file?name=claude-mem.db`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: Buffer.from('anything'),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('writes .env directly without JSON validation', async () => {
+    mkdirSync(paths.dataDir(), { recursive: true });
+    const port = await startServer();
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/backup/import/file?name=.env`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: Buffer.from('SOME_KEY=value\n'),
+    });
+
+    expect(res.status).toBe(200);
+    expect(require('fs').readFileSync(paths.envFile(), 'utf-8')).toBe('SOME_KEY=value\n');
   });
 });

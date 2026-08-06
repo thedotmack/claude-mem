@@ -1,5 +1,5 @@
 import express, { Request, Response } from 'express';
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import AdmZip from 'adm-zip';
 import { paths } from '../../../../shared/paths.js';
@@ -39,6 +39,11 @@ export class BackupRoutes extends BaseRouteHandler implements RouteHandler {
       '/api/backup/import',
       express.raw({ type: 'application/zip', limit: '50mb' }),
       this.handleImport.bind(this)
+    );
+    app.post(
+      '/api/backup/import/file',
+      express.raw({ type: 'application/octet-stream', limit: '5mb' }),
+      this.handleImportFile.bind(this)
     );
   }
 
@@ -95,6 +100,32 @@ export class BackupRoutes extends BaseRouteHandler implements RouteHandler {
     // Fire after the response is sent — the client should see success before
     // the worker starts tearing itself down for the restart.
     void this.restartWorker();
+  });
+
+  private handleImportFile = this.wrapHandler((req: Request, res: Response): void => {
+    const name = this.toStringParam(req.query.name as string | string[] | undefined);
+
+    if (name !== 'settings.json' && name !== '.env') {
+      res.status(400).json({ error: 'name must be "settings.json" or ".env"' });
+      return;
+    }
+
+    const body = req.body as Buffer;
+
+    if (name === 'settings.json') {
+      try {
+        JSON.parse(body.toString('utf-8'));
+      } catch {
+        res.status(400).json({ error: 'settings.json content is not valid JSON' });
+        return;
+      }
+    }
+
+    const targetPath = name === 'settings.json' ? paths.settings() : paths.envFile();
+    writeFileSync(targetPath, body);
+
+    logger.info('SYSTEM', 'Standalone file import written', { name });
+    res.json({ success: true, name });
   });
 
   private backupExistingFiles(basenames: string[]): void {
