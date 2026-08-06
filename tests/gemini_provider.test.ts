@@ -209,6 +209,32 @@ describe('GeminiProvider', () => {
     expect(url).toContain('key=test-api-key');
   });
 
+  it('should add each provider response to conversation history exactly once', async () => {
+    const session = makeSession();
+    const responseText = `
+      <observation>
+        <type>discovery</type>
+        <title>Test</title>
+        <narrative>Stored once</narrative>
+        <facts></facts>
+        <concepts></concepts>
+        <files_read></files_read>
+        <files_modified></files_modified>
+      </observation>
+    `;
+
+    global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: responseText }] } }],
+      usageMetadata: { totalTokenCount: 50 }
+    }))));
+
+    await agent.startSession(session);
+
+    expect(session.conversationHistory.filter(message => message.role === 'assistant')).toEqual([
+      { role: 'assistant', content: responseText }
+    ]);
+  });
+
   it('should handle multi-turn conversation', async () => {
     const session = {
       sessionDbId: 1,
