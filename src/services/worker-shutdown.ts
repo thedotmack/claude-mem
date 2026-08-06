@@ -174,7 +174,20 @@ async function spawnRestartSuccessor(handoff: RestartHandoffDeps): Promise<void>
     });
     return;
   }
-  handoff.applyPendingSwaps?.();
+  try {
+    handoff.applyPendingSwaps?.();
+  } catch (error: unknown) {
+    // Log-and-continue, like every other step in this function. A renameSync
+    // failure here (EPERM/EBUSY on Windows if a handle is somehow still open)
+    // must not abort the successor spawn — that would leave a half-swapped data
+    // dir AND no worker running.
+    logger.error(
+      'SYSTEM',
+      'Applying pending file swaps failed — continuing with the successor spawn',
+      { port: handoff.port },
+      error instanceof Error ? error : new Error(String(error))
+    );
+  }
   handoff.removePidFile();
   const successorPid = handoff.spawnDaemon(successorScript, handoff.port);
   if (successorPid === undefined) {
