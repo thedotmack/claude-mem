@@ -41,6 +41,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem status')}               Show worker status
   ${styleText('cyan', 'npx claude-mem doctor')}               Diagnose install/runtime health (bun, uv, worker)
   ${styleText('cyan', 'npx claude-mem telemetry status|enable|disable')}   Manage anonymous telemetry (on by default, opt-out)
+  ${styleText('cyan', 'npx claude-mem cloud connect --user-id <id> --hub-url <url>')}   Securely connect CMEM Cloud
   ${styleText('cyan', 'npx claude-mem server start')}         Start server service
   ${styleText('cyan', 'npx claude-mem server stop')}          Stop server service
   ${styleText('cyan', 'npx claude-mem server restart')}       Restart server service
@@ -171,6 +172,12 @@ async function main(): Promise<void> {
     case 'telemetry': {
       const { runTelemetryCommand } = await import('./commands/telemetry.js');
       await runTelemetryCommand(args.slice(1));
+      break;
+    }
+
+    case 'cloud': {
+      const { runCloudCommand } = await import('./commands/cloud.js');
+      await runCloudCommand(args.slice(1));
       break;
     }
 

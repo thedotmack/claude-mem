@@ -1,6 +1,6 @@
 ---
 name: cloud-sync
-description: Set up or check claude-mem cloud sync with cmem.ai Pro. Use when the user says "set up cloud sync", "sync my memories", "cmem pro", "cloud backup", "sync status", or wants their memory database backed up or synced to their cmem.ai account.
+description: Set up or check claude-mem cloud sync and bundled Managed Worker access with cmem.ai Pro. Use when the user says "set up cloud sync", "sync my memories", "cmem pro", "managed worker", "cloud backup", "sync status", or wants their memory database backed up or synced to their cmem.ai account.
 allowed-tools:
   - Bash
   - Read
@@ -11,10 +11,15 @@ allowed-tools:
 
 The installed worker syncs through SyncHub. There is one client, one durable
 operation log, and no separate sync daemon. This skill checks status or writes
-the three connection values issued by **cmem.ai → Connect**.
+the connection values issued by **cmem.ai → Connect**. A CMEM Pro bundle can
+also include a CMEM-only access key for the memory worker; Cloud-only accounts
+continue to receive only the three sync values. The provider credential and
+selected model never leave CMEM's backend.
 
-**Security rule:** never print the sync token, put it in argv, or log it.
-Confirm only its length. Preserve every unrelated setting and keep
+**Security rule:** never ask the user to paste the sync token or Managed Worker
+key into an AI chat, print either secret, put either one in argv, or log either
+one. The Connect page supplies a secret-free local command that collects the
+secrets with masked terminal input, preserves unrelated settings, and keeps
 `~/.claude-mem/settings.json` mode `0600`.
 
 ## 1. Check status
@@ -37,50 +42,24 @@ curl -s "http://127.0.0.1:${PORT}/api/sync/status"
 - Connection refused, 404, or 503 immediately after restart → retry every
   three seconds for about 30 seconds before diagnosing the worker.
 
-## 2. Obtain the connection
+## 2. Connect securely
 
-Ask for all three values shown by **cmem.ai → Connect**:
+Ask the user to open **cmem.ai → Connect**, copy the displayed `npx claude-mem
+cloud connect ...` command, and run it in their own terminal. The command itself
+contains only the user id and HTTPS endpoint URLs. It prompts locally for the
+sync token and, when included in the account, the Managed Worker key; terminal
+input is masked and the values are written atomically to the private settings
+file.
 
-1. sync token;
-2. user id;
-3. SyncHub URL.
+Do not ask the user to send the secrets to you and do not reconstruct the
+command with secret values. The Hub URL must be the absolute `https://` SyncHub
+URL shown by Connect. The optional Managed Worker URL and key are always
+configured as one block; this is not a general provider API key.
 
-The Hub URL must be an absolute `https://` URL. Do not substitute the cmem.ai
-application API URL; the installed client talks only to SyncHub.
+The worker mints and persists a device id on first start and defaults the device
+name to the hostname.
 
-## 3. Write installed-client settings
-
-Substitute the collected values inside this quoted stdin script. Do not echo
-them before or after running it:
-
-```bash
-node - <<'EOF'
-const fs = require('fs'), os = require('os'), path = require('path');
-const token = 'PASTE_TOKEN_HERE';
-const userId = 'PASTE_USER_ID_HERE';
-const hubUrl = 'PASTE_HUB_URL_HERE';
-if (!token || !userId || !/^https:\/\/[^\s]+$/.test(hubUrl)) {
-  console.error('token, user id, and an https SyncHub URL are required');
-  process.exit(1);
-}
-const dir = path.join(os.homedir(), '.claude-mem');
-const file = path.join(dir, 'settings.json');
-fs.mkdirSync(dir, { recursive: true });
-const settings = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
-const target = settings.env && typeof settings.env === 'object' ? settings.env : settings;
-target.CLAUDE_MEM_CLOUD_SYNC_TOKEN = token;
-target.CLAUDE_MEM_CLOUD_SYNC_USER_ID = userId;
-target.CLAUDE_MEM_CLOUD_SYNC_HUB_URL = hubUrl.replace(/\/+$/, '');
-fs.writeFileSync(file, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 });
-fs.chmodSync(file, 0o600);
-console.log(`saved cloud connection: token length ${token.length}, user id length ${userId.length}`);
-EOF
-```
-
-These are the only required connection keys. The worker mints and persists a
-device id on first start and defaults the device name to the hostname.
-
-## 4. Restart and verify
+## 3. Restart and verify
 
 ```bash
 curl -s -X POST "http://127.0.0.1:${PORT}/api/admin/restart"
@@ -98,10 +77,16 @@ If `hub.reachable` is false, report `hub.error`. If `lastError` is non-null,
 report it too. Ask the user to verify the three values in **cmem.ai →
 Connect**. Never include the token.
 
-## 5. Report
+When a Managed Worker block was installed, verify only that the local settings
+contain a non-empty key, the CMEM worker URL, and the `cmem-managed` alias. Do
+not print their values. The next captured memory performs the real inference
+request; Cloud reachability alone must not be reported as inference verification.
+
+## 4. Report
 
 Report device id, pending counts, last successful flush, Hub reachability and
-checkpoint, and any Hub/flush error. End with this privacy note:
+checkpoint, any Hub/flush error, and whether Managed Worker is configured (not
+its key or model value). End with this privacy note:
 
 > Cloud sync uploads your observation narratives and full prompt text to your
 > cmem.ai account.

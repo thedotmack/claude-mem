@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
@@ -53,6 +53,12 @@ describe('SettingsDefaultsManager', () => {
 
         const content = readFileSync(settingsPath, 'utf-8');
         expect(() => JSON.parse(content)).not.toThrow();
+      });
+
+      it('should create the settings file as owner-readable only', () => {
+        if (process.platform === 'win32') return;
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+        expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
       });
 
       it('should write pretty-printed JSON (2-space indent)', () => {

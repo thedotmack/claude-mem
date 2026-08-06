@@ -32,6 +32,12 @@ describe('resolveOpenRouterChatCompletionsUrl', () => {
     );
   });
 
+  it('resolves the CMEM Managed Worker gateway endpoint', () => {
+    expect(resolveOpenRouterChatCompletionsUrl('https://cmem.ai/api/worker/v1')).toBe(
+      'https://cmem.ai/api/worker/v1/chat/completions',
+    );
+  });
+
   it('uses a full /chat/completions URL verbatim', () => {
     const full = 'https://api.deepseek.com/v1/chat/completions';
     expect(resolveOpenRouterChatCompletionsUrl(full)).toBe(full);

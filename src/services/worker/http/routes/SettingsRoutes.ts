@@ -120,7 +120,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       settings.CLAUDE_CODE_PATH = expandTilde(settings.CLAUDE_CODE_PATH);
     }
 
-    writeJsonFileAtomic(settingsPath, settings);
+    writeJsonFileAtomic(settingsPath, settings, { mode: 0o600 });
 
     clearPortCache();
 
@@ -276,7 +276,7 @@ export class SettingsRoutes extends BaseRouteHandler {
         mkdirSync(dir, { recursive: true });
       }
 
-      writeJsonFileAtomic(settingsPath, defaults);
+      writeJsonFileAtomic(settingsPath, defaults, { mode: 0o600 });
       logger.info('SETTINGS', 'Created settings file with defaults', { settingsPath });
     }
   }

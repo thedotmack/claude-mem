@@ -74,6 +74,18 @@ describe('writeJsonFileAtomic', () => {
     expect(mode).toBe(0o600);
   });
 
+  it('can tighten an existing destination mode before writing secrets', () => {
+    if (IS_WINDOWS) return;
+    const target = join(tempDir, 'previously-public.json');
+    writeFileSync(target, '{}', { mode: 0o644 });
+    chmodSync(target, 0o644);
+
+    writeJsonFileAtomic(target, { secret: true }, { mode: 0o600 });
+
+    expect(statSync(target).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(readFileSync(target, 'utf-8'))).toEqual({ secret: true });
+  });
+
   it('writes the temp file in the same directory as the destination', () => {
     // Same-directory rename is what gives the atomic guarantee on POSIX
     // (cross-filesystem rename can fall back to copy+delete, which isn't atomic).
