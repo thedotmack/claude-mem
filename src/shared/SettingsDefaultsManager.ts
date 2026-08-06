@@ -233,7 +233,7 @@ export class SettingsDefaultsManager {
       if (!existsSync(settingsPath)) {
         const defaults = this.getAllDefaults();
         try {
-          writeJsonFileAtomic(settingsPath, defaults);
+          writeJsonFileAtomic(settingsPath, defaults, { mode: 0o600 });
           // stderr, never stdout: this fires on the first boot in a fresh data
           // dir, and CLI commands like `start` promise machine-readable JSON
           // on stdout to the hook framework.
@@ -252,7 +252,7 @@ export class SettingsDefaultsManager {
         flatSettings = settings.env;
 
         try {
-          writeJsonFileAtomic(settingsPath, flatSettings);
+          writeJsonFileAtomic(settingsPath, flatSettings, { mode: 0o600 });
           // stderr, never stdout — same JSON-on-stdout contract as above.
           console.warn('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
         } catch (error: unknown) {
@@ -268,7 +268,7 @@ export class SettingsDefaultsManager {
         };
 
         try {
-          writeJsonFileAtomic(settingsPath, flatSettings);
+          writeJsonFileAtomic(settingsPath, flatSettings, { mode: 0o600 });
           // stderr, never stdout — same JSON-on-stdout contract as above.
           console.warn('[SETTINGS] Migrated Telegram trigger types off the legacy default:', settingsPath);
         } catch (error: unknown) {
