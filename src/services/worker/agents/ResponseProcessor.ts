@@ -347,21 +347,44 @@ export async function processAgentResponse(
     }
 
     // Classify the non-XML output so a dropped batch is visible, not silent.
-    // Ordinary idle/prose is a claimed no-op batch: confirm it and do not build
-    // any respawn debt from repeated skip acknowledgements.
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
+
+    if (outputClass === 'idle') {
+      // An idle turn means the request went out empty, not that the batch had
+      // nothing to say: the generator can start before messages are queued.
+      // Requeue the claimed batch while the counter is within the bound; the
+      // buffer re-yields it to the next generator pass. Only past the bound is
+      // an idle batch confirmed and dropped, so a genuinely empty batch cannot
+      // loop.
+      session.consecutiveInvalidOutputs += 1;
+      if (session.consecutiveInvalidOutputs <= 3) {
+        logger.warn('PARSER', `${agentName} returned non-XML idle response — retrying claimed batch`, {
+          sessionId: session.sessionDbId,
+          outputClass,
+          preview,
+          ...(emptyOutputReason ? { emptyOutputReason } : {}),
+        });
+        await sessionManager.resetProcessingToPending(session.sessionDbId);
+        return;
+      }
+      logger.warn('PARSER', `${agentName} idle retry bound exceeded — ignoring queued batch`, {
+        sessionId: session.sessionDbId,
+        outputClass,
+        preview,
+        ...(emptyOutputReason ? { emptyOutputReason } : {}),
+      });
+    } else {
+      logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
+        sessionId: session.sessionDbId,
+        outputClass,
+        preview,
+      });
+    }
+
+    // Ordinary prose and bound-exceeded idle are claimed no-op batches: confirm
+    // them and do not build any respawn debt from repeated skip acknowledgements.
     session.consecutiveInvalidOutputs = 0;
-
-    logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
-      sessionId: session.sessionDbId,
-      outputClass,
-      preview,
-      ...(outputClass === 'idle' && emptyOutputReason ? { emptyOutputReason } : {}),
-    });
-
-    // Plain-text skip responses are intentionally ignored. Re-queueing them
-    // creates an observer loop where the same low-signal batch is retried.
     await sessionManager.confirmClaimedMessages(session.sessionDbId);
     session.earliestPendingTimestamp = null;
     return;

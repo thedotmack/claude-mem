@@ -207,6 +207,7 @@ describe('ResponseProcessor', () => {
       claimedMessageIds: [],
       conversationHistory: [],
       currentProvider: 'claude',
+      consecutiveInvalidOutputs: 0,
       ...overrides,
     } as ActiveSession;
   }
@@ -622,7 +623,7 @@ describe('ResponseProcessor', () => {
   });
 
   describe('empty-turn diagnostics (#3454)', () => {
-    it('reproduction: idle WARN at base had no emptyOutputReason; head adds it for non-text-blocks-only', async () => {
+    it('reproduction: idle WARN at base had no emptyOutputReason; head adds it and requeues the claimed batch', async () => {
       const reproPath = join(import.meta.dir, '../../fixtures/observer-empty-turn-repro-3454.txt');
       const reproContent = readFileSync(reproPath, 'utf-8');
       const previewMatch = /\bpreview=([^,}]*)/.exec(reproContent);
@@ -632,10 +633,12 @@ describe('ResponseProcessor', () => {
       expect(reproContent).not.toContain('emptyOutputReason');
 
       const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(0));
       mockSessionManager = {
         getMessageIterator: async function* () { yield* []; },
         getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
         confirmClaimedMessages,
+        resetProcessingToPending,
       } as unknown as SessionManager;
 
       const session = createMockSession();
@@ -657,22 +660,26 @@ describe('ResponseProcessor', () => {
 
       expect(logger.warn).toHaveBeenCalledWith(
         'PARSER',
-        expect.stringMatching(/returned non-XML idle response/),
+        expect.stringMatching(/returned non-XML idle response — retrying claimed batch/),
         expect.objectContaining({ outputClass: 'idle', emptyOutputReason: 'non-text-blocks-only(tool_use)' })
       );
       const warnCall = (logger.warn as any).mock.calls.find(
         (c: any[]) => typeof c[1] === 'string' && c[1].includes('non-XML idle response')
       );
       expect(warnCall[2]).not.toHaveProperty('consecutiveInvalidOutputs');
-      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(resetProcessingToPending).toHaveBeenCalledWith(session.sessionDbId);
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(session.consecutiveInvalidOutputs).toBe(1);
     });
 
     it('fault: consecutiveInvalidOutputs is removed from the non-XML WARN payload', async () => {
       const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(0));
       mockSessionManager = {
         getMessageIterator: async function* () { yield* []; },
         getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
         confirmClaimedMessages,
+        resetProcessingToPending,
       } as unknown as SessionManager;
 
       const session = createMockSession();
@@ -690,7 +697,7 @@ describe('ResponseProcessor', () => {
 
       expect(logger.warn).toHaveBeenCalledWith(
         'PARSER',
-        expect.any(String),
+        expect.stringMatching(/retrying claimed batch/),
         expect.not.objectContaining({ consecutiveInvalidOutputs: expect.anything() })
       );
     });
@@ -990,12 +997,14 @@ describe('ResponseProcessor', () => {
   });
 
   describe('handling empty / non-XML response', () => {
-    it('clears pending work and does NOT call storeObservations on empty response', async () => {
+    it('requeues the claimed batch on empty response instead of confirming it', async () => {
       const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(0));
       mockSessionManager = {
         getMessageIterator: async function* () { yield* []; },
         getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
         confirmClaimedMessages,
+        resetProcessingToPending,
       } as unknown as SessionManager;
 
       const session = createMockSession();
@@ -1007,8 +1016,10 @@ describe('ResponseProcessor', () => {
       );
 
       expect(mockStoreObservations).not.toHaveBeenCalled();
-      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
-      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(session.earliestPendingTimestamp).not.toBeNull();
+      expect(session.consecutiveInvalidOutputs).toBe(1);
     });
 
     it('clears pending work and does NOT call storeObservations on plain-text response', async () => {
