@@ -123,4 +123,13 @@ describe('CATEGORY_ORDER', () => {
     expect([...CATEGORY_ORDER].sort()).toEqual(expected.sort());
     expect(new Set(CATEGORY_ORDER).size).toBe(CATEGORY_ORDER.length);
   });
+
+  it('covers every category categoryOf can derive, so none go unfilterable', () => {
+    for (const type of KNOWN_OBSERVATION_TYPES) {
+      expect(CATEGORY_ORDER).toContain(type);
+    }
+    for (const category of ['summary', 'prompt', 'other']) {
+      expect(CATEGORY_ORDER).toContain(category);
+    }
+  });
 });
