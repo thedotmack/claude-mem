@@ -273,6 +273,10 @@ export class ClaudeProvider {
       // Textless frames are not dispatched (see below), so their usage rolls
       // into the next dispatch instead of going unattributed.
       let discoveryTokenBaseline = session.cumulativeInputTokens + session.cumulativeOutputTokens;
+      // Whether the current turn has dispatched any text yet. A turn that ends
+      // without one still needs the idle hand-off, otherwise the claimed batch
+      // is left dangling for session teardown to discard.
+      let turnDispatchedText = false;
 
       for await (const message of queryResult) {
         // Quota-aware wall-clock guard (#2234): the SDK pushes `system` events
@@ -339,7 +343,9 @@ export class ClaudeProvider {
           // confirm-and-drop the claimed batch before the real XML frame
           // arrives (#3492). A frame that does contain a text block still goes
           // through even when that text is empty: that is the provider saying
-          // it had nothing to record, which stays a confirmed no-op batch.
+          // it had nothing to record, which stays a confirmed no-op batch. A
+          // turn that never produces a text frame gets the same idle hand-off
+          // once, from the `result` branch below.
           const hasTextBlock = Array.isArray(content)
             ? content.some((c: any) => c?.type === 'text')
             : typeof content === 'string';
@@ -422,6 +428,7 @@ export class ClaudeProvider {
           );
 
           discoveryTokenBaseline = session.cumulativeInputTokens + session.cumulativeOutputTokens;
+          turnDispatchedText = true;
         }
 
         if (message.type === 'result') {
@@ -467,6 +474,30 @@ export class ClaudeProvider {
                   : undefined,
             });
           }
+
+          if (!turnDispatchedText) {
+            // The whole turn carried no text, so no frame handed the claimed
+            // batch to the parser. Do it once here with the empty response the
+            // turn actually produced: the batch is classified idle and
+            // confirmed, exactly as before #3492's frame-level skip. Skipping
+            // this would leave the batch claimed until session teardown
+            // disposes the in-RAM buffer, which drops it with no hand-off.
+            await processAgentResponse(
+              '',
+              session,
+              this.dbManager,
+              this.sessionManager,
+              worker,
+              (session.cumulativeInputTokens + session.cumulativeOutputTokens) - discoveryTokenBaseline,
+              session.earliestPendingTimestamp,
+              'SDK',
+              cwdTracker.lastCwd,
+              modelId,
+              activeResponseContext.current
+            );
+            discoveryTokenBaseline = session.cumulativeInputTokens + session.cumulativeOutputTokens;
+          }
+          turnDispatchedText = false;
         }
       }
     } finally {

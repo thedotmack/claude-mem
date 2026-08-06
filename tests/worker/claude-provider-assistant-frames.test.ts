@@ -274,7 +274,7 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
     expect(harness.confirmClaimedMessages).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the batch claimed when the whole turn produced no text frame', async () => {
+  it('confirms the batch once at the end of a turn that produced no text frame', async () => {
     const session = createSession();
     const harness = createHarness(session);
 
@@ -285,11 +285,46 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
 
     await harness.provider.startSession(session);
 
-    // Nothing was answered, so nothing is confirmed. The next generator pass
-    // re-yields the batch (SessionManager.getMessageIterator resets claimed
-    // messages back to pending before draining).
-    expect(harness.confirmClaimedMessages).not.toHaveBeenCalled();
-    expect(harness.remainingClaimed()).toHaveLength(1);
-    expect(session.earliestPendingTimestamp).toBe(QUEUED_TIMESTAMP);
+    // The turn said nothing at all, so the batch still gets the idle hand-off,
+    // just once and at turn granularity. Leaving it claimed would hand it to
+    // session teardown, which disposes the in-RAM buffer without a hand-off.
+    expect(harness.storeObservations).not.toHaveBeenCalled();
+    expect(harness.confirmClaimedMessages).toHaveBeenCalledTimes(1);
+    expect(harness.remainingClaimed()).toEqual([]);
+    expect(session.claimedMessageIds).toEqual([]);
+  });
+
+  it('does not re-confirm at the result when the turn already dispatched text', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: OBSERVATION_XML }]),
+      resultFrame(),
+    ];
+
+    await harness.provider.startSession(session);
+
+    expect(harness.storeObservations).toHaveBeenCalledTimes(1);
+    expect(harness.confirmClaimedMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('tracks text dispatch per turn across consecutive turns', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: OBSERVATION_XML }]),
+      resultFrame(),
+      assistantFrame([{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: {} }]),
+      resultFrame(),
+    ];
+
+    await harness.provider.startSession(session);
+
+    // Turn one stored, turn two produced no text and took the idle hand-off:
+    // the flag must not stay latched from the first turn.
+    expect(harness.storeObservations).toHaveBeenCalledTimes(1);
+    expect(harness.confirmClaimedMessages).toHaveBeenCalledTimes(2);
   });
 });
