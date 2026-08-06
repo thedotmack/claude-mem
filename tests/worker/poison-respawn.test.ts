@@ -3,25 +3,25 @@ import { logger } from '../../src/utils/logger.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import { processAgentResponse } from '../../src/services/worker/agents/ResponseProcessor.js';
 import { handleGeneratorExit } from '../../src/services/worker/session/GeneratorExitHandler.js';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
+import type { ModeConfig } from '../../src/services/domain/types.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { WorkerRef } from '../../src/services/worker/agents/types.js';
 
-mock.module('../../src/services/domain/ModeManager.js', () => ({
-  ModeManager: {
-    getInstance: () => ({
-      getActiveMode: () => ({
-        name: 'code',
-        prompts: {
-          init: 'init prompt',
-          observation: 'obs prompt',
-          summary: 'summary prompt',
-        },
-        observation_types: [{ id: 'discovery' }, { id: 'bugfix' }, { id: 'refactor' }],
-        observation_concepts: [],
-      }),
-    }),
-  },
-}));
+beforeEach(() => {
+  spyOn(ModeManager.prototype, 'getActiveMode').mockImplementation(() => ({
+    name: 'code',
+    description: 'mock mode',
+    version: '1.0.0',
+    prompts: {
+      init: 'init prompt',
+      observation: 'obs prompt',
+      summary: 'summary prompt',
+    },
+    observation_types: [{ id: 'discovery' }, { id: 'bugfix' }, { id: 'refactor' }],
+    observation_concepts: [],
+  }) as ModeConfig);
+});
 
 function makeDbManager(storeObservations = mock(() => ({ observationIds: [], summaryId: null, createdAtEpoch: 0 }))): DatabaseManager {
   return {
