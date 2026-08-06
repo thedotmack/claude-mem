@@ -4,7 +4,9 @@ import { parseArgs } from 'node:util';
 import { parseJsonWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
-const SYNC_TOKEN_PATTERN = /^cm_pro_[0-9a-f]{32}$/;
+// setup_token was historically 24 hex chars and is now 32. Accept both so
+// existing CMEM Cloud customers can move onto the secure setup command.
+const SYNC_TOKEN_PATTERN = /^cm_pro_(?:[0-9a-f]{24}|[0-9a-f]{32})$/;
 const WORKER_KEY_PATTERN = /^cmem_worker_[A-Za-z0-9_-]{43}$/;
 const USER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -26,7 +28,12 @@ function plainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function normalizedHttpsUrl(value: string, expectedPath?: string): string {
+function isCmemOwnedHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return normalized === 'cmem.ai' || normalized.endsWith('.cmem.ai');
+}
+
+function normalizedCmemUrl(value: string, expectedPath?: string): string {
   let url: URL;
   try {
     url = new URL(value);
@@ -37,10 +44,14 @@ function normalizedHttpsUrl(value: string, expectedPath?: string): string {
     url.protocol !== 'https:'
     || url.username
     || url.password
+    || url.port
     || url.search
     || url.hash
   ) {
-    throw new Error('Connection URLs must use https and cannot contain credentials, query parameters, or fragments');
+    throw new Error('Connection URLs must use standard https and cannot contain credentials, query parameters, or fragments');
+  }
+  if (!isCmemOwnedHostname(url.hostname)) {
+    throw new Error('CMEM Cloud connections only accept cmem.ai endpoints');
   }
   const pathname = url.pathname.replace(/\/+$/, '') || '/';
   if (expectedPath && pathname !== expectedPath) {
@@ -57,9 +68,9 @@ function validatePublicCloudConnection(
   if (!USER_ID_PATTERN.test(userId)) throw new Error('Invalid CMEM user id');
   return {
     userId,
-    hubUrl: normalizedHttpsUrl(input.hubUrl),
+    hubUrl: normalizedCmemUrl(input.hubUrl),
     ...(input.workerUrl
-      ? { workerUrl: normalizedHttpsUrl(input.workerUrl, '/api/worker/v1') }
+      ? { workerUrl: normalizedCmemUrl(input.workerUrl, '/api/worker/v1') }
       : {}),
   };
 }

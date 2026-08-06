@@ -62,6 +62,15 @@ describe('cloud connect', () => {
     expect(settings.CLAUDE_MEM_OPENROUTER_API_KEY).toBeUndefined();
   });
 
+  test('accepts existing 24-character CMEM sync tokens', () => {
+    const connection = validateCloudConnection({
+      ...valid,
+      syncToken: `cm_pro_${'b'.repeat(24)}`,
+    });
+
+    expect(connection.syncToken).toBe(`cm_pro_${'b'.repeat(24)}`);
+  });
+
   test('rejects incomplete worker settings and unsafe URLs', () => {
     expect(() => validateCloudConnection({
       userId: valid.userId,
@@ -73,11 +82,33 @@ describe('cloud connect', () => {
     expect(() => validateCloudConnection({
       ...valid,
       hubUrl: 'http://sync.cmem.ai',
-    })).toThrow('must use https');
+    })).toThrow('must use standard https');
 
     expect(() => validateCloudConnection({
       ...valid,
       workerUrl: 'https://cmem.ai/api/worker/v1/anything',
     })).toThrow('must end at /api/worker/v1');
+  });
+
+  test('never sends CMEM credentials to an untrusted origin', () => {
+    expect(() => validateCloudConnection({
+      ...valid,
+      hubUrl: 'https://attacker.example',
+    })).toThrow('only accept cmem.ai endpoints');
+
+    expect(() => validateCloudConnection({
+      ...valid,
+      hubUrl: 'https://cmem.ai.attacker.example',
+    })).toThrow('only accept cmem.ai endpoints');
+
+    expect(() => validateCloudConnection({
+      ...valid,
+      workerUrl: 'https://attacker.example/api/worker/v1',
+    })).toThrow('only accept cmem.ai endpoints');
+
+    expect(() => validateCloudConnection({
+      ...valid,
+      workerUrl: 'https://cmem.ai:8443/api/worker/v1',
+    })).toThrow('must use standard https');
   });
 });
