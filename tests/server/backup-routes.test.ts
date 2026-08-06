@@ -239,3 +239,64 @@ describe('BackupRoutes standalone file import', () => {
     expect(require('fs').readFileSync(paths.envFile(), 'utf-8')).toBe('SOME_KEY=value\n');
   });
 });
+
+describe('BackupRoutes export/import round trip', () => {
+  let server: InstanceType<typeof Server> | null = null;
+
+  afterEach(async () => {
+    if (server?.getHttpServer()) {
+      try { await server.close(); } catch { /* ignore */ }
+    }
+    server = null;
+  });
+
+  it('export then import restores byte-identical file content (staged, pre-restart)', async () => {
+    mkdirSync(paths.dataDir(), { recursive: true });
+    // Earlier describes in this file share this module-level TEST_DATA_DIR
+    // and one of them ("writes .env directly ...") leaves a real .env file
+    // behind (it's not staged, so nothing clears it). Remove any allowlisted
+    // files this test doesn't itself set up, so the export below contains
+    // exactly the two files this test expects, regardless of run order.
+    for (const basename of BACKUP_ALLOWLIST) {
+      if (basename === 'claude-mem.db' || basename === 'settings.json') continue;
+      const stray = path.join(paths.dataDir(), basename);
+      if (existsSync(stray)) rmSync(stray, { force: true });
+    }
+    writeFileSync(paths.database(), 'round-trip-db-content');
+    writeFileSync(paths.settings(), '{"roundTrip":true}');
+
+    server = new Server(baseOptions());
+    server.registerRoutes(new BackupRoutes(() => Promise.resolve()));
+    server.finalizeRoutes();
+    const port = 46000 + Math.floor(Math.random() * 9000);
+    await server.listen(port, '127.0.0.1');
+
+    // Export.
+    const exportRes = await fetch(`http://127.0.0.1:${port}/api/backup/export`);
+    const zipBuffer = Buffer.from(await exportRes.arrayBuffer());
+
+    // Mutate the live files, simulating drift since the export.
+    writeFileSync(paths.database(), 'mutated-after-export');
+    writeFileSync(paths.settings(), '{"mutated":true}');
+
+    // Import the original export back.
+    const importRes = await fetch(`http://127.0.0.1:${port}/api/backup/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip' },
+      body: zipBuffer,
+    });
+    expect(importRes.status).toBe(200);
+
+    // Import only stages — applying happens in the restart handoff (Task 2),
+    // which this test does not run end-to-end (no live worker process here).
+    // Assert the staged content matches the ORIGINAL export, proving the
+    // round trip preserved bytes up to the point where the real restart
+    // sequence would apply them.
+    const { applyPendingSwaps } = await import('../../src/services/infrastructure/PendingSwap.js');
+    const swapped = applyPendingSwaps();
+
+    expect(swapped.sort()).toEqual(['claude-mem.db', 'settings.json']);
+    expect(require('fs').readFileSync(paths.database(), 'utf-8')).toBe('round-trip-db-content');
+    expect(require('fs').readFileSync(paths.settings(), 'utf-8')).toBe('{"roundTrip":true}');
+  });
+});
