@@ -58,6 +58,14 @@ export interface ActiveSession {
   pendingCompressionEvent?: Record<string, unknown> | null;
   /** Cumulative total_cost_usd from the SDK's latest result message — per-compression cost is the delta between results. */
   lastResultTotalCostUsd?: number | null;
+  /**
+   * Cumulative cache_read_input_tokens across the session. Kept apart from
+   * cumulativeInputTokens because discovery_tokens is the delta of that
+   * counter; on a long observer session this is where most of the context the
+   * model re-reads shows up, so it is the number that makes resend growth
+   * visible.
+   */
+  cumulativeCacheReadTokens?: number;
 }
 
 export interface PendingMessage {

@@ -8,6 +8,7 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
+import { accumulateObserverUsage, observerUsageLogFields } from './observer-usage.js';
 import {
   processAgentResponse,
   snapshotResponseContext,
@@ -133,7 +134,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     logger.success('SDK', `${this.providerName} agent completed`, {
       sessionId: session.sessionDbId,
       duration: `${(sessionDuration / 1000).toFixed(1)}s`,
-      historyLength: session.conversationHistory.length
+      historyLength: session.conversationHistory.length,
+      ...observerUsageLogFields(session)
     });
   }
 
@@ -172,8 +174,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     if (initResponse.content) {
       session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
       const tokensUsed = initResponse.tokensUsed || 0;
-      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+      accumulateObserverUsage(session, initResponse);
       session.lastUsage = this.buildLastUsage(initResponse);
       await processAgentResponse(
         initResponse.content, session, this.dbManager, this.sessionManager,
@@ -221,8 +222,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     if (obsResponse.content) {
       session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
       tokensUsed = obsResponse.tokensUsed || 0;
-      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+      accumulateObserverUsage(session, obsResponse);
       // Both sides or nothing: a backend reporting only one of the two counts
       // must not produce a half-real event (input=0 → compression_ratio 0.0).
       session.lastUsage = this.buildLastUsage(obsResponse);
@@ -279,8 +279,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     if (summaryResponse.content) {
       session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
       tokensUsed = summaryResponse.tokensUsed || 0;
-      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+      accumulateObserverUsage(session, summaryResponse);
       session.lastUsage = this.buildLastUsage(summaryResponse);
     }
 
@@ -298,11 +297,17 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
   protected handleSessionError(error: unknown, session: ActiveSession, _worker?: WorkerRef): never {
     if (isAbortError(error)) {
-      logger.warn('SDK', `${this.providerName} agent aborted`, { sessionId: session.sessionDbId });
+      logger.warn('SDK', `${this.providerName} agent aborted`, {
+        sessionId: session.sessionDbId,
+        ...observerUsageLogFields(session)
+      });
       throw error;
     }
 
-    logger.failure('SDK', `${this.providerName} agent error`, { sessionDbId: session.sessionDbId }, error instanceof Error ? error : new Error(String(error)));
+    logger.failure('SDK', `${this.providerName} agent error`, {
+      sessionDbId: session.sessionDbId,
+      ...observerUsageLogFields(session)
+    }, error instanceof Error ? error : new Error(String(error)));
     throw error;
   }
 
