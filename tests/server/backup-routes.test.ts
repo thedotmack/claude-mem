@@ -1,6 +1,6 @@
 // tests/server/backup-routes.test.ts
-import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'bun:test';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import path from 'path';
 import { tmpdir } from 'os';
 import AdmZip from 'adm-zip';
@@ -13,20 +13,52 @@ const { Server } = await import('../../src/services/server/Server.js');
 const { BackupRoutes, BACKUP_ALLOWLIST } = await import('../../src/services/worker/http/routes/BackupRoutes.js');
 const { paths } = await import('../../src/shared/paths.js');
 
-// Every describe below shares this file's module-level TEST_DATA_DIR, and
-// several tests intentionally leave allowlisted files (and/or their
-// ".importing" staging counterparts) behind on disk as part of what they're
-// asserting. Reset the full BACKUP_ALLOWLIST surface before every test in
-// this file so no test's leftovers can leak into a later one, regardless of
-// run order or what future tests get appended.
-beforeEach(() => {
+/**
+ * NOTE ON ISOLATION: the mkdtemp + CLAUDE_MEM_DATA_DIR override above is INERT
+ * whenever another test file already imported src/shared/paths.js first —
+ * paths.ts freezes DATA_DIR at first module evaluation and bun runs the whole
+ * suite in one process. paths.dataDir() here is therefore usually the run-wide
+ * dir from tests/preload.ts, SHARED with every other test file. This file
+ * resets only the basenames it owns (the BACKUP_ALLOWLIST surface plus their
+ * ".importing" staging counterparts) before every test and again at the end,
+ * and never asserts that the directory is otherwise empty.
+ */
+function resetOwnedFiles(): void {
   if (!existsSync(paths.dataDir())) return;
   for (const basename of BACKUP_ALLOWLIST) {
-    const target = path.join(paths.dataDir(), basename);
-    if (existsSync(target)) rmSync(target, { force: true });
-    const staged = path.join(paths.dataDir(), `${basename}.importing`);
-    if (existsSync(staged)) rmSync(staged, { force: true });
+    rmSync(path.join(paths.dataDir(), basename), { force: true });
+    rmSync(path.join(paths.dataDir(), `${basename}.importing`), { force: true });
   }
+}
+
+beforeEach(() => {
+  resetOwnedFiles();
+});
+
+/**
+ * /api/backup/import now uses flushResponseThen (the /api/admin/restart
+ * contract), which calls process.exit(0) once the deferred action settles.
+ * Neutralize it for this file so a restore test cannot kill the test runner,
+ * and restore the real implementation afterwards.
+ */
+const realProcessExit = process.exit;
+const exitCalls: number[] = [];
+
+beforeAll(() => {
+  (process as unknown as { exit: (code?: number) => void }).exit = (code?: number) => {
+    exitCalls.push(code ?? 0);
+  };
+});
+
+afterAll(() => {
+  (process as unknown as { exit: typeof realProcessExit }).exit = realProcessExit;
+  if (PREVIOUS_DATA_DIR === undefined) {
+    delete process.env.CLAUDE_MEM_DATA_DIR;
+  } else {
+    process.env.CLAUDE_MEM_DATA_DIR = PREVIOUS_DATA_DIR;
+  }
+  resetOwnedFiles();
+  rmSync(TEST_DATA_DIR, { recursive: true, force: true });
 });
 
 function baseOptions() {
@@ -40,6 +72,31 @@ function baseOptions() {
   };
 }
 
+/**
+ * Bind to port 0 and read back what the OS assigned. The previous
+ * `4X000 + random(9000)` scheme reaches into 49152-65535, which is Windows'
+ * dynamic/ephemeral range, so it raced live outbound connections and produced
+ * real EADDRINUSE failures in a full-suite run. Port 0 cannot collide.
+ */
+async function listenOnFreePort(server: InstanceType<typeof Server>): Promise<number> {
+  await server.listen(0, '127.0.0.1');
+  const address = server.getHttpServer()!.address();
+  if (address === null || typeof address === 'string') {
+    throw new Error('expected a TCP address after listen()');
+  }
+  return address.port;
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      const timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), ms);
+      timer.unref?.();
+    }),
+  ]);
+}
+
 describe('BackupRoutes export', () => {
   let server: InstanceType<typeof Server> | null = null;
 
@@ -50,26 +107,16 @@ describe('BackupRoutes export', () => {
     server = null;
   });
 
-  afterAll(() => {
-    if (PREVIOUS_DATA_DIR === undefined) {
-      delete process.env.CLAUDE_MEM_DATA_DIR;
-    } else {
-      process.env.CLAUDE_MEM_DATA_DIR = PREVIOUS_DATA_DIR;
-    }
-    rmSync(TEST_DATA_DIR, { recursive: true, force: true });
-  });
-
   it('zips only the files that exist, skipping missing wal/shm', async () => {
     mkdirSync(paths.dataDir(), { recursive: true });
     writeFileSync(paths.database(), 'fake-db-content');
     writeFileSync(paths.settings(), '{"a":1}');
     // Deliberately no .db-shm / .db-wal / .env — export must not error.
 
-    server = new (await import('../../src/services/server/Server.js')).Server(baseOptions());
+    server = new Server(baseOptions());
     server.registerRoutes(new BackupRoutes(() => Promise.resolve()));
     server.finalizeRoutes();
-    const port = 43000 + Math.floor(Math.random() * 9000);
-    await server.listen(port, '127.0.0.1');
+    const port = await listenOnFreePort(server);
 
     const res = await fetch(`http://127.0.0.1:${port}/api/backup/export`);
     expect(res.status).toBe(200);
@@ -94,12 +141,10 @@ describe('BackupRoutes import', () => {
   });
 
   async function startServer(restartWorker: () => Promise<void>) {
-    const { Server } = await import('../../src/services/server/Server.js');
     server = new Server(baseOptions());
     server.registerRoutes(new BackupRoutes(restartWorker));
     server.finalizeRoutes();
-    const port = 44000 + Math.floor(Math.random() * 9000);
-    await server.listen(port, '127.0.0.1');
+    const port = await listenOnFreePort(server);
     return port;
   }
 
@@ -139,7 +184,13 @@ describe('BackupRoutes import', () => {
     writeFileSync(paths.settings(), '{"old":true}');
 
     let restartCalled = false;
-    const port = await startServer(() => { restartCalled = true; return Promise.resolve(); });
+    let signalRestart: () => void = () => {};
+    const restarted = new Promise<void>(resolve => { signalRestart = resolve; });
+    const port = await startServer(() => {
+      restartCalled = true;
+      signalRestart();
+      return Promise.resolve();
+    });
 
     const zip = new AdmZip();
     zip.addFile('claude-mem.db', Buffer.from('new-db'));
@@ -149,6 +200,12 @@ describe('BackupRoutes import', () => {
     // present above, so this must not create anything outside DATA_DIR.
     zip.addFile('../../evil.txt', Buffer.from('should never land on disk'));
 
+    // dataDir/.. is the shared OS temp root; clear the exact path first so the
+    // absence assertion below is about THIS request, not about the directory
+    // happening to be pristine.
+    const evilPath = path.join(paths.dataDir(), '..', 'evil.txt');
+    rmSync(evilPath, { force: true });
+
     const res = await fetch(`http://127.0.0.1:${port}/api/backup/import`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/zip' },
@@ -156,13 +213,56 @@ describe('BackupRoutes import', () => {
     });
 
     expect(res.status).toBe(200);
+    await withTimeout(restarted, 5000, 'deferred restart');
     expect(restartCalled).toBe(true);
     expect(existsSync(path.join(paths.dataDir(), 'claude-mem.db.importing'))).toBe(true);
     expect(existsSync(path.join(paths.dataDir(), 'settings.json.importing'))).toBe(true);
-    expect(existsSync(path.join(paths.dataDir(), '..', 'evil.txt'))).toBe(false);
+    expect(existsSync(evilPath)).toBe(false);
 
-    const backupDirs = require('fs').readdirSync(path.join(paths.dataDir(), 'backups'));
+    const backupDirs = readdirSync(path.join(paths.dataDir(), 'backups'));
     expect(backupDirs.some((d: string) => d.startsWith('backup-restore-'))).toBe(true);
+  });
+
+  it('defers the restart until the response has been flushed', async () => {
+    mkdirSync(paths.dataDir(), { recursive: true });
+
+    const order: string[] = [];
+    let signalRestart: () => void = () => {};
+    const restarted = new Promise<void>(resolve => { signalRestart = resolve; });
+
+    const port = await startServer(() => {
+      order.push('restart');
+      signalRestart();
+      return Promise.resolve();
+    });
+
+    // Observe the real response lifecycle: 'finish' fires once the response has
+    // been handed to the socket. Firing restartWorker() inline (the old
+    // `res.json(); void this.restartWorker();`) records 'restart' BEFORE
+    // 'finish'; flushResponseThen records it after.
+    server!.getHttpServer()!.on('request', (_req, res) => {
+      res.on('finish', () => order.push('finish'));
+    });
+
+    const zip = new AdmZip();
+    zip.addFile('settings.json', Buffer.from('{"deferred":true}'));
+
+    const exitCountBefore = exitCalls.length;
+    const res = await fetch(`http://127.0.0.1:${port}/api/backup/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip' },
+      body: zip.toBuffer(),
+    });
+    expect(res.status).toBe(200);
+    await res.json();
+
+    await withTimeout(restarted, 5000, 'deferred restart');
+    expect(order).toEqual(['finish', 'restart']);
+
+    // flushResponseThen's contract also includes exiting once the deferred
+    // action settles (process.exit is stubbed for this file).
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(exitCalls.length).toBeGreaterThan(exitCountBefore);
   });
 });
 
@@ -177,12 +277,10 @@ describe('BackupRoutes standalone file import', () => {
   });
 
   async function startServer() {
-    const { Server } = await import('../../src/services/server/Server.js');
     server = new Server(baseOptions());
     server.registerRoutes(new BackupRoutes(() => Promise.resolve()));
     server.finalizeRoutes();
-    const port = 45000 + Math.floor(Math.random() * 9000);
-    await server.listen(port, '127.0.0.1');
+    const port = await listenOnFreePort(server);
     return port;
   }
 
@@ -197,7 +295,7 @@ describe('BackupRoutes standalone file import', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(require('fs').readFileSync(paths.settings(), 'utf-8')).toBe('{"imported":true}');
+    expect(readFileSync(paths.settings(), 'utf-8')).toBe('{"imported":true}');
     expect(existsSync(path.join(paths.dataDir(), 'settings.json.importing'))).toBe(false);
   });
 
@@ -213,7 +311,7 @@ describe('BackupRoutes standalone file import', () => {
     });
 
     expect(res.status).toBe(400);
-    expect(require('fs').readFileSync(paths.settings(), 'utf-8')).toBe('{"original":true}');
+    expect(readFileSync(paths.settings(), 'utf-8')).toBe('{"original":true}');
   });
 
   it('rejects an unrecognized name parameter', async () => {
@@ -240,7 +338,108 @@ describe('BackupRoutes standalone file import', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(require('fs').readFileSync(paths.envFile(), 'utf-8')).toBe('SOME_KEY=value\n');
+    expect(readFileSync(paths.envFile(), 'utf-8')).toBe('SOME_KEY=value\n');
+  });
+
+  // POSIX-only: Windows has no mode bits beyond the read-only flag.
+  it.skipIf(process.platform === 'win32')(
+    'writes .env with 0600 permissions, even over a world-readable file',
+    async () => {
+      mkdirSync(paths.dataDir(), { recursive: true });
+      // Pre-existing 0644 file: writeFileSync's `mode` option is ignored when
+      // the file already exists, so only an explicit chmod fixes this.
+      writeFileSync(paths.envFile(), 'OLD=1\n', { mode: 0o644 });
+      const port = await startServer();
+
+      const res = await fetch(`http://127.0.0.1:${port}/api/backup/import/file?name=.env`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: Buffer.from('ANTHROPIC_API_KEY=secret\n'),
+      });
+
+      expect(res.status).toBe(200);
+      expect(statSync(paths.envFile()).mode & 0o777).toBe(0o600);
+    }
+  );
+});
+
+describe('BackupRoutes localhost enforcement', () => {
+  let server: InstanceType<typeof Server> | null = null;
+
+  afterEach(async () => {
+    if (server?.getHttpServer()) {
+      try { await server.close(); } catch { /* ignore */ }
+    }
+    server = null;
+  });
+
+  /**
+   * requireLocalhost reads req.ip. Enabling `trust proxy` makes express derive
+   * req.ip from X-Forwarded-For, which is the only way to present a non-local
+   * client to a server we can only reach over loopback. The middleware itself
+   * is exercised unchanged.
+   */
+  async function startServerTrustingProxy() {
+    server = new Server(baseOptions());
+    server.app.set('trust proxy', true);
+    server.registerRoutes(new BackupRoutes(() => Promise.resolve()));
+    server.finalizeRoutes();
+    const port = await listenOnFreePort(server);
+    return port;
+  }
+
+  const REMOTE = { 'X-Forwarded-For': '203.0.113.9' };
+
+  it('rejects a non-localhost export with 403 and does not leak the backup zip', async () => {
+    mkdirSync(paths.dataDir(), { recursive: true });
+    writeFileSync(paths.envFile(), 'ANTHROPIC_API_KEY=secret\n');
+    const port = await startServerTrustingProxy();
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/backup/export`, { headers: REMOTE });
+
+    expect(res.status).toBe(403);
+    const body = await res.text();
+    expect(body).not.toContain('ANTHROPIC_API_KEY');
+  });
+
+  it('rejects a non-localhost zip import with 403 and stages nothing', async () => {
+    mkdirSync(paths.dataDir(), { recursive: true });
+    const port = await startServerTrustingProxy();
+
+    const zip = new AdmZip();
+    zip.addFile('claude-mem.db', Buffer.from('attacker-db'));
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/backup/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip', ...REMOTE },
+      body: zip.toBuffer(),
+    });
+
+    expect(res.status).toBe(403);
+    expect(existsSync(path.join(paths.dataDir(), 'claude-mem.db.importing'))).toBe(false);
+  });
+
+  it('rejects a non-localhost standalone file import with 403 and writes nothing', async () => {
+    mkdirSync(paths.dataDir(), { recursive: true });
+    const port = await startServerTrustingProxy();
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/backup/import/file?name=.env`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', ...REMOTE },
+      body: Buffer.from('ANTHROPIC_API_KEY=attacker\n'),
+    });
+
+    expect(res.status).toBe(403);
+    expect(existsSync(paths.envFile())).toBe(false);
+  });
+
+  it('still allows the same requests from loopback', async () => {
+    mkdirSync(paths.dataDir(), { recursive: true });
+    writeFileSync(paths.settings(), '{"a":1}');
+    const port = await startServerTrustingProxy();
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/backup/export`);
+    expect(res.status).toBe(200);
   });
 });
 
@@ -262,8 +461,7 @@ describe('BackupRoutes export/import round trip', () => {
     server = new Server(baseOptions());
     server.registerRoutes(new BackupRoutes(() => Promise.resolve()));
     server.finalizeRoutes();
-    const port = 46000 + Math.floor(Math.random() * 9000);
-    await server.listen(port, '127.0.0.1');
+    const port = await listenOnFreePort(server);
 
     // Export.
     const exportRes = await fetch(`http://127.0.0.1:${port}/api/backup/export`);
@@ -290,7 +488,42 @@ describe('BackupRoutes export/import round trip', () => {
     const swapped = applyPendingSwaps();
 
     expect(swapped.sort()).toEqual(['claude-mem.db', 'settings.json']);
-    expect(require('fs').readFileSync(paths.database(), 'utf-8')).toBe('round-trip-db-content');
-    expect(require('fs').readFileSync(paths.settings(), 'utf-8')).toBe('{"roundTrip":true}');
+    expect(readFileSync(paths.database(), 'utf-8')).toBe('round-trip-db-content');
+    expect(readFileSync(paths.settings(), 'utf-8')).toBe('{"roundTrip":true}');
+  });
+
+  it('drops a stale -wal left behind when the restored zip has no wal entry', async () => {
+    mkdirSync(paths.dataDir(), { recursive: true });
+    writeFileSync(paths.database(), 'db-at-export-time');
+    writeFileSync(paths.settings(), '{"roundTrip":true}');
+    // No -wal at export time, so the zip contains none.
+
+    server = new Server(baseOptions());
+    server.registerRoutes(new BackupRoutes(() => Promise.resolve()));
+    server.finalizeRoutes();
+    const port = await listenOnFreePort(server);
+
+    const exportRes = await fetch(`http://127.0.0.1:${port}/api/backup/export`);
+    const zipBuffer = Buffer.from(await exportRes.arrayBuffer());
+    expect(new AdmZip(zipBuffer).getEntry('claude-mem.db-wal')).toBeNull();
+
+    // Between export and restore the live db accumulated a WAL.
+    writeFileSync(paths.database(), 'db-drifted');
+    writeFileSync(`${paths.database()}-wal`, 'frames-for-the-drifted-db');
+
+    const importRes = await fetch(`http://127.0.0.1:${port}/api/backup/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip' },
+      body: zipBuffer,
+    });
+    expect(importRes.status).toBe(200);
+
+    const { applyPendingSwaps } = await import('../../src/services/infrastructure/PendingSwap.js');
+    applyPendingSwaps();
+
+    expect(readFileSync(paths.database(), 'utf-8')).toBe('db-at-export-time');
+    // The orphaned WAL belongs to the drifted database — SQLite would replay
+    // its frames into the restored file.
+    expect(existsSync(`${paths.database()}-wal`)).toBe(false);
   });
 });
