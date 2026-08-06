@@ -13,6 +13,22 @@ const { Server } = await import('../../src/services/server/Server.js');
 const { BackupRoutes, BACKUP_ALLOWLIST } = await import('../../src/services/worker/http/routes/BackupRoutes.js');
 const { paths } = await import('../../src/shared/paths.js');
 
+// Every describe below shares this file's module-level TEST_DATA_DIR, and
+// several tests intentionally leave allowlisted files (and/or their
+// ".importing" staging counterparts) behind on disk as part of what they're
+// asserting. Reset the full BACKUP_ALLOWLIST surface before every test in
+// this file so no test's leftovers can leak into a later one, regardless of
+// run order or what future tests get appended.
+beforeEach(() => {
+  if (!existsSync(paths.dataDir())) return;
+  for (const basename of BACKUP_ALLOWLIST) {
+    const target = path.join(paths.dataDir(), basename);
+    if (existsSync(target)) rmSync(target, { force: true });
+    const staged = path.join(paths.dataDir(), `${basename}.importing`);
+    if (existsSync(staged)) rmSync(staged, { force: true });
+  }
+});
+
 function baseOptions() {
   return {
     getInitializationComplete: () => true,
@@ -153,18 +169,6 @@ describe('BackupRoutes import', () => {
 describe('BackupRoutes standalone file import', () => {
   let server: InstanceType<typeof Server> | null = null;
 
-  // The "BackupRoutes import" describe above shares this file's module-level
-  // TEST_DATA_DIR and its last test intentionally leaves *.importing staging
-  // artifacts on disk (that's what it's asserting). Clear them here so this
-  // describe's own "no staging occurred" assertions aren't polluted by state
-  // left over from an earlier, unrelated describe block.
-  beforeEach(() => {
-    for (const basename of BACKUP_ALLOWLIST) {
-      const stray = path.join(paths.dataDir(), `${basename}.importing`);
-      if (existsSync(stray)) rmSync(stray, { force: true });
-    }
-  });
-
   afterEach(async () => {
     if (server?.getHttpServer()) {
       try { await server.close(); } catch { /* ignore */ }
@@ -252,16 +256,6 @@ describe('BackupRoutes export/import round trip', () => {
 
   it('export then import restores byte-identical file content (staged, pre-restart)', async () => {
     mkdirSync(paths.dataDir(), { recursive: true });
-    // Earlier describes in this file share this module-level TEST_DATA_DIR
-    // and one of them ("writes .env directly ...") leaves a real .env file
-    // behind (it's not staged, so nothing clears it). Remove any allowlisted
-    // files this test doesn't itself set up, so the export below contains
-    // exactly the two files this test expects, regardless of run order.
-    for (const basename of BACKUP_ALLOWLIST) {
-      if (basename === 'claude-mem.db' || basename === 'settings.json') continue;
-      const stray = path.join(paths.dataDir(), basename);
-      if (existsSync(stray)) rmSync(stray, { force: true });
-    }
     writeFileSync(paths.database(), 'round-trip-db-content');
     writeFileSync(paths.settings(), '{"roundTrip":true}');
 
