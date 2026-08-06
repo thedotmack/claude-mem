@@ -269,6 +269,11 @@ export class ClaudeProvider {
         }),
       });
 
+      // Baseline for the next dispatched response's discovery-token delta.
+      // Textless frames are not dispatched (see below), so their usage rolls
+      // into the next dispatch instead of going unattributed.
+      let discoveryTokenBaseline = session.cumulativeInputTokens + session.cumulativeOutputTokens;
+
       for await (const message of queryResult) {
         // Quota-aware wall-clock guard (#2234): the SDK pushes `system` events
         // with subtype `rate_limit` carrying live subscription quota state.
@@ -327,13 +332,22 @@ export class ClaudeProvider {
 
         if (message.type === 'assistant') {
           const content = message.message.content;
+          // A turn can arrive as several assistant messages, and a frame that
+          // holds only thinking or tool_use blocks carries no text at all.
+          // Flattening such a frame to '' and handing it to
+          // processAgentResponse makes the parser read the turn as idle and
+          // confirm-and-drop the claimed batch before the real XML frame
+          // arrives (#3492). A frame that does contain a text block still goes
+          // through even when that text is empty: that is the provider saying
+          // it had nothing to record, which stays a confirmed no-op batch.
+          const hasTextBlock = Array.isArray(content)
+            ? content.some((c: any) => c?.type === 'text')
+            : typeof content === 'string';
           const textContent = Array.isArray(content)
             ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
             : typeof content === 'string' ? content : '';
 
           const responseSize = textContent.length;
-
-          const tokensBeforeResponse = session.cumulativeInputTokens + session.cumulativeOutputTokens;
 
           const usage = message.message.usage;
           if (usage) {
@@ -364,7 +378,18 @@ export class ClaudeProvider {
             });
           }
 
-          const discoveryTokens = (session.cumulativeInputTokens + session.cumulativeOutputTokens) - tokensBeforeResponse;
+          if (!hasTextBlock) {
+            logger.debug('SDK', 'Assistant frame carried no text block, leaving queued batch intact', {
+              sessionId: session.sessionDbId,
+              promptNumber: session.lastPromptNumber,
+              blockTypes: Array.isArray(content)
+                ? [...new Set(content.map((c: any) => String(c?.type)))].join(',')
+                : typeof content,
+            });
+            continue;
+          }
+
+          const discoveryTokens = (session.cumulativeInputTokens + session.cumulativeOutputTokens) - discoveryTokenBaseline;
 
           const originalTimestamp = session.earliestPendingTimestamp;
 
@@ -395,6 +420,8 @@ export class ClaudeProvider {
             modelId,
             activeResponseContext.current
           );
+
+          discoveryTokenBaseline = session.cumulativeInputTokens + session.cumulativeOutputTokens;
         }
 
         if (message.type === 'result') {
