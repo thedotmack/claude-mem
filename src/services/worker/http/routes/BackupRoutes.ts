@@ -1,11 +1,13 @@
 import express, { Request, Response } from 'express';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import AdmZip from 'adm-zip';
 import { paths } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import type { RouteHandler } from '../../../server/Server.js';
+import { requireLocalhost } from '../middleware.js';
+import { flushResponseThen } from '../../../server/flushResponseThen.js';
 import { stagePendingSwap } from '../../../infrastructure/PendingSwap.js';
 
 export const BACKUP_ALLOWLIST = [
@@ -34,14 +36,20 @@ export class BackupRoutes extends BaseRouteHandler implements RouteHandler {
   }
 
   setupRoutes(app: express.Application): void {
-    app.get('/api/backup/export', this.handleExport.bind(this));
+    // requireLocalhost on all three: export streams the `.env` (ANTHROPIC_API_KEY
+    // et al) to the caller, and both import routes grant full db/.env overwrite
+    // plus a forced restart. These are strictly more powerful than
+    // /api/admin/restart|shutdown|doctor, which are already localhost-gated.
+    app.get('/api/backup/export', requireLocalhost, this.handleExport.bind(this));
     app.post(
       '/api/backup/import',
+      requireLocalhost,
       express.raw({ type: 'application/zip', limit: '50mb' }),
       this.handleImport.bind(this)
     );
     app.post(
       '/api/backup/import/file',
+      requireLocalhost,
       express.raw({ type: 'application/octet-stream', limit: '5mb' }),
       this.handleImportFile.bind(this)
     );
@@ -95,11 +103,16 @@ export class BackupRoutes extends BaseRouteHandler implements RouteHandler {
       staged: matched.map(e => path.basename(e.entryName)),
     });
 
-    res.json({ success: true, staged: matched.map(e => path.basename(e.entryName)) });
-
-    // Fire after the response is sent — the client should see success before
-    // the worker starts tearing itself down for the restart.
-    void this.restartWorker();
+    // Same contract as /api/admin/restart: defer the restart until the response
+    // is provably flushed (res 'finish'). Firing it inline would let
+    // performGracefulShutdown's closeAllConnections() race the still-in-flight
+    // response socket, so the UI would see a failed fetch for a restore that
+    // actually succeeded.
+    flushResponseThen(
+      res,
+      { success: true, staged: matched.map(e => path.basename(e.entryName)) },
+      () => this.restartWorker()
+    );
   });
 
   private handleImportFile = this.wrapHandler((req: Request, res: Response): void => {
@@ -122,7 +135,12 @@ export class BackupRoutes extends BaseRouteHandler implements RouteHandler {
     }
 
     const targetPath = name === 'settings.json' ? paths.settings() : paths.envFile();
-    writeFileSync(targetPath, body);
+    writeFileSync(targetPath, body, name === '.env' ? { mode: 0o600 } : undefined);
+    if (name === '.env') {
+      // `mode` only applies on create — an existing `.env` keeps its old mode,
+      // so re-assert 0600 to match EnvManager.saveEnvFile()'s guarantee.
+      chmodSync(targetPath, 0o600);
+    }
 
     logger.info('SYSTEM', 'Standalone file import written', { name });
     res.json({ success: true, name });

@@ -213,10 +213,11 @@ export function ContextSettingsModal({
       if (!res.ok) throw new Error(body.error || `Restore failed (${res.status})`);
 
       setBackupStatus('Files staged — waiting for the worker to restart...');
-      // The import endpoint responds before the restart sequence runs (it's
-      // fire-and-forget server-side, matching the existing admin/restart
-      // pattern), so restart-verify failure has to be surfaced here rather
-      // than in the original response — see spec's Safety section.
+      // The import endpoint responds BEFORE the restart sequence runs: the
+      // worker defers it via flushResponseThen, so the restart only begins once
+      // this response is flushed (the same contract as /api/admin/restart).
+      // Restart-verify failure therefore has to be surfaced here rather than in
+      // the original response — see spec's Safety section.
       const healthy = await waitForWorkerHealthy(30000);
       setBackupStatus(
         healthy
