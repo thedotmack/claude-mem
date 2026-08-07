@@ -70,3 +70,24 @@ then re-measure after layers 1-2 have run for a while.
   storage-without-seed, exclusion from injection and dedup).
 - `groundedness` prints baseline numbers from the live DB (read-only).
 - Full suite green, tsc clean, bundle rebuilt.
+
+## Postscript: the lesson that proved the point (2026-08-07)
+
+While debugging the GPU-query case the operator (me, Kimi) twice explained
+memory behavior from unmeasured intuition ("90% of the corpus is memory-work",
+"the project pool is memory-heavy") — both wrong; the actual corpus is 6.2%
+claude-mem-dev, and project `search` held the RTX 3090 series all along. The
+real bug (platformSource where-filter on the semantic path) was found only
+after querying the database instead of narrating.
+
+This is exactly the compounding-fiction failure this document addresses —
+confident reconstruction without checking the artifact of reality. Rule,
+recorded for every future session that reads this file:
+
+1. Before explaining system behavior, query the artifact (DB, logs, running
+   process) first. No artifact, no claim.
+2. Never invent distributions, percentages, or counts — measure them.
+3. Label every statement "verified" or "assumption"; an assumption is a
+   starting point for a check, never an answer.
+
+The fix landed in PR #5 (semantic path honors the unified-memory setting).
