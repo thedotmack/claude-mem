@@ -15,6 +15,8 @@ export interface ContextConfig {
   totalObservationCount: number;
   fullObservationCount: number;
   sessionCount: number;
+  /** Cap on the `## Project Knowledge` block (CLAUDE_MEM_FACTS_INJECT_COUNT). */
+  factsInjectCount: number;
 
   showReadTokens: boolean;
   showWorkTokens: boolean;
@@ -45,6 +47,8 @@ export interface Observation {
   created_at: string;
   created_at_epoch: number;
   project?: string;
+  reinforcement_dates?: string | null;
+  relevance_count?: number | null;
 }
 
 export interface SessionSummary {
@@ -59,6 +63,17 @@ export interface SessionSummary {
   created_at: string;
   created_at_epoch: number;
   project?: string;
+}
+
+/** Active semantic fact rendered in the `## Project Knowledge` block. */
+export interface SemanticFact {
+  id: number;
+  project: string;
+  kind: string;
+  fact: string;
+  created_at_epoch: number;
+  reinforcement_dates?: string | null;
+  relevance_count?: number | null;
 }
 
 export interface SummaryTimelineItem extends SessionSummary {

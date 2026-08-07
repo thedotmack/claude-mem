@@ -13,10 +13,14 @@ export const PLACEHOLDER_CONTEXT = `# claude-mem: Cross-Session Memory
 
 Use claude-mem's MCP search tools for manual memory queries.`;
 
-export function buildMcpServerEntry(mcpServerPath: string): { command: string; args: string[] } {
+export function buildMcpServerEntry(
+  mcpServerPath: string,
+  env?: Record<string, string>,
+): { command: string; args: string[]; env?: Record<string, string> } {
   return {
     command: getNodeAbsolutePath(),
     args: [mcpServerPath],
+    ...(env && Object.keys(env).length > 0 ? { env } : {}),
   };
 }
 
@@ -24,6 +28,7 @@ export function writeMcpJsonConfig(
   configFilePath: string,
   mcpServerPath: string,
   serversKeyName: string = 'mcpServers',
+  env?: Record<string, string>,
 ): void {
   const parentDirectory = path.dirname(configFilePath);
   mkdirSync(parentDirectory, { recursive: true });
@@ -34,7 +39,7 @@ export function writeMcpJsonConfig(
     existingConfig[serversKeyName] = {};
   }
 
-  existingConfig[serversKeyName]['claude-mem'] = buildMcpServerEntry(mcpServerPath);
+  existingConfig[serversKeyName]['claude-mem'] = buildMcpServerEntry(mcpServerPath, env);
 
   writeFileSync(configFilePath, JSON.stringify(existingConfig, null, 2) + '\n');
 }

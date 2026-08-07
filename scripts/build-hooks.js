@@ -265,6 +265,24 @@ async function buildHooks() {
     }
     console.log('✓ Output directories ready');
 
+    // Ship the vendored chroma-mcp fork inside the plugin tree. The worker
+    // bundle resolves it by walking up from plugin/scripts to
+    // plugin/vendor/chroma-mcp (see ChromaMcpManager.resolveVendoredChromaMcpDir);
+    // repo-root vendor/chroma-mcp stays the single source of truth.
+    console.log('\n📦 Copying vendored chroma-mcp fork into plugin/...');
+    const vendorSrc = path.join('vendor', 'chroma-mcp');
+    const vendorDest = path.join('plugin', 'vendor', 'chroma-mcp');
+    if (!fs.existsSync(path.join(vendorSrc, 'pyproject.toml'))) {
+      throw new Error(`Vendored chroma-mcp fork missing at ${vendorSrc} — see plans/2026-07-29-e5-embedding-migration.md`);
+    }
+    fs.rmSync(vendorDest, { recursive: true, force: true });
+    fs.cpSync(vendorSrc, vendorDest, {
+      recursive: true,
+      filter: (src) => !['__pycache__', '.pytest_cache', '.ruff_cache', 'node_modules', '.venv']
+        .some(skip => src.split(path.sep).includes(skip)),
+    });
+    console.log('✓ plugin/vendor/chroma-mcp synced');
+
     console.log('\n📦 Generating plugin package.json...');
     const pluginPackageJson = {
       name: 'claude-mem-plugin',

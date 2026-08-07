@@ -300,6 +300,65 @@ Settings are stored in `~/.claude-mem/settings.json`:
 
 **Note**: The Context Settings Modal (in the web viewer) is the recommended way to configure these settings, as it provides live preview of changes.
 
+## Memory Reinforcement
+
+By default, context injection picks the most recent observations. Reinforcement adds a second signal: how often the world keeps re-confirming an observation. Each time the same finding is written again, or the observation is surfaced into a session, its *strength* grows; strength decays with time on a power law (`age^-d`), the standard ACT-R activation curve.
+
+The practical effect: a gotcha you hit repeatedly over three months outranks something you happened to touch yesterday.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_REINFORCE_ALPHA` | `0.5` | Weight of reinforcement strength on ranking. Higher → repeatedly-confirmed observations dominate sooner |
+| `CLAUDE_MEM_REINFORCE_BETA` | `0.1` | Weight of past surfacings (`log1p` of the surfacing count) |
+| `CLAUDE_MEM_REINFORCE_POWER_D` | `0.5` | Power-law decay exponent. `0.5` is the canonical ACT-R value; values ≤ 0 fall back to the default |
+| `CLAUDE_MEM_REINFORCE_RETRIEVAL_WINDOW_DAYS` | `30` | How far back surfacings are counted |
+| `CLAUDE_MEM_REINFORCE_POOL_MULT` | `5` | Candidate pool multiplier before re-ranking (capped at 500 rows) |
+
+Set both `ALPHA` and `BETA` to `0` to turn reinforcement off entirely — ranking falls back to pure recency, no reinstall needed:
+
+```json
+{
+  "CLAUDE_MEM_REINFORCE_ALPHA": "0",
+  "CLAUDE_MEM_REINFORCE_BETA": "0"
+}
+```
+
+Existing observations are not backfilled. They start with empty history and keep their current ranking, accruing strength from the moment you upgrade.
+
+### Semantic Dedup Judge
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_DEDUP_JUDGE_ENABLED` | `false` | Opt-in. Uses an LLM pass to fold *near*-duplicate observations into the existing row (reinforcing it) instead of storing a new one |
+
+Exact duplicates are always folded — that is a free content-hash comparison. The judge covers the case where the same finding is written in different words, at the cost of one extra model call per candidate observation (using `CLAUDE_MEM_MODEL`), which is why it is off by default: it spends subscription quota. It is fully defensive — any failure stores the batch unchanged.
+
+```json
+{
+  "CLAUDE_MEM_DEDUP_JUDGE_ENABLED": "true"
+}
+```
+
+### Semantic Memory Layer
+
+Episodes melt into knowledge: an opt-in consolidation job periodically distills new observations into durable, session-agnostic **semantic facts** ("tests run via `bun test`"). Active facts are injected above the observations timeline as a compact `## Project Knowledge` block, searchable via the MCP `facts` / `get_facts` tools.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_CONSOLIDATION_ENABLED` | `false` | Opt-in master switch. Each consolidation run costs one LLM call (using `CLAUDE_MEM_MODEL`), so it is off by default |
+| `CLAUDE_MEM_CONSOLIDATE_MIN_INTERVAL_HOURS` | `12` | Per-project throttle: minimum hours between consolidation runs |
+| `CLAUDE_MEM_CONSOLIDATE_MIN_OBSERVATIONS` | `20` | Per-project throttle: minimum new observations since the last run |
+| `CLAUDE_MEM_FACTS_INJECT_COUNT` | `15` | Cap on the `## Project Knowledge` block rendered above the timeline |
+| `CLAUDE_MEM_SEMANTIC_INJECT_MIN_SCORE` | `0` (off) | Cosine-similarity floor for vector hits eligible for per-prompt semantic injection (`## Relevant Past Work`). Off by default: measured on the live e5-small corpus, the similarity band is too compressed for an absolute floor to separate relevant from irrelevant (obvious nonsense lands within ~0.05 cos of genuine queries — everything passes 0.90, everything dies at 0.95). The plumbing remains for models with a wider band; the evidence-backed guard is an LLM relevance filter over candidates (deferred — it costs one LLM call per prompt) |
+
+Consolidation verdicts can add, update (the old fact is superseded and hands half its reinforcement history to the successor), or delete (a tombstone — rows are never physically removed). Every new or updated fact must cite the observations it was distilled from; uncited verdicts are discarded. The whole pass is defensive — any failure degrades to a no-op.
+
+```json
+{
+  "CLAUDE_MEM_CONSOLIDATION_ENABLED": "true"
+}
+```
+
 ## Customization
 
 Settings can be customized in `~/.claude-mem/settings.json`.

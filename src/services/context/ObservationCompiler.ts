@@ -2,12 +2,15 @@
 import path from 'path';
 import { existsSync, readFileSync } from 'fs';
 import type { Database } from 'bun:sqlite';
+import { rankByStrength, poolSize, blendedScore } from '../reinforcement/rank.js';
+import { readTunables } from '../reinforcement/strength.js';
 import { logger } from '../../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import type {
   ContextConfig,
   Observation,
+  SemanticFact,
   SessionSummary,
   SummaryTimelineItem,
   TimelineItem,
@@ -16,6 +19,54 @@ import type {
 import { SUMMARY_LOOKAHEAD } from './types.js';
 
 type DatabaseOwner = { db: Database };
+
+/**
+ * Semantic memory layer — active facts for the `## Project Knowledge` block.
+ * Only `superseded_by IS NULL AND invalidated_at IS NULL` rows surface; the
+ * recency pool is re-ranked by ACT-R strength and capped at
+ * `config.factsInjectCount`, strongest first. Fail-open: a pre-v53 database
+ * (the read-only hook connection cannot migrate) simply yields no block.
+ */
+export function queryActiveFactsMulti(
+  db: DatabaseOwner,
+  projects: string[],
+  config: ContextConfig
+): SemanticFact[] {
+  if (config.factsInjectCount <= 0 || projects.length === 0) return [];
+  const projectPlaceholders = projects.map(() => '?').join(',');
+
+  try {
+    const pool = db.db.prepare(`
+      SELECT
+        f.id,
+        f.project,
+        f.kind,
+        f.fact,
+        f.created_at_epoch,
+        f.reinforcement_dates,
+        f.relevance_count
+      FROM semantic_facts f
+      WHERE f.project IN (${projectPlaceholders})
+        AND f.superseded_by IS NULL
+        AND f.invalidated_at IS NULL
+      ORDER BY f.created_at_epoch DESC
+      LIMIT ?
+    `).all(...projects, poolSize(config.factsInjectCount)) as SemanticFact[];
+
+    const tunables = readTunables();
+    const today = new Date();
+    return pool
+      .map(fact => ({ fact, score: blendedScore(fact, today, tunables) }))
+      .sort((a, b) => b.score - a.score || b.fact.created_at_epoch - a.fact.created_at_epoch)
+      .slice(0, config.factsInjectCount)
+      .map(entry => entry.fact);
+  } catch (error) {
+    logger.debug('DB', 'Semantic facts query skipped', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  }
+}
 
 export function queryObservationsMulti(
   db: DatabaseOwner,
@@ -30,7 +81,7 @@ export function queryObservationsMulti(
 
   const projectPlaceholders = projects.map(() => '?').join(',');
 
-  return db.db.prepare(`
+  const pool = db.db.prepare(`
     SELECT
       o.id,
       o.memory_session_id,
@@ -46,12 +97,16 @@ export function queryObservationsMulti(
       o.discovery_tokens,
       o.created_at,
       o.created_at_epoch,
-      o.project
+      o.project,
+      o.reinforcement_dates,
+      o.relevance_count
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     WHERE (o.project IN (${projectPlaceholders})
            OR o.merged_into_project IN (${projectPlaceholders}))
       AND (? IS NULL OR s.platform_source = ?)
+      AND o.superseded_by IS NULL
+      AND o.echo_of IS NULL
       AND type IN (${typePlaceholders})
       AND EXISTS (
         SELECT 1 FROM json_each(o.concepts)
@@ -66,8 +121,13 @@ export function queryObservationsMulti(
     platformSource ?? null,
     ...typeArray,
     ...conceptArray,
-    config.totalObservationCount
+    poolSize(config.totalObservationCount)
   ) as Observation[];
+
+  // Phase 2: re-rank the recency-ordered pool by recency·(1+α·strength) and keep
+  // the configured count. With CLAUDE_MEM_REINFORCE_ALPHA=0 this is identical to
+  // the legacy "top-N most recent" selection.
+  return rankByStrength(pool, config.totalObservationCount);
 }
 
 export function countObservationsByProjects(db: DatabaseOwner, projects: string[], platformSource?: string): number {

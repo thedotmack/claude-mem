@@ -9,6 +9,7 @@ Practical guide based on 23 days of production usage with 3,400+ observations ac
 | CLAUDE_MEM_MAX_CONCURRENT_AGENTS | 2 | 3 | Better throughput without overload |
 | CLAUDE_MEM_SEMANTIC_INJECT | true | true | Relevant context >> recent context |
 | CLAUDE_MEM_SEMANTIC_INJECT_LIMIT | 5 | 5 | Sweet spot for token cost vs coverage |
+| CLAUDE_MEM_SEMANTIC_INJECT_GLOBAL_LIMIT | 0 | 3 | Cross-project hits (other projects' observations + facts) appended as a separate section; 0 = off |
 | CLAUDE_MEM_TIER_ROUTING_ENABLED | true | true | ~52% cost savings, no quality loss |
 
 ## Health Monitoring

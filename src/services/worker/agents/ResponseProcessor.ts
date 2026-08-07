@@ -19,6 +19,10 @@ import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
+import { dedupJudgeEnabled, applyDedupJudge } from '../../reinforcement/dedup-judge.js';
+import { detectEcho } from '../../reinforcement/dedup.js';
+import { supersedeObservation } from '../../reinforcement/persist.js';
+import { maybeConsolidate } from '../../reinforcement/consolidation-judge.js';
 
 type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input'>;
 
@@ -400,12 +404,59 @@ export async function processAgentResponse(
     agent_id: context.pendingAgentId
   }));
 
+  // Memory grounding (Layer 2): echo detection. An observation that retells a
+  // recently-injected memory with no new tool evidence is marked echo_of — it
+  // is stored without a reinforcement seed, excluded from injection and dedup
+  // candidacy, and skipped by the judge below so the echoed note is NOT
+  // reinforced. Runs even when the LLM judge is off: it needs only the FTS
+  // shortlist, no LLM call. Defensive like the judge — failures store as-is.
+  let echoCount = 0;
+  const echoCheckedObservations = labeledObservations.map(obs => {
+    try {
+      const echoOf = detectEcho(sessionStore.db, {
+        project: context.project,
+        type: obs.type,
+        title: obs.title,
+        narrative: obs.narrative,
+        files_read: obs.files_read,
+        files_modified: obs.files_modified,
+      });
+      if (echoOf == null) return obs;
+      echoCount++;
+      return { ...obs, echo_of: echoOf };
+    } catch {
+      return obs;
+    }
+  });
+  if (echoCount > 0) {
+    logger.info('DEDUP', `Echo detection: ${echoCount}/${labeledObservations.length} observation(s) retell recently-injected memory — stored without reinforcement seed`);
+  }
+
+  // Phase 3 (opt-in): semantic dedup judge. Folds near-duplicate observations
+  // into existing rows (reinforce instead of insert). Default off; fully
+  // defensive — any failure stores the original batch unchanged.
+  let observationsToStore = echoCheckedObservations;
+  const conflicts: Array<{ observation: (typeof labeledObservations)[number]; targetId: number; rationale: string }> = [];
+  if (dedupJudgeEnabled() && labeledObservations.length > 0) {
+    try {
+      observationsToStore = await applyDedupJudge(
+        sessionStore.db,
+        labeledObservations,
+        context.project,
+        undefined,
+        (info) => conflicts.push(info),
+      );
+    } catch (error) {
+      logger.warn('DEDUP', 'Dedup pass failed — storing all observations', {}, error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
   let result: ReturnType<typeof sessionStore.storeObservations>;
   try {
     result = sessionStore.storeObservations(
       session.memorySessionId,
       context.project,
-      labeledObservations,
+      observationsToStore,
       summaryForStore,
       context.promptNumber,
       discoveryTokens,
@@ -417,12 +468,39 @@ export async function processAgentResponse(
     session.pendingAgentType = null;
   }
 
+  // Phase 6 — reconsolidation: a kept observation that contradicted an existing
+  // one supersedes it now that it has a real id (observationIds align with the
+  // kept batch order). Best-effort: a missed supersession leaves both rows
+  // visible, which is the pre-Phase-6 behaviour.
+  for (const conflict of conflicts) {
+    try {
+      const keptIndex = observationsToStore.indexOf(conflict.observation);
+      const newId = keptIndex >= 0 ? result.observationIds[keptIndex] : undefined;
+      if (newId == null) continue;
+      if (supersedeObservation(sessionStore.db, conflict.targetId, newId)) {
+        logger.info('DEDUP', `#${conflict.targetId} superseded by #${newId} | ${conflict.rationale}`);
+      }
+    } catch (error) {
+      logger.warn('DEDUP', 'Supersede failed — both rows kept', {}, error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
   logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
     sessionId: session.sessionDbId,
     memorySessionId: session.memorySessionId
   });
 
   session.lastSummaryStored = result.summaryId !== null;
+
+  // Semantic memory layer (opt-in): after a session's summary is stored,
+  // episodes are distilled into durable semantic facts. Fire-and-forget and
+  // fully defensive — consolidation costs one LLM call per run and must never
+  // disturb the storage pipeline.
+  if (result.summaryId !== null) {
+    void maybeConsolidate(sessionStore.db, context.project).catch((error) => {
+      logger.warn('CONSOLIDATION', 'Consolidation trigger failed', { project: context.project }, error instanceof Error ? error : new Error(String(error)));
+    });
+  }
 
   // Telemetry: counts, enums, and REAL usage only (lastUsage is never an
   // estimate — providers leave it null when the API gave no usage split).

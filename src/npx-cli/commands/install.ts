@@ -409,6 +409,23 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
       };
     }
 
+    case 'kimi': {
+      return {
+        title: 'Kimi Code: installing hooks + MCP',
+        task: async (message) => {
+          message('Loading Kimi Code installer…');
+          const { installKimiHooks } = await import('../../services/integrations/KimiHooksInstaller.js');
+          message('Installing Kimi Code hooks + MCP…');
+          const { result, output } = await bufferConsole(() => installKimiHooks());
+          if (result !== 0) {
+            recordFailure('Kimi Code: hooks + MCP installation failed', output);
+            return `Kimi Code: hooks + MCP installation failed ${styleText('red', 'FAIL')}`;
+          }
+          return `Kimi Code: hooks + MCP installed ${styleText('green', 'OK')}`;
+        },
+      };
+    }
+
     case 'copilot-cli':
     case 'goose':
     case 'roo-code':

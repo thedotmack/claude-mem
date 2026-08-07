@@ -12,6 +12,7 @@ import { groupByDate } from '../../../../shared/timeline-formatting.js';
 import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
@@ -60,6 +61,7 @@ const semanticContextSchema = z.object({
   q: z.string().optional(),
   project: z.string().optional(),
   limit: z.union([z.string(), z.number()]).optional(),
+  globalLimit: z.union([z.string(), z.number()]).optional(),
   platformSource: z.string().optional(),
   platform_source: z.string().optional(),
 }).passthrough();
@@ -377,15 +379,51 @@ export class SearchRoutes extends BaseRouteHandler {
     const query = SearchRoutes.firstString(req.body?.q) ?? SearchRoutes.firstString(req.query.q) ?? '';
     const project = SearchRoutes.firstString(req.body?.project) ?? SearchRoutes.firstString(req.query.project);
     const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), 20);
-    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    // Cross-project semantic injection (CLAUDE_MEM_SEMANTIC_INJECT_GLOBAL_LIMIT,
+    // passed by the session-init hook): after the project-scoped search, run a
+    // second, unscoped search and surface top-N OTHER-project hits as a
+    // separate section. 0 = off (default).
+    const globalLimit = Math.min(Math.max(parseInt(String(req.body?.globalLimit ?? req.query.globalLimit ?? '0'), 10) || 0, 0), 20);
+    let platformSource = this.getOptionalPlatformSourceFromRequest(req);
+
+    // Unified-memory mode: ignore platform scoping entirely when the operator
+    // disabled the platform filter — otherwise older (null/claude-era)
+    // memories are invisible to semantic injection regardless of the setting
+    // (observed live 2026-08-07 on project `search` GPU memories).
+    const platformFilterEnabled = SettingsDefaultsManager
+      .loadFromFile(USER_SETTINGS_PATH)
+      .CLAUDE_MEM_CONTEXT_PLATFORM_FILTER !== 'false';
+    if (!platformFilterEnabled) platformSource = undefined;
 
     if (!query || query.length < 20) {
       res.json({ context: '', count: 0 });
       return;
     }
 
+    // Chroma is single-writer per data dir, so a secondary worker instance
+    // (e.g. the Kimi-dedicated worker on 37791) runs with Chroma disabled —
+    // leaving it with FTS-only search that cannot answer multi-word or
+    // cross-language queries (observed live 2026-08-01: Russian prompts got
+    // count:0 while the main worker answered them via e5). Both instances
+    // share the same SQLite and the same Chroma dir, so forward the semantic
+    // query to the main worker, which owns the vector index.
+    if (SettingsDefaultsManager.get('CLAUDE_MEM_CHROMA_ENABLED').trim().toLowerCase() === 'false') {
+      const forwarded = await this.forwardSemanticToMainWorker(req.body ?? { q: query, project, limit });
+      if (forwarded !== null) {
+        res.json(forwarded);
+        return;
+      }
+      // fall through to local FTS on forwarding failure
+    }
+
     let result: any;
     try {
+      // G4: relevance floor on the vector channel — weak semantic matches are
+      // how stale/misaligned experience gets replayed into the prompt
+      // (experience-following, C10 of the literature review).
+      const minScoreRaw = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)
+        .CLAUDE_MEM_SEMANTIC_INJECT_MIN_SCORE;
+      const minSimilarity = Number(minScoreRaw);
       result = await this.searchManager.search({
         query,
         type: 'observations',
@@ -393,6 +431,7 @@ export class SearchRoutes extends BaseRouteHandler {
         limit: String(limit),
         format: 'json',
         ...(platformSource ? { platformSource } : {}),
+        ...(Number.isFinite(minSimilarity) && minSimilarity > 0 ? { minSimilarity } : {}),
       });
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
@@ -402,10 +441,6 @@ export class SearchRoutes extends BaseRouteHandler {
     }
 
     const observations = result?.observations || [];
-    if (!observations.length) {
-      res.json({ context: '', count: 0 });
-      return;
-    }
 
     const lines: string[] = ['## Relevant Past Work (semantic match)\n'];
     for (const obs of observations.slice(0, limit)) {
@@ -415,8 +450,138 @@ export class SearchRoutes extends BaseRouteHandler {
       lines.push('');
     }
 
-    res.json({ context: lines.join('\n'), count: observations.length });
+    const context = observations.length ? lines.join('\n') : '';
+    const response: { context: string; count: number; globalContext?: string; globalCount?: number } = {
+      context,
+      count: observations.length,
+    };
+
+    if (globalLimit > 0 && project) {
+      const global = await this.searchGlobalContext(query, project, globalLimit, platformSource, observations);
+      if (global.globalCount > 0) {
+        response.globalContext = global.globalContext;
+        response.globalCount = global.globalCount;
+      }
+    }
+
+    res.json(response);
   });
+
+  /**
+   * Cross-project semantic search: same query without the project filter
+   * (observations via the Chroma path, facts via FTS — facts have no vectors
+   * yet, that is the v2 track). Hits from the current project and ids already
+   * in the main result set are dropped; the combined observation+fact budget
+   * is globalLimit. Best-effort: any failure yields an empty section, never a
+   * failed injection.
+   */
+  private async searchGlobalContext(
+    query: string,
+    project: string,
+    globalLimit: number,
+    platformSource: string | undefined,
+    mainObservations: any[],
+  ): Promise<{ globalContext: string; globalCount: number }> {
+    const empty = { globalContext: '', globalCount: 0 };
+    try {
+      const minScoreRaw = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)
+        .CLAUDE_MEM_SEMANTIC_INJECT_MIN_SCORE;
+      const minSimilarity = Number(minScoreRaw);
+
+      const mainKeys = new Set(
+        mainObservations.map(obs => SearchRoutes.observationKey(obs)),
+      );
+
+      // Overfetch: project-exclusion and id dedup shrink the candidate pool.
+      const globalResult = await this.searchManager.search({
+        query,
+        type: 'observations',
+        limit: String(Math.max(globalLimit * 3, 10)),
+        format: 'json',
+        ...(platformSource ? { platformSource } : {}),
+        ...(Number.isFinite(minSimilarity) && minSimilarity > 0 ? { minSimilarity } : {}),
+      });
+
+      const globalObservations = ((globalResult?.observations || []) as any[])
+        .filter(obs => obs.project && obs.project !== project)
+        .filter(obs => !mainKeys.has(SearchRoutes.observationKey(obs)))
+        .slice(0, globalLimit);
+
+      const remaining = globalLimit - globalObservations.length;
+      const facts = remaining > 0
+        ? this.searchManager.getSessionSearch()
+            .searchFacts(query, { limit: remaining * 3 })
+            .filter(fact => fact.project !== project)
+            .slice(0, remaining)
+        : [];
+
+      if (!globalObservations.length && !facts.length) {
+        return empty;
+      }
+
+      const lines: string[] = ['## Relevant Past Work — other projects\n'];
+      for (const obs of globalObservations) {
+        const date = obs.created_at?.slice(0, 10) || '';
+        lines.push(`### ${obs.title || 'Observation'} (${date}) [project: ${obs.project}]`);
+        if (obs.narrative) lines.push(obs.narrative);
+        lines.push('');
+      }
+      for (const fact of facts) {
+        lines.push(`#${fact.id} [${fact.project}/${fact.kind}] ${fact.fact}`);
+        lines.push('');
+      }
+
+      return {
+        globalContext: lines.join('\n'),
+        globalCount: globalObservations.length + facts.length,
+      };
+    } catch (error) {
+      logger.warn('HTTP', 'Cross-project semantic search failed, skipping global section', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return empty;
+    }
+  }
+
+  private static observationKey(obs: any): string {
+    return obs.id != null ? `id:${obs.id}` : `tn:${obs.title}|${obs.created_at}`;
+  }
+
+  /**
+   * Forward a semantic-context query to the main (Chroma-owning) worker when
+   * this instance runs with Chroma disabled. Returns the parsed JSON body, or
+   * null on any failure (caller falls back to local FTS). Peer URL defaults
+   * to the UID-derived default worker port and is overridable via
+   * CLAUDE_MEM_MAIN_WORKER_URL (env) for exotic layouts.
+   */
+  private async forwardSemanticToMainWorker(body: unknown): Promise<unknown | null> {
+    try {
+      // The main worker's port comes from settings.json — WITHOUT env
+      // overrides: this daemon itself carries CLAUDE_MEM_WORKER_PORT=37791 in
+      // env, and applying overrides would point the forward back at itself
+      // (recursive self-forward until timeout — observed live 2026-08-01).
+      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, false);
+      const mainPort = settings.CLAUDE_MEM_WORKER_PORT;
+      const base = process.env.CLAUDE_MEM_MAIN_WORKER_URL ?? `http://127.0.0.1:${mainPort}`;
+      if (base.includes(`:${getWorkerPort()}`)) return null; // never self-forward
+      const response = await fetch(`${base}/api/context/semantic`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body ?? {}),
+        signal: AbortSignal.timeout(25_000),
+      });
+      if (!response.ok) {
+        logger.warn('HTTP', `Semantic forwarding to main worker failed: HTTP ${response.status}`);
+        return null;
+      }
+      return await response.json();
+    } catch (error) {
+      logger.warn('HTTP', 'Semantic forwarding to main worker failed, falling back to local FTS', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
 
   private queryWithPlatformSource(req: Request): Record<string, any> {
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);

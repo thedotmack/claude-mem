@@ -14,6 +14,7 @@ import {
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash } from './observations/store.js';
+import { seedReinforcement, reinforceObservation } from '../reinforcement/persist.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
@@ -120,6 +121,231 @@ export class SessionStore {
     this.ensureSyncRevisionTextAffinity();
     this.initializeSyncHubLaunchBaseline();
     this.normalizeConceptTags();
+    this.addObservationReinforcementColumns();
+    this.ensureObservationRelevanceCountColumn();
+    this.ensureObservationSupersededByColumn();
+    this.ensureSemanticFactsTable();
+    this.ensureDeletedObservationsTable();
+    this.ensureObservationEchoColumns();
+  }
+
+  /**
+   * Phase 1a — reinforcement / ACT-R memory (version 50).
+   *
+   * Adds the columns the strength engine (src/services/reinforcement) needs to
+   * bias context injection by how often the world re-confirms an observation,
+   * instead of recency alone:
+   *   - reinforcement_dates: JSON array of ISO `YYYY-MM-DD` reinforcement events
+   *     (spacing-effect history, FIFO-trimmed to MAX_REINFORCEMENT_HISTORY)
+   *   - last_reinforced: ISO date of the most recent reinforcement
+   *
+   * No backfill: pre-existing observations start with empty history
+   * (effectiveStrength([]) === 0), so they keep their current keyword/recency
+   * ranking and accrue strength going forward. Idempotent — the PRAGMA checks
+   * are the real guard, the version row is bookkeeping.
+   */
+  private addObservationReinforcementColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(50) as SchemaVersion | undefined;
+
+    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasDates = columns.some(col => col.name === 'reinforcement_dates');
+    const hasLastReinforced = columns.some(col => col.name === 'last_reinforced');
+
+    if (applied && hasDates && hasLastReinforced) return;
+
+    if (!hasDates) {
+      this.db.run('ALTER TABLE observations ADD COLUMN reinforcement_dates TEXT');
+      logger.debug('DB', 'Added reinforcement_dates column to observations table');
+    }
+    if (!hasLastReinforced) {
+      this.db.run('ALTER TABLE observations ADD COLUMN last_reinforced TEXT');
+      logger.debug('DB', 'Added last_reinforced column to observations table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(50, new Date().toISOString());
+  }
+
+  /**
+   * Phase 4 — surfacing observability (version 51).
+   *
+   * Guarantees the `relevance_count` column exists so context injection can
+   * count how often an observation has surfaced and feed that back into ranking
+   * (beta * log1p(relevance_count)). Idempotent.
+   */
+  private ensureObservationRelevanceCountColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(51) as SchemaVersion | undefined;
+    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasColumn = columns.some(col => col.name === 'relevance_count');
+
+    if (applied && hasColumn) return;
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE observations ADD COLUMN relevance_count INTEGER DEFAULT 0');
+      logger.debug('DB', 'Added relevance_count column to observations table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(51, new Date().toISOString());
+  }
+
+  /**
+   * Phase 6 — reconsolidation (version 52).
+   *
+   * Guarantees the `superseded_by` column exists so a new observation that
+   * contradicts an existing one (dedup judge FLAG_CONFLICT) can mark the old row
+   * as superseded. Superseded rows drop out of context injection and dedup
+   * candidacy but stay in the DB as searchable history. Idempotent.
+   */
+  private ensureObservationSupersededByColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(52) as SchemaVersion | undefined;
+    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasColumn = columns.some(col => col.name === 'superseded_by');
+
+    if (applied && hasColumn) return;
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE observations ADD COLUMN superseded_by INTEGER');
+      logger.debug('DB', 'Added superseded_by column to observations table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(52, new Date().toISOString());
+  }
+
+  /**
+   * Semantic memory layer (version 53).
+   *
+   * Episodes melt into durable knowledge: `semantic_facts` holds short,
+   * session-agnostic facts consolidated from observations (see
+   * src/services/reinforcement/consolidation.ts). The ACT-R strength columns
+   * mirror the observations table so the reinforcement engine applies as-is;
+   * `superseded_by` / `invalidated_at` are the UPDATE / DELETE verdict
+   * tombstones (rows are never physically deleted), and the
+   * `valid_from` / `valid_to` pair is the bi-temporal record of when the fact
+   * held true in the world (vs `created_at` / `invalidated_at`, which track
+   * when the system learned it). `content_hash` is UNIQUE per project — free
+   * dedup on insert.
+   *
+   * `semantic_consolidation_state` is the per-project throttle ledger for the
+   * consolidation job (last run time + observation watermark).
+   *
+   * Idempotent — the sqlite_master check is the real guard, the version row is
+   * bookkeeping.
+   */
+  private ensureSemanticFactsTable(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(53) as SchemaVersion | undefined;
+    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'semantic_facts'").all() as TableNameRow[];
+    const hasTable = tables.length > 0;
+
+    if (applied && hasTable) return;
+
+    if (!hasTable) {
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS semantic_facts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          fact TEXT NOT NULL,
+          source_observation_ids TEXT NOT NULL DEFAULT '[]',
+          reinforcement_dates TEXT,
+          last_reinforced TEXT,
+          relevance_count INTEGER DEFAULT 0,
+          superseded_by INTEGER,
+          invalidated_at TEXT,
+          valid_from TEXT,
+          valid_to TEXT,
+          content_hash TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          updated_at_epoch INTEGER NOT NULL
+        )
+      `);
+      this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_semantic_facts_project_content_hash ON semantic_facts(project, content_hash)');
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS semantic_consolidation_state (
+          project TEXT PRIMARY KEY,
+          last_run_at_epoch INTEGER NOT NULL,
+          last_observation_id INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+      logger.debug('DB', 'Created semantic_facts table (semantic memory layer)');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(53, new Date().toISOString());
+  }
+
+  /**
+   * Retention policy audit trail (version 54).
+   *
+   * Deletion is a SEPARATE explicit policy, never a decay side-effect (memory
+   * review C3/C10 — plans/2026-07-31-memory-review-audit.md G2). The retention
+   * sweep (src/services/reinforcement/retention.ts) never hard-deletes: every
+   * removed observation lands here first as a full row snapshot, so a
+   * retention mistake is auditable and restorable. `reason` names the policy
+   * that deleted the row (currently always 'retention-sweep'); `batch_id`
+   * groups one sweep run. Idempotent — the sqlite_master check is the real
+   * guard, the version row is bookkeeping.
+   */
+  private ensureDeletedObservationsTable(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(54) as SchemaVersion | undefined;
+    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'deleted_observations'").all() as TableNameRow[];
+    const hasTable = tables.length > 0;
+
+    if (applied && hasTable) return;
+
+    if (!hasTable) {
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS deleted_observations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          observation_id INTEGER NOT NULL,
+          snapshot_json TEXT NOT NULL,
+          deleted_at TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          batch_id TEXT NOT NULL
+        )
+      `);
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_deleted_observations_observation_id ON deleted_observations(observation_id)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_deleted_observations_batch_id ON deleted_observations(batch_id)');
+      logger.debug('DB', 'Created deleted_observations table (retention audit trail)');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(54, new Date().toISOString());
+  }
+
+  /**
+   * Memory grounding — echo detection (version 55).
+   *
+   * Breaks the compounding-fiction loop (plans/2026-08-05-memory-grounding.md):
+   * the agent must no longer be able to "confirm" its own memory by retelling
+   * it. Two columns:
+   *   - last_surfaced: ISO `YYYY-MM-DD` of the most recent context injection
+   *     that included the row (written by the existing recordSurfaced path in
+   *     ContextBuilder). Freshness of this stamp is echo condition 2.
+   *   - echo_of: id of the near-duplicate observation this row echoes (set when
+   *     all three echo conditions hold — see detectEcho in
+   *     src/services/reinforcement/dedup.ts). Echo rows are stored for audit
+   *     but carry no reinforcement seed and are excluded from the injection
+   *     pool and dedup candidacy, exactly like superseded rows.
+   *
+   * Idempotent — the PRAGMA checks are the real guard, the version row is
+   * bookkeeping.
+   */
+  private ensureObservationEchoColumns(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(55) as SchemaVersion | undefined;
+    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasLastSurfaced = columns.some(col => col.name === 'last_surfaced');
+    const hasEchoOf = columns.some(col => col.name === 'echo_of');
+
+    if (applied && hasLastSurfaced && hasEchoOf) return;
+
+    if (!hasLastSurfaced) {
+      this.db.run('ALTER TABLE observations ADD COLUMN last_surfaced TEXT');
+      logger.debug('DB', 'Added last_surfaced column to observations table');
+    }
+    if (!hasEchoOf) {
+      this.db.run('ALTER TABLE observations ADD COLUMN echo_of INTEGER');
+      logger.debug('DB', 'Added echo_of column to observations table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(55, new Date().toISOString());
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -2601,6 +2827,13 @@ export class SessionStore {
       agent_type?: string | null;
       agent_id?: string | null;
       metadata?: string | null;
+      /**
+       * Echo marker (memory grounding, Layer 2): id of the near-duplicate
+       * observation this row retells. Echo rows are stored WITHOUT a
+       * reinforcement seed (reinforcement_dates / last_reinforced stay NULL)
+       * and are excluded from injection and dedup candidacy.
+       */
+      echo_of?: number | null;
     }>,
     summary: {
       request: string;
@@ -2618,6 +2851,8 @@ export class SessionStore {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
+    const seed = seedReinforcement(timestampEpoch);
+
     const storeTx = this.db.transaction(() => {
       const observationIds: number[] = [];
 
@@ -2625,8 +2860,8 @@ export class SessionStore {
         INSERT INTO observations
         (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
-         generated_by_model, metadata)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         generated_by_model, metadata, reinforcement_dates, last_reinforced, echo_of)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(memory_session_id, content_hash) DO NOTHING
         RETURNING id
       `);
@@ -2636,6 +2871,9 @@ export class SessionStore {
 
       for (const observation of observations) {
         const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+        // Echo rows (memory grounding, Layer 2) are stored for audit but get no
+        // reinforcement seed — an echo must never gain ACT-R strength.
+        const isEcho = observation.echo_of != null;
         const inserted = obsStmt.get(
           memorySessionId,
           project,
@@ -2655,7 +2893,10 @@ export class SessionStore {
           timestampIso,
           timestampEpoch,
           generatedByModel || null,
-          observation.metadata ?? null
+          observation.metadata ?? null,
+          isEcho ? null : seed.dates,
+          isEcho ? null : seed.lastReinforced,
+          observation.echo_of ?? null
         ) as { id: number } | null;
 
         if (inserted) {
@@ -2669,6 +2910,7 @@ export class SessionStore {
             `storeObservations: ON CONFLICT without existing row for content_hash=${contentHash}`
           );
         }
+        reinforceObservation(this.db, existing.id, new Date(timestampEpoch));
         observationIds.push(existing.id);
       }
 

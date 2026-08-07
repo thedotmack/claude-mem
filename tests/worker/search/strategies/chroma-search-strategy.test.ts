@@ -418,4 +418,47 @@ describe('ChromaSearchStrategy', () => {
       expect(calledWith).toEqual([100]);
     });
   });
+
+  describe('similarity floor (G4)', () => {
+    it('drops hits above 2*(1-minSimilarity) l2² distance, keeping id/meta alignment', async () => {
+      const recentEpoch = Date.now() - 1000 * 60 * 60 * 24;
+      mockChromaSync.queryChroma = mock(() => Promise.resolve({
+        ids: [10, 20, 30],
+        distances: [0.2, 0.9, 1.5], // cos ≈ 0.90, 0.55, 0.25
+        metadatas: [
+          { sqlite_id: 10, doc_type: 'observation', created_at_epoch: recentEpoch },
+          { sqlite_id: 20, doc_type: 'observation', created_at_epoch: recentEpoch },
+          { sqlite_id: 30, doc_type: 'observation', created_at_epoch: recentEpoch },
+        ],
+      }));
+      mockSessionStore.getObservationsByIds = mock(() => [mockObservation]);
+
+      // minSimilarity 0.5 → cap = 2*(1-0.5) = 1.0 → id 30 (d²=1.5) dropped.
+      const result = await strategy.search({ query: 'test query', searchType: 'observations', minSimilarity: 0.5 });
+
+      expect(result.usedChroma).toBe(true);
+      const calledWith = mockSessionStore.getObservationsByIds.mock.calls[0][0];
+      expect(calledWith).toEqual([10, 20]);
+    });
+
+    it('returns an empty result when the floor eliminates every hit', async () => {
+      const recentEpoch = Date.now() - 1000 * 60 * 60 * 24;
+      mockChromaSync.queryChroma = mock(() => Promise.resolve({
+        ids: [30],
+        distances: [1.9],
+        metadatas: [{ sqlite_id: 30, doc_type: 'observation', created_at_epoch: recentEpoch }],
+      }));
+
+      const result = await strategy.search({ query: 'test query', searchType: 'observations', minSimilarity: 0.5 });
+
+      expect(result.results.observations).toEqual([]);
+      expect(mockSessionStore.getObservationsByIds).not.toHaveBeenCalled();
+    });
+
+    it('minSimilarity 0 or absent keeps every hit (legacy behavior)', async () => {
+      const result = await strategy.search({ query: 'test query', minSimilarity: 0 });
+      expect(result.usedChroma).toBe(true);
+      expect(result.results.observations.length + result.results.sessions.length + result.results.prompts.length).toBeGreaterThan(0);
+    });
+  });
 });

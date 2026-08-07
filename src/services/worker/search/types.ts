@@ -42,6 +42,13 @@ export interface ExtendedSearchOptions extends SearchOptions {
   concepts?: string | string[];
   files?: string | string[];
   format?: 'text' | 'json';
+  /**
+   * Optional cosine-similarity floor (0..1) for the vector channel. Results
+   * with l2² distance above 2·(1 − minSimilarity) are dropped — guards
+   * context injection against experience-following on weak matches (G4).
+   * Unset = no floor (legacy behavior).
+   */
+  minSimilarity?: number;
 }
 
 export type SearchStrategyHint = 'chroma' | 'sqlite' | 'hybrid' | 'auto';

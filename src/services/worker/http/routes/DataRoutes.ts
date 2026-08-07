@@ -16,6 +16,14 @@ import { validateBody } from '../middleware/validateBody.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
+import { recordRetrieved } from '../../../reinforcement/persist.js';
+import { getFactsByIds, recordFactsRetrieved } from '../../../sqlite/facts/store.js';
+import { getFactProvenance, getFactsAt, parseTemporalTs } from '../../../sqlite/facts/audit.js';
+import { consolidationEnabled, runConsolidation } from '../../../reinforcement/consolidation-judge.js';
+import {
+  readRetentionPolicy, runRetentionSweep, observationChromaDocIds,
+} from '../../../reinforcement/retention.js';
+import { eraseFactCascade, observationErasureChain } from '../../../reinforcement/erasure.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
 import { assertCanonicalDecimal, type ContentKind } from '../../../sync/CanonicalContent.js';
 
@@ -60,6 +68,21 @@ const sdkSessionsBatchSchema = z.object({
   memorySessionIds: stringArrayLike,
 }).passthrough();
 
+const factsBatchSchema = z.object({
+  ids: integerArrayLike,
+  project: z.string().optional(),
+}).passthrough();
+
+const factsConsolidateSchema = z.object({
+  project: z.string().min(1),
+  force: z.boolean().optional(),
+}).passthrough();
+
+// Empty body is valid — dryRun defaults to true (report-only).
+const retentionSweepSchema = z.object({
+  dryRun: z.boolean().optional(),
+}).passthrough().default({});
+
 const importSchema = z.object({
   sessions: z.array(z.unknown()).optional(),
   summaries: z.array(z.unknown()).optional(),
@@ -87,10 +110,17 @@ export class DataRoutes extends BaseRouteHandler {
     app.get('/api/observation/:id', this.handleGetObservationById.bind(this));
     app.get('/api/observations/by-file', this.handleGetObservationsByFile.bind(this));
     app.post('/api/observations/batch', validateBody(observationsBatchSchema), this.handleGetObservationsByIds.bind(this));
+    app.get('/api/facts', this.handleGetFacts.bind(this));
+    app.get('/api/facts/at', this.handleGetFactsAt.bind(this));
+    app.get('/api/facts/:id/provenance', this.handleGetFactProvenance.bind(this));
+    app.post('/api/facts/batch', validateBody(factsBatchSchema), this.handleGetFactsByIds.bind(this));
+    app.post('/api/facts/consolidate', validateBody(factsConsolidateSchema), this.handleConsolidateFacts.bind(this));
+    app.post('/api/maintenance/retention-sweep', validateBody(retentionSweepSchema), this.handleRetentionSweep.bind(this));
     app.get('/api/session/:id', this.handleGetSessionById.bind(this));
     app.post('/api/sdk-sessions/batch', validateBody(sdkSessionsBatchSchema), this.handleGetSdkSessionsByIds.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
     app.delete('/api/observation/:id', this.handleDeleteObservation.bind(this));
+    app.delete('/api/facts/:id', this.handleDeleteFact.bind(this));
     app.delete('/api/summary/:id', this.handleDeleteSummary.bind(this));
     app.delete('/api/prompt/:id', this.handleDeletePrompt.bind(this));
 
@@ -173,7 +203,203 @@ export class DataRoutes extends BaseRouteHandler {
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
     const observations = store.getObservationsByIds(ids, { orderBy, limit, project, platformSource });
 
+    // ACT-R retrieval practice: the agent actively recalled these memories, so
+    // their traces get a real reinforcement date (same-day idempotent — a chatty
+    // agent can't inflate a note by re-fetching it). Best-effort: a missed
+    // reinforcement costs a little ranking accuracy, never a response.
+    try {
+      recordRetrieved(store.db, observations.map(o => o.id));
+    } catch (error) {
+      logger.debug('DB', 'Retrieval reinforcement skipped', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
     res.json(observations);
+  });
+
+  /**
+   * Semantic memory layer — compact listing of active facts for the MCP
+   * `facts` tool (~30 tokens/line). Optional `query` runs the facts FTS
+   * index; `kind` filters by fact kind. MCP-shaped response, like /api/search.
+   */
+  private handleGetFacts = this.wrapHandler((req: Request, res: Response): void => {
+    const project = DataRoutes.firstString(req.query.project);
+    const query = DataRoutes.firstString(req.query.query) ?? DataRoutes.firstString(req.query.q);
+    const kind = DataRoutes.firstString(req.query.kind);
+    const parsedLimit = parseInt(DataRoutes.firstString(req.query.limit) ?? '', 10);
+    const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 100) : 50;
+
+    const search = this.dbManager.getSessionSearch();
+    const facts = search.searchFacts(query, { project, kind, limit });
+
+    const lines: string[] = [];
+    lines.push(facts.length > 0 ? `${facts.length} active fact(s)` : 'No active facts');
+    lines.push('');
+    for (const fact of facts) {
+      lines.push(`#${fact.id} [${fact.kind}] ${fact.fact}`);
+    }
+
+    res.json({
+      content: [{
+        type: 'text' as const,
+        text: lines.join('\n')
+      }]
+    });
+  });
+
+  /**
+   * Semantic memory layer — full fact rows by id for the MCP `get_facts`
+   * tool. Retrieval practice: actively recalling a fact appends a real
+   * reinforcement date (same-day idempotent), mirroring
+   * /api/observations/batch. Best-effort: a missed reinforcement costs a
+   * little ranking accuracy, never a response.
+   */
+  private handleGetFactsByIds = this.wrapHandler((req: Request, res: Response): void => {
+    const { ids, project } = req.body as z.infer<typeof factsBatchSchema>;
+
+    if (ids.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+    let facts = getFactsByIds(store.db, ids);
+    if (project) {
+      facts = facts.filter(f => f.project === project);
+    }
+
+    try {
+      recordFactsRetrieved(store.db, facts.map(f => f.id));
+    } catch (error) {
+      logger.debug('DB', 'Fact retrieval reinforcement skipped', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    res.json(facts);
+  });
+
+  /**
+   * Provenance audit (audit G6) — "where did this belief come from": the fact
+   * row, its source observations (stale-flagged when superseded), the
+   * supersession chain up to the active head, and the rows it replaced.
+   * Read-only.
+   */
+  private handleGetFactProvenance = this.wrapHandler((req: Request, res: Response): void => {
+    const id = this.parseIntParam(req, res, 'id');
+    if (id === null) return;
+
+    const store = this.dbManager.getSessionStore();
+    const report = getFactProvenance(store.db, id);
+    if (!report) {
+      this.notFound(res, `fact #${id} not found`);
+      return;
+    }
+
+    res.json(report);
+  });
+
+  /**
+   * Temporal belief query (audit G6) — facts that were true at `ts` (epoch ms
+   * or ISO 8601), including rows superseded or invalidated since ("what did
+   * we believe then"). Each row carries its status as of today. Read-only.
+   */
+  private handleGetFactsAt = this.wrapHandler((req: Request, res: Response): void => {
+    const project = DataRoutes.firstString(req.query.project);
+    if (!project) {
+      this.badRequest(res, 'project query parameter is required');
+      return;
+    }
+
+    const ts = parseTemporalTs(DataRoutes.firstString(req.query.ts));
+    if (ts === null) {
+      this.badRequest(res, 'ts query parameter is required and must be epoch ms or an ISO 8601 date');
+      return;
+    }
+
+    const includeActive = DataRoutes.firstString(req.query.includeActive) !== 'false';
+    const parsedLimit = parseInt(DataRoutes.firstString(req.query.limit) ?? '', 10);
+    const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : undefined;
+
+    const store = this.dbManager.getSessionStore();
+    const facts = getFactsAt(store.db, project, ts, { includeActive, limit });
+
+    res.json({
+      project,
+      ts,
+      date: new Date(ts).toISOString(),
+      count: facts.length,
+      facts,
+    });
+  });
+
+  /**
+   * Semantic memory layer — manual consolidation trigger for a project.
+   * Throttled unless `force` is set; still master-gated by
+   * CLAUDE_MEM_CONSOLIDATION_ENABLED. Never throws: a failed pass reports as
+   * a NOOP summary.
+   */
+  private handleConsolidateFacts = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { project, force } = req.body as z.infer<typeof factsConsolidateSchema>;
+
+    if (!consolidationEnabled()) {
+      res.json({ ran: false, reason: 'CLAUDE_MEM_CONSOLIDATION_ENABLED is not true', added: 0, updated: 0, deleted: 0, noop: false, rejected: [] });
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const summary = await runConsolidation(store.db, project, undefined, new Date(), { force: force === true });
+    res.json(summary);
+  });
+
+  /**
+   * Retention sweep (audit G2) — explicit age/strength-threshold deletion of
+   * stale observations into the deleted_observations audit table. Dry-run by
+   * default: `{"dryRun":true}` (or an empty body) only reports candidates.
+   * Apply is gated on CLAUDE_MEM_RETENTION_ENABLED=true. Never runs on a
+   * timer — explicit invocation only.
+   */
+  private handleRetentionSweep = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { dryRun } = req.body as z.infer<typeof retentionSweepSchema>;
+    const apply = dryRun !== true;
+    const policy = readRetentionPolicy();
+
+    if (apply && !policy.enabled) {
+      res.status(403).json({
+        error: 'retention sweep is disabled — set CLAUDE_MEM_RETENTION_ENABLED=true to apply (dry-run is always allowed)',
+      });
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const result = runRetentionSweep(store.db, policy, { dryRun: !apply });
+
+    // Chroma tombstone, fail-soft: SQLite's audit table is the source of
+    // truth, orphaned vectors reconcile on the next full reindex.
+    let chromaRemoved = 0;
+    const chromaSync = this.dbManager.getChromaSync();
+    if (apply && chromaSync && result.snapshots.length > 0) {
+      const docIds = result.snapshots.flatMap(observationChromaDocIds);
+      try {
+        chromaRemoved = await chromaSync.removeDocuments(docIds);
+      } catch (error) {
+        logger.warn('RETENTION', 'Chroma tombstone after retention sweep failed', {
+          batchId: result.batchId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    res.json({
+      dryRun: result.dryRun,
+      policy: result.policy,
+      scanned: result.scanned,
+      candidates: result.candidates,
+      deleted: result.deleted,
+      batchId: result.batchId,
+      chromaRemoved,
+    });
   });
 
   private handleGetSessionById = this.wrapHandler((req: Request, res: Response): void => {
@@ -222,6 +448,26 @@ export class DataRoutes extends BaseRouteHandler {
     this.deleteSyncedContent(req, res, 'observation', 'observations');
   });
 
+  /**
+   * Hard delete of a semantic fact (audit G5) — cascades to the rows
+   * tombstoned BY it (recursive superseded_by chain). Facts are not
+   * cloud-synced, so unlike deleteSyncedContent this is a plain local
+   * delete; the semantic_facts_ad FTS trigger cleans the index.
+   */
+  private handleDeleteFact = this.wrapHandler((req: Request, res: Response): void => {
+    const id = this.parseIntParam(req, res, 'id');
+    if (id === null) return;
+
+    const store = this.dbManager.getSessionStore();
+    const result = eraseFactCascade(store.db, id);
+    if (result.deletedIds.length === 0) {
+      this.notFound(res, `fact #${id} not found`);
+      return;
+    }
+
+    res.json({ success: true, id, kind: 'fact', cascaded: result.cascaded });
+  });
+
   private handleDeleteSummary = this.wrapHandler((req: Request, res: Response): void => {
     this.deleteSyncedContent(req, res, 'summary', 'session_summaries');
   });
@@ -255,6 +501,13 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
+    // Erasure cascade (audit G5): a hard delete of an observation also removes
+    // the rows tombstoned BY it (recursive superseded_by chain) — otherwise
+    // the "erased" content survives in the DB as a marked row.
+    const chain = kind === 'observation'
+      ? observationErasureChain(store.db, Number(originLocalId))
+      : [Number(originLocalId)];
+
     const cloudSync = this.dbManager.getCloudSync();
     let entityRev: string | null = null;
     if (cloudSync?.isConfigured()) {
@@ -262,24 +515,35 @@ export class DataRoutes extends BaseRouteHandler {
         res.status(503).json({ error: 'cloud sync identity unavailable; refusing an unreplicated delete' });
         return;
       }
-      entityRev = cloudSync.queueDelete(kind, originLocalId);
+      for (const chainId of chain) {
+        const rev = cloudSync.queueDelete(kind, String(chainId));
+        if (chainId === chain[0]) entityRev = rev;
+      }
     } else {
       // A row with an acknowledged entity head must never be silently deleted
       // while its sync identity is unavailable: that would strand replicas.
+      const placeholders = chain.map(() => '?').join(',');
       const acknowledged = store.db.prepare(`
         SELECT 1 AS found FROM sync_entity_heads
-        WHERE kind = ? AND origin_local_id = ? LIMIT 1
-      `).get(kind, originLocalId) as { found: number } | undefined;
+        WHERE kind = ? AND origin_local_id IN (${placeholders}) LIMIT 1
+      `).get(kind, ...chain.map(String)) as { found: number } | undefined;
       if (acknowledged) {
         res.status(503).json({ error: 'cloud sync unavailable; refusing an unreplicated delete' });
         return;
       }
       store.db.prepare(
-        `DELETE FROM ${table} WHERE id = ? AND origin_device_id IS NULL`
-      ).run(originLocalId);
+        `DELETE FROM ${table} WHERE id IN (${placeholders}) AND origin_device_id IS NULL`
+      ).run(...chain);
     }
 
-    res.json({ success: true, id: originLocalId, kind, entity_rev: entityRev });
+    const cascaded = chain.length - 1;
+    if (cascaded > 0) {
+      logger.info('ERASURE', `Delete of ${kind} #${originLocalId} cascaded to ${cascaded} tombstone(s)`, {
+        chain,
+      });
+    }
+
+    res.json({ success: true, id: originLocalId, kind, entity_rev: entityRev, cascaded });
   }
 
   private handleGetStats = this.wrapHandler((req: Request, res: Response): void => {

@@ -3,6 +3,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { execFile, execSync, spawn, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
+import { fileURLToPath } from 'url';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
@@ -21,7 +22,13 @@ const execFileAsync = promisify(execFile);
 const CHROMA_MCP_CLIENT_NAME = 'claude-mem-chroma';
 const CHROMA_MCP_CLIENT_VERSION = '1.0.0';
 const MCP_CONNECTION_TIMEOUT_MS = 30_000;
-const DEFAULT_CHROMA_PREWARM_TIMEOUT_MS = 120_000;
+// First-ever prewarm resolves and downloads the fork's full dependency set
+// (torch + transformers + chromadb ≈ 600 MB–1 GB of wheels) before `--help`
+// can print; the old 120 s default was sized for the much smaller stock
+// chroma-mcp env. Note the e5 MODEL weights (~476 MB) are NOT downloaded at
+// prewarm — that happens lazily on the first chroma_create_collection with
+// the e5 EF (see CHROMA_CREATE_COLLECTION_TIMEOUT_MS).
+const DEFAULT_CHROMA_PREWARM_TIMEOUT_MS = 300_000;
 const CHROMA_PREWARM_TIMEOUT_SETTING = 'CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS';
 const CHROMA_PREWARM_TIMEOUT_BOUNDS = { min: 1, max: 600_000 } as const;
 const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
@@ -34,7 +41,23 @@ const CHROMA_MUTATION_TOOL_PATTERN = /^chroma_(?:add|create|delete|modify|update
 
 const CHROMA_MCP_PINNED_VERSION = '0.2.6';
 
-// Override transitive dep resolutions for chroma-mcp 0.2.6 (issue #2371).
+// e5 embedding migration (plans/2026-07-29-e5-embedding-migration.md):
+// chroma-mcp is spawned from the vendored fork at vendor/chroma-mcp (repo
+// root in dev; plugin/vendor/chroma-mcp in installed plugins — the build
+// copies it there). The fork registers the `e5-multilingual` embedding
+// function (intfloat/multilingual-e5-small via chromadb's registry-known
+// SentenceTransformerEmbeddingFunction). CHROMA_MCP_PINNED_VERSION remains
+// only as the PyPI fallback when the fork directory cannot be located.
+const CHROMA_MCP_FORK_RELATIVE_DIR = path.join('vendor', 'chroma-mcp');
+
+// The first chroma_create_collection with the e5 EF downloads ~476 MB of
+// model weights (intfloat/multilingual-e5-small) INSIDE the chroma-mcp
+// process; the MCP SDK default request timeout (60 s) would abort the call
+// mid-download. 15 min matches the pilot's worst-case (~16 min at 0.5 MB/s
+// was with hf-xet broken; HF_HUB_DISABLE_XET=1 is set in the spawn env).
+const CHROMA_CREATE_COLLECTION_TIMEOUT_MS = 900_000;
+
+// Override transitive dep resolutions for the spawned chroma-mcp (issue #2371).
 //
 // Why onnxruntime>=1.20: the shipped all-MiniLM-L6-v2 model has pytorch-2.0
 // IR. Older onnxruntime versions can't parse it and fail every embedding
@@ -47,11 +70,19 @@ const CHROMA_MCP_PINNED_VERSION = '0.2.6';
 // `TypeError: Descriptors cannot be created directly` at chromadb import.
 // Capping below 7 lands on protobuf 6.x which opentelemetry tolerates.
 //
-// These pins are runtime-only (uvx --with) so we don't have to fork
-// chroma-mcp upstream — they apply only to claude-mem's spawned subprocess.
+// Why sentence-transformers: the e5 EF in the vendored fork needs it (the
+// fork also declares it as a required dependency — this override makes the
+// guarantee explicit) AND it lets even the STOCK PyPI fallback serve an
+// existing e5 collection: chromadb reconstructs the persisted
+// `sentence_transformer` EF config via build_from_config, which only needs
+// the package importable in the environment.
+//
+// These pins are runtime-only (uvx --with) — they apply only to claude-mem's
+// spawned subprocess.
 const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
   'onnxruntime>=1.20',
   'protobuf<7',
+  'sentence-transformers>=4.1.0',
 ];
 
 // Issue #2696 (revised): chroma-mcp is now spawned by invoking uvx DIRECTLY on
@@ -528,12 +559,65 @@ export class ChromaMcpManager {
 
   private static buildLauncherPrefix(pythonVersion: string): string[] {
     const depOverrideFlags = CHROMA_MCP_DEP_OVERRIDES.flatMap(spec => ['--with', spec]);
+    const forkDir = ChromaMcpManager.resolveVendoredChromaMcpDir();
+    if (!forkDir) {
+      // Degraded fallback: stock chroma-mcp from PyPI. It cannot CREATE
+      // e5-multilingual collections (the EF name is fork-only), but it CAN
+      // serve existing ones — chromadb rebuilds the persisted
+      // sentence_transformer EF config via build_from_config, and the
+      // sentence-transformers --with override above keeps the package
+      // importable. Set CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION=default to
+      // create new collections in this mode.
+      logger.warn('CHROMA_MCP', 'Vendored chroma-mcp fork not found, falling back to PyPI pin', {
+        fallback: `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`
+      });
+    }
     return [
       '--python', pythonVersion,
       ...depOverrideFlags,
-      '--from', `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
+      '--from', forkDir ?? `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
       'chroma-mcp',
     ];
+  }
+
+  /**
+   * Locate the vendored chroma-mcp fork by walking up from this module's
+   * directory: repo-root `vendor/chroma-mcp` in dev, `plugin/vendor/chroma-mcp`
+   * in installed plugins (the bundle lives in plugin/scripts). An ABSOLUTE
+   * path is mandatory: uv resolves a relative `--from` against the spawned
+   * process cwd, and both the MCP transport and the prewarm spawn use
+   * `cwd: os.homedir()` — a relative `./vendor/chroma-mcp` would silently
+   * resolve against the user's home directory. Verified: uv 0.7.8 accepts a
+   * local directory for `--from` (builds it with hatchling).
+   */
+  private static resolveVendoredChromaMcpDir(): string | null {
+    let dir = ChromaMcpManager.getModuleDir();
+    for (let depth = 0; depth < 5; depth += 1) {
+      const candidate = path.join(dir, CHROMA_MCP_FORK_RELATIVE_DIR);
+      try {
+        if (fs.existsSync(path.join(candidate, 'pyproject.toml'))) {
+          return candidate;
+        }
+      } catch {
+        // Unreadable directory — keep walking up.
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) {
+        break;
+      }
+      dir = parent;
+    }
+    return null;
+  }
+
+  private static getModuleDir(): string {
+    // Same pattern as shared/paths.ts: __dirname exists under Bun and in the
+    // CJS plugin bundles; import.meta.url is the ESM fallback (esbuild maps
+    // it to __IMPORT_META_URL__ in the bundles).
+    if (typeof __dirname !== 'undefined') {
+      return __dirname;
+    }
+    return path.dirname(fileURLToPath(import.meta.url));
   }
 
   private static buildPrewarmCommandArgs(commandArgs: string[]): string[] {
@@ -721,11 +805,16 @@ export class ChromaMcpManager {
     });
 
     let result;
+    // The first e5 collection create downloads the model weights inside the
+    // server process — far beyond the MCP SDK's 60 s default request timeout.
+    const requestOptions = toolName === 'chroma_create_collection'
+      ? { timeout: CHROMA_CREATE_COLLECTION_TIMEOUT_MS }
+      : undefined;
     try {
       result = await this.client!.callTool({
         name: toolName,
         arguments: toolArguments
-      });
+      }, undefined, requestOptions);
     } catch (transportError) {
       logger.warn('CHROMA_MCP', `Transport error during "${toolName}", reconnecting and retrying once`, {
         error: transportError instanceof Error ? transportError.message : String(transportError)
@@ -748,7 +837,7 @@ export class ChromaMcpManager {
         result = await this.client!.callTool({
           name: toolName,
           arguments: toolArguments
-        });
+        }, undefined, requestOptions);
       } catch (retryError) {
         this.connected = false;
         throw new Error(`chroma-mcp transport error during "${toolName}" (retry failed): ${retryError instanceof Error ? retryError.message : String(retryError)}`);
@@ -1384,6 +1473,23 @@ export class ChromaMcpManager {
     // Disable Chroma's anonymous telemetry — it issues background HTTP from
     // the embedding subprocess on every collection touch.
     if (!baseEnv.ANONYMIZED_TELEMETRY) baseEnv.ANONYMIZED_TELEMETRY = 'false';
+
+    // huggingface_hub defaults to the hf-xet transfer protocol, which hangs
+    // at 0 bytes behind some proxies (observed in the e5 pilot — see
+    // vendor/chroma-mcp/README.md). Force plain HTTPS for the ~476 MB
+    // e5-small model download. Explicit user setting wins.
+    if (!baseEnv.HF_HUB_DISABLE_XET) baseEnv.HF_HUB_DISABLE_XET = '1';
+
+    // Cap torch's CPU parallelism: by default torch grabs every core, which
+    // is what made the e5 reindex pin the machine at 255% CPU (user report,
+    // 2026-07-31). Batch embedding gets ~2x slower but the host stays
+    // responsive; interactive single-doc embedding is unaffected. Explicit
+    // user env always wins over the settings-file value.
+    if (!baseEnv.OMP_NUM_THREADS) {
+      baseEnv.OMP_NUM_THREADS = SettingsDefaultsManager.get('CLAUDE_MEM_TORCH_NUM_THREADS');
+    }
+    if (!baseEnv.MKL_NUM_THREADS) baseEnv.MKL_NUM_THREADS = baseEnv.OMP_NUM_THREADS;
+    if (!baseEnv.TORCH_NUM_THREADS) baseEnv.TORCH_NUM_THREADS = baseEnv.OMP_NUM_THREADS;
     return baseEnv;
   }
 
