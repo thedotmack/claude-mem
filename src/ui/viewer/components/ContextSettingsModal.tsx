@@ -127,6 +127,8 @@ export function ContextSettingsModal({
   saveStatus
 }: ContextSettingsModalProps) {
   const [formState, setFormState] = useState<Settings>(settings);
+  const [backupStatus, setBackupStatus] = useState<string>('');
+  const [isBackupBusy, setIsBackupBusy] = useState(false);
 
   useEffect(() => {
     setFormState(settings);
@@ -158,6 +160,95 @@ export function ContextSettingsModal({
     const newValue = currentValue === 'true' ? 'false' : 'true';
     updateSetting(key, newValue);
   }, [formState, updateSetting]);
+
+  const handleExport = useCallback(async () => {
+    setBackupStatus('Downloading...');
+    try {
+      const res = await fetch('/api/backup/export');
+      if (!res.ok) throw new Error(`Export failed (${res.status})`);
+      const blob = await res.blob();
+      const disposition = res.headers.get('content-disposition') || '';
+      const match = disposition.match(/filename="([^"]+)"/);
+      const filename = match ? match[1] : 'claude-mem-backup.zip';
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      setBackupStatus('✓ Export downloaded');
+    } catch (err) {
+      setBackupStatus(`✗ ${err instanceof Error ? err.message : 'Export failed'}`);
+    }
+  }, []);
+
+  const waitForWorkerHealthy = useCallback(async (timeoutMs: number): Promise<boolean> => {
+    const deadline = Date.now() + timeoutMs;
+    // Give the graceful-shutdown + respawn sequence a moment to actually
+    // start tearing down before the first health probe.
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch('/api/health');
+        if (res.ok) return true;
+      } catch {
+        // Expected mid-restart (connection refused while the worker is down) — keep polling.
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    return false;
+  }, []);
+
+  const handleRestoreZip = useCallback(async (file: File) => {
+    setIsBackupBusy(true);
+    setBackupStatus('Restoring backup...');
+    try {
+      const res = await fetch('/api/backup/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/zip' },
+        body: file,
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `Restore failed (${res.status})`);
+
+      setBackupStatus('Files staged — waiting for the worker to restart...');
+      // The import endpoint responds BEFORE the restart sequence runs: the
+      // worker defers it via flushResponseThen, so the restart only begins once
+      // this response is flushed (the same contract as /api/admin/restart).
+      // Restart-verify failure therefore has to be surfaced here rather than in
+      // the original response — see spec's Safety section.
+      const healthy = await waitForWorkerHealthy(30000);
+      setBackupStatus(
+        healthy
+          ? '✓ Restore complete — worker restarted'
+          : '⚠ Files replaced, but the worker restart could not be verified — restart manually'
+      );
+    } catch (err) {
+      setBackupStatus(`✗ ${err instanceof Error ? err.message : 'Restore failed'}`);
+    } finally {
+      setIsBackupBusy(false);
+    }
+  }, [waitForWorkerHealthy]);
+
+  const handleImportSingleFile = useCallback(async (name: 'settings.json' | '.env', file: File) => {
+    setIsBackupBusy(true);
+    setBackupStatus(`Importing ${name}...`);
+    try {
+      const res = await fetch(`/api/backup/import/file?name=${encodeURIComponent(name)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: file,
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `Import failed (${res.status})`);
+      setBackupStatus(`✓ ${name} imported`);
+    } catch (err) {
+      setBackupStatus(`✗ ${err instanceof Error ? err.message : 'Import failed'}`);
+    } finally {
+      setIsBackupBusy(false);
+    }
+  }, []);
 
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => {
@@ -478,6 +569,69 @@ export function ContextSettingsModal({
                   onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE')}
                 />
               </div>
+            </CollapsibleSection>
+
+            {/* Section 5: Backup & Restore */}
+            <CollapsibleSection
+              title="Backup & Restore"
+              description="Snapshot or restore your claude-mem data"
+              defaultOpen={false}
+            >
+              <FormField label="Full backup">
+                <button type="button" className="save-btn" onClick={handleExport} disabled={isBackupBusy}>
+                  Export backup (.zip)
+                </button>
+              </FormField>
+
+              <FormField
+                label="Restore from backup"
+                tooltip="Overwrites your current database and settings. A copy of the current files is kept under backups/ first."
+              >
+                <input
+                  type="file"
+                  accept=".zip"
+                  disabled={isBackupBusy}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) void handleRestoreZip(file);
+                    e.target.value = '';
+                  }}
+                />
+              </FormField>
+
+              <div className="display-subsection">
+                <span className="subsection-label">Import a single file</span>
+                <FormField label="settings.json">
+                  <input
+                    type="file"
+                    accept="application/json,.json"
+                    disabled={isBackupBusy}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) void handleImportSingleFile('settings.json', file);
+                      e.target.value = '';
+                    }}
+                  />
+                </FormField>
+                <FormField label=".env">
+                  <input
+                    type="file"
+                    accept=".env"
+                    disabled={isBackupBusy}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) void handleImportSingleFile('.env', file);
+                      e.target.value = '';
+                    }}
+                  />
+                </FormField>
+              </div>
+
+              {backupStatus && (
+                <div className={backupStatus.startsWith('✗') ? 'error' : backupStatus.startsWith('✓') ? 'success' : ''}>
+                  {backupStatus}
+                </div>
+              )}
             </CollapsibleSection>
           </div>
         </div>

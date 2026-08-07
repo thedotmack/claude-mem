@@ -383,3 +383,84 @@ describe('GracefulShutdown', () => {
     });
   });
 });
+
+describe('spawnRestartSuccessor pending-swap hook', () => {
+  it('calls applyPendingSwaps after the port frees and before the successor spawns, when provided', async () => {
+    const { runShutdownSequence } = await import('../../src/services/worker-shutdown.js');
+    const calls: string[] = [];
+
+    await runShutdownSequence({
+      reason: 'restart',
+      isShuttingDown: () => false,
+      markShuttingDown: () => {},
+      beforeGracefulShutdown: async () => {},
+      performGracefulShutdown: async () => {},
+      gracefulDeadlineMs: 100,
+      restartHandoff: {
+        port: 39999,
+        portFreeTimeoutMs: 100,
+        resolveSuccessorScript: () => '/fake/script.cjs',
+        waitForPortFree: async () => true,
+        removePidFile: () => { calls.push('removePidFile'); },
+        spawnDaemon: () => { calls.push('spawnDaemon'); return 1234; },
+        applyPendingSwaps: () => { calls.push('applyPendingSwaps'); },
+      },
+    });
+
+    expect(calls).toEqual(['applyPendingSwaps', 'removePidFile', 'spawnDaemon']);
+  });
+
+  it('does not throw when applyPendingSwaps is omitted', async () => {
+    const { runShutdownSequence } = await import('../../src/services/worker-shutdown.js');
+
+    await runShutdownSequence({
+      reason: 'restart',
+      isShuttingDown: () => false,
+      markShuttingDown: () => {},
+      beforeGracefulShutdown: async () => {},
+      performGracefulShutdown: async () => {},
+      gracefulDeadlineMs: 100,
+      restartHandoff: {
+        port: 39998,
+        portFreeTimeoutMs: 100,
+        resolveSuccessorScript: () => '/fake/script.cjs',
+        waitForPortFree: async () => true,
+        removePidFile: () => {},
+        spawnDaemon: () => 1234,
+      },
+    });
+    // No assertion needed beyond "did not throw" — the await above is the check.
+    expect(true).toBe(true);
+  });
+
+  it('still spawns the successor when applyPendingSwaps throws', async () => {
+    const { runShutdownSequence } = await import('../../src/services/worker-shutdown.js');
+    const calls: string[] = [];
+
+    await runShutdownSequence({
+      reason: 'restart',
+      isShuttingDown: () => false,
+      markShuttingDown: () => {},
+      beforeGracefulShutdown: async () => {},
+      performGracefulShutdown: async () => {},
+      gracefulDeadlineMs: 100,
+      restartHandoff: {
+        port: 39997,
+        portFreeTimeoutMs: 100,
+        resolveSuccessorScript: () => '/fake/script.cjs',
+        waitForPortFree: async () => true,
+        removePidFile: () => { calls.push('removePidFile'); },
+        spawnDaemon: () => { calls.push('spawnDaemon'); return 1234; },
+        applyPendingSwaps: () => {
+          calls.push('applyPendingSwaps');
+          // renameSync can fail with EPERM/EBUSY on Windows if a handle is
+          // still open. Log-and-continue: aborting here would leave a
+          // half-swapped data dir AND no worker running.
+          throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+        },
+      },
+    });
+
+    expect(calls).toEqual(['applyPendingSwaps', 'removePidFile', 'spawnDaemon']);
+  });
+});

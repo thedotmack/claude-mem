@@ -18,6 +18,7 @@ import { logger } from '../utils/logger.js';
 import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
 import { openConfiguredSqliteDatabase } from './sqlite/connection.js';
+import { applyPendingSwaps } from './infrastructure/PendingSwap.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
@@ -102,6 +103,7 @@ import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
 import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
+import { BackupRoutes } from './worker/http/routes/BackupRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
 import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
@@ -359,6 +361,7 @@ export class WorkerService implements WorkerRef {
     );
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
+    this.server.registerRoutes(new BackupRoutes(() => this.shutdown('restart')));
     this.server.registerRoutes(new LogsRoutes());
     this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
     this.server.registerRoutes(new ServerV1Routes({
@@ -837,6 +840,7 @@ export class WorkerService implements WorkerRef {
         // runShutdownSequence seam (`removePidFile: () => void`) unchanged.
         removePidFile: () => removePidFileIfOwner(process.pid),
         spawnDaemon,
+        applyPendingSwaps,
       },
     });
   }
