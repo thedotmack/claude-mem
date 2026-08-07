@@ -32,6 +32,8 @@ interface SessionInitResponse {
 interface SemanticContextResponse {
   context: string;
   count: number;
+  globalContext?: string;
+  globalCount?: number;
 }
 
 const defaultDependencies = {
@@ -171,6 +173,9 @@ export const sessionInitHandler: EventHandler = {
 
     if (semanticInject && prompt && prompt.length >= 20 && prompt !== '[media prompt]') {
       const limit = settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT || '5';
+      // Cross-project injection (Palantir-in-`search`-needed-in-`kit` case):
+      // 0/absent = off, the worker answers with current-project context only.
+      const globalLimit = settings.CLAUDE_MEM_SEMANTIC_INJECT_GLOBAL_LIMIT || '0';
       // Unified memory applies here too: with the platform filter disabled the
       // request must NOT carry platformSource — otherwise the semantic path
       // where-filters Chroma to kimi-only observations and older (claude-era /
@@ -185,6 +190,7 @@ export const sessionInitHandler: EventHandler = {
           q: prompt,
           project,
           limit,
+          globalLimit,
           ...(platformFilterEnabled ? { platformSource } : {}),
         },
       );
@@ -193,6 +199,12 @@ export const sessionInitHandler: EventHandler = {
         additionalContext = additionalContext
           ? `${additionalContext}\n\n${semanticResult.context}`
           : semanticResult.context;
+      }
+      if (!dependencies.isWorkerFallback(semanticResult) && semanticResult?.globalContext) {
+        logger.debug('HOOK', `Cross-project semantic injection: ${semanticResult.globalCount} memories for prompt`, { sessionId: sessionDbId, count: semanticResult.globalCount });
+        additionalContext = additionalContext
+          ? `${additionalContext}\n\n${semanticResult.globalContext}`
+          : semanticResult.globalContext;
       }
     }
 

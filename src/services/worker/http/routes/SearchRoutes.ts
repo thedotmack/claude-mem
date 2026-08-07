@@ -61,6 +61,7 @@ const semanticContextSchema = z.object({
   q: z.string().optional(),
   project: z.string().optional(),
   limit: z.union([z.string(), z.number()]).optional(),
+  globalLimit: z.union([z.string(), z.number()]).optional(),
   platformSource: z.string().optional(),
   platform_source: z.string().optional(),
 }).passthrough();
@@ -378,6 +379,11 @@ export class SearchRoutes extends BaseRouteHandler {
     const query = SearchRoutes.firstString(req.body?.q) ?? SearchRoutes.firstString(req.query.q) ?? '';
     const project = SearchRoutes.firstString(req.body?.project) ?? SearchRoutes.firstString(req.query.project);
     const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), 20);
+    // Cross-project semantic injection (CLAUDE_MEM_SEMANTIC_INJECT_GLOBAL_LIMIT,
+    // passed by the session-init hook): after the project-scoped search, run a
+    // second, unscoped search and surface top-N OTHER-project hits as a
+    // separate section. 0 = off (default).
+    const globalLimit = Math.min(Math.max(parseInt(String(req.body?.globalLimit ?? req.query.globalLimit ?? '0'), 10) || 0, 0), 20);
     let platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     // Unified-memory mode: ignore platform scoping entirely when the operator
@@ -435,10 +441,6 @@ export class SearchRoutes extends BaseRouteHandler {
     }
 
     const observations = result?.observations || [];
-    if (!observations.length) {
-      res.json({ context: '', count: 0 });
-      return;
-    }
 
     const lines: string[] = ['## Relevant Past Work (semantic match)\n'];
     for (const obs of observations.slice(0, limit)) {
@@ -448,8 +450,102 @@ export class SearchRoutes extends BaseRouteHandler {
       lines.push('');
     }
 
-    res.json({ context: lines.join('\n'), count: observations.length });
+    const context = observations.length ? lines.join('\n') : '';
+    const response: { context: string; count: number; globalContext?: string; globalCount?: number } = {
+      context,
+      count: observations.length,
+    };
+
+    if (globalLimit > 0 && project) {
+      const global = await this.searchGlobalContext(query, project, globalLimit, platformSource, observations);
+      if (global.globalCount > 0) {
+        response.globalContext = global.globalContext;
+        response.globalCount = global.globalCount;
+      }
+    }
+
+    res.json(response);
   });
+
+  /**
+   * Cross-project semantic search: same query without the project filter
+   * (observations via the Chroma path, facts via FTS — facts have no vectors
+   * yet, that is the v2 track). Hits from the current project and ids already
+   * in the main result set are dropped; the combined observation+fact budget
+   * is globalLimit. Best-effort: any failure yields an empty section, never a
+   * failed injection.
+   */
+  private async searchGlobalContext(
+    query: string,
+    project: string,
+    globalLimit: number,
+    platformSource: string | undefined,
+    mainObservations: any[],
+  ): Promise<{ globalContext: string; globalCount: number }> {
+    const empty = { globalContext: '', globalCount: 0 };
+    try {
+      const minScoreRaw = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)
+        .CLAUDE_MEM_SEMANTIC_INJECT_MIN_SCORE;
+      const minSimilarity = Number(minScoreRaw);
+
+      const mainKeys = new Set(
+        mainObservations.map(obs => SearchRoutes.observationKey(obs)),
+      );
+
+      // Overfetch: project-exclusion and id dedup shrink the candidate pool.
+      const globalResult = await this.searchManager.search({
+        query,
+        type: 'observations',
+        limit: String(Math.max(globalLimit * 3, 10)),
+        format: 'json',
+        ...(platformSource ? { platformSource } : {}),
+        ...(Number.isFinite(minSimilarity) && minSimilarity > 0 ? { minSimilarity } : {}),
+      });
+
+      const globalObservations = ((globalResult?.observations || []) as any[])
+        .filter(obs => obs.project && obs.project !== project)
+        .filter(obs => !mainKeys.has(SearchRoutes.observationKey(obs)))
+        .slice(0, globalLimit);
+
+      const remaining = globalLimit - globalObservations.length;
+      const facts = remaining > 0
+        ? this.searchManager.getSessionSearch()
+            .searchFacts(query, { limit: remaining * 3 })
+            .filter(fact => fact.project !== project)
+            .slice(0, remaining)
+        : [];
+
+      if (!globalObservations.length && !facts.length) {
+        return empty;
+      }
+
+      const lines: string[] = ['## Relevant Past Work — other projects\n'];
+      for (const obs of globalObservations) {
+        const date = obs.created_at?.slice(0, 10) || '';
+        lines.push(`### ${obs.title || 'Observation'} (${date}) [project: ${obs.project}]`);
+        if (obs.narrative) lines.push(obs.narrative);
+        lines.push('');
+      }
+      for (const fact of facts) {
+        lines.push(`#${fact.id} [${fact.project}/${fact.kind}] ${fact.fact}`);
+        lines.push('');
+      }
+
+      return {
+        globalContext: lines.join('\n'),
+        globalCount: globalObservations.length + facts.length,
+      };
+    } catch (error) {
+      logger.warn('HTTP', 'Cross-project semantic search failed, skipping global section', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return empty;
+    }
+  }
+
+  private static observationKey(obs: any): string {
+    return obs.id != null ? `id:${obs.id}` : `tn:${obs.title}|${obs.created_at}`;
+  }
 
   /**
    * Forward a semantic-context query to the main (Chroma-owning) worker when
@@ -472,7 +568,7 @@ export class SearchRoutes extends BaseRouteHandler {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body ?? {}),
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(25_000),
       });
       if (!response.ok) {
         logger.warn('HTTP', `Semantic forwarding to main worker failed: HTTP ${response.status}`);
