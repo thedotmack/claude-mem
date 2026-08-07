@@ -229,6 +229,7 @@ export class SessionRoutes extends BaseRouteHandler {
     app.post('/api/sessions/init', this.handleSessionInitByClaudeId.bind(this));
     app.post('/api/sessions/observations', this.handleObservationsByClaudeId.bind(this));
     app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
+    app.post('/api/sessions/complete', this.handleCompleteByClaudeId.bind(this));
   }
 
   /**
@@ -482,6 +483,47 @@ export class SessionRoutes extends BaseRouteHandler {
     this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
 
     res.json({ status: 'queued' });
+  });
+
+  /**
+   * Complete a session by contentSessionId (cleanup-hook uses this)
+   * POST /api/sessions/complete
+   * Body: { contentSessionId }
+   *
+   * WHY THIS EXISTS
+   * SDKAgent keeps ONE `claude` subprocess alive per session, held open by
+   * SessionManager.getMessageIterator() -- an infinite async generator. The only
+   * thing that aborts it is SessionManager.deleteSession(), which was reachable
+   * solely from shutdownAll() or the sessionDbId-keyed endpoints below. Nothing
+   * told the worker a Claude Code session had ended, so each subprocess (~400MB)
+   * survived until reboot. Measured on a 24GB machine: 4 accumulated in 11
+   * minutes, 11 alive simultaneously, driving 20GB of swap and UI freezes.
+   *
+   * Hooks only know Claude Code's session_id, not our sessionDbId, so this
+   * mirrors the other /api/sessions/* endpoints and resolves it worker-side.
+   */
+  private handleCompleteByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { contentSessionId } = req.body;
+
+    if (!contentSessionId) {
+      return this.badRequest(res, 'Missing contentSessionId');
+    }
+
+    // Deliberately a pure lookup: never create a row while tearing one down.
+    const sessionDbId = this.dbManager
+      .getSessionStore()
+      .getSessionIdByContentSessionId(contentSessionId);
+
+    if (sessionDbId === null) {
+      // Unknown or already-reaped session. Not an error: the hook fires for every
+      // session, including ones this worker never tracked (e.g. worker restarted).
+      res.json({ status: 'skipped', reason: 'unknown session' });
+      return;
+    }
+
+    await this.completionHandler.completeByDbId(sessionDbId);
+
+    res.json({ status: 'completed', sessionDbId });
   });
 
   /**

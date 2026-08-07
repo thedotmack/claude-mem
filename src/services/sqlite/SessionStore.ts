@@ -1090,6 +1090,25 @@ export class SessionStore {
   }
 
   /**
+   * Look up a session's database ID from the Claude Code session_id.
+   *
+   * Unlike createSDKSession, this NEVER creates a row. Cleanup paths must not
+   * resurrect a session that was already torn down, otherwise the SessionEnd
+   * hook would insert a fresh row for every unknown session_id it sees.
+   */
+  getSessionIdByContentSessionId(contentSessionId: string): number | null {
+    const stmt = this.db.prepare(`
+      SELECT id
+      FROM sdk_sessions
+      WHERE content_session_id = ?
+      LIMIT 1
+    `);
+
+    const row = stmt.get(contentSessionId) as { id: number } | undefined;
+    return row?.id ?? null;
+  }
+
+  /**
    * Get SDK sessions by SDK session IDs
    * Used for exporting session metadata
    */
