@@ -378,7 +378,16 @@ export class SearchRoutes extends BaseRouteHandler {
     const query = SearchRoutes.firstString(req.body?.q) ?? SearchRoutes.firstString(req.query.q) ?? '';
     const project = SearchRoutes.firstString(req.body?.project) ?? SearchRoutes.firstString(req.query.project);
     const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), 20);
-    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    let platformSource = this.getOptionalPlatformSourceFromRequest(req);
+
+    // Unified-memory mode: ignore platform scoping entirely when the operator
+    // disabled the platform filter — otherwise older (null/claude-era)
+    // memories are invisible to semantic injection regardless of the setting
+    // (observed live 2026-08-07 on project `search` GPU memories).
+    const platformFilterEnabled = SettingsDefaultsManager
+      .loadFromFile(USER_SETTINGS_PATH)
+      .CLAUDE_MEM_CONTEXT_PLATFORM_FILTER !== 'false';
+    if (!platformFilterEnabled) platformSource = undefined;
 
     if (!query || query.length < 20) {
       res.json({ context: '', count: 0 });

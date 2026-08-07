@@ -171,10 +171,22 @@ export const sessionInitHandler: EventHandler = {
 
     if (semanticInject && prompt && prompt.length >= 20 && prompt !== '[media prompt]') {
       const limit = settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT || '5';
+      // Unified memory applies here too: with the platform filter disabled the
+      // request must NOT carry platformSource — otherwise the semantic path
+      // where-filters Chroma to kimi-only observations and older (claude-era /
+      // null-platform) memories become invisible to injection. Observed live
+      // 2026-08-07: a GPU-shop query in project `search` never saw the RTX 3090
+      // research series because its platform_source was NULL.
+      const platformFilterEnabled = settings.CLAUDE_MEM_CONTEXT_PLATFORM_FILTER !== 'false';
       const semanticResult = await dependencies.executeWithWorkerFallback<SemanticContextResponse>(
         '/api/context/semantic',
         'POST',
-        { q: prompt, project, limit, platformSource },
+        {
+          q: prompt,
+          project,
+          limit,
+          ...(platformFilterEnabled ? { platformSource } : {}),
+        },
       );
       if (!dependencies.isWorkerFallback(semanticResult) && semanticResult?.context) {
         logger.debug('HOOK', `Semantic injection: ${semanticResult.count} observations for prompt`, { sessionId: sessionDbId, count: semanticResult.count });
