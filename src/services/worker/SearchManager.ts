@@ -61,6 +61,10 @@ export class SearchManager {
     return this.sessionStore;
   }
 
+  getSessionSearch(): SessionSearch {
+    return this.sessionSearch;
+  }
+
   private async queryChroma(
     query: string,
     limit: number,
