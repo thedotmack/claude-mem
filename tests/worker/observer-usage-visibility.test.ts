@@ -187,6 +187,27 @@ describe('observerUsageLogFields', () => {
       cumulativeCacheReadTokens: 21_000_000,
     });
   });
+
+  it('matches the fields SessionRoutes spreads into Generator failed logs', () => {
+    const session = makeSession({
+      cumulativeInputTokens: 12_000,
+      cumulativeOutputTokens: 40,
+      cumulativeCacheReadTokens: 84_000,
+    });
+
+    const failureContext = {
+      sessionId: session.sessionDbId,
+      provider: 'claude',
+      error: 'stream died',
+      ...observerUsageLogFields(session),
+    };
+
+    expect(failureContext).toMatchObject({
+      cumulativeInputTokens: 12_000,
+      cumulativeOutputTokens: 40,
+      cumulativeCacheReadTokens: 84_000,
+    });
+  });
 });
 
 describe('OpenAICompatibleProvider observer cost visibility', () => {

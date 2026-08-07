@@ -20,6 +20,7 @@ import { getProjectContext } from '../../../../utils/project-name.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
+import { observerUsageLogFields } from '../../observer-usage.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
@@ -212,6 +213,7 @@ export class SessionRoutes extends BaseRouteHandler {
           sessionId: session.sessionDbId,
           provider,
           error: errorMsg,
+          ...observerUsageLogFields(session),
         }, error);
         telemetryBuffer.record('session_compressed', session.sessionDbId, {
           outcome: 'error',
