@@ -171,11 +171,12 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     model: string,
     responseContext: ReturnType<typeof snapshotResponseContext>
   ): Promise<void> {
+    accumulateObserverUsage(session, initResponse);
+    session.lastUsage = this.buildLastUsage(initResponse);
+    const tokensUsed = initResponse.tokensUsed || 0;
+
     if (initResponse.content) {
       session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
-      const tokensUsed = initResponse.tokensUsed || 0;
-      accumulateObserverUsage(session, initResponse);
-      session.lastUsage = this.buildLastUsage(initResponse);
       await processAgentResponse(
         initResponse.content, session, this.dbManager, this.sessionManager,
         worker, tokensUsed, null, this.providerName, undefined, initResponse.servedModel ?? model, responseContext
@@ -218,14 +219,12 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session.lastGeneratorSource = 'ingest';
     const obsResponse = await this.query(session.conversationHistory, config);
 
-    let tokensUsed = 0;
+    accumulateObserverUsage(session, obsResponse);
+    session.lastUsage = this.buildLastUsage(obsResponse);
+    const tokensUsed = obsResponse.tokensUsed || 0;
+
     if (obsResponse.content) {
       session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
-      tokensUsed = obsResponse.tokensUsed || 0;
-      accumulateObserverUsage(session, obsResponse);
-      // Both sides or nothing: a backend reporting only one of the two counts
-      // must not produce a half-real event (input=0 → compression_ratio 0.0).
-      session.lastUsage = this.buildLastUsage(obsResponse);
     }
 
     if (obsResponse.content || this.forwardEmptyMessageResponse) {
@@ -275,12 +274,12 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
     const summaryResponse = await this.query(session.conversationHistory, summaryConfig);
 
-    let tokensUsed = 0;
+    accumulateObserverUsage(session, summaryResponse);
+    session.lastUsage = this.buildLastUsage(summaryResponse);
+    const tokensUsed = summaryResponse.tokensUsed || 0;
+
     if (summaryResponse.content) {
       session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
-      tokensUsed = summaryResponse.tokensUsed || 0;
-      accumulateObserverUsage(session, summaryResponse);
-      session.lastUsage = this.buildLastUsage(summaryResponse);
     }
 
     if (summaryResponse.content || this.forwardEmptyMessageResponse) {

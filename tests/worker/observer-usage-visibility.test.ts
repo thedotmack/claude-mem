@@ -84,6 +84,43 @@ class RealUsageProvider extends OpenAICompatibleProvider<{ apiKey: string; model
   }
 }
 
+/** Init returns content; the observation turn is billed but empty-bodied (Gemini path). */
+class EmptyObservationUsageProvider extends OpenAICompatibleProvider<{ apiKey: string; model: string }> {
+  protected readonly providerName = 'TestProvider';
+  protected readonly syntheticIdPrefix = 'test';
+  protected readonly forwardEmptyMessageResponse = false;
+
+  private queryCount = 0;
+
+  constructor(dbManager: any, sessionManager: any) {
+    super(dbManager, sessionManager);
+  }
+
+  protected getConfig() {
+    return { apiKey: 'test-api-key', model: 'session-model' };
+  }
+
+  protected missingApiKeyError(): Error {
+    return new Error('missing key');
+  }
+
+  protected async query(_history: ConversationMessage[]): Promise<ProviderQueryResult> {
+    this.queryCount += 1;
+    if (this.queryCount === 1) {
+      return { content: 'init ok', tokensUsed: 100, inputTokens: 90, outputTokens: 10 };
+    }
+    return { content: '', tokensUsed: 1000, inputTokens: 990, outputTokens: 10 };
+  }
+
+  protected estimateTokens(): number {
+    return 0;
+  }
+
+  protected buildLastUsage(): ActiveSession['lastUsage'] {
+    return null;
+  }
+}
+
 describe('accumulateObserverUsage', () => {
   it('accumulates the real input/output split instead of a 70/30 estimate', () => {
     const session = makeSession();
@@ -274,6 +311,29 @@ describe('OpenAICompatibleProvider observer cost visibility', () => {
     expect(failure![2]).toMatchObject({
       cumulativeInputTokens: 4_100_000,
       cumulativeOutputTokens: 9_000,
+    });
+  });
+
+  it('accumulates billed usage from an empty-bodied observation response', async () => {
+    const provider = new EmptyObservationUsageProvider({} as any, {
+      confirmClaimedMessages: async () => 0,
+      resetProcessingToPending: async () => 0,
+      getMessageIterator: async function* () {
+        yield { type: 'observation', tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 2 };
+      },
+    } as any);
+    const session = makeSession();
+
+    await provider.startSession(session);
+
+    // init 90/10 + empty observation 990/10
+    expect(session.cumulativeInputTokens).toBe(1080);
+    expect(session.cumulativeOutputTokens).toBe(20);
+
+    const completion = successSpy.mock.calls.find(call => String(call[1]).includes('agent completed'));
+    expect(completion![2]).toMatchObject({
+      cumulativeInputTokens: 1080,
+      cumulativeOutputTokens: 20,
     });
   });
 });
