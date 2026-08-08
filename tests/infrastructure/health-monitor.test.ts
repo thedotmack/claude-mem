@@ -43,7 +43,7 @@ describe('HealthMonitor', () => {
       spy.mockRestore();
     });
 
-    it('should use a bind probe on Windows even when the health endpoint is unhealthy', async () => {
+    it('should fall through to a bind probe on Windows when the health endpoint is unhealthy', async () => {
       const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
       expect(platformDescriptor).toBeDefined();
 
@@ -64,7 +64,7 @@ describe('HealthMonitor', () => {
 
         expect(await isPortInUse(37777)).toBe(true);
         expect(net.createServer).toHaveBeenCalled();
-        expect(fetchMock).not.toHaveBeenCalled();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
       } finally {
         spy.mockRestore();
         Object.defineProperty(process, 'platform', platformDescriptor!);
