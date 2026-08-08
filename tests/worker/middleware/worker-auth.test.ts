@@ -11,6 +11,8 @@ import {
   createWorkerAuthMiddleware,
   isTrustedOriginlessHost,
   parseWorkerAuthMode,
+  StreamTicketStore,
+  STREAM_TICKET_TTL_MS,
   type WorkerAuthMode,
 } from '../../../src/services/worker/http/worker-auth.js';
 import { createServerApiKey, revokeServerApiKey } from '../../../src/server/auth/sqlite-api-key-service.js';
@@ -54,16 +56,23 @@ describe('worker CORS allowlist + auth', () => {
   let rawKey: string;
   let keyId: string;
 
+  let streamTickets: StreamTicketStore;
+
   async function startApp(mode: WorkerAuthMode, allowedOrigins: string[] = [ALLOWED_ORIGIN]): Promise<void> {
     const app = express();
     // Same mount order and paths as Server.ts: CORS first, then auth on
-    // /api + /v1 + the root-level /stream SSE route.
+    // /api + /v1 + the root-level /stream SSE route, then the ticket route.
+    streamTickets = new StreamTicketStore();
     app.use(createCorsMiddleware({ allowedOrigins }));
     app.use(['/api', '/v1', '/stream'], createWorkerAuthMiddleware({
       mode,
       getDatabase: () => db,
       exemptPaths: ['/health'],
+      streamTickets,
     }));
+    app.post('/api/stream-ticket', (_req, res) => {
+      res.json({ ticket: streamTickets.issue(), expiresInMs: STREAM_TICKET_TTL_MS });
+    });
     app.all('/api/echo', (_req, res) => { res.json({ ok: true }); });
     app.get('/api/health', (_req, res) => { res.json({ status: 'ok' }); });
     app.get('/stream', (_req, res) => { res.json({ sse: true }); });
@@ -261,6 +270,81 @@ describe('worker CORS allowlist + auth', () => {
     it('/stream stays tokenless for the originless loopback viewer', async () => {
       const res = await request(port, { path: '/stream' });
       expect(res.status).toBe(200);
+    });
+
+    it('forwarded-client headers void loopback trust (reverse-proxy bypass)', async () => {
+      for (const header of [
+        { 'X-Forwarded-For': '198.51.100.77' },
+        { Forwarded: 'for=198.51.100.77;proto=https' },
+        { 'X-Real-IP': '198.51.100.77' },
+      ]) {
+        const res = await request(port, { method: 'POST', headers: header });
+        expect(res.status).toBe(401);
+      }
+    });
+
+    it('a proxied client with a valid key passes', async () => {
+      const res = await request(port, {
+        headers: { 'X-Forwarded-For': '198.51.100.77', Authorization: `Bearer ${rawKey}` },
+      });
+      expect(res.status).toBe(200);
+    });
+  });
+
+  describe('stream tickets (native EventSource path)', () => {
+    beforeEach(() => startApp('origin'));
+
+    async function mintTicket(): Promise<string> {
+      const res = await request(port, {
+        path: '/api/stream-ticket',
+        method: 'POST',
+        headers: { Origin: ALLOWED_ORIGIN, Authorization: `Bearer ${rawKey}` },
+      });
+      expect(res.status).toBe(200);
+      return JSON.parse(res.body).ticket;
+    }
+
+    it('minting a ticket cross-origin requires a key', async () => {
+      const res = await request(port, {
+        path: '/api/stream-ticket',
+        method: 'POST',
+        headers: { Origin: ALLOWED_ORIGIN },
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it('a minted ticket opens /stream cross-origin without headers (EventSource shape)', async () => {
+      const ticket = await mintTicket();
+      const res = await request(port, {
+        path: `/stream?ticket=${ticket}`,
+        headers: { Origin: ALLOWED_ORIGIN },
+      });
+      expect(res.status).toBe(200);
+    });
+
+    it('tickets are single-use', async () => {
+      const ticket = await mintTicket();
+      const first = await request(port, { path: `/stream?ticket=${ticket}`, headers: { Origin: ALLOWED_ORIGIN } });
+      expect(first.status).toBe(200);
+      const second = await request(port, { path: `/stream?ticket=${ticket}`, headers: { Origin: ALLOWED_ORIGIN } });
+      expect(second.status).toBe(401);
+    });
+
+    it('a bogus ticket is 401', async () => {
+      const res = await request(port, { path: '/stream?ticket=smt_bogus', headers: { Origin: ALLOWED_ORIGIN } });
+      expect(res.status).toBe(401);
+    });
+
+    it('an expired ticket is 401', async () => {
+      const ticket = streamTickets.issue(-1);
+      const res = await request(port, { path: `/stream?ticket=${ticket}`, headers: { Origin: ALLOWED_ORIGIN } });
+      expect(res.status).toBe(401);
+    });
+
+    it('a ticket does not authenticate non-stream routes', async () => {
+      const ticket = await mintTicket();
+      const res = await request(port, { path: `/api/echo?ticket=${ticket}`, headers: { Origin: ALLOWED_ORIGIN } });
+      expect(res.status).toBe(401);
     });
   });
 

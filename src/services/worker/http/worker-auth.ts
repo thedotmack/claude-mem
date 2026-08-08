@@ -1,7 +1,13 @@
+import { randomBytes } from 'crypto';
 import type { Database } from 'bun:sqlite';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { verifyServerApiKey } from '../../../server/auth/sqlite-api-key-service.js';
-import { isLocalhost, parseBearerToken, parseHostWithoutPort } from '../../../server/middleware/request-auth-helpers.js';
+import {
+  hasForwardedClientHeaders,
+  isLocalhost,
+  parseBearerToken,
+  parseHostWithoutPort,
+} from '../../../server/middleware/request-auth-helpers.js';
 import { logger } from '../../../utils/logger.js';
 
 // Worker API auth (CLAUDE_MEM_WORKER_AUTH). Modes:
@@ -36,6 +42,41 @@ export interface WorkerAuthOptions {
   // Paths (relative to the mount point) that stay tokenless in every mode,
   // e.g. health probes.
   exemptPaths?: string[];
+  // When set, a valid single-use ticket in ?ticket= authenticates a request
+  // to the /stream mount — the browser-safe path for native EventSource,
+  // which cannot attach Authorization or X-Api-Key headers.
+  streamTickets?: StreamTicketStore;
+}
+
+export const STREAM_TICKET_TTL_MS = 60_000;
+
+// Short-lived, single-use tickets for the SSE stream. Minted by an
+// authenticated request to POST /api/stream-ticket, consumed once by
+// GET /stream?ticket=... — never a long-lived key in a query string, and a
+// leaked URL is dead after one use or 60 seconds, whichever comes first.
+export class StreamTicketStore {
+  private readonly tickets = new Map<string, number>();
+
+  issue(ttlMs: number = STREAM_TICKET_TTL_MS): string {
+    const now = Date.now();
+    for (const [ticket, expiresAt] of this.tickets) {
+      if (expiresAt <= now) {
+        this.tickets.delete(ticket);
+      }
+    }
+    const ticket = `smt_${randomBytes(24).toString('base64url')}`;
+    this.tickets.set(ticket, now + ttlMs);
+    return ticket;
+  }
+
+  consume(ticket: string): boolean {
+    const expiresAt = this.tickets.get(ticket);
+    if (expiresAt === undefined) {
+      return false;
+    }
+    this.tickets.delete(ticket);
+    return expiresAt > Date.now();
+  }
 }
 
 function isLocalhostOrigin(origin: string): boolean {
@@ -70,14 +111,30 @@ export function createWorkerAuthMiddleware(options: WorkerAuthOptions): RequestH
       return;
     }
 
+    // Forwarded-client headers mean a proxy sits between us and the real
+    // client — the loopback socket peer is then the proxy, not the client,
+    // so it proves nothing (same anti-proxy guard as the requireServerAuth
+    // local-dev bypass).
     const origin = req.headers.origin;
     const needsToken = options.mode === 'all'
       || (origin
         ? !isLocalhostOrigin(origin)
-        : !(isLocalhost(req) && isTrustedOriginlessHost(req.header('host') ?? '')));
+        : !(isLocalhost(req)
+          && isTrustedOriginlessHost(req.header('host') ?? '')
+          && !hasForwardedClientHeaders(req)));
     if (!needsToken) {
       next();
       return;
+    }
+
+    // Native EventSource cannot set headers, so /stream accepts a single-use
+    // ticket minted by an authenticated POST /api/stream-ticket.
+    if (options.streamTickets && req.baseUrl === '/stream') {
+      const ticket = typeof req.query.ticket === 'string' ? req.query.ticket : '';
+      if (ticket && options.streamTickets.consume(ticket)) {
+        next();
+        return;
+      }
     }
 
     const rawKey = parseBearerToken(req.header('authorization') ?? '') || req.header('x-api-key')?.trim() || null;

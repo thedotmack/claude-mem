@@ -59,13 +59,31 @@ External clients writing sessions or observations should identify themselves via
 the `platformSource` field on the session routes, so their activity is
 attributable in the viewer.
 
+## Live events over SSE
+
+Native `EventSource` can't attach headers, so `/stream` accepts a short-lived,
+single-use ticket instead. Mint one with an authenticated request, then connect:
+
+```js
+const { ticket } = await fetch("http://127.0.0.1:37777/api/stream-ticket", {
+  method: "POST",
+  headers: { Authorization: `Bearer ${key}` },
+}).then(r => r.json());
+
+const events = new EventSource(`http://127.0.0.1:37777/stream?ticket=${ticket}`);
+```
+
+Tickets expire after 60 seconds, work exactly once, and only open `/stream` —
+mint a fresh one on every (re)connect. Never put the long-lived API key itself
+in a URL.
+
 ## Enforcement modes
 
 `CLAUDE_MEM_WORKER_AUTH` controls when a key is required:
 
 | Mode | Behavior |
 |------|----------|
-| `origin` (default) | A key is required only where the surface actually opens: requests carrying a non-localhost `Origin`, and requests that are not provably local — the connection must come from loopback **and** carry a localhost/IP-literal `Host` (a caller-controlled `Host` header alone proves nothing, and a rebound DNS name in `Host` is the DNS-rebinding shape). Hooks, curl, and the viewer are unchanged; clients reaching a `0.0.0.0`-bound worker over the network need a key. |
+| `origin` (default) | A key is required only where the surface actually opens: requests carrying a non-localhost `Origin`, and requests that are not provably local — the connection must come from loopback, carry a localhost/IP-literal `Host` (a caller-controlled `Host` header alone proves nothing, and a rebound DNS name in `Host` is the DNS-rebinding shape), **and** carry no forwarded-client headers (`X-Forwarded-For` etc. mean a proxy is the real peer). Hooks, curl, and the viewer are unchanged; clients reaching the worker over the network or through a reverse proxy need a key. |
 | `all` | Every `/api` and `/v1` request needs a key — for hosted or shared-network deployments. Health probes (`/api/health`, `/api/readiness`, `/api/version`) stay open. |
 | `off` | No key checks (trusted-network opt-out). |
 

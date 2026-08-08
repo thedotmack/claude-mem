@@ -6,7 +6,7 @@ import path from 'path';
 import { ALLOWED_OPERATIONS, ALLOWED_TOPICS } from './allowed-constants.js';
 import { logger } from '../../utils/logger.js';
 import { createCorsMiddleware, createMiddleware, requireLocalhost } from '../worker/http/middleware.js';
-import { createWorkerAuthMiddleware, type WorkerAuthMode } from '../worker/http/worker-auth.js';
+import { createWorkerAuthMiddleware, StreamTicketStore, STREAM_TICKET_TTL_MS, type WorkerAuthMode } from '../worker/http/worker-auth.js';
 import type { Database } from 'bun:sqlite';
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
 import { getSupervisor } from '../../supervisor/index.js';
@@ -230,11 +230,20 @@ export class Server {
     // worker's init gate exempts. Static UI stays uncovered, but /stream must
     // be covered: ViewerRoutes registers the SSE stream at the root, and it
     // carries session/prompt data an allowlisted origin must not read keyless.
+    const streamTickets = new StreamTicketStore();
     this.app.use(['/api', '/v1', '/stream'], createWorkerAuthMiddleware({
       mode: this.options.workerAuth.mode,
       getDatabase: this.options.workerAuth.getDatabase,
       exemptPaths: ['/health', '/readiness', '/version', '/chroma/status', '/settings/dependency-health'],
+      streamTickets,
     }));
+    // Browser-safe /stream auth: native EventSource cannot attach headers, so
+    // an external client first mints a single-use short-lived ticket here.
+    // Registered under /api AFTER the middleware above, so minting itself is
+    // gated by the same policy — a cross-origin caller needs a valid key.
+    this.app.post('/api/stream-ticket', (_req: Request, res: Response) => {
+      res.json({ ticket: streamTickets.issue(), expiresInMs: STREAM_TICKET_TTL_MS });
+    });
   }
 
   private setupPreBodyParserRoutes(): void {
