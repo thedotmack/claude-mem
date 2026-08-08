@@ -1,12 +1,35 @@
-import { beforeAll, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { buildCompactionTimeline } from '../../src/services/worker/observer-compaction.js';
 
-// buildCompactionTimeline loads context config, which needs an active mode
-// (settings resolve to defaults inside the preload's per-run temp data dir).
-beforeAll(() => {
-  ModeManager.getInstance().loadMode('code');
+// buildCompactionTimeline loads context config, which resolves the active mode
+// through ModeManager.getInstance(). Mocked via spyOn rather than
+// loadMode('code'): an earlier test file's top-level mock.module of
+// ModeManager can leak into this file under whole-suite ordering (see
+// observer-compaction-hook.test.ts), and spyOn works on either the real
+// class or a leaked stub. observation_types/observation_concepts must match
+// the seeded observations so queryObservationsMulti's filters keep them.
+const mockMode = {
+  name: 'code',
+  prompts: {},
+  observation_types: [{ id: 'discovery' }],
+  observation_concepts: [{ id: 'how-it-works' }],
+};
+
+let modeManagerSpy: ReturnType<typeof spyOn>;
+
+beforeEach(() => {
+  modeManagerSpy = spyOn(ModeManager, 'getInstance').mockImplementation(() => ({
+    getActiveMode: () => mockMode,
+    loadMode: () => {},
+    // Used by the timeline renderer (AgentFormatter.renderAgentTableRow).
+    getTypeIcon: () => '*',
+  } as any));
+});
+
+afterEach(() => {
+  modeManagerSpy.mockRestore();
 });
 
 function seedObservation(
