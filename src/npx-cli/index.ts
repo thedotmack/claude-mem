@@ -29,8 +29,11 @@ ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem install --disable-auto-memory')}   Explicitly disable Claude Code native auto-memory
   ${styleText('cyan', 'npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server brings up Docker pg+redis, generates an API key, injects the IDE MCP config)
   ${styleText('cyan', 'npx claude-mem install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
+  ${styleText('cyan', 'npx claude-mem setup')}                Change settings (provider, model) without reinstalling
+  ${styleText('cyan', 'npx claude-mem setup --provider claude|gemini|openrouter')}   Change provider non-interactively
+  ${styleText('cyan', 'npx claude-mem setup --model <id>')}   Change model non-interactively
   ${styleText('cyan', 'npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
-  ${styleText('cyan', 'npx claude-mem update')}               Update to latest version
+  ${styleText('cyan', 'npx claude-mem update')}               Update to latest version (keeps your settings)
   ${styleText('cyan', 'npx claude-mem uninstall')}            Remove plugin and configs
   ${styleText('cyan', 'npx claude-mem version')}              Print version
 
@@ -116,7 +119,16 @@ async function main(): Promise<void> {
     case 'update':
     case 'upgrade': {
       const { runInstallCommand } = await import('./commands/install.js');
-      await runInstallCommand();
+      await runInstallCommand({ ...parseInstallOptions(args.slice(1)), mode: 'update' });
+      break;
+    }
+
+    case 'setup':
+    case 'settings':
+    case 'config':
+    case 'configure': {
+      const { runSetupCommand } = await import('./commands/setup.js');
+      await runSetupCommand(parseInstallOptions(args.slice(1)));
       break;
     }
 

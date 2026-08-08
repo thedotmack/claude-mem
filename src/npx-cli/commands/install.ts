@@ -815,6 +815,17 @@ function mergeSettings(updates: Record<string, string>): boolean {
 }
 
 type ProviderId = 'claude' | 'gemini' | 'openrouter';
+
+/**
+ * Whether a stored/hand-edited CLAUDE_MEM_PROVIDER value is one the worker can
+ * actually use. `SettingsDefaultsManager.loadFromFile` merges the built-in
+ * defaults but does not validate them, so anything can come back from a
+ * hand-edited settings.json — an emptiness check is not enough.
+ */
+export function isKnownProvider(value: unknown): value is ProviderId {
+  return value === 'claude' || value === 'gemini' || value === 'openrouter';
+}
+
 /**
  * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
  * it configures the generic OpenAI-compatible path (base URL + model + key) and
@@ -986,8 +997,9 @@ function openBrowser(url: string): void {
   }
 }
 
-async function promptProvider(options: InstallOptions): Promise<ProviderId> {
-  const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
+export async function promptProvider(options: InstallOptions): Promise<ProviderId> {
+  const storedProviderSetting = getSetting('CLAUDE_MEM_PROVIDER');
+  const initialProvider: ProviderId = isKnownProvider(storedProviderSetting) ? storedProviderSetting : 'claude';
 
   const persistClaudeProvider = (authMethod?: 'subscription' | 'api-key' | 'gateway') => {
     const resolvedAuthMethod = authMethod ?? resolveClaudeAuthMethod();
@@ -1111,6 +1123,16 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
       if (wrote) log.info(`Saved provider=${options.provider} to ~/.claude-mem/settings.json`);
       log.warn(`Provider=${options.provider} requested non-interactively. API key prompt skipped — set CLAUDE_MEM_${options.provider.toUpperCase()}_API_KEY and CLAUDE_MEM_PROVIDER in settings.json or env manually if not already set.`);
       return options.provider;
+    }
+    // A hand-edited or corrupt CLAUDE_MEM_PROVIDER has no prompt to fall back
+    // on here, and returning it would let the install complete against a
+    // provider the worker cannot use. Repair the setting rather than only
+    // returning a safe value: the worker reads settings.json at startup, so
+    // leaving the bad literal in place would keep it broken.
+    if (!isKnownProvider(storedProviderSetting)) {
+      log.warn(`Stored CLAUDE_MEM_PROVIDER="${String(storedProviderSetting)}" is not a supported provider — falling back to claude.`);
+      persistClaudeProvider();
+      return 'claude';
     }
     return initialProvider;
   }
@@ -1263,7 +1285,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   return selectedProvider;
 }
 
-async function promptClaudeModel(options: InstallOptions): Promise<void> {
+export async function promptClaudeModel(options: InstallOptions): Promise<void> {
   const allowed = new Set([
     'claude-haiku-4-5-20251001',
     'claude-sonnet-5',
@@ -1522,6 +1544,12 @@ export interface InstallOptions {
   runtime?: 'worker' | 'server' | 'server-beta';
   // Base URL the server runtime (and the injected IDE MCP config) targets.
   serverUrl?: string;
+  // `update` re-runs the file install (plugin cache, marketplace, runtime,
+  // hooks) on the latest version while keeping the stored configuration:
+  // the overwrite confirm and the runtime/provider/model prompts are skipped
+  // when settings already exist and no overriding flags were passed.
+  // Settings-only changes belong to `npx claude-mem setup`.
+  mode?: 'install' | 'update';
 }
 
 export async function runInstallCommand(options: InstallOptions = {}): Promise<void> {
@@ -1599,7 +1627,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   await promptCmemOnlineOptIn(version);
 
   if (alreadyInstalled) {
-    if (process.stdin.isTTY) {
+    if (options.mode === 'update') {
+      log.info('Updating existing installation in place.');
+    } else if (process.stdin.isTTY) {
       const shouldContinue = await p.confirm({
         message: 'Overwrite existing installation?',
         initialValue: true,
@@ -1628,10 +1658,37 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     selectedIDEs = ['claude-code'];
   }
 
-  const selectedRuntime = await promptRuntime(options);
-  const selectedProvider = await promptProvider(options);
-  if (selectedProvider === 'claude') {
-    await promptClaudeModel(options);
+  // `update` keeps the stored configuration instead of re-prompting: users
+  // updating versions have already answered these questions, and re-asking
+  // made "update" indistinguishable from a fresh install. Explicit flags
+  // (--provider/--model/--runtime) still win and route through the normal
+  // prompt flows, which handle them non-interactively.
+  // `loadFromFile` merges the built-in defaults, so a missing key reads back as
+  // 'claude' rather than ''. Validate the literal instead: an unrecognized
+  // provider (hand-edited or corrupt settings.json) falls through to the normal
+  // prompts rather than being carried forward as-is.
+  const storedProvider = getSetting('CLAUDE_MEM_PROVIDER');
+  const keepStoredConfig =
+    options.mode === 'update' &&
+    alreadyInstalled &&
+    isKnownProvider(storedProvider) &&
+    options.provider === undefined &&
+    options.model === undefined &&
+    options.runtime === undefined;
+
+  let selectedRuntime: RuntimeId;
+  let selectedProvider: ProviderId;
+  if (keepStoredConfig) {
+    const storedRuntime = String(getSetting('CLAUDE_MEM_RUNTIME') || 'worker');
+    selectedRuntime = storedRuntime === 'server' || storedRuntime === 'server-beta' ? 'server' : 'worker';
+    selectedProvider = storedProvider;
+    log.info(`Keeping existing configuration (provider=${selectedProvider}, runtime=${selectedRuntime}). Run ${styleText('cyan', 'npx claude-mem setup')} to change settings.`);
+  } else {
+    selectedRuntime = await promptRuntime(options);
+    selectedProvider = await promptProvider(options);
+    if (selectedProvider === 'claude') {
+      await promptClaudeModel(options);
+    }
   }
 
   let workerStartResult: WorkerStartResult = 'dead';
