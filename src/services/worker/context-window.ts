@@ -62,12 +62,25 @@ const GEMINI_CONTEXT_WINDOWS: Record<GeminiModel, number> = {
 /**
  * The catalogue is fetched at most once per TTL window (idiom:
  * telemetry.ts consentCache) and cached as the whole id → context_length map,
- * so one fetch serves every model lookup in the window. Only successful
- * fetches are cached — a failed fetch falls back this call and retries on the
- * next one.
+ * so one fetch serves every model lookup in the window. A failed fetch is
+ * negative-cached for CATALOGUE_FAILURE_TTL_MS, then retried.
  */
 const CATALOGUE_CACHE_TTL_MS = 60 * 60 * 1000;
 let catalogueCache: { value: Map<string, number>; expiresAt: number } | null = null;
+
+/**
+ * Negative cache: after a failed fetch, every lookup falls straight back for
+ * this long instead of re-hitting the catalogue. Without it, an outage makes
+ * each session start wait out its own 3s timeout (PR #3516 review).
+ */
+const CATALOGUE_FAILURE_TTL_MS = 60_000;
+let catalogueFailureUntil = 0;
+
+/**
+ * Concurrent cold lookups share one in-flight request instead of herding —
+ * N session starts racing an empty cache must issue exactly one GET.
+ */
+let inflightCatalogueFetch: Promise<Map<string, number> | null> | null = null;
 
 /**
  * Test-only. The catalogue cache is module state shared by the whole bun test
@@ -76,6 +89,8 @@ let catalogueCache: { value: Map<string, number>; expiresAt: number } | null = n
  */
 export function __resetContextWindowCacheForTests(): void {
   catalogueCache = null;
+  catalogueFailureUntil = 0;
+  inflightCatalogueFetch = null;
 }
 
 /**
@@ -89,6 +104,19 @@ async function fetchOpenRouterContextWindows(): Promise<Map<string, number> | nu
   if (catalogueCache && now < catalogueCache.expiresAt) {
     return catalogueCache.value;
   }
+  if (now < catalogueFailureUntil) {
+    return null;
+  }
+  if (inflightCatalogueFetch) {
+    return inflightCatalogueFetch;
+  }
+  inflightCatalogueFetch = fetchCatalogueOnce().finally(() => {
+    inflightCatalogueFetch = null;
+  });
+  return inflightCatalogueFetch;
+}
+
+async function fetchCatalogueOnce(): Promise<Map<string, number> | null> {
   try {
     const response = await fetch(MODELS_URL, {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
@@ -96,6 +124,7 @@ async function fetchOpenRouterContextWindows(): Promise<Map<string, number> | nu
     });
     if (!response.ok) {
       logger.debug('WORKER', 'OpenRouter catalogue returned non-OK; using fallback context window', { status: response.status });
+      catalogueFailureUntil = Date.now() + CATALOGUE_FAILURE_TTL_MS;
       return null;
     }
 
@@ -109,11 +138,12 @@ async function fetchOpenRouterContextWindows(): Promise<Map<string, number> | nu
       }
     }
 
-    catalogueCache = { value: byId, expiresAt: now + CATALOGUE_CACHE_TTL_MS };
+    catalogueCache = { value: byId, expiresAt: Date.now() + CATALOGUE_CACHE_TTL_MS };
     return byId;
   } catch (err) {
     // Offline workers are normal and must not be blocked by a window lookup.
     logger.debug('WORKER', 'OpenRouter catalogue fetch failed; using fallback context window', { rawError: String(err) });
+    catalogueFailureUntil = Date.now() + CATALOGUE_FAILURE_TTL_MS;
     return null;
   }
 }

@@ -1,6 +1,7 @@
 
 import type { Database } from 'bun:sqlite';
-import type { Observation } from '../context/types.js';
+import type { Observation, SessionSummary } from '../context/types.js';
+import { CHARS_PER_TOKEN_ESTIMATE } from '../context/types.js';
 import { loadContextConfig } from '../context/ContextConfigLoader.js';
 import { calculateObservationTokens } from '../context/TokenCalculator.js';
 import {
@@ -45,21 +46,34 @@ export function buildCompactionTimeline(
   const keptObservations: Observation[] = [];
   let cumulativeTokens = 0;
   for (const obs of observations) {
-    cumulativeTokens += calculateObservationTokens(obs);
-    if (cumulativeTokens > tokenBudget) break;
+    const observationTokens = calculateObservationTokens(obs);
+    if (cumulativeTokens + observationTokens > tokenBudget) break;
+    cumulativeTokens += observationTokens;
     keptObservations.push(obs);
+  }
+
+  // Summaries share the same budget. Each renders as one
+  // `S<id> <request> (time)` line (AgentFormatter.renderAgentSummaryItem), so
+  // its cost is its request text — a stored 4,000-char request is a
+  // 1,000-token line, and sessionCount of those can dwarf the observation
+  // budget if left uncounted (PR #3516 review).
+  const keptSummaries: SessionSummary[] = [];
+  const summaries = querySummariesMulti(db, [project], config);
+  for (const summary of summaries.slice(0, config.sessionCount)) {
+    const summaryTokens = Math.ceil((summary.request ?? '').length / CHARS_PER_TOKEN_ESTIMATE);
+    if (cumulativeTokens + summaryTokens > tokenBudget) break;
+    cumulativeTokens += summaryTokens;
+    keptSummaries.push(summary);
   }
 
   logger.debug('WORKER', 'Compaction timeline budget walk', {
     keptObservations: keptObservations.length,
     totalObservations: observations.length,
+    keptSummaries: keptSummaries.length,
     tokenBudget,
   });
 
-  const summaries = querySummariesMulti(db, [project], config);
-
-  const displaySummaries = summaries.slice(0, config.sessionCount);
-  const summariesForTimeline = prepareSummariesForTimeline(displaySummaries, summaries);
+  const summariesForTimeline = prepareSummariesForTimeline(keptSummaries, summaries);
   const timeline = buildTimeline(keptObservations, summariesForTimeline);
   const fullObservationIds = getFullObservationIds(keptObservations, config.fullObservationCount);
 

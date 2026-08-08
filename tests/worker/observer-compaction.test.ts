@@ -193,13 +193,52 @@ describe('buildCompactionTimeline', () => {
 
       // ~10 tokens is smaller than any single seeded observation, so the
       // budget walk keeps nothing — but the call must not throw, and the
-      // summary (which bypasses the budget walk) still renders.
+      // short summary line (4 tokens) still fits the remaining budget.
       const output = buildCompactionTimeline(store, project, '/tmp/compaction-test', 10);
 
       for (const title of titles) {
         expect(output).not.toContain(title);
       }
       expect(output).toContain('ZERO_FIT_SUMMARY');
+    } finally {
+      store.close();
+    }
+  });
+
+  it('budgets summaries too — long stored requests cannot blow past the budget', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      const project = 'compaction-summary-budget';
+      // Ten summaries with 4,000-char requests (~1,000 tokens each) against a
+      // 100-token budget: unbudgeted, these rendered a ~10,000-token timeline
+      // (PR #3516 review repro). Each needs its own memory session because
+      // querySummariesMulti returns one summary per session.
+      for (let i = 0; i < 10; i++) {
+        const memorySessionId = `summary-budget-memory-${i}`;
+        createSession(store, project, memorySessionId);
+        store.storeSummary(
+          memorySessionId,
+          project,
+          {
+            request: `LONG_SUMMARY_${i} ` + 'q'.repeat(4000),
+            investigated: 'investigated',
+            learned: 'learned',
+            completed: 'completed',
+            next_steps: 'next',
+            notes: null,
+          },
+          1,
+          0,
+          1_700_000_000_000 + i * 1000,
+        );
+      }
+
+      const tokenBudget = 100;
+      const output = buildCompactionTimeline(store, project, '/tmp/compaction-test', tokenBudget);
+
+      // Rendered size must stay near the budget instead of ballooning to the
+      // summaries' full ~10k tokens. Small allowance for day headers.
+      expect(Math.ceil(output.length / 4)).toBeLessThanOrEqual(tokenBudget + 50);
     } finally {
       store.close();
     }

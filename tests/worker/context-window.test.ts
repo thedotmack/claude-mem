@@ -95,14 +95,48 @@ describe('resolveContextWindowTokens', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
-  it('does not cache a failed fetch (next call retries)', async () => {
+  it('negative-caches a failed fetch (immediate next call falls back without refetching)', async () => {
+    const failingFetch = mock(() => Promise.reject(new Error('network down')));
+    global.fetch = failingFetch;
+    await resolveContextWindowTokens('openrouter', 'deepseek/deepseek-v4-flash', 'openrouter');
+
+    const window = await resolveContextWindowTokens('openrouter', 'deepseek/deepseek-v4-flash', 'openrouter');
+
+    expect(window).toBe(FALLBACK_CONTEXT_WINDOW_TOKENS);
+    expect(failingFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries after the failure TTL (reset stands in for expiry) and picks up the live value', async () => {
     global.fetch = mock(() => Promise.reject(new Error('network down')));
     await resolveContextWindowTokens('openrouter', 'deepseek/deepseek-v4-flash', 'openrouter');
 
+    __resetContextWindowCacheForTests();
     mockCatalogueFetch();
     const window = await resolveContextWindowTokens('openrouter', 'deepseek/deepseek-v4-flash', 'openrouter');
 
     expect(window).toBe(163840);
+  });
+
+  it('coalesces concurrent cold lookups into a single catalogue fetch', async () => {
+    let releaseFetch: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { releaseFetch = resolve; });
+    const gatedFetch = mock(async () => {
+      await gate;
+      return new Response(JSON.stringify({
+        data: [{ id: 'deepseek/deepseek-v4-flash', context_length: 163840 }],
+      }), { status: 200 });
+    });
+    global.fetch = gatedFetch as any;
+
+    const lookups = Promise.all(
+      Array.from({ length: 5 }, () =>
+        resolveContextWindowTokens('openrouter', 'deepseek/deepseek-v4-flash', 'openrouter')),
+    );
+    releaseFetch!();
+    const windows = await lookups;
+
+    expect(windows).toEqual([163840, 163840, 163840, 163840, 163840]);
+    expect(gatedFetch).toHaveBeenCalledTimes(1);
   });
 
   it('lets the settings override win over the catalogue, with no fetch', async () => {
