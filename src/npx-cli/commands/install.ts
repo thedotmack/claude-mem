@@ -1641,11 +1641,17 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // made "update" indistinguishable from a fresh install. Explicit flags
   // (--provider/--model/--runtime) still win and route through the normal
   // prompt flows, which handle them non-interactively.
-  const storedProvider = getSetting('CLAUDE_MEM_PROVIDER') as ProviderId | '';
+  // `loadFromFile` merges the built-in defaults, so a missing key reads back as
+  // 'claude' rather than ''. Validate the literal instead: an unrecognized
+  // provider (hand-edited or corrupt settings.json) falls through to the normal
+  // prompts rather than being carried forward as-is.
+  const storedProvider = String(getSetting('CLAUDE_MEM_PROVIDER') || '');
+  const hasUsableProvider =
+    storedProvider === 'claude' || storedProvider === 'gemini' || storedProvider === 'openrouter';
   const keepStoredConfig =
     options.mode === 'update' &&
     alreadyInstalled &&
-    storedProvider !== '' &&
+    hasUsableProvider &&
     options.provider === undefined &&
     options.model === undefined &&
     options.runtime === undefined;
@@ -1655,7 +1661,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   if (keepStoredConfig) {
     const storedRuntime = String(getSetting('CLAUDE_MEM_RUNTIME') || 'worker');
     selectedRuntime = storedRuntime === 'server' || storedRuntime === 'server-beta' ? 'server' : 'worker';
-    selectedProvider = storedProvider;
+    selectedProvider = storedProvider as ProviderId;
     log.info(`Keeping existing configuration (provider=${selectedProvider}, runtime=${selectedRuntime}). Run ${styleText('cyan', 'npx claude-mem setup')} to change settings.`);
   } else {
     selectedRuntime = await promptRuntime(options);
