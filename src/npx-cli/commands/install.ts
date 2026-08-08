@@ -986,7 +986,7 @@ function openBrowser(url: string): void {
   }
 }
 
-async function promptProvider(options: InstallOptions): Promise<ProviderId> {
+export async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
 
   const persistClaudeProvider = (authMethod?: 'subscription' | 'api-key' | 'gateway') => {
@@ -1263,7 +1263,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   return selectedProvider;
 }
 
-async function promptClaudeModel(options: InstallOptions): Promise<void> {
+export async function promptClaudeModel(options: InstallOptions): Promise<void> {
   const allowed = new Set([
     'claude-haiku-4-5-20251001',
     'claude-sonnet-5',
@@ -1522,6 +1522,12 @@ export interface InstallOptions {
   runtime?: 'worker' | 'server' | 'server-beta';
   // Base URL the server runtime (and the injected IDE MCP config) targets.
   serverUrl?: string;
+  // `update` re-runs the file install (plugin cache, marketplace, runtime,
+  // hooks) on the latest version while keeping the stored configuration:
+  // the overwrite confirm and the runtime/provider/model prompts are skipped
+  // when settings already exist and no overriding flags were passed.
+  // Settings-only changes belong to `npx claude-mem setup`.
+  mode?: 'install' | 'update';
 }
 
 export async function runInstallCommand(options: InstallOptions = {}): Promise<void> {
@@ -1599,7 +1605,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   await promptCmemOnlineOptIn(version);
 
   if (alreadyInstalled) {
-    if (process.stdin.isTTY) {
+    if (options.mode === 'update') {
+      log.info('Updating existing installation in place.');
+    } else if (process.stdin.isTTY) {
       const shouldContinue = await p.confirm({
         message: 'Overwrite existing installation?',
         initialValue: true,
@@ -1628,10 +1636,33 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     selectedIDEs = ['claude-code'];
   }
 
-  const selectedRuntime = await promptRuntime(options);
-  const selectedProvider = await promptProvider(options);
-  if (selectedProvider === 'claude') {
-    await promptClaudeModel(options);
+  // `update` keeps the stored configuration instead of re-prompting: users
+  // updating versions have already answered these questions, and re-asking
+  // made "update" indistinguishable from a fresh install. Explicit flags
+  // (--provider/--model/--runtime) still win and route through the normal
+  // prompt flows, which handle them non-interactively.
+  const storedProvider = getSetting('CLAUDE_MEM_PROVIDER') as ProviderId | '';
+  const keepStoredConfig =
+    options.mode === 'update' &&
+    alreadyInstalled &&
+    storedProvider !== '' &&
+    options.provider === undefined &&
+    options.model === undefined &&
+    options.runtime === undefined;
+
+  let selectedRuntime: RuntimeId;
+  let selectedProvider: ProviderId;
+  if (keepStoredConfig) {
+    const storedRuntime = String(getSetting('CLAUDE_MEM_RUNTIME') || 'worker');
+    selectedRuntime = storedRuntime === 'server' || storedRuntime === 'server-beta' ? 'server' : 'worker';
+    selectedProvider = storedProvider;
+    log.info(`Keeping existing configuration (provider=${selectedProvider}, runtime=${selectedRuntime}). Run ${styleText('cyan', 'npx claude-mem setup')} to change settings.`);
+  } else {
+    selectedRuntime = await promptRuntime(options);
+    selectedProvider = await promptProvider(options);
+    if (selectedProvider === 'claude') {
+      await promptClaudeModel(options);
+    }
   }
 
   let workerStartResult: WorkerStartResult = 'dead';
