@@ -73,6 +73,18 @@ export function formatCurrentConfig(settings: Record<string, unknown>): string[]
   return lines;
 }
 
+/**
+ * First candidate worker script that actually exists, or `undefined` when none
+ * do. Pure over the existence check so the "no script → don't touch the running
+ * worker" guarantee is testable without a real plugin tree.
+ */
+export function selectWorkerScriptPath(
+  candidates: string[],
+  exists: (path: string) => boolean,
+): string | undefined {
+  return candidates.find((candidate) => exists(candidate));
+}
+
 export async function runSetupCommand(options: InstallOptions = {}): Promise<void> {
   const version = readPluginVersion();
 
@@ -122,30 +134,40 @@ export async function runSetupCommand(options: InstallOptions = {}): Promise<voi
     restartNote = `Run ${styleText('cyan', 'npx claude-mem restart')} for the new settings to take effect.`;
   } else {
     const port = Number(getSetting('CLAUDE_MEM_WORKER_PORT'));
-    const marketplaceScriptPath = join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs');
-    const cacheScriptPath = join(pluginCacheDirectory(version), 'scripts', 'worker-service.cjs');
-    const scriptPath = existsSync(marketplaceScriptPath) ? marketplaceScriptPath : cacheScriptPath;
+    // Resolve the script BEFORE stopping anything. `ensureWorkerStarted` only
+    // rejects a missing script *after* the shutdown has already landed, so
+    // picking an unchecked fallback path would turn a settings-only `setup`
+    // into an outage: the healthy worker gets killed with nothing to replace it.
+    const scriptPath = selectWorkerScriptPath([
+      join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs'),
+      join(pluginCacheDirectory(version), 'scripts', 'worker-service.cjs'),
+    ], existsSync);
 
-    const spinner = p.spinner();
-    spinner.start('Restarting worker so the new settings take effect…');
-    try {
-      await shutdownWorkerAndWait(port, 10000);
-      const startResult = await ensureWorkerStarted(port, scriptPath);
-      switch (startResult) {
-        case 'ready':
-          spinner.stop(`Worker restarted at http://localhost:${port} ${styleText('green', 'OK')}`);
-          break;
-        case 'warming':
-          spinner.stop(`Worker restarting on port ${port} — finishing in background ${styleText('yellow', '⏳')}`);
-          break;
-        case 'dead':
-          spinner.stop(`Worker did not come back — run ${styleText('cyan', 'npx claude-mem start')} manually ${styleText('yellow', '!')}`);
-          break;
+    if (!scriptPath) {
+      log.warn('Worker script missing from both the marketplace and the plugin cache — leaving the running worker alone.');
+      restartNote = `Settings are saved. Run ${styleText('cyan', 'npx claude-mem repair')} to restore the runtime, then ${styleText('cyan', 'npx claude-mem restart')}.`;
+    } else {
+      const spinner = p.spinner();
+      spinner.start('Restarting worker so the new settings take effect…');
+      try {
+        await shutdownWorkerAndWait(port, 10000);
+        const startResult = await ensureWorkerStarted(port, scriptPath);
+        switch (startResult) {
+          case 'ready':
+            spinner.stop(`Worker restarted at http://localhost:${port} ${styleText('green', 'OK')}`);
+            break;
+          case 'warming':
+            spinner.stop(`Worker restarting on port ${port} — finishing in background ${styleText('yellow', '⏳')}`);
+            break;
+          case 'dead':
+            spinner.stop(`Worker did not come back — run ${styleText('cyan', 'npx claude-mem start')} manually ${styleText('yellow', '!')}`);
+            break;
+        }
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        spinner.stop(`Worker restart failed: ${message}`);
+        restartNote = `Run ${styleText('cyan', 'npx claude-mem restart')} for the new settings to take effect.`;
       }
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      spinner.stop(`Worker restart failed: ${message}`);
-      restartNote = `Run ${styleText('cyan', 'npx claude-mem restart')} for the new settings to take effect.`;
     }
   }
 

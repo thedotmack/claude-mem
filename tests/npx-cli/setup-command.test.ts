@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, it, expect } from 'bun:test';
-import { formatCurrentConfig } from '../../src/npx-cli/commands/setup.js';
+import { formatCurrentConfig, selectWorkerScriptPath } from '../../src/npx-cli/commands/setup.js';
 
 describe('setup — current-config summary', () => {
   it('falls back to claude/worker defaults on an empty settings record', () => {
@@ -44,5 +44,29 @@ describe('setup — current-config summary', () => {
     expect(lines).toContain('provider  claude');
     expect(lines).toContain('model     (default)');
     expect(lines).toContain('runtime   worker');
+  });
+});
+
+describe('setup — worker script selection', () => {
+  const marketplace = '/mkt/plugin/scripts/worker-service.cjs';
+  const cache = '/cache/scripts/worker-service.cjs';
+
+  it('prefers the marketplace script when it exists', () => {
+    const picked = selectWorkerScriptPath([marketplace, cache], (p) => p === marketplace);
+    expect(picked).toBe(marketplace);
+  });
+
+  it('falls back to the plugin cache script when only that one exists', () => {
+    const picked = selectWorkerScriptPath([marketplace, cache], (p) => p === cache);
+    expect(picked).toBe(cache);
+  });
+
+  // Regression: setup must not shut the worker down when there is nothing to
+  // restart it with. `ensureWorkerStarted` only rejects a missing script after
+  // the shutdown has landed, so an unchecked fallback path turned a
+  // settings-only `setup` into an outage.
+  it('returns undefined when neither candidate exists, so the running worker is left alone', () => {
+    const picked = selectWorkerScriptPath([marketplace, cache], () => false);
+    expect(picked).toBeUndefined();
   });
 });
