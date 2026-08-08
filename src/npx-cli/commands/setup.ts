@@ -15,7 +15,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { ensureWorkerStarted } from '../../services/worker-spawner.js';
+import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
 import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import {
@@ -32,6 +32,15 @@ import {
 } from './install.js';
 
 const isInteractive = process.stdin.isTTY === true;
+
+// Bounds on the post-shutdown restart retry. `install`/`update` replace the
+// plugin tree with rmSync + cpSync; the copy is the slow half, so a couple of
+// seconds between attempts is enough to outlast a typical replacement without
+// making a genuinely broken install sit on a spinner.
+const WORKER_RESTART_ATTEMPTS = 3;
+const WORKER_RESTART_RETRY_DELAY_MS = 2000;
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 const log = {
   info: (msg: string) => isInteractive ? p.log.info(msg) : console.log(`  ${msg}`),
@@ -151,29 +160,41 @@ export async function runSetupCommand(options: InstallOptions = {}): Promise<voi
       spinner.start('Restarting worker so the new settings take effect…');
       try {
         await shutdownWorkerAndWait(port, 10000);
-        // Re-resolve after the shutdown rather than reusing the path from
-        // above: `install`/`update` replace these directories with rmSync +
-        // cpSync, so a concurrent run can delete the chosen script while we
-        // wait. Re-resolving starts from whichever copy exists *now*, and an
-        // empty result means the tree is mid-replacement — say so instead of
-        // handing ensureWorkerStarted a path that has since vanished.
-        const scriptPath = selectWorkerScriptPath(workerScriptCandidates, existsSync);
-        if (!scriptPath) {
-          spinner.stop(`Worker script vanished mid-restart — a concurrent ${styleText('cyan', 'install')}/${styleText('cyan', 'update')} is likely replacing it ${styleText('yellow', '!')}`);
-          restartNote = `Run ${styleText('cyan', 'npx claude-mem start')} once that finishes.`;
-        } else {
-          const startResult = await ensureWorkerStarted(port, scriptPath);
-          switch (startResult) {
-            case 'ready':
-              spinner.stop(`Worker restarted at http://localhost:${port} ${styleText('green', 'OK')}`);
-              break;
-            case 'warming':
-              spinner.stop(`Worker restarting on port ${port} — finishing in background ${styleText('yellow', '⏳')}`);
-              break;
-            case 'dead':
-              spinner.stop(`Worker did not come back — run ${styleText('cyan', 'npx claude-mem start')} manually ${styleText('yellow', '!')}`);
-              break;
+
+        // The worker is down at this point, so the restart has to keep trying
+        // rather than give up on the first miss. `install`/`update` replace
+        // these directories with rmSync + cpSync, and neither resolving the
+        // path nor spawning from it is atomic against that: the script can go
+        // missing before we resolve it, or between our existsSync and the
+        // spawner's. Both failures look the same from here and both are
+        // transient — the replacement copy lands moments later — so re-resolve
+        // and retry a bounded number of times before declaring failure.
+        let startResult: WorkerStartResult | 'missing' = 'missing';
+        for (let attempt = 1; attempt <= WORKER_RESTART_ATTEMPTS; attempt++) {
+          const scriptPath = selectWorkerScriptPath(workerScriptCandidates, existsSync);
+          startResult = scriptPath ? await ensureWorkerStarted(port, scriptPath) : 'missing';
+          if (startResult === 'ready' || startResult === 'warming') break;
+
+          if (attempt < WORKER_RESTART_ATTEMPTS) {
+            spinner.message(`Worker script is being replaced — retrying (${attempt}/${WORKER_RESTART_ATTEMPTS - 1})…`);
+            await sleep(WORKER_RESTART_RETRY_DELAY_MS);
           }
+        }
+
+        switch (startResult) {
+          case 'ready':
+            spinner.stop(`Worker restarted at http://localhost:${port} ${styleText('green', 'OK')}`);
+            break;
+          case 'warming':
+            spinner.stop(`Worker restarting on port ${port} — finishing in background ${styleText('yellow', '⏳')}`);
+            break;
+          case 'missing':
+            spinner.stop(`Worker script still missing after ${WORKER_RESTART_ATTEMPTS} attempts — a concurrent ${styleText('cyan', 'install')}/${styleText('cyan', 'update')} may still be running ${styleText('yellow', '!')}`);
+            restartNote = `Run ${styleText('cyan', 'npx claude-mem start')} once that finishes.`;
+            break;
+          case 'dead':
+            spinner.stop(`Worker did not come back — run ${styleText('cyan', 'npx claude-mem start')} manually ${styleText('yellow', '!')}`);
+            break;
         }
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
