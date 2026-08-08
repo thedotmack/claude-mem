@@ -138,12 +138,12 @@ export async function runSetupCommand(options: InstallOptions = {}): Promise<voi
     // rejects a missing script *after* the shutdown has already landed, so
     // picking an unchecked fallback path would turn a settings-only `setup`
     // into an outage: the healthy worker gets killed with nothing to replace it.
-    const scriptPath = selectWorkerScriptPath([
+    const workerScriptCandidates = [
       join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs'),
       join(pluginCacheDirectory(version), 'scripts', 'worker-service.cjs'),
-    ], existsSync);
+    ];
 
-    if (!scriptPath) {
+    if (!selectWorkerScriptPath(workerScriptCandidates, existsSync)) {
       log.warn('Worker script missing from both the marketplace and the plugin cache — leaving the running worker alone.');
       restartNote = `Settings are saved. Run ${styleText('cyan', 'npx claude-mem repair')} to restore the runtime, then ${styleText('cyan', 'npx claude-mem restart')}.`;
     } else {
@@ -151,17 +151,29 @@ export async function runSetupCommand(options: InstallOptions = {}): Promise<voi
       spinner.start('Restarting worker so the new settings take effect…');
       try {
         await shutdownWorkerAndWait(port, 10000);
-        const startResult = await ensureWorkerStarted(port, scriptPath);
-        switch (startResult) {
-          case 'ready':
-            spinner.stop(`Worker restarted at http://localhost:${port} ${styleText('green', 'OK')}`);
-            break;
-          case 'warming':
-            spinner.stop(`Worker restarting on port ${port} — finishing in background ${styleText('yellow', '⏳')}`);
-            break;
-          case 'dead':
-            spinner.stop(`Worker did not come back — run ${styleText('cyan', 'npx claude-mem start')} manually ${styleText('yellow', '!')}`);
-            break;
+        // Re-resolve after the shutdown rather than reusing the path from
+        // above: `install`/`update` replace these directories with rmSync +
+        // cpSync, so a concurrent run can delete the chosen script while we
+        // wait. Re-resolving starts from whichever copy exists *now*, and an
+        // empty result means the tree is mid-replacement — say so instead of
+        // handing ensureWorkerStarted a path that has since vanished.
+        const scriptPath = selectWorkerScriptPath(workerScriptCandidates, existsSync);
+        if (!scriptPath) {
+          spinner.stop(`Worker script vanished mid-restart — a concurrent ${styleText('cyan', 'install')}/${styleText('cyan', 'update')} is likely replacing it ${styleText('yellow', '!')}`);
+          restartNote = `Run ${styleText('cyan', 'npx claude-mem start')} once that finishes.`;
+        } else {
+          const startResult = await ensureWorkerStarted(port, scriptPath);
+          switch (startResult) {
+            case 'ready':
+              spinner.stop(`Worker restarted at http://localhost:${port} ${styleText('green', 'OK')}`);
+              break;
+            case 'warming':
+              spinner.stop(`Worker restarting on port ${port} — finishing in background ${styleText('yellow', '⏳')}`);
+              break;
+            case 'dead':
+              spinner.stop(`Worker did not come back — run ${styleText('cyan', 'npx claude-mem start')} manually ${styleText('yellow', '!')}`);
+              break;
+          }
         }
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
