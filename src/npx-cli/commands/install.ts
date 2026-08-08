@@ -32,6 +32,17 @@ import {
   type InstallSummary,
 } from '../install/error-reporter.js';
 import { extractEresolveBlock, isEresolve, runNpmStrict } from '../install/npm-install-helper.js';
+import {
+  CLAUDE_OPTION_LABEL,
+  CMEM_PRO_BASE_URL,
+  CMEM_PRO_KEY_PATTERN,
+  CMEM_PRO_MODEL,
+  CMEM_PRO_OPTION_HINT,
+  CMEM_PRO_OPTION_LABEL,
+  CMEM_PRO_SIGNUP_URL,
+  GEMINI_OPTION_LABEL,
+  OPENROUTER_OPTION_LABEL,
+} from '../cmem-pro-costs.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
@@ -808,6 +819,13 @@ function mergeSettings(updates: Record<string, string>): boolean {
 }
 
 type ProviderId = 'claude' | 'gemini' | 'openrouter';
+/**
+ * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
+ * it configures the generic OpenAI-compatible path (base URL + model + key) and
+ * persists CLAUDE_MEM_PROVIDER='openrouter'. The worker only understands
+ * 'claude' | 'gemini' | 'openrouter', so 'cmem' must never reach settings.json.
+ */
+type ProviderChoice = ProviderId | 'cmem';
 type ClaudeAccessMode = 'subscription' | 'api-key';
 type ClaudeApiMode = 'direct' | 'gateway';
 // Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
@@ -949,6 +967,27 @@ async function bootstrapAndPersistServerApiKey(): Promise<void> {
     `Provisioned local hook API key (project=${result.projectId.slice(0, 8)}…). `
       + 'Settings saved with mode 0600.',
   );
+}
+
+/**
+ * Best-effort "open this URL in the user's browser". Every failure mode is
+ * non-fatal — the caller has already printed the URL, so the worst case is the
+ * user clicks it themselves.
+ */
+function openBrowser(url: string): void {
+  try {
+    if (process.platform === 'darwin') {
+      spawnSync('open', [url], { stdio: 'ignore' });
+    } else if (process.platform === 'win32') {
+      spawnSync('cmd', ['/c', 'start', '', url], { stdio: 'ignore' });
+    } else {
+      spawnSync('xdg-open', [url], { stdio: 'ignore' });
+    }
+  } catch {
+    // [ANTI-PATTERN IGNORED]: opening a browser is a convenience, not a step of the
+    // install; the recovery is the URL already printed above this call, which the
+    // user can open by hand. A headless box legitimately has no opener at all.
+  }
 }
 
 async function promptProvider(options: InstallOptions): Promise<ProviderId> {
@@ -1124,24 +1163,63 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     }
   };
 
-  let selectedProvider: ProviderId;
+  let selectedProvider: ProviderChoice;
   if (options.provider) {
     selectedProvider = options.provider;
   } else {
-    const providerResult = await p.select<ProviderId>({
+    const providerResult = await p.select<ProviderChoice>({
       message: 'Which memory provider do you want to use?',
       options: [
-        { value: 'claude', label: 'Claude Agent SDK (recommended)' },
-        { value: 'gemini', label: 'Gemini' },
-        { value: 'openrouter', label: 'OpenRouter' },
+        { value: 'cmem', label: CMEM_PRO_OPTION_LABEL, hint: CMEM_PRO_OPTION_HINT },
+        { value: 'openrouter', label: OPENROUTER_OPTION_LABEL },
+        { value: 'gemini', label: GEMINI_OPTION_LABEL },
+        { value: 'claude', label: CLAUDE_OPTION_LABEL },
       ],
-      initialValue: initialProvider,
+      initialValue: 'cmem',
     });
     if (p.isCancel(providerResult)) {
       p.cancel('Installation cancelled.');
       process.exit(0);
     }
     selectedProvider = providerResult;
+  }
+
+  // CMEM Pro: no new provider code. The worker's OpenRouter client is a generic
+  // OpenAI-compatible client whose endpoint and model both come from settings,
+  // so "use the CMEM observer model" is four settings writes and nothing else.
+  if (selectedProvider === 'cmem') {
+    p.note(
+      `Opening ${CMEM_PRO_SIGNUP_URL}\nSign in, subscribe, and copy the key you're shown.`,
+      'CMEM Pro',
+    );
+    openBrowser(CMEM_PRO_SIGNUP_URL);
+
+    const keyResult = await p.text({
+      message: 'Paste your CMEM Pro key (starts with cm_pro_):',
+      validate: (v?: string) =>
+        CMEM_PRO_KEY_PATTERN.test((v ?? '').trim())
+          ? undefined
+          : 'That does not look like a CMEM Pro key.',
+    });
+
+    if (p.isCancel(keyResult)) {
+      p.cancel('Installation cancelled.');
+      process.exit(0);
+    }
+
+    const wrote = mergeSettings({
+      CLAUDE_MEM_PROVIDER: 'openrouter',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: CMEM_PRO_BASE_URL,
+      CLAUDE_MEM_OPENROUTER_MODEL: CMEM_PRO_MODEL,
+      CLAUDE_MEM_OPENROUTER_API_KEY: String(keyResult).trim(),
+    });
+    if (wrote) log.info('Saved CMEM Pro configuration to ~/.claude-mem/settings.json');
+
+    p.note(
+      'Next: finish cloud sync in the browser — press NEXT on the page.',
+      'CMEM Pro ready',
+    );
+    return 'openrouter';
   }
 
   if (selectedProvider === 'claude') {
