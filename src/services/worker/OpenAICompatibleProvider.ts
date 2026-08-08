@@ -35,10 +35,12 @@ export interface ProviderQueryResult {
  * Shared scaffolding for OpenAI-compatible, multi-turn HTTP providers
  * (Gemini, OpenRouter). The session lifecycle — synthetic memory-session-id
  * generation, init/continuation prompt, the observation/summary message loop,
- * cumulative token accounting, abort-aware error handling, and history
- * truncation — is identical between them. Per-provider differences (config
- * resolution, request shape, token estimation, usage/cost reporting) are
- * supplied by abstract members.
+ * cumulative token accounting, and abort-aware error handling — is identical
+ * between them. Per-provider differences (config resolution, request shape,
+ * token estimation, usage/cost reporting) are supplied by abstract members.
+ * User prompts are pushed onto conversationHistory here; assistant replies
+ * are pushed by processAgentResponse (the single assistant-push site, shared
+ * with the Claude path).
  */
 export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string; model: string }> {
   protected dbManager: DatabaseManager;
@@ -170,10 +172,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     responseContext: ReturnType<typeof snapshotResponseContext>
   ): Promise<void> {
     if (initResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
       const tokensUsed = initResponse.tokensUsed || 0;
-      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+      this.accumulateUsage(session, initResponse);
       session.lastUsage = this.buildLastUsage(initResponse);
       await processAgentResponse(
         initResponse.content, session, this.dbManager, this.sessionManager,
@@ -219,10 +219,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     let tokensUsed = 0;
     if (obsResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
       tokensUsed = obsResponse.tokensUsed || 0;
-      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+      this.accumulateUsage(session, obsResponse);
       // Both sides or nothing: a backend reporting only one of the two counts
       // must not produce a half-real event (input=0 → compression_ratio 0.0).
       session.lastUsage = this.buildLastUsage(obsResponse);
@@ -277,10 +275,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     let tokensUsed = 0;
     if (summaryResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
       tokensUsed = summaryResponse.tokensUsed || 0;
-      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+      this.accumulateUsage(session, summaryResponse);
       session.lastUsage = this.buildLastUsage(summaryResponse);
     }
 
@@ -293,6 +289,23 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       logger.warn('SDK', `Empty ${this.providerName} summary response, leaving queue intact`, {
         sessionId: session.sessionDbId
       });
+    }
+  }
+
+  /**
+   * Accumulate a query's usage onto the session's cumulative counters. Real
+   * provider-reported input/output counts win when both are present (same
+   * both-or-nothing contract as buildLastUsage); otherwise fall back to an
+   * estimated 70/30 input/output split of the total.
+   */
+  private accumulateUsage(session: ActiveSession, result: ProviderQueryResult): void {
+    if (typeof result.inputTokens === 'number' && typeof result.outputTokens === 'number') {
+      session.cumulativeInputTokens += result.inputTokens;
+      session.cumulativeOutputTokens += result.outputTokens;
+    } else {
+      const tokensUsed = result.tokensUsed || 0;
+      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
+      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
     }
   }
 
