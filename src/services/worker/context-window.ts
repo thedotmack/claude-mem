@@ -125,7 +125,7 @@ async function fetchOpenRouterContextWindows(): Promise<Map<string, number> | nu
  * so a lookup there would be a name collision at best.
  */
 export async function resolveContextWindowTokens(
-  provider: 'openrouter' | 'gemini',
+  provider: string,
   model: string,
   endpointClass?: 'openrouter' | 'custom',
 ): Promise<number> {

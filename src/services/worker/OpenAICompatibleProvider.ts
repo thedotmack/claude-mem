@@ -8,12 +8,22 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
+import { resolveContextWindowTokens, FALLBACK_CONTEXT_WINDOW_TOKENS } from './context-window.js';
+import { buildCompactionTimeline } from './observer-compaction.js';
 import {
   processAgentResponse,
   snapshotResponseContext,
   isAbortError,
   type WorkerRef
 } from './agents/index.js';
+
+// Observer context compaction (plans/2026-08-08-observer-context-compaction.md,
+// Phase 4): when estimated history exceeds COMPACT_TRIGGER_RATIO of the model's
+// context window, the history is cleared and re-seeded with the continuation
+// prompt plus a recent-observations timeline budgeted at REINJECT_BUDGET_RATIO
+// of the window.
+const COMPACT_TRIGGER_RATIO = 0.7;
+const REINJECT_BUDGET_RATIO = 0.3;
 
 /**
  * Normalized result returned by a concrete provider's `query()`.
@@ -40,7 +50,9 @@ export interface ProviderQueryResult {
  * token estimation, usage/cost reporting) are supplied by abstract members.
  * User prompts are pushed onto conversationHistory here; assistant replies
  * are pushed by processAgentResponse (the single assistant-push site, shared
- * with the Claude path).
+ * with the Claude path). History is compacted (cleared and re-seeded with the
+ * continuation prompt plus a token-budgeted timeline) when its estimated size
+ * exceeds COMPACT_TRIGGER_RATIO of the model's context window.
  */
 export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string; model: string }> {
   protected dbManager: DatabaseManager;
@@ -91,6 +103,16 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       throw this.missingApiKeyError();
     }
 
+    // syntheticIdPrefix is 'openrouter' | 'gemini' for the two concrete
+    // providers; resolution treats anything else as unknown → fallback window.
+    // When compaction is disabled at session start, skip resolution (it can
+    // hit the network) and use the fallback constant — the hook's own
+    // per-message kill-switch check still guards each message.
+    const startupSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const contextWindowTokens = startupSettings.CLAUDE_MEM_OBSERVER_COMPACTION_ENABLED === 'false'
+      ? FALLBACK_CONTEXT_WINDOW_TOKENS
+      : await resolveContextWindowTokens(this.syntheticIdPrefix, config.model, session.endpointClass);
+
     if (!session.memorySessionId) {
       const syntheticMemorySessionId = `${this.syntheticIdPrefix}-${session.contentSessionId}-${Date.now()}`;
       session.memorySessionId = syntheticMemorySessionId;
@@ -121,7 +143,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
 
     try {
-      await this.runMessageLoop(session, worker, config, mode);
+      await this.runMessageLoop(session, worker, config, mode, contextWindowTokens);
     } catch (error: unknown) {
       if (error instanceof Error) {
         logger.error('SDK', `${this.providerName} message loop failed`, { sessionId: session.sessionDbId, model }, error);
@@ -143,7 +165,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session: ActiveSession,
     worker: WorkerRef | undefined,
     config: TConfig,
-    mode: ModeConfig
+    mode: ModeConfig,
+    contextWindowTokens: number
   ): Promise<void> {
     let lastCwd: string | undefined;
 
@@ -154,6 +177,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       if (message.cwd) {
         lastCwd = message.cwd;
       }
+
+      // Single compaction site, covering both observation and summary
+      // dispatch. Synchronous: the next query must see the compacted history.
+      this.maybeCompactHistory(session, mode, contextWindowTokens, lastCwd);
+
       const originalTimestamp = session.earliestPendingTimestamp;
 
       if (message.type === 'observation') {
@@ -288,6 +316,74 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     } else {
       logger.warn('SDK', `Empty ${this.providerName} summary response, leaving queue intact`, {
         sessionId: session.sessionDbId
+      });
+    }
+  }
+
+  /**
+   * Compact conversationHistory when its estimated token size exceeds
+   * COMPACT_TRIGGER_RATIO of the model's context window: clear it and re-seed
+   * with one user turn — the continuation prompt plus a recent-observations
+   * timeline budgeted at REINJECT_BUDGET_RATIO of the window. Starting with a
+   * user turn satisfies the Gemini consecutive-role-merge constraint.
+   * Deliberately synchronous and un-caught: a throwing timeline builder should
+   * fail the turn visibly via the message-loop error handler.
+   */
+  private maybeCompactHistory(
+    session: ActiveSession,
+    mode: ModeConfig,
+    contextWindowTokens: number,
+    lastCwd: string | undefined
+  ): void {
+    // Deliberate per-message re-read: the kill switch must take effect
+    // without a session restart.
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    if (settings.CLAUDE_MEM_OBSERVER_COMPACTION_ENABLED === 'false') {
+      return;
+    }
+
+    const estimatedHistoryTokens = this.estimateTokens(session.conversationHistory.map(m => m.content).join(''));
+    if (estimatedHistoryTokens <= contextWindowTokens * COMPACT_TRIGGER_RATIO) {
+      return;
+    }
+
+    const beforeMessages = session.conversationHistory.length;
+    session.conversationHistory.length = 0;
+
+    // Build the continuation prompt first so the timeline budget is net of
+    // it: the re-seeded turn as a whole must stay within
+    // REINJECT_BUDGET_RATIO of the window (anti-thrash).
+    const continuationPrompt = buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
+    const tokenBudget = Math.max(
+      0,
+      Math.floor(contextWindowTokens * REINJECT_BUDGET_RATIO) - this.estimateTokens(continuationPrompt)
+    );
+
+    const timeline = buildCompactionTimeline(
+      this.dbManager.getSessionStore(),
+      session.project,
+      lastCwd ?? session.project,
+      tokenBudget
+    );
+
+    const content = timeline
+      ? `${continuationPrompt}\n\n<recent_project_timeline>\n${timeline}\n</recent_project_timeline>`
+      : continuationPrompt;
+    session.conversationHistory.push({ role: 'user', content });
+
+    const afterTokens = this.estimateTokens(content);
+    logger.info('SDK', 'Observer history compacted', {
+      sessionId: session.sessionDbId,
+      beforeMessages,
+      beforeTokens: estimatedHistoryTokens,
+      afterTokens,
+      contextWindowTokens
+    });
+    if (afterTokens > contextWindowTokens * COMPACT_TRIGGER_RATIO) {
+      logger.warn('SDK', 'Compacted context alone exceeds the compaction trigger — context window too small; the next message will re-compact', {
+        sessionId: session.sessionDbId,
+        afterTokens,
+        contextWindowTokens
       });
     }
   }
