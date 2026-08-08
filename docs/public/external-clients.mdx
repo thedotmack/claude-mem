@@ -65,7 +65,7 @@ attributable in the viewer.
 
 | Mode | Behavior |
 |------|----------|
-| `origin` (default) | A key is required only where the surface actually opens: requests carrying a non-localhost `Origin`, and requests whose `Host` header is a non-localhost DNS name (the DNS-rebinding shape). Hooks, curl, and the viewer are unchanged. |
+| `origin` (default) | A key is required only where the surface actually opens: requests carrying a non-localhost `Origin`, and requests that are not provably local — the connection must come from loopback **and** carry a localhost/IP-literal `Host` (a caller-controlled `Host` header alone proves nothing, and a rebound DNS name in `Host` is the DNS-rebinding shape). Hooks, curl, and the viewer are unchanged; clients reaching a `0.0.0.0`-bound worker over the network need a key. |
 | `all` | Every `/api` and `/v1` request needs a key — for hosted or shared-network deployments. Health probes (`/api/health`, `/api/readiness`, `/api/version`) stay open. |
 | `off` | No key checks (trusted-network opt-out). |
 

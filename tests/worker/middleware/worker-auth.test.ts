@@ -56,15 +56,17 @@ describe('worker CORS allowlist + auth', () => {
 
   async function startApp(mode: WorkerAuthMode, allowedOrigins: string[] = [ALLOWED_ORIGIN]): Promise<void> {
     const app = express();
-    // Same mount order as Server.ts: CORS first, then auth on /api + /v1.
+    // Same mount order and paths as Server.ts: CORS first, then auth on
+    // /api + /v1 + the root-level /stream SSE route.
     app.use(createCorsMiddleware({ allowedOrigins }));
-    app.use(['/api', '/v1'], createWorkerAuthMiddleware({
+    app.use(['/api', '/v1', '/stream'], createWorkerAuthMiddleware({
       mode,
       getDatabase: () => db,
       exemptPaths: ['/health'],
     }));
     app.all('/api/echo', (_req, res) => { res.json({ ok: true }); });
     app.get('/api/health', (_req, res) => { res.json({ status: 'ok' }); });
+    app.get('/stream', (_req, res) => { res.json({ sse: true }); });
     await new Promise<void>(resolve => {
       server = app.listen(0, '127.0.0.1', resolve);
     });
@@ -242,6 +244,24 @@ describe('worker CORS allowlist + auth', () => {
       const res = await request(port, { path: '/api/health', headers: { Host: 'evil.example.net:1' } });
       expect(res.status).toBe(200);
     });
+
+    it('the root /stream SSE route is covered: allowlisted origin without a key is 401', async () => {
+      const res = await request(port, { path: '/stream', headers: { Origin: ALLOWED_ORIGIN } });
+      expect(res.status).toBe(401);
+    });
+
+    it('/stream works for an allowlisted origin with a valid key', async () => {
+      const res = await request(port, {
+        path: '/stream',
+        headers: { Origin: ALLOWED_ORIGIN, Authorization: `Bearer ${rawKey}` },
+      });
+      expect(res.status).toBe(200);
+    });
+
+    it('/stream stays tokenless for the originless loopback viewer', async () => {
+      const res = await request(port, { path: '/stream' });
+      expect(res.status).toBe(200);
+    });
   });
 
   describe("mode 'all'", () => {
@@ -268,6 +288,58 @@ describe('worker CORS allowlist + auth', () => {
       await startApp('off');
       const res = await request(port, { method: 'POST', headers: { Host: 'evil.example.net:1' } });
       expect(res.status).toBe(200);
+    });
+  });
+
+  describe('non-loopback socket peer (0.0.0.0 bind reached from the LAN)', () => {
+    // A LAN client controls its Host header entirely, so an IP-literal Host
+    // must NOT count as proof of locality — only the socket peer address can.
+    // Test sockets always connect via loopback, so drive the middleware with
+    // a synthetic request carrying a LAN peer address.
+    function invoke(mode: WorkerAuthMode, overrides: {
+      ip: string;
+      headers?: Record<string, string | undefined>;
+    }): Promise<number | 'next'> {
+      const middleware = createWorkerAuthMiddleware({ mode, getDatabase: () => db });
+      const headers: Record<string, string | undefined> = {
+        host: '192.168.1.10:37777',
+        ...overrides.headers,
+      };
+      const req = {
+        method: 'POST',
+        path: '/write',
+        ip: overrides.ip,
+        socket: { remoteAddress: overrides.ip },
+        headers,
+        header(name: string) { return headers[name.toLowerCase()]; },
+      };
+      return new Promise(resolve => {
+        const res = {
+          status(code: number) { resolve(code); return this; },
+          json() { return this; },
+        };
+        middleware(req as never, res as never, () => resolve('next'));
+      });
+    }
+
+    it('originless keyless request from a LAN peer with an IPv4-literal Host is 401', async () => {
+      expect(await invoke('origin', { ip: '169.254.0.21' })).toBe(401);
+    });
+
+    it('originless keyless request from a LAN peer with a localhost Host is still 401', async () => {
+      expect(await invoke('origin', { ip: '169.254.0.21', headers: { host: 'localhost:37777' } })).toBe(401);
+    });
+
+    it('a LAN peer with a valid key passes', async () => {
+      expect(await invoke('origin', { ip: '169.254.0.21', headers: { authorization: `Bearer ${rawKey}` } })).toBe('next');
+    });
+
+    it('a loopback peer with an IP-literal Host still needs no token (hooks invariant)', async () => {
+      expect(await invoke('origin', { ip: '127.0.0.1', headers: { host: '127.0.0.1:37777' } })).toBe('next');
+    });
+
+    it("mode 'off' skips the peer check", async () => {
+      expect(await invoke('off', { ip: '169.254.0.21' })).toBe('next');
     });
   });
 

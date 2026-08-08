@@ -1,17 +1,20 @@
 import type { Database } from 'bun:sqlite';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { verifyServerApiKey } from '../../../server/auth/sqlite-api-key-service.js';
-import { parseBearerToken, parseHostWithoutPort } from '../../../server/middleware/request-auth-helpers.js';
+import { isLocalhost, parseBearerToken, parseHostWithoutPort } from '../../../server/middleware/request-auth-helpers.js';
 import { logger } from '../../../utils/logger.js';
 
 // Worker API auth (CLAUDE_MEM_WORKER_AUTH). Modes:
 //   'origin' (default) — a token is required only where the attack surface
 //     actually opens: requests carrying a non-localhost Origin (a browser app
 //     allowlisted via CLAUDE_MEM_WORKER_ALLOWED_ORIGINS), and originless
-//     requests whose Host header is a DNS name other than localhost (the
-//     DNS-rebinding shape — a same-origin fetch after rebinding carries the
-//     attacker's hostname in Host). Hooks, curl, and the bundled viewer all
-//     reach the worker via loopback/IP hosts with no Origin and are unchanged.
+//     requests that are not provably local. "Provably local" needs BOTH the
+//     socket peer to be loopback (a Host header is caller-controlled and says
+//     nothing about where the connection came from — on a 0.0.0.0 bind a LAN
+//     client can send any Host it likes) AND a Host that is localhost or an
+//     IP literal (a same-origin fetch after DNS rebinding arrives FROM
+//     loopback but carries the attacker's domain in Host). Hooks, curl, and
+//     the bundled viewer all reach the worker over loopback and are unchanged.
 //   'all' — every covered request needs a token (hosted deployments).
 //   'off' — no token checks (trusted-network opt-out).
 export type WorkerAuthMode = 'origin' | 'all' | 'off';
@@ -39,11 +42,13 @@ function isLocalhostOrigin(origin: string): boolean {
   return origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:');
 }
 
-// DNS rebinding requires an attacker-controlled DNS name in the Host header —
-// a browser fetch to the attacker's rebound domain always carries that domain,
-// never an IP literal. So originless requests are trusted when Host is
-// localhost or any IP literal (hooks use 127.0.0.1, LAN setups use the bind
-// IP, 0.0.0.0 resolves to loopback); only non-localhost DNS names need a token.
+// Host-shape half of the originless trust decision (the other half is the
+// socket peer — see needsToken below). DNS rebinding requires an
+// attacker-controlled DNS name in the Host header — a browser fetch to the
+// attacker's rebound domain always carries that domain, never an IP literal —
+// so localhost and IP-literal Hosts pass this check and non-localhost DNS
+// names fail it. This alone proves nothing about locality: it must be
+// combined with a loopback socket peer.
 export function isTrustedOriginlessHost(rawHost: string): boolean {
   const host = parseHostWithoutPort(rawHost);
   if (host === 'localhost') {
@@ -67,7 +72,9 @@ export function createWorkerAuthMiddleware(options: WorkerAuthOptions): RequestH
 
     const origin = req.headers.origin;
     const needsToken = options.mode === 'all'
-      || (origin ? !isLocalhostOrigin(origin) : !isTrustedOriginlessHost(req.header('host') ?? ''));
+      || (origin
+        ? !isLocalhostOrigin(origin)
+        : !(isLocalhost(req) && isTrustedOriginlessHost(req.header('host') ?? '')));
     if (!needsToken) {
       next();
       return;

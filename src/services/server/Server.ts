@@ -227,8 +227,10 @@ export class Server {
       return;
     }
     // Health/readiness probes stay tokenless in every mode — the same set the
-    // worker's init gate exempts. Static UI and non-API paths are not covered.
-    this.app.use(['/api', '/v1'], createWorkerAuthMiddleware({
+    // worker's init gate exempts. Static UI stays uncovered, but /stream must
+    // be covered: ViewerRoutes registers the SSE stream at the root, and it
+    // carries session/prompt data an allowlisted origin must not read keyless.
+    this.app.use(['/api', '/v1', '/stream'], createWorkerAuthMiddleware({
       mode: this.options.workerAuth.mode,
       getDatabase: this.options.workerAuth.getDatabase,
       exemptPaths: ['/health', '/readiness', '/version', '/chroma/status', '/settings/dependency-health'],
