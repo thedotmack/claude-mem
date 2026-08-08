@@ -33,15 +33,11 @@ import {
 } from '../install/error-reporter.js';
 import { extractEresolveBlock, isEresolve, runNpmStrict } from '../install/npm-install-helper.js';
 import {
-  CLAUDE_OPTION_LABEL,
+  buildProviderLabels,
   CMEM_PRO_BASE_URL,
   CMEM_PRO_KEY_PATTERN,
   CMEM_PRO_MODEL,
-  CMEM_PRO_OPTION_HINT,
-  CMEM_PRO_OPTION_LABEL,
   CMEM_PRO_SIGNUP_URL,
-  GEMINI_OPTION_LABEL,
-  OPENROUTER_OPTION_LABEL,
 } from '../cmem-pro-costs.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
@@ -1167,13 +1163,18 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   if (options.provider) {
     selectedProvider = options.provider;
   } else {
+    // Rates are looked up live so the prompt never quotes a stale price. The
+    // lookup is timeout-bounded and falls back silently, so an offline install
+    // still gets a working prompt — just with last-known figures.
+    const labels = await buildProviderLabels();
+
     const providerResult = await p.select<ProviderChoice>({
       message: 'Which memory provider do you want to use?',
       options: [
-        { value: 'cmem', label: CMEM_PRO_OPTION_LABEL, hint: CMEM_PRO_OPTION_HINT },
-        { value: 'openrouter', label: OPENROUTER_OPTION_LABEL },
-        { value: 'gemini', label: GEMINI_OPTION_LABEL },
-        { value: 'claude', label: CLAUDE_OPTION_LABEL },
+        { value: 'cmem', label: labels.cmem, hint: labels.cmemHint },
+        { value: 'openrouter', label: labels.openrouter },
+        { value: 'gemini', label: labels.gemini },
+        { value: 'claude', label: labels.claude },
       ],
       initialValue: 'cmem',
     });
