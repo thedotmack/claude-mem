@@ -815,6 +815,17 @@ function mergeSettings(updates: Record<string, string>): boolean {
 }
 
 type ProviderId = 'claude' | 'gemini' | 'openrouter';
+
+/**
+ * Whether a stored/hand-edited CLAUDE_MEM_PROVIDER value is one the worker can
+ * actually use. `SettingsDefaultsManager.loadFromFile` merges the built-in
+ * defaults but does not validate them, so anything can come back from a
+ * hand-edited settings.json — an emptiness check is not enough.
+ */
+export function isKnownProvider(value: unknown): value is ProviderId {
+  return value === 'claude' || value === 'gemini' || value === 'openrouter';
+}
+
 /**
  * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
  * it configures the generic OpenAI-compatible path (base URL + model + key) and
@@ -987,7 +998,8 @@ function openBrowser(url: string): void {
 }
 
 export async function promptProvider(options: InstallOptions): Promise<ProviderId> {
-  const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
+  const storedProviderSetting = getSetting('CLAUDE_MEM_PROVIDER');
+  const initialProvider: ProviderId = isKnownProvider(storedProviderSetting) ? storedProviderSetting : 'claude';
 
   const persistClaudeProvider = (authMethod?: 'subscription' | 'api-key' | 'gateway') => {
     const resolvedAuthMethod = authMethod ?? resolveClaudeAuthMethod();
@@ -1111,6 +1123,16 @@ export async function promptProvider(options: InstallOptions): Promise<ProviderI
       if (wrote) log.info(`Saved provider=${options.provider} to ~/.claude-mem/settings.json`);
       log.warn(`Provider=${options.provider} requested non-interactively. API key prompt skipped — set CLAUDE_MEM_${options.provider.toUpperCase()}_API_KEY and CLAUDE_MEM_PROVIDER in settings.json or env manually if not already set.`);
       return options.provider;
+    }
+    // A hand-edited or corrupt CLAUDE_MEM_PROVIDER has no prompt to fall back
+    // on here, and returning it would let the install complete against a
+    // provider the worker cannot use. Repair the setting rather than only
+    // returning a safe value: the worker reads settings.json at startup, so
+    // leaving the bad literal in place would keep it broken.
+    if (!isKnownProvider(storedProviderSetting)) {
+      log.warn(`Stored CLAUDE_MEM_PROVIDER="${String(storedProviderSetting)}" is not a supported provider — falling back to claude.`);
+      persistClaudeProvider();
+      return 'claude';
     }
     return initialProvider;
   }
@@ -1645,13 +1667,11 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // 'claude' rather than ''. Validate the literal instead: an unrecognized
   // provider (hand-edited or corrupt settings.json) falls through to the normal
   // prompts rather than being carried forward as-is.
-  const storedProvider = String(getSetting('CLAUDE_MEM_PROVIDER') || '');
-  const hasUsableProvider =
-    storedProvider === 'claude' || storedProvider === 'gemini' || storedProvider === 'openrouter';
+  const storedProvider = getSetting('CLAUDE_MEM_PROVIDER');
   const keepStoredConfig =
     options.mode === 'update' &&
     alreadyInstalled &&
-    hasUsableProvider &&
+    isKnownProvider(storedProvider) &&
     options.provider === undefined &&
     options.model === undefined &&
     options.runtime === undefined;
@@ -1661,7 +1681,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   if (keepStoredConfig) {
     const storedRuntime = String(getSetting('CLAUDE_MEM_RUNTIME') || 'worker');
     selectedRuntime = storedRuntime === 'server' || storedRuntime === 'server-beta' ? 'server' : 'worker';
-    selectedProvider = storedProvider as ProviderId;
+    selectedProvider = storedProvider;
     log.info(`Keeping existing configuration (provider=${selectedProvider}, runtime=${selectedRuntime}). Run ${styleText('cyan', 'npx claude-mem setup')} to change settings.`);
   } else {
     selectedRuntime = await promptRuntime(options);
