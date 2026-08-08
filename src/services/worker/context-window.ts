@@ -1,6 +1,7 @@
 
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { logger } from '../../utils/logger.js';
 import type { GeminiModel } from './GeminiProvider.js';
 
 /**
@@ -93,7 +94,10 @@ async function fetchOpenRouterContextWindows(): Promise<Map<string, number> | nu
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       headers: { Accept: 'application/json' },
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      logger.debug('WORKER', 'OpenRouter catalogue returned non-OK; using fallback context window', { status: response.status });
+      return null;
+    }
 
     const payload = (await response.json()) as {
       data?: Array<{ id?: string; context_length?: number }>;
@@ -107,8 +111,9 @@ async function fetchOpenRouterContextWindows(): Promise<Map<string, number> | nu
 
     catalogueCache = { value: byId, expiresAt: now + CATALOGUE_CACHE_TTL_MS };
     return byId;
-  } catch {
+  } catch (err) {
     // Offline workers are normal and must not be blocked by a window lookup.
+    logger.debug('WORKER', 'OpenRouter catalogue fetch failed; using fallback context window', { rawError: String(err) });
     return null;
   }
 }

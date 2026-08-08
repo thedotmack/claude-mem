@@ -43,6 +43,17 @@ See [Gemini Provider](usage/gemini-provider) for detailed configuration and free
 
 See [OpenRouter Provider](usage/openrouter-provider) for detailed configuration, free model list, and usage guide.
 
+### Observer Compaction Settings
+
+These apply to the Gemini and OpenRouter observer providers. When the observer's conversation history nears the model's context window, claude-mem compacts it (clears the history and re-injects a recent-observations timeline) to keep token usage bounded.
+
+| Setting                                      | Default                     | Description                           |
+|----------------------------------------------|-----------------------------|---------------------------------------|
+| `CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW`         | —                           | Observer model context window in tokens. Empty = auto-resolve from the OpenRouter models catalogue (custom gateways fall back to `131072`). Set a positive integer to override |
+| `CLAUDE_MEM_OBSERVER_COMPACTION_ENABLED`     | `true`                      | Set to `false` to disable observer history compaction |
+
+**Note**: On custom OpenAI-compatible gateways that enforce strict user/assistant alternation, a compaction turn produces two consecutive user messages (valid on openrouter.ai); disable via `CLAUDE_MEM_OBSERVER_COMPACTION_ENABLED` if a strict gateway rejects it.
+
 ### Claude Gateway Settings
 
 Gateway credentials live in `~/.claude-mem/.env`, not `settings.json`.

@@ -11,6 +11,7 @@ import {
   getFullObservationIds,
 } from '../context/ObservationCompiler.js';
 import { renderTimeline } from '../context/sections/TimelineRenderer.js';
+import { logger } from '../../utils/logger.js';
 
 // Generous query ceiling: the token-budget walk below decides what actually
 // survives, so the count knob only needs to be large enough to never be the
@@ -48,6 +49,12 @@ export function buildCompactionTimeline(
     if (cumulativeTokens > tokenBudget) break;
     keptObservations.push(obs);
   }
+
+  logger.debug('WORKER', 'Compaction timeline budget walk', {
+    keptObservations: keptObservations.length,
+    totalObservations: observations.length,
+    tokenBudget,
+  });
 
   const summaries = querySummariesMulti(db, [project], config);
 
