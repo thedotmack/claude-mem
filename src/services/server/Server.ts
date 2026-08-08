@@ -6,6 +6,8 @@ import path from 'path';
 import { ALLOWED_OPERATIONS, ALLOWED_TOPICS } from './allowed-constants.js';
 import { logger } from '../../utils/logger.js';
 import { createCorsMiddleware, createMiddleware, requireLocalhost } from '../worker/http/middleware.js';
+import { createWorkerAuthMiddleware, type WorkerAuthMode } from '../worker/http/worker-auth.js';
+import type { Database } from 'bun:sqlite';
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
@@ -95,6 +97,16 @@ export interface ServerOptions {
   // (the same headers helmet's defaults emit) before any route runs. Opt-in so
   // the in-plugin worker runtime is unchanged; the server runtime sets it.
   securityHeaders?: boolean;
+  // Extra exact-match origins allowed by CORS in addition to localhost
+  // (CLAUDE_MEM_WORKER_ALLOWED_ORIGINS). Empty/undefined = localhost only.
+  allowedOrigins?: string[];
+  // Opt-in API-key enforcement for /api and /v1 (CLAUDE_MEM_WORKER_AUTH).
+  // Only the worker runtime sets this; the server runtime authenticates in
+  // its own route layer (requireServerAuth) and leaves it undefined.
+  workerAuth?: {
+    mode: WorkerAuthMode;
+    getDatabase: () => Database;
+  };
 }
 
 // #2572 — hand-rolled security headers.
@@ -128,6 +140,7 @@ export class Server {
     this.app.disable('x-powered-by');
     this.setupSecurityHeaders();
     this.setupCors();
+    this.setupWorkerAuth();
     this.setupPreBodyParserRoutes();
     this.setupMiddleware();
     this.setupCoreRoutes();
@@ -206,7 +219,20 @@ export class Server {
   }
 
   private setupCors(): void {
-    this.app.use(createCorsMiddleware());
+    this.app.use(createCorsMiddleware({ allowedOrigins: this.options.allowedOrigins }));
+  }
+
+  private setupWorkerAuth(): void {
+    if (!this.options.workerAuth) {
+      return;
+    }
+    // Health/readiness probes stay tokenless in every mode — the same set the
+    // worker's init gate exempts. Static UI and non-API paths are not covered.
+    this.app.use(['/api', '/v1'], createWorkerAuthMiddleware({
+      mode: this.options.workerAuth.mode,
+      getDatabase: this.options.workerAuth.getDatabase,
+      exemptPaths: ['/health', '/readiness', '/version', '/chroma/status', '/settings/dependency-health'],
+    }));
   }
 
   private setupPreBodyParserRoutes(): void {

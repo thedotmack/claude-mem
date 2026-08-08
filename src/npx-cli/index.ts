@@ -47,6 +47,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem server status')}        Show server status
   ${styleText('cyan', 'npx claude-mem server api-key create|list|revoke')}   Manage API keys
   ${styleText('cyan', 'npx claude-mem worker start|stop|restart|status')}    Worker compatibility aliases
+  ${styleText('cyan', 'npx claude-mem worker api-key create|list|revoke')}   Manage API keys for external worker clients
   ${styleText('cyan', 'npx claude-mem search <query>')}       Search observations
   ${styleText('cyan', 'npx claude-mem adopt [--dry-run] [--branch <name>]')}    Stamp merged worktrees into parent project
   ${styleText('cyan', 'npx claude-mem cleanup [--dry-run]')}    Run one-time v12.4.3 pollution cleanup (or preview counts)

@@ -1,0 +1,76 @@
+---
+title: "Connecting External Clients"
+description: "Let browser apps and remote agents call the local worker API — CORS allowlist, private-network preflight, and API keys."
+---
+
+# Connecting External Clients
+
+By default the worker at `http://127.0.0.1:<port>` only accepts browser requests
+from `localhost` origins, and nothing else changes until you configure it: Claude
+Code hooks, `curl`, and the bundled viewer UI keep working with no token and no
+setup.
+
+To let an external client — a web app on a real `https` origin, or a remote
+agent — talk to your worker, you allowlist its origin and hand it an API key.
+
+## 1. Allowlist the origin
+
+Add the client's full origin (comma-separated for several) to your settings —
+either in `~/.claude-mem/settings.json` or as an environment variable:
+
+```json
+{
+  "CLAUDE_MEM_WORKER_ALLOWED_ORIGINS": "https://app.example.com"
+}
+```
+
+Allowlisted origins get proper CORS echoes plus the
+`Access-Control-Allow-Private-Network` preflight header Chrome requires before a
+public website may reach a local server. Origins **not** on the list get a clean
+`403 {"error": "origin_not_allowed"}`.
+
+Restart the worker (`npx claude-mem restart`) after changing settings.
+
+## 2. Create an API key
+
+```bash
+npx claude-mem worker api-key create --name my-external-client
+```
+
+This prints the key **once** — paste it into the external client's settings. The
+same command family manages the lifecycle:
+
+```bash
+npx claude-mem worker api-key list
+npx claude-mem worker api-key revoke <id>
+```
+
+## 3. The client sends the key
+
+```bash
+curl -H "Authorization: Bearer cmem_..." \
+  "http://127.0.0.1:37777/api/search?query=auth+refactor"
+```
+
+`X-Api-Key: cmem_...` is accepted as a fallback for clients that can't set an
+`Authorization` header.
+
+External clients writing sessions or observations should identify themselves via
+the `platformSource` field on the session routes, so their activity is
+attributable in the viewer.
+
+## Enforcement modes
+
+`CLAUDE_MEM_WORKER_AUTH` controls when a key is required:
+
+| Mode | Behavior |
+|------|----------|
+| `origin` (default) | A key is required only where the surface actually opens: requests carrying a non-localhost `Origin`, and requests whose `Host` header is a non-localhost DNS name (the DNS-rebinding shape). Hooks, curl, and the viewer are unchanged. |
+| `all` | Every `/api` and `/v1` request needs a key — for hosted or shared-network deployments. Health probes (`/api/health`, `/api/readiness`, `/api/version`) stay open. |
+| `off` | No key checks (trusted-network opt-out). |
+
+## Feature detection
+
+External clients can probe `GET /api/health` (no auth in every mode) — the
+response includes `version`, so a client can feature-detect worker capabilities
+instead of guessing.

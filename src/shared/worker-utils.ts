@@ -143,6 +143,14 @@ export function getWorkerHost(): string {
   return cachedHost;
 }
 
+export function getWorkerAllowedOriginsSetting(): string {
+  return getWorkerSettings().CLAUDE_MEM_WORKER_ALLOWED_ORIGINS;
+}
+
+export function getWorkerAuthSetting(): string {
+  return getWorkerSettings().CLAUDE_MEM_WORKER_AUTH;
+}
+
 export function getWorkerApiRequestTimeoutMs(): number {
   if (cachedApiRequestTimeoutMs !== null) {
     return cachedApiRequestTimeoutMs;

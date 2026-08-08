@@ -176,9 +176,23 @@ async function lookupApiKeyIdByPlaintext(rawKey: string): Promise<string | null>
 export function runWorkerAliasCommand(argv: string[] = []): void {
   const subCommand = argv[0]?.toLowerCase();
 
+  // Keys for external clients of the worker API (CLAUDE_MEM_WORKER_AUTH /
+  // CLAUDE_MEM_WORKER_ALLOWED_ORIGINS). Same store as `server api-key` — both
+  // operate on the worker's own claude-mem.db.
+  if (subCommand === 'api-key') {
+    const apiKeyCommand = argv[1]?.toLowerCase();
+    if (apiKeyCommand === 'create' || apiKeyCommand === 'list' || apiKeyCommand === 'revoke') {
+      runServerApiKeyCommand(argv.slice(1));
+      return;
+    }
+    console.error(styleText('red', `Unknown worker api-key subcommand: ${apiKeyCommand ?? '(none)'}`));
+    console.error('Usage: npx claude-mem worker api-key create|list|revoke');
+    process.exit(1);
+  }
+
   if (!subCommand || !runWorkerLifecycleCommand(subCommand)) {
     console.error(styleText('red', `Unknown worker command: ${subCommand ?? '(none)'}`));
-    console.error('Usage: npx claude-mem worker start|stop|restart|status');
+    console.error('Usage: npx claude-mem worker start|stop|restart|status|api-key');
     process.exit(1);
   }
 }

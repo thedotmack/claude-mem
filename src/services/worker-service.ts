@@ -6,7 +6,9 @@ import { pathToFileURL } from 'url';
 import type { Database } from 'bun:sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
+import { getWorkerPort, getWorkerHost, getWorkerAllowedOriginsSetting, getWorkerAuthSetting, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
+import { parseAllowedOriginsSetting } from './worker/http/middleware.js';
+import { parseWorkerAuthMode } from './worker/http/worker-auth.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../shared/paths.js';
@@ -295,6 +297,11 @@ export class WorkerService implements WorkerRef {
       preBodyParserRoutes: [
         new BetterAuthRoutes(() => this.dbManager.getConnection()),
       ],
+      allowedOrigins: parseAllowedOriginsSetting(getWorkerAllowedOriginsSetting()),
+      workerAuth: {
+        mode: parseWorkerAuthMode(getWorkerAuthSetting()),
+        getDatabase: () => this.dbManager.getConnection(),
+      },
     });
 
     this.registerRoutes();

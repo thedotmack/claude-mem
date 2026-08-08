@@ -40,12 +40,36 @@ export function createMiddleware(): RequestHandler[] {
   return middlewares;
 }
 
-export function createCorsMiddleware(): RequestHandler {
+export interface CorsOptions {
+  // Exact-match full origins (e.g. https://app.example.com) allowed in
+  // addition to the always-allowed localhost family. Empty = localhost only.
+  allowedOrigins?: string[];
+}
+
+// Parses the CLAUDE_MEM_WORKER_ALLOWED_ORIGINS setting: comma-separated full
+// origins. Trailing slashes are stripped so `https://a.com/` matches the
+// browser-sent `Origin: https://a.com`.
+export function parseAllowedOriginsSetting(value: string): string[] {
+  return value
+    .split(',')
+    .map(origin => origin.trim().replace(/\/+$/, '').toLowerCase())
+    .filter(Boolean);
+}
+
+export function isLocalhostOrigin(origin: string): boolean {
+  return origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:');
+}
+
+export function createCorsMiddleware(options: CorsOptions = {}): RequestHandler {
+  const allowedOrigins = new Set(options.allowedOrigins ?? []);
   return (req: Request, res: Response, next: NextFunction): void => {
     const origin = req.headers.origin;
     if (origin) {
-      if (!origin.startsWith('http://localhost:') && !origin.startsWith('http://127.0.0.1:')) {
-        next(new Error('CORS not allowed'));
+      if (!isLocalhostOrigin(origin) && !allowedOrigins.has(origin.toLowerCase())) {
+        res.status(403).json({
+          error: 'origin_not_allowed',
+          message: 'Origin is not in CLAUDE_MEM_WORKER_ALLOWED_ORIGINS',
+        });
         return;
       }
       res.setHeader('Access-Control-Allow-Origin', origin);
@@ -53,7 +77,13 @@ export function createCorsMiddleware(): RequestHandler {
     }
     if (req.method === 'OPTIONS') {
       res.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,POST,PUT,PATCH,DELETE');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Api-Key,X-Requested-With');
+      // Chrome Private Network Access: an allowlisted public (https) origin
+      // reaching a local server must get this header on preflight or the
+      // browser blocks the request even with permissive CORS.
+      if (origin && req.headers['access-control-request-private-network'] === 'true') {
+        res.setHeader('Access-Control-Allow-Private-Network', 'true');
+      }
       res.status(204).end();
       return;
     }
