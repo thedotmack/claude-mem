@@ -37,6 +37,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENROUTER_SITE_URL: string;
   CLAUDE_MEM_OPENROUTER_APP_NAME: string;
   CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: string;  // Manual observer context-window override in tokens; '' = auto (OpenRouter catalogue / Gemini map)
+  CLAUDE_MEM_OBSERVER_COMPACTION_ENABLED: string;  // 'true'/'false' — compact observer history when it nears the model context window
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
   CLAUDE_MEM_PYTHON_VERSION: string;
@@ -133,6 +134,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
     CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: '',  // Observer context window in tokens. Empty = resolve automatically (see src/services/worker/context-window.ts)
+    CLAUDE_MEM_OBSERVER_COMPACTION_ENABLED: 'true',  // Clear + re-seed observer history past 70% of the context window (OpenAICompatibleProvider.maybeCompactHistory)
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',

@@ -354,7 +354,13 @@ describe('GeminiProvider', () => {
     }));
 
     const pending = agent.startSession(session);
-    await Promise.resolve();
+    // Pump microtasks until the init query's fetch is actually issued —
+    // startSession awaits resolveContextWindowTokens before the init query,
+    // so a single Promise.resolve() tick is no longer enough.
+    for (let i = 0; i < 10_000 && !resolveFetch; i++) {
+      await Promise.resolve();
+    }
+    expect(resolveFetch).toBeDefined();
 
     session.project = 'repo-b/worktree';
     session.userPrompt = 'prompt 2';
