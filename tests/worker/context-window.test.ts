@@ -3,6 +3,7 @@ import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManage
 import {
   resolveContextWindowTokens,
   FALLBACK_CONTEXT_WINDOW_TOKENS,
+  MIN_CONTEXT_WINDOW_TOKENS,
   __resetContextWindowCacheForTests,
 } from '../../src/services/worker/context-window';
 
@@ -157,6 +158,19 @@ describe('resolveContextWindowTokens', () => {
 
     contextWindowSetting = 'not-a-number';
     expect(await resolveContextWindowTokens('openrouter', 'deepseek/deepseek-v4-flash', 'openrouter')).toBe(163840);
+  });
+
+  it('clamps an unusably small settings override up to the minimum window', async () => {
+    mockCatalogueFetch();
+
+    // Prompt scaffolding alone is ~1k tokens, so a 16-token window can never
+    // fit a request no matter how far payloads shrink (PR #3516 review).
+    contextWindowSetting = '16';
+    expect(await resolveContextWindowTokens('openrouter', 'deepseek/deepseek-v4-flash', 'openrouter')).toBe(MIN_CONTEXT_WINDOW_TOKENS);
+
+    contextWindowSetting = String(MIN_CONTEXT_WINDOW_TOKENS);
+    expect(await resolveContextWindowTokens('openrouter', 'deepseek/deepseek-v4-flash', 'openrouter')).toBe(MIN_CONTEXT_WINDOW_TOKENS);
+    expect(global.fetch).toHaveBeenCalledTimes(0);
   });
 
   it('falls back for a custom gateway endpointClass with no fetch', async () => {
