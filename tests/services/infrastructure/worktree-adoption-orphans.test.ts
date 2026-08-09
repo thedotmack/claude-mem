@@ -140,6 +140,45 @@ describe('orphaned worktree adoption (#2864)', () => {
     expect(result.orphanedWorktrees).toEqual(['parent-repo/reported-wt']);
   });
 
+  // The Chroma patch runs after the SQL commits and can fail on its own (the
+  // data dir allows a single writer, so a CLI run loses to the live worker).
+  // selectObsForPatch matches `merged_into_project IS NULL OR = parent`
+  // precisely so a later run can re-patch. Orphan detection has to admit
+  // already-adopted keys too, or the retry it promises never happens and the
+  // vector metadata stays stale forever.
+  it('still collects Chroma targets for an already-adopted orphan', async () => {
+    tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-2864-orphan-'));
+    const mainRepo = path.join(tempRoot, 'parent-repo');
+    const worktree = path.join(tempRoot, 'retry-wt');
+    const dataDirectory = path.join(tempRoot, 'data');
+    mkdirSync(dataDirectory, { recursive: true });
+    initRepo(mainRepo);
+
+    git(mainRepo, 'worktree', 'add', '-b', 'retry', worktree);
+    const dbPath = path.join(dataDirectory, 'claude-mem.db');
+    const store = new SessionStore(dbPath);
+    seedSession(store, 'content-retry', 'parent-repo/retry-wt', 'memory-retry');
+    seedObservation(store, 'memory-retry', 'parent-repo/retry-wt');
+    store.close();
+
+    git(mainRepo, 'worktree', 'remove', '--force', worktree);
+    git(mainRepo, 'worktree', 'prune');
+
+    const first = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
+    expect(first.adoptedObservations).toBe(1);
+    expect(first.chromaUpdates).toBe(1);
+    expect(first.orphanedWorktrees).toEqual(['parent-repo/retry-wt']);
+
+    const second = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
+    // SQL is a no-op the second time — no double counting, no spurious revs.
+    expect(second.adoptedObservations).toBe(0);
+    // ...but the row is still offered to Chroma so a failed patch can recover.
+    expect(second.chromaUpdates).toBe(1);
+    // Reporting stays a changelog of what this run folded in, not a running
+    // tally of everything ever adopted.
+    expect(second.orphanedWorktrees).toEqual([]);
+  });
+
   it('adopts an orphan even when its branch was never merged', async () => {
     tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-2864-orphan-'));
     const mainRepo = path.join(tempRoot, 'parent-repo');

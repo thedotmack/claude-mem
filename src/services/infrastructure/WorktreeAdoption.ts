@@ -157,19 +157,40 @@ function listWorktrees(mainRepo: string): WorktreeEntry[] {
 function listOrphanProjectKeys(
   db: import('bun:sqlite').Database,
   parentProject: string,
-  liveWorktreeProjects: Set<string>
+  liveWorktreeProjects: Set<string>,
+  /**
+   * When false, only keys with rows still awaiting adoption are returned —
+   * used for reporting, so a run's output is a changelog of what it folded in
+   * rather than a running tally of everything ever adopted.
+   */
+  includeAlreadyAdopted: boolean
 ): string[] {
   const prefix = `${parentProject}/`;
   // '0' is the byte immediately after '/', so [prefix, upperBound) is exactly
   // the set of keys beginning with `${parentProject}/`.
   const upperBound = `${parentProject}0`;
+  // `merged_into_project IS NULL OR = parent` mirrors selectObsForPatch. The
+  // SQL update is a no-op for rows already stamped (emitRemapProject only
+  // touches NULLs), so re-runs neither double-count nor bump sync revs — but
+  // the rows stay eligible for the Chroma patch, which commits separately and
+  // can fail on its own (single-writer data dir). Filtering on NULL alone
+  // would drop an adopted key out of the target set permanently and strand
+  // its vector metadata, contradicting the "will retry on next run" the CLI
+  // reports.
+  const adoptedClause = includeAlreadyAdopted
+    ? 'AND (merged_into_project IS NULL OR merged_into_project = ?)'
+    : 'AND merged_into_project IS NULL';
+  const params = includeAlreadyAdopted
+    ? [prefix, upperBound, parentProject, prefix, upperBound, parentProject]
+    : [prefix, upperBound, prefix, upperBound];
+
   const rows = db.prepare(
     `SELECT DISTINCT project FROM observations
-      WHERE project >= ? AND project < ? AND merged_into_project IS NULL
+      WHERE project >= ? AND project < ? ${adoptedClause}
      UNION
      SELECT DISTINCT project FROM session_summaries
-      WHERE project >= ? AND project < ? AND merged_into_project IS NULL`
-  ).all(prefix, upperBound, prefix, upperBound) as Array<{ project: string }>;
+      WHERE project >= ? AND project < ? ${adoptedClause}`
+  ).all(...params) as Array<{ project: string }>;
 
   return rows
     .map(r => r.project)
@@ -371,10 +392,14 @@ export async function adoptMergedWorktrees(opts: {
 
     // `--branch` is a targeted escape hatch for squash-merges; keep it precise
     // and leave the orphan sweep to the default run.
+    // Targets include already-adopted keys so a previously-failed Chroma patch
+    // can recover; reporting lists only what this run actually folds in.
     const orphanProjects = opts.onlyBranch
       ? []
-      : listOrphanProjectKeys(db, parentProject, liveWorktreeProjects);
-    result.orphanedWorktrees = orphanProjects;
+      : listOrphanProjectKeys(db, parentProject, liveWorktreeProjects, true);
+    result.orphanedWorktrees = opts.onlyBranch
+      ? []
+      : listOrphanProjectKeys(db, parentProject, liveWorktreeProjects, false);
 
     const adoptionTargets: Array<{ project: string; label: string }> = [
       ...targets.map(wt => ({ project: getProjectContext(wt.path).primary, label: wt.path })),
