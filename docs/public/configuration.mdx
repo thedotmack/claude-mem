@@ -49,7 +49,7 @@ These apply to the Gemini and OpenRouter observer providers. When the observer's
 
 | Setting                                      | Default                     | Description                           |
 |----------------------------------------------|-----------------------------|---------------------------------------|
-| `CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW`         | —                           | Observer model context window in tokens. Empty = auto-resolve from the OpenRouter models catalogue (custom gateways fall back to `131072`). Set a positive integer to override |
+| `CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW`         | —                           | Observer model context window in tokens. Empty = auto-resolve from the OpenRouter models catalogue (custom gateways fall back to `131072`). Set a positive integer to override (values below 8192 are clamped up to 8192) |
 | `CLAUDE_MEM_OBSERVER_COMPACTION_ENABLED`     | `true`                      | Set to `false` to disable observer history compaction |
 
 **Note**: On custom OpenAI-compatible gateways that enforce strict user/assistant alternation, a compaction turn produces two consecutive user messages (valid on openrouter.ai); disable via `CLAUDE_MEM_OBSERVER_COMPACTION_ENABLED` if a strict gateway rejects it.

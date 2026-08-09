@@ -24,16 +24,14 @@ const mockMode = {
 const PROJECT = 'test-project';
 const SEEDED_TITLE = 'SEEDED_HOOK_OBS_TITLE';
 
-// Pinned via the CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW settings override so the
-// 0.7 trigger (700 tokens = 2800 chars) is cheap to hit.
-const SMALL_WINDOW = '1000';
-// Small enough that FILLER trips the 0.7 trigger, large enough that the 0.3
-// reinject budget survives the continuation prompt (~220 tokens) plus the
-// pending prompt reservation and still fits a timeline.
-const MID_WINDOW = '4000';
+// Pinned via the CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW settings override. The
+// override clamps at MIN_CONTEXT_WINDOW_TOKENS (8,192), so this is the
+// smallest window the hook can see: 0.7 trigger = 5,734 tokens.
+const SMALL_WINDOW = '8192';
+const SMALL_WINDOW_TOKENS = 8192;
 // Large enough that init prompt + responses never reach the trigger.
 const LARGE_WINDOW = '100000';
-// 40k chars ≈ 10k tokens — far past 0.7 × 1000.
+// 40k chars ≈ 10k tokens — past the 0.7 × 8,192 trigger.
 const FILLER = 'f'.repeat(40_000);
 
 let windowSetting = '';
@@ -193,10 +191,7 @@ describe('OpenAICompatibleProvider compaction hook', () => {
   it('compacts history past the trigger: the observation query sees the continuation prompt + timeline', async () => {
     const store = seedStore();
     try {
-      // MID_WINDOW, not SMALL_WINDOW: at 1,000 tokens the pending-prompt
-      // reservation legitimately consumes the whole reinject budget and no
-      // timeline fits; this test pins the timeline re-seed itself.
-      windowSetting = MID_WINDOW;
+      windowSetting = SMALL_WINDOW;
 
       const { provider } = await runObservationSession(store, { filler: FILLER });
 
@@ -350,10 +345,9 @@ describe('OpenAICompatibleProvider compaction hook', () => {
     const store = seedStore();
     try {
       windowSetting = SMALL_WINDOW;
-      // 12,000-char tool output at a 1,000-token window (PR #3516 review
-      // repro): unbounded, its JSON alone is ~3,000 tokens — three times the
-      // window. The cap is floor(1000 × 0.25) × 4 = 1,000 chars per payload,
-      // so JSON.stringify's 12,002 chars must drop 11,002.
+      // 12,000-char tool output (PR #3516 review repro): the cap is
+      // floor(8,192 × 0.25) × 4 = 8,192 chars per payload, so
+      // JSON.stringify's 12,002 chars must drop 3,810.
       const bigPayload = 'p'.repeat(12_000);
       const sessionManager = makeSessionManager([
         { type: 'observation', tool_name: 'Read', tool_input: {}, tool_response: bigPayload, prompt_number: 2, cwd: '/tmp/hook-cwd' },
@@ -368,7 +362,7 @@ describe('OpenAICompatibleProvider compaction hook', () => {
       const obsHistory = provider.queryHistories[1];
       const obsPrompt = obsHistory[obsHistory.length - 1].content;
       expect(obsPrompt).not.toContain(bigPayload);
-      expect(obsPrompt).toContain('…[truncated 11002 chars]');
+      expect(obsPrompt).toContain('…[truncated 3810 chars]');
     } finally {
       store.close();
     }
@@ -382,7 +376,7 @@ describe('OpenAICompatibleProvider compaction hook', () => {
       // with JSON escaping, doubling escaped content, so bounding the raw
       // JSON alone under-counts (PR #3516 review, escaped-payload repro).
       // The prompt-cap halving loop must keep the dispatched request within
-      // the 1,000-token window even right after a compact.
+      // the window even right after a compact.
       const escapedPayload = '\\'.repeat(12_000);
       const sessionManager = makeSessionManager([
         { type: 'observation', tool_name: 'Read', tool_input: {}, tool_response: escapedPayload, prompt_number: 2, cwd: '/tmp/hook-cwd' },
@@ -398,7 +392,7 @@ describe('OpenAICompatibleProvider compaction hook', () => {
 
       const obsHistory = provider.queryHistories[1];
       const totalTokens = Math.ceil(obsHistory.reduce((sum, m) => sum + m.content.length, 0) / 4);
-      expect(totalTokens).toBeLessThanOrEqual(1000);
+      expect(totalTokens).toBeLessThanOrEqual(SMALL_WINDOW_TOKENS);
     } finally {
       store.close();
     }
@@ -430,7 +424,7 @@ describe('OpenAICompatibleProvider compaction hook', () => {
       expect(summaryPrompt).not.toContain(bigAssistantMessage);
       expect(summaryPrompt).toContain('…[truncated');
       const totalTokens = Math.ceil(summaryHistory.reduce((sum, m) => sum + m.content.length, 0) / 4);
-      expect(totalTokens).toBeLessThanOrEqual(1000);
+      expect(totalTokens).toBeLessThanOrEqual(SMALL_WINDOW_TOKENS);
     } finally {
       store.close();
     }
@@ -496,7 +490,7 @@ describe('OpenAICompatibleProvider compaction hook', () => {
       // filler + init prompt + init assistant response were in history.
       expect(data.beforeMessages).toBe(3);
       expect(data.beforeTokens).toBeGreaterThan(data.afterTokens);
-      expect(data.contextWindowTokens).toBe(1000);
+      expect(data.contextWindowTokens).toBe(SMALL_WINDOW_TOKENS);
       infoSpy.mockRestore();
     } finally {
       store.close();

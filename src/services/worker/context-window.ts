@@ -47,6 +47,16 @@ const FETCH_TIMEOUT_MS = 3_000;
 export const FALLBACK_CONTEXT_WINDOW_TOKENS = 131_072;
 
 /**
+ * Floor for the CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW override. The compaction
+ * ratios derive every budget from the window, and prompt scaffolding alone is
+ * on the order of 1k tokens — below this floor no amount of payload shrinking
+ * produces a fitting request (PR #3516 review), so a smaller override is a
+ * misconfiguration and is clamped up with a warning. Real observer-class
+ * models all have far larger windows.
+ */
+export const MIN_CONTEXT_WINDOW_TOKENS = 8_192;
+
+/**
  * Gemini has no models catalogue. All five allowlisted models are Flash-family
  * with Google's documented 1M-token window. Keyed by the GeminiModel union so
  * an allowlist change breaks this map at compile time.
@@ -152,8 +162,9 @@ async function fetchCatalogueOnce(): Promise<Map<string, number> | null> {
  * Resolve the observer model's context window in tokens. Never throws.
  *
  * Order: CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW settings override (non-empty
- * positive int short-circuits everything) → provider lookup (OpenRouter
- * catalogue / Gemini map) → FALLBACK_CONTEXT_WINDOW_TOKENS.
+ * positive int short-circuits everything, clamped up to
+ * MIN_CONTEXT_WINDOW_TOKENS) → provider lookup (OpenRouter catalogue /
+ * Gemini map) → FALLBACK_CONTEXT_WINDOW_TOKENS.
  *
  * The catalogue is only consulted for `endpointClass === 'openrouter'`: a
  * custom gateway serves models the OpenRouter catalogue knows nothing about,
@@ -168,7 +179,16 @@ export async function resolveContextWindowTokens(
   const override = settings.CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW;
   if (override !== '') {
     const parsed = parseInt(override, 10);
-    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    if (Number.isFinite(parsed) && parsed > 0) {
+      if (parsed < MIN_CONTEXT_WINDOW_TOKENS) {
+        logger.warn('WORKER', 'CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW below minimum; clamping', {
+          requested: parsed,
+          minimum: MIN_CONTEXT_WINDOW_TOKENS,
+        });
+        return MIN_CONTEXT_WINDOW_TOKENS;
+      }
+      return parsed;
+    }
   }
 
   if (provider === 'gemini') {
