@@ -1725,14 +1725,8 @@ export class SessionStore {
     );
   }
 
-  /**
-   * #2864 — sessions persist the cwd they were captured in. The worktree
-   * adoption sweep used to discover repos from `pending_messages.cwd`, but that
-   * queue was replaced by an in-RAM buffer (61fe70a2, v13.10.0) and the table
-   * stopped receiving writes, so the sweep silently found nothing on every
-   * startup. `sdk_sessions` is local-only (sync knows observation/summary/prompt
-   * — see CanonicalContent.ts), so this column needs no sync-lane plumbing.
-   */
+  // Worktree adoption discovers repos from this; sdk_sessions is local-only,
+  // so no sync-lane plumbing (#2864).
   private ensureSessionCwdColumn(): void {
     const cols = this.db
       .query('PRAGMA table_info(sdk_sessions)')
@@ -2459,13 +2453,8 @@ export class SessionStore {
     return Number(result.lastInsertRowid);
   }
 
-  /**
-   * #2864 — record the directory a session was captured in, so the worktree
-   * adoption sweep can find the repos this install actually works in. First
-   * write wins: a session's cwd can drift mid-session (the agent may `cd` into
-   * a submodule or subdirectory), and the launch directory is the one that
-   * identifies the repo.
-   */
+  // First write wins: cwd drifts when the agent `cd`s into a subdirectory, and
+  // the launch directory is the one that identifies the repo.
   setSessionCwd(sessionDbId: number, cwd: string): void {
     if (!cwd.trim()) return;
     this.db.prepare(

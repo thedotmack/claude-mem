@@ -16,11 +16,7 @@ export interface AdoptionResult {
   parentProject: string;
   scannedWorktrees: number;
   mergedBranches: string[];
-  /**
-   * #2864 — composite project keys adopted because their worktree directory is
-   * gone, regardless of merge status. Reported separately from mergedBranches
-   * so a run never silently widens what it folded into the parent.
-   */
+  /** Keys adopted because their checkout is gone, merged or not (#2864). */
   orphanedWorktrees: string[];
   adoptedObservations: number;
   adoptedSummaries: number;
@@ -92,13 +88,10 @@ function resolveMainRepoPath(cwd: string): string | null {
   ]);
   if (!commonDir) return null;
 
-  // #2842 — inside a submodule, --git-common-dir is `<super>/.git/modules/<name>`
-  // (nested submodules append further `/modules/<name>` segments). Neither
-  // branch below matches that shape, so discovery used to hand back the
-  // gitdir itself: a path that exists, is not a working tree, and resolves to
-  // the wrong project. Walk back past `/.git/modules/` to the superproject
-  // root — the same anchor detectWorktree uses for the composite key, so
-  // discovery and key derivation agree.
+  // A submodule's --git-common-dir is `<super>/.git/modules/<name>`, which
+  // neither branch below matches — discovery used to return the gitdir itself.
+  // Anchor on the same marker detectWorktree uses, so discovery and key
+  // derivation agree (#2842).
   const modulesMarker = `${path.sep}.git${path.sep}modules${path.sep}`;
   const normalized = commonDir.split('/').join(path.sep);
   const modulesIndex = normalized.indexOf(modulesMarker);
@@ -138,45 +131,28 @@ function listWorktrees(mainRepo: string): WorktreeEntry[] {
 }
 
 /**
- * #2864 — composite `parent/leaf` keys in the DB that have no corresponding
- * live worktree. Once the worktree directory is gone, the parent↔worktree
- * association cannot be recomputed from disk, so these rows are unreachable by
- * every read path: `getProjectContext` on the parent yields only `[parent]`,
- * and `merged_into_project` was never stamped. They are orphaned by definition,
- * which is why they are adopted regardless of merge status — the alternative is
- * not "kept separate", it is "lost".
+ * Composite keys with no live checkout. Their parent association can no longer
+ * be recomputed from disk, so they are unreachable by every read path and are
+ * adopted regardless of merge status — the alternative to adopting is not
+ * "kept separate", it is "lost" (#2864).
  *
- * Matched with a half-open range rather than `LIKE 'parent/%' ESCAPE`, because
- * comparing exact bytes removes the LIKE-wildcard hazard at the source: `_` is
- * a single-character wildcard and is very common in repo names, so an
- * unescaped `my_app/%` also matches `myXapp/...` — a different repo's
- * worktree. (Both forms plan the same way today: SQLite drives off
- * `idx_observations_merged_into` for the `IS NULL` term rather than the
- * project prefix, so this is a correctness choice, not a speed one.)
+ * Range-matched rather than `LIKE 'parent/%'`: `_` is a LIKE wildcard and
+ * common in repo names, so `my_app/%` would also match another repo's
+ * `myXapp/...`.
  */
 function listOrphanProjectKeys(
   db: import('bun:sqlite').Database,
   parentProject: string,
   liveWorktreeProjects: Set<string>,
-  /**
-   * When false, only keys with rows still awaiting adoption are returned —
-   * used for reporting, so a run's output is a changelog of what it folded in
-   * rather than a running tally of everything ever adopted.
-   */
+  /** False narrows to keys still awaiting adoption, for reporting. */
   includeAlreadyAdopted: boolean
 ): string[] {
   const prefix = `${parentProject}/`;
-  // '0' is the byte immediately after '/', so [prefix, upperBound) is exactly
-  // the set of keys beginning with `${parentProject}/`.
+  // '0' is the byte after '/', so [prefix, upperBound) is exactly the children.
   const upperBound = `${parentProject}0`;
-  // `merged_into_project IS NULL OR = parent` mirrors selectObsForPatch. The
-  // SQL update is a no-op for rows already stamped (emitRemapProject only
-  // touches NULLs), so re-runs neither double-count nor bump sync revs — but
-  // the rows stay eligible for the Chroma patch, which commits separately and
-  // can fail on its own (single-writer data dir). Filtering on NULL alone
-  // would drop an adopted key out of the target set permanently and strand
-  // its vector metadata, contradicting the "will retry on next run" the CLI
-  // reports.
+  // Mirrors selectObsForPatch: already-adopted rows stay eligible so a Chroma
+  // patch that failed after the SQL commit can retry. The update itself is a
+  // no-op for them, so re-runs neither double-count nor bump sync revs.
   const adoptedClause = includeAlreadyAdopted
     ? 'AND (merged_into_project IS NULL OR merged_into_project = ?)'
     : 'AND merged_into_project IS NULL';
@@ -196,23 +172,17 @@ function listOrphanProjectKeys(
     .map(r => r.project)
     .filter(project => {
       if (liveWorktreeProjects.has(project)) return false;
-      // Composite keys are exactly one level deep (`${parent}/${leaf}`); anything
-      // deeper is not a key this resolver produces.
+      // Composite keys are exactly one level deep.
       const leaf = project.slice(prefix.length);
       return leaf.length > 0 && !leaf.includes('/');
     });
 }
 
 /**
- * #2842 — absolute paths of this repo's submodule checkouts. Submodules share
- * the `parent/leaf` composite key with worktrees (getProjectContext) but are
- * NOT reported by `git worktree list`, so without this an actively-used
- * submodule looks exactly like a worktree whose directory was deleted and the
- * orphan sweep would fold it into the superproject.
- *
- * Only paths that still exist are returned: a submodule checkout that is gone
- * strands its observations the same way a removed worktree does, and should be
- * adopted rather than protected.
+ * Submodule checkouts, which share the composite key with worktrees but are not
+ * reported by `git worktree list` — without them a live submodule looks exactly
+ * like a deleted worktree to the orphan sweep. Existence-filtered, so a deleted
+ * submodule is still adopted (#2842).
  */
 function listSubmodulePaths(mainRepo: string): string[] {
   const raw = gitCapture(mainRepo, ['submodule', 'status', '--recursive']);
@@ -221,9 +191,7 @@ function listSubmodulePaths(mainRepo: string): string[] {
   const paths: string[] = [];
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
-    // ` <sha> <path> (<describe>)`, where a leading -/+/U flags an
-    // uninitialized/out-of-sync/conflicted submodule and the trailing
-    // describe-suffix is optional. Paths may contain spaces.
+    // ` <sha> <path> (<describe>)`; paths may contain spaces.
     const match = line.match(/^[\s+\-U]*[0-9a-f]{7,40}\s+(.+?)(?:\s+\([^)]*\))?$/);
     if (!match) continue;
     const absolute = path.resolve(mainRepo, match[1]);
@@ -382,18 +350,12 @@ export async function adoptMergedWorktrees(opts: {
       result.adoptedSummaries += sumChanges;
     };
 
-    // Every nested checkout still on disk — worktrees (merged or in-flight) and
-    // submodules alike. Both share the parent/leaf composite key, and neither
-    // is an orphan while its directory exists.
     const liveWorktreeProjects = new Set([
       ...childWorktrees.map(w => getProjectContext(w.path).primary),
       ...listSubmodulePaths(mainRepo).map(p => getProjectContext(p).primary),
     ]);
 
-    // `--branch` is a targeted escape hatch for squash-merges; keep it precise
-    // and leave the orphan sweep to the default run.
-    // Targets include already-adopted keys so a previously-failed Chroma patch
-    // can recover; reporting lists only what this run actually folds in.
+    // `--branch` is a targeted squash-merge escape hatch; no orphan sweep.
     const orphanProjects = opts.onlyBranch
       ? []
       : listOrphanProjectKeys(db, parentProject, liveWorktreeProjects, true);
@@ -507,13 +469,8 @@ export async function adoptMergedWorktreesForAllKnownRepos(opts: {
     const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
     db = new Database(dbPath, { readonly: true });
 
-    // #2864 — repo discovery reads sdk_sessions.cwd. It used to read
-    // pending_messages.cwd, but that queue was replaced by an in-RAM buffer
-    // (61fe70a2, v13.10.0) and the table stopped receiving writes, so this
-    // sweep found zero repos on every startup and adoption only ever ran via a
-    // manual `npx claude-mem adopt`. pending_messages is still UNIONed in so
-    // installs that upgrade with pre-13.10 rows still on disk keep their
-    // history of known repos until sessions re-populate sdk_sessions.cwd.
+    // Discovery reads sdk_sessions.cwd; pending_messages stopped receiving
+    // writes in v13.10.0 and is UNIONed only for rows still on disk (#2864).
     const sessionCols = db
       .prepare('PRAGMA table_info(sdk_sessions)')
       .all() as Array<{ name: string }>;

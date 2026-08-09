@@ -89,8 +89,6 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   let promptNumber: number;
   try {
     sessionDbId = store.createSDKSession(payload.contentSessionId, project, '', undefined, platformSource);
-    // #2864 — persist cwd so the worktree adoption sweep can discover the repos
-    // this install works in. First write wins (see SessionStore.setSessionCwd).
     if (cwd) store.setSessionCwd(sessionDbId, cwd);
     promptNumber = store.getPromptNumberFromUserPrompts(payload.contentSessionId, sessionDbId);
   } catch (error) {

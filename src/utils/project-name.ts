@@ -73,7 +73,7 @@ export interface ProjectContext {
   primary: string;
   parent: string | null;
   isWorktree: boolean;
-  /** #2842 — set when `primary` is a composite key for a git submodule. */
+  /** Set when `primary` is a composite key for a submodule (#2842). */
   isSubmodule: boolean;
   allProjects: string[];
 }
@@ -92,8 +92,6 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
   // the parent/worktree compound key.
   const worktreeInfo = detectWorktree(findGitRepoRoot(expandedCwd) ?? expandedCwd);
 
-  // #2842 — submodules nest under a superproject exactly like worktrees nest
-  // under a parent repo, and get the same composite key.
   if ((worktreeInfo.isWorktree || worktreeInfo.isSubmodule) && worktreeInfo.parentProjectName) {
     const composite = `${worktreeInfo.parentProjectName}/${cwdProjectName}`;
     return {

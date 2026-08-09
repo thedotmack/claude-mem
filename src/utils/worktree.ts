@@ -5,12 +5,7 @@ import { logger } from './logger.js';
 
 export interface WorktreeInfo {
   isWorktree: boolean;
-  /**
-   * #2842 — a git submodule is a nested checkout that folds into its
-   * superproject the same way a worktree folds into its parent. Callers that
-   * only care "does this nest under a parent repo?" should test
-   * `isWorktree || isSubmodule`.
-   */
+  /** Nests under a superproject like a worktree nests under its parent (#2842). */
   isSubmodule: boolean;
   worktreeName: string | null;
   parentRepoPath: string | null;
@@ -69,12 +64,9 @@ export function detectWorktree(cwd: string): WorktreeInfo {
     };
   }
 
-  // #2842 — a submodule's .git file points at `<super>/.git/modules/<name>`
-  // (nested submodules extend that with further `/modules/` segments), which
-  // the worktrees pattern above never matched. Without this branch a submodule
-  // session resolved to its own leaf name: a brand-new, empty project, so
-  // context injection reported "no memory yet" despite a rich superproject
-  // history.
+  // Submodules point at `<super>/.git/modules/<name>`, which the worktrees
+  // pattern never matched — they resolved to their own leaf name, a new empty
+  // project, so context injection reported "no memory yet" (#2842).
   const submoduleMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]modules[/\\](.+)$/);
   if (submoduleMatch) {
     const parentRepoPath = submoduleMatch[1];
