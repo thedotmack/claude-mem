@@ -1388,6 +1388,14 @@ interface TrialPairing {
   pairingId: string;
   secret: string;
   pollIntervalMs: number;
+  /**
+   * Device-authorization user code (e.g. "WXYZ-4823") the human must type into
+   * the browser to approve THIS device before poll delivers credentials. Null
+   * when the server predates the approval step (older contract) — the flow
+   * then works the old way with no approval stage. Display-only: never written
+   * to settings, never sent to telemetry.
+   */
+  userCode: string | null;
 }
 
 interface StoredTrialState {
@@ -1432,7 +1440,7 @@ async function startTrialPairing(email: string): Promise<TrialPairing | null> {
       signal: controller.signal,
     });
     if (!res.ok) return null;
-    const body = await res.json() as { pairing_id?: unknown; secret?: unknown; poll_interval?: unknown };
+    const body = await res.json() as { pairing_id?: unknown; secret?: unknown; poll_interval?: unknown; user_code?: unknown };
     if (typeof body.pairing_id !== 'string' || typeof body.secret !== 'string') return null;
     // Clamp the server-controlled cadence to [1s, 30s]: the 240s poll budget
     // is only checked at the top of the loop, so an unclamped interval could
@@ -1440,7 +1448,13 @@ async function startTrialPairing(email: string): Promise<TrialPairing | null> {
     const pollIntervalS = typeof body.poll_interval === 'number' && Number.isFinite(body.poll_interval) && body.poll_interval > 0
       ? Math.min(Math.max(body.poll_interval, 1), 30)
       : TRIAL_DEFAULT_POLL_INTERVAL_S;
-    return { pairingId: body.pairing_id, secret: body.secret, pollIntervalMs: pollIntervalS * 1000 };
+    // user_code arrived with the device-approval contract; an older server
+    // omits it and the flow degrades gracefully (no code note, no approval
+    // stage copy) — see TrialPairing.userCode.
+    const userCode = typeof body.user_code === 'string' && body.user_code.trim().length > 0
+      ? body.user_code.trim()
+      : null;
+    return { pairingId: body.pairing_id, secret: body.secret, pollIntervalMs: pollIntervalS * 1000, userCode };
   } catch {
     // [ANTI-PATTERN IGNORED]: network/timeout failures here are NOT silent — every caller pairs the null return with a log.warn telling the user how to start the trial later; the install itself must proceed regardless.
     return null;
@@ -1449,7 +1463,7 @@ async function startTrialPairing(email: string): Promise<TrialPairing | null> {
   }
 }
 
-type TrialPollStage = 'awaiting_login' | 'awaiting_checkout';
+type TrialPollStage = 'awaiting_login' | 'awaiting_checkout' | 'awaiting_approval';
 
 type TrialPollOutcome =
   | { kind: 'pending'; stage: TrialPollStage }
@@ -1475,7 +1489,9 @@ async function pollTrialOnce(pairing: TrialPairing): Promise<TrialPollOutcome> {
       const body = await res.json().catch(() => ({})) as { stage?: unknown };
       return {
         kind: 'pending',
-        stage: body.stage === 'awaiting_checkout' ? 'awaiting_checkout' : 'awaiting_login',
+        stage: body.stage === 'awaiting_checkout' || body.stage === 'awaiting_approval'
+          ? body.stage
+          : 'awaiting_login',
       };
     }
     if (res.ok) {
@@ -1529,6 +1545,24 @@ function sleepUnlessCancelled(ms: number, isCancelled: () => boolean): Promise<v
 }
 
 /**
+ * Show the device-approval code the human must type into the browser (after
+ * the magic-link login) to approve this device — the step that closes the
+ * pairing-hijack hole, so it must be impossible to miss. No-op when the
+ * server didn't send a code (older contract: no approval step exists).
+ */
+function noteTrialUserCode(pairing: TrialPairing): void {
+  if (!pairing.userCode) return;
+  p.note(
+    [
+      styleText(['bold', 'cyan'], pairing.userCode),
+      '',
+      "You'll type this in the browser to approve this device.",
+    ].join('\n'),
+    'Your device code',
+  );
+}
+
+/**
  * First message after the banner: the cmem Pro free-week pitch. Entering an
  * email starts the trial server-side (account + sign-in email) and returns
  * the pairing the provider step later polls; Enter (or any failure) returns
@@ -1573,6 +1607,7 @@ async function promptProTrialOptIn(version: string): Promise<TrialPairing | null
       'Check your email — click the sign-in link and add a card ($0 today).\nInstall continues; we pick it up automatically.',
       'Link sent',
     );
+    noteTrialUserCode(pairing);
     await captureCliEvent('trial_link_sent', { version, duration_ms: Date.now() - resendStartedAt });
     return pairing;
   }
@@ -1644,6 +1679,7 @@ async function promptProTrialOptIn(version: string): Promise<TrialPairing | null
     'Check your email — click the sign-in link and add a card ($0 today).\nInstall continues; we pick it up automatically.',
     'Link sent',
   );
+  noteTrialUserCode(pairing);
   await captureCliEvent('trial_link_sent', { version, duration_ms: Date.now() - startRequestAt });
   return pairing;
 }
@@ -1663,6 +1699,12 @@ async function completeTrialPairing(pairing: TrialPairing, version: string): Pro
   const stageMessages: Record<TrialPollStage, string> = {
     awaiting_login: 'Waiting for you to click the sign-in link…',
     awaiting_checkout: 'Waiting for checkout ($0 today)…',
+    // Device-approval stage: the human types the user code shown at opt-in
+    // into the browser. Generic copy when an older-contract server never sent
+    // a code but still (unexpectedly) reports this stage — never crash on it.
+    awaiting_approval: pairing.userCode
+      ? `Enter code ${pairing.userCode} in the browser to approve this device…`
+      : 'Waiting for approval in the browser…',
   };
   let stage: TrialPollStage = 'awaiting_login';
 

@@ -175,11 +175,13 @@ export const CMEM_PRO_SIGNUP_URL = `${CMEM_PRO_ORIGIN}/pro?from=installer`;
  * The 7-day card-upfront trial funnel (plan 2026-08-08-seven-day-trial-npx-funnel).
  *
  * `start` creates the cmem.ai account + emails a sign-in link and answers with
- * a pairing id/secret; `poll` is the credential handoff the installer loops on
- * while the human clicks the link and enters a card ($0 today). Both are
- * unauthenticated cmem.ai endpoints — the CLI never holds a session-granting
- * link, only the pairing pair, and the credential delivered on `ready` is the
- * existing setup_token (delivered exactly once).
+ * a pairing id/secret plus a device-authorization `user_code` the human types
+ * into the browser to approve this device; `poll` is the credential handoff
+ * the installer loops on while the human clicks the link, enters a card
+ * ($0 today), and approves the device. Both are unauthenticated cmem.ai
+ * endpoints — the CLI never holds a session-granting link, only the pairing
+ * pair, and the credential delivered on `ready` is the existing setup_token
+ * (delivered exactly once, and only after device approval).
  */
 export const CMEM_PRO_TRIAL_START_URL = `${CMEM_PRO_ORIGIN}/api/pro/trial/start`;
 export const CMEM_PRO_TRIAL_POLL_URL = `${CMEM_PRO_ORIGIN}/api/pro/trial/poll`;
