@@ -172,9 +172,9 @@ function listOrphanProjectKeys(
     .map(r => r.project)
     .filter(project => {
       if (liveWorktreeProjects.has(project)) return false;
-      // Composite keys are exactly one level deep.
-      const leaf = project.slice(prefix.length);
-      return leaf.length > 0 && !leaf.includes('/');
+      // Nested submodules key on their path under the superproject, so a
+      // composite is not always one level deep (#2842).
+      return project.length > prefix.length;
     });
 }
 

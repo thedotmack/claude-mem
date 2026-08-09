@@ -207,6 +207,27 @@ describe('orphaned worktree adoption (#2864)', () => {
     expect(mergedInto(dbPath, obsId)).toBe('parent-repo');
   });
 
+  // Nested submodules key on their path under the superproject
+  // (`outer/alpha/shared`), so a composite key is not always one level deep.
+  it('adopts a deeper composite key whose checkout is gone', async () => {
+    tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-2864-orphan-'));
+    const mainRepo = path.join(tempRoot, 'parent-repo');
+    const dataDirectory = path.join(tempRoot, 'data');
+    mkdirSync(dataDirectory, { recursive: true });
+    initRepo(mainRepo);
+
+    const dbPath = path.join(dataDirectory, 'claude-mem.db');
+    const store = new SessionStore(dbPath);
+    seedSession(store, 'content-nested', 'parent-repo/vendor/shared', 'memory-nested');
+    const obsId = seedObservation(store, 'memory-nested', 'parent-repo/vendor/shared');
+    store.close();
+
+    const result = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
+
+    expect(result.orphanedWorktrees).toEqual(['parent-repo/vendor/shared']);
+    expect(mergedInto(dbPath, obsId)).toBe('parent-repo');
+  });
+
   it('leaves a live worktree with an unmerged branch alone', async () => {
     tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-2864-orphan-'));
     const mainRepo = path.join(tempRoot, 'parent-repo');

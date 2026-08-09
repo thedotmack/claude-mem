@@ -57,7 +57,34 @@ afterAll(() => {
   if (tempRoot) {
     try { rmSync(tempRoot, { recursive: true, force: true }); } catch {}
   }
+  for (const root of nestedRoots) {
+    try { rmSync(root, { recursive: true, force: true }); } catch {}
+  }
 });
+
+function buildNestedFixture(): { outer: string } {
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'claude-mem-2842-nested-')));
+  const shared = path.join(root, 'shared-origin');
+  const alpha = path.join(root, 'alpha-origin');
+  const beta = path.join(root, 'beta-origin');
+  const outer = path.join(root, 'outer');
+
+  for (const repo of [shared, alpha, beta, outer]) initRepo(repo, 'main');
+
+  for (const parent of [alpha, beta]) {
+    git(parent, '-c', 'protocol.file.allow=always', 'submodule', 'add', shared, 'shared');
+    git(parent, 'commit', '-m', 'add shared');
+  }
+  git(outer, '-c', 'protocol.file.allow=always', 'submodule', 'add', alpha, 'alpha');
+  git(outer, '-c', 'protocol.file.allow=always', 'submodule', 'add', beta, 'beta');
+  git(outer, 'commit', '-m', 'add alpha+beta');
+  git(outer, '-c', 'protocol.file.allow=always', 'submodule', 'update', '--init', '--recursive');
+
+  nestedRoots.push(root);
+  return { outer };
+}
+
+const nestedRoots: string[] = [];
 
 describe('#2842 — submodule folds into the superproject', () => {
   it('submodule root resolves to the superproject composite key', () => {
@@ -83,6 +110,23 @@ describe('#2842 — submodule folds into the superproject', () => {
     expect(inSubdir).toBe(atRoot);
     expect(inSubdir).not.toBe('peerless');
     expect(inSubdir).not.toBe('nested');
+  });
+
+  // Two nested submodules can share a leaf repo name under one superproject.
+  // Keying on the superproject + leaf basename alone collapses them into one
+  // project, so each checkout's observations would overwrite and read back as
+  // the other's. The key has to carry the path that distinguishes them.
+  it('keeps same-named nested submodules under distinct project keys', () => {
+    const nested = buildNestedFixture();
+
+    const alpha = getProjectContext(path.join(nested.outer, 'alpha', 'shared'));
+    const beta = getProjectContext(path.join(nested.outer, 'beta', 'shared'));
+
+    expect(alpha.primary).toBe('outer/alpha/shared');
+    expect(beta.primary).toBe('outer/beta/shared');
+    expect(alpha.primary).not.toBe(beta.primary);
+    expect(alpha.parent).toBe('outer');
+    expect(beta.parent).toBe('outer');
   });
 
   it('leaves the superproject itself a plain top-level project', () => {

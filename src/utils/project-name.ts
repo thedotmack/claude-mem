@@ -2,7 +2,7 @@ import { homedir } from 'os'
 import path from 'path';
 import { execFileSync } from 'child_process';
 import { logger } from './logger.js';
-import { detectWorktree } from './worktree.js';
+import { detectWorktree, type WorktreeInfo } from './worktree.js';
 
 function expandTilde(p: string): string {
   if (p === '~' || p.startsWith('~/')) {
@@ -78,6 +78,21 @@ export interface ProjectContext {
   allProjects: string[];
 }
 
+/**
+ * A submodule's key component is its path under the superproject, not its
+ * basename: two nested submodules can share a leaf repo name
+ * (`outer/alpha/shared` and `outer/beta/shared`), and keying on the basename
+ * alone collapses them into one project whose observations overwrite each
+ * other. Worktrees keep the basename — they usually live outside the parent
+ * tree, where a relative path is meaningless.
+ */
+function submoduleLeaf(info: WorktreeInfo, repoRoot: string): string | null {
+  if (!info.isSubmodule || !info.parentRepoPath) return null;
+  const relative = path.relative(info.parentRepoPath, repoRoot);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  return relative.split(path.sep).join('/');
+}
+
 export function getProjectContext(cwd: string | null | undefined): ProjectContext {
   const cwdProjectName = getProjectName(cwd);
 
@@ -90,10 +105,11 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
   // worktree root. Resolve the git working-tree root first (same pattern as
   // getProjectName / #2663) so sessions started in a subdirectory still get
   // the parent/worktree compound key.
-  const worktreeInfo = detectWorktree(findGitRepoRoot(expandedCwd) ?? expandedCwd);
+  const repoRoot = findGitRepoRoot(expandedCwd) ?? expandedCwd;
+  const worktreeInfo = detectWorktree(repoRoot);
 
   if ((worktreeInfo.isWorktree || worktreeInfo.isSubmodule) && worktreeInfo.parentProjectName) {
-    const composite = `${worktreeInfo.parentProjectName}/${cwdProjectName}`;
+    const composite = `${worktreeInfo.parentProjectName}/${submoduleLeaf(worktreeInfo, repoRoot) ?? cwdProjectName}`;
     return {
       primary: composite,
       parent: worktreeInfo.parentProjectName,
