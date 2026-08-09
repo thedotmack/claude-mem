@@ -24,6 +24,15 @@ import {
 // of the window.
 const COMPACT_TRIGGER_RATIO = 0.7;
 const REINJECT_BUDGET_RATIO = 0.3;
+// Cap for each embedded observation payload (tool_input, tool_output) as a
+// fraction of the context window. Compaction runs before the pending prompt is
+// appended, so an unbounded payload could overflow the window right after a
+// compact (PR #3516 review): two capped payloads plus the ≤0.3 re-seeded turn
+// stay comfortably inside the window.
+const PAYLOAD_WINDOW_RATIO = 0.25;
+// Char-per-token divisor used only to convert the payload cap to characters;
+// per-provider estimateTokens still governs all trigger/budget estimates.
+const PAYLOAD_CHARS_PER_TOKEN = 4;
 
 /**
  * Normalized result returned by a concrete provider's `query()`.
@@ -180,12 +189,22 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
       // Single compaction site, covering both observation and summary
       // dispatch. Synchronous: the next query must see the compacted history.
-      this.maybeCompactHistory(session, mode, contextWindowTokens, lastCwd);
+      // The pending message's estimated cost is reserved in the compaction
+      // decision — it is appended after compaction, so an unreserved payload
+      // could overflow the window right after a compact (PR #3516 review).
+      let pendingMessageTokens = 0;
+      if (message.type === 'observation') {
+        const { toolInputJson, toolOutputJson } = this.boundObservationPayloads(message, contextWindowTokens);
+        pendingMessageTokens = this.estimateTokens(toolInputJson + toolOutputJson);
+      } else if (message.type === 'summarize') {
+        pendingMessageTokens = this.estimateTokens(message.last_assistant_message || '');
+      }
+      this.maybeCompactHistory(session, mode, contextWindowTokens, lastCwd, pendingMessageTokens);
 
       const originalTimestamp = session.earliestPendingTimestamp;
 
       if (message.type === 'observation') {
-        await this.processObservationMessage(session, message, worker, config, originalTimestamp, lastCwd);
+        await this.processObservationMessage(session, message, worker, config, originalTimestamp, lastCwd, contextWindowTokens);
       } else if (message.type === 'summarize') {
         await this.processSummaryMessage(session, message, worker, config, mode, originalTimestamp, lastCwd);
       }
@@ -220,7 +239,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     worker: WorkerRef | undefined,
     config: TConfig,
     originalTimestamp: number | null,
-    lastCwd: string | undefined
+    lastCwd: string | undefined,
+    contextWindowTokens: number
   ): Promise<void> {
     if (message.prompt_number !== undefined) {
       session.lastPromptNumber = message.prompt_number;
@@ -230,11 +250,12 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
 
+    const { toolInputJson, toolOutputJson } = this.boundObservationPayloads(message, contextWindowTokens);
     const obsPrompt = buildObservationPrompt({
       id: 0,
       tool_name: message.tool_name!,
-      tool_input: JSON.stringify(message.tool_input),
-      tool_output: JSON.stringify(message.tool_response),
+      tool_input: toolInputJson,
+      tool_output: toolOutputJson,
       created_at_epoch: originalTimestamp ?? Date.now(),
       cwd: message.cwd
     });
@@ -321,6 +342,28 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   }
 
   /**
+   * JSON-encode an observation payload, truncated to a window-derived char
+   * cap. Truncation may cut mid-JSON — the observer reads it as prose, so a
+   * marked partial payload beats a rejected over-window request.
+   */
+  private boundPayloadJson(value: unknown, maxChars: number): string {
+    const json = JSON.stringify(value) ?? String(value);
+    if (json.length <= maxChars) return json;
+    return `${json.slice(0, maxChars)} …[truncated ${json.length - maxChars} chars]`;
+  }
+
+  private boundObservationPayloads(
+    message: { tool_input?: unknown; tool_response?: unknown },
+    contextWindowTokens: number
+  ): { toolInputJson: string; toolOutputJson: string } {
+    const maxChars = Math.floor(contextWindowTokens * PAYLOAD_WINDOW_RATIO) * PAYLOAD_CHARS_PER_TOKEN;
+    return {
+      toolInputJson: this.boundPayloadJson(message.tool_input, maxChars),
+      toolOutputJson: this.boundPayloadJson(message.tool_response, maxChars),
+    };
+  }
+
+  /**
    * Compact conversationHistory when its estimated token size exceeds
    * COMPACT_TRIGGER_RATIO of the model's context window: clear it and re-seed
    * with one user turn — the continuation prompt plus a recent-observations
@@ -333,7 +376,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session: ActiveSession,
     mode: ModeConfig,
     contextWindowTokens: number,
-    lastCwd: string | undefined
+    lastCwd: string | undefined,
+    pendingMessageTokens = 0
   ): void {
     // Deliberate per-message re-read: the kill switch must take effect
     // without a session restart.
@@ -342,8 +386,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       return;
     }
 
+    // pendingMessageTokens: the incoming message's prompt is appended after
+    // this hook runs, so it counts toward the trigger and is reserved out of
+    // the reinject budget below.
     const estimatedHistoryTokens = this.estimateTokens(session.conversationHistory.map(m => m.content).join(''));
-    if (estimatedHistoryTokens <= contextWindowTokens * COMPACT_TRIGGER_RATIO) {
+    if (estimatedHistoryTokens + pendingMessageTokens <= contextWindowTokens * COMPACT_TRIGGER_RATIO) {
       return;
     }
 
@@ -356,7 +403,9 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     const continuationPrompt = buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
     const tokenBudget = Math.max(
       0,
-      Math.floor(contextWindowTokens * REINJECT_BUDGET_RATIO) - this.estimateTokens(continuationPrompt)
+      Math.floor(contextWindowTokens * REINJECT_BUDGET_RATIO)
+        - this.estimateTokens(continuationPrompt)
+        - pendingMessageTokens
     );
 
     const timeline = buildCompactionTimeline(

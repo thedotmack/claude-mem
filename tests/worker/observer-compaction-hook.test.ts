@@ -152,10 +152,15 @@ async function runObservationSession(store: SessionStore, opts: { filler?: strin
  * budget math must be tested against precise token counts, and startSession's
  * real init prompt/response would blur them.
  */
-function invokeHook(provider: HookTestProvider, session: ActiveSession, contextWindowTokens: number): void {
+function invokeHook(
+  provider: HookTestProvider,
+  session: ActiveSession,
+  contextWindowTokens: number,
+  pendingMessageTokens = 0,
+): void {
   (provider as unknown as {
-    maybeCompactHistory(session: ActiveSession, mode: unknown, contextWindowTokens: number, lastCwd: string | undefined): void;
-  }).maybeCompactHistory(session, mockMode, contextWindowTokens, '/tmp/hook-cwd');
+    maybeCompactHistory(session: ActiveSession, mode: unknown, contextWindowTokens: number, lastCwd: string | undefined, pendingMessageTokens?: number): void;
+  }).maybeCompactHistory(session, mockMode, contextWindowTokens, '/tmp/hook-cwd', pendingMessageTokens);
 }
 
 describe('OpenAICompatibleProvider compaction hook', () => {
@@ -329,6 +334,75 @@ describe('OpenAICompatibleProvider compaction hook', () => {
       // budget typo would re-inject ~600+ tokens of observation titles and
       // blow well past this bound.
       expect(afterTokens).toBeLessThanOrEqual(300 + 250);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('bounds an oversized tool payload embedded in the observation prompt', async () => {
+    const store = seedStore();
+    try {
+      windowSetting = SMALL_WINDOW;
+      // 12,000-char tool output at a 1,000-token window (PR #3516 review
+      // repro): unbounded, its JSON alone is ~3,000 tokens — three times the
+      // window. The cap is floor(1000 × 0.25) × 4 = 1,000 chars per payload,
+      // so JSON.stringify's 12,002 chars must drop 11,002.
+      const bigPayload = 'p'.repeat(12_000);
+      const sessionManager = makeSessionManager([
+        { type: 'observation', tool_name: 'Read', tool_input: {}, tool_response: bigPayload, prompt_number: 2, cwd: '/tmp/hook-cwd' },
+      ]);
+      const provider = new HookTestProvider(
+        [{ content: 'init response text' }, { content: 'obs response text' }],
+        { getSessionStore: () => store },
+        sessionManager,
+      );
+      await provider.startSession(makeSession());
+
+      const obsHistory = provider.queryHistories[1];
+      const obsPrompt = obsHistory[obsHistory.length - 1].content;
+      expect(obsPrompt).not.toContain(bigPayload);
+      expect(obsPrompt).toContain('…[truncated 11002 chars]');
+    } finally {
+      store.close();
+    }
+  });
+
+  it('trigger reservation: a 600-token history compacts when the pending message adds 200 tokens', () => {
+    const store = seedStore();
+    try {
+      const provider = new HookTestProvider([], { getSessionStore: () => store }, makeSessionManager([]));
+      const session = makeSession();
+      // 600 tokens alone is below the 700 trigger (pinned by the boundary
+      // test above), but the pending message's 200 tokens push it past.
+      const content = 'x'.repeat(600 * 4);
+      session.conversationHistory.push({ role: 'user', content });
+
+      invokeHook(provider, session, 1000, 200);
+
+      expect(session.conversationHistory).toHaveLength(1);
+      const compacted = session.conversationHistory[0];
+      expect(compacted.content).not.toBe(content);
+      expect(compacted.content).toContain('<user_request>test prompt</user_request>');
+    } finally {
+      store.close();
+    }
+  });
+
+  it('budget reservation: pending message tokens are subtracted from the reinject budget', () => {
+    const store = seedStore();
+    try {
+      const provider = new HookTestProvider([], { getSessionStore: () => store }, makeSessionManager([]));
+      const session = makeSession();
+      session.conversationHistory.push({ role: 'user', content: FILLER });
+
+      // 300 pending tokens consume the entire 0.3 × 1000 reinject budget, so
+      // no timeline fits — the re-seeded turn is the continuation prompt only.
+      invokeHook(provider, session, 1000, 300);
+
+      expect(session.conversationHistory).toHaveLength(1);
+      const compacted = session.conversationHistory[0];
+      expect(compacted.content).toContain('<user_request>test prompt</user_request>');
+      expect(compacted.content).not.toContain('<recent_project_timeline>');
     } finally {
       store.close();
     }
