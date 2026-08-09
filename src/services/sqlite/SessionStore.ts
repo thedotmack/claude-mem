@@ -104,6 +104,7 @@ export class SessionStore {
     this.addSessionPlatformSourceColumn();
     this.addObservationModelColumns();
     this.ensureMergedIntoProjectColumns();
+    this.ensureSessionCwdColumn();
     this.addObservationSubagentColumns();
     this.addObservationsUniqueContentHashIndex();
     this.addObservationsMetadataColumn();
@@ -1724,6 +1725,26 @@ export class SessionStore {
     );
   }
 
+  /**
+   * #2864 — sessions persist the cwd they were captured in. The worktree
+   * adoption sweep used to discover repos from `pending_messages.cwd`, but that
+   * queue was replaced by an in-RAM buffer (61fe70a2, v13.10.0) and the table
+   * stopped receiving writes, so the sweep silently found nothing on every
+   * startup. `sdk_sessions` is local-only (sync knows observation/summary/prompt
+   * — see CanonicalContent.ts), so this column needs no sync-lane plumbing.
+   */
+  private ensureSessionCwdColumn(): void {
+    const cols = this.db
+      .query('PRAGMA table_info(sdk_sessions)')
+      .all() as TableColumnInfo[];
+    if (!cols.some(c => c.name === 'cwd')) {
+      this.db.run('ALTER TABLE sdk_sessions ADD COLUMN cwd TEXT');
+    }
+    this.db.run(
+      'CREATE INDEX IF NOT EXISTS idx_sdk_sessions_cwd ON sdk_sessions(cwd)'
+    );
+  }
+
   private addObservationSubagentColumns(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(27) as SchemaVersion | undefined;
 
@@ -2436,6 +2457,20 @@ export class SessionStore {
     }
 
     return Number(result.lastInsertRowid);
+  }
+
+  /**
+   * #2864 — record the directory a session was captured in, so the worktree
+   * adoption sweep can find the repos this install actually works in. First
+   * write wins: a session's cwd can drift mid-session (the agent may `cd` into
+   * a submodule or subdirectory), and the launch directory is the one that
+   * identifies the repo.
+   */
+  setSessionCwd(sessionDbId: number, cwd: string): void {
+    if (!cwd.trim()) return;
+    this.db.prepare(
+      'UPDATE sdk_sessions SET cwd = ? WHERE id = ? AND cwd IS NULL'
+    ).run(cwd, sessionDbId);
   }
 
   /**

@@ -5,13 +5,21 @@ import { logger } from './logger.js';
 
 export interface WorktreeInfo {
   isWorktree: boolean;
-  worktreeName: string | null;     
-  parentRepoPath: string | null;   
-  parentProjectName: string | null; 
+  /**
+   * #2842 — a git submodule is a nested checkout that folds into its
+   * superproject the same way a worktree folds into its parent. Callers that
+   * only care "does this nest under a parent repo?" should test
+   * `isWorktree || isSubmodule`.
+   */
+  isSubmodule: boolean;
+  worktreeName: string | null;
+  parentRepoPath: string | null;
+  parentProjectName: string | null;
 }
 
 const NOT_A_WORKTREE: WorktreeInfo = {
   isWorktree: false,
+  isSubmodule: false,
   worktreeName: null,
   parentRepoPath: null,
   parentProjectName: null
@@ -50,18 +58,34 @@ export function detectWorktree(cwd: string): WorktreeInfo {
   const gitdirPath = path.resolve(path.dirname(gitPath), match[1]);
 
   const worktreesMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]worktrees[/\\]([^/\\]+)$/);
-  if (!worktreesMatch) {
-    return NOT_A_WORKTREE;
+  if (worktreesMatch) {
+    const parentRepoPath = worktreesMatch[1];
+    return {
+      isWorktree: true,
+      isSubmodule: false,
+      worktreeName: path.basename(cwd),
+      parentRepoPath,
+      parentProjectName: path.basename(parentRepoPath)
+    };
   }
 
-  const parentRepoPath = worktreesMatch[1];
-  const worktreeName = path.basename(cwd);
-  const parentProjectName = path.basename(parentRepoPath);
+  // #2842 — a submodule's .git file points at `<super>/.git/modules/<name>`
+  // (nested submodules extend that with further `/modules/` segments), which
+  // the worktrees pattern above never matched. Without this branch a submodule
+  // session resolved to its own leaf name: a brand-new, empty project, so
+  // context injection reported "no memory yet" despite a rich superproject
+  // history.
+  const submoduleMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]modules[/\\](.+)$/);
+  if (submoduleMatch) {
+    const parentRepoPath = submoduleMatch[1];
+    return {
+      isWorktree: false,
+      isSubmodule: true,
+      worktreeName: path.basename(cwd),
+      parentRepoPath,
+      parentProjectName: path.basename(parentRepoPath)
+    };
+  }
 
-  return {
-    isWorktree: true,
-    worktreeName,
-    parentRepoPath,
-    parentProjectName
-  };
+  return NOT_A_WORKTREE;
 }
