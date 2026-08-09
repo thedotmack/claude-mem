@@ -29,14 +29,21 @@ import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAIComp
  * rejected payload is not misattributed to OpenRouter (#2382/#2590/#2622/#2393).
  */
 export function resolveOpenRouterProviderLabel(apiUrl: string | undefined): string {
-  if (!apiUrl || apiUrl.includes('openrouter.ai')) {
+  if (!apiUrl) {
     return 'OpenRouter';
   }
+  let url: URL;
   try {
-    return new URL(apiUrl).host;
+    url = new URL(apiUrl);
   } catch {
     return 'OpenAI-compatible endpoint';
   }
+  // Match on the parsed hostname, not a whole-URL substring: a custom gateway
+  // whose path or query mentions openrouter.ai must not be labeled OpenRouter.
+  if (url.hostname === 'openrouter.ai' || url.hostname.endsWith('.openrouter.ai')) {
+    return 'OpenRouter';
+  }
+  return url.host;
 }
 
 /**

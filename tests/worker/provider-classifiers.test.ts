@@ -251,6 +251,12 @@ describe('resolveOpenRouterProviderLabel', () => {
     expect(resolveOpenRouterProviderLabel('https://api.deepseek.com/v1/chat/completions')).toBe('api.deepseek.com');
     expect(resolveOpenRouterProviderLabel('http://localhost:1234/v1/chat/completions')).toBe('localhost:1234');
   });
+
+  it('matches on hostname, not a whole-URL substring', () => {
+    expect(resolveOpenRouterProviderLabel('https://gateway.example.test/openrouter.ai/chat/completions')).toBe('gateway.example.test');
+    expect(resolveOpenRouterProviderLabel('https://gateway.example.test/v1/chat/completions?ref=openrouter.ai')).toBe('gateway.example.test');
+    expect(resolveOpenRouterProviderLabel('https://api.openrouter.ai/v1/chat/completions')).toBe('OpenRouter');
+  });
 });
 
 describe('classifyClaudeError', () => {
