@@ -27,6 +27,10 @@ const SEEDED_TITLE = 'SEEDED_HOOK_OBS_TITLE';
 // Pinned via the CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW settings override so the
 // 0.7 trigger (700 tokens = 2800 chars) is cheap to hit.
 const SMALL_WINDOW = '1000';
+// Small enough that FILLER trips the 0.7 trigger, large enough that the 0.3
+// reinject budget survives the continuation prompt (~220 tokens) plus the
+// pending prompt reservation and still fits a timeline.
+const MID_WINDOW = '4000';
 // Large enough that init prompt + responses never reach the trigger.
 const LARGE_WINDOW = '100000';
 // 40k chars ≈ 10k tokens — far past 0.7 × 1000.
@@ -189,7 +193,10 @@ describe('OpenAICompatibleProvider compaction hook', () => {
   it('compacts history past the trigger: the observation query sees the continuation prompt + timeline', async () => {
     const store = seedStore();
     try {
-      windowSetting = SMALL_WINDOW;
+      // MID_WINDOW, not SMALL_WINDOW: at 1,000 tokens the pending-prompt
+      // reservation legitimately consumes the whole reinject budget and no
+      // timeline fits; this test pins the timeline re-seed itself.
+      windowSetting = MID_WINDOW;
 
       const { provider } = await runObservationSession(store, { filler: FILLER });
 
@@ -362,6 +369,68 @@ describe('OpenAICompatibleProvider compaction hook', () => {
       const obsPrompt = obsHistory[obsHistory.length - 1].content;
       expect(obsPrompt).not.toContain(bigPayload);
       expect(obsPrompt).toContain('…[truncated 11002 chars]');
+    } finally {
+      store.close();
+    }
+  });
+
+  it('escaped payloads: the post-compaction observation request stays within the window', async () => {
+    const store = seedStore();
+    try {
+      windowSetting = SMALL_WINDOW;
+      // Backslash-heavy payload: buildObservationPrompt re-encodes payloads
+      // with JSON escaping, doubling escaped content, so bounding the raw
+      // JSON alone under-counts (PR #3516 review, escaped-payload repro).
+      // The prompt-cap halving loop must keep the dispatched request within
+      // the 1,000-token window even right after a compact.
+      const escapedPayload = '\\'.repeat(12_000);
+      const sessionManager = makeSessionManager([
+        { type: 'observation', tool_name: 'Read', tool_input: {}, tool_response: escapedPayload, prompt_number: 2, cwd: '/tmp/hook-cwd' },
+      ]);
+      const provider = new HookTestProvider(
+        [{ content: 'init response text' }, { content: 'obs response text' }],
+        { getSessionStore: () => store },
+        sessionManager,
+      );
+      const session = makeSession();
+      session.conversationHistory.push({ role: 'user', content: FILLER });
+      await provider.startSession(session);
+
+      const obsHistory = provider.queryHistories[1];
+      const totalTokens = Math.ceil(obsHistory.reduce((sum, m) => sum + m.content.length, 0) / 4);
+      expect(totalTokens).toBeLessThanOrEqual(1000);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('summary reservation: the post-compaction summary request stays within the window and bounds the assistant message', async () => {
+    const store = seedStore();
+    try {
+      windowSetting = SMALL_WINDOW;
+      // The dispatched summary prompt is the full buildSummaryPrompt output —
+      // scaffold plus last_assistant_message — so the reservation must cover
+      // that exact string, and an oversized assistant message must be bounded
+      // (PR #3516 review, summary-overflow repro).
+      const bigAssistantMessage = 'a'.repeat(40_000);
+      const sessionManager = makeSessionManager([
+        { type: 'summarize', last_assistant_message: bigAssistantMessage },
+      ]);
+      const provider = new HookTestProvider(
+        [{ content: 'init response text' }, { content: '' }],
+        { getSessionStore: () => store },
+        sessionManager,
+      );
+      const session = makeSession();
+      session.conversationHistory.push({ role: 'user', content: FILLER });
+      await provider.startSession(session);
+
+      const summaryHistory = provider.queryHistories[1];
+      const summaryPrompt = summaryHistory[summaryHistory.length - 1].content;
+      expect(summaryPrompt).not.toContain(bigAssistantMessage);
+      expect(summaryPrompt).toContain('…[truncated');
+      const totalTokens = Math.ceil(summaryHistory.reduce((sum, m) => sum + m.content.length, 0) / 4);
+      expect(totalTokens).toBeLessThanOrEqual(1000);
     } finally {
       store.close();
     }
