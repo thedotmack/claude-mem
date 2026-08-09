@@ -8,7 +8,10 @@ import {
   categorizeGeminiBadRequest,
   classifyGeminiError,
 } from '../../src/services/worker/GeminiProvider.js';
-import { classifyOpenRouterError } from '../../src/services/worker/OpenRouterProvider.js';
+import {
+  classifyOpenRouterError,
+  resolveOpenRouterProviderLabel,
+} from '../../src/services/worker/OpenRouterProvider.js';
 
 // Hard cases per F4 spec — provider-specific classifiers must map raw HTTP
 // shapes / SDK errors to ClassifiedProviderError with the right kind.
@@ -198,6 +201,55 @@ describe('classifyOpenRouterError', () => {
     const cause = new Error('ECONNRESET');
     const err = classifyOpenRouterError({ cause });
     expect(err.kind).toBe('transient');
+  });
+
+  it('carries the response body in the 400 message', () => {
+    const err = classifyOpenRouterError({
+      status: 400,
+      bodyText: 'model xiaomi/mimo-v2-flash:free is not a valid model id',
+      cause: new Error('400'),
+    });
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.message).toContain('bad request (status 400)');
+    expect(err.message).toContain('is not a valid model id');
+  });
+
+  it('gives 404 a distinct message from 400', () => {
+    const err400 = classifyOpenRouterError({ status: 400, bodyText: 'bad', cause: new Error('400') });
+    const err404 = classifyOpenRouterError({ status: 404, bodyText: 'gone', cause: new Error('404') });
+    expect(err404.kind).toBe('unrecoverable');
+    expect(err404.message).toContain('not found (status 404)');
+    expect(err404.message).not.toBe(err400.message);
+  });
+
+  it('truncates the response body at 200 characters', () => {
+    const rawBody = 'x'.repeat(500);
+    const err = classifyOpenRouterError({ status: 400, bodyText: rawBody, cause: new Error('400') });
+    expect(err.message).toContain('x'.repeat(200));
+    expect(err.message).not.toContain('x'.repeat(201));
+  });
+
+  it('uses the provider label so a custom base URL is not misattributed', () => {
+    const err = classifyOpenRouterError({
+      status: 400,
+      bodyText: 'unexpected field "usage"',
+      cause: new Error('400'),
+      providerLabel: 'api.deepseek.com',
+    });
+    expect(err.message).toContain('api.deepseek.com bad request');
+    expect(err.message).not.toContain('OpenRouter');
+  });
+});
+
+describe('resolveOpenRouterProviderLabel', () => {
+  it('keeps the "OpenRouter" name for openrouter.ai and when unset', () => {
+    expect(resolveOpenRouterProviderLabel('https://openrouter.ai/api/v1/chat/completions')).toBe('OpenRouter');
+    expect(resolveOpenRouterProviderLabel(undefined)).toBe('OpenRouter');
+  });
+
+  it('uses the host for a custom base URL', () => {
+    expect(resolveOpenRouterProviderLabel('https://api.deepseek.com/v1/chat/completions')).toBe('api.deepseek.com');
+    expect(resolveOpenRouterProviderLabel('http://localhost:1234/v1/chat/completions')).toBe('localhost:1234');
   });
 });
 
