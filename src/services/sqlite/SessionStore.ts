@@ -1733,10 +1733,13 @@ export class SessionStore {
       .all() as TableColumnInfo[];
     if (!cols.some(c => c.name === 'cwd')) {
       this.db.run('ALTER TABLE sdk_sessions ADD COLUMN cwd TEXT');
+      logger.debug('DB', 'Added cwd column to sdk_sessions table (#2864)');
     }
     this.db.run(
       'CREATE INDEX IF NOT EXISTS idx_sdk_sessions_cwd ON sdk_sessions(cwd)'
     );
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(50, new Date().toISOString());
   }
 
   private addObservationSubagentColumns(): void {
