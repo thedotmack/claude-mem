@@ -1632,7 +1632,8 @@ async function promptProTrialOptIn(version: string): Promise<TrialPairing | null
 
   // Don't-re-nag persistence: a stored email means we never re-pitch. The
   // provider step flips STATE to 'active' once credentials arrive; until then
-  // 'link_sent' makes future installs quietly resend the link (see above).
+  // 'link_sent' makes future installs offer to resend the link (confirm
+  // prompt above).
   mergeSettings({
     CLAUDE_MEM_PRO_TRIAL_EMAIL: email,
     CLAUDE_MEM_PRO_TRIAL_AT: new Date().toISOString(),
