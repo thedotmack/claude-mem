@@ -4,11 +4,11 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import * as realInfrastructure from '../../src/services/infrastructure/index.js';
 import * as realSupervisor from '../../src/supervisor/index.js';
-import * as realSpawn from '../../src/shared/spawn.js';
+import * as realProcessManager from '../../src/services/infrastructure/ProcessManager.js';
 
 const realInfrastructureSnapshot = { ...realInfrastructure };
 const realSupervisorSnapshot = { ...realSupervisor };
-const realSpawnSnapshot = { ...realSpawn };
+const realProcessManagerSnapshot = { ...realProcessManager };
 
 // On version mismatch the hook must NOT delegate the recycle to the running
 // worker (the old design POSTed /api/admin/restart and the dying worker
@@ -35,11 +35,11 @@ let versionMatchResult: { matches: boolean; pluginVersion: string; workerVersion
 let ownedPidInfo: { pid: number; port: number; startedAt: string } | null = null;
 
 // Simulated process states driving the fetch mock: the stale worker serves
-// the port until it is killed; the successor serves it after spawnHidden.
+// the port until it is killed; the successor serves it after spawn.
 let staleWorkerAlive = true;
 let successorUp = false;
 
-// Records every spawn attempt (the lazy-spawn seam, spawnHidden in spawn.ts).
+// Records every spawn attempt (lazy-spawn seam: spawnDetachedWorkerDaemon).
 const spawnCalls: Array<{ command: string; args: string[] }> = [];
 
 mock.module('../../src/services/infrastructure/index.js', () => ({
@@ -51,11 +51,12 @@ mock.module('../../src/supervisor/index.js', () => ({
   readOwnedWorkerPidInfo: () => ownedPidInfo,
 }));
 
-mock.module('../../src/shared/spawn.js', () => ({
-  spawnHidden: (command: string, args: string[]) => {
-    spawnCalls.push({ command, args });
+mock.module('../../src/services/infrastructure/ProcessManager.js', () => ({
+  ...realProcessManagerSnapshot,
+  spawnDetachedWorkerDaemon: (runtimePath: string, scriptPath: string) => {
+    spawnCalls.push({ command: runtimePath, args: [scriptPath, '--daemon'] });
     successorUp = true;
-    return { pid: 5151, unref: () => {} };
+    return 0;
   },
 }));
 
@@ -136,7 +137,7 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
   afterAll(() => {
     mock.module('../../src/services/infrastructure/index.js', () => realInfrastructureSnapshot);
     mock.module('../../src/supervisor/index.js', () => realSupervisorSnapshot);
-    mock.module('../../src/shared/spawn.js', () => realSpawnSnapshot);
+    mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManagerSnapshot);
   });
 
   it('SIGKILLs the stale worker and lazy-spawns the resolved script — never POSTs /api/admin/restart', async () => {

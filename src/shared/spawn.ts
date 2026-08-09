@@ -15,7 +15,11 @@ export function spawnHidden(
   args?: readonly string[],
   options?: SpawnOptions
 ): ChildProcess {
-  return spawn(command, args ?? [], { windowsHide: true, ...options });
+  // windowsHide MUST win over caller options. Node's `detached: true` on
+  // Windows still allocates a console for the child (#3521); callers that
+  // need a background daemon on win32 must use Start-Process -WindowStyle
+  // Hidden (see ProcessManager.spawnDetachedWorkerDaemon), not detached.
+  return spawn(command, args ?? [], { ...options, windowsHide: true });
 }
 
 export const WINDOWS_CMD_EXTENSIONS = new Set(['.cmd', '.bat']);
@@ -65,8 +69,9 @@ export function buildSpawnSyncInvocation(
   platform: NodeJS.Platform = process.platform,
 ): SpawnSyncInvocation {
   const invocationOptions: SpawnSyncOptionsWithStringEncoding = {
-    ...(platform === 'win32' ? { windowsHide: true } : {}),
     ...options,
+    // Force hide on Windows last so callers cannot override it off (#3521).
+    ...(platform === 'win32' ? { windowsHide: true } : {}),
   };
 
   if (platform === 'win32' && WINDOWS_CMD_EXTENSIONS.has(extname(command).toLowerCase())) {

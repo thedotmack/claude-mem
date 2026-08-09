@@ -369,6 +369,106 @@ export function buildWindowsDaemonStartCommand(runtimePath: string, scriptPath: 
   return `Start-Process -FilePath '${psSingleQuote(runtimePath)}' -ArgumentList @('"${psSingleQuote(scriptPath)}"','--daemon') -WindowStyle Hidden`;
 }
 
+/** Absolute powershell.exe when SystemRoot is set; otherwise PATH lookup. */
+export function resolveWindowsPowerShellPath(
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  const systemRoot = env.SystemRoot || env.SYSTEMROOT;
+  if (systemRoot) {
+    return `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+  }
+  return 'powershell.exe';
+}
+
+/**
+ * Argv for launching a hidden worker daemon via Start-Process.
+ * -WindowStyle Hidden on powershell.exe itself plus Start-Process
+ * -WindowStyle Hidden inside the encoded script (#3521). Never use
+ * Node `detached: true` for this on Windows — that allocates a console.
+ */
+export function buildWindowsHiddenDaemonPowerShellArgs(
+  runtimePath: string,
+  scriptPath: string
+): string[] {
+  const encodedCommand = Buffer.from(
+    buildWindowsDaemonStartCommand(runtimePath, scriptPath),
+    'utf16le'
+  ).toString('base64');
+  return ['-NoProfile', '-WindowStyle', 'Hidden', '-EncodedCommand', encodedCommand];
+}
+
+/**
+ * Spawn the worker as a background daemon without a visible console.
+ *
+ * Windows: Start-Process -WindowStyle Hidden via powershell argv (sync).
+ * Returns 0 as a success sentinel (Start-Process does not yield the child pid).
+ *
+ * Unix: setsid/detached spawnHidden; returns the child pid.
+ *
+ * Used by spawnDaemon (CLI/MCP) and hook lazy-spawn (ensureWorkerRunning).
+ */
+export function spawnDetachedWorkerDaemon(
+  runtimePath: string,
+  scriptPath: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform
+): number | undefined {
+  if (platform === 'win32') {
+    const powershell = resolveWindowsPowerShellPath(env);
+    const args = buildWindowsHiddenDaemonPowerShellArgs(runtimePath, scriptPath);
+    try {
+      // argv spawnSync — never `execSync('powershell ...')` shell string.
+      // A shell-string launch can allocate a console before windowsHide
+      // applies; argv + -WindowStyle Hidden keeps the flash off (#3521).
+      const result = spawnSync(powershell, args, {
+        stdio: 'ignore',
+        windowsHide: true,
+        env,
+      });
+      if (result.error) {
+        throw result.error;
+      }
+      if (result.status !== 0) {
+        throw new Error(
+          `powershell Start-Process exited ${result.status ?? 'null'}` +
+            (result.signal ? ` signal=${result.signal}` : '')
+        );
+      }
+      return 0;
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.error(
+        'SYSTEM',
+        'Failed to spawn worker daemon on Windows',
+        { runtimePath, powershell },
+        err
+      );
+      return undefined;
+    }
+  }
+
+  const setsidPath = '/usr/bin/setsid';
+  const useSetsid = existsSync(setsidPath);
+
+  const execPath = useSetsid ? setsidPath : runtimePath;
+  const args = useSetsid
+    ? [runtimePath, scriptPath, '--daemon']
+    : [scriptPath, '--daemon'];
+
+  const child = spawnHidden(execPath, args, {
+    detached: true,
+    stdio: 'ignore',
+    env,
+  });
+
+  if (child.pid === undefined) {
+    return undefined;
+  }
+
+  child.unref();
+  return child.pid;
+}
+
 export function spawnDaemon(
   scriptPath: string,
   port: number,
@@ -391,49 +491,7 @@ export function spawnDaemon(
     return undefined;
   }
 
-  if (process.platform === 'win32') {
-    const psScript = buildWindowsDaemonStartCommand(runtimePath, scriptPath);
-    const encodedCommand = Buffer.from(psScript, 'utf16le').toString('base64');
-
-    try {
-      execSync(`powershell -NoProfile -EncodedCommand ${encodedCommand}`, {
-        stdio: 'ignore',
-        windowsHide: true,
-        env
-      });
-      return 0;
-    } catch (error: unknown) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      logger.error(
-        'SYSTEM',
-        'Failed to spawn worker daemon on Windows',
-        { runtimePath },
-        err
-      );
-      return undefined;
-    }
-  }
-
-  const setsidPath = '/usr/bin/setsid';
-  const useSetsid = existsSync(setsidPath);
-
-  const execPath = useSetsid ? setsidPath : runtimePath;
-  const args = useSetsid
-    ? [runtimePath, scriptPath, '--daemon']
-    : [scriptPath, '--daemon'];
-
-  const child = spawnHidden(execPath, args, {
-    detached: true,
-    stdio: 'ignore',
-    env
-  });
-
-  if (child.pid === undefined) {
-    return undefined;
-  }
-
-  child.unref();
-  return child.pid;
+  return spawnDetachedWorkerDaemon(runtimePath, scriptPath, env);
 }
 
 export function isPidFileRecent(thresholdMs: number = 15000): boolean {
