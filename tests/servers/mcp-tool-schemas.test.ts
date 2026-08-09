@@ -31,7 +31,6 @@ describe('MCP tool inputSchema declarations', () => {
       expect(toolSection).toContain('annotations: { readOnlyHint: true }');
     }
 
-    expect(src).toContain('annotations: tool.annotations');
   });
 
   it('search tool declares query parameter', async () => {

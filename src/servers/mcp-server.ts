@@ -8,12 +8,7 @@ console['log'] = (...args: any[]) => {
   logger.error('CONSOLE', 'Intercepted console output (MCP protocol protection)', undefined, { args });
 };
 
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
 import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
@@ -38,6 +33,7 @@ import {
   type ServerRuntimeContext,
 } from '../services/hooks/runtime-selector.js';
 import { normalizePlatformSource } from '../shared/platform-source.js';
+import { createMcpToolServer } from './mcp-tool-server.js';
 
 let mcpServerDirResolutionFailed = false;
 const mcpServerDir = (() => {
@@ -866,49 +862,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   }
 ];
 
-const server = new Server(
-  {
-    name: 'claude-mem',
-    version: packageVersion,
-  },
-  {
-    capabilities: {
-      tools: {},  // Exposes tools capability (handled by ListToolsRequestSchema and CallToolRequestSchema)
-    },
-  }
-);
-
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: tools.map(tool => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema,
-      ...('annotations' in tool ? { annotations: tool.annotations } : {})
-    }))
-  };
-});
-
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const tool = tools.find(t => t.name === request.params.name);
-
-  if (!tool) {
-    throw new Error(`Unknown tool: ${request.params.name}`);
-  }
-
-  try {
-    return await tool.handler(request.params.arguments || {});
-  } catch (error: unknown) {
-    logger.error('SYSTEM', 'Tool execution failed', { tool: request.params.name }, error instanceof Error ? error : new Error(String(error)));
-    return {
-      content: [{
-        type: 'text' as const,
-        text: `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`
-      }],
-      isError: true
-    };
-  }
-});
+const server = createMcpToolServer(tools, packageVersion);
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
