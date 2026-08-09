@@ -33,6 +33,15 @@ const PAYLOAD_WINDOW_RATIO = 0.25;
 // Char-per-token divisor used only to convert the payload cap to characters;
 // per-provider estimateTokens still governs all trigger/budget estimates.
 const PAYLOAD_CHARS_PER_TOKEN = 4;
+// Cap for the whole rendered pending prompt. buildObservationPrompt re-encodes
+// payloads pretty-printed with escaping, so a capped payload can still double
+// inside the prompt (PR #3516 review, escaped-payload repro); the payload cap
+// is halved until the rendered prompt fits this ratio of the window.
+const PROMPT_WINDOW_RATIO = 0.5;
+// Halving floor: below this the loop stops shrinking — a window too small for
+// prompt scaffolding plus this much payload cannot fit the message at all,
+// which the post-compaction overflow warning already reports.
+const PAYLOAD_MIN_CHARS = 256;
 
 /**
  * Normalized result returned by a concrete provider's `query()`.
@@ -187,26 +196,25 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         lastCwd = message.cwd;
       }
 
-      // Single compaction site, covering both observation and summary
-      // dispatch. Synchronous: the next query must see the compacted history.
-      // The pending message's estimated cost is reserved in the compaction
-      // decision — it is appended after compaction, so an unreserved payload
-      // could overflow the window right after a compact (PR #3516 review).
-      let pendingMessageTokens = 0;
-      if (message.type === 'observation') {
-        const { toolInputJson, toolOutputJson } = this.boundObservationPayloads(message, contextWindowTokens);
-        pendingMessageTokens = this.estimateTokens(toolInputJson + toolOutputJson);
-      } else if (message.type === 'summarize') {
-        pendingMessageTokens = this.estimateTokens(message.last_assistant_message || '');
-      }
-      this.maybeCompactHistory(session, mode, contextWindowTokens, lastCwd, pendingMessageTokens);
-
       const originalTimestamp = session.earliestPendingTimestamp;
 
+      // Single compaction site, covering both observation and summary
+      // dispatch. Synchronous: the next query must see the compacted history.
+      // The pending prompt is built first — exactly the string dispatched
+      // below — so its full cost (template scaffold included, not just the
+      // payload) is reserved in the compaction decision; it is appended after
+      // compaction, so an unreserved prompt could overflow the window right
+      // after a compact (PR #3516 review).
+      const pendingPrompt = this.buildPendingPrompt(session, message, mode, contextWindowTokens, originalTimestamp);
+      this.maybeCompactHistory(
+        session, mode, contextWindowTokens, lastCwd,
+        pendingPrompt === null ? 0 : this.estimateTokens(pendingPrompt)
+      );
+
       if (message.type === 'observation') {
-        await this.processObservationMessage(session, message, worker, config, originalTimestamp, lastCwd, contextWindowTokens);
+        await this.processObservationMessage(session, message, worker, config, originalTimestamp, lastCwd, pendingPrompt!);
       } else if (message.type === 'summarize') {
-        await this.processSummaryMessage(session, message, worker, config, mode, originalTimestamp, lastCwd);
+        await this.processSummaryMessage(session, worker, config, originalTimestamp, lastCwd, pendingPrompt!);
       }
     }
   }
@@ -240,7 +248,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     config: TConfig,
     originalTimestamp: number | null,
     lastCwd: string | undefined,
-    contextWindowTokens: number
+    obsPrompt: string
   ): Promise<void> {
     if (message.prompt_number !== undefined) {
       session.lastPromptNumber = message.prompt_number;
@@ -250,15 +258,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
 
-    const { toolInputJson, toolOutputJson } = this.boundObservationPayloads(message, contextWindowTokens);
-    const obsPrompt = buildObservationPrompt({
-      id: 0,
-      tool_name: message.tool_name!,
-      tool_input: toolInputJson,
-      tool_output: toolOutputJson,
-      created_at_epoch: originalTimestamp ?? Date.now(),
-      cwd: message.cwd
-    });
     const responseContext = snapshotResponseContext(session);
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
@@ -289,24 +288,16 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
   private async processSummaryMessage(
     session: ActiveSession,
-    message: { last_assistant_message?: string },
     worker: WorkerRef | undefined,
     config: TConfig,
-    mode: ModeConfig,
     originalTimestamp: number | null,
-    lastCwd: string | undefined
+    lastCwd: string | undefined,
+    summaryPrompt: string
   ): Promise<void> {
     if (!session.memorySessionId) {
       throw new Error('Cannot process summary: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
 
-    const summaryPrompt = buildSummaryPrompt({
-      id: session.sessionDbId,
-      memory_session_id: session.memorySessionId,
-      project: session.project,
-      user_prompt: session.userPrompt,
-      last_assistant_message: message.last_assistant_message || ''
-    }, mode);
     const responseContext = snapshotResponseContext(session);
 
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
@@ -342,25 +333,64 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   }
 
   /**
-   * JSON-encode an observation payload, truncated to a window-derived char
-   * cap. Truncation may cut mid-JSON — the observer reads it as prose, so a
+   * Truncate text to a window-derived char cap with an explicit marker.
+   * Truncation may cut mid-JSON — the observer reads it as prose, so a
    * marked partial payload beats a rejected over-window request.
    */
-  private boundPayloadJson(value: unknown, maxChars: number): string {
-    const json = JSON.stringify(value) ?? String(value);
-    if (json.length <= maxChars) return json;
-    return `${json.slice(0, maxChars)} …[truncated ${json.length - maxChars} chars]`;
+  private boundText(text: string, maxChars: number): string {
+    if (text.length <= maxChars) return text;
+    return `${text.slice(0, maxChars)} …[truncated ${text.length - maxChars} chars]`;
   }
 
-  private boundObservationPayloads(
-    message: { tool_input?: unknown; tool_response?: unknown },
-    contextWindowTokens: number
-  ): { toolInputJson: string; toolOutputJson: string } {
-    const maxChars = Math.floor(contextWindowTokens * PAYLOAD_WINDOW_RATIO) * PAYLOAD_CHARS_PER_TOKEN;
-    return {
-      toolInputJson: this.boundPayloadJson(message.tool_input, maxChars),
-      toolOutputJson: this.boundPayloadJson(message.tool_response, maxChars),
-    };
+  private boundPayloadJson(value: unknown, maxChars: number): string {
+    return this.boundText(JSON.stringify(value) ?? String(value), maxChars);
+  }
+
+  /**
+   * Build the exact prompt the pending message will dispatch, so compaction
+   * can reserve its true cost — template scaffold included. The variable
+   * payload (tool_input/tool_output, or last_assistant_message) starts at the
+   * PAYLOAD_WINDOW_RATIO cap and is halved until the rendered prompt fits
+   * PROMPT_WINDOW_RATIO of the window: buildObservationPrompt re-encodes
+   * payloads pretty-printed with escaping, so only measuring the rendered
+   * string bounds the real request (PR #3516 review). Returns null for
+   * message types that dispatch no prompt.
+   */
+  private buildPendingPrompt(
+    session: ActiveSession,
+    message: { type?: string; tool_name?: string; tool_input?: unknown; tool_response?: unknown; cwd?: string; last_assistant_message?: string },
+    mode: ModeConfig,
+    contextWindowTokens: number,
+    originalTimestamp: number | null
+  ): string | null {
+    if (message.type !== 'observation' && message.type !== 'summarize') {
+      return null;
+    }
+
+    const promptCapTokens = contextWindowTokens * PROMPT_WINDOW_RATIO;
+    let maxChars = Math.floor(contextWindowTokens * PAYLOAD_WINDOW_RATIO) * PAYLOAD_CHARS_PER_TOKEN;
+    for (;;) {
+      const prompt = message.type === 'observation'
+        ? buildObservationPrompt({
+            id: 0,
+            tool_name: message.tool_name!,
+            tool_input: this.boundPayloadJson(message.tool_input, maxChars),
+            tool_output: this.boundPayloadJson(message.tool_response, maxChars),
+            created_at_epoch: originalTimestamp ?? Date.now(),
+            cwd: message.cwd
+          })
+        : buildSummaryPrompt({
+            id: session.sessionDbId,
+            memory_session_id: session.memorySessionId ?? '',
+            project: session.project,
+            user_prompt: session.userPrompt,
+            last_assistant_message: this.boundText(message.last_assistant_message || '', maxChars)
+          }, mode);
+      if (this.estimateTokens(prompt) <= promptCapTokens || maxChars <= PAYLOAD_MIN_CHARS) {
+        return prompt;
+      }
+      maxChars = Math.floor(maxChars / 2);
+    }
   }
 
   /**
