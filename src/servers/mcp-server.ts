@@ -437,6 +437,7 @@ async function ensureWorkerConnection(): Promise<boolean> {
 const tools = [
   {
     name: '__IMPORTANT',
+    annotations: { readOnlyHint: true },
     description: `3-LAYER WORKFLOW (ALWAYS FOLLOW):
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
@@ -471,6 +472,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'search',
+    annotations: { readOnlyHint: true },
     description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, platformSource, type, obs_type, dateStart, dateEnd, offset, orderBy',
     inputSchema: {
       type: 'object',
@@ -494,6 +496,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'timeline',
+    annotations: { readOnlyHint: true },
     description: 'Step 2: Get context around results. Params: anchor (observation ID) OR query (finds anchor automatically), depth_before, depth_after, project',
     inputSchema: {
       type: 'object',
@@ -512,6 +515,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'get_observations',
+    annotations: { readOnlyHint: true },
     description: 'Step 3: Fetch full details for filtered IDs. Params: ids (array of observation IDs, required), orderBy, limit, project',
     inputSchema: {
       type: 'object',
@@ -531,6 +535,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'session_start_context',
+    annotations: { readOnlyHint: true },
     description: 'Render the exact worker-mode SessionStart context for a project. Calls /api/context/inject and returns the same text hooks inject at startup. Params: project OR projects, platformSource, full, colors.',
     inputSchema: {
       type: 'object',
@@ -593,6 +598,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'observation_search',
+    annotations: { readOnlyHint: true },
     description: 'Full-text search across generated observations using the server\'s GIN tsvector index (Phase 1). Calls /v1/search. Server runtime only. Params: query (required), projectId (optional), platformSource, limit (default 20, max 100).',
     inputSchema: {
       type: 'object',
@@ -609,6 +615,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'observation_context',
+    annotations: { readOnlyHint: true },
     description: 'Get top-N relevant observations for context injection. Returns matched observations AND a pre-joined context string suitable for prompt injection. Calls /v1/context. Server runtime only.',
     inputSchema: {
       type: 'object',
@@ -625,6 +632,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'observation_generation_status',
+    annotations: { readOnlyHint: true },
     description: 'Look up the status of an observation generation job by id. Calls /v1/jobs/:id. Server runtime only. Returns the same payload as REST.',
     inputSchema: {
       type: 'object',
@@ -638,6 +646,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'smart_search',
+    annotations: { readOnlyHint: true },
     description: 'Search codebase for symbols, functions, classes using tree-sitter AST parsing. Returns folded structural views with token counts. Use path parameter to scope the search.',
     inputSchema: {
       type: 'object',
@@ -675,6 +684,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'smart_unfold',
+    annotations: { readOnlyHint: true },
     description: 'Expand a specific symbol (function, class, method) from a file. Returns the full source code of just that symbol. Use after smart_search or smart_outline to read specific code.',
     inputSchema: {
       type: 'object',
@@ -719,6 +729,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'smart_outline',
+    annotations: { readOnlyHint: true },
     description: 'Get structural outline of a file — shows all symbols (functions, classes, methods, types) with signatures but bodies folded. Much cheaper than reading the full file.',
     inputSchema: {
       type: 'object',
@@ -773,6 +784,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'list_corpora',
+    annotations: { readOnlyHint: true },
     description: 'List all knowledge corpora with their stats and priming status',
     inputSchema: {
       type: 'object',
@@ -871,7 +883,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: tools.map(tool => ({
       name: tool.name,
       description: tool.description,
-      inputSchema: tool.inputSchema
+      inputSchema: tool.inputSchema,
+      ...('annotations' in tool ? { annotations: tool.annotations } : {})
     }))
   };
 });
