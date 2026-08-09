@@ -191,10 +191,10 @@ describe('buildCompactionTimeline', () => {
         1_700_000_010_000,
       );
 
-      // ~10 tokens is smaller than any single seeded observation, so the
-      // budget walk keeps nothing — but the call must not throw, and the
-      // short summary line (4 tokens) still fits the remaining budget.
-      const output = buildCompactionTimeline(store, project, '/tmp/compaction-test', 10);
+      // ~50 tokens is smaller than any single seeded observation (~103), so
+      // the budget walk keeps nothing — but the call must not throw, and the
+      // short summary's rendered line plus day header (~17 tokens) still fits.
+      const output = buildCompactionTimeline(store, project, '/tmp/compaction-test', 50);
 
       for (const title of titles) {
         expect(output).not.toContain(title);
@@ -239,6 +239,43 @@ describe('buildCompactionTimeline', () => {
       // Rendered size must stay near the budget instead of ballooning to the
       // summaries' full ~10k tokens. Small allowance for day headers.
       expect(Math.ceil(output.length / 4)).toBeLessThanOrEqual(tokenBudget + 50);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('enforces the budget on rendered output — row scaffolding cannot blow past it', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      const project = 'compaction-rendered-budget';
+      // Ten one-char summary requests: the admission walk charges ~1 token
+      // each, but every row renders as `S<id> <char> (<datetime>)` plus day
+      // headers — ~94 tokens against a 10-token budget before the
+      // rendered-output limit existed (PR #3516 review repro).
+      for (let i = 0; i < 10; i++) {
+        const memorySessionId = `rendered-budget-memory-${i}`;
+        createSession(store, project, memorySessionId);
+        store.storeSummary(
+          memorySessionId,
+          project,
+          {
+            request: 'x',
+            investigated: 'investigated',
+            learned: 'learned',
+            completed: 'completed',
+            next_steps: 'next',
+            notes: null,
+          },
+          1,
+          0,
+          1_700_000_000_000 + i * 1000,
+        );
+      }
+
+      const tokenBudget = 10;
+      const output = buildCompactionTimeline(store, project, '/tmp/compaction-test', tokenBudget);
+
+      expect(Math.ceil(output.length / 4)).toBeLessThanOrEqual(tokenBudget);
     } finally {
       store.close();
     }

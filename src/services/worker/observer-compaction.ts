@@ -73,11 +73,37 @@ export function buildCompactionTimeline(
     tokenBudget,
   });
 
-  const summariesForTimeline = prepareSummariesForTimeline(keptSummaries, summaries);
-  const timeline = buildTimeline(keptObservations, summariesForTimeline);
-  const fullObservationIds = getFullObservationIds(keptObservations, config.fullObservationCount);
+  const render = (): string => {
+    const summariesForTimeline = prepareSummariesForTimeline(keptSummaries, summaries);
+    const timeline = buildTimeline(keptObservations, summariesForTimeline);
+    const fullObservationIds = getFullObservationIds(keptObservations, config.fullObservationCount);
+    return renderTimeline(timeline, fullObservationIds, config, cwd, false).join('\n').trimEnd();
+  };
 
-  const output = renderTimeline(timeline, fullObservationIds, config, cwd, false);
+  // The admission walk above only charges each item's content, but rendering
+  // adds scaffolding — day headers, `S<id> … (<datetime>)` wrappers, table
+  // chrome — that can dwarf tiny items (PR #3516 review: ten one-char summary
+  // requests under a 10-token budget rendered ~94 tokens). Enforce the budget
+  // on the actual rendered output: drop the oldest kept item (both lists are
+  // newest-first, so the oldest is the tail) and re-render until it fits.
+  let rendered = render();
+  while (
+    Math.ceil(rendered.length / CHARS_PER_TOKEN_ESTIMATE) > tokenBudget &&
+    (keptObservations.length > 0 || keptSummaries.length > 0)
+  ) {
+    const oldestObservation = keptObservations[keptObservations.length - 1];
+    const oldestSummary = keptSummaries[keptSummaries.length - 1];
+    if (
+      oldestSummary === undefined ||
+      (oldestObservation !== undefined &&
+        oldestObservation.created_at_epoch <= oldestSummary.created_at_epoch)
+    ) {
+      keptObservations.pop();
+    } else {
+      keptSummaries.pop();
+    }
+    rendered = render();
+  }
 
-  return output.join('\n').trimEnd();
+  return rendered;
 }
