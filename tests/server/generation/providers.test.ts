@@ -115,6 +115,16 @@ describe('shared error classification', () => {
     expect((err.cause as Error).message).not.toContain(rawBody);
   });
 
+  it('classifyHttpProviderError treats a 2xx body-level litellm parse error as transient', () => {
+    const err = classifyHttpProviderError({
+      status: 200,
+      bodyText: '200 Unable to get json response - Expecting value: line 45 column 1',
+      cause: new Error('OpenRouter API error: 200 - Unable to get json response'),
+      providerLabel: 'OpenRouter',
+    });
+    expect(err.kind).toBe('transient');
+  });
+
   it('classifyClaudeServerError treats 529 as transient', () => {
     expect(classifyClaudeServerError({ status: 529, cause: 'x' }).kind).toBe('transient');
   });

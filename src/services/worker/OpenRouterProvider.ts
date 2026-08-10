@@ -88,6 +88,23 @@ export function classifyOpenRouterError(input: {
     );
   }
 
+  // litellm (behind OpenRouter) can fail to parse the downstream model's
+  // response and surface it as a body-level error inside a 200 envelope, e.g.
+  // `{ error: { code: 200, message: "Unable to get json response - Expecting
+  // value: line 45 column 1" } }`. Because the body-error path forwards the
+  // success status verbatim, none of the HTTP-status branches above match and
+  // it would otherwise fall through to `unrecoverable` and never retry. These
+  // are transient upstream hiccups that usually succeed on a retry, so detect
+  // the tell-tale litellm markers and route them to the retry loop.
+  // Kept marker-scoped on purpose: OpenRouter also delivers genuine auth/quota
+  // errors inside 200 envelopes, which must stay non-transient.
+  if (lower.includes('unable to get json') || lower.includes('expecting value')) {
+    return new ClassifiedProviderError(
+      `OpenRouter transient upstream parse failure (status ${status})${body ? ` - ${body.substring(0, 200)}` : ''}`,
+      { kind: 'transient', cause: input.cause },
+    );
+  }
+
   return new ClassifiedProviderError(
     `OpenRouter API error: ${status}${body ? ` - ${body.substring(0, 200)}` : ''}`,
     { kind: 'unrecoverable', cause: input.cause },
