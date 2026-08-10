@@ -24,6 +24,29 @@ import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAIComp
  */
 
 /**
+ * Provider label for error messages. openrouter.ai keeps the "OpenRouter"
+ * name; a custom base URL (DeepSeek, LM Studio, a gateway) shows its host so a
+ * rejected payload is not misattributed to OpenRouter (#2382/#2590/#2622/#2393).
+ */
+export function resolveOpenRouterProviderLabel(apiUrl: string | undefined): string {
+  if (!apiUrl) {
+    return 'OpenRouter';
+  }
+  let url: URL;
+  try {
+    url = new URL(apiUrl);
+  } catch {
+    return 'OpenAI-compatible endpoint';
+  }
+  // Match on the parsed hostname, not a whole-URL substring: a custom gateway
+  // whose path or query mentions openrouter.ai must not be labeled OpenRouter.
+  if (url.hostname === 'openrouter.ai' || url.hostname.endsWith('.openrouter.ai')) {
+    return 'OpenRouter';
+  }
+  return url.host;
+}
+
+/**
  * Classify an OpenRouter fetch failure into ClassifiedProviderError. Called
  * at the boundary right after `fetch()` returns or throws.
  */
@@ -33,10 +56,13 @@ export function classifyOpenRouterError(input: {
   headers?: Headers | { get(name: string): string | null };
   cause: unknown;
   requestId?: string;
+  providerLabel?: string;
 }): ClassifiedProviderError {
   const status = input.status;
   const body = input.bodyText ?? '';
   const lower = body.toLowerCase();
+  const label = input.providerLabel ?? 'OpenRouter';
+  const bodySuffix = body ? ` - ${body.substring(0, 200)}` : '';
   const headers = input.headers;
   const retryAfterMs = headers ? parseRetryAfterMs(headers.get('retry-after')) : undefined;
 
@@ -47,35 +73,45 @@ export function classifyOpenRouterError(input: {
     lower.includes('insufficient_quota')
   ) {
     return new ClassifiedProviderError(
-      `OpenRouter quota exhausted${status !== undefined ? ` (status ${status})` : ''}`,
+      `${label} quota exhausted${status !== undefined ? ` (status ${status})` : ''}`,
       { kind: 'quota_exhausted', cause: input.cause },
     );
   }
 
   if (status === 429) {
     return new ClassifiedProviderError(
-      'OpenRouter rate limit (429)',
+      `${label} rate limit (429)`,
       { kind: 'rate_limit', cause: input.cause, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
     );
   }
 
   if (status === 401 || status === 403) {
     return new ClassifiedProviderError(
-      `OpenRouter auth error (status ${status})`,
+      `${label} auth error (status ${status})`,
       { kind: 'auth_invalid', cause: input.cause },
     );
   }
 
-  if (status === 400 || status === 404) {
+  // Keep 400 and 404 on separate fingerprints, and carry the response body:
+  // the body is the only thing that tells an unknown model from an oversized
+  // payload from a gateway that does not speak the OpenRouter request shape.
+  if (status === 400) {
     return new ClassifiedProviderError(
-      `OpenRouter bad request (status ${status})`,
+      `${label} bad request (status 400)${bodySuffix}`,
+      { kind: 'unrecoverable', cause: input.cause },
+    );
+  }
+
+  if (status === 404) {
+    return new ClassifiedProviderError(
+      `${label} not found (status 404)${bodySuffix}`,
       { kind: 'unrecoverable', cause: input.cause },
     );
   }
 
   if (status !== undefined && status >= 500 && status < 600) {
     return new ClassifiedProviderError(
-      `OpenRouter upstream error (status ${status})`,
+      `${label} upstream error (status ${status})`,
       { kind: 'transient', cause: input.cause },
     );
   }
@@ -83,13 +119,13 @@ export function classifyOpenRouterError(input: {
   // Network errors (no status) — treat as transient.
   if (status === undefined) {
     return new ClassifiedProviderError(
-      `OpenRouter network error: ${input.cause instanceof Error ? input.cause.message : String(input.cause)}`,
+      `${label} network error: ${input.cause instanceof Error ? input.cause.message : String(input.cause)}`,
       { kind: 'transient', cause: input.cause },
     );
   }
 
   return new ClassifiedProviderError(
-    `OpenRouter API error: ${status}${body ? ` - ${body.substring(0, 200)}` : ''}`,
+    `${label} API error: ${status}${bodySuffix}`,
     { kind: 'unrecoverable', cause: input.cause },
   );
 }
@@ -250,7 +286,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         response = await this.fetchChatCompletion(apiUrl, apiKey, model, messages, siteUrl, appName, priorRequestId, attemptSignal);
       } catch (networkError: unknown) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
-        throw classifyOpenRouterError({ cause: err });
+        throw classifyOpenRouterError({ cause: err, providerLabel: resolveOpenRouterProviderLabel(apiUrl) });
       }
 
       const requestId = response.headers.get('x-request-id') ?? response.headers.get('x-openrouter-request-id');
@@ -267,6 +303,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
           bodyText: errorText,
           headers: response.headers,
           cause: new Error(`OpenRouter API error: ${response.status} - ${errorText}`),
+          providerLabel: resolveOpenRouterProviderLabel(apiUrl),
           ...(requestId ? { requestId } : {}),
         });
       }
@@ -280,6 +317,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
           bodyText: `${responseData.error.code} ${responseData.error.message ?? ''}`,
           headers: response.headers,
           cause: new Error(`OpenRouter API error: ${responseData.error.code} - ${responseData.error.message}`),
+          providerLabel: resolveOpenRouterProviderLabel(apiUrl),
         });
       }
 
