@@ -104,6 +104,12 @@ describe('getProjectName', () => {
         getProjectName('/home/user/pasteypal')
       );
     });
+
+    it('leaves non-ASCII characters untouched to stay in step with SQLite NOCASE', () => {
+      // SQLite's NOCASE collation folds only ASCII A–Z, so folding `É` here
+      // would produce a key that NOCASE cannot match back to the stored row.
+      expect(getProjectName('/home/user/Éclair')).toBe('Éclair');
+    });
   });
 
   describe('realistic scenarios from #1478', () => {

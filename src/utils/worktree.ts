@@ -56,9 +56,7 @@ export function detectWorktree(cwd: string): WorktreeInfo {
 
   const parentRepoPath = worktreesMatch[1];
   const worktreeName = path.basename(cwd);
-  // #3531 — lowercase the parent key so the worktree composite bucket
-  // (`parent/worktree`) matches getProjectName, which also lowercases.
-  const parentProjectName = path.basename(parentRepoPath).toLowerCase();
+  const parentProjectName = path.basename(parentRepoPath);
 
   return {
     isWorktree: true,

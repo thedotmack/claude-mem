@@ -66,10 +66,13 @@ export function getProjectName(cwd: string | null | undefined): string {
     return 'unknown-project';
   }
 
-  // #3531 — lowercase the project key so two checkouts of the same repo whose
-  // directory names differ only in case (e.g. `PasteyPal` vs `pasteypal`) resolve
-  // to one memory bucket instead of silently forking into two.
-  return basename.toLowerCase();
+  // #3531 — fold ASCII case so two checkouts of the same repo whose directory
+  // names differ only in case (e.g. `PasteyPal` vs `pasteypal`) resolve to one
+  // memory bucket instead of silently forking into two. Fold ONLY ASCII A–Z:
+  // the retrieval queries compare with SQLite's NOCASE collation, which is
+  // ASCII-only, so lowercasing non-ASCII here (e.g. `É`→`é`) would disagree with
+  // NOCASE and strand rows stored under the original casing.
+  return basename.replace(/[A-Z]/g, ch => ch.toLowerCase());
 }
 
 export interface ProjectContext {
