@@ -29,6 +29,7 @@ import {
   recordClaudeCliSetupRequired,
 } from '../../../../shared/dependency-health.js';
 import { findClaudeExecutable } from '../../../../shared/find-claude-executable.js';
+import { recordObserverFailure } from '../../../../shared/observer-health.js';
 import { isClassified } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
 
@@ -213,6 +214,9 @@ export class SessionRoutes extends BaseRouteHandler {
           provider,
           error: errorMsg,
         }, error);
+        // Observer-health ledger: repeated generator failures mean observations
+        // are being dropped — session-start context warns the user via this.
+        recordObserverFailure(provider, errorMsg);
         telemetryBuffer.record('session_compressed', session.sessionDbId, {
           outcome: 'error',
           provider,
