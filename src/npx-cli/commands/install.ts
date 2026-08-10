@@ -70,27 +70,22 @@ function detectInstallMethod(): string {
  * Claude Code releases, so this is key for diagnosing installs whose worker
  * never starts. Missing binary or timeout → undefined (dropped by scrubber).
  */
-function readClaudeCodeVersionOutput(): string | undefined {
-  const command = process.platform === 'win32'
-    ? (lookupWindowsCommand('claude') ?? 'claude.cmd')
-    : 'claude';
-  const invocation = buildSpawnSyncInvocation(command, ['--version'], {
-    timeout: 5000,
-    encoding: 'utf-8',
-  });
-  const result = spawnSync(invocation.command, invocation.args, invocation.options);
-  const output = (result.stdout ?? '').trim();
-  if (!output) return undefined;
-  // "2.0.14 (Claude Code)" → "2.0.14"
-  return output.split(/\s+/)[0].slice(0, 40) || undefined;
-}
-
 function detectClaudeCodeVersion(): string | undefined {
   try {
-    return readClaudeCodeVersionOutput();
+    const command = process.platform === 'win32'
+      ? (lookupWindowsCommand('claude') ?? 'claude.cmd')
+      : 'claude';
+    const invocation = buildSpawnSyncInvocation(command, ['--version'], {
+      timeout: 5000,
+      encoding: 'utf-8',
+    });
+    const result = spawnSync(invocation.command, invocation.args, invocation.options);
+    const output = (result.stdout ?? '').trim();
+    if (!output) return undefined;
+    // "2.0.14 (Claude Code)" → "2.0.14"
+    return output.split(/\s+/)[0].slice(0, 40) || undefined;
   } catch (error: unknown) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    console.warn('[install] Could not detect Claude Code version:', err);
+    console.warn('[install] Could not detect Claude Code version:', error instanceof Error ? error : String(error));
     return undefined;
   }
 }
@@ -293,6 +288,66 @@ async function resolveClaudeAutoMemoryChoice(
   return choice;
 }
 
+/**
+ * The single-step IDE installers all share one shape: load the installer
+ * module, run it with console output buffered, record a FAIL_LOUD_PER_IDE
+ * failure on non-zero exit. Everything IDE-specific lives in this table.
+ * `load` returns a nullary runner so module import (shown as `loading`) and
+ * execution (shown as `step`) stay separate spinner messages.
+ */
+const IDE_TASKS: Record<string, {
+  title: string;
+  loading: string;
+  step: string;
+  fail: string;
+  ok: string;
+  load: () => Promise<() => Promise<number>>;
+}> = {
+  opencode: {
+    title: 'OpenCode: installing plugin',
+    loading: 'Loading OpenCode installer…',
+    step: 'Installing OpenCode plugin…',
+    fail: 'OpenCode: plugin installation failed',
+    ok: 'OpenCode: plugin installed',
+    load: async () => (await import('../../services/integrations/OpenCodeInstaller.js')).installOpenCodeIntegration,
+  },
+  windsurf: {
+    title: 'Windsurf: installing hooks',
+    loading: 'Loading Windsurf installer…',
+    step: 'Installing Windsurf hooks…',
+    fail: 'Windsurf: hook installation failed',
+    ok: 'Windsurf: hooks installed',
+    load: async () => (await import('../../services/integrations/WindsurfHooksInstaller.js')).installWindsurfHooks,
+  },
+  openclaw: {
+    title: 'OpenClaw: installing plugin',
+    loading: 'Loading OpenClaw installer…',
+    step: 'Copying plugin files…',
+    fail: 'OpenClaw: plugin installation failed',
+    ok: 'OpenClaw: plugin installed',
+    load: async () => (await import('../../services/integrations/OpenClawInstaller.js')).installOpenClawIntegration,
+  },
+  'codex-cli': {
+    title: 'Codex CLI: registering hooks marketplace',
+    loading: 'Loading Codex CLI installer…',
+    step: 'Registering native Codex hooks…',
+    fail: 'Codex CLI: integration setup failed',
+    ok: 'Codex CLI: hooks marketplace registered',
+    load: async () => {
+      const { installCodexCli } = await import('../../services/integrations/CodexCliInstaller.js');
+      return () => installCodexCli(marketplaceDirectory());
+    },
+  },
+  antigravity: {
+    title: 'Antigravity: installing hooks + MCP',
+    loading: 'Loading Antigravity CLI installer…',
+    step: 'Installing Antigravity hooks + MCP…',
+    fail: 'Antigravity: hooks + MCP installation failed',
+    ok: 'Antigravity: hooks + MCP installed',
+    load: async () => (await import('../../services/integrations/AntigravityCliHooksInstaller.js')).installAntigravityCliHooks,
+  },
+};
+
 function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | null {
   const recordFailure = (label: string, output: string) => {
     // Route every per-IDE failure through the central decision point. A single
@@ -307,6 +362,24 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
     }, summary);
   };
 
+  const generic = IDE_TASKS[ideId];
+  if (generic) {
+    return {
+      title: generic.title,
+      task: async (message) => {
+        message(generic.loading);
+        const run = await generic.load();
+        message(generic.step);
+        const { result, output } = await bufferConsole(() => run());
+        if (result !== 0) {
+          recordFailure(generic.fail, output);
+          return `${generic.fail} ${styleText('red', 'FAIL')}`;
+        }
+        return `${generic.ok} ${styleText('green', 'OK')}`;
+      },
+    };
+  }
+
   switch (ideId) {
     case 'claude-code': {
       return {
@@ -316,6 +389,8 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
     }
 
     case 'cursor': {
+      // Two-step with a partial-success path (hooks OK, MCP failed) — does not
+      // fit the single-step table shape above.
       return {
         title: 'Cursor: installing hooks + MCP',
         task: async (message) => {
@@ -333,91 +408,6 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
             return `Cursor: hooks + MCP installed ${styleText('green', 'OK')}`;
           }
           return `Cursor: hooks installed; MCP setup failed — run \`npx claude-mem cursor mcp\` ${styleText('yellow', '!')}`;
-        },
-      };
-    }
-
-    case 'opencode': {
-      return {
-        title: 'OpenCode: installing plugin',
-        task: async (message) => {
-          message('Loading OpenCode installer…');
-          const { installOpenCodeIntegration } = await import('../../services/integrations/OpenCodeInstaller.js');
-          message('Installing OpenCode plugin…');
-          const { result, output } = await bufferConsole(() => installOpenCodeIntegration());
-          if (result !== 0) {
-            recordFailure('OpenCode: plugin installation failed', output);
-            return `OpenCode: plugin installation failed ${styleText('red', 'FAIL')}`;
-          }
-          return `OpenCode: plugin installed ${styleText('green', 'OK')}`;
-        },
-      };
-    }
-
-    case 'windsurf': {
-      return {
-        title: 'Windsurf: installing hooks',
-        task: async (message) => {
-          message('Loading Windsurf installer…');
-          const { installWindsurfHooks } = await import('../../services/integrations/WindsurfHooksInstaller.js');
-          message('Installing Windsurf hooks…');
-          const { result, output } = await bufferConsole(() => installWindsurfHooks());
-          if (result !== 0) {
-            recordFailure('Windsurf: hook installation failed', output);
-            return `Windsurf: hook installation failed ${styleText('red', 'FAIL')}`;
-          }
-          return `Windsurf: hooks installed ${styleText('green', 'OK')}`;
-        },
-      };
-    }
-
-    case 'openclaw': {
-      return {
-        title: 'OpenClaw: installing plugin',
-        task: async (message) => {
-          message('Loading OpenClaw installer…');
-          const { installOpenClawIntegration } = await import('../../services/integrations/OpenClawInstaller.js');
-          message('Copying plugin files…');
-          const { result, output } = await bufferConsole(() => installOpenClawIntegration());
-          if (result !== 0) {
-            recordFailure('OpenClaw: plugin installation failed', output);
-            return `OpenClaw: plugin installation failed ${styleText('red', 'FAIL')}`;
-          }
-          return `OpenClaw: plugin installed ${styleText('green', 'OK')}`;
-        },
-      };
-    }
-
-    case 'codex-cli': {
-      return {
-        title: 'Codex CLI: registering hooks marketplace',
-        task: async (message) => {
-          message('Loading Codex CLI installer…');
-          const { installCodexCli } = await import('../../services/integrations/CodexCliInstaller.js');
-          message('Registering native Codex hooks…');
-          const { result, output } = await bufferConsole(() => installCodexCli(marketplaceDirectory()));
-          if (result !== 0) {
-            recordFailure('Codex CLI: integration setup failed', output);
-            return `Codex CLI: integration setup failed ${styleText('red', 'FAIL')}`;
-          }
-          return `Codex CLI: hooks marketplace registered ${styleText('green', 'OK')}`;
-        },
-      };
-    }
-
-    case 'antigravity': {
-      return {
-        title: 'Antigravity: installing hooks + MCP',
-        task: async (message) => {
-          message('Loading Antigravity CLI installer…');
-          const { installAntigravityCliHooks } = await import('../../services/integrations/AntigravityCliHooksInstaller.js');
-          message('Installing Antigravity hooks + MCP…');
-          const { result, output } = await bufferConsole(() => installAntigravityCliHooks());
-          if (result !== 0) {
-            recordFailure('Antigravity: hooks + MCP installation failed', output);
-            return `Antigravity: hooks + MCP installation failed ${styleText('red', 'FAIL')}`;
-          }
-          return `Antigravity: hooks + MCP installed ${styleText('green', 'OK')}`;
         },
       };
     }
@@ -774,25 +764,16 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
 function mergeSettings(updates: Record<string, string>): boolean {
   const path = USER_SETTINGS_PATH;
   try {
-    // Read the FULL document so we can write it back intact. The
-    // Claude-Code-style settings.json wraps env vars in a top-level `env`
-    // block and exposes peer keys at the root (hooks, permissions,
-    // apiKeyHelper, model, statusLine, etc.). readFlatSettings unwraps the
-    // env subtree for reads, but writing that flattened view back as the
-    // entire file silently drops every non-env top-level key — destroying
-    // user configuration that disableClaudeAutoMemory + writeJsonFileAtomic
-    // had carefully written.
-    //
-    // Track whether the file uses the env-nested shape so we mutate only the
-    // relevant subtree and preserve every other top-level key on write.
+    // Read the FULL document and merge at the top level, preserving unknown
+    // keys. The file is always flat here: SettingsDefaultsManager.loadFromFile
+    // migrates any legacy env-nested settings.json to the flat schema on first
+    // read (and getSetting() runs before any mergeSettings call).
     let document: Record<string, unknown> = {};
-    let envNested = false;
     if (existsSync(path)) {
       try {
         const parsed = parseJsonWithBom(readFileSync(path, 'utf-8'));
         if (parsed && typeof parsed === 'object') {
           document = parsed as Record<string, unknown>;
-          envNested = typeof document.env === 'object' && document.env !== null;
         }
       } catch (parseError: unknown) {
         console.warn('[install] Failed to parse existing settings.json, starting from empty:', parseError instanceof Error ? parseError.message : String(parseError));
@@ -805,12 +786,7 @@ function mergeSettings(updates: Record<string, string>): boolean {
       }
     }
 
-    const target = envNested
-      ? (document.env as Record<string, unknown>)
-      : document;
-    for (const [key, value] of Object.entries(updates)) {
-      target[key] = value;
-    }
+    Object.assign(document, updates);
 
     writeSettingsJsonAtomic(path, document);
     // settings.json can carry tokens (CMEM Pro setup token, provider API
@@ -847,20 +823,13 @@ type ClaudeApiMode = 'direct' | 'gateway';
 // API_KEY,PROJECT_ID}).
 type RuntimeId = 'worker' | 'server';
 
-function readRawStoredAuthMethod(): 'subscription' | 'api-key' | 'gateway' | undefined {
+function resolveClaudeAuthMethod(): 'subscription' | 'api-key' | 'gateway' {
   try {
     const value = readFlatSettings(USER_SETTINGS_PATH)?.CLAUDE_MEM_CLAUDE_AUTH_METHOD;
     if (value === 'subscription' || value === 'api-key' || value === 'gateway') return value;
-    return undefined;
   } catch {
-    // [ANTI-PATTERN IGNORED]: settings.json is optional and may be absent or hand-edited into invalid JSON; falling back to env-based auth detection in resolveClaudeAuthMethod is the designed recovery.
-    return undefined;
+    // [ANTI-PATTERN IGNORED]: settings.json is optional and may be absent or hand-edited into invalid JSON; falling back to env-based auth detection below is the designed recovery.
   }
-}
-
-function resolveClaudeAuthMethod(): 'subscription' | 'api-key' | 'gateway' {
-  const stored = readRawStoredAuthMethod();
-  if (stored) return stored;
   const env = loadClaudeMemEnv();
   if (env.ANTHROPIC_BASE_URL?.trim()) return 'gateway';
   if (env.ANTHROPIC_API_KEY?.trim()) return 'api-key';
@@ -1404,20 +1373,16 @@ interface StoredTrialState {
   state: string;
 }
 
-function parseStoredTrialState(): StoredTrialState | null {
-  const flat = readFlatSettings(USER_SETTINGS_PATH);
-  if (!flat) return null;
-  const email = typeof flat.CLAUDE_MEM_PRO_TRIAL_EMAIL === 'string' ? flat.CLAUDE_MEM_PRO_TRIAL_EMAIL : '';
-  if (!email) return null;
-  return {
-    email,
-    state: typeof flat.CLAUDE_MEM_PRO_TRIAL_STATE === 'string' ? flat.CLAUDE_MEM_PRO_TRIAL_STATE : '',
-  };
-}
-
 function readStoredTrialState(): StoredTrialState | null {
   try {
-    return parseStoredTrialState();
+    const flat = readFlatSettings(USER_SETTINGS_PATH);
+    if (!flat) return null;
+    const email = typeof flat.CLAUDE_MEM_PRO_TRIAL_EMAIL === 'string' ? flat.CLAUDE_MEM_PRO_TRIAL_EMAIL : '';
+    if (!email) return null;
+    return {
+      email,
+      state: typeof flat.CLAUDE_MEM_PRO_TRIAL_STATE === 'string' ? flat.CLAUDE_MEM_PRO_TRIAL_STATE : '',
+    };
   } catch {
     // [ANTI-PATTERN IGNORED]: settings.json is optional and may be missing or hand-edited into invalid JSON; treating that as "no stored trial state" simply re-offers the trial, the designed recovery for this never-blocking flow.
     return null;
@@ -1430,14 +1395,12 @@ function readStoredTrialState(): StoredTrialState | null {
  * the failure with a log.warn and the install continues as if skipped.
  */
 async function startTrialPairing(email: string): Promise<TrialPairing | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TRIAL_START_TIMEOUT_MS);
   try {
     const res = await fetch(CMEM_PRO_TRIAL_START_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, source: 'npx-installer', device_name: hostname() }),
-      signal: controller.signal,
+      signal: AbortSignal.timeout(TRIAL_START_TIMEOUT_MS),
     });
     if (!res.ok) return null;
     const body = await res.json() as { pairing_id?: unknown; secret?: unknown; poll_interval?: unknown; user_code?: unknown };
@@ -1458,8 +1421,6 @@ async function startTrialPairing(email: string): Promise<TrialPairing | null> {
   } catch {
     // [ANTI-PATTERN IGNORED]: network/timeout failures here are NOT silent — every caller pairs the null return with a log.warn telling the user how to start the trial later; the install itself must proceed regardless.
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -1475,14 +1436,12 @@ type TrialPollOutcome =
 
 /** One POST to /api/pro/trial/poll, timeout-bounded. Never throws. */
 async function pollTrialOnce(pairing: TrialPairing): Promise<TrialPollOutcome> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TRIAL_POLL_TIMEOUT_MS);
   try {
     const res = await fetch(CMEM_PRO_TRIAL_POLL_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pairing_id: pairing.pairingId, secret: pairing.secret }),
-      signal: controller.signal,
+      signal: AbortSignal.timeout(TRIAL_POLL_TIMEOUT_MS),
     });
     if (res.status === 410 || res.status === 404) return { kind: 'gone' };
     if (res.status === 202) {
@@ -1522,8 +1481,6 @@ async function pollTrialOnce(pairing: TrialPairing): Promise<TrialPollOutcome> {
   } catch {
     // [ANTI-PATTERN IGNORED]: a failed poll is an expected transient during the human's browser dance; completeTrialPairing counts consecutive failures and warns loudly before giving up.
     return { kind: 'unreachable' };
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -1894,13 +1851,45 @@ export interface InstallOptions {
   serverUrl?: string;
 }
 
-export async function runInstallCommand(options: InstallOptions = {}): Promise<void> {
+/**
+ * Run an installer flow with the shared InstallAbortError handling: flush
+ * accrued warnings, print the remediation headline, and exit 1. ABORT must
+ * never reach the "Complete" path. `label` is the headline noun
+ * ('Installation' | 'Repair'); `onAbort` runs first (e.g. telemetry).
+ */
+async function withInstallAbort(
+  label: string,
+  fn: (summary: InstallSummary) => Promise<void>,
+  onAbort?: (err: InstallAbortError) => Promise<void>,
+): Promise<void> {
   const summary = createInstallSummary();
   try {
-    await runInstallCommandInner(options, summary);
+    await fn(summary);
   } catch (error: unknown) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    if (err instanceof InstallAbortError) {
+    if (error instanceof InstallAbortError) {
+      if (onAbort) await onAbort(error);
+      flushSummary(summary, (line) => (isInteractive ? p.log.message(line) : console.error(`  ${line}`)));
+      const headline = `${label} Aborted: ${error.category.id}`;
+      if (isInteractive) {
+        p.log.error(headline);
+        p.log.error(error.remediation);
+        p.outro(styleText('red', `claude-mem ${label.toLowerCase()} aborted.`));
+      } else {
+        console.error(`\n  ${headline}`);
+        console.error(`  ${error.remediation}`);
+        console.error(`  ${error.message}`);
+      }
+      process.exit(1);
+    }
+    throw error;
+  }
+}
+
+export async function runInstallCommand(options: InstallOptions = {}): Promise<void> {
+  await withInstallAbort(
+    'Installation',
+    (summary) => runInstallCommandInner(options, summary),
+    async (err) => {
       // err.category.id is OUR taxonomy id (error-taxonomy.ts), never a message.
       await captureCliEvent('install_failed', {
         error_category: err.category.id,
@@ -1908,24 +1897,8 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
         install_method: detectInstallMethod(),
         claude_code_version: detectClaudeCodeVersion(),
       }, { person: true });
-      // Flush whatever warnings accrued before the abort, then print the
-      // remediation headline and exit non-zero. ABORT must never reach the
-      // "Installation Complete" path.
-      flushSummary(summary, (line) => (isInteractive ? p.log.message(line) : console.error(`  ${line}`)));
-      const headline = `Installation Aborted: ${err.category.id}`;
-      if (isInteractive) {
-        p.log.error(headline);
-        p.log.error(err.remediation);
-        p.outro(styleText('red', 'claude-mem installation aborted.'));
-      } else {
-        console.error(`\n  ${headline}`);
-        console.error(`  ${err.remediation}`);
-        console.error(`  ${err.message}`);
-      }
-      process.exit(1);
-    }
-    throw error;
-  }
+    },
+  );
 }
 
 async function runInstallCommandInner(options: InstallOptions, summary: InstallSummary): Promise<void> {
@@ -2450,25 +2423,5 @@ async function runRepairCommandInner(summary: InstallSummary): Promise<void> {
 }
 
 export async function runRepairCommand(): Promise<void> {
-  const summary = createInstallSummary();
-  try {
-    await runRepairCommandInner(summary);
-  } catch (error: unknown) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    if (err instanceof InstallAbortError) {
-      flushSummary(summary, (line) => (isInteractive ? p.log.message(line) : console.error(`  ${line}`)));
-      const headline = `Repair Aborted: ${err.category.id}`;
-      if (isInteractive) {
-        p.log.error(headline);
-        p.log.error(err.remediation);
-        p.outro(styleText('red', 'claude-mem repair aborted.'));
-      } else {
-        console.error(`\n  ${headline}`);
-        console.error(`  ${err.remediation}`);
-        console.error(`  ${err.message}`);
-      }
-      process.exit(1);
-    }
-    throw error;
-  }
+  await withInstallAbort('Repair', (summary) => runRepairCommandInner(summary));
 }

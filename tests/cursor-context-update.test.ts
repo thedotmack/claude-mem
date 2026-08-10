@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { writeContextFile } from '../src/utils/cursor-utils';
+import { writeCursorContextFile as writeContextFile } from '../src/services/integrations/CursorHooksInstaller';
 
 // Read-back helper for verifying writeContextFile output.
 function readContextFile(workspacePath: string): string | null {

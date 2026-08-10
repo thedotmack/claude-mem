@@ -13,23 +13,22 @@ function globToRegex(pattern: string): RegExp {
   let regex = expanded.replace(/[.+^${}()|[\]\\]/g, '\\$&');
 
   regex = regex
-    .replace(/\*\*/g, '<<<GLOBSTAR>>>')  
-    .replace(/\*/g, '[^/]*')              
-    .replace(/\?/g, '[^/]')               
-    .replace(/<<<GLOBSTAR>>>/g, '.*');    
+    .replace(/\*\*/g, '<<<GLOBSTAR>>>')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '[^/]')
+    .replace(/<<<GLOBSTAR>>>/g, '.*');
 
   return new RegExp(`^${regex}$`);
 }
 
 /**
- * Returns true when `folderPath` matches any of the supplied glob patterns.
+ * Returns true when `path` matches any of the supplied glob patterns.
  * Patterns support `*`, `**`, `?`, and a leading `~`. Matches against both the
- * full normalized path and the basename. Reuses the same glob semantics as
- * project exclusion. Used by the skeleton-CLAUDE.md deny-list (#2400).
+ * full normalized path and the basename. Used for project exclusion and the
+ * skeleton-CLAUDE.md deny-list (#2400).
  */
-export function matchesAnyGlob(folderPath: string, patterns: string[]): boolean {
-  if (!patterns.length) return false;
-  const normalizedPath = folderPath.replace(/\\/g, '/');
+export function matchesAnyGlob(path: string, patterns: string[]): boolean {
+  const normalizedPath = path.replace(/\\/g, '/');
   const pathBasename = basename(normalizedPath);
   for (const rawPattern of patterns) {
     const pattern = rawPattern.trim();
@@ -47,30 +46,7 @@ export function matchesAnyGlob(folderPath: string, patterns: string[]): boolean 
   return false;
 }
 
+/** Comma-separated-pattern form of {@link matchesAnyGlob} for the exclusion setting. */
 export function isProjectExcluded(projectPath: string, exclusionPatterns: string): boolean {
-  if (!exclusionPatterns || !exclusionPatterns.trim()) {
-    return false;
-  }
-
-  const normalizedProjectPath = projectPath.replace(/\\/g, '/');
-  const projectBasename = basename(normalizedProjectPath);
-
-  const patternList = exclusionPatterns
-    .split(',')
-    .map(p => p.trim())
-    .filter(Boolean);
-
-  for (const pattern of patternList) {
-    try {
-      const regex = globToRegex(pattern);
-      if (regex.test(normalizedProjectPath) || regex.test(projectBasename)) {
-        return true;
-      }
-    } catch (error: unknown) {
-      logger.warn('PROJECT_NAME', 'Invalid exclusion pattern', { pattern, error: error instanceof Error ? error.message : String(error) });
-      continue;
-    }
-  }
-
-  return false;
+  return matchesAnyGlob(projectPath, (exclusionPatterns ?? '').split(','));
 }

@@ -1,7 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
 import { Observation, Summary, UserPrompt, StreamEvent } from '../types';
-import { API_ENDPOINTS } from '../constants/api';
-import { TIMING } from '../constants/timing';
 
 export function useSSE() {
   const [observations, setObservations] = useState<Observation[]>([]);
@@ -23,7 +21,7 @@ export function useSSE() {
         eventSourceRef.current.close();
       }
 
-      const eventSource = new EventSource(API_ENDPOINTS.STREAM);
+      const eventSource = new EventSource('/stream');
       eventSourceRef.current = eventSource;
 
       eventSource.onopen = () => {
@@ -41,7 +39,7 @@ export function useSSE() {
           reconnectTimeoutRef.current = undefined;
           console.log('[SSE] Attempting to reconnect...');
           connect();
-        }, TIMING.SSE_RECONNECT_DELAY_MS);
+        }, 3000);
       };
 
       eventSource.onmessage = (event) => {

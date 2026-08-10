@@ -1,6 +1,5 @@
 import {
   closeSync,
-  existsSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -32,9 +31,7 @@ export function readJsonFileWithBom<T = unknown>(filepath: string): T {
 }
 
 export function ensureDirectoryExists(directoryPath: string): void {
-  if (!existsSync(directoryPath)) {
-    mkdirSync(directoryPath, { recursive: true });
-  }
+  mkdirSync(directoryPath, { recursive: true });
 }
 
 /**

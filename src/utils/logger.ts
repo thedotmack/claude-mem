@@ -77,14 +77,8 @@ let errorSink: ErrorSink | null = null;
 
 class Logger {
   private level: LogLevel | null = null;
-  private useColor: boolean;
   private logFilePath: string | null = null;
   private logFileInitialized: boolean = false;
-
-  constructor() {
-    this.useColor = process.stdout.isTTY ?? false;
-    // Don't initialize log file in constructor - do it lazily to avoid circular dependency
-  }
 
   private ensureLogFileInitialized(): void {
     if (this.logFileInitialized) return;

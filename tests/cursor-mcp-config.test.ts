@@ -3,9 +3,9 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
-  configureCursorMcp,
+  writeCursorMcpConfig as configureCursorMcp,
   type CursorMcpConfig
-} from '../src/utils/cursor-utils';
+} from '../src/services/integrations/CursorHooksInstaller';
 
 describe('Cursor MCP Configuration', () => {
   let tempDir: string;

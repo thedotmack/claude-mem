@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// SQLite-backed API key service for the local server/worker runtime. This is
-// the bun:sqlite auth backend (see src/server/middleware/auth.ts). The
-// Postgres-backed server-beta runtime uses a separate path
-// (src/server/middleware/postgres-auth.ts).
+// SQLite-backed API key service for the local server/worker runtime (backs
+// the worker's api-key CLI). The Postgres-backed server-beta runtime uses a
+// separate path (src/server/middleware/postgres-auth.ts).
 
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'crypto';
 import { Database } from 'bun:sqlite';
@@ -33,14 +32,10 @@ export interface CreateServerApiKeyInput {
 }
 
 // #2428 — Default scopes for a newly-created local (SQLite-backed) API key.
-//
-// The local route middleware (src/server/routes/v1/ServerV1Routes.ts) gates
-// reads on `memories:read` and writes on `memories:write`. A key created with
-// no explicit scopes previously got `[]`, which is authorized for NOTHING — so
-// a "default" key silently failed every route it was meant to serve. We
-// default to the full read+write memory scope so a default key actually works
-// against the routes the local runtime mounts, while NOT granting the `*`
-// admin wildcard (that stays an explicit opt-in for privileged operations).
+// A key created with no explicit scopes previously got `[]`, which is
+// authorized for NOTHING. We default to the full read+write memory scope,
+// while NOT granting the `*` admin wildcard (that stays an explicit opt-in
+// for privileged operations).
 export const DEFAULT_LOCAL_API_KEY_SCOPES: readonly string[] = Object.freeze([
   'memories:read',
   'memories:write',

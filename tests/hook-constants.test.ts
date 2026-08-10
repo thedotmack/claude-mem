@@ -17,10 +17,6 @@ describe('hook-constants', () => {
       expect(HOOK_TIMEOUTS.HEALTH_CHECK).toBe(3000);
     });
 
-    it('should define POST_SPAWN_WAIT as 15s', () => {
-      expect(HOOK_TIMEOUTS.POST_SPAWN_WAIT).toBe(15000);
-    });
-
     it('should define PORT_IN_USE_WAIT as 3s', () => {
       expect(HOOK_TIMEOUTS.PORT_IN_USE_WAIT).toBe(3000);
     });

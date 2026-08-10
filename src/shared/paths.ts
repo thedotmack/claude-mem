@@ -1,6 +1,6 @@
 import { join, dirname, basename, sep } from 'path';
 import { homedir } from 'os';
-import { existsSync, mkdirSync, readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { parseJsonWithBom } from './atomic-json.js';
@@ -14,30 +14,9 @@ function getDirname(): string {
 
 const _dirname = getDirname();
 
-/**
- * Expand a leading `~/` (or a bare `~`) to the user's home directory.
- *
- * Node's `path.join` / `fs` do NOT expand `~` — only the shell does. So a
- * literal `~/.claude-mem` read from `settings.json` or an env var is treated
- * as a *relative* path, creating a directory literally named `~` in the
- * process cwd. claude-mem workers inherit the cwd of whatever spawned them
- * (subagents pinned to a subdirectory, a plugin-install dir, etc.), so a
- * `~`-prefixed DATA_DIR scattered stray `~/.claude-mem/` trees across the
- * workspace. Expanding here keeps every downstream path absolute regardless
- * of how the value was written.
- */
-export function expandHome(p: string): string {
-  if (typeof p !== 'string' || p.length === 0) return p;
-  if (p === '~') return homedir();
-  if (p.startsWith('~/')) return join(homedir(), p.slice(2));
-  // A `~user/...` form is intentionally left untouched — resolving another
-  // user's home is out of scope and platform-dependent.
-  return p;
-}
-
 export function resolveDataDir(): string {
   if (process.env.CLAUDE_MEM_DATA_DIR) {
-    return expandHome(process.env.CLAUDE_MEM_DATA_DIR);
+    return expandTilde(process.env.CLAUDE_MEM_DATA_DIR);
   }
 
   const defaultDataDir = join(homedir(), '.claude-mem');
@@ -46,8 +25,8 @@ export function resolveDataDir(): string {
     if (existsSync(settingsPath)) {
       const raw = parseJsonWithBom<Record<string, any>>(readFileSync(settingsPath, 'utf-8'));
       const settings = raw.env ?? raw;
-      if (settings.CLAUDE_MEM_DATA_DIR) {
-        return expandHome(settings.CLAUDE_MEM_DATA_DIR);
+      if (typeof settings.CLAUDE_MEM_DATA_DIR === 'string' && settings.CLAUDE_MEM_DATA_DIR) {
+        return expandTilde(settings.CLAUDE_MEM_DATA_DIR);
       }
     }
   } catch {
@@ -70,9 +49,7 @@ export const OBSERVER_SESSIONS_DIR = join(DATA_DIR, 'observer-sessions');
 
 export const OBSERVER_SESSIONS_PROJECT = basename(OBSERVER_SESSIONS_DIR);
 
-export function ensureDir(dirPath: string): void {
-  mkdirSync(dirPath, { recursive: true });
-}
+export { ensureDirectoryExists as ensureDir } from './atomic-json.js';
 
 export function getPackageRoot(): string {
   return join(_dirname, '..');

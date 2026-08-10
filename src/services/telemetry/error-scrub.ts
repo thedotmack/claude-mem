@@ -65,17 +65,8 @@ export const REDACTED = '[REDACTED]';
  */
 export function capRawInput(text: unknown): string {
   try {
-    if (typeof text !== 'string') {
-      if (text === null || text === undefined) return '';
-      try {
-        text = String(text);
-      } catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        logger.warn('SYSTEM', 'error-scrub: String() coercion of non-string input failed', undefined, err);
-        return '';
-      }
-    }
-    const s = text as string;
+    if (text === null || text === undefined) return '';
+    const s = typeof text === 'string' ? text : String(text);
     return s.length > MAX_RAW_INPUT_CHARS ? s.slice(0, MAX_RAW_INPUT_CHARS) : s;
   } catch {
     return '';
@@ -86,32 +77,11 @@ export function capRawInput(text: unknown): string {
  * Replaces the user's home directory prefix with `~`. Done FIRST so later
  * path/basename redaction operates on already-tildified paths and we never
  * leak the username embedded in the home path.
- *
- * os.homedir() can theoretically throw on exotic platforms; guarded so the
- * helper stays pure.
  */
 export function redactHomeDir(text: string): string {
   if (typeof text !== 'string' || text.length === 0) return text ?? '';
-  let home = '';
-  try {
-    home = os.homedir() || '';
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.warn('SYSTEM', 'error-scrub: os.homedir() failed; skipping home-dir redaction', undefined, err);
-    home = '';
-  }
-  if (!home) return text;
-  // Replace every occurrence of the literal home path. Escape regex metachars
-  // in the home path so it is matched literally (paths can contain e.g. '.').
-  const escaped = home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  try {
-    return text.replace(new RegExp(escaped, 'g'), '~');
-  } catch (error) {
-    // If the constructed RegExp is somehow invalid, fall back to split/join.
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.warn('SYSTEM', 'error-scrub: home-dir RegExp replace failed; using split/join fallback', undefined, err);
-    return text.split(home).join('~');
-  }
+  const home = os.homedir() || '';
+  return home ? text.replaceAll(home, '~') : text;
 }
 
 /**
@@ -309,33 +279,20 @@ export type ScrubbedError = {
 export function extractErrorType(err: unknown): string {
   try {
     if (err instanceof Error) {
-      // err.name can be overridden via a throwing getter on exotic objects.
-      try {
-        const name = err.name;
-        if (typeof name === 'string' && name.length > 0) {
-          return collapseWhitespace(name).slice(0, 100);
-        }
-      } catch {
-        /* fall through */
+      const name = err.name;
+      if (typeof name === 'string' && name.length > 0) {
+        return collapseWhitespace(name).slice(0, 100);
       }
-      try {
-        const ctor = err.constructor?.name;
-        if (typeof ctor === 'string' && ctor.length > 0) return ctor.slice(0, 100);
-      } catch {
-        /* fall through */
-      }
+      const ctor = err.constructor?.name;
+      if (typeof ctor === 'string' && ctor.length > 0) return ctor.slice(0, 100);
       return 'Error';
     }
     if (err === null) return 'NullError';
     if (err === undefined) return 'UndefinedError';
     if (typeof err === 'string') return 'StringError';
     if (typeof err === 'object') {
-      try {
-        const ctor = (err as { constructor?: { name?: unknown } }).constructor?.name;
-        if (typeof ctor === 'string' && ctor.length > 0) return ctor.slice(0, 100);
-      } catch {
-        /* fall through */
-      }
+      const ctor = (err as { constructor?: { name?: unknown } }).constructor?.name;
+      if (typeof ctor === 'string' && ctor.length > 0) return ctor.slice(0, 100);
       return 'ObjectError';
     }
     return typeof err === 'number' || typeof err === 'boolean'
@@ -354,14 +311,8 @@ export function extractErrorType(err: unknown): string {
 function safeReadField(err: unknown, field: 'message' | 'stack'): string {
   try {
     if (err && typeof err === 'object') {
-      try {
-        const value = (err as Record<string, unknown>)[field];
-        if (typeof value === 'string') return value;
-      } catch (error) {
-        const readErr = error instanceof Error ? error : new Error(String(error));
-        logger.warn('SYSTEM', `error-scrub: reading .${field} off thrown value failed (hostile getter)`, undefined, readErr);
-        return '';
-      }
+      const value = (err as Record<string, unknown>)[field];
+      if (typeof value === 'string') return value;
     }
     return '';
   } catch {

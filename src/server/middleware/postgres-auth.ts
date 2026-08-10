@@ -4,7 +4,6 @@ import { createHash } from 'crypto';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
 import type { PostgresApiKey } from '../../storage/postgres/auth.js';
-import type { AuthContext } from './auth.js';
 import {
   hasForwardedClientHeaders,
   hasLoopbackHostHeader,
@@ -15,12 +14,28 @@ import { logger } from '../../utils/logger.js';
 
 // Postgres-backed auth middleware for the server-beta runtime.
 //
-// Mirrors src/server/middleware/auth.ts but reads API keys from the Postgres
-// `api_keys` table instead of bun:sqlite. Phase 4 routes use this so the
-// runtime depends only on the Postgres pool and Postgres-backed repositories.
+// Reads API keys from the Postgres `api_keys` table. Phase 4 routes use this
+// so the runtime depends only on the Postgres pool and Postgres-backed
+// repositories.
 //
 // teamId / projectId on req.authContext come straight from the Postgres
 // api_keys row. Routes use those to scope every read and write.
+
+export interface AuthContext {
+  userId: string | null;
+  organizationId: string | null;
+  teamId: string | null;
+  projectId: string | null;
+  scopes: string[];
+  apiKeyId: string | null;
+  mode: 'api-key' | 'local-dev';
+}
+
+declare module 'express-serve-static-core' {
+  interface Request {
+    authContext?: AuthContext;
+  }
+}
 
 export interface PostgresRequireAuthOptions {
   requiredScopes?: string[];

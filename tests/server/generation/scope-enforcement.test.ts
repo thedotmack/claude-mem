@@ -4,10 +4,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import pg from 'pg';
 import {
   bootstrapServerPostgresSchema,
-  createPostgresStorageRepositories,
   type PostgresPoolClient,
-  type PostgresStorageRepositories,
 } from '../../../src/storage/postgres/index.js';
+import { createPostgresStorageRepositories, type PostgresStorageRepositories } from '../../sdk/pg-storage.js';
 import {
   ProviderObservationGenerator,
   ServerGenerationScopeViolationError,

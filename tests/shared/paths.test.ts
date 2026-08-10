@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { paths, DATA_DIR, resolveDataDir, expandHome } from '../../src/shared/paths.js';
+import { paths, DATA_DIR, resolveDataDir, expandTilde } from '../../src/shared/paths.js';
 import { homedir } from 'os';
 import { join } from 'path';
 
@@ -34,31 +34,31 @@ describe('paths namespace', () => {
   });
 });
 
-describe('expandHome', () => {
+describe('expandTilde', () => {
   it('expands a leading ~/ to the home directory', () => {
-    expect(expandHome('~/foo/bar')).toBe(join(homedir(), 'foo/bar'));
+    expect(expandTilde('~/foo/bar')).toBe(join(homedir(), 'foo/bar'));
   });
 
   it('expands a bare ~ to the home directory', () => {
-    expect(expandHome('~')).toBe(homedir());
+    expect(expandTilde('~')).toBe(homedir());
   });
 
   it('leaves an absolute path untouched', () => {
     const abs = join(homedir(), '.claude-mem');
-    expect(expandHome(abs)).toBe(abs);
+    expect(expandTilde(abs)).toBe(abs);
   });
 
   it('leaves a relative path (no ~) untouched', () => {
-    expect(expandHome('foo/bar')).toBe('foo/bar');
+    expect(expandTilde('foo/bar')).toBe('foo/bar');
   });
 
   it('does not expand ~ not at position 0', () => {
     // a tilde mid-path is a literal character, not a home reference
-    expect(expandHome('foo/~bar')).toBe('foo/~bar');
+    expect(expandTilde('foo/~bar')).toBe('foo/~bar');
   });
 
   it('does not touch a ~user/ form (out of scope)', () => {
-    expect(expandHome('~someone/data')).toBe('~someone/data');
+    expect(expandTilde('~someone/data')).toBe('~someone/data');
   });
 });
 

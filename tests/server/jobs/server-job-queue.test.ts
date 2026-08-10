@@ -170,7 +170,7 @@ describe('ServerJobQueue', () => {
     ).not.toThrow();
   });
 
-  it('Phase 12 — emits completed/failed/stalled lifecycle events through observe()', () => {
+  it('Phase 12 — emits stalled through observe() and counts stalled/errored', () => {
     const queueState: FakeQueueState = { added: [], removed: [], closed: false };
     const workerState: FakeWorkerState = {
       processor: null, options: null, errorHandlers: [], ranWith: null, closed: false,
@@ -181,26 +181,18 @@ describe('ServerJobQueue', () => {
       workerFactory: buildFakeWorker(workerState),
     });
 
-    const events: { kind: string; jobId?: string; arg?: unknown }[] = [];
-    sjq.observe({
-      onCompleted: (jobId, durationMs) => { events.push({ kind: 'completed', jobId, arg: durationMs }); },
-      onFailed: (jobId, attempts, reason) => { events.push({ kind: 'failed', jobId: jobId ?? '?', arg: { attempts, reason } }); },
-      onStalled: (jobId) => { events.push({ kind: 'stalled', jobId }); },
-      onError: (err) => { events.push({ kind: 'error', arg: err }); },
-    });
+    const stalled: string[] = [];
+    sjq.observe({ onStalled: (jobId) => { stalled.push(jobId); } });
     sjq.start(async () => {});
 
-    // Fire a fake "active" then "completed" so duration is positive.
+    // Fire a fake "active" then "completed" so the logging path is exercised.
     workerState.eventHandlers?.get('active')?.({ id: 'job1' });
     workerState.eventHandlers?.get('completed')?.({ id: 'job1', data: { source_type: 'agent_event' } }, { ok: true });
     workerState.eventHandlers?.get('failed')?.({ id: 'job2', data: { source_type: 'agent_event' }, attemptsMade: 2 }, new Error('boom'));
     workerState.eventHandlers?.get('stalled')?.('job3');
     workerState.errorHandlers[0]!(new Error('worker err'));
 
-    expect(events.find(e => e.kind === 'completed')?.jobId).toBe('job1');
-    expect(events.find(e => e.kind === 'failed')?.jobId).toBe('job2');
-    expect(events.find(e => e.kind === 'stalled')?.jobId).toBe('job3');
-    expect(events.some(e => e.kind === 'error')).toBe(true);
+    expect(stalled).toEqual(['job3']);
 
     const counters = sjq.getLifecycleCounters();
     expect(counters.stalled).toBe(1);

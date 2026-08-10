@@ -200,9 +200,3 @@ async function startServerSession(
     project,
   });
 }
-
-function parseSemanticInjectLimit(value: string | number): number {
-  const parsed = typeof value === 'number' ? value : Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 5;
-  return parsed;
-}

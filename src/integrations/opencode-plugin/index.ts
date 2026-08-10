@@ -138,29 +138,11 @@ async function workerGetText(path: string): Promise<string | null> {
   }
 }
 
+// openCodeSessionId -> contentSessionId. Presence in the map doubles as the
+// "session initialized" flag; oldest entry is evicted at the size cap.
 const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
-const initializedSessionIds = new Set<string>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
-
-function getOrCreateContentSessionId(openCodeSessionId: string): string {
-  if (!contentSessionIdsByOpenCodeSessionId.has(openCodeSessionId)) {
-    while (contentSessionIdsByOpenCodeSessionId.size >= MAX_SESSION_MAP_ENTRIES) {
-      const oldestKey = contentSessionIdsByOpenCodeSessionId.keys().next().value;
-      if (oldestKey !== undefined) {
-        contentSessionIdsByOpenCodeSessionId.delete(oldestKey);
-        initializedSessionIds.delete(oldestKey);
-      } else {
-        break;
-      }
-    }
-    contentSessionIdsByOpenCodeSessionId.set(
-      openCodeSessionId,
-      `opencode-${openCodeSessionId}-${Date.now()}`,
-    );
-  }
-  return contentSessionIdsByOpenCodeSessionId.get(openCodeSessionId)!;
-}
 
 /**
  * The worker has no "session.created" event in OpenCode, so we lazily initialize
@@ -168,22 +150,26 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
  * message). This guarantees a session row exists before observations arrive.
  */
 function ensureSessionInitialized(openCodeSessionId: string, projectName: string): string {
-  const contentSessionId = getOrCreateContentSessionId(openCodeSessionId);
-  if (!initializedSessionIds.has(openCodeSessionId)) {
-    initializedSessionIds.add(openCodeSessionId);
-    workerPostFireAndForget("/api/sessions/init", {
-      contentSessionId,
-      project: projectName,
-      prompt: "",
-    });
+  const existing = contentSessionIdsByOpenCodeSessionId.get(openCodeSessionId);
+  if (existing) return existing;
+
+  if (contentSessionIdsByOpenCodeSessionId.size >= MAX_SESSION_MAP_ENTRIES) {
+    contentSessionIdsByOpenCodeSessionId.delete(
+      contentSessionIdsByOpenCodeSessionId.keys().next().value!,
+    );
   }
+  const contentSessionId = `opencode-${openCodeSessionId}-${Date.now()}`;
+  contentSessionIdsByOpenCodeSessionId.set(openCodeSessionId, contentSessionId);
+  workerPostFireAndForget("/api/sessions/init", {
+    contentSessionId,
+    project: projectName,
+    prompt: "",
+  });
   return contentSessionId;
 }
 
 function truncate(text: string): string {
-  return text.length > MAX_TOOL_RESPONSE_LENGTH
-    ? text.slice(0, MAX_TOOL_RESPONSE_LENGTH)
-    : text;
+  return text.slice(0, MAX_TOOL_RESPONSE_LENGTH);
 }
 
 export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
@@ -264,7 +250,6 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
         }
         case "session.deleted": {
           contentSessionIdsByOpenCodeSessionId.delete(sessionID);
-          initializedSessionIds.delete(sessionID);
           break;
         }
         default:

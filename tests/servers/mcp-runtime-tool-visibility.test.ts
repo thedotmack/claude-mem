@@ -15,9 +15,6 @@ const allTools = [
   { name: 'observation_search', description: '', inputSchema: {} },
   { name: 'observation_context', description: '', inputSchema: {} },
   { name: 'observation_generation_status', description: '', inputSchema: {} },
-  { name: 'memory_add', description: '', inputSchema: {} },
-  { name: 'memory_search', description: '', inputSchema: {} },
-  { name: 'memory_context', description: '', inputSchema: {} },
   { name: 'smart_search', description: '', inputSchema: {} },
 ];
 

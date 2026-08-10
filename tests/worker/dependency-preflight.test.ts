@@ -3,7 +3,7 @@ import path from 'node:path';
 import { runWorkerDependencyPreflight } from '../../src/services/worker/dependency-preflight.js';
 import {
   getDependencyStatus,
-  recordDependencyStatus,
+  recordClaudeCliSetupRequired,
   resetDependencyStatusesForTesting,
 } from '../../src/shared/dependency-health.js';
 
@@ -76,7 +76,7 @@ describe('worker dependency preflight', () => {
   });
 
   it('clears stale Claude CLI setup status when a non-Claude provider is selected', () => {
-    recordDependencyStatus('claude_cli', 'setup_required', 'old failure');
+    recordClaudeCliSetupRequired('old failure');
 
     runWorkerDependencyPreflight({
       settings: {

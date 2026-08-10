@@ -53,10 +53,3 @@ export async function withPostgresTransaction<T>(
     client.release();
   }
 }
-
-export async function closePostgresPool(pool: PostgresPool): Promise<void> {
-  if (pool === sharedPool) {
-    sharedPool = null;
-  }
-  await pool.end();
-}

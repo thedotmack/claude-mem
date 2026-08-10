@@ -37,24 +37,24 @@ describe('error taxonomy', () => {
   it('exposes ErrorSeverity, ERROR_CATEGORIES, classifyError', () => {
     expect(ErrorSeverity.ABORT).toBe('ABORT');
     expect(Array.isArray(ERROR_CATEGORIES)).toBe(true);
-    expect(ERROR_CATEGORIES.length).toBeGreaterThanOrEqual(12);
+    expect(ERROR_CATEGORIES.length).toBeGreaterThanOrEqual(10);
   });
 
   it('has no SILENT severity', () => {
-    const severities = new Set(ERROR_CATEGORIES.map((c) => c.severity));
-    expect(severities.has('SILENT' as ErrorSeverity)).toBe(false);
+    // Severity lives at the installerError call sites now; the enum itself is
+    // the only severity source and must never grow a SILENT member.
+    expect(Object.values(ErrorSeverity)).not.toContain('SILENT');
   });
 
-  it('classifies a missing bun error as ABORT (bun-missing-after-install)', () => {
+  it('classifies a missing bun error (bun-missing-after-install)', () => {
     const cat = classifyError(new Error('Bun executable not found after install attempt.'), {
       component: 'bun-install',
       phase: 'setup-runtime',
     });
     expect(cat.id).toBe('bun-missing-after-install');
-    expect(cat.severity).toBe(ErrorSeverity.ABORT);
   });
 
-  it('classifies a missing uv error as ABORT (uv-missing-after-install)', () => {
+  it('classifies a missing uv error (uv-missing-after-install)', () => {
     const cat = classifyError(new Error('uv installed but version probe failed.'), {
       component: 'uv-install',
       phase: 'setup-runtime',
@@ -62,21 +62,19 @@ describe('error taxonomy', () => {
     expect(cat.id).toBe('uv-missing-after-install');
   });
 
-  it('classifies ERESOLVE stderr as tree-sitter-eresolve ABORT', () => {
+  it('classifies ERESOLVE stderr as tree-sitter-eresolve', () => {
     const cat = classifyError(new Error('npm error code ERESOLVE\nWhile resolving: x'), {
       component: 'marketplace-npm-install',
       phase: 'marketplace-deps',
     });
     expect(cat.id).toBe('tree-sitter-eresolve');
-    expect(cat.severity).toBe(ErrorSeverity.ABORT);
   });
 
-  it('defaults unknown errors to ABORT (fail-loud)', () => {
+  it('defaults unknown errors to unknown-install-error (fail-loud at call sites)', () => {
     const cat = classifyError(new Error('something we have never seen'), {
       component: 'mystery',
       phase: 'mystery',
     });
-    expect(cat.severity).toBe(ErrorSeverity.ABORT);
     expect(cat.id).toBe('unknown-install-error');
   });
 

@@ -9,7 +9,7 @@ import { useSettings } from './hooks/useSettings';
 import { usePagination } from './hooks/usePagination';
 import { useTheme } from './hooks/useTheme';
 import { Observation, Summary, UserPrompt } from './types';
-import { mergeAndDeduplicateByProject } from './utils/data';
+import { dedupeById } from './utils/data';
 
 export function App() {
   const [currentFilter, setCurrentFilter] = useState('');
@@ -38,19 +38,19 @@ export function App() {
   const allObservations = useMemo(() => {
     const live = observations.filter(matchesSelection);
     const paginated = paginatedObservations.filter(matchesSelection);
-    return mergeAndDeduplicateByProject(live, paginated);
+    return dedupeById(live, paginated);
   }, [observations, paginatedObservations, matchesSelection]);
 
   const allSummaries = useMemo(() => {
     const live = summaries.filter(matchesSelection);
     const paginated = paginatedSummaries.filter(matchesSelection);
-    return mergeAndDeduplicateByProject(live, paginated);
+    return dedupeById(live, paginated);
   }, [summaries, paginatedSummaries, matchesSelection]);
 
   const allPrompts = useMemo(() => {
     const live = prompts.filter(matchesSelection);
     const paginated = paginatedPrompts.filter(matchesSelection);
-    return mergeAndDeduplicateByProject(live, paginated);
+    return dedupeById(live, paginated);
   }, [prompts, paginatedPrompts, matchesSelection]);
 
   const toggleContextPreview = useCallback(() => {

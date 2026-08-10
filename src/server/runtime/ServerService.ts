@@ -21,7 +21,8 @@ import { SessionsObservationsAdapter } from '../compat/SessionsObservationsAdapt
 import { SessionsSummarizeAdapter } from '../compat/SessionsSummarizeAdapter.js';
 import { ActiveServerQueueManager } from './ActiveServerQueueManager.js';
 import { ServerViewerRoutes } from './ServerViewerRoutes.js';
-import type { ServerServiceGraph, ServerQueueLaneMetric } from './types.js';
+import type { ObservationQueueHealthLaneSnapshot } from '../queue/queue-health-types.js';
+import type { ServerServiceGraph } from './types.js';
 
 // Phase 1d retains the persisted runtime literal `'server-beta'`. Renaming the
 // constant here keeps the TS identifier modern while preserving wire/storage
@@ -84,7 +85,7 @@ class ServerRuntimeInfoRoutes implements RouteHandler {
 
 async function collectQueueLaneMetrics(
   graph: ServerServiceGraph,
-): Promise<ServerQueueLaneMetric[]> {
+): Promise<ObservationQueueHealthLaneSnapshot[]> {
   const manager = graph.queueManager;
   if (!(manager instanceof ActiveServerQueueManager)) {
     return [];
@@ -150,7 +151,6 @@ export class ServerService {
         if (health.status !== 'active' || details.engine !== 'bullmq') {
           return null;
         }
-        const lanes = await collectQueueLaneMetrics(this.graph);
         return {
           engine: 'bullmq' as const,
           redis: {
@@ -160,18 +160,7 @@ export class ServerService {
             port: typeof details.port === 'number' ? details.port : 6379,
             prefix: String(details.prefix ?? 'claude_mem'),
           },
-          lanes: lanes.map(lane => ({
-            kind: lane.kind,
-            name: lane.name,
-            waiting: lane.waiting,
-            active: lane.active,
-            completed: lane.completed,
-            failed: lane.failed,
-            delayed: lane.delayed,
-            stalled: lane.stalled,
-            unavailable: lane.unavailable,
-            ...(lane.unavailableReason ? { unavailableReason: lane.unavailableReason } : {}),
-          })),
+          lanes: await collectQueueLaneMetrics(this.graph),
         };
       },
     });

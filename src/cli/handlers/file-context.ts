@@ -5,7 +5,7 @@
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
-import { parseJsonArray } from '../../shared/timeline-formatting.js';
+import { parseJsonArray, formatTime, formatDate } from '../../shared/timeline-formatting.js';
 import { statSync } from 'fs';
 import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
@@ -29,16 +29,6 @@ const TYPE_ICONS: Record<string, string> = {
 
 function compactTime(timeStr: string): string {
   return timeStr.toLowerCase().replace(' am', 'a').replace(' pm', 'p');
-}
-
-function formatTime(epoch: number): string {
-  const date = new Date(epoch);
-  return date.toLocaleString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-}
-
-function formatDate(epoch: number): string {
-  const date = new Date(epoch);
-  return date.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 interface ObservationRow {

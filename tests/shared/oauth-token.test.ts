@@ -16,7 +16,7 @@ import { buildIsolatedEnvWithFreshOAuth } from '../../src/shared/EnvManager.js';
  * The implementation uses promisify(execFile), which captures execFile at
  * module-load time. To intercept those calls in tests we replace the export
  * on `child_process` and restore it afterwards. We also redirect DATA_DIR
- * to a per-test temp dir for marker/sidecar tests.
+ * to a per-test temp dir for marker tests.
  */
 
 const ORIGINAL_EXEC_FILE = childProcess.execFile;
@@ -156,7 +156,7 @@ describe('readClaudeOAuthToken — env-fallback branch', () => {
   });
 
   it('returns present (env-fallback) when env token is set and not expired', async () => {
-    // Non-JWT bare token, no sidecar -> no expiresAt detectable -> not expired.
+    // Non-JWT bare token -> no expiresAt detectable -> not expired.
     process.env.CLAUDE_CODE_OAUTH_TOKEN = 'sk-ant-oat01-fallback';
     const result = await readClaudeOAuthToken();
     expect(result.kind).toBe('present');
@@ -180,31 +180,6 @@ describe('readClaudeOAuthToken — env-fallback branch', () => {
     }
   });
 
-  it('returns expired when sidecar metadata indicates env token is stale', async () => {
-    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'sk-ant-oat01-bare';
-    // Write a sidecar with expiresAt in the past (well beyond grace window).
-    const sidecarPath = join(tempDir, 'oauth-token-meta.json');
-    const stalePastMs = Date.now() - 60 * 60 * 1000; // 1 hour ago
-    fs.writeFileSync(sidecarPath, JSON.stringify({ expiresAt: stalePastMs }));
-    const result = await readClaudeOAuthToken();
-    expect(result.kind).toBe('expired');
-    if (result.kind === 'expired') {
-      expect(result.expiresAt).toBe(stalePastMs);
-    }
-  });
-
-  it('returns present when sidecar expiresAt is in the future', async () => {
-    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'sk-ant-oat01-bare';
-    const sidecarPath = join(tempDir, 'oauth-token-meta.json');
-    const futureMs = Date.now() + 60 * 60 * 1000; // 1 hour from now
-    fs.writeFileSync(sidecarPath, JSON.stringify({ expiresAt: futureMs }));
-    const result = await readClaudeOAuthToken();
-    expect(result.kind).toBe('present');
-    if (result.kind === 'present') {
-      expect(result.expiresAt).toBe(futureMs);
-      expect(result.source).toBe('env-fallback');
-    }
-  });
 });
 
 describe('readClaudeOAuthToken — macOS keychain branch', () => {

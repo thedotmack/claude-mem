@@ -4,7 +4,6 @@ import { ApiKeySchema } from '../../../src/core/schemas/auth.js';
 import { MemoryItemSchema } from '../../../src/core/schemas/memory-item.js';
 import { ProjectSchema } from '../../../src/core/schemas/project.js';
 import { ServerSessionSchema } from '../../../src/core/schemas/session.js';
-import { TeamSchema } from '../../../src/core/schemas/team.js';
 
 describe('server storage Zod schemas', () => {
   it('parses the shared contracts used by server-owned tables', () => {
@@ -42,13 +41,6 @@ describe('server storage Zod schemas', () => {
       createdAtEpoch: now
     });
 
-    const team = TeamSchema.parse({
-      id: 'team-1',
-      name: 'Team',
-      createdAtEpoch: now,
-      updatedAtEpoch: now
-    });
-
     const apiKey = ApiKeySchema.parse({
       id: 'key-1',
       name: 'Local key',
@@ -61,7 +53,6 @@ describe('server storage Zod schemas', () => {
     expect(session.platformSource).toBe('claude');
     expect(memoryItem.facts).toEqual([]);
     expect(event.payload).toEqual({});
-    expect(team.metadata).toEqual({});
     expect(apiKey.status).toBe('active');
   });
 

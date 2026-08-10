@@ -12,7 +12,7 @@ import {
   toJsonObject
 } from './utils.js';
 
-export type ObservationGenerationJobSourceType = 'agent_event' | 'session_summary' | 'observation_reindex';
+export type ObservationGenerationJobSourceType = 'agent_event' | 'session_summary';
 export type ObservationGenerationJobStatus = 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled';
 export type ObservationGenerationJobEventType =
   | 'queued'
@@ -223,24 +223,6 @@ export class PostgresObservationGenerationJobRepository {
     throw new Error('observation generation job status transition was not applied');
   }
 
-  async listByStatusForScope(input: {
-    status: ObservationGenerationJobStatus;
-    projectId: string;
-    teamId: string;
-    limit?: number;
-  }): Promise<PostgresObservationGenerationJob[]> {
-    const result = await this.client.query<JobRow>(
-      `
-        SELECT * FROM observation_generation_jobs
-        WHERE status = $1 AND project_id = $2 AND team_id = $3
-        ORDER BY created_at ASC
-        LIMIT $4
-      `,
-      [input.status, input.projectId, input.teamId, input.limit ?? 100]
-    );
-    return result.rows.map(mapJobRow);
-  }
-
   private async validateSource(input: {
     projectId: string;
     teamId: string;
@@ -269,25 +251,10 @@ export class PostgresObservationGenerationJobRepository {
       return;
     }
 
-    if (input.sourceType === 'session_summary') {
-      const sessionId = input.serverSessionId ?? input.sourceId;
-      await assertSessionOwnership(this.client, sessionId, input.projectId, input.teamId);
-      if (input.sourceId !== sessionId) {
-        throw new Error('session_summary source_id must equal server_session_id');
-      }
-      return;
-    }
-
-    const observation = await queryOne<{ id: string }>(
-      this.client,
-      'SELECT id FROM observations WHERE id = $1 AND project_id = $2 AND team_id = $3',
-      [input.sourceId, input.projectId, input.teamId]
-    );
-    if (!observation) {
-      throw new Error('observation_reindex source_id must belong to project_id and team_id');
-    }
-    if (input.serverSessionId) {
-      await assertSessionOwnership(this.client, input.serverSessionId, input.projectId, input.teamId);
+    const sessionId = input.serverSessionId ?? input.sourceId;
+    await assertSessionOwnership(this.client, sessionId, input.projectId, input.teamId);
+    if (input.sourceId !== sessionId) {
+      throw new Error('session_summary source_id must equal server_session_id');
     }
   }
 }
@@ -334,24 +301,6 @@ export class PostgresObservationGenerationJobEventsRepository {
     }
     return mapJobEventRow(row!);
   }
-
-  async listByJobForScope(input: {
-    generationJobId: string;
-    projectId: string;
-    teamId: string;
-  }): Promise<PostgresObservationGenerationJobEvent[]> {
-    const result = await this.client.query<JobEventRow>(
-      `
-        SELECT events.*
-        FROM observation_generation_job_events events
-        INNER JOIN observation_generation_jobs jobs ON jobs.id = events.generation_job_id
-        WHERE events.generation_job_id = $1 AND jobs.project_id = $2 AND jobs.team_id = $3
-        ORDER BY events.created_at ASC
-      `,
-      [input.generationJobId, input.projectId, input.teamId]
-    );
-    return result.rows.map(mapJobEventRow);
-  }
 }
 
 export function buildObservationGenerationJobIdempotencyKey(input: {
@@ -379,10 +328,7 @@ function normalizeSourceModel(input: {
   if (input.sourceType === 'agent_event') {
     return { agentEventId: input.agentEventId ?? input.sourceId, serverSessionId: input.serverSessionId ?? null };
   }
-  if (input.sourceType === 'session_summary') {
-    return { agentEventId: null, serverSessionId: input.serverSessionId ?? input.sourceId };
-  }
-  return { agentEventId: null, serverSessionId: input.serverSessionId ?? null };
+  return { agentEventId: null, serverSessionId: input.serverSessionId ?? input.sourceId };
 }
 
 const TERMINAL_JOB_STATUSES = new Set<ObservationGenerationJobStatus>(['completed', 'failed', 'cancelled']);

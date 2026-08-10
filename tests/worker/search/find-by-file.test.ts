@@ -1,6 +1,6 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
-import { HybridSearchStrategy } from '../../../../src/services/worker/search/strategies/HybridSearchStrategy.js';
-import type { StrategySearchOptions, ObservationSearchResult, SessionSummarySearchResult } from '../../../../src/services/worker/search/types.js';
+import { SearchManager } from '../../../src/services/worker/SearchManager.js';
+import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../src/services/sqlite/types.js';
 
 const mockObservation1: ObservationSearchResult = {
   id: 1,
@@ -77,11 +77,20 @@ const mockSession: SessionSummarySearchResult = {
   created_at_epoch: Date.now() - 1000 * 60 * 60 * 24
 };
 
-describe('HybridSearchStrategy', () => {
-  let strategy: HybridSearchStrategy;
+describe('SearchManager.findByFile', () => {
   let mockChromaSync: any;
   let mockSessionStore: any;
   let mockSessionSearch: any;
+
+  function makeManager(chromaSync: any): SearchManager {
+    return new SearchManager(
+      mockSessionSearch,
+      mockSessionStore,
+      chromaSync,
+      {} as any,
+      {} as any,
+    );
+  }
 
   beforeEach(() => {
     mockChromaSync = {
@@ -107,17 +116,11 @@ describe('HybridSearchStrategy', () => {
         sessions: [mockSession]
       }))
     };
-
-    strategy = new HybridSearchStrategy(mockChromaSync, mockSessionStore, mockSessionSearch);
   });
 
-  describe('findByFile', () => {
+  describe('hybrid path (Chroma available)', () => {
     it('should find observations and sessions by file path', async () => {
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      const result = await strategy.findByFile('/path/to/file.ts', options);
+      const result = await makeManager(mockChromaSync).findByFile('/path/to/file.ts', { limit: 10 });
 
       expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/path/to/file.ts', expect.any(Object));
       expect(result.observations.length).toBeGreaterThanOrEqual(0);
@@ -125,23 +128,17 @@ describe('HybridSearchStrategy', () => {
     });
 
     it('should return sessions without semantic ranking', async () => {
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      const result = await strategy.findByFile('/path/to/file.ts', options);
+      const result = await makeManager(mockChromaSync).findByFile('/path/to/file.ts', { limit: 10 });
 
       expect(result.sessions).toHaveLength(1);
       expect(result.sessions[0].id).toBe(1);
     });
 
     it('should preserve platformSource through by-file metadata search and hydration', async () => {
-      const options: StrategySearchOptions = {
+      await makeManager(mockChromaSync).findByFile('/path/to/file.ts', {
         limit: 10,
         platformSource: 'cursor'
-      };
-
-      await strategy.findByFile('/path/to/file.ts', options);
+      });
 
       expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/path/to/file.ts', expect.objectContaining({
         platformSource: 'cursor'
@@ -158,11 +155,7 @@ describe('HybridSearchStrategy', () => {
         metadatas: []
       }));
 
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      const result = await strategy.findByFile('/path/to/file.ts', options);
+      const result = await makeManager(mockChromaSync).findByFile('/path/to/file.ts', { limit: 10 });
 
       expect(result.observations[0].id).toBe(2);
       expect(result.usedChroma).toBe(true);
@@ -175,7 +168,7 @@ describe('HybridSearchStrategy', () => {
         metadatas: []
       }));
 
-      const result = await strategy.findByFile('/path/to/file.ts', {
+      const result = await makeManager(mockChromaSync).findByFile('/path/to/file.ts', {
         limit: 10,
         platformSource: 'cursor'
       });
@@ -192,11 +185,7 @@ describe('HybridSearchStrategy', () => {
         sessions: [mockSession]
       }));
 
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
-      const result = await strategy.findByFile('/path/to/file.ts', options);
+      const result = await makeManager(mockChromaSync).findByFile('/path/to/file.ts', { limit: 10 });
 
       expect(result.usedChroma).toBe(false);
       expect(result.sessions).toHaveLength(1);
@@ -205,13 +194,23 @@ describe('HybridSearchStrategy', () => {
     it('should propagate Chroma error (fail-fast, no silent fallback)', async () => {
       mockChromaSync.queryChroma = mock(() => Promise.reject(new Error('Chroma down')));
 
-      const options: StrategySearchOptions = {
-        limit: 10
-      };
-
       await expect(
-        strategy.findByFile('/path/to/file.ts', options)
+        makeManager(mockChromaSync).findByFile('/path/to/file.ts', { limit: 10 })
       ).rejects.toThrow('Chroma down');
+    });
+  });
+
+  describe('SQLite path (Chroma not configured)', () => {
+    it('returns metadata matches with usedChroma: false and a date_desc default order', async () => {
+      const result = await makeManager(null).findByFile('/path/to/file.ts', { limit: 10 });
+
+      expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/path/to/file.ts', expect.objectContaining({
+        limit: 10,
+        orderBy: 'date_desc'
+      }));
+      expect(result.observations).toEqual([mockObservation1, mockObservation2]);
+      expect(result.sessions).toEqual([mockSession]);
+      expect(result.usedChroma).toBe(false);
     });
   });
 });

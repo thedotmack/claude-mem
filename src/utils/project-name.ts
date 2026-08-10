@@ -1,15 +1,8 @@
-import { homedir } from 'os'
 import path from 'path';
 import { execFileSync } from 'child_process';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
-
-function expandTilde(p: string): string {
-  if (p === '~' || p.startsWith('~/')) {
-    return p.replace(/^~/, homedir())
-  }
-  return p
-}
+import { expandTilde } from '../shared/paths.js';
 
 /**
  * Resolve the git repository ROOT for a directory, so a project's name is

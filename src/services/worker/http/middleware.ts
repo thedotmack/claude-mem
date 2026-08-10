@@ -23,12 +23,10 @@ export function createMiddleware(): RequestHandler[] {
     const bodySummary = summarizeRequestBody(req.method, req.path, req.body);
     logger.debug('HTTP', `→ ${req.method} ${req.path}`, { requestId }, bodySummary);
 
-    const originalSend = res.send.bind(res);
-    res.send = function(body: any) {
+    res.on('finish', () => {
       const duration = Date.now() - start;
       logger.debug('HTTP', `← ${res.statusCode} ${req.path}`, { requestId, duration: `${duration}ms` });
-      return originalSend(body);
-    };
+    });
 
     next();
   });

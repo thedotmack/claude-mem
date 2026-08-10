@@ -7,9 +7,7 @@ interface GitHubStarsButtonProps {
 }
 
 function formatStarCount(count: number): string {
-  if (count < 1000) return count.toString();
-  if (count < 1000000) return `${(count / 1000).toFixed(1)}k`;
-  return `${(count / 1000000).toFixed(1)}M`;
+  return new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(count);
 }
 
 export function GitHubStarsButton({ username, repo, className = '' }: GitHubStarsButtonProps) {

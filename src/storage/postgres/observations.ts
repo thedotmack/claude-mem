@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import type { JsonObject, JsonValue, PostgresQueryable } from './utils.js';
+import type { JsonObject, PostgresQueryable } from './utils.js';
 import {
   assertProjectOwnership,
   assertSessionOwnership,
@@ -13,7 +13,7 @@ import {
 } from './utils.js';
 import { normalizePlatformSourceOrNull } from '../../shared/platform-source.js';
 
-export type ObservationSourceType = 'agent_event' | 'session_summary' | 'observation_reindex' | 'manual';
+export type ObservationSourceType = 'agent_event' | 'session_summary' | 'manual';
 
 export interface PostgresObservation {
   id: string;
@@ -24,7 +24,6 @@ export interface PostgresObservation {
   content: string;
   generationKey: string | null;
   metadata: JsonObject;
-  embedding: JsonValue | null;
   createdByJobId: string | null;
   createdAtEpoch: number;
   updatedAtEpoch: number;
@@ -50,7 +49,6 @@ interface ObservationRow {
   content: string;
   generation_key: string | null;
   metadata: unknown;
-  embedding: unknown | null;
   created_by_job_id: string | null;
   created_at: Date;
   updated_at: Date;
@@ -79,7 +77,6 @@ export class PostgresObservationRepository {
     content: string;
     generationKey?: string | null;
     metadata?: JsonObject;
-    embedding?: JsonValue | null;
     createdByJobId?: string | null;
   }): Promise<PostgresObservation> {
     await assertProjectOwnership(this.client, input.projectId, input.teamId);
@@ -95,9 +92,9 @@ export class PostgresObservationRepository {
       `
         INSERT INTO observations (
           id, project_id, team_id, server_session_id, kind, content,
-          generation_key, metadata, embedding, created_by_job_id
+          generation_key, metadata, created_by_job_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
         ON CONFLICT (team_id, project_id, generation_key) WHERE generation_key IS NOT NULL DO UPDATE SET
           updated_at = observations.updated_at
         RETURNING *
@@ -111,7 +108,6 @@ export class PostgresObservationRepository {
         input.content,
         input.generationKey ?? null,
         JSON.stringify(input.metadata ?? {}),
-        input.embedding == null ? null : JSON.stringify(input.embedding),
         input.createdByJobId ?? null
       ]
     );
@@ -230,8 +226,6 @@ export class PostgresObservationSourcesRepository {
       await assertAgentEventOwnership(this.client, input.sourceId, input.projectId, input.teamId);
     } else if (input.sourceType === 'session_summary' && !input.generationJobId) {
       await assertSessionOwnership(this.client, input.sourceId, input.projectId, input.teamId);
-    } else if (input.sourceType === 'observation_reindex' && !input.generationJobId) {
-      await assertObservationOwnership(this.client, input.sourceId, input.projectId, input.teamId);
     }
     if (input.generationJobId) {
       await assertGenerationJobMatchesSource(this.client, {
@@ -269,26 +263,6 @@ export class PostgresObservationSourcesRepository {
     return mapObservationSourceRow(row!);
   }
 
-  async listByObservationForScope(input: {
-    observationId: string;
-    projectId: string;
-    teamId: string;
-  }): Promise<PostgresObservationSource[]> {
-    const result = await this.client.query<ObservationSourceRow>(
-      `
-        SELECT observation_sources.*
-        FROM observation_sources
-        INNER JOIN observations
-          ON observations.id = observation_sources.observation_id
-        WHERE observation_sources.observation_id = $1
-          AND observations.project_id = $2
-          AND observations.team_id = $3
-        ORDER BY observation_sources.created_at ASC
-      `,
-      [input.observationId, input.projectId, input.teamId]
-    );
-    return result.rows.map(mapObservationSourceRow);
-  }
 }
 
 export function buildObservationGenerationKey(input: {
@@ -373,22 +347,6 @@ async function assertAgentEventOwnership(
   }
 }
 
-async function assertObservationOwnership(
-  client: PostgresQueryable,
-  observationId: string,
-  projectId: string,
-  teamId: string
-): Promise<void> {
-  const row = await queryOne<{ id: string }>(
-    client,
-    'SELECT id FROM observations WHERE id = $1 AND project_id = $2 AND team_id = $3',
-    [observationId, projectId, teamId]
-  );
-  if (!row) {
-    throw new Error('observation_reindex source_id must belong to project_id and team_id');
-  }
-}
-
 function mapObservationRow(row: ObservationRow): PostgresObservation {
   return {
     id: row.id,
@@ -399,7 +357,6 @@ function mapObservationRow(row: ObservationRow): PostgresObservation {
     content: row.content,
     generationKey: row.generation_key,
     metadata: toJsonObject(row.metadata),
-    embedding: row.embedding,
     createdByJobId: row.created_by_job_id,
     createdAtEpoch: toEpoch(row.created_at),
     updatedAtEpoch: toEpoch(row.updated_at)

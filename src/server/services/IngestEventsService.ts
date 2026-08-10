@@ -86,71 +86,18 @@ export interface IngestEventOptions {
 export class IngestEventsService {
   constructor(private readonly options: IngestEventsServiceOptions) {}
 
+  // A single-event ingest is a one-element batch — same transaction, same
+  // outbox-then-publish guarantees. Only the default lifecycle-log `source`
+  // differs, so it is resolved here before delegating.
   async ingestOne(
     input: CreatePostgresAgentEventInput,
     opts: IngestEventOptions = {},
   ): Promise<IngestEventResult> {
-    const generate = opts.generate ?? true;
-    const source = opts.source ?? 'http_post_v1_events';
-
-    const txResult = await withPostgresTransaction(this.options.pool, async (client) => {
-      const eventsRepo = new PostgresAgentEventsRepository(client);
-      const inserted = await eventsRepo.create(input);
-
-      if (!generate) {
-        return { event: inserted, outbox: null as PostgresObservationGenerationJob | null };
-      }
-
-      const jobsRepo = new PostgresObservationGenerationJobRepository(client);
-      const eventsLogRepo = new PostgresObservationGenerationJobEventsRepository(client);
-      // Pre-generate the outbox id so we can build the BullMQ payload (which
-      // references generation_job_id) and persist it on the row. Reconciliation
-      // and operator retry rely on this persisted payload to re-enqueue a
-      // payload that passes assertServerGenerationJobPayload at the worker.
-      const outboxId = newId();
-      const bullmqPayload = buildEventBullmqPayload({
-        outboxId,
-        event: inserted,
-        apiKeyId: opts.apiKeyId ?? null,
-        actorId: opts.actorId ?? null,
-        sourceAdapter: opts.sourceAdapter ?? null,
-        requestId: opts.requestId ?? null,
-      });
-      const outbox = await jobsRepo.create({
-        id: outboxId,
-        projectId: inserted.projectId,
-        teamId: inserted.teamId,
-        sourceType: 'agent_event',
-        sourceId: inserted.id,
-        agentEventId: inserted.id,
-        serverSessionId: inserted.serverSessionId,
-        jobType: EVENT_JOB_TYPE,
-        bullmqJobId: buildServerJobId({
-          kind: 'event',
-          team_id: inserted.teamId,
-          project_id: inserted.projectId,
-          source_type: 'agent_event',
-          source_id: inserted.id,
-        }),
-        payload: bullmqPayload as unknown as Record<string, unknown>,
-      });
-      await eventsLogRepo.append({
-        generationJobId: outbox.id,
-        projectId: outbox.projectId,
-        teamId: outbox.teamId,
-        eventType: 'queued',
-        statusAfter: outbox.status,
-        attempt: outbox.attempts,
-        details: { source },
-      });
-      return { event: inserted, outbox };
+    const [result] = await this.ingestBatch([input], {
+      ...opts,
+      source: opts.source ?? 'http_post_v1_events',
     });
-
-    let enqueueState: EnqueueOutcome = 'skipped';
-    if (txResult.outbox) {
-      enqueueState = await this.publishEventJob(txResult.event, txResult.outbox);
-    }
-    return { event: txResult.event, outbox: txResult.outbox, enqueueState };
+    return result!;
   }
 
   async ingestBatch(
@@ -171,6 +118,10 @@ export class IngestEventsService {
           acc.push({ event, outbox: null });
           continue;
         }
+        // Pre-generate the outbox id so we can build the BullMQ payload (which
+        // references generation_job_id) and persist it on the row. Reconciliation
+        // and operator retry rely on this persisted payload to re-enqueue a
+        // payload that passes assertServerGenerationJobPayload at the worker.
         const outboxId = newId();
         const bullmqPayload = buildEventBullmqPayload({
           outboxId,

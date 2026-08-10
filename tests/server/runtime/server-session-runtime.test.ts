@@ -4,11 +4,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import pg from 'pg';
 import {
   bootstrapServerPostgresSchema,
-  createPostgresStorageRepositories,
   PostgresServerSessionsRepository,
   type PostgresPoolClient,
-  type PostgresStorageRepositories,
 } from '../../../src/storage/postgres/index.js';
+import { createPostgresStorageRepositories, type PostgresStorageRepositories } from '../../sdk/pg-storage.js';
 import { buildSummaryJobId } from '../../../src/server/runtime/SessionGenerationPolicy.js';
 import { processSessionSummaryResponse } from '../../../src/server/generation/processGeneratedResponse.js';
 import { quoteIdentifier } from '../../sdk/pg-isolation.js';

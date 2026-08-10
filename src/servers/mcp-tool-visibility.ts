@@ -7,9 +7,6 @@ export const SERVER_BETA_ONLY_TOOL_NAMES = [
   'observation_search',
   'observation_context',
   'observation_generation_status',
-  'memory_add',
-  'memory_search',
-  'memory_context',
 ] as const;
 
 const serverBetaOnlyToolNameSet = new Set<string>(SERVER_BETA_ONLY_TOOL_NAMES);

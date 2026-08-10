@@ -141,24 +141,12 @@ async function main(): Promise<void> {
       break;
     }
 
-    case 'start': {
-      const { runStartCommand } = await import('./commands/runtime.js');
-      runStartCommand();
-      break;
-    }
-    case 'stop': {
-      const { runStopCommand } = await import('./commands/runtime.js');
-      runStopCommand();
-      break;
-    }
-    case 'restart': {
-      const { runRestartCommand } = await import('./commands/runtime.js');
-      runRestartCommand();
-      break;
-    }
+    case 'start':
+    case 'stop':
+    case 'restart':
     case 'status': {
-      const { runStatusCommand } = await import('./commands/runtime.js');
-      runStatusCommand();
+      const { spawnBunWorkerCommand } = await import('./commands/runtime.js');
+      spawnBunWorkerCommand(command);
       break;
     }
 

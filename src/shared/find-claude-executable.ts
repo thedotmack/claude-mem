@@ -28,6 +28,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, expandTilde } from './paths.js';
+import { compareVersionsDescending } from './worker-utils.js';
 import { logger, type Component } from '../utils/logger.js';
 
 /**
@@ -173,17 +174,6 @@ function probeCandidate(candidate: string): ProbeResult {
   return { kind: 'broken', detail };
 }
 
-/** Parse "2.1.176 (Claude Code)" → [2, 1, 176]; unparseable sorts lowest. */
-function parseVersionKey(version: string): [number, number, number] {
-  const match = version.match(/(\d+)\.(\d+)\.(\d+)/);
-  if (!match) return [0, 0, 0];
-  return [Number(match[1]), Number(match[2]), Number(match[3])];
-}
-
-function compareVersionKeysDesc(a: [number, number, number], b: [number, number, number]): number {
-  return b[0] - a[0] || b[1] - a[1] || b[2] - a[2];
-}
-
 /**
  * All places a Claude CLI might live, best-effort and deduplicated:
  *   - every PATH match (`which -a` / `where`), not just the first — a stale
@@ -326,7 +316,7 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
   }
 
   // --- 2. Probe every discovered candidate ---------------------------------
-  const capable: Array<{ path: string; version: string; key: [number, number, number]; order: number }> = [];
+  const capable: Array<{ path: string; version: string; order: number }> = [];
   const incompatible: Array<{ path: string; version: string; detail: string }> = [];
 
   const candidates = discoverCandidates();
@@ -335,7 +325,7 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
     const probe = probeCandidate(candidate);
 
     if (probe.kind === 'capable') {
-      capable.push({ path: candidate, version: probe.version, key: parseVersionKey(probe.version), order });
+      capable.push({ path: candidate, version: probe.version, order });
       continue;
     }
 
@@ -360,7 +350,7 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
   }
 
   if (capable.length > 0) {
-    capable.sort((a, b) => compareVersionKeysDesc(a.key, b.key) || a.order - b.order);
+    capable.sort((a, b) => compareVersionsDescending(a.version, b.version) || a.order - b.order);
     const winner = capable[0];
     // INFO, not DEBUG: when observations silently stop, which binary the
     // worker picked is the first question — make it answerable from default logs.

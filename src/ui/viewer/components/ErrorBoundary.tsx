@@ -7,7 +7,6 @@ interface Props {
 interface State {
   hasError: boolean;
   error: Error | null;
-  errorInfo: ErrorInfo | null;
 }
 
 export class ErrorBoundary extends Component<Props, State> {
@@ -15,8 +14,7 @@ export class ErrorBoundary extends Component<Props, State> {
     super(props);
     this.state = {
       hasError: false,
-      error: null,
-      errorInfo: null
+      error: null
     };
   }
 
@@ -26,10 +24,6 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error('[ErrorBoundary] Caught error:', error, errorInfo);
-    this.setState({
-      error,
-      errorInfo
-    });
   }
 
   render() {
@@ -50,7 +44,6 @@ export class ErrorBoundary extends Component<Props, State> {
                 overflow: 'auto'
               }}>
                 {this.state.error.toString()}
-                {this.state.errorInfo && '\n\n' + this.state.errorInfo.componentStack}
               </pre>
             </details>
           )}

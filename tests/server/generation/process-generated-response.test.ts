@@ -4,10 +4,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import pg from 'pg';
 import {
   bootstrapServerPostgresSchema,
-  createPostgresStorageRepositories,
   type PostgresPoolClient,
-  type PostgresStorageRepositories,
 } from '../../../src/storage/postgres/index.js';
+import { createPostgresStorageRepositories, type PostgresStorageRepositories } from '../../sdk/pg-storage.js';
 import {
   processGeneratedResponse,
   markGenerationFailed,
@@ -135,13 +134,12 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
     expect(reloaded?.status).toBe('completed');
 
     // observation_sources row exists
-    const sources = await storage.observationSources.listByObservationForScope({
-      observationId: outcome.kind === 'completed' ? outcome.observations[0]!.id : '',
-      projectId,
-      teamId,
-    });
-    expect(sources).toHaveLength(1);
-    expect(sources[0]!.sourceType).toBe('agent_event');
+    const sources = await client.query(
+      'SELECT source_type FROM observation_sources WHERE observation_id = $1',
+      [outcome.kind === 'completed' ? outcome.observations[0]!.id : ''],
+    );
+    expect(sources.rows).toHaveLength(1);
+    expect(sources.rows[0]!.source_type).toBe('agent_event');
     expect(sources[0]!.sourceId).toBe(eventId);
     expect(sources[0]!.generationJobId).toBe(jobId);
   });

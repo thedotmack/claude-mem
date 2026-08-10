@@ -21,7 +21,7 @@ describe('buildServerJobId', () => {
     const variants = [
       { ...baseParts, team_id: 'team_other' },
       { ...baseParts, project_id: 'project_other' },
-      { ...baseParts, source_type: 'observation_reindex' },
+      { ...baseParts, source_type: 'session_summary' },
       { ...baseParts, source_id: 'evt_002' },
       { ...baseParts, kind: 'summary' as const }
     ];

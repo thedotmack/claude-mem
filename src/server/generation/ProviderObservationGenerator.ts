@@ -288,7 +288,7 @@ export class ProviderObservationGenerator {
       project_id: string;
       team_id: string;
       agent_event_id: string | null;
-      source_type: 'agent_event' | 'session_summary' | 'observation_reindex';
+      source_type: 'agent_event' | 'session_summary';
       source_id: string;
       server_session_id: string | null;
       job_type: string;

@@ -3,54 +3,29 @@ import { exec, execSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } fr
 import { createRequire } from 'module';
 import { join } from 'path';
 import { homedir } from 'os';
-import { ErrorSeverity } from './error-taxonomy.js';
+import { ErrorSeverity, platformBunRemediation, platformUvRemediation } from './error-taxonomy.js';
 import { installerError, type InstallSummary } from './error-reporter.js';
+import { resolveInstallTimeoutMs } from './npm-install-helper.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
 import { IS_WINDOWS } from '../utils/paths.js';
-import { parseJsonWithBom } from '../../shared/atomic-json.js';
+import { readFlatSettings } from '../utils/settings.js';
 
-const INSTALL_TIMEOUT_MS = (() => {
-  const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
-  if (override && Number.isFinite(Number(override))) return Number(override);
-  return 5 * 60 * 1000;
-})();
+// Re-exported for compatibility: the platform remediation strings now live in
+// the error taxonomy (single source of truth for installer remediation text).
+export { platformBunRemediation, platformUvRemediation };
 
-/**
- * Platform-specific manual-install instructions, surfaced as the PRIMARY ABORT
- * message when auto-install fails or the binary can't be found afterward.
- */
-export function platformBunRemediation(): string {
-  return IS_WINDOWS
-    ? 'Install Bun manually: `winget install Oven-sh.Bun` (or `powershell -c "irm bun.sh/install.ps1 | iex"`), then re-run `npx claude-mem install`.'
-    : 'Install Bun manually: `curl -fsSL https://bun.sh/install | bash` (or `brew install oven-sh/bun/bun`), then re-run `npx claude-mem install`.';
-}
-
-export function platformUvRemediation(): string {
-  return IS_WINDOWS
-    ? 'Install uv manually: `winget install astral-sh.uv` (or `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`), then re-run `npx claude-mem install`.'
-    : 'Install uv manually: `curl -LsSf https://astral.sh/uv/install.sh | sh` (or `brew install uv`), then re-run `npx claude-mem install`.';
-}
+const INSTALL_TIMEOUT_MS = resolveInstallTimeoutMs();
 
 function userHasOptedOutOfVectorSearch(): boolean {
   // Read the settings file directly (the value is not in the typed defaults).
-  // Honors both a top-level key and an `env`-nested key.
-  let raw: unknown;
   try {
-    if (!existsSync(USER_SETTINGS_PATH)) return false;
-    raw = parseJsonWithBom(readFileSync(USER_SETTINGS_PATH, 'utf-8'));
+    const value = readFlatSettings(USER_SETTINGS_PATH)?.CLAUDE_MEM_DISABLE_VECTOR_SEARCH;
+    return value === true || value === 'true' || value === '1';
   } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    console.warn(`claude-mem: could not read ${USER_SETTINGS_PATH} while checking vector-search opt-out:`, err);
+    console.warn(`claude-mem: could not read ${USER_SETTINGS_PATH} while checking vector-search opt-out:`, error instanceof Error ? error : String(error));
     return false;
   }
-  if (!raw || typeof raw !== 'object') return false;
-  const record = raw as Record<string, unknown>;
-  const envBlock = (record.env && typeof record.env === 'object')
-    ? (record.env as Record<string, unknown>)
-    : {};
-  const value = record.CLAUDE_MEM_DISABLE_VECTOR_SEARCH ?? envBlock.CLAUDE_MEM_DISABLE_VECTOR_SEARCH;
-  return value === true || value === 'true' || value === '1';
 }
 
 const BUN_COMMON_PATHS = IS_WINDOWS

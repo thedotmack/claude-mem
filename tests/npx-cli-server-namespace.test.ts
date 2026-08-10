@@ -16,19 +16,13 @@ describe('npx CLI server namespace', () => {
   it('routes worker lifecycle aliases through the server command module', () => {
     expect(indexSource).toContain("case 'worker'");
     expect(indexSource).toContain('runWorkerAliasCommand(args.slice(1))');
-    expect(serverSource).toContain('runWorkerLifecycleCommand');
-    expect(serverSource).toContain('runStartCommand()');
-    expect(serverSource).toContain('runStopCommand()');
-    expect(serverSource).toContain('runRestartCommand()');
-    expect(serverSource).toContain('runStatusCommand()');
+    expect(serverSource).toContain("new Set(['start', 'stop', 'restart', 'status'])");
+    expect(serverSource).toContain('spawnBunWorkerCommand(subCommand)');
   });
 
   it('routes server lifecycle commands and falls through to a nonzero failure for unknown commands', () => {
-    expect(serverSource).toContain('runServerLifecycleCommand(subCommand)');
-    expect(serverSource).toContain('runServerStartCommand()');
-    expect(serverSource).toContain('runServerStopCommand()');
-    expect(serverSource).toContain('runServerRestartCommand()');
-    expect(serverSource).toContain('runServerStatusCommand()');
+    expect(serverSource).toContain('LIFECYCLE_VERBS.has(subCommand)');
+    expect(serverSource).toContain('spawnBunServerCommand(subCommand)');
     expect(serverSource).toContain("process.exit(1)");
     expect(serverSource).toContain('runServerApiKeyCommand(argv.slice(1))');
     expect(serverSource).not.toContain('runServerLogsCommand');

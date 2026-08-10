@@ -19,8 +19,11 @@ import { Server } from '../../src/services/server/Server.js';
 import type { ServerOptions } from '../../src/services/server/Server.js';
 import { WorkerService } from '../../src/services/worker-service.js';
 import {
-  recordDependencyStatus,
+  recordClaudeCliSetupRequired,
+  recordUvxVectorSearchUnavailable,
   resetDependencyStatusesForTesting,
+  CLAUDE_CLI_SETUP_REMEDIATION,
+  UVX_VECTOR_SEARCH_REMEDIATION,
 } from '../../src/shared/dependency-health.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -115,12 +118,7 @@ describe('Worker API Endpoints Integration', () => {
       });
 
       serialIt('includes dependency health and stays HTTP 200 for dependency-only degradation', async () => {
-        recordDependencyStatus(
-          'uvx',
-          'vector_search_unavailable',
-          'uvx executable not found on effective PATH for vector search',
-          'Install uv and restart claude-mem',
-        );
+        recordUvxVectorSearchUnavailable('uvx executable not found on effective PATH for vector search');
 
         server = new Server(mockOptions);
         await server.listen(testPort, '127.0.0.1');
@@ -137,7 +135,7 @@ describe('Worker API Endpoints Integration', () => {
               dependency: 'uvx',
               kind: 'vector_search_unavailable',
               message: 'uvx executable not found on effective PATH for vector search',
-              remediation: 'Install uv and restart claude-mem',
+              remediation: UVX_VECTOR_SEARCH_REMEDIATION,
             },
           ],
         });
@@ -195,12 +193,7 @@ describe('Worker API Endpoints Integration', () => {
 
     describe('GET /api/settings/dependency-health', () => {
       serialIt('passes through WorkerService initialization guard while initialization is incomplete', async () => {
-        recordDependencyStatus(
-          'claude_cli',
-          'setup_required',
-          'Claude executable not found',
-          'Install Claude Code CLI',
-        );
+        recordClaudeCliSetupRequired('Claude executable not found');
 
         const worker = new WorkerService();
         expect((worker as any).initializationCompleteFlag).toBe(false);
@@ -221,7 +214,7 @@ describe('Worker API Endpoints Integration', () => {
               dependency: 'claude_cli',
               kind: 'setup_required',
               message: 'Claude executable not found',
-              remediation: 'Install Claude Code CLI',
+              remediation: CLAUDE_CLI_SETUP_REMEDIATION,
             },
           ],
         });
@@ -231,12 +224,7 @@ describe('Worker API Endpoints Integration', () => {
 
   describe('Error Handling', () => {
     serialIt('includes dependency health in admin doctor output', async () => {
-      recordDependencyStatus(
-        'claude_cli',
-        'setup_required',
-        'Claude executable not found',
-        'Install Claude Code CLI',
-      );
+      recordClaudeCliSetupRequired('Claude executable not found');
 
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
@@ -252,7 +240,7 @@ describe('Worker API Endpoints Integration', () => {
             dependency: 'claude_cli',
             kind: 'setup_required',
             message: 'Claude executable not found',
-            remediation: 'Install Claude Code CLI',
+            remediation: CLAUDE_CLI_SETUP_REMEDIATION,
           },
         ],
       });

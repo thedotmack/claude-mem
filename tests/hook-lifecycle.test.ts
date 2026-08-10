@@ -482,10 +482,9 @@ describe('Hook Lifecycle - stderr Suppression (#1181)', () => {
 
 describe('Hook Lifecycle - Standard Response', () => {
   it('should define standard hook response with suppressOutput: true', async () => {
-    const { STANDARD_HOOK_RESPONSE } = await import('../src/hooks/hook-response.js');
-    const parsed = JSON.parse(STANDARD_HOOK_RESPONSE);
-    expect(parsed.continue).toBe(true);
-    expect(parsed.suppressOutput).toBe(true);
+    // The standard response now lives only where it is produced: buildNoOpResult.
+    const { buildNoOpResult } = await import('../src/cli/hook-command.js');
+    expect(buildNoOpResult('observation')).toEqual({ continue: true, suppressOutput: true });
   });
 });
 

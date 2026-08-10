@@ -27,7 +27,6 @@ import { snapshotDependencyHealth, type DependencyHealthSnapshot } from '../shar
 import { captureEvent, captureException, shutdownTelemetry, enableExceptionAutocaptureForWorker } from './telemetry/telemetry.js';
 import { telemetryBuffer } from './telemetry/buffer.js';
 import { collectInstallStats } from './telemetry/install-stats.js';
-import { runHistoricalBackfill } from './telemetry/backfill.js';
 import { runWorkerDependencyPreflight } from './worker/dependency-preflight.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -67,7 +66,6 @@ import {
   migrateServerApiKeyScopes,
   DEFAULT_LOCAL_API_KEY_SCOPES,
 } from '../server/auth/sqlite-api-key-service.js';
-import { ServerV1Routes } from '../server/routes/v1/ServerV1Routes.js';
 
 import {
   handleCursorCommand
@@ -361,9 +359,6 @@ export class WorkerService implements WorkerRef {
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
     this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
-    this.server.registerRoutes(new ServerV1Routes({
-      getDatabase: () => this.dbManager.getConnection(),
-    }));
   }
 
   /**
@@ -567,7 +562,7 @@ export class WorkerService implements WorkerRef {
 
       const corpusBuilder = new CorpusBuilder(
         this.dbManager.getSessionStore(),
-        searchManager.getOrchestrator(),
+        searchManager,
         this.corpusStore
       );
       const knowledgeAgent = new KnowledgeAgent(this.corpusStore);
@@ -630,17 +625,6 @@ export class WorkerService implements WorkerRef {
         ...buildLifecycleProps(),
       }, { person: true });
       telemetryBuffer.start();
-
-      // One-time historical telemetry backfill (anonymized daily rollups).
-      // Fire-and-forget: gated internally by the backfill.json marker and the
-      // same consent checks as live telemetry; a failed run retries on the
-      // next worker start because no marker is written.
-      // runHistoricalBackfill never rejects by contract (its body is fully
-      // try/caught), so this .catch is an unhandled-rejection backstop that
-      // keeps the worker alive if that contract ever regresses.
-      runHistoricalBackfill(this.dbManager.getConnection()).catch(error => {
-        logger.error('SYSTEM', 'Telemetry historical backfill failed (non-blocking)', {}, error as Error);
-      });
 
       await this.startTranscriptWatcher(settings);
 
@@ -1237,7 +1221,6 @@ async function main() {
         if (dependencyHint) {
           console.log(dependencyHint);
         }
-        printQueueStatusIfBullMq(health);
         process.exit(0);
       }
       if (await isPortInUse(port)) {
@@ -1488,16 +1471,6 @@ export interface WorkerHealthSnapshot {
   uptime?: unknown;
   workerPath?: unknown;
   dependencies?: DependencyHealthSnapshot;
-  queue?: {
-    redis?: {
-      status?: string;
-      host?: string;
-      port?: number;
-      mode?: string;
-      prefix?: string;
-      error?: string;
-    };
-  };
 }
 
 export function formatDependencyHealthHint(health: WorkerHealthSnapshot): string | null {
@@ -1537,27 +1510,6 @@ async function fetchWorkerHealth(port: number, timeoutMs: number): Promise<Worke
     // [ANTI-PATTERN IGNORED]: health probe — connection refused/timeout IS the "worker not running" answer, polled on every status check; logging would spam. null is the documented recovery value the callers branch on.
     return null;
   }
-}
-
-/**
- * Print BullMQ queue detail from an already-fetched /api/health snapshot.
- * A degraded worker answers 503 but still includes the queue block, and
- * `status` already treats that worker as running — so this must not
- * re-fetch and bail on a non-2xx response (which hid the queue detail
- * behind "BullMQ health unavailable (HTTP 503)"). Reusing the snapshot in
- * hand keeps the output consistent with what `status` just reported.
- */
-function printQueueStatusIfBullMq(health: WorkerHealthSnapshot): void {
-  if (SettingsDefaultsManager.get('CLAUDE_MEM_QUEUE_ENGINE').trim().toLowerCase() !== 'bullmq') {
-    return;
-  }
-  const redis = health.queue?.redis;
-  if (!redis) {
-    return;
-  }
-  const target = `${redis.host ?? 'unknown'}:${redis.port ?? 'unknown'}`;
-  const suffix = redis.status === 'ok' ? '' : ` (${redis.error ?? 'unhealthy'})`;
-  console.log(`  Queue: BullMQ Redis ${redis.status ?? 'unknown'} at ${target} [${redis.mode ?? 'external'}, prefix=${redis.prefix ?? 'claude_mem'}]${suffix}`);
 }
 
 const isMainModule = typeof require !== 'undefined' && typeof module !== 'undefined'

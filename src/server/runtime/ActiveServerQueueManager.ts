@@ -9,11 +9,8 @@ import {
 } from '../jobs/types.js';
 import type { RedisQueueConfig } from '../queue/redis-config.js';
 import { logger } from '../../utils/logger.js';
-import type {
-  ServerBoundaryHealth,
-  ServerQueueLaneMetric,
-  ServerQueueManager,
-} from './types.js';
+import type { ObservationQueueHealthLaneSnapshot } from '../queue/queue-health-types.js';
+import type { ServerBoundaryHealth, ServerQueueManager } from './types.js';
 
 // ActiveServerQueueManager owns one ServerJobQueue per generation kind.
 // It is wired in only when CLAUDE_MEM_QUEUE_ENGINE=bullmq is set; otherwise
@@ -82,8 +79,8 @@ export class ActiveServerQueueManager implements ServerQueueManager {
    * reported with an `unavailable` flag rather than throwing so /api/health
    * remains responsive even in partial-failure modes.
    */
-  async getLaneMetrics(): Promise<ServerQueueLaneMetric[]> {
-    const out: ServerQueueLaneMetric[] = [];
+  async getLaneMetrics(): Promise<ObservationQueueHealthLaneSnapshot[]> {
+    const out: ObservationQueueHealthLaneSnapshot[] = [];
     for (const kind of QUEUE_KINDS) {
       const queue = this.queues.get(kind);
       if (!queue) continue;
@@ -119,7 +116,7 @@ export class ActiveServerQueueManager implements ServerQueueManager {
     kind: ServerGenerationJobKind,
     queue: ServerJobQueue<ServerGenerationJobPayload>,
     stalled: number,
-  ): Promise<ServerQueueLaneMetric> {
+  ): Promise<ObservationQueueHealthLaneSnapshot> {
     const counts = await queue.getCounts();
     return {
       kind,

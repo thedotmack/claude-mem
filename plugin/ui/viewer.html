@@ -9,8 +9,7 @@
   <style>
     @font-face {
       font-family: 'Monaspace Radon';
-      src: url('assets/fonts/monaspace-radon-var.woff2') format('woff2-variations'),
-        url('assets/fonts/monaspace-radon-var.woff') format('woff-variations');
+      src: url('assets/fonts/monaspace-radon-var.woff2') format('woff2-variations');
       font-weight: 200 900;
       font-display: swap;
     }
@@ -30,8 +29,6 @@
       --color-bg-button-active: #0860ca;
       --color-bg-summary: #fffbf0;
       --color-bg-prompt: #f6f3fb;
-      --color-bg-observation: #f0f6fb;
-      --color-bg-stat: #f6f8fa;
       --color-bg-scrollbar-track: #ffffff;
       --color-bg-scrollbar-thumb: #d1d5da;
       --color-bg-scrollbar-thumb-hover: #b1b5ba;
@@ -45,7 +42,6 @@
       --color-border-prompt: #8250df;
       --color-border-prompt-hover: #6e40c9;
       --color-border-observation: #0969da;
-      --color-border-observation-hover: #0550ae;
 
       --color-text-primary: #2b2520;
       --color-text-secondary: #5a5248;
@@ -53,19 +49,14 @@
       --color-text-muted: #8f8a7e;
       --color-text-header: #2b2520;
       --color-text-title: #2b2520;
-      --color-text-subtitle: #5a5248;
       --color-text-button: #ffffff;
       --color-text-summary: #8a6116;
-      --color-text-observation: #2b2520;
       --color-text-logo: #2b2520;
 
       --color-accent-primary: #0969da;
       --color-accent-focus: #0969da;
-      --color-accent-success: #1a7f37;
       --color-accent-error: #d1242f;
       --color-accent-summary: #9a6700;
-      --color-accent-prompt: #8250df;
-      --color-accent-observation: #0550ae;
 
       --color-type-badge-bg: rgba(9, 105, 218, 0.12);
       --color-type-badge-text: #0969da;
@@ -73,11 +64,7 @@
       --color-summary-badge-text: #9a6700;
       --color-prompt-badge-bg: rgba(130, 80, 223, 0.12);
       --color-prompt-badge-text: #8250df;
-      --color-observation-badge-bg: rgba(9, 105, 218, 0.12);
-      --color-observation-badge-text: #0550ae;
 
-      --color-skeleton-base: #d0d7de;
-      --color-skeleton-highlight: #e8ecef;
 
       --shadow-focus: 0 0 0 2px rgba(9, 105, 218, 0.3);
 
@@ -99,8 +86,6 @@
       --color-bg-button-active: #0860ca;
       --color-bg-summary: #2a2724;
       --color-bg-prompt: #262033;
-      --color-bg-observation: #1a2332;
-      --color-bg-stat: #252320;
       --color-bg-scrollbar-track: #1a1916;
       --color-bg-scrollbar-thumb: #3a3834;
       --color-bg-scrollbar-thumb-hover: #4a4540;
@@ -114,7 +99,6 @@
       --color-border-prompt: #6e5b9e;
       --color-border-prompt-hover: #7e6bae;
       --color-border-observation: #527aa0;
-      --color-border-observation-hover: #6a8eb8;
 
       --color-text-primary: #dcd6cc;
       --color-text-secondary: #b8b0a4;
@@ -122,19 +106,14 @@
       --color-text-muted: #7a7266;
       --color-text-header: #e8e2d8;
       --color-text-title: #e8e2d8;
-      --color-text-subtitle: #b8b0a4;
       --color-text-button: #ffffff;
       --color-text-summary: #d4b888;
-      --color-text-observation: #a8b8c8;
       --color-text-logo: #e0dad0;
 
       --color-accent-primary: #58a6ff;
       --color-accent-focus: #58a6ff;
-      --color-accent-success: #16c60c;
       --color-accent-error: #e74856;
       --color-accent-summary: #d4b888;
-      --color-accent-prompt: #8e7cbc;
-      --color-accent-observation: #79b8ff;
 
       --color-type-badge-bg: rgba(88, 166, 255, 0.125);
       --color-type-badge-text: #58a6ff;
@@ -142,11 +121,7 @@
       --color-summary-badge-text: #d4b888;
       --color-prompt-badge-bg: rgba(142, 124, 188, 0.15);
       --color-prompt-badge-text: #9e8ccc;
-      --color-observation-badge-bg: rgba(121, 184, 255, 0.15);
-      --color-observation-badge-text: #79b8ff;
 
-      --color-skeleton-base: #3a3834;
-      --color-skeleton-highlight: #4a4540;
 
       --shadow-focus: 0 0 0 2px rgba(88, 166, 255, 0.2);
 
@@ -169,8 +144,6 @@
         --color-bg-button-active: #0860ca;
         --color-bg-summary: #fffbf0;
         --color-bg-prompt: #f6f3fb;
-        --color-bg-observation: #f0f6fb;
-        --color-bg-stat: #f6f8fa;
         --color-bg-scrollbar-track: #ffffff;
         --color-bg-scrollbar-thumb: #d1d5da;
         --color-bg-scrollbar-thumb-hover: #b1b5ba;
@@ -184,7 +157,6 @@
         --color-border-prompt: #8250df;
         --color-border-prompt-hover: #6e40c9;
         --color-border-observation: #0969da;
-        --color-border-observation-hover: #0550ae;
 
         --color-text-primary: #24292f;
         --color-text-secondary: #57606a;
@@ -192,19 +164,14 @@
         --color-text-muted: #8b949e;
         --color-text-header: #24292f;
         --color-text-title: #24292f;
-        --color-text-subtitle: #57606a;
         --color-text-button: #ffffff;
         --color-text-summary: #8a6116;
-        --color-text-observation: #24292f;
         --color-text-logo: #24292f;
 
         --color-accent-primary: #0969da;
         --color-accent-focus: #0969da;
-        --color-accent-success: #1a7f37;
         --color-accent-error: #d1242f;
         --color-accent-summary: #9a6700;
-        --color-accent-prompt: #8250df;
-        --color-accent-observation: #0550ae;
 
         --color-type-badge-bg: rgba(9, 105, 218, 0.12);
         --color-type-badge-text: #0969da;
@@ -212,11 +179,7 @@
         --color-summary-badge-text: #9a6700;
         --color-prompt-badge-bg: rgba(130, 80, 223, 0.12);
         --color-prompt-badge-text: #8250df;
-        --color-observation-badge-bg: rgba(9, 105, 218, 0.12);
-        --color-observation-badge-text: #0550ae;
 
-        --color-skeleton-base: #d0d7de;
-        --color-skeleton-highlight: #e8ecef;
 
         --shadow-focus: 0 0 0 2px rgba(9, 105, 218, 0.3);
 
@@ -239,8 +202,6 @@
         --color-bg-button-active: #0860ca;
         --color-bg-summary: #3d2f00;
         --color-bg-prompt: #2d1b4e;
-        --color-bg-observation: #1a2332;
-        --color-bg-stat: #2d2d2d;
         --color-bg-scrollbar-track: #1e1e1e;
         --color-bg-scrollbar-thumb: #424242;
         --color-bg-scrollbar-thumb-hover: #4e4e4e;
@@ -254,7 +215,6 @@
         --color-border-prompt: #6e40c9;
         --color-border-prompt-hover: #8e6cdb;
         --color-border-observation: #527aa0;
-        --color-border-observation-hover: #6a8eb8;
 
         --color-text-primary: #cccccc;
         --color-text-secondary: #a0a0a0;
@@ -262,19 +222,14 @@
         --color-text-muted: #8b949e;
         --color-text-header: #e0e0e0;
         --color-text-title: #e0e0e0;
-        --color-text-subtitle: #a0a0a0;
         --color-text-button: #ffffff;
         --color-text-summary: #f2cc60;
-        --color-text-observation: #a8b8c8;
         --color-text-logo: #dadada;
 
         --color-accent-primary: #58a6ff;
         --color-accent-focus: #58a6ff;
-        --color-accent-success: #16c60c;
         --color-accent-error: #e74856;
         --color-accent-summary: #f2cc60;
-        --color-accent-prompt: #8e6cdb;
-        --color-accent-observation: #79b8ff;
 
         --color-type-badge-bg: rgba(88, 166, 255, 0.125);
         --color-type-badge-text: #58a6ff;
@@ -282,11 +237,7 @@
         --color-summary-badge-text: #f2cc60;
         --color-prompt-badge-bg: rgba(110, 64, 201, 0.125);
         --color-prompt-badge-text: #8e6cdb;
-        --color-observation-badge-bg: rgba(121, 184, 255, 0.15);
-        --color-observation-badge-text: #79b8ff;
 
-        --color-skeleton-base: #404040;
-        --color-skeleton-highlight: #505050;
 
         --shadow-focus: 0 0 0 2px rgba(88, 166, 255, 0.2);
 
@@ -367,15 +318,6 @@
       box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
       animation: pulse 2s ease-in-out infinite;
       z-index: 10;
-    }
-
-    @keyframes pulse {
-      0%, 100% {
-        transform: scale(1);
-      }
-      50% {
-        transform: scale(1.1);
-      }
     }
 
     .logo-text {
@@ -827,9 +769,6 @@
       font-weight: 500;
       color: var(--color-text-tertiary);
     }
-
-    /* Stack single column on narrow screens (removed - no longer using card-files) */
-    @media (max-width: 600px) {}
 
     /* Project badge styling */
     .card-project {
@@ -1297,16 +1236,6 @@
     @keyframes spin {
       to {
         transform: rotate(360deg);
-      }
-    }
-
-    @keyframes shimmer {
-      0% {
-        background-position: 200% 0;
-      }
-
-      100% {
-        background-position: -200% 0;
       }
     }
 

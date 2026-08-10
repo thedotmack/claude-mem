@@ -7,16 +7,16 @@ interface UseContextPreviewResult {
   error: string | null;
   projects: string[];
   sources: string[];
-  selectedSource: string | null;
+  selectedSource: string;
   setSelectedSource: (source: string) => void;
   selectedProject: string | null;
   setSelectedProject: (project: string) => void;
 }
 
-function getPreferredSource(sources: string[]): string | null {
+function getPreferredSource(sources: string[]): string {
   if (sources.includes('claude')) return 'claude';
   if (sources.includes('codex')) return 'codex';
-  return sources[0] || null;
+  return sources[0];
 }
 
 function withDefaultSources(sources: string[]): string[] {
@@ -30,7 +30,7 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
   const [error, setError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<ProjectCatalog>({ projects: [], sources: [], projectsBySource: {} });
   const [projects, setProjects] = useState<string[]>([]);
-  const [selectedSource, setSelectedSource] = useState<string | null>(null);
+  const [selectedSource, setSelectedSource] = useState<string>('claude');
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
 
   useEffect(() => {
@@ -55,26 +55,14 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
       const preferredSource = getPreferredSource(nextCatalog.sources);
       setSelectedSource(preferredSource);
 
-      if (preferredSource) {
-        const sourceProjects = nextCatalog.projectsBySource[preferredSource] || [];
-        setProjects(sourceProjects);
-        setSelectedProject(sourceProjects[0] || null);
-        return;
-      }
-
-      setProjects(nextCatalog.projects);
-      setSelectedProject(nextCatalog.projects[0] || null);
+      const sourceProjects = nextCatalog.projectsBySource[preferredSource] || [];
+      setProjects(sourceProjects);
+      setSelectedProject(sourceProjects[0] || null);
     }
     fetchProjects();
   }, []);
 
   useEffect(() => {
-    if (!selectedSource) {
-      setProjects(catalog.projects);
-      setSelectedProject(prev => (prev && catalog.projects.includes(prev) ? prev : catalog.projects[0] || null));
-      return;
-    }
-
     const sourceProjects = catalog.projectsBySource[selectedSource] || [];
     setProjects(sourceProjects);
     setSelectedProject(prev => (prev && sourceProjects.includes(prev) ? prev : sourceProjects[0] || null));
@@ -90,12 +78,9 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     setError(null);
 
     const params = new URLSearchParams({
-      project: selectedProject
+      project: selectedProject,
+      platformSource: selectedSource
     });
-
-    if (selectedSource) {
-      params.append('platformSource', selectedSource);
-    }
 
     try {
       const response = await fetch(`/api/context/preview?${params}`);

@@ -4,10 +4,9 @@ import {
   SERVER_POSTGRES_TABLES,
   bootstrapServerPostgresSchema,
   buildObservationGenerationKey,
-  createPostgresStorageRepositories,
   type PostgresPoolClient,
-  type PostgresStorageRepositories
 } from '../../../src/storage/postgres/index.js';
+import { createPostgresStorageRepositories, type PostgresStorageRepositories } from '../../sdk/pg-storage.js';
 import { quoteIdentifier } from '../../sdk/pg-isolation.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
@@ -238,11 +237,11 @@ describe('server beta postgres observation storage', () => {
     expect(retry.id).toBe(observation.id);
     expect(source.id).toBe(duplicateSource.id);
     expect(search.map(item => item.id)).toContain(observation.id);
-    await expect(storage.observationSources.listByObservationForScope({
-      observationId: observation.id,
-      projectId: project.id,
-      teamId: project.teamId
-    })).resolves.toHaveLength(1);
+    const sourceRows = await client.query(
+      'SELECT id FROM observation_sources WHERE observation_id = $1',
+      [observation.id]
+    );
+    expect(sourceRows.rows).toHaveLength(1);
   });
 
   it('scopes observation generation_key idempotency to project and team', async () => {
@@ -273,36 +272,6 @@ describe('server beta postgres observation storage', () => {
     expect(second.id).not.toBe(first.id);
     expect(second.projectId).toBe(secondScope.project.id);
     expect(second.teamId).toBe(secondScope.project.teamId);
-  });
-
-  it('scopes observation source reads to the observation project and team', async () => {
-    const { project, event, eventJob } = await createFixtureScopeWithEventJob(storage);
-    const other = await createFixtureScope(storage);
-    const observation = await storage.observations.create({
-      projectId: project.id,
-      teamId: project.teamId,
-      content: 'Scoped observation source reader'
-    });
-
-    await storage.observationSources.addSource({
-      observationId: observation.id,
-      projectId: project.id,
-      teamId: project.teamId,
-      sourceType: 'agent_event',
-      sourceId: event.id,
-      generationJobId: eventJob.id
-    });
-
-    await expect(storage.observationSources.listByObservationForScope({
-      observationId: observation.id,
-      projectId: project.id,
-      teamId: project.teamId
-    })).resolves.toHaveLength(1);
-    await expect(storage.observationSources.listByObservationForScope({
-      observationId: observation.id,
-      projectId: other.project.id,
-      teamId: other.project.teamId
-    })).resolves.toEqual([]);
   });
 
   it('does not mutate scoped observation source, job transition, or job event writes with the wrong scope', async () => {
@@ -337,21 +306,21 @@ describe('server beta postgres observation storage', () => {
       statusAfter: 'processing'
     })).rejects.toThrow(/generation_job_id must belong/);
 
-    await expect(storage.observationSources.listByObservationForScope({
-      observationId: observation.id,
-      projectId: project.id,
-      teamId: project.teamId
-    })).resolves.toEqual([]);
+    const wrongScopeSources = await client.query(
+      'SELECT id FROM observation_sources WHERE observation_id = $1',
+      [observation.id]
+    );
+    expect(wrongScopeSources.rows).toEqual([]);
     await expect(storage.observationGenerationJobs.getByIdForScope({
       id: eventJob.id,
       projectId: project.id,
       teamId: project.teamId
     })).resolves.toMatchObject({ status: 'queued', attempts: 0, lockedBy: null });
-    await expect(storage.observationGenerationJobEvents.listByJobForScope({
-      generationJobId: eventJob.id,
-      projectId: project.id,
-      teamId: project.teamId
-    })).resolves.toEqual([]);
+    const wrongScopeEvents = await client.query(
+      'SELECT id FROM observation_generation_job_events WHERE generation_job_id = $1',
+      [eventJob.id]
+    );
+    expect(wrongScopeEvents.rows).toEqual([]);
   });
 
   it('deduplicates sessions by deterministic identity when external session IDs are omitted', async () => {
@@ -488,20 +457,6 @@ describe('server beta postgres observation storage', () => {
       expect(exposed[['listBy', 'Job'].join('')]).toBeUndefined();
       expect(exposed[['listBy', 'Observation'].join('')]).toBeUndefined();
     }
-  });
-
-  it('scopes team lookup by membership', async () => {
-    const team = await storage.teams.create({ name: 'Scoped Team' });
-    await storage.teams.addMember({ teamId: team.id, userId: 'member-1', role: 'viewer' });
-
-    await expect(storage.teams.getByIdForUser({
-      id: team.id,
-      userId: 'member-1'
-    })).resolves.toMatchObject({ id: team.id });
-    await expect(storage.teams.getByIdForUser({
-      id: team.id,
-      userId: 'outsider'
-    })).resolves.toBeNull();
   });
 
   it('rejects illegal generation job lifecycle transitions and max-attempt retries', async () => {
@@ -679,16 +634,6 @@ describe('server beta postgres observation storage', () => {
       teamId: scope.project.teamId,
       content: 'Target observation for non-agent source validation'
     });
-    const sourceObservation = await storage.observations.create({
-      projectId: scope.project.id,
-      teamId: scope.project.teamId,
-      content: 'Source observation for reindex validation'
-    });
-    const otherObservation = await storage.observations.create({
-      projectId: other.project.id,
-      teamId: other.project.teamId,
-      content: 'Cross-scope source observation'
-    });
 
     await expect(storage.observationSources.addSource({
       observationId: targetObservation.id,
@@ -701,23 +646,9 @@ describe('server beta postgres observation storage', () => {
       observationId: targetObservation.id,
       projectId: scope.project.id,
       teamId: scope.project.teamId,
-      sourceType: 'observation_reindex',
-      sourceId: sourceObservation.id
-    })).resolves.toMatchObject({ sourceType: 'observation_reindex', sourceId: sourceObservation.id });
-    await expect(storage.observationSources.addSource({
-      observationId: targetObservation.id,
-      projectId: scope.project.id,
-      teamId: scope.project.teamId,
       sourceType: 'session_summary',
       sourceId: other.session.id
     })).rejects.toThrow(/server_session_id must belong/);
-    await expect(storage.observationSources.addSource({
-      observationId: targetObservation.id,
-      projectId: scope.project.id,
-      teamId: scope.project.teamId,
-      sourceType: 'observation_reindex',
-      sourceId: otherObservation.id
-    })).rejects.toThrow(/observation_reindex source_id must belong/);
   });
 
   it('scopes generation job source uniqueness to project and team', async () => {
@@ -731,7 +662,7 @@ describe('server beta postgres observation storage', () => {
         INSERT INTO observation_generation_jobs (
           id, project_id, team_id, source_type, source_id, job_type, status, idempotency_key
         )
-        VALUES ($1, $2, $3, 'observation_reindex', $4, $5, 'queued', $6)
+        VALUES ($1, $2, $3, 'session_summary', $4, $5, 'queued', $6)
       `,
       [
         crypto.randomUUID(),
@@ -747,7 +678,7 @@ describe('server beta postgres observation storage', () => {
         INSERT INTO observation_generation_jobs (
           id, project_id, team_id, source_type, source_id, job_type, status, idempotency_key
         )
-        VALUES ($1, $2, $3, 'observation_reindex', $4, $5, 'queued', $6)
+        VALUES ($1, $2, $3, 'session_summary', $4, $5, 'queued', $6)
       `,
       [
         crypto.randomUUID(),
@@ -763,7 +694,7 @@ describe('server beta postgres observation storage', () => {
         INSERT INTO observation_generation_jobs (
           id, project_id, team_id, source_type, source_id, job_type, status, idempotency_key
         )
-        VALUES ($1, $2, $3, 'observation_reindex', $4, $5, 'queued', $6)
+        VALUES ($1, $2, $3, 'session_summary', $4, $5, 'queued', $6)
       `,
       [
         crypto.randomUUID(),
@@ -796,18 +727,6 @@ describe('server beta postgres observation storage', () => {
       serverSessionId: session.id,
       jobType: 'generate_session_summary'
     });
-    const observation = await storage.observations.create({
-      projectId: project.id,
-      teamId: project.teamId,
-      content: 'Reindexable observation'
-    });
-    const reindexJob = await storage.observationGenerationJobs.create({
-      projectId: project.id,
-      teamId: project.teamId,
-      sourceType: 'observation_reindex',
-      sourceId: observation.id,
-      jobType: 'reindex_observation'
-    });
     const processing = await storage.observationGenerationJobs.transitionStatus({
       id: eventJob.id,
       projectId: project.id,
@@ -831,38 +750,31 @@ describe('server beta postgres observation storage', () => {
       attempt: processing?.attempts ?? 1
     });
 
-    const scopedQueuedJobs = await storage.observationGenerationJobs.listByStatusForScope({
-      status: 'queued',
-      projectId: project.id,
-      teamId: project.teamId
-    });
-    const wrongScopeQueuedJobs = await storage.observationGenerationJobs.listByStatusForScope({
-      status: 'queued',
-      projectId: other.project.id,
-      teamId: other.project.teamId
-    });
-    const lifecycle = await storage.observationGenerationJobEvents.listByJobForScope({
-      generationJobId: eventJob.id,
-      projectId: project.id,
-      teamId: project.teamId
-    });
-    const wrongScopeLifecycle = await storage.observationGenerationJobEvents.listByJobForScope({
-      generationJobId: eventJob.id,
-      projectId: other.project.id,
-      teamId: other.project.teamId
-    });
+    const scopedQueuedJobs = await client.query(
+      `SELECT id FROM observation_generation_jobs
+       WHERE status = 'queued' AND project_id = $1 AND team_id = $2`,
+      [project.id, project.teamId]
+    );
+    const wrongScopeQueuedJobs = await client.query(
+      `SELECT id FROM observation_generation_jobs
+       WHERE status = 'queued' AND project_id = $1 AND team_id = $2`,
+      [other.project.id, other.project.teamId]
+    );
+    const lifecycle = await client.query(
+      `SELECT event_type FROM observation_generation_job_events
+       WHERE generation_job_id = $1
+       ORDER BY created_at ASC`,
+      [eventJob.id]
+    );
 
     expect(duplicateEventJob.id).toBe(eventJob.id);
     expect(summaryJob.sourceType).toBe('session_summary');
     expect(summaryJob.agentEventId).toBeNull();
     expect(summaryJob.serverSessionId).toBe(session.id);
-    expect(reindexJob.sourceType).toBe('observation_reindex');
-    expect(reindexJob.agentEventId).toBeNull();
     expect(processing?.attempts).toBe(1);
-    expect(scopedQueuedJobs.map(job => job.id).sort()).toEqual([summaryJob.id, reindexJob.id].sort());
-    expect(wrongScopeQueuedJobs).toEqual([]);
-    expect(lifecycle.map(eventRecord => eventRecord.eventType)).toEqual(['queued', 'processing']);
-    expect(wrongScopeLifecycle).toEqual([]);
+    expect(scopedQueuedJobs.rows.map(job => job.id)).toEqual([summaryJob.id]);
+    expect(wrongScopeQueuedJobs.rows).toEqual([]);
+    expect(lifecycle.rows.map(eventRecord => eventRecord.event_type)).toEqual(['queued', 'processing']);
   });
 });
 
