@@ -9,6 +9,7 @@ import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
 import { IS_WINDOWS } from '../utils/paths.js';
 import { parseJsonWithBom } from '../../shared/atomic-json.js';
+import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
 
 const INSTALL_TIMEOUT_MS = (() => {
   const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
@@ -53,13 +54,37 @@ function userHasOptedOutOfVectorSearch(): boolean {
   return value === true || value === 'true' || value === '1';
 }
 
-const BUN_COMMON_PATHS = IS_WINDOWS
-  ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
-  : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun', '/opt/homebrew/bin/bun', '/home/linuxbrew/.linuxbrew/bin/bun'];
+/**
+ * Absolute paths bun's installer can write to, recomputed per call so an
+ * installer that set `$BUN_INSTALL` earlier in this process is still found.
+ * Honours `$BUN_INSTALL`, both `homedir()` and `%USERPROFILE%` (which differ on
+ * redirected Windows profiles), `%LOCALAPPDATA%\bun`, and the platform defaults.
+ * The previous `homedir()`-only list missed env-directed installs and aborted
+ * with "executable not found" even when the binary was present.
+ */
+export function bunCommonPaths(env: NodeJS.ProcessEnv = process.env): string[] {
+  const binName = IS_WINDOWS ? 'bun.exe' : 'bun';
+  const homeRoots = [homedir(), env.USERPROFILE].filter((v): v is string => Boolean(v));
+  const localAppData = IS_WINDOWS && env.LOCALAPPDATA
+    ? [join(env.LOCALAPPDATA, 'bun', binName), join(env.LOCALAPPDATA, 'bun', 'bin', binName)]
+    : [];
+  const systemPaths = IS_WINDOWS
+    ? []
+    : ['/usr/local/bin/bun', '/opt/homebrew/bin/bun', '/home/linuxbrew/.linuxbrew/bin/bun', '/usr/bin/bun', '/snap/bin/bun'];
+  const candidates = [
+    ...(env.BUN_INSTALL ? [join(env.BUN_INSTALL, 'bin', binName)] : []),
+    ...homeRoots.map(root => join(root, '.bun', 'bin', binName)),
+    ...localAppData,
+    ...systemPaths,
+  ];
+  return [...new Set(candidates)];
+}
 
-const UV_COMMON_PATHS = IS_WINDOWS
-  ? [join(homedir(), '.local', 'bin', 'uv.exe'), join(homedir(), '.cargo', 'bin', 'uv.exe')]
-  : [join(homedir(), '.local', 'bin', 'uv'), join(homedir(), '.cargo', 'bin', 'uv'), '/usr/local/bin/uv', '/opt/homebrew/bin/uv'];
+/** Absolute paths uv's installer can write to (getUvxBinDirs already dedupes). */
+export function uvCommonPaths(env: NodeJS.ProcessEnv = process.env): string[] {
+  const binName = IS_WINDOWS ? 'uv.exe' : 'uv';
+  return getUvxBinDirs({ env }).map(dir => join(dir, binName));
+}
 
 interface MarkerSchema {
   version: string;
@@ -99,7 +124,7 @@ function getToolPath(command: string, commonPaths: string[]): string | null {
 }
 
 export function getBunPath(): string | null {
-  return getToolPath('bun', BUN_COMMON_PATHS);
+  return getToolPath('bun', bunCommonPaths());
 }
 
 function isBunInstalled(): boolean {
@@ -121,7 +146,7 @@ export function getBunVersion(): string | null {
 }
 
 function getUvPath(): string | null {
-  return getToolPath('uv', UV_COMMON_PATHS);
+  return getToolPath('uv', uvCommonPaths());
 }
 
 function isUvInstalled(): boolean {
@@ -326,7 +351,7 @@ export async function ensureBun(summary?: InstallSummary): Promise<{ bunPath: st
 
   let bunPath = getBunPath();
   if (!bunPath) {
-    bunPath = BUN_COMMON_PATHS.find(existsSync) ?? null;
+    bunPath = bunCommonPaths().find(existsSync) ?? null;
   }
   if (!bunPath) {
     installerError(ErrorSeverity.ABORT, {
@@ -385,9 +410,10 @@ export async function ensureUv(
 
   let uvPath = getUvPath();
   if (!uvPath) {
-    // Re-probe UV_COMMON_PATHS directly — PATH may not yet include ~/.local/bin
-    // in the current shell even though the install just wrote the binary there.
-    uvPath = UV_COMMON_PATHS.find(existsSync) ?? null;
+    // Re-probe the known uv bin dirs directly — PATH may not yet include
+    // ~/.local/bin in the current shell even though the install just wrote the
+    // binary there.
+    uvPath = uvCommonPaths().find(existsSync) ?? null;
   }
   if (!uvPath) {
     if (options.allowVectorSearchOptOut && userHasOptedOutOfVectorSearch()) {

@@ -9,7 +9,10 @@ import {
   isInstallCurrent,
   platformBunRemediation,
   platformUvRemediation,
+  bunCommonPaths,
+  uvCommonPaths,
 } from '../src/npx-cli/install/setup-runtime';
+import { IS_WINDOWS } from '../src/npx-cli/utils/paths';
 
 const SETUP_RUNTIME_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'npx-cli', 'install', 'setup-runtime.ts');
 const SHARED_SPAWN_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'shared', 'spawn.ts');
@@ -153,6 +156,32 @@ describe('setup-runtime install marker', () => {
       expect(text.toLowerCase()).toContain('uv');
       expect(text).toContain('claude-mem install');
     });
+  });
+});
+
+describe('setup-runtime binary detection honours installer env vars', () => {
+  const bunName = IS_WINDOWS ? 'bun.exe' : 'bun';
+  const uvName = IS_WINDOWS ? 'uv.exe' : 'uv';
+
+  it('bunCommonPaths honours BUN_INSTALL', () => {
+    const paths = bunCommonPaths({ BUN_INSTALL: '/opt/bun' });
+    expect(paths).toContain(join('/opt/bun', 'bin', bunName));
+  });
+
+  it('uvCommonPaths honours UV_INSTALL_DIR', () => {
+    const paths = uvCommonPaths({ UV_INSTALL_DIR: '/opt/uv/bin' });
+    expect(paths).toContain(join('/opt/uv/bin', uvName));
+  });
+
+  it('uvCommonPaths honours XDG_BIN_HOME', () => {
+    const paths = uvCommonPaths({ XDG_BIN_HOME: '/xdg/bin' });
+    expect(paths).toContain(join('/xdg/bin', uvName));
+  });
+
+  it('bunCommonPaths returns absolute paths and no duplicates', () => {
+    const paths = bunCommonPaths({ BUN_INSTALL: '/opt/bun' });
+    expect(paths.length).toBe(new Set(paths).size);
+    expect(paths.every(p => p.length > 0)).toBe(true);
   });
 });
 
