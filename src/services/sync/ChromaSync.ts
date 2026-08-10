@@ -768,8 +768,10 @@ export class ChromaSync {
       } catch (error) {
         // A single unformattable row (e.g. a malformed JSON column) must not
         // abort the whole backfill. Skip and log it so the rest of the run
-        // proceeds. The skipped row is not marked synced, so it retries on the
-        // next run and self-heals once its format issue is resolved.
+        // proceeds. Mark the id pending so a later higher-id row that advances
+        // the watermark does not strand it: the pending path re-fetches it on
+        // the next run, which self-heals once its format issue is resolved.
+        ChromaSyncState.markPending(backfillProject, kind, [row.id]);
         logger.warn('CHROMA_SYNC', 'Skipped unformattable row during backfill', {
           project: backfillProject,
           kind,
