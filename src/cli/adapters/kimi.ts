@@ -1,7 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 
+// Kimi Code platform adapter.
+//
+// Payload facts below were verified against live Kimi Code (v2, Node engine)
+// hook payloads — see https://github.com/thedotmack/claude-mem/pull/2908 for
+// the original integration this corrects:
+//
+//  - PostToolUse payloads carry `tool_output` / `tool_call_id`, NOT Claude
+//    Code's `tool_response` / `tool_use_id`.
+//  - Stop payloads carry only {cwd, hook_event_name, session_id,
+//    stop_hook_active} — no transcript_path and no last_assistant_message,
+//    so we synthesize a transcript from Kimi's wire.jsonl session log.
+//  - Kimi appends a hook's raw stdout to the model context on
+//    UserPromptSubmit, and ignores SessionStart hook stdout entirely. A JSON
+//    hook envelope would be injected verbatim, so context is emitted as
+//    plain text and everything else stays silent.
+//  - SessionStart sources are 'startup' | 'resume'.
+
 import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.js';
 import { AdapterRejectedInput, isValidCwd } from './errors.js';
+import { synthesizeKimiTranscript } from './kimi-transcript.js';
 
 export const kimiAdapter: PlatformAdapter = {
   normalizeInput(raw): NormalizedHookInput {
@@ -16,15 +34,17 @@ export const kimiAdapter: PlatformAdapter = {
       throw new AdapterRejectedInput('invalid_cwd');
     }
 
-    const sessionId = r.session_id
-      ?? process.env.KIMI_SESSION_ID
-      ?? undefined;
+    const sessionId = r.session_id ?? process.env.KIMI_SESSION_ID ?? undefined;
+    if (!sessionId) {
+      throw new AdapterRejectedInput('missing_session_id');
+    }
 
     const hookEventName: string | undefined = r.hook_event_name;
 
     const toolName: string | undefined = r.tool_name;
     const toolInput: unknown = r.tool_input;
-    const toolResponse: unknown = r.tool_response;
+    // Kimi sends tool_output where Claude Code sends tool_response.
+    const toolResponse: unknown = r.tool_response ?? r.tool_output;
 
     // Kimi sends the user prompt on UserPromptSubmit. Coerce to string to guard against
     // multimodal payloads where prompt may be an object/array.
@@ -46,15 +66,18 @@ export const kimiAdapter: PlatformAdapter = {
       prompt = (rawField as any).text;
     }
 
-    const metadata: Record<string, unknown> = {};
-    if (r.source) metadata.source = r.source;
-    if (r.reason) metadata.reason = r.reason;
-    if (r.trigger) metadata.trigger = r.trigger;
-    if (r.mcp_context) metadata.mcp_context = r.mcp_context;
-    if (r.notification_type) metadata.notification_type = r.notification_type;
-    if (r.stop_hook_active !== undefined) metadata.stop_hook_active = r.stop_hook_active;
-    if (r.original_request_name) metadata.original_request_name = r.original_request_name;
-    if (hookEventName) metadata.hook_event_name = hookEventName;
+    // Kimi's Stop payload has no transcript_path / last_assistant_message.
+    // Convert the session's wire.jsonl to Claude Code transcript format so
+    // the summarize handler can extract the final assistant message.
+    let transcriptPath: string | undefined = r.transcript_path;
+    if (hookEventName === 'Stop' && !transcriptPath && r.last_assistant_message === undefined) {
+      try {
+        transcriptPath = synthesizeKimiTranscript(sessionId) ?? undefined;
+      } catch {
+        // Best effort — the summarize handler degrades to a logged skip
+        // when no transcript is available.
+      }
+    }
 
     return {
       sessionId,
@@ -63,43 +86,29 @@ export const kimiAdapter: PlatformAdapter = {
       toolName,
       toolInput,
       toolResponse,
-      transcriptPath: r.transcript_path,
+      transcriptPath,
       lastAssistantMessage: r.last_assistant_message,
       turnId: r.turn_id,
       stopHookActive: r.stop_hook_active,
       permissionMode: r.permission_mode,
       model: r.model,
-      sessionSource: r.source === 'startup' || r.source === 'resume' || r.source === 'clear'
+      sessionSource: r.source === 'startup' || r.source === 'resume'
         ? r.source
         : undefined,
       filePath: r.file_path,
       edits: r.edits,
-      metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
     };
   },
 
-  formatOutput(result): Record<string, unknown> | undefined {
-    // Kimi displays stdout in the UI, so emit nothing when there's no
-    // context/system message to inject. Exit code 0 already means "continue".
-    const hasOutput = result.systemMessage || result.hookSpecificOutput?.additionalContext;
-    if (!hasOutput) {
-      return undefined;
+  formatOutput(result): string | undefined {
+    // Kimi appends raw hook stdout to the model context on UserPromptSubmit;
+    // anything else written to stdout is UI noise. Emit the context text
+    // plain (no JSON envelope) and stay silent otherwise — exit code 0
+    // already means "continue".
+    const ctx = result.hookSpecificOutput?.additionalContext;
+    if (typeof ctx === 'string' && ctx.trim()) {
+      return ctx;
     }
-
-    const output: Record<string, unknown> = {
-      continue: result.continue ?? true,
-    };
-
-    if (result.systemMessage) {
-      output.systemMessage = result.systemMessage;
-    }
-
-    // Kimi follows the Codex/Claude SDK standard for context injection:
-    // top-level additionalContext.
-    if (result.hookSpecificOutput?.additionalContext) {
-      output.additionalContext = result.hookSpecificOutput.additionalContext;
-    }
-
-    return output;
+    return undefined;
   }
 };

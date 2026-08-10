@@ -39,15 +39,29 @@ describe('Kimi Code CLI installer config registration', () => {
 
     const config = readConfig();
     expect(Array.isArray(config.hooks)).toBe(true);
-    expect(config.hooks.length).toBe(4);
-    expect(config.hooks.map((h: any) => h.event)).toEqual([
-      'SessionStart',
-      'UserPromptSubmit',
-      'PostToolUse',
-      'Stop',
+    expect(config.hooks.length).toBe(7);
+    expect(config.hooks.map((h: any) => [h.event, h.matcher ?? null])).toEqual([
+      ['SessionStart', 'startup|resume'],
+      ['SessionStart', 'startup|resume'],
+      ['UserPromptSubmit', null],
+      ['PreToolUse', 'Read'],
+      ['PostToolUse', null],
+      ['PostToolUseFailure', null],
+      ['Stop', null],
     ]);
-    expect(config.hooks.every((h: any) => h.command.includes('hook kimi-code'))).toBe(true);
-    expect(config.hooks.every((h: any) => h.timeout === 120)).toBe(true);
+    // First SessionStart entry is the bare `start` worker command; the rest
+    // are `hook kimi-code <event>` dispatches.
+    expect(config.hooks[0].command).toContain('worker-service.cjs start');
+    expect(config.hooks.slice(1).every((h: any) => h.command.includes('hook kimi-code'))).toBe(true);
+    expect(config.hooks.map((h: any) => h.command.match(/hook kimi-code ([\w-]+)/)?.[1] ?? 'start')).toEqual([
+      'start',
+      'context',
+      'session-init',
+      'file-context',
+      'observation',
+      'observation',
+      'summarize',
+    ]);
   });
 
   it('preserves existing hooks and settings', async () => {
@@ -70,9 +84,10 @@ describe('Kimi Code CLI installer config registration', () => {
 
     const config = readConfig();
     expect(config.default_model).toBe('kimi-code/kimi-for-coding');
-    expect(config.hooks.length).toBe(5);
+    expect(config.hooks.length).toBe(8);
     expect(config.hooks[0].event).toBe('PreToolUse');
-    expect(config.hooks.slice(1).every((h: any) => h.command.includes('hook kimi-code'))).toBe(true);
+    expect(config.hooks[0].command).toBe('bash ~/.kimi-code/hooks/pre.sh');
+    expect(config.hooks.slice(1).every((h: any) => h.command.includes('worker-service.cjs'))).toBe(true);
   });
 
   it('is idempotent across repeated installs', async () => {
@@ -81,7 +96,7 @@ describe('Kimi Code CLI installer config registration', () => {
     expect(result).toBe(0);
 
     const config = readConfig();
-    expect(config.hooks.length).toBe(4);
+    expect(config.hooks.length).toBe(7);
   });
 
   it('removes only claude-mem hooks during uninstall', async () => {

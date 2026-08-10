@@ -125,7 +125,10 @@ export function emitModelContext(adapter: PlatformAdapter, result: HookResult): 
   if (output === undefined) {
     return;
   }
-  console.log(JSON.stringify(output));
+  // Adapters may return a plain string for platforms whose hook channel
+  // passes stdout through verbatim (Kimi appends it to the model context);
+  // wrapping it in JSON.stringify would inject escapes and quotes.
+  console.log(typeof output === 'string' ? output : JSON.stringify(output));
 }
 
 let moduleHasEmitted = false;

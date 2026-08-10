@@ -35,47 +35,64 @@ const HOOK_NAME = 'claude-mem';
 // Kimi timeout is in seconds. The docs show values like 5, 30, 60.
 const HOOK_TIMEOUT_SECONDS = 120;
 
-const KIMI_EVENT_TO_INTERNAL_EVENT: Record<string, string> = {
-  'SessionStart': 'context',
-  'UserPromptSubmit': 'session-init',
-  'PostToolUse': 'observation',
-  'Stop': 'summarize',
-};
+interface KimiHookSpec {
+  event: string;
+  matcher?: string;
+  /** hook kimi-code <event>; omit for the bare `start` worker command */
+  internalEvent?: string;
+  timeout?: number;
+}
+
+// Mirrors the upstream Claude Code hook set (plugin/hooks/hooks.json), adapted
+// to Kimi's lifecycle events. Verified against live Kimi Code hook payloads:
+//  - SessionStart sources are 'startup' | 'resume' (no clear/compact).
+//  - `start` is the bare worker-service command that ensures the daemon is
+//    up; the other entries are `hook kimi-code <event>` dispatches.
+//  - PreToolUse(Read) → file-context gives the same recall-on-read behavior
+//    Claude Code gets.
+//  - PostToolUseFailure is Kimi-specific; failures are observations too.
+//  - Kimi matchers are regexes; omitting the matcher catches all targets
+//    ('*' is not a valid catch-all regex).
+const KIMI_HOOK_SPECS: KimiHookSpec[] = [
+  { event: 'SessionStart', matcher: 'startup|resume', timeout: 60 },
+  { event: 'SessionStart', matcher: 'startup|resume', internalEvent: 'context', timeout: 60 },
+  { event: 'UserPromptSubmit', internalEvent: 'session-init', timeout: 60 },
+  { event: 'PreToolUse', matcher: 'Read', internalEvent: 'file-context', timeout: 60 },
+  { event: 'PostToolUse', internalEvent: 'observation', timeout: HOOK_TIMEOUT_SECONDS },
+  { event: 'PostToolUseFailure', internalEvent: 'observation', timeout: HOOK_TIMEOUT_SECONDS },
+  { event: 'Stop', internalEvent: 'summarize', timeout: HOOK_TIMEOUT_SECONDS },
+];
 
 function buildHookCommand(
   bunPath: string,
   workerServicePath: string,
-  kimiEventName: string,
+  spec: KimiHookSpec,
 ): string {
-  const internalEvent = KIMI_EVENT_TO_INTERNAL_EVENT[kimiEventName];
-  if (!internalEvent) {
-    throw new Error(`Unknown Kimi event: ${kimiEventName}`);
-  }
-
   // Kimi splits the command string by whitespace and passes the resulting
   // tokens as argv. Quoting paths is not supported, so we rely on the
   // resolved paths having no spaces. (The standard install locations don't.)
-  return `${bunPath} ${workerServicePath} hook kimi-code ${internalEvent}`;
+  if (!spec.internalEvent) {
+    return `${bunPath} ${workerServicePath} start`;
+  }
+  return `${bunPath} ${workerServicePath} hook kimi-code ${spec.internalEvent}`;
 }
 
 function createHookEntry(
   bunPath: string,
   workerServicePath: string,
-  kimiEventName: string,
+  spec: KimiHookSpec,
 ): KimiHookEntry {
-  // Kimi matchers are regexes against the target (tool name / prompt text / source).
-  // '*' is not a valid regex and would match nothing, so omit the matcher to
-  // catch all targets. SessionStart sources are 'startup' or 'resume' per Kimi docs.
-  const matcher = kimiEventName === 'SessionStart'
-    ? 'startup|resume|clear|compact'
-    : undefined;
-
   return {
-    event: kimiEventName,
-    ...(matcher !== undefined && { matcher }),
-    command: buildHookCommand(bunPath, workerServicePath, kimiEventName),
-    timeout: HOOK_TIMEOUT_SECONDS,
+    event: spec.event,
+    ...(spec.matcher !== undefined && { matcher: spec.matcher }),
+    command: buildHookCommand(bunPath, workerServicePath, spec),
+    timeout: spec.timeout ?? HOOK_TIMEOUT_SECONDS,
   };
+}
+
+function describeSpec(spec: KimiHookSpec): string {
+  const target = spec.internalEvent ?? 'start';
+  return spec.matcher ? `${spec.event}[${spec.matcher}] → ${target}` : `${spec.event} → ${target}`;
 }
 
 function readKimiConfig(): KimiConfig {
@@ -106,8 +123,7 @@ function writeKimiConfig(config: KimiConfig): void {
 
 function isClaudeMemHook(entry: KimiHookEntry): boolean {
   return typeof entry.command === 'string'
-    && entry.command.includes('worker-service.cjs')
-    && entry.command.includes('hook kimi-code');
+    && entry.command.includes('worker-service.cjs');
 }
 
 function mergeHooksIntoConfig(
@@ -141,10 +157,9 @@ export async function installKimiCodeHooks(): Promise<number> {
   console.log(`  Worker service: ${workerServicePath}`);
 
   try {
-    const newHooks: KimiHookEntry[] = [];
-    for (const kimiEvent of Object.keys(KIMI_EVENT_TO_INTERNAL_EVENT)) {
-      newHooks.push(createHookEntry(bunPath, workerServicePath, kimiEvent));
-    }
+    const newHooks: KimiHookEntry[] = KIMI_HOOK_SPECS.map((spec) =>
+      createHookEntry(bunPath, workerServicePath, spec),
+    );
 
     const existingConfig = readKimiConfig();
     const mergedConfig = mergeHooksIntoConfig(existingConfig, newHooks);
@@ -152,11 +167,9 @@ export async function installKimiCodeHooks(): Promise<number> {
     writeKimiConfig(mergedConfig);
     console.log(`  Merged hooks into ${getKimiConfigPath()}`);
 
-    const eventNames = Object.keys(KIMI_EVENT_TO_INTERNAL_EVENT);
-    console.log(`  Registered ${eventNames.length} hook events:`);
-    for (const event of eventNames) {
-      const internalEvent = KIMI_EVENT_TO_INTERNAL_EVENT[event];
-      console.log(`    ${event} → ${internalEvent}`);
+    console.log(`  Registered ${KIMI_HOOK_SPECS.length} hook entries:`);
+    for (const spec of KIMI_HOOK_SPECS) {
+      console.log(`    ${describeSpec(spec)}`);
     }
 
     console.log(`
@@ -244,14 +257,14 @@ export function checkKimiCodeHooksStatus(): number {
     return 0;
   }
 
-  const installedEvents: string[] = [];
+  const installedCommands: string[] = [];
   for (const entry of config.hooks) {
     if (isClaudeMemHook(entry) && entry.event) {
-      installedEvents.push(entry.event);
+      installedCommands.push(`${entry.event}${entry.matcher ? `[${entry.matcher}]` : ''}`);
     }
   }
 
-  if (installedEvents.length === 0) {
+  if (installedCommands.length === 0) {
     console.log('Kimi Code CLI config: Found, but no claude-mem hooks\n');
     console.log('Run: claude-mem install --ide kimi-code\n');
     return 0;
@@ -259,10 +272,11 @@ export function checkKimiCodeHooksStatus(): number {
 
   console.log(`Config: ${getKimiConfigPath()}`);
   console.log(`Mode: Unified CLI (bun worker-service.cjs hook kimi-code)`);
-  console.log(`Events: ${installedEvents.length} of ${Object.keys(KIMI_EVENT_TO_INTERNAL_EVENT).length} mapped`);
-  for (const event of installedEvents) {
-    const internalEvent = KIMI_EVENT_TO_INTERNAL_EVENT[event] ?? 'unknown';
-    console.log(`  ${event} → ${internalEvent}`);
+  console.log(`Hook entries: ${installedCommands.length} of ${KIMI_HOOK_SPECS.length} installed`);
+  for (const spec of KIMI_HOOK_SPECS) {
+    const label = `${spec.event}${spec.matcher ? `[${spec.matcher}]` : ''}`;
+    const mark = installedCommands.includes(label) ? 'installed' : 'missing';
+    console.log(`  ${describeSpec(spec)} — ${mark}`);
   }
 
   console.log('');
