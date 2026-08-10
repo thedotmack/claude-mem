@@ -16,7 +16,18 @@ describe('resolvePluginRoot', () => {
   const savedPluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
   const savedPluginRootAlt = process.env.PLUGIN_ROOT;
 
+  /** A runnable root: manifest plus the scripts the hooks require to accept it. */
   function writePluginJson(root: string): string {
+    mkdirSync(join(root, '.claude-plugin'), { recursive: true });
+    writeFileSync(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'claude-mem' }));
+    mkdirSync(join(root, 'scripts'), { recursive: true });
+    writeFileSync(join(root, 'scripts', 'bun-runner.js'), '');
+    writeFileSync(join(root, 'scripts', 'worker-service.cjs'), '');
+    return root;
+  }
+
+  /** An incomplete root: manifest only, missing the scripts the hooks require. */
+  function writeManifestOnly(root: string): string {
     mkdirSync(join(root, '.claude-plugin'), { recursive: true });
     writeFileSync(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'claude-mem' }));
     return root;
@@ -90,5 +101,17 @@ describe('resolvePluginRoot', () => {
     const envRoot = writePluginJson(join(configDir, 'custom-root'));
     process.env.CLAUDE_PLUGIN_ROOT = envRoot;
     expect(resolvePluginRoot()).toBe(envRoot);
+  });
+
+  it('skips an incomplete newer cache entry for an older runnable one', () => {
+    writeManifestOnly(cacheVersionDir('13.14.0'));
+    const runnable = writePluginJson(cacheVersionDir('13.13.0'));
+    expect(resolvePluginRoot()).toBe(runnable);
+  });
+
+  it('falls through an incomplete $CLAUDE_PLUGIN_ROOT to a runnable root', () => {
+    const runnable = writePluginJson(cacheVersionDir('13.14.0'));
+    process.env.CLAUDE_PLUGIN_ROOT = writeManifestOnly(join(configDir, 'partial-root'));
+    expect(resolvePluginRoot()).toBe(runnable);
   });
 });

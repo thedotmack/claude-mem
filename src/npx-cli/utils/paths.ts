@@ -127,16 +127,27 @@ function versionedCacheDirectories(): string[] {
 }
 
 /**
- * The directory that holds `.claude-plugin/plugin.json`, or null when the given
- * candidate is not an installed plugin root. A candidate may point either at the
- * root itself (cache directories) or at its parent (the marketplace copy nests
- * the plugin under `plugin/`), so both layouts are accepted.
+ * Whether a directory is a runnable plugin root. This matches the check the
+ * runtime hooks in plugin/hooks/hooks.json apply before accepting a root: the
+ * manifest plus the scripts they spawn must all be present. Requiring the same
+ * files keeps the CLI from selecting an incomplete root the hooks skip.
+ */
+function isRunnablePluginRoot(root: string): boolean {
+  return existsSync(join(root, '.claude-plugin', 'plugin.json'))
+    && existsSync(join(root, 'scripts', 'bun-runner.js'))
+    && existsSync(join(root, 'scripts', 'worker-service.cjs'));
+}
+
+/**
+ * The runnable plugin root reachable from a candidate, or null. A candidate may
+ * point either at the root itself (cache directories) or at its parent (the
+ * marketplace copy nests the plugin under `plugin/`), so both layouts are tried.
  */
 function normalizePluginRoot(candidate: string): string | null {
   const trimmed = candidate.replace(/[\\/]+$/, '');
   const nested = join(trimmed, 'plugin');
-  if (existsSync(join(nested, '.claude-plugin', 'plugin.json'))) return nested;
-  if (existsSync(join(trimmed, '.claude-plugin', 'plugin.json'))) return trimmed;
+  if (isRunnablePluginRoot(nested)) return nested;
+  if (isRunnablePluginRoot(trimmed)) return trimmed;
   return null;
 }
 
