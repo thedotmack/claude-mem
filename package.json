@@ -38,6 +38,8 @@
     ".codex-plugin",
     "plugin/.claude-plugin",
     "plugin/.codex-plugin",
+    ".kimi-plugin",
+    "plugin/.kimi-plugin",
     "plugin/.mcp.json",
     "plugin/package.json",
     "plugin/bun.lock",
@@ -120,9 +122,10 @@
   },
   "dependencies": {
     "@better-auth/api-key": "^1.6.16",
+    "@iarna/toml": "^2.2.5",
     "better-auth": "^1.6.16"
   },
-  "//dependencies-note": "Only deps that survive the bundler as a live `import`/`require` in a shipped artifact live here — better-auth (+ api-key) is the server-runtime auth surface, externalized from the worker bundle deliberately (see scripts/build-hooks.js). Everything else (express, bullmq, ioredis, react, react-dom, dompurify, @clack/prompts, ansi-to-html, posthog-node, shell-quote, pg, zod, @modelcontextprotocol/sdk, @anthropic-ai/claude-agent-sdk) is esbuild-inlined into the worker/server/npx bundles (or, for zod's plugin runtime copy, resolved from plugin/package.json's own dependency), so it is a build-time devDependency and is not downloaded by consumers of the `claude-mem` package.",
+  "//dependencies-note": "Only deps that survive the bundler as a live `import`/`require` in a shipped artifact live here \u2014 better-auth (+ api-key) is the server-runtime auth surface, externalized from the worker bundle deliberately (see scripts/build-hooks.js). Everything else (express, bullmq, ioredis, react, react-dom, dompurify, @clack/prompts, ansi-to-html, posthog-node, shell-quote, pg, zod, @modelcontextprotocol/sdk, @anthropic-ai/claude-agent-sdk) is esbuild-inlined into the worker/server/npx bundles (or, for zod's plugin runtime copy, resolved from plugin/package.json's own dependency), so it is a build-time devDependency and is not downloaded by consumers of the `claude-mem` package.",
   "overrides": {
     "tmp": "^0.2.7"
   },

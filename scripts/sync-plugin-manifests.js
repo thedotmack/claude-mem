@@ -12,6 +12,8 @@ const codexPluginPath = path.join(rootDir, '.codex-plugin', 'plugin.json');
 const bundledCodexPluginPath = path.join(rootDir, 'plugin', '.codex-plugin', 'plugin.json');
 const claudePluginPath = path.join(rootDir, '.claude-plugin', 'plugin.json');
 const bundledClaudePluginPath = path.join(rootDir, 'plugin', '.claude-plugin', 'plugin.json');
+const kimiPluginPath = path.join(rootDir, '.kimi-plugin', 'plugin.json');
+const bundledKimiPluginPath = path.join(rootDir, 'plugin', '.kimi-plugin', 'plugin.json');
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -63,6 +65,31 @@ function syncClaudePlugin(plugin, pkg) {
   };
 }
 
+function syncKimiPlugin(plugin, pkg) {
+  const author =
+    typeof plugin.author === 'object' && plugin.author ? plugin.author : {};
+
+  return {
+    ...plugin,
+    name: pkg.name,
+    version: pkg.version,
+    description: pkg.description,
+    homepage: pkg.homepage,
+    repository: normalizeRepositoryUrl(pkg.repository),
+    license: pkg.license,
+    keywords: pkg.keywords,
+    author: {
+      ...author,
+      name: normalizeAuthorName(pkg.author),
+    },
+    interface: {
+      ...plugin.interface,
+      developerName: normalizeAuthorName(pkg.author),
+      websiteURL: normalizeRepositoryUrl(pkg.repository),
+    },
+  };
+}
+
 function normalizeAuthorName(author) {
   if (typeof author === 'string') return author;
   if (author && typeof author === 'object' && typeof author.name === 'string') return author.name;
@@ -77,7 +104,7 @@ function normalizeRepositoryUrl(repository) {
 }
 
 function main() {
-  for (const filePath of [packageJsonPath, codexPluginPath, bundledCodexPluginPath, claudePluginPath, bundledClaudePluginPath]) {
+  for (const filePath of [packageJsonPath, codexPluginPath, bundledCodexPluginPath, claudePluginPath, bundledClaudePluginPath, kimiPluginPath, bundledKimiPluginPath]) {
     if (!fs.existsSync(filePath)) {
       console.error(`Missing required file: ${filePath}`);
       process.exit(1);
@@ -89,11 +116,15 @@ function main() {
   const bundledCodexPlugin = readJson(bundledCodexPluginPath);
   const claudePlugin = readJson(claudePluginPath);
   const bundledClaudePlugin = readJson(bundledClaudePluginPath);
+  const kimiPlugin = readJson(kimiPluginPath);
+  const bundledKimiPlugin = readJson(bundledKimiPluginPath);
 
   writeJson(codexPluginPath, syncCodexPlugin(codexPlugin, pkg));
   writeJson(bundledCodexPluginPath, syncCodexPlugin(bundledCodexPlugin, pkg));
   writeJson(claudePluginPath, syncClaudePlugin(claudePlugin, pkg));
   writeJson(bundledClaudePluginPath, syncClaudePlugin(bundledClaudePlugin, pkg));
+  writeJson(kimiPluginPath, syncKimiPlugin(kimiPlugin, pkg));
+  writeJson(bundledKimiPluginPath, syncKimiPlugin(bundledKimiPlugin, pkg));
 
   console.log('✓ Synced plugin manifests from package.json');
 }
