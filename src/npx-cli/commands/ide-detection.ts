@@ -83,6 +83,12 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'hooks + MCP integration',
     },
     {
+      id: 'kimi-code',
+      label: 'Kimi Code CLI',
+      detected: existsSync(join(home, '.kimi-code')),
+      hint: 'hooks + MCP integration',
+    },
+    {
       id: 'copilot-cli',
       label: 'Copilot CLI',
       detected: isCommandInPath('copilot'),
