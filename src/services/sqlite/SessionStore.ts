@@ -1,4 +1,4 @@
-import { Database, type SQLQueryBindings } from 'bun:sqlite';
+import { Database, type SQLQueryBindings, type Statement } from 'bun:sqlite';
 import { randomUUID } from 'crypto';
 import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
@@ -73,6 +73,13 @@ interface SdkSessionDetailRow {
 
 export class SessionStore {
   public db: Database;
+  /**
+   * Cached sync_outbox insert. enqueueMutationOp runs once per prompt inside
+   * requeuePromptSync's transaction loop, so preparing the invariant statement
+   * on every call leaked one unfinalized handle per prompt until prepare()
+   * itself ran out of memory. The single cached handle is reused instead.
+   */
+  private syncOutboxInsertStmt?: Statement;
 
   constructor(dbPathOrDb: string | Database = DB_PATH) {
     if (dbPathOrDb instanceof Database) {
@@ -1911,10 +1918,11 @@ export class SessionStore {
       if (target?.origin_device_id === null) target.origin_device_id = 'self';
     }
     validateCanonicalMutation(candidate);
-    this.db.prepare(`
+    this.syncOutboxInsertStmt ??= this.db.prepare(`
       INSERT INTO sync_outbox (op_uuid, rev, body, created_at_epoch)
       VALUES (?, ?, ?, ?)
-    `).run(randomUUID(), String(rev), JSON.stringify(body), Date.now());
+    `);
+    this.syncOutboxInsertStmt.run(randomUUID(), String(rev), JSON.stringify(body), Date.now());
   }
 
   /**
@@ -1958,12 +1966,16 @@ export class SessionStore {
       `).all(sessionDbId) as Array<{ id: string; sync_rev: string }>;
       if (prompts.length === 0) return;
 
+      // Prepared once, not per prompt: the SQL is invariant across the loop, so
+      // re-preparing it each iteration leaked handles until prepare() OOMed.
+      const bumpPromptRevStmt = this.db.prepare(`
+        UPDATE user_prompts SET sync_rev = ?, synced_at = NULL
+        WHERE id = ? AND origin_device_id IS NULL
+      `);
+
       for (const prompt of prompts) {
         const nextRev = incrementCanonicalDecimal(prompt.sync_rev);
-        this.db.prepare(`
-          UPDATE user_prompts SET sync_rev = ?, synced_at = NULL
-          WHERE id = ? AND origin_device_id IS NULL
-        `).run(nextRev, prompt.id);
+        bumpPromptRevStmt.run(nextRev, prompt.id);
         this.enqueueMutationOp(nextRev, {
           op: 'set_prompt_session',
           target: { origin_device_id: null, origin_local_id: prompt.id },
