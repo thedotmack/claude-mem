@@ -113,8 +113,13 @@ type ProbeResult =
   | { kind: 'capable'; version: string }
   /** Runs (`--version` works) but rejects the capability flags — too old. */
   | { kind: 'incompatible'; version: string; detail: string }
-  /** Does not run at all (desktop app, missing interpreter, corrupt install). */
-  | { kind: 'broken'; detail: string };
+  /**
+   * Does not resolve to a usable CLI. `launchFailed` is true only when the OS
+   * could not start the process at all (desktop app, missing interpreter,
+   * corrupt install); false when the process ran but failed its version probe
+   * (non-zero exit, timeout, or no version output).
+   */
+  | { kind: 'broken'; detail: string; launchFailed: boolean };
 
 /**
  * Run `<candidate> <args>` and return trimmed stdout, or null on any failure.
@@ -124,7 +129,7 @@ type ProbeResult =
  * injection if the path contains characters like `"`, `;`, `&` — reachable
  * on Windows via a crafted CLAUDE_CODE_PATH in settings.json.
  */
-function runProbe(candidate: string, args: readonly string[]): { stdout: string } | { error: string } {
+function runProbe(candidate: string, args: readonly string[]): { stdout: string } | { error: string; launchFailed: boolean } {
   try {
     const stdout = _internals.execFileSync(candidate, [...args], {
       encoding: 'utf8',
@@ -134,15 +139,21 @@ function runProbe(candidate: string, args: readonly string[]): { stdout: string 
     }).trim();
     return { stdout };
   } catch (error) {
-    const stderr = (error as { stderr?: unknown }).stderr;
-    const firstLine = String(stderr ?? (error instanceof Error ? error.message : error))
+    const err = error as { stderr?: unknown; status?: unknown; signal?: unknown; killed?: unknown };
+    const firstLine = String(err.stderr ?? (error instanceof Error ? error.message : error))
       .split('\n')[0]
       .trim();
+    // Did the OS fail to launch the process at all (ENOENT/EACCES/ENOEXEC), or
+    // did the process run and then fail? A launch failure yields neither an
+    // exit status nor a termination signal — the child never started. A
+    // non-zero exit sets `status`; a timeout sets `signal`/`killed`. Only a
+    // true launch failure is the "found but could not be executed" case.
+    const launchFailed = err.status == null && err.signal == null && !err.killed;
     // Probe failures are expected classification signals (stale CLI, desktop
     // app, broken install); callers warn on or surface the detail, so this
     // stays at debug with the full error for deep troubleshooting.
     logger.debug('SDK', `Probe of "${candidate}" failed: ${firstLine || 'probe failed'}`, { args: [...args] }, error);
-    return { error: firstLine || 'probe failed' };
+    return { error: firstLine || 'probe failed', launchFailed };
   }
 }
 
@@ -170,7 +181,12 @@ function probeCandidate(candidate: string): ProbeResult {
   }
 
   const detail = 'error' in capability ? capability.error : 'failed --version check';
-  return { kind: 'broken', detail };
+  // The plain --version is the last word on whether this binary can launch:
+  // if it errored on a spawn failure, so did the capability probe (same
+  // binary); if it exited cleanly with no output, `launchFailed` is absent
+  // (it ran, it just gave no version), so default to false.
+  const launchFailed = 'launchFailed' in plain ? plain.launchFailed : false;
+  return { kind: 'broken', detail, launchFailed };
 }
 
 /** Parse "2.1.176 (Claude Code)" → [2, 1, 176]; unparseable sorts lowest. */
@@ -339,16 +355,24 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
         `Install Claude Code CLI: npm install -g @anthropic-ai/claude-code`
       );
     }
-    // existsSync passed above, so the file is really there — the probe (a spawn)
-    // itself failed. This is the "found but won't run" case, distinct from the
-    // "file does not exist" throw. ENOENT here comes from a launcher script
+    // existsSync passed above, so the file is really there — the probe failed.
+    // Split the two ways that happens. A launch failure (ENOENT from a launcher
     // whose shebang interpreter is missing, or a native-installer stub pointing
-    // at a version directory that was deleted; neither is fixed by re-checking
-    // the path, so name the likely cause instead of a dead-end "ensure it works".
+    // at a deleted version directory) means the OS never ran the file; a
+    // re-check of the path cannot fix it, so name the likely cause. A process
+    // that ran but exited non-zero, timed out, or printed no version is a
+    // different problem — do not claim it "could not be executed".
+    if (probe.launchFailed) {
+      throw new Error(
+        `CLAUDE_CODE_PATH is set to ${describedPath} — the file exists but could not be executed (${probe.detail}). ` +
+        `A launcher script whose interpreter (shebang) is missing, or a native-installer stub pointing at a deleted version directory, fails this way. ` +
+        `Reinstall the Claude Code CLI or point CLAUDE_CODE_PATH at a working binary.`
+      );
+    }
     throw new Error(
-      `CLAUDE_CODE_PATH is set to ${describedPath} — the file exists but could not be executed (${probe.detail}). ` +
-      `A launcher script whose interpreter (shebang) is missing, or a native-installer stub pointing at a deleted version directory, fails this way. ` +
-      `Reinstall the Claude Code CLI or point CLAUDE_CODE_PATH at a working binary.`
+      `CLAUDE_CODE_PATH is set to ${describedPath} — the file ran but failed its version probe (${probe.detail}). ` +
+      `It may be the wrong program, or a wrapper that errors before printing a version. ` +
+      `Ensure CLAUDE_CODE_PATH points at a working Claude Code CLI binary.`
     );
   }
 

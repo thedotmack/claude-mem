@@ -16,8 +16,10 @@ import { logger } from '../../src/utils/logger.js';
 interface FakeCli {
   version: string;
   supportsDontAsk: boolean;
-  /** Fails every probe (corrupt install / desktop app) — the `broken` branch. */
+  /** Fails to launch on every probe (corrupt install / desktop app) — the `broken` branch. */
   broken?: boolean;
+  /** Launches but exits non-zero on every probe — a `broken` result whose process still ran. */
+  ranButFailed?: boolean;
 }
 
 const ORIGINALS = { ..._internals };
@@ -58,8 +60,18 @@ function installFakes(options: { settingsPath?: string; platform?: NodeJS.Platfo
       throw error;
     }
     if (cli.broken) {
+      // Spawn/launch failure: the OS never started the process, so no exit
+      // status or signal is set (mirrors ENOENT/EACCES from execFileSync).
       const error = new Error('Command failed') as Error & { stderr: string };
       error.stderr = 'cannot execute binary file';
+      throw error;
+    }
+    if (cli.ranButFailed) {
+      // The process ran and exited non-zero: `status` is set, so this is NOT a
+      // launch failure.
+      const error = new Error('Command failed') as Error & { stderr: string; status: number };
+      error.stderr = 'boom: exiting 17';
+      error.status = 17;
       throw error;
     }
     if (args.includes('--permission-mode') && !cli.supportsDontAsk) {
@@ -206,15 +218,25 @@ describe('findClaudeExecutable broken candidates', () => {
     expect(() => findClaudeExecutable('SDK')).toThrow(/Claude executable not found/);
   });
 
-  it('reports a configured CLAUDE_CODE_PATH that exists but cannot be executed', () => {
+  it('reports a configured CLAUDE_CODE_PATH that exists but cannot be launched', () => {
     installFakes({ settingsPath: '/custom/claude' });
     fakeClis.set('/custom/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
 
-    // The file exists (existsSync passes), so the failure is a spawn failure —
-    // reported as "exists but could not be executed", not "file does not exist"
-    // and not the old dead-end "--version check" wording.
+    // The file exists (existsSync passes) and the OS could not launch it (no
+    // exit status), so it is reported as "exists but could not be executed" —
+    // not "file does not exist" and not the old dead-end "--version check".
     expect(() => findClaudeExecutable('SDK')).toThrow(/exists but could not be executed/);
     expect(() => findClaudeExecutable('SDK')).toThrow(/shebang|native-installer/);
+  });
+
+  it('reports a configured CLAUDE_CODE_PATH that ran but failed its version probe without claiming it could not launch', () => {
+    installFakes({ settingsPath: '/custom/claude' });
+    fakeClis.set('/custom/claude', { version: '0.0.0', supportsDontAsk: false, ranButFailed: true });
+
+    // The process started and exited non-zero, so the launch-failure guidance
+    // (shebang / native-installer stub) must NOT appear.
+    expect(() => findClaudeExecutable('SDK')).toThrow(/ran but failed its version probe/);
+    expect(() => findClaudeExecutable('SDK')).not.toThrow(/could not be executed|shebang|native-installer/);
   });
 
   it('reports a desktop-app CLAUDE_CODE_PATH with CLI install guidance', () => {
