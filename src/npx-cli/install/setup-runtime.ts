@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { exec, execSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'child_process';
+import { execFile, execSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'child_process';
 import { createRequire } from 'module';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -454,23 +454,23 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
     throw new Error(`installPluginDependencies: no package.json at ${targetDir}`);
   }
 
-  const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
-
   // Per CHANGELOG v12.6.1 -> v12.6.2: tree-sitter-swift's nested
   // tree-sitter-cli postinstall downloads a Rust binary and can hang the
   // install. Bun honors trustedDependencies; npm does not. We additionally
   // pass --ignore-scripts as belt-and-suspenders and bound it with a timeout.
-  // Async exec (not execSync): a blocked event loop freezes the installer's
-  // clack spinner for the duration of the install, which reads as a stall.
+  // Async execFile (not execFileSync): a blocked event loop freezes the
+  // installer's clack spinner for the duration of the install, which reads as a
+  // stall. execFile (not exec) passes bunPath as argv[0] with no shell, so a
+  // resolved path with spaces or shell metacharacters is never parsed.
   const runBunInstall = (): Promise<void> =>
     new Promise<void>((resolve, reject) => {
-      exec(`${bunCmd} install --frozen-lockfile --ignore-scripts`, {
+      execFile(bunPath, ['install', '--frozen-lockfile', '--ignore-scripts'], {
         cwd: targetDir,
         timeout: INSTALL_TIMEOUT_MS,
         maxBuffer: 16 * 1024 * 1024,
-        ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
+        ...(IS_WINDOWS ? { windowsHide: true } : {}),
       }, (error, stdout, stderr) =>
-        // exec errors don't carry stdio; attach so describeExecError can report it.
+        // execFile errors don't carry stdio; attach so describeExecError can report it.
         error ? reject(Object.assign(error, { stdout, stderr })) : resolve());
     });
 

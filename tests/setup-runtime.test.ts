@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { chmodSync } from 'fs';
 import {
   readInstallMarker,
   writeInstallMarker,
@@ -11,6 +12,7 @@ import {
   platformUvRemediation,
   bunCommonPaths,
   uvCommonPaths,
+  installPluginDependencies,
 } from '../src/npx-cli/install/setup-runtime';
 import { IS_WINDOWS } from '../src/npx-cli/utils/paths';
 
@@ -182,6 +184,42 @@ describe('setup-runtime binary detection honours installer env vars', () => {
     const paths = bunCommonPaths({ BUN_INSTALL: '/opt/bun' });
     expect(paths.length).toBe(new Set(paths).size);
     expect(paths.every(p => p.length > 0)).toBe(true);
+  });
+});
+
+describe('installPluginDependencies passes the bun path as an argument, not through a shell', () => {
+  // The bun path now flows from installer env vars (e.g. $BUN_INSTALL) that can
+  // hold spaces or shell metacharacters. execFile must pass it as argv[0] so it
+  // never reaches a shell.
+  it('runs a bun path containing spaces and injection syntax without evaluating it', async () => {
+    if (IS_WINDOWS) return; // POSIX fake-bin shell script
+
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const marker = join(tmpdir(), `pwned-${unique}`);
+    // The bun executable lives in a dir whose name has a space and injection
+    // syntax; its output goes to a clean path so the fake script's own redirect
+    // is never the thing under test.
+    const base = join(tmpdir(), `bun space $(touch ${marker}) ${unique}`);
+    const targetDir = join(base, 'target');
+    const argsFile = join(tmpdir(), `args-${unique}.txt`);
+    mkdirSync(targetDir, { recursive: true });
+    writeFileSync(join(targetDir, 'package.json'), JSON.stringify({ dependencies: {} }));
+
+    const fakeBun = join(base, 'bun');
+    writeFileSync(fakeBun, `#!/bin/sh\nprintf '%s\\n' "$@" > "${argsFile}"\nexit 0\n`);
+    chmodSync(fakeBun, 0o755);
+
+    try {
+      await installPluginDependencies(targetDir, fakeBun);
+      const recorded = readFileSync(argsFile, 'utf-8').trim().split('\n');
+      expect(recorded).toEqual(['install', '--frozen-lockfile', '--ignore-scripts']);
+      // The $(touch ...) in the path must NOT have executed.
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+      rmSync(marker, { force: true });
+      rmSync(argsFile, { force: true });
+    }
   });
 });
 
