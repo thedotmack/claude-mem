@@ -206,11 +206,15 @@ describe('findClaudeExecutable broken candidates', () => {
     expect(() => findClaudeExecutable('SDK')).toThrow(/Claude executable not found/);
   });
 
-  it('reports a broken configured CLAUDE_CODE_PATH with the probe failure', () => {
+  it('reports a configured CLAUDE_CODE_PATH that exists but cannot be executed', () => {
     installFakes({ settingsPath: '/custom/claude' });
     fakeClis.set('/custom/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
 
-    expect(() => findClaudeExecutable('SDK')).toThrow(/failed the --version check/);
+    // The file exists (existsSync passes), so the failure is a spawn failure —
+    // reported as "exists but could not be executed", not "file does not exist"
+    // and not the old dead-end "--version check" wording.
+    expect(() => findClaudeExecutable('SDK')).toThrow(/exists but could not be executed/);
+    expect(() => findClaudeExecutable('SDK')).toThrow(/shebang|native-installer/);
   });
 
   it('reports a desktop-app CLAUDE_CODE_PATH with CLI install guidance', () => {
@@ -254,6 +258,23 @@ describe('findClaudeExecutable explicit CLAUDE_CODE_PATH', () => {
     expect(findClaudeExecutable('SDK')).toBe('/home/tester/.local/bin/claude');
     // Every spawn must see the expanded path, never the literal tilde.
     expect(probeCalls.every((call) => call.path === '/home/tester/.local/bin/claude')).toBe(true);
+  });
+
+  it('labels a verbatim absolute path as un-expanded so a redacted ~ is not mistaken for a tilde setting', () => {
+    // Telemetry rewrites /home/tester -> ~ before an error is sent, so this
+    // absolute path arrives tildified. The "used verbatim" note tells the
+    // reader no tilde was expanded, so a ~ in the report is redaction.
+    installFakes({ settingsPath: '/home/tester/.local/bin/claude' });
+    fakeClis.set('/home/tester/.local/bin/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
+
+    expect(() => findClaudeExecutable('SDK')).toThrow(/used verbatim, no tilde expansion/);
+  });
+
+  it('labels a tilde path as expanded in the error so the two forms are visible', () => {
+    installFakes({ settingsPath: '~/.local/bin/claude' });
+    fakeClis.set('/home/tester/.local/bin/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
+
+    expect(() => findClaudeExecutable('SDK')).toThrow(/tilde-expanded to "\/home\/tester\/\.local\/bin\/claude"/);
   });
 });
 

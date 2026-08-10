@@ -255,6 +255,25 @@ function discoverCandidates(): string[] {
   return deduped;
 }
 
+/**
+ * Describe a configured CLAUDE_CODE_PATH for an error message without ambiguity.
+ *
+ * Telemetry scrubbing rewrites the home directory to `~` before an error
+ * reaches error tracking (see redactHomeDir in
+ * src/services/telemetry/error-scrub.ts), so a real absolute path such as
+ * /home/user/.local/bin/claude arrives tildified and looks exactly like a
+ * literal `~` the user typed into settings — the tilde bug already fixed in
+ * find-claude-executable (expandTilde below). Stating whether the value is the
+ * raw setting or the tilde-expanded one stops a redacted `~` from being read as
+ * a settings `~`, so the next person does not re-fix a fixed bug.
+ */
+function describeConfiguredPath(rawSetting: string, expandedPath: string): string {
+  if (rawSetting === expandedPath) {
+    return `"${rawSetting}" (used verbatim, no tilde expansion)`;
+  }
+  return `"${rawSetting}" (tilde-expanded to "${expandedPath}")`;
+}
+
 function updateInstructions(): string {
   return (
     'Update it (`claude update`, or `npm install -g @anthropic-ai/claude-code@latest` for npm installs), ' +
@@ -291,9 +310,10 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
     // probe spawn see a real absolute path (SettingsRoutes also normalizes on
     // write; this covers files edited by hand).
     const configuredPath = expandTilde(settings.CLAUDE_CODE_PATH, _internals.homedir());
+    const describedPath = describeConfiguredPath(settings.CLAUDE_CODE_PATH, configuredPath);
     if (!_internals.existsSync(configuredPath)) {
       throw new Error(
-        `CLAUDE_CODE_PATH is set to "${settings.CLAUDE_CODE_PATH}" but the file does not exist.`
+        `CLAUDE_CODE_PATH is set to ${describedPath} but the file does not exist.`
       );
     }
 
@@ -309,19 +329,26 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
     }
     if (probe.kind === 'incompatible') {
       throw new Error(
-        `CLAUDE_CODE_PATH is set to "${settings.CLAUDE_CODE_PATH}" (${probe.version}) but that CLI is too old for claude-mem — ` +
+        `CLAUDE_CODE_PATH is set to ${describedPath} (${probe.version}) but that CLI is too old for claude-mem — ` +
         `it rejects flags every memory agent spawn requires (${probe.detail}). ${updateInstructions()}`
       );
     }
     if (looksLikeDesktopAppPath(configuredPath)) {
       throw new Error(
-        `Found desktop app at "${settings.CLAUDE_CODE_PATH}" but it doesn't support headless mode. ` +
+        `Found desktop app at ${describedPath} but it doesn't support headless mode. ` +
         `Install Claude Code CLI: npm install -g @anthropic-ai/claude-code`
       );
     }
+    // existsSync passed above, so the file is really there — the probe (a spawn)
+    // itself failed. This is the "found but won't run" case, distinct from the
+    // "file does not exist" throw. ENOENT here comes from a launcher script
+    // whose shebang interpreter is missing, or a native-installer stub pointing
+    // at a version directory that was deleted; neither is fixed by re-checking
+    // the path, so name the likely cause instead of a dead-end "ensure it works".
     throw new Error(
-      `CLAUDE_CODE_PATH is set to "${settings.CLAUDE_CODE_PATH}" but it failed the --version check (${probe.detail}). ` +
-      `Ensure this is a working Claude Code CLI binary.`
+      `CLAUDE_CODE_PATH is set to ${describedPath} — the file exists but could not be executed (${probe.detail}). ` +
+      `A launcher script whose interpreter (shebang) is missing, or a native-installer stub pointing at a deleted version directory, fails this way. ` +
+      `Reinstall the Claude Code CLI or point CLAUDE_CODE_PATH at a working binary.`
     );
   }
 
