@@ -74,12 +74,14 @@ interface SdkSessionDetailRow {
 export class SessionStore {
   public db: Database;
   /**
-   * Cached sync_outbox insert. enqueueMutationOp runs once per prompt inside
-   * requeuePromptSync's transaction loop, so preparing the invariant statement
-   * on every call leaked one unfinalized handle per prompt until prepare()
-   * itself ran out of memory. The single cached handle is reused instead.
+   * Statements reused across every requeuePromptSync call. The insert runs once
+   * per prompt inside the transaction loop and the rev bump once per prompt
+   * too, so preparing either afresh leaked native handles — per prompt inside
+   * the loop, and per call for the bump — until prepare() ran out of memory.
+   * One cached handle each, prepared lazily on the live connection.
    */
   private syncOutboxInsertStmt?: Statement;
+  private bumpPromptRevStmt?: Statement;
 
   constructor(dbPathOrDb: string | Database = DB_PATH) {
     if (dbPathOrDb instanceof Database) {
@@ -1966,16 +1968,17 @@ export class SessionStore {
       `).all(sessionDbId) as Array<{ id: string; sync_rev: string }>;
       if (prompts.length === 0) return;
 
-      // Prepared once, not per prompt: the SQL is invariant across the loop, so
-      // re-preparing it each iteration leaked handles until prepare() OOMed.
-      const bumpPromptRevStmt = this.db.prepare(`
+      // Cached on the instance, not prepared here: the SQL is invariant, so a
+      // fresh prepare per prompt (inner loop) or per call leaked handles until
+      // prepare() OOMed.
+      this.bumpPromptRevStmt ??= this.db.prepare(`
         UPDATE user_prompts SET sync_rev = ?, synced_at = NULL
         WHERE id = ? AND origin_device_id IS NULL
       `);
 
       for (const prompt of prompts) {
         const nextRev = incrementCanonicalDecimal(prompt.sync_rev);
-        bumpPromptRevStmt.run(nextRev, prompt.id);
+        this.bumpPromptRevStmt.run(nextRev, prompt.id);
         this.enqueueMutationOp(nextRev, {
           op: 'set_prompt_session',
           target: { origin_device_id: null, origin_local_id: prompt.id },
