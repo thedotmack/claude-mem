@@ -343,11 +343,69 @@ describe('ProcessManager', () => {
         execPath: '/usr/bin/node',
         env: {} as NodeJS.ProcessEnv,
         homeDirectory: '/home/alice',
-        pathExists: () => false,
-        lookupInPath: () => '/custom/bin/bun'
+        pathExists: candidatePath => candidatePath === '/custom/bin/bun',
+        lookupInPath: () => '/custom/bin/bun',
+        realpath: candidatePath => candidatePath
       });
 
       expect(resolved).toBe('/custom/bin/bun');
+    });
+
+    it('should reject a dangling PATH fallback that resolves to a missing binary', () => {
+      // Reproduces the reported crash source: `which bun` returns an npm/nvm
+      // shim that is on PATH but whose real binary never landed. The unguarded
+      // fallback returned it verbatim; the guard now rejects it.
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'linux',
+        execPath: '/usr/bin/node',
+        env: {} as NodeJS.ProcessEnv,
+        homeDirectory: '/home/alice',
+        pathExists: () => false,
+        lookupInPath: () => '/home/alice/.config/nvm/versions/node/v24.16.0/lib/node_modules/bun/bin/bun',
+        realpath: () => null
+      });
+
+      expect(resolved).toBeNull();
+    });
+
+    it('should reject a PATH fallback that is not a Bun executable', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'linux',
+        execPath: '/usr/bin/node',
+        env: {} as NodeJS.ProcessEnv,
+        homeDirectory: '/home/alice',
+        pathExists: () => false,
+        lookupInPath: () => '/usr/bin/node'
+      });
+
+      expect(resolved).toBeNull();
+    });
+
+    it('should return the resolved real path when the PATH fallback is a symlink', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'linux',
+        execPath: '/usr/bin/node',
+        env: {} as NodeJS.ProcessEnv,
+        homeDirectory: '/home/alice',
+        pathExists: candidatePath => candidatePath === '/home/alice/.bun/bin/bun',
+        lookupInPath: () => '/usr/local/bin/bun',
+        realpath: () => '/home/alice/.bun/bin/bun'
+      });
+
+      expect(resolved).toBe('/home/alice/.bun/bin/bun');
+    });
+
+    it('should resolve an npm-global Bun from npm_config_prefix', () => {
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'linux',
+        execPath: '/usr/bin/node',
+        env: { npm_config_prefix: '/home/alice/.npm-global' } as NodeJS.ProcessEnv,
+        homeDirectory: '/home/alice',
+        pathExists: candidatePath => candidatePath === '/home/alice/.npm-global/bin/bun',
+        lookupInPath: () => null
+      });
+
+      expect(resolved).toBe('/home/alice/.npm-global/bin/bun');
     });
 
     it('should return null on non-Windows when Bun cannot be resolved', () => {
@@ -389,8 +447,9 @@ describe('ProcessManager', () => {
         platform: 'win32',
         execPath: 'C:\\Program Files\\nodejs\\node.exe',
         env: {} as NodeJS.ProcessEnv,
-        pathExists: () => false,
-        lookupInPath: () => 'C:\\Program Files\\Bun\\bun.exe'
+        pathExists: candidatePath => candidatePath === 'C:\\Program Files\\Bun\\bun.exe',
+        lookupInPath: () => 'C:\\Program Files\\Bun\\bun.exe',
+        realpath: candidatePath => candidatePath
       });
 
       expect(resolved).toBe('C:\\Program Files\\Bun\\bun.exe');

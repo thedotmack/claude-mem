@@ -567,6 +567,15 @@ export async function ensureWorkerRunning(): Promise<boolean> {
           detached: true,
           stdio: ['ignore', 'ignore', 'ignore'],
         });
+        // A bad runtime path (dangling npm/nvm shim, missing binary) is
+        // reported by Node as an asynchronous 'error' event, which the
+        // synchronous try/catch below can never see. Without this listener the
+        // ENOENT escapes as an uncaught exception and takes down the worker
+        // mid session-end, silently stopping summarization. Log and let the
+        // readiness wait below report the failure.
+        proc.on('error', (error: Error) => {
+          logger.error('SYSTEM', 'Lazy-spawn of worker failed', { runtimePath, scriptPath }, error);
+        });
         proc.unref();
       } catch (error: unknown) {
         if (error instanceof Error) {
