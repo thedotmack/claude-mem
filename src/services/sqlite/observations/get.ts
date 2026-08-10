@@ -34,7 +34,7 @@ export function getObservationsByFilePath(
   let projectClause = '';
   if (options?.projects?.length) {
     const placeholders = options.projects.map(() => '?').join(',');
-    projectClause = `AND o.project IN (${placeholders})`;
+    projectClause = `AND o.project COLLATE NOCASE IN (${placeholders})`;
     params.push(...options.projects);
   }
 

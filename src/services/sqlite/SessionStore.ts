@@ -1722,6 +1722,16 @@ export class SessionStore {
     this.db.run(
       'CREATE INDEX IF NOT EXISTS idx_summaries_merged_into ON session_summaries(merged_into_project)'
     );
+
+    // #3531 — retrieval compares `project`/`merged_into_project` with COLLATE
+    // NOCASE so case-variant checkouts resolve to one bucket. The default BINARY
+    // indexes above cannot serve a NOCASE predicate, so add matching NOCASE
+    // indexes to keep those hot read paths on an index seek instead of a scan.
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_project_nocase ON observations(project COLLATE NOCASE)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_merged_into_nocase ON observations(merged_into_project COLLATE NOCASE)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_summaries_project_nocase ON session_summaries(project COLLATE NOCASE)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_summaries_merged_into_nocase ON session_summaries(merged_into_project COLLATE NOCASE)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_sdk_sessions_project_nocase ON sdk_sessions(project COLLATE NOCASE)');
   }
 
   private addObservationSubagentColumns(): void {
@@ -2151,7 +2161,7 @@ export class SessionStore {
           CASE WHEN sum.memory_session_id IS NOT NULL THEN 1 ELSE 0 END as has_summary
         FROM sdk_sessions s
         LEFT JOIN session_summaries sum ON s.memory_session_id = sum.memory_session_id
-        WHERE s.project = ? AND s.memory_session_id IS NOT NULL
+        WHERE s.project COLLATE NOCASE = ? AND s.memory_session_id IS NOT NULL
         ${platformClause}
         GROUP BY s.memory_session_id
         ORDER BY s.started_at_epoch DESC
@@ -2227,7 +2237,7 @@ export class SessionStore {
     const additionalConditions: string[] = [];
 
     if (project) {
-      additionalConditions.push('(o.project = ? OR o.merged_into_project = ?)');
+      additionalConditions.push('(o.project COLLATE NOCASE = ? OR o.merged_into_project COLLATE NOCASE = ?)');
       params.push(project, project);
     }
 
@@ -2719,7 +2729,7 @@ export class SessionStore {
     const additionalConditions: string[] = [];
 
     if (project) {
-      additionalConditions.push('(ss.project = ? OR ss.merged_into_project = ?)');
+      additionalConditions.push('(ss.project COLLATE NOCASE = ? OR ss.merged_into_project COLLATE NOCASE = ?)');
       params.push(project, project);
     }
 
@@ -2764,7 +2774,7 @@ export class SessionStore {
     const additionalConditions: string[] = [];
 
     if (project) {
-      additionalConditions.push('s.project = ?');
+      additionalConditions.push('s.project COLLATE NOCASE = ?');
       params.push(project);
     }
 
@@ -2831,10 +2841,10 @@ export class SessionStore {
 
       if (project) {
         if (includeMergedProject) {
-          conditions.push(`(${rowAlias}.project = ? OR ${rowAlias}.merged_into_project = ?)`);
+          conditions.push(`(${rowAlias}.project COLLATE NOCASE = ? OR ${rowAlias}.merged_into_project COLLATE NOCASE = ?)`);
           params.push(project, project);
         } else {
-          conditions.push(`${rowAlias}.project = ?`);
+          conditions.push(`${rowAlias}.project COLLATE NOCASE = ?`);
           params.push(project);
         }
       }

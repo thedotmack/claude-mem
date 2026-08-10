@@ -94,6 +94,18 @@ describe('getProjectName', () => {
     });
   });
 
+  describe('#3531 — case normalization', () => {
+    it('lowercases a mixed-case basename', () => {
+      expect(getProjectName('/home/user/PasteyPal')).toBe('pasteypal');
+    });
+
+    it('maps two case-variant directory names to one key', () => {
+      expect(getProjectName('/home/user/PasteyPal')).toBe(
+        getProjectName('/home/user/pasteypal')
+      );
+    });
+  });
+
   describe('realistic scenarios from #1478', () => {
     it('handles ~ the same as full home path', () => {
       const home = homedir();

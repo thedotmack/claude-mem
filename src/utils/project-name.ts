@@ -66,7 +66,10 @@ export function getProjectName(cwd: string | null | undefined): string {
     return 'unknown-project';
   }
 
-  return basename;
+  // #3531 — lowercase the project key so two checkouts of the same repo whose
+  // directory names differ only in case (e.g. `PasteyPal` vs `pasteypal`) resolve
+  // to one memory bucket instead of silently forking into two.
+  return basename.toLowerCase();
 }
 
 export interface ProjectContext {
