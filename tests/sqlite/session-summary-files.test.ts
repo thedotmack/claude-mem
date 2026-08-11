@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore, rollupObservationFileLists } from '../../src/services/sqlite/SessionStore.js';
+import { attachObservationFilesToSummary } from '../../src/services/worker/agents/ResponseProcessor.js';
 
 describe('session_summaries files_read / files_edited (#3517)', () => {
   let store: SessionStore;
@@ -22,6 +23,30 @@ describe('session_summaries files_read / files_edited (#3517)', () => {
       files_read: ['a.ts', 'b.ts', 'c.ts'],
       files_edited: ['b.ts', 'd.ts'],
     });
+  });
+
+  it('attachObservationFilesToSummary keeps claimed file evidence for summary-only responses', () => {
+    const summary = attachObservationFilesToSummary(
+      {
+        request: 'r',
+        investigated: 'i',
+        learned: 'l',
+        completed: 'c',
+        next_steps: 'n',
+        notes: null,
+        files_read: [],
+        files_edited: [],
+      },
+      [
+        {
+          files_read: ['src/verified.ts'],
+          files_modified: ['src/verified-edit.ts'],
+        },
+      ]
+    );
+
+    expect(summary?.files_read).toEqual(['src/verified.ts']);
+    expect(summary?.files_edited).toEqual(['src/verified-edit.ts']);
   });
 
   it('storeObservations writes rolled-up files_read and files_edited', () => {

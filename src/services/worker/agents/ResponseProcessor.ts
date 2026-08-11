@@ -385,9 +385,17 @@ export async function processAgentResponse(
   const claimedMessages = sessionManager.getClaimedMessages(session.sessionDbId);
   const fileEvidence = extractObservationFileEvidence(claimedMessages);
   const sanitizedObservations = sanitizeObservationFiles(observations, fileEvidence);
+  // Include claimed-message file evidence even for summary-only responses
+  // (no parsed observations), otherwise files_read/files_edited persist as [].
   const summaryForStore = attachObservationFilesToSummary(
     normalizeSummaryForStorage(summary),
-    sanitizedObservations
+    [
+      {
+        files_read: fileEvidence.files_read,
+        files_modified: fileEvidence.files_modified,
+      },
+      ...sanitizedObservations,
+    ]
   );
 
   const sessionStore = dbManager.getSessionStore();
