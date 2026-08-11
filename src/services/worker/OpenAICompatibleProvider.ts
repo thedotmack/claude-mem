@@ -8,6 +8,7 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
+import { isExpectedBudgetError } from './provider-errors.js';
 import {
   processAgentResponse,
   snapshotResponseContext,
@@ -110,23 +111,13 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       const initResponse = await this.query(session.conversationHistory, config);
       await this.handleInitResponse(initResponse, session, worker, model, initContext);
     } catch (error: unknown) {
-      if (error instanceof Error) {
-        logger.error('SDK', `${this.providerName} init query failed`, { sessionId: session.sessionDbId, model }, error);
-      } else {
-        logger.error('SDK', `${this.providerName} init query failed with non-Error`, { sessionId: session.sessionDbId, model }, new Error(String(error)));
-      }
-      return this.handleSessionError(error, session, worker);
+      return this.handleSessionError(error, session, 'init query');
     }
 
     try {
       await this.runMessageLoop(session, worker, config, mode);
     } catch (error: unknown) {
-      if (error instanceof Error) {
-        logger.error('SDK', `${this.providerName} message loop failed`, { sessionId: session.sessionDbId, model }, error);
-      } else {
-        logger.error('SDK', `${this.providerName} message loop failed with non-Error`, { sessionId: session.sessionDbId, model }, new Error(String(error)));
-      }
-      return this.handleSessionError(error, session, worker);
+      return this.handleSessionError(error, session, 'message loop');
     }
 
     const sessionDuration = Date.now() - session.startTime;
@@ -296,13 +287,25 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
   }
 
-  protected handleSessionError(error: unknown, session: ActiveSession, _worker?: WorkerRef): never {
+  protected handleSessionError(error: unknown, session: ActiveSession, phase: string): never {
     if (isAbortError(error)) {
       logger.warn('SDK', `${this.providerName} agent aborted`, { sessionId: session.sessionDbId });
       throw error;
     }
 
-    logger.failure('SDK', `${this.providerName} agent error`, { sessionDbId: session.sessionDbId }, error instanceof Error ? error : new Error(String(error)));
+    const context = { sessionDbId: session.sessionDbId, model: session.lastModelId, phase };
+
+    // A spent budget looks identical to a crash unless we classify it. Log
+    // rate-limit and quota-exhaustion causes at warn so they stay out of the
+    // error-tracking sink (logger.error routes Errors to captureException),
+    // instead of opening a fresh error-tracking issue on every retry.
+    if (isExpectedBudgetError(error)) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn('SDK', `${this.providerName} provider budget exhausted during ${phase}`, { ...context, error: message });
+      throw error;
+    }
+
+    logger.failure('SDK', `${this.providerName} agent error`, context, error instanceof Error ? error : new Error(String(error)));
     throw error;
   }
 

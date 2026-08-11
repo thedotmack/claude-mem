@@ -29,7 +29,7 @@ import {
   recordClaudeCliSetupRequired,
 } from '../../../../shared/dependency-health.js';
 import { findClaudeExecutable } from '../../../../shared/find-claude-executable.js';
-import { isClassified } from '../../provider-errors.js';
+import { isClassified, isExpectedBudgetError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
@@ -208,11 +208,24 @@ export class SessionRoutes extends BaseRouteHandler {
         // controller on its next line, so aborted generators either resolve
         // normally (quota/overflow break) or hit the signal-aborted early
         // return above — this catch only ever sees non-abort rejections.
-        logger.error('SESSION', 'Generator failed', {
-          sessionId: session.sessionDbId,
-          provider,
-          error: errorMsg,
-        }, error);
+        //
+        // A spent provider budget (rate limit / daily quota) is expected, not a
+        // bug: log it at warn so it stays out of the error-tracking sink
+        // (logger.error routes Errors to captureException) instead of filing a
+        // fresh issue on every retry into an exhausted budget.
+        if (isExpectedBudgetError(error)) {
+          logger.warn('SESSION', 'Generator stopped: provider budget exhausted', {
+            sessionId: session.sessionDbId,
+            provider,
+            error: errorMsg,
+          });
+        } else {
+          logger.error('SESSION', 'Generator failed', {
+            sessionId: session.sessionDbId,
+            provider,
+            error: errorMsg,
+          }, error);
+        }
         telemetryBuffer.record('session_compressed', session.sessionDbId, {
           outcome: 'error',
           provider,
