@@ -39,6 +39,13 @@ describe('isExpectedBudgetError', () => {
     expect(isExpectedBudgetError(new ClassifiedProviderError('bad request', { kind: 'unrecoverable', cause: null }))).toBe(false);
   });
 
+  it('keeps a classified kind authoritative over the message heuristics', () => {
+    // A non-budget classified error whose message happens to contain a budget
+    // word must stay on the error-reporting path, not the warn path.
+    expect(isExpectedBudgetError(new ClassifiedProviderError('Provider quota lookup failed', { kind: 'unrecoverable', cause: null }))).toBe(false);
+    expect(isExpectedBudgetError(new ClassifiedProviderError('rate limit config parse error', { kind: 'transient', cause: null }))).toBe(false);
+  });
+
   it('handles non-Error inputs without throwing', () => {
     expect(isExpectedBudgetError('daily request limit reached')).toBe(true);
     expect(isExpectedBudgetError(null)).toBe(false);

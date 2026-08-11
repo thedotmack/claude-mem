@@ -56,8 +56,12 @@ const BUDGET_MESSAGE_PATTERNS: RegExp[] = [
  * error-tracking sink.
  */
 export function isExpectedBudgetError(err: unknown): boolean {
-  if (isClassified(err) && (err.kind === 'rate_limit' || err.kind === 'quota_exhausted')) {
-    return true;
+  // A classified error's kind is authoritative: a non-budget kind (e.g.
+  // `unrecoverable` whose message happens to mention "quota") must stay on the
+  // error-reporting path. Message heuristics apply only to raw/unclassified
+  // errors, which is how a wrapped/patched bundle surfaces its own cap.
+  if (isClassified(err)) {
+    return err.kind === 'rate_limit' || err.kind === 'quota_exhausted';
   }
   const message = err instanceof Error ? err.message : typeof err === 'string' ? err : '';
   return message !== '' && BUDGET_MESSAGE_PATTERNS.some((re) => re.test(message));
