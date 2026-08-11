@@ -54,7 +54,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
 
 ${styleText('bold', 'IDE Identifiers')}:
-  claude-code, cursor, opencode, openclaw,
+  claude-code, cursor, opencode, openclaw, omp,
   windsurf, codex-cli, copilot-cli, antigravity, goose,
   roo-code, warp
 `);
