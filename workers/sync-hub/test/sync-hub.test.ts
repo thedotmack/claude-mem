@@ -709,6 +709,37 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 		)).acquired).toBe(true);
 		expect(releaseCalls).toBe(0);
 	});
+
+	it("bounds scheduled repair work and releases the lease after safe progress", async () => {
+		const userId = "projection-bounded-repair";
+		const stub = hub(userId);
+		const ops = await Promise.all(
+			Array.from({ length: 101 }, (_, index) => observationOp(String(index + 1))),
+		);
+		const pushed = ok(await stub.pushOps("dev-a", ops));
+
+		const partial = await drainProjection(projectionEnv("success"), userId, pushed.head_seq, {
+			maxPages: 1,
+			fetchTimeoutMs: 100,
+		});
+		expect(partial).toEqual({ ok: true, projectedSeq: "100" });
+		expect((await stub.getProjectionState()).projected_seq).toBe("100");
+
+		// The bounded success is deterministic and checkpointed, so the lease is
+		// released immediately and the next cron can finish the same user.
+		const finished = await drainProjection(projectionEnv("success"), userId, pushed.head_seq, {
+			maxPages: 1,
+			fetchTimeoutMs: 100,
+		});
+		expect(finished).toEqual({ ok: true, projectedSeq: "101" });
+		expect((await stub.getProjectionState()).projected_seq).toBe("101");
+	});
+
+	it("rejects invalid projection page budgets before acquiring a lease", async () => {
+		await expect(drainProjection(projectionEnv("success"), "projection-bad-budget", "1", {
+			maxPages: 0,
+		})).rejects.toThrow(/positive safe integer/);
+	});
 });
 
 describe("large cursor pagination", () => {
