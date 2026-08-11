@@ -1,3 +1,8 @@
+/**
+ * Test goal: verify GeminiProvider request formatting, lifecycle behavior, and error handling.
+ * Strategy: replace provider IO and worker persistence boundaries with deterministic test doubles,
+ * then exercise the public session API and inspect requests, stored results, and session state.
+ */
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
@@ -211,27 +216,82 @@ describe('GeminiProvider', () => {
 
   it('should add each provider response to conversation history exactly once', async () => {
     const session = makeSession();
-    const responseText = `
+    const initResponse = `
       <observation>
         <type>discovery</type>
-        <title>Test</title>
-        <narrative>Stored once</narrative>
+        <title>Init response</title>
+        <narrative>Initial context stored once</narrative>
         <facts></facts>
         <concepts></concepts>
         <files_read></files_read>
         <files_modified></files_modified>
       </observation>
     `;
+    const observationResponse = `
+      <observation>
+        <type>bugfix</type>
+        <title>Observation response</title>
+        <narrative>Tool result stored once</narrative>
+        <facts></facts>
+        <concepts></concepts>
+        <files_read></files_read>
+        <files_modified></files_modified>
+      </observation>
+    `;
+    const summaryResponse = `
+      <summary>
+        <request>Fix duplicate history entries</request>
+        <investigated>Init and message-loop responses</investigated>
+        <learned>ResponseProcessor owns assistant history writes</learned>
+        <completed>Added regression coverage</completed>
+        <next_steps>Run focused tests</next_steps>
+        <notes>Summary stored once</notes>
+      </summary>
+    `;
+    const providerResponses = [initResponse, observationResponse, summaryResponse];
 
-    global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
-      candidates: [{ content: { parts: [{ text: responseText }] } }],
-      usageMetadata: { totalTokenCount: 50 }
-    }))));
+    mockSessionManager.getMessageIterator = async function* () {
+      yield {
+        type: 'observation',
+        tool_name: 'Read',
+        tool_input: { file_path: '/tmp/input.ts' },
+        tool_response: { content: 'file contents' },
+        prompt_number: 2,
+        cwd: '/tmp',
+        _persistentId: 1,
+        _originalTimestamp: 1_700_000_000_000,
+      };
+      yield {
+        type: 'summarize',
+        last_assistant_message: 'Regression test completed',
+        _persistentId: 2,
+        _originalTimestamp: 1_700_000_000_001,
+      };
+    };
+
+    global.fetch = mock(() => {
+      const responseText = providerResponses.shift();
+      if (!responseText) {
+        throw new Error('Unexpected Gemini request');
+      }
+      return Promise.resolve(new Response(JSON.stringify({
+        candidates: [{ content: { parts: [{ text: responseText }] } }],
+        usageMetadata: { totalTokenCount: 50 }
+      })));
+    });
 
     await agent.startSession(session);
 
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+    const requestBodies = (global.fetch as any).mock.calls.map((call: any[]) => JSON.parse(call[1].body));
+    expect(requestBodies[0].contents.at(-1).parts[0].text).toContain('<user_request>test prompt</user_request>');
+    expect(requestBodies[1].contents.at(-1).parts[0].text).toContain('<what_happened>Read</what_happened>');
+    expect(requestBodies[2].contents.at(-1).parts[0].text).toContain('MODE SWITCH: PROGRESS SUMMARY');
+    expect(mockStoreObservations).toHaveBeenCalledTimes(3);
     expect(session.conversationHistory.filter(message => message.role === 'assistant')).toEqual([
-      { role: 'assistant', content: responseText }
+      { role: 'assistant', content: initResponse },
+      { role: 'assistant', content: observationResponse },
+      { role: 'assistant', content: summaryResponse },
     ]);
   });
 
