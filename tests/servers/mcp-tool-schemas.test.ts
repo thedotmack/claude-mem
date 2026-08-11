@@ -5,6 +5,34 @@ const mcpServerPath = new URL('../../src/servers/mcp-server.ts', import.meta.url
 describe('MCP tool inputSchema declarations', () => {
   let tools: any[];
 
+  it('advertises read-only tools with readOnlyHint annotations', async () => {
+    const src = await Bun.file(mcpServerPath).text();
+    const readOnlyTools = [
+      '__IMPORTANT',
+      'search',
+      'timeline',
+      'get_observations',
+      'session_start_context',
+      'observation_search',
+      'observation_context',
+      'observation_generation_status',
+      'smart_search',
+      'smart_unfold',
+      'smart_outline',
+      'list_corpora',
+    ];
+
+    for (const toolName of readOnlyTools) {
+      const start = src.indexOf(`name: '${toolName}'`);
+      const end = src.indexOf("\n  {\n    name:", start + 1);
+      const toolSection = src.slice(start, end === -1 ? undefined : end);
+
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(toolSection).toContain('annotations: { readOnlyHint: true }');
+    }
+
+  });
+
   it('search tool declares query parameter', async () => {
     const src = await Bun.file(mcpServerPath).text();
 

@@ -8,12 +8,7 @@ console['log'] = (...args: any[]) => {
   logger.error('CONSOLE', 'Intercepted console output (MCP protocol protection)', undefined, { args });
 };
 
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
 import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
@@ -38,6 +33,7 @@ import {
   type ServerRuntimeContext,
 } from '../services/hooks/runtime-selector.js';
 import { normalizePlatformSource } from '../shared/platform-source.js';
+import { createMcpToolServer } from './mcp-tool-server.js';
 
 let mcpServerDirResolutionFailed = false;
 const mcpServerDir = (() => {
@@ -437,6 +433,7 @@ async function ensureWorkerConnection(): Promise<boolean> {
 const tools = [
   {
     name: '__IMPORTANT',
+    annotations: { readOnlyHint: true },
     description: `3-LAYER WORKFLOW (ALWAYS FOLLOW):
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
@@ -471,6 +468,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'search',
+    annotations: { readOnlyHint: true },
     description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, platformSource, type, obs_type, dateStart, dateEnd, offset, orderBy',
     inputSchema: {
       type: 'object',
@@ -494,6 +492,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'timeline',
+    annotations: { readOnlyHint: true },
     description: 'Step 2: Get context around results. Params: anchor (observation ID) OR query (finds anchor automatically), depth_before, depth_after, project',
     inputSchema: {
       type: 'object',
@@ -512,6 +511,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'get_observations',
+    annotations: { readOnlyHint: true },
     description: 'Step 3: Fetch full details for filtered IDs. Params: ids (array of observation IDs, required), orderBy, limit, project',
     inputSchema: {
       type: 'object',
@@ -531,6 +531,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'session_start_context',
+    annotations: { readOnlyHint: true },
     description: 'Render the exact worker-mode SessionStart context for a project. Calls /api/context/inject and returns the same text hooks inject at startup. Params: project OR projects, platformSource, full, colors.',
     inputSchema: {
       type: 'object',
@@ -593,6 +594,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'observation_search',
+    annotations: { readOnlyHint: true },
     description: 'Full-text search across generated observations using the server\'s GIN tsvector index (Phase 1). Calls /v1/search. Server runtime only. Params: query (required), projectId (optional), platformSource, limit (default 20, max 100).',
     inputSchema: {
       type: 'object',
@@ -609,6 +611,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'observation_context',
+    annotations: { readOnlyHint: true },
     description: 'Get top-N relevant observations for context injection. Returns matched observations AND a pre-joined context string suitable for prompt injection. Calls /v1/context. Server runtime only.',
     inputSchema: {
       type: 'object',
@@ -625,6 +628,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'observation_generation_status',
+    annotations: { readOnlyHint: true },
     description: 'Look up the status of an observation generation job by id. Calls /v1/jobs/:id. Server runtime only. Returns the same payload as REST.',
     inputSchema: {
       type: 'object',
@@ -638,6 +642,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'smart_search',
+    annotations: { readOnlyHint: true },
     description: 'Search codebase for symbols, functions, classes using tree-sitter AST parsing. Returns folded structural views with token counts. Use path parameter to scope the search.',
     inputSchema: {
       type: 'object',
@@ -675,6 +680,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'smart_unfold',
+    annotations: { readOnlyHint: true },
     description: 'Expand a specific symbol (function, class, method) from a file. Returns the full source code of just that symbol. Use after smart_search or smart_outline to read specific code.',
     inputSchema: {
       type: 'object',
@@ -719,6 +725,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'smart_outline',
+    annotations: { readOnlyHint: true },
     description: 'Get structural outline of a file — shows all symbols (functions, classes, methods, types) with signatures but bodies folded. Much cheaper than reading the full file.',
     inputSchema: {
       type: 'object',
@@ -773,6 +780,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'list_corpora',
+    annotations: { readOnlyHint: true },
     description: 'List all knowledge corpora with their stats and priming status',
     inputSchema: {
       type: 'object',
@@ -854,48 +862,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   }
 ];
 
-const server = new Server(
-  {
-    name: 'claude-mem',
-    version: packageVersion,
-  },
-  {
-    capabilities: {
-      tools: {},  // Exposes tools capability (handled by ListToolsRequestSchema and CallToolRequestSchema)
-    },
-  }
-);
-
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: tools.map(tool => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema
-    }))
-  };
-});
-
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const tool = tools.find(t => t.name === request.params.name);
-
-  if (!tool) {
-    throw new Error(`Unknown tool: ${request.params.name}`);
-  }
-
-  try {
-    return await tool.handler(request.params.arguments || {});
-  } catch (error: unknown) {
-    logger.error('SYSTEM', 'Tool execution failed', { tool: request.params.name }, error instanceof Error ? error : new Error(String(error)));
-    return {
-      content: [{
-        type: 'text' as const,
-        text: `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`
-      }],
-      isError: true
-    };
-  }
-});
+const server = createMcpToolServer(tools, packageVersion);
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
