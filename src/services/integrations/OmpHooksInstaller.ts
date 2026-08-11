@@ -23,11 +23,15 @@ const OMP_AGENT_HOOKS_PRE_DIR = path.join(homedir(), '.omp', 'agent', 'hooks', '
 const OMP_HOOK_FILENAME = 'claude-mem.ts';
 const OMP_HOOK_DESTINATION = path.join(OMP_AGENT_HOOKS_PRE_DIR, OMP_HOOK_FILENAME);
 
-/** Where the shipped hook lives: the installed marketplace root, or a repo/dev checkout. */
-const OMP_HOOK_SOURCE_ROOTS = [MARKETPLACE_ROOT, process.cwd()];
-
+/** Trusted locations for the shipped hook. The marketplace root is the
+ *  canonical, claude-mem-installed source. A repo/checkout source is honored
+ *  only behind an explicit dev opt-in — never by default: process.cwd() could
+ *  be an untrusted repository whose omp/hooks/ would then be installed as a
+ *  persistent user-global OMP hook (~/.omp/agent/hooks/pre/). (Greptile P1.) */
 export function findOmpHookSourcePath(): string | null {
-  for (const root of OMP_HOOK_SOURCE_ROOTS) {
+  const roots = [MARKETPLACE_ROOT];
+  if (process.env.CLAUDE_MEM_DEV_HOOK_SOURCE === '1') roots.push(process.cwd());
+  for (const root of roots) {
     const candidate = path.join(root, 'omp', 'hooks', OMP_HOOK_FILENAME);
     if (existsSync(candidate)) return candidate;
   }
@@ -37,8 +41,10 @@ export function findOmpHookSourcePath(): string | null {
 export async function installOmpHooks(): Promise<number> {
   const source = findOmpHookSourcePath();
   if (!source) {
-    console.error('Could not find the OMP hook bundle.');
-    console.error('  Expected at: omp/hooks/claude-mem.ts');
+    console.error('Could not find the OMP hook bundle shipped with claude-mem.');
+    console.error('  Expected at: <marketplace>/omp/hooks/claude-mem.ts');
+    console.error('  Re-run `npx claude-mem install` to populate the marketplace,');
+    console.error('  or set CLAUDE_MEM_DEV_HOOK_SOURCE=1 to resolve from the cwd (dev only).');
     return 1;
   }
 
