@@ -825,6 +825,34 @@ describe("front Worker durability and repair", () => {
 		expect(body.projected_through_seq).toBe(body.head_seq);
 	});
 
+	it("returns 202 until a bounded scheduled repair reaches its target", async () => {
+		const repairUser = "66666666-6666-4666-8666-666666666667";
+		const stub = hub(repairUser);
+		const ops = await Promise.all(
+			Array.from({ length: 101 }, (_, index) => observationOp(String(index + 1))),
+		);
+		ok(await stub.pushOps("dev-a", ops));
+		const request = () => SELF.fetch(`${base}/internal/v1/projection/drain`, {
+			method: "POST",
+			headers: { Authorization: "Bearer test-projector-secret", "Content-Type": "application/json" },
+			body: JSON.stringify({ protocol_version: 1, user_id: repairUser }),
+		});
+
+		const partial = await request();
+		expect(partial.status).toBe(202);
+		expect(await partial.json()).toMatchObject({
+			head_seq: "101",
+			projected_through_seq: "100",
+		});
+
+		const complete = await request();
+		expect(complete.status).toBe(200);
+		expect(await complete.json()).toMatchObject({
+			head_seq: "101",
+			projected_through_seq: "101",
+		});
+	});
+
 	it("surfaces deterministic Pro document rejection as nonretryable 409", async () => {
 		const rejectedUser = "77777777-7777-4777-8777-777777777777";
 		const response = await SELF.fetch(`${base}/v1/sync/ops`, {

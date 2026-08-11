@@ -866,7 +866,13 @@ async function handleRepairDrain(request: Request, env: Env): Promise<Response> 
 			projected_through_seq: finalState.projected_seq,
 		});
 	}
-	return json(200, {
+	// A bounded repair that checkpointed one page is successful progress, but it
+	// is not a completed request until the original target has been reached.
+	// HTTP 202 preserves the existing JSON schema while giving the Pro caller an
+	// explicit continuation signal. Explicit through_seq callers are complete
+	// once their requested target is reached even if newer ops arrived meanwhile.
+	const complete = decimalAtLeast(finalState.projected_seq, target);
+	return json(complete ? 200 : 202, {
 		protocol_version: 1,
 		user_id: record.user_id,
 		epoch: finalState.epoch,
