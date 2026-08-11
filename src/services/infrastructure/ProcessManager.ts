@@ -10,6 +10,10 @@ import { removeOwnedPidFile } from '../../supervisor/shutdown.js';
 import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../supervisor/index.js';
 import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
 import { paths } from '../../shared/paths.js';
+import { HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
+
+/** Bound Windows PowerShell Start-Process so a stalled shell cannot hold the spawn lock forever (#3529 Greptile P1). */
+export const WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.POWERSHELL_COMMAND);
 
 const DATA_DIR = paths.dataDir();
 const PID_FILE = paths.workerPid();
@@ -424,9 +428,17 @@ export function spawnDetachedWorkerDaemon(
         stdio: 'ignore',
         windowsHide: true,
         env,
+        timeout: WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS,
+        killSignal: 'SIGTERM',
       });
       if (result.error) {
         throw result.error;
+      }
+      if (result.signal) {
+        throw new Error(
+          `powershell Start-Process killed by signal=${result.signal}` +
+            ` after ${WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS}ms`
+        );
       }
       if (result.status !== 0) {
         throw new Error(

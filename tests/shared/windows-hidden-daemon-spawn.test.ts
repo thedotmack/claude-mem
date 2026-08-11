@@ -3,8 +3,11 @@ import {
   buildWindowsDaemonStartCommand,
   buildWindowsHiddenDaemonPowerShellArgs,
   resolveWindowsPowerShellPath,
+  WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS,
 } from '../../src/services/infrastructure/ProcessManager.js';
 import { buildSpawnSyncInvocation } from '../../src/shared/spawn.js';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 
 /**
  * #3521 — Windows console flash from detached / shell-string daemon spawns.
@@ -57,5 +60,14 @@ describe('Windows #3521 — hidden daemon spawn contract', () => {
       'win32',
     );
     expect(invocation.options.windowsHide).toBe(true);
+  });
+
+  it('Windows daemon spawnSync uses a bounded timeout (Greptile P1)', () => {
+    expect(WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS).toBeGreaterThan(0);
+    const source = readFileSync(
+      join(import.meta.dir, '../../src/services/infrastructure/ProcessManager.ts'),
+      'utf8',
+    );
+    expect(source).toContain('timeout: WINDOWS_HIDDEN_DAEMON_SPAWN_TIMEOUT_MS');
   });
 });
