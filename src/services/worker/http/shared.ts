@@ -20,6 +20,29 @@ interface IngestContext {
 
 let ctx: IngestContext | null = null;
 
+// Compile each CLAUDE_MEM_SKIP_BASH_PATTERNS value once, not per observation:
+// ingestObservation runs on the hot path. A cached `null` marks a value that
+// failed to compile, so an invalid regex warns once instead of on every Bash
+// command until the setting is fixed.
+const bashPatternCache = new Map<string, RegExp | null>();
+
+function getBashSkipPattern(pattern: string): RegExp | null {
+  const cached = bashPatternCache.get(pattern);
+  if (cached !== undefined) return cached;
+
+  let compiled: RegExp | null = null;
+  try {
+    compiled = new RegExp(pattern);
+  } catch (error) {
+    logger.warn('INGEST', 'Invalid CLAUDE_MEM_SKIP_BASH_PATTERNS regex — ignoring', {
+      pattern,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  bashPatternCache.set(pattern, compiled);
+  return compiled;
+}
+
 export function setIngestContext(next: IngestContext): void {
   ctx = next;
 }
@@ -78,19 +101,11 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   if (payload.toolName === 'Bash' && skipBashPatterns) {
     const input = payload.toolInput as { command?: unknown } | null;
     const command = input && typeof input.command === 'string' ? input.command : '';
-    if (command) {
-      try {
-        if (new RegExp(skipBashPatterns).test(command)) {
-          return { ok: true, status: 'skipped', reason: 'bash_pattern_excluded' };
-        }
-      } catch (error) {
-        // A bad user regex must never throw inside the ingest path and drop the
-        // observation — log once and capture the command as if no pattern was set.
-        logger.warn('INGEST', 'Invalid CLAUDE_MEM_SKIP_BASH_PATTERNS regex — ignoring', {
-          pattern: skipBashPatterns,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+    // A bad user regex never throws here — getBashSkipPattern returns null, so the
+    // command is captured as if no pattern was set.
+    const pattern = command ? getBashSkipPattern(skipBashPatterns) : null;
+    if (pattern && pattern.test(command)) {
+      return { ok: true, status: 'skipped', reason: 'bash_pattern_excluded' };
     }
   }
 
