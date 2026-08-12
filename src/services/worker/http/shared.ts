@@ -74,6 +74,26 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     return { ok: true, status: 'skipped', reason: 'tool_excluded' };
   }
 
+  const skipBashPatterns = settings.CLAUDE_MEM_SKIP_BASH_PATTERNS.trim();
+  if (payload.toolName === 'Bash' && skipBashPatterns) {
+    const input = payload.toolInput as { command?: unknown } | null;
+    const command = input && typeof input.command === 'string' ? input.command : '';
+    if (command) {
+      try {
+        if (new RegExp(skipBashPatterns).test(command)) {
+          return { ok: true, status: 'skipped', reason: 'bash_pattern_excluded' };
+        }
+      } catch (error) {
+        // A bad user regex must never throw inside the ingest path and drop the
+        // observation — log once and capture the command as if no pattern was set.
+        logger.warn('INGEST', 'Invalid CLAUDE_MEM_SKIP_BASH_PATTERNS regex — ignoring', {
+          pattern: skipBashPatterns,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
   const fileOperationTools = new Set(['Edit', 'Write', 'Read', 'NotebookEdit']);
   if (fileOperationTools.has(payload.toolName) && payload.toolInput && typeof payload.toolInput === 'object') {
     const input = payload.toolInput as { file_path?: string; notebook_path?: string };
