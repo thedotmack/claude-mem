@@ -59,3 +59,88 @@ export function sanitizeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Proces
 
   return sanitized;
 }
+
+/**
+ * Python / venv keys that poison hermetic `uvx --python …` children when the
+ * worker itself was launched from an activated virtualenv (#3552).
+ *
+ * `uvx` installs chromadb into its own cache, but CPython still honours
+ * `VIRTUAL_ENV` / `PYTHONPATH` / `PYTHONHOME` from the parent, so a foreign
+ * `numpy` (wrong ABI) can win and chroma-mcp prewarm fails silently.
+ */
+export const FOREIGN_PYTHON_ENV_KEYS = [
+  'VIRTUAL_ENV',
+  'VIRTUAL_ENV_PROMPT',
+  'PYTHONHOME',
+  'PYTHONPATH',
+  'PYTHONUSERBASE',
+  'PYTHONSTARTUP',
+  '__PYVENV_LAUNCHER__',
+  'CONDA_PREFIX',
+  'CONDA_DEFAULT_ENV',
+  'CONDA_PROMPT_MODIFIER',
+  'CONDA_PYTHON_EXE',
+  'CONDA_SHLVL',
+] as const;
+
+const FOREIGN_PYTHON_ENV_KEY_SET = new Set<string>(FOREIGN_PYTHON_ENV_KEYS);
+
+function normalizePathForCompare(value: string): string {
+  return value.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
+}
+
+function isForeignPythonPathEntry(entry: string, roots: string[]): boolean {
+  const normalized = normalizePathForCompare(entry);
+  if (!normalized) return false;
+
+  for (const root of roots) {
+    const normalizedRoot = normalizePathForCompare(root);
+    if (
+      normalized === normalizedRoot
+      || normalized.startsWith(`${normalizedRoot}/`)
+    ) {
+      return true;
+    }
+  }
+
+  // Heuristic for shells that put venv Scripts/bin on PATH without VIRTUAL_ENV.
+  return /(^|\/)(\.?venv|virtualenv)(\/.*)?\/(scripts|bin)$/i.test(normalized)
+    || /(^|\/)(\.?venv|virtualenv)$/i.test(normalized);
+}
+
+/**
+ * Strip foreign Python / conda activation state and matching PATH prefixes so
+ * `uvx --python N` children resolve packages from uv's cache only (#3552).
+ *
+ * Does not touch UV_* cache/config vars — those belong to the hermetic tool.
+ */
+export function stripForeignPythonEnv(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  const cleaned: NodeJS.ProcessEnv = { ...env };
+  const roots: string[] = [];
+
+  for (const key of ['VIRTUAL_ENV', 'CONDA_PREFIX'] as const) {
+    const value = cleaned[key];
+    if (value) roots.push(value);
+  }
+
+  for (const key of FOREIGN_PYTHON_ENV_KEYS) {
+    delete cleaned[key];
+  }
+
+  const pathKey = Object.keys(cleaned).find((key) => key.toLowerCase() === 'path');
+  if (!pathKey || cleaned[pathKey] === undefined) {
+    return cleaned;
+  }
+
+  const sep = platform === 'win32' ? ';' : ':';
+  const filtered = cleaned[pathKey]
+    .split(sep)
+    .filter(Boolean)
+    .filter((entry) => !isForeignPythonPathEntry(entry, roots));
+
+  cleaned[pathKey] = filtered.join(sep);
+  return cleaned;
+}
