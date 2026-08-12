@@ -4,15 +4,21 @@
  *
  * See `CLAUDE.md` → "Spawn-Contract Resolution". The host-owned config files
  * (`plugin/hooks/hooks.json`, `plugin/hooks/codex-hooks.json`,
- * `plugin/.mcp.json`) embed a defensive POSIX-shell prelude that resolves the
- * plugin root from `${CLAUDE_PLUGIN_ROOT}` (or `${PLUGIN_ROOT}`), then falls
- * back through the host cache directories and the marketplace install dir.
- * Some host versions / cache rotations do NOT inject `CLAUDE_PLUGIN_ROOT`, so
- * the fallback chain is load-bearing (issues #1215, #1533).
+ * `plugin/.mcp.json`) each resolve the plugin root from `${CLAUDE_PLUGIN_ROOT}`
+ * (or `${PLUGIN_ROOT}`), then fall back through the host cache directories and
+ * the marketplace install dir. Some host versions / cache rotations do NOT
+ * inject `CLAUDE_PLUGIN_ROOT`, so the fallback chain is load-bearing (issues
+ * #1215, #1533).
  *
- * This module emits those command strings from ONE place so the shape can't
- * drift between the three files. `tests/infrastructure/plugin-distribution.test.ts`
- * asserts the hand-maintained files match the generator output byte-for-byte.
+ * The resolution runs three ways: a defensive POSIX-shell prelude for Codex CLI
+ * shell hooks, and a pure-Node payload for the Claude Code exec-form hooks
+ * (buildClaudeCodeNodeLauncher) and the MCP launcher — both spawn `node`
+ * directly with no shell, so no console window flashes on Windows (#3521,
+ * #3559).
+ *
+ * This module emits every command string from ONE place so the shape can't
+ * drift between the files. `tests/infrastructure/plugin-distribution.test.ts`
+ * asserts the hand-maintained files match the generator output.
  *
  * The fallback chain ORDER is contractual and must not change:
  *   1. ${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}   (host-injected env)
@@ -21,7 +27,10 @@
  *   4. $_C/plugins/marketplaces/thedotmack/plugin (marketplace install)
  */
 
-export type ShellTemplateHost = 'claude-code' | 'claude-code-setup' | 'codex-cli' | 'mcp';
+// Claude Code hooks are no longer shell commands — they run as exec-form Node
+// launchers (see buildClaudeCodeNodeLauncher), so this generator only emits
+// shell strings for the Codex CLI and the MCP launcher.
+export type ShellTemplateHost = 'codex-cli' | 'mcp';
 
 export interface ShellTemplateOptions {
   /** Host whose spawn contract / PATH prelude applies. */
@@ -58,12 +67,6 @@ export interface ShellTemplateOptions {
   mcpExtraCacheRoots?: string[];
 }
 
-const CLAUDE_CODE_PATH_PRELUDE = `export PATH="$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH";`;
-
-const CLAUDE_CODE_SETUP_PATH_PRELUDE =
-  'export PATH="$HOME/.nvm/versions/node/v$(ls \\"$HOME/.nvm/versions/node\\" 2>/dev/null | ' +
-  "sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\";";
-
 const CODEX_CLI_PATH_PRELUDE =
   `_HP=$(printenv PATH 2>/dev/null || true); ` +
   `if [ -z "$_HP" ] && [ -n "\${SHELL:-}" ]; then _HP=$("$SHELL" -lc 'printf %s "$PATH"' 2>/dev/null || true); fi; ` +
@@ -71,10 +74,6 @@ const CODEX_CLI_PATH_PRELUDE =
 
 function pathPrelude(host: ShellTemplateHost): string {
   switch (host) {
-    case 'claude-code':
-      return CLAUDE_CODE_PATH_PRELUDE;
-    case 'claude-code-setup':
-      return CLAUDE_CODE_SETUP_PATH_PRELUDE;
     case 'codex-cli':
       // Trailing space is intentional: join() adds one more → double space
       // before `_C=`, matching the hand-authored codex-hooks.json.
@@ -244,6 +243,40 @@ function jsArray(values: string[]): string {
   return `[${values.map(jsSingleQuoted).join(',')}]`;
 }
 
+/**
+ * Emit the pure-Node plugin-root discovery core shared by every Node launcher
+ * (Codex Windows override, Claude Code exec-form hooks). It resolves `R` — the
+ * plugin root — from `CLAUDE_PLUGIN_ROOT`/`PLUGIN_ROOT`, the version-sorted
+ * cache directories (orphan-stamped dirs skipped), then the marketplace install
+ * dir, and exits 1 with `notFoundMessage` when nothing resolves. `requireFiles`
+ * are the `scripts/<file>` names that must exist for a root to count.
+ *
+ * S/W mirror compareVersionsDescending in src/shared/worker-utils.ts and the
+ * filter skips .orphaned_at-stamped cache dirs, same as
+ * cacheWorkerScriptCandidates — every resolver ranking candidates identically
+ * (by version, never mtime) is the restart-storm invariant.
+ */
+function buildNodeDiscoveryCore(requireFiles: string[], notFoundMessage: string): string {
+  const confirm = requireFiles
+    .map((file) => `fs.existsSync(p.join(r,'scripts','${file}'))`)
+    .join('&&');
+  return [
+    "const fs=require('fs'),p=require('path'),o=require('os'),c=require('child_process');",
+    "const h=o.homedir();",
+    "const C=process.env.CLAUDE_CONFIG_DIR||p.join(h,'.claude');",
+    "const roots=[];",
+    "for(const v of [process.env.CLAUDE_PLUGIN_ROOT,process.env.PLUGIN_ROOT])if(v)roots.push(v);",
+    "const cache=p.join(C,'plugins','cache','thedotmack','claude-mem');",
+    "const S=n=>{const q=n.split('-')[0].split('.');return[parseInt(q[0],10)||0,parseInt(q[1],10)||0,parseInt(q[2],10)||0]};",
+    "const W=(a,b)=>{const x=S(a),y=S(b);return(y[0]-x[0])||(y[1]-x[1])||(y[2]-x[2])||((a.indexOf('-')<0?0:1)-(b.indexOf('-')<0?0:1))||(a<b?1:a>b?-1:0)};",
+    "try{roots.push(...fs.readdirSync(cache).filter(n=>{const ch=n.charAt(0);return ch>='0'&&ch<='9'}).map(n=>p.join(cache,n)).filter(r=>{try{return fs.statSync(r).isDirectory()&&!fs.existsSync(p.join(r,'.orphaned_at'))}catch{return false}}).sort((a,b)=>W(p.basename(a),p.basename(b))))}catch{}",
+    "roots.push(p.join(C,'plugins','marketplaces','thedotmack','plugin'));",
+    "let R=null;",
+    `for(const k of roots){const r=fs.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(${confirm}){R=r;break}}`,
+    `if(!R){process.stderr.write('${notFoundMessage}\\n');process.exit(1)}`,
+  ].join('');
+}
+
 export interface CodexWindowsCommandOptions {
   startupVersionCheck?: boolean;
 }
@@ -258,23 +291,7 @@ export function buildCodexWindowsCommand(
   options: CodexWindowsCommandOptions = {},
 ): string {
   const parts = [
-    "const fs=require('fs'),p=require('path'),o=require('os'),c=require('child_process');",
-    "const h=o.homedir();",
-    "const C=process.env.CLAUDE_CONFIG_DIR||p.join(h,'.claude');",
-    "const roots=[];",
-    "for(const v of [process.env.CLAUDE_PLUGIN_ROOT,process.env.PLUGIN_ROOT])if(v)roots.push(v);",
-    "const cache=p.join(C,'plugins','cache','thedotmack','claude-mem');",
-    // S/W mirror compareVersionsDescending in src/shared/worker-utils.ts and
-    // the filter skips .orphaned_at-stamped cache dirs, same as
-    // cacheWorkerScriptCandidates — every resolver ranking candidates
-    // identically (by version, never mtime) is the restart-storm invariant.
-    "const S=n=>{const q=n.split('-')[0].split('.');return[parseInt(q[0],10)||0,parseInt(q[1],10)||0,parseInt(q[2],10)||0]};",
-    "const W=(a,b)=>{const x=S(a),y=S(b);return(y[0]-x[0])||(y[1]-x[1])||(y[2]-x[2])||((a.indexOf('-')<0?0:1)-(b.indexOf('-')<0?0:1))||(a<b?1:a>b?-1:0)};",
-    "try{roots.push(...fs.readdirSync(cache).filter(n=>{const ch=n.charAt(0);return ch>='0'&&ch<='9'}).map(n=>p.join(cache,n)).filter(r=>{try{return fs.statSync(r).isDirectory()&&!fs.existsSync(p.join(r,'.orphaned_at'))}catch{return false}}).sort((a,b)=>W(p.basename(a),p.basename(b))))}catch{}",
-    "roots.push(p.join(C,'plugins','marketplaces','thedotmack','plugin'));",
-    "let R=null;",
-    "for(const k of roots){const r=fs.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(fs.existsSync(p.join(r,'scripts','bun-runner.js'))&&fs.existsSync(p.join(r,'scripts','worker-service.cjs'))){R=r;break}}",
-    "if(!R){process.stderr.write('claude-mem: plugin scripts not found\\n');process.exit(1)}",
+    buildNodeDiscoveryCore(['bun-runner.js', 'worker-service.cjs'], 'claude-mem: plugin scripts not found'),
     "const env={...process.env,CLAUDE_MEM_CODEX_HOOK:'1'};",
   ];
 
@@ -294,6 +311,59 @@ export function buildCodexWindowsCommand(
   );
 
   return `node -e "${parts.join('')}"`;
+}
+
+/** Exec-form hook entry: Claude Code spawns the executable directly, no shell. */
+export interface NodeExecCommand {
+  command: 'node';
+  args: string[];
+}
+
+export interface ClaudeCodeNodeLauncherOptions {
+  /** Script(s) under `scripts/` that confirm a candidate plugin root. */
+  requireFiles: string[];
+  /** stderr message when no candidate root resolves. */
+  notFoundMessage: string;
+  /** Worker tail tokens (e.g. `['hook','claude-code','observation']`, `['start']`). */
+  workerArgs?: string[];
+  /** Setup only: run `version-check.js` and exit with its status (no worker spawn). */
+  versionCheckOnly?: boolean;
+}
+
+/**
+ * Build the Claude Code exec-form hook launcher: `{command:'node', args:['-e',
+ * <payload>]}`. Claude Code resolves `node` and spawns it directly (no shell),
+ * so on Windows it applies its own hidden-window flag to the console child —
+ * the `shell:"bash"` chain (bash → node.exe → bun.exe) that gave the node.exe
+ * grandchild a fresh visible console per tool call is gone (issues #3521,
+ * #3559). The pure-Node payload keeps the load-bearing plugin-root fallback
+ * chain (#1215, #1533) that a bare `${CLAUDE_PLUGIN_ROOT}` path would lose, and
+ * spawns children via `process.execPath` so no child PATH lookup is needed.
+ */
+export function buildClaudeCodeNodeLauncher(options: ClaudeCodeNodeLauncherOptions): NodeExecCommand {
+  const parts = [buildNodeDiscoveryCore(options.requireFiles, options.notFoundMessage)];
+
+  // windowsHide:true keeps this node grandchild from allocating its own console
+  // on Windows — the same flag every other spawn site in the tree sets. Without
+  // it, the hidden `node -e` parent spawning a console node.exe would flash a
+  // fresh window, the exact defect this launcher removes (#3521, #3559).
+  if (options.versionCheckOnly) {
+    parts.push(
+      "const res=c.spawnSync(process.execPath,[p.join(R,'scripts','version-check.js')],{stdio:'inherit',windowsHide:true});",
+      "if(res.error){process.stderr.write(String(res.error.message||res.error)+'\\n');process.exit(1)}",
+      "process.exit(res.status==null?0:res.status)",
+    );
+  } else {
+    parts.push(
+      `const workerArgs=${jsArray(options.workerArgs ?? [])};`,
+      "const args=[p.join(R,'scripts','bun-runner.js'),p.join(R,'scripts','worker-service.cjs'),...workerArgs];",
+      "const res=c.spawnSync(process.execPath,args,{stdio:'inherit',windowsHide:true});",
+      "if(res.error){process.stderr.write(String(res.error.message||res.error)+'\\n');process.exit(1)}",
+      "process.exit(res.status==null?0:res.status)",
+    );
+  }
+
+  return { command: 'node', args: ['-e', parts.join('')] };
 }
 
 /**
