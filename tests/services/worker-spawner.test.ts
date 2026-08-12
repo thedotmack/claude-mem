@@ -1,14 +1,20 @@
 
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, afterAll } from 'bun:test';
 import { existsSync, mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
 
-// Redirect the data dir before worker-spawner (and paths.js) load, so the
-// boot-failure markers land in a throwaway temp tree, not the real ~/.claude-mem.
+// Boot-failure markers must land in a throwaway temp tree, not the real
+// ~/.claude-mem. The spawner reads CLAUDE_MEM_DATA_DIR fresh at call time, so
+// resetMocks() sets it per test — a module-load override would lose to any
+// other suite file that sets the same env var during import.
 const TEST_DATA_DIR = mkdtempSync(join(tmpdir(), 'cmem-spawner-'));
-process.env.CLAUDE_MEM_DATA_DIR = TEST_DATA_DIR;
+const ORIGINAL_DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR;
+afterAll(() => {
+  if (ORIGINAL_DATA_DIR === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+  else process.env.CLAUDE_MEM_DATA_DIR = ORIGINAL_DATA_DIR;
+});
 
 const cliTelemetry = {
   captureCliEvent: mock(async () => {}),
@@ -80,6 +86,7 @@ function resetMocks(): void {
   spawnGate.acquireSpawnLock.mockReturnValue(true);
   spawnGate.releaseSpawnLock.mockReset();
   cliTelemetry.captureCliEvent.mockClear();
+  process.env.CLAUDE_MEM_DATA_DIR = TEST_DATA_DIR;
 }
 
 describe('ensureWorkerStarted startup readiness', () => {

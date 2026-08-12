@@ -3,7 +3,6 @@ import path from 'path';
 import { existsSync, mkdirSync, writeFileSync, appendFileSync, unlinkSync, statSync } from 'fs';
 import { logger } from '../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
-import { DATA_DIR, LOGS_DIR } from '../shared/paths.js';
 import { captureCliEvent } from './telemetry/cli-telemetry.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import {
@@ -85,10 +84,12 @@ async function recordWorkerBootFailure(port: number, spawnedPid: number | undefi
   ].join('\n');
 
   try {
-    mkdirSync(LOGS_DIR, { recursive: true });
-    appendFileSync(path.join(LOGS_DIR, 'runner-errors.log'), diagnostic + '\n\n');
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(path.join(DATA_DIR, 'CAPTURE_BROKEN'), diagnostic + '\n');
+    const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
+    const logsDir = path.join(dataDir, 'logs');
+    mkdirSync(logsDir, { recursive: true });
+    appendFileSync(path.join(logsDir, 'runner-errors.log'), diagnostic + '\n\n');
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(path.join(dataDir, 'CAPTURE_BROKEN'), diagnostic + '\n');
   } catch (error) {
     logger.warn('SYSTEM', 'Failed to persist worker boot-failure marker', {},
       error instanceof Error ? error : new Error(String(error)));
