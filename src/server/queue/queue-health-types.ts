@@ -10,6 +10,10 @@
 // NOTE: the local SQLite worker no longer has an observation queue (it uses an
 // in-RAM buffer), so only the server-beta runtime produces this shape.
 
+// Per-lane queue metric snapshot. Produced by
+// ActiveServerQueueManager.getLaneMetrics and published verbatim on
+// /api/health and /v1/info. `unavailable` is set when Redis was unreachable
+// at sample time so /api/health still responds rather than 500'ing.
 export interface ObservationQueueHealthLaneSnapshot {
   kind: string;
   name: string;

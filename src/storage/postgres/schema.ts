@@ -190,7 +190,7 @@ CREATE TABLE IF NOT EXISTS observation_generation_jobs (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
   agent_event_id TEXT REFERENCES agent_events(id) ON DELETE CASCADE,
-  source_type TEXT NOT NULL CHECK (source_type IN ('agent_event', 'session_summary', 'observation_reindex')),
+  source_type TEXT NOT NULL CHECK (source_type IN ('agent_event', 'session_summary')),
   source_id TEXT NOT NULL,
   server_session_id TEXT REFERENCES server_sessions(id) ON DELETE SET NULL,
   job_type TEXT NOT NULL,
@@ -213,8 +213,6 @@ CREATE TABLE IF NOT EXISTS observation_generation_jobs (
     (source_type = 'agent_event' AND agent_event_id IS NOT NULL AND source_id = agent_event_id)
     OR
     (source_type = 'session_summary' AND agent_event_id IS NULL AND server_session_id IS NOT NULL AND source_id = server_session_id)
-    OR
-    (source_type = 'observation_reindex' AND agent_event_id IS NULL)
   ),
   FOREIGN KEY (agent_event_id, project_id, team_id) REFERENCES agent_events(id, project_id, team_id) ON DELETE CASCADE,
   FOREIGN KEY (project_id, team_id) REFERENCES projects(id, team_id) ON DELETE CASCADE
@@ -230,7 +228,6 @@ CREATE TABLE IF NOT EXISTS observations (
   content_search TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', content)) STORED,
   generation_key TEXT,
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-  embedding JSONB,
   created_by_job_id TEXT REFERENCES observation_generation_jobs(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -242,7 +239,7 @@ CREATE TABLE IF NOT EXISTS observation_sources (
   observation_id TEXT NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
   agent_event_id TEXT REFERENCES agent_events(id) ON DELETE CASCADE,
   generation_job_id TEXT REFERENCES observation_generation_jobs(id) ON DELETE SET NULL,
-  source_type TEXT NOT NULL CHECK (source_type IN ('agent_event', 'session_summary', 'observation_reindex', 'manual')),
+  source_type TEXT NOT NULL CHECK (source_type IN ('agent_event', 'session_summary', 'manual')),
   source_id TEXT NOT NULL,
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

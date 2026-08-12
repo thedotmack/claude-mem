@@ -32,6 +32,19 @@ const LOG_COMPONENTS: { key: LogComponent; label: string; icon: string; color: s
   { key: 'CHROMA', label: 'Chroma', icon: '🔮', color: '#a855f7' },
 ];
 
+const ALL_LEVELS = LOG_LEVELS.map(l => l.key);
+const ALL_COMPONENTS = LOG_COMPONENTS.map(c => c.key);
+
+function toggleInSet<T>(prev: Set<T>, value: T): Set<T> {
+  const next = new Set(prev);
+  if (next.has(value)) {
+    next.delete(value);
+  } else {
+    next.add(value);
+  }
+  return next;
+}
+
 function parseLogLine(line: string): ParsedLogLine {
   const pattern = /^\[([^\]]+)\]\s+\[(\w+)\s*\]\s+\[(\w+)\s*\]\s+(?:\[([^\]]+)\]\s+)?(.*)$/;
   const match = line.match(pattern);
@@ -79,10 +92,10 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   const wasAtBottomRef = useRef(true);
 
   const [activeLevels, setActiveLevels] = useState<Set<LogLevel>>(
-    new Set(['DEBUG', 'INFO', 'WARN', 'ERROR'])
+    new Set(ALL_LEVELS)
   );
   const [activeComponents, setActiveComponents] = useState<Set<LogComponent>>(
-    new Set(['HOOK', 'WORKER', 'SDK', 'PARSER', 'DB', 'SYSTEM', 'HTTP', 'SESSION', 'CHROMA'])
+    new Set(ALL_COMPONENTS)
   );
   const [alignmentOnly, setAlignmentOnly] = useState(false);
 
@@ -201,43 +214,19 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   }, [isOpen, autoRefresh, fetchLogs]);
 
   const toggleLevel = useCallback((level: LogLevel) => {
-    setActiveLevels(prev => {
-      const next = new Set(prev);
-      if (next.has(level)) {
-        next.delete(level);
-      } else {
-        next.add(level);
-      }
-      return next;
-    });
+    setActiveLevels(prev => toggleInSet(prev, level));
   }, []);
 
   const toggleComponent = useCallback((component: LogComponent) => {
-    setActiveComponents(prev => {
-      const next = new Set(prev);
-      if (next.has(component)) {
-        next.delete(component);
-      } else {
-        next.add(component);
-      }
-      return next;
-    });
+    setActiveComponents(prev => toggleInSet(prev, component));
   }, []);
 
   const setAllLevels = useCallback((enabled: boolean) => {
-    if (enabled) {
-      setActiveLevels(new Set(['DEBUG', 'INFO', 'WARN', 'ERROR']));
-    } else {
-      setActiveLevels(new Set());
-    }
+    setActiveLevels(new Set(enabled ? ALL_LEVELS : []));
   }, []);
 
   const setAllComponents = useCallback((enabled: boolean) => {
-    if (enabled) {
-      setActiveComponents(new Set(['HOOK', 'WORKER', 'SDK', 'PARSER', 'DB', 'SYSTEM', 'HTTP', 'SESSION', 'CHROMA']));
-    } else {
-      setActiveComponents(new Set());
-    }
+    setActiveComponents(new Set(enabled ? ALL_COMPONENTS : []));
   }, []);
 
   if (!isOpen) {
@@ -246,10 +235,8 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
 
   const getLineStyle = (line: ParsedLogLine): React.CSSProperties => {
     const levelConfig = LOG_LEVELS.find(l => l.key === line.level);
-    const componentConfig = LOG_COMPONENTS.find(c => c.key === line.component);
 
     let color = 'var(--color-text-primary)';
-    let fontWeight = 'normal';
     let backgroundColor = 'transparent';
 
     if (line.level === 'ERROR') {
@@ -268,7 +255,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
       color = levelConfig.color;
     }
 
-    return { color, fontWeight, backgroundColor, padding: '1px 0', borderRadius: '2px' };
+    return { color, backgroundColor, padding: '1px 0', borderRadius: '2px' };
   };
 
   const renderLogLine = (line: ParsedLogLine, index: number) => {

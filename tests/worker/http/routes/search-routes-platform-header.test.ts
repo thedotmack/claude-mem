@@ -79,7 +79,7 @@ describe('SearchRoutes platform-source headers', () => {
       searchObservations,
       getRecentContext,
       getTimelineByQuery,
-      getOrchestrator: () => ({ findByFile }),
+      findByFile,
       getFormatter: () => ({}),
     } as any);
     const handlers = captureGetHandlers(routes);

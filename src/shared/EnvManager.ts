@@ -299,21 +299,12 @@ export function getCredential(key: keyof ClaudeMemEnv): string | undefined {
   return env[key];
 }
 
-export function hasAnthropicApiKey(): boolean {
-  const env = loadClaudeMemEnv();
-  return !!env.ANTHROPIC_API_KEY;
-}
-
-export function hasAnthropicAuthToken(): boolean {
-  const env = loadClaudeMemEnv();
-  return !!env.ANTHROPIC_AUTH_TOKEN;
-}
-
 export function getAuthMethodDescription(): string {
-  if (hasAnthropicApiKey()) {
+  const env = loadClaudeMemEnv();
+  if (env.ANTHROPIC_API_KEY) {
     return 'API key (from ~/.claude-mem/.env)';
   }
-  if (hasAnthropicAuthToken()) {
+  if (env.ANTHROPIC_AUTH_TOKEN) {
     return 'Gateway auth token (from ~/.claude-mem/.env)';
   }
   // Note: this is a quick sync hint for logging — the authoritative OAuth

@@ -266,40 +266,49 @@ async function buildHooks() {
     console.log('✓ Output directories ready');
 
     console.log('\n📦 Generating plugin package.json...');
+    // Runtime dependency pins live in root package.json devDependencies —
+    // read them from there instead of keeping a third verbatim copy here.
+    const pluginDependencyNames = [
+      'zod',
+      'tree-sitter-cli',
+      'tree-sitter-c',
+      'tree-sitter-cpp',
+      'tree-sitter-go',
+      'tree-sitter-java',
+      'tree-sitter-javascript',
+      'tree-sitter-python',
+      'tree-sitter-ruby',
+      'tree-sitter-rust',
+      'tree-sitter-typescript',
+      'tree-sitter-kotlin',
+      'tree-sitter-swift',
+      'tree-sitter-php',
+      '@tree-sitter-grammars/tree-sitter-lua',
+      'tree-sitter-scala',
+      'tree-sitter-bash',
+      'tree-sitter-haskell',
+      '@tree-sitter-grammars/tree-sitter-zig',
+      'tree-sitter-css',
+      'tree-sitter-scss',
+      '@tree-sitter-grammars/tree-sitter-toml',
+      '@tree-sitter-grammars/tree-sitter-yaml',
+      '@derekstride/tree-sitter-sql',
+      '@tree-sitter-grammars/tree-sitter-markdown',
+      'shell-quote',
+    ];
     const pluginPackageJson = {
       name: 'claude-mem-plugin',
       version: version,
       private: true,
       description: 'Runtime dependencies for claude-mem bundled hooks',
       type: 'module',
-      dependencies: {
-        'zod': '^4.4.3',
-        'tree-sitter-cli': '^0.26.5',
-        'tree-sitter-c': '^0.24.1',
-        'tree-sitter-cpp': '^0.23.4',
-        'tree-sitter-go': '^0.25.0',
-        'tree-sitter-java': '^0.23.5',
-        'tree-sitter-javascript': '^0.25.0',
-        'tree-sitter-python': '^0.25.0',
-        'tree-sitter-ruby': '^0.23.1',
-        'tree-sitter-rust': '^0.24.0',
-        'tree-sitter-typescript': '^0.23.2',
-        'tree-sitter-kotlin': '^0.3.8',
-        'tree-sitter-swift': '^0.7.1',
-        'tree-sitter-php': '^0.24.2',
-        '@tree-sitter-grammars/tree-sitter-lua': '^0.4.1',
-        'tree-sitter-scala': '^0.24.0',
-        'tree-sitter-bash': '^0.25.1',
-        'tree-sitter-haskell': '^0.23.1',
-        '@tree-sitter-grammars/tree-sitter-zig': '^1.1.2',
-        'tree-sitter-css': '^0.25.0',
-        'tree-sitter-scss': '^1.0.0',
-        '@tree-sitter-grammars/tree-sitter-toml': '^0.7.0',
-        '@tree-sitter-grammars/tree-sitter-yaml': '^0.7.1',
-        '@derekstride/tree-sitter-sql': '^0.3.11',
-        '@tree-sitter-grammars/tree-sitter-markdown': '^0.3.2',
-        'shell-quote': '^1.8.3',
-      },
+      dependencies: Object.fromEntries(pluginDependencyNames.map((name) => {
+        const pinned = packageJson.devDependencies[name];
+        if (!pinned) {
+          throw new Error(`Missing version pin for ${name} in root package.json devDependencies`);
+        }
+        return [name, pinned];
+      })),
       overrides: {
         'tree-sitter': '^0.25.0'
       },

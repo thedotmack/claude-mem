@@ -14,7 +14,6 @@ const EXCLUDED_PATTERNS = [
   /^bin\//,              // CLI utilities (may use console.log for output)
   /index\.ts$/,          // Re-export files
   /logger\.ts$/,         // Logger itself
-  /hook-response\.ts$/,  // Pure data structure
   /hook-constants\.ts$/, // Pure constants
   /paths\.ts$/,          // Path utilities
   /bun-path\.ts$/,       // Path utilities
@@ -52,7 +51,6 @@ const HIGH_PRIORITY_PATTERNS = [
   /^services\/sqlite\/(?!types\.ts$|index\.ts$)/,  // SQLite services
   /^services\/sync\//,
   /^services\/context-generator\.ts$/,
-  /^hooks\/(?!hook-response\.ts$)/,  // All src/hooks/* except hook-response.ts (NOT ui/hooks)
   /^sdk\/(?!.*types?\.ts$)/,  // SDK files (not type files)
   /^servers\/(?!.*types?\.ts$)/,  // Server files (not type files)
 ];

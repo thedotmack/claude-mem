@@ -23,16 +23,6 @@ interface CheckResult {
   required: boolean;
 }
 
-function probeVersion(bin: 'bun' | 'uv'): string | null {
-  try {
-    return bin === 'bun' ? getBunVersion() : getUvVersion();
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    console.warn(`[doctor] Failed to probe \`${bin} --version\`:`, err);
-    return null;
-  }
-}
-
 async function probeWorkerHealth(workerHost: string, workerPort: string): Promise<{ status: CheckStatus; detail: string }> {
   const workerUrl = `http://${workerHost}:${workerPort}`;
   const res = await fetch(`${workerUrl}/api/health`, {
@@ -49,7 +39,12 @@ export async function runDoctorCommand(): Promise<void> {
   const dataDir = resolveDataDir();
 
   // 1. Bun (required — hooks run on Bun).
-  const bunVersion = probeVersion('bun');
+  let bunVersion: string | null = null;
+  try {
+    bunVersion = getBunVersion();
+  } catch (error) {
+    console.warn('[doctor] Failed to probe `bun --version`:', error instanceof Error ? error : String(error));
+  }
   checks.push({
     name: 'Bun runtime',
     status: bunVersion ? 'ok' : 'fail',
@@ -58,7 +53,12 @@ export async function runDoctorCommand(): Promise<void> {
   });
 
   // 2. uv (warn-only — only needed for vector search).
-  const uvVersion = probeVersion('uv');
+  let uvVersion: string | null = null;
+  try {
+    uvVersion = getUvVersion();
+  } catch (error) {
+    console.warn('[doctor] Failed to probe `uv --version`:', error instanceof Error ? error : String(error));
+  }
   checks.push({
     name: 'uv (vector search)',
     status: uvVersion ? 'ok' : 'warn',

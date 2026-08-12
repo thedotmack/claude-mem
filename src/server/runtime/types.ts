@@ -20,24 +20,6 @@ export interface ServerBoundaryHealth {
   details?: Record<string, unknown>;
 }
 
-// Phase 12 — per-lane queue metric snapshot. Returned by
-// ActiveServerQueueManager.getLaneMetrics so /api/health and /v1/info
-// can publish current waiting/active/completed/failed/delayed/stalled counts
-// for each generation lane. `unavailable` is set when Redis was unreachable
-// at sample time so /api/health still responds rather than 500'ing.
-export interface ServerQueueLaneMetric {
-  kind: string;
-  name: string;
-  waiting: number;
-  active: number;
-  completed: number;
-  failed: number;
-  delayed: number;
-  stalled: number;
-  unavailable: boolean;
-  unavailableReason?: string;
-}
-
 export interface ServerQueueManager {
   readonly kind: 'queue-manager';
   getHealth(): ServerBoundaryHealth;

@@ -1,4 +1,5 @@
 import { ChildProcess, spawnSync } from 'child_process';
+import { once } from 'node:events';
 import { spawnHidden } from '../shared/spawn.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
@@ -43,6 +44,40 @@ export function isPidAlive(pid: number): boolean {
     }
     logger.warn('SYSTEM', 'PID check threw non-Error', { pid, error: String(error) });
     return false;
+  }
+}
+
+// Signal one managed record, preferring its process group (which also reaches
+// grandchildren re-parented to init) when we have a pgid and are not on
+// Windows. Throws whatever process.kill throws; callers decide how to log.
+function signalRecord(record: ManagedProcessRecord, signal: 'SIGTERM' | 'SIGKILL'): void {
+  if (typeof record.pgid === 'number' && process.platform !== 'win32') {
+    process.kill(-record.pgid, signal);
+  } else {
+    process.kill(record.pid, signal);
+  }
+}
+
+// reapSession's two kill phases differ only by signal. ESRCH means the process
+// already exited, which is the success case here — not something to log.
+function signalSessionRecord(record: ManagedProcessRecord, signal: 'SIGTERM' | 'SIGKILL'): void {
+  try {
+    signalRecord(record, signal);
+  } catch (error: unknown) {
+    if (error instanceof Error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
+        logger.debug('SYSTEM', `Failed to ${signal} session process PID ${record.pid}`, {
+          pid: record.pid,
+          pgid: record.pgid
+        }, error);
+      }
+    } else {
+      logger.warn('SYSTEM', `Failed to ${signal} session process PID ${record.pid} (non-Error)`, {
+        pid: record.pid,
+        pgid: record.pgid,
+        error: String(error)
+      });
+    }
   }
 }
 
@@ -312,29 +347,7 @@ export class ProcessRegistry {
 
     const aliveRecords = sessionRecords.filter(r => isPidAlive(r.pid));
     for (const record of aliveRecords) {
-      try {
-        if (typeof record.pgid === 'number' && process.platform !== 'win32') {
-          process.kill(-record.pgid, 'SIGTERM');
-        } else {
-          process.kill(record.pid, 'SIGTERM');
-        }
-      } catch (error: unknown) {
-        if (error instanceof Error) {
-          const code = (error as NodeJS.ErrnoException).code;
-          if (code !== 'ESRCH') {
-            logger.debug('SYSTEM', `Failed to SIGTERM session process PID ${record.pid}`, {
-              pid: record.pid,
-              pgid: record.pgid
-            }, error);
-          }
-        } else {
-          logger.warn('SYSTEM', `Failed to SIGTERM session process PID ${record.pid} (non-Error)`, {
-            pid: record.pid,
-            pgid: record.pgid,
-            error: String(error)
-          });
-        }
-      }
+      signalSessionRecord(record, 'SIGTERM');
     }
 
     await waitForExit(aliveRecords, REAP_SESSION_SIGTERM_TIMEOUT_MS);
@@ -346,39 +359,10 @@ export class ProcessRegistry {
         pgid: record.pgid,
         sessionId: sessionIdNum
       });
-      try {
-        if (typeof record.pgid === 'number' && process.platform !== 'win32') {
-          process.kill(-record.pgid, 'SIGKILL');
-        } else {
-          process.kill(record.pid, 'SIGKILL');
-        }
-      } catch (error: unknown) {
-        if (error instanceof Error) {
-          const code = (error as NodeJS.ErrnoException).code;
-          if (code !== 'ESRCH') {
-            logger.debug('SYSTEM', `Failed to SIGKILL session process PID ${record.pid}`, {
-              pid: record.pid,
-              pgid: record.pgid
-            }, error);
-          }
-        } else {
-          logger.warn('SYSTEM', `Failed to SIGKILL session process PID ${record.pid} (non-Error)`, {
-            pid: record.pid,
-            pgid: record.pgid,
-            error: String(error)
-          });
-        }
-      }
+      signalSessionRecord(record, 'SIGKILL');
     }
 
-    if (survivors.length > 0) {
-      const sigkillDeadline = Date.now() + REAP_SESSION_SIGKILL_TIMEOUT_MS;
-      while (Date.now() < sigkillDeadline) {
-        const remaining = survivors.filter(r => isPidAlive(r.pid));
-        if (remaining.length === 0) break;
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-    }
+    await waitForExit(survivors, REAP_SESSION_SIGKILL_TIMEOUT_MS);
 
     for (const record of sessionRecords) {
       this.entries.delete(record.id);
@@ -452,6 +436,18 @@ export function getSdkProcessForSession(sessionDbId: number): TrackedSdkProcess 
   };
 }
 
+// Resolve when `proc` exits or `timeoutMs` elapses, whichever comes first.
+// AbortSignal.timeout makes events.once self-cancelling, so no stray listener
+// or timer outlives the wait. Callers re-check proc.exitCode to tell the two
+// outcomes apart; a rejection (timeout, or an 'error' event) just ends the wait.
+async function waitForProcessExit(proc: ChildProcess, timeoutMs: number): Promise<void> {
+  try {
+    await once(proc, 'exit', { signal: AbortSignal.timeout(timeoutMs) });
+  } catch {
+    // Timed out (or the child emitted 'error') — the exitCode check decides.
+  }
+}
+
 export async function ensureSdkProcessExit(
   tracked: TrackedSdkProcess,
   timeoutMs: number = 5000
@@ -460,15 +456,7 @@ export async function ensureSdkProcessExit(
 
   if (proc.exitCode !== null) return;
 
-  const exitPromise = new Promise<void>((resolve) => {
-    proc.once('exit', () => resolve());
-  });
-
-  const timeoutPromise = new Promise<void>((resolve) => {
-    setTimeout(resolve, timeoutMs);
-  });
-
-  await Promise.race([exitPromise, timeoutPromise]);
+  await waitForProcessExit(proc, timeoutMs);
 
   if (proc.exitCode !== null) return;
 
@@ -485,13 +473,7 @@ export async function ensureSdkProcessExit(
     // Already dead — fine.
   }
 
-  const sigkillExit = new Promise<void>((resolve) => {
-    proc.once('exit', () => resolve());
-  });
-  const sigkillTimeout = new Promise<void>((resolve) => {
-    setTimeout(resolve, 1000);
-  });
-  await Promise.race([sigkillExit, sigkillTimeout]);
+  await waitForProcessExit(proc, 1000);
 }
 
 const TOTAL_PROCESS_HARD_CAP = 10;
@@ -762,22 +744,6 @@ export function spawnSdkProcess(
   return { process: spawned, pid, pgid };
 }
 
-function sigtermDuplicateSdkProcess(record: ManagedProcessRecord, sessionDbId: number): void {
-  if (typeof record.pgid === 'number') {
-    if (process.platform !== 'win32') {
-      process.kill(-record.pgid, 'SIGTERM');
-    } else {
-      process.kill(record.pid, 'SIGTERM');
-    }
-  } else {
-    process.kill(record.pid, 'SIGTERM');
-  }
-  logger.warn('PROCESS', `Killing duplicate SDK process PID ${record.pid} before spawning new one for session ${sessionDbId}`, {
-    existingPid: record.pid,
-    sessionDbId,
-  });
-}
-
 export function createSdkSpawnFactory(sessionDbId: number, slotReservation?: SlotReservation, extraArgs: string[] = []) {
   return (spawnOptions: SpawnSdkOptions): SpawnedSdkProcess => {
     const registry = getProcessRegistry();
@@ -786,7 +752,11 @@ export function createSdkSpawnFactory(sessionDbId: number, slotReservation?: Slo
     for (const record of existing) {
       if (!isPidAlive(record.pid)) continue;
       try {
-        sigtermDuplicateSdkProcess(record, sessionDbId);
+        signalRecord(record, 'SIGTERM');
+        logger.warn('PROCESS', `Killing duplicate SDK process PID ${record.pid} before spawning new one for session ${sessionDbId}`, {
+          existingPid: record.pid,
+          sessionDbId,
+        });
       } catch (error: unknown) {
         const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
         if (code !== 'ESRCH') {

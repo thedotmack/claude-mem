@@ -1,41 +1,36 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
+import { writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
-import { tmpdir } from 'os';
+import { DATA_DIR } from '../src/shared/paths';
 import {
   readCursorRegistry,
-  writeCursorRegistry,
   registerCursorProject,
   unregisterCursorProject
-} from '../src/utils/cursor-utils';
+} from '../src/services/integrations/CursorHooksInstaller';
+
+// The registry path is bound to DATA_DIR at import time. tests/preload.ts
+// already pins CLAUDE_MEM_DATA_DIR at a per-run temp dir, so this only has to
+// clear the file between cases.
+const registryFile = join(DATA_DIR, 'cursor-projects.json');
 
 describe('Cursor Project Registry', () => {
-  let tempDir: string;
-  let registryFile: string;
-
   beforeEach(() => {
-    tempDir = join(tmpdir(), `cursor-registry-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    mkdirSync(tempDir, { recursive: true });
-    registryFile = join(tempDir, 'cursor-projects.json');
+    rmSync(registryFile, { force: true });
   });
 
   afterEach(() => {
-    try {
-      rmSync(tempDir, { recursive: true, force: true });
-    } catch {
-      // Ignore cleanup errors
-    }
+    rmSync(registryFile, { force: true });
   });
 
   describe('readCursorRegistry', () => {
     it('returns empty object when registry file does not exist', () => {
-      const registry = readCursorRegistry(registryFile);
+      const registry = readCursorRegistry();
       expect(registry).toEqual({});
     });
 
     it('returns empty object when registry file is corrupt JSON', () => {
       writeFileSync(registryFile, 'not valid json {{{');
-      const registry = readCursorRegistry(registryFile);
+      const registry = readCursorRegistry();
       expect(registry).toEqual({});
     });
 
@@ -48,24 +43,24 @@ describe('Cursor Project Registry', () => {
       };
       writeFileSync(registryFile, JSON.stringify(expected));
 
-      const registry = readCursorRegistry(registryFile);
+      const registry = readCursorRegistry();
       expect(registry).toEqual(expected);
     });
   });
 
   describe('registerCursorProject', () => {
     it('creates registry file if it does not exist', () => {
-      registerCursorProject(registryFile, 'new-project', '/path/to/project');
+      registerCursorProject('new-project', '/path/to/project');
 
       expect(existsSync(registryFile)).toBe(true);
     });
 
     it('stores project with workspacePath and installedAt', () => {
       const before = Date.now();
-      registerCursorProject(registryFile, 'test-project', '/workspace/test');
+      registerCursorProject('test-project', '/workspace/test');
       const after = Date.now();
 
-      const registry = readCursorRegistry(registryFile);
+      const registry = readCursorRegistry();
       expect(registry['test-project']).toBeDefined();
       expect(registry['test-project'].workspacePath).toBe('/workspace/test');
 
@@ -75,29 +70,29 @@ describe('Cursor Project Registry', () => {
     });
 
     it('preserves existing projects when registering new one', () => {
-      registerCursorProject(registryFile, 'project-a', '/path/a');
-      registerCursorProject(registryFile, 'project-b', '/path/b');
+      registerCursorProject('project-a', '/path/a');
+      registerCursorProject('project-b', '/path/b');
 
-      const registry = readCursorRegistry(registryFile);
+      const registry = readCursorRegistry();
       expect(Object.keys(registry)).toHaveLength(2);
       expect(registry['project-a'].workspacePath).toBe('/path/a');
       expect(registry['project-b'].workspacePath).toBe('/path/b');
     });
 
     it('overwrites existing project with same name', () => {
-      registerCursorProject(registryFile, 'my-project', '/old/path');
-      registerCursorProject(registryFile, 'my-project', '/new/path');
+      registerCursorProject('my-project', '/old/path');
+      registerCursorProject('my-project', '/new/path');
 
-      const registry = readCursorRegistry(registryFile);
+      const registry = readCursorRegistry();
       expect(Object.keys(registry)).toHaveLength(1);
       expect(registry['my-project'].workspacePath).toBe('/new/path');
     });
 
     it('handles special characters in project name', () => {
       const projectName = 'my-project_v2.0 (beta)';
-      registerCursorProject(registryFile, projectName, '/path/to/project');
+      registerCursorProject(projectName, '/path/to/project');
 
-      const registry = readCursorRegistry(registryFile);
+      const registry = readCursorRegistry();
       expect(registry[projectName]).toBeDefined();
       expect(registry[projectName].workspacePath).toBe('/path/to/project');
     });
@@ -105,27 +100,27 @@ describe('Cursor Project Registry', () => {
 
   describe('unregisterCursorProject', () => {
     it('removes specified project from registry', () => {
-      registerCursorProject(registryFile, 'project-a', '/path/a');
-      registerCursorProject(registryFile, 'project-b', '/path/b');
+      registerCursorProject('project-a', '/path/a');
+      registerCursorProject('project-b', '/path/b');
 
-      unregisterCursorProject(registryFile, 'project-a');
+      unregisterCursorProject('project-a');
 
-      const registry = readCursorRegistry(registryFile);
+      const registry = readCursorRegistry();
       expect(registry['project-a']).toBeUndefined();
       expect(registry['project-b']).toBeDefined();
     });
 
     it('does nothing when unregistering non-existent project', () => {
-      registerCursorProject(registryFile, 'existing', '/path');
+      registerCursorProject('existing', '/path');
 
-      unregisterCursorProject(registryFile, 'non-existent');
+      unregisterCursorProject('non-existent');
 
-      const registry = readCursorRegistry(registryFile);
+      const registry = readCursorRegistry();
       expect(registry['existing']).toBeDefined();
     });
 
     it('handles unregister when registry file does not exist', () => {
-      unregisterCursorProject(registryFile, 'any-project');
+      unregisterCursorProject('any-project');
 
       expect(existsSync(registryFile)).toBe(false);
     });
@@ -133,7 +128,7 @@ describe('Cursor Project Registry', () => {
 
   describe('registry format validation', () => {
     it('stores registry as pretty-printed JSON', () => {
-      registerCursorProject(registryFile, 'test', '/path');
+      registerCursorProject('test', '/path');
 
       const content = readFileSync(registryFile, 'utf-8');
       expect(content).toContain('\n');
@@ -141,8 +136,8 @@ describe('Cursor Project Registry', () => {
     });
 
     it('registry file is valid JSON that can be read by other tools', () => {
-      registerCursorProject(registryFile, 'project-1', '/path/1');
-      registerCursorProject(registryFile, 'project-2', '/path/2');
+      registerCursorProject('project-1', '/path/1');
+      registerCursorProject('project-2', '/path/2');
 
       const content = readFileSync(registryFile, 'utf-8');
       const parsed = JSON.parse(content);

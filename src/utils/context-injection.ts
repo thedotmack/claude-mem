@@ -1,44 +1,50 @@
 
 import path from 'path';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'fs';
 import { toBmpSafe } from './bmp-safe.js';
 
 export const CONTEXT_TAG_OPEN = '<claude-mem-context>';
 export const CONTEXT_TAG_CLOSE = '</claude-mem-context>';
 
-export function injectContextIntoMarkdownFile(
-  filePath: string,
-  contextContent: string,
-  headerLine?: string,
-): void {
-  const parentDirectory = path.dirname(filePath);
-  mkdirSync(parentDirectory, { recursive: true });
+/**
+ * Replace (or append) the <claude-mem-context> block in a markdown file.
+ *
+ * Single shared implementation for CLAUDE.md folder indexes, AGENTS.md
+ * mirrors, and integration context files:
+ *   - never writes inside a .git directory (issue #1165)
+ *   - creates the parent directory when missing
+ *   - strips astral (surrogate-pair) code points (#2787: a Claude Code
+ *     truncation can split a pair and brick the session)
+ *   - writes via tmp file + atomic rename
+ *   - for a brand-new file, prefixes the optional `header` line
+ */
+export function writeTaggedBlock(filePath: string, body: string, header?: string): void {
+  const resolvedPath = path.resolve(filePath);
+  if (
+    resolvedPath.includes('/.git/') || resolvedPath.includes('\\.git\\') ||
+    resolvedPath.endsWith('/.git') || resolvedPath.endsWith('\\.git')
+  ) return;
 
-  // #2787: strip astral (surrogate-pair) code points so a Claude Code context
-  // truncation can't split a pair into a lone surrogate and brick the session.
-  const wrappedContent = `${CONTEXT_TAG_OPEN}\n${toBmpSafe(contextContent)}\n${CONTEXT_TAG_CLOSE}`;
+  mkdirSync(path.dirname(resolvedPath), { recursive: true });
 
+  const block = `${CONTEXT_TAG_OPEN}\n${toBmpSafe(body)}\n${CONTEXT_TAG_CLOSE}`;
+
+  let finalContent: string;
   if (existsSync(filePath)) {
-    let existingContent = readFileSync(filePath, 'utf-8');
-
+    const existingContent = readFileSync(filePath, 'utf-8');
     const tagStartIndex = existingContent.indexOf(CONTEXT_TAG_OPEN);
     const tagEndIndex = existingContent.indexOf(CONTEXT_TAG_CLOSE);
-
-    if (tagStartIndex !== -1 && tagEndIndex !== -1) {
-      existingContent =
-        existingContent.slice(0, tagStartIndex) +
-        wrappedContent +
-        existingContent.slice(tagEndIndex + CONTEXT_TAG_CLOSE.length);
-    } else {
-      existingContent = existingContent.trimEnd() + '\n\n' + wrappedContent + '\n';
-    }
-
-    writeFileSync(filePath, existingContent, 'utf-8');
+    finalContent = tagStartIndex !== -1 && tagEndIndex !== -1
+      ? existingContent.slice(0, tagStartIndex) + block + existingContent.slice(tagEndIndex + CONTEXT_TAG_CLOSE.length)
+      : existingContent.trimEnd() + '\n\n' + block + '\n';
   } else {
-    if (headerLine) {
-      writeFileSync(filePath, `${headerLine}\n\n${wrappedContent}\n`, 'utf-8');
-    } else {
-      writeFileSync(filePath, wrappedContent + '\n', 'utf-8');
-    }
+    finalContent = header ? `${header}\n\n${block}\n` : block + '\n';
   }
+
+  const tempFile = `${filePath}.tmp`;
+  writeFileSync(tempFile, finalContent, 'utf-8');
+  renameSync(tempFile, filePath);
 }
+
+// Legacy name kept for existing callers (integration installers).
+export const injectContextIntoMarkdownFile = writeTaggedBlock;

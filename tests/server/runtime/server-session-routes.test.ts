@@ -6,10 +6,9 @@ import { Server } from '../../../src/services/server/Server.js';
 import { ServerV1PostgresRoutes } from '../../../src/server/routes/v1/ServerV1PostgresRoutes.js';
 import {
   bootstrapServerPostgresSchema,
-  createPostgresStorageRepositories,
   type PostgresPoolClient,
-  type PostgresStorageRepositories,
 } from '../../../src/storage/postgres/index.js';
+import { createPostgresStorageRepositories, type PostgresStorageRepositories } from '../../sdk/pg-storage.js';
 import { DisabledServerQueueManager } from '../../../src/server/runtime/types.js';
 import { logger } from '../../../src/utils/logger.js';
 import { quoteIdentifier, newApiKey } from '../../sdk/pg-isolation.js';
@@ -204,12 +203,12 @@ describe('ServerV1PostgresRoutes Phase 6 session endpoints', () => {
     // Re-ending may still publish to the queue (BullMQ add() is idempotent on
     // jobId), but the outbox row count is unchanged. We assert the outbox
     // collapse rather than queue-publish count.
-    const allJobs = await storage.observationGenerationJobs.listByStatusForScope({
-      status: 'queued',
-      projectId,
-      teamId,
-    });
-    const summaryJobs = allJobs.filter(j => j.sourceType === 'session_summary');
+    const allJobs = await client.query(
+      `SELECT source_type FROM observation_generation_jobs
+       WHERE status = 'queued' AND project_id = $1 AND team_id = $2`,
+      [projectId, teamId],
+    );
+    const summaryJobs = allJobs.rows.filter(j => j.source_type === 'session_summary');
     expect(summaryJobs.length).toBe(1);
   });
 

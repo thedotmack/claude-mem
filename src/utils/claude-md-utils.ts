@@ -1,5 +1,5 @@
 
-import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs';
+import { existsSync } from 'fs';
 import path from 'path';
 import { logger } from './logger.js';
 import { formatDate, groupByDate } from '../shared/timeline-formatting.js';
@@ -7,7 +7,7 @@ import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { workerHttpRequest } from '../shared/worker-utils.js';
 import { paths } from '../shared/paths.js';
 import { matchesAnyGlob } from './project-filter.js';
-import { toBmpSafe } from './bmp-safe.js';
+import { writeTaggedBlock } from './context-injection.js';
 
 const SETTINGS_PATH = paths.settings();
 
@@ -54,51 +54,13 @@ function isValidPathForClaudeMd(filePath: string, projectRoot?: string): boolean
   return true;
 }
 
-export function replaceTaggedContent(existingContent: string, newContent: string): string {
-  const startTag = '<claude-mem-context>';
-  const endTag = '</claude-mem-context>';
-
-  if (!existingContent) {
-    return `${startTag}\n${newContent}\n${endTag}`;
-  }
-
-  const startIdx = existingContent.indexOf(startTag);
-  const endIdx = existingContent.indexOf(endTag);
-
-  if (startIdx !== -1 && endIdx !== -1) {
-    return existingContent.substring(0, startIdx) +
-      `${startTag}\n${newContent}\n${endTag}` +
-      existingContent.substring(endIdx + endTag.length);
-  }
-
-  return existingContent + `\n\n${startTag}\n${newContent}\n${endTag}`;
-}
-
 export function writeClaudeMdToFolder(folderPath: string, newContent: string, targetFilename?: string): void {
-  const resolvedPath = path.resolve(folderPath);
-
-  if (resolvedPath.includes('/.git/') || resolvedPath.includes('\\.git\\') || resolvedPath.endsWith('/.git') || resolvedPath.endsWith('\\.git')) return;
-
-  const filename = targetFilename ?? getTargetFilename();
-  const claudeMdPath = path.join(folderPath, filename);
-  const tempFile = `${claudeMdPath}.tmp`;
-
+  // Only refresh indexes in folders that still exist — never create them.
   if (!existsSync(folderPath)) {
     logger.debug('FOLDER_INDEX', 'Skipping non-existent folder', { folderPath });
     return;
   }
-
-  let existingContent = '';
-  if (existsSync(claudeMdPath)) {
-    existingContent = readFileSync(claudeMdPath, 'utf-8');
-  }
-
-  // #2787: never write astral (surrogate-pair) code points into auto-loaded
-  // context — a Claude Code truncation can split a pair and brick the session.
-  const finalContent = replaceTaggedContent(existingContent, toBmpSafe(newContent));
-
-  writeFileSync(tempFile, finalContent);
-  renameSync(tempFile, claudeMdPath);
+  writeTaggedBlock(path.join(folderPath, targetFilename ?? getTargetFilename()), newContent);
 }
 
 interface ParsedObservation {
@@ -227,7 +189,6 @@ function isExcludedFolder(folderPath: string, excludePaths: string[]): boolean {
 export async function updateFolderClaudeMdFiles(
   filePaths: string[],
   project: string,
-  _port: number,
   projectRoot?: string
 ): Promise<void> {
   const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);

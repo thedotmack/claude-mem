@@ -8,8 +8,6 @@ import {
 } from 'node:child_process';
 import { extname } from 'node:path';
 
-export type SpawnHiddenOptions = SpawnOptions;
-
 export function spawnHidden(
   command: string,
   args?: readonly string[],

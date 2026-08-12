@@ -2798,20 +2798,6 @@ export class SessionStore {
     return limit ? ordered.slice(0, limit) : ordered;
   }
 
-  getTimelineAroundTimestamp(
-    anchorEpoch: number,
-    depthBefore: number = 10,
-    depthAfter: number = 10,
-    project?: string,
-    platformSource?: string
-  ): {
-    observations: any[];
-    sessions: any[];
-    prompts: any[];
-  } {
-    return this.getTimelineAroundObservation(null, anchorEpoch, depthBefore, depthAfter, project, platformSource);
-  }
-
   getTimelineAroundObservation(
     anchorObservationId: number | null,
     anchorEpoch: number,

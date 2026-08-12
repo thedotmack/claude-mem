@@ -2,7 +2,7 @@
 import { logger } from '../../../utils/logger.js';
 import type { ObservationSearchResult } from '../../sqlite/types.js';
 import type { SessionStore } from '../../sqlite/SessionStore.js';
-import type { SearchOrchestrator } from '../search/SearchOrchestrator.js';
+import type { SearchManager } from '../SearchManager.js';
 import { CorpusRenderer } from './CorpusRenderer.js';
 import { CorpusStore } from './CorpusStore.js';
 import type { CorpusFile, CorpusFilter, CorpusObservation, CorpusStats } from './types.js';
@@ -28,7 +28,7 @@ export class CorpusBuilder {
 
   constructor(
     private sessionStore: SessionStore,
-    private searchOrchestrator: SearchOrchestrator,
+    private searchManager: SearchManager,
     private corpusStore: CorpusStore
   ) {
     this.renderer = new CorpusRenderer();
@@ -47,9 +47,9 @@ export class CorpusBuilder {
     if (filter.date_end) searchArgs.dateEnd = filter.date_end;
     if (filter.limit) searchArgs.limit = filter.limit;
 
-    const searchResult = await this.searchOrchestrator.search(searchArgs);
+    const searchResult = await this.searchManager.search({ ...searchArgs, format: 'json' });
 
-    const observationIds = (searchResult.results.observations || []).map(
+    const observationIds = (searchResult.observations || []).map(
       (obs: { id: number }) => obs.id
     );
 

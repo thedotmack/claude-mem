@@ -51,11 +51,10 @@ export function useTheme() {
   const setThemePreference = (newPreference: ThemePreference) => {
     try {
       localStorage.setItem(STORAGE_KEY, newPreference);
-      setPreference(newPreference);
     } catch (e: unknown) {
       console.warn('Failed to save theme preference to localStorage:', e instanceof Error ? e.message : String(e));
-      setPreference(newPreference);
     }
+    setPreference(newPreference);
   };
 
   return {

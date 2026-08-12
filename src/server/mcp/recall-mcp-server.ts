@@ -25,10 +25,14 @@ import { logger } from '../../utils/logger.js';
 export interface RecallBackend {
   // Returns serialized observations (already shaped by serializeObservation),
   // scoped to the caller's team. Throws if `projectId` is outside the key's scope.
-  // `search` and `context` query identically; they are separate methods so the
-  // route can audit each tool under its own mode (search vs context).
-  search(args: { projectId: string; query: string; limit: number }): Promise<unknown[]>;
-  context(args: { projectId: string; query: string; limit: number }): Promise<unknown[]>;
+  // The `search` and `context` tools query identically; `mode` tells the route
+  // which tool asked so it can audit each under its own mode.
+  search(args: {
+    projectId: string;
+    query: string;
+    limit: number;
+    mode: 'search' | 'context';
+  }): Promise<unknown[]>;
   recent(args: { projectId: string; limit: number }): Promise<unknown[]>;
 }
 
@@ -103,20 +107,14 @@ async function dispatchToolCall(
   name: string,
   args: Record<string, unknown>,
 ): Promise<CallToolResult> {
-  if (name === 'search') {
+  if (name === 'search' || name === 'context') {
     const observations = await backend.search({
       projectId: requireString(args, 'projectId'),
       query: requireString(args, 'query'),
-      limit: clampLimit(args.limit, SEARCH_LIMIT),
+      limit: clampLimit(args.limit, name === 'context' ? CONTEXT_LIMIT : SEARCH_LIMIT),
+      mode: name,
     });
-    return jsonResult({ observations });
-  }
-  if (name === 'context') {
-    const observations = await backend.context({
-      projectId: requireString(args, 'projectId'),
-      query: requireString(args, 'query'),
-      limit: clampLimit(args.limit, CONTEXT_LIMIT),
-    });
+    if (name === 'search') return jsonResult({ observations });
     const context = observations
       .map((o) => (o as { content?: unknown }).content)
       .filter((t): t is string => typeof t === 'string' && t.length > 0)
@@ -159,5 +157,3 @@ export function createRecallMcpServer(backend: RecallBackend, version: string): 
 
   return server;
 }
-
-export const RECALL_MCP_TOOLS = TOOLS;

@@ -130,11 +130,6 @@ export class PostgresAuthRepository {
     );
     return mapAuditLogRow(row!);
   }
-
-  async getApiKeyByHash(keyHash: string): Promise<PostgresApiKey | null> {
-    const row = await queryOne<ApiKeyRow>(this.client, 'SELECT * FROM api_keys WHERE key_hash = $1', [keyHash]);
-    return row ? mapApiKeyRow(row) : null;
-  }
 }
 
 function mapApiKeyRow(row: ApiKeyRow): PostgresApiKey {

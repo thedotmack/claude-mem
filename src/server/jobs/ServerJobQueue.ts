@@ -45,10 +45,7 @@ export interface ServerJobLifecycleCounters {
 }
 
 export interface ServerJobObservedListener {
-  onCompleted?: (jobId: string, durationMs: number, returnvalue: unknown) => void;
-  onFailed?: (jobId: string | undefined, attemptsMade: number, reason: string) => void;
   onStalled?: (jobId: string) => void;
-  onError?: (error: unknown) => void;
 }
 
 export interface ServerJobQueueOptions<TPayload> {
@@ -230,16 +227,13 @@ export class ServerJobQueue<TPayload extends object = object> {
   }
 
   // Single source of truth for queue-side error accounting. worker errors and
-  // QueueEvents errors both increment counters.errored and notify listeners,
-  // so per-process metrics aren't asymmetric across the two sources.
+  // QueueEvents errors both increment counters.errored, so per-process metrics
+  // aren't asymmetric across the two sources.
   private notifyQueueError(error: unknown, source: 'worker' | 'queue-events'): void {
     this.counters.errored += 1;
     logger.warn('QUEUE', `${this.name} ${source} error`, {
       error: error instanceof Error ? error.message : String(error),
     });
-    for (const l of this.listeners) {
-      try { l.onError?.(error); } catch { /* listener errors must not propagate */ }
-    }
   }
 
   start(processor: Processor<TPayload>): void {
@@ -265,7 +259,7 @@ export class ServerJobQueue<TPayload extends object = object> {
       w.on('active', (job: Job<TPayload>) => {
         if (job.id) this.jobStartTimes.set(job.id, Date.now());
       });
-      w.on('completed', (job: Job<TPayload>, returnvalue: unknown) => {
+      w.on('completed', (job: Job<TPayload>) => {
         const startedAt = job.id ? this.jobStartTimes.get(job.id) : undefined;
         const durationMs = startedAt ? Date.now() - startedAt : 0;
         if (job.id) this.jobStartTimes.delete(job.id);
@@ -276,9 +270,6 @@ export class ServerJobQueue<TPayload extends object = object> {
           sourceType,
           durationMs,
         });
-        for (const l of this.listeners) {
-          try { l.onCompleted?.(job.id ?? '?', durationMs, returnvalue); } catch { /* swallow listener errors only */ }
-        }
       });
       w.on('failed', (job: Job<TPayload> | undefined, error: Error) => {
         if (job?.id) this.jobStartTimes.delete(job.id);
@@ -291,9 +282,6 @@ export class ServerJobQueue<TPayload extends object = object> {
           attemptsMade,
           reason: error.message,
         });
-        for (const l of this.listeners) {
-          try { l.onFailed?.(job?.id, attemptsMade, error.message); } catch { /* swallow */ }
-        }
       });
       w.on('progress', (job: Job<TPayload>, progress: unknown) => {
         logger.debug?.('QUEUE', `[generation] job=${job.id ?? '?'} progress`, {
@@ -333,9 +321,9 @@ export class ServerJobQueue<TPayload extends object = object> {
   }
 
   /**
-   * Phase 12 — register an observer for completed/failed/stalled/error
-   * events. Used by the runtime to surface lifecycle hooks (audit, metrics)
-   * without subclassing. Listeners that throw are isolated.
+   * Phase 12 — register an observer for stalled events. Used by the runtime to
+   * surface lifecycle hooks (audit, metrics) without subclassing. Listeners
+   * that throw are isolated.
    */
   observe(listener: ServerJobObservedListener): void {
     this.listeners.push(listener);

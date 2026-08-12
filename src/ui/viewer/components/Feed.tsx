@@ -4,7 +4,6 @@ import { ObservationCard } from './ObservationCard';
 import { SummaryCard } from './SummaryCard';
 import { PromptCard } from './PromptCard';
 import { ScrollToTop } from './ScrollToTop';
-import { UI } from '../constants/ui';
 
 interface FeedProps {
   observations: Observation[];
@@ -35,7 +34,7 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
           onLoadMoreRef.current?.();
         }
       },
-      { threshold: UI.LOAD_MORE_THRESHOLD }
+      { threshold: 0.1 }
     );
 
     observer.observe(element);

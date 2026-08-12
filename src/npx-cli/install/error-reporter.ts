@@ -84,7 +84,9 @@ function writeLastInstallError(
   dataDir: string,
 ): void {
   const payload = {
-    severity: category.severity,
+    // Only ABORT failures are persisted — this helper is called exclusively
+    // from the ABORT branch of installerError.
+    severity: ErrorSeverity.ABORT,
     categoryId: category.id,
     component: ctx.component,
     phase: ctx.phase,

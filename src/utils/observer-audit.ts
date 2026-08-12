@@ -14,13 +14,11 @@
  * never throw, fall back to stderr).
  */
 
-import { appendFileSync, statSync, renameSync, existsSync } from 'fs';
+import { appendFileSync } from 'fs';
 import { join } from 'path';
 import { DATA_DIR } from '../shared/paths.js';
 
 const AUDIT_LOG_PATH = join(DATA_DIR, 'observer-audit.log');
-const ROTATE_AT_BYTES = 50 * 1024 * 1024; // 50MB
-const KEEP_GENERATIONS = 3;
 const MAX_INPUT_BYTES = 4096;
 
 export interface ObserverToolAttempt {
@@ -39,22 +37,6 @@ export function getObserverAuditLogPath(): string {
   return AUDIT_LOG_PATH;
 }
 
-function rotateIfNeeded(): void {
-  try {
-    if (!existsSync(AUDIT_LOG_PATH)) return;
-    const { size } = statSync(AUDIT_LOG_PATH);
-    if (size < ROTATE_AT_BYTES) return;
-    for (let i = KEEP_GENERATIONS - 1; i >= 1; i--) {
-      const from = `${AUDIT_LOG_PATH}.${i}`;
-      const to = `${AUDIT_LOG_PATH}.${i + 1}`;
-      if (existsSync(from)) renameSync(from, to);
-    }
-    renameSync(AUDIT_LOG_PATH, `${AUDIT_LOG_PATH}.1`);
-  } catch {
-    // best-effort rotation; never fail the recording call
-  }
-}
-
 function truncateInput(input: unknown, maxBytes = MAX_INPUT_BYTES): string {
   try {
     const s = typeof input === 'string' ? input : JSON.stringify(input);
@@ -71,7 +53,6 @@ function truncateInput(input: unknown, maxBytes = MAX_INPUT_BYTES): string {
 }
 
 function writeAuditEntry(attempt: ObserverToolAttempt): void {
-  rotateIfNeeded();
   const entry = {
     ts: new Date().toISOString(),
     source: attempt.source,

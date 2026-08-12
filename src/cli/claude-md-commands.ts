@@ -7,11 +7,12 @@ import {
   readFileSync,
   renameSync,
   unlinkSync,
-  readdirSync
+  readdirSync,
+  type Dirent
 } from 'fs';
 import { execSync } from 'child_process';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
-import { formatTime, groupByDate } from '../shared/timeline-formatting.js';
+import { estimateTokens, formatTime, groupByDate } from '../shared/timeline-formatting.js';
 import { isDirectChild } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
 import { paths } from '../shared/paths.js';
@@ -51,14 +52,6 @@ function getTypeIcon(type: string): string {
   return TYPE_ICONS[type] || '•';
 }
 
-function estimateTokens(obs: ObservationRow): number {
-  const size = (obs.title?.length || 0) +
-    (obs.subtitle?.length || 0) +
-    (obs.narrative?.length || 0) +
-    (obs.facts?.length || 0);
-  return Math.ceil(size / 4);
-}
-
 function getTrackedFolders(workingDir: string): Set<string> {
   const folders = new Set<string>();
 
@@ -72,7 +65,9 @@ function getTrackedFolders(workingDir: string): Set<string> {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.warn('CLAUDE_MD', 'git ls-files failed, falling back to directory walk', { error: errorMessage });
-    walkDirectoriesWithIgnore(workingDir, folders);
+    for (const [entry, fullPath] of walkEntries(workingDir, { maxDepth: 10, skipHidden: true })) {
+      if (entry.isDirectory()) folders.add(fullPath);
+    }
     return folders;
   }
 
@@ -91,28 +86,41 @@ function getTrackedFolders(workingDir: string): Set<string> {
   return folders;
 }
 
-function walkDirectoriesWithIgnore(dir: string, folders: Set<string>, depth: number = 0): void {
-  if (depth > 10) return;
+const WALK_IGNORE_DIRS = new Set([
+  'node_modules', '.git', '.next', 'dist', 'build', '.cache',
+  '__pycache__', '.venv', 'venv', '.idea', '.vscode', 'coverage',
+  '.claude-mem', '.open-next', '.turbo'
+]);
 
-  const ignorePatterns = [
-    'node_modules', '.git', '.next', 'dist', 'build', '.cache',
-    '__pycache__', '.venv', 'venv', '.idea', '.vscode', 'coverage',
-    '.claude-mem', '.open-next', '.turbo'
-  ];
-
+/**
+ * Recursively yields [entry, fullPath] for everything under `dir`, never
+ * descending into WALK_IGNORE_DIRS. `maxDepth` caps recursion depth (readdir
+ * still runs at depth === maxDepth); `skipHidden` also drops dot-directories
+ * other than `.claude`. Unreadable directories are skipped silently.
+ */
+function* walkEntries(
+  dir: string,
+  opts: { maxDepth?: number; skipHidden?: boolean } = {},
+  depth = 0
+): Generator<[Dirent, string]> {
+  let entries: Dirent[];
   try {
-    const entries = readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      if (ignorePatterns.includes(entry.name)) continue;
-      if (entry.name.startsWith('.') && entry.name !== '.claude') continue;
-
-      const fullPath = path.join(dir, entry.name);
-      folders.add(fullPath);
-      walkDirectoriesWithIgnore(fullPath, folders, depth + 1);
-    }
+    entries = readdirSync(dir, { withFileTypes: true });
   } catch {
-    // Ignore permission errors
+    return; // Ignore permission errors
+  }
+
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (!entry.isDirectory()) {
+      yield [entry, fullPath];
+      continue;
+    }
+    if (WALK_IGNORE_DIRS.has(entry.name)) continue;
+    if (opts.skipHidden && entry.name.startsWith('.') && entry.name !== '.claude') continue;
+
+    yield [entry, fullPath];
+    if (depth < (opts.maxDepth ?? Infinity)) yield* walkEntries(fullPath, opts, depth + 1);
   }
 }
 
@@ -224,7 +232,7 @@ function formatObservationsForClaudeMd(observations: ObservationRow[], folderPat
 
         const icon = getTypeIcon(obs.type);
         const title = obs.title || 'Untitled';
-        const tokens = estimateTokens(obs);
+        const tokens = estimateTokens([obs.title, obs.subtitle, obs.narrative, obs.facts].join(''));
 
         lines.push(`| #${obs.id} | ${timeDisplay} | ${icon} | ${title} | ~${tokens} |`);
       }
@@ -471,39 +479,17 @@ export async function cleanClaudeMd(dryRun: boolean): Promise<number> {
 
   const filesToProcess: string[] = [];
 
-  function walkForClaudeMd(dir: string): void {
-    const ignorePatterns = [
-      'node_modules', '.git', '.next', 'dist', 'build', '.cache',
-      '__pycache__', '.venv', 'venv', '.idea', '.vscode', 'coverage',
-      '.claude-mem', '.open-next', '.turbo'
-    ];
-
+  for (const [entry, fullPath] of walkEntries(workingDir)) {
+    if (entry.isDirectory() || entry.name !== 'CLAUDE.md') continue;
     try {
-      const entries = readdirSync(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name);
-
-        if (entry.isDirectory()) {
-          if (!ignorePatterns.includes(entry.name)) {
-            walkForClaudeMd(fullPath);
-          }
-        } else if (entry.name === 'CLAUDE.md') {
-          try {
-            const content = readFileSync(fullPath, 'utf-8');
-            if (content.includes('<claude-mem-context>')) {
-              filesToProcess.push(fullPath);
-            }
-          } catch {
-            // Skip files we can't read
-          }
-        }
+      const content = readFileSync(fullPath, 'utf-8');
+      if (content.includes('<claude-mem-context>')) {
+        filesToProcess.push(fullPath);
       }
     } catch {
-      // Ignore permission errors
+      // Skip files we can't read
     }
   }
-
-  walkForClaudeMd(workingDir);
 
   if (filesToProcess.length === 0) {
     logger.info('CLAUDE_MD', 'No CLAUDE.md files with auto-generated content found');

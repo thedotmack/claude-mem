@@ -16,7 +16,10 @@ import {
   type PostgresObservationGenerationJob,
 } from '../../../storage/postgres/generation-jobs.js';
 import { PostgresAuthRepository } from '../../../storage/postgres/auth.js';
-import { PostgresObservationRepository } from '../../../storage/postgres/observations.js';
+import {
+  PostgresObservationRepository,
+  type PostgresObservation,
+} from '../../../storage/postgres/observations.js';
 import { PostgresProjectsRepository } from '../../../storage/postgres/projects.js';
 import { logger } from '../../../utils/logger.js';
 import { requirePostgresServerAuth } from '../../middleware/postgres-auth.js';
@@ -30,7 +33,10 @@ import { requireRateLimit, requireMonthlyQuota } from '../../middleware/rate-lim
 import { meterRequests } from '../../middleware/usage-metering.js';
 import { PostgresUsageRepository } from '../../../storage/postgres/usage.js';
 import { createHash, randomBytes } from 'node:crypto';
-import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
+import {
+  PostgresServerSessionsRepository,
+  type PostgresServerSession,
+} from '../../../storage/postgres/server-sessions.js';
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
 import { EndSessionService } from '../../services/EndSessionService.js';
 import { normalizePlatformSource, normalizePlatformSourceOrNull } from '../../../shared/platform-source.js';
@@ -195,7 +201,6 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     // key is shown exactly once.
     app.post('/v1/keys', writeAuth, this.handleCreate(
       z.object({
-        label: z.string().max(120).optional(),
         expiresInDays: z.number().int().positive().max(365).optional(),
       }),
       async (req, res, body) => {
@@ -214,7 +219,6 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           scopes: ['memories:read'],
           expiresAt,
         });
-        void body.label; // reserved for when api_keys grows a label column
         const mcpUrl = mcpConnectUrl(req);
         res.status(201).json({
           id: key.id,
@@ -502,7 +506,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         return;
       }
       const callerProjectId = req.authContext?.projectId ?? null;
-      const { status, limit, offset } = parseJobListingQuery(req);
+      const { status, limit, offset } = parseGenericJobListingQuery(req);
       let jobs: JobListRow[] = [];
       let total = 0;
       try {
@@ -566,7 +570,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         return;
       }
 
-      const { status, limit, offset } = parseJobListingQuery(req);
+      const { status, limit, offset } = parseGenericJobListingQuery(req);
       let jobs: JobListRow[] = [];
       let total = 0;
       try {
@@ -1018,21 +1022,12 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         }
       };
       const backend: RecallBackend = {
-        search: async ({ projectId, query, limit }) => {
+        search: async ({ projectId, query, limit, mode }) => {
           assertProjectAllowed(projectId);
           const rows = await repo.search({ projectId, teamId, query, limit });
           // Audit the read, same as POST /v1/search — the MCP path is no exception.
           await this.auditWrite(req, 'observation.read', null, projectId, {
-            mode: 'search', via: 'mcp', query, limit,
-            resultCount: rows.length, observationIds: rows.map(o => o.id),
-          });
-          return rows.map(serializeObservation);
-        },
-        context: async ({ projectId, query, limit }) => {
-          assertProjectAllowed(projectId);
-          const rows = await repo.search({ projectId, teamId, query, limit });
-          await this.auditWrite(req, 'observation.read', null, projectId, {
-            mode: 'context', via: 'mcp', query, limit,
+            mode, via: 'mcp', query, limit,
             resultCount: rows.length, observationIds: rows.map(o => o.id),
           });
           return rows.map(serializeObservation);
@@ -1780,18 +1775,6 @@ const JOB_LIST_STATUS_VALUES = new Set(['queued', 'processing', 'completed', 'fa
 const JOB_LIST_DEFAULT_LIMIT = 50;
 const JOB_LIST_MAX_LIMIT = 200;
 
-function parseJobListingQuery(req: Request): {
-  status: string | null;
-  limit: number;
-  offset: number;
-} {
-  const statusRaw = typeof req.query.status === 'string' ? req.query.status.trim() : '';
-  const status = statusRaw && JOB_LIST_STATUS_VALUES.has(statusRaw) ? statusRaw : null;
-  const limit = clampInt(req.query.limit, JOB_LIST_DEFAULT_LIMIT, 1, JOB_LIST_MAX_LIMIT);
-  const offset = clampInt(req.query.offset, 0, 0, Number.MAX_SAFE_INTEGER);
-  return { status, limit, offset };
-}
-
 function clampInt(value: unknown, fallback: number, min: number, max: number): number {
   if (typeof value !== 'string') return fallback;
   const parsed = Number.parseInt(value, 10);
@@ -1892,82 +1875,30 @@ function preValidateBatch(
   return null;
 }
 
-function serializeSession(session: {
-  id: string;
-  projectId: string;
-  teamId: string;
-  externalSessionId: string | null;
-  contentSessionId: string | null;
-  agentId: string | null;
-  agentType: string | null;
-  platformSource: string | null;
-  generationStatus: string;
-  metadata: Record<string, unknown>;
-  startedAtEpoch: number;
-  endedAtEpoch: number | null;
-  lastGeneratedAtEpoch: number | null;
-  createdAtEpoch: number;
-  updatedAtEpoch: number;
-}): Record<string, unknown> {
-  return {
-    id: session.id,
-    projectId: session.projectId,
-    teamId: session.teamId,
-    externalSessionId: session.externalSessionId,
-    contentSessionId: session.contentSessionId,
-    agentId: session.agentId,
-    agentType: session.agentType,
-    platformSource: session.platformSource,
-    generationStatus: session.generationStatus,
-    metadata: session.metadata,
-    startedAtEpoch: session.startedAtEpoch,
-    endedAtEpoch: session.endedAtEpoch,
-    lastGeneratedAtEpoch: session.lastGeneratedAtEpoch,
-    createdAtEpoch: session.createdAtEpoch,
-    updatedAtEpoch: session.updatedAtEpoch,
-  };
+// The storage types are already the wire shape in camelCase, so a serializer
+// that restates every field is just the interface written twice. omit() keeps
+// the interesting half — which internal columns never leave the server — and
+// type-checks those names against the source type, so adding a column to a
+// repository row surfaces it on the API by default rather than silently
+// dropping it (the previous field-by-field lists did the opposite).
+function omit<T extends object>(value: T, ...keys: (keyof T)[]): Record<string, unknown> {
+  const dropped = new Set<PropertyKey>(keys);
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !dropped.has(key)));
+}
+
+// `idempotencyKey` is the internal dedupe column; it is not part of the API.
+function serializeSession(session: PostgresServerSession): Record<string, unknown> {
+  return omit(session, 'idempotencyKey');
 }
 
 function serializeEvent(event: PostgresAgentEvent): Record<string, unknown> {
-  return {
-    id: event.id,
-    projectId: event.projectId,
-    teamId: event.teamId,
-    serverSessionId: event.serverSessionId,
-    sourceAdapter: event.sourceAdapter,
-    sourceEventId: event.sourceEventId,
-    eventType: event.eventType,
-    platformSource: event.platformSource,
-    payload: event.payload,
-    metadata: event.metadata,
-    occurredAtEpoch: event.occurredAtEpoch,
-    receivedAtEpoch: event.receivedAtEpoch,
-    createdAtEpoch: event.createdAtEpoch,
-  };
+  return omit(event, 'idempotencyKey');
 }
 
-function serializeObservation(observation: {
-  id: string;
-  projectId: string;
-  teamId: string;
-  serverSessionId: string | null;
-  kind: string;
-  content: string;
-  metadata: Record<string, unknown>;
-  createdAtEpoch: number;
-  updatedAtEpoch: number;
-}): Record<string, unknown> {
-  return {
-    id: observation.id,
-    projectId: observation.projectId,
-    teamId: observation.teamId,
-    serverSessionId: observation.serverSessionId,
-    kind: observation.kind,
-    content: observation.content,
-    metadata: observation.metadata,
-    createdAtEpoch: observation.createdAtEpoch,
-    updatedAtEpoch: observation.updatedAtEpoch,
-  };
+// Generation provenance is surfaced separately by serializeObservationWithSource
+// (GET /v1/memories/:id/sources), not on the plain memory shape.
+function serializeObservation(observation: PostgresObservation): Record<string, unknown> {
+  return omit(observation, 'generationKey', 'createdByJobId');
 }
 
 interface ObservationWithSourceRow {
@@ -2050,28 +1981,11 @@ function serializeJobStatusResponse(
   };
 }
 
+// The full outbox row minus internal bookkeeping: the dedupe key, the worker
+// lock columns, and `payload` — which can carry an entire agent-event body and
+// is only ever exposed through the admin-gated `?include=payload` list path.
 function serializeGenerationJobStatus(
   job: PostgresObservationGenerationJob,
 ): Record<string, unknown> {
-  return {
-    id: job.id,
-    projectId: job.projectId,
-    teamId: job.teamId,
-    sourceType: job.sourceType,
-    sourceId: job.sourceId,
-    agentEventId: job.agentEventId,
-    serverSessionId: job.serverSessionId,
-    jobType: job.jobType,
-    status: job.status,
-    bullmqJobId: job.bullmqJobId,
-    attempts: job.attempts,
-    maxAttempts: job.maxAttempts,
-    nextAttemptAtEpoch: job.nextAttemptAtEpoch,
-    completedAtEpoch: job.completedAtEpoch,
-    failedAtEpoch: job.failedAtEpoch,
-    cancelledAtEpoch: job.cancelledAtEpoch,
-    lastError: job.lastError,
-    createdAtEpoch: job.createdAtEpoch,
-    updatedAtEpoch: job.updatedAtEpoch,
-  };
+  return omit(job, 'idempotencyKey', 'lockedAtEpoch', 'lockedBy', 'payload');
 }

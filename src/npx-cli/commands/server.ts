@@ -1,16 +1,9 @@
 import { styleText } from 'node:util';
 import { readFlatSettings } from '../utils/settings.js';
 import {
-  runServerRestartCommand,
-  runServerStartCommand,
-  runServerStatusCommand,
-  runServerStopCommand,
-  runServerWorkerStartCommand,
-  runRestartCommand,
   runServerApiKeyCommand,
-  runStartCommand,
-  runStatusCommand,
-  runStopCommand,
+  spawnBunServerCommand,
+  spawnBunWorkerCommand,
 } from './runtime.js';
 
 function printServerUsage(): void {
@@ -18,43 +11,7 @@ function printServerUsage(): void {
   console.error('Commands: start, stop, restart, status, api-key create|list|revoke, keys rotate, worker start, jobs status|failed|retry|cancel');
 }
 
-function runWorkerLifecycleCommand(command: string): boolean {
-  switch (command) {
-    case 'start':
-      runStartCommand();
-      return true;
-    case 'stop':
-      runStopCommand();
-      return true;
-    case 'restart':
-      runRestartCommand();
-      return true;
-    case 'status':
-      runStatusCommand();
-      return true;
-    default:
-      return false;
-  }
-}
-
-function runServerLifecycleCommand(command: string): boolean {
-  switch (command) {
-    case 'start':
-      runServerStartCommand();
-      return true;
-    case 'stop':
-      runServerStopCommand();
-      return true;
-    case 'restart':
-      runServerRestartCommand();
-      return true;
-    case 'status':
-      runServerStatusCommand();
-      return true;
-    default:
-      return false;
-  }
-}
+const LIFECYCLE_VERBS = new Set(['start', 'stop', 'restart', 'status']);
 
 export async function runServerCommand(argv: string[] = []): Promise<void> {
   const subCommand = argv[0]?.toLowerCase();
@@ -64,7 +21,8 @@ export async function runServerCommand(argv: string[] = []): Promise<void> {
     process.exit(1);
   }
 
-  if (runServerLifecycleCommand(subCommand)) {
+  if (LIFECYCLE_VERBS.has(subCommand)) {
+    spawnBunServerCommand(subCommand);
     return;
   }
 
@@ -82,7 +40,10 @@ export async function runServerCommand(argv: string[] = []): Promise<void> {
   if (subCommand === 'worker') {
     const workerCommand = argv[1]?.toLowerCase();
     if (workerCommand === 'start') {
-      runServerWorkerStartCommand();
+      // Phase 10 — start the BullMQ generation worker (no HTTP). Use this in
+      // Compose to scale generation horizontally while a single (or multiple)
+      // HTTP-only server replicas serve writes/reads.
+      spawnBunServerCommand('worker', ['start']);
       return;
     }
     console.error(styleText('red', `Unknown server worker subcommand: ${workerCommand ?? '(none)'}`));
@@ -176,9 +137,10 @@ async function lookupApiKeyIdByPlaintext(rawKey: string): Promise<string | null>
 export function runWorkerAliasCommand(argv: string[] = []): void {
   const subCommand = argv[0]?.toLowerCase();
 
-  if (!subCommand || !runWorkerLifecycleCommand(subCommand)) {
+  if (!subCommand || !LIFECYCLE_VERBS.has(subCommand)) {
     console.error(styleText('red', `Unknown worker command: ${subCommand ?? '(none)'}`));
     console.error('Usage: npx claude-mem worker start|stop|restart|status');
     process.exit(1);
   }
+  spawnBunWorkerCommand(subCommand);
 }

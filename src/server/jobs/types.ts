@@ -70,7 +70,7 @@ export const SERVER_JOB_KIND_PREFIX: Record<ServerGenerationJobKind, string> = {
 const baseFieldsSchema = z.object({
   team_id: z.string().min(1, 'team_id is required'),
   project_id: z.string().min(1, 'project_id is required'),
-  source_type: z.enum(['agent_event', 'session_summary', 'observation_reindex']),
+  source_type: z.enum(['agent_event', 'session_summary']),
   source_id: z.string().min(1, 'source_id is required'),
   generation_job_id: z.string().min(1, 'generation_job_id is required'),
   // api_key_id and actor_id are nullable to accommodate local-dev/system

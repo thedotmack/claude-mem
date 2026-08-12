@@ -15,11 +15,10 @@ import { Server } from '../../src/services/server/Server.js';
 import { ServerV1PostgresRoutes } from '../../src/server/routes/v1/ServerV1PostgresRoutes.js';
 import {
   bootstrapServerPostgresSchema,
-  createPostgresStorageRepositories,
   PostgresUsageRepository,
   type PostgresPoolClient,
-  type PostgresStorageRepositories,
 } from '../../src/storage/postgres/index.js';
+import { createPostgresStorageRepositories, type PostgresStorageRepositories } from '../sdk/pg-storage.js';
 import { DisabledServerQueueManager } from '../../src/server/runtime/types.js';
 import { requireRateLimit, requireMonthlyQuota } from '../../src/server/middleware/rate-limit.js';
 import { meterRequests } from '../../src/server/middleware/usage-metering.js';

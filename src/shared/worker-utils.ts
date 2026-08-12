@@ -3,7 +3,6 @@ import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdir
 import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
-import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile, readOwnedWorkerPidInfo } from "../supervisor/index.js";
@@ -16,37 +15,26 @@ import { checkVersionMatch } from "../services/infrastructure/index.js";
 import { resolveWorkerRuntimePath } from "../services/infrastructure/ProcessManager.js";
 import { acquireSpawnLock, releaseSpawnLock } from "./worker-spawn-gate.js";
 
-function readTimeoutEnv(
-  envName: string,
-  defaultValue: number,
-  bounds: { min: number; max: number }
-): number {
-  const envVal = process.env[envName];
-  if (envVal) {
-    const parsed = parseInt(envVal, 10);
-    if (Number.isFinite(parsed) && parsed >= bounds.min && parsed <= bounds.max) {
-      return parsed;
-    }
-    logger.warn('SYSTEM', `Invalid ${envName}, using default`, {
-      value: envVal, min: bounds.min, max: bounds.max
-    });
-  }
-  return defaultValue;
+/** Parse an integer setting/env value, falling back when missing or out of bounds. */
+function boundedInt(raw: string | undefined, min: number, max: number, fallback: number): number {
+  if (!raw) return fallback;
+  const parsed = parseInt(raw, 10);
+  if (Number.isFinite(parsed) && parsed >= min && parsed <= max) return parsed;
+  logger.warn('SYSTEM', 'Invalid timeout value, using default', { value: raw, min, max });
+  return fallback;
 }
 
-const HEALTH_CHECK_TIMEOUT_MS = readTimeoutEnv(
-  'CLAUDE_MEM_HEALTH_TIMEOUT_MS',
-  getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK),
-  { min: 500, max: 300000 }
+const HEALTH_CHECK_TIMEOUT_MS = boundedInt(
+  process.env.CLAUDE_MEM_HEALTH_TIMEOUT_MS,
+  500, 300000,
+  getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK)
 );
 
-const HOOK_READINESS_TIMEOUT_MS = readTimeoutEnv(
-  'CLAUDE_MEM_HOOK_READINESS_TIMEOUT_MS',
-  getTimeout(HOOK_TIMEOUTS.HOOK_READINESS_WAIT),
-  { min: 0, max: 300000 }
+const HOOK_READINESS_TIMEOUT_MS = boundedInt(
+  process.env.CLAUDE_MEM_HOOK_READINESS_TIMEOUT_MS,
+  0, 300000,
+  getTimeout(HOOK_TIMEOUTS.HOOK_READINESS_WAIT)
 );
-
-const API_REQUEST_TIMEOUT_BOUNDS = { min: 500, max: 300000 } as const;
 
 export async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs: number): Promise<Response> {
   try {
@@ -66,92 +54,23 @@ export async function fetchWithTimeout(url: string, init: RequestInit = {}, time
 
 let cachedPort: number | null = null;
 let cachedHost: string | null = null;
-let cachedSettings: SettingsDefaults | null = null;
 let cachedApiRequestTimeoutMs: number | null = null;
 
-function getWorkerSettingsPath(): string {
-  return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
-}
-
-function getWorkerSettings(): SettingsDefaults {
-  if (cachedSettings !== null) {
-    return cachedSettings;
-  }
-
-  cachedSettings = SettingsDefaultsManager.loadFromFile(getWorkerSettingsPath());
-  return cachedSettings;
-}
-
-function parseBoundedTimeout(
-  rawValue: string | undefined,
-  bounds: { min: number; max: number }
-): number | null {
-  if (!rawValue) return null;
-  const parsed = parseInt(rawValue, 10);
-  if (Number.isFinite(parsed) && parsed >= bounds.min && parsed <= bounds.max) {
-    return parsed;
-  }
-  return null;
-}
-
-function readSettingsBackedTimeout(
-  settingName: keyof SettingsDefaults,
-  defaultValue: number,
-  bounds: { min: number; max: number }
-): number {
-  const envVal = process.env[settingName];
-  if (envVal !== undefined) {
-    const parsed = parseBoundedTimeout(envVal, bounds);
-    if (parsed !== null) {
-      return parsed;
-    }
-    logger.warn('SYSTEM', `Invalid ${settingName}, using default`, {
-      value: envVal, min: bounds.min, max: bounds.max
-    });
-    return defaultValue;
-  }
-
-  const settingsValue = getWorkerSettings()[settingName];
-  const parsed = parseBoundedTimeout(settingsValue, bounds);
-  if (parsed !== null) {
-    return parsed;
-  }
-
-  logger.warn('SYSTEM', `Invalid ${settingName} in settings.json, using default`, {
-    value: settingsValue, min: bounds.min, max: bounds.max
-  });
-  return defaultValue;
-}
-
 export function getWorkerPort(): number {
-  if (cachedPort !== null) {
-    return cachedPort;
-  }
-
-  const settings = getWorkerSettings();
-  cachedPort = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
+  cachedPort ??= parseInt(loadFromFileOnce().CLAUDE_MEM_WORKER_PORT, 10);
   return cachedPort;
 }
 
 export function getWorkerHost(): string {
-  if (cachedHost !== null) {
-    return cachedHost;
-  }
-
-  const settings = getWorkerSettings();
-  cachedHost = settings.CLAUDE_MEM_WORKER_HOST;
+  cachedHost ??= loadFromFileOnce().CLAUDE_MEM_WORKER_HOST;
   return cachedHost;
 }
 
 export function getWorkerApiRequestTimeoutMs(): number {
-  if (cachedApiRequestTimeoutMs !== null) {
-    return cachedApiRequestTimeoutMs;
-  }
-
-  cachedApiRequestTimeoutMs = readSettingsBackedTimeout(
-    'CLAUDE_MEM_API_TIMEOUT_MS',
-    getTimeout(HOOK_TIMEOUTS.API_REQUEST),
-    API_REQUEST_TIMEOUT_BOUNDS
+  cachedApiRequestTimeoutMs ??= boundedInt(
+    process.env.CLAUDE_MEM_API_TIMEOUT_MS ?? loadFromFileOnce().CLAUDE_MEM_API_TIMEOUT_MS,
+    500, 300000,
+    getTimeout(HOOK_TIMEOUTS.API_REQUEST)
   );
   return cachedApiRequestTimeoutMs;
 }
@@ -159,7 +78,6 @@ export function getWorkerApiRequestTimeoutMs(): number {
 export function clearPortCache(): void {
   cachedPort = null;
   cachedHost = null;
-  cachedSettings = null;
   cachedApiRequestTimeoutMs = null;
 }
 
@@ -216,7 +134,7 @@ function candidateWorkerScriptPath(root: string): string {
   return path.join(pluginRoot, 'scripts', 'worker-service.cjs');
 }
 
-export interface WorkerScriptCandidate {
+interface WorkerScriptCandidate {
   scriptPath: string;
   version: string | null;
 }
@@ -587,7 +505,7 @@ export async function ensureWorkerRunning(): Promise<boolean> {
     // worker needs ~7s to bind. The old 3-attempt/250ms budget (~0.75s) expired
     // long before that, so the context (and session-init) hooks raced boot and
     // soft-failed to empty — dropping memory injection and the user_prompts row
-    // (the upstream trigger for #2794). Wait up to ~15.5s (≈ POST_SPAWN_WAIT) so
+    // (the upstream trigger for #2794). Wait up to ~15.5s so
     // whichever worker wins the port is seen before we give up.
     const alive = await waitForWorkerPort({ attempts: 6, backoffMs: 500 });
     if (!alive) {
@@ -614,7 +532,7 @@ export async function ensureWorkerRunning(): Promise<boolean> {
 
 let aliveCache: boolean | null = null;
 
-export async function ensureWorkerAliveOnce(): Promise<boolean> {
+async function ensureWorkerAliveOnce(): Promise<boolean> {
   if (aliveCache !== null) return aliveCache;
   aliveCache = await ensureWorkerRunning();
   return aliveCache;
@@ -696,7 +614,7 @@ function getFailLoudThreshold(): number {
  * file-edit) simply omit hook_type.
  */
 const TELEMETRY_HOOK_TYPES = ['context', 'session-init', 'observation', 'summarize', 'file-context'] as const;
-export type TelemetryHookType = (typeof TELEMETRY_HOOK_TYPES)[number];
+type TelemetryHookType = (typeof TELEMETRY_HOOK_TYPES)[number];
 
 let activeHookType: TelemetryHookType | null = null;
 
@@ -766,24 +684,18 @@ export type WorkerFallback =
   | { continue: true; [WORKER_FALLBACK_BRAND]: true }
   | { continue: true; reason: string; [WORKER_FALLBACK_BRAND]: true };
 
-export type WorkerCallResult<T> = T | WorkerFallback;
-
-export function isWorkerFallback<T>(result: WorkerCallResult<T>): result is WorkerFallback {
+export function isWorkerFallback<T>(result: T | WorkerFallback): result is WorkerFallback {
   return typeof result === 'object'
     && result !== null
     && (result as { [WORKER_FALLBACK_BRAND]?: unknown })[WORKER_FALLBACK_BRAND] === true;
-}
-
-export interface WorkerFallbackOptions {
-  timeoutMs?: number;
 }
 
 export async function executeWithWorkerFallback<T = unknown>(
   url: string,
   method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   body?: unknown,
-  options: WorkerFallbackOptions = {},
-): Promise<WorkerCallResult<T>> {
+  options: { timeoutMs?: number } = {},
+): Promise<T | WorkerFallback> {
   const alive = await ensureWorkerAliveOnce();
   if (!alive) {
     await recordWorkerUnreachable();

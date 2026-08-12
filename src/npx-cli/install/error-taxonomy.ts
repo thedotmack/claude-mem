@@ -10,6 +10,8 @@
  *  - There is NO `SILENT` severity.
  */
 
+import { IS_WINDOWS } from '../utils/paths.js';
+
 export enum ErrorSeverity {
   /** exit 1, do not continue. */
   ABORT = 'ABORT',
@@ -30,9 +32,12 @@ export interface MatchContext {
   phase: string;
 }
 
+/**
+ * Severity is NOT part of the category: every installerError call site passes
+ * its severity explicitly — the taxonomy only classifies (id + remediation).
+ */
 export interface ErrorCategory {
   id: string;
-  severity: ErrorSeverity;
   match: (cause: unknown, ctx: MatchContext) => boolean;
   remediation: (ctx: RemediationContext) => string;
 }
@@ -46,15 +51,23 @@ function causeMessage(cause: unknown): string {
   return String(cause ?? '');
 }
 
-const BUN_REMEDIATION = (ctx: RemediationContext): string =>
-  ctx.platform === 'win32'
-    ? 'Install Bun manually then re-run `npx claude-mem install`. Windows: `winget install Oven-sh.Bun` (or `powershell -c "irm bun.sh/install.ps1 | iex"`).'
-    : 'Install Bun manually then re-run `npx claude-mem install`. macOS/Linux: `curl -fsSL https://bun.sh/install | bash` (or `brew install oven-sh/bun/bun`).';
+/**
+ * Platform-specific manual-install instructions. The single source of truth
+ * for bun/uv remediation text: setup-runtime passes these explicitly as the
+ * PRIMARY ABORT message, and the bun/uv categories below fall back to the
+ * same text for classification-only paths.
+ */
+export function platformBunRemediation(): string {
+  return IS_WINDOWS
+    ? 'Install Bun manually: `winget install Oven-sh.Bun` (or `powershell -c "irm bun.sh/install.ps1 | iex"`), then re-run `npx claude-mem install`.'
+    : 'Install Bun manually: `curl -fsSL https://bun.sh/install | bash` (or `brew install oven-sh/bun/bun`), then re-run `npx claude-mem install`.';
+}
 
-const UV_REMEDIATION = (ctx: RemediationContext): string =>
-  ctx.platform === 'win32'
-    ? 'Install uv manually then re-run `npx claude-mem install`. Windows: `winget install astral-sh.uv` (or `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`).'
-    : 'Install uv manually then re-run `npx claude-mem install`. macOS/Linux: `curl -LsSf https://astral.sh/uv/install.sh | sh` (or `brew install uv`).';
+export function platformUvRemediation(): string {
+  return IS_WINDOWS
+    ? 'Install uv manually: `winget install astral-sh.uv` (or `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`), then re-run `npx claude-mem install`.'
+    : 'Install uv manually: `curl -LsSf https://astral.sh/uv/install.sh | sh` (or `brew install uv`), then re-run `npx claude-mem install`.';
+}
 
 /**
  * The canonical category list. Ordered most-specific-first; `classifyError`
@@ -64,7 +77,6 @@ const UV_REMEDIATION = (ctx: RemediationContext): string =>
 export const ERROR_CATEGORIES: ErrorCategory[] = [
   {
     id: 'bun-missing-after-install',
-    severity: ErrorSeverity.ABORT,
     match: (cause) => {
       const m = causeMessage(cause);
       return (
@@ -73,11 +85,10 @@ export const ERROR_CATEGORIES: ErrorCategory[] = [
         m.includes('Failed to install Bun')
       );
     },
-    remediation: BUN_REMEDIATION,
+    remediation: () => platformBunRemediation(),
   },
   {
     id: 'uv-missing-after-install',
-    severity: ErrorSeverity.ABORT,
     match: (cause) => {
       const m = causeMessage(cause);
       return (
@@ -87,76 +98,52 @@ export const ERROR_CATEGORIES: ErrorCategory[] = [
         m.includes('Failed to install uv')
       );
     },
-    remediation: UV_REMEDIATION,
+    remediation: () => platformUvRemediation(),
   },
   {
     id: 'tree-sitter-eresolve',
-    severity: ErrorSeverity.ABORT,
     match: (cause) => /\bERESOLVE\b/.test(causeMessage(cause)),
     remediation: () =>
       'ERESOLVE peer-dependency conflict in marketplace deps that --legacy-peer-deps could not resolve. Open an issue at https://github.com/thedotmack/claude-mem/issues with the conflicting peer ranges shown above.',
   },
   {
     id: 'marketplace-dir-not-writable',
-    severity: ErrorSeverity.ABORT,
     match: (cause) => /\b(EACCES|EPERM)\b/.test(causeMessage(cause)),
     remediation: (ctx) =>
       `Cannot write to the claude-mem data/marketplace directory under ${ctx.dataDir}. Check filesystem permissions or set CLAUDE_MEM_DATA_DIR to a writable path, then re-run.`,
   },
   {
-    id: 'plugin-json-corrupt',
-    severity: ErrorSeverity.ABORT,
-    match: (cause, ctx) =>
-      ctx.component === 'plugin-json' &&
-      /Unexpected token|JSON|parse/i.test(causeMessage(cause)),
-    remediation: () =>
-      'Existing plugin.json is corrupt. Run `rm -rf ~/.claude/plugins/marketplaces/thedotmack` and re-run `npx claude-mem install`.',
-  },
-  {
     id: 'all-ides-failed',
-    severity: ErrorSeverity.ABORT,
     match: (_cause, ctx) => ctx.component === 'all-ides',
     remediation: () =>
       'Every selected IDE integration failed. See the per-IDE errors above. Re-run with `--ide=<single>` to isolate the failure.',
   },
   {
     id: 'single-ide-failed',
-    severity: ErrorSeverity.FAIL_LOUD_PER_IDE,
     match: (_cause, ctx) => ctx.phase === 'ide-install',
     remediation: () =>
       'Re-run `npx claude-mem install --ide=<name>` to retry just this IDE. The captured stderr is shown above.',
   },
   {
-    id: 'path-update-failed',
-    severity: ErrorSeverity.WARN_CONTINUE,
-    match: (_cause, ctx) => ctx.component === 'path-update',
-    remediation: () =>
-      'Could not auto-update PATH in your shell config. Add the printed export line manually and restart your shell.',
-  },
-  {
     id: 'auto-memory-toggle-failed',
-    severity: ErrorSeverity.WARN_CONTINUE,
     match: (_cause, ctx) => ctx.component === 'auto-memory',
     remediation: () =>
       'Could not disable Claude Code auto-memory. Add `"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"` to the env block in ~/.claude/settings.json.',
   },
   {
     id: 'version-probe-transient',
-    severity: ErrorSeverity.WARN_CONTINUE,
     match: (_cause, ctx) => ctx.component.endsWith('-version-probe'),
     remediation: () =>
       'Could not verify the tool version after install — the installation is likely OK. Re-run `npx claude-mem install` if features misbehave.',
   },
   {
     id: 'child-process-timeout',
-    severity: ErrorSeverity.ABORT,
     match: (cause) => /timed out|ETIMEDOUT|SIGTERM|did not finish/i.test(causeMessage(cause)),
     remediation: () =>
       'An install command did not finish in time. Check network connectivity. On a slow host, raise the budget with CLAUDE_MEM_INSTALL_TIMEOUT_MS and re-run.',
   },
   {
     id: 'unknown-install-error',
-    severity: ErrorSeverity.ABORT,
     match: () => true,
     remediation: (ctx) =>
       `An unexpected installer error occurred. Capture ${ctx.dataDir}/last-install-error.json and open an issue at https://github.com/thedotmack/claude-mem/issues.`,

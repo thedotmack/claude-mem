@@ -227,8 +227,8 @@ describe('Install Non-TTY Support', () => {
 
     it('probes Claude Code version through the shared no-shell Windows invocation', () => {
       const versionProbeRegion = installSource.slice(
-        installSource.indexOf('function readClaudeCodeVersionOutput'),
         installSource.indexOf('function detectClaudeCodeVersion'),
+        installSource.indexOf('interface TaskDescriptor'),
       );
       expect(versionProbeRegion).toContain("lookupWindowsCommand('claude') ?? 'claude.cmd'");
       expect(versionProbeRegion).toContain('buildSpawnSyncInvocation(command, [');

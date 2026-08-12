@@ -113,25 +113,14 @@ export async function callMcpToolOnce(
   );
 
   const timeoutMs = options.timeoutMs ?? MCP_CALL_TIMEOUT_MS;
-  let timeout: ReturnType<typeof setTimeout> | null = null;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeout = setTimeout(
-      () => reject(new Error(`MCP tool ${name} timed out after ${timeoutMs}ms`)),
-      timeoutMs,
-    );
-  });
 
   try {
-    const result = await Promise.race([
-      (async () => {
-        await client.connect(transport);
-        return await client.callTool({ name, arguments: args });
-      })(),
-      timeoutPromise,
-    ]);
+    // The SDK enforces per-request timeouts natively (McpError with code
+    // RequestTimeout) — no manual Promise.race needed.
+    await client.connect(transport, { timeout: timeoutMs });
+    const result = await client.callTool({ name, arguments: args }, undefined, { timeout: timeoutMs });
     return textFromToolResult(result);
   } finally {
-    if (timeout) clearTimeout(timeout);
     try {
       await client.close();
     } catch (error: unknown) {

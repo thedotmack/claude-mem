@@ -114,18 +114,6 @@ export class PostgresServerSessionsRepository {
     return row ? mapServerSessionRow(row) : null;
   }
 
-  async listByProject(projectId: string, teamId: string): Promise<PostgresServerSession[]> {
-    const result = await this.client.query<ServerSessionRow>(
-      `
-        SELECT * FROM server_sessions
-        WHERE project_id = $1 AND team_id = $2
-        ORDER BY started_at DESC
-      `,
-      [projectId, teamId]
-    );
-    return result.rows.map(mapServerSessionRow);
-  }
-
   async findByExternalIdForScope(input: {
     externalSessionId: string;
     projectId: string;
@@ -205,70 +193,6 @@ export class PostgresServerSessionsRepository {
         RETURNING *
       `,
       [input.id, input.projectId, input.teamId]
-    );
-    return updated ? mapServerSessionRow(updated) : null;
-  }
-
-  async markGenerationStarted(input: {
-    id: string;
-    projectId: string;
-    teamId: string;
-  }): Promise<PostgresServerSession | null> {
-    const updated = await queryOne<ServerSessionRow>(
-      this.client,
-      `
-        UPDATE server_sessions
-        SET generation_status = 'processing', updated_at = now()
-        WHERE id = $1 AND project_id = $2 AND team_id = $3
-        RETURNING *
-      `,
-      [input.id, input.projectId, input.teamId]
-    );
-    return updated ? mapServerSessionRow(updated) : null;
-  }
-
-  async markGenerationCompleted(input: {
-    id: string;
-    projectId: string;
-    teamId: string;
-  }): Promise<PostgresServerSession | null> {
-    const updated = await queryOne<ServerSessionRow>(
-      this.client,
-      `
-        UPDATE server_sessions
-        SET generation_status = 'completed',
-            last_generated_at = now(),
-            updated_at = now()
-        WHERE id = $1 AND project_id = $2 AND team_id = $3
-        RETURNING *
-      `,
-      [input.id, input.projectId, input.teamId]
-    );
-    return updated ? mapServerSessionRow(updated) : null;
-  }
-
-  async markGenerationFailed(input: {
-    id: string;
-    projectId: string;
-    teamId: string;
-    error?: string | null;
-  }): Promise<PostgresServerSession | null> {
-    const updated = await queryOne<ServerSessionRow>(
-      this.client,
-      `
-        UPDATE server_sessions
-        SET generation_status = 'failed',
-            metadata = jsonb_set(
-              COALESCE(metadata, '{}'::jsonb),
-              '{lastGenerationError}',
-              COALESCE(to_jsonb($4::text), 'null'::jsonb),
-              true
-            ),
-            updated_at = now()
-        WHERE id = $1 AND project_id = $2 AND team_id = $3
-        RETURNING *
-      `,
-      [input.id, input.projectId, input.teamId, input.error ?? null]
     );
     return updated ? mapServerSessionRow(updated) : null;
   }

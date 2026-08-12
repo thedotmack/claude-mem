@@ -44,7 +44,7 @@ async function modelBaseSpawnResult(
   waitForHealthImpl: TimedProbe,
   waitForReadinessImpl: TimedProbe
 ): Promise<'ready' | 'warming'> {
-  const healthy = await waitForHealthImpl(port, HOOK_TIMEOUTS.POST_SPAWN_WAIT);
+  const healthy = await waitForHealthImpl(port, 15_000);
   if (!healthy) return 'warming';
   const ready = await waitForReadinessImpl(port, HOOK_TIMEOUTS.READINESS_WAIT);
   return ready ? 'ready' : 'warming';

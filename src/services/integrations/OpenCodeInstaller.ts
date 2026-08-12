@@ -261,35 +261,6 @@ export function uninstallOpenCodePlugin(): number {
   return hasErrors ? 1 : 0;
 }
 
-export function checkOpenCodeStatus(): number {
-  console.log('\nClaude-Mem OpenCode Integration Status\n');
-
-  const configDirectory = getOpenCodeConfigDirectory();
-  const pluginPath = getInstalledPluginPath();
-  const agentsMdPath = getOpenCodeAgentsMdPath();
-
-  console.log(`Config directory: ${configDirectory}`);
-  console.log(`  Exists: ${existsSync(configDirectory) ? 'yes' : 'no'}`);
-  console.log('');
-
-  console.log(`Plugin: ${pluginPath}`);
-  console.log(`  Installed: ${existsSync(pluginPath) ? 'yes' : 'no'}`);
-  console.log('');
-
-  console.log(`Context (AGENTS.md): ${agentsMdPath}`);
-  if (existsSync(agentsMdPath)) {
-    const content = readFileSync(agentsMdPath, 'utf-8');
-    const hasContextTags = content.includes(CONTEXT_TAG_OPEN);
-    console.log(`  Exists: yes`);
-    console.log(`  Has claude-mem context: ${hasContextTags ? 'yes' : 'no'}`);
-  } else {
-    console.log(`  Exists: no`);
-  }
-
-  console.log('');
-  return 0;
-}
-
 export async function installOpenCodeIntegration(): Promise<number> {
   console.log('\nInstalling Claude-Mem for OpenCode...\n');
 

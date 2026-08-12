@@ -177,7 +177,6 @@ export class SearchRoutes extends BaseRouteHandler {
   });
 
   private handleSearchByFile = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const orchestrator = this.searchManager.getOrchestrator();
     const formatter = this.searchManager.getFormatter();
     const query = this.queryWithPlatformSource(req);
     const rawFilePath = query.filePath ?? query.files;
@@ -187,7 +186,7 @@ export class SearchRoutes extends BaseRouteHandler {
         ? rawFilePath.split(',')[0].trim()
         : rawFilePath;
 
-    const { observations, sessions } = await orchestrator.findByFile(filePath, query);
+    const { observations, sessions } = await this.searchManager.findByFile(filePath, query);
     const totalResults = observations.length + sessions.length;
 
     if (totalResults === 0) {

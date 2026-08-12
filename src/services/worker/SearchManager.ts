@@ -12,12 +12,14 @@ import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { formatDate, formatTime, formatDateTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
 import { ModeManager } from '../domain/ModeManager.js';
 
-import {
-  SearchOrchestrator,
-  SEARCH_CONSTANTS
-} from './search/index.js';
 import { ResultFormatter } from './search/ResultFormatter.js';
 import { ChromaUnavailableError } from './search/errors.js';
+
+const SEARCH_CONSTANTS = {
+  RECENCY_WINDOW_MS: 90 * 24 * 60 * 60 * 1000,
+  DEFAULT_LIMIT: 20,
+  CHROMA_BATCH_SIZE: 100
+} as const;
 
 /**
  * Telemetry envelope for search_performed (see docs/public/telemetry.mdx).
@@ -33,25 +35,13 @@ export interface SearchTelemetryEnvelope {
 }
 
 export class SearchManager {
-  private orchestrator: SearchOrchestrator;
-
   constructor(
     private sessionSearch: SessionSearch,
     private sessionStore: SessionStore,
     private chromaSync: ChromaSync | null,
     private formatter: FormattingService,
     private timelineService: TimelineService
-  ) {
-    this.orchestrator = new SearchOrchestrator(
-      sessionSearch,
-      sessionStore,
-      chromaSync
-    );
-  }
-
-  getOrchestrator(): SearchOrchestrator {
-    return this.orchestrator;
-  }
+  ) {}
 
   getFormatter(): FormattingService {
     return this.formatter;
@@ -125,6 +115,83 @@ export class SearchManager {
       }
     }
     return [];
+  }
+
+  /**
+   * File-scoped search (moved from the deleted SearchOrchestrator/
+   * HybridSearchStrategy). SQLite metadata match first; when Chroma is
+   * available, its semantic ranking re-orders the metadata-matched
+   * observations (fail-fast on Chroma errors, no silent fallback). Sessions
+   * are never semantically ranked.
+   */
+  async findByFile(filePath: string, args: any): Promise<{
+    observations: ObservationSearchResult[];
+    sessions: SessionSummarySearchResult[];
+    usedChroma: boolean;
+  }> {
+    const options = this.normalizeParams(args);
+    const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, platformSource, dateRange, orderBy } = options;
+
+    if (!this.chromaSync) {
+      const results = this.sessionSearch.findByFile(filePath, {
+        limit, project, platformSource, dateRange, orderBy: orderBy ?? 'date_desc'
+      });
+      return { ...results, usedChroma: false };
+    }
+
+    logger.debug('SEARCH', 'findByFile: hybrid metadata + semantic ranking', { filePath });
+
+    const metadataResults = this.sessionSearch.findByFile(filePath, { limit, project, platformSource, dateRange, orderBy });
+    const sessions = metadataResults.sessions;
+
+    if (metadataResults.observations.length === 0) {
+      return { observations: [], sessions, usedChroma: false };
+    }
+
+    const metadataIds = metadataResults.observations.map(obs => obs.id);
+
+    const whereFilters: Array<Record<string, any>> = [{ doc_type: 'observation' }];
+    if (project) whereFilters.push({ project });
+    if (platformSource) whereFilters.push({ platform_source: normalizePlatformSource(platformSource) });
+    const whereFilter = whereFilters.length === 1 ? whereFilters[0] : { $and: whereFilters };
+
+    const chromaResults = await this.chromaSync.queryChroma(
+      filePath,
+      Math.min(metadataIds.length, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE),
+      whereFilter
+    );
+
+    // Chroma relevance order, restricted to the metadata-matched ids.
+    const metadataSet = new Set(metadataIds);
+    const rankedIds: number[] = [];
+    for (const chromaId of chromaResults.ids) {
+      if (metadataSet.has(chromaId) && !rankedIds.includes(chromaId)) {
+        rankedIds.push(chromaId);
+      }
+    }
+
+    if (rankedIds.length > 0) {
+      const observations = this.sessionStore.getObservationsByIds(rankedIds, {
+        orderBy: 'relevance',
+        limit,
+        project,
+        platformSource
+      });
+      observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
+      return { observations, sessions, usedChroma: true };
+    }
+
+    if (platformSource) {
+      // Platform-scoped Chroma ranked zero ids (pre-platform metadata):
+      // fall back to the metadata matches, date-sorted.
+      const direction = orderBy === 'date_asc' ? 1 : -1;
+      const observations = [...metadataResults.observations]
+        .sort((a, b) => direction * ((a.created_at_epoch - b.created_at_epoch) || (a.id - b.id)))
+        .slice(0, limit);
+      return { observations, sessions, usedChroma: false };
+    }
+
+    return { observations: [], sessions, usedChroma: false };
   }
 
   private async searchChromaForTimeline(query: string, project?: string, platformSource?: string): Promise<ObservationSearchResult[]> {
@@ -845,7 +912,7 @@ export class SearchManager {
         }
         anchorEpoch = sessions[0].created_at_epoch;
         anchorId = `S${sessionNum}`;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project, platformSource);
+        timelineData = this.sessionStore.getTimelineAroundObservation(null, anchorEpoch, depthBefore, depthAfter, project, platformSource);
       } else {
         const date = new Date(anchor);
         if (isNaN(date.getTime())) {
@@ -859,7 +926,7 @@ export class SearchManager {
         }
         anchorEpoch = date.getTime();
         anchorId = anchor;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project, platformSource);
+        timelineData = this.sessionStore.getTimelineAroundObservation(null, anchorEpoch, depthBefore, depthAfter, project, platformSource);
       }
     } else {
       return {

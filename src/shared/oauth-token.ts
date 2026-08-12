@@ -252,26 +252,6 @@ function parseKeychainPayload(raw: string): OAuthTokenResult {
 }
 
 /**
- * Sidecar metadata file: when a fallback token is provided via env (CI, headless,
- * keychain-blocked environments), a sibling JSON file at
- * `${DATA_DIR}/oauth-token-meta.json` may carry the token's expiresAt timestamp.
- * This lets us refuse stale-token injection in environments where keychain
- * access is blocked.
- */
-function readSidecarExpiresAt(): number | undefined {
-  const sidecarPath = join(paths.dataDir(), 'oauth-token-meta.json');
-  if (!existsSync(sidecarPath)) return undefined;
-  try {
-    const raw = readFileSync(sidecarPath, 'utf-8');
-    const parsed = JSON.parse(raw);
-    if (typeof parsed.expiresAt === 'number') return parsed.expiresAt;
-  } catch {
-    // Malformed sidecar — treat as absent and let fall-through happen.
-  }
-  return undefined;
-}
-
-/**
  * Read Claude Desktop's OAuth token, preferring the platform-native credential
  * store. Falls back to the CLAUDE_CODE_OAUTH_TOKEN environment variable only
  * when the keychain has no entry — env-as-primary is intended for CI/headless
@@ -304,18 +284,16 @@ export async function readClaudeOAuthToken(): Promise<OAuthTokenResult> {
     return keychainResult;
   }
 
-  // Keychain absent: try env-fallback for CI/headless. Refuse if the sidecar
-  // metadata indicates the env-provided token is stale.
+  // Keychain absent: try env-fallback for CI/headless. Refuse if the token's
+  // own JWT exp claim indicates it is stale.
   const envToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
   if (envToken && envToken.trim().length > 0) {
-    const sidecarExpiresAt = readSidecarExpiresAt();
-    const jwtExpiresAt = decodeJwtExpMs(envToken);
-    const effectiveExpiresAt = sidecarExpiresAt ?? jwtExpiresAt;
+    const effectiveExpiresAt = decodeJwtExpMs(envToken);
 
     if (isExpired(effectiveExpiresAt)) {
       return {
         kind: 'expired',
-        reason: 'CLAUDE_CODE_OAUTH_TOKEN env var expired (per sidecar/JWT) — re-login via Claude Desktop',
+        reason: 'CLAUDE_CODE_OAUTH_TOKEN env var expired (per JWT exp claim) — re-login via Claude Desktop',
         expiresAt: effectiveExpiresAt,
       };
     }

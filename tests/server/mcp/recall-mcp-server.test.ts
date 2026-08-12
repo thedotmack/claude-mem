@@ -13,13 +13,12 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createRecallMcpServer, type RecallBackend } from '../../../src/server/mcp/recall-mcp-server.js';
 
 interface Recorded {
-  search: Array<{ projectId: string; query: string; limit: number }>;
-  context: Array<{ projectId: string; query: string; limit: number }>;
+  search: Array<{ projectId: string; query: string; limit: number; mode: 'search' | 'context' }>;
   recent: Array<{ projectId: string; limit: number }>;
 }
 
 function makeBackend(overrides: Partial<RecallBackend> = {}): { backend: RecallBackend; calls: Recorded } {
-  const calls: Recorded = { search: [], context: [], recent: [] };
+  const calls: Recorded = { search: [], recent: [] };
   const observations = [
     { id: 'o1', content: 'alpha' },
     { id: 'o2', content: 'beta' },
@@ -27,10 +26,6 @@ function makeBackend(overrides: Partial<RecallBackend> = {}): { backend: RecallB
   const backend: RecallBackend = {
     search: async (args) => {
       calls.search.push(args);
-      return observations;
-    },
-    context: async (args) => {
-      calls.context.push(args);
       return observations;
     },
     recent: async (args) => {
@@ -70,17 +65,16 @@ describe('createRecallMcpServer', () => {
       name: 'search',
       arguments: { projectId: 'p1', query: 'hello', limit: 9999 },
     });
-    expect(calls.search[0]).toEqual({ projectId: 'p1', query: 'hello', limit: 100 });
+    expect(calls.search[0]).toEqual({ projectId: 'p1', query: 'hello', limit: 100, mode: 'search' });
     expect(JSON.parse(textOf(res)).observations).toHaveLength(2);
     await client.close();
   });
 
-  it('context routes through backend.context and packs a joined string', async () => {
+  it('context queries the backend in context mode and packs a joined string', async () => {
     const { backend, calls } = makeBackend();
     const client = await connectClient(backend);
     const res = await client.callTool({ name: 'context', arguments: { projectId: 'p1', query: 'hi' } });
-    expect(calls.context).toHaveLength(1);
-    expect(calls.search).toHaveLength(0);
+    expect(calls.search).toEqual([{ projectId: 'p1', query: 'hi', limit: 10, mode: 'context' }]);
     expect(JSON.parse(textOf(res)).context).toBe('alpha\n\nbeta');
     await client.close();
   });

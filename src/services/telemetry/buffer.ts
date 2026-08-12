@@ -121,102 +121,78 @@ const SAFETY_MAX_RECORDS = 1000;                // hard memory cap per session
 // Rollup computation helpers
 // ---------------------------------------------------------------------------
 
+// Numeric record fields summed into the rollup, [recordField, rollupField].
+// `count` is observations created in this turn (NOT the rollup's turn count);
+// summing it gives observations_created alongside total_cost_usd, so PostHog
+// can derive cost-per-observation and observation-type mix from the rollup.
+const ROLLUP_SUM_FIELDS: ReadonlyArray<readonly [string, string]> = [
+  ['tokens_input', 'total_tokens_input'],
+  ['tokens_output', 'total_tokens_output'],
+  ['cost_usd', 'total_cost_usd'],
+  ['count', 'observations_created'],
+  ['obs_type_bugfix', 'obs_type_bugfix'],
+  ['obs_type_discovery', 'obs_type_discovery'],
+  ['obs_type_decision', 'obs_type_decision'],
+  ['obs_type_refactor', 'obs_type_refactor'],
+  ['obs_type_other', 'obs_type_other'],
+];
+
+// Numeric record fields averaged into the rollup (mean over records that
+// carry a finite value), [recordField, rollupField].
+const ROLLUP_AVG_FIELDS: ReadonlyArray<readonly [string, string]> = [
+  ['duration_ms', 'avg_duration_ms'],
+  ['compression_ms', 'avg_compression_ms'],
+];
+
+/** Closed outcome enum -> rollup counter field. */
+const ROLLUP_OUTCOME_FIELDS: Readonly<Record<string, string>> = {
+  ok: 'outcomes_ok',
+  error: 'outcomes_error',
+  aborted: 'outcomes_aborted',
+  invalid_output: 'outcomes_invalid_output',
+};
+
 function computeSessionCompressedRollup(
   bucket: SessionCompressedBucket,
   rollupReason: RollupReason
 ): Record<string, unknown> {
   const { records, windowStartTs, windowSeq } = bucket;
-  const count = records.length;
 
-  let totalTokensInput = 0;
-  let totalTokensOutput = 0;
-  let totalCostUsd = 0;
-  let durationSum = 0;
-  let durationCount = 0;
-  let compressionSum = 0;
-  let compressionCount = 0;
-  let outcomesOk = 0;
-  let outcomesError = 0;
-  let outcomesAborted = 0;
-  let outcomesInvalidOutput = 0;
-  let observationsCreated = 0;
-  let obsTypeBugfix = 0;
-  let obsTypeDiscovery = 0;
-  let obsTypeDecision = 0;
-  let obsTypeRefactor = 0;
-  let obsTypeOther = 0;
+  const sums: Record<string, number> = {};
+  for (const [, rollupField] of ROLLUP_SUM_FIELDS) sums[rollupField] = 0;
+  const avg: Record<string, { sum: number; n: number }> = {};
+  for (const [, rollupField] of ROLLUP_AVG_FIELDS) avg[rollupField] = { sum: 0, n: 0 };
+  const outcomes: Record<string, number> = {};
+  for (const rollupField of Object.values(ROLLUP_OUTCOME_FIELDS)) outcomes[rollupField] = 0;
   const modelFrequency: Map<string, number> = new Map();
 
-  for (const r of records) {
-    if (typeof r.tokens_input === 'number' && Number.isFinite(r.tokens_input)) {
-      totalTokensInput += r.tokens_input;
+  for (const r of records as Array<Record<string, unknown>>) {
+    for (const [recordField, rollupField] of ROLLUP_SUM_FIELDS) {
+      const value = r[recordField];
+      if (typeof value === 'number' && Number.isFinite(value)) sums[rollupField] += value;
     }
-    if (typeof r.tokens_output === 'number' && Number.isFinite(r.tokens_output)) {
-      totalTokensOutput += r.tokens_output;
+    for (const [recordField, rollupField] of ROLLUP_AVG_FIELDS) {
+      const value = r[recordField];
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        avg[rollupField].sum += value;
+        avg[rollupField].n++;
+      }
     }
-    if (typeof r.cost_usd === 'number' && Number.isFinite(r.cost_usd)) {
-      totalCostUsd += r.cost_usd;
-    }
-    if (typeof r.duration_ms === 'number' && Number.isFinite(r.duration_ms)) {
-      durationSum += r.duration_ms;
-      durationCount++;
-    }
-    if (typeof r.compression_ms === 'number' && Number.isFinite(r.compression_ms)) {
-      compressionSum += r.compression_ms;
-      compressionCount++;
-    }
-    if (r.outcome === 'ok') outcomesOk++;
-    else if (r.outcome === 'error') outcomesError++;
-    else if (r.outcome === 'aborted') outcomesAborted++;
-    else if (r.outcome === 'invalid_output') outcomesInvalidOutput++;
+    const outcomeField = typeof r.outcome === 'string' ? ROLLUP_OUTCOME_FIELDS[r.outcome] : undefined;
+    if (outcomeField) outcomes[outcomeField]++;
 
     if (typeof r.model === 'string' && r.model) {
       modelFrequency.set(r.model, (modelFrequency.get(r.model) ?? 0) + 1);
     }
-    // Generation-side observation volume. r.count is observations created in
-    // this turn (NOT the rollup's turn count); sum it so the rollup carries
-    // observations_created alongside total_cost_usd.
-    if (typeof r.count === 'number' && Number.isFinite(r.count)) {
-      observationsCreated += r.count;
-    }
-    if (typeof r.obs_type_bugfix === 'number' && Number.isFinite(r.obs_type_bugfix)) {
-      obsTypeBugfix += r.obs_type_bugfix;
-    }
-    if (typeof r.obs_type_discovery === 'number' && Number.isFinite(r.obs_type_discovery)) {
-      obsTypeDiscovery += r.obs_type_discovery;
-    }
-    if (typeof r.obs_type_decision === 'number' && Number.isFinite(r.obs_type_decision)) {
-      obsTypeDecision += r.obs_type_decision;
-    }
-    if (typeof r.obs_type_refactor === 'number' && Number.isFinite(r.obs_type_refactor)) {
-      obsTypeRefactor += r.obs_type_refactor;
-    }
-    if (typeof r.obs_type_other === 'number' && Number.isFinite(r.obs_type_other)) {
-      obsTypeOther += r.obs_type_other;
-    }
   }
 
   const rollup: Record<string, unknown> = {
-    count,
-    total_tokens_input: totalTokensInput,
-    total_tokens_output: totalTokensOutput,
-    total_cost_usd: totalCostUsd,
-    avg_duration_ms: durationCount > 0 ? durationSum / durationCount : 0,
-    avg_compression_ms: compressionCount > 0 ? compressionSum / compressionCount : 0,
-    outcomes_ok: outcomesOk,
-    outcomes_error: outcomesError,
-    outcomes_aborted: outcomesAborted,
-    outcomes_invalid_output: outcomesInvalidOutput,
-    // Generation-side observation volume + type mix for the session. Lets
-    // PostHog derive cost-per-observation (total_cost_usd / observations_created)
-    // and observation-type-by-(top_)model directly from the rollup, instead of
-    // the decaying legacy session_compressed stream.
-    observations_created: observationsCreated,
-    obs_type_bugfix: obsTypeBugfix,
-    obs_type_discovery: obsTypeDiscovery,
-    obs_type_decision: obsTypeDecision,
-    obs_type_refactor: obsTypeRefactor,
-    obs_type_other: obsTypeOther,
+    count: records.length,
+    ...sums,
+    ...Object.fromEntries(
+      Object.entries(avg).map(([field, { sum, n }]) => [field, n > 0 ? sum / n : 0])
+    ),
+    ...outcomes,
     window_start_ts: windowStartTs,
     // Phase 2: why this rollup was emitted (session_end | worker_shutdown |
     // safety_flush) and the partial-flush sequence number for long-lived

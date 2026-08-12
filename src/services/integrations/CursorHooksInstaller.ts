@@ -1,18 +1,11 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, renameSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { workerHttpRequest } from '../../shared/worker-utils.js';
 import { DATA_DIR } from '../../shared/paths.js';
-import {
-  readCursorRegistry as readCursorRegistryFromFile,
-  registerCursorProject as registerCursorProjectInFile,
-  unregisterCursorProject as unregisterCursorProjectInFile,
-  configureCursorMcp as configureCursorMcpFile,
-  writeContextFile,
-  type CursorProjectRegistry
-} from '../../utils/cursor-utils.js';
+import { toBmpSafe } from '../../utils/bmp-safe.js';
 import type { CursorInstallTarget, CursorHooksJson } from './types.js';
 import {
   getMcpServerAbsolutePath,
@@ -20,20 +13,115 @@ import {
   getBunAbsolutePath,
 } from './install-paths.js';
 
+export interface CursorProjectRegistry {
+  [projectName: string]: {
+    workspacePath: string;
+    installedAt: string;
+  };
+}
+
+export interface CursorMcpConfig {
+  mcpServers: {
+    [name: string]: {
+      command: string;
+      args?: string[];
+      env?: Record<string, string>;
+    };
+  };
+}
+
 const CURSOR_REGISTRY_FILE = path.join(DATA_DIR, 'cursor-projects.json');
 
 export function readCursorRegistry(): CursorProjectRegistry {
-  return readCursorRegistryFromFile(CURSOR_REGISTRY_FILE);
+  try {
+    if (!existsSync(CURSOR_REGISTRY_FILE)) return {};
+    return JSON.parse(readFileSync(CURSOR_REGISTRY_FILE, 'utf-8'));
+  } catch (error) {
+    logger.error('CONFIG', 'Failed to read Cursor registry, using empty registry', {
+      file: CURSOR_REGISTRY_FILE,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return {};
+  }
+}
+
+function writeCursorRegistry(registry: CursorProjectRegistry): void {
+  mkdirSync(path.dirname(CURSOR_REGISTRY_FILE), { recursive: true });
+  writeFileSync(CURSOR_REGISTRY_FILE, JSON.stringify(registry, null, 2));
 }
 
 export function registerCursorProject(projectName: string, workspacePath: string): void {
-  registerCursorProjectInFile(CURSOR_REGISTRY_FILE, projectName, workspacePath);
+  const registry = readCursorRegistry();
+  registry[projectName] = {
+    workspacePath,
+    installedAt: new Date().toISOString()
+  };
+  writeCursorRegistry(registry);
   logger.info('CURSOR', 'Registered project for auto-context updates', { projectName, workspacePath });
 }
 
 export function unregisterCursorProject(projectName: string): void {
-  unregisterCursorProjectInFile(CURSOR_REGISTRY_FILE, projectName);
+  const registry = readCursorRegistry();
+  if (registry[projectName]) {
+    delete registry[projectName];
+    writeCursorRegistry(registry);
+  }
   logger.info('CURSOR', 'Unregistered project', { projectName });
+}
+
+/** Write the workspace's .cursor/rules/claude-mem-context.mdc (atomic tmp+rename). */
+export function writeCursorContextFile(workspacePath: string, context: string): void {
+  const rulesDir = path.join(workspacePath, '.cursor', 'rules');
+  const rulesFile = path.join(rulesDir, 'claude-mem-context.mdc');
+  const tempFile = `${rulesFile}.tmp`;
+
+  mkdirSync(rulesDir, { recursive: true });
+
+  const content = `---
+alwaysApply: true
+description: "Claude-mem context from past sessions (auto-updated)"
+---
+
+# Memory Context from Past Sessions
+
+The following context is from claude-mem, a persistent memory system that tracks your coding sessions.
+
+${toBmpSafe(context)}
+
+---
+*Updated after last session. Use claude-mem's MCP search tools for more detailed queries.*
+`;
+
+  writeFileSync(tempFile, content);
+  renameSync(tempFile, rulesFile);
+}
+
+/** Register claude-mem's MCP server in a Cursor mcp.json (other servers preserved). */
+export function writeCursorMcpConfig(mcpJsonPath: string, mcpServerScriptPath: string): void {
+  mkdirSync(path.dirname(mcpJsonPath), { recursive: true });
+
+  let config: CursorMcpConfig = { mcpServers: {} };
+  if (existsSync(mcpJsonPath)) {
+    try {
+      config = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
+      if (!config.mcpServers) {
+        config.mcpServers = {};
+      }
+    } catch (error) {
+      logger.error('CONFIG', 'Failed to read MCP config, starting fresh', {
+        file: mcpJsonPath,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      config = { mcpServers: {} };
+    }
+  }
+
+  config.mcpServers['claude-mem'] = {
+    command: 'node',
+    args: [mcpServerScriptPath]
+  };
+
+  writeFileSync(mcpJsonPath, JSON.stringify(config, null, 2));
 }
 
 export async function updateCursorContextForProject(projectName: string): Promise<void> {
@@ -52,7 +140,7 @@ export async function updateCursorContextForProject(projectName: string): Promis
     const context = await response.text();
     if (!context || !context.trim()) return;
 
-    writeContextFile(entry.workspacePath, context);
+    writeCursorContextFile(entry.workspacePath, context);
     logger.debug('CURSOR', 'Updated context file', { projectName, workspacePath: entry.workspacePath });
   } catch (error) {
     if (error instanceof Error) {
@@ -101,7 +189,7 @@ export function configureCursorMcp(target: CursorInstallTarget): number {
   const mcpJsonPath = path.join(targetDir, 'mcp.json');
 
   try {
-    configureCursorMcpFile(mcpJsonPath, mcpServerPath);
+    writeCursorMcpConfig(mcpJsonPath, mcpServerPath);
     console.log(`  Configured MCP server in ${target === 'user' ? '~/.cursor' : '.cursor'}/mcp.json`);
     console.log(`    Server path: ${mcpServerPath}`);
 
@@ -267,7 +355,7 @@ async function fetchInitialContextFromWorker(
 
   const context = await contextResponse.text();
   if (context && context.trim()) {
-    writeContextFile(workspaceRoot, context);
+    writeCursorContextFile(workspaceRoot, context);
     console.log(`  Generated initial context from existing memory`);
     return true;
   }

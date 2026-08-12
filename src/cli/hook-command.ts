@@ -65,12 +65,6 @@ export function isWorkerUnavailableError(error: unknown): boolean {
 
   if (/failed:\s*429/.test(message) || /status[:\s]+429/.test(message)) return true;
 
-  if (/failed:\s*4\d{2}/.test(message) || /status[:\s]+4\d{2}/.test(message)) return false;
-
-  if (error instanceof TypeError || error instanceof ReferenceError || error instanceof SyntaxError) {
-    return false;
-  }
-
   return false;
 }
 

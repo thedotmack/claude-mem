@@ -16,7 +16,6 @@ import type { Application, Request, Response } from 'express';
 import { z } from 'zod';
 import type { RouteHandler } from '../../services/server/Server.js';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
-import { PostgresServerSessionsRepository } from '../../storage/postgres/server-sessions.js';
 import { logger } from '../../utils/logger.js';
 import { requirePostgresServerAuth } from '../middleware/postgres-auth.js';
 import { EndSessionService } from '../services/EndSessionService.js';
@@ -137,7 +136,3 @@ export class SessionsSummarizeAdapter implements RouteHandler {
     };
   }
 }
-
-// Side-effect import so PostgresServerSessionsRepository symbol is reachable
-// even when tree-shaking is aggressive in the main bundle.
-void PostgresServerSessionsRepository;

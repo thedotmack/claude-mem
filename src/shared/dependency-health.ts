@@ -33,7 +33,7 @@ export interface DependencyHealthSnapshot {
   statuses: DependencyStatus[];
 }
 
-export function recordDependencyStatus(
+function recordDependencyStatus(
   dependency: DependencyName,
   kind: DependencyStatusKind,
   message: string,

@@ -8,8 +8,8 @@ import {
 } from '../../src/server/runtime/types.js';
 import {
   bootstrapServerPostgresSchema,
-  createPostgresStorageRepositories,
 } from '../../src/storage/postgres/index.js';
+import { createPostgresStorageRepositories, type PostgresStorageRepositories } from '../sdk/pg-storage.js';
 import { logger } from '../../src/utils/logger.js';
 
 const loggerSpies: ReturnType<typeof spyOn>[] = [];
