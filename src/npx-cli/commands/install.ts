@@ -761,13 +761,15 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
   }, summary);
 }
 
-function mergeSettings(updates: Record<string, string>): boolean {
+export function mergeSettings(updates: Record<string, string>): boolean {
   const path = USER_SETTINGS_PATH;
   try {
     // Read the FULL document and merge at the top level, preserving unknown
-    // keys. The file is always flat here: SettingsDefaultsManager.loadFromFile
-    // migrates any legacy env-nested settings.json to the flat schema on first
-    // read (and getSetting() runs before any mergeSettings call).
+    // keys. A legacy env-nested settings.json must be flattened FIRST: the
+    // installer writes settings (runtime choice, trial state) before anything
+    // calls getSetting(), so loadFromFile has not migrated the file yet, and
+    // its migration replaces the document with the env subtree outright —
+    // silently discarding any key written beside env.
     let document: Record<string, unknown> = {};
     if (existsSync(path)) {
       try {
@@ -784,6 +786,12 @@ function mergeSettings(updates: Record<string, string>): boolean {
       if (!existsSync(dir)) {
         mkdirSync(dir, { recursive: true });
       }
+    }
+
+    // Same collapse rule as SettingsDefaultsManager.loadFromFile: the env
+    // subtree wins outright over sibling top-level keys.
+    if (document.env && typeof document.env === 'object' && !Array.isArray(document.env)) {
+      document = { ...(document.env as Record<string, unknown>) };
     }
 
     Object.assign(document, updates);
