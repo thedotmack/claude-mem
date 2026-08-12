@@ -170,7 +170,7 @@ describe('ensureWorkerStarted startup readiness', () => {
     expect(existsSync(join(TEST_DATA_DIR, 'CAPTURE_BROKEN'))).toBe(true);
     expect(cliTelemetry.captureCliEvent).toHaveBeenCalledWith(
       'worker_start_failed',
-      expect.objectContaining({ outcome: 'dead', error_category: 'port_unbound' }),
+      expect.objectContaining({ outcome: 'dead', error_category: 'unreachable_after_boot' }),
     );
   });
 

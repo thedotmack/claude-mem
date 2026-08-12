@@ -69,15 +69,17 @@ function clearWorkerSpawnAttempted(): void {
 }
 
 /**
- * A worker we spawned exited without ever binding the port (#3557). Drop the
- * durable markers so the next session start can tell the user, and emit the
- * telemetry event that closes the measurement hole — every other boot dies
- * silently today. Best-effort: capture must never break because a marker or an
- * event could not be written.
+ * A worker we spawned is dead and not serving after boot (#3557). This covers
+ * both a worker that never bound the port and one that bound, then crashed —
+ * this path cannot tell them apart, so the diagnosis stays neutral rather than
+ * claiming "never bound". Drop the durable markers so the next session start
+ * can tell the user, and emit the telemetry event that closes the measurement
+ * hole — every other boot dies silently today. Best-effort: capture must never
+ * break because a marker or an event could not be written.
  */
 async function recordWorkerBootFailure(port: number, spawnedPid: number | undefined): Promise<void> {
   const diagnostic = [
-    `[worker-spawner] worker exited without binding port ${port} — issue #3557`,
+    `[worker-spawner] worker is dead and unreachable on port ${port} after boot — issue #3557`,
     `  spawned pid: ${spawnedPid ?? 'n/a'}`,
     `  platform: ${process.platform}`,
     `  timestamp: ${new Date().toISOString()}`,
@@ -97,7 +99,7 @@ async function recordWorkerBootFailure(port: number, spawnedPid: number | undefi
 
   await captureCliEvent('worker_start_failed', {
     outcome: 'dead',
-    error_category: 'port_unbound',
+    error_category: 'unreachable_after_boot',
   });
 }
 
