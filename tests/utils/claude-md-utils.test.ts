@@ -1110,6 +1110,23 @@ describe('skeleton CLAUDE.md deny-list (#2400)', () => {
     content: [{ text: 'no observation rows here' }],
   };
 
+  it('does not create a new CLAUDE.md when the formatted timeline is empty', async () => {
+    delete process.env[ENV_KEY];
+
+    const folderPath = join(tempDir, 'empty-timeline');
+    mkdirSync(folderPath, { recursive: true });
+    const filePath = join(folderPath, 'file.ts');
+
+    global.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(emptySkeletonResponse),
+    } as Response));
+
+    await updateFolderClaudeMdFiles([filePath], 'test-project', 37777, tempDir);
+
+    expect(existsSync(join(folderPath, 'CLAUDE.md'))).toBe(false);
+  });
+
   it('does NOT overwrite an existing CLAUDE.md with a skeleton when the folder matches the deny-list', async () => {
     process.env[ENV_KEY] = JSON.stringify(['**/transient']);
 
