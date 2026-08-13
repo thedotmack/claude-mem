@@ -45,7 +45,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   /** Prefix for the synthetic memorySessionId (e.g. 'gemini', 'openrouter'). */
   protected abstract readonly syntheticIdPrefix: string;
   /**
-   * When a query returns empty content for an observation/summary message:
+   * When a query returns empty content:
    * OpenRouter still calls processAgentResponse('') (forwards the empty batch
    * to the parser/recovery path); Gemini skips it and logs a warning. This flag
    * preserves that per-provider divergence.
@@ -163,14 +163,15 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     worker: WorkerRef | undefined,
     model: string
   ): Promise<void> {
-    if (initResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
+    if (initResponse.content || this.forwardEmptyMessageResponse) {
+      const content = initResponse.content || '';
+      session.conversationHistory.push({ role: 'assistant', content });
       const tokensUsed = initResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
       session.lastUsage = this.buildLastUsage(initResponse);
       await processAgentResponse(
-        initResponse.content, session, this.dbManager, this.sessionManager,
+        content, session, this.dbManager, this.sessionManager,
         worker, tokensUsed, null, this.providerName, undefined, initResponse.servedModel ?? model
       );
     } else {
