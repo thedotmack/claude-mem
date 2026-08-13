@@ -1,0 +1,85 @@
+---
+title: "Remote Skill (Claude.ai & ChatGPT)"
+description: "Teach hosted assistants to search your cmem.ai cloud memory properly — a downloadable skill that pairs with the read-only MCP connector."
+---
+
+# Remote Skill (Claude.ai & ChatGPT)
+
+The cmem.ai MCP connector gives a hosted assistant the *tools* to read your
+cloud memory. The **remote skill** gives it the *method*.
+
+Without it, assistants search once and then pull back every record they found —
+slow answers, a flooded context window, and the useful memory buried among
+twenty near-misses. The skill teaches the workflow claude-mem is built around:
+scan wide and cheap, keep only the few rows that matter, then fetch just those
+in a single batch.
+
+<Note>
+**Claude Code already has this.** The plugin ships the `mem-search` skill, which
+covers the local worker's tools. The remote skill is for assistants that reach
+your memory *over the network* — Claude.ai, Claude Desktop, ChatGPT. The two are
+not interchangeable: the cloud MCP surface uses opaque string ids, a
+cursor-paged timeline, and no date filters, so the local skill's calls would not
+validate against it.
+</Note>
+
+## Get it
+
+The skill is served from cmem.ai and contains **no credentials** — it is pure
+instruction, safe to share with a teammate:
+
+- **Skill bundle (.zip)** — <a href="https://cmem.ai/api/skill?format=zip">cmem.ai/api/skill?format=zip</a>
+- **Raw SKILL.md** — <a href="https://cmem.ai/api/skill?format=md">cmem.ai/api/skill?format=md</a>
+- **Instructions only, no frontmatter** — <a href="https://cmem.ai/api/skill?format=txt">cmem.ai/api/skill?format=txt</a>
+
+It is also linked directly from **Connect** in your cmem.ai account, step 3,
+alongside the connector setup for each client.
+
+## Install it
+
+<Steps>
+  <Step title="Connect the MCP server first">
+    The skill is useless on its own — it describes tools that arrive with the
+    connector. Set that up from [Connect](https://cmem.ai/connect), which hands
+    you the server URL and your read-only token.
+  </Step>
+  <Step title="Claude — add the skill">
+    Download the `.zip` above, then add it under **Settings → Capabilities →
+    Skills**. Claude loads it automatically when a question calls for memory.
+  </Step>
+  <Step title="ChatGPT — paste the instructions">
+    ChatGPT has no skill bundle format. Copy the instructions-only version and
+    paste it into the **instructions** of the Project (or custom GPT) where you
+    added the cmem connector, so it applies to every chat there.
+  </Step>
+</Steps>
+
+## What it teaches
+
+The whole skill is one discipline, in three moves:
+
+1. **Scan** — `memory_search` for keyword questions, `timeline` for
+   recency questions (it is the only tool that orders by date), `list_projects`
+   to get an exact project name before filtering on one.
+2. **Filter** — read the titles and snippets that come back and keep only the
+   rows that actually answer the question. Usually two to five out of twenty.
+   Often the snippets alone are enough and nothing needs fetching.
+3. **Fetch** — `get_observations` or `get_summaries` on the surviving ids, all
+   in one call rather than one call per id.
+
+A full record costs roughly ten times its search row, so filtering before
+fetching is both the cheap path and the accurate one.
+
+It also encodes the sharp edges of the remote surface: ids are opaque strings
+(`observation:…`, `summary:…`) that must come from a search result and can never
+be constructed; prompts are searchable but have **no** fetch tool, so their
+snippet is all there is; and every response carries a `freshness` field, so a
+laptop that has not synced lately reads as *stale* rather than as *empty*.
+
+## Safety
+
+Every tool the connector exposes is **read-only** — an assistant following this
+skill can search and read your memory, never write or delete it. Your token
+lives in the connector's settings; the skill never asks for it, and you should
+never paste it into a conversation. Rotate or revoke it any time from
+[Connect](https://cmem.ai/connect).

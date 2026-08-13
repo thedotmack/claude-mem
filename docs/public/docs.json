@@ -94,7 +94,8 @@
         "icon": "cloud",
         "pages": [
           "hosted-server",
-          "cloud-sync"
+          "cloud-sync",
+          "remote-skill"
         ]
       },
       {
