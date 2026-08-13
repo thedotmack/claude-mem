@@ -83,7 +83,7 @@ Restart Cursor to load the hooks.
 - Browse sessions, observations, and summaries
 - Search your project history
 
-✨ **Get cmem Pro — 7-day free trial: cloud sync + memory model** → https://cmem.ai/pro?from=docs
+✨ **Get 2x more use out of your Max plan for free (7-day trial, $30/mo)** → https://cmem.ai/pro?from=docs
 
 ### Via MCP Tools (if enabled)
 - claude-mem provides search tools via MCP

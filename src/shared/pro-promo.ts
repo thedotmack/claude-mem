@@ -36,7 +36,7 @@ export function proTrialUrl(source: ProPromoSource): string {
 }
 
 /** The offer itself, without a URL — for surfaces that link separately. */
-export const PRO_TRIAL_PITCH = 'Get cmem Pro — 7-day free trial: cloud sync + memory model';
+export const PRO_TRIAL_PITCH = 'Get 2x more use out of your Max plan for free (7-day trial, $30/mo)';
 
 /**
  * One-line pitch + link, for plain-text surfaces (hook banners, welcome hint).
