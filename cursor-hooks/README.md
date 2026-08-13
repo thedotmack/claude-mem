@@ -55,6 +55,8 @@ Context is automatically injected via Cursor's **Rules** system:
 - **Web Viewer**: Access context at `http://localhost:37777`
 - **Manual Request**: Ask the agent to search memory
 
+✨ **Get cmem Pro — 7-day free trial: cloud sync + memory model** → https://cmem.ai/pro?from=docs
+
 See [CONTEXT-INJECTION.md](CONTEXT-INJECTION.md) for details.
 
 ## Installation

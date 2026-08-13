@@ -83,6 +83,8 @@ Restart Cursor to load the hooks.
 - Browse sessions, observations, and summaries
 - Search your project history
 
+✨ **Get cmem Pro — 7-day free trial: cloud sync + memory model** → https://cmem.ai/pro?from=docs
+
 ### Via MCP Tools (if enabled)
 - claude-mem provides search tools via MCP
 - Use `search`, `timeline`, and `get_observations` tools
