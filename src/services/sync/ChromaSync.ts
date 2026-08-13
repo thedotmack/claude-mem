@@ -151,8 +151,6 @@ export class ChromaSync {
   }
 
   private formatObservationDocs(obs: StoredObservation): ChromaDocument[] {
-    const documents: ChromaDocument[] = [];
-
     const facts = obs.facts ? JSON.parse(obs.facts) : [];
     const concepts = obs.concepts ? JSON.parse(obs.concepts) : [];
     // parseFileList is SQLite-shaped (`bun:sqlite` in the import chain) —
@@ -189,36 +187,33 @@ export class ChromaSync {
       baseMetadata.files_modified = files_modified.join(',');
     }
 
-    if (obs.narrative) {
-      documents.push({
-        id: `obs_${obs.id}_narrative`,
-        document: obs.narrative,
-        metadata: { ...baseMetadata, field_type: 'narrative' }
-      });
+    // Search hydrates the complete SQLite row after Chroma returns its id, so
+    // emitting one vector per field only multiplies embeddings and crowds the
+    // top-k with duplicate hits for the same observation. Keep a single,
+    // prioritized semantic projection per source row. Retain the historical
+    // `_narrative` id shape so typed-id hydration and in-place upgrades remain
+    // compatible.
+    const semanticProjection = [
+      obs.title ? `Title: ${obs.title}` : '',
+      obs.subtitle ? `Subtitle: ${obs.subtitle}` : '',
+      obs.narrative ? `Narrative: ${obs.narrative}` : '',
+      facts.length > 0 ? `Facts: ${facts.join(' | ')}` : '',
+      obs.text ? `Text: ${obs.text}` : '',
+      concepts.length > 0 ? `Concepts: ${concepts.join(', ')}` : '',
+    ].filter(Boolean).join('\n');
+
+    if (!semanticProjection) {
+      return [];
     }
 
-    if (obs.text) {
-      documents.push({
-        id: `obs_${obs.id}_text`,
-        document: obs.text,
-        metadata: { ...baseMetadata, field_type: 'text' }
-      });
-    }
-
-    facts.forEach((fact: string, index: number) => {
-      documents.push({
-        id: `obs_${obs.id}_fact_${index}`,
-        document: fact,
-        metadata: { ...baseMetadata, field_type: 'fact', fact_index: index }
-      });
-    });
-
-    return documents;
+    return [{
+      id: `obs_${obs.id}_narrative`,
+      document: semanticProjection,
+      metadata: { ...baseMetadata, field_type: 'narrative' }
+    }];
   }
 
   private formatSummaryDocs(summary: StoredSummary): ChromaDocument[] {
-    const documents: ChromaDocument[] = [];
-
     const baseMetadata: Record<string, string | number | null> = {
       sqlite_id: summary.id,
       doc_type: 'session_summary',
@@ -232,55 +227,24 @@ export class ChromaSync {
       prompt_number: summary.prompt_number || 0
     };
 
-    if (summary.request) {
-      documents.push({
-        id: `summary_${summary.id}_request`,
-        document: summary.request,
-        metadata: { ...baseMetadata, field_type: 'request' }
-      });
+    const semanticProjection = [
+      summary.request ? `Request: ${summary.request}` : '',
+      summary.completed ? `Completed: ${summary.completed}` : '',
+      summary.learned ? `Learned: ${summary.learned}` : '',
+      summary.investigated ? `Investigated: ${summary.investigated}` : '',
+      summary.next_steps ? `Next steps: ${summary.next_steps}` : '',
+      summary.notes ? `Notes: ${summary.notes}` : '',
+    ].filter(Boolean).join('\n');
+
+    if (!semanticProjection) {
+      return [];
     }
 
-    if (summary.investigated) {
-      documents.push({
-        id: `summary_${summary.id}_investigated`,
-        document: summary.investigated,
-        metadata: { ...baseMetadata, field_type: 'investigated' }
-      });
-    }
-
-    if (summary.learned) {
-      documents.push({
-        id: `summary_${summary.id}_learned`,
-        document: summary.learned,
-        metadata: { ...baseMetadata, field_type: 'learned' }
-      });
-    }
-
-    if (summary.completed) {
-      documents.push({
-        id: `summary_${summary.id}_completed`,
-        document: summary.completed,
-        metadata: { ...baseMetadata, field_type: 'completed' }
-      });
-    }
-
-    if (summary.next_steps) {
-      documents.push({
-        id: `summary_${summary.id}_next_steps`,
-        document: summary.next_steps,
-        metadata: { ...baseMetadata, field_type: 'next_steps' }
-      });
-    }
-
-    if (summary.notes) {
-      documents.push({
-        id: `summary_${summary.id}_notes`,
-        document: summary.notes,
-        metadata: { ...baseMetadata, field_type: 'notes' }
-      });
-    }
-
-    return documents;
+    return [{
+      id: `summary_${summary.id}_request`,
+      document: semanticProjection,
+      metadata: { ...baseMetadata, field_type: 'request' }
+    }];
   }
 
   /**
@@ -301,6 +265,28 @@ export class ChromaSync {
   public async addDocuments(documents: ChromaDocument[]): Promise<number> {
     if (documents.length === 0) {
       return 0;
+    }
+
+    // SQLite FTS5's trigram tokenizer accepts NUL-containing TEXT but builds
+    // an index that subsequently fails PRAGMA quick_check / integrity_check as
+    // "malformed inverted index". Codex transcripts can legitimately contain
+    // NUL bytes copied from terminal or binary output, so sanitize at the last
+    // common boundary before every Chroma add/update path. U+FFFD preserves a
+    // visible boundary without making unrelated text run together.
+    let nulSanitizedDocuments = 0;
+    const safeDocuments = documents.map(document => {
+      if (!document.document.includes('\0')) return document;
+      nulSanitizedDocuments += 1;
+      return {
+        ...document,
+        document: document.document.replaceAll('\0', '\uFFFD'),
+      };
+    });
+    if (nulSanitizedDocuments > 0) {
+      logger.warn('CHROMA_SYNC', 'Sanitized NUL bytes before Chroma FTS indexing', {
+        collection: this.collectionName,
+        documents: nulSanitizedDocuments,
+      });
     }
 
     try {
@@ -325,8 +311,8 @@ export class ChromaSync {
     const chromaMcp = ChromaMcpManager.getInstance();
 
     let written = 0;
-    for (let i = 0; i < documents.length; i += this.BATCH_SIZE) {
-      const batch = documents.slice(i, i + this.BATCH_SIZE);
+    for (let i = 0; i < safeDocuments.length; i += this.BATCH_SIZE) {
+      const batch = safeDocuments.slice(i, i + this.BATCH_SIZE);
 
       const cleanMetadatas = batch.map(d =>
         Object.fromEntries(
@@ -687,12 +673,17 @@ export class ChromaSync {
       WHERE project = ?
       ORDER BY id ASC
     `).all(project) as Array<{ id: number }>;
+    // Codex transcript/hook imports can contain replay bursts of the same
+    // prompt text hundreds of times inside one session. Chroma only needs the
+    // latest occurrence for semantic retrieval; indexing every replay both
+    // crowds the top-k results and turns recovery into a multi-hour rebuild.
     const promptIds = store.db.prepare(`
-      SELECT up.id
+      SELECT MAX(up.id) AS id
       FROM user_prompts up
       JOIN sdk_sessions s ON up.session_db_id = s.id
       WHERE s.project = ?
-      ORDER BY up.id ASC
+      GROUP BY up.session_db_id, up.prompt_text
+      ORDER BY id ASC
     `).all(project) as Array<{ id: number }>;
     const observationBootstrap = this.summarizeBootstrapPending(observationIds.map(row => row.id), existing.observations);
     const summaryBootstrap = this.summarizeBootstrapPending(summaryIds.map(row => row.id), existing.summaries);
@@ -749,11 +740,11 @@ export class ChromaSync {
    * Shared batch/watermark loop for all three backfill kinds. Returns the
    * number of documents produced from `rows`.
    *
-   * Watermark durability is row-atomic, not batch-atomic: one observation or
-   * summary can expand into several Chroma documents and span multiple
-   * BATCH_SIZE writes. We only clear pending state and bump the row watermark
-   * after every document for that row lands, otherwise a later batch failure or
-   * restart can strand the tail of a split row forever.
+   * Watermark correctness is row-atomic, but transport writes are document-
+   * batched. Packing complete source rows into BATCH_SIZE calls avoids one MCP
+   * embedding request per observation while still recording every source row
+   * in an under-written batch as pending. A single source row larger than one
+   * batch remains pending until all of its chunks land.
    */
   private async backfillKind<T extends { id: number }>(
     rows: T[],
@@ -764,47 +755,92 @@ export class ChromaSync {
     const rowsWithDocs = rows.map(row => ({ row, docs: formatDocs(row) }));
     const totalDocs = rowsWithDocs.reduce((sum, { docs }) => sum + docs.length, 0);
     let processedDocs = 0;
+    let pendingBatch: Array<{ row: T; docs: ChromaDocument[] }> = [];
+    let pendingDocCount = 0;
 
-    for (const { row, docs } of rowsWithDocs) {
-      if (docs.length === 0) {
-        continue;
-      }
+    const logProgress = (): void => {
+      logger.debug('CHROMA_SYNC', 'Backfill progress', {
+        project: backfillProject,
+        progress: `${Math.min(processedDocs, totalDocs)}/${totalDocs}`
+      });
+    };
 
-      let rowComplete = true;
-      for (let i = 0; i < docs.length; i += this.BATCH_SIZE) {
-        const batch = docs.slice(i, i + this.BATCH_SIZE);
-        const writtenInBatch = await this.addDocuments(batch);
-        processedDocs += batch.length;
-        // Only advance the watermark for documents that actually landed in
-        // Chroma. addDocuments() logs and continues on per-batch failures, so a
-        // partial write must not mark unwritten docs as synced.
-        if (writtenInBatch < batch.length) {
-          ChromaSyncState.markPending(backfillProject, kind, [row.id]);
-          logger.debug('CHROMA_SYNC', 'Recorded pending watermark gap for failed/partial row batch', {
-            project: backfillProject,
-            kind,
-            rowId: row.id,
-            batchStart: i,
-            requested: batch.length,
-            written: writtenInBatch
-          });
-          rowComplete = false;
-          break;
-        }
+    const flushPackedRows = async (): Promise<void> => {
+      if (pendingBatch.length === 0) return;
 
-        logger.debug('CHROMA_SYNC', 'Backfill progress', {
+      const batchRows = pendingBatch;
+      const batch = batchRows.flatMap(({ docs }) => docs);
+      const rowIds = batchRows.map(({ row }) => row.id);
+      pendingBatch = [];
+      pendingDocCount = 0;
+
+      const writtenInBatch = await this.addDocuments(batch);
+      processedDocs += batch.length;
+      if (writtenInBatch === batch.length) {
+        ChromaSyncState.completeBatch(backfillProject, kind, rowIds);
+      } else {
+        // addDocuments reports a count, not the identities that landed. Keep
+        // every source row in the partial batch pending rather than advancing
+        // a watermark across an uncertain gap.
+        ChromaSyncState.markPending(backfillProject, kind, rowIds);
+        logger.debug('CHROMA_SYNC', 'Recorded pending watermark gaps for failed/partial packed batch', {
           project: backfillProject,
-          progress: `${Math.min(processedDocs, totalDocs)}/${totalDocs}`
+          kind,
+          rowIds,
+          requested: batch.length,
+          written: writtenInBatch
         });
       }
+      logProgress();
+    };
 
-      if (!rowComplete) {
+    for (const entry of rowsWithDocs) {
+      const { row, docs } = entry;
+      if (docs.length === 0) {
+        await flushPackedRows();
+        ChromaSyncState.completeBatch(backfillProject, kind, [row.id]);
         continue;
       }
 
-      ChromaSyncState.clearPending(backfillProject, kind, [row.id]);
-      ChromaSyncState.bump(backfillProject, kind, row.id);
+      if (docs.length > this.BATCH_SIZE) {
+        await flushPackedRows();
+        let rowComplete = true;
+        for (let i = 0; i < docs.length; i += this.BATCH_SIZE) {
+          const batch = docs.slice(i, i + this.BATCH_SIZE);
+          const writtenInBatch = await this.addDocuments(batch);
+          processedDocs += batch.length;
+          if (writtenInBatch < batch.length) {
+            ChromaSyncState.markPending(backfillProject, kind, [row.id]);
+            logger.debug('CHROMA_SYNC', 'Recorded pending watermark gap for failed/partial oversized row', {
+              project: backfillProject,
+              kind,
+              rowId: row.id,
+              batchStart: i,
+              requested: batch.length,
+              written: writtenInBatch
+            });
+            rowComplete = false;
+            break;
+          }
+          logProgress();
+        }
+        if (rowComplete) {
+          ChromaSyncState.completeBatch(backfillProject, kind, [row.id]);
+        }
+        continue;
+      }
+
+      if (pendingDocCount + docs.length > this.BATCH_SIZE) {
+        await flushPackedRows();
+      }
+      pendingBatch.push(entry);
+      pendingDocCount += docs.length;
+      if (pendingDocCount === this.BATCH_SIZE) {
+        await flushPackedRows();
+      }
     }
+
+    await flushPackedRows();
 
     return totalDocs;
   }
@@ -924,15 +960,24 @@ export class ChromaSync {
   ): Promise<number> {
     const pendingIds = ChromaSyncState.getPending(backfillProject, 'prompts');
     const prompts = db.db.prepare(`
-      SELECT
-        up.*,
-        s.project,
-        s.memory_session_id,
-        COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
-      FROM user_prompts up
-      JOIN sdk_sessions s ON up.session_db_id = s.id
-      WHERE s.project = ? AND up.id > ?
-      ORDER BY up.id ASC
+      WITH deduped_prompts AS (
+        SELECT
+          up.*,
+          s.project,
+          s.memory_session_id,
+          COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source,
+          ROW_NUMBER() OVER (
+            PARTITION BY up.session_db_id, up.prompt_text
+            ORDER BY up.id DESC
+          ) as dedupe_rank
+        FROM user_prompts up
+        JOIN sdk_sessions s ON up.session_db_id = s.id
+        WHERE s.project = ?
+      )
+      SELECT *
+      FROM deduped_prompts
+      WHERE dedupe_rank = 1 AND id > ?
+      ORDER BY id ASC
     `).all(backfillProject, watermark) as StoredUserPrompt[];
     let pendingRows: StoredUserPrompt[] = [];
     if (pendingIds.length > 0) {
@@ -946,6 +991,13 @@ export class ChromaSync {
         FROM user_prompts up
         JOIN sdk_sessions s ON up.session_db_id = s.id
         WHERE s.project = ? AND up.id IN (${placeholders})
+          AND NOT EXISTS (
+            SELECT 1
+            FROM user_prompts newer
+            WHERE newer.session_db_id = up.session_db_id
+              AND newer.prompt_text = up.prompt_text
+              AND newer.id > up.id
+          )
         ORDER BY up.id ASC
       `).all(backfillProject, ...pendingIds) as StoredUserPrompt[];
       const foundPendingIds = new Set(pendingRows.map(row => row.id));
@@ -962,9 +1014,13 @@ export class ChromaSync {
 
     const totalPromptCount = db.db.prepare(`
       SELECT COUNT(*) as count
-      FROM user_prompts up
-      JOIN sdk_sessions s ON up.session_db_id = s.id
-      WHERE s.project = ?
+      FROM (
+        SELECT 1
+        FROM user_prompts up
+        JOIN sdk_sessions s ON up.session_db_id = s.id
+        WHERE s.project = ?
+        GROUP BY up.session_db_id, up.prompt_text
+      )
     `).get(backfillProject) as { count: number };
 
     logger.info('CHROMA_SYNC', 'Backfilling user prompts', {
@@ -1068,7 +1124,9 @@ export class ChromaSync {
   private static backfillInProgress = false;
 
   /**
-   * Backfill all projects that have observations in SQLite but may be missing from Chroma.
+   * Backfill all projects that have any searchable SQLite entity but may be
+   * missing from Chroma. Some Codex/worktree projects contain prompts only;
+   * enumerating observations alone silently omitted those projects forever.
    * Uses a single shared ChromaSync('claude-mem') instance and Chroma connection.
    * Per-project scoping is passed as a parameter to ensureBackfilled(), avoiding
    * instance state mutation. All documents land in the cm__claude-mem collection
@@ -1089,9 +1147,21 @@ export class ChromaSync {
 
     ChromaSync.backfillInProgress = true;
     try {
-      const projects = store.db.prepare(
-        'SELECT DISTINCT project FROM observations WHERE project IS NOT NULL AND project != ?'
-      ).all('') as { project: string }[];
+      const projects = store.db.prepare(`
+        SELECT project
+        FROM observations
+        WHERE project IS NOT NULL AND project != ''
+        UNION
+        SELECT project
+        FROM session_summaries
+        WHERE project IS NOT NULL AND project != ''
+        UNION
+        SELECT s.project
+        FROM user_prompts up
+        JOIN sdk_sessions s ON s.id = up.session_db_id
+        WHERE s.project IS NOT NULL AND s.project != ''
+        ORDER BY project
+      `).all() as { project: string }[];
 
       logger.info('CHROMA_SYNC', `Backfill check for ${projects.length} projects`);
 
@@ -1114,6 +1184,7 @@ export class ChromaSync {
       // before starting the next one. Simple and predictable — no semaphore
       // overhead, no unbounded fan-out.
       const concurrency = ChromaSync.BACKFILL_CONCURRENCY_LIMIT;
+      const failedProjects = new Set<string>();
       for (let i = 0; i < projects.length; i += concurrency) {
         const chunk = projects.slice(i, i + concurrency);
         const chunkResults = await Promise.allSettled(
@@ -1124,6 +1195,7 @@ export class ChromaSync {
           const result = chunkResults[j];
           if (result.status === 'rejected') {
             const project = chunk[j].project;
+            failedProjects.add(project);
             const error = result.reason;
             if (error instanceof Error) {
               logger.error('CHROMA_SYNC', `Backfill failed for project: ${project}`, {}, error);
@@ -1133,6 +1205,54 @@ export class ChromaSync {
             // Continue to next chunk — don't let one failure stop others
           }
         }
+      }
+
+      // addDocuments deliberately records uncertain rows as pending instead
+      // of aborting the whole rebuild. Give transient failures one bounded
+      // repair pass, then reject the overall backfill if any gap remains so
+      // worker-service never logs a false "complete for all projects" result.
+      const kinds: Array<'observations' | 'summaries' | 'prompts'> = [
+        'observations',
+        'summaries',
+        'prompts',
+      ];
+      const projectsWithPending = projects
+        .map(({ project }) => project)
+        .filter(project => kinds.some(kind => ChromaSyncState.getPending(project, kind).length > 0));
+      const repairProjects = [...new Set([...failedProjects, ...projectsWithPending])];
+
+      if (repairProjects.length > 0) {
+        logger.warn('CHROMA_SYNC', 'Retrying incomplete projects once', {
+          projects: repairProjects,
+        });
+        for (const project of repairProjects) {
+          try {
+            await sync.ensureBackfilled(project, store);
+            failedProjects.delete(project);
+          } catch (error) {
+            failedProjects.add(project);
+            logger.error('CHROMA_SYNC', `Backfill repair failed for project: ${project}`,
+              {}, error instanceof Error ? error : new Error(String(error)));
+          }
+        }
+      }
+
+      const unresolvedPending = projects
+        .map(({ project }) => ({
+          project,
+          pending: Object.fromEntries(
+            kinds
+              .map(kind => [kind, ChromaSyncState.getPending(project, kind)] as const)
+              .filter(([, ids]) => ids.length > 0),
+          ),
+        }))
+        .filter(({ pending }) => Object.keys(pending).length > 0);
+
+      if (failedProjects.size > 0 || unresolvedPending.length > 0) {
+        throw new Error(
+          `Chroma backfill incomplete: failedProjects=${JSON.stringify([...failedProjects])} ` +
+          `pending=${JSON.stringify(unresolvedPending)}`
+        );
       }
     } finally {
       ChromaSync.backfillInProgress = false;

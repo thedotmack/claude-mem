@@ -45,6 +45,7 @@
     "plugin/modes",
     "plugin/scripts/*.js",
     "plugin/scripts/*.cjs",
+    "plugin/scripts/*.py",
     "plugin/sqlite",
     "plugin/skills",
     "plugin/ui",
