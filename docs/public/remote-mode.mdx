@@ -1,0 +1,105 @@
+---
+title: "Remote Mode (Claude Code on the web)"
+description: "Connect your CMEM Pro account from ephemeral Claude Code cloud containers on claude.ai — credentials pre-filled once in your environment settings, memory that follows your account instead of your machine."
+---
+
+# Remote Mode (Claude Code on the web)
+
+Claude Code cloud sessions on claude.ai run in **ephemeral containers**: every
+session starts from a blank filesystem, and the container is thrown away when
+the session ends. Without help, claude-mem would begin every cloud session
+with an empty memory and lose everything it learned when the session closed.
+
+Remote mode fixes both directions. At session start the plugin **pulls your
+account's memories down** from SyncHub before the first context injection, and
+during the session every new observation **pushes back up** — so memory
+follows your **cmem.ai Pro account**, not the machine.
+
+## Setup (one time)
+
+<Steps>
+  <Step title="Install the claude-mem plugin">
+    Cloud sessions use the same plugin marketplace as your local Claude Code.
+    If claude-mem is installed locally, it is available in your cloud sessions
+    too.
+  </Step>
+  <Step title="Copy your remote-mode variables">
+    Open **[cmem.ai/pro/remote](https://cmem.ai/pro/remote)** (requires an
+    active Pro account). It shows a ready-to-paste block of three environment
+    variables with your credentials pre-filled:
+
+    ```text
+    CLAUDE_MEM_REMOTE_MODE=true
+    CLAUDE_MEM_PRO_TOKEN=cm_pro_…
+    CLAUDE_MEM_PRO_USER_ID=…
+    ```
+  </Step>
+  <Step title="Add them to your environment settings">
+    On claude.ai, open your Claude Code **environment settings** (choose the
+    environment when starting a session → settings → environment variables)
+    and add the three variables. They become plain env vars inside every
+    container started from that environment.
+  </Step>
+  <Step title="Start a new cloud session">
+    Environment variables apply at container start. In the new session, memory
+    from your account is injected from the very first prompt.
+  </Step>
+</Steps>
+
+## What the credentials expand into
+
+Remote mode activates when both `CLAUDE_MEM_PRO_TOKEN` and
+`CLAUDE_MEM_PRO_USER_ID` are present (and `CLAUDE_MEM_REMOTE_MODE` is not
+`false`). The plugin then derives the full connection — **only for keys you
+have not set yourself**:
+
+| Derived key | Value |
+|---|---|
+| `CLAUDE_MEM_CLOUD_SYNC_TOKEN` / `_USER_ID` | your Pro credentials |
+| `CLAUDE_MEM_CLOUD_SYNC_HUB_URL` | `https://sync.cmem.ai` |
+| `CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME` | `Claude Code cloud` |
+| `CLAUDE_MEM_PROVIDER` | `openrouter` |
+| `CLAUDE_MEM_OPENROUTER_BASE_URL` | `https://cmem.ai/api/inference/v1` (the Pro inference gateway) |
+| `CLAUDE_MEM_OPENROUTER_API_KEY` | your Pro token |
+| `CLAUDE_MEM_OPENROUTER_MODEL` | `cmem-observer` |
+| `CLAUDE_MEM_CHROMA_ENABLED` | `false` — no local vector store on a disposable disk |
+
+Every derived key is still individually overridable through the same
+environment settings (for example set `CLAUDE_MEM_CHROMA_ENABLED=true` to
+bring local vector search back). Set `CLAUDE_MEM_REMOTE_MODE=false` to turn
+all derivation off. The derivations live only in memory — credentials are
+never written into `settings.json`.
+
+## The cold-start pull
+
+An ephemeral container has never pulled anything, so the first context
+injection of a session runs a **bounded catch-up pull** against SyncHub
+(default budget 20 seconds, tunable via
+`CLAUDE_MEM_REMOTE_BOOTSTRAP_TIMEOUT_MS`) before compiling context. If your
+corpus is very large the first injection may be partial; the worker keeps
+pulling in the background and subsequent injections are complete. Every later
+injection uses the normal fast 1.5-second freshness pull.
+
+Each container registers as its **own device** in the cmem.ai Devices panel
+(named "Claude Code cloud" by default). That is deliberate — sync cursors are
+per-device and containers must never share one.
+
+## Verifying
+
+Inside a cloud session, ask Claude to run the plugin's **remote-mode skill**
+("check claude-mem remote mode"), or query the worker directly:
+
+```bash
+curl -s "http://127.0.0.1:${CLAUDE_MEM_WORKER_PORT:-37700}/api/sync/status"
+```
+
+`remoteMode: true`, `configured: true`, and `hub.reachable: true` means the
+session is connected to your account.
+
+<Note>
+Remote mode syncs observation narratives and full prompt text from cloud
+sessions to your cmem.ai account, and pulls your account's memories into the
+container for context. The token grants write access to your memory and
+metered access to the Pro inference gateway — treat your environment settings
+as secret storage.
+</Note>

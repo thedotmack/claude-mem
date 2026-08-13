@@ -392,6 +392,45 @@ export class SyncClient {
    * poll tier is stretched, so "wait for the next poll" could mean minutes.
    * Single-flight still holds either way.
    */
+  /**
+   * Sync cursor (SyncApply-owned, read-only here). '0' means nothing has ever
+   * been pulled into this database — the remote-mode cold-start signal an
+   * ephemeral container uses to trade a longer first-inject budget for a
+   * populated context.
+   */
+  getCursor(): string {
+    return this.apply.getCursor();
+  }
+
+  /**
+   * Remote-mode cold start: loop full pull cycles until the hub reports no
+   * more ops, progress stalls (caught up or failing — pullCycle never
+   * throws), or the deadline passes. A fresh container's corpus can span many
+   * pages, so a single page-capped pullCycle is not enough; the no-progress
+   * exit keeps a dead network from burning the whole budget in retries.
+   * Same session-activity/suspension bookkeeping as pullOnce.
+   */
+  async bootstrapPull(options: { timeoutMs: number }): Promise<void> {
+    try {
+      const deadline = this.now() + options.timeoutMs;
+      for (;;) {
+        if (this.stopped) return;
+        this.lastActiveAt = this.now();
+        this.resumeIfSuspended();
+        const before = this.apply.getCursor();
+        await this.pullCycle(deadline);
+        if (this.now() >= deadline) return;
+        if (this.apply.getCursor() === before) return;
+      }
+    } finally {
+      // Re-arm the loop if it was suspended (mirrors pullOnce).
+      if (this.started && !this.stopped && this.timer === null) {
+        const delay = this.currentDelay();
+        this.schedule(delay ?? this.idlePollMs);
+      }
+    }
+  }
+
   async pullOnce(options: { timeoutMs?: number; force?: boolean } = {}): Promise<void> {
     try {
       if (this.stopped) return;

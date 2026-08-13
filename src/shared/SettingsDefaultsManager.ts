@@ -4,6 +4,7 @@ import { join } from 'path';
 import { homedir, hostname } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
+import { applyRemoteModeDerivations } from './remote-mode.js';
 
 // A fresh settings.json is seeded with EVERY default (see loadFromFile), and
 // persisted values then win over DEFAULTS. So any install created after the
@@ -85,6 +86,15 @@ export interface SettingsDefaults {
   // entirely (the old per-kind cmem.ai lane was deleted in the hub cutover).
   CLAUDE_MEM_CLOUD_SYNC_TOKEN: string;
   CLAUDE_MEM_CLOUD_SYNC_USER_ID: string;
+  // Remote mode (ephemeral Claude Code cloud containers): the Pro credential
+  // pair below expands into cloud sync + Pro inference via
+  // applyRemoteModeDerivations (src/shared/remote-mode.ts). Pre-filled as env
+  // vars through the claude.ai environment settings; see docs remote-mode.
+  CLAUDE_MEM_REMOTE_MODE: string;
+  CLAUDE_MEM_PRO_TOKEN: string;
+  CLAUDE_MEM_PRO_USER_ID: string;
+  CLAUDE_MEM_PRO_ORIGIN: string;
+  CLAUDE_MEM_REMOTE_BOOTSTRAP_TIMEOUT_MS: string;
   CLAUDE_MEM_CLOUD_SYNC_HUB_URL: string;
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: string;
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: string;
@@ -174,6 +184,14 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
     CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: '120000',
     CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: '5000', // Bound burst imports without changing normal live indexing
+    // Remote mode (see remote-mode.ts). REMOTE_MODE: 'auto' activates when
+    // both Pro credentials are present; 'true' documents intent explicitly;
+    // 'false' disables all derivation.
+    CLAUDE_MEM_REMOTE_MODE: 'auto',
+    CLAUDE_MEM_PRO_TOKEN: '',
+    CLAUDE_MEM_PRO_USER_ID: '',
+    CLAUDE_MEM_PRO_ORIGIN: '',  // Empty = https://cmem.ai (kept empty so the shipped default can move without a settings migration)
+    CLAUDE_MEM_REMOTE_BOOTSTRAP_TIMEOUT_MS: '20000',  // Cold-start SyncHub catch-up budget at first context inject
     // Worker-native cloud sync: credentials come from cmem.ai → Connect.
     CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
     CLAUDE_MEM_CLOUD_SYNC_USER_ID: '',
@@ -218,6 +236,14 @@ export class SettingsDefaultsManager {
     return parseInt(value, 10);
   }
 
+  // Effective-settings finalizer: env wins per key, then remote mode (if
+  // active) expands the Pro credential pair into the connection keys. Runs
+  // only on the applyEnvOverrides=true path — raw-file loads (settings UI)
+  // stay derivation-free so the file round-trips unchanged.
+  private static finalize(settings: SettingsDefaults): SettingsDefaults {
+    return applyRemoteModeDerivations(this.applyEnvOverrides(settings), this.DEFAULTS);
+  }
+
   private static applyEnvOverrides(settings: SettingsDefaults): SettingsDefaults {
     const result = { ...settings };
     for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
@@ -241,7 +267,7 @@ export class SettingsDefaultsManager {
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error instanceof Error ? error.message : String(error));
         }
-        return applyEnvOverrides ? this.applyEnvOverrides(defaults) : defaults;
+        return applyEnvOverrides ? this.finalize(defaults) : defaults;
       }
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
@@ -284,11 +310,11 @@ export class SettingsDefaultsManager {
         }
       }
 
-      return applyEnvOverrides ? this.applyEnvOverrides(result) : result;
+      return applyEnvOverrides ? this.finalize(result) : result;
     } catch (error: unknown) {
       console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error instanceof Error ? error.message : String(error));
       const defaults = this.getAllDefaults();
-      return applyEnvOverrides ? this.applyEnvOverrides(defaults) : defaults;
+      return applyEnvOverrides ? this.finalize(defaults) : defaults;
     }
   }
 }

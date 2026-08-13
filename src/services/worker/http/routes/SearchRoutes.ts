@@ -11,6 +11,7 @@ import { logger } from '../../../../utils/logger.js';
 import { groupByDate } from '../../../../shared/timeline-formatting.js';
 import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { isRemoteModeActive, remoteBootstrapTimeoutMs } from '../../../../shared/remote-mode.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
@@ -76,7 +77,13 @@ export class SearchRoutes extends BaseRouteHandler {
     // Structural type (not the SyncClient class) so tests can pass a stub and
     // route construction stays decoupled from sync wiring. Null when sync is
     // unconfigured — context injection then skips the session-start pull.
-    private syncClient: { pullOnce(options?: { timeoutMs?: number }): Promise<void> } | null = null
+    // getCursor/bootstrapPull are optional so existing stubs keep compiling;
+    // both must be present for the remote-mode cold-start path to engage.
+    private syncClient: {
+      pullOnce(options?: { timeoutMs?: number }): Promise<void>;
+      getCursor?(): string;
+      bootstrapPull?(options: { timeoutMs: number }): Promise<void>;
+    } | null = null
   ) {
     super();
   }
@@ -298,6 +305,26 @@ export class SearchRoutes extends BaseRouteHandler {
     }
 
     const settings = this.getCachedSettings();
+
+    // Remote-mode cold start (ephemeral Claude Code cloud containers): the
+    // database is empty on every boot, so catch up from SyncHub BEFORE the
+    // welcome-hint emptiness check and context compilation — otherwise the
+    // first session of every container would be told "no memory yet" despite
+    // a populated cloud account. Gated on cursor '0' (nothing ever pulled),
+    // so once any pull lands the cheap 1500 ms path below takes over.
+    // isRemoteModeActive reads env-first — required, because getCachedSettings
+    // deliberately loads without env overrides and remote-mode credentials
+    // arrive as env vars.
+    let bootstrapped = false;
+    if (
+      this.syncClient?.bootstrapPull &&
+      this.syncClient.getCursor?.() === '0' &&
+      isRemoteModeActive(settings)
+    ) {
+      await this.syncClient.bootstrapPull({ timeoutMs: remoteBootstrapTimeoutMs(settings) });
+      bootstrapped = true;
+    }
+
     // Env always wins over cached settings (mirrors SettingsDefaultsManager
     // applyEnvOverrides semantics). Reading process.env is free, so honoring it
     // here keeps the welcome-hint toggle responsive without waiting out the
@@ -324,7 +351,7 @@ export class SearchRoutes extends BaseRouteHandler {
     // catch up on other devices' ops before compiling context. Hard-bounded so
     // a dead network can't stall injection; pullOnce never throws — failure
     // simply proceeds with local data.
-    if (this.syncClient) {
+    if (this.syncClient && !bootstrapped) {
       await this.syncClient.pullOnce({ timeoutMs: 1500 });
     }
 

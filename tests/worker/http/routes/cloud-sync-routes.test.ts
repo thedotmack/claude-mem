@@ -89,7 +89,9 @@ describe('CloudSyncRoutes — GET /api/sync/status', () => {
 
     expect(probe).toHaveBeenCalledTimes(1);
     expect(jsonSpy).toHaveBeenCalledTimes(1);
-    expect(jsonSpy).toHaveBeenCalledWith(status);
+    // remoteMode rides along on every status payload (no Pro creds in the
+    // test env → false).
+    expect(jsonSpy).toHaveBeenCalledWith({ ...status, remoteMode: false });
     expect(statusSpy).not.toHaveBeenCalled(); // implicit 200
   });
 
@@ -103,7 +105,7 @@ describe('CloudSyncRoutes — GET /api/sync/status', () => {
     await invoke(handler, req, res, jsonSpy);
 
     expect(jsonSpy).toHaveBeenCalledTimes(1);
-    expect(jsonSpy).toHaveBeenCalledWith({ configured: false });
+    expect(jsonSpy).toHaveBeenCalledWith({ configured: false, remoteMode: false });
     expect(statusSpy).not.toHaveBeenCalled(); // no error status set
   });
 
