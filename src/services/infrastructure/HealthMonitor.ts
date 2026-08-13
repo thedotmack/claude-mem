@@ -6,6 +6,14 @@ import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { MARKETPLACE_ROOT, USER_SETTINGS_PATH } from '../../shared/paths.js';
 
+const REQUEST_TIMEOUT_MS = 5000;
+
+function createRequestTimeout(timeoutMs: number): { controller: AbortController; timer: ReturnType<typeof setTimeout> } {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1, timeoutMs));
+  return { controller, timer };
+}
+
 function getWorkerHost(): string {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
 }
@@ -20,22 +28,34 @@ function formatHostForUrl(host: string): string {
 async function httpRequestToWorker(
   port: number,
   endpointPath: string,
-  method: string = 'GET'
+  method: string = 'GET',
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
-  const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, { method });
-  let body = '';
+  const { controller, timer } = createRequestTimeout(timeoutMs);
   try {
-    body = await response.text();
-  } catch {
-    // Body unavailable — health/readiness checks only need .ok
+    const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, {
+      method,
+      signal: controller.signal,
+    });
+    let body = '';
+    try {
+      body = await response.text();
+    } catch {
+      // Body unavailable — health/readiness checks only need .ok
+    }
+    return { ok: response.ok, statusCode: response.status, body };
+  } finally {
+    clearTimeout(timer);
   }
-  return { ok: response.ok, statusCode: response.status, body };
 }
 
-export async function isPortInUse(port: number): Promise<boolean> {
+export async function isPortInUse(port: number, timeoutMs: number = REQUEST_TIMEOUT_MS): Promise<boolean> {
   if (process.platform === 'win32') {
+    const { controller, timer } = createRequestTimeout(timeoutMs);
     try {
-      const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`);
+      const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`, {
+        signal: controller.signal,
+      });
       return response.ok;
     } catch (error) {
       if (error instanceof Error) {
@@ -44,6 +64,8 @@ export async function isPortInUse(port: number): Promise<boolean> {
         logger.debug('SYSTEM', 'Windows health check failed (port not in use)', { error: String(error) });
       }
       return false;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -70,10 +92,11 @@ async function pollEndpointUntilOk(
   timeoutMs: number,
   retryLogMessage: string
 ): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     try {
-      const result = await httpRequestToWorker(port, endpointPath);
+      const remainingMs = deadline - Date.now();
+      const result = await httpRequestToWorker(port, endpointPath, 'GET', Math.min(REQUEST_TIMEOUT_MS, remainingMs));
       if (result.ok) return true;
     } catch (error) {
       if (error instanceof Error) {
@@ -82,7 +105,10 @@ async function pollEndpointUntilOk(
         logger.debug('SYSTEM', retryLogMessage, { error: String(error) });
       }
     }
-    await new Promise(r => setTimeout(r, 500));
+    const retryDelayMs = Math.min(500, deadline - Date.now());
+    if (retryDelayMs > 0) {
+      await new Promise(r => setTimeout(r, retryDelayMs));
+    }
   }
   return false;
 }
@@ -96,10 +122,14 @@ export function waitForReadiness(port: number, timeoutMs: number = 30000): Promi
 }
 
 export async function waitForPortFree(port: number, timeoutMs: number = 10000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (!(await isPortInUse(port))) return true;
-    await new Promise(r => setTimeout(r, 500));
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const remainingMs = deadline - Date.now();
+    if (!(await isPortInUse(port, Math.min(REQUEST_TIMEOUT_MS, remainingMs)))) return true;
+    const retryDelayMs = Math.min(500, deadline - Date.now());
+    if (retryDelayMs > 0) {
+      await new Promise(r => setTimeout(r, retryDelayMs));
+    }
   }
   return false;
 }
