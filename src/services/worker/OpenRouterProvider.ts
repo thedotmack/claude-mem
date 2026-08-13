@@ -108,6 +108,7 @@ interface OpenRouterResponse {
     message?: {
       role?: string;
       content?: string;
+      reasoning_content?: string;
     };
     finish_reason?: string;
   }>;
@@ -286,12 +287,20 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       return responseData;
     }, { label: `OpenRouter ${model}` });
 
-    if (!data.choices?.[0]?.message?.content) {
+    const choice = data.choices?.[0];
+    const message = choice?.message;
+    if (!message || typeof message.content !== 'string') {
       logger.error('SDK', 'Empty response from OpenRouter');
       return { content: '' };
     }
 
-    const content = data.choices[0].message.content;
+    const content = message.content;
+    if (content.length === 0) {
+      logger.debug('SDK', 'OpenRouter returned an empty message', {
+        finishReason: choice.finish_reason,
+        hasReasoningContent: Boolean(message.reasoning_content),
+      });
+    }
     const tokensUsed = data.usage?.total_tokens;
     const realInputTokens = data.usage?.prompt_tokens;
     const realOutputTokens = data.usage?.completion_tokens;
