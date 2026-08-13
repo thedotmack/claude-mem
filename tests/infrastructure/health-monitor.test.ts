@@ -24,6 +24,22 @@ describe('HealthMonitor', () => {
 
   describe('isPortInUse', () => {
 
+    it('should not report a timed-out Windows health probe as a free port', async () => {
+      if (process.platform !== 'win32') return;
+
+      global.fetch = mock((_input: RequestInfo | URL, init?: RequestInit) => new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) {
+          reject(new Error('expected an abort signal'));
+          return;
+        }
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      }));
+
+      expect(await isPortInUse(37777, 50)).toBe(true);
+      expect(await waitForPortFree(37777, 100)).toBe(false);
+    });
+
     it('should return true for occupied port (EADDRINUSE)', async () => {
       const createServerMock = mock(() => ({
         once: mock((event: string, cb: Function) => {

@@ -58,6 +58,10 @@ export async function isPortInUse(port: number, timeoutMs: number = REQUEST_TIME
       });
       return response.ok;
     } catch (error) {
+      if (controller.signal.aborted) {
+        logger.debug('SYSTEM', 'Windows health check timed out (treating port as occupied)', {});
+        return true;
+      }
       if (error instanceof Error) {
         logger.debug('SYSTEM', 'Windows health check failed (port not in use)', {}, error);
       } else {
