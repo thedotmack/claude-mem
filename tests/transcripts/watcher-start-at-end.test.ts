@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import type { NormalizedHookInput } from '../../src/cli/types.js';
 import type { TranscriptSchema, WatchTarget } from '../../src/services/transcripts/types.js';
 
@@ -40,6 +40,29 @@ describe('TranscriptWatcher startAtEnd', () => {
   afterEach(() => {
     loggerSpies.forEach(spy => spy.mockRestore());
     rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('discovers transcripts inside dot-directories', () => {
+    const transcriptPath = join(
+      tmpRoot,
+      'brain',
+      'conversation-id',
+      '.system_generated',
+      'logs',
+      'transcript_full.jsonl',
+    );
+    mkdirSync(join(transcriptPath, '..'), { recursive: true });
+    writeFileSync(transcriptPath, '', 'utf8');
+
+    const watcher = new TranscriptWatcher(
+      { version: 1, watches: [] },
+      join(tmpRoot, 'state.json'),
+    );
+    const pattern = join(tmpRoot, 'brain', '**', '.system_generated', 'logs', 'transcript_full.jsonl');
+
+    const matches = (watcher as any).resolveWatchFiles(pattern) as string[];
+
+    expect(matches.map(match => resolve(match))).toEqual([resolve(transcriptPath)]);
   });
 
   it('does not replay history from transcript files discovered after startup', async () => {
