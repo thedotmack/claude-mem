@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, mock, spyOn } from 'bun:test';
+import fsDefault from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
@@ -824,6 +825,27 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
       kind: 'vector_search_unavailable',
       message: expect.stringContaining('unreadable'),
     });
+  });
+
+  it('acquires the writer lock through an exclusive create when hard links are unsupported', async () => {
+    const linkSpy = spyOn(fsDefault, 'linkSync').mockImplementation(() => {
+      const error: NodeJS.ErrnoException = new Error('operation not supported');
+      error.code = 'EOPNOTSUPP';
+      throw error;
+    });
+    try {
+      const mgr = ChromaMcpManager.getInstance();
+
+      await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+      expect(linkSpy).toHaveBeenCalled();
+      expect(existsSync(chromaWriterLockPath())).toBe(true);
+      const lock = JSON.parse(readFileSync(chromaWriterLockPath(), 'utf-8'));
+      expect(lock.pid).toBe(process.pid);
+      expect(transportInstances.length).toBe(1);
+    } finally {
+      linkSpy.mockRestore();
+    }
   });
 
   it('preserves remote mutation concurrency', async () => {

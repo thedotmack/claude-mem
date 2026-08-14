@@ -423,24 +423,30 @@ export class ChromaMcpManager {
 
         const existing = ChromaMcpManager.readChromaWriterLock(lockPath);
         if (!existing) {
-          // The lock file cannot be parsed. Removing it is the only way out,
-          // because an unreadable lock can never be judged live or stale. Wait
-          // out a short grace period first, then remove it and retry so a
-          // zero-byte or truncated leftover cannot wedge Chroma forever.
-          if (!ChromaMcpManager.isUnreadableChromaWriterLockStale(lockPath)) {
+          // The lock file cannot be parsed, so it can never be judged live or
+          // stale by content. Fall back to file age: an unparseable lock older
+          // than the grace period is a zero-byte or truncated leftover, safe to
+          // reclaim so it cannot wedge Chroma forever.
+          let lockStat: fs.Stats;
+          try {
+            lockStat = fs.statSync(lockPath);
+          } catch {
+            // Gone under us between the failed publish and here — just retry.
+            continue;
+          }
+          if (Date.now() - lockStat.mtimeMs < CHROMA_WRITER_LOCK_UNREADABLE_GRACE_MS) {
             const message = `Chroma writer lock at ${lockPath} is unreadable; refusing to start a second writer`;
             recordChromaVectorSearchUnavailable(message);
             throw new ChromaUnavailableError(message);
           }
-          try {
-            fs.rmSync(lockPath, { force: true });
-            logger.info('CHROMA_MCP', 'Removed unreadable Chroma writer lock', { lockPath });
+          // Remove it only if it is still the same unparseable file. Another
+          // worker may have reclaimed and published a valid lock in the race
+          // window; deleting that would leave two writers on one data dir.
+          if (!ChromaMcpManager.removeStaleUnreadableChromaWriterLock(lockPath, lockStat)) {
             continue;
-          } catch (removeError) {
-            const message = `Unable to remove unreadable Chroma writer lock at ${lockPath}: ${removeError instanceof Error ? removeError.message : String(removeError)}`;
-            recordChromaVectorSearchUnavailable(message);
-            throw new ChromaUnavailableError(message, removeError instanceof Error ? removeError : undefined);
           }
+          logger.info('CHROMA_MCP', 'Removed unreadable Chroma writer lock', { lockPath });
+          continue;
         }
 
         if (existing.pid === process.pid && existing.ownerId === this.chromaWriterOwnerId) {
@@ -517,29 +523,65 @@ export class ChromaMcpManager {
    * already held, which keeps the exclusive-create guard that stops a second
    * writer from opening the same data dir. `rename` cannot do this — it would
    * clobber a live lock and let two writers coexist.
+   *
+   * Some filesystems do not support hard links (`link` fails with EPERM /
+   * EOPNOTSUPP / ENOSYS). There we fall back to an exclusive create, which is
+   * still non-clobbering: `wx` fails with EEXIST when the lock exists. Any
+   * zero-byte window that fallback leaves is now recoverable through the
+   * unreadable-lock grace path.
    */
   private static writeChromaWriterLockAtomically(lockPath: string, payload: ChromaWriterLockPayload): void {
+    const serialized = JSON.stringify(payload, null, 2);
     const tempPath = `${lockPath}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
-    fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2), { encoding: 'utf-8' });
+    fs.writeFileSync(tempPath, serialized, { encoding: 'utf-8' });
     try {
       fs.linkSync(tempPath, lockPath);
+    } catch (error) {
+      const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+      if (code === 'EEXIST') {
+        throw error;
+      }
+      fs.writeFileSync(lockPath, serialized, { encoding: 'utf-8', flag: 'wx' });
     } finally {
       fs.rmSync(tempPath, { force: true });
     }
   }
 
   /**
-   * Decide whether an unparseable writer lock is old enough to reclaim. Age is
-   * measured from the file mtime; a lock we can no longer stat is already gone,
-   * so it counts as stale.
+   * Remove an unparseable writer lock only when it is still the same file first
+   * seen. Returns false when another worker replaced or changed it in the race
+   * window — a valid lock now, or a different inode — so the caller re-evaluates
+   * instead of deleting a lock it does not own. Throws when a genuine removal
+   * fails.
    */
-  private static isUnreadableChromaWriterLockStale(lockPath: string): boolean {
-    try {
-      const stats = fs.statSync(lockPath);
-      return Date.now() - stats.mtimeMs >= CHROMA_WRITER_LOCK_UNREADABLE_GRACE_MS;
-    } catch {
-      return true;
+  private static removeStaleUnreadableChromaWriterLock(
+    lockPath: string,
+    expected: fs.Stats,
+  ): boolean {
+    if (ChromaMcpManager.readChromaWriterLock(lockPath) !== null) {
+      return false;
     }
+    let current: fs.Stats;
+    try {
+      current = fs.statSync(lockPath);
+    } catch {
+      return false;
+    }
+    if (
+      current.ino !== expected.ino ||
+      current.mtimeMs !== expected.mtimeMs ||
+      current.size !== expected.size
+    ) {
+      return false;
+    }
+    try {
+      fs.rmSync(lockPath, { force: true });
+    } catch (error) {
+      const message = `Unable to remove unreadable Chroma writer lock at ${lockPath}: ${error instanceof Error ? error.message : String(error)}`;
+      recordChromaVectorSearchUnavailable(message);
+      throw new ChromaUnavailableError(message, error instanceof Error ? error : undefined);
+    }
+    return true;
   }
 
   private static readChromaWriterLock(lockPath: string): ChromaWriterLockPayload | null {
