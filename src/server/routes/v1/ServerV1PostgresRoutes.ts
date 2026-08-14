@@ -880,6 +880,10 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         // every such memory lands with server_session_id NULL and can never be
         // grouped, scoped or compared by session.
         contentSessionId: z.string().min(1).nullable().optional(),
+        // Two sessions in the same team/project can share a contentSessionId across
+        // platforms; without the scope the lookup picks whichever started last, so a
+        // Cursor memory can land on a Codex session. /v1/events already scopes this.
+        platformSource: z.string().min(1).nullable().optional(),
         kind: z.string().min(1).optional(),
         content: z.string().min(1),
         metadata: z.record(z.string(), z.unknown()).optional(),
@@ -893,6 +897,9 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           contentSessionId: body.contentSessionId ?? null,
           projectId: body.projectId,
           teamId,
+          // same normalization the ingest path applies, so an omitted field and an
+          // explicit null keep meaning different things
+          ...this.sessionLookupPlatformScope(req.body),
         });
         const createInput = {
           projectId: body.projectId,
@@ -1217,15 +1224,20 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     contentSessionId: string | null;
     projectId: string;
     teamId: string;
+    platformSource?: string | null;
   }): Promise<string | null> {
     if (input.serverSessionId) return input.serverSessionId;
     if (!input.contentSessionId) return null;
+    const platformScope = Object.prototype.hasOwnProperty.call(input, 'platformSource')
+      ? { platformSource: input.platformSource ?? null }
+      : {};
     try {
       return await new PostgresServerSessionsRepository(this.options.pool)
         .findIdByContentSessionId({
           contentSessionId: input.contentSessionId,
           projectId: input.projectId,
           teamId: input.teamId,
+          ...platformScope,
         });
     } catch (err) {
       logger.warn('HTTP', 'session linkage lookup failed; storing memory unlinked', {

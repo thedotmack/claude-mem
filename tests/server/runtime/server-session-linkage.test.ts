@@ -134,6 +134,7 @@ describe('ServerV1PostgresRoutes content session linkage', () => {
           contentSessionId: string | null;
           projectId: string;
           teamId: string;
+          platformSource?: string | null;
         }): Promise<string | null>;
       };
 
@@ -183,6 +184,47 @@ describe('ServerV1PostgresRoutes content session linkage', () => {
       });
       expect(linked).toBeNull();
       expect(calls).toHaveLength(0);
+    });
+
+
+    it('carries the platform scope into the lookup', async () => {
+      const calls: unknown[][] = [];
+      const pool = {
+        async query(_text: string, values?: unknown[]) {
+          calls.push(values ?? []);
+          return { command: 'SELECT', rowCount: 1, oid: 0, fields: [], rows: [{ id: 'scoped-session' }] };
+        },
+      };
+      const linked = await routesWith(pool).resolveMemorySessionLink({
+        serverSessionId: null,
+        contentSessionId: 'shared-content',
+        projectId: 'project-1',
+        teamId: 'team-1',
+        platformSource: 'cursor',
+      });
+      expect(linked).toBe('scoped-session');
+      // without the scope the lookup returns whichever session started last, so a
+      // memory from one platform can be attached to another platform's session
+      expect(calls[0]).toContain('cursor');
+    });
+
+    it('distinguishes an omitted platformSource from an explicit null', async () => {
+      const seen: unknown[][] = [];
+      const pool = {
+        async query(_text: string, values?: unknown[]) {
+          seen.push(values ?? []);
+          return { command: 'SELECT', rowCount: 0, oid: 0, fields: [], rows: [] };
+        },
+      };
+      const routes = routesWith(pool);
+      await routes.resolveMemorySessionLink({
+        serverSessionId: null, contentSessionId: 'c', projectId: 'p', teamId: 't',
+      });
+      await routes.resolveMemorySessionLink({
+        serverSessionId: null, contentSessionId: 'c', projectId: 'p', teamId: 't', platformSource: null,
+      });
+      expect(seen).toHaveLength(2);
+      expect(JSON.stringify(seen[0])).not.toBe(JSON.stringify(seen[1]));
     });
 
     it('never fails the write when the lookup throws', async () => {
