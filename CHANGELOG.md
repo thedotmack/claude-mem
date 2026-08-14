@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.15.0] - 2026-08-10
+
+The npx installer can now start a free week of CMEM Pro end to end:
+
+- **Trial funnel in `npx claude-mem install`** — pitch → email entry → magic-link → Stripe checkout, with the installer polling the pairing API and finishing setup automatically once the trial starts (#3524)
+- **Device-code approval** — the terminal shows a short code (XXXX-XXXX) that you confirm in the browser before credentials are delivered, closing a pairing-secret disclosure vector (#3524)
+- **Live model pricing** — the installer now fetches model pricing from the API instead of shipping hardcoded numbers (#3515)
+
+Requires the cmem.ai backend released today (trial routes + `cli_pairings` device-authorization grant).
+
 ## [13.14.0] - 2026-08-08
 
 ## CMEM Pro is now the first option in the installer

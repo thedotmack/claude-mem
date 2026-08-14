@@ -34,6 +34,11 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'is_update',
   // Install funnel shape — install_method is a package-manager enum parsed
   // from npm_config_user_agent, the *_version keys are tool version strings.
+  // stage is the cmem Pro trial poll's closed enum
+  // (awaiting_login | awaiting_checkout | awaiting_approval) on
+  // trial_poll_timeout — never an email, token, pairing secret, or device
+  // user code (those never enter any event property).
+  'stage',
   'install_method',
   'interactive',
   'bun_version',

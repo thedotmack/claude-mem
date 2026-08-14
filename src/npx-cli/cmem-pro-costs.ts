@@ -149,7 +149,7 @@ export async function buildProviderLabels(): Promise<ProviderLabels> {
   return {
     cmem:
       `CMEM Pro — observer model, off your plan  ($0/1k observations · $${CMEM_PRO_MONTHLY_USD}/mo, cloud sync included)`,
-    cmemHint: 'Recommended',
+    cmemHint: `${CMEM_PRO_TRIAL_DAYS} days free, then $${CMEM_PRO_MONTHLY_USD}/mo`,
     openrouter:
       `OpenRouter / any OpenAI-compatible key    (~$${costPer1kObservations(rates.openrouter)}/1k observations, billed to you)`,
     gemini:
@@ -170,6 +170,22 @@ const CMEM_PRO_ORIGIN = (process.env.CMEM_PRO_ORIGIN?.trim() || 'https://cmem.ai
 
 /** Where the installer sends people to buy CMEM Pro. */
 export const CMEM_PRO_SIGNUP_URL = `${CMEM_PRO_ORIGIN}/pro?from=installer`;
+
+/**
+ * The 7-day card-upfront trial funnel (plan 2026-08-08-seven-day-trial-npx-funnel).
+ *
+ * `start` creates the cmem.ai account + emails a sign-in link and answers with
+ * a pairing id/secret plus a device-authorization `user_code` the human types
+ * into the browser to approve this device; `poll` is the credential handoff
+ * the installer loops on while the human clicks the link, enters a card
+ * ($0 today), and approves the device. Both are unauthenticated cmem.ai
+ * endpoints — the CLI never holds a session-granting link, only the pairing
+ * pair, and the credential delivered on `ready` is the existing setup_token
+ * (delivered exactly once, and only after device approval).
+ */
+export const CMEM_PRO_TRIAL_START_URL = `${CMEM_PRO_ORIGIN}/api/pro/trial/start`;
+export const CMEM_PRO_TRIAL_POLL_URL = `${CMEM_PRO_ORIGIN}/api/pro/trial/poll`;
+export const CMEM_PRO_TRIAL_DAYS = 7;
 
 /**
  * CMEM Pro settings, written as a plain `openrouter` provider config: the
