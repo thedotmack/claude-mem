@@ -7,6 +7,7 @@ import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { readPidFile } from '../../services/infrastructure/ProcessManager.js';
 
 // SessionEnd (#3073). Claude Code never had an end-of-session hook, so the
 // persistent worker only ever learned a session was over indirectly (when its
@@ -33,6 +34,12 @@ export const sessionEndHandler: EventHandler = {
 
     const platformSource = normalizePlatformSource(input.platform);
 
+    // Capability proof for the destructive endpoint: the running worker's own
+    // start token, read from worker.pid in the user's data dir. Absent (no
+    // worker, unreadable file) we still send the request — the worker will
+    // refuse it, which is the same clean no-op as the worker being down.
+    const workerToken = readPidFile()?.startToken;
+
     const result = await executeWithWorkerFallback<{ status?: string; reaped?: boolean }>(
       '/api/sessions/end',
       'POST',
@@ -40,6 +47,7 @@ export const sessionEndHandler: EventHandler = {
         contentSessionId: sessionId,
         platformSource,
       },
+      workerToken ? { headers: { 'X-Claude-Mem-Worker-Token': workerToken } } : {},
     );
 
     if (isWorkerFallback(result)) {
