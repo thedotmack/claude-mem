@@ -1,128 +1,292 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
-import { isPidAlive } from '../../supervisor/process-registry.js';
-import { waitForPortFree } from './HealthMonitor.js';
-
-const execFileAsync = promisify(execFile);
+import {
+  captureProcessStartToken,
+  isPidAlive,
+  readPersistedRegistryRecords,
+  verifyManagedProcessIdentity,
+  verifyPidFileOwnership,
+  type ManagedProcessRecord,
+  type PidInfo,
+} from '../../supervisor/process-registry.js';
+import net from 'net';
+import { signalProcess } from '../../supervisor/shutdown.js';
 
 /**
- * Find the PID currently bound to a local TCP port in LISTEN state.
+ * Worker-port reclaim (#3073, #3450) under the lifecycle contract from #3138:
+ * health is the oracle, ownership is proven by start token, and there are no
+ * arbitrary kills.
  *
- * Ghost-socket recovery (#3073): after an unclean teardown the worker port can
- * stay bound to a process that is no longer a healthy worker (an orphaned or
- * wedged daemon). ensureWorkerStarted needs the owning PID so it can reclaim
- * the port instead of giving up with `dead`.
+ * The previous implementation asked the OS "which PID owns this port?" and
+ * killed that process tree. That is unsound: the answer may be an unrelated
+ * service, which is precisely what review reproduced against PR #3405. This
+ * module never asks who owns the port. It only asks claude-mem's own records —
+ * the PID file and supervisor.json — what claude-mem itself started, and it
+ * refuses to signal anything it cannot tie to those records by start token.
  *
- * Best-effort and cross-platform. Returns null when nothing owns the port or
- * the owner cannot be determined (in which case the caller must not kill
- * anything — a null result is treated as "not reclaimable").
+ * The ladder, in order:
+ *
+ *   1. PID file names a VERIFIED live owner (alive + token match + same port)
+ *      that does not answer /api/health  -> it is our wedged worker. SIGTERM,
+ *      bounded wait, re-verify the SAME token, SIGKILL.
+ *   2. That verified owner DOES answer /api/health (readiness merely false)
+ *      -> it is initializing. Never reclaimed.
+ *   3a. The owner is dead but the port is still bound — the ghost socket. The
+ *      socket is held by a child that inherited the handle (#3450 traces it to
+ *      the uvx -> uv -> chroma-mcp -> python chain). Reap the registry records
+ *      claude-mem wrote when it spawned those children, each one identity-
+ *      verified before it is signalled.
+ *   3b. Ownership cannot be proven — no PID file, tokenless, token mismatch,
+ *      a foreign listener, or 3a did not recover the port. Signal NOTHING and
+ *      tell the caller to fail over to a different port.
+ *
+ * Rungs 1, 2 and the once-per-invocation bound are the policy proposed by
+ * @greghughespdx in #3448, adopted here rather than reinvented. Rung 3a is the
+ * addition that actually clears the inherited socket, which verified-owner
+ * reclaim alone cannot reach because by then the owner is already gone.
  */
-export async function findPidOnPort(port: number): Promise<number | null> {
-  try {
-    if (process.platform === 'win32') {
-      // Get-NetTCPConnection is the reliable Windows API. Filter to Listen so we
-      // match the daemon's server socket, not a transient client connection.
-      const { stdout } = await execFileAsync(
-        'powershell',
-        [
-          '-NoProfile',
-          '-Command',
-          `(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess)`,
-        ],
-        { timeout: 5_000, windowsHide: true }
-      );
-      const pid = parseInt(stdout.trim(), 10);
-      return Number.isInteger(pid) && pid > 0 ? pid : null;
-    }
 
-    // POSIX: prefer lsof, which prints the owning PID directly.
-    const { stdout } = await execFileAsync(
-      'lsof',
-      ['-ti', `tcp:${port}`, '-sTCP:LISTEN'],
-      { timeout: 5_000 }
-    );
-    const pid = parseInt(stdout.trim().split(/\s+/)[0] ?? '', 10);
-    return Number.isInteger(pid) && pid > 0 ? pid : null;
-  } catch (error) {
-    // Non-zero exit means "no match" for both powershell (empty) and lsof, or
-    // the tool is unavailable. Either way we cannot identify an owner.
-    logger.debug('SYSTEM', 'Could not determine PID owning port', {
-      port,
-      error: error instanceof Error ? error.message : String(error),
+/** How long to wait for a SIGTERM'd worker to exit before escalating. */
+const OWNER_SIGTERM_GRACE_MS = 5_000;
+
+/** How long to wait for the port to come back after a reclaim. */
+const PORT_RECOVERY_WAIT_MS = 5_000;
+
+/**
+ * Health probe used to separate "initializing" (rung 2) from "wedged" (rung 1).
+ * Short on purpose: the caller has already waited out the full health window
+ * before reaching reclaim, so this only needs to catch a worker that started
+ * answering in the interim.
+ */
+const OWNER_HEALTH_PROBE_MS = 1_000;
+
+export type ReclaimOutcome =
+  /** Port recovered. The caller should proceed to spawn on the same port. */
+  | { kind: 'reclaimed'; via: 'verified-owner' | 'registered-children' }
+  /** A verified owner is alive and answering health — leave it alone. */
+  | { kind: 'owner-initializing' }
+  /** Ownership unprovable. The caller MUST fail over; nothing was signalled. */
+  | { kind: 'unprovable'; reason: string }
+  /** We owned it and tried, but the port did not come back. */
+  | { kind: 'failed'; reason: string };
+
+/**
+ * Can we bind `port` right now? Definitive, and — unlike an HTTP probe —
+ * incapable of hanging.
+ */
+function isPortBindable(port: number): Promise<boolean> {
+  return new Promise(resolve => {
+    const server = net.createServer();
+    server.once('error', () => resolve(false));
+    server.once('listening', () => server.close(() => resolve(true)));
+    server.listen(port, '127.0.0.1');
+  });
+}
+
+/**
+ * Bounded health probe.
+ *
+ * Deliberately NOT HealthMonitor.waitForHealth: its fetch has no deadline, and
+ * the exact thing we are recovering from is a socket that completes the TCP
+ * handshake and then answers nothing (#3450). Against that listener an
+ * unbounded fetch never settles, so a reclaim built on it would hang the hook
+ * it is supposed to be rescuing. Every probe here carries its own abort.
+ */
+async function probeHealthBounded(port: number, timeoutMs: number): Promise<boolean> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
+      signal: AbortSignal.timeout(timeoutMs),
     });
-    return null;
+    return response.ok;
+  } catch {
+    return false;
   }
 }
 
 /**
- * Kill the process tree rooted at `pid`. Windows uses `taskkill /T /F` (the
- * daemon spawns a chroma-mcp child tree that must go with it); POSIX sends
- * SIGKILL to the process group, falling back to the bare PID.
+ * Has the port recovered?
+ *
+ * "The port is free" is the wrong question on its own, and #3450 documents
+ * why: a concurrently-spawned worker can claim the port before we look, so it
+ * may never be observed idle even on a fully successful recovery. Recovery
+ * therefore means EITHER the port is genuinely bindable (ours to take) OR
+ * something healthy is now answering on it.
  */
-async function killTree(pid: number): Promise<void> {
-  if (process.platform === 'win32') {
+async function confirmPortRecovered(port: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await isPortBindable(port)) return true;
+    if (await probeHealthBounded(port, OWNER_HEALTH_PROBE_MS)) return true;
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  return false;
+}
+
+/**
+ * Reap the children claude-mem's own registry says it spawned.
+ *
+ * Every PID here comes from a record claude-mem wrote at spawn time, and each
+ * is re-verified by start token immediately before being signalled, so a PID
+ * that has since been recycled onto an unrelated process is skipped rather
+ * than killed. Records that are dead, tokenless, or mismatched are left alone.
+ *
+ * The 'worker' record is excluded: the worker is rung 1's business, reached
+ * through the PID file. This reaps what it left behind.
+ *
+ * Name-based matching is deliberately not used — #3450 notes the last two
+ * links in the chroma chain run as plain `python.exe`, so a name filter both
+ * misses the actual handle holders and risks unrelated processes.
+ */
+async function reapRegisteredChildren(currentPid: number): Promise<number> {
+  const candidates = readPersistedRegistryRecords().filter(
+    record => record.pid !== currentPid && record.type !== 'worker' && record.id !== 'worker'
+  );
+
+  const verified: ManagedProcessRecord[] = [];
+  for (const record of candidates) {
+    if (verifyManagedProcessIdentity(record)) {
+      verified.push(record);
+    }
+  }
+
+  if (verified.length === 0) return 0;
+
+  logger.warn('SYSTEM', 'Reaping identity-verified child processes left behind by a dead worker', {
+    count: verified.length,
+    records: verified.map(record => ({ id: record.id, pid: record.pid, type: record.type })),
+  });
+
+  for (const record of verified) {
+    // SIGKILL directly: these are orphans of a worker that is already gone, so
+    // there is no graceful-shutdown path left for them to take. On Windows
+    // signalProcess uses `taskkill /T`, which is what reaches the grandchildren
+    // (`python.exe`) actually holding the inherited handle.
     try {
-      await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], {
-        timeout: 5_000,
-        windowsHide: true,
-      });
-    } catch (error) {
-      // taskkill exits non-zero when the process is already gone — fine.
-      logger.debug('SYSTEM', 'taskkill during port reclaim finished (may already be dead)', {
-        pid,
+      await signalProcess(record, 'SIGKILL');
+    } catch (error: unknown) {
+      logger.debug('SYSTEM', 'Failed to signal registered child during port reclaim', {
+        id: record.id,
+        pid: record.pid,
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  return verified.length;
+}
+
+/**
+ * Rung 1: terminate a worker we have positively identified as ours.
+ *
+ * The start token is re-verified immediately before SIGKILL so that a PID
+ * recycled during the SIGTERM grace window is never the thing we force-kill.
+ */
+async function terminateVerifiedOwner(info: PidInfo): Promise<void> {
+  const record: ManagedProcessRecord = {
+    id: 'worker',
+    pid: info.pid,
+    type: 'worker',
+    startedAt: info.startedAt,
+    startToken: info.startToken,
+  };
+
+  logger.warn('SYSTEM', 'Reclaiming the worker port from our own wedged worker', {
+    pid: info.pid,
+    port: info.port,
+  });
+
+  try {
+    await signalProcess(record, 'SIGTERM');
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'SIGTERM to wedged worker failed', {
+      pid: info.pid,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  const deadline = Date.now() + OWNER_SIGTERM_GRACE_MS;
+  while (Date.now() < deadline && isPidAlive(info.pid)) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+
+  if (!isPidAlive(info.pid)) return;
+
+  // Still alive — escalate, but only after proving it is still the SAME
+  // process. If the token no longer matches, this PID was recycled while we
+  // waited and force-killing it would hit a stranger.
+  const currentToken = captureProcessStartToken(info.pid);
+  if (info.startToken && currentToken !== null && currentToken !== info.startToken) {
+    logger.warn('SYSTEM', 'Wedged worker PID was recycled during the SIGTERM grace window — not escalating', {
+      pid: info.pid,
+    });
     return;
   }
+
   try {
-    process.kill(-pid, 'SIGKILL');
-  } catch {
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch {
-      // Already gone — fine.
-    }
+    await signalProcess(record, 'SIGKILL');
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'SIGKILL to wedged worker failed', {
+      pid: info.pid,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
 /**
- * Reclaim an orphaned worker port: identify the owning process, kill its tree,
- * and wait for the port to free. Returns true only when the port is confirmed
- * free afterwards.
+ * Attempt to reclaim `port` for a new worker.
  *
- * Callers MUST only invoke this after confirming no HEALTHY worker answers on
- * the port (see ensureWorkerStarted): this kills whatever holds the port.
+ * Callers MUST have already established that no healthy worker answers on the
+ * port. Nothing here is signalled without start-token-proven ownership; an
+ * `unprovable` outcome guarantees no signal was sent to anything.
  */
-export async function reclaimOrphanedPort(port: number, waitMs: number = 5_000): Promise<boolean> {
-  const ownerPid = await findPidOnPort(port);
+export async function reclaimWorkerPort(
+  port: number,
+  pidInfo: PidInfo | null,
+  currentPid: number = process.pid
+): Promise<ReclaimOutcome> {
+  const ownsThisPort = pidInfo !== null && pidInfo.port === port;
 
-  if (ownerPid === null) {
-    // Nothing identifiable owns it. It may be a lingering socket the OS will
-    // release shortly; give it the wait window rather than killing blindly.
-    logger.warn('SYSTEM', 'Port is in use but no owning process could be identified — waiting for OS to release it', { port });
-    return waitForPortFree(port, waitMs);
+  if (ownsThisPort && pidInfo.pid === currentPid) {
+    return { kind: 'unprovable', reason: 'pid-file names the current process' };
   }
 
-  if (ownerPid === process.pid) {
-    logger.error('SYSTEM', 'Refusing to reclaim port owned by the current process', { port, ownerPid });
-    return false;
+  if (ownsThisPort && verifyPidFileOwnership(pidInfo)) {
+    // Rung 2: a verified owner that still answers health is initializing, not
+    // wedged. Readiness being false is normal during migrations/cold boot.
+    if (await probeHealthBounded(port, OWNER_HEALTH_PROBE_MS)) {
+      logger.info('SYSTEM', 'Verified worker owns the port and answers health — initializing, not reclaiming', {
+        pid: pidInfo.pid,
+        port,
+      });
+      return { kind: 'owner-initializing' };
+    }
+
+    // Rung 1.
+    await terminateVerifiedOwner(pidInfo);
+    // The worker's own children outlive it and are what pin the socket, so
+    // clear them too — otherwise rung 1 recreates the ghost socket it just fixed.
+    await reapRegisteredChildren(currentPid);
+
+    if (await confirmPortRecovered(port, PORT_RECOVERY_WAIT_MS)) {
+      return { kind: 'reclaimed', via: 'verified-owner' };
+    }
+    return { kind: 'failed', reason: 'port still held after terminating the verified owner' };
   }
 
-  if (!isPidAlive(ownerPid)) {
-    // Owner already dead but the socket is still bound (the classic ghost
-    // socket). Nothing to kill — just wait for the OS to reclaim it.
-    logger.warn('SYSTEM', 'Port bound by a dead PID (ghost socket) — waiting for OS to release it', { port, ownerPid });
-    return waitForPortFree(port, waitMs);
+  // Rung 3a: no verified live owner. If the port is still bound, the holder is
+  // something our worker left behind. Reap only what our registry vouches for.
+  const reaped = await reapRegisteredChildren(currentPid);
+  if (reaped > 0 && (await confirmPortRecovered(port, PORT_RECOVERY_WAIT_MS))) {
+    logger.info('SYSTEM', 'Worker port recovered by reaping registered orphans of a dead worker', { port, reaped });
+    return { kind: 'reclaimed', via: 'registered-children' };
   }
 
-  logger.warn('SYSTEM', 'Reclaiming orphaned worker port by killing the unresponsive owner process tree', { port, ownerPid });
-  await killTree(ownerPid);
-
-  const freed = await waitForPortFree(port, waitMs);
-  if (!freed) {
-    logger.error('SYSTEM', 'Port did not free after reclaiming the owner process', { port, ownerPid });
-  }
-  return freed;
+  // Rung 3b: we cannot prove who holds this port. Signal nothing; fail over.
+  const reason = reaped > 0
+    ? 'port still held after reaping registered orphans'
+    : 'no identity-verified claude-mem process holds this port';
+  logger.warn('SYSTEM', 'Cannot prove ownership of the occupied worker port — leaving it untouched and failing over', {
+    port,
+    reason,
+  });
+  return { kind: 'unprovable', reason };
 }
