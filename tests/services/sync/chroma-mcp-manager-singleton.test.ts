@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -795,6 +795,35 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(lock.pid).toBe(process.pid);
     expect(lock.ownerId).not.toBe('dead-worker-owner');
     expect(transportInstances.length).toBe(1);
+  });
+
+  it('reclaims an unreadable writer lock once it is older than the grace period', async () => {
+    mkdirSync(mockedChromaDir, { recursive: true });
+    writeFileSync(chromaWriterLockPath(), '');
+    const oldTime = new Date(Date.now() - 60_000);
+    utimesSync(chromaWriterLockPath(), oldTime, oldTime);
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    const lock = JSON.parse(readFileSync(chromaWriterLockPath(), 'utf-8'));
+    expect(lock.pid).toBe(process.pid);
+    expect(transportInstances.length).toBe(1);
+  });
+
+  it('refuses to reclaim an unreadable writer lock still inside the grace period', async () => {
+    mkdirSync(mockedChromaDir, { recursive: true });
+    writeFileSync(chromaWriterLockPath(), '');
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('unreadable');
+
+    expect(transportInstances.length).toBe(0);
+    expect(getDependencyStatus('chroma')).toMatchObject({
+      dependency: 'chroma',
+      kind: 'vector_search_unavailable',
+      message: expect.stringContaining('unreadable'),
+    });
   });
 
   it('preserves remote mutation concurrency', async () => {

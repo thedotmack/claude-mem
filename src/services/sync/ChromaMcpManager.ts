@@ -27,6 +27,12 @@ const CHROMA_PREWARM_TIMEOUT_BOUNDS = { min: 1, max: 600_000 } as const;
 const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
 const RECONNECT_BACKOFF_MS = 10_000;
 const CHROMA_WRITER_LOCK_FILENAME = '.claude-mem-chroma-writer.lock';
+// Grace period before an unparseable writer lock counts as stale. A lock this
+// old cannot be a payload another process is still writing, because we now write
+// the payload atomically (temp file + link). So an unreadable lock older than
+// this is a zero-byte or truncated leftover from a crash, a full disk, or an old
+// non-atomic writer, and it is safe to remove and reclaim.
+const CHROMA_WRITER_LOCK_UNREADABLE_GRACE_MS = 30_000;
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
 const CHROMA_OUTPUT_TAIL_MAX_CHARS = 2048;
 const DEFAULT_MAX_PENDING_MUTATIONS = 5_000;
@@ -401,12 +407,9 @@ export class ChromaMcpManager {
       startToken: captureProcessStartToken(process.pid),
     };
 
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        fs.writeFileSync(lockPath, JSON.stringify(payload, null, 2), {
-          encoding: 'utf-8',
-          flag: 'wx',
-        });
+        ChromaMcpManager.writeChromaWriterLockAtomically(lockPath, payload);
         this.chromaWriterLock = { path: lockPath, dataDir: normalizedDataDir, ownerId: this.chromaWriterOwnerId };
         logger.debug('CHROMA_MCP', 'Acquired Chroma writer lock', { lockPath, dataDir: normalizedDataDir });
         return;
@@ -420,9 +423,24 @@ export class ChromaMcpManager {
 
         const existing = ChromaMcpManager.readChromaWriterLock(lockPath);
         if (!existing) {
-          const message = `Chroma writer lock at ${lockPath} is unreadable; refusing to start a second writer`;
-          recordChromaVectorSearchUnavailable(message);
-          throw new ChromaUnavailableError(message);
+          // The lock file cannot be parsed. Removing it is the only way out,
+          // because an unreadable lock can never be judged live or stale. Wait
+          // out a short grace period first, then remove it and retry so a
+          // zero-byte or truncated leftover cannot wedge Chroma forever.
+          if (!ChromaMcpManager.isUnreadableChromaWriterLockStale(lockPath)) {
+            const message = `Chroma writer lock at ${lockPath} is unreadable; refusing to start a second writer`;
+            recordChromaVectorSearchUnavailable(message);
+            throw new ChromaUnavailableError(message);
+          }
+          try {
+            fs.rmSync(lockPath, { force: true });
+            logger.info('CHROMA_MCP', 'Removed unreadable Chroma writer lock', { lockPath });
+            continue;
+          } catch (removeError) {
+            const message = `Unable to remove unreadable Chroma writer lock at ${lockPath}: ${removeError instanceof Error ? removeError.message : String(removeError)}`;
+            recordChromaVectorSearchUnavailable(message);
+            throw new ChromaUnavailableError(message, removeError instanceof Error ? removeError : undefined);
+          }
         }
 
         if (existing.pid === process.pid && existing.ownerId === this.chromaWriterOwnerId) {
@@ -489,6 +507,38 @@ export class ChromaMcpManager {
         lockPath: lock.path,
         error: error instanceof Error ? error.message : String(error),
       });
+    }
+  }
+
+  /**
+   * Write the writer lock so a reader never sees a half-written file. The
+   * payload lands in a temp file first, then `link` publishes it under the lock
+   * name in one atomic step. `link` also fails with EEXIST when the lock is
+   * already held, which keeps the exclusive-create guard that stops a second
+   * writer from opening the same data dir. `rename` cannot do this — it would
+   * clobber a live lock and let two writers coexist.
+   */
+  private static writeChromaWriterLockAtomically(lockPath: string, payload: ChromaWriterLockPayload): void {
+    const tempPath = `${lockPath}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2), { encoding: 'utf-8' });
+    try {
+      fs.linkSync(tempPath, lockPath);
+    } finally {
+      fs.rmSync(tempPath, { force: true });
+    }
+  }
+
+  /**
+   * Decide whether an unparseable writer lock is old enough to reclaim. Age is
+   * measured from the file mtime; a lock we can no longer stat is already gone,
+   * so it counts as stale.
+   */
+  private static isUnreadableChromaWriterLockStale(lockPath: string): boolean {
+    try {
+      const stats = fs.statSync(lockPath);
+      return Date.now() - stats.mtimeMs >= CHROMA_WRITER_LOCK_UNREADABLE_GRACE_MS;
+    } catch {
+      return true;
     }
   }
 
