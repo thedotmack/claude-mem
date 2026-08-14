@@ -2,9 +2,15 @@
 import { describe, it, expect, mock } from 'bun:test';
 import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
 
+// These mocks replace their modules WHOLESALE, so every export the spawner's
+// dependency graph reaches for must exist here. A missing one is not a failing
+// assertion — the module graph fails to load and the entire file reports as one
+// unhandled error, which is how this suite silently stopped running altogether
+// when the reclaim path was first added.
 const processManager = {
   cleanStalePidFile: mock(() => 'dead' as 'alive' | 'dead'),
   getPlatformTimeout: mock((timeout: number) => timeout),
+  readPidFile: mock(() => null),
   spawnDaemon: mock(() => 2147483647),
   touchPidFile: mock(() => {}),
 };
@@ -13,6 +19,7 @@ const healthMonitor = {
   isPortInUse: mock(async () => false),
   waitForHealth: mock(async () => false),
   waitForReadiness: mock(async () => false),
+  waitForPortFree: mock(async () => true),
 };
 
 const spawnGate = {
@@ -20,9 +27,26 @@ const spawnGate = {
   releaseSpawnLock: mock(() => {}),
 };
 
+// Default posture: nothing is reclaimable and no alternate port is available,
+// so the ladder stays out of the way of the pre-existing startup tests.
+// Reclaim behaviour has its own suite (tests/services/port-reclaim.test.ts).
+const portReclaim = {
+  reclaimWorkerPort: mock(async () => ({ kind: 'unprovable' as const, reason: 'test-default' })),
+};
+
+const portFailover = {
+  findFailoverPort: mock(async (): Promise<number | null> => null),
+  recordFailoverPort: mock(() => {}),
+  reconcileFailoverPort: mock(() => {}),
+  resolveEffectiveWorkerPort: mock((preferred: number) => preferred),
+  clearFailoverPort: mock(() => {}),
+};
+
 mock.module('../../src/services/infrastructure/ProcessManager.js', () => processManager);
 mock.module('../../src/services/infrastructure/HealthMonitor.js', () => healthMonitor);
 mock.module('../../src/shared/worker-spawn-gate.js', () => spawnGate);
+mock.module('../../src/services/infrastructure/PortReclaim.js', () => portReclaim);
+mock.module('../../src/shared/worker-port-failover.js', () => portFailover);
 
 const { ensureWorkerStarted } = await import('../../src/services/worker-spawner.js');
 
