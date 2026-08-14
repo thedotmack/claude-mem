@@ -8,6 +8,7 @@ import {
   recordObserverSuccess,
   isObserverUnhealthy,
   renderObserverHealthWarning,
+  describeDuration,
   scrubErrorMessage,
   OBSERVER_UNHEALTHY_FAILURE_THRESHOLD,
   type ObserverHealthState,
@@ -83,11 +84,50 @@ describe('observer-health ledger', () => {
     expect(scrubErrorMessage('x'.repeat(10_000)).length).toBeLessThanOrEqual(600);
   });
 
+  it('scrubs key/value, JSON, authorization, and query-string credential shapes', () => {
+    const scrubbed = scrubErrorMessage(
+      'POST https://api.example.com/v1/chat?api_key=SUPERSECRETONE&token=SUPERSECRETTWO failed: '
+      + '{"apiKey": "SUPERSECRETTHREE", "client_secret":"SUPERSECRETFOUR"} '
+      + 'Authorization: Basic SUPERSECRETFIVE; password=SUPERSECRETSIX'
+    );
+    for (const secret of ['SUPERSECRETONE', 'SUPERSECRETTWO', 'SUPERSECRETTHREE', 'SUPERSECRETFOUR', 'SUPERSECRETFIVE', 'SUPERSECRETSIX']) {
+      expect(scrubbed).not.toContain(secret);
+    }
+  });
+
+  it('keeps numeric diagnostics and remedy URLs that merely look credential-adjacent', () => {
+    const scrubbed = scrubErrorMessage(
+      'max_tokens: 200000 exceeded; Key limit exceeded (monthly limit). Manage it using https://openrouter.ai/keys/2101b95e'
+    );
+    expect(scrubbed).toContain('200000');
+    expect(scrubbed).toContain('Key limit exceeded');
+    expect(scrubbed).toContain('https://openrouter.ai/keys/2101b95e');
+  });
+
   it('failure records pass the raw message through the scrubber', () => {
     recordObserverFailure('openrouter', 'key sk-or-v1-deadbeefdeadbeef died', healthPath);
     expect(readObserverHealth(healthPath)!.lastErrorMessage).not.toContain('deadbeef');
     expect(readFileSync(healthPath, 'utf-8')).not.toContain('deadbeef');
   });
+
+  it('serializes concurrent failure writes so the warning threshold is never lost', async () => {
+    const gatePath = join(dataDir, 'writers.gate');
+    const writers = Array.from({ length: 3 }, () => Bun.spawn(['bun', '-e', `
+      import { existsSync } from 'fs';
+      import { recordObserverFailure } from ${JSON.stringify(join(repoRoot, 'src/shared/observer-health.ts'))};
+      while (!existsSync(${JSON.stringify(gatePath)})) Bun.sleepSync(1);
+      recordObserverFailure('openrouter', 'concurrent boom', ${JSON.stringify(healthPath)});
+    `], { cwd: repoRoot, stderr: 'pipe' }));
+
+    await Bun.sleep(500);
+    writeFileSync(gatePath, 'go');
+    const exitCodes = await Promise.all(writers.map((writer) => writer.exited));
+    expect(exitCodes).toEqual([0, 0, 0]);
+
+    const state = readObserverHealth(healthPath)!;
+    expect(state.consecutiveFailures).toBe(3);
+    expect(isObserverUnhealthy(state)).toBe(true);
+  }, 30_000);
 });
 
 describe('isObserverUnhealthy', () => {
@@ -102,13 +142,31 @@ describe('isObserverUnhealthy', () => {
 
 describe('renderObserverHealthWarning', () => {
   it('includes count, provider, since-time, last error, and the tell-the-user instruction', () => {
-    const warning = renderObserverHealthWarning(unhealthyState({ consecutiveFailures: 4245 }));
-    expect(warning).toContain('NOT BEING RECORDED');
-    expect(warning).toContain('4245 consecutive times');
+    const nowMs = 1_754_700_000_000 + 2 * 60 * 60_000;
+    const warning = renderObserverHealthWarning(unhealthyState({ consecutiveFailures: 4245 }), nowMs);
+    expect(warning).toContain("can't save memories");
+    expect(warning).toContain('4245 times in a row');
+    expect(warning).toContain('for about 2 hours');
     expect(warning).toContain('openrouter');
     expect(warning).toContain(new Date(1_754_700_000_000).toISOString());
     expect(warning).toContain('https://openrouter.ai/keys/abc');
-    expect(warning).toContain('Tell the user');
+    expect(warning).toContain('tell the user');
+  });
+
+  it('re-scrubs the stored error, so a ledger written by an older build cannot leak a secret', () => {
+    const warning = renderObserverHealthWarning(
+      unhealthyState({ lastErrorMessage: 'rejected: api_key=SUPERSECRETLEDGER' })
+    );
+    expect(warning).not.toContain('SUPERSECRETLEDGER');
+  });
+});
+
+describe('describeDuration', () => {
+  it('renders minutes, hours, and days at human granularity', () => {
+    expect(describeDuration(30_000)).toBe('1 minute');
+    expect(describeDuration(57 * 60_000)).toBe('57 minutes');
+    expect(describeDuration(3 * 60 * 60_000)).toBe('about 3 hours');
+    expect(describeDuration(72 * 60 * 60_000)).toBe('about 3 days');
   });
 });
 
@@ -138,7 +196,7 @@ describe('ContextBuilder observer-health injection', () => {
   it('prepends the outage warning even when there is no database to render', () => {
     writeFileSync(join(dataDir, 'observer-health.json'), JSON.stringify(unhealthyState()));
     const { emptyDbText } = runContextChild(dataDir);
-    expect(emptyDbText).toContain('NOT BEING RECORDED');
+    expect(emptyDbText).toContain("can't save memories");
     expect(emptyDbText).toContain('openrouter');
   });
 
@@ -148,6 +206,6 @@ describe('ContextBuilder observer-health injection', () => {
       JSON.stringify(unhealthyState({ consecutiveFailures: 0, lastSuccessAt: Date.now() }))
     );
     const { emptyDbText } = runContextChild(dataDir);
-    expect(emptyDbText).not.toContain('NOT BEING RECORDED');
+    expect(emptyDbText).not.toContain("can't save memories");
   });
 });
