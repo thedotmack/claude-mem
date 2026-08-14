@@ -36,7 +36,7 @@ export const sessionEndHandler: EventHandler = {
 
     // Capability proof for the destructive endpoint: the running worker's own
     // start token, read from worker.pid in the user's data dir. Absent (no
-    // worker, unreadable file) we still send the request — the worker will
+    // worker, unreadable file) we still send the request; the worker will
     // refuse it, which is the same clean no-op as the worker being down.
     const workerToken = readPidFile()?.startToken;
 
@@ -51,7 +51,7 @@ export const sessionEndHandler: EventHandler = {
     );
 
     if (isWorkerFallback(result)) {
-      // Worker not running — nothing to reap.
+      // Worker not running, nothing to reap.
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 

@@ -278,7 +278,7 @@ export class SessionRoutes extends BaseRouteHandler {
     );
     // Destructive: aborts an in-flight generator, reaps its SDK subprocess and
     // discards queued work. Gated on proof the caller can read this user's
-    // claude-mem data dir (the worker's own start token) — "is localhost" is
+    // claude-mem data dir (the worker's own start token), "is localhost" is
     // not a sufficient authority to end someone else's live session.
     app.post(
       '/api/sessions/end',
@@ -364,7 +364,7 @@ export class SessionRoutes extends BaseRouteHandler {
   private handleEndByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     // SessionEnd (#3073): reap the tracked session for this Claude Code content
     // session, if one is still live. deleteSession aborts any in-flight
-    // generator, reaps the SDK subprocess, and flushes — so a session that ends
+    // generator, reaps the SDK subprocess, and flushes, so a session that ends
     // mid-generation no longer orphans its child process. A no-op when nothing
     // is tracked (the common case: the generator already finished).
     const { contentSessionId } = req.body;
@@ -372,7 +372,7 @@ export class SessionRoutes extends BaseRouteHandler {
     // platforms at once, and ending the wrong one aborts a running generator
     // that nobody asked to stop.
     // Optional, not normalized-with-a-default: if the caller did not say which
-    // platform, we must NOT invent one — a wrong guess ends the wrong session.
+    // platform, we must NOT invent one: a wrong guess ends the wrong session.
     // Passing undefined lets SessionManager refuse an ambiguous match instead.
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
     const reaped = await this.sessionManager.endBySessionIdentity(contentSessionId, platformSource);

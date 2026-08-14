@@ -4,7 +4,7 @@ import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
 
 // These mocks replace their modules WHOLESALE, so every export the spawner's
 // dependency graph reaches for must exist here. A missing one is not a failing
-// assertion — the module graph fails to load and the entire file reports as one
+// assertion: the module graph fails to load and the entire file reports as one
 // unhandled error, which is how this suite silently stopped running altogether
 // when the reclaim path was first added.
 const processManager = {

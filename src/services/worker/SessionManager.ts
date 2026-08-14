@@ -360,7 +360,7 @@ export class SessionManager {
 
     // A contentSessionId alone is NOT a session identity: the same id can be
     // live under two platforms at once (Claude and Cursor), and matching on the
-    // bare id tears down whichever happens to come first in iteration order —
+    // bare id tears down whichever happens to come first in iteration order,
     // aborting one platform's generator while the intended session keeps
     // running. Scope the match when the caller told us which platform it is.
     if (platformSource !== undefined) {
@@ -373,7 +373,7 @@ export class SessionManager {
     // No platform given and more than one candidate: guessing here destroys
     // live work, so do nothing and say so.
     if (matches.length > 1) {
-      logger.warn('SYSTEM', 'Refusing to end an ambiguous session — contentSessionId is live under multiple platforms and no platformSource was supplied', {
+      logger.warn('SYSTEM', 'Refusing to end an ambiguous session: contentSessionId is live under multiple platforms and no platformSource was supplied', {
         contentSessionId,
         platforms: matches.map(([, session]) => session.platformSource),
       });

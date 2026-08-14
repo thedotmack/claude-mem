@@ -7,7 +7,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 // Point the data dir at a scratch directory BEFORE anything under src/ is
-// imported — paths.ts resolves DATA_DIR at module load, and the registry
+// imported: paths.ts resolves DATA_DIR at module load, and the registry
 // reader derives supervisor.json from it.
 const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-reclaim-'));
 process.env.CLAUDE_MEM_DATA_DIR = dataDir;
@@ -20,7 +20,7 @@ const { captureProcessStartToken, isPidAlive } = await import('../../src/supervi
  *
  * The claim this module has to earn is "it never kills something it cannot
  * prove is ours". That is a claim about behaviour against live processes, and
- * a mocked kill path cannot demonstrate it — the review that blocked #3405
+ * a mocked kill path cannot demonstrate it: the review that blocked #3405
  * proved the opposite behaviour by running the code against a real foreign
  * listener, so the rebuttal has to be made on the same terms.
  */
@@ -49,7 +49,7 @@ function listenPlain(port: number): Promise<net.Server> {
   });
 }
 
-/** A listener that DOES answer /api/health — i.e. looks like a live worker. */
+/** A listener that DOES answer /api/health, i.e. looks like a live worker. */
 function listenHealthy(port: number): Promise<http.Server> {
   return new Promise((resolve, reject) => {
     const server = http.createServer((_req, res) => {
@@ -92,7 +92,7 @@ afterEach(async () => {
   writeRegistry({});
 });
 
-describe('reclaimWorkerPort — rung 3b: refuses to touch what it cannot prove is ours', () => {
+describe('reclaimWorkerPort rung 3b: refuses to touch what it cannot prove is ours', () => {
   it('leaves an unrelated local listener running and reports unprovable', async () => {
     // This is the exact scenario the security review reproduced against the
     // previous implementation, which identified the port owner and killed its
@@ -112,7 +112,7 @@ describe('reclaimWorkerPort — rung 3b: refuses to touch what it cannot prove i
     const port = takePort();
     await listenPlain(port);
 
-    // A pid file that survived its worker — #3450 observed exactly this, with
+    // A pid file that survived its worker. #3450 observed exactly this, with
     // the startToken still present and the pid long gone.
     const outcome = await reclaimWorkerPort(port, {
       pid: 999_999_21,
@@ -162,7 +162,7 @@ describe('reclaimWorkerPort — rung 3b: refuses to touch what it cannot prove i
   });
 });
 
-describe('reclaimWorkerPort — rung 3a: reaps the identity-verified orphan holding the socket', () => {
+describe('reclaimWorkerPort rung 3a: reaps the identity-verified orphan holding the socket', () => {
   it('kills a registered child whose start token matches, and recovers the port', async () => {
     // The #3073/#3450 shape: the worker is gone, but a child it registered is
     // still alive and still holding the listening socket.
@@ -205,13 +205,13 @@ describe('reclaimWorkerPort — rung 3a: reaps the identity-verified orphan hold
   });
 });
 
-describe('reclaimWorkerPort — rung 2: never reclaims an owner that is merely initializing', () => {
+describe('reclaimWorkerPort rung 2: never reclaims an owner that is merely initializing', () => {
   it('reports owner-initializing when the verified owner still answers health', async () => {
     const port = takePort();
     await listenHealthy(port);
 
     // The pid file names THIS process, which is provably alive with a matching
-    // token — a stand-in for a verified worker mid-cold-boot (readiness false,
+    // token, a stand-in for a verified worker mid-cold-boot (readiness false,
     // health fine). Passing a different currentPid keeps the self-reclaim guard
     // out of the way so rung 2 itself is what is under test.
     const outcome = await reclaimWorkerPort(
@@ -229,7 +229,7 @@ describe('reclaimWorkerPort — rung 2: never reclaims an owner that is merely i
   });
 });
 
-describe('reclaimWorkerPort — rung 1: terminates a verified wedged owner', () => {
+describe('reclaimWorkerPort rung 1: terminates a verified wedged owner', () => {
   it('kills the pid-file owner when it holds the port but answers nothing', async () => {
     const port = takePort();
     const holder = await spawnPortHolder(port);
@@ -246,8 +246,8 @@ describe('reclaimWorkerPort — rung 1: terminates a verified wedged owner', () 
     expect(outcome.kind).toBe('reclaimed');
     if (outcome.kind === 'reclaimed') expect(outcome.via).toBe('verified-owner');
     expect(isPidAlive(holder.pid!)).toBe(false);
-    // Generous: this path really does spend seconds — a SIGTERM grace window
-    // plus the port-recovery confirmation — and that is the intended behaviour,
+    // Generous: this path really does spend seconds (a SIGTERM grace
+    // window plus the port-recovery confirmation), and that is intended behaviour,
     // not something to tune down to fit a default test timeout.
   }, 30_000);
 

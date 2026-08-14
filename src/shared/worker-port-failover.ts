@@ -9,9 +9,9 @@ import { writeJsonFileAtomic } from './atomic-json.js';
  * Worker-port failover (#3073, #3450, and the rung-3b half of PortReclaim).
  *
  * When the configured worker port is held by something we cannot prove is
- * ours — a ghost socket we could not clear, or an unrelated local service —
- * the safe move is to leave it alone and run somewhere else. This module owns
- * the record of "somewhere else" and, importantly, its expiry.
+ * ours (a ghost socket we could not clear, or an unrelated local service), the
+ * safe move is to leave it alone and run somewhere else. This module owns the
+ * record of "somewhere else" and, importantly, its expiry.
  *
  * Two design constraints, both learned from existing bugs:
  *
@@ -115,7 +115,7 @@ export function recordFailoverPort(port: number, preferredPort: number, reason: 
  * changed CLAUDE_MEM_WORKER_PORT) or which has aged out is discarded here, so
  * resolution converges back on the configured port by itself.
  *
- * This is intentionally cheap and synchronous — it is on the hook path. It
+ * This is intentionally cheap and synchronous; it is on the hook path. It
  * does not probe health; liveness is enforced by the caller that owns the
  * connection attempt (see reconcileFailoverPort).
  */
@@ -124,7 +124,7 @@ export function resolveEffectiveWorkerPort(preferredPort: number): number {
   if (!record) return preferredPort;
 
   if (record.preferredPort !== preferredPort) {
-    logger.info('SYSTEM', 'Failover record was for a different configured port — discarding', {
+    logger.info('SYSTEM', 'Failover record was for a different configured port: discarding', {
       recordedPreferred: record.preferredPort,
       configured: preferredPort,
     });
@@ -134,7 +134,7 @@ export function resolveEffectiveWorkerPort(preferredPort: number): number {
 
   const ageMs = Date.now() - Date.parse(record.recordedAt);
   if (!Number.isFinite(ageMs) || ageMs > FAILOVER_MAX_AGE_MS) {
-    logger.info('SYSTEM', 'Failover record aged out — discarding', { recordedAt: record.recordedAt });
+    logger.info('SYSTEM', 'Failover record aged out: discarding', { recordedAt: record.recordedAt });
     clearFailoverPort();
     return preferredPort;
   }
@@ -147,12 +147,12 @@ export function resolveEffectiveWorkerPort(preferredPort: number): number {
  *
  * This is what stops #3484 from recurring: without it a failover is permanent,
  * and the fleet drifts onto a port the user never configured. Call it when the
- * preferred port is observed free — the next spawn then goes home.
+ * preferred port is observed free; the next spawn then goes home.
  */
 export function reconcileFailoverPort(preferredPort: number, preferredPortIsFree: boolean): void {
   if (!preferredPortIsFree) return;
   if (readFailoverRecord() === null) return;
-  logger.info('SYSTEM', 'Configured worker port is free again — dropping failover record', { preferredPort });
+  logger.info('SYSTEM', 'Configured worker port is free again: dropping failover record', { preferredPort });
   clearFailoverPort();
 }
 

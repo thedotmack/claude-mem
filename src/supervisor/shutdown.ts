@@ -153,7 +153,7 @@ export function removeOwnedPidFile(pidFilePath: string, currentPid: number | nul
  *
  * Exported so PortReclaim can reuse the sanctioned reaper rather than growing a
  * second taskkill implementation. Callers outside the shutdown cascade MUST
- * prove the record's identity first (verifyManagedProcessIdentity) — this
+ * prove the record's identity first (verifyManagedProcessIdentity); this
  * function signals whatever PID it is handed.
  */
 export async function signalProcess(record: ManagedProcessRecord, signal: 'SIGTERM' | 'SIGKILL'): Promise<void> {

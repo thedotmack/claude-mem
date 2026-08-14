@@ -97,7 +97,7 @@ export function requireLocalhost(req: Request, res: Response, next: NextFunction
  *
  * The proof required here is knowledge of the running worker's own start token,
  * which lives in `worker.pid` inside the user's data directory. That makes the
- * capability exactly "can read this user's claude-mem data dir" — which is the
+ * capability exactly "can read this user's claude-mem data dir", which is the
  * real trust boundary, and which every legitimate caller (the hooks) already
  * sits inside. Nothing new is stored and no secret is minted; the token is
  * already written and already used as the worker's identity proof.
@@ -111,9 +111,9 @@ export function requireWorkerToken(req: Request, res: Response, next: NextFuncti
 
   if (!expected) {
     // No token on disk means we cannot verify anything. Refuse rather than
-    // fall open — the caller degrades to "session not explicitly ended",
+    // fall open: the caller degrades to "session not explicitly ended",
     // which is exactly the pre-existing behaviour and harms nothing.
-    logger.warn('SECURITY', 'Destructive session endpoint denied — worker has no start token to verify against', {
+    logger.warn('SECURITY', 'Destructive session endpoint denied: worker has no start token to verify against', {
       endpoint: req.path
     });
     res.status(403).json({ error: 'Forbidden', message: 'Worker token unavailable' });
@@ -127,7 +127,7 @@ export function requireWorkerToken(req: Request, res: Response, next: NextFuncti
     timingSafeEqual(presentedBuffer, expectedBuffer);
 
   if (!matches) {
-    logger.warn('SECURITY', 'Destructive session endpoint denied — missing or invalid worker token', {
+    logger.warn('SECURITY', 'Destructive session endpoint denied: missing or invalid worker token', {
       endpoint: req.path,
       method: req.method
     });

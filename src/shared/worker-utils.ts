@@ -145,12 +145,12 @@ export function getConfiguredWorkerPort(): number {
  * is in effect (see worker-port-failover.ts).
  *
  * Every client resolves through here so hooks, MCP and the spawner cannot
- * disagree about where the worker is — the desync that made #3484 permanent.
+ * disagree about where the worker is: the desync that made #3484 permanent.
  */
 export function getWorkerPort(): number {
   // Deliberately NOT cached. The effective port can change underneath a
   // long-lived process when another launcher fails the worker over, and a
-  // client that caches it keeps talking to a port nothing is listening on —
+  // client that caches it keeps talking to a port nothing is listening on,
   // the permanent desync of #3484. The configured port is still cached; the
   // failover lookup is an existsSync on a file that usually does not exist.
   return resolveEffectiveWorkerPort(getConfiguredWorkerPort());

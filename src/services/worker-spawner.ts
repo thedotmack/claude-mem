@@ -95,8 +95,8 @@ type ReclaimResolution =
 /**
  * Decide what to do about a worker port that is occupied by nothing healthy.
  *
- * Delegates the ownership question to PortReclaim — which never signals a
- * process it cannot tie to claude-mem's own records by start token — and turns
+ * Delegates the ownership question to PortReclaim, which never signals a
+ * process it cannot tie to claude-mem's own records by start token, and turns
  * its verdict into an action:
  *
  *   reclaimed         -> spawn here, the port is ours again
@@ -112,7 +112,7 @@ async function resolveOccupiedPort(port: number): Promise<ReclaimResolution> {
 
   switch (outcome.kind) {
     case 'reclaimed':
-      logger.info('SYSTEM', 'Reclaimed the worker port — spawning a fresh worker', {
+      logger.info('SYSTEM', 'Reclaimed the worker port: spawning a fresh worker', {
         port,
         via: outcome.via,
       });
@@ -188,12 +188,12 @@ export async function ensureWorkerStarted(
       return 'dead';
     }
     // #3448: a live owner that never answers health leaves this branch
-    // returning 'warming' forever — memory capture stays down until someone
+    // returning 'warming' forever; memory capture stays down until someone
     // restarts the worker by hand. Escalate instead. reclaimWorkerPort re-probes
     // health itself and refuses to touch an owner that is merely initializing,
     // so a slow cold boot is still safe.
     if (!workerStillHealthy && workerPidStillAlive && !reclaimAttempted) {
-      logger.warn('SYSTEM', 'Live PID owns the worker port but never became healthy — escalating to reclaim');
+      logger.warn('SYSTEM', 'Live PID owns the worker port but never became healthy: escalating to reclaim');
       reclaimAttempted = true;
       const resolution = await resolveOccupiedPort(port);
       if (resolution.action === 'return') return resolution.result;
@@ -232,7 +232,7 @@ export async function ensureWorkerStarted(
       logger.error('SYSTEM', 'Port still unhealthy after this invocation already attempted a reclaim');
       return 'dead';
     }
-    logger.warn('SYSTEM', 'Port in use but no healthy worker responded — attempting recovery');
+    logger.warn('SYSTEM', 'Port in use but no healthy worker responded: attempting recovery');
     reclaimAttempted = true;
     const resolution = await resolveOccupiedPort(port);
     if (resolution.action === 'return') return resolution.result;
