@@ -58,6 +58,57 @@ export interface ProviderObservationGeneratorOptions {
   workerId?: string;
 }
 
+
+// The `limit` on listUnprocessedEvents caps the event COUNT, not the payload
+// volume, and event size varies by orders of magnitude. Long sessions therefore
+// still blow the provider context window: measured on a production deployment,
+// sessions that failed with "context overflow" carried up to 34 MB of event
+// payload (~9M tokens), and even truncated to the 500-event default they still
+// averaged ~634k tokens with a 1.55M worst case — against a ~200k window. No
+// model currently on offer absorbs that, so the input has to be bounded by size.
+//
+// Keep the head and the tail of the session: the opening carries the goal, the
+// close carries the outcome and what was left pending. Dropping the middle
+// yields a partial summary, which is strictly better than the current outcome
+// for these sessions — an unrecoverable failure and no summary at all.
+const SUMMARY_INPUT_BUDGET_BYTES = Number.parseInt(
+  process.env.CLAUDE_MEM_SUMMARY_INPUT_BUDGET_BYTES ?? '',
+  10,
+) || 600_000;
+
+export function capSummaryInput<T>(events: T[]): T[] {
+  const size = (e: T): number => {
+    try {
+      return JSON.stringify(e)?.length ?? 0;
+    } catch {
+      return 0;
+    }
+  };
+  let total = 0;
+  for (const e of events) total += size(e);
+  if (total <= SUMMARY_INPUT_BUDGET_BYTES) return events;
+
+  const half = SUMMARY_INPUT_BUDGET_BYTES / 2;
+  const head: T[] = [];
+  let headBytes = 0;
+  for (const e of events) {
+    const s = size(e);
+    if (headBytes + s > half) break;
+    head.push(e);
+    headBytes += s;
+  }
+  const tail: T[] = [];
+  let tailBytes = 0;
+  for (let i = events.length - 1; i >= head.length; i -= 1) {
+    const e = events[i] as T;
+    const s = size(e);
+    if (tailBytes + s > SUMMARY_INPUT_BUDGET_BYTES - headBytes) break;
+    tail.unshift(e);
+    tailBytes += s;
+  }
+  return [...head, ...tail];
+}
+
 export class ProviderObservationGenerator {
   constructor(private readonly options: ProviderObservationGeneratorOptions) {}
 
@@ -518,7 +569,7 @@ export class ProviderObservationGenerator {
         projectId: job.projectId,
         teamId: job.teamId,
       });
-      return events;
+      return capSummaryInput(events);
     }
 
     if (job.sourceType !== 'agent_event') {
