@@ -15,6 +15,7 @@ import { checkVersionMatch } from "../services/infrastructure/index.js";
 // ProcessManager imports nothing from worker-utils, so no cycle.
 import { resolveWorkerRuntimePath } from "../services/infrastructure/ProcessManager.js";
 import { acquireSpawnLock, releaseSpawnLock } from "./worker-spawn-gate.js";
+import { resolveEffectiveWorkerPort } from "./worker-port-failover.js";
 
 function readTimeoutEnv(
   envName: string,
@@ -123,7 +124,13 @@ function readSettingsBackedTimeout(
   return defaultValue;
 }
 
-export function getWorkerPort(): number {
+/**
+ * The port the user configured, ignoring any failover in effect.
+ *
+ * This is the port we always want to be on. Reclaim/failover logic needs it to
+ * decide whether a failover record is still relevant and when to go home.
+ */
+export function getConfiguredWorkerPort(): number {
   if (cachedPort !== null) {
     return cachedPort;
   }
@@ -131,6 +138,22 @@ export function getWorkerPort(): number {
   const settings = getWorkerSettings();
   cachedPort = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
   return cachedPort;
+}
+
+/**
+ * The port to actually talk to, which is the configured port unless a failover
+ * is in effect (see worker-port-failover.ts).
+ *
+ * Every client resolves through here so hooks, MCP and the spawner cannot
+ * disagree about where the worker is — the desync that made #3484 permanent.
+ */
+export function getWorkerPort(): number {
+  // Deliberately NOT cached. The effective port can change underneath a
+  // long-lived process when another launcher fails the worker over, and a
+  // client that caches it keeps talking to a port nothing is listening on —
+  // the permanent desync of #3484. The configured port is still cached; the
+  // failover lookup is an existsSync on a file that usually does not exist.
+  return resolveEffectiveWorkerPort(getConfiguredWorkerPort());
 }
 
 export function getWorkerHost(): string {
@@ -776,6 +799,9 @@ export function isWorkerFallback<T>(result: WorkerCallResult<T>): result is Work
 
 export interface WorkerFallbackOptions {
   timeoutMs?: number;
+  /** Extra request headers, e.g. the worker-token capability proof used by
+   *  destructive endpoints (see requireWorkerToken in worker/http/middleware). */
+  headers?: Record<string, string>;
 }
 
 export async function executeWithWorkerFallback<T = unknown>(
@@ -794,6 +820,9 @@ export async function executeWithWorkerFallback<T = unknown>(
   if (body !== undefined) {
     init.headers = { 'Content-Type': 'application/json' };
     init.body = JSON.stringify(body);
+  }
+  if (options.headers) {
+    init.headers = { ...init.headers, ...options.headers };
   }
   if (options.timeoutMs !== undefined) {
     init.timeoutMs = options.timeoutMs;

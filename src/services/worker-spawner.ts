@@ -7,6 +7,7 @@ import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import {
   cleanStalePidFile,
   getPlatformTimeout,
+  readPidFile,
   spawnDaemon,
   touchPidFile,
 } from './infrastructure/ProcessManager.js';
@@ -15,11 +16,28 @@ import {
   waitForHealth,
   waitForReadiness,
 } from './infrastructure/HealthMonitor.js';
-import { reclaimOrphanedPort } from './infrastructure/PortReclaim.js';
+import { reclaimWorkerPort } from './infrastructure/PortReclaim.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
 import { isPidAlive } from '../supervisor/process-registry.js';
+import {
+  findFailoverPort,
+  recordFailoverPort,
+  reconcileFailoverPort,
+} from '../shared/worker-port-failover.js';
 
 const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
+
+/**
+ * The port the user configured, ignoring any failover currently in effect.
+ *
+ * Read straight from settings rather than through worker-utils' getWorkerPort:
+ * that module pulls in the whole hook/runtime graph, and this file is a leaf
+ * that the spawner tests mock ProcessManager underneath. Keeping the
+ * dependency local keeps that seam intact.
+ */
+function getConfiguredWorkerPort(): number {
+  return parseInt(SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT'), 10);
+}
 
 function getWorkerSpawnLockPath(): string {
   return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.worker-start-attempted');
@@ -70,6 +88,65 @@ function clearWorkerSpawnAttempted(): void {
 
 export type WorkerStartResult = 'ready' | 'warming' | 'dead';
 
+type ReclaimResolution =
+  | { action: 'spawn'; port: number }
+  | { action: 'return'; result: WorkerStartResult };
+
+/**
+ * Decide what to do about a worker port that is occupied by nothing healthy.
+ *
+ * Delegates the ownership question to PortReclaim — which never signals a
+ * process it cannot tie to claude-mem's own records by start token — and turns
+ * its verdict into an action:
+ *
+ *   reclaimed         -> spawn here, the port is ours again
+ *   owner-initializing-> leave it alone, report 'warming'
+ *   failed            -> we owned it and could not clear it, report 'dead'
+ *   unprovable        -> touch nothing, move to a different port
+ *
+ * The `unprovable` branch is what makes this safe to ship: when the occupant
+ * might be an unrelated local service, we relocate rather than kill.
+ */
+async function resolveOccupiedPort(port: number): Promise<ReclaimResolution> {
+  const outcome = await reclaimWorkerPort(port, readPidFile());
+
+  switch (outcome.kind) {
+    case 'reclaimed':
+      logger.info('SYSTEM', 'Reclaimed the worker port — spawning a fresh worker', {
+        port,
+        via: outcome.via,
+      });
+      return { action: 'spawn', port };
+
+    case 'owner-initializing':
+      return { action: 'return', result: 'warming' };
+
+    case 'failed':
+      logger.error('SYSTEM', 'Could not reclaim the worker port from our own worker', {
+        port,
+        reason: outcome.reason,
+      });
+      return { action: 'return', result: 'dead' };
+
+    case 'unprovable': {
+      const configuredPort = getConfiguredWorkerPort();
+      const failoverPort = await findFailoverPort(configuredPort);
+      if (failoverPort === null) {
+        logger.error('SYSTEM', 'Worker port is occupied and no alternate port is bindable', {
+          port,
+          reason: outcome.reason,
+        });
+        return { action: 'return', result: 'dead' };
+      }
+      // Nothing to invalidate: getWorkerPort() resolves the failover record on
+      // every call precisely so a port change cannot be missed by a client
+      // holding a stale cache.
+      recordFailoverPort(failoverPort, configuredPort, outcome.reason);
+      return { action: 'spawn', port: failoverPort };
+    }
+  }
+}
+
 export async function ensureWorkerStarted(
   port: number,
   workerScriptPath: string
@@ -87,6 +164,14 @@ export async function ensureWorkerStarted(
     return 'dead';
   }
 
+  // Reclaim is bounded to ONE attempt per invocation (#3448): if the worker we
+  // just cleared the way for also wedges, it is reported as 'warming' and left
+  // for the next call, so this can never become a kill/respawn loop.
+  let reclaimAttempted = false;
+  // The port we will actually spawn on. Diverges from `port` only when the
+  // configured port is held by something we cannot prove is ours.
+  let activePort = port;
+
   const pidFileStatus = cleanStalePidFile();
   if (pidFileStatus === 'alive') {
     logger.info('SYSTEM', 'Worker PID file points to a live process, skipping duplicate spawn');
@@ -102,11 +187,25 @@ export async function ensureWorkerStarted(
       logger.error('SYSTEM', 'Live PID disappeared before readiness endpoint became available');
       return 'dead';
     }
-    logger.warn('SYSTEM', 'Live PID detected but worker did not become ready before timeout');
-    return 'warming';
+    // #3448: a live owner that never answers health leaves this branch
+    // returning 'warming' forever — memory capture stays down until someone
+    // restarts the worker by hand. Escalate instead. reclaimWorkerPort re-probes
+    // health itself and refuses to touch an owner that is merely initializing,
+    // so a slow cold boot is still safe.
+    if (!workerStillHealthy && workerPidStillAlive && !reclaimAttempted) {
+      logger.warn('SYSTEM', 'Live PID owns the worker port but never became healthy — escalating to reclaim');
+      reclaimAttempted = true;
+      const resolution = await resolveOccupiedPort(port);
+      if (resolution.action === 'return') return resolution.result;
+      activePort = resolution.port;
+      clearWorkerSpawnAttempted();
+    } else {
+      logger.warn('SYSTEM', 'Live PID detected but worker did not become ready before timeout');
+      return 'warming';
+    }
   }
 
-  if (await waitForHealth(port, 1000)) {
+  if (activePort === port && (await waitForHealth(port, 1000))) {
     clearWorkerSpawnAttempted();
     const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
     if (!ready) {
@@ -116,8 +215,7 @@ export async function ensureWorkerStarted(
     return ready ? 'ready' : 'warming';
   }
 
-  const portInUse = await isPortInUse(port);
-  if (portInUse) {
+  if (activePort === port && (await isPortInUse(port))) {
     logger.info('SYSTEM', 'Port in use, waiting for worker to become healthy');
     const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
     if (healthy) {
@@ -126,22 +224,29 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker is now healthy');
       return ready ? 'ready' : 'warming';
     }
-    // Ghost-socket recovery (#3073): the port is held but no healthy worker
-    // answers — an orphaned/wedged daemon (or its surviving child tree) is
-    // pinning it. Previously we gave up with `dead` and the port stayed stuck
-    // until the OS released it, which blocks every subsequent restart. Instead
-    // reclaim the port, then fall through to spawn a fresh worker.
-    logger.warn('SYSTEM', 'Port in use but no healthy worker responded — attempting to reclaim it');
-    const reclaimed = await reclaimOrphanedPort(port);
-    if (!reclaimed) {
-      logger.error('SYSTEM', 'Port in use but worker not responding, and reclaim failed');
+    // The port is held but nothing healthy answers (#3073, #3450). Previously
+    // this returned `dead` and the port stayed wedged until the OS released it,
+    // blocking every subsequent restart. Now: reclaim it if we can prove it is
+    // ours, and move to a different port if we cannot.
+    if (reclaimAttempted) {
+      logger.error('SYSTEM', 'Port still unhealthy after this invocation already attempted a reclaim');
       return 'dead';
     }
+    logger.warn('SYSTEM', 'Port in use but no healthy worker responded — attempting recovery');
+    reclaimAttempted = true;
+    const resolution = await resolveOccupiedPort(port);
+    if (resolution.action === 'return') return resolution.result;
+    activePort = resolution.port;
     // A stale Windows cooldown marker from the failed attempt must not now
     // suppress the fresh spawn we just cleared the way for.
     clearWorkerSpawnAttempted();
-    logger.info('SYSTEM', 'Reclaimed orphaned port — spawning a fresh worker');
-    // fall through to the spawn path below
+  }
+
+  // Nothing is squatting the configured port any more, so a failover record
+  // left over from a previous incident should not keep pinning clients
+  // elsewhere (#3484).
+  if (activePort === port) {
+    reconcileFailoverPort(getConfiguredWorkerPort(), !(await isPortInUse(getConfiguredWorkerPort())));
   }
 
   if (shouldSkipSpawnOnWindows()) {
@@ -160,9 +265,9 @@ export async function ensureWorkerStarted(
   let spawnedPid: number | undefined;
   try {
     if (spawnLockHeld) {
-      logger.info('SYSTEM', 'Starting worker daemon', { workerScriptPath });
+      logger.info('SYSTEM', 'Starting worker daemon', { workerScriptPath, port: activePort });
       markWorkerSpawnAttempted();
-      spawnedPid = spawnDaemon(workerScriptPath, port);
+      spawnedPid = spawnDaemon(workerScriptPath, activePort);
       if (spawnedPid === undefined) {
         logger.error('SYSTEM', 'Failed to spawn worker daemon');
         return 'dead';
@@ -171,9 +276,9 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Another launcher holds the spawn lock — skipping duplicate spawn and waiting for its worker');
     }
 
-    const ready = await waitForReadiness(port, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
+    const ready = await waitForReadiness(activePort, getPlatformTimeout(HOOK_TIMEOUTS.READINESS_WAIT));
     if (!ready) {
-      const workerStillHealthy = await waitForHealth(port, 1000);
+      const workerStillHealthy = await waitForHealth(activePort, 1000);
       const workerPidStillAlive = cleanStalePidFile() === 'alive';
       const spawnedProcessStillAlive = spawnedPid !== undefined && spawnedPid > 0 && isPidAlive(spawnedPid);
       if (!workerStillHealthy && !workerPidStillAlive && !spawnedProcessStillAlive) {
