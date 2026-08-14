@@ -9,6 +9,7 @@ import {
   classifyGeminiError,
 } from '../../src/services/worker/GeminiProvider.js';
 import { classifyOpenRouterError } from '../../src/services/worker/OpenRouterProvider.js';
+import { classifyOrcaRouterError } from '../../src/services/worker/OrcaRouterProvider.js';
 
 // Hard cases per F4 spec — provider-specific classifiers must map raw HTTP
 // shapes / SDK errors to ClassifiedProviderError with the right kind.
@@ -197,6 +198,92 @@ describe('classifyOpenRouterError', () => {
   it('classifies network error (no status) as transient', () => {
     const cause = new Error('ECONNRESET');
     const err = classifyOpenRouterError({ cause });
+    expect(err.kind).toBe('transient');
+  });
+});
+
+describe('classifyOrcaRouterError', () => {
+  it('classifies 429 with no Retry-After as rate_limit with no retryAfterMs', () => {
+    const headers = new Headers(); // no Retry-After
+    const err = classifyOrcaRouterError({
+      status: 429,
+      bodyText: 'rate limit exceeded',
+      headers,
+      cause: new Error('429'),
+    });
+    expect(err.kind).toBe('rate_limit');
+    expect(err.retryAfterMs).toBeUndefined();
+  });
+
+  it('classifies 429 with Retry-After: 10 as rate_limit with retryAfterMs=10000', () => {
+    const headers = new Headers({ 'retry-after': '10' });
+    const err = classifyOrcaRouterError({
+      status: 429,
+      bodyText: '',
+      headers,
+      cause: new Error('429'),
+    });
+    expect(err.kind).toBe('rate_limit');
+    expect(err.retryAfterMs).toBe(10_000);
+  });
+
+  it('classifies 500 with body containing "quota exceeded" as quota_exhausted', () => {
+    const err = classifyOrcaRouterError({
+      status: 500,
+      bodyText: 'something quota exceeded',
+      cause: new Error('500'),
+    });
+    expect(err.kind).toBe('quota_exhausted');
+  });
+
+  it('classifies "insufficient credits" body as quota_exhausted regardless of status', () => {
+    const err = classifyOrcaRouterError({
+      status: 402,
+      bodyText: 'insufficient credits',
+      cause: new Error('402'),
+    });
+    expect(err.kind).toBe('quota_exhausted');
+  });
+
+  it('classifies 401 as auth_invalid', () => {
+    const err = classifyOrcaRouterError({
+      status: 401,
+      bodyText: 'unauthorized',
+      cause: new Error('401'),
+    });
+    expect(err.kind).toBe('auth_invalid');
+  });
+
+  it('classifies 403 as auth_invalid', () => {
+    const err = classifyOrcaRouterError({
+      status: 403,
+      bodyText: 'forbidden',
+      cause: new Error('403'),
+    });
+    expect(err.kind).toBe('auth_invalid');
+  });
+
+  it('classifies 404 as unrecoverable', () => {
+    const err = classifyOrcaRouterError({
+      status: 404,
+      bodyText: 'not found',
+      cause: new Error('404'),
+    });
+    expect(err.kind).toBe('unrecoverable');
+  });
+
+  it('classifies 502 as transient', () => {
+    const err = classifyOrcaRouterError({
+      status: 502,
+      bodyText: 'bad gateway',
+      cause: new Error('502'),
+    });
+    expect(err.kind).toBe('transient');
+  });
+
+  it('classifies network error (no status) as transient', () => {
+    const cause = new Error('ECONNRESET');
+    const err = classifyOrcaRouterError({ cause });
     expect(err.kind).toBe('transient');
   });
 });

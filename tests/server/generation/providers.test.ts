@@ -17,6 +17,7 @@ import {
   type GeminiBadRequestCategory,
 } from '../../../src/server/generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../../../src/server/generation/providers/OpenRouterObservationProvider.js';
+import { OrcaRouterObservationProvider } from '../../../src/server/generation/providers/OrcaRouterObservationProvider.js';
 import { buildServerGenerationPrompt } from '../../../src/server/generation/providers/shared/prompt-builder.js';
 import type { ServerGenerationContext } from '../../../src/server/generation/providers/shared/types.js';
 
@@ -404,5 +405,83 @@ describe('OpenRouterObservationProvider', () => {
     await provider.generate(makeContext());
     const body = JSON.parse(String(capturing.lastInit?.body)) as { model?: string };
     expect(body.model).toBe('deepseek-chat');
+  });
+});
+
+describe('OrcaRouterObservationProvider', () => {
+  it('parses OpenAI-style response and reports tokensUsed', async () => {
+    const fakeFetch = new FakeFetch(
+      jsonResponse(200, {
+        choices: [{ message: { content: '<observation><type>x</type><title>o</title></observation>' } }],
+        usage: { total_tokens: 100 },
+      }),
+    );
+    const provider = new OrcaRouterObservationProvider({ apiKey: 'fake', fetchImpl: fakeFetch.fetch });
+    const result = await provider.generate(makeContext());
+    expect(result.rawText).toContain('<observation>');
+    expect(result.tokensUsed).toBe(100);
+    expect(result.providerLabel).toBe('orcarouter');
+  });
+
+  it('classifies a 429 response as rate_limit', async () => {
+    const fakeFetch = new FakeFetch(jsonResponse(429, { error: { message: 'rl' } }));
+    const provider = new OrcaRouterObservationProvider({ apiKey: 'fake', fetchImpl: fakeFetch.fetch });
+    try {
+      await provider.generate(makeContext());
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ServerClassifiedProviderError);
+      expect((error as ServerClassifiedProviderError).kind).toBe('rate_limit');
+    }
+  });
+
+  it('POSTs to the default OrcaRouter URL when baseUrl is unset', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
+    );
+    const provider = new OrcaRouterObservationProvider({ apiKey: 'fake', fetchImpl: capturing.fetch });
+    await provider.generate(makeContext());
+    expect(capturing.lastUrl).toBe('https://api.orcarouter.ai/v1/chat/completions');
+  });
+
+  it('appends /chat/completions to a base URL', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
+    );
+    const provider = new OrcaRouterObservationProvider({
+      apiKey: 'fake',
+      baseUrl: 'https://api.orcarouter.ai/v1',
+      fetchImpl: capturing.fetch,
+    });
+    await provider.generate(makeContext());
+    expect(capturing.lastUrl).toBe('https://api.orcarouter.ai/v1/chat/completions');
+  });
+
+  it('uses a full chat/completions base URL verbatim and normalizes trailing slash', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
+    );
+    const provider = new OrcaRouterObservationProvider({
+      apiKey: 'fake',
+      baseUrl: 'https://api.orcarouter.ai/v1/chat/completions/',
+      fetchImpl: capturing.fetch,
+    });
+    await provider.generate(makeContext());
+    expect(capturing.lastUrl).toBe('https://api.orcarouter.ai/v1/chat/completions');
+  });
+
+  it('sends the configured model verbatim in the request body', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
+    );
+    const provider = new OrcaRouterObservationProvider({
+      apiKey: 'fake',
+      baseUrl: 'https://api.orcarouter.ai/v1',
+      model: 'openai/gpt-4o-mini',
+      fetchImpl: capturing.fetch,
+    });
+    await provider.generate(makeContext());
+    const body = JSON.parse(String(capturing.lastInit?.body)) as { model?: string };
+    expect(body.model).toBe('openai/gpt-4o-mini');
   });
 });
