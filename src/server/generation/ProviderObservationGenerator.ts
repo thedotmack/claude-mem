@@ -76,14 +76,35 @@ const SUMMARY_INPUT_BUDGET_BYTES = Number.parseInt(
   10,
 ) || 600_000;
 
+// Mirrors MAX_PAYLOAD_CHARS in providers/shared/prompt-builder.ts: each event's
+// payload is truncated there before it reaches the model.
+const PROMPT_PAYLOAD_CAP_CHARS = 16 * 1024;
+
+/**
+ * Bytes this event will actually contribute to the prompt.
+ *
+ * Measuring the raw row instead would be wrong twice over: the payload is
+ * truncated to 16 KiB during prompt construction, so a single oversized event
+ * would consume the whole budget and could be dropped entirely — leaving the
+ * request with no session content at all, even though its truncated form fits.
+ * And `String.length` counts UTF-16 units, so non-ASCII content under-reports
+ * against a byte budget.
+ */
+function promptFootprint(event: unknown): number {
+  try {
+    const payload = (event as { payload?: unknown })?.payload;
+    const raw = typeof payload === 'string' ? payload : JSON.stringify(payload ?? {});
+    const truncated = raw.length > PROMPT_PAYLOAD_CAP_CHARS
+      ? raw.slice(0, PROMPT_PAYLOAD_CAP_CHARS)
+      : raw;
+    return Buffer.byteLength(truncated, 'utf8');
+  } catch {
+    return 0;
+  }
+}
+
 export function capSummaryInput<T>(events: T[]): T[] {
-  const size = (e: T): number => {
-    try {
-      return JSON.stringify(e)?.length ?? 0;
-    } catch {
-      return 0;
-    }
-  };
+  const size = (e: T): number => promptFootprint(e);
   let total = 0;
   for (const e of events) total += size(e);
   if (total <= SUMMARY_INPUT_BUDGET_BYTES) return events;
