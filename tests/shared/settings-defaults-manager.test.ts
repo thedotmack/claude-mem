@@ -237,6 +237,81 @@ describe('SettingsDefaultsManager', () => {
       });
     });
 
+    // A fresh settings.json is seeded with every default, so installs created
+    // while 'security_alert' was the default have it frozen on disk. Without
+    // this migration a newly-added trigger type never reaches them.
+    describe('Telegram trigger types migration', () => {
+      it('should migrate the exact legacy default to the current default', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert',
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES).toBe(
+          SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES
+        );
+        expect(result.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES.split(',')).toContain('sensitive');
+      });
+
+      it('should persist the migrated trigger types back to the file', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert',
+          CLAUDE_MEM_TELEGRAM_CHAT_ID: '12345',
+        }));
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES.split(',')).toContain('sensitive');
+        // Unrelated persisted keys survive the rewrite.
+        expect(parsed.CLAUDE_MEM_TELEGRAM_CHAT_ID).toBe('12345');
+      });
+
+      it('should preserve a customized trigger list', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'bugfix,decision',
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES).toBe('bugfix,decision');
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES).toBe('bugfix,decision');
+      });
+
+      it('should preserve a customized list that merely contains the legacy value', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert,security_note',
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES).toBe('security_alert,security_note');
+      });
+
+      it('should leave an empty opt-out list alone', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: '',
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES).toBe('');
+      });
+
+      it('should be idempotent across repeated loads', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert',
+        }));
+
+        const first = SettingsDefaultsManager.loadFromFile(settingsPath);
+        const second = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(second.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES).toBe(first.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES);
+      });
+    });
+
     describe('edge cases', () => {
       it('should handle empty object in file', () => {
         writeFileSync(settingsPath, '{}');

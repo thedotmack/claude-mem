@@ -4,6 +4,103 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.15.0] - 2026-08-10
+
+The npx installer can now start a free week of CMEM Pro end to end:
+
+- **Trial funnel in `npx claude-mem install`** — pitch → email entry → magic-link → Stripe checkout, with the installer polling the pairing API and finishing setup automatically once the trial starts (#3524)
+- **Device-code approval** — the terminal shows a short code (XXXX-XXXX) that you confirm in the browser before credentials are delivered, closing a pairing-secret disclosure vector (#3524)
+- **Live model pricing** — the installer now fetches model pricing from the API instead of shipping hardcoded numbers (#3515)
+
+Requires the cmem.ai backend released today (trial routes + `cli_pairings` device-authorization grant).
+
+## [13.14.0] - 2026-08-08
+
+## CMEM Pro is now the first option in the installer
+
+`npx claude-mem` now leads its provider prompt with **CMEM Pro**, and every option shows what it actually costs per 1,000 observations — so the choice is made on price rather than brand recognition.
+
+```
+◆  Which memory provider do you want to use?
+│  ● CMEM Pro — observer model, off your plan  ($0/1k observations · $30/mo, cloud sync included)  Recommended
+│  ○ OpenRouter / any OpenAI-compatible key    (~$2.73/1k observations, billed to you)
+│  ○ Gemini API key                            (~$3.39/1k observations, billed to you)
+│  ○ Use your Anthropic plan                   (~$8.91/1k observations, billed to your Claude plan)
+```
+
+Anthropic moves last: it is the most expensive per observation and it bills your own Claude plan.
+
+### Picking CMEM Pro
+
+Opens `cmem.ai/pro?from=installer`, waits for the `cm_pro_…` key the signup flow hands back, writes it to settings, and points you at the browser to finish cloud sync. The key is pasted by hand — no polling, no device-code handshake.
+
+### No new provider code
+
+`OpenRouterProvider` is already a generic OpenAI-compatible client whose base URL and model both come from settings, so CMEM Pro is four settings writes:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openrouter",
+  "CLAUDE_MEM_OPENROUTER_BASE_URL": "https://cmem.ai/api/inference/v1",
+  "CLAUDE_MEM_OPENROUTER_MODEL": "cmem-observer",
+  "CLAUDE_MEM_OPENROUTER_API_KEY": "cm_pro_<hex>"
+}
+```
+
+`'cmem'` is a prompt-only sentinel and never reaches `settings.json` — the worker still only understands `claude | gemini | openrouter`.
+
+### Cost figures
+
+New `src/npx-cli/cmem-pro-costs.ts` derives every label from one constant (`ratePerM × TOKENS_PER_OBSERVATION / 1000`), so re-pricing is a one-line edit. CMEM Pro deliberately carries no computed $/1k — it is a flat subscription that does not bill your tokens.
+
+`CMEM_PRO_ORIGIN` overrides the origin so the whole funnel can be walked against a dev server.
+
+### Notes
+
+- `openBrowser()` is best-effort; the URL is printed first, so headless boxes just get a copy-pasteable link.
+- Existing installs are unaffected — this changes the prompt, not any persisted provider.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.13.1...v13.14.0
+
+## [13.13.1] - 2026-08-03
+
+## What’s new
+
+- Adds an interactive `/mode-creator` workflow that turns a user’s domain and note-taking needs into a custom claude-mem mode.
+- Guides capture-type and tag design, including specialized suggestions when standard code mode is a useful baseline.
+- Installs custom modes in durable user storage and reports the active mode in startup context.
+- Adds optional tag-triggered Telegram notifications with guided bot configuration and verification.
+- Includes mode-authoring and Telegram references, secure helper scripts, documentation, distribution coverage, and runtime tests.
+
+## Compatibility
+
+This patch release has no intended breaking changes.
+
+## [13.13.0] - 2026-08-02
+
+## Sensitive observation type
+
+Adds a ninth observation type to the code mode: **`sensitive`** — information that isn't quite private, but that you wouldn't want leaking into further content development in the wrong context. Internal URLs, unreleased plans, personal details, business metrics, client or partner names.
+
+These fire a **Telegram notification** by default, the same way `security_alert` does.
+
+### Configuring
+
+Notifications are controlled by `CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES` in `~/.claude-mem/settings.json`. The default is now `security_alert,sensitive`. Set the key to any comma-separated list of types, or to an empty string to turn notifications off entirely.
+
+Existing installs are migrated automatically: if your trigger list is still the old default of exactly `security_alert`, it is rewritten to include `sensitive`. A customized list is left untouched. Without this migration the new type would never have notified on any existing install, because a fresh `settings.json` is seeded with every default and persisted values win on load.
+
+If you had deliberately set your trigger list to exactly `security_alert` and want it to stay that way, set it to something explicitly different after upgrading — the migration cannot distinguish that case from the seeded default.
+
+### Also in this release
+
+- **Observer prompt fix.** The `type_guidance` prompt still described "6 options" and never listed `security_alert` or `security_note` from #2084. That string is the only type prose the observer model sees — the per-type `description` fields are never injected into any prompt — so those types have been under-emitted since April. It now enumerates all nine.
+- Corpus filters, the OpenClaw detailed feed, and the weekly-digests legend all recognize the new type.
+- BMP-safe fallback for the new emoji, so injected context can't contribute a surrogate pair (the #2787 failure class).
+- Built plugin artifacts are regenerated, picking up the chroma concurrent-write fix from #3462 that had not yet been built into the shipped bundles.
+
+**Full changelog**: https://github.com/thedotmack/claude-mem/compare/v13.12.4...v13.13.0
+
 ## [13.12.4] - 2026-07-23
 
 Four root-cause fixes from the post-v13.12.2 issue batch.

@@ -40,6 +40,7 @@ function mcpStartupCommandFrom(relativePath: string): string {
 
 describe('Plugin Distribution - Skills', () => {
   const skillPath = path.join(projectRoot, 'plugin/skills/mem-search/SKILL.md');
+  const modeCreatorPath = path.join(projectRoot, 'plugin/skills/mode-creator/SKILL.md');
 
   it('should include plugin/skills/mem-search/SKILL.md', () => {
     expect(existsSync(skillPath)).toBe(true);
@@ -64,6 +65,12 @@ describe('Plugin Distribution - Skills', () => {
     expect(content).toContain('timeline');
     expect(content).toContain('get_observations');
   });
+
+  it('should include the mode creator workflow and installers', () => {
+    expect(existsSync(modeCreatorPath)).toBe(true);
+    expect(existsSync(path.join(projectRoot, 'plugin/skills/mode-creator/scripts/install-mode.mjs'))).toBe(true);
+    expect(existsSync(path.join(projectRoot, 'plugin/skills/mode-creator/scripts/configure-telegram.mjs'))).toBe(true);
+  });
 });
 
 describe('Plugin Distribution - Required Files', () => {
@@ -76,6 +83,7 @@ describe('Plugin Distribution - Required Files', () => {
     'plugin/sqlite/SessionStore.js',
     'plugin/sqlite/observations/files.js',
     'plugin/skills/mem-search/SKILL.md',
+    'plugin/skills/mode-creator/SKILL.md',
     '.agents/plugins/marketplace.json',
   ];
 

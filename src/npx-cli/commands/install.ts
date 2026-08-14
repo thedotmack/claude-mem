@@ -5,8 +5,8 @@ import { spawnSync } from 'child_process';
 import { loadTelemetryConfig, saveTelemetryConfig } from '../../services/telemetry/consent.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../../shared/spawn.js';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { homedir } from 'os';
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -32,6 +32,19 @@ import {
   type InstallSummary,
 } from '../install/error-reporter.js';
 import { extractEresolveBlock, isEresolve, runNpmStrict } from '../install/npm-install-helper.js';
+import {
+  buildProviderLabels,
+  CMEM_PRO_BASE_URL,
+  CMEM_PRO_KEY_PATTERN,
+  CMEM_PRO_MODEL,
+  CMEM_PRO_MONTHLY_USD,
+  CMEM_PRO_SIGNUP_URL,
+  CMEM_PRO_TRIAL_DAYS,
+  CMEM_PRO_TRIAL_POLL_URL,
+  CMEM_PRO_TRIAL_START_URL,
+  costPer1kObservations,
+  fetchBlendedRates,
+} from '../cmem-pro-costs.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
@@ -800,6 +813,15 @@ function mergeSettings(updates: Record<string, string>): boolean {
     }
 
     writeSettingsJsonAtomic(path, document);
+    // settings.json can carry tokens (CMEM Pro setup token, provider API
+    // keys); a fresh file inherits the umask (usually 0644), leaving them
+    // world-readable. Tighten to owner-only. Fail-soft: a chmod failure must
+    // never fail the settings write itself, but it is not silent.
+    try {
+      chmodSync(path, 0o600);
+    } catch (chmodError: unknown) {
+      log.warn(`Could not restrict permissions on ${path} to 0600: ${chmodError instanceof Error ? chmodError.message : String(chmodError)}`);
+    }
     return true;
   } catch (error: unknown) {
     log.error(`Failed to write settings to ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -808,6 +830,13 @@ function mergeSettings(updates: Record<string, string>): boolean {
 }
 
 type ProviderId = 'claude' | 'gemini' | 'openrouter';
+/**
+ * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
+ * it configures the generic OpenAI-compatible path (base URL + model + key) and
+ * persists CLAUDE_MEM_PROVIDER='openrouter'. The worker only understands
+ * 'claude' | 'gemini' | 'openrouter', so 'cmem' must never reach settings.json.
+ */
+type ProviderChoice = ProviderId | 'cmem';
 type ClaudeAccessMode = 'subscription' | 'api-key';
 type ClaudeApiMode = 'direct' | 'gateway';
 // Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
@@ -949,6 +978,27 @@ async function bootstrapAndPersistServerApiKey(): Promise<void> {
     `Provisioned local hook API key (project=${result.projectId.slice(0, 8)}…). `
       + 'Settings saved with mode 0600.',
   );
+}
+
+/**
+ * Best-effort "open this URL in the user's browser". Every failure mode is
+ * non-fatal — the caller has already printed the URL, so the worst case is the
+ * user clicks it themselves.
+ */
+function openBrowser(url: string): void {
+  try {
+    if (process.platform === 'darwin') {
+      spawnSync('open', [url], { stdio: 'ignore' });
+    } else if (process.platform === 'win32') {
+      spawnSync('cmd', ['/c', 'start', '', url], { stdio: 'ignore' });
+    } else {
+      spawnSync('xdg-open', [url], { stdio: 'ignore' });
+    }
+  } catch {
+    // [ANTI-PATTERN IGNORED]: opening a browser is a convenience, not a step of the
+    // install; the recovery is the URL already printed above this call, which the
+    // user can open by hand. A headless box legitimately has no opener at all.
+  }
 }
 
 async function promptProvider(options: InstallOptions): Promise<ProviderId> {
@@ -1124,24 +1174,70 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     }
   };
 
-  let selectedProvider: ProviderId;
+  let selectedProvider: ProviderChoice;
   if (options.provider) {
     selectedProvider = options.provider;
   } else {
-    const providerResult = await p.select<ProviderId>({
+    // Rates are looked up live so the prompt never quotes a stale price. The
+    // lookup is timeout-bounded and falls back silently, so an offline install
+    // still gets a working prompt — just with last-known figures.
+    const labels = await buildProviderLabels();
+
+    const providerResult = await p.select<ProviderChoice>({
       message: 'Which memory provider do you want to use?',
       options: [
-        { value: 'claude', label: 'Claude Agent SDK (recommended)' },
-        { value: 'gemini', label: 'Gemini' },
-        { value: 'openrouter', label: 'OpenRouter' },
+        { value: 'cmem', label: labels.cmem, hint: labels.cmemHint },
+        { value: 'openrouter', label: labels.openrouter },
+        { value: 'gemini', label: labels.gemini },
+        { value: 'claude', label: labels.claude },
       ],
-      initialValue: initialProvider,
+      initialValue: 'cmem',
     });
     if (p.isCancel(providerResult)) {
       p.cancel('Installation cancelled.');
       process.exit(0);
     }
     selectedProvider = providerResult;
+  }
+
+  // CMEM Pro: no new provider code. The worker's OpenRouter client is a generic
+  // OpenAI-compatible client whose endpoint and model both come from settings,
+  // so "use the CMEM observer model" is four settings writes and nothing else.
+  if (selectedProvider === 'cmem') {
+    p.note(
+      `${CMEM_PRO_TRIAL_DAYS} days free, then $${CMEM_PRO_MONTHLY_USD}/mo — card required, cancel anytime.\n`
+        + `Opening ${CMEM_PRO_SIGNUP_URL}\n`
+        + "Sign in, start your free week, and copy the key you're shown.",
+      `cmem Pro — ${CMEM_PRO_TRIAL_DAYS} days free`,
+    );
+    openBrowser(CMEM_PRO_SIGNUP_URL);
+
+    const keyResult = await p.text({
+      message: 'Paste your CMEM Pro key (starts with cm_pro_):',
+      validate: (v?: string) =>
+        CMEM_PRO_KEY_PATTERN.test((v ?? '').trim())
+          ? undefined
+          : 'That does not look like a CMEM Pro key.',
+    });
+
+    if (p.isCancel(keyResult)) {
+      p.cancel('Installation cancelled.');
+      process.exit(0);
+    }
+
+    const wrote = mergeSettings({
+      CLAUDE_MEM_PROVIDER: 'openrouter',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: CMEM_PRO_BASE_URL,
+      CLAUDE_MEM_OPENROUTER_MODEL: CMEM_PRO_MODEL,
+      CLAUDE_MEM_OPENROUTER_API_KEY: String(keyResult).trim(),
+    });
+    if (wrote) log.info('Saved CMEM Pro configuration to ~/.claude-mem/settings.json');
+
+    p.note(
+      'Next: finish cloud sync in the browser — press NEXT on the page.',
+      'CMEM Pro ready',
+    );
+    return 'openrouter';
   }
 
   if (selectedProvider === 'claude') {
@@ -1261,72 +1357,493 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
   }
 }
 
-// --- CMEM Online email opt-in ----------------------------------------------
-// Interactive, optional. The CLI POSTs the email + optional note to the live
-// waitlist endpoint (cmem.ai/api/waitlist), which handles persistence, dedup,
-// and the confirmation email server-side. CLAUDE_MEM_SIGNUP_URL overrides the
-// default for testing/staging. No API keys ever ship in the npx package — the
-// endpoint is unauthenticated and the secret (Resend) stays server-side.
-// Anything that goes wrong here is swallowed — a marketing opt-in must never
-// block or fail the install.
+// --- cmem Pro 7-day trial opt-in --------------------------------------------
+// The first interaction of the install (replaces the old CMEM Online waitlist
+// opt-in — one funnel, not two). Entering an email POSTs to cmem.ai, which
+// creates the account server-side and emails a sign-in link; the response is a
+// pairing id/secret this installer polls at the provider step
+// (completeTrialPairing) to receive credentials once the human has finished
+// login + Stripe checkout (card, $0 today) in the browser. The server-side
+// contract lives in cmem-pro-mvp `plans/2026-08-08-seven-day-trial-npx-funnel.md`.
+// Every network call here is timeout-bounded and fail-soft: a cmem.ai outage
+// must never break `npx claude-mem install`.
 
-const DEFAULT_SIGNUP_ENDPOINT = 'https://cmem.ai/api/waitlist';
-const SIGNUP_ENDPOINT = process.env.CLAUDE_MEM_SIGNUP_URL?.trim() || DEFAULT_SIGNUP_ENDPOINT;
 const SIGNUP_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-interface StoredSignup {
-  email: string;
-  note: string;
-  sent: boolean;
+const TRIAL_START_TIMEOUT_MS = 10_000;
+const TRIAL_POLL_TIMEOUT_MS = 10_000;
+/**
+ * Total time the provider step waits for the browser steps. Card entry is
+ * slower than a login click, hence minutes, not seconds; past the budget the
+ * install falls back to the normal provider prompt rather than stranding the
+ * session.
+ */
+const TRIAL_POLL_BUDGET_MS = 240_000;
+/** Poll cadence fallback when the start response omits poll_interval. */
+const TRIAL_DEFAULT_POLL_INTERVAL_S = 3;
+const TRIAL_UNREACHABLE_WARNING = "Couldn't reach cmem.ai — start the trial later with npx claude-mem install";
+const TRIAL_FINISH_LATER_WARNING = 'No worries — finish anytime: npx claude-mem install';
+
+interface TrialPairing {
+  pairingId: string;
+  secret: string;
+  pollIntervalMs: number;
+  /**
+   * Device-authorization user code (e.g. "WXYZ-4823") the human must type into
+   * the browser to approve THIS device before poll delivers credentials. Null
+   * when the server predates the approval step (older contract) — the flow
+   * then works the old way with no approval stage. Display-only: never written
+   * to settings, never sent to telemetry.
+   */
+  userCode: string | null;
 }
 
-function parseStoredSignup(): StoredSignup | null {
+interface StoredTrialState {
+  email: string;
+  /** 'link_sent' (started, credentials never picked up) | 'active' (done). */
+  state: string;
+}
+
+function parseStoredTrialState(): StoredTrialState | null {
   const flat = readFlatSettings(USER_SETTINGS_PATH);
   if (!flat) return null;
-  const email = typeof flat.CLAUDE_MEM_ONLINE_SIGNUP_EMAIL === 'string' ? flat.CLAUDE_MEM_ONLINE_SIGNUP_EMAIL : '';
+  const email = typeof flat.CLAUDE_MEM_PRO_TRIAL_EMAIL === 'string' ? flat.CLAUDE_MEM_PRO_TRIAL_EMAIL : '';
   if (!email) return null;
   return {
     email,
-    note: typeof flat.CLAUDE_MEM_ONLINE_SIGNUP_NOTE === 'string' ? flat.CLAUDE_MEM_ONLINE_SIGNUP_NOTE : '',
-    sent: flat.CLAUDE_MEM_ONLINE_SIGNUP_SENT === 'true',
+    state: typeof flat.CLAUDE_MEM_PRO_TRIAL_STATE === 'string' ? flat.CLAUDE_MEM_PRO_TRIAL_STATE : '',
   };
 }
 
-function readStoredSignup(): StoredSignup | null {
+function readStoredTrialState(): StoredTrialState | null {
   try {
-    return parseStoredSignup();
+    return parseStoredTrialState();
   } catch {
-    // [ANTI-PATTERN IGNORED]: settings.json is optional and may be missing or hand-edited into invalid JSON; treating that as "no stored signup" simply re-asks the opt-in, the designed recovery for this never-blocking marketing flow.
+    // [ANTI-PATTERN IGNORED]: settings.json is optional and may be missing or hand-edited into invalid JSON; treating that as "no stored trial state" simply re-offers the trial, the designed recovery for this never-blocking flow.
     return null;
   }
 }
 
-async function postSignup(payload: { email: string; note: string; version: string }, signal: AbortSignal): Promise<boolean> {
-  const res = await fetch(SIGNUP_ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      email: payload.email,
-      note: payload.note,
-      version: payload.version,
-      platform: process.platform,
-      source: 'npx-installer',
-    }),
-    signal,
-  });
-  return res.ok;
-}
-
-async function submitOnlineSignup(payload: { email: string; note: string; version: string }): Promise<boolean> {
+/**
+ * POST /api/pro/trial/start. Returns the pairing on 200, null on ANY failure
+ * (bad status, malformed body, network error, 10s timeout) — callers surface
+ * the failure with a log.warn and the install continues as if skipped.
+ */
+async function startTrialPairing(email: string): Promise<TrialPairing | null> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5000);
+  const timer = setTimeout(() => controller.abort(), TRIAL_START_TIMEOUT_MS);
   try {
-    return await postSignup(payload, controller.signal);
+    const res = await fetch(CMEM_PRO_TRIAL_START_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, source: 'npx-installer', device_name: hostname() }),
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const body = await res.json() as { pairing_id?: unknown; secret?: unknown; poll_interval?: unknown; user_code?: unknown };
+    if (typeof body.pairing_id !== 'string' || typeof body.secret !== 'string') return null;
+    // Clamp the server-controlled cadence to [1s, 30s]: the 240s poll budget
+    // is only checked at the top of the loop, so an unclamped interval could
+    // defeat it (and a sub-second one would hammer the endpoint).
+    const pollIntervalS = typeof body.poll_interval === 'number' && Number.isFinite(body.poll_interval) && body.poll_interval > 0
+      ? Math.min(Math.max(body.poll_interval, 1), 30)
+      : TRIAL_DEFAULT_POLL_INTERVAL_S;
+    // user_code arrived with the device-approval contract; an older server
+    // omits it and the flow degrades gracefully (no code note, no approval
+    // stage copy) — see TrialPairing.userCode.
+    const userCode = typeof body.user_code === 'string' && body.user_code.trim().length > 0
+      ? body.user_code.trim()
+      : null;
+    return { pairingId: body.pairing_id, secret: body.secret, pollIntervalMs: pollIntervalS * 1000, userCode };
   } catch {
-    // [ANTI-PATTERN IGNORED]: network/timeout failures of this optional waitlist POST are expected offline; the caller persists the email locally and retries silently on the next install run.
-    return false;
+    // [ANTI-PATTERN IGNORED]: network/timeout failures here are NOT silent — every caller pairs the null return with a log.warn telling the user how to start the trial later; the install itself must proceed regardless.
+    return null;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+type TrialPollStage = 'awaiting_login' | 'awaiting_checkout' | 'awaiting_approval';
+
+type TrialPollOutcome =
+  | { kind: 'pending'; stage: TrialPollStage }
+  | { kind: 'ready'; userId: string; setupToken: string; hubUrl: string; trialEndsAt: string | null }
+  /** 410 expired/delivered or 404 unknown — this pairing will never succeed. */
+  | { kind: 'gone' }
+  /** Network error, timeout, 5xx/429, or malformed body — maybe transient. */
+  | { kind: 'unreachable' };
+
+/** One POST to /api/pro/trial/poll, timeout-bounded. Never throws. */
+async function pollTrialOnce(pairing: TrialPairing): Promise<TrialPollOutcome> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TRIAL_POLL_TIMEOUT_MS);
+  try {
+    const res = await fetch(CMEM_PRO_TRIAL_POLL_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pairing_id: pairing.pairingId, secret: pairing.secret }),
+      signal: controller.signal,
+    });
+    if (res.status === 410 || res.status === 404) return { kind: 'gone' };
+    if (res.status === 202) {
+      const body = await res.json().catch(() => ({})) as { stage?: unknown };
+      return {
+        kind: 'pending',
+        stage: body.stage === 'awaiting_checkout' || body.stage === 'awaiting_approval'
+          ? body.stage
+          : 'awaiting_login',
+      };
+    }
+    if (res.ok) {
+      const body = await res.json() as {
+        status?: unknown;
+        user_id?: unknown;
+        setup_token?: unknown;
+        hub_url?: unknown;
+        trial?: { ends_at?: unknown };
+      };
+      if (
+        body.status === 'ready'
+        && typeof body.user_id === 'string'
+        && typeof body.setup_token === 'string'
+        && typeof body.hub_url === 'string'
+      ) {
+        return {
+          kind: 'ready',
+          userId: body.user_id,
+          setupToken: body.setup_token,
+          hubUrl: body.hub_url,
+          trialEndsAt: typeof body.trial?.ends_at === 'string' ? body.trial.ends_at : null,
+        };
+      }
+      return { kind: 'unreachable' };
+    }
+    return { kind: 'unreachable' };
+  } catch {
+    // [ANTI-PATTERN IGNORED]: a failed poll is an expected transient during the human's browser dance; completeTrialPairing counts consecutive failures and warns loudly before giving up.
+    return { kind: 'unreachable' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Sleep in 250ms slices so a Ctrl+C — which clack's active spinner converts
+ * into `isCancelled` without killing the process — interrupts the wait
+ * promptly instead of after a full poll interval.
+ */
+function sleepUnlessCancelled(ms: number, isCancelled: () => boolean): Promise<void> {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      if (isCancelled() || Date.now() - startedAt >= ms) {
+        clearInterval(timer);
+        resolve();
+      }
+    }, 250);
+  });
+}
+
+/**
+ * Show the device-approval code the human must type into the browser (after
+ * the magic-link login) to approve this device — the step that closes the
+ * pairing-hijack hole, so it must be impossible to miss. No-op when the
+ * server didn't send a code (older contract: no approval step exists).
+ */
+function noteTrialUserCode(pairing: TrialPairing): void {
+  if (!pairing.userCode) return;
+  p.note(
+    [
+      styleText(['bold', 'cyan'], pairing.userCode),
+      '',
+      "You'll type this in the browser to approve this device.",
+    ].join('\n'),
+    'Your device code',
+  );
+}
+
+/**
+ * First message after the banner: the cmem Pro free-week pitch. Entering an
+ * email starts the trial server-side (account + sign-in email) and returns
+ * the pairing the provider step later polls; Enter (or any failure) returns
+ * null and the install proceeds exactly as before. Deliberately non-blocking:
+ * the human does email + Stripe in the browser while the install works
+ * through the IDE/runtime steps.
+ */
+async function promptProTrialOptIn(version: string): Promise<TrialPairing | null> {
+  // Interactive-only, and easy to turn off for CI / scripted installs.
+  if (!isInteractive) return null;
+  if (process.env.CI) return null;
+  if (String(process.env.CLAUDE_MEM_ONLINE_OPTIN ?? '').trim().toLowerCase() === 'false') return null;
+
+  const prior = readStoredTrialState();
+  if (prior) {
+    // We already captured this email — never re-pitch. If a previous install
+    // sent a link that was never picked up (state 'link_sent'; the pairing TTL
+    // is 30 minutes, so it has long expired), ask before sending a fresh one:
+    // a silent resend would email the user (and start the 240s poll) on every
+    // future install/update forever. Decline leaves state untouched, so the
+    // offer repeats next time; CLAUDE_MEM_ONLINE_OPTIN=false kills it outright.
+    if (prior.state !== 'link_sent') return null;
+
+    const resendChoice = await p.confirm({
+      message: `You started a cmem Pro trial earlier — send a fresh sign-in link to ${prior.email}?`,
+      initialValue: false,
+    });
+    if (p.isCancel(resendChoice) || resendChoice !== true) return null;
+
+    const spin = p.spinner();
+    spin.start(`Resending your cmem Pro sign-in link to ${prior.email}…`);
+    const resendStartedAt = Date.now();
+    const pairing = await startTrialPairing(prior.email);
+    if (!pairing) {
+      spin.stop(styleText('yellow', 'Could not resend the sign-in link.'));
+      log.warn(TRIAL_UNREACHABLE_WARNING);
+      return null;
+    }
+    mergeSettings({ CLAUDE_MEM_PRO_TRIAL_AT: new Date().toISOString() });
+    spin.stop('Sign-in link resent.');
+    p.note(
+      'Check your email — click the sign-in link and add a card ($0 today).\nInstall continues; we pick it up automatically.',
+      'Link sent',
+    );
+    noteTrialUserCode(pairing);
+    await captureCliEvent('trial_link_sent', { version, duration_ms: Date.now() - resendStartedAt });
+    return pairing;
+  }
+
+  // The alt-path figure is live-fetched (with a bounded timeout and baked
+  // fallback) so the pitch never quotes a stale price. Framing rule: never
+  // print a $/1k figure for Pro itself — it is a flat subscription that does
+  // not bill the user's tokens.
+  const { rates } = await fetchBlendedRates();
+  const haikuPer1k = costPer1kObservations(rates.claude);
+
+  p.note(
+    [
+      styleText(['bold', 'cyan'], 'Free week of Pro: cloud memory generation + sync across machines.'),
+      '',
+      'Memory generation runs on our metered models instead of your',
+      `Anthropic plan — the default Haiku path burns ~$${haikuPer1k}/1k observations`,
+      "of your plan's tokens; Pro takes $0 from it.",
+      `${CMEM_PRO_TRIAL_DAYS} days free, then $${CMEM_PRO_MONTHLY_USD}/mo — card required, cancel anytime.`,
+      '',
+      "Enter your email to start (we'll send a sign-in link) — or press",
+      'Enter to skip and use local generation.',
+    ].join('\n'),
+    `cmem Pro — ${CMEM_PRO_TRIAL_DAYS} days free`,
+  );
+
+  const emailResult = await p.text({
+    message: 'Your email (press Enter to skip):',
+    placeholder: 'you@company.com',
+    defaultValue: '',
+    validate: (v?: string) => {
+      const value = (v ?? '').trim();
+      if (value.length === 0) return undefined; // empty = skip, not an error
+      if (!SIGNUP_EMAIL_RE.test(value)) return "That doesn't look like an email — fix it, or clear the field to skip.";
+      return undefined;
+    },
+  });
+
+  if (p.isCancel(emailResult)) return null;
+  const email = String(emailResult).trim();
+  if (email.length === 0) return null;
+
+  await captureCliEvent('trial_email_submitted', { version });
+
+  const spin = p.spinner();
+  spin.start('Starting your free week — sending the sign-in link…');
+  const startRequestAt = Date.now();
+  const pairing = await startTrialPairing(email);
+  if (!pairing) {
+    spin.stop(styleText('yellow', 'Could not start the trial.'));
+    // NOT fail-silent (unlike the old waitlist opt-in): the user typed an
+    // email expecting something to happen, so say what went wrong and how to
+    // retry. Nothing is persisted, so the next install re-offers the trial.
+    log.warn(TRIAL_UNREACHABLE_WARNING);
+    return null;
+  }
+
+  // Don't-re-nag persistence: a stored email means we never re-pitch. The
+  // provider step flips STATE to 'active' once credentials arrive; until then
+  // 'link_sent' makes future installs offer to resend the link (confirm
+  // prompt above).
+  mergeSettings({
+    CLAUDE_MEM_PRO_TRIAL_EMAIL: email,
+    CLAUDE_MEM_PRO_TRIAL_AT: new Date().toISOString(),
+    CLAUDE_MEM_PRO_TRIAL_STATE: 'link_sent',
+  });
+  spin.stop('Sign-in link sent.');
+  p.note(
+    'Check your email — click the sign-in link and add a card ($0 today).\nInstall continues; we pick it up automatically.',
+    'Link sent',
+  );
+  noteTrialUserCode(pairing);
+  await captureCliEvent('trial_link_sent', { version, duration_ms: Date.now() - startRequestAt });
+  return pairing;
+}
+
+/**
+ * The jump-forward: runs at the provider step when the opt-in produced a
+ * pairing. Polls cmem.ai until the human finishes login + checkout in the
+ * browser, then writes provider + cloud-sync settings in ONE mergeSettings
+ * call and skips the provider prompt entirely (returns 'openrouter').
+ *
+ * Every failure mode — pairing expiry, poll budget exhaustion, Ctrl+C,
+ * cmem.ai outage — returns null with a warning, and the caller falls through
+ * to the normal provider prompt: the trial can never break the install.
+ */
+async function completeTrialPairing(pairing: TrialPairing, version: string): Promise<'openrouter' | null> {
+  const startedAt = Date.now();
+  const stageMessages: Record<TrialPollStage, string> = {
+    awaiting_login: 'Waiting for you to click the sign-in link…',
+    awaiting_checkout: 'Waiting for checkout ($0 today)…',
+    // Device-approval stage: the human types the user code shown at opt-in
+    // into the browser. Generic copy when an older-contract server never sent
+    // a code but still (unexpectedly) reports this stage — never crash on it.
+    awaiting_approval: pairing.userCode
+      ? `Enter code ${pairing.userCode} in the browser to approve this device…`
+      : 'Waiting for approval in the browser…',
+  };
+  let stage: TrialPollStage = 'awaiting_login';
+
+  // Honest copy: on the common path clack's raw-mode keypress handler turns
+  // Ctrl+C during a spinner into a clean exit of the WHOLE installer (the
+  // ETX fallback below only catches the rare press clack misses), so tell
+  // the user exactly that before the wait begins.
+  log.info(styleText('dim', 'Ctrl+C exits — finish anytime with npx claude-mem install'));
+
+  const spin = p.spinner({ cancelMessage: 'Stopped waiting for the browser steps.' });
+  spin.start(stageMessages[stage]);
+
+  // Ctrl+C handling. The preceding prompt's readline close() leaves stdin
+  // explicitly PAUSED, so during a bare spinner the Ctrl+C byte would sit
+  // unread in the tty buffer and the "cancel key exits" behavior clack gives
+  // every other spinner in this file would not fire until much later
+  // (observed empirically). Resume stdin for the duration of the poll so the
+  // first Ctrl+C is delivered immediately — normally clack's raw-mode
+  // keypress handler then exits cleanly (its standard spinner behavior); the
+  // data listener below is the fallback that turns any press clack misses
+  // into a graceful escape to the provider prompt. Restored in the finally.
+  let ctrlCPressed = false;
+  const onStdinData = (chunk: Buffer | string): void => {
+    if (typeof chunk === 'string' ? chunk.includes('\x03') : chunk.includes(0x03)) {
+      ctrlCPressed = true;
+    }
+  };
+  process.stdin.on('data', onStdinData);
+  process.stdin.resume();
+  const wasCancelled = (): boolean => spin.isCancelled || ctrlCPressed;
+
+  const bailCancelled = async (): Promise<null> => {
+    if (!spin.isCancelled) spin.cancel('Stopped waiting for the browser steps.');
+    log.warn(TRIAL_FINISH_LATER_WARNING);
+    await captureCliEvent('trial_poll_timeout', {
+      version,
+      stage,
+      outcome: 'cancelled',
+      duration_ms: Date.now() - startedAt,
+    });
+    return null;
+  };
+
+  try {
+    let consecutiveFailures = 0;
+    while (Date.now() - startedAt < TRIAL_POLL_BUDGET_MS) {
+      if (wasCancelled()) return bailCancelled();
+
+      const result = await pollTrialOnce(pairing);
+      // Re-check: Ctrl+C may have landed during the (up to 10s) poll request.
+      if (wasCancelled()) return bailCancelled();
+
+      if (result.kind === 'ready') {
+        // ONE mergeSettings call: the seven funnel keys (provider trio + key,
+        // sync trio) land atomically so an interruption can never leave the
+        // provider configured without sync or vice versa. Device id/name are
+        // deliberately absent — the worker mints them on first CloudSync start.
+        const wrote = mergeSettings({
+          CLAUDE_MEM_PROVIDER: 'openrouter',
+          CLAUDE_MEM_OPENROUTER_BASE_URL: CMEM_PRO_BASE_URL,
+          CLAUDE_MEM_OPENROUTER_MODEL: CMEM_PRO_MODEL,
+          CLAUDE_MEM_OPENROUTER_API_KEY: result.setupToken,
+          CLAUDE_MEM_CLOUD_SYNC_TOKEN: result.setupToken,
+          CLAUDE_MEM_CLOUD_SYNC_USER_ID: result.userId,
+          CLAUDE_MEM_CLOUD_SYNC_HUB_URL: result.hubUrl,
+          CLAUDE_MEM_PRO_TRIAL_STATE: 'active',
+        });
+        if (!wrote) {
+          // mergeSettings already logged the write error. The setup token was
+          // delivered exactly once and is now lost — fall back to the normal
+          // provider prompt rather than pretending Pro is configured.
+          spin.stop(styleText('yellow', 'Could not save cmem Pro settings.'));
+          log.warn(TRIAL_FINISH_LATER_WARNING);
+          return null;
+        }
+        const endsAt = result.trialEndsAt ? new Date(result.trialEndsAt) : null;
+        const endsAtLabel = endsAt && !Number.isNaN(endsAt.getTime())
+          ? endsAt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+          : `in ${CMEM_PRO_TRIAL_DAYS} days`;
+        spin.stop('cmem Pro credentials received.');
+        p.note(
+          `✓ Free week active — cloud generation + sync ON.\n$${CMEM_PRO_MONTHLY_USD}/mo starts ${endsAtLabel}; cancel anytime at cmem.ai.`,
+          'cmem Pro ready',
+        );
+        await captureCliEvent('trial_activated', { version, duration_ms: Date.now() - startedAt });
+        return 'openrouter';
+      }
+
+      if (result.kind === 'gone') {
+        spin.stop(styleText('yellow', 'That sign-in link has expired.'));
+        log.warn(TRIAL_FINISH_LATER_WARNING);
+        await captureCliEvent('trial_poll_timeout', {
+          version,
+          stage,
+          outcome: 'expired',
+          duration_ms: Date.now() - startedAt,
+        });
+        return null;
+      }
+
+      if (result.kind === 'unreachable') {
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= 3) {
+          spin.stop(styleText('yellow', 'cmem.ai is not responding.'));
+          log.warn(TRIAL_UNREACHABLE_WARNING);
+          await captureCliEvent('trial_poll_timeout', {
+            version,
+            stage,
+            outcome: 'unreachable',
+            duration_ms: Date.now() - startedAt,
+          });
+          return null;
+        }
+      } else {
+        consecutiveFailures = 0;
+        if (result.stage !== stage) {
+          stage = result.stage;
+          spin.message(stageMessages[stage]);
+        }
+      }
+
+      await sleepUnlessCancelled(pairing.pollIntervalMs, wasCancelled);
+    }
+
+    if (wasCancelled()) return bailCancelled();
+    spin.stop(styleText('yellow', 'Still waiting on the browser steps — moving on.'));
+    log.warn(TRIAL_FINISH_LATER_WARNING);
+    await captureCliEvent('trial_poll_timeout', {
+      version,
+      stage,
+      outcome: 'timeout',
+      duration_ms: Date.now() - startedAt,
+    });
+    return null;
+  } finally {
+    process.stdin.off('data', onStdinData);
+    // Re-pause so stdin is in the same state the next clack prompt expects
+    // (each prompt resumes it itself).
+    process.stdin.pause();
   }
 }
 
@@ -1362,74 +1879,6 @@ async function promptTelemetryOptIn(): Promise<void> {
     decidedAt: new Date().toISOString(),
   });
   log.success(consent ? 'Thanks! Anonymized usage sharing is on.' : 'No problem — telemetry is off.');
-}
-
-async function promptCmemOnlineOptIn(version: string): Promise<void> {
-  // Interactive-only, and easy to turn off for CI / scripted installs.
-  if (!isInteractive) return;
-  if (process.env.CI) return;
-  if (String(process.env.CLAUDE_MEM_ONLINE_OPTIN ?? '').trim().toLowerCase() === 'false') return;
-
-  const prior = readStoredSignup();
-  if (prior) {
-    // We already captured this email — don't re-nag. If a previous send never
-    // reached the service, quietly retry once now and record the result.
-    if (!prior.sent) {
-      const ok = await submitOnlineSignup({ email: prior.email, note: prior.note, version });
-      if (ok) mergeSettings({ CLAUDE_MEM_ONLINE_SIGNUP_SENT: 'true' });
-    }
-    return;
-  }
-
-  p.note(
-    [
-      styleText(['bold', 'cyan'], 'New! CMEM Online: every mem everywhere all at once.'),
-      '',
-      "Share your email and we'll send you a link. We're rolling this out to our",
-      'top users first, then everyone ASAP.',
-    ].join('\n'),
-    'CMEM Online',
-  );
-
-  const emailResult = await p.text({
-    message: 'Your work email (press Enter to skip):',
-    placeholder: 'you@company.com',
-    defaultValue: '',
-    validate: (v?: string) => {
-      const value = (v ?? '').trim();
-      if (value.length === 0) return undefined; // empty = skip, not an error
-      if (!SIGNUP_EMAIL_RE.test(value)) return "That doesn't look like an email — fix it, or clear the field to skip.";
-      return undefined;
-    },
-  });
-
-  if (p.isCancel(emailResult)) return;
-  const email = String(emailResult).trim();
-  if (email.length === 0) return;
-
-  const noteResult = await p.text({
-    message: 'Optionally: what are you working on, or how can we help you and your team? (Enter to skip)',
-    placeholder: 'e.g. migrating a monorepo, onboarding a 5-dev team…',
-    defaultValue: '',
-  });
-  const note = p.isCancel(noteResult) ? '' : String(noteResult).trim();
-
-  const spin = p.spinner();
-  spin.start('Signing you up for CMEM Online…');
-  const ok = await submitOnlineSignup({ email, note, version });
-  // Persist locally regardless of the network result so we never re-prompt;
-  // a failed send is retried silently on the next install (see above).
-  mergeSettings({
-    CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: email,
-    CLAUDE_MEM_ONLINE_SIGNUP_NOTE: note,
-    CLAUDE_MEM_ONLINE_SIGNUP_AT: new Date().toISOString(),
-    CLAUDE_MEM_ONLINE_SIGNUP_SENT: ok ? 'true' : 'false',
-  });
-  if (ok) {
-    spin.stop(`You're on the list — we'll email ${styleText('cyan', email)} your CMEM Online link.`);
-  } else {
-    spin.stop(styleText('yellow', `Saved ${email} — we'll finish signing you up next time you run the installer.`));
-  }
 }
 
 export interface InstallOptions {
@@ -1517,7 +1966,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   }
   log.info(segments.join(` ${dot} `));
 
-  await promptCmemOnlineOptIn(version);
+  // An explicit --provider flag wins over the trial funnel: never pitch,
+  // email, poll, or override a provider the operator asked for by name.
+  const trialPairing = options.provider ? null : await promptProTrialOptIn(version);
 
   if (alreadyInstalled) {
     if (process.stdin.isTTY) {
@@ -1550,7 +2001,18 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   }
 
   const selectedRuntime = await promptRuntime(options);
-  const selectedProvider = await promptProvider(options);
+  // Jump-forward: a pairing from the trial opt-in means the human is doing
+  // (or has done) login + checkout in the browser — poll for credentials
+  // instead of asking which provider to use. Any failure (expired link, poll
+  // budget, Ctrl+C, cmem.ai outage) falls through to the normal prompt.
+  let selectedProvider: ProviderId | null = null;
+  if (trialPairing && !options.provider) {
+    selectedProvider = await completeTrialPairing(trialPairing, version);
+  }
+  const trialActivated = selectedProvider === 'openrouter';
+  if (selectedProvider === null) {
+    selectedProvider = await promptProvider(options);
+  }
   if (selectedProvider === 'claude') {
     await promptClaudeModel(options);
   }
@@ -1761,6 +2223,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `Plugin dir:  ${styleText('cyan', marketplaceDir)}`,
     `IDEs:        ${styleText('cyan', selectedIDEs.join(', '))}`,
   ];
+  if (trialActivated) {
+    summaryLines.push(`Cloud sync:  ${styleText('cyan', 'ON (cmem Pro free week)')}`);
+  }
   if (autoMemoryStatus === 'disabled') {
     summaryLines.push(`Auto-memory: ${styleText('cyan', 'disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
   } else if (autoMemoryStatus === 'already-disabled') {
@@ -1820,6 +2285,28 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       );
     } catch {
       healthSpinner?.stop(`Worker not yet responding on port ${workerPort} (still starting)`);
+    }
+
+    // Trial installs just wrote cloud-sync settings the worker booted with, so
+    // one cheap read of /api/sync/status confirms sync is really configured.
+    // Purely informational and fail-soft — a warming worker legitimately
+    // can't answer yet, and the state is always visible via the cloud-sync skill.
+    if (trialActivated && workerReady) {
+      try {
+        const syncResponse = await fetch(`http://${workerUrlHost}:${actualPort}/api/sync/status`, {
+          signal: AbortSignal.timeout(3000),
+        });
+        if (syncResponse.ok) {
+          const sync = await syncResponse.json() as { configured?: boolean };
+          if (sync && sync.configured === false) {
+            log.warn('Cloud sync: worker has not picked up the sync settings yet — it will on its next restart.');
+          } else {
+            log.success('Cloud sync: configured — the worker is reporting sync status.');
+          }
+        }
+      } catch {
+        // [ANTI-PATTERN IGNORED]: this read-through is purely informational; a worker still warming up legitimately can't answer, and sync state stays visible via the cloud-sync skill.
+      }
     }
   }
 
