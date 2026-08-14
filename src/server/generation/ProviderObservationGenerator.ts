@@ -3,6 +3,8 @@
 import type { Job } from 'bullmq';
 import { logger } from '../../utils/logger.js';
 import { PostgresAgentEventsRepository } from '../../storage/postgres/agent-events.js';
+import type { PostgresAgentEvent } from '../../storage/postgres/agent-events.js';
+import { eventBlockBytes } from './providers/shared/prompt-builder.js';
 import { PostgresObservationGenerationJobRepository } from '../../storage/postgres/generation-jobs.js';
 import { PostgresProjectsRepository } from '../../storage/postgres/projects.js';
 import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
@@ -76,31 +78,22 @@ const SUMMARY_INPUT_BUDGET_BYTES = Number.parseInt(
   10,
 ) || 600_000;
 
-// Mirrors MAX_PAYLOAD_CHARS in providers/shared/prompt-builder.ts: each event's
-// payload is truncated there before it reaches the model.
-const PROMPT_PAYLOAD_CAP_CHARS = 16 * 1024;
-
 /**
  * Bytes this event will actually contribute to the prompt.
  *
- * Measuring the raw row instead would be wrong twice over: the payload is
- * truncated to 16 KiB during prompt construction, so a single oversized event
- * would consume the whole budget and could be dropped entirely — leaving the
- * request with no session content at all, even though its truncated form fits.
- * And `String.length` counts UTF-16 units, so non-ASCII content under-reports
- * against a byte budget.
+ * Delegates to the prompt builder instead of estimating: the builder
+ * pretty-prints, privacy-strips, truncates, XML-escapes and wraps every payload,
+ * and an estimate that skips any of those steps under-counts the request it is
+ * supposed to bound. Measuring the raw row would also count UTF-16 units rather
+ * than bytes, and would charge full price for a payload the builder truncates.
+ *
+ * Not defensive on purpose: an event that cannot be turned into a block here
+ * cannot be turned into one during prompt construction either, so swallowing the
+ * error would only trade a loud failure for the context overflow this budget
+ * exists to prevent.
  */
 function promptFootprint(event: unknown): number {
-  try {
-    const payload = (event as { payload?: unknown })?.payload;
-    const raw = typeof payload === 'string' ? payload : JSON.stringify(payload ?? {});
-    const truncated = raw.length > PROMPT_PAYLOAD_CAP_CHARS
-      ? raw.slice(0, PROMPT_PAYLOAD_CAP_CHARS)
-      : raw;
-    return Buffer.byteLength(truncated, 'utf8');
-  } catch {
-    return 0;
-  }
+  return eventBlockBytes(event as PostgresAgentEvent);
 }
 
 export function capSummaryInput<T>(events: T[]): T[] {
