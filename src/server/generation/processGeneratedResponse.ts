@@ -196,7 +196,17 @@ export async function processSessionSummaryResponse(
 
   const summary = parsed.summary ?? null;
   const skipped = summary?.skipped === true;
-  const summaryContent = summary ? renderSummaryContent(summary) : '';
+
+  // Defence in depth: a provider that answers with <observation> blocks instead of
+  // a <summary> block used to be dropped here silently — parsed.summary was null,
+  // the content was judged empty, the job completed and parsed.observations was
+  // never looked at. Fold those blocks into the summary body rather than
+  // discarding a response the model was billed for.
+  const fallbackObservations = !summary && !skipped ? parsed.observations : [];
+  const summaryContent = summary
+    ? renderSummaryContent(summary)
+    : fallbackObservations.map(o => renderObservationContent(o)).join('\n\n');
+
   const privateContentDetected = skipped || summaryContent.trim().length === 0;
 
   const rendered: RenderedObservation[] = privateContentDetected

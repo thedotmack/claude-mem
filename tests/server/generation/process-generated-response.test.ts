@@ -10,6 +10,7 @@ import {
 } from '../../../src/storage/postgres/index.js';
 import {
   processGeneratedResponse,
+  processSessionSummaryResponse,
   markGenerationFailed,
 } from '../../../src/server/generation/processGeneratedResponse.js';
 import { ModeManager } from '../../../src/services/domain/ModeManager.js';
@@ -96,6 +97,73 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
       teamId,
     });
   }
+
+
+  // Regression: the summary path used to read only parsed.summary. A provider that
+  // answered with <observation> blocks (which is what the shared prompt asked for)
+  // produced summary=null, was judged empty, and the job completed having discarded
+  // a paid-for response. Measured on a production deployment: 4,898 summary jobs,
+  // zero observations persisted.
+  it('persists a summary job answered with <observation> blocks instead of dropping it', async () => {
+    const session = await storage.sessions.create({
+      projectId,
+      teamId,
+      contentSessionId: `content-${crypto.randomUUID()}`,
+      agentId: 'agent-1',
+      platformSource: 'claude-code',
+      metadata: {},
+    });
+
+    const summaryJob = await storage.observationGenerationJobs.create({
+      projectId,
+      teamId,
+      sourceType: 'session_summary',
+      sourceId: session.id,
+      serverSessionId: session.id,
+      jobType: 'observation_generate_session_summary',
+    });
+
+    await storage.observationGenerationJobs.transitionStatus({
+      id: summaryJob.id,
+      projectId,
+      teamId,
+      status: 'processing',
+    });
+
+    const fresh = (await storage.observationGenerationJobs.getByIdForScope({
+      id: summaryJob.id,
+      projectId,
+      teamId,
+    }))!;
+
+    const outcome = await processSessionSummaryResponse({
+      pool: pool as unknown as Parameters<typeof processSessionSummaryResponse>[0]['pool'],
+      job: fresh,
+      rawText: `
+        <observation>
+          <type>discovery</type>
+          <title>Session arc</title>
+          <facts><fact>the run ended with the queue drained</fact></facts>
+        </observation>
+      `,
+      providerLabel: 'fake',
+      modelId: 'fake-1',
+    });
+
+    expect(outcome.kind).toBe('completed');
+    if (outcome.kind === 'completed') {
+      // the point of the fix: the response is kept, not silently discarded
+      expect(outcome.observations.length).toBeGreaterThan(0);
+      expect(outcome.observations[0]!.content).toContain('queue drained');
+    }
+
+    const reloaded = await storage.observationGenerationJobs.getByIdForScope({
+      id: summaryJob.id,
+      projectId,
+      teamId,
+    });
+    expect(reloaded?.status).toBe('completed');
+  });
 
   it('persists observation, links source, and marks job completed for valid XML', async () => {
     const xml = `
