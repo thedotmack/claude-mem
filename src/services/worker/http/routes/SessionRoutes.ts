@@ -3,6 +3,7 @@ import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import { ingestObservation } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
+import { requireLocalhost, requireWorkerToken } from '../../../worker/http/middleware.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTags, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
@@ -275,8 +276,14 @@ export class SessionRoutes extends BaseRouteHandler {
       validateBody(SessionRoutes.summarizeByClaudeIdSchema),
       this.handleSummarizeByClaudeId.bind(this)
     );
+    // Destructive: aborts an in-flight generator, reaps its SDK subprocess and
+    // discards queued work. Gated on proof the caller can read this user's
+    // claude-mem data dir (the worker's own start token) — "is localhost" is
+    // not a sufficient authority to end someone else's live session.
     app.post(
       '/api/sessions/end',
+      requireLocalhost,
+      requireWorkerToken,
       validateBody(SessionRoutes.endByClaudeIdSchema),
       this.handleEndByClaudeId.bind(this)
     );
@@ -361,7 +368,14 @@ export class SessionRoutes extends BaseRouteHandler {
     // mid-generation no longer orphans its child process. A no-op when nothing
     // is tracked (the common case: the generator already finished).
     const { contentSessionId } = req.body;
-    const reaped = await this.sessionManager.endByContentSessionId(contentSessionId);
+    // Scope by platform: the same contentSessionId can be live under two
+    // platforms at once, and ending the wrong one aborts a running generator
+    // that nobody asked to stop.
+    // Optional, not normalized-with-a-default: if the caller did not say which
+    // platform, we must NOT invent one — a wrong guess ends the wrong session.
+    // Passing undefined lets SessionManager refuse an ambiguous match instead.
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const reaped = await this.sessionManager.endBySessionIdentity(contentSessionId, platformSource);
     res.json({ status: 'ok', reaped });
   });
 
