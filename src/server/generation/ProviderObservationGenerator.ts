@@ -73,6 +73,13 @@ export interface ProviderObservationGeneratorOptions {
 // close carries the outcome and what was left pending. Dropping the middle
 // yields a partial summary, which is strictly better than the current outcome
 // for these sessions — an unrecoverable failure and no summary at all.
+// Bounds the SESSION INPUT, not the finished prompt: buildServerGenerationPrompt
+// wraps the selected event blocks in request/project/job tags, the instructions and
+// the observation schema. That envelope is a fixed cost — 1,244 bytes with the mode
+// active here, independent of event count and payload size — so it is left out of
+// the budget rather than reserved from it. At the default that is 0.2%; only a
+// budget small enough to be unusable anyway (~1 KB buys one truncated tool call)
+// would be decided by it.
 const SUMMARY_INPUT_BUDGET_BYTES = Number.parseInt(
   process.env.CLAUDE_MEM_SUMMARY_INPUT_BUDGET_BYTES ?? '',
   10,
