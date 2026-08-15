@@ -112,7 +112,7 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
         logger.error('PARSER', `Invalid observation type: ${type}, preserving emitted type`, { correlationId });
       }
     } else {
-      logger.error('PARSER', `Observation missing type field, using "${fallbackType}"`, { correlationId });
+      logger.error('PARSER', `Observation missing type field, defaulting to the first declared type: "${fallbackType}"`, { correlationId });
     }
 
     // #3379: concepts are matched exactly by the injection SQL, so a prefixed
