@@ -223,8 +223,9 @@ async function reapRegisteredChildren(currentPid: number, terminatedOwner: PidIn
 /**
  * Rung 1: terminate a worker we have positively identified as ours.
  *
- * The start token is re-verified immediately before SIGKILL so that a PID
- * recycled during the SIGTERM grace window is never the thing we force-kill.
+ * The start token is re-verified, strictly, immediately before SIGKILL so
+ * that a PID recycled during the SIGTERM grace window is never the thing we
+ * force-kill. Anything short of a readable, matching token means no SIGKILL.
  */
 async function terminateVerifiedOwner(info: PidInfo): Promise<void> {
   const record: ManagedProcessRecord = {
@@ -257,12 +258,21 @@ async function terminateVerifiedOwner(info: PidInfo): Promise<void> {
   if (!isPidAlive(info.pid)) return;
 
   // Still alive. Escalate, but only after proving it is still the SAME
-  // process. If the token no longer matches, this PID was recycled while we
-  // waited and force-killing it would hit a stranger.
+  // process. This is a kill decision, so it fails closed like
+  // verifyManagedProcessIdentity: no persisted token, an unreadable current
+  // token, or a mismatch all mean we cannot re-prove identity, and a PID
+  // recycled during the grace window would otherwise take the SIGKILL meant
+  // for our worker. (SIGTERM above was sent under verifyPidFileOwnership's
+  // more permissive "may keep running" rule; escalation gets the strict one.)
   const currentToken = captureProcessStartToken(info.pid);
-  if (info.startToken && currentToken !== null && currentToken !== info.startToken) {
-    logger.warn('SYSTEM', 'Wedged worker PID was recycled during the SIGTERM grace window; not escalating', {
+  if (!info.startToken || currentToken === null || currentToken !== info.startToken) {
+    logger.warn('SYSTEM', 'Cannot re-prove the wedged worker\'s identity after the SIGTERM grace window; not escalating to SIGKILL', {
       pid: info.pid,
+      reason: !info.startToken
+        ? 'pid file has no start token'
+        : currentToken === null
+          ? 'current start token unreadable'
+          : 'start token mismatch (PID recycled)',
     });
     return;
   }

@@ -548,6 +548,35 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(transportCount).toBe(1);
   });
 
+  it('re-verifies identity after the launcher probe and never signals a PID that changed under it', async () => {
+    // The argv probe awaits a subprocess; the recorded PID can exit and be
+    // recycled inside that window. Model it: the probe itself flips the PID to
+    // "gone" (identity no longer verifiable) before returning a match. The
+    // pre-signal re-check must catch that and drop the record without a kill.
+    const racedPid = process.pid;
+    const racedToken = captureProcessStartToken(racedPid);
+    expect(racedToken).not.toBeNull();
+    mockSupervisorRegistryEntries = [{
+      id: 'chroma-mcp',
+      pid: racedPid,
+      type: 'chroma',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      pgid: racedPid,
+      startToken: racedToken,
+    }];
+    ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(async (pid) => {
+      deadPids.add(pid);
+      return true;
+    });
+
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(killTreeCalls).not.toContain(racedPid);
+    expect(supervisorUnregisterCalls).toContain('chroma-mcp');
+    expect(transportCount).toBe(1);
+  });
+
   it('never signals a live PID whose record carries no start token', async () => {
     const tokenlessPid = process.pid;
     mockSupervisorRegistryEntries = [{

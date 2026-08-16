@@ -1045,6 +1045,17 @@ export class ChromaMcpManager {
         return;
       }
 
+      // The probe above awaited a subprocess; the PID could have exited and
+      // been recycled in that window. Re-prove identity immediately before
+      // the signal, so the tree-kill never lands on a replacement process.
+      if (!verifyManagedProcessIdentity(record)) {
+        logger.debug('CHROMA_MCP', 'Prior-generation chroma-mcp PID changed identity during the launcher probe; dropping without signaling', {
+          pid: record.pid
+        });
+        getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+        return;
+      }
+
       logger.warn('CHROMA_MCP', 'Reaping orphaned chroma-mcp left by a previous worker generation', {
         pid: record.pid,
         startedAt: record.startedAt

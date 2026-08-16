@@ -44,6 +44,18 @@ function spawnPortHolder(port: number): Promise<ChildProcess> {
   return new Promise(resolve => setTimeout(() => resolve(child), 400));
 }
 
+/** A port holder that ignores SIGTERM: only SIGKILL removes it. Stands in for
+ *  a worker wedged hard enough that graceful shutdown never runs. */
+function spawnStubbornPortHolder(port: number): Promise<ChildProcess> {
+  const child = spawn(
+    process.execPath,
+    ['-e', `process.on('SIGTERM',()=>{});require('net').createServer().listen(${port},'127.0.0.1');setInterval(()=>{},1000)`],
+    { stdio: 'ignore' }
+  );
+  spawned.push(child);
+  return new Promise(resolve => setTimeout(() => resolve(child), 400));
+}
+
 function listenPlain(port: number): Promise<net.Server> {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -402,6 +414,44 @@ describe('reclaimWorkerPort rung 1: terminates a verified wedged owner', () => {
     // Generous: this path really does spend seconds (a SIGTERM grace
     // window plus the port-recovery confirmation), and that is intended behaviour,
     // not something to tune down to fit a default test timeout.
+  }, 30_000);
+
+  it('escalates to SIGKILL only after re-proving the owner by start token', async () => {
+    const port = takePort();
+    const holder = await spawnStubbornPortHolder(port);
+    const token = captureProcessStartToken(holder.pid!);
+    expect(token).not.toBeNull();
+
+    const outcome = await reclaimWorkerPort(port, {
+      pid: holder.pid!,
+      port,
+      startedAt: new Date().toISOString(),
+      startToken: token ?? undefined,
+    });
+
+    // SIGTERM was ignored; the token still matched after the grace window, so
+    // SIGKILL was sent and the port came back.
+    expect(outcome.kind).toBe('reclaimed');
+    expect(await exited(holder)).toBe(true);
+  }, 30_000);
+
+  it('never escalates to SIGKILL when the pid file has no start token', async () => {
+    // A tokenless pid file (older claude-mem) is enough to SIGTERM the owner
+    // under verifyPidFileOwnership's permissive rule, but a kill decision
+    // fails closed: with nothing to re-prove identity against after the grace
+    // window, the PID could have been recycled, so no SIGKILL is sent.
+    const port = takePort();
+    const holder = await spawnStubbornPortHolder(port);
+
+    const outcome = await reclaimWorkerPort(port, {
+      pid: holder.pid!,
+      port,
+      startedAt: new Date().toISOString(),
+    });
+
+    expect(outcome.kind).toBe('failed');
+    expect(isPidAlive(holder.pid!)).toBe(true);
+    expect(await isListening(port)).toBe(true);
   }, 30_000);
 
   it('refuses to reclaim a port whose pid file names the current process', async () => {
