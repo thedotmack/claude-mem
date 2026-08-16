@@ -310,6 +310,7 @@ import {
 
 afterAll(() => {
   ChromaMcpManager.setUvxAvailabilityProbeForTesting(null);
+  ChromaMcpManager.setDescendantCollectorForTesting(null);
   process.kill = realProcessKill;
   if (originalPrewarmTimeout === undefined) {
     delete process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS;
@@ -346,6 +347,7 @@ function resetState(): void {
   mockSupervisorRegistryEntries = [];
   supervisorUnregisterCalls = [];
   ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(null);
+  ChromaMcpManager.setDescendantCollectorForTesting(null);
   logEntries.length = 0;
   execSyncCalls = 0;
   nextFakePid = 100_000;
@@ -660,6 +662,42 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
         try { realProcessKill(child.pid!, 'SIGKILL'); } catch { /* already gone */ }
       }
     }
+  });
+
+  it('discards a descendant re-scan whose root stopped verifying while it was pending', async () => {
+    // Between the pre-rescan identity check and the rescan's result, the root
+    // can exit and be recycled; the pids the rescan returns are then a
+    // replacement's children. The rescan is driven through the collector seam
+    // so that exact interleaving is deterministic: the second collection
+    // marks the root unverifiable and returns a "new" child.
+    const rootPid = process.pid;
+    const rootToken = captureProcessStartToken(rootPid);
+    expect(rootToken).not.toBeNull();
+    const replacementChildPid = 99_790;
+    mockSupervisorRegistryEntries = [{
+      id: 'chroma-mcp',
+      pid: rootPid,
+      type: 'chroma',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      pgid: rootPid,
+      startToken: rootToken,
+    }];
+    ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(async () => true);
+    let collections = 0;
+    ChromaMcpManager.setDescendantCollectorForTesting(async () => {
+      collections += 1;
+      if (collections === 1) return [];
+      deadPids.add(rootPid);
+      return [replacementChildPid];
+    });
+
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(collections).toBe(2);
+    expect(killSignals.filter(entry => entry.pid === replacementChildPid)).toEqual([]);
+    expect(killSignals.filter(entry => entry.pid === rootPid).map(entry => entry.signal)).toEqual(['SIGTERM']);
+    expect(supervisorUnregisterCalls).toContain('chroma-mcp');
   });
 
   it('never signals a live PID whose record carries no start token', async () => {

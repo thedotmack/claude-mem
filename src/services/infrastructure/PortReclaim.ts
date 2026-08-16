@@ -51,6 +51,9 @@ import { signalProcess } from '../../supervisor/shutdown.js';
 /** How long to wait for a SIGTERM'd worker to exit before escalating. */
 const OWNER_SIGTERM_GRACE_MS = 5_000;
 
+/** How long to wait for a SIGKILL'd worker to actually disappear. */
+const OWNER_SIGKILL_CONFIRM_MS = 2_000;
+
 /** How long to wait for the port to come back after a reclaim. */
 const PORT_RECOVERY_WAIT_MS = 5_000;
 
@@ -234,14 +237,28 @@ async function reapRegisteredChildren(currentPid: number, terminatedOwner: PidIn
   return signalled;
 }
 
+async function waitUntilDead(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && isPidAlive(pid)) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  return !isPidAlive(pid);
+}
+
 /**
  * Rung 1: terminate a worker we have positively identified as ours.
  *
  * The start token is re-verified, strictly, immediately before SIGKILL so
  * that a PID recycled during the SIGTERM grace window is never the thing we
  * force-kill. Anything short of a readable, matching token means no SIGKILL.
+ *
+ * Returns true only when the owner is conclusively gone (observed dead after
+ * SIGTERM or after SIGKILL). The caller uses that to decide whether the
+ * owner's linked children may be reaped as orphans: a worker that survived
+ * (escalation refused, SIGKILL failed, or still alive after it) is still a
+ * live generation and its children are not orphans.
  */
-async function terminateVerifiedOwner(info: PidInfo): Promise<void> {
+async function terminateVerifiedOwner(info: PidInfo): Promise<boolean> {
   const record: ManagedProcessRecord = {
     id: 'worker',
     pid: info.pid,
@@ -264,12 +281,7 @@ async function terminateVerifiedOwner(info: PidInfo): Promise<void> {
     });
   }
 
-  const deadline = Date.now() + OWNER_SIGTERM_GRACE_MS;
-  while (Date.now() < deadline && isPidAlive(info.pid)) {
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-
-  if (!isPidAlive(info.pid)) return;
+  if (await waitUntilDead(info.pid, OWNER_SIGTERM_GRACE_MS)) return true;
 
   // Still alive. Escalate, but only after proving it is still the SAME
   // process. This is a kill decision, so it fails closed like
@@ -288,7 +300,7 @@ async function terminateVerifiedOwner(info: PidInfo): Promise<void> {
           ? 'current start token unreadable'
           : 'start token mismatch (PID recycled)',
     });
-    return;
+    return false;
   }
 
   try {
@@ -298,7 +310,10 @@ async function terminateVerifiedOwner(info: PidInfo): Promise<void> {
       pid: info.pid,
       error: error instanceof Error ? error.message : String(error),
     });
+    return false;
   }
+
+  return waitUntilDead(info.pid, OWNER_SIGKILL_CONFIRM_MS);
 }
 
 /**
@@ -351,11 +366,13 @@ export async function reclaimWorkerPort(
     }
 
     // Rung 1.
-    await terminateVerifiedOwner(pidInfo);
+    const ownerGone = await terminateVerifiedOwner(pidInfo);
     // The worker's own children outlive it and are what pin the socket, so
     // clear them too; otherwise rung 1 recreates the ghost socket it just fixed.
-    // Only ITS children: the owner identity scopes the reap to that generation.
-    await reapRegisteredChildren(currentPid, pidInfo);
+    // Only ITS children, and only once it is conclusively gone: if the owner
+    // survived, its children are a live generation's and ownerIsGone's normal
+    // liveness/token rule decides (i.e. leaves them alone).
+    await reapRegisteredChildren(currentPid, ownerGone ? pidInfo : null);
 
     if (await confirmPortRecovered(port, PORT_RECOVERY_WAIT_MS)) {
       return { kind: 'reclaimed', via: 'verified-owner' };

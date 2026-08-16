@@ -111,6 +111,7 @@ export class ChromaMcpManager {
   private stopPromise: Promise<void> | null = null;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
   private static chromaLauncherIdentityProbe: ((pid: number) => Promise<boolean>) | null = null;
+  private static descendantCollectorOverride: ((rootPid: number) => Promise<number[]>) | null = null;
 
   private constructor() {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
@@ -1336,15 +1337,23 @@ export class ChromaMcpManager {
       // likely exited, and a recycled PID's children are not ours to touch.
       // The pre-TERM descendants were verified children and are still
       // SIGKILLed either way.
-      const rootVerifiedForKill = rootStillOurs();
-      const descendantsBeforeKill = rootVerifiedForKill
+      let descendantsBeforeKill = rootStillOurs()
         ? await ChromaMcpManager.collectDescendantPids(pid)
         : [];
-      // Freshly re-scanned descendants were just found under a verified root
-      // and are signalled as-is. Retained pre-TERM descendants that the
-      // re-scan no longer sees (re-parented, or exited) are signalled only if
-      // they still verify as the same process: alive, and start token equal
-      // to the one captured at discovery.
+      // The re-scan awaited a subprocess; re-prove the root AFTER it as well.
+      // If the root stopped verifying in that window, what pgrep returned may
+      // be a replacement's children: discard it and rely only on the retained,
+      // token-checked pre-TERM set.
+      const rootVerifiedForKill = rootStillOurs();
+      if (!rootVerifiedForKill && descendantsBeforeKill.length > 0) {
+        logger.debug('CHROMA_MCP', `Root PID ${pid} stopped verifying during the descendant re-scan; discarding re-scan results`);
+        descendantsBeforeKill = [];
+      }
+      // Freshly re-scanned descendants were just found under a root verified
+      // both before and after the scan and are signalled as-is. Retained
+      // pre-TERM descendants that the re-scan no longer sees (re-parented, or
+      // exited) are signalled only if they still verify as the same process:
+      // alive, and start token equal to the one captured at discovery.
       const freshlySeen = new Set(descendantsBeforeKill);
       const killTargets = Array.from(new Set([...descendantsBeforeTerm, ...descendantsBeforeKill]));
       for (const child of killTargets) {
@@ -1388,6 +1397,9 @@ export class ChromaMcpManager {
    * their ancestors. Best-effort: missing pgrep / non-zero exits return [].
    */
   private static async collectDescendantPids(rootPid: number): Promise<number[]> {
+    if (ChromaMcpManager.descendantCollectorOverride) {
+      return ChromaMcpManager.descendantCollectorOverride(rootPid);
+    }
     const seen = new Set<number>();
     const collected: number[] = [];
 
@@ -1621,6 +1633,12 @@ export class ChromaMcpManager {
     probe: ((pid: number) => Promise<boolean>) | null,
   ): void {
     ChromaMcpManager.chromaLauncherIdentityProbe = probe;
+  }
+
+  static setDescendantCollectorForTesting(
+    collector: ((rootPid: number) => Promise<number[]>) | null,
+  ): void {
+    ChromaMcpManager.descendantCollectorOverride = collector;
   }
 
   private static ensureUvOnPath(env: Record<string, string>): void {
