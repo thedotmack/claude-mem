@@ -74,6 +74,81 @@ describe('observer-health ledger', () => {
     expect(readObserverHealth(healthPath)).toBeNull();
   });
 
+  it('object form round-trips code, action, url, and request id through the file', () => {
+    recordObserverFailure('openrouter', {
+      message: "You've used your $30 monthly allowance.",
+      code: 'allowance_exhausted',
+      action: 'It resets on the 1st. Upgrade or add credits to keep going now.',
+      url: 'https://cmem.ai/dashboard',
+      requestId: 'req_abc123',
+    }, healthPath);
+    const state = readObserverHealth(healthPath)!;
+    expect(state.consecutiveFailures).toBe(1);
+    expect(state.lastErrorMessage).toBe("You've used your $30 monthly allowance.");
+    expect(state.lastErrorCode).toBe('allowance_exhausted');
+    expect(state.lastErrorAction).toBe('It resets on the 1st. Upgrade or add credits to keep going now.');
+    expect(state.lastErrorUrl).toBe('https://cmem.ai/dashboard');
+    expect(state.lastErrorRequestId).toBe('req_abc123');
+    // Persisted, not just in-memory: the raw JSON carries the keys.
+    const raw = JSON.parse(readFileSync(healthPath, 'utf-8'));
+    expect(raw.lastErrorCode).toBe('allowance_exhausted');
+    expect(raw.lastErrorRequestId).toBe('req_abc123');
+  });
+
+  it('string form leaves the structured fields null, and overwrites stale ones from a prior classified failure', () => {
+    recordObserverFailure('openrouter', 'plain boom', healthPath);
+    const plain = readObserverHealth(healthPath)!;
+    expect(plain.lastErrorMessage).toBe('plain boom');
+    expect(plain.lastErrorCode).toBeNull();
+    expect(plain.lastErrorAction).toBeNull();
+    expect(plain.lastErrorUrl).toBeNull();
+    expect(plain.lastErrorRequestId).toBeNull();
+
+    recordObserverFailure('openrouter', {
+      message: 'classified', code: 'key_invalid', action: 'Reconnect', url: 'https://cmem.ai/dashboard', requestId: 'r1',
+    }, healthPath);
+    recordObserverFailure('openrouter', 'plain again', healthPath);
+    const after = readObserverHealth(healthPath)!;
+    expect(after.consecutiveFailures).toBe(3);
+    expect(after.lastErrorMessage).toBe('plain again');
+    expect(after.lastErrorCode).toBeNull();
+    expect(after.lastErrorAction).toBeNull();
+    expect(after.lastErrorUrl).toBeNull();
+    expect(after.lastErrorRequestId).toBeNull();
+  });
+
+  it('scrubs the object-form message and action but stores url and request id as-is', () => {
+    recordObserverFailure('openrouter', {
+      message: 'rejected api_key=SUPERSECRETMSG',
+      action: 'retry with token=SUPERSECRETACTION',
+      url: 'https://cmem.ai/dashboard?ref=key',
+      requestId: 'req_keep_me',
+    }, healthPath);
+    const state = readObserverHealth(healthPath)!;
+    expect(state.lastErrorMessage).not.toContain('SUPERSECRETMSG');
+    expect(state.lastErrorAction).not.toContain('SUPERSECRETACTION');
+    expect(state.lastErrorUrl).toBe('https://cmem.ai/dashboard?ref=key');
+    expect(state.lastErrorRequestId).toBe('req_keep_me');
+  });
+
+  it('reads an old ledger file lacking the structured keys with them null', () => {
+    writeFileSync(healthPath, JSON.stringify({
+      consecutiveFailures: 5,
+      failingSinceAt: 1_754_700_000_000,
+      lastErrorAt: 1_754_700_100_000,
+      lastErrorMessage: 'legacy boom',
+      lastErrorProvider: 'openrouter',
+      lastSuccessAt: null,
+    }));
+    const state = readObserverHealth(healthPath)!;
+    expect(state.consecutiveFailures).toBe(5);
+    expect(state.lastErrorMessage).toBe('legacy boom');
+    expect(state.lastErrorCode).toBeNull();
+    expect(state.lastErrorAction).toBeNull();
+    expect(state.lastErrorUrl).toBeNull();
+    expect(state.lastErrorRequestId).toBeNull();
+  });
+
   it('scrubs credential-shaped content but keeps remedy URLs, and truncates', () => {
     const scrubbed = scrubErrorMessage(
       'auth sk-or-v1-3b5aaaaaaaaaaaaaaaa failed, Bearer abc.def.ghi rejected; manage at https://openrouter.ai/keys/2101b95e'
@@ -82,6 +157,7 @@ describe('observer-health ledger', () => {
     expect(scrubbed).not.toContain('abc.def.ghi');
     expect(scrubbed).toContain('https://openrouter.ai/keys/2101b95e');
     expect(scrubErrorMessage('x'.repeat(10_000)).length).toBeLessThanOrEqual(600);
+    expect(scrubErrorMessage('Unrecognized key cm_pro_9f8e7d6c5b4a3210')).not.toContain('9f8e7d6c5b4a3210');
   });
 
   it('scrubs key/value, JSON, authorization, and query-string credential shapes', () => {
@@ -158,6 +234,49 @@ describe('renderObserverHealthWarning', () => {
       unhealthyState({ lastErrorMessage: 'rejected: api_key=SUPERSECRETLEDGER' })
     );
     expect(warning).not.toContain('SUPERSECRETLEDGER');
+  });
+
+  it('with an action: shows What to do / Link / Request id and drops the generic settings.json remedy', () => {
+    const warning = renderObserverHealthWarning(unhealthyState({
+      lastErrorMessage: "You've used your $30 monthly allowance.",
+      lastErrorCode: 'allowance_exhausted',
+      lastErrorAction: 'It resets on the 1st. Upgrade or add credits to keep going now.',
+      lastErrorUrl: 'https://cmem.ai/dashboard',
+      lastErrorRequestId: 'req_abc123',
+    }));
+    expect(warning).toContain("Latest error: You've used your $30 monthly allowance.");
+    expect(warning).toContain('What to do: It resets on the 1st. Upgrade or add credits to keep going now.');
+    expect(warning).toContain('Link: https://cmem.ai/dashboard');
+    expect(warning).toContain('Request id: req_abc123');
+    expect(warning).not.toContain('~/.claude-mem/settings.json');
+    expect(warning).toContain('tell the user');
+  });
+
+  it('without an action: keeps the generic settings.json remedy and omits the structured lines', () => {
+    const warning = renderObserverHealthWarning(unhealthyState());
+    expect(warning).toContain('~/.claude-mem/settings.json');
+    expect(warning).not.toContain('What to do:');
+    expect(warning).not.toContain('Link:');
+    expect(warning).not.toContain('Request id:');
+  });
+
+  it('renders Link and Request id even without an action, keeping the generic remedy', () => {
+    const warning = renderObserverHealthWarning(unhealthyState({
+      lastErrorUrl: 'https://openrouter.ai/settings/keys',
+      lastErrorRequestId: 'req_only',
+    }));
+    expect(warning).toContain('Link: https://openrouter.ai/settings/keys');
+    expect(warning).toContain('Request id: req_only');
+    expect(warning).not.toContain('What to do:');
+    expect(warning).toContain('~/.claude-mem/settings.json');
+  });
+
+  it('re-scrubs the action at render time', () => {
+    const warning = renderObserverHealthWarning(unhealthyState({
+      lastErrorAction: 'rotate; token=SUPERSECRETACTION',
+    }));
+    expect(warning).toContain('What to do:');
+    expect(warning).not.toContain('SUPERSECRETACTION');
   });
 });
 
