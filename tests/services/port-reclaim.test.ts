@@ -435,13 +435,15 @@ describe('reclaimWorkerPort rung 1: terminates a verified wedged owner', () => {
     expect(await exited(holder)).toBe(true);
   }, 30_000);
 
-  it('never escalates to SIGKILL when the pid file has no start token', async () => {
-    // A tokenless pid file (older claude-mem) is enough to SIGTERM the owner
-    // under verifyPidFileOwnership's permissive rule, but a kill decision
-    // fails closed: with nothing to re-prove identity against after the grace
-    // window, the PID could have been recycled, so no SIGKILL is sent.
+  it('signals nothing when the pid file names a live owner but has no start token', async () => {
+    // A tokenless pid file (older claude-mem) satisfies verifyPidFileOwnership,
+    // which answers "may this worker keep running?". Rung 1 is a kill decision
+    // and needs the strict answer: with no token there is nothing to prove the
+    // live PID is our worker rather than a recycled one, so it is left
+    // untouched (not even SIGTERM; this holder would die from one) and the
+    // caller fails over.
     const port = takePort();
-    const holder = await spawnStubbornPortHolder(port);
+    const holder = await spawnPortHolder(port);
 
     const outcome = await reclaimWorkerPort(port, {
       pid: holder.pid!,
@@ -449,10 +451,25 @@ describe('reclaimWorkerPort rung 1: terminates a verified wedged owner', () => {
       startedAt: new Date().toISOString(),
     });
 
-    expect(outcome.kind).toBe('failed');
+    expect(outcome.kind).toBe('unprovable');
     expect(isPidAlive(holder.pid!)).toBe(true);
     expect(await isListening(port)).toBe(true);
-  }, 30_000);
+  });
+
+  it('signals nothing when the pid file token does not match the live owner', async () => {
+    const port = takePort();
+    const holder = await spawnPortHolder(port);
+
+    const outcome = await reclaimWorkerPort(port, {
+      pid: holder.pid!,
+      port,
+      startedAt: new Date().toISOString(),
+      startToken: 'token-of-the-worker-that-used-to-have-this-pid',
+    });
+
+    expect(outcome.kind).toBe('unprovable');
+    expect(isPidAlive(holder.pid!)).toBe(true);
+  });
 
   it('refuses to reclaim a port whose pid file names the current process', async () => {
     const port = takePort();

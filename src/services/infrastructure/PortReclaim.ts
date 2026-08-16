@@ -25,9 +25,10 @@ import { signalProcess } from '../../supervisor/shutdown.js';
  *
  * The ladder, in order:
  *
- *   1. PID file names a VERIFIED live owner (alive + token match + same port)
- *      that does not answer /api/health  -> it is our wedged worker. SIGTERM,
- *      bounded wait, re-verify the SAME token, SIGKILL.
+ *   1. PID file names a VERIFIED live owner (alive + readable, matching token
+ *      + same port) that does not answer /api/health -> it is our wedged
+ *      worker. SIGTERM, bounded wait, re-verify the SAME token, SIGKILL.
+ *      Tokenless or unreadable is not verified: nothing is signalled.
  *   2. That verified owner DOES answer /api/health (readiness merely false)
  *      -> it is initializing. Never reclaimed.
  *   3a. The owner is dead but the port is still bound: the ghost socket. The
@@ -179,7 +180,7 @@ async function reapRegisteredChildren(currentPid: number, terminatedOwner: PidIn
     record => record.pid !== currentPid && record.type !== 'worker' && record.id !== 'worker'
   );
 
-  const verified: ManagedProcessRecord[] = [];
+  const orphans: ManagedProcessRecord[] = [];
   for (const record of candidates) {
     if (!ownerIsGone(record, terminatedOwner)) {
       logger.debug('SYSTEM', 'Skipping registered child during port reclaim: owner generation not proven gone', {
@@ -190,24 +191,37 @@ async function reapRegisteredChildren(currentPid: number, terminatedOwner: PidIn
       continue;
     }
     if (verifyManagedProcessIdentity(record)) {
-      verified.push(record);
+      orphans.push(record);
     }
   }
 
-  if (verified.length === 0) return 0;
+  if (orphans.length === 0) return 0;
 
   logger.warn('SYSTEM', 'Reaping identity-verified child processes left behind by a dead worker', {
-    count: verified.length,
-    records: verified.map(record => ({ id: record.id, pid: record.pid, type: record.type })),
+    count: orphans.length,
+    records: orphans.map(record => ({ id: record.id, pid: record.pid, type: record.type })),
   });
 
-  for (const record of verified) {
+  let signalled = 0;
+  for (const record of orphans) {
+    // Re-verify immediately before THIS signal: an earlier iteration awaited,
+    // and in that window this record's PID may have exited and been recycled.
+    // The batch check above decides what is an orphan; this one decides
+    // whether the PID is still that orphan right now.
+    if (!verifyManagedProcessIdentity(record)) {
+      logger.debug('SYSTEM', 'Registered child changed identity before it could be signalled; skipping', {
+        id: record.id,
+        pid: record.pid,
+      });
+      continue;
+    }
     // SIGKILL directly: these are orphans of a worker that is already gone, so
     // there is no graceful-shutdown path left for them to take. On Windows
     // signalProcess uses `taskkill /T`, which is what reaches the grandchildren
     // (`python.exe`) actually holding the inherited handle.
     try {
       await signalProcess(record, 'SIGKILL');
+      signalled += 1;
     } catch (error: unknown) {
       logger.debug('SYSTEM', 'Failed to signal registered child during port reclaim', {
         id: record.id,
@@ -217,7 +231,7 @@ async function reapRegisteredChildren(currentPid: number, terminatedOwner: PidIn
     }
   }
 
-  return verified.length;
+  return signalled;
 }
 
 /**
@@ -314,6 +328,26 @@ export async function reclaimWorkerPort(
         port,
       });
       return { kind: 'owner-initializing' };
+    }
+
+    // verifyPidFileOwnership answers "may this worker keep running?" and so
+    // tolerates a tokenless pid file or an unreadable current token. Rung 1
+    // is a kill decision and gets the strict rule instead: no readable,
+    // matching start token means we cannot prove the live PID is our worker
+    // rather than a recycled one, so nothing is signalled and we fail over.
+    if (!verifyManagedProcessIdentity({
+      pid: pidInfo.pid,
+      type: 'worker',
+      startedAt: pidInfo.startedAt,
+      startToken: pidInfo.startToken,
+    })) {
+      const reason = 'pid-file owner is alive but its identity cannot be proven by start token';
+      logger.warn('SYSTEM', 'Cannot prove the live pid-file owner is our worker: leaving it untouched and failing over', {
+        pid: pidInfo.pid,
+        port,
+        reason,
+      });
+      return { kind: 'unprovable', reason };
     }
 
     // Rung 1.

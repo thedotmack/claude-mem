@@ -195,7 +195,11 @@ mock.module('../../../src/utils/logger.js', () => ({
 
 // Track tree-kill invocations and the transport whose subprocess was killed.
 const killTreeCalls: number[] = [];
+const killSignals: Array<{ pid: number; signal: string | number | undefined }> = [];
 const deadPids = new Set<number>();
+// When set, a SIGTERM to this pid marks it dead for later isPidAlive checks:
+// models the root exiting on SIGTERM and its pid no longer being ours.
+let dieOnSigterm: number | null = null;
 let execSyncCalls = 0;
 const prewarmSpawnCalls: Array<{ command: string; args: string[]; child: FakeChildProcess }> = [];
 let prewarmSpawnBehavior: 'success' | 'timeout' | 'failure' = 'success';
@@ -279,6 +283,10 @@ const stubbedProcessKill = ((pid: number, signal?: string | number) => {
     return true;
   }
   killTreeCalls.push(pid);
+  killSignals.push({ pid, signal });
+  if (dieOnSigterm === pid && signal === 'SIGTERM') {
+    deadPids.add(pid);
+  }
   if (transportKillEmitsOnclose) {
     const transport = transportInstances.find(instance => instance._process.pid === pid);
     if (transport && transport._process.exitCode === null && transport._process.signalCode === null) {
@@ -328,7 +336,9 @@ function resetState(): void {
   transportInstances.length = 0;
   prewarmSpawnCalls.length = 0;
   killTreeCalls.length = 0;
+  killSignals.length = 0;
   deadPids.clear();
+  dieOnSigterm = null;
   mockSupervisorRegistryEntries = [];
   supervisorUnregisterCalls = [];
   ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(null);
@@ -573,6 +583,33 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     await mgr.callTool('chroma_list_collections', { limit: 1 });
 
     expect(killTreeCalls).not.toContain(racedPid);
+    expect(supervisorUnregisterCalls).toContain('chroma-mcp');
+    expect(transportCount).toBe(1);
+  });
+
+  it('does not SIGKILL the reaped root once it stops verifying after SIGTERM', async () => {
+    // Tree kill: SIGTERM, grace, SIGKILL. If the launcher exits on SIGTERM and
+    // its pid is recycled before the SIGKILL phase, the numeric pid must not be
+    // signalled again. Model the exit by marking the pid dead on SIGTERM.
+    const rootPid = process.pid;
+    const rootToken = captureProcessStartToken(rootPid);
+    expect(rootToken).not.toBeNull();
+    mockSupervisorRegistryEntries = [{
+      id: 'chroma-mcp',
+      pid: rootPid,
+      type: 'chroma',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      pgid: rootPid,
+      startToken: rootToken,
+    }];
+    ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(async () => true);
+    dieOnSigterm = rootPid;
+
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    const rootSignals = killSignals.filter(entry => entry.pid === rootPid).map(entry => entry.signal);
+    expect(rootSignals).toEqual(['SIGTERM']);
     expect(supervisorUnregisterCalls).toContain('chroma-mcp');
     expect(transportCount).toBe(1);
   });

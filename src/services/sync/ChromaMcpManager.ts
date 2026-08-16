@@ -12,7 +12,12 @@ import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
-import { captureProcessStartToken, isPidAlive, verifyManagedProcessIdentity } from '../../supervisor/process-registry.js';
+import {
+  captureProcessStartToken,
+  isPidAlive,
+  verifyManagedProcessIdentity,
+  type ManagedProcessInfo,
+} from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
 
@@ -1060,7 +1065,9 @@ export class ChromaMcpManager {
         pid: record.pid,
         startedAt: record.startedAt
       });
-      await ChromaMcpManager.killProcessTree(record.pid);
+      // The tree kill awaits descendant discovery and a grace window before
+      // each root signal; it re-proves this identity right before each one.
+      await ChromaMcpManager.killProcessTree(record.pid, record);
       getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
     } catch (error) {
       logger.debug('CHROMA_MCP', 'Cross-generation chroma-mcp reap skipped (best-effort)', {
@@ -1240,8 +1247,18 @@ export class ChromaMcpManager {
    *
    * Best-effort — swallows ESRCH (already dead) and logs other errors.
    */
-  private static async killProcessTree(pid: number): Promise<void> {
+  /**
+   * `expectedIdentity`, when given, is re-verified (start token) immediately
+   * before every signal to the root and before the post-grace descendant
+   * re-scan. Callers that hold a persisted record rather than a live
+   * ChildProcess handle (the cross-generation reap) pass it so a root PID
+   * that exits and is recycled during the async steps here is never signalled
+   * as if it were still the launcher.
+   */
+  private static async killProcessTree(pid: number, expectedIdentity?: ManagedProcessInfo): Promise<void> {
     logger.debug('CHROMA_MCP', `Killing process tree rooted at PID ${pid}`);
+    const rootStillOurs = (): boolean =>
+      expectedIdentity === undefined || verifyManagedProcessIdentity(expectedIdentity);
 
     if (process.platform === 'win32') {
       try {
@@ -1267,6 +1284,13 @@ export class ChromaMcpManager {
     // (CodeRabbit review on PR #2282).
     try {
       const descendantsBeforeTerm = await ChromaMcpManager.collectDescendantPids(pid);
+      if (!rootStillOurs()) {
+        // The root exited (or was recycled) while descendants were being
+        // discovered: what pgrep returned may belong to a replacement. Signal
+        // nothing.
+        logger.debug('CHROMA_MCP', `Root PID ${pid} no longer verifies as ours; skipping tree kill`);
+        return;
+      }
       // Signal leaves first, then the root.
       for (const child of descendantsBeforeTerm) {
         try {
@@ -1298,7 +1322,16 @@ export class ChromaMcpManager {
       // were definitely children before SIGTERM (CodeRabbit review on PR
       // #2282). Dedupe via Set since `descendantsBeforeKill` typically
       // overlaps with `descendantsBeforeTerm`.
-      const descendantsBeforeKill = await ChromaMcpManager.collectDescendantPids(pid);
+      //
+      // When an identity is expected, the re-scan and the root SIGKILL both
+      // require the root to still verify: after SIGTERM the root has very
+      // likely exited, and a recycled PID's children are not ours to touch.
+      // The pre-TERM descendants were verified children and are still
+      // SIGKILLed either way.
+      const rootVerifiedForKill = rootStillOurs();
+      const descendantsBeforeKill = rootVerifiedForKill
+        ? await ChromaMcpManager.collectDescendantPids(pid)
+        : [];
       const killTargets = Array.from(new Set([...descendantsBeforeTerm, ...descendantsBeforeKill]));
       for (const child of killTargets) {
         try {
@@ -1307,10 +1340,14 @@ export class ChromaMcpManager {
           // Already dead — fine.
         }
       }
-      try {
-        process.kill(pid, 'SIGKILL');
-      } catch {
-        // Already dead — fine.
+      if (rootVerifiedForKill && rootStillOurs()) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // Already dead — fine.
+        }
+      } else if (expectedIdentity !== undefined) {
+        logger.debug('CHROMA_MCP', `Root PID ${pid} no longer verifies as ours after SIGTERM grace; not sending SIGKILL`);
       }
     } catch (error) {
       logger.debug('CHROMA_MCP', `Process tree kill completed (best-effort)`, {
