@@ -31,6 +31,33 @@ export interface ObserverHealthState {
   lastErrorProvider: string | null;
   /** Epoch ms of the most recent successful observation/summary store. */
   lastSuccessAt: number | null;
+  /**
+   * Structured detail from a classified provider error (the gateway's taxonomy
+   * envelope `{ code, message, action, url, request_id }`), carried so the
+   * session-start warning shows the same words as the worker's `Observer failed`
+   * log line. All null for unclassified failures and for ledgers written by
+   * older builds.
+   */
+  lastErrorCode?: string | null;
+  /** Scrubbed remedy text ("It resets on …", "Add credits at …"). */
+  lastErrorAction?: string | null;
+  /** Link the remedy points at (stored as-is; URLs are not credentials). */
+  lastErrorUrl?: string | null;
+  /** Gateway/upstream request id for support. */
+  lastErrorRequestId?: string | null;
+}
+
+/**
+ * Failure detail accepted by recordObserverFailure. A plain string is the
+ * legacy/unclassified form; the object form carries the classified error's
+ * structured fields.
+ */
+export interface ObserverFailureDetail {
+  message: string;
+  code?: string;
+  action?: string;
+  url?: string;
+  requestId?: string;
 }
 
 export const OBSERVER_HEALTH_FILENAME = 'observer-health.json';
@@ -47,6 +74,10 @@ const EMPTY_STATE: ObserverHealthState = {
   lastErrorMessage: null,
   lastErrorProvider: null,
   lastSuccessAt: null,
+  lastErrorCode: null,
+  lastErrorAction: null,
+  lastErrorUrl: null,
+  lastErrorRequestId: null,
 };
 
 function defaultHealthFilePath(): string {
@@ -71,6 +102,7 @@ const CREDENTIAL_ASSIGNMENT_PATTERN =
 export function scrubErrorMessage(message: string): string {
   return message
     .replace(/\bsk-[A-Za-z0-9_-]{8,}/g, 'sk-…')
+    .replace(/\bcm_pro_[A-Za-z0-9_-]{8,}/g, 'cm_pro_…')
     .replace(/\b(Bearer|Basic|Digest|Token)\s+[^\s"']+/gi, '$1 …')
     // Numbers are limits/counts, not credentials — `max_tokens: 200000` and
     // `key limit exceeded` style diagnostics survive intact.
@@ -179,9 +211,10 @@ function withLedgerLock<T>(filePath: string, mutate: () => T): T {
 
 export function recordObserverFailure(
   provider: string,
-  errorMessage: string,
+  error: string | ObserverFailureDetail,
   filePath: string = defaultHealthFilePath(),
 ): void {
+  const detail: ObserverFailureDetail = typeof error === 'string' ? { message: error } : error;
   withLedgerLock(filePath, () => {
     const prior = readObserverHealth(filePath) ?? EMPTY_STATE;
     const now = Date.now();
@@ -190,8 +223,14 @@ export function recordObserverFailure(
       consecutiveFailures: prior.consecutiveFailures + 1,
       failingSinceAt: prior.consecutiveFailures > 0 ? prior.failingSinceAt : now,
       lastErrorAt: now,
-      lastErrorMessage: scrubErrorMessage(errorMessage),
+      lastErrorMessage: scrubErrorMessage(detail.message),
       lastErrorProvider: provider,
+      // Always overwrite (never inherit from `prior`): a string-form failure
+      // after a classified one must not keep the stale action/link/request id.
+      lastErrorCode: detail.code ?? null,
+      lastErrorAction: detail.action ? scrubErrorMessage(detail.action) : null,
+      lastErrorUrl: detail.url ?? null,
+      lastErrorRequestId: detail.requestId ?? null,
     }, filePath);
   });
 }
@@ -236,16 +275,24 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
     : 'for an unknown amount of time';
   const provider = state.lastErrorProvider ?? 'unknown provider';
   const count = state.consecutiveFailures;
+  const action = state.lastErrorAction ? scrubErrorMessage(state.lastErrorAction) : null;
   const lines = [
     "⚠️ Heads up: claude-mem can't save memories right now.",
     '',
     `The memory observer (provider: ${provider}) has failed ${count} time${count === 1 ? '' : 's'} in a row ${sinceText}.`,
     '',
     `Latest error: ${state.lastErrorMessage ? scrubErrorMessage(state.lastErrorMessage) : 'unknown'}`,
+    ...(action ? [`What to do: ${action}`] : []),
+    ...(state.lastErrorUrl ? [`Link: ${state.lastErrorUrl}`] : []),
+    ...(state.lastErrorRequestId ? [`Request id: ${state.lastErrorRequestId}`] : []),
     '',
     "Until it's fixed, nothing from this session — or any other — will be remembered.",
-    "To fix it, check the observer provider's API key, spend limit, and base URL in",
-    '~/.claude-mem/settings.json. The error above may include a management link with the remedy.',
+    // A classified error already says what to do; the generic settings.json
+    // remedy is wrong for e.g. Pro users whose allowance ran out.
+    ...(action ? [] : [
+      "To fix it, check the observer provider's API key, spend limit, and base URL in",
+      '~/.claude-mem/settings.json. The error above may include a management link with the remedy.',
+    ]),
     '',
     '(Assistant: please tell the user about this outage at the very start of your first reply,',
     'quoting the error above.)',

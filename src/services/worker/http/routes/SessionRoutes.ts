@@ -231,7 +231,11 @@ export class SessionRoutes extends BaseRouteHandler {
         }
         // Observer-health ledger: repeated generator failures mean observations
         // are being dropped — session-start context warns the user via this.
-        recordObserverFailure(provider, errorMsg);
+        // Classified errors carry the structured detail (code/action/link/
+        // request id) so the warning shows the same words as the log line.
+        recordObserverFailure(provider, isClassified(error)
+          ? { message: error.message, code: error.code, action: error.action, url: error.url, requestId: error.requestId }
+          : errorMsg);
         telemetryBuffer.record('session_compressed', session.sessionDbId, {
           outcome: 'error',
           provider,

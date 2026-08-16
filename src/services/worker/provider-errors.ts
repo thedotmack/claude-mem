@@ -63,8 +63,9 @@ export function isClassified(err: unknown): err is ClassifiedProviderError {
 
 /**
  * The one rendering of a classified error for humans: message, then the
- * action, link, and request id when present. Used by the worker's single
- * `Observer failed` log line and by the observer-health ledger.
+ * action, link, and request id when present. This is the single renderer for
+ * the worker's `Observer failed` log line; the observer-health ledger stores
+ * the fields structurally and renders them itself at session start.
  */
 export function describeProviderError(err: ClassifiedProviderError): string {
   return `${err.message}${err.action ? ' — ' + err.action : ''}${err.url ? ' ' + err.url : ''}${err.requestId ? ` (req ${err.requestId})` : ''}`;
