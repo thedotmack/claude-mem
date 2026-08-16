@@ -58,7 +58,27 @@ export interface ShellTemplateOptions {
   mcpExtraCacheRoots?: string[];
 }
 
-const CLAUDE_CODE_PATH_PRELUDE = `export PATH="$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH";`;
+// The prelude exists so `node` resolves inside the hook. When it already does,
+// the login shell buys nothing, so it is guarded rather than unconditional.
+//
+// Unconditional, it cost a full login shell PER HOOK INVOCATION: on Windows
+// `$SHELL` is `/bin/bash.exe`, so `$SHELL -lc` spawns a console-attached Git
+// Bash that sources the whole profile just to read `$PATH`. With PostToolUse on
+// `matcher: "*"` that is one such spawn per tool call, which is the console
+// window flashing on every keystroke-sized action (#3396, same symptom class as
+// #676 / #681 / #748). It also DOUBLES `$PATH` on every invocation - the exact
+// condition `plugin/scripts/bun-runner.js` already documents a workaround for,
+// where a doubled PATH overran cmd.exe's ~8191-char per-variable limit and made
+// `bun` unresolvable (#3196).
+//
+// `command -v` is a POSIX shell builtin, so the common path now forks nothing;
+// the same idiom already appears further down these commands (`command -v
+// cygpath`). Where the prelude was load-bearing - node genuinely absent from an
+// inherited PATH, e.g. a GUI-launched host on macOS with nvm unsourced - the
+// original prepend still runs, byte for byte. The `mcp` host has relied on the
+// inherited PATH with no prelude at all since day one.
+const CLAUDE_CODE_PATH_PRELUDE =
+  `command -v node >/dev/null 2>&1 || export PATH="$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH";`;
 
 const CLAUDE_CODE_SETUP_PATH_PRELUDE =
   'export PATH="$HOME/.nvm/versions/node/v$(ls \\"$HOME/.nvm/versions/node\\" 2>/dev/null | ' +
