@@ -550,6 +550,103 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(prewarmSpawnCalls.length).toBe(0);
   });
 
+  // The worker's shutdown paths exit the process moments after stopping chroma.
+  // #3462's connectionGeneration guards cancel calls that were already in flight
+  // when stop() bumped the generation, and acceptingLocalMutations rejects late
+  // mutations in local mode — but a READ arriving after the bump captures the new
+  // generation, so it passes every guard and reaches connectInternal(), spawning a
+  // REPLACEMENT tree that process.exit() then orphans to init. The terminal latch
+  // closes that remaining path.
+  it('stop({ terminal: true }) refuses to spawn a replacement tree afterwards', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    expect(transportInstances.length).toBe(1);
+
+    await mgr.stop({ terminal: true });
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow(
+      /shutting down/
+    );
+    // The critical assertion: no second subprocess tree was spawned.
+    expect(transportInstances.length).toBe(1);
+  });
+
+  // The latch check on entry to ensureConnected() is separated from the spawn by
+  // `await waitForUnexpectedCloseCleanup()`. A terminal stop landing inside that
+  // window leaves the call resuming with a stale "not stopped" reading, and
+  // connectInternal() then captures the POST-bump generation, so #3462's
+  // cancellation guards pass too — a replacement tree gets spawned for
+  // process.exit() to orphan. Parking the cleanup makes that race deterministic.
+  it('stop({ terminal: true }) landing mid-ensureConnected still blocks the spawn', async () => {
+    const managerForTesting = ChromaMcpManager as unknown as typeof ChromaMcpManager & {
+      killProcessTree: (pid: number) => Promise<void>;
+    };
+    const originalKillProcessTree = managerForTesting.killProcessTree;
+    const cleanupStartedForPids: number[] = [];
+    let finishCleanup: (() => void) | null = null;
+
+    managerForTesting.killProcessTree = async (pid: number) => {
+      cleanupStartedForPids.push(pid);
+      await new Promise<void>(resolve => {
+        finishCleanup = resolve;
+      });
+    };
+
+    try {
+      const mgr = ChromaMcpManager.getInstance();
+
+      await mgr.callTool('chroma_list_collections', { limit: 1 });
+      expect(transportInstances.length).toBe(1);
+
+      // Unexpected close parks a cleanup promise that ensureConnected() awaits.
+      const firstPid = transportInstances[0]._process.pid;
+      transportInstances[0].onclose?.();
+      await waitForCondition(() => cleanupStartedForPids.includes(firstPid));
+
+      // This call passes the entry check (nothing has latched yet), then blocks
+      // on the parked cleanup.
+      const reconnecting = mgr.callTool('chroma_list_collections', { limit: 1 });
+
+      // Teardown lands while it is parked. stop() latches synchronously, so
+      // firing it un-awaited models the race without deadlocking on the same
+      // parked cleanup.
+      void mgr.stop({ terminal: true });
+
+      // The unexpected close also armed the 10s reconnect backoff, which would
+      // reject the resumed call before it ever reaches the spawn guard under
+      // test. Clearing it simulates that backoff having expired, without making
+      // the test sleep for 10s — a reachable state, since a session drain
+      // outlasts the backoff several times over.
+      (mgr as unknown as { lastConnectionFailureTimestamp: number }).lastConnectionFailureTimestamp = 0;
+
+      finishCleanup?.();
+
+      await expect(reconnecting).rejects.toThrow(/shutting down/);
+      // The critical assertion: the resumed call spawned no replacement tree.
+      expect(transportInstances.length).toBe(1);
+    } finally {
+      finishCleanup?.();
+      managerForTesting.killProcessTree = originalKillProcessTree;
+    }
+  });
+
+  it('concurrent stop() calls share a single teardown', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    logEntries.length = 0;
+
+    // The worker's shutdown backstop can call stop() while the abandoned
+    // performGracefulShutdown reaches the same call. Unmemoized, two disposers
+    // interleave over the same client/transport/writer-lock fields.
+    await Promise.all([mgr.stop(), mgr.stop(), mgr.stop()]);
+
+    expect(
+      logEntries.filter(entry => entry.message === 'Stopping chroma-mcp MCP connection').length
+    ).toBe(1);
+  });
+
   it('stop() ignores close-triggered onclose from an intentionally closed transport', async () => {
     transportCloseEmitsOnclose = true;
     const mgr = ChromaMcpManager.getInstance();

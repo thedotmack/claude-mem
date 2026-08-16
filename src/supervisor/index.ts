@@ -101,7 +101,19 @@ class Supervisor {
     }
   }
 
-  async stop(): Promise<void> {
+  /**
+   * `preserveRegistryForSuccessor` is for a restart that actually handed off:
+   * the successor may already have registered itself in supervisor.json, so
+   * this cascade signals its children but makes no registry writes. See
+   * ShutdownCascadeOptions for why.
+   *
+   * Note this is memoized — a second caller joins the in-flight cascade and its
+   * options do NOT apply. In the normal restart path that is not a problem,
+   * because performGracefulShutdown defers its own supervisor stop
+   * (deferSupervisorStop), leaving the post-handoff backstop as the first
+   * caller.
+   */
+  async stop(options: { preserveRegistryForSuccessor?: boolean } = {}): Promise<void> {
     if (this.stopPromise) {
       await this.stopPromise;
       return;
@@ -110,7 +122,8 @@ class Supervisor {
     stopHealthChecker();
     this.stopPromise = runShutdownCascade({
       registry: this.registry,
-      currentPid: process.pid
+      currentPid: process.pid,
+      preserveRegistryForSuccessor: options.preserveRegistryForSuccessor
     }).finally(() => {
       this.started = false;
       this.stopPromise = null;

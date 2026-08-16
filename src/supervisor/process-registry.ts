@@ -281,6 +281,7 @@ export class ProcessRegistry {
   private readonly entries = new Map<string, ManagedProcessInfo>();
   private readonly runtimeProcesses = new Map<string, ChildProcess>();
   private initialized = false;
+  private writesSuspended = false;
 
   constructor(registryPath: string = DEFAULT_REGISTRY_PATH) {
     this.registryPath = registryPath;
@@ -496,7 +497,30 @@ export class ProcessRegistry {
     return sessionRecords.length;
   }
 
+  /**
+   * Stop this instance from writing supervisor.json, permanently.
+   *
+   * For the restart handoff: once the successor has registered itself in the
+   * shared file, this (dying) process must not write to it again. Its map is a
+   * process-local snapshot frozen at boot, and persist() rewrites the file in
+   * full, so any write erases the successor's record.
+   *
+   * The latch lives here rather than at the cascade's call sites because the
+   * writes are not all synchronous or enumerable: SIGTERM'ing a tracked child
+   * makes its own 'exit' handler call unregister() (see spawnSdkProcess and
+   * ChromaMcpManager's chromaProcess 'exit' hook), which persists from outside
+   * the cascade entirely. Suppressing at the single write chokepoint covers
+   * those callbacks and any future writer.
+   *
+   * In-memory bookkeeping continues as normal — only the file write stops.
+   */
+  suspendWrites(): void {
+    this.writesSuspended = true;
+  }
+
   private persist(): void {
+    if (this.writesSuspended) return;
+
     const payload: PersistedRegistry = {
       processes: Object.fromEntries(this.entries.entries())
     };
