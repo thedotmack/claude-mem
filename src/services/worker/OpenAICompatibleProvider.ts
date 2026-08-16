@@ -90,10 +90,18 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
 
     if (!session.memorySessionId) {
-      const syntheticMemorySessionId = `${this.syntheticIdPrefix}-${session.contentSessionId}-${Date.now()}`;
-      session.memorySessionId = syntheticMemorySessionId;
-      this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, syntheticMemorySessionId);
-      logger.info('SESSION', `MEMORY_ID_GENERATED | sessionDbId=${session.sessionDbId} | provider=${this.providerName}`);
+      const persistedMemorySessionId = this.dbManager.getSessionById(session.sessionDbId).memory_session_id;
+      const syntheticIdPrefix = `${this.syntheticIdPrefix}-${session.contentSessionId}-`;
+
+      if (persistedMemorySessionId?.startsWith(syntheticIdPrefix)) {
+        session.memorySessionId = persistedMemorySessionId;
+        logger.info('SESSION', `MEMORY_ID_REUSED | sessionDbId=${session.sessionDbId} | provider=${this.providerName}`);
+      } else {
+        const syntheticMemorySessionId = `${syntheticIdPrefix}${Date.now()}`;
+        session.memorySessionId = syntheticMemorySessionId;
+        this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, syntheticMemorySessionId);
+        logger.info('SESSION', `MEMORY_ID_GENERATED | sessionDbId=${session.sessionDbId} | provider=${this.providerName}`);
+      }
     }
 
     const mode = ModeManager.getInstance().getActiveMode();
