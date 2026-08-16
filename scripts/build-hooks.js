@@ -132,7 +132,7 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
         notFoundMessage: 'claude-mem: mcp server not found',
         mcpExtraCandidates: ['$PWD/plugin', '$PWD'],
         mcpExtraCacheRoots: [
-          '$HOME/.codex/plugins/cache/claude-mem-local/claude-mem',
+          '$HOME/.codex/plugins/cache/claude-mem-local/mempilot',
           '$HOME/.codex/plugins/cache/thedotmack/claude-mem',
         ],
       }),
@@ -175,6 +175,7 @@ async function verifyShellTemplateCanonical() {
     let dirty = false;
     if (spec.kind === 'mcp') {
       const actual = parsed.mcpServers?.['mcp-search']?.args?.[1] ?? '';
+      console.log('ACTUAL matches SPEC:', actual === spec.command);
       if (actual !== spec.command) {
         if (!writeMode) {
           throw new Error(
@@ -182,6 +183,7 @@ async function verifyShellTemplateCanonical() {
             `Regenerate via \`node scripts/build-hooks.js --write-shell-templates\` after an intentional generator change.`
           );
         }
+        console.log('UPDATING .mcp.json args[1]!');
         parsed.mcpServers['mcp-search'].args[1] = spec.command;
         dirty = true;
       }
@@ -736,21 +738,21 @@ async function buildHooks() {
       }
     }
     const codexMarketplace = JSON.parse(fs.readFileSync('.agents/plugins/marketplace.json', 'utf-8'));
-    const claudeMemMarketplaceEntry = (codexMarketplace.plugins ?? []).find((plugin) => plugin.name === 'claude-mem');
+    const claudeMemMarketplaceEntry = (codexMarketplace.plugins ?? []).find((plugin) => plugin.name === 'mempilot');
     if (claudeMemMarketplaceEntry?.source?.path !== './plugin') {
-      throw new Error('.agents/plugins/marketplace.json must point claude-mem source.path at ./plugin so Codex loads the bundled plugin root');
+      throw new Error('.agents/plugins/marketplace.json must point mempilot source.path at ./plugin so Codex loads the bundled plugin root');
     }
+    await verifyShellTemplateCanonical();
+
     const bundledMcp = JSON.parse(fs.readFileSync('plugin/.mcp.json', 'utf-8'));
     const mcpSearchCommand = bundledMcp.mcpServers?.['mcp-search']?.args?.join(' ') ?? '';
-    if (!mcpSearchCommand.includes('.codex/plugins/cache/claude-mem-local/claude-mem')) {
+    if (!mcpSearchCommand.includes('.codex/plugins/cache/claude-mem-local/mempilot')) {
       throw new Error('plugin/.mcp.json mcp-search launcher must include Codex cache fallback for hosts that do not inject PLUGIN_ROOT');
     }
     if (!mcpSearchCommand.includes('plugins/cache/thedotmack/claude-mem')) {
       throw new Error('plugin/.mcp.json mcp-search launcher must include Claude cache fallback for hosts that do not inject PLUGIN_ROOT');
     }
     console.log('✓ All required distribution files present');
-
-    await verifyShellTemplateCanonical();
 
     console.log('\n✅ All build targets compiled successfully!');
     console.log(`   Output: ${hooksDir}/`);
