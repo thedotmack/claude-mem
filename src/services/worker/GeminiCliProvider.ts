@@ -63,14 +63,14 @@ export class GeminiCliProvider implements LlmProvider {
               resolve(stdout.trim());
             }
           } else {
-            const error = stderr.trim() || `gemini exited with code ${code}`;
+            const error = stderr.trim() || `agy (Antigravity CLI) exited with code ${code}`;
             reject(new Error(error));
           }
         });
 
         proc.on('error', (err: any) => {
           if (err.code === 'ENOENT') {
-            reject(new Error(`gemini CLI binary not found: ${this.binary}`));
+            reject(new Error(`Antigravity CLI (agy) binary not found: ${this.binary}`));
           } else {
             reject(err);
           }
@@ -81,7 +81,7 @@ export class GeminiCliProvider implements LlmProvider {
         proc.stdin.end();
       } catch (err: any) {
         if (err.code === 'ENOENT') {
-          reject(new Error(`gemini CLI binary not found: ${this.binary}`));
+          reject(new Error(`Antigravity CLI (agy) binary not found: ${this.binary}`));
         } else {
           reject(err);
         }

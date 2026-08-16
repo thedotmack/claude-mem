@@ -469,7 +469,7 @@ export function ContextSettingsModal({
                   <ToggleSwitch
                     id="prefer-cost-optimization"
                     label="Prefer Cost Optimization"
-                    description="Route distillation tasks to lowest-cost available provider (Ollama first, then Gemini CLI)"
+                    description="Route distillation tasks to lowest-cost available provider (Ollama first, then Antigravity CLI)"
                     checked={formState.CLAUDE_MEM_PREFER_COST_OPTIMIZATION === 'true'}
                     onChange={(checked) => updateSetting('CLAUDE_MEM_PREFER_COST_OPTIMIZATION', checked ? 'true' : 'false')}
                   />
@@ -503,7 +503,7 @@ export function ContextSettingsModal({
                       🦙 Ollama
                     </button>
 
-                    {/* Gemini CLI */}
+                    {/* Antigravity CLI */}
                     <button
                       className="save-btn"
                       onClick={() => {
@@ -521,7 +521,7 @@ export function ContextSettingsModal({
                       type="button"
                       style={{ fontSize: '0.9em', padding: '8px' }}
                     >
-                      ✨ Gemini CLI
+                      ✨ Antigravity CLI
                     </button>
                   </div>
                   <p style={{ fontSize: '0.75em', color: '#999', marginTop: '4px', textAlign: 'center' }}>
@@ -575,23 +575,23 @@ export function ContextSettingsModal({
                   )}
                 </div>
 
-                {/* Gemini CLI */}
+                {/* Antigravity CLI */}
                 <div style={{ paddingLeft: '12px', borderLeft: '2px solid #e0e0e0' }}>
-                  <span style={{ fontSize: '0.9em', fontWeight: '500', color: '#666' }}>Gemini CLI</span>
+                  <span style={{ fontSize: '0.9em', fontWeight: '500', color: '#666' }}>Antigravity CLI (agy)</span>
                   <FormField
                     label="Binary Path"
-                    tooltip="Path to the gemini CLI binary (default: 'gemini' on PATH)"
+                    tooltip="Path to the agy CLI binary (default: 'agy' on PATH)"
                   >
                     <input
                       type="text"
-                      value={formState.CLAUDE_MEM_GEMINI_CLI_BINARY ?? 'gemini'}
+                      value={formState.CLAUDE_MEM_GEMINI_CLI_BINARY ?? 'agy'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_GEMINI_CLI_BINARY', e.target.value)}
-                      placeholder="gemini"
+                      placeholder="agy"
                     />
                   </FormField>
                   <FormField
                     label="Model"
-                    tooltip="Gemini model to pass to the CLI"
+                    tooltip="Model to pass to the CLI"
                   >
                     <input
                       type="text"

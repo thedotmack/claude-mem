@@ -137,8 +137,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',  // Rate limiting ON by default for free tier users
     CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES: '20',  // Max messages in Gemini context window
     CLAUDE_MEM_GEMINI_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
-    CLAUDE_MEM_GEMINI_CLI_BINARY: 'gemini',  // Default path to gemini CLI binary
-    CLAUDE_MEM_GEMINI_CLI_MODEL: 'gemini-2.5-flash-lite',  // Default model for gemini CLI
+    CLAUDE_MEM_GEMINI_CLI_BINARY: 'agy',  // Default path to Antigravity CLI binary
+    CLAUDE_MEM_GEMINI_CLI_MODEL: 'gemini-2.5-flash-lite',  // Default model for Antigravity CLI
     CLAUDE_MEM_OPENROUTER_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',  // Default OpenRouter model (free tier)
     CLAUDE_MEM_OPENROUTER_BASE_URL: '',  // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL (e.g. https://api.deepseek.com, http://localhost:1234/v1). Empty = default OpenRouter endpoint.
