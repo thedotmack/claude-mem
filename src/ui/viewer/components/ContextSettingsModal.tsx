@@ -465,18 +465,8 @@ export function ContextSettingsModal({
               <div className="display-subsection">
                 <span className="subsection-label">Local/Free Providers (Distillation)</span>
 
-                <div className="toggle-group" style={{ marginBottom: '12px' }}>
-                  <ToggleSwitch
-                    id="prefer-cost-optimization"
-                    label="Prefer Cost Optimization"
-                    description="Route distillation tasks to lowest-cost available provider (Ollama first, then Antigravity CLI)"
-                    checked={formState.CLAUDE_MEM_PREFER_COST_OPTIMIZATION === 'true'}
-                    onChange={(checked) => updateSetting('CLAUDE_MEM_PREFER_COST_OPTIMIZATION', checked ? 'true' : 'false')}
-                  />
-                </div>
-
-                <div style={{ marginBottom: '16px' }}>
-                  <p style={{ fontSize: '0.9em', fontWeight: '500', color: '#666', marginBottom: '8px' }}>Quick Configure - All Distillation Tasks:</p>
+                <div style={{ marginBottom: '16px', marginTop: '12px' }}>
+                  <p style={{ fontSize: '0.9em', fontWeight: '500', color: '#666', marginBottom: '8px' }}>Primary Distillation Provider:</p>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '8px' }}>
                     {/* Ollama */}
                     <button
