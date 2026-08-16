@@ -8,12 +8,40 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
+import { resolveContextWindowTokens, FALLBACK_CONTEXT_WINDOW_TOKENS } from './context-window.js';
+import { buildCompactionTimeline } from './observer-compaction.js';
 import {
   processAgentResponse,
   snapshotResponseContext,
   isAbortError,
   type WorkerRef
 } from './agents/index.js';
+
+// Observer context compaction (plans/2026-08-08-observer-context-compaction.md,
+// Phase 4): when estimated history exceeds COMPACT_TRIGGER_RATIO of the model's
+// context window, the history is cleared and re-seeded with the continuation
+// prompt plus a recent-observations timeline budgeted at REINJECT_BUDGET_RATIO
+// of the window.
+const COMPACT_TRIGGER_RATIO = 0.7;
+const REINJECT_BUDGET_RATIO = 0.3;
+// Cap for each embedded observation payload (tool_input, tool_output) as a
+// fraction of the context window. Compaction runs before the pending prompt is
+// appended, so an unbounded payload could overflow the window right after a
+// compact (PR #3516 review): two capped payloads plus the ≤0.3 re-seeded turn
+// stay comfortably inside the window.
+const PAYLOAD_WINDOW_RATIO = 0.25;
+// Char-per-token divisor used only to convert the payload cap to characters;
+// per-provider estimateTokens still governs all trigger/budget estimates.
+const PAYLOAD_CHARS_PER_TOKEN = 4;
+// Cap for the whole rendered pending prompt. buildObservationPrompt re-encodes
+// payloads pretty-printed with escaping, so a capped payload can still double
+// inside the prompt (PR #3516 review, escaped-payload repro); the payload cap
+// is halved until the rendered prompt fits this ratio of the window.
+const PROMPT_WINDOW_RATIO = 0.5;
+// Halving floor: below this the loop stops shrinking — a window too small for
+// prompt scaffolding plus this much payload cannot fit the message at all,
+// which the post-compaction overflow warning already reports.
+const PAYLOAD_MIN_CHARS = 256;
 
 /**
  * Normalized result returned by a concrete provider's `query()`.
@@ -35,10 +63,14 @@ export interface ProviderQueryResult {
  * Shared scaffolding for OpenAI-compatible, multi-turn HTTP providers
  * (Gemini, OpenRouter). The session lifecycle — synthetic memory-session-id
  * generation, init/continuation prompt, the observation/summary message loop,
- * cumulative token accounting, abort-aware error handling, and history
- * truncation — is identical between them. Per-provider differences (config
- * resolution, request shape, token estimation, usage/cost reporting) are
- * supplied by abstract members.
+ * cumulative token accounting, and abort-aware error handling — is identical
+ * between them. Per-provider differences (config resolution, request shape,
+ * token estimation, usage/cost reporting) are supplied by abstract members.
+ * User prompts are pushed onto conversationHistory here; assistant replies
+ * are pushed by processAgentResponse (the single assistant-push site, shared
+ * with the Claude path). History is compacted (cleared and re-seeded with the
+ * continuation prompt plus a token-budgeted timeline) when its estimated size
+ * exceeds COMPACT_TRIGGER_RATIO of the model's context window.
  */
 export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string; model: string }> {
   protected dbManager: DatabaseManager;
@@ -89,6 +121,16 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       throw this.missingApiKeyError();
     }
 
+    // syntheticIdPrefix is 'openrouter' | 'gemini' for the two concrete
+    // providers; resolution treats anything else as unknown → fallback window.
+    // When compaction is disabled at session start, skip resolution (it can
+    // hit the network) and use the fallback constant — the hook's own
+    // per-message kill-switch check still guards each message.
+    const startupSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const contextWindowTokens = startupSettings.CLAUDE_MEM_OBSERVER_COMPACTION_ENABLED === 'false'
+      ? FALLBACK_CONTEXT_WINDOW_TOKENS
+      : await resolveContextWindowTokens(this.syntheticIdPrefix, config.model, session.endpointClass);
+
     if (!session.memorySessionId) {
       const syntheticMemorySessionId = `${this.syntheticIdPrefix}-${session.contentSessionId}-${Date.now()}`;
       session.memorySessionId = syntheticMemorySessionId;
@@ -119,7 +161,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
 
     try {
-      await this.runMessageLoop(session, worker, config, mode);
+      await this.runMessageLoop(session, worker, config, mode, contextWindowTokens);
     } catch (error: unknown) {
       if (error instanceof Error) {
         logger.error('SDK', `${this.providerName} message loop failed`, { sessionId: session.sessionDbId, model }, error);
@@ -141,7 +183,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session: ActiveSession,
     worker: WorkerRef | undefined,
     config: TConfig,
-    mode: ModeConfig
+    mode: ModeConfig,
+    contextWindowTokens: number
   ): Promise<void> {
     let lastCwd: string | undefined;
 
@@ -152,12 +195,26 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       if (message.cwd) {
         lastCwd = message.cwd;
       }
+
       const originalTimestamp = session.earliestPendingTimestamp;
 
+      // Single compaction site, covering both observation and summary
+      // dispatch. Synchronous: the next query must see the compacted history.
+      // The pending prompt is built first — exactly the string dispatched
+      // below — so its full cost (template scaffold included, not just the
+      // payload) is reserved in the compaction decision; it is appended after
+      // compaction, so an unreserved prompt could overflow the window right
+      // after a compact (PR #3516 review).
+      const pendingPrompt = this.buildPendingPrompt(session, message, mode, contextWindowTokens, originalTimestamp);
+      this.maybeCompactHistory(
+        session, mode, contextWindowTokens, lastCwd,
+        pendingPrompt === null ? 0 : this.estimateTokens(pendingPrompt)
+      );
+
       if (message.type === 'observation') {
-        await this.processObservationMessage(session, message, worker, config, originalTimestamp, lastCwd);
+        await this.processObservationMessage(session, message, worker, config, originalTimestamp, lastCwd, pendingPrompt!);
       } else if (message.type === 'summarize') {
-        await this.processSummaryMessage(session, message, worker, config, mode, originalTimestamp, lastCwd);
+        await this.processSummaryMessage(session, worker, config, originalTimestamp, lastCwd, pendingPrompt!);
       }
     }
   }
@@ -170,10 +227,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     responseContext: ReturnType<typeof snapshotResponseContext>
   ): Promise<void> {
     if (initResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
       const tokensUsed = initResponse.tokensUsed || 0;
-      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+      this.accumulateUsage(session, initResponse);
       session.lastUsage = this.buildLastUsage(initResponse);
       await processAgentResponse(
         initResponse.content, session, this.dbManager, this.sessionManager,
@@ -192,7 +247,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     worker: WorkerRef | undefined,
     config: TConfig,
     originalTimestamp: number | null,
-    lastCwd: string | undefined
+    lastCwd: string | undefined,
+    obsPrompt: string
   ): Promise<void> {
     if (message.prompt_number !== undefined) {
       session.lastPromptNumber = message.prompt_number;
@@ -202,14 +258,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
 
-    const obsPrompt = buildObservationPrompt({
-      id: 0,
-      tool_name: message.tool_name!,
-      tool_input: JSON.stringify(message.tool_input),
-      tool_output: JSON.stringify(message.tool_response),
-      created_at_epoch: originalTimestamp ?? Date.now(),
-      cwd: message.cwd
-    });
     const responseContext = snapshotResponseContext(session);
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
@@ -219,10 +267,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     let tokensUsed = 0;
     if (obsResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
       tokensUsed = obsResponse.tokensUsed || 0;
-      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+      this.accumulateUsage(session, obsResponse);
       // Both sides or nothing: a backend reporting only one of the two counts
       // must not produce a half-real event (input=0 → compression_ratio 0.0).
       session.lastUsage = this.buildLastUsage(obsResponse);
@@ -242,24 +288,16 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
   private async processSummaryMessage(
     session: ActiveSession,
-    message: { last_assistant_message?: string },
     worker: WorkerRef | undefined,
     config: TConfig,
-    mode: ModeConfig,
     originalTimestamp: number | null,
-    lastCwd: string | undefined
+    lastCwd: string | undefined,
+    summaryPrompt: string
   ): Promise<void> {
     if (!session.memorySessionId) {
       throw new Error('Cannot process summary: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
 
-    const summaryPrompt = buildSummaryPrompt({
-      id: session.sessionDbId,
-      memory_session_id: session.memorySessionId,
-      project: session.project,
-      user_prompt: session.userPrompt,
-      last_assistant_message: message.last_assistant_message || ''
-    }, mode);
     const responseContext = snapshotResponseContext(session);
 
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
@@ -277,10 +315,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     let tokensUsed = 0;
     if (summaryResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
       tokensUsed = summaryResponse.tokensUsed || 0;
-      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+      this.accumulateUsage(session, summaryResponse);
       session.lastUsage = this.buildLastUsage(summaryResponse);
     }
 
@@ -293,6 +329,158 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       logger.warn('SDK', `Empty ${this.providerName} summary response, leaving queue intact`, {
         sessionId: session.sessionDbId
       });
+    }
+  }
+
+  /**
+   * Truncate text to a window-derived char cap with an explicit marker.
+   * Truncation may cut mid-JSON — the observer reads it as prose, so a
+   * marked partial payload beats a rejected over-window request.
+   */
+  private boundText(text: string, maxChars: number): string {
+    if (text.length <= maxChars) return text;
+    return `${text.slice(0, maxChars)} …[truncated ${text.length - maxChars} chars]`;
+  }
+
+  private boundPayloadJson(value: unknown, maxChars: number): string {
+    return this.boundText(JSON.stringify(value) ?? String(value), maxChars);
+  }
+
+  /**
+   * Build the exact prompt the pending message will dispatch, so compaction
+   * can reserve its true cost — template scaffold included. The variable
+   * payload (tool_input/tool_output, or last_assistant_message) starts at the
+   * PAYLOAD_WINDOW_RATIO cap and is halved until the rendered prompt fits
+   * PROMPT_WINDOW_RATIO of the window: buildObservationPrompt re-encodes
+   * payloads pretty-printed with escaping, so only measuring the rendered
+   * string bounds the real request (PR #3516 review). Returns null for
+   * message types that dispatch no prompt.
+   */
+  private buildPendingPrompt(
+    session: ActiveSession,
+    message: { type?: string; tool_name?: string; tool_input?: unknown; tool_response?: unknown; cwd?: string; last_assistant_message?: string },
+    mode: ModeConfig,
+    contextWindowTokens: number,
+    originalTimestamp: number | null
+  ): string | null {
+    if (message.type !== 'observation' && message.type !== 'summarize') {
+      return null;
+    }
+
+    const promptCapTokens = contextWindowTokens * PROMPT_WINDOW_RATIO;
+    let maxChars = Math.floor(contextWindowTokens * PAYLOAD_WINDOW_RATIO) * PAYLOAD_CHARS_PER_TOKEN;
+    for (;;) {
+      const prompt = message.type === 'observation'
+        ? buildObservationPrompt({
+            id: 0,
+            tool_name: message.tool_name!,
+            tool_input: this.boundPayloadJson(message.tool_input, maxChars),
+            tool_output: this.boundPayloadJson(message.tool_response, maxChars),
+            created_at_epoch: originalTimestamp ?? Date.now(),
+            cwd: message.cwd
+          })
+        : buildSummaryPrompt({
+            id: session.sessionDbId,
+            memory_session_id: session.memorySessionId ?? '',
+            project: session.project,
+            user_prompt: session.userPrompt,
+            last_assistant_message: this.boundText(message.last_assistant_message || '', maxChars)
+          }, mode);
+      if (this.estimateTokens(prompt) <= promptCapTokens || maxChars <= PAYLOAD_MIN_CHARS) {
+        return prompt;
+      }
+      maxChars = Math.floor(maxChars / 2);
+    }
+  }
+
+  /**
+   * Compact conversationHistory when its estimated token size exceeds
+   * COMPACT_TRIGGER_RATIO of the model's context window: clear it and re-seed
+   * with one user turn — the continuation prompt plus a recent-observations
+   * timeline budgeted at REINJECT_BUDGET_RATIO of the window. Starting with a
+   * user turn satisfies the Gemini consecutive-role-merge constraint.
+   * Deliberately synchronous and un-caught: a throwing timeline builder should
+   * fail the turn visibly via the message-loop error handler.
+   */
+  private maybeCompactHistory(
+    session: ActiveSession,
+    mode: ModeConfig,
+    contextWindowTokens: number,
+    lastCwd: string | undefined,
+    pendingMessageTokens = 0
+  ): void {
+    // Deliberate per-message re-read: the kill switch must take effect
+    // without a session restart.
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    if (settings.CLAUDE_MEM_OBSERVER_COMPACTION_ENABLED === 'false') {
+      return;
+    }
+
+    // pendingMessageTokens: the incoming message's prompt is appended after
+    // this hook runs, so it counts toward the trigger and is reserved out of
+    // the reinject budget below.
+    const estimatedHistoryTokens = this.estimateTokens(session.conversationHistory.map(m => m.content).join(''));
+    if (estimatedHistoryTokens + pendingMessageTokens <= contextWindowTokens * COMPACT_TRIGGER_RATIO) {
+      return;
+    }
+
+    const beforeMessages = session.conversationHistory.length;
+    session.conversationHistory.length = 0;
+
+    // Build the continuation prompt first so the timeline budget is net of
+    // it: the re-seeded turn as a whole must stay within
+    // REINJECT_BUDGET_RATIO of the window (anti-thrash).
+    const continuationPrompt = buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
+    const tokenBudget = Math.max(
+      0,
+      Math.floor(contextWindowTokens * REINJECT_BUDGET_RATIO)
+        - this.estimateTokens(continuationPrompt)
+        - pendingMessageTokens
+    );
+
+    const timeline = buildCompactionTimeline(
+      this.dbManager.getSessionStore(),
+      session.project,
+      lastCwd ?? session.project,
+      tokenBudget
+    );
+
+    const content = timeline
+      ? `${continuationPrompt}\n\n<recent_project_timeline>\n${timeline}\n</recent_project_timeline>`
+      : continuationPrompt;
+    session.conversationHistory.push({ role: 'user', content });
+
+    const afterTokens = this.estimateTokens(content);
+    logger.info('SDK', 'Observer history compacted', {
+      sessionId: session.sessionDbId,
+      beforeMessages,
+      beforeTokens: estimatedHistoryTokens,
+      afterTokens,
+      contextWindowTokens
+    });
+    if (afterTokens > contextWindowTokens * COMPACT_TRIGGER_RATIO) {
+      logger.warn('SDK', 'Compacted context alone exceeds the compaction trigger — context window too small; the next message will re-compact', {
+        sessionId: session.sessionDbId,
+        afterTokens,
+        contextWindowTokens
+      });
+    }
+  }
+
+  /**
+   * Accumulate a query's usage onto the session's cumulative counters. Real
+   * provider-reported input/output counts win when both are present (same
+   * both-or-nothing contract as buildLastUsage); otherwise fall back to an
+   * estimated 70/30 input/output split of the total.
+   */
+  private accumulateUsage(session: ActiveSession, result: ProviderQueryResult): void {
+    if (typeof result.inputTokens === 'number' && typeof result.outputTokens === 'number') {
+      session.cumulativeInputTokens += result.inputTokens;
+      session.cumulativeOutputTokens += result.outputTokens;
+    } else {
+      const tokensUsed = result.tokensUsed || 0;
+      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
+      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
     }
   }
 
