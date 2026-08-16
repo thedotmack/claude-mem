@@ -3,6 +3,7 @@ import {
   classifyObserverOutput,
   isAuthFailureObserverOutput,
   isQuotaLimitedObserverOutput,
+  isTransportErrorObserverOutput,
   previewOutput,
 } from '../../src/sdk/output-classifier.js';
 
@@ -94,6 +95,56 @@ describe('isAuthFailureObserverOutput', () => {
     expect(isAuthFailureObserverOutput('No observations to record.')).toBe(false);
     expect(isAuthFailureObserverOutput('Please run /login in the observed project instructions.')).toBe(false);
     expect(isAuthFailureObserverOutput('The project authentication guide says to run /login before testing.')).toBe(false);
+  });
+});
+
+describe('isTransportErrorObserverOutput', () => {
+  it('detects a connection dropped mid-response', () => {
+    expect(
+      isTransportErrorObserverOutput(
+        'API Error: Connection closed mid-response. The response above may be incomplete.'
+      )
+    ).toBe(true);
+  });
+
+  it('detects other transport-failure phrasings', () => {
+    expect(isTransportErrorObserverOutput('The stream ended unexpectedly.')).toBe(true);
+    expect(isTransportErrorObserverOutput('Error: premature close')).toBe(true);
+    expect(isTransportErrorObserverOutput('socket hang up')).toBe(true);
+    expect(isTransportErrorObserverOutput('request failed: ECONNRESET')).toBe(true);
+  });
+
+  it('is insensitive to case and collapsed whitespace', () => {
+    expect(
+      isTransportErrorObserverOutput('API ERROR:   Connection   Closed\n  Mid-Response.')
+    ).toBe(true);
+  });
+
+  it('returns false for empty or non-string output', () => {
+    expect(isTransportErrorObserverOutput('')).toBe(false);
+    expect(isTransportErrorObserverOutput('   \n ')).toBe(false);
+    expect(isTransportErrorObserverOutput(undefined)).toBe(false);
+    expect(isTransportErrorObserverOutput(null)).toBe(false);
+  });
+
+  it('does not fire on XML, even when the content mentions a dropped connection', () => {
+    expect(
+      isTransportErrorObserverOutput(
+        '<observation><title>Connection closed mid-response in the retry path</title></observation>'
+      )
+    ).toBe(false);
+    expect(
+      isTransportErrorObserverOutput('<skip_summary reason="socket hang up in observed code"/>')
+    ).toBe(false);
+  });
+
+  it('does not fire on ordinary observer prose or on quota/auth text', () => {
+    expect(isTransportErrorObserverOutput('No observations to record.')).toBe(false);
+    expect(
+      isTransportErrorObserverOutput("I'm observing the primary session, but there's no work to record.")
+    ).toBe(false);
+    expect(isTransportErrorObserverOutput('Claude usage limit reached. Try again later.')).toBe(false);
+    expect(isTransportErrorObserverOutput('Authentication failed; run /login.')).toBe(false);
   });
 });
 

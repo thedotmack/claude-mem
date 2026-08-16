@@ -9,19 +9,17 @@ import {
 /**
  * Regression guard for plan-08 (OpenCode event-contract correctness).
  *
- * The old plugin subscribed to bus event names that do not exist in OpenCode
- * (`session.created`, `message.updated`, `session.compacted`, `file.edited`,
- * `session.deleted` on a `(name, payload)` switch) and parsed `data.items`
- * instead of the worker's real `data.content` blocks — so it captured nothing
- * and search always returned "No results". These tests fail CI if either
- * contract regresses.
+ * The old plugin used `chat.message` for assistant capture, but current
+ * OpenCode emits message updates on the event bus (`message.updated` and
+ * `message.part.updated`). It also parsed `data.items` instead of the worker's
+ * real `data.content` blocks — so it captured nothing and search always
+ * returned "No results". These tests fail CI if either contract regresses.
  */
 
 // The real OpenCode plugin hook names. Anything the plugin returns as a hook
 // key must be in this allowlist; a future typo (e.g. "session.created") fails.
 const REAL_OPENCODE_HOOK_NAMES = new Set<string>([
   "tool.execute.after",
-  "chat.message",
   "event",
   "experimental.session.compacting",
   "tool.execute.before",
@@ -32,11 +30,12 @@ const REAL_OPENCODE_HOOK_NAMES = new Set<string>([
   "tool",
 ]);
 
-// Bus event names the old code used that DO NOT exist in OpenCode's contract.
-const PHANTOM_BUS_EVENT_NAMES = [
+// Event names are delivered through the generic `event` hook, not as top-level
+// plugin hook keys.
+const EVENT_NAMES_THAT_ARE_NOT_HOOK_KEYS = [
   "session.created",
   "message.updated",
-  "session.compacted",
+  "message.part.updated",
   "file.edited",
 ];
 
@@ -68,27 +67,25 @@ describe("OpenCode plugin event contract", () => {
 
     // The capture-critical hooks must be present.
     expect(hookKeys).toContain("tool.execute.after");
-    expect(hookKeys).toContain("chat.message");
     expect(hookKeys).toContain("experimental.session.compacting");
     expect(hookKeys).toContain("event");
+    expect(hookKeys).not.toContain("chat.message");
   });
 
-  it("does not register the phantom bus event names as hooks", async () => {
+  it("does not register bus event names as direct hooks", async () => {
     const plugin = await ClaudeMemPlugin(pluginCtx);
     const hookKeys = Object.keys(plugin);
-    for (const phantom of PHANTOM_BUS_EVENT_NAMES) {
-      expect(hookKeys).not.toContain(phantom);
+    for (const eventName of EVENT_NAMES_THAT_ARE_NOT_HOOK_KEYS) {
+      expect(hookKeys).not.toContain(eventName);
     }
   });
 
-  it("only reacts to real bus event types", () => {
-    // session.idle / session.deleted are real OpenCode bus events; the phantom
-    // names must never appear in the reacted-to allowlist.
+  it("reacts to the current OpenCode bus event types", () => {
+    expect(REAL_OPENCODE_EVENT_TYPES).toContain("message.updated");
+    expect(REAL_OPENCODE_EVENT_TYPES).toContain("message.part.updated");
     expect(REAL_OPENCODE_EVENT_TYPES).toContain("session.idle");
     expect(REAL_OPENCODE_EVENT_TYPES).toContain("session.deleted");
-    for (const phantom of PHANTOM_BUS_EVENT_NAMES) {
-      expect(REAL_OPENCODE_EVENT_TYPES as readonly string[]).not.toContain(phantom);
-    }
+    expect(REAL_OPENCODE_EVENT_TYPES as readonly string[]).not.toContain("chat.message");
   });
 
   it("posts observations to the worker via tool.execute.after", async () => {
@@ -106,8 +103,8 @@ describe("OpenCode plugin event contract", () => {
       const plugin = await ClaudeMemPlugin(pluginCtx);
       const toolAfter = plugin["tool.execute.after"];
       await toolAfter(
-        { tool: "read", sessionID: "ses_1", callID: "c1" },
-        { title: "Read", output: "file contents", metadata: {}, args: { path: "/a" } },
+        { tool: "read", sessionID: "ses_tool_1", callID: "c1", args: { path: "/a" } },
+        { title: "Read", output: "file contents", metadata: {} },
       );
 
       const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
@@ -116,7 +113,59 @@ describe("OpenCode plugin event contract", () => {
       expect(obsPost, "tool.execute.after should POST an observation").toBeTruthy();
       const obsBody = obsPost!.body as Record<string, unknown>;
       expect(obsBody.tool_name).toBe("read");
+      expect(obsBody.tool_input).toEqual({ path: "/a" });
       expect(obsBody.tool_response).toBe("file contents");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("posts assistant observations from message.updated and message.part.updated events", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin.event({
+        event: {
+          type: "message.updated",
+          properties: {
+            sessionID: "ses_msg_1",
+            info: { id: "msg_1", role: "assistant", sessionID: "ses_msg_1" },
+          },
+        },
+      });
+      await plugin.event({
+        event: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "ses_msg_1",
+            part: {
+              id: "prt_1",
+              sessionID: "ses_msg_1",
+              messageID: "msg_1",
+              type: "text",
+              text: "assistant text",
+              time: { end: 1 },
+            },
+          },
+        },
+      });
+
+      const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
+      const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
+      expect(initPost, "message events should lazily init the session").toBeTruthy();
+      expect(obsPost, "message events should POST an assistant observation").toBeTruthy();
+      const obsBody = obsPost!.body as Record<string, unknown>;
+      expect(obsBody.tool_name).toBe("assistant_message");
+      expect(obsBody.tool_response).toBe("assistant text");
     } finally {
       globalThis.fetch = originalFetch;
     }

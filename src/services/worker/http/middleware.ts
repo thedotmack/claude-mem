@@ -1,8 +1,10 @@
 
 import express, { Request, Response, NextFunction, RequestHandler } from 'express';
 import path from 'path';
+import { timingSafeEqual } from 'crypto';
 import { getPackageRoot } from '../../../shared/paths.js';
 import { logger } from '../../../utils/logger.js';
+import { readPidFile } from '../../infrastructure/ProcessManager.js';
 
 export function createMiddleware(): RequestHandler[] {
   const middlewares: RequestHandler[] = [];
@@ -79,6 +81,57 @@ export function requireLocalhost(req: Request, res: Response, next: NextFunction
       error: 'Forbidden',
       message: 'Admin endpoints are only accessible from localhost'
     });
+    return;
+  }
+
+  next();
+}
+
+/**
+ * Capability check for destructive session endpoints (#3073 review).
+ *
+ * `requireLocalhost` is not sufficient on its own for a route that aborts live
+ * work: every process on the machine is "localhost", so any local caller that
+ * learns or guesses a session id could tear down another session's in-flight
+ * generator and queued observations.
+ *
+ * The proof required here is knowledge of the running worker's own start token,
+ * which lives in `worker.pid` inside the user's data directory. That makes the
+ * capability exactly "can read this user's claude-mem data dir", which is the
+ * real trust boundary, and which every legitimate caller (the hooks) already
+ * sits inside. Nothing new is stored and no secret is minted; the token is
+ * already written and already used as the worker's identity proof.
+ *
+ * Comparison is length-safe and constant-time to avoid leaking the token
+ * through response timing.
+ */
+export function requireWorkerToken(req: Request, res: Response, next: NextFunction): void {
+  const presented = req.get('X-Claude-Mem-Worker-Token') ?? '';
+  const expected = readPidFile()?.startToken ?? '';
+
+  if (!expected) {
+    // No token on disk means we cannot verify anything. Refuse rather than
+    // fall open: the caller degrades to "session not explicitly ended",
+    // which is exactly the pre-existing behaviour and harms nothing.
+    logger.warn('SECURITY', 'Destructive session endpoint denied: worker has no start token to verify against', {
+      endpoint: req.path
+    });
+    res.status(403).json({ error: 'Forbidden', message: 'Worker token unavailable' });
+    return;
+  }
+
+  const presentedBuffer = Buffer.from(presented, 'utf-8');
+  const expectedBuffer = Buffer.from(expected, 'utf-8');
+  const matches =
+    presentedBuffer.length === expectedBuffer.length &&
+    timingSafeEqual(presentedBuffer, expectedBuffer);
+
+  if (!matches) {
+    logger.warn('SECURITY', 'Destructive session endpoint denied: missing or invalid worker token', {
+      endpoint: req.path,
+      method: req.method
+    });
+    res.status(403).json({ error: 'Forbidden', message: 'Valid worker token required' });
     return;
   }
 

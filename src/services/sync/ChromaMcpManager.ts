@@ -12,7 +12,12 @@ import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
-import { captureProcessStartToken, isPidAlive } from '../../supervisor/process-registry.js';
+import {
+  captureProcessStartToken,
+  isPidAlive,
+  verifyManagedProcessIdentity,
+  type ManagedProcessInfo,
+} from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
 
@@ -77,6 +82,12 @@ interface ChromaWriterLockPayload {
   startToken?: string | null;
 }
 
+/** A descendant PID as discovered by the tree walk, with its identity at that moment. */
+interface DiscoveredDescendant {
+  pid: number;
+  startToken: string | null;
+}
+
 export class ChromaMcpManager {
   private static instance: ChromaMcpManager | null = null;
   private client: Client | null = null;
@@ -95,7 +106,18 @@ export class ChromaMcpManager {
   private readonly maxPendingMutationCalls: number;
   private readonly serializeMutations: boolean;
   private acceptingLocalMutations = true;
+  /**
+   * Terminal latch set by stop({ terminal: true }). Those callers are abandoning
+   * this instance for good (worker shutdown, or reset() which then nulls the
+   * singleton), so once it is set, ensureConnected() must refuse rather than
+   * spawn a replacement tree — see the note on stop().
+   */
+  private stopped: boolean = false;
+  /** Memoized stop() run, so concurrent callers share one teardown. */
+  private stopPromise: Promise<void> | null = null;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
+  private static chromaLauncherIdentityProbe: ((pid: number) => Promise<boolean>) | null = null;
+  private static descendantCollectorOverride: ((rootPid: number) => Promise<number[]>) | null = null;
 
   private constructor() {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
@@ -114,6 +136,14 @@ export class ChromaMcpManager {
   }
 
   private async ensureConnected(): Promise<void> {
+    // Refuse once stop() has latched: this instance is being torn down and the
+    // process is about to exit, so spawning a replacement tree here would leak
+    // it to init. Reached via callTool()'s transport-error retry when session
+    // work is still draining as chroma goes away. Throwing (rather than
+    // returning) keeps the existing ChromaUnavailableError contract that
+    // callers already handle as "chroma is not usable right now".
+    this.assertNotStopped();
+
     await this.waitForUnexpectedCloseCleanup();
 
     if (this.connected && this.client) {
@@ -129,6 +159,15 @@ export class ChromaMcpManager {
       await this.connecting;
       return;
     }
+
+    // Re-check immediately before the spawn. The check at the top of this method
+    // is separated from here by at least one await, and stop({ terminal: true })
+    // can land inside that window — the call would then resume with a stale
+    // "not stopped" reading and connectInternal() would capture the POST-bump
+    // generation, so #3462's cancellation guards see nothing wrong either. This
+    // is the last latch check before connectInternal() starts; from there the
+    // generation guards cover its own awaits, including the two spawn sites.
+    this.assertNotStopped();
 
     this.connecting = this.connectInternal();
     try {
@@ -150,6 +189,20 @@ export class ChromaMcpManager {
     }
   }
 
+  /**
+   * Refuse work once stop({ terminal: true }) has latched: this instance is
+   * permanently abandoned — the worker is exiting, or reset() has dropped the
+   * singleton — so spawning a replacement tree here would leak it (to init, on
+   * the shutdown path). Throwing (rather than returning) keeps the existing
+   * ChromaUnavailableError contract that callers already handle as "chroma is
+   * not usable right now" — see the note on stop().
+   */
+  private assertNotStopped(): void {
+    if (this.stopped) {
+      throw new ChromaUnavailableError('chroma-mcp is shutting down');
+    }
+  }
+
   private async connectInternal(): Promise<void> {
     const connectionGeneration = this.connectionGeneration;
 
@@ -161,6 +214,7 @@ export class ChromaMcpManager {
     // tree-kill primitive used by stop() so reconnect can never leave
     // orphans behind.
     await this.disposeCurrentSubprocess();
+    await this.reapRegisteredChromaFromPriorGeneration();
     this.assertConnectionNotCancelled(connectionGeneration);
 
     const localChromaDataDir = this.getLocalPersistentChromaDataDir();
@@ -940,6 +994,118 @@ export class ChromaMcpManager {
     this.connected = false;
   }
 
+  /**
+   * Cross-generation orphan reap (#3270): when a previous worker process died
+   * without running stop() (SIGKILL, crash, OOM), its chroma-mcp subprocess
+   * tree survives — the descendants re-parent to init/launchd while the
+   * persisted supervisor registry still records their root PID. A fresh
+   * worker cannot reach that subprocess through this.transport (the in-memory
+   * handle died with the old worker), and registerManagedProcess() later
+   * overwrites the registry entry — the only record of the orphan's PID —
+   * without killing it. Net effect: every ungraceful worker death leaks one
+   * uvx→uv→python chroma-mcp tree, unbounded across restarts.
+   *
+   * Before spawning a replacement, consult the persisted entry and tree-kill
+   * the prior subprocess if it is still alive and verifiably OURS. Ownership
+   * is proven by the registry's start token (verifyManagedProcessIdentity):
+   * a bare PID is not an identity, and a persisted record can name a PID
+   * that has since been recycled onto an unrelated process. The command-line
+   * probe is kept as defense in depth, never as the ownership proof; a
+   * substring match on `chroma-mcp` says nothing about which generation
+   * (or which program) a reused PID now belongs to. On a missing, unreadable
+   * or mismatched token the stale record is dropped and nothing is signalled.
+   */
+  private async reapRegisteredChromaFromPriorGeneration(): Promise<void> {
+    if (process.platform === 'win32') {
+      // No command-line identity probe wired up for Windows yet — leave the
+      // registry entry untouched so behavior there is unchanged.
+      return;
+    }
+
+    // Best-effort by design: a failure here must never block the connect
+    // path — worst case we fall back to the pre-fix behavior (orphan
+    // survives) instead of losing semantic search entirely.
+    try {
+      const record = getSupervisor().getRegistry().getAll()
+        .find(entry => entry.id === CHROMA_SUPERVISOR_ID);
+      if (!record) {
+        return;
+      }
+
+      if (!isPidAlive(record.pid)) {
+        getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+        return;
+      }
+
+      if (!verifyManagedProcessIdentity(record)) {
+        // Tokenless, unreadable, or mismatched start token: we cannot prove
+        // this PID is still the launcher we registered. Drop the stale entry
+        // without signaling anything.
+        logger.debug('CHROMA_MCP', 'Prior-generation chroma-mcp record failed identity verification; dropping without signaling', {
+          pid: record.pid,
+          startedAt: record.startedAt
+        });
+        getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+        return;
+      }
+
+      if (!(await ChromaMcpManager.isChromaMcpLauncherPid(record.pid))) {
+        // Defense in depth on top of the token check: the process is ours by
+        // identity but its command line no longer looks like the launcher.
+        // Drop the entry without signaling anything.
+        getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+        return;
+      }
+
+      // The probe above awaited a subprocess; the PID could have exited and
+      // been recycled in that window. Re-prove identity immediately before
+      // the signal, so the tree-kill never lands on a replacement process.
+      if (!verifyManagedProcessIdentity(record)) {
+        logger.debug('CHROMA_MCP', 'Prior-generation chroma-mcp PID changed identity during the launcher probe; dropping without signaling', {
+          pid: record.pid
+        });
+        getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+        return;
+      }
+
+      logger.warn('CHROMA_MCP', 'Reaping orphaned chroma-mcp left by a previous worker generation', {
+        pid: record.pid,
+        startedAt: record.startedAt
+      });
+      // The tree kill awaits descendant discovery and a grace window before
+      // each root signal; it re-proves this identity right before each one.
+      await ChromaMcpManager.killProcessTree(record.pid, record);
+      getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+    } catch (error) {
+      logger.debug('CHROMA_MCP', 'Cross-generation chroma-mcp reap skipped (best-effort)', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  /**
+   * POSIX command-line probe for the cross-generation reap: true only when the
+   * process's command line looks like the uvx/chroma-mcp launcher chain we
+   * spawn. Defense in depth behind verifyManagedProcessIdentity, not an
+   * ownership proof on its own. Best-effort — a failed `ps` reads as "not ours".
+   */
+  private static async isChromaMcpLauncherPid(pid: number): Promise<boolean> {
+    if (ChromaMcpManager.chromaLauncherIdentityProbe) {
+      return ChromaMcpManager.chromaLauncherIdentityProbe(pid);
+    }
+    try {
+      const { stdout } = await execFileAsync('ps', ['-p', String(pid), '-o', 'command='], {
+        timeout: 5_000,
+        // Uniform spawn-env discipline: sanitize even for read-only system
+        // binaries so the spawn-env CI check stays a single rule (#2357/#2375).
+        env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
+      });
+      return stdout.includes('chroma-mcp');
+    } catch {
+      return false;
+    }
+  }
+
   private async disposeActivePrewarm(): Promise<void> {
     const prewarmChild = this.activePrewarmChild;
     if (!prewarmChild) {
@@ -1005,9 +1171,61 @@ export class ChromaMcpManager {
    * accumulate across reconnects or worker restarts. Matches the tree-kill
    * pattern from shutdown.ts (Principle 5: OS-supervised teardown).
    */
-  async stop(): Promise<void> {
+  async stop(options: { terminal?: boolean } = {}): Promise<void> {
     this.acceptingLocalMutations = false;
+
+    // Two properties the worker's shutdown path depends on:
+    //
+    // 1. `terminal: true` latches so ensureConnected() refuses afterwards.
+    //    The connectionGeneration guards added in #3462 cancel calls that were
+    //    already in flight when stop() bumped the generation, but a call that
+    //    ARRIVES after the bump captures the new generation and passes every
+    //    one of them; acceptingLocalMutations catches only mutation tools in
+    //    local mode. So a read (or isHealthy()'s chroma_list_collections) still
+    //    reaches connectInternal() and spawns a REPLACEMENT tree, which the
+    //    imminent process.exit() orphans — stopping chroma would create the very
+    //    leak it is meant to prevent. ensureConnected() therefore checks the
+    //    latch both on entry and again immediately before it spawns, since those
+    //    two points are separated by an await the latch can land inside.
+    // 2. The run is memoized so concurrent callers share one teardown. The
+    //    worker's shutdown backstop can call stop() while the abandoned
+    //    performGracefulShutdown reaches the same call; without this, two
+    //    disposers interleave over the same client/transport/lock fields and an
+    //    older one can clear state the newer one just established.
+    //
+    // The latch is OPT-IN because a plain stop() must stay reusable for reads:
+    // ensureConnected() after stop() must spawn a fresh transport (pinned by
+    // "stop() disposes state including any pending connecting promise" in
+    // tests/services/sync/chroma-mcp-manager-singleton.test.ts). Note that only
+    // reads recover: local mutations stay rejected either way, since #3462
+    // clears acceptingLocalMutations above and never restores it.
+    //
+    // Only callers abandoning this instance for good pass terminal: true — the worker's
+    // shutdown paths, which exit the process immediately after, and reset(),
+    // which drops the singleton so a retained reference must not reconnect.
+    if (options.terminal) {
+      this.stopped = true;
+    }
+
+    // Bump on EVERY call, not only the one that owns the teardown. A plain
+    // stop() is reusable, so a connection can be established while an earlier
+    // teardown is still in flight; that connection captured the generation the
+    // first stop() set, and a later caller returning the memoized promise below
+    // would otherwise never invalidate it. Bumping here also cancels sooner than
+    // stopInternal() could, since it happens before any await.
     this.connectionGeneration += 1;
+
+    if (this.stopPromise) {
+      return this.stopPromise;
+    }
+    this.stopPromise = this.stopInternal().finally(() => {
+      this.stopPromise = null;
+    });
+    return this.stopPromise;
+  }
+
+  private async stopInternal(): Promise<void> {
+    // connectionGeneration is bumped by stop() before this runs.
     await this.waitForUnexpectedCloseCleanup();
 
     if (!this.client && !this.transport && !this.activePrewarmChild) {
@@ -1036,10 +1254,27 @@ export class ChromaMcpManager {
    *
    * Best-effort — swallows ESRCH (already dead) and logs other errors.
    */
-  private static async killProcessTree(pid: number): Promise<void> {
+  /**
+   * `expectedIdentity`, when given, is re-verified (start token) immediately
+   * before every signal to the root and before the post-grace descendant
+   * re-scan. Callers that hold a persisted record rather than a live
+   * ChildProcess handle (the cross-generation reap) pass it so a root PID
+   * that exits and is recycled during the async steps here is never signalled
+   * as if it were still the launcher.
+   */
+  private static async killProcessTree(pid: number, expectedIdentity?: ManagedProcessInfo): Promise<void> {
     logger.debug('CHROMA_MCP', `Killing process tree rooted at PID ${pid}`);
+    const rootStillOurs = (): boolean =>
+      expectedIdentity === undefined || verifyManagedProcessIdentity(expectedIdentity);
 
     if (process.platform === 'win32') {
+      // Same discipline as POSIX: re-prove the root immediately before the
+      // (tree-wide, forceful) signal. taskkill /T reaches every descendant of
+      // whatever currently holds this PID, so a recycled root is never it.
+      if (!rootStillOurs()) {
+        logger.debug('CHROMA_MCP', `Root PID ${pid} no longer verifies as ours; skipping taskkill`);
+        return;
+      }
       try {
         await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], {
           timeout: 5_000,
@@ -1061,15 +1296,39 @@ export class ChromaMcpManager {
     // survive. We collect the full descendant set via `pgrep -P` walks before
     // signaling, so the SIGTERM phase reaches every layer
     // (CodeRabbit review on PR #2282).
+    //
+    // Identity discipline: a descendant is known only by the number pgrep
+    // returned, and a number is not an identity. Each descendant's start
+    // token is captured the moment it is discovered, and EVERY signal to a
+    // descendant is preceded, synchronously, by an alive + same-token check
+    // against that discovery-time token. A PID that exits and is recycled at
+    // any point after discovery is skipped rather than signalled.
+    const stillSameProcess = (d: DiscoveredDescendant): boolean =>
+      d.startToken !== null && isPidAlive(d.pid) && captureProcessStartToken(d.pid) === d.startToken;
+    const signalDescendant = (d: DiscoveredDescendant, signal: 'SIGTERM' | 'SIGKILL'): void => {
+      if (!stillSameProcess(d)) {
+        logger.debug('CHROMA_MCP', `Descendant PID ${d.pid} no longer verifies as the discovered process; not sending ${signal}`);
+        return;
+      }
+      try {
+        process.kill(d.pid, signal);
+      } catch {
+        // Already gone — fine.
+      }
+    };
+
     try {
       const descendantsBeforeTerm = await ChromaMcpManager.collectDescendantPids(pid);
+      if (!rootStillOurs()) {
+        // The root exited (or was recycled) while descendants were being
+        // discovered: what pgrep returned may belong to a replacement. Signal
+        // nothing.
+        logger.debug('CHROMA_MCP', `Root PID ${pid} no longer verifies as ours; skipping tree kill`);
+        return;
+      }
       // Signal leaves first, then the root.
-      for (const child of descendantsBeforeTerm) {
-        try {
-          process.kill(child, 'SIGTERM');
-        } catch {
-          // Already gone — fine.
-        }
+      for (const descendant of descendantsBeforeTerm) {
+        signalDescendant(descendant, 'SIGTERM');
       }
       try {
         process.kill(pid, 'SIGTERM');
@@ -1092,21 +1351,36 @@ export class ChromaMcpManager {
       // init and drop out of `pgrep -P <root>`. Without the union, those
       // re-parented descendants would never receive SIGKILL even though they
       // were definitely children before SIGTERM (CodeRabbit review on PR
-      // #2282). Dedupe via Set since `descendantsBeforeKill` typically
-      // overlaps with `descendantsBeforeTerm`.
-      const descendantsBeforeKill = await ChromaMcpManager.collectDescendantPids(pid);
-      const killTargets = Array.from(new Set([...descendantsBeforeTerm, ...descendantsBeforeKill]));
-      for (const child of killTargets) {
+      // #2282). Where a PID appears in both sets, the pre-TERM identity wins:
+      // if the token changed between scans the pre-TERM child is gone and the
+      // check above skips the newcomer.
+      //
+      // The re-scan requires the root to verify both before AND after it: it
+      // awaited a subprocess, and a root that stopped verifying in that window
+      // may have been recycled, making the returned children a replacement's.
+      let descendantsBeforeKill = rootStillOurs()
+        ? await ChromaMcpManager.collectDescendantPids(pid)
+        : [];
+      const rootVerifiedForKill = rootStillOurs();
+      if (!rootVerifiedForKill && descendantsBeforeKill.length > 0) {
+        logger.debug('CHROMA_MCP', `Root PID ${pid} stopped verifying during the descendant re-scan; discarding re-scan results`);
+        descendantsBeforeKill = [];
+      }
+      const killTargets = new Map<number, DiscoveredDescendant>();
+      for (const descendant of [...descendantsBeforeKill, ...descendantsBeforeTerm]) {
+        killTargets.set(descendant.pid, descendant);
+      }
+      for (const descendant of killTargets.values()) {
+        signalDescendant(descendant, 'SIGKILL');
+      }
+      if (rootVerifiedForKill && rootStillOurs()) {
         try {
-          process.kill(child, 'SIGKILL');
+          process.kill(pid, 'SIGKILL');
         } catch {
           // Already dead — fine.
         }
-      }
-      try {
-        process.kill(pid, 'SIGKILL');
-      } catch {
-        // Already dead — fine.
+      } else if (expectedIdentity !== undefined) {
+        logger.debug('CHROMA_MCP', `Root PID ${pid} no longer verifies as ours after SIGTERM grace; not sending SIGKILL`);
       }
     } catch (error) {
       logger.debug('CHROMA_MCP', `Process tree kill completed (best-effort)`, {
@@ -1117,13 +1391,19 @@ export class ChromaMcpManager {
   }
 
   /**
-   * Recursively collect all descendant PIDs of `rootPid` using `pgrep -P`.
-   * Returned bottom-up (leaves first) so callers can signal leaves before
-   * their ancestors. Best-effort: missing pgrep / non-zero exits return [].
+   * Recursively collect all descendant PIDs of `rootPid` using `pgrep -P`,
+   * each paired with the start token captured the moment it was discovered
+   * (the identity every later signal to it is checked against). Returned
+   * bottom-up (leaves first) so callers can signal leaves before their
+   * ancestors. Best-effort: missing pgrep / non-zero exits return [].
    */
-  private static async collectDescendantPids(rootPid: number): Promise<number[]> {
+  private static async collectDescendantPids(rootPid: number): Promise<DiscoveredDescendant[]> {
+    if (ChromaMcpManager.descendantCollectorOverride) {
+      const pids = await ChromaMcpManager.descendantCollectorOverride(rootPid);
+      return pids.map(pid => ({ pid, startToken: captureProcessStartToken(pid) }));
+    }
     const seen = new Set<number>();
-    const collected: number[] = [];
+    const collected: DiscoveredDescendant[] = [];
 
     async function walk(pid: number): Promise<void> {
       let stdout = '';
@@ -1143,9 +1423,12 @@ export class ChromaMcpManager {
 
       for (const child of children) {
         seen.add(child);
+        // Capture identity now, before anything else can run: this token is
+        // what proves the PID is still this process at signal time.
+        const startToken = captureProcessStartToken(child);
         await walk(child);
         // Bottom-up: push after recursion so leaves come first.
-        collected.push(child);
+        collected.push({ pid: child, startToken });
       }
     }
 
@@ -1159,7 +1442,10 @@ export class ChromaMcpManager {
    */
   static async reset(): Promise<void> {
     if (ChromaMcpManager.instance) {
-      await ChromaMcpManager.instance.stop();
+      // Terminal: the singleton is dropped on the next line, so any caller
+      // still holding this reference must not be able to reconnect it into a
+      // subprocess tree nothing owns any more.
+      await ChromaMcpManager.instance.stop({ terminal: true });
     }
     ChromaMcpManager.instance = null;
   }
@@ -1346,6 +1632,18 @@ export class ChromaMcpManager {
     probe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null,
   ): void {
     ChromaMcpManager.uvxAvailabilityProbe = probe;
+  }
+
+  static setChromaLauncherIdentityProbeForTesting(
+    probe: ((pid: number) => Promise<boolean>) | null,
+  ): void {
+    ChromaMcpManager.chromaLauncherIdentityProbe = probe;
+  }
+
+  static setDescendantCollectorForTesting(
+    collector: ((rootPid: number) => Promise<number[]>) | null,
+  ): void {
+    ChromaMcpManager.descendantCollectorOverride = collector;
   }
 
   private static ensureUvOnPath(env: Record<string, string>): void {

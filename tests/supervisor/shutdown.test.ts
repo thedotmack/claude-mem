@@ -58,6 +58,137 @@ describe('supervisor shutdown cascade', () => {
     expect(() => readFileSync(pidFilePath, 'utf-8')).toThrow();
   });
 
+  // Restart handoff (greptile review, PR #3465): the successor self-registers
+  // into the SHARED supervisor.json before the predecessor's post-handoff
+  // cascade runs. The predecessor's registry is process-local and frozen at its
+  // boot, and every unregister()/pruneDeadEntries() rewrites the whole file from
+  // that stale snapshot — erasing the successor's record.
+  it('preserves a successor record written after this registry was initialized', async () => {
+    const tempDir = makeTempDir();
+    tempDirs.push(tempDir);
+    mkdirSync(tempDir, { recursive: true });
+
+    const registryPath = path.join(tempDir, 'supervisor.json');
+
+    // Predecessor: its own worker record plus a child that is already dead, so
+    // the in-loop unregister path is exercised too.
+    const predecessor = createProcessRegistry(registryPath);
+    predecessor.register('worker', {
+      pid: process.pid,
+      type: 'worker',
+      startedAt: '2026-03-15T00:00:00.000Z'
+    });
+    predecessor.register('dead-child', {
+      pid: 2147483647,
+      type: 'mcp',
+      startedAt: '2026-03-15T00:00:01.000Z'
+    });
+
+    // Successor boots and claims the same 'worker' id in the shared file. A
+    // separate registry instance is the point: the predecessor cannot see this.
+    const successor = createProcessRegistry(registryPath);
+    successor.register('worker', {
+      pid: process.ppid,
+      type: 'worker',
+      startedAt: '2026-03-15T00:00:02.000Z'
+    });
+
+    await runShutdownCascade({
+      registry: predecessor,
+      currentPid: process.pid,
+      pidFilePath: path.join(tempDir, 'worker.pid'),
+      preserveRegistryForSuccessor: true
+    });
+
+    const persisted = JSON.parse(readFileSync(registryPath, 'utf-8'));
+    expect(persisted.processes.worker).toBeDefined();
+    expect(persisted.processes.worker.pid).toBe(process.ppid);
+  });
+
+  // The cascade signals children, and each child's own 'exit' handler calls
+  // registry.unregister() (spawnSdkProcess; ChromaMcpManager's chromaProcess
+  // 'exit' hook) — asynchronously, from outside the cascade. Gating only the
+  // cascade's own call sites left that path writing the stale snapshot, so the
+  // latch has to live on the registry and outlive the cascade.
+  it('keeps suppressing writes after the cascade returns (child exit callbacks)', async () => {
+    const tempDir = makeTempDir();
+    tempDirs.push(tempDir);
+    mkdirSync(tempDir, { recursive: true });
+
+    const registryPath = path.join(tempDir, 'supervisor.json');
+
+    const predecessor = createProcessRegistry(registryPath);
+    predecessor.register('worker', {
+      pid: process.pid,
+      type: 'worker',
+      startedAt: '2026-03-15T00:00:00.000Z'
+    });
+    predecessor.register('sdk:1:41001', {
+      pid: 41001,
+      type: 'sdk',
+      startedAt: '2026-03-15T00:00:01.000Z'
+    });
+
+    const successor = createProcessRegistry(registryPath);
+    successor.register('worker', {
+      pid: process.ppid,
+      type: 'worker',
+      startedAt: '2026-03-15T00:00:02.000Z'
+    });
+
+    await runShutdownCascade({
+      registry: predecessor,
+      currentPid: process.pid,
+      pidFilePath: path.join(tempDir, 'worker.pid'),
+      preserveRegistryForSuccessor: true
+    });
+
+    // What a child's exit handler does once the cascade has already returned.
+    predecessor.unregister('sdk:1:41001');
+    predecessor.register('late', {
+      pid: 41002,
+      type: 'mcp',
+      startedAt: '2026-03-15T00:00:03.000Z'
+    });
+
+    const persisted = JSON.parse(readFileSync(registryPath, 'utf-8'));
+    expect(persisted.processes.worker?.pid).toBe(process.ppid);
+    expect(persisted.processes.late).toBeUndefined();
+  });
+
+  it('erases that successor record without the preserve flag (the bug)', async () => {
+    const tempDir = makeTempDir();
+    tempDirs.push(tempDir);
+    mkdirSync(tempDir, { recursive: true });
+
+    const registryPath = path.join(tempDir, 'supervisor.json');
+
+    const predecessor = createProcessRegistry(registryPath);
+    predecessor.register('worker', {
+      pid: process.pid,
+      type: 'worker',
+      startedAt: '2026-03-15T00:00:00.000Z'
+    });
+
+    const successor = createProcessRegistry(registryPath);
+    successor.register('worker', {
+      pid: process.ppid,
+      type: 'worker',
+      startedAt: '2026-03-15T00:00:02.000Z'
+    });
+
+    await runShutdownCascade({
+      registry: predecessor,
+      currentPid: process.pid,
+      pidFilePath: path.join(tempDir, 'worker.pid')
+    });
+
+    // Pins the behavior the flag exists to avoid: the successor's live record
+    // is gone from the shared file.
+    const persisted = JSON.parse(readFileSync(registryPath, 'utf-8'));
+    expect(persisted.processes.worker).toBeUndefined();
+  });
+
   it('terminates tracked children in reverse spawn order', async () => {
     const tempDir = makeTempDir();
     tempDirs.push(tempDir);

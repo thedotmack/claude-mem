@@ -72,6 +72,34 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
 }
 
 /**
+ * Detect transport-level failure text surfaced as an assistant message rather
+ * than a structured SDK error — e.g. a connection dropped part-way through a
+ * response. Unlike ordinary observer prose, this represents *unfinished* work:
+ * the batch was never actually considered, so confirming it silently loses
+ * observations. Callers should preserve the claimed batch for retry instead.
+ */
+export function isTransportErrorObserverOutput(raw: unknown): boolean {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return false;
+  }
+
+  if (/<(observation|summary)\b/i.test(raw) || /<skip_summary\b/i.test(raw)) {
+    return false;
+  }
+
+  const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  return (
+    /\bconnection closed\b.{0,40}\bmid-?response\b/.test(text) ||
+    /\bresponse\b.{0,40}\bmay be incomplete\b/.test(text) ||
+    /\b(?:stream|response|connection)\b.{0,20}\b(?:ended|terminated|closed)\b.{0,20}\bunexpectedly\b/.test(text) ||
+    /\bpremature (?:close|end of stream)\b/.test(text) ||
+    /\bsocket hang ?up\b/.test(text) ||
+    /\b(?:econnreset|epipe|etimedout)\b/.test(text)
+  );
+}
+
+/**
  * Detect provider authentication-failure prose so claimed work can be retried
  * after the user restores provider authentication.
  */
