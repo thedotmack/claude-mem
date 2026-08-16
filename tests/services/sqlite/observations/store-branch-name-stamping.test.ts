@@ -1,23 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { execSync } from 'child_process';
-import { mkdtempSync, writeFileSync } from 'fs';
+import { mkdtempSync, writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { ClaudeMemDatabase } from '../../../../src/services/sqlite/Database.js';
-import { storeObservation } from '../../../../src/services/sqlite/Observations.js';
-import {
-  createSDKSession,
-  updateMemorySessionId,
-} from '../../../../src/services/sqlite/Sessions.js';
-import type { ObservationInput } from '../../../../src/services/sqlite/observations/types.js';
-import type { Database } from 'bun:sqlite';
+import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
 
 describe('observation writer: branch_name stamping', () => {
-  let db: Database;
+  let store: SessionStore;
+  let testDbPath: string;
   let repoPath: string;
 
   beforeEach(() => {
-    db = new ClaudeMemDatabase(':memory:').db;
+    testDbPath = `/tmp/test-branch-name-${crypto.randomUUID()}.db`;
+    store = new SessionStore(testDbPath);
 
     // Create a git repo with two branches
     repoPath = mkdtempSync(join(tmpdir(), 'obs-repo-'));
@@ -33,10 +28,13 @@ describe('observation writer: branch_name stamping', () => {
   });
 
   afterEach(() => {
-    db.close();
+    store.close();
+    try {
+      unlinkSync(testDbPath);
+    } catch (e) {}
   });
 
-  function createObservationInput(overrides: Partial<ObservationInput> = {}): ObservationInput {
+  function createObservationInput(overrides: any = {}): any {
     return {
       type: 'discovery',
       title: 'Test Observation',
@@ -55,21 +53,21 @@ describe('observation writer: branch_name stamping', () => {
     memorySessionId: string,
     project = 'test-project'
   ): string {
-    const sessionId = createSDKSession(db, contentSessionId, project, 'initial prompt');
-    updateMemorySessionId(db, sessionId, memorySessionId);
+    const sessionId = store.createSDKSession(contentSessionId, project, 'initial prompt');
+    store.updateMemorySessionId(sessionId, memorySessionId);
     return memorySessionId;
   }
 
   it('stamps the current git branch onto the new observation', () => {
     const memorySessionId = createSessionWithMemoryId('content-branch-1', 'mem-branch-1', repoPath);
 
-    const result = storeObservation(db, memorySessionId, repoPath, createObservationInput({
+    const result = store.storeObservation(memorySessionId, repoPath, createObservationInput({
       title: 'Test observation',
       narrative: 'This is a test',
     }));
 
     // Verify observation has branch_name = 'feature/foo'
-    const obs = db
+    const obs = store['db']
       .prepare('SELECT * FROM observations WHERE id = ?')
       .get(result.id) as { branch_name: string | null } | null;
 
@@ -81,8 +79,7 @@ describe('observation writer: branch_name stamping', () => {
     const memorySessionId = createSessionWithMemoryId('content-dedup-1', 'mem-dedup-1', repoPath);
 
     // Write from feature/foo
-    const result1 = storeObservation(
-      db,
+    const result1 = store.storeObservation(
       memorySessionId,
       repoPath,
       createObservationInput({
@@ -95,8 +92,7 @@ describe('observation writer: branch_name stamping', () => {
     execSync(`git -C "${repoPath}" checkout main`);
 
     // Write from main
-    const result2 = storeObservation(
-      db,
+    const result2 = store.storeObservation(
       memorySessionId,
       repoPath,
       createObservationInput({
@@ -105,10 +101,10 @@ describe('observation writer: branch_name stamping', () => {
       })
     );
 
-    const obs1 = db
+    const obs1 = store['db']
       .prepare('SELECT * FROM observations WHERE id = ?')
       .get(result1.id) as { branch_name: string | null };
-    const obs2 = db
+    const obs2 = store['db']
       .prepare('SELECT * FROM observations WHERE id = ?')
       .get(result2.id) as { branch_name: string | null };
 
@@ -123,8 +119,7 @@ describe('observation writer: branch_name stamping', () => {
     const commitSha = execSync(`git -C "${repoPath}" rev-parse HEAD`).toString().trim();
     execSync(`git -C "${repoPath}" checkout ${commitSha}`);
 
-    const result = storeObservation(
-      db,
+    const result = store.storeObservation(
       memorySessionId,
       repoPath,
       createObservationInput({
@@ -133,7 +128,7 @@ describe('observation writer: branch_name stamping', () => {
       })
     );
 
-    const obs = db
+    const obs = store['db']
       .prepare('SELECT * FROM observations WHERE id = ?')
       .get(result.id) as { branch_name: string | null };
 
@@ -146,8 +141,7 @@ describe('observation writer: branch_name stamping', () => {
     const nonGitPath = mkdtempSync(join(tmpdir(), 'non-git-'));
     const memorySessionId = createSessionWithMemoryId('content-nongit-1', 'mem-nongit-1', nonGitPath);
 
-    const result = storeObservation(
-      db,
+    const result = store.storeObservation(
       memorySessionId,
       nonGitPath,
       createObservationInput({
@@ -156,10 +150,11 @@ describe('observation writer: branch_name stamping', () => {
       })
     );
 
-    const obs = db
+    const obs = store['db']
       .prepare('SELECT * FROM observations WHERE id = ?')
       .get(result.id) as { branch_name: string | null };
 
     expect(obs.branch_name).toBeNull();
   });
 });
+

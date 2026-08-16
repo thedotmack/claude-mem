@@ -108,6 +108,7 @@ export class SessionStore {
     this.addObservationSubagentColumns();
     this.addObservationsUniqueContentHashIndex();
     this.addObservationsMetadataColumn();
+    this.addObservationsBranchNameColumn();
     this.dropDeadPendingMessagesColumns();
     this.ensurePendingMessagesToolUseIdColumn();
     this.dropWorkerPidColumn();
@@ -1881,6 +1882,18 @@ export class SessionStore {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(30, new Date().toISOString());
+  }
+
+  private addObservationsBranchNameColumn(): void {
+    const cols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const hasColumn = cols.some(c => c.name === 'branch_name');
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE observations ADD COLUMN branch_name TEXT');
+      logger.debug('DB', 'Added branch_name column to observations table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(31, new Date().toISOString());
   }
 
   updateMemorySessionId(sessionDbId: number, memorySessionId: string | null): void {
