@@ -344,6 +344,46 @@ export class SessionManager {
     return this.sessions.size;
   }
 
+  /**
+   * SessionEnd (#3073): reap the in-memory session identified by
+   * (contentSessionId, platformSource), if one is currently tracked. Used by
+   * the SessionEnd hook to give an explicit end-of-session signal so any
+   * in-flight generator and its SDK subprocess are finalized rather than
+   * orphaned. Returns true when a matching live session was torn down.
+   */
+  async endBySessionIdentity(contentSessionId: string, platformSource?: string): Promise<boolean> {
+    const matches = [...this.sessions.entries()].filter(
+      ([, session]) => session.contentSessionId === contentSessionId
+    );
+
+    if (matches.length === 0) return false;
+
+    // A contentSessionId alone is NOT a session identity: the same id can be
+    // live under two platforms at once (Claude and Cursor), and matching on the
+    // bare id tears down whichever happens to come first in iteration order,
+    // aborting one platform's generator while the intended session keeps
+    // running. Scope the match when the caller told us which platform it is.
+    if (platformSource !== undefined) {
+      const scoped = matches.find(([, session]) => session.platformSource === platformSource);
+      if (!scoped) return false;
+      await this.deleteSession(scoped[0]);
+      return true;
+    }
+
+    // No platform given and more than one candidate: guessing here destroys
+    // live work, so do nothing and say so.
+    if (matches.length > 1) {
+      logger.warn('SYSTEM', 'Refusing to end an ambiguous session: contentSessionId is live under multiple platforms and no platformSource was supplied', {
+        contentSessionId,
+        platforms: matches.map(([, session]) => session.platformSource),
+      });
+      return false;
+    }
+
+    await this.deleteSession(matches[0][0]);
+    return true;
+  }
+
   getTotalQueueDepth(): number {
     return this.buffer.getTotalDepth();
   }

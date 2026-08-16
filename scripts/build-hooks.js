@@ -111,6 +111,11 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
         'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
         'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
         'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
+        // SessionEnd (#3073): give the persistent worker an explicit
+        // end-of-session signal so it can cleanly finalize and reap the
+        // session (abort any in-flight generator, reap the SDK subprocess,
+        // flush) rather than leaving per-session work to orphan on exit.
+        'SessionEnd.0.0': claudeHook(['hook', 'claude-code', 'session-end']),
       },
     },
     'plugin/hooks/codex-hooks.json': {
