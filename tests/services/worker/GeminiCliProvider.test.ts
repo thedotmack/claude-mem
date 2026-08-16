@@ -45,7 +45,7 @@ describe('GeminiCliProvider', () => {
     expect(lastCall[0]).toBe('gemini');
     expect(lastCall[1]).toContain('-p');
     expect(lastCall[1]).toContain('-');
-    expect(lastCall[1]).toContain('-m');
+    expect(lastCall[1]).toContain('--model');
     expect(lastCall[1]).toContain('gemini-2.5-flash-lite');
   });
 
