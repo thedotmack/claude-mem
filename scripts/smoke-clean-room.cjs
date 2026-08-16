@@ -221,7 +221,7 @@ function checkPackageCompleteness(failures) {
     return;
   }
 
-  const pkgRoot = path.join(tmpPkg, 'node_modules', 'claude-mem');
+  const pkgRoot = path.join(tmpPkg, 'node_modules', 'mempilot');
   if (!fs.existsSync(pkgRoot)) {
     failures.push(`installed package not found at ${pkgRoot}`);
     return;
@@ -247,7 +247,7 @@ function checkPackageCompleteness(failures) {
   const binPath =
     typeof binField === 'string'
       ? binField
-      : binField && binField['claude-mem'];
+      : binField && binField['mempilot'];
   if (binPath) {
     const abs = path.join(pkgRoot, binPath);
     if (fs.existsSync(abs)) entries.push({ label: `bin (${binPath})`, abs, kind: 'bin' });
