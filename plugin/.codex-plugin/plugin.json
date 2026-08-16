@@ -1,5 +1,5 @@
 {
-  "name": "claude-mem",
+  "name": "mempilot",
   "version": "13.15.0",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "author": {
