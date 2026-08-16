@@ -829,7 +829,7 @@ function mergeSettings(updates: Record<string, string>): boolean {
   }
 }
 
-type ProviderId = 'claude' | 'gemini' | 'openrouter';
+type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'ollama';
 /**
  * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
  * it configures the generic OpenAI-compatible path (base URL + model + key) and
@@ -1187,6 +1187,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
       message: 'Which memory provider do you want to use?',
       options: [
         { value: 'cmem', label: labels.cmem, hint: labels.cmemHint },
+        { value: 'ollama', label: 'Ollama (Local GPU)', hint: '($0/mo, 100% private)' },
         { value: 'openrouter', label: labels.openrouter },
         { value: 'gemini', label: labels.gemini },
         { value: 'claude', label: labels.claude },
@@ -1243,6 +1244,12 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   if (selectedProvider === 'claude') {
     await runClaudeAuthFlow();
     return 'claude';
+  }
+
+  if (selectedProvider === 'ollama') {
+    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'ollama' });
+    if (wrote) log.info('Saved provider=ollama to ~/.claude-mem/settings.json');
+    return 'ollama';
   }
 
   const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
