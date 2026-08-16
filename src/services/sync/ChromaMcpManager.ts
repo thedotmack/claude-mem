@@ -1268,6 +1268,13 @@ export class ChromaMcpManager {
       expectedIdentity === undefined || verifyManagedProcessIdentity(expectedIdentity);
 
     if (process.platform === 'win32') {
+      // Same discipline as POSIX: re-prove the root immediately before the
+      // (tree-wide, forceful) signal. taskkill /T reaches every descendant of
+      // whatever currently holds this PID, so a recycled root is never it.
+      if (!rootStillOurs()) {
+        logger.debug('CHROMA_MCP', `Root PID ${pid} no longer verifies as ours; skipping taskkill`);
+        return;
+      }
       try {
         await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], {
           timeout: 5_000,
