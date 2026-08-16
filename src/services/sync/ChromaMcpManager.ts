@@ -82,6 +82,12 @@ interface ChromaWriterLockPayload {
   startToken?: string | null;
 }
 
+/** A descendant PID as discovered by the tree walk, with its identity at that moment. */
+interface DiscoveredDescendant {
+  pid: number;
+  startToken: string | null;
+}
+
 export class ChromaMcpManager {
   private static instance: ChromaMcpManager | null = null;
   private client: Client | null = null;
@@ -1283,6 +1289,27 @@ export class ChromaMcpManager {
     // survive. We collect the full descendant set via `pgrep -P` walks before
     // signaling, so the SIGTERM phase reaches every layer
     // (CodeRabbit review on PR #2282).
+    //
+    // Identity discipline: a descendant is known only by the number pgrep
+    // returned, and a number is not an identity. Each descendant's start
+    // token is captured the moment it is discovered, and EVERY signal to a
+    // descendant is preceded, synchronously, by an alive + same-token check
+    // against that discovery-time token. A PID that exits and is recycled at
+    // any point after discovery is skipped rather than signalled.
+    const stillSameProcess = (d: DiscoveredDescendant): boolean =>
+      d.startToken !== null && isPidAlive(d.pid) && captureProcessStartToken(d.pid) === d.startToken;
+    const signalDescendant = (d: DiscoveredDescendant, signal: 'SIGTERM' | 'SIGKILL'): void => {
+      if (!stillSameProcess(d)) {
+        logger.debug('CHROMA_MCP', `Descendant PID ${d.pid} no longer verifies as the discovered process; not sending ${signal}`);
+        return;
+      }
+      try {
+        process.kill(d.pid, signal);
+      } catch {
+        // Already gone — fine.
+      }
+    };
+
     try {
       const descendantsBeforeTerm = await ChromaMcpManager.collectDescendantPids(pid);
       if (!rootStillOurs()) {
@@ -1292,21 +1319,9 @@ export class ChromaMcpManager {
         logger.debug('CHROMA_MCP', `Root PID ${pid} no longer verifies as ours; skipping tree kill`);
         return;
       }
-      // Remember who each pre-TERM descendant IS, not just its number: these
-      // PIDs are retained across the grace window below, and one that exits
-      // and is recycled in that window must not receive the SIGKILL meant
-      // for the original. An unreadable token means the PID cannot be
-      // re-proven later and is dropped from the retained set at that point.
-      const descendantTokensBeforeTerm = new Map<number, string | null>(
-        descendantsBeforeTerm.map(child => [child, captureProcessStartToken(child)])
-      );
       // Signal leaves first, then the root.
-      for (const child of descendantsBeforeTerm) {
-        try {
-          process.kill(child, 'SIGTERM');
-        } catch {
-          // Already gone — fine.
-        }
+      for (const descendant of descendantsBeforeTerm) {
+        signalDescendant(descendant, 'SIGTERM');
       }
       try {
         process.kill(pid, 'SIGTERM');
@@ -1329,50 +1344,27 @@ export class ChromaMcpManager {
       // init and drop out of `pgrep -P <root>`. Without the union, those
       // re-parented descendants would never receive SIGKILL even though they
       // were definitely children before SIGTERM (CodeRabbit review on PR
-      // #2282). Dedupe via Set since `descendantsBeforeKill` typically
-      // overlaps with `descendantsBeforeTerm`.
+      // #2282). Where a PID appears in both sets, the pre-TERM identity wins:
+      // if the token changed between scans the pre-TERM child is gone and the
+      // check above skips the newcomer.
       //
-      // When an identity is expected, the re-scan and the root SIGKILL both
-      // require the root to still verify: after SIGTERM the root has very
-      // likely exited, and a recycled PID's children are not ours to touch.
-      // The pre-TERM descendants were verified children and are still
-      // SIGKILLed either way.
+      // The re-scan requires the root to verify both before AND after it: it
+      // awaited a subprocess, and a root that stopped verifying in that window
+      // may have been recycled, making the returned children a replacement's.
       let descendantsBeforeKill = rootStillOurs()
         ? await ChromaMcpManager.collectDescendantPids(pid)
         : [];
-      // The re-scan awaited a subprocess; re-prove the root AFTER it as well.
-      // If the root stopped verifying in that window, what pgrep returned may
-      // be a replacement's children: discard it and rely only on the retained,
-      // token-checked pre-TERM set.
       const rootVerifiedForKill = rootStillOurs();
       if (!rootVerifiedForKill && descendantsBeforeKill.length > 0) {
         logger.debug('CHROMA_MCP', `Root PID ${pid} stopped verifying during the descendant re-scan; discarding re-scan results`);
         descendantsBeforeKill = [];
       }
-      // Freshly re-scanned descendants were just found under a root verified
-      // both before and after the scan and are signalled as-is. Retained
-      // pre-TERM descendants that the re-scan no longer sees (re-parented, or
-      // exited) are signalled only if they still verify as the same process:
-      // alive, and start token equal to the one captured at discovery.
-      const freshlySeen = new Set(descendantsBeforeKill);
-      const killTargets = Array.from(new Set([...descendantsBeforeTerm, ...descendantsBeforeKill]));
-      for (const child of killTargets) {
-        if (!freshlySeen.has(child)) {
-          const tokenBeforeTerm = descendantTokensBeforeTerm.get(child) ?? null;
-          const stillSameProcess =
-            tokenBeforeTerm !== null &&
-            isPidAlive(child) &&
-            captureProcessStartToken(child) === tokenBeforeTerm;
-          if (!stillSameProcess) {
-            logger.debug('CHROMA_MCP', `Retained descendant PID ${child} no longer verifies as the pre-TERM process; not sending SIGKILL`);
-            continue;
-          }
-        }
-        try {
-          process.kill(child, 'SIGKILL');
-        } catch {
-          // Already dead — fine.
-        }
+      const killTargets = new Map<number, DiscoveredDescendant>();
+      for (const descendant of [...descendantsBeforeKill, ...descendantsBeforeTerm]) {
+        killTargets.set(descendant.pid, descendant);
+      }
+      for (const descendant of killTargets.values()) {
+        signalDescendant(descendant, 'SIGKILL');
       }
       if (rootVerifiedForKill && rootStillOurs()) {
         try {
@@ -1392,16 +1384,19 @@ export class ChromaMcpManager {
   }
 
   /**
-   * Recursively collect all descendant PIDs of `rootPid` using `pgrep -P`.
-   * Returned bottom-up (leaves first) so callers can signal leaves before
-   * their ancestors. Best-effort: missing pgrep / non-zero exits return [].
+   * Recursively collect all descendant PIDs of `rootPid` using `pgrep -P`,
+   * each paired with the start token captured the moment it was discovered
+   * (the identity every later signal to it is checked against). Returned
+   * bottom-up (leaves first) so callers can signal leaves before their
+   * ancestors. Best-effort: missing pgrep / non-zero exits return [].
    */
-  private static async collectDescendantPids(rootPid: number): Promise<number[]> {
+  private static async collectDescendantPids(rootPid: number): Promise<DiscoveredDescendant[]> {
     if (ChromaMcpManager.descendantCollectorOverride) {
-      return ChromaMcpManager.descendantCollectorOverride(rootPid);
+      const pids = await ChromaMcpManager.descendantCollectorOverride(rootPid);
+      return pids.map(pid => ({ pid, startToken: captureProcessStartToken(pid) }));
     }
     const seen = new Set<number>();
-    const collected: number[] = [];
+    const collected: DiscoveredDescendant[] = [];
 
     async function walk(pid: number): Promise<void> {
       let stdout = '';
@@ -1421,9 +1416,12 @@ export class ChromaMcpManager {
 
       for (const child of children) {
         seen.add(child);
+        // Capture identity now, before anything else can run: this token is
+        // what proves the PID is still this process at signal time.
+        const startToken = captureProcessStartToken(child);
         await walk(child);
         // Bottom-up: push after recursion so leaves come first.
-        collected.push(child);
+        collected.push({ pid: child, startToken });
       }
     }
 

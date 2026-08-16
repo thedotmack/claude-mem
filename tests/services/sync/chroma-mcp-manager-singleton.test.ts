@@ -673,31 +673,84 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     const rootPid = process.pid;
     const rootToken = captureProcessStartToken(rootPid);
     expect(rootToken).not.toBeNull();
-    const replacementChildPid = 99_790;
-    mockSupervisorRegistryEntries = [{
-      id: 'chroma-mcp',
-      pid: rootPid,
-      type: 'chroma',
-      startedAt: '2026-01-01T00:00:00.000Z',
-      pgid: rootPid,
-      startToken: rootToken,
-    }];
-    ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(async () => true);
-    let collections = 0;
-    ChromaMcpManager.setDescendantCollectorForTesting(async () => {
-      collections += 1;
-      if (collections === 1) return [];
-      deadPids.add(rootPid);
-      return [replacementChildPid];
-    });
+    // A real process, so its own identity check would pass: only the root
+    // check can be what stops the signal.
+    const replacementChild = realChildProcess.spawn('sleep', ['30'], { stdio: 'ignore' });
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const replacementChildPid = replacementChild.pid!;
+    try {
+      expect(captureProcessStartToken(replacementChildPid)).not.toBeNull();
+      mockSupervisorRegistryEntries = [{
+        id: 'chroma-mcp',
+        pid: rootPid,
+        type: 'chroma',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        pgid: rootPid,
+        startToken: rootToken,
+      }];
+      ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(async () => true);
+      let collections = 0;
+      ChromaMcpManager.setDescendantCollectorForTesting(async () => {
+        collections += 1;
+        if (collections === 1) return [];
+        deadPids.add(rootPid);
+        return [replacementChildPid];
+      });
 
-    const mgr = ChromaMcpManager.getInstance();
-    await mgr.callTool('chroma_list_collections', { limit: 1 });
+      const mgr = ChromaMcpManager.getInstance();
+      await mgr.callTool('chroma_list_collections', { limit: 1 });
 
-    expect(collections).toBe(2);
-    expect(killSignals.filter(entry => entry.pid === replacementChildPid)).toEqual([]);
-    expect(killSignals.filter(entry => entry.pid === rootPid).map(entry => entry.signal)).toEqual(['SIGTERM']);
-    expect(supervisorUnregisterCalls).toContain('chroma-mcp');
+      expect(collections).toBe(2);
+      expect(killSignals.filter(entry => entry.pid === replacementChildPid)).toEqual([]);
+      expect(killSignals.filter(entry => entry.pid === rootPid).map(entry => entry.signal)).toEqual(['SIGTERM']);
+      expect(supervisorUnregisterCalls).toContain('chroma-mcp');
+    } finally {
+      try { realProcessKill(replacementChildPid, 'SIGKILL'); } catch { /* already gone */ }
+    }
+  });
+
+  it('does not SIGTERM a discovered descendant whose identity is gone by signal time', async () => {
+    // A descendant is known only by the number pgrep returned. If it exits
+    // (and its pid may be recycled) between discovery and the SIGTERM loop,
+    // no signal may be sent. Modelled through the collector seam: the pid is
+    // reported and, in the same step, made unverifiable.
+    const rootPid = process.pid;
+    const rootToken = captureProcessStartToken(rootPid);
+    expect(rootToken).not.toBeNull();
+    const vanished = realChildProcess.spawn('sleep', ['30'], { stdio: 'ignore' });
+    const survivor = realChildProcess.spawn('sleep', ['30'], { stdio: 'ignore' });
+    await new Promise(resolve => setTimeout(resolve, 300));
+    try {
+      mockSupervisorRegistryEntries = [{
+        id: 'chroma-mcp',
+        pid: rootPid,
+        type: 'chroma',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        pgid: rootPid,
+        startToken: rootToken,
+      }];
+      ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(async () => true);
+      let collections = 0;
+      ChromaMcpManager.setDescendantCollectorForTesting(async () => {
+        collections += 1;
+        if (collections === 1) {
+          deadPids.add(vanished.pid!);
+          return [vanished.pid!, survivor.pid!];
+        }
+        return [survivor.pid!];
+      });
+
+      const mgr = ChromaMcpManager.getInstance();
+      await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+      const signalsFor = (pid: number) => killSignals.filter(entry => entry.pid === pid).map(entry => entry.signal);
+      expect(signalsFor(vanished.pid!)).toEqual([]);
+      expect(signalsFor(survivor.pid!)).toEqual(['SIGTERM', 'SIGKILL']);
+    } finally {
+      for (const child of [vanished, survivor]) {
+        try { realProcessKill(child.pid!, 'SIGKILL'); } catch { /* already gone */ }
+      }
+    }
   });
 
   it('never signals a live PID whose record carries no start token', async () => {
