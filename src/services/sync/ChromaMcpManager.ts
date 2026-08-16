@@ -12,7 +12,7 @@ import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
-import { captureProcessStartToken, isPidAlive } from '../../supervisor/process-registry.js';
+import { captureProcessStartToken, isPidAlive, verifyManagedProcessIdentity } from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
 
@@ -994,8 +994,14 @@ export class ChromaMcpManager {
    * uvx→uv→python chroma-mcp tree, unbounded across restarts.
    *
    * Before spawning a replacement, consult the persisted entry and tree-kill
-   * the prior subprocess if it is still alive and verifiably a chroma-mcp
-   * launcher (command-line check guards against PID reuse).
+   * the prior subprocess if it is still alive and verifiably OURS. Ownership
+   * is proven by the registry's start token (verifyManagedProcessIdentity):
+   * a bare PID is not an identity, and a persisted record can name a PID
+   * that has since been recycled onto an unrelated process. The command-line
+   * probe is kept as defense in depth, never as the ownership proof; a
+   * substring match on `chroma-mcp` says nothing about which generation
+   * (or which program) a reused PID now belongs to. On a missing, unreadable
+   * or mismatched token the stale record is dropped and nothing is signalled.
    */
   private async reapRegisteredChromaFromPriorGeneration(): Promise<void> {
     if (process.platform === 'win32') {
@@ -1019,9 +1025,22 @@ export class ChromaMcpManager {
         return;
       }
 
+      if (!verifyManagedProcessIdentity(record)) {
+        // Tokenless, unreadable, or mismatched start token: we cannot prove
+        // this PID is still the launcher we registered. Drop the stale entry
+        // without signaling anything.
+        logger.debug('CHROMA_MCP', 'Prior-generation chroma-mcp record failed identity verification; dropping without signaling', {
+          pid: record.pid,
+          startedAt: record.startedAt
+        });
+        getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
+        return;
+      }
+
       if (!(await ChromaMcpManager.isChromaMcpLauncherPid(record.pid))) {
-        // PID recycled by an unrelated process — drop the stale entry without
-        // signaling anything.
+        // Defense in depth on top of the token check: the process is ours by
+        // identity but its command line no longer looks like the launcher.
+        // Drop the entry without signaling anything.
         getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
         return;
       }
@@ -1040,9 +1059,10 @@ export class ChromaMcpManager {
   }
 
   /**
-   * POSIX identity probe for the cross-generation reap: true only when the
+   * POSIX command-line probe for the cross-generation reap: true only when the
    * process's command line looks like the uvx/chroma-mcp launcher chain we
-   * spawn. Best-effort — a failed `ps` reads as "not ours".
+   * spawn. Defense in depth behind verifyManagedProcessIdentity, not an
+   * ownership proof on its own. Best-effort — a failed `ps` reads as "not ours".
    */
   private static async isChromaMcpLauncherPid(pid: number): Promise<boolean> {
     if (ChromaMcpManager.chromaLauncherIdentityProbe) {

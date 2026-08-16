@@ -31,6 +31,32 @@ export interface ManagedProcessInfo {
    * Those are treated as unverifiable, never as verified.
    */
   startToken?: string | null;
+  /**
+   * Identity of the worker generation that spawned this process: the pid and
+   * start token of the process that called ProcessRegistry.register. Stamped
+   * automatically at registration time.
+   *
+   * A verified-live record is not by itself a licence to kill: supervisor.json
+   * is shared across worker generations, so a live SDK subprocess of the
+   * CURRENT worker sits next to the orphans of a dead one. Any cleanup that
+   * reaps "what a dead worker left behind" (PortReclaim rung 3a) must first
+   * prove the record's owner is that dead worker, and this linkage is the
+   * only way to do so. Records without it are never reaped by that path.
+   *
+   * Optional because records persisted by older versions predate these fields.
+   */
+  ownerPid?: number;
+  ownerStartToken?: string | null;
+}
+
+let currentProcessStartToken: string | null | undefined;
+
+/** The registering process's own start token, captured once per process. */
+function ownStartToken(): string | null {
+  if (currentProcessStartToken === undefined) {
+    currentProcessStartToken = captureProcessStartToken(process.pid);
+  }
+  return currentProcessStartToken;
 }
 
 export interface ManagedProcessRecord extends ManagedProcessInfo {
@@ -333,7 +359,12 @@ export class ProcessRegistry {
     // capture is a cold-path syscall (cached 5s per pid on Windows) and all
     // three registration sites fire at most once per process spawn.
     const startToken = processInfo.startToken ?? captureProcessStartToken(processInfo.pid);
-    this.entries.set(id, { ...processInfo, startToken });
+    // Owner linkage: the registering process IS the owning worker generation.
+    // Stamped here for the same reason as the start token — every registrar
+    // gets it without having to remember to.
+    const ownerPid = processInfo.ownerPid ?? process.pid;
+    const ownerStartToken = processInfo.ownerStartToken ?? ownStartToken();
+    this.entries.set(id, { ...processInfo, startToken, ownerPid, ownerStartToken });
     if (processRef) {
       this.runtimeProcesses.set(id, processRef);
     }

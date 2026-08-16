@@ -83,6 +83,34 @@ function isListening(port: number): Promise<boolean> {
 let nextPort = 41200;
 const takePort = (): number => nextPort++;
 
+/** A process that does nothing but stay alive; stands in for a live SDK child. */
+function spawnIdleChild(): Promise<ChildProcess> {
+  const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
+  spawned.push(child);
+  return new Promise(resolve => setTimeout(() => resolve(child), 300));
+}
+
+/**
+ * Has `child` exited? Resolves as soon as the runtime reaps it, or false after
+ * `timeoutMs`. Used where the assertion is "it was killed": isPidAlive alone
+ * is racy for our own children, because kill(pid, 0) still succeeds on a
+ * zombie the event loop has not yet reaped.
+ */
+function exited(child: ChildProcess, timeoutMs = 3_000): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    child.once('exit', () => { clearTimeout(timer); resolve(true); });
+  });
+}
+
+/**
+ * Owner linkage naming a worker generation that is provably gone: a pid that
+ * cannot be alive and a token that could never match it. This is what a
+ * child record looks like after the worker that spawned it crashed.
+ */
+const DEAD_OWNER = { ownerPid: 999_999_21, ownerStartToken: 'token-of-a-worker-that-crashed' };
+
 beforeAll(() => {
   writeRegistry({});
 });
@@ -182,6 +210,7 @@ describe('reclaimWorkerPort rung 3a: reaps the identity-verified orphan holding 
         type: 'chroma-mcp',
         startedAt: new Date().toISOString(),
         startToken: token,
+        ...DEAD_OWNER,
       },
     });
 
@@ -190,6 +219,99 @@ describe('reclaimWorkerPort rung 3a: reaps the identity-verified orphan holding 
     expect(outcome.kind).toBe('reclaimed');
     if (outcome.kind === 'reclaimed') expect(outcome.via).toBe('registered-children');
     expect(isPidAlive(holder.pid!)).toBe(false);
+  });
+
+  it('kills a registered child whose owner pid was recycled onto a different process', async () => {
+    // The owner pid is alive (it is this test process) but its token is not
+    // the one the record carries: the worker that spawned the child is gone
+    // and its pid has been reused. The child is an orphan.
+    const port = takePort();
+    const holder = await spawnPortHolder(port);
+    const token = captureProcessStartToken(holder.pid!);
+    expect(token).not.toBeNull();
+
+    writeRegistry({
+      'chroma-mcp': {
+        pid: holder.pid,
+        type: 'chroma-mcp',
+        startedAt: new Date().toISOString(),
+        startToken: token,
+        ownerPid: process.pid,
+        ownerStartToken: 'not-the-token-this-pid-actually-has',
+      },
+    });
+
+    const outcome = await reclaimWorkerPort(port, null);
+
+    expect(outcome.kind).toBe('reclaimed');
+    expect(isPidAlive(holder.pid!)).toBe(false);
+  });
+
+  it('leaves a verified child alone when its owner worker is still alive', async () => {
+    // The scenario review reproduced: a live, identity-verified SDK record
+    // that belongs to the CURRENT worker sits in the same registry file as
+    // the dead worker's orphans. Reclaiming the port must not kill it. Here
+    // the owner is this test process, provably alive with a matching token.
+    const port = takePort();
+    const holder = await spawnPortHolder(port);
+    const sdkChild = await spawnIdleChild();
+    const holderToken = captureProcessStartToken(holder.pid!);
+    const sdkToken = captureProcessStartToken(sdkChild.pid!);
+    const liveOwnerToken = captureProcessStartToken(process.pid);
+    expect(holderToken).not.toBeNull();
+    expect(sdkToken).not.toBeNull();
+    expect(liveOwnerToken).not.toBeNull();
+
+    writeRegistry({
+      'chroma-mcp': {
+        pid: holder.pid,
+        type: 'chroma-mcp',
+        startedAt: new Date().toISOString(),
+        startToken: holderToken,
+        ...DEAD_OWNER,
+      },
+      'sdk:42:1': {
+        pid: sdkChild.pid,
+        type: 'sdk',
+        sessionId: 42,
+        startedAt: new Date().toISOString(),
+        startToken: sdkToken,
+        ownerPid: process.pid,
+        ownerStartToken: liveOwnerToken,
+      },
+    });
+
+    const outcome = await reclaimWorkerPort(port, null);
+
+    // The dead worker's orphan is reaped and the port recovers...
+    expect(outcome.kind).toBe('reclaimed');
+    expect(isPidAlive(holder.pid!)).toBe(false);
+    // ...but the live worker's SDK child is untouched.
+    expect(isPidAlive(sdkChild.pid!)).toBe(true);
+  });
+
+  it('leaves a verified child alone when its record has no owner linkage', async () => {
+    // A record persisted by an older claude-mem: identity-verifiable, but not
+    // tied to any worker generation. It cannot be proven orphaned, so it is
+    // not signalled and the caller fails over.
+    const port = takePort();
+    const holder = await spawnPortHolder(port);
+    const token = captureProcessStartToken(holder.pid!);
+    expect(token).not.toBeNull();
+
+    writeRegistry({
+      'chroma-mcp': {
+        pid: holder.pid,
+        type: 'chroma-mcp',
+        startedAt: new Date().toISOString(),
+        startToken: token,
+      },
+    });
+
+    const outcome = await reclaimWorkerPort(port, null);
+
+    expect(outcome.kind).toBe('unprovable');
+    expect(isPidAlive(holder.pid!)).toBe(true);
   });
 
   it('never reaps the record for the worker itself', async () => {
@@ -241,6 +363,30 @@ describe('reclaimWorkerPort rung 1: terminates a verified wedged owner', () => {
     const token = captureProcessStartToken(holder.pid!);
     expect(token).not.toBeNull();
 
+    // Two registered children: one spawned by the wedged owner (reaped with
+    // it, so it cannot re-pin the socket) and one owned by a live worker
+    // (this test process), which rung 1 must leave alone.
+    const ownersChild = await spawnIdleChild();
+    const liveWorkersChild = await spawnIdleChild();
+    writeRegistry({
+      'sdk:1:a': {
+        pid: ownersChild.pid,
+        type: 'sdk',
+        startedAt: new Date().toISOString(),
+        startToken: captureProcessStartToken(ownersChild.pid!),
+        ownerPid: holder.pid,
+        ownerStartToken: token,
+      },
+      'sdk:2:b': {
+        pid: liveWorkersChild.pid,
+        type: 'sdk',
+        startedAt: new Date().toISOString(),
+        startToken: captureProcessStartToken(liveWorkersChild.pid!),
+        ownerPid: process.pid,
+        ownerStartToken: captureProcessStartToken(process.pid),
+      },
+    });
+
     const outcome = await reclaimWorkerPort(port, {
       pid: holder.pid!,
       port,
@@ -251,6 +397,8 @@ describe('reclaimWorkerPort rung 1: terminates a verified wedged owner', () => {
     expect(outcome.kind).toBe('reclaimed');
     if (outcome.kind === 'reclaimed') expect(outcome.via).toBe('verified-owner');
     expect(isPidAlive(holder.pid!)).toBe(false);
+    expect(await exited(ownersChild)).toBe(true);
+    expect(isPidAlive(liveWorkersChild.pid!)).toBe(true);
     // Generous: this path really does spend seconds (a SIGTERM grace
     // window plus the port-recovery confirmation), and that is intended behaviour,
     // not something to tune down to fit a default test timeout.

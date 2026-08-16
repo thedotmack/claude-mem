@@ -12,6 +12,7 @@ import * as realSettingsDefaultsManager from '../../../src/shared/SettingsDefaul
 import * as realPaths from '../../../src/shared/paths.js';
 import * as realLogger from '../../../src/utils/logger.js';
 import * as realSupervisor from '../../../src/supervisor/index.ts';
+import { captureProcessStartToken } from '../../../src/supervisor/process-registry.js';
 import * as realEnvSanitizer from '../../../src/supervisor/env-sanitizer.js';
 import * as realSdkClientStdio from '@modelcontextprotocol/sdk/client/stdio.js';
 import * as realSdkClientIndex from '@modelcontextprotocol/sdk/client/index.js';
@@ -463,17 +464,25 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
   });
 
   it('reaps an orphaned chroma-mcp registry entry left by a prior worker generation (#3270)', async () => {
-    const orphanPid = 99_777;
+    // The reap requires strict start-token identity (verifyManagedProcessIdentity)
+    // before it signals, and that check reads the LIVE process's token, so the
+    // orphan has to be a real process with a real token. This test process is
+    // the stand-in: process.kill is stubbed above, so the "kill" is recorded,
+    // not delivered.
+    const orphanPid = process.pid;
+    const orphanToken = captureProcessStartToken(orphanPid);
+    expect(orphanToken).not.toBeNull();
     mockSupervisorRegistryEntries = [{
       id: 'chroma-mcp',
       pid: orphanPid,
       type: 'chroma',
       startedAt: '2026-01-01T00:00:00.000Z',
       pgid: orphanPid,
+      startToken: orphanToken,
     }];
-    // The identity probe shells out to `ps` against a synthetic PID that does
-    // not exist on the test host, so stub it the same way the uvx probe is
-    // stubbed in resetState().
+    // The command-line probe shells out to `ps` and looks for chroma-mcp in
+    // argv, which the test runner is not, so stub it the same way the uvx
+    // probe is stubbed in resetState().
     const probedPids: number[] = [];
     ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(async (pid) => {
       probedPids.push(pid);
@@ -505,6 +514,55 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     await mgr.callTool('chroma_list_collections', { limit: 1 });
 
     expect(killTreeCalls).not.toContain(recycledPid);
+    expect(supervisorUnregisterCalls).toContain('chroma-mcp');
+    expect(transportCount).toBe(1);
+  });
+
+  it('never signals a live PID whose persisted start token does not match, even if argv says chroma-mcp', async () => {
+    // A stale record naming a reused PID: the process is alive and its command
+    // line happens to contain "chroma-mcp", but its start token is not the one
+    // we recorded. Substring identity is not ownership; the record is dropped
+    // and nothing is killed.
+    const reusedPid = process.pid;
+    mockSupervisorRegistryEntries = [{
+      id: 'chroma-mcp',
+      pid: reusedPid,
+      type: 'chroma',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      pgid: reusedPid,
+      startToken: 'token-of-a-previous-incarnation',
+    }];
+    const probedPids: number[] = [];
+    ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(async (pid) => {
+      probedPids.push(pid);
+      return true;
+    });
+
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(killTreeCalls).not.toContain(reusedPid);
+    // Identity failed first, so the argv probe was never consulted for a kill.
+    expect(probedPids).not.toContain(reusedPid);
+    expect(supervisorUnregisterCalls).toContain('chroma-mcp');
+    expect(transportCount).toBe(1);
+  });
+
+  it('never signals a live PID whose record carries no start token', async () => {
+    const tokenlessPid = process.pid;
+    mockSupervisorRegistryEntries = [{
+      id: 'chroma-mcp',
+      pid: tokenlessPid,
+      type: 'chroma',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      pgid: tokenlessPid,
+    }];
+    ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(async () => true);
+
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(killTreeCalls).not.toContain(tokenlessPid);
     expect(supervisorUnregisterCalls).toContain('chroma-mcp');
     expect(transportCount).toBe(1);
   });

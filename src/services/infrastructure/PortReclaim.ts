@@ -34,7 +34,9 @@ import { signalProcess } from '../../supervisor/shutdown.js';
  *      socket is held by a child that inherited the handle (#3450 traces it to
  *      the uvx -> uv -> chroma-mcp -> python chain). Reap the registry records
  *      claude-mem wrote when it spawned those children, each one identity-
- *      verified before it is signalled.
+ *      verified before it is signalled AND linked (ownerPid/ownerStartToken)
+ *      to a worker generation that is provably gone. A live worker's own
+ *      children share the same registry file and are never touched.
  *   3b. Ownership cannot be proven: no PID file, tokenless, token mismatch,
  *      a foreign listener, or 3a did not recover the port. Signal NOTHING and
  *      tell the caller to fail over to a different port.
@@ -122,12 +124,48 @@ async function confirmPortRecovered(port: number, timeoutMs: number): Promise<bo
 }
 
 /**
- * Reap the children claude-mem's own registry says it spawned.
+ * Is this record's owning worker generation provably gone?
  *
- * Every PID here comes from a record claude-mem wrote at spawn time, and each
- * is re-verified by start token immediately before being signalled, so a PID
- * that has since been recycled onto an unrelated process is skipped rather
- * than killed. Records that are dead, tokenless, or mismatched are left alone.
+ * supervisor.json is shared across generations, so a live, identity-verified
+ * child record may belong to the CURRENT worker (an active SDK session, the
+ * live chroma launcher) rather than to the dead one whose socket we are
+ * reclaiming. Being verified-live is therefore not enough to signal it; its
+ * owner has to be the worker we know is gone. That is true when the owner is
+ * exactly the one rung 1 just terminated, or when the owner pid is dead or
+ * has been recycled onto a different process. A record with no owner linkage
+ * (persisted by an older claude-mem) cannot be tied to any generation and is
+ * left alone; the caller fails over instead.
+ */
+function ownerIsGone(record: ManagedProcessRecord, terminatedOwner: PidInfo | null): boolean {
+  if (typeof record.ownerPid !== 'number' || !record.ownerStartToken) return false;
+
+  if (
+    terminatedOwner !== null &&
+    record.ownerPid === terminatedOwner.pid &&
+    record.ownerStartToken === terminatedOwner.startToken
+  ) {
+    return true;
+  }
+
+  if (!isPidAlive(record.ownerPid)) return true;
+
+  const currentOwnerToken = captureProcessStartToken(record.ownerPid);
+  // Unreadable token: the owner may still be running. Resolve toward leaving
+  // its children alone.
+  if (currentOwnerToken === null) return false;
+  return currentOwnerToken !== record.ownerStartToken;
+}
+
+/**
+ * Reap the children a dead worker generation left behind, according to
+ * claude-mem's own registry.
+ *
+ * Every PID here comes from a record claude-mem wrote at spawn time. A record
+ * is signalled only when BOTH hold: its owner worker is provably gone
+ * (ownerIsGone), and the record itself is re-verified by start token
+ * immediately beforehand, so a PID recycled onto an unrelated process is
+ * skipped rather than killed. Records that are dead, tokenless, mismatched,
+ * unlinked to an owner, or owned by a live worker are left alone.
  *
  * The 'worker' record is excluded: the worker is rung 1's business, reached
  * through the PID file. This reaps what it left behind.
@@ -136,13 +174,21 @@ async function confirmPortRecovered(port: number, timeoutMs: number): Promise<bo
  * links in the chroma chain run as plain `python.exe`, so a name filter both
  * misses the actual handle holders and risks unrelated processes.
  */
-async function reapRegisteredChildren(currentPid: number): Promise<number> {
+async function reapRegisteredChildren(currentPid: number, terminatedOwner: PidInfo | null): Promise<number> {
   const candidates = readPersistedRegistryRecords().filter(
     record => record.pid !== currentPid && record.type !== 'worker' && record.id !== 'worker'
   );
 
   const verified: ManagedProcessRecord[] = [];
   for (const record of candidates) {
+    if (!ownerIsGone(record, terminatedOwner)) {
+      logger.debug('SYSTEM', 'Skipping registered child during port reclaim: owner generation not proven gone', {
+        id: record.id,
+        pid: record.pid,
+        ownerPid: record.ownerPid ?? null,
+      });
+      continue;
+    }
     if (verifyManagedProcessIdentity(record)) {
       verified.push(record);
     }
@@ -264,7 +310,8 @@ export async function reclaimWorkerPort(
     await terminateVerifiedOwner(pidInfo);
     // The worker's own children outlive it and are what pin the socket, so
     // clear them too; otherwise rung 1 recreates the ghost socket it just fixed.
-    await reapRegisteredChildren(currentPid);
+    // Only ITS children: the owner identity scopes the reap to that generation.
+    await reapRegisteredChildren(currentPid, pidInfo);
 
     if (await confirmPortRecovered(port, PORT_RECOVERY_WAIT_MS)) {
       return { kind: 'reclaimed', via: 'verified-owner' };
@@ -273,8 +320,10 @@ export async function reclaimWorkerPort(
   }
 
   // Rung 3a: no verified live owner. If the port is still bound, the holder is
-  // something our worker left behind. Reap only what our registry vouches for.
-  const reaped = await reapRegisteredChildren(currentPid);
+  // something a dead worker left behind. Reap only what our registry vouches
+  // for AND can tie to a worker generation that is provably gone; a child of
+  // the live worker, or an unlinked record, is never signalled from here.
+  const reaped = await reapRegisteredChildren(currentPid, null);
   if (reaped > 0 && (await confirmPortRecovered(port, PORT_RECOVERY_WAIT_MS))) {
     logger.info('SYSTEM', 'Worker port recovered by reaping registered orphans of a dead worker', { port, reaped });
     return { kind: 'reclaimed', via: 'registered-children' };
