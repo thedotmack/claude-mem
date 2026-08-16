@@ -1,5 +1,5 @@
 {
-  "name": "claude-mem",
+  "name": "claude-mempilot",
   "version": "13.15.0",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
@@ -27,7 +27,7 @@
   },
   "type": "module",
   "bin": {
-    "claude-mem": "./dist/npx-cli/index.js"
+    "claude-mempilot": "./dist/npx-cli/index.js"
   },
   "exports": {
     "./modes/*": "./plugin/modes/*"
