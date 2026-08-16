@@ -635,10 +635,11 @@ export class SearchManager {
           }]
         };
       }
+      const matchText = query ? ` matching "${query}"` : ' matching your filters';
       return {
         content: [{
           type: 'text' as const,
-          text: `No results found matching "${query}"`
+          text: `No results found${matchText}`
         }]
       };
     }
