@@ -170,6 +170,19 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'observations_created',
   'total_observations_injected',
   'total_tokens_saved_vs_naive',
+  // Relevance-annotation channel of context_injected_rollup (buffer.ts,
+  // CLAUDE_MEM_SEMANTIC_ANNOTATE): integer counters + mean latency + a closed
+  // enum family (annotation_outcomes_<ok|timeout|error|unparseable|
+  // provider_off>). Flattened counters — nested objects do not survive the
+  // primitive-only whitelist. Never query text, never hint text.
+  'total_annotated',
+  'total_annotation_dropped',
+  'avg_annotation_ms',
+  'annotation_outcomes_ok',
+  'annotation_outcomes_timeout',
+  'annotation_outcomes_error',
+  'annotation_outcomes_unparseable',
+  'annotation_outcomes_provider_off',
 ]);
 
 const MAX_STRING_LENGTH = 200;

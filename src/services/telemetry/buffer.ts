@@ -68,6 +68,15 @@ interface ContextInjectedRecord {
   // context_injected stream decays away.
   observation_count?: number;
   tokens_saved_vs_naive?: number;
+  // Relevance-annotation channel (CLAUDE_MEM_SEMANTIC_ANNOTATE, emitted from
+  // handleSemanticContext): annotated_count = memories that got a "Why now:"
+  // hint, annotation_dropped = memories the critic removed from the injection,
+  // annotation_ms = critic call latency, annotation_outcome = per-call result
+  // ('ok' | 'timeout' | 'error' | 'unparseable' | 'provider_off').
+  annotated_count?: number;
+  annotation_dropped?: number;
+  annotation_ms?: number;
+  annotation_outcome?: string;
   [key: string]: unknown;
 }
 
@@ -253,6 +262,11 @@ function computeContextInjectedRollup(
   let outcomesError = 0;
   let totalObservationsInjected = 0;
   let totalTokensSaved = 0;
+  let totalAnnotated = 0;
+  let totalAnnotationDropped = 0;
+  let annotationMsSum = 0;
+  let annotationMsCount = 0;
+  const annotationOutcomeCounts: Record<string, number> = {};
 
   for (const r of records) {
     // Callers spread ContextInjectStats which uses tokens_injected
@@ -271,6 +285,21 @@ function computeContextInjectedRollup(
     if (typeof r.tokens_saved_vs_naive === 'number' && Number.isFinite(r.tokens_saved_vs_naive)) {
       totalTokensSaved += r.tokens_saved_vs_naive;
     }
+    // Relevance-annotation channel: sums + outcome histogram so critic quality
+    // (drop rate, timeout rate, latency) is reviewable from the rollup alone.
+    if (typeof r.annotated_count === 'number' && Number.isFinite(r.annotated_count)) {
+      totalAnnotated += r.annotated_count;
+    }
+    if (typeof r.annotation_dropped === 'number' && Number.isFinite(r.annotation_dropped)) {
+      totalAnnotationDropped += r.annotation_dropped;
+    }
+    if (typeof r.annotation_ms === 'number' && Number.isFinite(r.annotation_ms)) {
+      annotationMsSum += r.annotation_ms;
+      annotationMsCount++;
+    }
+    if (typeof r.annotation_outcome === 'string' && r.annotation_outcome) {
+      annotationOutcomeCounts[r.annotation_outcome] = (annotationOutcomeCounts[r.annotation_outcome] ?? 0) + 1;
+    }
     // Injection callers only ever emit 'ok' or 'error'. Tracking the split
     // keeps a window of 100% failed injections (zero tokens, all errors)
     // distinguishable from a window of zero-token successes.
@@ -286,6 +315,19 @@ function computeContextInjectedRollup(
     total_tokens_saved_vs_naive: totalTokensSaved,
     outcomes_ok: outcomesOk,
     outcomes_error: outcomesError,
+    // Relevance-annotation channel (only non-zero when CLAUDE_MEM_SEMANTIC_ANNOTATE
+    // is on): critic volume, total drops, mean latency, per-outcome counters.
+    // Outcomes are flattened (annotation_outcomes_<outcome>) because the
+    // telemetry scrub whitelist only passes primitive top-level values —
+    // a nested histogram object would be stripped before capture.
+    total_annotated: totalAnnotated,
+    total_annotation_dropped: totalAnnotationDropped,
+    avg_annotation_ms: annotationMsCount > 0 ? annotationMsSum / annotationMsCount : 0,
+    annotation_outcomes_ok: annotationOutcomeCounts['ok'] ?? 0,
+    annotation_outcomes_timeout: annotationOutcomeCounts['timeout'] ?? 0,
+    annotation_outcomes_error: annotationOutcomeCounts['error'] ?? 0,
+    annotation_outcomes_unparseable: annotationOutcomeCounts['unparseable'] ?? 0,
+    annotation_outcomes_provider_off: annotationOutcomeCounts['provider_off'] ?? 0,
     window_start_ts: windowStartTs,
   };
 }

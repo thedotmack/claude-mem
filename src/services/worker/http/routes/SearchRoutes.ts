@@ -11,11 +11,12 @@ import { logger } from '../../../../utils/logger.js';
 import { groupByDate } from '../../../../shared/timeline-formatting.js';
 import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { USER_SETTINGS_PATH, LOGS_DIR } from '../../../../shared/paths.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
+import { RelevanceAnnotator, type AnnotationVerdict } from '../../RelevanceAnnotator.js';
 
 const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
 
@@ -72,6 +73,8 @@ export class SearchRoutes extends BaseRouteHandler {
   // Scope this cache to the route instance so separate server/test instances do
   // not inherit each other's positive observation state through shared modules.
   private readonly projectsKnownNonEmpty = new Set<string>();
+  // Critique stage for semantic injection (CLAUDE_MEM_SEMANTIC_ANNOTATE).
+  private readonly relevanceAnnotator = new RelevanceAnnotator();
 
   constructor(
     private searchManager: SearchManager,
@@ -442,26 +445,133 @@ export class SearchRoutes extends BaseRouteHandler {
 
     const observations = result?.observations || [];
 
-    const lines: string[] = ['## Relevant Past Work (semantic match)\n'];
-    for (const obs of observations.slice(0, limit)) {
-      const date = obs.created_at?.slice(0, 10) || '';
-      lines.push(`### ${obs.title || 'Observation'} (${date})`);
-      if (obs.narrative) lines.push(obs.narrative);
-      lines.push('');
+    // Cross-project candidates are fetched BEFORE rendering so both sections
+    // can be critiqued by a single batched annotation call below.
+    const globalData = globalLimit > 0 && project
+      ? await this.searchGlobalContext(query, project, globalLimit, platformSource, observations)
+      : { globalObservations: [] as any[], facts: [] as any[] };
+
+    // Relevance annotation (CLAUDE_MEM_SEMANTIC_ANNOTATE): one batched
+    // cheap-model call critiques every candidate against the current prompt —
+    // each memory gets a "Why now:" hint or a drop verdict. Fail-open: any
+    // non-'ok' outcome leaves the injection exactly as retrieval produced it.
+    const settings = this.getCachedSettings();
+    let verdicts: Map<string, AnnotationVerdict> | null = null;
+    let annotationStats: { attempted: boolean; kept: number; dropped: number; durationMs: number; timedOut: boolean } | undefined;
+
+    const allCandidates = [...observations.slice(0, limit), ...globalData.globalObservations];
+    if (settings.CLAUDE_MEM_SEMANTIC_ANNOTATE === 'true' && allCandidates.length > 0) {
+      const annotation = await this.relevanceAnnotator.annotate(
+        query,
+        allCandidates.map(obs => ({
+          key: SearchRoutes.observationKey(obs),
+          title: obs.title || 'Observation',
+          narrative: obs.narrative,
+          project: obs.project,
+        })),
+      );
+      let dropped = 0;
+      let kept = 0;
+      if (annotation.verdicts) {
+        verdicts = annotation.verdicts;
+        for (const verdict of annotation.verdicts.values()) {
+          if (verdict === 'drop') dropped++; else kept++;
+        }
+      }
+      annotationStats = {
+        attempted: true,
+        kept,
+        dropped,
+        durationMs: annotation.durationMs,
+        timedOut: annotation.outcome === 'timeout',
+      };
+      logger.info('HTTP', 'semantic_annotate', {
+        project,
+        outcome: annotation.outcome,
+        candidates_in: allCandidates.length,
+        kept,
+        dropped,
+        duration_ms: annotation.durationMs,
+        model: annotation.model,
+      });
+      // Hook-level event (no sessionDbId in scope) → null key, time-window rollup.
+      telemetryBuffer.record('context_injected', null, {
+        outcome: 'ok',
+        annotated_count: kept,
+        annotation_dropped: dropped,
+        annotation_ms: annotation.durationMs,
+        annotation_outcome: annotation.outcome,
+      });
+      if (settings.CLAUDE_MEM_SEMANTIC_ANNOTATE_DEBUG_LOG === 'true') {
+        SearchRoutes.writeAnnotationDebugLog({
+          ts: new Date().toISOString(),
+          project,
+          query,
+          outcome: annotation.outcome,
+          model: annotation.model,
+          duration_ms: annotation.durationMs,
+          candidates: allCandidates.map(obs => ({
+            key: SearchRoutes.observationKey(obs),
+            title: obs.title,
+            project: obs.project,
+            verdict: verdicts?.get(SearchRoutes.observationKey(obs)) ?? null,
+          })),
+        });
+      }
     }
 
-    const context = observations.length ? lines.join('\n') : '';
-    const response: { context: string; count: number; globalContext?: string; globalCount?: number } = {
-      context,
-      count: observations.length,
+    // Render one observation; returns null when the critic dropped it. When
+    // the critic ran successfully the injection switches to COMPACT mode: the
+    // "Why now:" hint REPLACES the full narrative (a hint plus a fetchable id
+    // is the book cover + why-it-helps, not the whole book) — narratives stay
+    // available via get_observations([id]). Without a successful critique the
+    // legacy full format is kept (fail-open).
+    const compact = verdicts !== null;
+    const renderObservation = (obs: any, headerSuffix = ''): string[] | null => {
+      const verdict = verdicts?.get(SearchRoutes.observationKey(obs));
+      if (verdict === 'drop') return null;
+      const date = obs.created_at?.slice(0, 10) || '';
+      const idSuffix = obs.id != null ? ` #${obs.id}` : '';
+      const lines = [`### ${obs.title || 'Observation'} (${date})${headerSuffix}${idSuffix}`];
+      if (verdict) lines.push(`**Why now:** ${verdict.hint}`);
+      if (!compact && obs.narrative) lines.push(obs.narrative);
+      lines.push('');
+      return lines;
     };
 
-    if (globalLimit > 0 && project) {
-      const global = await this.searchGlobalContext(query, project, globalLimit, platformSource, observations);
-      if (global.globalCount > 0) {
-        response.globalContext = global.globalContext;
-        response.globalCount = global.globalCount;
-      }
+    const lines: string[] = ['## Relevant Past Work (semantic match)\n'];
+    let keptCount = 0;
+    for (const obs of observations.slice(0, limit)) {
+      const rendered = renderObservation(obs);
+      if (!rendered) continue;
+      lines.push(...rendered);
+      keptCount++;
+    }
+    if (compact && keptCount) {
+      lines.push('_Expand any memory via get_observations([id])._');
+    }
+
+    const context = keptCount ? lines.join('\n') : '';
+    const response: {
+      context: string;
+      count: number;
+      globalContext?: string;
+      globalCount?: number;
+      annotations?: { attempted: boolean; kept: number; dropped: number; durationMs: number; timedOut: boolean };
+    } = {
+      context,
+      count: keptCount,
+      ...(annotationStats ? { annotations: annotationStats } : {}),
+    };
+
+    const globalSection = SearchRoutes.renderGlobalSection(
+      globalData.globalObservations,
+      globalData.facts,
+      renderObservation,
+    );
+    if (globalSection.globalCount > 0) {
+      response.globalContext = globalSection.globalContext;
+      response.globalCount = globalSection.globalCount;
     }
 
     res.json(response);
@@ -472,8 +582,10 @@ export class SearchRoutes extends BaseRouteHandler {
    * (observations via the Chroma path, facts via FTS — facts have no vectors
    * yet, that is the v2 track). Hits from the current project and ids already
    * in the main result set are dropped; the combined observation+fact budget
-   * is globalLimit. Best-effort: any failure yields an empty section, never a
-   * failed injection.
+   * is globalLimit. Returns RAW candidates — rendering lives in
+   * renderGlobalSection so the caller can run the relevance critic over both
+   * sections before anything is rendered. Best-effort: any failure yields
+   * empty lists, never a failed injection.
    */
   private async searchGlobalContext(
     query: string,
@@ -481,8 +593,8 @@ export class SearchRoutes extends BaseRouteHandler {
     globalLimit: number,
     platformSource: string | undefined,
     mainObservations: any[],
-  ): Promise<{ globalContext: string; globalCount: number }> {
-    const empty = { globalContext: '', globalCount: 0 };
+  ): Promise<{ globalObservations: any[]; facts: any[] }> {
+    const empty = { globalObservations: [] as any[], facts: [] as any[] };
     try {
       const minScoreRaw = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)
         .CLAUDE_MEM_SEMANTIC_INJECT_MIN_SCORE;
@@ -515,31 +627,54 @@ export class SearchRoutes extends BaseRouteHandler {
             .slice(0, remaining)
         : [];
 
-      if (!globalObservations.length && !facts.length) {
-        return empty;
-      }
-
-      const lines: string[] = ['## Relevant Past Work — other projects\n'];
-      for (const obs of globalObservations) {
-        const date = obs.created_at?.slice(0, 10) || '';
-        lines.push(`### ${obs.title || 'Observation'} (${date}) [project: ${obs.project}]`);
-        if (obs.narrative) lines.push(obs.narrative);
-        lines.push('');
-      }
-      for (const fact of facts) {
-        lines.push(`#${fact.id} [${fact.project}/${fact.kind}] ${fact.fact}`);
-        lines.push('');
-      }
-
-      return {
-        globalContext: lines.join('\n'),
-        globalCount: globalObservations.length + facts.length,
-      };
+      return { globalObservations, facts };
     } catch (error) {
       logger.warn('HTTP', 'Cross-project semantic search failed, skipping global section', {
         error: error instanceof Error ? error.message : String(error),
       });
       return empty;
+    }
+  }
+
+  /**
+   * Render the cross-project section from raw candidates. `renderObservation`
+   * is shared with the current-project section so critic verdicts (drop /
+   * "Why now:" hints) apply identically to global hits; facts carry no
+   * narrative and are never annotated.
+   */
+  private static renderGlobalSection(
+    globalObservations: any[],
+    facts: any[],
+    renderObservation: (obs: any, headerSuffix?: string) => string[] | null,
+  ): { globalContext: string; globalCount: number } {
+    const lines: string[] = ['## Relevant Past Work — other projects\n'];
+    let count = 0;
+    for (const obs of globalObservations) {
+      const rendered = renderObservation(obs, ` [project: ${obs.project}]`);
+      if (!rendered) continue;
+      lines.push(...rendered);
+      count++;
+    }
+    for (const fact of facts) {
+      lines.push(`#${fact.id} [${fact.project}/${fact.kind}] ${fact.fact}`);
+      lines.push('');
+      count++;
+    }
+    if (!count) return { globalContext: '', globalCount: 0 };
+    return { globalContext: lines.join('\n'), globalCount: count };
+  }
+
+  /**
+   * Opt-in quality-inspection dump (CLAUDE_MEM_SEMANTIC_ANNOTATE_DEBUG_LOG):
+   * one JSONL entry per annotated injection — full query text, candidates,
+   * verdicts. Local file, best-effort; never breaks the injection path.
+   */
+  private static writeAnnotationDebugLog(entry: Record<string, unknown>): void {
+    try {
+      fs.mkdirSync(LOGS_DIR, { recursive: true });
+      fs.appendFileSync(path.join(LOGS_DIR, 'semantic-annotate.jsonl'), JSON.stringify(entry) + '\n', 'utf8');
+    } catch {
+      // best-effort debug dump — never fail the injection over a log write
     }
   }
 
