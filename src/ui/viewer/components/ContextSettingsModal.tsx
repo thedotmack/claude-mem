@@ -494,8 +494,7 @@ export function ContextSettingsModal({
                         const updates: Partial<Settings> = {
                           CLAUDE_MEM_PROVIDER: 'ollama',
                           CLAUDE_MEM_TASKS: allOllama,
-                          CLAUDE_MEM_PREFER_COST_OPTIMIZATION: 'true',
-                          CLAUDE_MEM_OLLAMA_ENABLED: 'true'
+                          CLAUDE_MEM_PREFER_COST_OPTIMIZATION: 'true'
                         };
                         
                         if (!formState.OLLAMA_ENDPOINT) {
@@ -533,7 +532,7 @@ export function ContextSettingsModal({
                           CLAUDE_MEM_PROVIDER: 'gemini-cli',
                           CLAUDE_MEM_TASKS: allGeminiCli,
                           CLAUDE_MEM_PREFER_COST_OPTIMIZATION: 'true',
-                          CLAUDE_MEM_OLLAMA_ENABLED: 'false'
+                          OLLAMA_ENDPOINT: ''
                         });
                       }}
                       type="button"
