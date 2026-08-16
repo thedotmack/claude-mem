@@ -18,7 +18,7 @@ export class ProviderRegistry {
     this.loadTaskOverrides(settings);
     this.costOptimization =
       settings.CLAUDE_MEM_PREFER_COST_OPTIMIZATION === 'true' ||
-      settings.CLAUDE_MEM_PREFER_COST_OPTIMIZATION === true;
+      (settings.CLAUDE_MEM_PREFER_COST_OPTIMIZATION as any) === true;
   }
 
   private registerProviders(settings: SettingsDefaults) {

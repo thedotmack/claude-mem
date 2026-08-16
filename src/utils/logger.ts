@@ -24,6 +24,7 @@ export type Component =
   | 'CURSOR'
   | 'DB'
   | 'DEDUP'
+  | 'DISTILL'
   | 'ENV'
   | 'FOLDER_INDEX'
   | 'GIT'
