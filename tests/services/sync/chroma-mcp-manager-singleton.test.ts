@@ -197,8 +197,9 @@ mock.module('../../../src/utils/logger.js', () => ({
 const killTreeCalls: number[] = [];
 const killSignals: Array<{ pid: number; signal: string | number | undefined }> = [];
 const deadPids = new Set<number>();
-// When set, a SIGTERM to this pid marks it dead for later isPidAlive checks:
-// models the root exiting on SIGTERM and its pid no longer being ours.
+// When set, a SIGTERM to this pid marks it dead for later isPidAlive checks
+// and, if it is a real child of this test process, actually terminates it:
+// models a process exiting on SIGTERM so its pid is no longer ours.
 let dieOnSigterm: number | null = null;
 let execSyncCalls = 0;
 const prewarmSpawnCalls: Array<{ command: string; args: string[]; child: FakeChildProcess }> = [];
@@ -286,6 +287,9 @@ const stubbedProcessKill = ((pid: number, signal?: string | number) => {
   killSignals.push({ pid, signal });
   if (dieOnSigterm === pid && signal === 'SIGTERM') {
     deadPids.add(pid);
+    if (pid !== process.pid) {
+      try { realProcessKill(pid, 'SIGKILL'); } catch { /* not a real process */ }
+    }
   }
   if (transportKillEmitsOnclose) {
     const transport = transportInstances.find(instance => instance._process.pid === pid);
@@ -612,6 +616,50 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(rootSignals).toEqual(['SIGTERM']);
     expect(supervisorUnregisterCalls).toContain('chroma-mcp');
     expect(transportCount).toBe(1);
+  });
+
+  it('does not SIGKILL a retained pre-TERM descendant whose PID no longer verifies', async () => {
+    // Descendants discovered before SIGTERM are retained across the grace
+    // window so re-parented layers still get SIGKILL. A retained PID that has
+    // exited (and may have been recycled) must not; one that still verifies
+    // (alive, same start token) must. The root is this test process, so the
+    // real `pgrep -P` walk finds two real children spawned here: one exits on
+    // SIGTERM (the stub really terminates it), the other stays. process.kill
+    // is otherwise stubbed, so nothing else is actually signalled.
+    const rootPid = process.pid;
+    const rootToken = captureProcessStartToken(rootPid);
+    expect(rootToken).not.toBeNull();
+    const exiting = realChildProcess.spawn('sleep', ['30'], { stdio: 'ignore' });
+    const surviving = realChildProcess.spawn('sleep', ['30'], { stdio: 'ignore' });
+    await new Promise(resolve => setTimeout(resolve, 300));
+    try {
+      expect(captureProcessStartToken(exiting.pid!)).not.toBeNull();
+      expect(captureProcessStartToken(surviving.pid!)).not.toBeNull();
+
+      mockSupervisorRegistryEntries = [{
+        id: 'chroma-mcp',
+        pid: rootPid,
+        type: 'chroma',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        pgid: rootPid,
+        startToken: rootToken,
+      }];
+      ChromaMcpManager.setChromaLauncherIdentityProbeForTesting(async () => true);
+      // The "exiting" descendant leaves on SIGTERM; its PID is then unverifiable.
+      dieOnSigterm = exiting.pid!;
+
+      const mgr = ChromaMcpManager.getInstance();
+      await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+      const signalsFor = (pid: number) => killSignals.filter(entry => entry.pid === pid).map(entry => entry.signal);
+      expect(signalsFor(exiting.pid!)).toEqual(['SIGTERM']);
+      expect(signalsFor(surviving.pid!)).toEqual(['SIGTERM', 'SIGKILL']);
+      expect(supervisorUnregisterCalls).toContain('chroma-mcp');
+    } finally {
+      for (const child of [exiting, surviving]) {
+        try { realProcessKill(child.pid!, 'SIGKILL'); } catch { /* already gone */ }
+      }
+    }
   });
 
   it('never signals a live PID whose record carries no start token', async () => {

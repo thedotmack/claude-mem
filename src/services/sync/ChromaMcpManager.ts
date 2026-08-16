@@ -1291,6 +1291,14 @@ export class ChromaMcpManager {
         logger.debug('CHROMA_MCP', `Root PID ${pid} no longer verifies as ours; skipping tree kill`);
         return;
       }
+      // Remember who each pre-TERM descendant IS, not just its number: these
+      // PIDs are retained across the grace window below, and one that exits
+      // and is recycled in that window must not receive the SIGKILL meant
+      // for the original. An unreadable token means the PID cannot be
+      // re-proven later and is dropped from the retained set at that point.
+      const descendantTokensBeforeTerm = new Map<number, string | null>(
+        descendantsBeforeTerm.map(child => [child, captureProcessStartToken(child)])
+      );
       // Signal leaves first, then the root.
       for (const child of descendantsBeforeTerm) {
         try {
@@ -1332,8 +1340,25 @@ export class ChromaMcpManager {
       const descendantsBeforeKill = rootVerifiedForKill
         ? await ChromaMcpManager.collectDescendantPids(pid)
         : [];
+      // Freshly re-scanned descendants were just found under a verified root
+      // and are signalled as-is. Retained pre-TERM descendants that the
+      // re-scan no longer sees (re-parented, or exited) are signalled only if
+      // they still verify as the same process: alive, and start token equal
+      // to the one captured at discovery.
+      const freshlySeen = new Set(descendantsBeforeKill);
       const killTargets = Array.from(new Set([...descendantsBeforeTerm, ...descendantsBeforeKill]));
       for (const child of killTargets) {
+        if (!freshlySeen.has(child)) {
+          const tokenBeforeTerm = descendantTokensBeforeTerm.get(child) ?? null;
+          const stillSameProcess =
+            tokenBeforeTerm !== null &&
+            isPidAlive(child) &&
+            captureProcessStartToken(child) === tokenBeforeTerm;
+          if (!stillSameProcess) {
+            logger.debug('CHROMA_MCP', `Retained descendant PID ${child} no longer verifies as the pre-TERM process; not sending SIGKILL`);
+            continue;
+          }
+        }
         try {
           process.kill(child, 'SIGKILL');
         } catch {
