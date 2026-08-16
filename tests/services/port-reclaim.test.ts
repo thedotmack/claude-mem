@@ -2,18 +2,22 @@ import { describe, it, expect, beforeAll, afterEach } from 'bun:test';
 import net from 'net';
 import http from 'http';
 import { spawn, type ChildProcess } from 'child_process';
-import { mkdtempSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { mkdirSync, writeFileSync } from 'fs';
+import { dirname } from 'path';
+import { paths } from '../../src/shared/paths.js';
+import { reclaimWorkerPort } from '../../src/services/infrastructure/PortReclaim.js';
+import { captureProcessStartToken, isPidAlive } from '../../src/supervisor/process-registry.js';
 
-// Point the data dir at a scratch directory BEFORE anything under src/ is
-// imported: paths.ts resolves DATA_DIR at module load, and the registry
-// reader derives supervisor.json from it.
-const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-reclaim-'));
-process.env.CLAUDE_MEM_DATA_DIR = dataDir;
-
-const { reclaimWorkerPort } = await import('../../src/services/infrastructure/PortReclaim.js');
-const { captureProcessStartToken, isPidAlive } = await import('../../src/supervisor/process-registry.js');
+// The registry file MUST be the one the code under test reads. paths.ts
+// resolves DATA_DIR once at module load, and under `bun test` that module is
+// shared across every test file in the run, so setting CLAUDE_MEM_DATA_DIR
+// here would only take effect when this file happens to load paths.ts first
+// (it did in isolation, and silently did not in the full suite: the reaper
+// then read an empty registry and every rung-3a case degraded to
+// 'unprovable'). tests/preload.ts already points CLAUDE_MEM_DATA_DIR at a
+// per-run scratch directory, so resolving through `paths` is both correct
+// and isolated from the user's real ~/.claude-mem.
+const registryPath = paths.supervisorRegistry();
 
 /**
  * These tests use REAL processes and REAL sockets on purpose.
@@ -63,7 +67,8 @@ function listenHealthy(port: number): Promise<http.Server> {
 }
 
 function writeRegistry(records: Record<string, unknown>): void {
-  writeFileSync(join(dataDir, 'supervisor.json'), JSON.stringify({ processes: records }), 'utf-8');
+  mkdirSync(dirname(registryPath), { recursive: true });
+  writeFileSync(registryPath, JSON.stringify({ processes: records }), 'utf-8');
 }
 
 function isListening(port: number): Promise<boolean> {
