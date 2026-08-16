@@ -282,7 +282,7 @@ export class OllamaSessionProvider {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     return {
       endpoint: settings.OLLAMA_ENDPOINT?.trim() || 'http://localhost:11434',
-      model: settings.OLLAMA_MODEL?.trim() || 'llama3.2'
+      model: settings.OLLAMA_MODEL?.trim() || 'gpt-oss:20b'
     };
   }
 }

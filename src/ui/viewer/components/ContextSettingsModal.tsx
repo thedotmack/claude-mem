@@ -498,7 +498,13 @@ export function ContextSettingsModal({
                         }
                       }}
                       type="button"
-                      style={{ fontSize: '0.9em', padding: '8px' }}
+                      style={{ 
+                        fontSize: '0.9em', 
+                        padding: '8px',
+                        background: formState.CLAUDE_MEM_TASKS?.includes('"ollama"') ? 'var(--accent-color, #3b82f6)' : 'var(--color-bg-secondary, #f6f8fa)',
+                        color: formState.CLAUDE_MEM_TASKS?.includes('"ollama"') ? 'white' : 'var(--color-text-primary, #24292e)',
+                        border: formState.CLAUDE_MEM_TASKS?.includes('"ollama"') ? 'none' : '1px solid var(--color-border, #e1e4e8)'
+                      }}
                     >
                       🦙 Ollama
                     </button>
@@ -519,7 +525,13 @@ export function ContextSettingsModal({
                         updateSetting('CLAUDE_MEM_PREFER_COST_OPTIMIZATION', 'true');
                       }}
                       type="button"
-                      style={{ fontSize: '0.9em', padding: '8px' }}
+                      style={{ 
+                        fontSize: '0.9em', 
+                        padding: '8px',
+                        background: formState.CLAUDE_MEM_TASKS?.includes('"gemini-cli"') ? 'var(--accent-color, #3b82f6)' : 'var(--color-bg-secondary, #f6f8fa)',
+                        color: formState.CLAUDE_MEM_TASKS?.includes('"gemini-cli"') ? 'white' : 'var(--color-text-primary, #24292e)',
+                        border: formState.CLAUDE_MEM_TASKS?.includes('"gemini-cli"') ? 'none' : '1px solid var(--color-border, #e1e4e8)'
+                      }}
                     >
                       ✨ Antigravity CLI
                     </button>
@@ -595,9 +607,9 @@ export function ContextSettingsModal({
                   >
                     <input
                       type="text"
-                      value={formState.CLAUDE_MEM_GEMINI_CLI_MODEL ?? 'gemini-2.5-flash-lite'}
+                      value={formState.CLAUDE_MEM_GEMINI_CLI_MODEL ?? 'Gemini 3.5 Flash (Low)'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_GEMINI_CLI_MODEL', e.target.value)}
-                      placeholder="gemini-2.5-flash-lite"
+                      placeholder="Gemini 3.5 Flash (Low)"
                     />
                   </FormField>
                 </div>

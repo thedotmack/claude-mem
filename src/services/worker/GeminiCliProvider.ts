@@ -38,8 +38,8 @@ export class GeminiCliProvider implements LlmProvider {
       let stderr = '';
 
       try {
-        // Use '-p -' to read prompt from stdin, and '-m' to set the model
-        const proc = spawn(this.binary, ['-p', '-', '-m', this.model], {
+        // Use '-p -' to read prompt from stdin, and '--model' to set the model
+        const proc = spawn(this.binary, ['-p', '-', '--model', this.model], {
           stdio: ['pipe', 'pipe', 'pipe'],
         });
 
