@@ -99,7 +99,3 @@ Do not add sections. Do not add sub-bullets. Do not restate file paths or line n
 - Adding parameters not in documentation
 - Skipping verification steps
 - Assuming structure without checking examples
-
-## See Also
-
-- `oh-my-issues` — the issue-side sibling. When the plan you're being asked to make is rooted in a bug or feature backlog rather than a fresh idea, route through `oh-my-issues` first to cluster issues by root cause into plan masters and `plans/0X-*.md` design docs. `make-plan` then operates on the design doc for one plan slice.
