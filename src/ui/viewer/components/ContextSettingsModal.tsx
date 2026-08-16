@@ -145,9 +145,12 @@ export function ContextSettingsModal({
   } = useContextPreview(formState);
 
   const updateSetting = useCallback((key: keyof Settings, value: string) => {
-    const newState = { ...formState, [key]: value };
-    setFormState(newState);
-  }, [formState]);
+    setFormState(prev => ({ ...prev, [key]: value }));
+  }, []);
+
+  const updateMultipleSettings = useCallback((updates: Partial<Settings>) => {
+    setFormState(prev => ({ ...prev, ...updates }));
+  }, []);
 
   const handleSave = useCallback(() => {
     onSave(formState);
@@ -480,12 +483,18 @@ export function ContextSettingsModal({
                           "embeddings-generation":"ollama","similarity-scoring":"ollama",
                           "metadata-enrichment":"ollama","concept-extraction":"ollama","file-impact-analysis":"ollama"
                         });
-                        updateSetting('CLAUDE_MEM_PROVIDER', 'ollama');
-                        updateSetting('CLAUDE_MEM_TASKS', allOllama);
-                        updateSetting('CLAUDE_MEM_PREFER_COST_OPTIMIZATION', 'true');
+                        
+                        const updates: Partial<Settings> = {
+                          CLAUDE_MEM_PROVIDER: 'ollama',
+                          CLAUDE_MEM_TASKS: allOllama,
+                          CLAUDE_MEM_PREFER_COST_OPTIMIZATION: 'true'
+                        };
+                        
                         if (!formState.OLLAMA_ENDPOINT) {
-                          updateSetting('OLLAMA_ENDPOINT', 'http://localhost:11434');
+                          updates.OLLAMA_ENDPOINT = 'http://localhost:11434';
                         }
+                        
+                        updateMultipleSettings(updates);
                       }}
                       type="button"
                       style={{ 
@@ -511,8 +520,12 @@ export function ContextSettingsModal({
                           "embeddings-generation":"gemini-cli","similarity-scoring":"gemini-cli",
                           "metadata-enrichment":"gemini-cli","concept-extraction":"gemini-cli","file-impact-analysis":"gemini-cli"
                         });
-                        updateSetting('CLAUDE_MEM_TASKS', allGeminiCli);
-                        updateSetting('CLAUDE_MEM_PREFER_COST_OPTIMIZATION', 'true');
+                        
+                        updateMultipleSettings({
+                          CLAUDE_MEM_PROVIDER: 'gemini-cli',
+                          CLAUDE_MEM_TASKS: allGeminiCli,
+                          CLAUDE_MEM_PREFER_COST_OPTIMIZATION: 'true'
+                        });
                       }}
                       type="button"
                       style={{ 
