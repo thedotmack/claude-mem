@@ -7,11 +7,12 @@ import { disableClaudeAutoMemory } from '../src/npx-cli/commands/install.js';
 /**
  * Tests for auto-memory disable behavior in the install command.
  *
- * Closes anthropics/claude-code#23544 from claude-mem's side: any install that
- * targets claude-code must set CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 in
+ * Closes anthropics/claude-code#23544 from claude-mem's side: installs now
+ * require explicit consent before setting CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 in
  * ~/.claude/settings.json `env` block. The built-in MEMORY.md system creates
  * shadow state outside the user's control and competes with claude-mem's
- * hook-based memory for context-window tokens.
+ * hook-based memory for context-window tokens, but we should not disable it
+ * without the user's opt-in.
  *
  * Source-inspection style mirrors install-non-tty.test.ts — disableClaudeAutoMemory
  * is a private module-level helper that can't be imported directly.
@@ -74,22 +75,34 @@ describe('Install: disable Claude Code auto-memory', () => {
   });
 
   describe('runInstallCommand integration', () => {
-    it('calls disableClaudeAutoMemory after setupIDEs', () => {
+    it('resolves auto-memory choice after setupIDEs', () => {
       // setupIDEs returns first; we need its result before deciding what to do,
       // and the disable step shouldn't run if claude-code wasn't installed.
-      // Use lastIndexOf for the call so we match the call site, not the helper definition.
       const setupCallIdx = installSource.indexOf('await setupIDEs(selectedIDEs');
-      const disableCallIdx = installSource.lastIndexOf('disableClaudeAutoMemory()');
+      const choiceCallIdx = installSource.indexOf('await resolveClaudeAutoMemoryChoice(selectedIDEs, options)');
       expect(setupCallIdx).toBeGreaterThan(-1);
-      expect(disableCallIdx).toBeGreaterThan(-1);
-      expect(disableCallIdx).toBeGreaterThan(setupCallIdx);
+      expect(choiceCallIdx).toBeGreaterThan(-1);
+      expect(choiceCallIdx).toBeGreaterThan(setupCallIdx);
     });
 
-    it("only runs the disable step when claude-code is in selectedIDEs", () => {
-      // Cursor/Codex/Windsurf installs shouldn't touch ~/.claude/settings.json
-      // for an env var that doesn't apply to them.
+    it('skips the consent helper entirely when claude-code is not selected', () => {
       expect(installSource).toMatch(
-        /selectedIDEs\.includes\(['"]claude-code['"]\)[\s\S]{0,200}disableClaudeAutoMemory\(\)/,
+        /if \(!selectedIDEs\.includes\(['"]claude-code['"]\)\) \{\s*return ['"]not-applicable['"]/,
+      );
+    });
+
+    it('only calls disableClaudeAutoMemory after an explicit disable decision', () => {
+      expect(installSource).toMatch(
+        /if \(autoMemoryChoice === ['"]disable['"]\)[\s\S]{0,300}disableClaudeAutoMemory\(\)/,
+      );
+    });
+
+    it('leaves auto-memory enabled in non-interactive installs unless the explicit flag is present', () => {
+      expect(installSource).toMatch(
+        /if \(!isInteractive\) \{\s*return ['"]leave-enabled['"]/,
+      );
+      expect(installSource).toMatch(
+        /if \(options\.disableAutoMemory\) \{\s*return ['"]disable['"]/,
       );
     });
 
@@ -97,7 +110,7 @@ describe('Install: disable Claude Code auto-memory', () => {
       // Settings.json is the user's file — a write failure (permissions, disk
       // full, etc.) must surface as a warning, not abort the install.
       const integrationBlock = installSource.match(
-        /selectedIDEs\.includes\(['"]claude-code['"]\)[\s\S]{0,800}/,
+        /if \(autoMemoryChoice === ['"]disable['"]\)[\s\S]{0,800}/,
       )?.[0];
       expect(integrationBlock).toBeDefined();
       expect(integrationBlock).toContain('try {');
@@ -109,29 +122,31 @@ describe('Install: disable Claude Code auto-memory', () => {
       expect(integrationBlock).toMatch(/installerError\(ErrorSeverity\.WARN_CONTINUE/);
     });
 
-    it('tracks a tri-state autoMemoryStatus (disabled / already-disabled / failed)', () => {
+    it('tracks a four-state autoMemoryStatus (disabled / already-disabled / left-enabled / failed)', () => {
       // A boolean would conflate the error path with "already set", so a write
-      // failure mid-install would silently render "already disabled" in the
-      // summary while the warning above said the opposite. Tri-state keeps the
+      // failure mid-install would silently render the wrong summary. The extra
+      // left-enabled state keeps the log line and the summary line truthful when
+      // the user declines or a non-interactive install leaves native memory alone.
+      // This keeps the warning line and the summary line truthful and consistent.
       // log line and the summary line truthful and consistent.
       expect(installSource).toMatch(
-        /let autoMemoryStatus:\s*['"]disabled['"]\s*\|\s*['"]already-disabled['"]\s*\|\s*['"]failed['"]\s*\|\s*null/,
+        /let autoMemoryStatus:\s*['"]disabled['"]\s*\|\s*['"]already-disabled['"]\s*\|\s*['"]left-enabled['"]\s*\|\s*['"]failed['"]\s*\|\s*null/,
       );
-      const integrationBlock = installSource.match(
-        /selectedIDEs\.includes\(['"]claude-code['"]\)[\s\S]{0,800}/,
-      )?.[0];
+      const integrationBlock = installSource.match(/autoMemoryChoice[\s\S]{0,1200}/)?.[0];
       expect(integrationBlock).toMatch(/autoMemoryStatus = wrote \? ['"]disabled['"] : ['"]already-disabled['"]/);
+      expect(integrationBlock).toMatch(/autoMemoryStatus = ['"]left-enabled['"]/);
       expect(integrationBlock).toMatch(/autoMemoryStatus = ['"]failed['"]/);
     });
 
-    it('surfaces all three states in the install summary distinctly', () => {
-      // The error case must NOT render as "already disabled" — that would
-      // contradict the warn line above it and falsely imply the env var is set.
+    it('surfaces disabled, already-disabled, left-enabled, and failed states in the install summary distinctly', () => {
       expect(installSource).toMatch(
         /autoMemoryStatus === ['"]disabled['"][\s\S]{0,200}CLAUDE_CODE_DISABLE_AUTO_MEMORY=1/,
       );
       expect(installSource).toMatch(
         /autoMemoryStatus === ['"]already-disabled['"][\s\S]{0,200}already disabled/,
+      );
+      expect(installSource).toMatch(
+        /autoMemoryStatus === ['"]left-enabled['"][\s\S]{0,200}left enabled/,
       );
       expect(installSource).toMatch(
         /autoMemoryStatus === ['"]failed['"][\s\S]{0,200}write failed/,

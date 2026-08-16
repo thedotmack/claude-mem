@@ -7,8 +7,7 @@
  *  - Fail loud over silent. Unknown errors default to ABORT until classified.
  *  - Remediation strings interpolate the resolved data dir (multi-account safe),
  *    never a hard-coded ~/.claude-mem path.
- *  - There is NO `SILENT` severity — the closest is SILENT_RETRY (retry once,
- *    then escalate to a visible WARN_CONTINUE).
+ *  - There is NO `SILENT` severity.
  */
 
 export enum ErrorSeverity {
@@ -18,8 +17,6 @@ export enum ErrorSeverity {
   FAIL_LOUD_PER_IDE = 'FAIL_LOUD_PER_IDE',
   /** print warning to end-of-install summary, continue (exit 0). */
   WARN_CONTINUE = 'WARN_CONTINUE',
-  /** retry once with backoff; escalate to WARN_CONTINUE on repeated failure. */
-  SILENT_RETRY = 'SILENT_RETRY',
 }
 
 export interface RemediationContext {
@@ -98,13 +95,6 @@ export const ERROR_CATEGORIES: ErrorCategory[] = [
     match: (cause) => /\bERESOLVE\b/.test(causeMessage(cause)),
     remediation: () =>
       'ERESOLVE peer-dependency conflict in marketplace deps that --legacy-peer-deps could not resolve. Open an issue at https://github.com/thedotmack/claude-mem/issues with the conflicting peer ranges shown above.',
-  },
-  {
-    id: 'bun-install-network-fail',
-    severity: ErrorSeverity.SILENT_RETRY,
-    match: (cause) => /error: failed to resolve/.test(causeMessage(cause)),
-    remediation: () =>
-      'bun install failed to resolve packages — check network connectivity and re-run `npx claude-mem install`. Cached packages in ~/.bun/install/cache will be reused.',
   },
   {
     id: 'marketplace-dir-not-writable',

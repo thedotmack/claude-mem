@@ -14,8 +14,13 @@ jobs:
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
+      - name: Install Bun (required by smoke:clean-room)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
       - run: npm install --ignore-scripts
       - run: npm run build
+      - run: npm run smoke:clean-room
       - run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

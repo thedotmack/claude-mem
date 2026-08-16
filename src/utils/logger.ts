@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { paths } from '../shared/paths.js';
 import { emitDiagnostic } from '../shared/hook-io.js';
+import { parseJsonWithBom } from '../shared/atomic-json.js';
 
 export enum LogLevel {
   DEBUG = 0,
@@ -19,6 +20,7 @@ export type Component =
   | 'CHROMA_MCP'
   | 'CHROMA_SYNC'
   | 'CLAUDE_MD'
+  | 'CLOUD_SYNC'
   | 'CONFIG'
   | 'CONSOLE'
   | 'CURSOR'
@@ -46,6 +48,8 @@ export type Component =
   | 'SESSION'
   | 'SETTINGS'
   | 'SHUTDOWN'
+  | 'SYNC_APPLY'
+  | 'SYNC_CLIENT'
   | 'SYSTEM'
   | 'TELEGRAM'
   | 'TRANSCRIPT'
@@ -58,6 +62,18 @@ interface LogContext {
   correlationId?: string | number;
   [key: string]: any;
 }
+
+/**
+ * Optional error sink. The logger must NEVER import the telemetry client (that
+ * would create an import cycle: telemetry → logger via instrument.ts → ...).
+ * Instead worker/telemetry init injects a sink via logger.setErrorSink(); when
+ * present, logger.error()/logger.failure() route their Error payload through it
+ * (consent + rate-limit + kill-switch all enforced INSIDE the sink, i.e.
+ * captureException). The sink is optional and swallow-all so logging keeps
+ * working with telemetry disabled or uninstalled.
+ */
+export type ErrorSink = (err: unknown, ctx?: Record<string, unknown>) => void;
+let errorSink: ErrorSink | null = null;
 
 
 class Logger {
@@ -96,7 +112,7 @@ class Logger {
         const settingsPath = paths.settings();
         if (existsSync(settingsPath)) {
           const settingsData = readFileSync(settingsPath, 'utf-8');
-          const settings = JSON.parse(settingsData);
+          const settings = parseJsonWithBom<Record<string, any>>(settingsData);
           const envLevel = (settings.CLAUDE_MEM_LOG_LEVEL || 'INFO').toUpperCase();
           this.level = LogLevel[envLevel as keyof typeof LogLevel] ?? LogLevel.INFO;
         } else {
@@ -108,14 +124,6 @@ class Logger {
       }
     }
     return this.level;
-  }
-
-  correlationId(sessionId: number, observationNum: number): string {
-    return `obs-${sessionId}-${observationNum}`;
-  }
-
-  sessionId(sessionId: number): string {
-    return `session-${sessionId}`;
   }
 
   private formatData(data: any): string {
@@ -153,7 +161,8 @@ class Logger {
     if (typeof toolInput === 'string') {
       try {
         input = JSON.parse(toolInput);
-      } catch (_parseError: unknown) {
+      } catch {
+        // [ANTI-PATTERN IGNORED]: tool_input is often a plain non-JSON string, so parse failure is the expected signal here; recovery is falling back to the raw string, and logging would spam every formatted log line.
         input = toolInput;
       }
     }
@@ -249,6 +258,7 @@ class Logger {
         try {
           dataStr = '\n' + JSON.stringify(data, null, 2);
         } catch {
+          // [ANTI-PATTERN IGNORED]: JSON.stringify fails on circular/BigInt payloads, an expected data shape inside the logger's own log() path; recovery is the formatData fallback, and self-logging here would recurse.
           dataStr = ' ' + this.formatData(data);
         }
       } else {
@@ -271,10 +281,12 @@ class Logger {
       try {
         appendFileSync(this.logFilePath, logLine + '\n', 'utf8');
       } catch (error: unknown) {
+        // [ANTI-PATTERN IGNORED]: this is the logger's own file-write failure path — calling the logger here would recurse into the same failing appendFileSync, so the error is surfaced via emitDiagnostic to real stderr instead.
         // DIAGNOSTIC: route through hook-io so the message bypasses the Phase 2
         // hook stderr buffer (#2292). Outside the hook context emitDiagnostic
         // writes straight to real stderr, so non-hook callers are unaffected.
-        emitDiagnostic(`[LOGGER] Failed to write to log file: ${error instanceof Error ? error.message : String(error)}\n`);
+        const err = error instanceof Error ? error : new Error(String(error));
+        emitDiagnostic(`[LOGGER] Failed to write to log file: ${err.message}\n${err.stack ?? ''}\n`);
       }
     } else {
       // DIAGNOSTIC: see note above.
@@ -294,8 +306,40 @@ class Logger {
     this.log(LogLevel.WARN, component, message, context, data);
   }
 
+  /**
+   * Installs (or clears, with null) the optional error sink. Called once by
+   * worker/telemetry init to bridge logged errors into captureException without
+   * the logger importing telemetry (no import cycle). Never throws.
+   */
+  setErrorSink(sink: ErrorSink | null): void {
+    errorSink = sink;
+  }
+
   error(component: Component, message: string, context?: LogContext, data?: any): void {
     this.log(LogLevel.ERROR, component, message, context, data);
+    this.routeErrorToSink(message, context, data);
+  }
+
+  /**
+   * Routes a logged Error through the optional error sink (captureException).
+   * Only fires when `data` is an actual Error so we never ship arbitrary log
+   * payloads as exceptions. Swallow-all: the sink failing (or being absent)
+   * must never break logging. `failure()` delegates to `error()`, so it is
+   * covered too — but it passes the same `data` object, so we de-dupe by only
+   * routing from the single `error()` entry point.
+   */
+  private routeErrorToSink(message: string, context?: LogContext, data?: any): void {
+    try {
+      if (!errorSink || !(data instanceof Error)) return;
+      // Pass the message as context so the sink can fingerprint on it too; the
+      // sink (captureException) scrubs everything through error-scrub /
+      // scrubProperties, so an unsafe message here cannot leak — but `message`
+      // is not whitelisted, so it is dropped by scrubProperties anyway. We pass
+      // only the Error itself; context is intentionally minimal.
+      errorSink(data);
+    } catch {
+      // Telemetry/error-sink must never break logging.
+    }
   }
 
   dataIn(component: Component, message: string, context?: LogContext, data?: any): void {
@@ -312,35 +356,6 @@ class Logger {
 
   failure(component: Component, message: string, context?: LogContext, data?: any): void {
     this.error(component, `✗ ${message}`, context, data);
-  }
-
-  timing(component: Component, message: string, durationMs: number, context?: LogContext): void {
-    this.info(component, `⏱ ${message}`, context, { duration: `${durationMs}ms` });
-  }
-
-  happyPathError<T = string>(
-    component: Component,
-    message: string,
-    context?: LogContext,
-    data?: any,
-    fallback: T = '' as T
-  ): T {
-    const stack = new Error().stack || '';
-    const stackLines = stack.split('\n');
-    const callerLine = stackLines[2] || '';
-    const callerMatch = callerLine.match(/at\s+(?:.*\s+)?\(?([^:]+):(\d+):(\d+)\)?/);
-    const location = callerMatch
-      ? `${callerMatch[1].split('/').pop()}:${callerMatch[2]}`
-      : 'unknown';
-
-    const enhancedContext = {
-      ...context,
-      location
-    };
-
-    this.warn(component, `[HAPPY-PATH] ${message}`, enhancedContext, data);
-
-    return fallback;
   }
 }
 

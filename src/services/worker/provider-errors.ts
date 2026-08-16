@@ -5,6 +5,7 @@ export type ProviderErrorClass =
   | 'rate_limit'
   | 'quota_exhausted'
   | 'auth_invalid'
+  | 'setup_required'
   | (string & {}); // open union: providers may emit custom kinds
 
 export class ClassifiedProviderError extends Error {

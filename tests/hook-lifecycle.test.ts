@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { fileURLToPath } from 'node:url';
 
 describe('Hook Lifecycle - Event Handlers', () => {
   describe('worker fallback failure counter', () => {
@@ -196,6 +197,17 @@ describe('Codex CLI Compatibility (#744)', () => {
       });
     });
 
+    it('omits suppressOutput from base Codex output', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const output = codexAdapter.formatOutput({
+        continue: true,
+        suppressOutput: true,
+      }) as any;
+
+      expect(output).toEqual({ continue: true });
+      expect(output).not.toHaveProperty('suppressOutput');
+    });
+
     it('does not emit hookSpecificOutput for Stop outputs', async () => {
       const { codexAdapter } = await import('../src/cli/adapters/codex.js');
       const output = codexAdapter.formatOutput({
@@ -207,7 +219,21 @@ describe('Codex CLI Compatibility (#744)', () => {
         },
       }) as any;
 
-      expect(output).toEqual({ continue: true, suppressOutput: true });
+      expect(output).toEqual({ continue: true });
+    });
+
+    it('preserves an explicit empty-string additionalContext instead of dropping the key (#3127)', async () => {
+      const { codexAdapter } = await import('../src/cli/adapters/codex.js');
+      const output = codexAdapter.formatOutput({
+        continue: true,
+        suppressOutput: true,
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+      }) as any;
+
+      expect(output).toEqual({
+        continue: true,
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+      });
     });
   });
 
@@ -469,7 +495,7 @@ describe('hookCommand - stderr discipline (plan 01 / #2292)', () => {
     expect(typeof hookCommand).toBe('function');
 
     const hookCommandSource = await Bun.file(
-      new URL('../src/cli/hook-command.ts', import.meta.url).pathname
+      fileURLToPath(new URL('../src/cli/hook-command.ts', import.meta.url))
     ).text();
 
     // Diagnostics still go through the structured logger.

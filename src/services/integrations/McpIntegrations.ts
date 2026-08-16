@@ -7,20 +7,20 @@ import { getMcpServerAbsolutePath, getNodeAbsolutePath } from './install-paths.j
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
 
-const PLACEHOLDER_CONTEXT = `# claude-mem: Cross-Session Memory
+export const PLACEHOLDER_CONTEXT = `# claude-mem: Cross-Session Memory
 
 *No context yet. Complete your first session and context will appear here.*
 
 Use claude-mem's MCP search tools for manual memory queries.`;
 
-function buildMcpServerEntry(mcpServerPath: string): { command: string; args: string[] } {
+export function buildMcpServerEntry(mcpServerPath: string): { command: string; args: string[] } {
   return {
     command: getNodeAbsolutePath(),
     args: [mcpServerPath],
   };
 }
 
-function writeMcpJsonConfig(
+export function writeMcpJsonConfig(
   configFilePath: string,
   mcpServerPath: string,
   serversKeyName: string = 'mcpServers',
@@ -44,10 +44,7 @@ interface McpInstallerConfig {
   ideLabel: string;
   configPath: string;
   configKey: 'servers' | 'mcpServers';
-  contextFile?: {
-    path: string;
-    isWorkspaceRelative: boolean;
-  };
+  contextPath?: string;
 }
 
 function installMcpIntegration(config: McpInstallerConfig): () => Promise<number> {
@@ -65,10 +62,7 @@ function installMcpIntegration(config: McpInstallerConfig): () => Promise<number
 
     const skipWarpConfigWrite = config.ideId === 'warp' && !existsSync(path.dirname(configPath));
 
-    let contextPath: string | undefined;
-    if (config.contextFile) {
-      contextPath = config.contextFile.path;
-    }
+    const contextPath = config.contextPath;
 
     try {
       writeMcpConfigAndContext(config, configPath, mcpServerPath, skipWarpConfigWrite, contextPath);
@@ -124,21 +118,7 @@ const COPILOT_CLI_CONFIG: McpInstallerConfig = {
   ideLabel: 'Copilot CLI',
   configPath: path.join(homedir(), '.github', 'copilot', 'mcp.json'),
   configKey: 'servers',
-  contextFile: {
-    path: path.join(process.cwd(), '.github', 'copilot-instructions.md'),
-    isWorkspaceRelative: true,
-  },
-};
-
-const ANTIGRAVITY_CONFIG: McpInstallerConfig = {
-  ideId: 'antigravity',
-  ideLabel: 'Antigravity',
-  configPath: path.join(homedir(), '.gemini', 'antigravity', 'mcp_config.json'),
-  configKey: 'mcpServers',
-  contextFile: {
-    path: path.join(process.cwd(), '.agents', 'rules', 'claude-mem-context.md'),
-    isWorkspaceRelative: true,
-  },
+  contextPath: path.join(process.cwd(), '.github', 'copilot-instructions.md'),
 };
 
 const ROO_CODE_CONFIG: McpInstallerConfig = {
@@ -146,10 +126,7 @@ const ROO_CODE_CONFIG: McpInstallerConfig = {
   ideLabel: 'Roo Code',
   configPath: path.join(process.cwd(), '.roo', 'mcp.json'),
   configKey: 'mcpServers',
-  contextFile: {
-    path: path.join(process.cwd(), '.roo', 'rules', 'claude-mem-context.md'),
-    isWorkspaceRelative: true,
-  },
+  contextPath: path.join(process.cwd(), '.roo', 'rules', 'claude-mem-context.md'),
 };
 
 const WARP_CONFIG: McpInstallerConfig = {
@@ -157,10 +134,7 @@ const WARP_CONFIG: McpInstallerConfig = {
   ideLabel: 'Warp',
   configPath: path.join(homedir(), '.warp', 'mcp.json'),
   configKey: 'mcpServers',
-  contextFile: {
-    path: path.join(process.cwd(), 'WARP.md'),
-    isWorkspaceRelative: true,
-  },
+  contextPath: path.join(process.cwd(), 'WARP.md'),
 };
 
 function getGooseConfigPath(): string {
@@ -172,18 +146,9 @@ function gooseConfigHasClaudeMemEntry(yamlContent: string): boolean {
     yamlContent.includes('mcpServers:');
 }
 
-function buildGooseMcpYamlBlock(mcpServerPath: string): string {
+function buildGooseClaudeMemEntryYaml(mcpServerPath: string, withHeader = false): string {
   return [
-    'mcpServers:',
-    '  claude-mem:',
-    `    command: ${getNodeAbsolutePath()}`,
-    '    args:',
-    `      - ${mcpServerPath}`,
-  ].join('\n');
-}
-
-function buildGooseClaudeMemEntryYaml(mcpServerPath: string): string {
-  return [
+    ...(withHeader ? ['mcpServers:'] : []),
     '  claude-mem:',
     `    command: ${getNodeAbsolutePath()}`,
     '    args:',
@@ -242,13 +207,13 @@ function mergeGooseYamlConfig(configPath: string, mcpServerPath: string): void {
       writeFileSync(configPath, yamlContent);
       console.log(`  Added claude-mem to existing mcpServers in: ${configPath}`);
     } else {
-      const mcpBlock = '\n' + buildGooseMcpYamlBlock(mcpServerPath) + '\n';
+      const mcpBlock = '\n' + buildGooseClaudeMemEntryYaml(mcpServerPath, true) + '\n';
       yamlContent = yamlContent.trimEnd() + '\n' + mcpBlock;
       writeFileSync(configPath, yamlContent);
       console.log(`  Appended mcpServers section to: ${configPath}`);
     }
   } else {
-    const templateContent = buildGooseMcpYamlBlock(mcpServerPath) + '\n';
+    const templateContent = buildGooseClaudeMemEntryYaml(mcpServerPath, true) + '\n';
     writeFileSync(configPath, templateContent);
     console.log(`  Created config with MCP server: ${configPath}`);
   }
@@ -267,9 +232,14 @@ Next steps:
 `);
 }
 
+// NOTE: 'antigravity' is intentionally absent here. It graduated from an
+// MCP-only integration to a full hooks+MCP installer — see
+// AntigravityCliHooksInstaller.ts, which owns Antigravity's install/uninstall
+// end-to-end (reusing writeMcpJsonConfig/buildMcpServerEntry from this file
+// for its MCP half). Leaving an entry here too would create two competing
+// install paths for the same IDE.
 export const MCP_IDE_INSTALLERS: Record<string, () => Promise<number>> = {
   'copilot-cli': installMcpIntegration(COPILOT_CLI_CONFIG),
-  'antigravity': installMcpIntegration(ANTIGRAVITY_CONFIG),
   'goose': installGooseMcpIntegration,
   'roo-code': installMcpIntegration(ROO_CODE_CONFIG),
   'warp': installMcpIntegration(WARP_CONFIG),

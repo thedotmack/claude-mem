@@ -1,25 +1,29 @@
 
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import type { ModeConfig, ObservationType, ObservationConcept } from './types.js';
+import type { ModeConfig, ObservationType } from './types.js';
 import { logger } from '../../utils/logger.js';
-import { getPackageRoot } from '../../shared/paths.js';
+import { getPackageRoot, paths } from '../../shared/paths.js';
+
+const MODE_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*(?:--[a-z0-9]+(?:-[a-z0-9]+)*)?$/;
 
 export class ModeManager {
   private static instance: ModeManager | null = null;
   private activeMode: ModeConfig | null = null;
-  private modesDir: string;
+  private activeModeId: string | null = null;
+  private modeDirs: string[];
 
   private constructor() {
     const packageRoot = getPackageRoot();
     
     const possiblePaths = [
+      ...(process.env.CLAUDE_MEM_MODES_DIR ? [process.env.CLAUDE_MEM_MODES_DIR] : []),
+      join(paths.dataDir(), 'modes'),        // User-created modes (durable across plugin upgrades)
       join(packageRoot, 'modes'),           // Production (plugin/modes)
       join(packageRoot, '..', 'plugin', 'modes'), // Development (src/../plugin/modes)
     ];
 
-    const foundPath = possiblePaths.find(p => existsSync(p));
-    this.modesDir = foundPath || possiblePaths[0];
+    this.modeDirs = [...new Set(possiblePaths)];
   }
 
   static getInstance(): ModeManager {
@@ -79,10 +83,16 @@ export class ModeManager {
   }
 
   private loadModeFile(modeId: string): ModeConfig {
-    const modePath = join(this.modesDir, `${modeId}.json`);
+    if (!MODE_ID_PATTERN.test(modeId)) {
+      throw new Error(`Invalid mode ID: ${modeId}`);
+    }
 
-    if (!existsSync(modePath)) {
-      throw new Error(`Mode file not found: ${modePath}`);
+    const modePath = this.modeDirs
+      .map(modesDir => join(modesDir, `${modeId}.json`))
+      .find(candidate => existsSync(candidate));
+
+    if (!modePath) {
+      throw new Error(`Mode file not found: ${modeId}.json (searched: ${this.modeDirs.join(', ')})`);
     }
 
     const jsonContent = readFileSync(modePath, 'utf-8');
@@ -96,6 +106,7 @@ export class ModeManager {
       try {
         const mode = this.loadModeFile(modeId);
         this.activeMode = mode;
+        this.activeModeId = modeId;
         logger.debug('SYSTEM', `Loaded mode: ${mode.name} (${modeId})`, undefined, {
           types: mode.observation_types.map(t => t.id),
           concepts: mode.observation_concepts.map(c => c.id)
@@ -150,6 +161,7 @@ export class ModeManager {
 
     const mergedMode = this.deepMerge(parentMode, overrideConfig);
     this.activeMode = mergedMode;
+    this.activeModeId = modeId;
 
     logger.debug('SYSTEM', `Loaded mode with inheritance: ${mergedMode.name} (${modeId} = ${parentId} + ${overrideId})`, undefined, {
       parent: parentId,
@@ -168,12 +180,15 @@ export class ModeManager {
     return this.activeMode;
   }
 
-  getObservationTypes(): ObservationType[] {
-    return this.getActiveMode().observation_types;
+  getActiveModeId(): string {
+    if (!this.activeModeId) {
+      throw new Error('No mode loaded. Call loadMode() first.');
+    }
+    return this.activeModeId;
   }
 
-  getObservationConcepts(): ObservationConcept[] {
-    return this.getActiveMode().observation_concepts;
+  getObservationTypes(): ObservationType[] {
+    return this.getActiveMode().observation_types;
   }
 
   getTypeIcon(typeId: string): string {
@@ -184,14 +199,5 @@ export class ModeManager {
   getWorkEmoji(typeId: string): string {
     const type = this.getObservationTypes().find(t => t.id === typeId);
     return type?.work_emoji || '📝';
-  }
-
-  validateType(typeId: string): boolean {
-    return this.getObservationTypes().some(t => t.id === typeId);
-  }
-
-  getTypeLabel(typeId: string): string {
-    const type = this.getObservationTypes().find(t => t.id === typeId);
-    return type?.label || typeId;
   }
 }

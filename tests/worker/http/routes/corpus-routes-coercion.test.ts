@@ -187,4 +187,28 @@ describe('CorpusRoutes Type Coercion', () => {
     expect(statusSpy).toHaveBeenCalledWith(400);
     expect(mockBuild).not.toHaveBeenCalled();
   });
+
+  it('rejects a corpus name with illegal characters before calling CorpusBuilder', async () => {
+    const { req, res, statusSpy } = createMockReqRes({
+      name: 'bad name/with spaces',
+    });
+
+    handler(req as Request, res as Response);
+    await flushPromises();
+
+    expect(statusSpy).toHaveBeenCalledWith(400);
+    expect(mockBuild).not.toHaveBeenCalled();
+  });
+
+  it('rejects a padded corpus name instead of silently trimming it', async () => {
+    const { req, res, statusSpy } = createMockReqRes({
+      name: '  bad  ',
+    });
+
+    handler(req as Request, res as Response);
+    await flushPromises();
+
+    expect(statusSpy).toHaveBeenCalledWith(400);
+    expect(mockBuild).not.toHaveBeenCalled();
+  });
 });

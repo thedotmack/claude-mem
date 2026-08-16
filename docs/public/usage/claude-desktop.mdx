@@ -22,7 +22,8 @@ Before configuring MCP tools, ensure:
 ### Verify Worker is Running
 
 ```bash
-curl http://localhost:37777/api/health
+WORKER_PORT=$(jq -r .CLAUDE_MEM_WORKER_PORT ~/.claude-mem/settings.json)
+curl http://127.0.0.1:$WORKER_PORT/api/health
 # Should return: {"status":"ok"}
 ```
 
@@ -115,7 +116,7 @@ This 3-layer approach provides ~10x token savings compared to fetching full deta
 
 ### MCP Server Connection Failed
 
-1. Verify the worker is running: `curl http://localhost:37777/api/health`
+1. Verify the worker is running: `curl http://127.0.0.1:$WORKER_PORT/api/health`
 2. Check the MCP server path in configuration
 3. Look for errors in Claude Desktop logs
 
@@ -133,9 +134,9 @@ This 3-layer approach provides ~10x token savings compared to fetching full deta
 
 ### Search Returns No Results
 
-1. Ensure claude-mem has recorded sessions (check http://localhost:37777)
+1. Ensure claude-mem has recorded sessions (check http://127.0.0.1:$WORKER_PORT)
 2. Verify the database exists: `ls ~/.claude-mem/claude-mem.db`
-3. Test the API directly: `curl "http://localhost:37777/api/search?query=test"`
+3. Test the API directly: `curl "http://127.0.0.1:$WORKER_PORT/api/search?query=test"`
 
 ## Related
 

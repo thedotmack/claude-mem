@@ -7,9 +7,9 @@
 
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { spawnSync } from 'child_process';
-import pc from 'picocolors';
-import { isPluginInstalled, marketplaceDirectory } from '../utils/paths.js';
+import { styleText } from 'node:util';
+import { isPluginInstalled, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
+import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../../shared/paths.js';
 
@@ -23,19 +23,25 @@ interface CheckResult {
   required: boolean;
 }
 
-const IS_WINDOWS = process.platform === 'win32';
-
-function probeVersion(bin: string): string | null {
+function probeVersion(bin: 'bun' | 'uv'): string | null {
   try {
-    const result = spawnSync(bin, ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
-    });
-    return result.status === 0 ? result.stdout.trim() : null;
-  } catch {
+    return bin === 'bun' ? getBunVersion() : getUvVersion();
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    console.warn(`[doctor] Failed to probe \`${bin} --version\`:`, err);
     return null;
   }
+}
+
+async function probeWorkerHealth(workerHost: string, workerPort: string): Promise<{ status: CheckStatus; detail: string }> {
+  const workerUrl = `http://${workerHost}:${workerPort}`;
+  const res = await fetch(`${workerUrl}/api/health`, {
+    signal: AbortSignal.timeout(3000),
+  });
+  if (res.ok) {
+    return { status: 'ok', detail: `healthy at ${workerUrl}` };
+  }
+  return { status: 'warn', detail: `reachable but unhealthy (HTTP ${res.status}) at ${workerUrl}` };
 }
 
 export async function runDoctorCommand(): Promise<void> {
@@ -69,31 +75,36 @@ export async function runDoctorCommand(): Promise<void> {
     required: true,
   });
 
-  // 4. Marketplace dependencies materialized.
-  const marketplaceNodeModules = join(marketplaceDirectory(), 'node_modules');
+  // 4. Marketplace runtime root materialized.
+  const marketplaceDir = marketplaceDirectory();
+  const marketplaceNodeModules = join(marketplaceDir, 'node_modules');
+  const marketplaceMarker = join(marketplaceDir, '.install-version');
   const depsPresent = existsSync(marketplaceNodeModules);
+  const markerPresent = existsSync(marketplaceMarker);
+  const marketplaceCurrent = installed && isInstallCurrent(marketplaceDir, readPluginVersion());
+  const marketplaceDetail = marketplaceCurrent
+    ? 'node_modules and install marker present'
+    : !depsPresent
+      ? 'node_modules missing — run `npx claude-mem repair`'
+      : !markerPresent
+        ? 'install marker missing — run `npx claude-mem repair`'
+        : 'install marker stale — run `npx claude-mem repair`';
   checks.push({
-    name: 'Marketplace deps',
-    status: installed ? (depsPresent ? 'ok' : 'fail') : 'warn',
-    detail: depsPresent ? 'node_modules present' : 'missing — run `npx claude-mem repair`',
+    name: 'Marketplace runtime',
+    status: installed ? (marketplaceCurrent ? 'ok' : 'fail') : 'warn',
+    detail: marketplaceDetail,
     required: installed,
   });
 
   // 5. Worker health.
+  const workerHost = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_HOST');
   const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
   let workerStatus: CheckStatus = 'fail';
-  let workerDetail = `no response on port ${workerPort} — start with \`npx claude-mem start\``;
+  let workerDetail = `no response at http://${workerHost}:${workerPort} — start with \`npx claude-mem start\``;
   try {
-    const res = await fetch(`http://127.0.0.1:${workerPort}/api/health`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (res.ok) {
-      workerStatus = 'ok';
-      workerDetail = `healthy at http://127.0.0.1:${workerPort}`;
-    } else {
-      workerStatus = 'warn';
-      workerDetail = `reachable but unhealthy (HTTP ${res.status}) on port ${workerPort}`;
-    }
+    const worker = await probeWorkerHealth(workerHost, workerPort);
+    workerStatus = worker.status;
+    workerDetail = worker.detail;
   } catch {
     // leave as fail
   }
@@ -125,20 +136,20 @@ export async function runDoctorCommand(): Promise<void> {
   }
 
   const icon = (s: CheckStatus): string =>
-    s === 'ok' ? pc.green('✓') : s === 'warn' ? pc.yellow('!') : pc.red('✗');
+    s === 'ok' ? styleText('green', '✓') : s === 'warn' ? styleText('yellow', '!') : styleText('red', '✗');
 
-  console.log(pc.bold('\nclaude-mem doctor\n'));
+  console.log(styleText('bold', '\nclaude-mem doctor\n'));
   for (const c of checks) {
-    console.log(`  ${icon(c.status)} ${c.name.padEnd(22)} ${pc.dim(c.detail)}`);
+    console.log(`  ${icon(c.status)} ${c.name.padEnd(22)} ${styleText('dim', c.detail)}`);
   }
 
   const hardFailures = checks.filter((c) => c.required && c.status === 'fail');
   console.log('');
   if (hardFailures.length === 0) {
-    console.log(pc.green('All required checks passed.'));
+    console.log(styleText('green', 'All required checks passed.'));
     process.exit(0);
   } else {
-    console.log(pc.red(`${hardFailures.length} required check(s) failed — see remediation above.`));
+    console.log(styleText('red', `${hardFailures.length} required check(s) failed — see remediation above.`));
     process.exit(1);
   }
 }

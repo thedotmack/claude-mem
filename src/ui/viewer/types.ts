@@ -99,23 +99,3 @@ export interface Settings {
   CLAUDE_MEM_PREFER_COST_OPTIMIZATION?: string;
   CLAUDE_MEM_TASKS?: string;
 }
-
-export interface WorkerStats {
-  version?: string;
-  uptime?: number;
-  activeSessions?: number;
-  sseClients?: number;
-}
-
-export interface DatabaseStats {
-  size?: number;
-  observations?: number;
-  sessions?: number;
-  summaries?: number;
-  firstObservationAt?: string | null;
-}
-
-export interface Stats {
-  worker?: WorkerStats;
-  database?: DatabaseStats;
-}

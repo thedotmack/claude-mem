@@ -1,7 +1,10 @@
-import { afterEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, describe, expect, mock, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import * as realPaths from '../../../src/shared/paths.js';
+
+const realPathsSnapshot = { ...realPaths };
 
 describe('redis queue config', () => {
   const previousEnv = new Map<string, string | undefined>();
@@ -23,6 +26,10 @@ describe('redis queue config', () => {
     mock.restore();
   });
 
+  afterAll(() => {
+    mock.module('../../../src/shared/paths.js', () => realPathsSnapshot);
+  });
+
   test('loads queue settings from settings file with env override precedence', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-redis-config-'));
     const settingsPath = join(tempDir, 'settings.json');
@@ -36,6 +43,8 @@ describe('redis queue config', () => {
     }), 'utf-8');
 
     mock.module('../../../src/shared/paths.js', () => ({
+      ...realPathsSnapshot,
+      paths: realPaths.paths,
       USER_SETTINGS_PATH: settingsPath,
     }));
 

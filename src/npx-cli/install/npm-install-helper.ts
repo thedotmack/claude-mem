@@ -14,12 +14,10 @@
  * `trustedDependencies` (Bun-only), so we suppress scripts at the CLI level.
  */
 
-import { spawnSync } from 'child_process';
+import { spawn } from 'child_process';
+import { IS_WINDOWS } from '../utils/paths.js';
 
-const IS_WINDOWS = process.platform === 'win32';
-
-const TIMEOUT_FIRST_RUN_MS = 5 * 60 * 1000;
-const TIMEOUT_SUBSEQUENT_MS = 2 * 60 * 1000;
+const TIMEOUT_MS = 5 * 60 * 1000;
 
 export interface NpmResult {
   code: number;
@@ -28,10 +26,10 @@ export interface NpmResult {
   timedOut: boolean;
 }
 
-export function resolveInstallTimeoutMs(isFirstRun: boolean): number {
+export function resolveInstallTimeoutMs(): number {
   const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
   if (override && Number.isFinite(Number(override))) return Number(override);
-  return isFirstRun ? TIMEOUT_FIRST_RUN_MS : TIMEOUT_SUBSEQUENT_MS;
+  return TIMEOUT_MS;
 }
 
 /** Detect an npm ERESOLVE peer-dependency conflict in captured stderr. */
@@ -50,20 +48,46 @@ export function extractEresolveBlock(stderr: string): string {
   return stderr.slice(start).trim();
 }
 
-export function runNpmStrict(cwd: string, flags: string[], isFirstRun = true): NpmResult {
-  const result = spawnSync('npm', flags, {
-    cwd,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: resolveInstallTimeoutMs(isFirstRun),
-    ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
-  });
+// Async (spawn, not spawnSync) so the installer's clack spinner keeps
+// animating during a multi-minute npm install — a blocked event loop freezes
+// the spinner mid-frame and the install looks stalled.
+export function runNpmStrict(cwd: string, flags: string[]): Promise<NpmResult> {
+  return new Promise((resolve) => {
+    const child = spawn('npm', flags, {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
+    });
 
-  const timedOut = result.signal === 'SIGTERM' || (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT';
-  return {
-    code: typeof result.status === 'number' ? result.status : (timedOut ? 124 : 1),
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? (result.error ? String(result.error.message) : ''),
-    timedOut,
-  };
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let spawnError: Error | null = null;
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+    }, resolveInstallTimeoutMs());
+
+    child.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
+    child.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+    let settled = false;
+    const settle = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        code: typeof code === 'number' ? code : (timedOut ? 124 : 1),
+        stdout,
+        stderr: stderr || (spawnError ? String(spawnError.message) : ''),
+        timedOut,
+      });
+    };
+
+    // 'close' never fires when the process fails to spawn (ENOENT), so the
+    // error handler must settle too.
+    child.on('error', (error) => { spawnError = error; settle(null); });
+    child.on('close', (code) => { settle(code); });
+  });
 }

@@ -138,6 +138,15 @@ function formatFileTimeline(
 
 export const fileContextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
+    if (input.agentId) {
+      logger.debug('HOOK', 'Skipping file context: subagent context detected', {
+        sessionId: input.sessionId,
+        agentId: input.agentId,
+        agentType: input.agentType
+      });
+      return { continue: true, suppressOutput: true };
+    }
+
     const toolInput = input.toolInput as Record<string, unknown> | undefined;
     const filePaths = Array.isArray(toolInput?.filePaths)
       ? (toolInput.filePaths as unknown[]).filter((p): p is string => typeof p === 'string').slice(0, MAX_FILE_CONTEXT_PATHS)

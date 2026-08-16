@@ -45,11 +45,7 @@ export function stripTags(input: string): { stripped: string; counts: Record<Tag
   return { stripped: stripped.trim(), counts };
 }
 
-export function stripMemoryTagsFromJson(content: string): string {
-  return stripTags(content).stripped;
-}
-
-export function stripMemoryTagsFromPrompt(content: string): string {
+export function stripMemoryTags(content: string): string {
   return stripTags(content).stripped;
 }
 

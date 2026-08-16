@@ -24,10 +24,13 @@ function findGitRepoRoot(dir: string): string | null {
       cwd: dir,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     }).trim();
     return root || null;
-  } catch {
+  } catch (error: unknown) {
+    const err = error instanceof Error ? error : new Error(String(error));
     // Not a git repo, git not installed, or dir does not exist — fall back to basename.
+    logger.debug('PROJECT_NAME', 'git rev-parse failed, falling back to basename', { dir }, err);
     return null;
   }
 }
@@ -81,7 +84,11 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
   }
 
   const expandedCwd = expandTilde(cwd);
-  const worktreeInfo = detectWorktree(expandedCwd);
+  // #3262 — detectWorktree stats `<cwd>/.git`, which only exists at the
+  // worktree root. Resolve the git working-tree root first (same pattern as
+  // getProjectName / #2663) so sessions started in a subdirectory still get
+  // the parent/worktree compound key.
+  const worktreeInfo = detectWorktree(findGitRepoRoot(expandedCwd) ?? expandedCwd);
 
   if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
     const composite = `${worktreeInfo.parentProjectName}/${cwdProjectName}`;

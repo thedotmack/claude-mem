@@ -34,10 +34,4 @@ export class SessionCompletionHandler {
 
     logger.info('SESSION', 'Session finalized', { sessionId: sessionDbId });
   }
-
-  async completeByDbId(sessionDbId: number): Promise<void> {
-    await this.finalizeSession(sessionDbId);
-
-    await this.sessionManager.deleteSession(sessionDbId);
-  }
 }

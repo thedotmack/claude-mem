@@ -3,7 +3,7 @@ import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, renameSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { getWorkerPort } from '../../shared/worker-utils.js';
+import { getWorkerHost, getWorkerPort } from '../../shared/worker-utils.js';
 import { DATA_DIR } from '../../shared/paths.js';
 import { getBunAbsolutePath as findBunPath, getWorkerServiceAbsolutePath as findWorkerServicePath } from './install-paths.js';
 
@@ -78,33 +78,6 @@ export function unregisterWindsurfProject(workspacePath: string): void {
   }
 }
 
-export async function updateWindsurfContextForProject(projectName: string, workspacePath: string, port: number): Promise<void> {
-  const registry = readWindsurfRegistry();
-  const entry = registry[workspacePath];
-
-  if (!entry) return; 
-
-  try {
-    const response = await fetch(
-      `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`
-    );
-
-    if (!response.ok) return;
-
-    const context = await response.text();
-    if (!context || !context.trim()) return;
-
-    writeWindsurfContextFile(workspacePath, context);
-    logger.debug('WINDSURF', 'Updated context file', { projectName, workspacePath });
-  } catch (error) {
-    if (error instanceof Error) {
-      logger.error('WORKER', 'Failed to update context file', { projectName, workspacePath }, error);
-    } else {
-      logger.error('WORKER', 'Failed to update context file', { projectName, workspacePath }, new Error(String(error)));
-    }
-  }
-}
-
 export function writeWindsurfContextFile(workspacePath: string, context: string): void {
   const rulesDir = path.join(workspacePath, '.windsurf', 'rules');
   const rulesFile = path.join(rulesDir, 'claude-mem-context.md');
@@ -142,7 +115,8 @@ function buildHookCommand(bunPath: string, workerServicePath: string, eventName:
 
   const hookCommand = eventToCommand[eventName] ?? 'observation';
 
-  return `"${bunPath}" "${workerServicePath}" hook windsurf ${hookCommand}`;
+  const callOperator = process.platform === 'win32' ? '& ' : '';
+  return `${callOperator}"${bunPath}" "${workerServicePath}" hook windsurf ${hookCommand}`;
 }
 
 function mergeAndWriteHooksJson(
@@ -293,11 +267,12 @@ async function fetchWindsurfContextFromWorker(
   projectName: string,
   workspaceRoot: string,
 ): Promise<boolean> {
-  const healthResponse = await fetch(`http://127.0.0.1:${port}/api/readiness`);
+  const workerUrl = `http://${getWorkerHost()}:${port}`;
+  const healthResponse = await fetch(`${workerUrl}/api/readiness`);
   if (!healthResponse.ok) return false;
 
   const contextResponse = await fetch(
-    `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`,
+    `${workerUrl}/api/context/inject?project=${encodeURIComponent(projectName)}`,
   );
   if (!contextResponse.ok) return false;
 
@@ -420,38 +395,4 @@ export function checkWindsurfHooksStatus(): number {
 
   console.log('');
   return 0;
-}
-
-export async function handleWindsurfCommand(subcommand: string, _args: string[]): Promise<number> {
-  switch (subcommand) {
-    case 'install':
-      return installWindsurfHooks();
-
-    case 'uninstall':
-      return uninstallWindsurfHooks();
-
-    case 'status':
-      return checkWindsurfHooksStatus();
-
-    default: {
-      console.log(`
-Claude-Mem Windsurf Integration
-
-Usage: claude-mem windsurf <command>
-
-Commands:
-  install     Install Windsurf hooks (user-level, ~/.codeium/windsurf/hooks.json)
-  uninstall   Remove Windsurf hooks
-  status      Check installation status
-
-Examples:
-  claude-mem windsurf install      # Install hooks globally
-  claude-mem windsurf uninstall    # Remove hooks
-  claude-mem windsurf status       # Check if hooks are installed
-
-For more info: https://docs.claude-mem.ai/windsurf
-      `);
-      return 0;
-    }
-  }
 }

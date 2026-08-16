@@ -12,6 +12,24 @@
 import { ClassifiedProviderError, isClassified } from './provider-errors.js';
 import { logger } from '../../utils/logger.js';
 
+/**
+ * Parse Retry-After header (seconds or HTTP-date).
+ * Returns ms or undefined.
+ */
+export function parseRetryAfterMs(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (!Number.isNaN(seconds) && seconds >= 0) {
+    return Math.floor(seconds * 1000);
+  }
+  const dateMs = Date.parse(value);
+  if (!Number.isNaN(dateMs)) {
+    const delta = dateMs - Date.now();
+    return delta > 0 ? delta : 0;
+  }
+  return undefined;
+}
+
 export interface RetryOptions {
   /** Maximum retry attempts (in addition to the initial attempt). Cap=2 by default for non-idempotent POSTs. */
   maxRetries?: number;

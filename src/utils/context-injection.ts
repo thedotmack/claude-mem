@@ -1,6 +1,7 @@
 
 import path from 'path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { toBmpSafe } from './bmp-safe.js';
 
 export const CONTEXT_TAG_OPEN = '<claude-mem-context>';
 export const CONTEXT_TAG_CLOSE = '</claude-mem-context>';
@@ -13,7 +14,9 @@ export function injectContextIntoMarkdownFile(
   const parentDirectory = path.dirname(filePath);
   mkdirSync(parentDirectory, { recursive: true });
 
-  const wrappedContent = `${CONTEXT_TAG_OPEN}\n${contextContent}\n${CONTEXT_TAG_CLOSE}`;
+  // #2787: strip astral (surrogate-pair) code points so a Claude Code context
+  // truncation can't split a pair into a lone surrogate and brick the session.
+  const wrappedContent = `${CONTEXT_TAG_OPEN}\n${toBmpSafe(contextContent)}\n${CONTEXT_TAG_CLOSE}`;
 
   if (existsSync(filePath)) {
     let existingContent = readFileSync(filePath, 'utf-8');

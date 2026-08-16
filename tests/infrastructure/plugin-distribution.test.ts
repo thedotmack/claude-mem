@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'bun:test';
-import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { buildShellCommand } from '../../src/build/hook-shell-template.js';
+import { buildCodexWindowsCommand, buildShellCommand } from '../../src/build/hook-shell-template.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '../..');
@@ -24,6 +24,15 @@ function commandHooksFrom(relativePath: string): string[] {
   );
 }
 
+function commandHookEntriesFrom(relativePath: string): any[] {
+  const parsed = readJson(relativePath);
+  return Object.values(parsed.hooks ?? {}).flatMap((matchers: any) =>
+    matchers.flatMap((matcher: any) =>
+      (matcher.hooks ?? []).filter((hook: any) => hook.type === 'command')
+    )
+  );
+}
+
 function mcpStartupCommandFrom(relativePath: string): string {
   const parsed = readJson(relativePath);
   return parsed.mcpServers['mcp-search'].args[1];
@@ -31,6 +40,7 @@ function mcpStartupCommandFrom(relativePath: string): string {
 
 describe('Plugin Distribution - Skills', () => {
   const skillPath = path.join(projectRoot, 'plugin/skills/mem-search/SKILL.md');
+  const modeCreatorPath = path.join(projectRoot, 'plugin/skills/mode-creator/SKILL.md');
 
   it('should include plugin/skills/mem-search/SKILL.md', () => {
     expect(existsSync(skillPath)).toBe(true);
@@ -55,6 +65,12 @@ describe('Plugin Distribution - Skills', () => {
     expect(content).toContain('timeline');
     expect(content).toContain('get_observations');
   });
+
+  it('should include the mode creator workflow and installers', () => {
+    expect(existsSync(modeCreatorPath)).toBe(true);
+    expect(existsSync(path.join(projectRoot, 'plugin/skills/mode-creator/scripts/install-mode.mjs'))).toBe(true);
+    expect(existsSync(path.join(projectRoot, 'plugin/skills/mode-creator/scripts/configure-telegram.mjs'))).toBe(true);
+  });
 });
 
 describe('Plugin Distribution - Required Files', () => {
@@ -64,7 +80,10 @@ describe('Plugin Distribution - Required Files', () => {
     'plugin/.claude-plugin/plugin.json',
     'plugin/.codex-plugin/plugin.json',
     'plugin/.mcp.json',
+    'plugin/sqlite/SessionStore.js',
+    'plugin/sqlite/observations/files.js',
     'plugin/skills/mem-search/SKILL.md',
+    'plugin/skills/mode-creator/SKILL.md',
     '.agents/plugins/marketplace.json',
   ];
 
@@ -82,6 +101,43 @@ describe('Plugin Distribution - Codex Marketplace', () => {
     const marketplace = JSON.parse(readFileSync(marketplacePath, 'utf-8'));
 
     expect(marketplace.plugins[0].source.path).toBe('./plugin');
+  });
+
+  it('ships Codex hooks with only Codex-supported root keys', () => {
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    expect(Object.keys(codexHooks).sort()).toEqual(['hooks']);
+  });
+
+  it('sets the Codex hook marker on every Codex command', () => {
+    for (const command of commandHooksFrom('plugin/hooks/codex-hooks.json')) {
+      expect(command).toContain('CLAUDE_MEM_CODEX_HOOK=1');
+    }
+  });
+
+  it('sets Windows Codex hook overrides without POSIX-only shell syntax', () => {
+    const entries = commandHookEntriesFrom('plugin/hooks/codex-hooks.json');
+    const posixOnlyTokens = ['$(', '${', '[ -', 'printenv', 'export PATH', 'command -v', '2>/dev/null', 'while IFS'];
+
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) {
+      expect(typeof entry.commandWindows).toBe('string');
+      expect(entry.commandWindows).toContain('node -e');
+      expect(entry.commandWindows).toContain('CLAUDE_MEM_CODEX_HOOK');
+      expect(entry.commandWindows).toContain('bun-runner.js');
+      expect(entry.commandWindows).toContain('worker-service.cjs');
+      expect(entry.commandWindows).toContain('plugins');
+      expect(entry.commandWindows).toContain('cache');
+      expect(entry.commandWindows).toContain('marketplaces');
+      for (const token of posixOnlyTokens) {
+        expect(entry.commandWindows).not.toContain(token);
+      }
+    }
+  });
+
+  it('ships a single Codex SessionStart command', () => {
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    expect(codexHooks.hooks.SessionStart[0].hooks).toHaveLength(1);
+    expect(codexHooks.hooks.SessionStart[0].hooks[0].commandWindows).toContain('version-check.js');
   });
 
   it('MCP launcher can recover without plugin root environment variables', () => {
@@ -129,21 +185,24 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
 });
 
 describe('Plugin Distribution - Startup Root Resolution', () => {
-  it('MCP startup commands should have config-dir based non-empty fallbacks', () => {
-    for (const relativePath of ['plugin/.mcp.json']) {
-      const command = mcpStartupCommandFrom(relativePath);
+  it('MCP startup command resolves the plugin root cross-platform (#2792)', () => {
+    // The launcher is now a cross-platform `node -e` payload (no `sh`), so it
+    // spawns on Windows without Git Bash. It must still resolve the plugin root
+    // with config-dir + env fallbacks and try cache roots before marketplaces.
+    const command = mcpStartupCommandFrom('plugin/.mcp.json');
 
-      expect(command).toContain('${CLAUDE_CONFIG_DIR:-$HOME/.claude}');
-      expect(command).toContain('_E="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}"');
-      expect(command).toContain('while IFS= read -r _R');
-      expect(command).toContain('$_C/plugins/marketplaces/thedotmack/plugin');
-      expect(command).toContain('$_C/plugins/cache/thedotmack/claude-mem');
-      expect(command).toContain('[ -f "$_Q/scripts/mcp-server.cjs" ]');
-      expect(command).not.toContain('"/scripts/mcp-server.cjs"');
-      expect(command.indexOf('$_C/plugins/cache/thedotmack/claude-mem')).toBeLessThan(
-        command.indexOf('$_C/plugins/marketplaces/thedotmack/plugin')
-      );
-    }
+    expect(command).toContain('CLAUDE_CONFIG_DIR');
+    expect(command).toContain('.claude');
+    expect(command).toContain('CLAUDE_PLUGIN_ROOT');
+    expect(command).toContain('PLUGIN_ROOT');
+    expect(command).toContain('plugins/marketplaces/thedotmack/plugin');
+    expect(command).toContain('plugins/cache/thedotmack/claude-mem');
+    expect(command).toContain('mcp-server.cjs');
+    // No bare absolute "/scripts/..." path leaks through.
+    expect(command).not.toContain('"/scripts/mcp-server.cjs"');
+    expect(command.indexOf('plugins/cache/thedotmack/claude-mem')).toBeLessThan(
+      command.indexOf('plugins/marketplaces/thedotmack/plugin')
+    );
   });
 
   it('Codex hook commands should have config-dir based non-empty fallbacks', () => {
@@ -183,6 +242,21 @@ describe('Plugin Distribution - package.json Files Field', () => {
     expect(packageJson.files).toContain('plugin/hooks');
     expect(packageJson.files).toContain('plugin/skills');
     expect(packageJson.files).toContain('plugin/scripts/*.cjs');
+    expect(packageJson.files).toContain('plugin/sqlite');
+  });
+
+  it('npm tarball includes sqlite runtime modules required by the worker', () => {
+    const result = spawnSync('npm', ['pack', '--dry-run', '--json'], {
+      cwd: projectRoot,
+      encoding: 'utf-8',
+    });
+
+    expect(result.status).toBe(0);
+    const packed = JSON.parse(result.stdout);
+    const filePaths = new Set(packed[0].files.map((file: { path: string }) => file.path));
+
+    expect(filePaths.has('plugin/sqlite/SessionStore.js')).toBe(true);
+    expect(filePaths.has('plugin/sqlite/observations/files.js')).toBe(true);
   });
 });
 
@@ -193,6 +267,8 @@ describe('Plugin Distribution - Build Script Verification', () => {
 
     expect(content).toContain('plugin/skills/mem-search/SKILL.md');
     expect(content).toContain('plugin/hooks/hooks.json');
+    expect(content).toContain('plugin/sqlite/SessionStore.js');
+    expect(content).toContain('plugin/sqlite/observations/files.js');
     expect(content).toContain('plugin/.claude-plugin/plugin.json');
   });
 });
@@ -227,6 +303,24 @@ describe('Plugin Distribution - Setup Hook (#1547)', () => {
   });
 });
 
+describe('Plugin Distribution - Non-blocking bookkeeping hooks (#3206)', () => {
+  it('runs observation, file context, and summarization asynchronously', () => {
+    const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
+
+    const postToolUse = parsed.hooks.PostToolUse[0].hooks[0];
+    const preToolUse = parsed.hooks.PreToolUse[0].hooks[0];
+    const stop = parsed.hooks.Stop[0].hooks[0];
+
+    expect(postToolUse.command).toContain('observation');
+    expect(postToolUse.async).toBe(true);
+    expect(preToolUse.command).toContain('file-context');
+    expect(preToolUse.async).toBe(true);
+    expect(stop.command).toContain('summarize');
+    expect(stop.async).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Spawn-contract templating (plans/02-spawn-contract-templating.md)
 // ---------------------------------------------------------------------------
@@ -241,16 +335,39 @@ const claudeHook = (tail: string[], extra: Record<string, unknown> = {}) => buil
 const codexHook = (tail: string[]) => buildShellCommand({
   host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
   trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
+  extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
+});
+const codexStartupHook = () => buildShellCommand({
+  host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
+  trailingCommand: [
+    '_V=$(CLAUDE_MEM_CODEX_HOOK=1 node "$_P/scripts/version-check.js" || true);',
+    'if [ -n "$_V" ]; then printf \'%s\\n\' "$_V"; else',
+    'CLAUDE_MEM_CODEX_HOOK=1', ...ccTrailing('hook', 'codex', 'context'),
+    '; fi',
+  ],
+  notFoundMessage: 'claude-mem: plugin scripts not found',
+});
+const codexHookPair = (tail: string[], options: { startupVersionCheck?: boolean } = {}) => ({
+  command: options.startupVersionCheck ? codexStartupHook() : codexHook(tail),
+  commandWindows: buildCodexWindowsCommand(tail, options),
 });
 
-const RULE_A_EXPECTATIONS: Record<string, Record<string, string>> = {
+type RuleAExpectation = string | { command: string; commandWindows: string };
+
+const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
   'plugin/hooks/hooks.json': {
     'Setup.0.0': buildShellCommand({
       host: 'claude-code-setup', requireFile: 'version-check.js',
       trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
       notFoundMessage: 'claude-mem: version-check.js not found',
     }),
-    'SessionStart.0.0': claudeHook(['start'], { trailingJson: { continue: true, suppressOutput: true } }),
+    // `start` already prints its own single, valid status JSON
+    // (buildStatusOutput → {"continue":true,"status":"ready","suppressOutput":true}),
+    // so NO trailingJson echo is appended — a second echoed object would
+    // concatenate two JSON documents on stdout, which Claude Code cannot parse,
+    // causing it to ignore suppressOutput and render the raw JSON at the top of
+    // every session.
+    'SessionStart.0.0': claudeHook(['start']),
     'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
     'UserPromptSubmit.0.0': claudeHook(['hook', 'claude-code', 'session-init']),
     'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
@@ -258,23 +375,18 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, string>> = {
     'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
   },
   'plugin/hooks/codex-hooks.json': {
-    'SessionStart.0.0': buildShellCommand({
-      host: 'codex-cli', requireFile: 'version-check.js', extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
-      trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
-      notFoundMessage: 'claude-mem: version-check.js not found',
-    }),
-    'SessionStart.0.1': codexHook(['start']),
-    'SessionStart.0.2': codexHook(['hook', 'codex', 'context']),
-    'UserPromptSubmit.0.0': codexHook(['hook', 'codex', 'session-init']),
-    'PreToolUse.0.0': codexHook(['hook', 'codex', 'file-context']),
-    'PostToolUse.0.0': codexHook(['hook', 'codex', 'observation']),
-    'Stop.0.0': codexHook(['hook', 'codex', 'summarize']),
+    'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context'], { startupVersionCheck: true }),
+    'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
+    'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
+    'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
+    'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
   },
 };
 
 const MCP_EXPECTED = buildShellCommand({
+  // The mcp Node launcher derives its spawn target from requireFile; it ignores
+  // trailingCommand, so none is passed (see buildMcpNodeLauncher).
   host: 'mcp', requireFile: 'mcp-server.cjs',
-  trailingCommand: ['exec', 'node', '"$_P/scripts/mcp-server.cjs"'],
   notFoundMessage: 'claude-mem: mcp server not found',
   mcpExtraCandidates: ['$PWD/plugin', '$PWD'],
   mcpExtraCacheRoots: [
@@ -283,9 +395,13 @@ const MCP_EXPECTED = buildShellCommand({
   ],
 });
 
-function hookCommandByPath(parsed: any, dottedPath: string): string | null {
+function hookEntryByPath(parsed: any, dottedPath: string): any | null {
   const [event, groupIdx, hookIdx] = dottedPath.split('.');
-  return parsed.hooks?.[event]?.[Number(groupIdx)]?.hooks?.[Number(hookIdx)]?.command ?? null;
+  return parsed.hooks?.[event]?.[Number(groupIdx)]?.hooks?.[Number(hookIdx)] ?? null;
+}
+
+function hookCommandByPath(parsed: any, dottedPath: string): string | null {
+  return hookEntryByPath(parsed, dottedPath)?.command ?? null;
 }
 
 describe('Spawn-Contract Templating - Rule A generator parity', () => {
@@ -293,8 +409,12 @@ describe('Spawn-Contract Templating - Rule A generator parity', () => {
     for (const [dottedPath, expected] of Object.entries(commands)) {
       it(`${filePath} [${dottedPath}] equals buildShellCommand output`, () => {
         const parsed = readJson(filePath);
-        const actual = hookCommandByPath(parsed, dottedPath);
-        expect(actual).toBe(expected);
+        const entry = hookEntryByPath(parsed, dottedPath);
+        const expectedCommand = typeof expected === 'string' ? expected : expected.command;
+        expect(entry?.command ?? null).toBe(expectedCommand);
+        if (typeof expected !== 'string') {
+          expect(entry?.commandWindows ?? null).toBe(expected.commandWindows);
+        }
       });
     }
   }
@@ -308,14 +428,20 @@ describe('Spawn-Contract Templating - Rule A generator parity', () => {
     // The placeholder may appear only inside the _E="${CLAUDE_PLUGIN_ROOT:-...}"
     // expansion, never as a bare `${CLAUDE_PLUGIN_ROOT}` token that would reach
     // the binary unsubstituted.
-    const all = [
-      ...Object.values(RULE_A_EXPECTATIONS).flatMap((c) => Object.values(c)),
-      MCP_EXPECTED,
-    ];
-    for (const command of all) {
+    const shCommands = Object.values(RULE_A_EXPECTATIONS).flatMap((c) =>
+      Object.values(c).map((expectation) =>
+        typeof expectation === 'string' ? expectation : expectation.command
+      )
+    );
+    for (const command of shCommands) {
       expect(command).not.toMatch(/\$\{CLAUDE_PLUGIN_ROOT\}(?!:-)/);
       expect(command).toContain('_E="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}"');
     }
+    // The MCP node launcher reads env vars directly — it has no `${...}` shell
+    // tokens at all, so a raw placeholder can never reach the binary.
+    expect(MCP_EXPECTED).not.toContain('${CLAUDE_PLUGIN_ROOT}');
+    expect(MCP_EXPECTED).toContain('process.env.CLAUDE_PLUGIN_ROOT');
+    expect(MCP_EXPECTED).toContain('process.env.PLUGIN_ROOT');
   });
 });
 
@@ -377,8 +503,38 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     try {
       for (const { command } of claudeCommands()) {
         const { stdout } = shellEval(instrument(command), { HOME: home });
-        // ls -dt yields a trailing slash; the hook trims it via _R="${_R%/}".
+        // The version-sort producer yields a trailing slash; the hook trims it
+        // via _R="${_R%/}".
         expect(stdout).toContain(`RESOLVED=${cacheRoot}`);
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers the highest cache version over the newest mtime and skips .orphaned_at dirs (2026-07-22 restart storm)', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
+    const cacheBase = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
+    const makeVersion = (version: string) => {
+      const root = path.join(cacheBase, version);
+      mkdirSync(path.join(root, 'scripts'), { recursive: true });
+      for (const file of ['version-check.js', 'bun-runner.js', 'worker-service.cjs']) {
+        writeFileSync(path.join(root, 'scripts', file), '');
+      }
+      return root;
+    };
+    // The storm layout: the OLD version dir carries the .orphaned_at stamp and
+    // the newest mtime; the NEW version dir is older by mtime. The resolver
+    // must pick the new version anyway.
+    const oldRoot = makeVersion('13.11.0');
+    writeFileSync(path.join(oldRoot, '.orphaned_at'), String(Date.now()));
+    const newRoot = makeVersion('13.12.0');
+    const past = new Date(Date.now() - 600_000);
+    utimesSync(newRoot, past, past);
+    try {
+      for (const { command } of claudeCommands()) {
+        const { stdout } = shellEval(instrument(command), { HOME: home });
+        expect(stdout).toContain(`RESOLVED=${newRoot}`);
       }
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -406,8 +562,8 @@ describe('Spawn-Contract Templating - Rule B installers bake absolute paths', ()
   const installerFiles = [
     'src/services/integrations/CursorHooksInstaller.ts',
     'src/services/integrations/WindsurfHooksInstaller.ts',
-    'src/services/integrations/GeminiCliHooksInstaller.ts',
     'src/services/integrations/McpIntegrations.ts',
+    'src/services/integrations/AntigravityCliHooksInstaller.ts',
   ];
 
   for (const file of installerFiles) {
@@ -428,7 +584,6 @@ describe('Spawn-Contract Templating - Rule B installers bake absolute paths', ()
       'getBunAbsolutePath',
       'getNodeAbsolutePath',
       'getPluginRootAbsolutePath',
-      'getVersionCheckAbsolutePath',
     ]) {
       expect(content).toContain(`export function ${name}`);
     }

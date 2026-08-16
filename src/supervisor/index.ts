@@ -152,6 +152,23 @@ export function configureSupervisorSignalHandlers(shutdownHandler: () => Promise
   supervisorSingleton.configureSignalHandlers(shutdownHandler);
 }
 
+/**
+ * The verified-owner PID info from the worker PID file, or null when the file
+ * is missing, unparseable, or names a process that is not a live claude-mem
+ * worker. Read-only sibling of validateWorkerPidFile for callers that need
+ * the pid itself (the hook's stale-worker kill in shared/worker-utils.ts).
+ */
+export function readOwnedWorkerPidInfo(): PidInfo | null {
+  if (!existsSync(PID_FILE)) return null;
+  let pidInfo: PidInfo | null;
+  try {
+    pidInfo = JSON.parse(readFileSync(PID_FILE, 'utf-8')) as PidInfo | null;
+  } catch {
+    return null;
+  }
+  return pidInfo !== null && verifyPidFileOwnership(pidInfo) ? pidInfo : null;
+}
+
 export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): ValidateWorkerPidStatus {
   const pidFilePath = options.pidFilePath ?? PID_FILE;
 

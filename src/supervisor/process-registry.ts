@@ -46,6 +46,18 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
+// Poll until every record's pid is gone or the timeout elapses. Shared by the
+// reapSession wait phase and shutdown.ts's SIGTERM grace period.
+export async function waitForExit(records: ManagedProcessRecord[], timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (records.every(record => !isPidAlive(record.pid))) {
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+}
+
 export interface PidInfo {
   pid: number;
   port: number;
@@ -60,6 +72,32 @@ export interface PidInfo {
 const WINDOWS_START_TOKEN_CACHE_TTL_MS = 5_000;
 const windowsStartTokenCache = new Map<number, { token: string | null; capturedAtMs: number }>();
 
+function queryWindowsCreationDate(pid: number): string | null {
+  // CreationDate is a CIM DATETIME (yyyyMMddHHmmss.ffffff±UTCoffset) that is
+  // unique-enough per (pid, boot) to detect PID reuse. `-NoProfile` keeps it
+  // fast; sanitizeEnv keeps the spawn-env discipline uniform (#2357/#2375).
+  const result = spawnSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `(Get-CimInstance Win32_Process -Filter \"ProcessId=${pid}\").CreationDate.ToString('yyyyMMddHHmmss.ffffff')`
+    ],
+    {
+      encoding: 'utf-8',
+      timeout: 5000,
+      windowsHide: true,
+      env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
+    }
+  );
+  if (result.status === 0) {
+    const trimmed = result.stdout.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  return null;
+}
+
 function captureWindowsStartToken(pid: number): string | null {
   const cached = windowsStartTokenCache.get(pid);
   if (cached && Date.now() - cached.capturedAtMs < WINDOWS_START_TOKEN_CACHE_TTL_MS) {
@@ -68,28 +106,7 @@ function captureWindowsStartToken(pid: number): string | null {
 
   let token: string | null = null;
   try {
-    // CreationDate is a CIM DATETIME (yyyyMMddHHmmss.ffffff±UTCoffset) that is
-    // unique-enough per (pid, boot) to detect PID reuse. `-NoProfile` keeps it
-    // fast; sanitizeEnv keeps the spawn-env discipline uniform (#2357/#2375).
-    const result = spawnSync(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        `(Get-CimInstance Win32_Process -Filter \"ProcessId=${pid}\").CreationDate.ToString('yyyyMMddHHmmss.ffffff')`
-      ],
-      {
-        encoding: 'utf-8',
-        timeout: 5000,
-        windowsHide: true,
-        env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
-      }
-    );
-    if (result.status === 0) {
-      const trimmed = result.stdout.trim();
-      token = trimmed.length > 0 ? trimmed : null;
-    }
+    token = queryWindowsCreationDate(pid);
   } catch (error: unknown) {
     logger.debug('SYSTEM', 'captureProcessStartToken: powershell CIM lookup failed', {
       pid,
@@ -258,10 +275,6 @@ export class ProcessRegistry {
     return this.runtimeProcesses.get(id);
   }
 
-  getByPid(pid: number): ManagedProcessRecord[] {
-    return this.getAll().filter(record => record.pid === pid);
-  }
-
   pruneDeadEntries(): number {
     this.initialize();
 
@@ -324,12 +337,7 @@ export class ProcessRegistry {
       }
     }
 
-    const deadline = Date.now() + REAP_SESSION_SIGTERM_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      const survivors = aliveRecords.filter(r => isPidAlive(r.pid));
-      if (survivors.length === 0) break;
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
+    await waitForExit(aliveRecords, REAP_SESSION_SIGTERM_TIMEOUT_MS);
 
     const survivors = aliveRecords.filter(r => isPidAlive(r.pid));
     for (const record of survivors) {
@@ -490,8 +498,35 @@ const TOTAL_PROCESS_HARD_CAP = 10;
 const SLOT_RECHECK_INTERVAL_MS = 5_000;
 const slotWaiters: Array<() => void> = [];
 
+/**
+ * Slots granted by waitForSlot() that are not yet visible as registry
+ * records. Registration only happens after spawn() returns a PID, and the
+ * caller has a wide await gap (OAuth refresh) between the grant and the
+ * spawn. Without a reservation, every concurrent caller observes the same
+ * stale count and all of them spawn (#3287: 9 agents against a max of 2).
+ */
+let reservedSlots = 0;
+
+export interface SlotReservation {
+  /** Frees the reserved slot. Idempotent: calls after the first are no-ops. */
+  release(): void;
+}
+
+function takeSlotReservation(): SlotReservation {
+  reservedSlots += 1;
+  let released = false;
+  return {
+    release(): void {
+      if (released) return;
+      released = true;
+      reservedSlots -= 1;
+      notifySlotAvailable();
+    },
+  };
+}
+
 function getActiveSdkCount(): number {
-  return getProcessRegistry().getAll().filter(record => record.type === 'sdk').length;
+  return getProcessRegistry().getAll().filter(record => record.type === 'sdk').length + reservedSlots;
 }
 
 function notifySlotAvailable(): void {
@@ -499,14 +534,22 @@ function notifySlotAvailable(): void {
   if (waiter) waiter();
 }
 
-export async function waitForSlot(maxConcurrent: number, signal?: AbortSignal): Promise<void> {
+/**
+ * Waits until an SDK agent slot is free, then reserves it. The count check
+ * and the reservation happen in the same synchronous block, so no concurrent
+ * caller can be granted the same slot. The caller must release the returned
+ * reservation once the spawned process is registered (the registry record
+ * takes over the accounting) or when the spawn fails or never happens:
+ * a leaked reservation would occupy the slot until the worker restarts.
+ */
+export async function waitForSlot(maxConcurrent: number, signal?: AbortSignal): Promise<SlotReservation> {
   getProcessRegistry().pruneDeadEntries();
   const activeCount = getActiveSdkCount();
   if (activeCount >= TOTAL_PROCESS_HARD_CAP) {
     throw new Error(`Hard cap exceeded: ${activeCount} processes in registry (cap=${TOTAL_PROCESS_HARD_CAP}). Refusing to spawn more.`);
   }
 
-  if (activeCount < maxConcurrent) return;
+  if (activeCount < maxConcurrent) return takeSlotReservation();
 
   if (signal?.aborted) {
     throw new Error('waitForSlot aborted before queuing');
@@ -514,7 +557,7 @@ export async function waitForSlot(maxConcurrent: number, signal?: AbortSignal): 
 
   logger.info('PROCESS', `Pool limit reached (${activeCount}/${maxConcurrent}), waiting for slot...`);
 
-  return new Promise<void>((resolve, reject) => {
+  return new Promise<SlotReservation>((resolve, reject) => {
     let recheckTimer: ReturnType<typeof setInterval> | null = null;
     let abortHandler: (() => void) | null = null;
     const cleanup = () => {
@@ -533,7 +576,7 @@ export async function waitForSlot(maxConcurrent: number, signal?: AbortSignal): 
 
       if (count < maxConcurrent) {
         cleanup();
-        resolve();
+        resolve(takeSlotReservation());
       } else {
         slotWaiters.push(onSlot);
       }
@@ -575,9 +618,34 @@ export interface SpawnedSdkProcess {
 export interface SpawnSdkOptions {
   command: string;
   args: string[];
+  extraArgs?: string[];
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
+}
+
+export function normalizeSpawnSdkArgs(args: string[], extraArgs: string[] = []): string[] {
+  const filteredArgs: string[] = [];
+  for (const arg of args) {
+    if (arg === '') {
+      // The SDK encodes optional flag/value pairs as `--flag ''` when the
+      // value is absent. Strip the whole pair, but only when the preceding
+      // token is a long option so positional args are left untouched.
+      if (filteredArgs.length > 0 && filteredArgs[filteredArgs.length - 1].startsWith('--')) {
+        filteredArgs.pop();
+      }
+      continue;
+    }
+    filteredArgs.push(arg);
+  }
+
+  for (const extraArg of extraArgs) {
+    if (extraArg !== '') {
+      filteredArgs.push(extraArg);
+    }
+  }
+
+  return filteredArgs;
 }
 
 export function spawnSdkProcess(
@@ -588,17 +656,7 @@ export function spawnSdkProcess(
 
   const useCmdWrapper = process.platform === 'win32' && options.command.endsWith('.cmd');
   const env = sanitizeEnv(options.env ?? process.env);
-
-  const filteredArgs: string[] = [];
-  for (const arg of options.args) {
-    if (arg === '') {
-      if (filteredArgs.length > 0 && filteredArgs[filteredArgs.length - 1].startsWith('--')) {
-        filteredArgs.pop();
-      }
-      continue;
-    }
-    filteredArgs.push(arg);
-  }
+  const filteredArgs = normalizeSpawnSdkArgs(options.args, options.extraArgs);
 
   const isWin = process.platform === 'win32';
   const child = useCmdWrapper
@@ -636,9 +694,17 @@ export function spawnSdkProcess(
   const pid = child.pid;
   const pgid = pid; 
 
+  // Keep the tail of stderr so a non-zero exit can say WHY at WARN level.
+  // Without this, a CLI that dies at flag parsing ("error: unknown option…")
+  // logs only an opaque {code=1} and the real cause is invisible unless the
+  // worker happens to run at DEBUG.
+  const STDERR_TAIL_MAX_CHARS = 2048;
+  let stderrTail = '';
   if (child.stderr) {
     child.stderr.on('data', (data: Buffer) => {
-      logger.debug('SDK_SPAWN', `[session-${sessionDbId}] stderr: ${data.toString().trim()}`);
+      const text = data.toString();
+      stderrTail = (stderrTail + text).slice(-STDERR_TAIL_MAX_CHARS);
+      logger.debug('SDK_SPAWN', `[session-${sessionDbId}] stderr: ${text.trim()}`);
     });
   }
 
@@ -651,11 +717,22 @@ export function spawnSdkProcess(
     pgid,
   }, child);
 
-  child.on('exit', (code: number | null, signal: string | null) => {
-    if (code !== 0) {
-      logger.warn('SDK_SPAWN', `[session-${sessionDbId}] Claude process exited`, { code, signal, pid });
-    }
+  child.on('exit', () => {
     registry.unregister(recordId);
+  });
+
+  // 'close', not 'exit': 'exit' can fire while piped stderr still holds
+  // buffered data, truncating the tail. 'close' waits for all stdio to drain.
+  child.on('close', (code: number | null, signal: string | null) => {
+    if (code !== 0) {
+      const tail = stderrTail.trim();
+      logger.warn('SDK_SPAWN', `[session-${sessionDbId}] Claude process exited`, {
+        code,
+        signal,
+        pid,
+        ...(tail ? { stderrTail: tail } : {}),
+      });
+    }
   });
 
   if (!child.stdin || !child.stdout || !child.stderr) {
@@ -685,7 +762,23 @@ export function spawnSdkProcess(
   return { process: spawned, pid, pgid };
 }
 
-export function createSdkSpawnFactory(sessionDbId: number) {
+function sigtermDuplicateSdkProcess(record: ManagedProcessRecord, sessionDbId: number): void {
+  if (typeof record.pgid === 'number') {
+    if (process.platform !== 'win32') {
+      process.kill(-record.pgid, 'SIGTERM');
+    } else {
+      process.kill(record.pid, 'SIGTERM');
+    }
+  } else {
+    process.kill(record.pid, 'SIGTERM');
+  }
+  logger.warn('PROCESS', `Killing duplicate SDK process PID ${record.pid} before spawning new one for session ${sessionDbId}`, {
+    existingPid: record.pid,
+    sessionDbId,
+  });
+}
+
+export function createSdkSpawnFactory(sessionDbId: number, slotReservation?: SlotReservation, extraArgs: string[] = []) {
   return (spawnOptions: SpawnSdkOptions): SpawnedSdkProcess => {
     const registry = getProcessRegistry();
 
@@ -693,19 +786,7 @@ export function createSdkSpawnFactory(sessionDbId: number) {
     for (const record of existing) {
       if (!isPidAlive(record.pid)) continue;
       try {
-        if (typeof record.pgid === 'number') {
-          if (process.platform !== 'win32') {
-            process.kill(-record.pgid, 'SIGTERM');
-          } else {
-            process.kill(record.pid, 'SIGTERM');
-          }
-        } else {
-          process.kill(record.pid, 'SIGTERM');
-        }
-        logger.warn('PROCESS', `Killing duplicate SDK process PID ${record.pid} before spawning new one for session ${sessionDbId}`, {
-          existingPid: record.pid,
-          sessionDbId,
-        });
+        sigtermDuplicateSdkProcess(record, sessionDbId);
       } catch (error: unknown) {
         const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
         if (code !== 'ESRCH') {
@@ -720,7 +801,20 @@ export function createSdkSpawnFactory(sessionDbId: number) {
       }
     }
 
-    const result = spawnSdkProcess(sessionDbId, spawnOptions);
+    let result: ReturnType<typeof spawnSdkProcess>;
+    try {
+      result = spawnSdkProcess(sessionDbId, {
+        ...spawnOptions,
+        extraArgs: [...(spawnOptions.extraArgs ?? []), ...extraArgs],
+      });
+    } finally {
+      // The waitForSlot() reservation is consumed here: on success the
+      // process is now a registry record (registered inside spawnSdkProcess)
+      // and takes over the slot accounting; on failure the slot goes back to
+      // the pool. Both statements above are synchronous, so no other caller
+      // can observe the reservation and the record at the same time.
+      slotReservation?.release();
+    }
     if (!result) {
       throw new Error(`Failed to spawn SDK subprocess for session ${sessionDbId}`);
     }

@@ -3,7 +3,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   calculateObservationTokens,
   calculateTokenEconomics,
-} from '../../src/services/context/index.js';
+} from '../../src/services/context/TokenCalculator.js';
 import type { Observation } from '../../src/services/context/types.js';
 import { CHARS_PER_TOKEN_ESTIMATE } from '../../src/services/context/types.js';
 

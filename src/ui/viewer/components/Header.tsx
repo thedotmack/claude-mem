@@ -5,7 +5,6 @@ import { GitHubStarsButton } from './GitHubStarsButton';
 import { useSpinningFavicon } from '../hooks/useSpinningFavicon';
 
 interface HeaderProps {
-  isConnected: boolean;
   projects: string[];
   currentFilter: string;
   onFilterChange: (filter: string) => void;
@@ -18,7 +17,6 @@ interface HeaderProps {
 }
 
 export function Header({
-  isConnected,
   projects,
   currentFilter,
   onFilterChange,

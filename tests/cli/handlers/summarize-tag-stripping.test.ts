@@ -212,3 +212,23 @@ describe('summarizeHandler — privacy tag stripping', () => {
     });
   }
 });
+
+// Migrated from the now-deleted Gemini CLI host-integration compat test file
+// (Phase A removal) — these two checks are unrelated to that integration, they
+// just happened to live in the same file. Preserved here so the platformSource
+// plumbing in summarize.ts keeps regression coverage.
+describe('Summarize handler - platformSource in request body', () => {
+  it('should include platformSource import in summarize.ts', async () => {
+    const { readFileSync } = await import('fs');
+    const src = readFileSync('src/cli/handlers/summarize.ts', 'utf-8');
+    expect(src).toContain('normalizePlatformSource');
+    expect(src).toContain('platform-source');
+  });
+
+  it('should pass platformSource in the summarize request body', async () => {
+    const { readFileSync } = await import('fs');
+    const src = readFileSync('src/cli/handlers/summarize.ts', 'utf-8');
+    expect(src).toContain('platformSource');
+    expect(src).toContain('/api/sessions/summarize');
+  });
+});

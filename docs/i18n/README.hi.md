@@ -1,6 +1,5 @@
 🌐 यह एक स्वचालित अनुवाद है। समुदाय से सुधार का स्वागत है!
 
----
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
@@ -11,52 +10,57 @@
     </picture>
   </a>
   <br>
+  <a href="https://vercel.com/open-source-program">
+    <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" />
+  </a>
 </h1>
 
 <p align="center">
-  <a href="README.zh.md">🇨🇳 中文</a> •
-  <a href="README.zh-tw.md">🇹🇼 繁體中文</a> •
-  <a href="README.ja.md">🇯🇵 日本語</a> •
-  <a href="README.pt-br.md">🇧🇷 Português</a> •
-  <a href="README.ko.md">🇰🇷 한국어</a> •
-  <a href="README.es.md">🇪🇸 Español</a> •
-  <a href="README.de.md">🇩🇪 Deutsch</a> •
-  <a href="README.fr.md">🇫🇷 Français</a>
-  <a href="README.he.md">🇮🇱 עברית</a> •
-  <a href="README.ar.md">🇸🇦 العربية</a> •
-  <a href="README.ru.md">🇷🇺 Русский</a> •
-  <a href="README.pl.md">🇵🇱 Polski</a> •
-  <a href="README.cs.md">🇨🇿 Čeština</a> •
-  <a href="README.nl.md">🇳🇱 Nederlands</a> •
-  <a href="README.tr.md">🇹🇷 Türkçe</a> •
-  <a href="README.uk.md">🇺🇦 Українська</a> •
-  <a href="README.vi.md">🇻🇳 Tiếng Việt</a> •
-  <a href="README.id.md">🇮🇩 Indonesia</a> •
-  <a href="README.th.md">🇹🇭 ไทย</a> •
-  <a href="README.hi.md">🇮🇳 हिन्दी</a> •
-  <a href="README.bn.md">🇧🇩 বাংলা</a> •
-  <a href="README.ur.md">🇵🇰 اردو</a> •
-  <a href="README.ro.md">🇷🇴 Română</a> •
-  <a href="README.sv.md">🇸🇪 Svenska</a> •
-  <a href="README.it.md">🇮🇹 Italiano</a> •
-  <a href="README.el.md">🇬🇷 Ελληνικά</a> •
-  <a href="README.hu.md">🇭🇺 Magyar</a> •
-  <a href="README.fi.md">🇫🇮 Suomi</a> •
-  <a href="README.da.md">🇩🇰 Dansk</a> •
-  <a href="README.no.md">🇳🇴 Norsk</a>
+  <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
+  <a href="docs/i18n/README.zh-tw.md">🇹🇼 繁體中文</a> •
+  <a href="docs/i18n/README.ja.md">🇯🇵 日本語</a> •
+  <a href="docs/i18n/README.pt.md">🇵🇹 Português</a> •
+  <a href="docs/i18n/README.pt-br.md">🇧🇷 Português</a> •
+  <a href="docs/i18n/README.ko.md">🇰🇷 한국어</a> •
+  <a href="docs/i18n/README.es.md">🇪🇸 Español</a> •
+  <a href="docs/i18n/README.de.md">🇩🇪 Deutsch</a> •
+  <a href="docs/i18n/README.fr.md">🇫🇷 Français</a> •
+  <a href="docs/i18n/README.he.md">🇮🇱 עברית</a> •
+  <a href="docs/i18n/README.ar.md">🇸🇦 العربية</a> •
+  <a href="docs/i18n/README.ru.md">🇷🇺 Русский</a> •
+  <a href="docs/i18n/README.pl.md">🇵🇱 Polski</a> •
+  <a href="docs/i18n/README.cs.md">🇨🇿 Čeština</a> •
+  <a href="docs/i18n/README.nl.md">🇳🇱 Nederlands</a> •
+  <a href="docs/i18n/README.tr.md">🇹🇷 Türkçe</a> •
+  <a href="docs/i18n/README.uk.md">🇺🇦 Українська</a> •
+  <a href="docs/i18n/README.vi.md">🇻🇳 Tiếng Việt</a> •
+  <a href="docs/i18n/README.tl.md">🇵🇭 Tagalog</a> •
+  <a href="docs/i18n/README.id.md">🇮🇩 Indonesia</a> •
+  <a href="docs/i18n/README.th.md">🇹🇭 ไทย</a> •
+  <a href="docs/i18n/README.hi.md">🇮🇳 हिन्दी</a> •
+  <a href="docs/i18n/README.bn.md">🇧🇩 বাংলা</a> •
+  <a href="docs/i18n/README.ur.md">🇵🇰 اردو</a> •
+  <a href="docs/i18n/README.ro.md">🇷🇴 Română</a> •
+  <a href="docs/i18n/README.sv.md">🇸🇪 Svenska</a> •
+  <a href="docs/i18n/README.it.md">🇮🇹 Italiano</a> •
+  <a href="docs/i18n/README.el.md">🇬🇷 Ελληνικά</a> •
+  <a href="docs/i18n/README.hu.md">🇭🇺 Magyar</a> •
+  <a href="docs/i18n/README.fi.md">🇫🇮 Suomi</a> •
+  <a href="docs/i18n/README.da.md">🇩🇰 Dansk</a> •
+  <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
 </p>
 
 <h4 align="center"><a href="https://claude.com/claude-code" target="_blank">Claude Code</a> के लिए बनाई गई स्थायी मेमोरी संपीड़न प्रणाली।</h4>
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-13.4.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
+    <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
   </a>
   <a href="https://github.com/thedotmack/awesome-claude-code">
     <img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Claude Code">
@@ -75,13 +79,40 @@
 
 <br>
 
-<p align="center">
-  <a href="https://github.com/thedotmack/claude-mem">
-    <picture>
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/cm-preview.gif" alt="Claude-Mem Preview" width="800">
-    </picture>
-  </a>
-</p>
+<table align="center">
+  <tr>
+    <td align="center">
+      <a href="https://github.com/thedotmack/claude-mem">
+        <picture>
+          <img
+            src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/cm-preview.gif"
+            alt="Claude-Mem Preview"
+            width="500"
+          >
+        </picture>
+      </a>
+    </td>
+    <td align="center">
+      <a href="https://www.star-history.com/#thedotmack/claude-mem&Date">
+        <picture>
+          <source
+            media="(prefers-color-scheme: dark)"
+            srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&theme=dark&legend=top-left"
+          />
+          <source
+            media="(prefers-color-scheme: light)"
+            srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left"
+          />
+          <img
+            alt="Star History Chart"
+            src="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left"
+            width="500"
+          />
+        </picture>
+      </a>
+    </td>
+  </tr>
+</table>
 
 <p align="center">
   <a href="#quick-start">त्वरित शुरुआत</a> •
@@ -101,28 +132,57 @@
 
 ## त्वरित शुरुआत
 
-टर्मिनल में एक नया Claude Code सत्र शुरू करें और निम्नलिखित कमांड दर्ज करें:
+एक ही कमांड से इंस्टॉल करें:
 
+```bash
+npx claude-mem install
 ```
-> /plugin marketplace add thedotmack/claude-mem
 
-> /plugin install claude-mem
+या OpenCode के लिए इंस्टॉल करें:
+
+```bash
+npx claude-mem install --ide opencode
+```
+
+या Antigravity CLI के लिए इंस्टॉल करें ([सेटअप गाइड](https://docs.claude-mem.ai/antigravity-cli/setup)):
+
+```bash
+npx claude-mem install --ide antigravity
+```
+
+या Claude Code के अंदर प्लगइन मार्केटप्लेस से इंस्टॉल करें:
+
+```bash
+/plugin marketplace add thedotmack/claude-mem
+
+/plugin install claude-mem
 ```
 
 Claude Code को पुनः आरंभ करें। पिछले सत्रों का संदर्भ स्वचालित रूप से नए सत्रों में दिखाई देगा।
+
+> **नोट:** Claude-Mem npm पर भी प्रकाशित है, लेकिन `npm install -g claude-mem` केवल **SDK/लाइब्रेरी** इंस्टॉल करता है — यह प्लगइन hooks को रजिस्टर नहीं करता और न ही worker सेवा सेट अप करता है। हमेशा `npx claude-mem install` या ऊपर दिए गए `/plugin` कमांड्स के माध्यम से ही इंस्टॉल करें।
+
+### 🦞 OpenClaw Gateway
+
+एक ही कमांड से [OpenClaw](https://openclaw.ai) gateways पर claude-mem को स्थायी मेमोरी प्लगइन के रूप में इंस्टॉल करें:
+
+```bash
+curl -fsSL https://install.cmem.ai/openclaw.sh | bash
+```
+
+इंस्टॉलर डिपेंडेंसीज़, प्लगइन सेटअप, AI प्रोवाइडर कॉन्फ़िगरेशन, worker स्टार्टअप, और Telegram, Discord, Slack, और अन्य प्लेटफ़ॉर्म्स पर वैकल्पिक रीयल-टाइम अवलोकन फ़ीड को संभालता है। विवरण के लिए [OpenClaw एकीकरण गाइड](https://docs.claude-mem.ai/openclaw-integration) देखें।
 
 **मुख्य विशेषताएं:**
 
 - 🧠 **स्थायी मेमोरी** - संदर्भ सत्रों में बना रहता है
 - 📊 **प्रगतिशील प्रकटीकरण** - टोकन लागत दृश्यता के साथ स्तरित मेमोरी पुनर्प्राप्ति
 - 🔍 **स्किल-आधारित खोज** - mem-search स्किल के साथ अपने प्रोजेक्ट इतिहास को क्वेरी करें
-- 🖥️ **वेब व्यूअर UI** - http://localhost:37777 पर रीयल-टाइम मेमोरी स्ट्रीम
+- 🖥️ **वेब व्यूअर UI** - स्टार्टअप पर प्रिंट किए गए worker URL पर रीयल-टाइम मेमोरी स्ट्रीम
 - 💻 **Claude Desktop स्किल** - Claude Desktop वार्तालापों से मेमोरी खोजें
 - 🔒 **गोपनीयता नियंत्रण** - संवेदनशील सामग्री को स्टोरेज से बाहर रखने के लिए `<private>` टैग का उपयोग करें
 - ⚙️ **संदर्भ कॉन्फ़िगरेशन** - किस संदर्भ को इंजेक्ट किया जाता है, इस पर सूक्ष्म नियंत्रण
 - 🤖 **स्वचालित संचालन** - मैन्युअल हस्तक्षेप की आवश्यकता नहीं
-- 🔗 **उद्धरण** - IDs के साथ पिछले अवलोकनों का संदर्भ दें (http://localhost:37777/api/observation/{id} के माध्यम से एक्सेस करें या http://localhost:37777 पर वेब व्यूअर में सभी देखें)
-- 🧪 **बीटा चैनल** - संस्करण स्विचिंग के माध्यम से Endless Mode जैसी प्रायोगिक सुविधाओं को आज़माएं
+- 🔗 **उद्धरण** - worker API के माध्यम से IDs के साथ पिछले अवलोकनों का संदर्भ दें या वेब व्यूअर में सभी देखें
 
 ---
 
@@ -135,7 +195,6 @@ Claude Code को पुनः आरंभ करें। पिछले स
 - **[इंस्टॉलेशन गाइड](https://docs.claude-mem.ai/installation)** - त्वरित शुरुआत और उन्नत इंस्टॉलेशन
 - **[उपयोग गाइड](https://docs.claude-mem.ai/usage/getting-started)** - Claude-Mem स्वचालित रूप से कैसे काम करता है
 - **[खोज उपकरण](https://docs.claude-mem.ai/usage/search-tools)** - प्राकृतिक भाषा के साथ अपने प्रोजेक्ट इतिहास को क्वेरी करें
-- **[बीटा सुविधाएं](https://docs.claude-mem.ai/beta-features)** - Endless Mode जैसी प्रायोगिक सुविधाओं को आज़माएं
 
 ### सर्वोत्तम अभ्यास
 
@@ -156,6 +215,7 @@ Claude Code को पुनः आरंभ करें। पिछले स
 
 - **[कॉन्फ़िगरेशन](https://docs.claude-mem.ai/configuration)** - पर्यावरण चर और सेटिंग्स
 - **[विकास](https://docs.claude-mem.ai/development)** - बिल्डिंग, परीक्षण, योगदान
+- **[रिलीज़ ब्रांच](https://docs.claude-mem.ai/branches)** - स्थिर, core-dev, और community-edge ब्रांच प्रवाह
 - **[समस्या निवारण](https://docs.claude-mem.ai/troubleshooting)** - सामान्य समस्याएं और समाधान
 
 ---
@@ -166,7 +226,7 @@ Claude Code को पुनः आरंभ करें। पिछले स
 
 1. **5 जीवनचक्र Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook स्क्रिप्ट)
 2. **स्मार्ट इंस्टॉल** - कैश्ड डिपेंडेंसी चेकर (pre-hook स्क्रिप्ट, जीवनचक्र hook नहीं)
-3. **Worker सेवा** - वेब व्यूअर UI और 10 खोज endpoints के साथ पोर्ट 37777 पर HTTP API, Bun द्वारा प्रबंधित
+3. **Worker सेवा** - वेब व्यूअर UI और खोज endpoints के साथ लोकल HTTP API, Bun द्वारा प्रबंधित
 4. **SQLite डेटाबेस** - सत्र, अवलोकन, सारांश संग्रहीत करता है
 5. **mem-search स्किल** - प्रगतिशील प्रकटीकरण के साथ प्राकृतिक भाषा क्वेरी
 6. **Chroma वेक्टर डेटाबेस** - बुद्धिमान संदर्भ पुनर्प्राप्ति के लिए हाइब्रिड सिमेंटिक + कीवर्ड खोज
@@ -175,56 +235,72 @@ Claude Code को पुनः आरंभ करें। पिछले स
 
 ---
 
-## mem-search स्किल
+## MCP खोज उपकरण
 
-Claude-Mem mem-search स्किल के माध्यम से बुद्धिमान खोज प्रदान करता है जो स्वचालित रूप से सक्रिय हो जाती है जब आप पिछले काम के बारे में पूछते हैं:
+Claude-Mem एक टोकन-कुशल **3-लेयर वर्कफ़्लो पैटर्न** का पालन करते हुए **4 MCP टूल्स** के माध्यम से बुद्धिमान मेमोरी खोज प्रदान करता है:
+
+**3-लेयर वर्कफ़्लो:**
+
+1. **`search`** - IDs के साथ कॉम्पैक्ट इंडेक्स प्राप्त करें (~50-100 टोकन/परिणाम)
+2. **`timeline`** - दिलचस्प परिणामों के आसपास कालानुक्रमिक संदर्भ प्राप्त करें
+3. **`get_observations`** - केवल फ़िल्टर किए गए IDs के लिए पूर्ण विवरण प्राप्त करें (~500-1,000 टोकन/परिणाम)
 
 **यह कैसे काम करता है:**
-- बस स्वाभाविक रूप से पूछें: *"हमने पिछले सत्र में क्या किया?"* या *"क्या हमने पहले इस बग को ठीक किया था?"*
-- Claude स्वचालित रूप से प्रासंगिक संदर्भ खोजने के लिए mem-search स्किल को सक्रिय करता है
+- Claude आपकी मेमोरी खोजने के लिए MCP टूल्स का उपयोग करता है
+- परिणामों का एक इंडेक्स प्राप्त करने के लिए `search` से शुरू करें
+- विशिष्ट अवलोकनों के आसपास क्या हो रहा था यह देखने के लिए `timeline` का उपयोग करें
+- प्रासंगिक IDs के लिए पूर्ण विवरण प्राप्त करने के लिए `get_observations` का उपयोग करें
+- विवरण प्राप्त करने से पहले फ़िल्टर करके **~10x टोकन बचत**
 
-**उपलब्ध खोज संचालन:**
+**उपलब्ध MCP टूल्स:**
 
-1. **अवलोकन खोजें** - अवलोकनों में पूर्ण-पाठ खोज
-2. **सत्र खोजें** - सत्र सारांशों में पूर्ण-पाठ खोज
-3. **प्रॉम्प्ट खोजें** - कच्चे उपयोगकर्ता अनुरोध खोजें
-4. **अवधारणा द्वारा** - अवधारणा टैग द्वारा खोजें (discovery, problem-solution, pattern, आदि)
-5. **फ़ाइल द्वारा** - विशिष्ट फ़ाइलों का संदर्भ देने वाले अवलोकन खोजें
-6. **प्रकार द्वारा** - प्रकार द्वारा खोजें (decision, bugfix, feature, refactor, discovery, change)
-7. **हालिया संदर्भ** - एक प्रोजेक्ट के लिए हालिया सत्र संदर्भ प्राप्त करें
-8. **टाइमलाइन** - समय में एक विशिष्ट बिंदु के आसपास संदर्भ की एकीकृत टाइमलाइन प्राप्त करें
-9. **क्वेरी द्वारा टाइमलाइन** - अवलोकनों को खोजें और सर्वश्रेष्ठ मिलान के आसपास टाइमलाइन संदर्भ प्राप्त करें
-10. **API सहायता** - खोज API दस्तावेज़ीकरण प्राप्त करें
+1. **`search`** - पूर्ण-पाठ क्वेरी के साथ मेमोरी इंडेक्स खोजें, प्रकार/तिथि/प्रोजेक्ट के अनुसार फ़िल्टर करें
+2. **`timeline`** - किसी विशिष्ट अवलोकन या क्वेरी के आसपास कालानुक्रमिक संदर्भ प्राप्त करें
+3. **`get_observations`** - IDs द्वारा पूर्ण अवलोकन विवरण प्राप्त करें (हमेशा कई IDs को बैच करें)
 
-**प्राकृतिक भाषा क्वेरी के उदाहरण:**
+**उपयोग उदाहरण:**
 
-```
-"What bugs did we fix last session?"
-"How did we implement authentication?"
-"What changes were made to worker-service.ts?"
-"Show me recent work on this project"
-"What was happening when we added the viewer UI?"
+```typescript
+// चरण 1: इंडेक्स के लिए खोजें
+search(query="authentication bug", type="bugfix", limit=10)
+
+// चरण 2: इंडेक्स की समीक्षा करें, प्रासंगिक IDs की पहचान करें (जैसे, #123, #456)
+
+// चरण 3: पूर्ण विवरण प्राप्त करें
+get_observations(ids=[123, 456])
 ```
 
 विस्तृत उदाहरणों के लिए [खोज उपकरण गाइड](https://docs.claude-mem.ai/usage/search-tools) देखें।
 
 ---
 
-## बीटा सुविधाएं
+## रिलीज़ ब्रांच
 
-Claude-Mem **बीटा चैनल** के साथ **Endless Mode** (विस्तारित सत्रों के लिए बायोमिमेटिक मेमोरी आर्किटेक्चर) जैसी प्रायोगिक सुविधाएं प्रदान करता है। http://localhost:37777 → Settings पर वेब व्यूअर UI से स्थिर और बीटा संस्करणों के बीच स्विच करें।
-
-Endless Mode के विवरण और इसे आज़माने के तरीके के लिए **[बीटा सुविधाएं दस्तावेज़ीकरण](https://docs.claude-mem.ai/beta-features)** देखें।
+स्थिर रिलीज़ `main` से शिप होती हैं और npm पर प्रकाशित होती हैं। `core-dev` और
+`community-edge` शुरुआती विश्वसनीयता सुधारों और सामुदायिक एकीकरण के लिए
+सोर्स-रन ब्रांच हैं। ब्रांच प्रवाह और गैर-स्थिर रन निर्देशों के लिए
+**[रिलीज़ ब्रांच](https://docs.claude-mem.ai/branches)** देखें।
 
 ---
 
 ## सिस्टम आवश्यकताएं
 
-- **Node.js**: 18.0.0 या उच्चतर
+- **Node.js**: 20.0.0 या उच्चतर
 - **Claude Code**: प्लगइन समर्थन के साथ नवीनतम संस्करण
 - **Bun**: JavaScript रनटाइम और प्रोसेस मैनेजर (यदि गायब हो तो ऑटो-इंस्टॉल)
 - **uv**: वेक्टर खोज के लिए Python पैकेज मैनेजर (यदि गायब हो तो ऑटो-इंस्टॉल)
 - **SQLite 3**: स्थायी स्टोरेज के लिए (बंडल किया गया)
+
+---
+### Windows सेटअप नोट्स
+
+यदि आपको इस तरह की त्रुटि दिखाई देती है:
+
+```powershell
+npm : The term 'npm' is not recognized as the name of a cmdlet
+```
+
+सुनिश्चित करें कि Node.js और npm इंस्टॉल हैं और आपके PATH में जोड़े गए हैं। https://nodejs.org से नवीनतम Node.js इंस्टॉलर डाउनलोड करें और इंस्टॉलेशन के बाद अपना टर्मिनल पुनः आरंभ करें।
 
 ---
 
@@ -234,6 +310,45 @@ Endless Mode के विवरण और इसे आज़माने क�
 
 सभी उपलब्ध सेटिंग्स और उदाहरणों के लिए **[कॉन्फ़िगरेशन गाइड](https://docs.claude-mem.ai/configuration)** देखें।
 
+### मोड और भाषा कॉन्फ़िगरेशन
+
+Claude-Mem `CLAUDE_MEM_MODE` सेटिंग के माध्यम से कई वर्कफ़्लो मोड और भाषाओं का समर्थन करता है।
+
+यह विकल्प दोनों को नियंत्रित करता है:
+- वर्कफ़्लो व्यवहार (जैसे code, chill, investigation)
+- जनरेट किए गए अवलोकनों में उपयोग की जाने वाली भाषा
+
+#### कॉन्फ़िगर कैसे करें
+
+अपनी सेटिंग्स फ़ाइल को `~/.claude-mem/settings.json` पर संपादित करें:
+
+```json
+{
+  "CLAUDE_MEM_MODE": "code--zh"
+}
+```
+
+मोड `plugin/modes/` में परिभाषित हैं। स्थानीय रूप से सभी उपलब्ध मोड देखने के लिए:
+
+```bash
+ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
+```
+
+#### उपलब्ध मोड
+
+| मोड | विवरण |
+|------------|-------------------------|
+| `code` | डिफ़ॉल्ट अंग्रेज़ी मोड |
+| `code--zh` | सरलीकृत चीनी मोड |
+| `code--ja` | जापानी मोड |
+
+भाषा-विशिष्ट मोड `code--[lang]` पैटर्न का पालन करते हैं जहां `[lang]` ISO 639-1 भाषा कोड है (जैसे, चीनी के लिए `zh`, जापानी के लिए `ja`, स्पेनिश के लिए `es`)।
+
+> नोट: `code--zh` (सरलीकृत चीनी) पहले से ही बिल्ट-इन है — किसी अतिरिक्त इंस्टॉलेशन या प्लगइन अपडेट की आवश्यकता नहीं है।
+
+#### मोड बदलने के बाद
+
+नई मोड कॉन्फ़िगरेशन लागू करने के लिए Claude Code को पुनः आरंभ करें।
 ---
 
 ## विकास
@@ -269,34 +384,47 @@ npm run bug-report
 4. दस्तावेज़ीकरण अपडेट करें
 5. एक Pull Request सबमिट करें
 
+Claude-Mem तीन ब्रांच से शिप होता है: `main` (स्थिर), `core-dev`, और
+`community-edge`। केवल `main` npm पर प्रकाशित होता है; अन्य सोर्स से
+रन किए जाते हैं। रणनीति और लोकल रन निर्देशों के लिए [रिलीज़ ब्रांच](https://docs.claude-mem.ai/branches) देखें।
+
 योगदान वर्कफ़्लो के लिए [विकास गाइड](https://docs.claude-mem.ai/development) देखें।
 
 ---
 
-## License
+## लाइसेंस
 
-This project is licensed under the **Apache License 2.0** (Apache-2.0).
+Claude-Mem को Apache License 2.0 के तहत लाइसेंस प्राप्त है।
 
-Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
+हमने Apache-2.0 इसलिए चुना क्योंकि स्थायी एजेंटिक मेमोरी को डेवलपर टूल्स, लोकल एजेंट्स,
+MCP सर्वर, एंटरप्राइज़ सिस्टम, रोबोटिक्स स्टैक्स, और प्रोडक्शन एजेंट हार्नेस में
+आसानी से एम्बेड करने योग्य होना चाहिए।
 
-See the [LICENSE](LICENSE) file for full details.
+पूर्ण विवरण के लिए [LICENSE](LICENSE) फ़ाइल देखें। लाइसेंसिंग स्कोप और
+ओपन/कमर्शियल सीमा के लिए [docs/license.md](docs/license.md)
+और [docs/ip-boundary.md](docs/ip-boundary.md) देखें।
 
-Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
-
-**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
+**Ragtime पर नोट**: `ragtime/` डायरेक्टरी **Apache License 2.0** के तहत लाइसेंस प्राप्त है। विवरण के लिए [ragtime/LICENSE](ragtime/LICENSE) देखें।
 
 ---
-
 
 ## समर्थन
 
 - **दस्तावेज़ीकरण**: [docs/](docs/)
 - **समस्याएं**: [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
 - **रिपॉजिटरी**: [github.com/thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)
+- **आधिकारिक X अकाउंट**: [@Claude_Memory](https://x.com/Claude_Memory)
+- **आधिकारिक Discord**: [Discord से जुड़ें](https://discord.com/invite/J4wttp9vDu)
 - **लेखक**: Alex Newman ([@thedotmack](https://github.com/thedotmack))
 
 ---
 
-**Claude Agent SDK के साथ निर्मित** | **Claude Code द्वारा संचालित** | **TypeScript के साथ बनाया गया**
+**Claude Agent SDK के साथ निर्मित** | **Claude Code के साथ काम करता है** | **TypeScript के साथ बनाया गया**
 
 ---
+
+### CMEM के बारे में क्या?
+
+CMEM एक ऐसा टोकन है जिसे किसी तीसरे पक्ष द्वारा बनाया गया है लेकिन Claude-Mem के निर्माता (Alex Newman, @thedotmack) द्वारा आधिकारिक रूप से अपनाया गया है। यह टोकन विकास के लिए एक सामुदायिक उत्प्रेरक और CMEM को उन डेवलपर्स और नॉलेज वर्कर्स तक पहुंचाने का एक माध्यम है जिन्हें इसकी सबसे ज़्यादा ज़रूरत है।
+
+आधिकारिक BASE CA: 0x76b1967eec0ccaeb001bbbb2b40dc4badba31ba3

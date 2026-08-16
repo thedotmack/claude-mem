@@ -1,0 +1,185 @@
+---
+title: "Cloud Sync (cmem.ai Pro)"
+description: "Two-lane multi-device sync of your memory database — durable HTTP push/pull through a per-user sync hub, with an optional WebSocket speed layer."
+---
+
+# Cloud Sync (cmem.ai Pro)
+
+Cloud sync replicates your local memory database across your devices through a
+**per-user sync hub** — an ordered log of everything your devices write. It is
+built into the worker: **there is no daemon — the worker syncs on write**. The
+same process that records every observation also uploads it, and pulls the
+other devices' writes back down.
+
+<Note>
+**Two lanes, one source of truth.** Everything durable travels over plain
+HTTP: pushes append to the hub's ordered log, pulls page through it with a
+cursor. An optional WebSocket rides alongside as a pure *speed layer* — it
+only makes the next pull happen sooner. The socket can be dropped, disabled,
+or wrong with **zero data loss**; the HTTP cursor is always the truth.
+</Note>
+
+## What syncs
+
+Three kinds of rows are replicated between your devices:
+
+- **Observations** — the compressed memories claude-mem generates from your sessions.
+- **Session summaries** — the per-session overview records.
+- **User prompts** — the prompts you typed (clamped to 200&nbsp;KB per field).
+
+Alongside the rows, three kinds of **mutations** travel through the same log
+so later edits converge everywhere: session **title** changes, **prompt→session
+repairs** (a prompt captured before its session registered is re-linked on
+every device), and **project remaps** (worktree adoption and cwd-based moves
+retarget the affected rows on every device).
+
+<Warning>
+**Privacy:** cloud sync uploads your observation narratives and your full
+prompt text to the sync hub under your cmem.ai account. Don't enable it if
+that content must stay on your machine.
+</Warning>
+
+## How the push lane works
+
+**The database is the queue.** Every synced table carries a `synced_at` column
+(`NULL` = not in the log yet). After each write, the worker nudges a debounced
+flusher that drains `WHERE synced_at IS NULL` and stamps rows on success. That
+one mechanism handles live sync, offline catch-up, and retry. Rows written
+after the SyncHub launch boundary start as `NULL`; anything that fails to
+upload stays `NULL` until a later flush picks it up. Pre-launch local rows are
+not treated as a cloud migration corpus.
+
+- **Debounced:** write bursts coalesce; the flusher runs ~1.5&nbsp;s after the
+  last write (250&nbsp;ms while the speed layer is connected), and only one
+  flush runs at a time.
+- **Batched:** ops drain in requests of up to 500 ops / 4,000,000 encoded
+  bytes. Each individual canonical body is capped at 256,000 encoded bytes.
+- **Timeboxed:** every request has a 30&nbsp;s timeout — a dead network can
+  never hang the worker.
+- **Retrying:** a failed upload leaves rows `NULL` and retries on the next
+  write plus a capped exponential backoff (30&nbsp;s → 10&nbsp;min). The write
+  path is never blocked — sync failures cost nothing but delay.
+- **Idempotent:** the hub dedupes on origin identity, so a retried push can
+  never create duplicates.
+
+## How the pull lane works
+
+Each device keeps a **cursor** into the hub's log and pulls everything after
+it — in pages, so a device that was offline for a week (or is brand new and
+starts from zero) catches up the same way an active one stays current:
+
+- **Session start:** the worker pulls immediately before injecting context
+  (bounded to 1.5&nbsp;s, so a dead network can't stall your session), which
+  means memory written on another machine is there the moment you start
+  working.
+- **Steady state:** a short poll every 30&nbsp;s while a session is active,
+  every 5&nbsp;min when idle, suspended entirely after an hour of no activity.
+  Every push response also reports the log head, so an active device learns
+  about remote writes without waiting out the timer.
+- **Applied like native writes:** pulled rows keep their original timestamps,
+  carry their origin device, index into full-text and vector search through
+  the same paths native writes use, and are stamped so they can never be
+  echoed back up.
+
+## The speed layer (optional WebSocket)
+
+When enabled (the default), the worker also holds one WebSocket to the hub and
+receives new ops the moment another device pushes them — multi-device
+convergence in well under a second instead of a poll interval. The socket is
+strictly **advisory**: any anomaly (a gap, a parse error, a dropped
+connection) simply closes it and runs one HTTP pull, which is always correct.
+Set `CLAUDE_MEM_CLOUD_SYNC_WS` to `false` to turn it off — sync stays fully
+correct at poll latency.
+
+The hub can also ask every client to fall back to polling by stamping
+responses with an `X-Sync-Mode: poll` header (an operational brake on the
+server side). Clients close their sockets and keep syncing over HTTP —
+degraded means *slower*, never *stopped* — and resume the socket automatically
+when the header disappears.
+
+## Requirements and setup
+
+Cloud sync is active when **all three** of the token, the user id, and the hub
+URL are non-empty — there is no separate enable flag; blank any one of them to
+turn sync off.
+
+1. A **cmem.ai Pro sync token and user id** (from **cmem.ai → Connect**).
+2. A **sync hub URL** in `CLAUDE_MEM_CLOUD_SYNC_HUB_URL`. The hub is a
+   Cloudflare Workers service (source in `workers/sync-hub/` with its own
+   deploy runbook); use the hub URL your cmem.ai account documentation
+   provides for it.
+
+Run the `/cloud-sync` skill in Claude Code to check status and walk through
+setup. It writes the settings into `~/.claude-mem/settings.json` (mode
+`0600`) without ever echoing the token, restarts the worker, and verifies the
+installed client can reach SyncHub.
+
+## Settings
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `CLAUDE_MEM_CLOUD_SYNC_TOKEN` | `''` | Your cmem.ai sync token (from **cmem.ai → Connect**). Sent as `Authorization: Bearer`. |
+| `CLAUDE_MEM_CLOUD_SYNC_USER_ID` | `''` | Your cmem.ai user id (from **cmem.ai → Connect**). All your devices share it — it names your hub log. |
+| `CLAUDE_MEM_CLOUD_SYNC_HUB_URL` | `''` | Sync hub base URL. **Empty = sync off.** |
+| `CLAUDE_MEM_CLOUD_SYNC_WS` | `'true'` | Advisory WebSocket speed layer. `'false'` = HTTP polling only; sync stays fully correct at poll latency. |
+| `CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID` | `''` | Stable identity of this machine. A fresh UUID is minted and persisted on first start. Don't edit it: every row is attributed to its origin device. |
+| `CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME` | machine hostname | Human-readable label for this device. |
+
+A Hub accepts at most 64 distinct device ids per account. Existing devices
+continue to sync normally at the limit; a new device receives
+`409 device_limit_exceeded`. Status/metadata reads and renaming an unknown
+device do not create phantom devices.
+
+## Status endpoint
+
+The worker exposes `GET /api/sync/status` (on the same port as the rest of the
+worker HTTP API). It is registered unconditionally, so an unconfigured install
+answers `200` rather than a `404` — callers can tell "not set up" apart from
+"worker down".
+
+```bash
+curl -s "http://127.0.0.1:${CLAUDE_MEM_WORKER_PORT}/api/sync/status"
+```
+
+Configured:
+
+```json
+{
+  "configured": true,
+  "deviceId": "2f6b1c9e-7d41-4c1a-9b0e-3d5f8a2c6e10",
+  "pending": { "observations": 0, "summaries": 0, "prompts": 2, "mutations": 0, "tombstones": 0 },
+  "quarantine": { "count": 0, "latestReason": null },
+  "lastFlushAt": 1783981042731,
+  "lastError": null,
+  "hub": {
+    "checkedAt": 1783981042800,
+    "reachable": true,
+    "epoch": "1783981042000",
+    "headSeq": "42",
+    "projectedSeq": "42",
+    "error": null
+  }
+}
+```
+
+Every configured status request makes an authenticated, read-only
+`GET /v1/sync/status` directly to SyncHub, including when all pending counts
+are zero. The probe does not append an operation or advance a pull cursor.
+`hub.reachable: false` and `hub.error` therefore expose a bad token, wrong Hub
+URL, malformed response, timeout, or network failure
+that an empty queue would otherwise hide.
+
+- `pending` — rows (and queued mutation ops) still waiting to upload. Counts
+  near 0 mean the hub's log has everything this device wrote.
+- `lastFlushAt` — epoch ms of the last successful flush, `null` before the first.
+- `lastError` — message from the most recent failed flush, `null` when healthy.
+  It never contains the token.
+- `hub` — the most recent authenticated SyncHub probe. Treat
+  `hub.reachable: true` as the connectivity check; `lastError: null` alone is
+  not enough. Sequence and epoch fields remain decimal strings.
+
+Not configured:
+
+```json
+{ "configured": false }
+```

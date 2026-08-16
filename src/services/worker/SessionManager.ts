@@ -4,11 +4,11 @@ import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationDa
 import { SessionMessageBuffer } from './SessionMessageBuffer.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
+import { telemetryBuffer } from '../telemetry/buffer.js';
 
 export class SessionManager {
   private dbManager: DatabaseManager;
   private sessions: Map<number, ActiveSession> = new Map();
-  private onSessionDeletedCallback?: () => void;
   private onPendingMutate?: () => void;
   private readonly buffer = new SessionMessageBuffer(() => this.onPendingMutate?.());
 
@@ -16,15 +16,18 @@ export class SessionManager {
     this.dbManager = dbManager;
   }
 
-  setOnSessionDeleted(callback: () => void): void {
-    this.onSessionDeletedCallback = callback;
-  }
-
   setOnPendingMutate(cb: () => void): void {
     this.onPendingMutate = cb;
   }
 
-  initializeSession(sessionDbId: number, currentUserPrompt?: string, promptNumber?: number): ActiveSession {
+  initializeSession(
+    sessionDbId: number,
+    currentUserPrompt?: string,
+    promptNumber?: number,
+    currentProject?: string,
+  ): ActiveSession {
+    const suppliedProject = currentProject && currentProject !== 'unknown' ? currentProject : undefined;
+
     logger.debug('SESSION', 'initializeSession called', {
       sessionDbId,
       promptNumber,
@@ -40,13 +43,16 @@ export class SessionManager {
       });
 
       const dbSession = this.dbManager.getSessionById(sessionDbId);
-      if (dbSession.project && dbSession.project !== session.project) {
+      if (dbSession.project && dbSession.project !== session.project && !suppliedProject) {
         logger.debug('SESSION', 'Updating project from database', {
           sessionDbId,
           oldProject: session.project,
           newProject: dbSession.project
         });
         session.project = dbSession.project;
+      }
+      if (suppliedProject) {
+        session.project = suppliedProject;
       }
       if (dbSession.platform_source && dbSession.platform_source !== session.platformSource) {
         session.platformSource = dbSession.platform_source;
@@ -56,7 +62,7 @@ export class SessionManager {
         logger.debug('SESSION', 'Updating userPrompt for continuation', {
           sessionDbId,
           promptNumber,
-          oldPrompt: session.userPrompt.substring(0, 80),
+          oldPrompt: session.userPrompt?.substring(0, 80) ?? '',
           newPrompt: currentUserPrompt.substring(0, 80)
         });
         session.userPrompt = currentUserPrompt;
@@ -65,7 +71,7 @@ export class SessionManager {
         logger.debug('SESSION', 'No currentUserPrompt provided for existing session', {
           sessionDbId,
           promptNumber,
-          usingCachedPrompt: session.userPrompt.substring(0, 80)
+          usingCachedPrompt: session.userPrompt?.substring(0, 80) ?? ''
         });
       }
       return session;
@@ -93,7 +99,7 @@ export class SessionManager {
       logger.debug('SESSION', 'No currentUserPrompt provided for new session, using database', {
         sessionDbId,
         promptNumber,
-        dbPrompt: dbSession.user_prompt.substring(0, 80)
+        dbPrompt: dbSession.user_prompt?.substring(0, 80) ?? ''
       });
     } else {
       logger.debug('SESSION', 'Initializing session with fresh userPrompt', {
@@ -107,13 +113,12 @@ export class SessionManager {
       sessionDbId,
       contentSessionId: dbSession.content_session_id,
       memorySessionId: null,  // Always start fresh - SDK will capture new ID
-      project: dbSession.project,
+      project: suppliedProject || dbSession.project,
       platformSource: dbSession.platform_source,
       userPrompt,
-      pendingMessages: [],
       abortController: new AbortController(),
       generatorPromise: null,
-      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id),
+      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id, sessionDbId),
       startTime: Date.now(),
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
@@ -133,7 +138,7 @@ export class SessionManager {
       contentSessionId: dbSession.content_session_id,
       dbMemorySessionId: dbSession.memory_session_id || '(none in DB)',
       memorySessionId: '(cleared - will capture fresh from SDK)',
-      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id)
+      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id, sessionDbId)
     });
 
     this.sessions.set(sessionDbId, session);
@@ -235,47 +240,10 @@ export class SessionManager {
     return confirmed;
   }
 
-  /**
-   * Kill and respawn a poisoned SDK session while PRESERVING the in-RAM pending
-   * messages (plan-11, #2485). A session that keeps emitting non-XML/poisoned
-   * output wedges the pipeline at zero observations; aborting the generator and
-   * killing the SDK subprocess forces a fresh spawn on the next ingest, but the
-   * buffered tool-use fragments must survive so they get reprocessed.
-   *
-   * Unlike deleteSession this does NOT dispose the SessionMessageBuffer and does
-   * NOT remove the session from the active map: it un-claims any in-flight
-   * messages (so the next generator re-yields them), aborts the current
-   * generator with a 'poisoned' reason, and ensures the SDK subprocess exits.
-   * The next ensureGeneratorRunning starts a clean generator.
-   */
-  async respawnPoisonedSession(sessionDbId: number): Promise<void> {
+  getClaimedMessages(sessionDbId: number): PendingMessageWithId[] {
     const session = this.sessions.get(sessionDbId);
-    if (!session) {
-      return;
-    }
-
-    const preservedPending = this.buffer.getPendingCount(sessionDbId);
-    logger.warn('SESSION', 'Respawning poisoned SDK session, preserving pending messages', {
-      sessionId: sessionDbId,
-      preservedPending,
-      consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
-    });
-
-    // Re-yield anything claimed-but-unconfirmed so the fresh generator picks it up.
-    await this.resetProcessingToPending(sessionDbId);
-
-    // Drop stale conversation context: the poisoned turns are what wedged it.
-    session.conversationHistory = [];
-    session.consecutiveInvalidOutputs = 0;
-    session.memorySessionId = null;  // force a fresh SDK session id on respawn
-
-    session.abortReason = 'poisoned';
-    session.abortController.abort();
-
-    const tracked = getSdkProcessForSession(sessionDbId);
-    if (tracked && tracked.process.exitCode === null) {
-      await ensureSdkProcessExit(tracked, 5000);
-    }
+    const claimedIds = session?.claimedMessageIds ?? [];
+    return this.buffer.getMessagesByIds(sessionDbId, claimedIds);
   }
 
   async deleteSession(sessionDbId: number): Promise<void> {
@@ -283,6 +251,12 @@ export class SessionManager {
     if (!session) {
       return;
     }
+
+    // Phase 2: emit this session's single observer_turn_rollup at session end,
+    // while the session still exists. flushSession removes the bucket, so the
+    // matching call in removeSessionImmediate (or a re-entry here) is a safe
+    // no-op. Never throws — telemetry is fire-and-forget.
+    telemetryBuffer.flushSession(sessionDbId, 'session_end');
 
     const sessionDuration = Date.now() - session.startTime;
 
@@ -337,15 +311,16 @@ export class SessionManager {
       duration: `${(sessionDuration / 1000).toFixed(1)}s`,
       project: session.project
     });
-
-    if (this.onSessionDeletedCallback) {
-      this.onSessionDeletedCallback();
-    }
   }
 
   removeSessionImmediate(sessionDbId: number): void {
     const session = this.sessions.get(sessionDbId);
     if (!session) return;
+
+    // Phase 2: same session-end rollup as deleteSession. Whichever teardown
+    // path runs first flushes; flushSession removes the bucket so the second is
+    // a no-op (guards against the deleteSession/removeSessionImmediate pair).
+    telemetryBuffer.flushSession(sessionDbId, 'session_end');
 
     if (session.respawnTimer) {
       clearTimeout(session.respawnTimer);
@@ -358,19 +333,11 @@ export class SessionManager {
       sessionId: sessionDbId,
       project: session.project
     });
-
-    if (this.onSessionDeletedCallback) {
-      this.onSessionDeletedCallback();
-    }
   }
 
   async shutdownAll(): Promise<void> {
     const sessionIds = Array.from(this.sessions.keys());
     await Promise.all(sessionIds.map(id => this.deleteSession(id)));
-  }
-
-  async hasPendingMessages(): Promise<boolean> {
-    return this.getTotalQueueDepth() > 0;
   }
 
   getActiveSessionCount(): number {

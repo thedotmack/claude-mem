@@ -1,8 +1,8 @@
 # Phase 10 — E2E driver overlay. Adds a one-shot Node container that hits
-# the server-beta HTTP service across the compose network. Pairs with
-# scripts/e2e-server-beta-docker.sh.
+# the server HTTP service across the compose network. Pairs with
+# scripts/e2e-server-docker.sh.
 services:
-  server-beta-e2e:
+  server-e2e:
     image: node:20-alpine
     depends_on:
       claude-mem-server:
@@ -20,4 +20,4 @@ services:
     volumes:
       - ./docker/e2e:/e2e:ro
     working_dir: /e2e
-    command: ["node", "/e2e/server-beta-e2e.mjs"]
+    command: ["node", "/e2e/server-e2e.mjs"]
