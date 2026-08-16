@@ -1,9 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { readFileSync, existsSync, rmSync } from 'fs';
-import {
-  buildHardenedSdkOptions,
-  OBSERVER_DISALLOWED_TOOLS,
-} from '../../src/sdk/hardened-options.js';
+import { buildHardenedSdkOptions } from '../../src/sdk/hardened-options.js';
 import {
   recordObserverToolAttempt,
   getObserverAuditLogPath,
@@ -15,6 +12,7 @@ const BASE_INPUT = {
   model: 'claude-sonnet-4-6',
   env: {} as NodeJS.ProcessEnv,
   pathToClaudeCodeExecutable: '/usr/bin/claude',
+  systemPrompt: 'You are a test observer.',
 };
 
 const AUDIT_PATH = getObserverAuditLogPath();
@@ -28,37 +26,23 @@ function readAuditLines(): Array<Record<string, unknown>> {
 }
 
 describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () => {
-  describe('belt + suspenders + braces: option surface', () => {
+  describe('tool lockdown: tools:[] + canUseTool audit backstop', () => {
     it('sets tools to an empty array (disables ALL built-in tools)', () => {
       const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
       expect(Array.isArray(opts.tools)).toBe(true);
       expect(opts.tools).toHaveLength(0);
     });
 
-    it('sets allowedTools to an empty array (nothing auto-approved)', () => {
+    it('does not set allowedTools, disallowedTools, or permissionMode', () => {
       const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
-      expect(Array.isArray(opts.allowedTools)).toBe(true);
-      expect(opts.allowedTools).toHaveLength(0);
+      expect(opts.allowedTools).toBeUndefined();
+      expect(opts.disallowedTools).toBeUndefined();
+      expect(opts.permissionMode).toBeUndefined();
     });
 
-    it('keeps the full disallowedTools deny-list (12 tools)', () => {
+    it('passes systemPrompt through unchanged', () => {
       const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
-      const denied = opts.disallowedTools ?? [];
-      for (const tool of OBSERVER_DISALLOWED_TOOLS) {
-        expect(denied).toContain(tool);
-      }
-      expect(denied).toHaveLength(OBSERVER_DISALLOWED_TOOLS.length);
-      expect(OBSERVER_DISALLOWED_TOOLS).toHaveLength(12);
-    });
-
-    it("uses the most restrictive non-interactive permissionMode ('dontAsk')", () => {
-      const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
-      expect(opts.permissionMode).toBe('dontAsk');
-    });
-
-    it('never uses bypassPermissions', () => {
-      const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
-      expect(opts.permissionMode).not.toBe('bypassPermissions');
+      expect(opts.systemPrompt).toBe('You are a test observer.');
     });
 
     it('isolates settings, MCP, and extra directories', () => {
@@ -166,9 +150,7 @@ describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () =
       const o = buildHardenedSdkOptions(input);
       return {
         tools: o.tools,
-        allowedTools: o.allowedTools,
-        disallowedTools: o.disallowedTools,
-        permissionMode: o.permissionMode,
+        systemPrompt: o.systemPrompt,
         mcpServers: o.mcpServers,
         settingSources: o.settingSources,
         strictMcpConfig: o.strictMcpConfig,
@@ -187,6 +169,7 @@ describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () =
         model: 'm',
         env: {},
         pathToClaudeCodeExecutable: '/c',
+        systemPrompt: 'You are a test observer.',
         abortController: new AbortController(),
         spawnClaudeCodeProcess: () => ({}) as never,
       });
@@ -196,9 +179,17 @@ describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () =
         model: 'm',
         env: {},
         pathToClaudeCodeExecutable: '/c',
+        systemPrompt: 'You are a test observer.',
         resume: 'session-xyz',
       });
       expect(observer).toEqual(knowledge);
+    });
+  });
+
+  describe('OBSERVER_DISALLOWED_TOOLS is no longer exported', () => {
+    it('is not present on the hardened-options module', async () => {
+      const mod = await import('../../src/sdk/hardened-options.js');
+      expect('OBSERVER_DISALLOWED_TOOLS' in mod).toBe(false);
     });
   });
 });
