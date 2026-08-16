@@ -348,12 +348,19 @@ export function ContextSettingsModal({
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter (multi-model)</option>
                   <option value="ollama">Ollama (local, no API key needed)</option>
+                  <option value="gemini-cli">Antigravity CLI (agy)</option>
                 </select>
               </FormField>
 
               {formState.CLAUDE_MEM_PROVIDER === 'ollama' && (
                 <p style={{ fontSize: '0.85em', color: '#666', margin: '4px 0 8px' }}>
                   Using Ollama endpoint and model configured below in Local/Free Providers.
+                </p>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'gemini-cli' && (
+                <p style={{ fontSize: '0.85em', color: '#666', margin: '4px 0 8px' }}>
+                  Using Antigravity CLI binary and model configured below in Local/Free Providers.
                 </p>
               )}
 
@@ -487,7 +494,8 @@ export function ContextSettingsModal({
                         const updates: Partial<Settings> = {
                           CLAUDE_MEM_PROVIDER: 'ollama',
                           CLAUDE_MEM_TASKS: allOllama,
-                          CLAUDE_MEM_PREFER_COST_OPTIMIZATION: 'true'
+                          CLAUDE_MEM_PREFER_COST_OPTIMIZATION: 'true',
+                          CLAUDE_MEM_OLLAMA_ENABLED: 'true'
                         };
                         
                         if (!formState.OLLAMA_ENDPOINT) {
@@ -524,7 +532,8 @@ export function ContextSettingsModal({
                         updateMultipleSettings({
                           CLAUDE_MEM_PROVIDER: 'gemini-cli',
                           CLAUDE_MEM_TASKS: allGeminiCli,
-                          CLAUDE_MEM_PREFER_COST_OPTIMIZATION: 'true'
+                          CLAUDE_MEM_PREFER_COST_OPTIMIZATION: 'true',
+                          CLAUDE_MEM_OLLAMA_ENABLED: 'false'
                         });
                       }}
                       type="button"
