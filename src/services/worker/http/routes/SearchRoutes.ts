@@ -10,6 +10,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import { groupByDate } from '../../../../shared/timeline-formatting.js';
 import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
+import { withObserverHealthWarning } from '../../../context/ContextBuilder.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
@@ -313,7 +314,10 @@ export class SearchRoutes extends BaseRouteHandler {
         const viewerUrl = `http://localhost:${port}`;
         const hintBody = WELCOME_HINT_TEMPLATE.replace('{viewer_url}', viewerUrl);
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        res.send(hintBody);
+        // A project with zero observations is exactly where a failing observer
+        // hides: without this the health warning (applied inside
+        // generateContextWithStats) never reached the user this early-return serves.
+        res.send(withObserverHealthWarning(hintBody));
         return;
       }
     }

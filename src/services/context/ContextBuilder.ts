@@ -175,10 +175,11 @@ function buildInjectStats(
 
 /**
  * Prepend the observer-health outage warning when the observer is failing.
- * Applied to EVERY context path (including empty-state and missing-DB) so the
- * outage is surfaced even when there is nothing else to render.
+ * Applied to EVERY context path (including empty-state, missing-DB, and the
+ * no-memories-yet welcome hint in SearchRoutes) so the outage is surfaced even
+ * when there is nothing else to render.
  */
-function withObserverHealthWarning(text: string): string {
+export function withObserverHealthWarning(text: string): string {
   const health = readObserverHealth();
   if (!isObserverUnhealthy(health)) {
     return text;
