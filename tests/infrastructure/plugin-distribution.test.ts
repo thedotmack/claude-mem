@@ -312,7 +312,7 @@ describe('Plugin Distribution - Non-blocking bookkeeping hooks (#3206)', () => {
     expect(stop.async).toBe(true);
   });
 
-  it('runs SessionStart and UserPromptSubmit asynchronously (#3303)', () => {
+  it('runs SessionStart asynchronously and UserPromptSubmit synchronously (#3303)', () => {
     const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
     const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
 
@@ -325,7 +325,7 @@ describe('Plugin Distribution - Non-blocking bookkeeping hooks (#3206)', () => {
     expect(sessionStart[1].command).toContain(' hook claude-code context');
     expect(sessionStart[1].async).toBe(true);
     expect(userPromptSubmit.command).toContain(' hook claude-code session-init');
-    expect(userPromptSubmit.async).toBe(true);
+    expect(userPromptSubmit).not.toHaveProperty('async');
   });
 });
 
