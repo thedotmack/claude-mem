@@ -6,21 +6,26 @@ import {
   previewOutput,
 } from '../../src/sdk/output-classifier.js';
 
-describe('classifyObserverOutput (plan-11 #2485)', () => {
-  it('classifies valid <observation> XML as xml', () => {
+describe('classifyObserverOutput (observer batch-safety contract)', () => {
+  it('classifies valid <observation> XML as valid', () => {
     const xml = `<observation>
       <type>discovery</type>
       <title>A real finding</title>
     </observation>`;
-    expect(classifyObserverOutput(xml)).toBe('xml');
+    expect(classifyObserverOutput(xml)).toBe('valid');
   });
 
-  it('classifies <summary> XML as xml', () => {
-    expect(classifyObserverOutput('<summary><request>do x</request></summary>')).toBe('xml');
+  it('classifies <summary> XML as valid', () => {
+    expect(classifyObserverOutput('<summary><request>do x</request></summary>')).toBe('valid');
   });
 
-  it('classifies <skip_summary/> as xml', () => {
-    expect(classifyObserverOutput('<skip_summary reason="nothing to do"/>')).toBe('xml');
+  it('classifies both explicit skip sentinels as skip', () => {
+    expect(classifyObserverOutput('<skip_summary reason="nothing to do"/>')).toBe('skip');
+    expect(classifyObserverOutput('<skip_observation reason="nothing durable"/>')).toBe('skip');
+  });
+
+  it('does not accept a skip sentinel embedded in prose', () => {
+    expect(classifyObserverOutput('Skipping because <skip_observation/>')).toBe('xml_drift');
   });
 
   it('classifies empty string as idle', () => {
@@ -40,14 +45,28 @@ describe('classifyObserverOutput (plan-11 #2485)', () => {
     expect(classifyObserverOutput('Skipping — repeated log scan with no new findings.')).toBe('prose');
   });
 
-  it('classifies former poison marker strings as ordinary prose', () => {
-    expect(classifyObserverOutput('This session has been exhausted, I cannot continue.')).toBe('prose');
-    expect(classifyObserverOutput('Error: prompt is too long for this model.')).toBe('prose');
-    expect(classifyObserverOutput('I hit the context window, so there is no XML.')).toBe('prose');
+  it('classifies recoverable failure text into closed failure classes', () => {
+    expect(classifyObserverOutput('Connection closed mid-response.')).toBe('transport');
+    expect(classifyObserverOutput('Error: prompt is too long for this model.')).toBe('overflow');
+    expect(classifyObserverOutput('I hit the context window, so there is no XML.')).toBe('overflow');
+    expect(classifyObserverOutput("There's an issue with the selected model.")).toBe('model_error');
   });
 
-  it('does not let former poison markers override XML-shaped output', () => {
-    expect(classifyObserverOutput('session exhausted <observation></observation>')).toBe('xml');
+  it('includes auth and quota in the same closed classification', () => {
+    expect(classifyObserverOutput('Failed to authenticate. API Error: 401')).toBe('auth');
+    expect(classifyObserverOutput('Claude usage limit reached. Your weekly limit will reset soon.')).toBe('quota');
+  });
+
+  it('distinguishes schema drift from valid XML', () => {
+    expect(classifyObserverOutput(
+      '<observation><kind>discovery</kind><detail>wrong schema</detail></observation>',
+    )).toBe('xml_drift');
+  });
+
+  it('does not let error-looking memory content override valid XML', () => {
+    expect(classifyObserverOutput(
+      '<observation><type>discovery</type><title>Prompt is too long error</title></observation>',
+    )).toBe('valid');
   });
 });
 

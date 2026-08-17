@@ -54,7 +54,7 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
   test('confirm removes a message; resetClaimed makes claimed messages re-drainable', async () => {
     const buffer = new SessionMessageBuffer();
     const id = buffer.enqueue(1, obs('Read', 'a'));
-    buffer.enqueue(1, obs('Write', 'b'));
+    const retriedId = buffer.enqueue(1, obs('Write', 'b'));
 
     // First drain claims both.
     const first = await drainAll(buffer, 1);
@@ -70,6 +70,8 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
     expect(buffer.resetClaimed(1)).toBe(1);
     const second = await drainAll(buffer, 1);
     expect(second.map(m => m.tool_name)).toEqual(['Write']);
+    expect(second[0]._persistentId).toBe(retriedId);
+    expect(buffer.getPendingCount(1)).toBe(1);
   });
 
   test('clear empties a session; dispose forgets it', () => {

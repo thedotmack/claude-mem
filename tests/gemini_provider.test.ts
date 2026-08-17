@@ -328,6 +328,50 @@ describe('GeminiProvider', () => {
     expect(mockStoreObservations).toHaveBeenCalled();
     expect(mockSyncObservation).toHaveBeenCalled();
     expect(session.cumulativeInputTokens).toBeGreaterThan(0);
+    expect(session.conversationHistory.filter(
+      (message: { role: string; content: string }) =>
+        message.role === 'assistant' && message.content === observationXml,
+    )).toHaveLength(1);
+  });
+
+  it('does not retain a rejected observation response in shared provider history', async () => {
+    const rejectedText = 'Connection closed mid-response.';
+    const session = makeSession({
+      lastPromptNumber: 2,
+      conversationHistory: [
+        { role: 'user', content: 'accepted user turn' },
+        { role: 'assistant', content: 'accepted assistant turn' },
+      ],
+    });
+
+    (mockSessionManager as any).getMessageIterator = async function* () {
+      yield {
+        type: 'observation',
+        tool_name: 'Read',
+        tool_input: {},
+        tool_response: {},
+        prompt_number: 2,
+      };
+    };
+    agent = new GeminiProvider(mockDbManager, mockSessionManager);
+
+    let requestNumber = 0;
+    global.fetch = mock(() => {
+      const text = requestNumber++ === 0
+        ? '<skip_summary reason="continuation acknowledged"/>'
+        : rejectedText;
+      return Promise.resolve(new Response(JSON.stringify({
+        candidates: [{ content: { parts: [{ text }] } }],
+        usageMetadata: { totalTokenCount: 10 },
+      })));
+    });
+
+    await agent.startSession(session);
+
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(session.conversationHistory.some(
+      (message: { content: string }) => message.content === rejectedText,
+    )).toBe(false);
   });
 
   it('stores a deferred init response under the original prompt project after the live session advances', async () => {

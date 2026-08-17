@@ -192,4 +192,76 @@ describe('Claude setup-required generator gate', () => {
       remediation: expect.stringContaining('Claude Code CLI'),
     });
   });
+
+  it('preserves a claimed batch across one thrown provider retry, then pauses', async () => {
+    const session = makeSession();
+    let starts = 0;
+    let finalizerCalls = 0;
+    let removeSessionImmediateCalls = 0;
+    let claimed = false;
+    let resetCalls = 0;
+
+    const sessionManager = {
+      getSession: () => session,
+      getMessageBuffer: () => ({
+        getPendingCount: () => 1,
+        peekTypes: () => [{ message_type: 'observation', tool_name: 'Read' }],
+      }),
+      resetProcessingToPending: async () => {
+        resetCalls += 1;
+        claimed = false;
+        session.claimedMessageIds = [];
+        return 1;
+      },
+      removeSessionImmediate: () => {
+        removeSessionImmediateCalls += 1;
+      },
+    };
+
+    const claudeProvider = {
+      startSession: async () => {
+        starts += 1;
+        // The original provider turn fails after claiming the batch. The
+        // bounded retry then fails during its synthetic init turn, before the
+        // preserved batch can be claimed again.
+        if (starts === 1) {
+          claimed = true;
+          session.claimedMessageIds = [77];
+        }
+        session.conversationHistory.push({ role: 'user', content: `attempt ${starts}` });
+        throw new Error('Connection reset by peer');
+      },
+    };
+
+    const routes = new SessionRoutes(
+      sessionManager as any,
+      {} as any,
+      claudeProvider as any,
+      { startSession: async () => {} } as any,
+      { startSession: async () => {} } as any,
+      {} as any,
+      { broadcastProcessingStatus: () => {} } as any,
+      {
+        finalizeSession: async () => {
+          finalizerCalls += 1;
+        },
+      } as any,
+    );
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    const firstAttempt = session.generatorPromise;
+    await firstAttempt;
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+
+    expect(starts).toBe(2);
+    expect(resetCalls).toBe(2);
+    expect(claimed).toBe(false);
+    expect(session.claimedMessageIds).toEqual([]);
+    expect(session.consecutiveInvalidOutputs).toBe(2);
+    expect(session.observerOutputPaused).toBe(true);
+    expect(session.generatorPromise).toBeNull();
+    expect(session.conversationHistory).toEqual([]);
+    expect(finalizerCalls).toBe(0);
+    expect(removeSessionImmediateCalls).toBe(0);
+  });
 });

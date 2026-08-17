@@ -32,6 +32,8 @@ import { findClaudeExecutable } from '../../../../shared/find-claude-executable.
 import { recordObserverFailure } from '../../../../shared/observer-health.js';
 import { isClassified, describeProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
+import { classifyObserverOutput, type ObserverOutputClass } from '../../../../sdk/output-classifier.js';
+import { recordRecoverableOutputFailure } from '../../session/OutputRecovery.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
@@ -42,15 +44,37 @@ const MAX_USER_PROMPT_BYTES = 256 * 1024;
  */
 function normalizeAbortReason(
   reason: string | null | undefined
-): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'none' {
+): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'auth' | 'quota' | 'output_retry' | 'output_paused' | 'storage_paused' | 'none' {
   switch ((reason ?? '').split(':')[0]) {
     case 'idle': return 'idle';
     case 'shutdown': return 'shutdown';
     case 'overflow': return 'overflow';
     case 'restart-guard': return 'restart_guard';
+    case 'auth': return 'auth';
     case 'quota': return 'quota';
+    case 'output_retry': return 'output_retry';
+    case 'output_paused': return 'output_paused';
+    case 'storage_paused': return 'storage_paused';
     default: return 'none';
   }
+}
+
+function classifyProviderException(error: unknown): ObserverOutputClass {
+  if (isClassified(error)) {
+    switch (error.kind) {
+      case 'auth_invalid': return 'auth';
+      case 'quota_exhausted':
+      case 'rate_limit': return 'quota';
+      case 'unrecoverable': return 'model_error';
+      default: return 'transport';
+    }
+  }
+
+  const classified = classifyObserverOutput(error instanceof Error ? error.message : String(error));
+  return classified === 'auth' || classified === 'quota' || classified === 'overflow' ||
+    classified === 'model_error' || classified === 'transport'
+    ? classified
+    : 'transport';
 }
 
 export class SessionRoutes extends BaseRouteHandler {
@@ -77,6 +101,15 @@ export class SessionRoutes extends BaseRouteHandler {
   public async ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
+
+    if (session.observerOutputPaused) {
+      logger.warn('SESSION', 'Skipping generator start while observer output is paused', {
+        sessionId: sessionDbId,
+        source,
+        pendingCount: this.sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
+      });
+      return;
+    }
 
     const selectedProvider = this.getSelectedProvider();
 
@@ -199,10 +232,6 @@ export class SessionRoutes extends BaseRouteHandler {
           return;
         }
 
-        // No retry: the generator failed, the in-RAM batch is dropped, and the
-        // transcript is the recovery path. The next observation ingest will
-        // start a fresh generator via ensureGeneratorRunning.
-        //
         // The local error line (full fidelity) and the scrubbed
         // session_compressed rollup are one logical event.
         // No abort_reason here: every site that sets abortReason aborts the
@@ -246,6 +275,28 @@ export class SessionRoutes extends BaseRouteHandler {
           hook: session.lastGeneratorSource,
           ide: session.platformSource,
         });
+
+        const hasRecoverableWork =
+          (session.claimedMessageIds?.length ?? 0) > 0 ||
+          this.sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId) > 0;
+        if (hasRecoverableWork) {
+          const outputClass = classifyProviderException(error);
+          const lastHistoryMessage = session.conversationHistory.at(-1);
+          if (lastHistoryMessage?.role === 'user') {
+            session.conversationHistory.pop();
+          }
+
+          if (outputClass === 'auth' || outputClass === 'quota') {
+            session.abortReason = `${outputClass}:provider_exception`;
+          } else {
+            const disposition = recordRecoverableOutputFailure(session);
+            session.observerOutputPaused = disposition === 'pause';
+            session.abortReason = `${disposition === 'retry' ? 'output_retry' : 'output_paused'}:${outputClass}`;
+          }
+          await this.sessionManager.resetProcessingToPending(session.sessionDbId);
+          myController.abort();
+          this.workerService.broadcastProcessingStatus?.();
+        }
       })
       .finally(async () => {
         if (skipGeneratorExitFinalization) {
@@ -277,6 +328,8 @@ export class SessionRoutes extends BaseRouteHandler {
         await handleGeneratorExit(session, reason, {
           sessionManager: this.sessionManager,
           completionHandler: this.completionHandler,
+          restartGenerator: (sessionDbId, restartSource) =>
+            this.ensureGeneratorRunning(sessionDbId, restartSource),
         });
       });
     session.generatorPromise = generatorPromise;

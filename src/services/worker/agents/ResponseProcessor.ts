@@ -3,15 +3,13 @@ import { logger } from '../../../utils/logger.js';
 import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
 import {
   classifyObserverOutput,
-  isAuthFailureObserverOutput,
-  isQuotaLimitedObserverOutput,
   previewOutput,
 } from '../../../sdk/output-classifier.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
-import { recordObserverSuccess } from '../../../shared/observer-health.js';
+import { recordObserverFailure, recordObserverSuccess } from '../../../shared/observer-health.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import type { ActiveSession, PendingMessage } from '../../worker-types.js';
@@ -20,6 +18,10 @@ import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
+import {
+  clearRecoverableOutputFailure,
+  recordRecoverableOutputFailure,
+} from '../session/OutputRecovery.js';
 
 type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input'>;
 
@@ -263,6 +265,12 @@ export interface ResponseContext {
   promptNumber: number;
   pendingAgentId: string | null;
   pendingAgentType: string | null;
+  /** History length before the current provider prompt was appended. */
+  historyCheckpoint?: number;
+  /** False for the provider's synthetic init turn, which has no queue claim. */
+  hasClaimedBatch?: boolean;
+  /** A retry generator's init response establishes context but is not new work. */
+  suppressStorage?: boolean;
 }
 
 export function snapshotResponseContext(session: ActiveSession): ResponseContext {
@@ -271,7 +279,27 @@ export function snapshotResponseContext(session: ActiveSession): ResponseContext
     promptNumber: session.lastPromptNumber,
     pendingAgentId: session.pendingAgentId ?? null,
     pendingAgentType: session.pendingAgentType ?? null,
+    historyCheckpoint: session.conversationHistory.length,
+    hasClaimedBatch: (session.claimedMessageIds?.length ?? 0) > 0,
   };
+}
+
+function rollbackRejectedHistory(session: ActiveSession, context: ResponseContext): void {
+  if (
+    typeof context.historyCheckpoint === 'number' &&
+    context.historyCheckpoint < session.conversationHistory.length
+  ) {
+    session.conversationHistory.length = context.historyCheckpoint;
+  }
+}
+
+function abortGenerator(session: ActiveSession, reason: string): void {
+  session.abortReason = reason;
+  try {
+    session.abortController.abort();
+  } catch {
+    // best-effort; AbortController.abort() should not throw in normal use.
+  }
 }
 
 export async function processAgentResponse(
@@ -289,13 +317,14 @@ export async function processAgentResponse(
 ): Promise<void> {
   const processingStartedAt = Date.now();
   session.lastGeneratorActivity = Date.now();
-  const context = responseContext ?? snapshotResponseContext(session);
-
-  if (text) {
-    session.conversationHistory.push({ role: 'assistant', content: text });
-  }
+  const context = responseContext ?? {
+    ...snapshotResponseContext(session),
+    // Direct callers use this function to process a claimed reducer turn.
+    hasClaimedBatch: true,
+  };
 
   const parsed = parseAgentXml(text, session.contentSessionId);
+  const outputClass = classifyObserverOutput(text, parsed);
 
   // Provider enum for telemetry, derived once so the invalid-output and
   // success paths stamp the same value.
@@ -305,70 +334,91 @@ export async function processAgentResponse(
     'claude';
 
   if (!parsed.valid) {
-    if (isQuotaLimitedObserverOutput(text)) {
-      session.consecutiveInvalidOutputs = 0;
+    rollbackRejectedHistory(session, context);
+
+    if (outputClass === 'quota') {
+      clearRecoverableOutputFailure(session);
 
       logger.warn('PARSER', `${agentName} returned quota-limit prose — pausing generator and preserving queued batch`, {
         sessionId: session.sessionDbId,
-        outputClass: 'prose',
+        outputClass,
         preview: previewOutput(text),
       });
 
       await sessionManager.resetProcessingToPending(session.sessionDbId);
-      session.abortReason = 'quota:observer_text';
-      try {
-        session.abortController.abort();
-      } catch {
-        // best-effort; AbortController.abort() should not throw in normal use.
-      }
+      abortGenerator(session, 'quota:observer_text');
       worker?.broadcastProcessingStatus?.();
       return;
     }
 
-    if (isAuthFailureObserverOutput(text)) {
-      session.consecutiveInvalidOutputs = 0;
+    if (outputClass === 'auth') {
+      clearRecoverableOutputFailure(session);
 
       await sessionManager.resetProcessingToPending(session.sessionDbId);
-      session.abortReason = 'auth:observer_text';
-      try {
-        session.abortController.abort();
-      } catch {
-        // best-effort; AbortController.abort() should not throw in normal use.
-      }
+      abortGenerator(session, 'auth:observer_text');
       worker?.broadcastProcessingStatus?.();
       logger.error('PARSER', `${agentName} authentication failed; run /login to preserve queued batch`, {
         sessionId: session.sessionDbId,
-        outputClass: 'prose',
+        outputClass,
         remediation: '/login',
         preview: previewOutput(text),
       });
       return;
     }
 
-    // Classify the non-XML output so a dropped batch is visible, not silent.
-    // Ordinary idle/prose is a claimed no-op batch: confirm it and do not build
-    // any respawn debt from repeated skip acknowledgements.
-    const outputClass = classifyObserverOutput(text);
-    const preview = previewOutput(text);
-    session.consecutiveInvalidOutputs = 0;
+    if (context.hasClaimedBatch === false) {
+      if (!context.suppressStorage) {
+        clearRecoverableOutputFailure(session);
+      }
+      logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} init response — continuing without committing it`, {
+        sessionId: session.sessionDbId,
+        outputClass,
+        preview: previewOutput(text),
+      });
+      return;
+    }
 
-    logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
+    const preview = previewOutput(text);
+    const shouldRetry = recordRecoverableOutputFailure(session) === 'retry';
+    session.observerOutputPaused = !shouldRetry;
+
+    logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — preserving queued batch`, {
       sessionId: session.sessionDbId,
       outputClass,
       preview,
       consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+      disposition: shouldRetry ? 'retry_once' : 'paused',
     });
+    recordObserverFailure(providerName, `Observer output ${shouldRetry ? 'rejected' : 'paused'} (${outputClass})`);
 
-    // Plain-text skip responses are intentionally ignored. Re-queueing them
-    // creates an observer loop where the same low-signal batch is retried.
-    await sessionManager.confirmClaimedMessages(session.sessionDbId);
-    session.earliestPendingTimestamp = null;
+    await sessionManager.resetProcessingToPending(session.sessionDbId);
+    abortGenerator(
+      session,
+      `${shouldRetry ? 'output_retry' : 'output_paused'}:${outputClass}`,
+    );
+    worker?.broadcastProcessingStatus?.();
+    return;
+  }
+
+  if (context.suppressStorage) {
+    session.conversationHistory.push({ role: 'assistant', content: text });
     return;
   }
 
   // Valid parse — clear the invalid-output counter so transient misses don't
   // accumulate toward a respawn across a healthy session.
-  session.consecutiveInvalidOutputs = 0;
+  clearRecoverableOutputFailure(session);
+  session.observerOutputPaused = false;
+
+  if (parsed.summary?.skipped) {
+    session.conversationHistory.push({ role: 'assistant', content: text });
+    session.lastSummaryStored = false;
+    await sessionManager.confirmClaimedMessages(session.sessionDbId);
+    session.earliestPendingTimestamp = null;
+    worker?.broadcastProcessingStatus?.();
+    recordObserverSuccess();
+    return;
+  }
 
   if (!session.memorySessionId) {
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {
@@ -377,6 +427,7 @@ export async function processAgentResponse(
     // Reset any claimed-but-undelivered messages back to pending so they don't
     // count as "in progress" and trigger a respawn loop while we wait for the
     // memory session id to appear. The next generator pass will re-claim them.
+    rollbackRejectedHistory(session, context);
     await sessionManager.resetProcessingToPending(session.sessionDbId);
     return;
   }
@@ -413,10 +464,24 @@ export async function processAgentResponse(
       originalTimestamp ?? undefined,
       modelId
     );
+  } catch (error) {
+    rollbackRejectedHistory(session, context);
+    await sessionManager.resetProcessingToPending(session.sessionDbId);
+    session.observerOutputPaused = true;
+    abortGenerator(session, 'storage_paused');
+    worker?.broadcastProcessingStatus?.();
+    logger.error('DB', 'Observation storage failed; preserving claimed batch and pausing observer', {
+      sessionId: session.sessionDbId,
+      memorySessionId: session.memorySessionId,
+    }, error instanceof Error ? error : new Error(String(error)));
+    recordObserverFailure(providerName, 'Observer storage failed; queued batch paused');
+    return;
   } finally {
     session.pendingAgentId = null;
     session.pendingAgentType = null;
   }
+
+  session.conversationHistory.push({ role: 'assistant', content: text });
 
   logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
     sessionId: session.sessionDbId,
@@ -424,6 +489,13 @@ export async function processAgentResponse(
   });
 
   session.lastSummaryStored = result.summaryId !== null;
+
+  // Storage is the irreversible step. Confirm immediately afterward, before
+  // telemetry and integration side effects, so a downstream exception cannot
+  // replay an already-stored batch and create duplicate memories.
+  await sessionManager.confirmClaimedMessages(session.sessionDbId);
+  session.earliestPendingTimestamp = null;
+  worker?.broadcastProcessingStatus?.();
 
   // A completed store proves the observer pipeline works end-to-end — clear
   // the failure streak in the observer-health ledger.
@@ -490,10 +562,6 @@ export async function processAgentResponse(
           : undefined,
     });
   }
-
-  await sessionManager.confirmClaimedMessages(session.sessionDbId);
-  session.earliestPendingTimestamp = null;
-  worker?.broadcastProcessingStatus?.();
 
   void notifyTelegram({
     observations: labeledObservations,

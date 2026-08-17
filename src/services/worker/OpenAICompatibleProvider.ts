@@ -49,12 +49,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   protected abstract readonly providerName: string;
   /** Prefix for the synthetic memorySessionId (e.g. 'gemini', 'openrouter'). */
   protected abstract readonly syntheticIdPrefix: string;
-  /**
-   * When a query returns empty content for an observation/summary message:
-   * OpenRouter still calls processAgentResponse('') (forwards the empty batch
-   * to the parser/recovery path); Gemini skips it and logs a warning. This flag
-   * preserves that per-provider divergence.
-   */
+  /** @deprecated Empty claimed responses now always enter batch recovery. */
   protected abstract readonly forwardEmptyMessageResponse: boolean;
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
@@ -101,7 +96,10 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     const initPrompt = session.lastPromptNumber === 1
       ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
-    const initContext = snapshotResponseContext(session);
+    const initContext = {
+      ...snapshotResponseContext(session),
+      suppressStorage: session.lastGeneratorSource === 'output_retry',
+    };
 
     session.conversationHistory.push({ role: 'user', content: initPrompt });
 
@@ -177,7 +175,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     responseContext: ReturnType<typeof snapshotResponseContext>
   ): Promise<void> {
     if (initResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
       const tokensUsed = initResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
@@ -226,7 +223,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     let tokensUsed = 0;
     if (obsResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
       tokensUsed = obsResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
@@ -235,16 +231,10 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       session.lastUsage = this.buildLastUsage(obsResponse);
     }
 
-    if (obsResponse.content || this.forwardEmptyMessageResponse) {
-      await processAgentResponse(
-        obsResponse.content || '', session, this.dbManager, this.sessionManager,
-        worker, tokensUsed, originalTimestamp, this.providerName, lastCwd, obsResponse.servedModel ?? config.model, responseContext
-      );
-    } else {
-      logger.warn('SDK', `Empty ${this.providerName} observation response, leaving queue intact`, {
-        sessionId: session.sessionDbId
-      });
-    }
+    await processAgentResponse(
+      obsResponse.content || '', session, this.dbManager, this.sessionManager,
+      worker, tokensUsed, originalTimestamp, this.providerName, lastCwd, obsResponse.servedModel ?? config.model, responseContext
+    );
   }
 
   private async processSummaryMessage(
@@ -284,23 +274,16 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     let tokensUsed = 0;
     if (summaryResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
       tokensUsed = summaryResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
       session.lastUsage = this.buildLastUsage(summaryResponse);
     }
 
-    if (summaryResponse.content || this.forwardEmptyMessageResponse) {
-      await processAgentResponse(
-        summaryResponse.content || '', session, this.dbManager, this.sessionManager,
-        worker, tokensUsed, originalTimestamp, this.providerName, lastCwd, summaryResponse.servedModel ?? summaryConfig.model, responseContext
-      );
-    } else {
-      logger.warn('SDK', `Empty ${this.providerName} summary response, leaving queue intact`, {
-        sessionId: session.sessionDbId
-      });
-    }
+    await processAgentResponse(
+      summaryResponse.content || '', session, this.dbManager, this.sessionManager,
+      worker, tokensUsed, originalTimestamp, this.providerName, lastCwd, summaryResponse.servedModel ?? summaryConfig.model, responseContext
+    );
   }
 
   protected handleSessionError(error: unknown, session: ActiveSession, _worker?: WorkerRef): never {
