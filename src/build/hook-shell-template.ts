@@ -4,15 +4,16 @@
  *
  * See `CLAUDE.md` → "Spawn-Contract Resolution". The host-owned config files
  * (`plugin/hooks/hooks.json`, `plugin/hooks/codex-hooks.json`,
- * `plugin/.mcp.json`) embed a defensive POSIX-shell prelude that resolves the
- * plugin root from `${CLAUDE_PLUGIN_ROOT}` (or `${PLUGIN_ROOT}`), then falls
- * back through the host cache directories and the marketplace install dir.
+ * `plugin/.mcp.json`) resolve the plugin root from `${CLAUDE_PLUGIN_ROOT}` (or
+ * `${PLUGIN_ROOT}`), then fall back through the host cache directories and the
+ * marketplace install dir.
  * Some host versions / cache rotations do NOT inject `CLAUDE_PLUGIN_ROOT`, so
  * the fallback chain is load-bearing (issues #1215, #1533).
  *
- * This module emits those command strings from ONE place so the shape can't
- * drift between the three files. `tests/infrastructure/plugin-distribution.test.ts`
- * asserts the hand-maintained files match the generator output byte-for-byte.
+ * Claude Code hooks use direct Node exec entries. Codex keeps its shell command
+ * plus Windows override, while MCP uses a separate pure-Node launcher. The
+ * generated files are checked against this module by
+ * `tests/infrastructure/plugin-distribution.test.ts`.
  *
  * The fallback chain ORDER is contractual and must not change:
  *   1. ${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}   (host-injected env)
@@ -56,6 +57,17 @@ export interface ShellTemplateOptions {
    * uniformly. Ignored for non-mcp hosts.
    */
   mcpExtraCacheRoots?: string[];
+}
+
+export interface ClaudeNodeLauncherOptions {
+  /** Script that must exist under `<root>/scripts/` for the root to count. */
+  requireFile: string;
+  /** Optional second required script for worker hooks. */
+  requireFileSecondary?: string;
+  /** Arguments passed to the resolved script after its path. */
+  scriptArgs: string[];
+  /** stderr message when no candidate root resolves. */
+  notFoundMessage: string;
 }
 
 const CLAUDE_CODE_PATH_PRELUDE = `export PATH="$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH";`;
@@ -234,6 +246,45 @@ function buildMcpNodeLauncher(options: ShellTemplateOptions): string {
     `for(const s of ['SIGTERM','SIGINT','SIGHUP'])process.on(s,()=>{try{ch.kill(s)}catch{}});` +
     `ch.on('exit',(code,sig)=>{if(sig){process.removeAllListeners(sig);try{process.kill(process.pid,sig)}catch{process.exit(1)}}else process.exit(code==null?0:code)})`
   );
+}
+
+/** Build a direct Claude Code Node launcher without an intermediate shell. */
+export function buildClaudeNodeLauncher(options: ClaudeNodeLauncherOptions): string {
+  const requiredFiles = [options.requireFile, options.requireFileSecondary].filter(Boolean);
+  const required = JSON.stringify(requiredFiles);
+  const scriptArgs = JSON.stringify(options.scriptArgs);
+  const notFound = JSON.stringify(`${options.notFoundMessage}\n`);
+
+  return (
+    `const f=require('fs'),p=require('path'),o=require('os'),c=require('child_process');` +
+    `const h=o.homedir();` +
+    `const C=process.env.CLAUDE_CONFIG_DIR||p.join(h,'.claude');` +
+    `const roots=[];` +
+    `for(const v of [process.env.CLAUDE_PLUGIN_ROOT,process.env.PLUGIN_ROOT])if(v)roots.push(v);` +
+    `const cache=p.join(C,'plugins','cache','thedotmack','claude-mem');` +
+    `const S=n=>n.split('-')[0].split('.').map(v=>parseInt(v,10)||0);` +
+    `const W=(a,b)=>{const x=S(a),y=S(b);return(y[0]-x[0])||(y[1]-x[1])||(y[2]-x[2])||((a.indexOf('-')<0?0:1)-(b.indexOf('-')<0?0:1))||(a<b?1:a>b?-1:0)};` +
+    `try{roots.push(...f.readdirSync(cache).filter(n=>/^\\d/.test(n)).map(n=>p.join(cache,n)).filter(r=>{try{return f.statSync(r).isDirectory()&&!f.existsSync(p.join(r,'.orphaned_at'))}catch{return false}}).sort((a,b)=>W(p.basename(a),p.basename(b))))}catch{}` +
+    `roots.push(p.join(C,'plugins','marketplaces','thedotmack','plugin'));` +
+    `const files=${required};` +
+    `let R=null;` +
+    `for(const k of roots){const r=f.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(files.every(v=>f.existsSync(p.join(r,'scripts',v)))){R=r;break}}` +
+    `if(!R){process.stderr.write(${notFound});process.exit(1)}` +
+    `const ch=c.spawn(process.execPath,[p.join(R,'scripts',${JSON.stringify(options.requireFile)}),...${scriptArgs}],{stdio:'inherit',windowsHide:true});` +
+    `for(const s of ['SIGTERM','SIGINT','SIGHUP'])process.on(s,()=>{try{ch.kill(s)}catch{}});` +
+    `ch.on('error',e=>{process.stderr.write(String(e.message||e)+'\\n');process.exit(1)});` +
+    `ch.on('exit',(code,sig)=>{if(sig){process.removeAllListeners(sig);try{process.kill(process.pid,sig)}catch{process.exit(1)}}else process.exit(code==null?0:code)})`
+  );
+}
+
+export interface ClaudeNodeHookEntry {
+  command: 'node';
+  args: ['-e', string];
+}
+
+/** Build the complete direct-exec entry consumed by Claude Code. */
+export function buildClaudeNodeHook(options: ClaudeNodeLauncherOptions): ClaudeNodeHookEntry {
+  return { command: 'node', args: ['-e', buildClaudeNodeLauncher(options)] };
 }
 
 function jsSingleQuoted(value: string): string {
