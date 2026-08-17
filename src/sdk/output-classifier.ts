@@ -1,21 +1,22 @@
-/**
- * Output-fidelity classifier for observer/summarizer SDK responses (plan-11, #2485).
- *
- * The observer SDK is supposed to emit `<observation>`/`<summary>` XML, but it
- * sometimes returns conversational prose or an empty/idle string instead.
- * Historically parseAgentXml just returned `{ valid: false }` and the whole
- * batch was dropped silently, leaving observations stuck at zero with no
- * signal. This classifier splits the non-XML cases apart so the pipeline can
- * log a visible preview while dropping benign skip/no-op output.
- */
+import type { ParseResult } from './parser.js';
 
-export type ObserverOutputClass = 'xml' | 'idle' | 'prose';
+export type ObserverOutputClass =
+  | 'valid'
+  | 'skip'
+  | 'idle'
+  | 'auth'
+  | 'quota'
+  | 'transport'
+  | 'overflow'
+  | 'model_error'
+  | 'xml_drift'
+  | 'prose';
 
 const PREVIEW_LENGTH = 200;
 
 /**
- * Returns a short, single-line preview of raw output for diagnostics/logging so
- * a dropped batch is visible instead of silent.
+ * Returns a short, single-line preview of raw output for local diagnostics.
+ * Rejected output is preserved for recovery; telemetry never receives it.
  */
 export function previewOutput(raw: unknown, maxLength: number = PREVIEW_LENGTH): string {
   if (typeof raw !== 'string') {
@@ -31,19 +32,72 @@ export function previewOutput(raw: unknown, maxLength: number = PREVIEW_LENGTH):
 /**
  * Classify an observer/summarizer SDK output.
  *
- * - `xml`      — contains a parseable `<observation>`/`<summary>`/`<skip_summary/>`
- *                root tag. (Whether it ultimately yields rows is parseAgentXml's
- *                job; this is the structural gate.)
- * - `idle`     — empty / whitespace-only. Benign: the SDK had nothing to say.
- * - `prose`    — any other non-XML text. Conversational output; not persisted.
+ * Parseable XML wins before prose error detection so memory text that happens
+ * to mention an error cannot be misclassified. Every rejected response maps
+ * to a closed reason that is safe to log and use in abort state.
  */
-export function classifyObserverOutput(raw: unknown): ObserverOutputClass {
+function classifyAcceptedXml(raw: string): 'valid' | 'skip' | null {
+  if (/^\s*<skip_(?:summary|observation)(?:\s+reason="[^"]*")?\s*\/>\s*$/.test(raw)) {
+    return 'skip';
+  }
+
+  const observation = /<observation>([\s\S]*?)<\/observation>/.exec(raw)?.[1];
+  if (observation && /<(?:title|narrative|fact|concept)>[\s\S]*?[^\s<][\s\S]*?<\//.test(observation)) {
+    return 'valid';
+  }
+
+  const summary = /<summary>([\s\S]*?)<\/summary>/.exec(raw)?.[1];
+  if (summary && /<(?:request|investigated|learned|completed|next_steps)>[\s\S]*?[^\s<][\s\S]*?<\//.test(summary)) {
+    return 'valid';
+  }
+
+  return null;
+}
+
+export function classifyObserverOutput(raw: unknown, parsed?: ParseResult): ObserverOutputClass {
   if (typeof raw !== 'string' || raw.trim() === '') {
     return 'idle';
   }
 
-  if (/<(observation|summary)\b/i.test(raw) || /<skip_summary\b/i.test(raw)) {
-    return 'xml';
+  if (parsed?.valid) {
+    return parsed.summary?.skipped ? 'skip' : 'valid';
+  }
+  if (parsed === undefined) {
+    const acceptedXml = classifyAcceptedXml(raw);
+    if (acceptedXml) {
+      return acceptedXml;
+    }
+  }
+
+  if (isAuthFailureObserverOutput(raw)) {
+    return 'auth';
+  }
+  if (isQuotaLimitedObserverOutput(raw)) {
+    return 'quota';
+  }
+
+  const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (
+    /\b(context window|context length|maximum context|prompt is too long|input is too long|too many tokens)\b/.test(text) ||
+    /\btoken limit\b.{0,30}\b(exceeded|reached)\b/.test(text)
+  ) {
+    return 'overflow';
+  }
+  if (
+    /\b(connection (?:closed|reset|lost|terminated)|socket hang up|network error|fetch failed|timed? out|timeout|stream (?:closed|terminated|interrupted))\b/.test(text)
+  ) {
+    return 'transport';
+  }
+  if (
+    /\b(issue with the selected model|model (?:is )?(?:unavailable|not found|unsupported)|invalid model|model error)\b/.test(text)
+  ) {
+    return 'model_error';
+  }
+  if (/<\/?(?:observation|summary|skip_(?:summary|observation))\b/i.test(raw)) {
+    return 'xml_drift';
+  }
+  if (/^(?:no|nothing)\b.{0,40}\b(?:observations?|summar(?:y|ies)|durable)\b/i.test(text)) {
+    return 'idle';
   }
 
   return 'prose';
@@ -80,7 +134,7 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
     return false;
   }
 
-  if (/<(observation|summary)\b/i.test(raw) || /<skip_summary\b/i.test(raw)) {
+  if (classifyAcceptedXml(raw)) {
     return false;
   }
 

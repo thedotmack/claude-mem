@@ -92,9 +92,9 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'chroma_available',
   'fallback_reason',
   // session_compressed trust signals — booleans, counters, and our own
-  // closed enums (invalid_output_class: xml | idle | prose, where 'xml' means
-  // XML-shaped output that still failed to parse; abort_reason:
-  // idle | shutdown | overflow | restart_guard | quota | none).
+  // closed enums (invalid_output_class is a parser-owned class; abort_reason:
+  // idle | shutdown | overflow | restart_guard | auth | quota | output_retry |
+  // output_paused | storage_paused | none).
   // Never model output, never raw abort strings.
   'invalid_output_class',
   'consecutive_invalid_outputs',

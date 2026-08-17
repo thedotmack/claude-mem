@@ -128,6 +128,8 @@ export class SessionManager {
       currentProvider: null,  // Will be set when generator starts
       consecutiveRestarts: 0,
       consecutiveInvalidOutputs: 0,
+      invalidOutputBatchKey: null,
+      observerOutputPaused: false,
       lastGeneratorActivity: Date.now(),  // Initialize for stale detection (Issue #1099)
       pendingAgentId: null,   // Subagent identity carried from the most recent claimed message
       pendingAgentType: null

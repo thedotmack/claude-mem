@@ -25,11 +25,14 @@ export interface ActiveSession {
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
   consecutiveRestarts: number;
   /**
-   * Legacy invalid-output counter. Ordinary non-XML observer output is now
-   * confirmed as a no-op and resets this to 0 so skip acknowledgements never
-   * accumulate respawn debt.
+   * Recoverable-output attempts for the currently claimed batch. A first
+   * rejected response retries once; a second pauses without confirming.
    */
   consecutiveInvalidOutputs: number;
+  /** Stable claimed-message key whose recoverable-output attempts are counted. */
+  invalidOutputBatchKey?: string | null;
+  /** Prevents automatic third attempts after output/storage safety pauses. */
+  observerOutputPaused?: boolean;
   forceInit?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;

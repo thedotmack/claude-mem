@@ -149,9 +149,9 @@ export function buildObservationPrompt(obs: Observation): string {
 
 If a <parameters> or <outcome> block above contains an "<elided chars=... />" marker, that field was truncated to fit the observer's context window. Describe only what you can see in the kept portion and do not infer details about the elided range.
 
-Return either one or more <observation>...</observation> blocks, or an empty response if this tool use should be skipped.
+Return either one or more <observation>...</observation> blocks, or exactly <skip_observation reason="nothing durable"/> if this tool use should be skipped.
 Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection count as durable discoveries and should be recorded.
-Never reply with prose such as "Skipping", "No substantive tool executions", or any explanation outside XML. Non-XML text is discarded.`;
+Never reply with an empty response. Never reply with prose such as "Skipping", "No substantive tool executions", or any explanation outside XML. Only valid observation XML or the explicit skip sentinel can complete this batch.`;
 }
 
 export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): string {
@@ -185,6 +185,7 @@ ${mode.prompts.summary_format_instruction}
 </summary>
 
 REMINDER: Your response MUST use <summary> as the root tag, NOT <observation>.
+If there is genuinely nothing to summarize, return exactly <skip_summary reason="nothing durable"/> instead of an empty response or prose.
 ${mode.prompts.summary_footer}`;
 }
 

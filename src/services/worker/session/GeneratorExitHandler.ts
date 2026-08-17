@@ -7,6 +7,7 @@ import { getSdkProcessForSession, ensureSdkProcessExit } from '../../../supervis
 export interface GeneratorExitDependencies {
   sessionManager: SessionManager;
   completionHandler: SessionCompletionHandler;
+  restartGenerator?: (sessionDbId: number, source: string) => void | Promise<void>;
 }
 
 /**
@@ -30,7 +31,7 @@ export async function handleGeneratorExit(
   reason: ActiveSession['abortReason'],
   deps: GeneratorExitDependencies
 ): Promise<void> {
-  const { sessionManager, completionHandler } = deps;
+  const { sessionManager, completionHandler, restartGenerator } = deps;
   const sessionDbId = session.sessionDbId;
 
   const tracked = getSdkProcessForSession(sessionDbId);
@@ -42,11 +43,20 @@ export async function handleGeneratorExit(
   session.currentProvider = null;
 
   const abortCategory = (reason ?? '').split(':')[0];
-  if (abortCategory === 'quota' || abortCategory === 'auth') {
+  if (
+    abortCategory === 'quota' ||
+    abortCategory === 'auth' ||
+    abortCategory === 'output_retry' ||
+    abortCategory === 'output_paused' ||
+    abortCategory === 'storage_paused'
+  ) {
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
     });
+    if (abortCategory === 'output_retry') {
+      await restartGenerator?.(sessionDbId, 'output_retry');
+    }
     return;
   }
 

@@ -192,4 +192,155 @@ describe('Claude setup-required generator gate', () => {
       remediation: expect.stringContaining('Claude Code CLI'),
     });
   });
+
+  it('pauses after one thrown-provider retry and resumes only on a later user prompt', async () => {
+    const session = makeSession();
+    let starts = 0;
+    let finalizerCalls = 0;
+    let removeSessionImmediateCalls = 0;
+    let claimed = false;
+    let resetCalls = 0;
+
+    const sessionManager = {
+      getSession: () => session,
+      getMessageBuffer: () => ({
+        getPendingCount: () => 1,
+        peekTypes: () => [{ message_type: 'observation', tool_name: 'Read' }],
+      }),
+      resetProcessingToPending: async () => {
+        resetCalls += 1;
+        claimed = false;
+        session.claimedMessageIds = [];
+        return 1;
+      },
+      removeSessionImmediate: () => {
+        removeSessionImmediateCalls += 1;
+      },
+    };
+
+    const claudeProvider = {
+      startSession: async () => {
+        starts += 1;
+        // The original provider turn fails after claiming the batch. The
+        // bounded retry then fails during its synthetic init turn, before the
+        // preserved batch can be claimed again.
+        if (starts === 1) {
+          claimed = true;
+          session.claimedMessageIds = [77];
+        }
+        session.conversationHistory.push({ role: 'user', content: `attempt ${starts}` });
+        if (starts === 3) {
+          return new Promise<void>(() => {});
+        }
+        throw new Error('Connection reset by peer');
+      },
+    };
+
+    const routes = new SessionRoutes(
+      sessionManager as any,
+      {} as any,
+      claudeProvider as any,
+      { startSession: async () => {} } as any,
+      { startSession: async () => {} } as any,
+      {} as any,
+      { broadcastProcessingStatus: () => {} } as any,
+      {
+        finalizeSession: async () => {
+          finalizerCalls += 1;
+        },
+      } as any,
+    );
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    const firstAttempt = session.generatorPromise;
+    await firstAttempt;
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'summarize');
+
+    expect(starts).toBe(2);
+    expect(resetCalls).toBe(2);
+    expect(claimed).toBe(false);
+    expect(session.claimedMessageIds).toEqual([]);
+    expect(session.consecutiveInvalidOutputs).toBe(2);
+    expect(session.observerOutputPaused).toBe(true);
+    expect(session.generatorPromise).toBeNull();
+    expect(session.conversationHistory).toEqual([]);
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'init');
+
+    expect(starts).toBe(3);
+    expect(session.observerOutputPaused).toBe(false);
+    expect(session.consecutiveInvalidOutputs).toBe(0);
+    expect(session.invalidOutputBatchKey).toBeNull();
+    expect(session.generatorPromise).not.toBeNull();
+    expect(session.conversationHistory).toEqual([
+      { role: 'user', content: 'attempt 3' },
+    ]);
+    expect(finalizerCalls).toBe(0);
+    expect(removeSessionImmediateCalls).toBe(0);
+  });
+
+  it('waits for a paused generator to unwind and single-flights concurrent user-prompt resumes', async () => {
+    const session = makeSession();
+    session.observerOutputPaused = true;
+    session.consecutiveInvalidOutputs = 2;
+    session.invalidOutputBatchKey = '77';
+
+    let finishPausedGenerator!: () => void;
+    const pausedGenerator = new Promise<void>(resolve => {
+      finishPausedGenerator = resolve;
+    }).finally(() => {
+      session.generatorPromise = null;
+      session.currentProvider = null;
+    });
+    session.generatorPromise = pausedGenerator;
+
+    let starts = 0;
+    const sdkAgent = {
+      startSession: () => {
+        starts += 1;
+        return new Promise<void>(() => {});
+      },
+    };
+    const sessionManager = {
+      getSession: () => session,
+      getMessageBuffer: () => ({
+        getPendingCount: () => 1,
+        peekTypes: () => [{ message_type: 'observation', tool_name: 'Read' }],
+      }),
+    };
+    const routes = new SessionRoutes(
+      sessionManager as any,
+      {} as any,
+      sdkAgent as any,
+      { startSession: async () => {} } as any,
+      { startSession: async () => {} } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    let resumesFinished = 0;
+    const resumes = [
+      routes.ensureGeneratorRunning(session.sessionDbId, 'init'),
+      routes.ensureGeneratorRunning(session.sessionDbId, 'init'),
+    ].map(resume => resume.then(() => {
+      resumesFinished += 1;
+    }));
+    await Promise.resolve();
+
+    expect(starts).toBe(0);
+    expect(resumesFinished).toBe(0);
+    expect(session.observerOutputPaused).toBe(true);
+
+    finishPausedGenerator();
+    await Promise.all(resumes);
+
+    expect(starts).toBe(1);
+    expect(resumesFinished).toBe(2);
+    expect(session.observerOutputPaused).toBe(false);
+    expect(session.consecutiveInvalidOutputs).toBe(0);
+    expect(session.invalidOutputBatchKey).toBeNull();
+    expect(session.generatorPromise).not.toBeNull();
+  });
 });

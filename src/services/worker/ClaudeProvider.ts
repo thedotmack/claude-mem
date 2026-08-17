@@ -485,7 +485,10 @@ export class ClaudeProvider {
     const initPrompt = isInitPrompt
       ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
-    activeResponseContext.current = snapshotResponseContext(session);
+    activeResponseContext.current = {
+      ...snapshotResponseContext(session),
+      suppressStorage: session.lastGeneratorSource === 'output_retry',
+    };
 
     session.conversationHistory.push({ role: 'user', content: initPrompt });
 

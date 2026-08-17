@@ -246,6 +246,8 @@ describe('ResponseProcessor', () => {
       expect(observations).toHaveLength(1);
       expect(observations[0].type).toBe('discovery');
       expect(observations[0].title).toBe('Found important pattern');
+      expect(mockSessionManager.confirmClaimedMessages).toHaveBeenCalledTimes(1);
+      expect(mockSessionManager.resetProcessingToPending).not.toHaveBeenCalled();
     });
 
     it('should parse multiple observations from response', async () => {
@@ -532,12 +534,14 @@ describe('ResponseProcessor', () => {
   });
 
   describe('non-XML observer responses', () => {
-    it('warns and clears pending work when the observer returns non-XML prose', async () => {
+    it('warns and preserves pending work when the observer returns non-XML prose', async () => {
       const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(1));
       mockSessionManager = {
         getMessageIterator: async function* () { yield* []; },
         getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
         confirmClaimedMessages,
+        resetProcessingToPending,
       } as unknown as SessionManager;
 
       const session = createMockSession();
@@ -559,9 +563,95 @@ describe('ResponseProcessor', () => {
         expect.stringMatching(/^TestAgent returned non-XML prose response/),
         expect.objectContaining({ sessionId: 1, outputClass: 'prose' })
       );
-      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
-      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(session.earliestPendingTimestamp).not.toBeNull();
       expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('explicit skip sentinels', () => {
+    for (const responseText of [
+      '<skip_summary reason="nothing durable"/>',
+      '<skip_observation reason="nothing durable"/>',
+    ]) {
+      it(`confirms ${responseText.split(' ')[0]} exactly once without storage`, async () => {
+        const confirmClaimedMessages = mock(() => Promise.resolve(1));
+        const resetProcessingToPending = mock(() => Promise.resolve(0));
+        mockSessionManager = {
+          getMessageIterator: async function* () { yield* []; },
+          getClaimedMessages: mock(() => []),
+          confirmClaimedMessages,
+          resetProcessingToPending,
+        } as unknown as SessionManager;
+        const session = createMockSession();
+
+        await processAgentResponse(
+          responseText,
+          session,
+          mockDbManager,
+          mockSessionManager,
+          mockWorker,
+          0,
+          null,
+          'TestAgent'
+        );
+
+        expect(confirmClaimedMessages).toHaveBeenCalledTimes(1);
+        expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+        expect(resetProcessingToPending).not.toHaveBeenCalled();
+        expect(mockStoreObservations).not.toHaveBeenCalled();
+        expect(logger.warn).not.toHaveBeenCalledWith(
+          'PARSER',
+          expect.stringContaining('non-XML'),
+          expect.anything(),
+        );
+      });
+    }
+  });
+
+  describe('fresh retry initialization', () => {
+    it('accepts retry init context without storing it or resetting the batch attempt', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getClaimedMessages: mock(() => []),
+        confirmClaimedMessages,
+        resetProcessingToPending: mock(() => Promise.resolve(0)),
+      } as unknown as SessionManager;
+      const session = createMockSession({
+        consecutiveInvalidOutputs: 1,
+        invalidOutputBatchKey: '77',
+      });
+
+      await processAgentResponse(
+        '<summary><request>retry context only</request></summary>',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        0,
+        null,
+        'TestAgent',
+        undefined,
+        undefined,
+        {
+          project: session.project,
+          promptNumber: session.lastPromptNumber,
+          pendingAgentId: null,
+          pendingAgentType: null,
+          historyCheckpoint: 0,
+          hasClaimedBatch: false,
+          suppressStorage: true,
+        },
+      );
+
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(session.consecutiveInvalidOutputs).toBe(1);
+      expect(session.invalidOutputBatchKey).toBe('77');
+      expect(session.conversationHistory).toEqual([
+        { role: 'assistant', content: '<summary><request>retry context only</request></summary>' },
+      ]);
     });
   });
 
@@ -784,12 +874,14 @@ describe('ResponseProcessor', () => {
   });
 
   describe('handling empty / non-XML response', () => {
-    it('clears pending work and does NOT call storeObservations on empty response', async () => {
+    it('preserves pending work and does NOT call storeObservations on empty response', async () => {
       const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(1));
       mockSessionManager = {
         getMessageIterator: async function* () { yield* []; },
         getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
         confirmClaimedMessages,
+        resetProcessingToPending,
       } as unknown as SessionManager;
 
       const session = createMockSession();
@@ -801,16 +893,19 @@ describe('ResponseProcessor', () => {
       );
 
       expect(mockStoreObservations).not.toHaveBeenCalled();
-      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
-      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(session.earliestPendingTimestamp).not.toBeNull();
     });
 
-    it('clears pending work and does NOT call storeObservations on plain-text response', async () => {
+    it('preserves pending work and does NOT call storeObservations on plain-text response', async () => {
       const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(1));
       mockSessionManager = {
         getMessageIterator: async function* () { yield* []; },
         getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
         confirmClaimedMessages,
+        resetProcessingToPending,
       } as unknown as SessionManager;
 
       const session = createMockSession();
@@ -822,8 +917,9 @@ describe('ResponseProcessor', () => {
       );
 
       expect(mockStoreObservations).not.toHaveBeenCalled();
-      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
-      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(session.earliestPendingTimestamp).not.toBeNull();
     });
   });
 
@@ -948,6 +1044,35 @@ describe('ResponseProcessor', () => {
       expect(session.conversationHistory).toHaveLength(1);
       expect(session.conversationHistory[0].role).toBe('assistant');
       expect(session.conversationHistory[0].content).toBe(responseText);
+    });
+
+    it('does not add rejected output to reusable conversation history', async () => {
+      const resetProcessingToPending = mock(() => Promise.resolve(1));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getClaimedMessages: mock(() => []),
+        confirmClaimedMessages: mock(() => Promise.resolve(0)),
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+      const session = createMockSession({
+        conversationHistory: [{ role: 'user', content: 'accepted prior turn' }],
+      });
+
+      await processAgentResponse(
+        'Connection closed mid-response.',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(session.conversationHistory).toEqual([
+        { role: 'user', content: 'accepted prior turn' },
+      ]);
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
     });
   });
 

@@ -81,6 +81,20 @@ describe('parseAgentXml — summaries', () => {
     }
   });
 
+  it('treats <skip_observation reason="…"/> as an explicit accepted skip', () => {
+    const result = parseAgentXml('<skip_observation reason="nothing durable"/>');
+    expect(result.valid).toBe(true);
+    if (result.valid && result.summary) {
+      expect(result.observations).toEqual([]);
+      expect(result.summary.skipped).toBe(true);
+      expect(result.summary.skip_reason).toBe('nothing durable');
+    }
+  });
+
+  it('rejects a skip sentinel embedded in prose', () => {
+    expect(parseAgentXml('I decided to skip: <skip_observation/>')).toEqual({ valid: false });
+  });
+
   it('does NOT coerce <observation> into a summary (former #1633 path deleted)', () => {
     const result = parseAgentXml('<observation><title>foo</title></observation>');
     expect(result.valid).toBe(true);
