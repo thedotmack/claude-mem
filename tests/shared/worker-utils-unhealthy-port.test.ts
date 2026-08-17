@@ -6,11 +6,13 @@ import * as realInfrastructure from '../../src/services/infrastructure/index.js'
 import * as realHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
 import * as realSupervisor from '../../src/supervisor/index.js';
 import * as realSpawn from '../../src/shared/spawn.js';
+import * as realSpawnGate from '../../src/shared/worker-spawn-gate.js';
 
 const realInfrastructureSnapshot = { ...realInfrastructure };
 const realHealthMonitorSnapshot = { ...realHealthMonitor };
 const realSupervisorSnapshot = { ...realSupervisor };
 const realSpawnSnapshot = { ...realSpawn };
+const realSpawnGateSnapshot = { ...realSpawnGate };
 const spawnCalls: string[] = [];
 const classifierTimeouts: number[] = [];
 let occupancy: 'free' | 'occupied' | 'indeterminate' = 'occupied';
@@ -18,6 +20,7 @@ let classifierResults: Array<'free' | 'occupied' | 'indeterminate'> = [];
 let versionMatch = { matches: true, pluginVersion: '13.15.2', workerVersion: '13.15.2' };
 let versionCheckCalls = 0;
 let ownedPidInfo: { pid: number; port: number; startedAt: string } | null = null;
+let spawnLockResult = true;
 
 mock.module('../../src/services/infrastructure/index.js', () => ({
   checkVersionMatch: () => {
@@ -46,6 +49,10 @@ mock.module('../../src/shared/spawn.js', () => ({
     return { unref: () => {} };
   },
 }));
+mock.module('../../src/shared/worker-spawn-gate.js', () => ({
+  acquireSpawnLock: () => spawnLockResult,
+  releaseSpawnLock: () => {},
+}));
 
 async function importWorkerUtilsFresh() {
   return import(`../../src/shared/worker-utils.js?unhealthy-port=${Date.now()}-${Math.random()}`);
@@ -71,6 +78,7 @@ describe('ensureWorkerRunning — unhealthy port guard', () => {
     versionMatch = { matches: true, pluginVersion: '13.15.2', workerVersion: '13.15.2' };
     versionCheckCalls = 0;
     ownedPidInfo = null;
+    spawnLockResult = true;
     global.fetch = mock(() => Promise.resolve({ ok: false, status: 503, text: () => Promise.resolve('') } as unknown as Response));
   });
 
@@ -89,6 +97,7 @@ describe('ensureWorkerRunning — unhealthy port guard', () => {
     mock.module('../../src/services/infrastructure/HealthMonitor.js', () => realHealthMonitorSnapshot);
     mock.module('../../src/supervisor/index.js', () => realSupervisorSnapshot);
     mock.module('../../src/shared/spawn.js', () => realSpawnSnapshot);
+    mock.module('../../src/shared/worker-spawn-gate.js', () => realSpawnGateSnapshot);
   });
 
   it('wedged listener returns fallback without spawn', async () => {
@@ -112,7 +121,7 @@ describe('ensureWorkerRunning — unhealthy port guard', () => {
   });
 
   it('waits for an active spawn lock without binding the worker port', async () => {
-    writeFileSync(join(dataDir, 'spawn.lock'), JSON.stringify({ pid: 4242, startedAt: new Date().toISOString() }));
+    spawnLockResult = false;
     let healthCalls = 0;
     global.fetch = mock(() => {
       healthCalls += 1;
