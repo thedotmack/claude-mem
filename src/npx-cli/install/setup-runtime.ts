@@ -535,9 +535,9 @@ export async function installPluginDependencies(
     await ensureTreeSitterCliBinary(targetDir, isTreeSitterCliBinaryUsable, treeSitterTimeoutMs);
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
-    const details = describeExecError(err);
+    const details = describeExecError(err).slice(0, 4000);
     const cause = Object.assign(
-      new Error(`tree-sitter-cli provisioning failed in ${targetDir}\n${details}`),
+      new Error(`tree-sitter-cli provisioning failed in ${targetDir}: ${err.message}`),
       {
         code: (err as Error & { code?: number }).code,
         killed: (err as Error & { killed?: boolean }).killed,
