@@ -23,21 +23,6 @@ mock.module('../../src/shared/worker-utils.js', () => ({
   getWorkerPort: () => 37777,
 }));
 
-// Capture the real exports before mock.module mutates the live namespace, then
-// re-register the snapshot in afterAll. bun's mock.module is process-global and
-// mock.restore() does NOT undo it, so without this the partial ModeManager stub
-// below (no class prototype, no loadMode) leaks into later test files and
-// breaks tests/server/server-boot.test.ts and server-runtime-smoke whenever the
-// readdir-dependent file order runs them after this file. Same pattern as
-// tests/context/formatters/agent-formatter.test.ts.
-import * as realModeManagerModule from '../../src/services/domain/ModeManager.js';
-
-const realModeManagerSnapshot = { ...realModeManagerModule };
-
-afterAll(() => {
-  mock.module('../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
-});
-
 mock.module('../../src/services/domain/ModeManager.js', () => ({
   ModeManager: {
     getInstance: () => ({
