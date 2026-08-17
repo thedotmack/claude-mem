@@ -541,17 +541,7 @@ export async function ensureWorkerRunning(): Promise<boolean> {
     // Fall through to (re)spawn + readiness wait below.
   }
 
-  const runtimePath = resolveWorkerRuntimePath();
   const scriptPath = resolvedScript?.scriptPath ?? null;
-
-  if (!runtimePath) {
-    logger.warn('SYSTEM', 'Cannot lazy-spawn worker: Bun runtime not found on PATH');
-    return false;
-  }
-  if (!scriptPath) {
-    logger.warn('SYSTEM', 'Cannot lazy-spawn worker: worker-service.cjs not found in plugin/scripts');
-    return false;
-  }
 
   // Spawn gate (worker-spawn-gate.ts): only ONE gated launcher — hook, MCP
   // server, or the CLI restart fallback — may spawn at a time. (The dying
@@ -570,6 +560,15 @@ export async function ensureWorkerRunning(): Promise<boolean> {
         const remainingMs = preSpawnDeadline - Date.now();
         if (remainingMs <= 0) return false;
         if ((await classifyPortOccupancy(getWorkerPort(), remainingMs)) !== 'free') return false;
+      }
+      const runtimePath = resolveWorkerRuntimePath();
+      if (!runtimePath) {
+        logger.warn('SYSTEM', 'Cannot lazy-spawn worker: Bun runtime not found on PATH');
+        return false;
+      }
+      if (!scriptPath) {
+        logger.warn('SYSTEM', 'Cannot lazy-spawn worker: worker-service.cjs not found in plugin/scripts');
+        return false;
       }
       logger.info('SYSTEM', 'Worker not running — lazy-spawning', { runtimePath, scriptPath });
 
