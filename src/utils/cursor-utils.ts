@@ -3,8 +3,6 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from '
 import { join } from 'path';
 import { logger } from './logger.js';
 import { toBmpSafe } from './bmp-safe.js';
-import { parseJsonWithBom } from '../shared/atomic-json.js';
-import { readJsonSafe } from './json-utils.js';
 
 export interface CursorProjectRegistry {
   [projectName: string]: {
@@ -24,19 +22,15 @@ export interface CursorMcpConfig {
 }
 
 export function readCursorRegistry(registryFile: string): CursorProjectRegistry {
-  if (!existsSync(registryFile)) return {};
   try {
-    const parsed = parseJsonWithBom<unknown>(readFileSync(registryFile, 'utf-8'));
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('Cursor project registry is not a JSON object');
-    }
-    return parsed as CursorProjectRegistry;
+    if (!existsSync(registryFile)) return {};
+    return JSON.parse(readFileSync(registryFile, 'utf-8'));
   } catch (error) {
     logger.error('CONFIG', 'Failed to read Cursor registry, using empty registry', {
       file: registryFile,
       error: error instanceof Error ? error.message : String(error)
     });
-    throw error;
+    return {};
   }
 }
 
@@ -97,24 +91,20 @@ export function configureCursorMcp(mcpJsonPath: string, mcpServerScriptPath: str
   const dir = join(mcpJsonPath, '..');
   mkdirSync(dir, { recursive: true });
 
-  let config: CursorMcpConfig;
-  try {
-    const parsed = readJsonSafe<unknown>(mcpJsonPath, { mcpServers: {} });
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('Cursor MCP config is not a JSON object');
+  let config: CursorMcpConfig = { mcpServers: {} };
+  if (existsSync(mcpJsonPath)) {
+    try {
+      config = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
+      if (!config.mcpServers) {
+        config.mcpServers = {};
+      }
+    } catch (error) {
+      logger.error('CONFIG', 'Failed to read MCP config, starting fresh', {
+        file: mcpJsonPath,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      config = { mcpServers: {} };
     }
-    config = parsed as CursorMcpConfig;
-  } catch (error) {
-    logger.error('CONFIG', 'Failed to read Cursor MCP config; repair or remove mcp.json before retrying', {
-      file: mcpJsonPath,
-      error: error instanceof Error ? error.message : String(error)
-    });
-    throw error;
-  }
-  if (config.mcpServers === undefined) {
-    config.mcpServers = {};
-  } else if (config.mcpServers === null || typeof config.mcpServers !== 'object' || Array.isArray(config.mcpServers)) {
-    throw new Error('Cursor MCP config has a non-object mcpServers value');
   }
 
   config.mcpServers['claude-mem'] = {

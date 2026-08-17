@@ -217,20 +217,13 @@ function registerPlugin(version: string): void {
   writeJsonFileAtomic(installedPluginsPath(), installedPlugins);
 }
 
-export function enablePluginInClaudeSettings(settingsPath = claudeSettingsPath()): void {
-  const parsed = readJsonSafe<unknown>(settingsPath, {});
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('Claude Code settings.json is not a JSON object. Repair or restore the file and rerun the installer.');
-  }
-  const settings = parsed as Record<string, any>;
+function enablePluginInClaudeSettings(): void {
+  const settings = readJsonSafe<Record<string, any>>(claudeSettingsPath(), {});
 
-  if (settings.enabledPlugins === undefined) settings.enabledPlugins = {};
-  if (settings.enabledPlugins === null || typeof settings.enabledPlugins !== 'object' || Array.isArray(settings.enabledPlugins)) {
-    throw new Error('Claude Code settings.json has a non-object enabledPlugins value. Repair or restore the file and rerun the installer.');
-  }
+  if (!settings.enabledPlugins) settings.enabledPlugins = {};
   settings.enabledPlugins['claude-mem@thedotmack'] = true;
 
-  writeJsonFileAtomic(settingsPath, settings);
+  writeJsonFileAtomic(claudeSettingsPath(), settings);
 }
 
 /**
@@ -247,7 +240,7 @@ export function enablePluginInClaudeSettings(settingsPath = claudeSettingsPath()
  */
 export function disableClaudeAutoMemory(): boolean {
   const settings = readJsonSafe<Record<string, any>>(claudeSettingsPath(), {});
-  const env = (settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env)) ? settings.env : {};
+  const env = (settings.env && typeof settings.env === 'object') ? settings.env : {};
 
   if (env.CLAUDE_CODE_DISABLE_AUTO_MEMORY === '1') {
     return false;
@@ -959,7 +952,7 @@ async function maybeBootstrapServerApiKey(): Promise<void> {
 }
 
 async function bootstrapAndPersistServerApiKey(): Promise<void> {
-  const { bootstrapServerApiKey, persistServerSettings } = await import(
+  const { bootstrapServerApiKey, revokeServerApiKey, persistServerSettings } = await import(
     '../../services/hooks/server-bootstrap.js'
   );
   const result = await bootstrapServerApiKey();
@@ -973,6 +966,12 @@ async function bootstrapAndPersistServerApiKey(): Promise<void> {
         + 'Settings saved with mode 0600.',
     );
   } else {
+    await revokeServerApiKey(result.apiKeyId).catch((error: unknown) => {
+      console.warn(
+        '[install] Could not revoke the unpersisted server API key. Repair settings.json before retrying.',
+        error instanceof Error ? error.message : String(error),
+      );
+    });
     console.warn(
       '[install] Server API key provisioned but settings.json could not be updated. '
         + 'Repair or restore ~/.claude-mem/settings.json and rerun the installer.',
@@ -1001,7 +1000,7 @@ function openBrowser(url: string): void {
   }
 }
 
-async function promptProvider(options: InstallOptions): Promise<ProviderId> {
+async function promptProvider(options: InstallOptions, summary: InstallSummary): Promise<ProviderId> {
   const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
 
   const persistClaudeProvider = (authMethod?: 'subscription' | 'api-key' | 'gateway') => {
@@ -1231,7 +1230,15 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
       CLAUDE_MEM_OPENROUTER_MODEL: CMEM_PRO_MODEL,
       CLAUDE_MEM_OPENROUTER_API_KEY: String(keyResult).trim(),
     });
-    if (wrote) log.info('Saved CMEM Pro configuration to ~/.claude-mem/settings.json');
+    if (!wrote) {
+      installerError(ErrorSeverity.ABORT, {
+        component: 'provider-settings',
+        phase: 'provider-selection',
+        cause: new Error('Could not persist CMEM Pro settings'),
+        remediation: 'Repair or restore ~/.claude-mem/settings.json, then rerun the installer.',
+      }, summary);
+    }
+    log.info('Saved CMEM Pro configuration to ~/.claude-mem/settings.json');
 
     p.note(
       'Next: finish cloud sync in the browser — press NEXT on the page.',
@@ -2011,7 +2018,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   }
   const trialActivated = selectedProvider === 'openrouter';
   if (selectedProvider === null) {
-    selectedProvider = await promptProvider(options);
+    selectedProvider = await promptProvider(options, summary);
   }
   if (selectedProvider === 'claude') {
     await promptClaudeModel(options);

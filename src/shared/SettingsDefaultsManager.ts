@@ -233,11 +233,15 @@ export class SettingsDefaultsManager {
       if (!existsSync(settingsPath)) {
         const defaults = this.getAllDefaults();
         try {
-          ensureSettingsDocument(settingsPath, defaults);
-          // stderr, never stdout: this fires on the first boot in a fresh data
-          // dir, and CLI commands like `start` promise machine-readable JSON
-          // on stdout to the hook framework.
-          console.warn('[SETTINGS] Created settings file with defaults:', settingsPath);
+          const ensured = ensureSettingsDocument(settingsPath, defaults);
+          if (ensured.status === 'created') {
+            // stderr, never stdout: this fires on the first boot in a fresh data
+            // dir, and CLI commands like `start` promise machine-readable JSON
+            // on stdout to the hook framework.
+            console.warn('[SETTINGS] Created settings file with defaults:', settingsPath);
+          } else if (ensured.status === 'refused') {
+            console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, ensured.error instanceof Error ? ensured.error.message : String(ensured.error));
+          }
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error instanceof Error ? error.message : String(error));
         }

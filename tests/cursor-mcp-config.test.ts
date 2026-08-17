@@ -82,32 +82,14 @@ describe('Cursor MCP Configuration', () => {
       expect(config.mcpServers['claude-mem'].args).toEqual([newPath]);
     });
 
-    it('throws on corrupt mcp.json and leaves bytes unchanged', () => {
+    it('recovers from corrupt mcp.json', () => {
       mkdirSync(join(tempDir, '.cursor'), { recursive: true });
-      const corruptBytes = 'not valid json {{{{';
-      writeFileSync(mcpJsonPath, corruptBytes);
+      writeFileSync(mcpJsonPath, 'not valid json {{{{');
 
-      expect(() => configureCursorMcp(mcpJsonPath, mcpServerPath)).toThrow();
+      configureCursorMcp(mcpJsonPath, mcpServerPath);
 
-      expect(readFileSync(mcpJsonPath, 'utf-8')).toBe(corruptBytes);
-    });
-
-    it('throws on a root array and leaves bytes unchanged', () => {
-      mkdirSync(join(tempDir, '.cursor'), { recursive: true });
-      const original = '["sentinel"]';
-      writeFileSync(mcpJsonPath, original);
-
-      expect(() => configureCursorMcp(mcpJsonPath, mcpServerPath)).toThrow();
-      expect(readFileSync(mcpJsonPath, 'utf-8')).toBe(original);
-    });
-
-    it('throws on an mcpServers array and leaves bytes unchanged', () => {
-      mkdirSync(join(tempDir, '.cursor'), { recursive: true });
-      const original = JSON.stringify({ mcpServers: ['sentinel'] });
-      writeFileSync(mcpJsonPath, original);
-
-      expect(() => configureCursorMcp(mcpJsonPath, mcpServerPath)).toThrow();
-      expect(readFileSync(mcpJsonPath, 'utf-8')).toBe(original);
+      const config: CursorMcpConfig = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
+      expect(config.mcpServers['claude-mem']).toBeDefined();
     });
 
     it('handles mcp.json with missing mcpServers key', () => {

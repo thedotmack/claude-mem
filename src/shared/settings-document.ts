@@ -109,6 +109,6 @@ export function migrateSettingsDocumentToFlat(
     writeJsonFileAtomic(path, flat);
     return { status: 'updated', document: flat };
   } catch (error) {
-    return { status: 'refused', document: loaded.document, error };
+    return { status: 'refused', document: flat, error };
   }
 }
