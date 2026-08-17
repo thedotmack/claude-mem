@@ -111,17 +111,19 @@ export function createWorkerAuthMiddleware(options: WorkerAuthOptions): RequestH
       return;
     }
 
-    // Forwarded-client headers mean a proxy sits between us and the real
-    // client — the loopback socket peer is then the proxy, not the client,
-    // so it proves nothing (same anti-proxy guard as the requireServerAuth
-    // local-dev bypass).
+    // Every header is caller-controlled — Origin included — so header shape
+    // alone never establishes trust. A request is "provably local" only when
+    // the socket peer is loopback AND no forwarded-client headers are present
+    // (with a proxy in the path, the loopback peer is the proxy, not the
+    // client — same anti-proxy guard as the requireServerAuth local-dev
+    // bypass). A localhost-shaped Origin or Host then narrows WHICH local
+    // requests stay tokenless; it can never substitute for the peer check.
+    const locallyConnected = isLocalhost(req) && !hasForwardedClientHeaders(req);
     const origin = req.headers.origin;
     const needsToken = options.mode === 'all'
       || (origin
-        ? !isLocalhostOrigin(origin)
-        : !(isLocalhost(req)
-          && isTrustedOriginlessHost(req.header('host') ?? '')
-          && !hasForwardedClientHeaders(req)));
+        ? !(isLocalhostOrigin(origin) && locallyConnected)
+        : !(locallyConnected && isTrustedOriginlessHost(req.header('host') ?? '')));
     if (!needsToken) {
       next();
       return;

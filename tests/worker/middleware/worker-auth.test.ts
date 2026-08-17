@@ -410,6 +410,38 @@ describe('worker CORS allowlist + auth', () => {
       expect(await invoke('origin', { ip: '169.254.0.21' })).toBe(401);
     });
 
+    it('a forged localhost Origin from a LAN peer is 401 (Origin is caller-controlled)', async () => {
+      expect(await invoke('origin', {
+        ip: '169.254.0.21',
+        headers: { origin: 'http://localhost:37777' },
+      })).toBe(401);
+    });
+
+    it('a forged localhost Origin from a LAN peer passes with a valid key', async () => {
+      expect(await invoke('origin', {
+        ip: '169.254.0.21',
+        headers: { origin: 'http://localhost:37777', authorization: `Bearer ${rawKey}` },
+      })).toBe('next');
+    });
+
+    it('a localhost Origin through a loopback proxy (forwarded headers) is 401', async () => {
+      expect(await invoke('origin', {
+        ip: '127.0.0.1',
+        headers: {
+          origin: 'http://localhost:37777',
+          host: '127.0.0.1:37777',
+          'x-forwarded-for': '198.51.100.77',
+        },
+      })).toBe(401);
+    });
+
+    it('a localhost Origin from a clean loopback connection stays tokenless (viewer invariant)', async () => {
+      expect(await invoke('origin', {
+        ip: '127.0.0.1',
+        headers: { origin: 'http://localhost:37777', host: '127.0.0.1:37777' },
+      })).toBe('next');
+    });
+
     it('originless keyless request from a LAN peer with a localhost Host is still 401', async () => {
       expect(await invoke('origin', { ip: '169.254.0.21', headers: { host: 'localhost:37777' } })).toBe(401);
     });
