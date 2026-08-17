@@ -265,7 +265,7 @@ export function buildClaudeNodeLauncher(options: ClaudeNodeLauncherOptions): str
     `const h=o.homedir();` +
     `const C=process.env.CLAUDE_CONFIG_DIR||p.join(h,'.claude');` +
     `const roots=[];` +
-    `for(const v of [process.env.CLAUDE_PLUGIN_ROOT,process.env.PLUGIN_ROOT])if(v)roots.push(v);` +
+    `const E=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT;if(E)roots.push(E);` +
     `const cache=p.join(C,'plugins','cache','thedotmack','claude-mem');` +
     // Keep version tuples fixed width so absent components compare as zero.
     `const S=n=>{const q=n.split('-')[0].split('.');return[parseInt(q[0],10)||0,parseInt(q[1],10)||0,parseInt(q[2],10)||0]};` +

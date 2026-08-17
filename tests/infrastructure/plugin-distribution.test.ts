@@ -536,6 +536,27 @@ describe('Spawn-Contract Templating - Rule A Claude exec resolution matrix', () 
     }
   });
 
+  it('uses the first non-empty plugin-root environment variable', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
+    const cacheRoot = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0');
+    const lowerPriorityRoot = mkdtempSync(path.join(tmpdir(), 'cm-plugin-root-'));
+    makeRoot(cacheRoot);
+    makeRoot(lowerPriorityRoot);
+    try {
+      const entry = hookEntryByPath(readJson('plugin/hooks/hooks.json'), 'Setup.0.0');
+      const result = runEntry(entry, {
+        CLAUDE_PLUGIN_ROOT: path.join(home, 'missing-claude-root'),
+        PLUGIN_ROOT: lowerPriorityRoot,
+        HOME: home,
+      });
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout).root).toBe(path.join(cacheRoot, 'scripts'));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(lowerPriorityRoot, { recursive: true, force: true });
+    }
+  });
+
   it('resolves _P from the cache directory when CLAUDE_PLUGIN_ROOT is unset', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
     const cacheRoot = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0');
@@ -628,8 +649,9 @@ describe('Spawn-Contract Templating - Rule A Claude exec resolution matrix', () 
 
   it('forwards termination signals to the resolved Claude child', async () => {
     const entry = hookEntryByPath(readJson('plugin/hooks/hooks.json'), 'UserPromptSubmit.0.0');
+    const signals: NodeJS.Signals[] = ['SIGTERM', 'SIGINT', 'SIGHUP'];
     if (process.platform === 'win32') {
-      expect(entry.args?.[1]).toContain("['SIGTERM','SIGINT','SIGHUP']");
+      for (const signal of signals) expect(entry.args?.[1]).toContain(signal);
       return;
     }
 
@@ -638,36 +660,38 @@ describe('Spawn-Contract Templating - Rule A Claude exec resolution matrix', () 
     mkdirSync(path.join(root, 'scripts'), { recursive: true });
     writeFileSync(
       path.join(root, 'scripts', 'bun-runner.js'),
-      "process.on('SIGTERM',()=>{process.stdout.write('signal-received');process.exit(0)});setInterval(()=>{},1000);",
+      "for(const s of ['SIGTERM','SIGINT','SIGHUP'])process.on(s,()=>{process.stdout.write('signal-'+s);process.exit(0)});setInterval(()=>{},1000);",
     );
     writeFileSync(path.join(root, 'scripts', 'worker-service.cjs'), '');
-    let stdout = '';
     try {
-      const child = spawn(entry.command, entry.args, {
-        env: { PATH: process.env.PATH ?? '', CLAUDE_PLUGIN_ROOT: root, HOME: home, USERPROFILE: home },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      child.stdout?.setEncoding('utf8');
-      child.stdout?.on('data', (chunk) => { stdout += chunk; });
-      const outcome = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          child.kill('SIGKILL');
-          reject(new Error('Claude launcher did not exit after forwarding SIGTERM'));
-        }, 5000);
-        const signalTimer = setTimeout(() => child.kill('SIGTERM'), 100);
-        child.once('error', (error) => {
-          clearTimeout(timeout);
-          clearTimeout(signalTimer);
-          reject(error);
+      for (const signal of signals) {
+        const child = spawn(entry.command, entry.args, {
+          env: { PATH: process.env.PATH ?? '', CLAUDE_PLUGIN_ROOT: root, HOME: home, USERPROFILE: home },
+          stdio: ['ignore', 'pipe', 'pipe'],
         });
-        child.once('close', (code, signal) => {
-          clearTimeout(timeout);
-          clearTimeout(signalTimer);
-          resolve({ code, signal });
+        let stdout = '';
+        child.stdout?.setEncoding('utf8');
+        child.stdout?.on('data', (chunk) => { stdout += chunk; });
+        const outcome = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            child.kill('SIGKILL');
+            reject(new Error(`Claude launcher did not exit after forwarding ${signal}`));
+          }, 5000);
+          const signalTimer = setTimeout(() => child.kill(signal), 100);
+          child.once('error', (error) => {
+            clearTimeout(timeout);
+            clearTimeout(signalTimer);
+            reject(error);
+          });
+          child.once('close', (code, receivedSignal) => {
+            clearTimeout(timeout);
+            clearTimeout(signalTimer);
+            resolve({ code, signal: receivedSignal });
+          });
         });
-      });
-      expect(outcome.code).toBe(0);
-      expect(stdout).toContain('signal-received');
+        expect(outcome.code).toBe(0);
+        expect(stdout).toContain(`signal-${signal}`);
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });
