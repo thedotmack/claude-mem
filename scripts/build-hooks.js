@@ -46,10 +46,19 @@ function assertBundleIntegrity(filePath) {
   } catch (err) {
     throw new Error(`${filePath} does not parse after build (${err.message}). Refusing to ship a corrupt bundle.`);
   }
+  // esbuild's ESM __dirname inlining (the leak the old rewrite existed for)
+  // emits the absolute directory of a bundled module — always under the
+  // checkout's node_modules/ or src/. Match those exact prefixes, not any
+  // substring of the checkout path, so a legitimate runtime path that merely
+  // shares an ancestor of the build dir (e.g. Bun's /home/linuxbrew/.bun/bin/bun
+  // when building from /home) is never misread as a leak.
   const buildDir = process.cwd();
-  if (content.includes(buildDir)) {
+  const leaked = ['node_modules', 'src']
+    .map((dir) => buildDir + path.sep + dir + path.sep)
+    .find((prefix) => content.includes(prefix));
+  if (leaked) {
     throw new Error(
-      `${filePath} leaked the absolute build path ${buildDir}: a __dirname/__filename literal was inlined. Check the esbuild \`define\` mapping.`
+      `${filePath} inlined the absolute build path ${leaked}…: a __dirname/__filename literal leaked. Check the esbuild \`define\` mapping.`
     );
   }
 }
