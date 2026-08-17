@@ -111,11 +111,16 @@ describe('ensureWorkerRunning — unhealthy port guard', () => {
     expect(spawnCalls).toHaveLength(1);
   });
 
-  it('rechecks the port after the spawn lock before spawning', async () => {
-    classifierResults = ['free', 'occupied'];
+  it('waits for an active spawn lock without binding the worker port', async () => {
+    writeFileSync(join(dataDir, 'spawn.lock'), JSON.stringify({ pid: 4242, startedAt: new Date().toISOString() }));
+    let healthCalls = 0;
+    global.fetch = mock(() => {
+      healthCalls += 1;
+      return Promise.resolve({ ok: healthCalls > 1, status: healthCalls > 1 ? 200 : 503, text: () => Promise.resolve('') } as unknown as Response);
+    });
     const workerUtils = await importWorkerUtilsFresh();
-    expect(await workerUtils.ensureWorkerRunning()).toBe(false);
-    expect(classifierTimeouts).toHaveLength(2);
+    expect(await workerUtils.ensureWorkerRunning()).toBe(true);
+    expect(classifierTimeouts).toHaveLength(0);
     expect(spawnCalls).toHaveLength(0);
   });
 

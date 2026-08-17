@@ -541,12 +541,6 @@ export async function ensureWorkerRunning(): Promise<boolean> {
     // Fall through to (re)spawn + readiness wait below.
   }
 
-  if (!recycledStaleWorker) {
-    const remainingMs = preSpawnDeadline - Date.now();
-    if (remainingMs <= 0) return false;
-    if ((await classifyPortOccupancy(getWorkerPort(), remainingMs)) !== 'free') return false;
-  }
-
   const runtimePath = resolveWorkerRuntimePath();
   const scriptPath = resolvedScript?.scriptPath ?? null;
 

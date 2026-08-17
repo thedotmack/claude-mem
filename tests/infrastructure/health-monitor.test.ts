@@ -222,6 +222,25 @@ describe('HealthMonitor', () => {
       listenSpy.mockRestore();
     });
 
+    it('uses a real local listener to distinguish occupied from free', async () => {
+      process.env.CLAUDE_MEM_WORKER_HOST = '127.0.0.1';
+      const server = net.createServer();
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', () => resolve());
+      });
+      let port: number;
+      try {
+        const address = server.address();
+        if (!address || typeof address === 'string') throw new Error('test listener did not expose a TCP address');
+        port = address.port;
+        expect(await classifyPortOccupancy(port, 1000)).toBe('occupied');
+      } finally {
+        await new Promise<void>(resolve => server.close(() => resolve()));
+      }
+      expect(await classifyPortOccupancy(port!, 1000)).toBe('free');
+    });
+
     it('bounds synchronous throws, timeout, and zero budget', async () => {
       const throwSpy = spyOn(net, 'createServer').mockImplementation(() => { throw new Error('setup failed'); });
       expect(await classifyPortOccupancy(37777, 100)).toBe('indeterminate');
