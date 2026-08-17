@@ -87,7 +87,8 @@
           "troubleshooting",
           "platform-integration",
           "openclaw-integration",
-          "external-clients"
+          "external-clients",
+          "local-models"
         ]
       },
       {
