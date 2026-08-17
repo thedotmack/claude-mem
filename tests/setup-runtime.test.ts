@@ -230,6 +230,15 @@ describe('setup-runtime install marker', () => {
       await expect(ensureTreeSitterCliBinary(tempDir)).resolves.toBeUndefined();
       expect(existsSync(join(cliDir, process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter'))).toBe(true);
     });
+
+    it('does not resolve a tree-sitter package from an ancestor node_modules', async () => {
+      const nestedDir = join(tempDir, 'nested', 'cache');
+      const ancestorCliDir = join(tempDir, 'node_modules', 'tree-sitter-cli');
+      mkdirSync(ancestorCliDir, { recursive: true });
+      copyFileSync(REPO_TREE_SITTER_BINARY, join(ancestorCliDir, process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter'));
+
+      await expect(ensureTreeSitterCliBinary(nestedDir)).rejects.toThrow('install script not found');
+    });
   });
 
   describe('cache dependency installation', () => {
@@ -318,7 +327,12 @@ describe('setup-runtime install marker', () => {
       ].join('\n'));
       writeFileSync(fixture.eventsPath, '');
 
-      await expect(installPluginDependencies(fixture.cacheDir, fixture.bunPath)).rejects.toBeTruthy();
+      try {
+        await installPluginDependencies(fixture.cacheDir, fixture.bunPath);
+        throw new Error('expected cache provisioner to reject');
+      } catch (error) {
+        expect(error).toMatchObject({ code: 2 });
+      }
       expect(readFileSync(fixture.eventsPath, 'utf-8').trim().split('\n')).toEqual([
         'bun install --frozen-lockfile --ignore-scripts',
         'provision',
@@ -328,14 +342,18 @@ describe('setup-runtime install marker', () => {
     it('rejects when the cache provisioner times out', async () => {
       const fixture = createCacheFixture([
         `require('fs').appendFileSync(process.env.CLAUDE_MEM_TEST_EVENTS, 'provision\\n');`,
-        'setTimeout(() => {}, 500);',
+        'setTimeout(() => {}, 5000);',
       ].join('\n'));
       writeFileSync(fixture.eventsPath, '');
       const previousTimeout = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
-      process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = '25';
+      process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = '1000';
 
       try {
         await expect(installPluginDependencies(fixture.cacheDir, fixture.bunPath)).rejects.toBeTruthy();
+        expect(readFileSync(fixture.eventsPath, 'utf-8').trim().split('\n')).toEqual([
+          'bun install --frozen-lockfile --ignore-scripts',
+          'provision',
+        ]);
       } finally {
         if (previousTimeout === undefined) delete process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
         else process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = previousTimeout;

@@ -11,10 +11,12 @@ import { selectTreeSitterBinary } from '../../shared/tree-sitter-binary.js';
 import { IS_WINDOWS } from '../utils/paths.js';
 import { parseJsonWithBom } from '../../shared/atomic-json.js';
 
-function installTimeoutMs(): number {
+const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
+
+function treeSitterInstallTimeoutMs(): number {
   const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
   if (override && Number.isFinite(Number(override))) return Number(override);
-  return 5 * 60 * 1000;
+  return INSTALL_TIMEOUT_MS;
 }
 
 /**
@@ -162,13 +164,13 @@ function runBunInstaller(): void {
   if (IS_WINDOWS) {
     execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
       stdio: 'pipe',
-      timeout: installTimeoutMs(),
+      timeout: INSTALL_TIMEOUT_MS,
       shell: process.env.ComSpec ?? 'cmd.exe',
     });
   } else {
     execSync('curl -fsSL https://bun.sh/install | bash', {
       stdio: 'pipe',
-      timeout: installTimeoutMs(),
+      timeout: INSTALL_TIMEOUT_MS,
       shell: '/bin/bash',
     });
   }
@@ -200,13 +202,13 @@ function runUvInstaller(): void {
   if (IS_WINDOWS) {
     execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
       stdio: 'pipe',
-      timeout: installTimeoutMs(),
+      timeout: INSTALL_TIMEOUT_MS,
       shell: process.env.ComSpec ?? 'cmd.exe',
     });
   } else {
     execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
       stdio: 'pipe',
-      timeout: installTimeoutMs(),
+      timeout: INSTALL_TIMEOUT_MS,
       shell: '/bin/bash',
     });
   }
@@ -253,23 +255,24 @@ export function treeSitterCliBinaryPath(targetDir: string): string {
     ?? join(treeSitterCliPackageDir(targetDir), IS_WINDOWS ? 'tree-sitter.exe' : 'tree-sitter');
 }
 
-export function isTreeSitterCliBinaryUsable(targetDir: string): boolean {
-  const result = spawnSync(treeSitterCliBinaryPath(targetDir), ['--version'], {
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: TREE_SITTER_VERSION_TIMEOUT_MS,
-    windowsHide: true,
+export async function isTreeSitterCliBinaryUsable(targetDir: string): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    execFile(treeSitterCliBinaryPath(targetDir), ['--version'], {
+      encoding: 'utf-8',
+      timeout: TREE_SITTER_VERSION_TIMEOUT_MS,
+      windowsHide: true,
+    }, (error, stdout) => {
+      resolve(!error && /^tree-sitter \d+\.\d+\.\d+(?:\s|$)/.test((stdout ?? '').trim()));
+    });
   });
-  return result.status === 0
-    && /^tree-sitter \d+\.\d+\.\d+(?:\s|$)/.test((result.stdout ?? '').trim());
 }
 
 export async function ensureTreeSitterCliBinary(
   targetDir: string,
-  isUsable: (targetDir: string) => boolean = isTreeSitterCliBinaryUsable,
+  isUsable: (targetDir: string) => boolean | Promise<boolean> = isTreeSitterCliBinaryUsable,
 ): Promise<void> {
   const binaryPath = treeSitterCliBinaryPath(targetDir);
-  if (isUsable(targetDir)) return;
+  if (await isUsable(targetDir)) return;
 
   const cliDir = treeSitterCliPackageDir(targetDir);
   const installScript = join(cliDir, 'install.js');
@@ -280,7 +283,7 @@ export async function ensureTreeSitterCliBinary(
   await new Promise<void>((resolve, reject) => {
     execFile(process.execPath, [installScript], {
       cwd: cliDir,
-      timeout: installTimeoutMs(),
+      timeout: treeSitterInstallTimeoutMs(),
       maxBuffer: 16 * 1024 * 1024,
       windowsHide: true,
     }, (error, stdout, stderr) => {
@@ -292,7 +295,7 @@ export async function ensureTreeSitterCliBinary(
     });
   });
 
-  if (!isUsable(targetDir)) {
+  if (!(await isUsable(targetDir))) {
     throw new Error(`tree-sitter-cli install completed without creating a working executable ${binaryPath}`);
   }
 }
@@ -495,7 +498,7 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
     new Promise<void>((resolve, reject) => {
       exec(`${bunCmd} install --frozen-lockfile --ignore-scripts`, {
         cwd: targetDir,
-        timeout: installTimeoutMs(),
+        timeout: INSTALL_TIMEOUT_MS,
         maxBuffer: 16 * 1024 * 1024,
         ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
       }, (error, stdout, stderr) =>
