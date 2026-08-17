@@ -11,11 +11,11 @@ import { selectTreeSitterBinary } from '../../shared/tree-sitter-binary.js';
 import { IS_WINDOWS } from '../utils/paths.js';
 import { parseJsonWithBom } from '../../shared/atomic-json.js';
 
-const INSTALL_TIMEOUT_MS = (() => {
+function installTimeoutMs(): number {
   const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
   if (override && Number.isFinite(Number(override))) return Number(override);
   return 5 * 60 * 1000;
-})();
+}
 
 /**
  * Platform-specific manual-install instructions, surfaced as the PRIMARY ABORT
@@ -162,13 +162,13 @@ function runBunInstaller(): void {
   if (IS_WINDOWS) {
     execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
       stdio: 'pipe',
-      timeout: INSTALL_TIMEOUT_MS,
+      timeout: installTimeoutMs(),
       shell: process.env.ComSpec ?? 'cmd.exe',
     });
   } else {
     execSync('curl -fsSL https://bun.sh/install | bash', {
       stdio: 'pipe',
-      timeout: INSTALL_TIMEOUT_MS,
+      timeout: installTimeoutMs(),
       shell: '/bin/bash',
     });
   }
@@ -200,13 +200,13 @@ function runUvInstaller(): void {
   if (IS_WINDOWS) {
     execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
       stdio: 'pipe',
-      timeout: INSTALL_TIMEOUT_MS,
+      timeout: installTimeoutMs(),
       shell: process.env.ComSpec ?? 'cmd.exe',
     });
   } else {
     execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
       stdio: 'pipe',
-      timeout: INSTALL_TIMEOUT_MS,
+      timeout: installTimeoutMs(),
       shell: '/bin/bash',
     });
   }
@@ -280,7 +280,7 @@ export async function ensureTreeSitterCliBinary(
   await new Promise<void>((resolve, reject) => {
     execFile(process.execPath, [installScript], {
       cwd: cliDir,
-      timeout: INSTALL_TIMEOUT_MS,
+      timeout: installTimeoutMs(),
       maxBuffer: 16 * 1024 * 1024,
       windowsHide: true,
     }, (error, stdout, stderr) => {
@@ -495,7 +495,7 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
     new Promise<void>((resolve, reject) => {
       exec(`${bunCmd} install --frozen-lockfile --ignore-scripts`, {
         cwd: targetDir,
-        timeout: INSTALL_TIMEOUT_MS,
+        timeout: installTimeoutMs(),
         maxBuffer: 16 * 1024 * 1024,
         ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
       }, (error, stdout, stderr) =>

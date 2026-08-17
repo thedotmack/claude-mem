@@ -310,6 +310,37 @@ describe('setup-runtime install marker', () => {
       ]);
       expect(existsSync(treeSitterCliBinaryPath(fixture.cacheDir))).toBe(false);
     });
+
+    it('rejects when the cache provisioner exits non-zero', async () => {
+      const fixture = createCacheFixture([
+        `require('fs').appendFileSync(process.env.CLAUDE_MEM_TEST_EVENTS, 'provision\\n');`,
+        'process.exitCode = 2;',
+      ].join('\n'));
+      writeFileSync(fixture.eventsPath, '');
+
+      await expect(installPluginDependencies(fixture.cacheDir, fixture.bunPath)).rejects.toBeTruthy();
+      expect(readFileSync(fixture.eventsPath, 'utf-8').trim().split('\n')).toEqual([
+        'bun install --frozen-lockfile --ignore-scripts',
+        'provision',
+      ]);
+    });
+
+    it('rejects when the cache provisioner times out', async () => {
+      const fixture = createCacheFixture([
+        `require('fs').appendFileSync(process.env.CLAUDE_MEM_TEST_EVENTS, 'provision\\n');`,
+        'setTimeout(() => {}, 500);',
+      ].join('\n'));
+      writeFileSync(fixture.eventsPath, '');
+      const previousTimeout = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
+      process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = '25';
+
+      try {
+        await expect(installPluginDependencies(fixture.cacheDir, fixture.bunPath)).rejects.toBeTruthy();
+      } finally {
+        if (previousTimeout === undefined) delete process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
+        else process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = previousTimeout;
+      }
+    });
   });
 });
 
