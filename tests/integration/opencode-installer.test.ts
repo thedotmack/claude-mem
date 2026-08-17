@@ -13,6 +13,22 @@ import {
 } from '../../src/services/integrations/OpenCodeInstaller.js';
 import { getMcpServerAbsolutePath } from '../../src/services/integrations/install-paths.js';
 
+// Checked-in host contract (plan-23 step 1): the OpenCode local-MCP entry
+// schema the installer must emit. `mcp.claude-mem` is validated against it
+// below so a drift from the host's real schema fails CI, not a user install.
+const OPENCODE_MCP_FIXTURE_PATH = join(import.meta.dir, '../../fixtures/hosts/opencode-mcp.json');
+const opencodeMcpFixture = JSON.parse(
+  readFileSync(OPENCODE_MCP_FIXTURE_PATH, 'utf-8'),
+) as {
+  entry: {
+    allowed_keys: string[];
+    required_keys: string[];
+    type: { accepted_values: string[]; claude_mem_value: string };
+    command: { min_items: number };
+  };
+  claude_mem_entry: { key: string; type: string; command: string[] };
+};
+
 describe('OpenCode installer config registration', () => {
   let tempDir: string;
   let previousConfigDir: string | undefined;
@@ -161,5 +177,42 @@ describe('OpenCode installer config registration', () => {
     });
 
     expect('mcp' in config).toBe(false);
+  });
+});
+
+describe('OpenCode MCP entry host contract (plan-23 step 1)', () => {
+  it('emits an entry that satisfies the checked-in OpenCode schema fixture', () => {
+    const output = addOpenCodeMcpReference({
+      $schema: 'https://opencode.ai/config.json',
+      plugin: ['./plugins/claude-mem.js'],
+    });
+
+    const entry = (output.mcp as Record<string, unknown>)[opencodeMcpFixture.claude_mem_entry.key] as
+      | Record<string, unknown>
+      | undefined;
+    expect(entry, 'installer must emit the claude-mem MCP entry').toBeTruthy();
+
+    const schema = opencodeMcpFixture.entry;
+
+    // Only host-accepted keys may be present.
+    for (const key of Object.keys(entry!)) {
+      expect(schema.allowed_keys).toContain(key);
+    }
+
+    // Required keys must be present.
+    for (const key of schema.required_keys) {
+      expect(Object.keys(entry!)).toContain(key);
+    }
+
+    // Transport is the fixture's canonical local-server value.
+    expect(entry!.type).toBe(schema.type.claude_mem_value);
+    expect(schema.type.accepted_values).toContain(entry!.type);
+
+    // command is an argv array with at least the node + script pair, both absolute.
+    const command = entry!.command as string[];
+    expect(Array.isArray(command)).toBe(true);
+    expect(command.length).toBeGreaterThanOrEqual(schema.command.min_items);
+    expect(command[0]).toBe(process.execPath);
+    expect(command[1]).toBe(getMcpServerAbsolutePath());
   });
 });
