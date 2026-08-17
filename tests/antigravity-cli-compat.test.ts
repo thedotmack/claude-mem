@@ -42,11 +42,13 @@ describe('AntigravityCliHooksInstaller - event mapping (official 5-event hooks.j
     expect(src).not.toContain('"${formattedWorkerPath}"');
   });
 
-  it('resolves space-containing paths via 8.3 short paths instead of emitting breakable bare paths', () => {
+  it('resolves space-containing paths via 8.3 short paths, falling back to a warning instead of blocking install', () => {
     expect(src).toContain('function toSpaceFreePath');
     expect(src).toContain("if (!filePath.includes(' ')) return filePath");
     expect(src).toContain('toSpaceFreePath(bunPath)');
     expect(src).toContain('toSpaceFreePath(workerServicePath)');
+    expect(src).toContain('WARNING: Antigravity CLI hook path contains spaces');
+    expect(src).not.toContain('throw new Error(\n    `Antigravity CLI hook path contains spaces and 8.3 short-path resolution failed');
   });
 
   it('refuses to overwrite a malformed hooks.json instead of clobbering it', () => {

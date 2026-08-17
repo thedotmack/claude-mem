@@ -79,16 +79,18 @@ const ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT: Record<string, string> = {
 // agy splits the command string on spaces and does NOT strip quotes, so a
 // quoted path makes bun receive a literal quoted filename (exit 1), while an
 // unquoted path containing a space gets split into separate arguments. On
-// Windows, resolve 8.3 short paths to eliminate spaces; elsewhere, reject
-// the install with a clear message (non-Windows hosts rarely put bun or the
-// plugin under a space-containing path).
+// Windows, resolve 8.3 short paths to eliminate spaces; if 8.3 is unavailable
+// (disabled on the volume), fall back to the original path with a warning so
+// the install is not blocked — the user can still fix the path manually.
 function toSpaceFreePath(filePath: string): string {
   if (!filePath.includes(' ')) return filePath;
   if (process.platform !== 'win32') {
-    throw new Error(
-      `Antigravity CLI hook path contains spaces and short-path resolution is Windows-only: ${filePath}. ` +
-      `Move bun or the plugin to a path without spaces.`,
+    console.warn(
+      `  WARNING: Antigravity CLI hook path contains spaces: ${filePath}\n` +
+      `  agy splits commands on spaces, so hooks may fail to launch.\n` +
+      `  Move bun or the plugin to a path without spaces.`,
     );
+    return filePath;
   }
   try {
     const shortPath = execSync(
@@ -101,10 +103,14 @@ function toSpaceFreePath(filePath: string): string {
       logger.error('WORKER', 'Failed to resolve Windows 8.3 short path', { path: filePath }, error);
     }
   }
-  throw new Error(
-    `Antigravity CLI hook path contains spaces and 8.3 short-path resolution failed: ${filePath}. ` +
-    `Ensure 8.3 filename generation is enabled on the volume, or move bun/plugin to a space-free path.`,
+  console.warn(
+    `  WARNING: Antigravity CLI hook path contains spaces and 8.3 short-path\n` +
+    `  resolution failed: ${filePath}\n` +
+    `  agy splits commands on spaces, so hooks may fail to launch.\n` +
+    `  Enable 8.3 filename generation on the volume, or move bun/plugin to a\n` +
+    `  space-free path.`,
   );
+  return filePath;
 }
 
 function buildHookCommand(
