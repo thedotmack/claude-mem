@@ -38,7 +38,7 @@ This change does not:
 - **Automatic retry**: one new provider turn for the same batch, using a fresh
   provider session and history restored to the batch checkpoint.
 - **Pause**: keep the batch pending, stop automatic generation, expose a typed
-  unhealthy state, and require explicit later recovery.
+  unhealthy state, and wait for a later user prompt to explicitly resume it.
 
 ## Output classes and disposition
 
@@ -103,19 +103,28 @@ category. `GeneratorExitHandler` must not finalize the session, remove the
 session, or dispose its buffer. No timer or pending-count hook may start another
 automatic retry for that batch.
 
-### B8. Auth and quota never auto-retry
+### B8. A later user prompt is the recovery boundary
+
+Observation and summarize hooks cannot clear a pause. A later accepted user
+prompt may clear the batch-attempt state and start one new bounded recovery
+cycle. This makes recovery reachable without allowing tool-hook traffic to
+become an automatic retry loop. If the failed generator is still unwinding, the
+prompt waits for that exit to finish before it clears the pause and starts the
+replacement, so the recovery signal cannot be lost in a generator-exit race.
+
+### B9. Auth and quota never auto-retry
 
 These conditions require external state to change. They preserve the batch and
 pause immediately, retaining the current behavior's user-facing remediation.
 
-### B9. Accepted responses are recorded once
+### B10. Accepted responses are recorded once
 
 A valid or explicit-skip assistant response is appended to reusable history at
 most once. Provider adapters and `ResponseProcessor` must not both append it.
 Storage and broadcasting must not occur more than once for a single accepted
 batch.
 
-### B10. Failure telemetry is content-safe
+### B11. Failure telemetry is content-safe
 
 Failure telemetry may contain the closed class, provider, attempt number, and
 bounded length/count fields. It must not include raw tool input/output, response
@@ -152,6 +161,10 @@ The test-first patch must cover these cases before production code changes:
 7. Accepted assistant output appears exactly once in history across each
    provider adapter.
 8. Reset/retry does not duplicate a buffered message.
+9. Later observation and summarize starts remain blocked while paused, but a
+   later user-prompt start clears the pause and resumes the preserved batch.
+10. A user prompt arriving while the paused generator is still unwinding waits
+    for that exit and then starts exactly one replacement generator.
 
 Tests 1, 4, and part of 8 already exist and must remain green. Tests 2-3 and
 5-7 are the safety gap. Where a required production seam does not exist yet,

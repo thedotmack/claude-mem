@@ -193,7 +193,7 @@ describe('Claude setup-required generator gate', () => {
     });
   });
 
-  it('preserves a claimed batch across one thrown provider retry, then pauses', async () => {
+  it('pauses after one thrown-provider retry and resumes only on a later user prompt', async () => {
     const session = makeSession();
     let starts = 0;
     let finalizerCalls = 0;
@@ -229,6 +229,9 @@ describe('Claude setup-required generator gate', () => {
           session.claimedMessageIds = [77];
         }
         session.conversationHistory.push({ role: 'user', content: `attempt ${starts}` });
+        if (starts === 3) {
+          return new Promise<void>(() => {});
+        }
         throw new Error('Connection reset by peer');
       },
     };
@@ -252,6 +255,7 @@ describe('Claude setup-required generator gate', () => {
     const firstAttempt = session.generatorPromise;
     await firstAttempt;
     await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'summarize');
 
     expect(starts).toBe(2);
     expect(resetCalls).toBe(2);
@@ -261,7 +265,80 @@ describe('Claude setup-required generator gate', () => {
     expect(session.observerOutputPaused).toBe(true);
     expect(session.generatorPromise).toBeNull();
     expect(session.conversationHistory).toEqual([]);
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'init');
+
+    expect(starts).toBe(3);
+    expect(session.observerOutputPaused).toBe(false);
+    expect(session.consecutiveInvalidOutputs).toBe(0);
+    expect(session.invalidOutputBatchKey).toBeNull();
+    expect(session.generatorPromise).not.toBeNull();
+    expect(session.conversationHistory).toEqual([
+      { role: 'user', content: 'attempt 3' },
+    ]);
     expect(finalizerCalls).toBe(0);
     expect(removeSessionImmediateCalls).toBe(0);
+  });
+
+  it('waits for a paused generator to unwind before a user prompt resumes it', async () => {
+    const session = makeSession();
+    session.observerOutputPaused = true;
+    session.consecutiveInvalidOutputs = 2;
+    session.invalidOutputBatchKey = '77';
+
+    let finishPausedGenerator!: () => void;
+    const pausedGenerator = new Promise<void>(resolve => {
+      finishPausedGenerator = resolve;
+    }).finally(() => {
+      session.generatorPromise = null;
+      session.currentProvider = null;
+    });
+    session.generatorPromise = pausedGenerator;
+
+    let starts = 0;
+    const sdkAgent = {
+      startSession: () => {
+        starts += 1;
+        return new Promise<void>(() => {});
+      },
+    };
+    const sessionManager = {
+      getSession: () => session,
+      getMessageBuffer: () => ({
+        getPendingCount: () => 1,
+        peekTypes: () => [{ message_type: 'observation', tool_name: 'Read' }],
+      }),
+    };
+    const routes = new SessionRoutes(
+      sessionManager as any,
+      {} as any,
+      sdkAgent as any,
+      { startSession: async () => {} } as any,
+      { startSession: async () => {} } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    let resumeFinished = false;
+    const resume = routes.ensureGeneratorRunning(session.sessionDbId, 'init')
+      .then(() => {
+        resumeFinished = true;
+      });
+    await Promise.resolve();
+
+    expect(starts).toBe(0);
+    expect(resumeFinished).toBe(false);
+    expect(session.observerOutputPaused).toBe(true);
+
+    finishPausedGenerator();
+    await resume;
+
+    expect(starts).toBe(1);
+    expect(resumeFinished).toBe(true);
+    expect(session.observerOutputPaused).toBe(false);
+    expect(session.consecutiveInvalidOutputs).toBe(0);
+    expect(session.invalidOutputBatchKey).toBeNull();
+    expect(session.generatorPromise).not.toBeNull();
   });
 });

@@ -33,7 +33,10 @@ import { recordObserverFailure } from '../../../../shared/observer-health.js';
 import { isClassified, describeProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
 import { classifyObserverOutput, type ObserverOutputClass } from '../../../../sdk/output-classifier.js';
-import { recordRecoverableOutputFailure } from '../../session/OutputRecovery.js';
+import {
+  clearRecoverableOutputFailure,
+  recordRecoverableOutputFailure,
+} from '../../session/OutputRecovery.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
@@ -103,12 +106,38 @@ export class SessionRoutes extends BaseRouteHandler {
     if (!session) return;
 
     if (session.observerOutputPaused) {
-      logger.warn('SESSION', 'Skipping generator start while observer output is paused', {
-        sessionId: sessionDbId,
-        source,
-        pendingCount: this.sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
-      });
-      return;
+      // A new user prompt is the explicit recovery boundary. Tool/summarize
+      // hooks remain blocked so a malformed preserved batch cannot create an
+      // automatic retry loop, while the user's next turn can try the provider
+      // again without recreating the session manually.
+      if (source === 'init') {
+        // ResponseProcessor marks the session paused before the failing
+        // generator's finally-handler clears generatorPromise. If a prompt
+        // lands in that narrow window, wait for the old generator to unwind;
+        // otherwise we would clear the pause, observe a non-null promise, and
+        // leave the preserved batch idle until some later hook arrived.
+        const pausedGenerator = session.generatorPromise;
+        if (pausedGenerator) {
+          await pausedGenerator;
+          if (this.sessionManager.getSession(sessionDbId) !== session) {
+            return;
+          }
+        }
+        clearRecoverableOutputFailure(session);
+        session.observerOutputPaused = false;
+        logger.info('SESSION', 'Resuming paused observer on new user prompt', {
+          sessionId: sessionDbId,
+          source,
+          pendingCount: this.sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
+        });
+      } else {
+        logger.warn('SESSION', 'Skipping generator start while observer output is paused', {
+          sessionId: sessionDbId,
+          source,
+          pendingCount: this.sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
+        });
+        return;
+      }
     }
 
     const selectedProvider = this.getSelectedProvider();
