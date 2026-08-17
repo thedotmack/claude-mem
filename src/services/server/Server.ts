@@ -6,6 +6,8 @@ import path from 'path';
 import { ALLOWED_OPERATIONS, ALLOWED_TOPICS } from './allowed-constants.js';
 import { logger } from '../../utils/logger.js';
 import { createCorsMiddleware, createMiddleware, requireLocalhost } from '../worker/http/middleware.js';
+import { createWorkerAuthMiddleware, StreamTicketStore, STREAM_TICKET_TTL_MS, type WorkerAuthMode } from '../worker/http/worker-auth.js';
+import type { Database } from 'bun:sqlite';
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
@@ -95,6 +97,16 @@ export interface ServerOptions {
   // (the same headers helmet's defaults emit) before any route runs. Opt-in so
   // the in-plugin worker runtime is unchanged; the server runtime sets it.
   securityHeaders?: boolean;
+  // Extra exact-match origins allowed by CORS in addition to localhost
+  // (CLAUDE_MEM_WORKER_ALLOWED_ORIGINS). Empty/undefined = localhost only.
+  allowedOrigins?: string[];
+  // Opt-in API-key enforcement for /api and /v1 (CLAUDE_MEM_WORKER_AUTH).
+  // Only the worker runtime sets this; the server runtime authenticates in
+  // its own route layer (requireServerAuth) and leaves it undefined.
+  workerAuth?: {
+    mode: WorkerAuthMode;
+    getDatabase: () => Database;
+  };
 }
 
 // #2572 — hand-rolled security headers.
@@ -128,6 +140,7 @@ export class Server {
     this.app.disable('x-powered-by');
     this.setupSecurityHeaders();
     this.setupCors();
+    this.setupWorkerAuth();
     this.setupPreBodyParserRoutes();
     this.setupMiddleware();
     this.setupCoreRoutes();
@@ -206,7 +219,31 @@ export class Server {
   }
 
   private setupCors(): void {
-    this.app.use(createCorsMiddleware());
+    this.app.use(createCorsMiddleware({ allowedOrigins: this.options.allowedOrigins }));
+  }
+
+  private setupWorkerAuth(): void {
+    if (!this.options.workerAuth) {
+      return;
+    }
+    // Health/readiness probes stay tokenless in every mode — the same set the
+    // worker's init gate exempts. Static UI stays uncovered, but /stream must
+    // be covered: ViewerRoutes registers the SSE stream at the root, and it
+    // carries session/prompt data an allowlisted origin must not read keyless.
+    const streamTickets = new StreamTicketStore();
+    this.app.use(['/api', '/v1', '/stream'], createWorkerAuthMiddleware({
+      mode: this.options.workerAuth.mode,
+      getDatabase: this.options.workerAuth.getDatabase,
+      exemptPaths: ['/health', '/readiness', '/version', '/chroma/status', '/settings/dependency-health'],
+      streamTickets,
+    }));
+    // Browser-safe /stream auth: native EventSource cannot attach headers, so
+    // an external client first mints a single-use short-lived ticket here.
+    // Registered under /api AFTER the middleware above, so minting itself is
+    // gated by the same policy — a cross-origin caller needs a valid key.
+    this.app.post('/api/stream-ticket', (_req: Request, res: Response) => {
+      res.json({ ticket: streamTickets.issue(), expiresInMs: STREAM_TICKET_TTL_MS });
+    });
   }
 
   private setupPreBodyParserRoutes(): void {

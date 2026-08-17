@@ -1,0 +1,66 @@
+---
+title: "Local Models"
+description: "Run memory compression on a local model — free, private, no API costs."
+---
+
+# Local Models
+
+Memory compression normally calls a cloud model. If your machine can run a
+small local model, claude-mem can use it instead — **free, fully private, and
+offline-capable**. Ollama and LM Studio both work out of the box because the
+worker's OpenRouter provider speaks to any OpenAI-compatible endpoint.
+
+## 1. Test your system
+
+```bash
+npx claude-mem local-model check
+```
+
+This probes your hardware (RAM is the binding constraint) and looks for a
+running Ollama (`:11434`) or LM Studio (`:1234`):
+
+```
+Local model capability check
+  Hardware: 32GB RAM, 10 CPUs (Apple Silicon)
+  Verdict:  can run a ~14B model (suggested: qwen2.5:14b)
+  Ollama: running at http://127.0.0.1:11434/v1 (qwen2.5:14b)
+  LM Studio: not detected
+
+Ready. Switch memory compression to a local model (free) with:
+  npx claude-mem local-model setup
+```
+
+Rough guidance: 8–15GB RAM → ~3B model, 16–31GB → 7–8B, 32GB+ → 14B. Below
+8GB, local inference would swap and a cloud provider is the better fit —
+`check` exits non-zero in that case so scripts can branch on it.
+
+## 2. Switch over
+
+```bash
+npx claude-mem local-model setup      # picks the detected runtime + best installed model
+npx claude-mem restart
+```
+
+`setup` writes three settings (`CLAUDE_MEM_PROVIDER=openrouter`,
+`CLAUDE_MEM_OPENROUTER_BASE_URL`, `CLAUDE_MEM_OPENROUTER_MODEL`) and touches
+nothing else. Pin a specific model or a non-default endpoint explicitly:
+
+```bash
+npx claude-mem local-model setup --model qwen2.5:7b
+npx claude-mem local-model setup --endpoint http://127.0.0.1:8080/v1 --model my-model
+```
+
+No API key is needed for local endpoints — a configured base URL is enough for
+the provider to activate.
+
+## Switching back
+
+Set `CLAUDE_MEM_PROVIDER` back to `claude` (or `gemini`) in
+`~/.claude-mem/settings.json` and restart the worker.
+
+## Quality note
+
+Memory compression is a summarization task, which small models handle well —
+but a 3B model will produce terser, occasionally rougher observations than a
+frontier model. If your memories start feeling thin, step up a model size or
+switch back to a cloud provider.

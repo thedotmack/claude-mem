@@ -282,7 +282,10 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     return fetch(apiUrl, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        // Keyless local endpoints (Ollama, LM Studio) get no Authorization
+        // header at all — a literal `Bearer ` with an empty key trips strict
+        // gateways that reject malformed credentials.
+        ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}),
         'HTTP-Referer': siteUrl || 'https://github.com/thedotmack/claude-mem',
         'X-Title': appName || 'claude-mem',
         'Content-Type': 'application/json',
@@ -440,7 +443,16 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
 export function isOpenRouterAvailable(): boolean {
   const settingsPath = USER_SETTINGS_PATH;
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return !!(settings.CLAUDE_MEM_OPENROUTER_API_KEY || getCredential('OPENROUTER_API_KEY'));
+  // A configured custom base URL counts as available without a key: local
+  // OpenAI-compatible endpoints (Ollama, LM Studio — see #2393 and
+  // `claude-mem local-model setup`) need none, and requiring one silently
+  // fell the provider back to Claude unless the user invented a dummy key.
+  return !!(
+    settings.CLAUDE_MEM_OPENROUTER_API_KEY
+    || getCredential('OPENROUTER_API_KEY')
+    || settings.CLAUDE_MEM_OPENROUTER_BASE_URL
+    || process.env.OPENROUTER_BASE_URL
+  );
 }
 
 export function isOpenRouterSelected(): boolean {

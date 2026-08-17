@@ -24,6 +24,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
+  CLAUDE_MEM_WORKER_ALLOWED_ORIGINS: string;
+  CLAUDE_MEM_WORKER_AUTH: string;
   CLAUDE_MEM_API_TIMEOUT_MS: string;
   CLAUDE_MEM_SKIP_TOOLS: string;
   CLAUDE_MEM_PROVIDER: string;  
@@ -119,6 +121,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
+    CLAUDE_MEM_WORKER_ALLOWED_ORIGINS: '',  // Comma-separated full origins (e.g. https://app.example.com) allowed to call the worker API cross-origin, in addition to localhost. Empty = localhost only (today's behavior).
+    CLAUDE_MEM_WORKER_AUTH: 'origin',       // 'origin' = API key required only for cross-origin/non-local requests (compat default) | 'all' = every API request needs a key | 'off' = no key checks
     CLAUDE_MEM_API_TIMEOUT_MS: String(getTimeout(HOOK_TIMEOUTS.API_REQUEST)),
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
     CLAUDE_MEM_PROVIDER: 'claude',  // Default to Claude
