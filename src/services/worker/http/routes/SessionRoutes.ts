@@ -81,6 +81,8 @@ function classifyProviderException(error: unknown): ObserverOutputClass {
 }
 
 export class SessionRoutes extends BaseRouteHandler {
+  private readonly generatorStarts = new Map<number, Promise<void>>();
+
   constructor(
     private sessionManager: SessionManager,
     private dbManager: DatabaseManager,
@@ -102,6 +104,36 @@ export class SessionRoutes extends BaseRouteHandler {
   }
 
   public async ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
+    while (true) {
+      const existingStart = this.generatorStarts.get(sessionDbId);
+      if (existingStart) {
+        await existingStart;
+        const currentSession = this.sessionManager.getSession(sessionDbId);
+        if (source === 'init' && currentSession?.observerOutputPaused) {
+          // A background hook may have owned the single-flight slot and
+          // returned because the observer was paused. Preserve the user
+          // prompt's explicit resume signal by claiming the next slot.
+          continue;
+        }
+        return;
+      }
+
+      const start = this.ensureGeneratorRunningOnce(sessionDbId, source)
+        .finally(() => {
+          if (this.generatorStarts.get(sessionDbId) === start) {
+            this.generatorStarts.delete(sessionDbId);
+          }
+        });
+      // Install the claim before awaiting any tier-routing or paused-generator
+      // work. Concurrent callers will join this start instead of launching a
+      // second provider for the same preserved batch.
+      this.generatorStarts.set(sessionDbId, start);
+      await start;
+      return;
+    }
+  }
+
+  private async ensureGeneratorRunningOnce(sessionDbId: number, source: string): Promise<void> {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
 

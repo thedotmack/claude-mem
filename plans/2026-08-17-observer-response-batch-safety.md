@@ -111,6 +111,8 @@ cycle. This makes recovery reachable without allowing tool-hook traffic to
 become an automatic retry loop. If the failed generator is still unwinding, the
 prompt waits for that exit to finish before it clears the pause and starts the
 replacement, so the recovery signal cannot be lost in a generator-exit race.
+Generator starts are single-flight per session: simultaneous user prompts join
+the same start instead of launching duplicate providers for one preserved batch.
 
 ### B9. Auth and quota never auto-retry
 
@@ -163,8 +165,8 @@ The test-first patch must cover these cases before production code changes:
 8. Reset/retry does not duplicate a buffered message.
 9. Later observation and summarize starts remain blocked while paused, but a
    later user-prompt start clears the pause and resumes the preserved batch.
-10. A user prompt arriving while the paused generator is still unwinding waits
-    for that exit and then starts exactly one replacement generator.
+10. Concurrent user prompts arriving while the paused generator is still
+    unwinding wait for that exit and start exactly one replacement generator.
 
 Tests 1, 4, and part of 8 already exist and must remain green. Tests 2-3 and
 5-7 are the safety gap. Where a required production seam does not exist yet,

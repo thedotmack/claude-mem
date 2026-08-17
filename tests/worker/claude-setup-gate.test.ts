@@ -280,7 +280,7 @@ describe('Claude setup-required generator gate', () => {
     expect(removeSessionImmediateCalls).toBe(0);
   });
 
-  it('waits for a paused generator to unwind before a user prompt resumes it', async () => {
+  it('waits for a paused generator to unwind and single-flights concurrent user-prompt resumes', async () => {
     const session = makeSession();
     session.observerOutputPaused = true;
     session.consecutiveInvalidOutputs = 2;
@@ -320,22 +320,24 @@ describe('Claude setup-required generator gate', () => {
       {} as any,
     );
 
-    let resumeFinished = false;
-    const resume = routes.ensureGeneratorRunning(session.sessionDbId, 'init')
-      .then(() => {
-        resumeFinished = true;
-      });
+    let resumesFinished = 0;
+    const resumes = [
+      routes.ensureGeneratorRunning(session.sessionDbId, 'init'),
+      routes.ensureGeneratorRunning(session.sessionDbId, 'init'),
+    ].map(resume => resume.then(() => {
+      resumesFinished += 1;
+    }));
     await Promise.resolve();
 
     expect(starts).toBe(0);
-    expect(resumeFinished).toBe(false);
+    expect(resumesFinished).toBe(0);
     expect(session.observerOutputPaused).toBe(true);
 
     finishPausedGenerator();
-    await resume;
+    await Promise.all(resumes);
 
     expect(starts).toBe(1);
-    expect(resumeFinished).toBe(true);
+    expect(resumesFinished).toBe(2);
     expect(session.observerOutputPaused).toBe(false);
     expect(session.consecutiveInvalidOutputs).toBe(0);
     expect(session.invalidOutputBatchKey).toBeNull();
