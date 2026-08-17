@@ -339,12 +339,17 @@ describe('setup-runtime install marker', () => {
     it('rejects when cache binary provisioning cannot produce a usable executable', async () => {
       const fixture = createCacheFixture([
         `require('fs').appendFileSync(process.env.CLAUDE_MEM_TEST_EVENTS, 'provision\\n');`,
+        "console.log('Downloading https://example/tree-sitter');",
+        "console.error('release asset unavailable');",
       ].join('\n'));
       writeFileSync(fixture.eventsPath, '');
 
       await expect(installPluginDependencies(fixture.cacheDir, fixture.bunPath)).rejects.toThrow(
         'without creating a working executable',
       );
+      const errorRecord = JSON.parse(readFileSync(join(tempDir, 'install-errors', 'last-install-error.json'), 'utf-8'));
+      expect(errorRecord.details).toContain('Downloading https://example/tree-sitter');
+      expect(errorRecord.details).toContain('release asset unavailable');
       expect(readFileSync(fixture.eventsPath, 'utf-8').trim().split('\n')).toEqual([
         'bun install --frozen-lockfile --ignore-scripts',
         'provision',

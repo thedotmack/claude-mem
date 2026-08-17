@@ -157,7 +157,7 @@ function describeExecError(error: unknown): string {
     const stderr = e.stderr ? e.stderr.toString().trim() : '';
     if (stderr) parts.push(`stderr: ${stderr}`);
     const stdout = e.stdout ? e.stdout.toString().trim() : '';
-    if (!stderr && stdout) parts.push(`stdout: ${stdout}`);
+    if (stdout) parts.push(`stdout: ${stdout}`);
     return parts.join('\n');
   }
   return String(error);
@@ -289,6 +289,7 @@ export async function ensureTreeSitterCliBinary(
     throw new Error(`tree-sitter-cli install script not found: ${installScript}`);
   }
 
+  let installOutput: { stdout: string; stderr: string } | undefined;
   await new Promise<void>((resolve, reject) => {
     execFile(process.execPath, [installScript], {
       cwd: cliDir,
@@ -300,12 +301,16 @@ export async function ensureTreeSitterCliBinary(
         reject(Object.assign(error, { stdout, stderr }));
         return;
       }
+      installOutput = { stdout, stderr };
       resolve();
     });
   });
 
   if (!(await isUsable(targetDir))) {
-    throw new Error(`tree-sitter-cli install completed without creating a working executable ${binaryPath}`);
+    throw Object.assign(
+      new Error(`tree-sitter-cli install completed without creating a working executable ${binaryPath}`),
+      installOutput,
+    );
   }
 }
 
@@ -530,8 +535,9 @@ export async function installPluginDependencies(
     await ensureTreeSitterCliBinary(targetDir, isTreeSitterCliBinaryUsable, treeSitterTimeoutMs);
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
+    const details = describeExecError(err);
     const cause = Object.assign(
-      new Error(`tree-sitter-cli provisioning failed in ${targetDir}\n${describeExecError(err)}`),
+      new Error(`tree-sitter-cli provisioning failed in ${targetDir}\n${details}`),
       {
         code: (err as Error & { code?: number }).code,
         killed: (err as Error & { killed?: boolean }).killed,
@@ -541,6 +547,7 @@ export async function installPluginDependencies(
       component: 'tree-sitter-cli-cache',
       phase: 'dependency-install',
       cause,
+      details,
     }, summaryOrEphemeral());
     throw new Error('unreachable');
   }
