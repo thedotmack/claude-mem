@@ -231,6 +231,21 @@ describe('setup-runtime install marker', () => {
       expect(existsSync(join(cliDir, process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter'))).toBe(true);
     });
 
+    it.skipIf(process.platform === 'win32')('closes stdin before accepting a package-local version response', async () => {
+      const cliDir = join(tempDir, 'node_modules', 'tree-sitter-cli');
+      const binaryPath = join(cliDir, 'tree-sitter');
+      mkdirSync(cliDir, { recursive: true });
+      writeFileSync(binaryPath, [
+        '#!/usr/bin/env node',
+        "process.stdin.on('end', () => process.stdout.write('tree-sitter 0.26.8\\n'));",
+      ].join('\n'));
+      chmodSync(binaryPath, 0o755);
+
+      const startedAt = Date.now();
+      await expect(ensureTreeSitterCliBinary(tempDir)).resolves.toBeUndefined();
+      expect(Date.now() - startedAt).toBeLessThan(2000);
+    });
+
     it('does not resolve a tree-sitter package from an ancestor node_modules', async () => {
       const nestedDir = join(tempDir, 'nested', 'cache');
       const ancestorCliDir = join(tempDir, 'node_modules', 'tree-sitter-cli');

@@ -4,7 +4,6 @@ import {
   execFile,
   execSync,
   spawnSync,
-  type ExecFileOptionsWithStringEncoding,
   type SpawnSyncOptionsWithStringEncoding,
 } from 'child_process';
 import { createRequire } from 'module';
@@ -268,15 +267,14 @@ export function treeSitterCliBinaryPath(targetDir: string): string {
 
 export async function isTreeSitterCliBinaryUsable(targetDir: string): Promise<boolean> {
   return await new Promise<boolean>((resolve) => {
-    const options = {
+    const child = execFile(treeSitterCliBinaryPath(targetDir), ['--version'], {
       encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
       timeout: TREE_SITTER_VERSION_TIMEOUT_MS,
       windowsHide: true,
-    } as ExecFileOptionsWithStringEncoding & { stdio: ['ignore', 'pipe', 'pipe'] };
-    execFile(treeSitterCliBinaryPath(targetDir), ['--version'], options, (error, stdout) => {
+    }, (error, stdout) => {
       resolve(!error && /^tree-sitter \d+\.\d+\.\d+(?:\s|$)/.test((stdout ?? '').trim()));
     });
+    child.stdin?.end();
   });
 }
 
