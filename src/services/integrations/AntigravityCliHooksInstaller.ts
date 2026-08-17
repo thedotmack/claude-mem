@@ -2,6 +2,7 @@
 import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { execSync } from 'child_process';
 import { logger } from '../../utils/logger.js';
 import {
   getWorkerServiceAbsolutePath as findWorkerServicePath,
@@ -75,6 +76,37 @@ const ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT: Record<string, string> = {
   'Stop': 'summarize',
 };
 
+// agy splits the command string on spaces and does NOT strip quotes, so a
+// quoted path makes bun receive a literal quoted filename (exit 1), while an
+// unquoted path containing a space gets split into separate arguments. On
+// Windows, resolve 8.3 short paths to eliminate spaces; elsewhere, reject
+// the install with a clear message (non-Windows hosts rarely put bun or the
+// plugin under a space-containing path).
+function toSpaceFreePath(filePath: string): string {
+  if (!filePath.includes(' ')) return filePath;
+  if (process.platform !== 'win32') {
+    throw new Error(
+      `Antigravity CLI hook path contains spaces and short-path resolution is Windows-only: ${filePath}. ` +
+      `Move bun or the plugin to a path without spaces.`,
+    );
+  }
+  try {
+    const shortPath = execSync(
+      `for %~I in ("${filePath}") do @echo %~sI`,
+      { shell: 'cmd.exe', encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] },
+    ).trim();
+    if (shortPath && !shortPath.includes(' ')) return shortPath;
+  } catch (error) {
+    if (error instanceof Error) {
+      logger.error('WORKER', 'Failed to resolve Windows 8.3 short path', { path: filePath }, error);
+    }
+  }
+  throw new Error(
+    `Antigravity CLI hook path contains spaces and 8.3 short-path resolution failed: ${filePath}. ` +
+    `Ensure 8.3 filename generation is enabled on the volume, or move bun/plugin to a space-free path.`,
+  );
+}
+
 function buildHookCommand(
   bunPath: string,
   workerServicePath: string,
@@ -88,9 +120,10 @@ function buildHookCommand(
   // agy splits the command on spaces and does NOT strip quotes, so wrapping a
   // path in "..." makes bun receive a literal quoted filename and fail with
   // "File not found" (verified on a live install: quoted paths broke every hook
-  // with exit status 1). Emit bare, forward-slashed paths.
-  const formattedBunPath = bunPath.replace(/\\/g, '/');
-  const formattedWorkerPath = workerServicePath.replace(/\\/g, '/');
+  // with exit status 1). Emit bare, forward-slashed paths. Resolve spaces via
+  // 8.3 short paths on Windows so paths like C:\Users\John Doe\... don't break.
+  const formattedBunPath = toSpaceFreePath(bunPath).replace(/\\/g, '/');
+  const formattedWorkerPath = toSpaceFreePath(workerServicePath).replace(/\\/g, '/');
 
   return `${formattedBunPath} ${formattedWorkerPath} hook antigravity-cli ${internalEvent}`;
 }
@@ -142,14 +175,15 @@ function writeAntigravityHooksConfig(hooksConfig: AntigravityHooksConfig): void 
 
   let existingData: Record<string, any> = {};
   if (existsSync(GEMINI_HOOKS_CONFIG_PATH)) {
-    try {
-      const content = readFileSync(GEMINI_HOOKS_CONFIG_PATH, 'utf-8');
-      if (content.trim()) {
+    const content = readFileSync(GEMINI_HOOKS_CONFIG_PATH, 'utf-8');
+    if (content.trim()) {
+      try {
         existingData = JSON.parse(content);
-      }
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.error('WORKER', 'Corrupt JSON in Antigravity CLI hooks config', { path: GEMINI_HOOKS_CONFIG_PATH }, error);
+      } catch (error) {
+        if (error instanceof Error) {
+          logger.error('WORKER', 'Corrupt JSON in Antigravity CLI hooks config', { path: GEMINI_HOOKS_CONFIG_PATH }, error);
+        }
+        throw new Error(`Corrupt JSON in ${GEMINI_HOOKS_CONFIG_PATH}, refusing to overwrite user hooks`);
       }
     }
   }

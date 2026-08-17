@@ -42,6 +42,17 @@ describe('AntigravityCliHooksInstaller - event mapping (official 5-event hooks.j
     expect(src).not.toContain('"${formattedWorkerPath}"');
   });
 
+  it('resolves space-containing paths via 8.3 short paths instead of emitting breakable bare paths', () => {
+    expect(src).toContain('function toSpaceFreePath');
+    expect(src).toContain("if (!filePath.includes(' ')) return filePath");
+    expect(src).toContain('toSpaceFreePath(bunPath)');
+    expect(src).toContain('toSpaceFreePath(workerServicePath)');
+  });
+
+  it('refuses to overwrite a malformed hooks.json instead of clobbering it', () => {
+    expect(src).toContain('refusing to overwrite user hooks');
+  });
+
   it('dual-writes MCP config to both B0-confirmed candidate paths', () => {
     expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'antigravity', 'mcp_config.json')");
     expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'config', 'mcp_config.json')");
