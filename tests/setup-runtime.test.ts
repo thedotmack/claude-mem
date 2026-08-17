@@ -239,6 +239,14 @@ describe('setup-runtime install marker', () => {
 
       await expect(ensureTreeSitterCliBinary(nestedDir)).rejects.toThrow('install script not found');
     });
+
+    it('rejects a tree-sitter package path that is not a directory', async () => {
+      const cliPath = join(tempDir, 'node_modules', 'tree-sitter-cli');
+      mkdirSync(join(tempDir, 'node_modules'), { recursive: true });
+      writeFileSync(cliPath, 'not a directory');
+
+      await expect(ensureTreeSitterCliBinary(tempDir)).rejects.toThrow('package path is not a directory');
+    });
   });
 
   describe('cache dependency installation', () => {
@@ -345,18 +353,23 @@ describe('setup-runtime install marker', () => {
         'setTimeout(() => {}, 5000);',
       ].join('\n'));
       writeFileSync(fixture.eventsPath, '');
-      const previousTimeout = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
-      process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = '1000';
+      const previousTimeout = process.env.CLAUDE_MEM_TREE_SITTER_INSTALL_TIMEOUT_MS;
+      process.env.CLAUDE_MEM_TREE_SITTER_INSTALL_TIMEOUT_MS = '2000';
 
       try {
-        await expect(installPluginDependencies(fixture.cacheDir, fixture.bunPath)).rejects.toBeTruthy();
+        try {
+          await installPluginDependencies(fixture.cacheDir, fixture.bunPath);
+          throw new Error('expected cache provisioner to time out');
+        } catch (error) {
+          expect(error).toMatchObject({ killed: true });
+        }
         expect(readFileSync(fixture.eventsPath, 'utf-8').trim().split('\n')).toEqual([
           'bun install --frozen-lockfile --ignore-scripts',
           'provision',
         ]);
       } finally {
-        if (previousTimeout === undefined) delete process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
-        else process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = previousTimeout;
+        if (previousTimeout === undefined) delete process.env.CLAUDE_MEM_TREE_SITTER_INSTALL_TIMEOUT_MS;
+        else process.env.CLAUDE_MEM_TREE_SITTER_INSTALL_TIMEOUT_MS = previousTimeout;
       }
     });
   });

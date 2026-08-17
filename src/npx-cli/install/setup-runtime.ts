@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { exec, execFile, execSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'child_process';
 import { createRequire } from 'module';
 import { join } from 'path';
@@ -11,10 +11,14 @@ import { selectTreeSitterBinary } from '../../shared/tree-sitter-binary.js';
 import { IS_WINDOWS } from '../utils/paths.js';
 import { parseJsonWithBom } from '../../shared/atomic-json.js';
 
-const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
+const INSTALL_TIMEOUT_MS = (() => {
+  const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
+  if (override && Number.isFinite(Number(override))) return Number(override);
+  return 5 * 60 * 1000;
+})();
 
 function treeSitterInstallTimeoutMs(): number {
-  const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
+  const override = process.env.CLAUDE_MEM_TREE_SITTER_INSTALL_TIMEOUT_MS;
   if (override && Number.isFinite(Number(override))) return Number(override);
   return INSTALL_TIMEOUT_MS;
 }
@@ -275,6 +279,9 @@ export async function ensureTreeSitterCliBinary(
   if (await isUsable(targetDir)) return;
 
   const cliDir = treeSitterCliPackageDir(targetDir);
+  if (existsSync(cliDir) && !statSync(cliDir).isDirectory()) {
+    throw new Error(`tree-sitter-cli package path is not a directory: ${cliDir}`);
+  }
   const installScript = join(cliDir, 'install.js');
   if (!existsSync(installScript)) {
     throw new Error(`tree-sitter-cli install script not found: ${installScript}`);
