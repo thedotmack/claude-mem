@@ -277,13 +277,13 @@ export async function ensureTreeSitterCliBinary(
   isUsable: (targetDir: string) => boolean | Promise<boolean> = isTreeSitterCliBinaryUsable,
   installTimeoutMs: number = INSTALL_TIMEOUT_MS,
 ): Promise<void> {
-  const binaryPath = treeSitterCliBinaryPath(targetDir);
-  if (await isUsable(targetDir)) return;
-
   const cliDir = treeSitterCliPackageDir(targetDir);
   if (existsSync(cliDir) && !statSync(cliDir).isDirectory()) {
     throw new Error(`tree-sitter-cli package path is not a directory: ${cliDir}`);
   }
+  const binaryPath = treeSitterCliBinaryPath(targetDir);
+  if (await isUsable(targetDir)) return;
+
   const installScript = join(cliDir, 'install.js');
   if (!existsSync(installScript)) {
     throw new Error(`tree-sitter-cli install script not found: ${installScript}`);
