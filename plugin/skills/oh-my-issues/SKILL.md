@@ -125,12 +125,13 @@ List all open issues (the read-everything pass). Two gotchas:
 total=$(gh api "search/issues?q=repo:$owner/$repo+is:issue+is:open" --jq '.total_count')
 echo "Open issues: $total"
 
-# 2. List bodies (set --limit at or above the true total)
-gh issue list --state open --limit "$total" \
+# 2. List bodies (set --limit at or above the true total). Exclude existing
+#    plan masters (label `plan`) — the cluster pass starts blind (Mode 1).
+gh issue list --state open --limit "$total" --search "-label:plan" \
   --json number,title,body,labels,author,createdAt
 
 # 3. For each issue, fetch its full comment thread
-for n in $(gh issue list --state open --limit "$total" --json number --jq '.[].number'); do
+for n in $(gh issue list --state open --limit "$total" --search "-label:plan" --json number --jq '.[].number'); do
   echo "=== Issue #$n ==="
   gh issue view "$n" --json comments \
     --jq '.comments[] | "\(.author.login) (\(.createdAt)): \(.body)"'
