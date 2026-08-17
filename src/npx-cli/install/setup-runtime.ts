@@ -291,7 +291,7 @@ export async function ensureTreeSitterCliBinary(
 
   let installOutput: { stdout: string; stderr: string } | undefined;
   await new Promise<void>((resolve, reject) => {
-    execFile(process.execPath, [installScript], {
+    const child = execFile(process.execPath, [installScript], {
       cwd: cliDir,
       timeout: installTimeoutMs,
       maxBuffer: 16 * 1024 * 1024,
@@ -304,6 +304,7 @@ export async function ensureTreeSitterCliBinary(
       installOutput = { stdout, stderr };
       resolve();
     });
+    child.stdin?.end();
   });
 
   if (!(await isUsable(targetDir))) {
@@ -535,12 +536,18 @@ export async function installPluginDependencies(
     await ensureTreeSitterCliBinary(targetDir, isTreeSitterCliBinaryUsable, treeSitterTimeoutMs);
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
+    const processError = err as Error & { code?: number; killed?: boolean };
     const details = describeExecError(err, true).slice(0, 4000);
+    const failure = processError.killed
+      ? 'timed out'
+      : processError.code !== undefined
+        ? `exited with code ${processError.code}`
+        : err.message;
     const cause = Object.assign(
-      new Error(`tree-sitter-cli provisioning failed in ${targetDir}: ${err.message}`),
+      new Error(`tree-sitter-cli provisioning failed in ${targetDir}: ${failure}`),
       {
-        code: (err as Error & { code?: number }).code,
-        killed: (err as Error & { killed?: boolean }).killed,
+        code: processError.code,
+        killed: processError.killed,
       },
     );
     installerError(ErrorSeverity.ABORT, {

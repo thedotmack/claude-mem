@@ -311,6 +311,7 @@ describe('setup-runtime install marker', () => {
     function materializingInstallScript(): string {
       const binaryName = process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter';
       return [
+        `process.stdin.resume(); process.stdin.on('end', () => {});`,
         `require('fs').appendFileSync(process.env.CLAUDE_MEM_TEST_EVENTS, 'provision\\n');`,
         `require('fs').mkdirSync(require('path').join(__dirname, '..', 'provisioned-after-tree-sitter'), { recursive: true });`,
         `require('fs').writeFileSync(require('path').join(__dirname, '..', 'provisioned-after-tree-sitter', 'package.json'), '{}');`,
@@ -379,6 +380,9 @@ describe('setup-runtime install marker', () => {
         'bun install --frozen-lockfile --ignore-scripts',
         'provision',
       ]);
+      const errorRecord = JSON.parse(readFileSync(join(tempDir, 'install-errors', 'last-install-error.json'), 'utf-8'));
+      expect(errorRecord.cause).toContain('exited with code 2');
+      expect(errorRecord.cause.length).toBeLessThan(4000);
     });
 
     it('rejects when the cache provisioner times out', async () => {
