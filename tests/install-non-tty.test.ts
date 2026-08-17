@@ -171,8 +171,10 @@ describe('Install Non-TTY Support', () => {
         installSource.indexOf("title: 'Setting up runtime"),
         installSource.indexOf("return `Runtime ready"),
       );
-      expect(runtimeSetupRegion.indexOf('await installPluginDependencies(cacheDir, bunPath)'))
-        .toBeLessThan(runtimeSetupRegion.indexOf('writeInstallMarker(cacheDir, version, bunVersion, uvVersion)'));
+      const installCall = runtimeSetupRegion.indexOf('await installPluginDependencies(cacheDir, bunPath)');
+      const markerWrite = runtimeSetupRegion.indexOf('writeInstallMarker(cacheDir, version, bunVersion, uvVersion)');
+      expect(installCall).toBeGreaterThanOrEqual(0);
+      expect(markerWrite).toBeGreaterThan(installCall);
     });
 
     it('replaces stale Codex marketplace registrations from a different source', () => {
@@ -270,8 +272,10 @@ describe('Install Non-TTY Support', () => {
       expect(repairRegion).toContain("title: 'Repairing marketplace runtime'");
       expect(repairRegion).toContain('copyPluginToCache(version)');
       expect(repairRegion).toContain('writeInstallMarker(cacheDir, version, bunVersion, uvVersion)');
-      expect(repairRegion.indexOf('await installPluginDependencies(cacheDir, bunPath)'))
-        .toBeLessThan(repairRegion.indexOf('writeInstallMarker(cacheDir, version, bunVersion, uvVersion)'));
+      const installCall = repairRegion.indexOf('await installPluginDependencies(cacheDir, bunPath)');
+      const markerWrite = repairRegion.indexOf('writeInstallMarker(cacheDir, version, bunVersion, uvVersion)');
+      expect(installCall).toBeGreaterThanOrEqual(0);
+      expect(markerWrite).toBeGreaterThan(installCall);
       expect(repairRegion).toContain('Repopulating marketplace root from npm package');
       expect(repairRegion).toContain('copyPluginToMarketplace()');
       expect(repairRegion).toContain('await runNpmInstallInMarketplace(summary)');
