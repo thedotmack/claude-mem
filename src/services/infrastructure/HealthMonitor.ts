@@ -76,6 +76,7 @@ export function classifyPortOccupancy(port: number, timeoutMs: number = 5000): P
 
   return new Promise((resolve) => {
     let settled = false;
+    let listening = false;
     let closeRequested = false;
     let server: net.Server;
     try {
@@ -98,7 +99,11 @@ export function classifyPortOccupancy(port: number, timeoutMs: number = 5000): P
     };
 
     const timer = setTimeout(() => {
-      closeServer();
+      if (listening) {
+        closeServer();
+      } else {
+        try { server.close(); } catch { /* the listening handler retries cleanup */ }
+      }
       settle('indeterminate');
     }, timeoutMs);
 
@@ -110,10 +115,19 @@ export function classifyPortOccupancy(port: number, timeoutMs: number = 5000): P
     };
 
     server.once('error', (err: NodeJS.ErrnoException) => {
-      closeServer();
+      if (listening) {
+        closeServer();
+      } else {
+        try { server.close(); } catch { /* the bind did not start */ }
+      }
       settle(err.code === 'EADDRINUSE' ? 'occupied' : 'indeterminate');
     });
     server.once('listening', () => {
+      listening = true;
+      if (settled) {
+        closeServer();
+        return;
+      }
       try {
         closeServer((error?: Error) => settle(error ? 'indeterminate' : 'free'));
       } catch {
@@ -124,7 +138,7 @@ export function classifyPortOccupancy(port: number, timeoutMs: number = 5000): P
     try {
       server.listen(port, getWorkerHost());
     } catch {
-      closeServer();
+      try { server.close(); } catch { /* the bind did not start */ }
       settle('indeterminate');
     }
   });

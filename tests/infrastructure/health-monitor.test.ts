@@ -241,6 +241,29 @@ describe('HealthMonitor', () => {
       expect(await classifyPortOccupancy(port!, 1000)).toBe('free');
     });
 
+    it('closes a listener that starts after the timeout has settled the result', async () => {
+      let listeningCallback: (() => void) | undefined;
+      let listening = false;
+      const close = mock((callback?: (error?: Error) => void) => {
+        if (listening) callback?.();
+      });
+      const server = {
+        once: mock((event: string, callback: () => void) => {
+          if (event === 'listening') listeningCallback = callback;
+        }),
+        listen: mock(() => setTimeout(() => {
+          listening = true;
+          listeningCallback?.();
+        }, 20)),
+        close,
+      };
+      const createServerSpy = spyOn(net, 'createServer').mockImplementation(() => server as any);
+      expect(await classifyPortOccupancy(37777, 5)).toBe('indeterminate');
+      await new Promise(resolve => setTimeout(resolve, 30));
+      expect(close).toHaveBeenCalledTimes(2);
+      createServerSpy.mockRestore();
+    });
+
     it('bounds synchronous throws, timeout, and zero budget', async () => {
       const throwSpy = spyOn(net, 'createServer').mockImplementation(() => { throw new Error('setup failed'); });
       expect(await classifyPortOccupancy(37777, 100)).toBe('indeterminate');
