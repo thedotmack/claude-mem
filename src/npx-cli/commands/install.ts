@@ -10,7 +10,7 @@ import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { parseJsonWithBom, selectSettingsTarget, writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
+import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
 import { formatHostForUrl } from '../../shared/worker-utils.js';
@@ -256,6 +256,23 @@ export function disableClaudeAutoMemory(): boolean {
   settings.env = { ...env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' };
   writeJsonFileAtomic(claudeSettingsPath(), settings);
   return true;
+}
+
+function mergeSettingsOrWarn(updates: Record<string, string>, description: string): boolean {
+  const wrote = mergeSettings(updates);
+  if (!wrote) log.warn(`Could not save ${description} to ~/.claude-mem/settings.json. Repair or restore the file and rerun the installer.`);
+  return wrote;
+}
+
+function persistRuntimeOrAbort(runtime: RuntimeId, summary: InstallSummary): void {
+  if (!mergeSettings({ CLAUDE_MEM_RUNTIME: runtime })) {
+    installerError(ErrorSeverity.ABORT, {
+      component: 'runtime-settings',
+      phase: 'runtime-selection',
+      cause: new Error('Could not persist the runtime selection'),
+      remediation: 'Repair or restore ~/.claude-mem/settings.json, then rerun the installer.',
+    }, summary);
+  }
 }
 
 type ClaudeAutoMemoryChoice = 'disable' | 'leave-enabled' | 'not-applicable';
@@ -783,72 +800,21 @@ export function mergeSettings(
   updates: Record<string, string>,
   settingsPath: string = USER_SETTINGS_PATH,
 ): boolean {
-  try {
-    // Read the FULL document so we can write it back intact. The
-    // Claude-Code-style settings.json wraps env vars in a top-level `env`
-    // block and exposes peer keys at the root (hooks, permissions,
-    // apiKeyHelper, model, statusLine, etc.). readFlatSettings unwraps the
-    // env subtree for reads, but writing that flattened view back as the
-    // entire file silently drops every non-env top-level key — destroying
-    // user configuration that disableClaudeAutoMemory + writeJsonFileAtomic
-    // had carefully written.
-    //
-    // Track whether the file uses the env-nested shape so we mutate only the
-    // relevant subtree and preserve every other top-level key on write.
-    // When the existing file can't be parsed or isn't a non-array object,
-    // refuse the write and leave the bytes untouched.
-    let document: Record<string, unknown> = {};
-    if (existsSync(settingsPath)) {
-      let parsed: unknown;
-      try {
-        parsed = parseJsonWithBom(readFileSync(settingsPath, 'utf-8'));
-      } catch (parseError: unknown) {
-        console.warn(
-          '[install] Failed to parse existing settings.json, leaving file unchanged.',
-          'Repair or restore the file and rerun the installer:',
-          parseError instanceof Error ? parseError.message : String(parseError),
-        );
-        return false;
-      }
-      if (
-        parsed === null ||
-        typeof parsed !== 'object' ||
-        Array.isArray(parsed)
-      ) {
-        console.warn(
-          '[install] Existing settings.json is not a JSON object, leaving file unchanged.',
-          'Repair or restore the file and rerun the installer.',
-        );
-        return false;
-      }
-      document = parsed as Record<string, unknown>;
-    } else {
-      const dir = dirname(settingsPath);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-    }
-
-    const target = selectSettingsTarget(document);
-    for (const [key, value] of Object.entries(updates)) {
-      target[key] = value;
-    }
-
-    writeSettingsJsonAtomic(path, document);
+  const result = updateSettingsDocument(settingsPath, updates, {});
+  if (result.status === 'refused') {
+    log.warn(`Could not persist settings to ${settingsPath}: ${result.error instanceof Error ? result.error.message : String(result.error)}`);
+    return false;
+  }
     // settings.json can carry tokens (CMEM Pro setup token, provider API
     // keys); a fresh file inherits the umask (usually 0644), leaving them
     // world-readable. Tighten to owner-only. Fail-soft: a chmod failure must
     // never fail the settings write itself, but it is not silent.
     try {
-      chmodSync(path, 0o600);
+      chmodSync(settingsPath, 0o600);
     } catch (chmodError: unknown) {
-      log.warn(`Could not restrict permissions on ${path} to 0600: ${chmodError instanceof Error ? chmodError.message : String(chmodError)}`);
+      log.warn(`Could not restrict permissions on ${settingsPath} to 0600: ${chmodError instanceof Error ? chmodError.message : String(chmodError)}`);
     }
-    return true;
-  } catch (error: unknown) {
-    log.error(`Failed to write settings to ${settingsPath}: ${error instanceof Error ? error.message : String(error)}`);
-    return false;
-  }
+  return true;
 }
 
 type ProviderId = 'claude' | 'gemini' | 'openrouter';
@@ -891,7 +857,7 @@ function resolveClaudeAuthMethod(): 'subscription' | 'api-key' | 'gateway' {
 
 const DEFAULT_SERVER_RUNTIME_BASE_URL = 'http://127.0.0.1:37877';
 
-async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
+async function promptRuntime(options: InstallOptions, summary: InstallSummary): Promise<RuntimeId> {
   // #2543 — non-interactive runtime selection via `--runtime`. When the flag is
   // present we never prompt and never fall back to the worker path: we resolve
   // the requested runtime deterministically and, for the server runtime, plan +
@@ -903,15 +869,15 @@ async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
       process.exit(1);
     }
     if (requested === 'server') {
-      await setupServerRuntimeNonInteractive(options);
+      await setupServerRuntimeNonInteractive(options, summary);
       return 'server';
     }
-    mergeSettings({ CLAUDE_MEM_RUNTIME: 'worker' });
+    persistRuntimeOrAbort('worker', summary);
     return 'worker';
   }
 
   if (!isInteractive) {
-    mergeSettings({ CLAUDE_MEM_RUNTIME: 'worker' });
+    persistRuntimeOrAbort('worker', summary);
     return 'worker';
   }
 
@@ -929,9 +895,7 @@ async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
     process.exit(0);
   }
 
-  mergeSettings({
-    CLAUDE_MEM_RUNTIME: selected,
-  });
+  persistRuntimeOrAbort(selected, summary);
 
   if (selected === 'server') {
     await maybeBootstrapServerApiKey();
@@ -944,10 +908,17 @@ async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
 // provisioner executes); key generation reuses the same bootstrap path as the
 // interactive flow (createServerApiKey via server-bootstrap), and the IDE MCP
 // config target is recorded in settings so hooks resolve the server runtime.
-async function setupServerRuntimeNonInteractive(options: InstallOptions): Promise<void> {
+async function setupServerRuntimeNonInteractive(options: InstallOptions, summary: InstallSummary): Promise<void> {
   const serverBaseUrl = (options.serverUrl ?? '').trim() || DEFAULT_SERVER_RUNTIME_BASE_URL;
 
-  mergeSettings({ CLAUDE_MEM_RUNTIME: 'server', CLAUDE_MEM_SERVER_URL: serverBaseUrl });
+  if (!mergeSettings({ CLAUDE_MEM_RUNTIME: 'server', CLAUDE_MEM_SERVER_URL: serverBaseUrl })) {
+    installerError(ErrorSeverity.ABORT, {
+      component: 'runtime-settings',
+      phase: 'runtime-selection',
+      cause: new Error('Could not persist the server runtime selection'),
+      remediation: 'Repair or restore ~/.claude-mem/settings.json, then rerun the installer.',
+    }, summary);
+  }
 
   log.info(
     'Server runtime selected. Bring up the bundled stack with '
@@ -2029,7 +2000,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     selectedIDEs = ['claude-code'];
   }
 
-  const selectedRuntime = await promptRuntime(options);
+  const selectedRuntime = await promptRuntime(options, summary);
   // Jump-forward: a pairing from the trial opt-in means the human is doing
   // (or has done) login + checkout in the browser — poll for credentials
   // instead of asking which provider to use. Any failure (expired link, poll

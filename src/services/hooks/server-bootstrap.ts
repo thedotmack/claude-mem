@@ -27,7 +27,7 @@ import { createHash, randomBytes } from 'crypto';
 import { chmodSync, existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { logger } from '../../utils/logger.js';
-import { readJsonFileWithBom, selectSettingsTarget, writeJsonFileAtomic } from '../../shared/atomic-json.js';
+import { canReadSettingsDocument, updateSettingsDocument } from '../../shared/settings-document.js';
 import { createPostgresPool, type PostgresPool } from '../../storage/postgres/pool.js';
 import { parsePostgresConfig } from '../../storage/postgres/config.js';
 import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
@@ -159,79 +159,26 @@ export async function rotateServerApiKey(options: RotateOptions = {}): Promise<B
 }
 
 export function canPersistServerSettings(settingsPath: string): boolean {
-  if (!existsSync(settingsPath)) return true;
-  try {
-    const parsed = readJsonFileWithBom<unknown>(settingsPath);
-    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
-  } catch {
-    return false;
-  }
+  return canReadSettingsDocument(settingsPath);
 }
 
 export function persistServerSettings(
   settingsPath: string,
   values: { apiKey: string; projectId: string; serverBaseUrl?: string; previousApiKeyId?: string | null },
 ): boolean {
-  const dir = dirname(settingsPath);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
+  const updates: Record<string, unknown> = {
+    CLAUDE_MEM_SERVER_API_KEY: values.apiKey,
+    CLAUDE_MEM_SERVER_PROJECT_ID: values.projectId,
+  };
+  if (values.serverBaseUrl) updates.CLAUDE_MEM_SERVER_URL = values.serverBaseUrl;
+  if (values.previousApiKeyId) updates.CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID = values.previousApiKeyId;
+  const result = updateSettingsDocument(settingsPath, updates, {}, target => {
+    if (!values.previousApiKeyId) delete target.CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID;
+  });
+  if (result.status === 'refused') {
+    logger.warn('HOOK', 'Could not persist server settings; leaving existing credentials unchanged.', { settingsPath }, result.error instanceof Error ? result.error : undefined);
+    return false;
   }
-
-  let existing: Record<string, unknown> = {};
-  if (existsSync(settingsPath)) {
-    let parsed: unknown;
-    try {
-      parsed = readJsonFileWithBom<unknown>(settingsPath);
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      logger.warn(
-        'HOOK',
-        'Failed to read existing settings file; leaving file unchanged. Repair or restore the file and rerun the installer.',
-        { settingsPath },
-        err,
-      );
-      return false;
-    }
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      logger.warn(
-        'HOOK',
-        'Existing settings file is not a JSON object; leaving file unchanged. Repair or restore the file and rerun the installer.',
-        { settingsPath },
-      );
-      return false;
-    }
-    existing = parsed as Record<string, unknown>;
-  }
-  // Settings file format: support both the flat shape (modern) and the
-  // env-nested shape (Claude-Code-style: { env: {...}, hooks: [...], ... }).
-  // `flat` is a *reference* into `existing` — the env subtree when nested, or
-  // the root document otherwise — so mutating `flat` mutates `existing` in
-  // place. We then write the full `existing` document below (NOT `flat`), so
-  // non-env top-level keys (hooks, permissions, apiKeyHelper, ...) survive.
-  // Writing `flat` back as the whole file silently dropped them (data loss).
-  const flat = selectSettingsTarget(existing);
-
-  // Phase 1d: write the new canonical settings keys. Legacy
-  // `CLAUDE_MEM_SERVER_BETA_*` keys are dual-accepted by reads in
-  // `runtime-selector.ts`, so existing installs continue to work. Any
-  // legacy keys that already live in `flat` are left untouched (we don't
-  // delete them) so a downgrade can still find them.
-  flat.CLAUDE_MEM_SERVER_API_KEY = values.apiKey;
-  flat.CLAUDE_MEM_SERVER_PROJECT_ID = values.projectId;
-  if (values.serverBaseUrl) {
-    flat.CLAUDE_MEM_SERVER_URL = values.serverBaseUrl;
-  }
-  if (values.previousApiKeyId) {
-    flat.CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID = values.previousApiKeyId;
-  } else {
-    delete flat.CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID;
-  }
-
-  // Write the full document (via the atomic temp-file+rename writer), then
-  // tighten permissions. `writeJsonFileAtomic` creates new files under the
-  // process umask, so on first creation the API key plaintext is briefly
-  // world-readable until chmodSync narrows it to 0o600.
-  writeJsonFileAtomic(settingsPath, existing);
   // Hooks read this file on every invocation; restrict permissions so other
   // local users cannot read the API key.
   try {

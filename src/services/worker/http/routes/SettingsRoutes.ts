@@ -12,7 +12,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
-import { parseJsonWithBom, selectSettingsTarget, writeJsonFileAtomic } from '../../../../shared/atomic-json.js';
+import { ensureSettingsDocument, updateSettingsDocument } from '../../../../shared/settings-document.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
@@ -36,7 +36,7 @@ export class SettingsRoutes extends BaseRouteHandler {
 
   private handleGetSettings = this.wrapHandler((req: Request, res: Response): void => {
     const settingsPath = paths.settings();
-    this.ensureSettingsFile(settingsPath);
+    ensureSettingsDocument(settingsPath, SettingsDefaultsManager.getAllDefaults());
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     res.json(settings);
   });
@@ -56,31 +56,6 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
 
     const settingsPath = paths.settings();
-    this.ensureSettingsFile(settingsPath);
-    let settings: any = {};
-
-    if (existsSync(settingsPath)) {
-      const settingsData = readFileSync(settingsPath, 'utf-8');
-      try {
-        const parsed = parseJsonWithBom<unknown>(settingsData);
-        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-          res.status(500).json({
-            success: false,
-            error: 'Settings file is not a JSON object. Repair or restore the file and rerun the worker.'
-          });
-          return;
-        }
-        settings = parsed as Record<string, unknown>;
-      } catch (parseError) {
-        const normalizedParseError = parseError instanceof Error ? parseError : new Error(String(parseError));
-        logger.error('HTTP', 'Failed to parse settings file', { settingsPath }, normalizedParseError);
-        res.status(500).json({
-          success: false,
-          error: `Settings file is corrupted. Delete ${settingsPath} to reset.`
-        });
-        return;
-      }
-    }
 
     const settingKeys = [
       'CLAUDE_MEM_MODEL',
@@ -114,10 +89,10 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
     ];
 
-    const target = selectSettingsTarget(settings);
+    const updates: Record<string, unknown> = {};
     for (const key of settingKeys) {
       if (req.body[key] !== undefined) {
-        target[key] = req.body[key];
+        updates[key] = req.body[key];
       }
     }
 
@@ -125,11 +100,16 @@ export class SettingsRoutes extends BaseRouteHandler {
     // to existsSync/posix_spawn (no shell), where a literal `~` fails with
     // ENOENT and silently breaks all memory capture. Store the resolved path so
     // the resolver never sees the tilde.
-    if (typeof target.CLAUDE_CODE_PATH === 'string' && target.CLAUDE_CODE_PATH) {
-      target.CLAUDE_CODE_PATH = expandTilde(target.CLAUDE_CODE_PATH);
+    if (typeof updates.CLAUDE_CODE_PATH === 'string' && updates.CLAUDE_CODE_PATH) {
+      updates.CLAUDE_CODE_PATH = expandTilde(updates.CLAUDE_CODE_PATH);
     }
 
-    writeJsonFileAtomic(settingsPath, settings);
+    const result = updateSettingsDocument(settingsPath, updates, SettingsDefaultsManager.getAllDefaults());
+    if (result.status === 'refused') {
+      logger.error('HTTP', 'Failed to persist settings file', { settingsPath }, result.error instanceof Error ? result.error : new Error(String(result.error)));
+      res.status(500).json({ success: false, error: `Settings file could not be updated. Repair or restore ${settingsPath}.` });
+      return;
+    }
 
     clearPortCache();
 
@@ -276,17 +256,4 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
   }
 
-  private ensureSettingsFile(settingsPath: string): void {
-    if (!existsSync(settingsPath)) {
-      const defaults = SettingsDefaultsManager.getAllDefaults();
-
-      const dir = path.dirname(settingsPath);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-
-      writeJsonFileAtomic(settingsPath, defaults);
-      logger.info('SETTINGS', 'Created settings file with defaults', { settingsPath });
-    }
-  }
 }

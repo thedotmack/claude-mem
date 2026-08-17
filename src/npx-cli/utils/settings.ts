@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'fs';
-import { parseJsonWithBom, selectSettingsTarget } from '../../shared/atomic-json.js';
+import { readJsonFileWithBom } from '../../shared/atomic-json.js';
+import { settingsTarget } from '../../shared/settings-document.js';
 
 /**
  * Read a claude-mem settings.json as a flat key/value record, unwrapping the
@@ -8,8 +9,8 @@ import { parseJsonWithBom, selectSettingsTarget } from '../../shared/atomic-json
  */
 export function readFlatSettings(path: string): Record<string, unknown> | null {
   if (!existsSync(path)) return null;
-  const raw = parseJsonWithBom(readFileSync(path, 'utf-8'));
+  const raw = readJsonFileWithBom<unknown>(path);
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const record = raw as Record<string, unknown>;
-  return selectSettingsTarget(record);
+  return settingsTarget(record);
 }

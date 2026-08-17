@@ -15,7 +15,7 @@ import {
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { readJsonFileWithBom, selectSettingsTarget, writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
+import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
 import {
   normalizeRuntimeFlag,
@@ -43,29 +43,11 @@ export function clearServerRuntimeSettings(
   settingsPath: string = USER_SETTINGS_PATH,
 ): void {
   if (!existsSync(settingsPath)) return;
-  let document: Record<string, unknown>;
-  try {
-    const parsed = readJsonFileWithBom<unknown>(settingsPath);
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return;
-    document = parsed as Record<string, unknown>;
-  } catch (error: unknown) {
-    console.warn('[uninstall] Could not read settings for server runtime cleanup:', error instanceof Error ? error.message : String(error));
-    return;
-  }
-  const flat = selectSettingsTarget(document);
-  let changed = false;
-  for (const key of keys) {
-    if (key in flat) {
-      delete flat[key];
-      changed = true;
-    }
-  }
-  if (changed) {
-    try {
-      writeSettingsJsonAtomic(settingsPath, document);
-    } catch (error: unknown) {
-      console.warn('[uninstall] Could not write settings during server runtime cleanup:', error instanceof Error ? error.message : String(error));
-    }
+  const result = updateSettingsDocument(settingsPath, {}, {}, document => {
+    for (const key of keys) delete document[key];
+  });
+  if (result.status === 'refused') {
+    console.warn('[uninstall] Could not write settings during server runtime cleanup:', result.error instanceof Error ? result.error.message : String(result.error));
   }
 }
 

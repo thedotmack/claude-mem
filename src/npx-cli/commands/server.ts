@@ -120,18 +120,10 @@ async function runServerKeysRotateCommand(): Promise<void> {
     console.error('Configure Postgres first, then re-run this command.');
     process.exit(1);
   }
-  const { rotateServerApiKey, revokeServerApiKey, persistServerSettings, canPersistServerSettings } = await import(
+  const { rotateServerApiKey, revokeServerApiKey, persistServerSettings } = await import(
     '../../services/hooks/server-bootstrap.js'
   );
   const { USER_SETTINGS_PATH: settingsPath } = await import('../../shared/paths.js');
-
-  // Up-front writability check: refuse before revoking the old key so a
-  // corrupt or non-object settings file never causes credential loss.
-  if (!canPersistServerSettings(settingsPath)) {
-    console.error(styleText('red', 'Cannot rotate: existing settings.json is corrupt or not a JSON object.'));
-    console.error('Repair or restore the file, then re-run this command.');
-    process.exit(1);
-  }
 
   let previousApiKeyId: string | null = null;
   let currentApiKey: string | null = null;

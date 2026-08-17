@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir, hostname } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
-import { isNestedSettingsDocument, parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
+import { ensureSettingsDocument, migrateSettingsDocumentToFlat } from './settings-document.js';
 
 // A fresh settings.json is seeded with EVERY default (see loadFromFile), and
 // persisted values then win over DEFAULTS. So any install created after the
@@ -233,7 +233,7 @@ export class SettingsDefaultsManager {
       if (!existsSync(settingsPath)) {
         const defaults = this.getAllDefaults();
         try {
-          writeJsonFileAtomic(settingsPath, defaults);
+          ensureSettingsDocument(settingsPath, defaults);
           // stderr, never stdout: this fires on the first boot in a fresh data
           // dir, and CLI commands like `start` promise machine-readable JSON
           // on stdout to the hook framework.
@@ -244,41 +244,15 @@ export class SettingsDefaultsManager {
         return applyEnvOverrides ? this.applyEnvOverrides(defaults) : defaults;
       }
 
-      const settingsData = readFileSync(settingsPath, 'utf-8');
-      const settings = parseJsonWithBom<Record<string, any>>(settingsData);
-
-      let flatSettings = settings;
-      const nestedEnv = isNestedSettingsDocument(settings) ? settings.env as Record<string, unknown> : undefined;
-      if (nestedEnv !== undefined) {
-        flatSettings = { ...settings };
-        delete flatSettings.env;
-        Object.assign(flatSettings, nestedEnv);
-
-        try {
-          writeJsonFileAtomic(settingsPath, flatSettings);
-          // stderr, never stdout — same JSON-on-stdout contract as above.
-          console.warn('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
-        } catch (error: unknown) {
-          console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error instanceof Error ? error.message : String(error));
-          // Continue with in-memory migration even if write fails
+      const migration = migrateSettingsDocumentToFlat(settingsPath, flat => {
+        if (flat.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES === LEGACY_TELEGRAM_TRIGGER_TYPES) {
+          flat.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES = this.DEFAULTS.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES;
         }
+      });
+      if (migration.status === 'refused') {
+        console.warn('[SETTINGS] Failed to migrate settings file:', settingsPath, migration.error instanceof Error ? migration.error.message : String(migration.error));
       }
-
-      if (flatSettings.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES === LEGACY_TELEGRAM_TRIGGER_TYPES) {
-        flatSettings = {
-          ...flatSettings,
-          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: this.DEFAULTS.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES,
-        };
-
-        try {
-          writeJsonFileAtomic(settingsPath, flatSettings);
-          // stderr, never stdout — same JSON-on-stdout contract as above.
-          console.warn('[SETTINGS] Migrated Telegram trigger types off the legacy default:', settingsPath);
-        } catch (error: unknown) {
-          console.warn('[SETTINGS] Failed to migrate Telegram trigger types:', settingsPath, error instanceof Error ? error.message : String(error));
-          // Continue with the in-memory migration even if the write fails
-        }
-      }
+      const flatSettings: Record<string, any> = migration.document ?? {};
 
       const result: SettingsDefaults = { ...this.DEFAULTS };
       for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
