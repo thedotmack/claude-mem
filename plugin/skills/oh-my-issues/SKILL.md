@@ -30,7 +30,9 @@ This compounds three ways: architectural fixes retire whole symptom families, th
 
 ### Mode 1: Cluster pass (initial reduction)
 
-Use when the backlog has never been consolidated. Goal: go from N issues to N_plans masters in one operation.
+Use when the backlog has never been consolidated, or when the user wants a fresh re-cluster. Goal: go from N issues to N_plans masters in one operation.
+
+**Start blind.** Do NOT read prior plan docs (`plans/*.md`, in the working tree or in git history), prior `[plan-XX]` master issues, `plan`-labeled issues, or closed-issue redirect trails before clustering. Prior clusterings anchor the new one to their surfaces and defeat the point of re-running the pass. Cluster from the open issues alone; only after the new clusters are named may you diff against existing masters to decide which to close/supersede.
 
 1. **Read everything in full.** Fetch every open issue's body *and* its comment thread — not just titles. Surface-level grouping fails without full text, and reproduction steps, linked duplicates, and diagnostic output often live in comments rather than the original body. See "GitHub CLI primitives" below for the correct paginated listing + per-issue comment fetch (a single `gh issue list` call does **not** return comment bodies).
 2. **Cluster by root cause, not by surface.** The clustering question is *would one architectural change retire all of these?* — not *do these mention the same word?*. "Windows" is a surface; "spawn contract violated by host shells" is a root cause. Two issues with different surfaces can share a cluster (e.g. an env-var leak in two different code paths sharing one missing env-isolation boundary).
@@ -221,6 +223,7 @@ For a bundle: stop when the PR is merged and every listed child is auto-closed b
 ## Failure modes worth refusing
 
 - **Premature clustering** before reading every issue body in full. Don't.
+- **Reading prior plans/masters before clustering.** A cluster pass starts blind (see Mode 1). Consulting old `plans/*.md` or `[plan-XX]` issues first anchors the result to the previous clustering.
 - **Closing children before the master is open.** Children must always have a redirect target.
 - **Using the redirect comment for issues that aren't symptoms** (e.g. genuine feature requests with no shared root cause). Those stay open or get their own track.
 - **Closing a master before every listed child is shipped.** The master is the contract; closing it early breaks the audit trail.
