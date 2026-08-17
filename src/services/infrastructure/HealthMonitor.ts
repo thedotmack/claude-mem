@@ -66,20 +66,55 @@ export async function isPortInUse(port: number): Promise<boolean> {
     // net.createServer() approach to definitively check port occupancy.
   }
 
+  return (await classifyPortOccupancy(port)) === 'occupied';
+}
+
+export type PortOccupancy = 'free' | 'occupied' | 'indeterminate';
+
+export function classifyPortOccupancy(port: number, timeoutMs: number = 5000): Promise<PortOccupancy> {
+  if (timeoutMs <= 0) return Promise.resolve('indeterminate');
+
   return new Promise((resolve) => {
-    const server = net.createServer();
-    const workerHost = getWorkerHost();
-    server.once('error', (err: NodeJS.ErrnoException) => {
-      if (err.code === 'EADDRINUSE') {
-        resolve(true);
-      } else {
-        resolve(false);
+    let settled = false;
+    let listening = false;
+    let server: net.Server;
+    try {
+      server = net.createServer();
+    } catch {
+      resolve('indeterminate');
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (listening) {
+        try { server.close(); } catch { /* the timeout result is indeterminate */ }
       }
+      settle('indeterminate');
+    }, timeoutMs);
+
+    const settle = (result: PortOccupancy): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+
+    server.once('error', (err: NodeJS.ErrnoException) => {
+      settle(err.code === 'EADDRINUSE' ? 'occupied' : 'indeterminate');
     });
     server.once('listening', () => {
-      server.close(() => resolve(false));
+      listening = true;
+      try {
+        server.close((error?: Error) => settle(error ? 'indeterminate' : 'free'));
+      } catch {
+        settle('indeterminate');
+      }
     });
-    server.listen(port, workerHost);
+
+    try {
+      server.listen(port, getWorkerHost());
+    } catch {
+      settle('indeterminate');
+    }
   });
 }
 

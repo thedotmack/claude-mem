@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:te
 import net from 'net';
 import {
   isPortInUse,
+  classifyPortOccupancy,
   waitForHealth,
   waitForPortFree,
   getRunningWorkerVersion,
@@ -172,6 +173,51 @@ describe('HealthMonitor', () => {
       } finally {
         Object.defineProperty(process, 'platform', { value: origPlatform, configurable: true });
       }
+    });
+  });
+
+  describe('classifyPortOccupancy', () => {
+    const mockServer = (event: 'error' | 'listening', value?: unknown) => {
+      const close = mock((callback?: (error?: Error) => void) => callback?.());
+      const server = {
+        once: mock((name: string, callback: (value?: unknown) => void) => {
+          if (name === event) setTimeout(() => callback(value), 0);
+        }),
+        listen: mock(() => {}),
+        close,
+      };
+      return { server, close };
+    };
+
+    it('distinguishes occupied, free, and every non-occupancy outcome', async () => {
+      const cases = [
+        { event: 'error' as const, value: { code: 'EADDRINUSE' }, expected: 'occupied' },
+        { event: 'listening' as const, expected: 'free' },
+        { event: 'error' as const, value: { code: 'EACCES' }, expected: 'indeterminate' },
+      ];
+      for (const testCase of cases) {
+        const { server, close } = mockServer(testCase.event, testCase.value);
+        const spy = spyOn(net, 'createServer').mockImplementation(() => server as any);
+        expect(await classifyPortOccupancy(37777, 100)).toBe(testCase.expected);
+        if (testCase.expected === 'free') expect(close).toHaveBeenCalledTimes(1);
+        spy.mockRestore();
+      }
+    });
+
+    it('bounds synchronous throws, timeout, and zero budget', async () => {
+      const throwSpy = spyOn(net, 'createServer').mockImplementation(() => { throw new Error('setup failed'); });
+      expect(await classifyPortOccupancy(37777, 100)).toBe('indeterminate');
+      throwSpy.mockRestore();
+
+      const timeoutServer = {
+        once: mock(() => {}),
+        listen: mock(() => {}),
+        close: mock(() => {}),
+      };
+      const timeoutSpy = spyOn(net, 'createServer').mockImplementation(() => timeoutServer as any);
+      expect(await classifyPortOccupancy(37777, 10)).toBe('indeterminate');
+      expect(await classifyPortOccupancy(37777, 0)).toBe('indeterminate');
+      timeoutSpy.mockRestore();
     });
   });
 
