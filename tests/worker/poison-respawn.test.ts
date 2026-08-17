@@ -450,7 +450,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(confirmSpy).toHaveBeenCalledWith(12);
   });
 
-  it('drops a genuinely empty batch on the 4th consecutive idle', async () => {
+  it('preserves a genuinely empty batch through repeated idle responses', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(13, 'do the thing', 1);
     session.memorySessionId = 'mem-13';
@@ -458,6 +458,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
 
     const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
     const resetSpy = spyOn(sm, 'resetProcessingToPending');
+    const worker = makeWorker();
 
     for (let i = 1; i <= 3; i++) {
       await processAgentResponse(
@@ -465,7 +466,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
         session,
         makeDbManager(),
         sm,
-        makeWorker(),
+        worker,
         0,
         null,
         'TestAgent',
@@ -487,7 +488,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
       session,
       makeDbManager(),
       sm,
-      makeWorker(),
+      worker,
       0,
       null,
       'TestAgent',
@@ -498,12 +499,48 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
       expect.stringMatching(/idle retry bound exceeded/),
       expect.any(Object)
     );
-    expect(confirmSpy).toHaveBeenCalledWith(13);
+    expect(confirmSpy).not.toHaveBeenCalled();
     expect(resetSpy).toHaveBeenCalled();
-    expect(sm.getMessageBuffer().getPendingCount(13)).toBe(0);
+    expect(sm.getMessageBuffer().getPendingCount(13)).toBe(1);
     expect(session.claimedMessageIds).toEqual([]);
+    expect(session.consecutiveInvalidOutputs).toBe(4);
+    expect(session.earliestPendingTimestamp).not.toBeNull();
+    expect(session.abortReason).toBe('empty-output:observer_text');
+    expect(session.abortController.signal.aborted).toBe(true);
+    expect(worker.broadcastProcessingStatus).toHaveBeenCalled();
+  });
+
+  it('releases the generator at the idle bound while retaining the pending batch', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(14, 'do the thing', 1);
+    session.memorySessionId = 'mem-14';
+    session.currentProvider = 'claude';
+    session.generatorPromise = Promise.resolve();
+    await queueAndClaimOne(sm, 14);
+
+    for (let i = 0; i < 4; i++) {
+      await processAgentResponse('', session, makeDbManager(), sm, makeWorker(), 0, null, 'TestAgent');
+      if (i < 3) {
+        const iterator = sm.getMessageIterator(14);
+        await iterator.next();
+        await iterator.return?.();
+      }
+    }
+
+    const finalizeSession = mock(() => Promise.resolve());
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+    await handleGeneratorExit(session, session.abortReason, {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+    });
+
+    expect(finalizeSession).not.toHaveBeenCalled();
+    expect(removeSpy).not.toHaveBeenCalled();
+    expect(sm.getSession(14)).toBe(session);
+    expect(sm.getMessageBuffer().getPendingCount(14)).toBe(1);
+    expect(session.generatorPromise).toBeNull();
+    expect(session.currentProvider).toBeNull();
     expect(session.consecutiveInvalidOutputs).toBe(0);
-    expect(session.earliestPendingTimestamp).toBeNull();
   });
 
   it('resets the idle counter to 0 on valid XML after requeues', async () => {

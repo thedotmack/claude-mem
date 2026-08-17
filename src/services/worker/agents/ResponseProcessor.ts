@@ -354,9 +354,7 @@ export async function processAgentResponse(
       // An idle turn means the request went out empty, not that the batch had
       // nothing to say: the generator can start before messages are queued.
       // Requeue the claimed batch while the counter is within the bound; the
-      // buffer re-yields it to the next generator pass. Only past the bound is
-      // an idle batch confirmed and dropped, so a genuinely empty batch cannot
-      // loop.
+      // buffer re-yields it to the next generator pass.
       session.consecutiveInvalidOutputs += 1;
       if (session.consecutiveInvalidOutputs <= 3) {
         logger.warn('PARSER', `${agentName} returned non-XML idle response — retrying claimed batch`, {
@@ -368,12 +366,21 @@ export async function processAgentResponse(
         await sessionManager.resetProcessingToPending(session.sessionDbId);
         return;
       }
-      logger.warn('PARSER', `${agentName} idle retry bound exceeded — ignoring queued batch`, {
+      logger.warn('PARSER', `${agentName} idle retry bound exceeded — releasing generator with queued batch preserved`, {
         sessionId: session.sessionDbId,
         outputClass,
         preview,
         ...(emptyOutputReason ? { emptyOutputReason } : {}),
       });
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = 'empty-output:observer_text';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      return;
     } else {
       logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
         sessionId: session.sessionDbId,
@@ -382,8 +389,8 @@ export async function processAgentResponse(
       });
     }
 
-    // Ordinary prose and bound-exceeded idle are claimed no-op batches: confirm
-    // them and do not build any respawn debt from repeated skip acknowledgements.
+    // Ordinary prose is a claimed no-op batch: confirm it and do not build any
+    // respawn debt from repeated skip acknowledgements.
     session.consecutiveInvalidOutputs = 0;
     await sessionManager.confirmClaimedMessages(session.sessionDbId);
     session.earliestPendingTimestamp = null;

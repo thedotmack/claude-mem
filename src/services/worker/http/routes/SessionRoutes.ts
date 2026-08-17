@@ -153,6 +153,16 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const actualQueueDepth = this.sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId);
 
+    if (actualQueueDepth === 0) {
+      logger.debug('SESSION', 'Skipping generator start with an empty queue', {
+        sessionId: session.sessionDbId,
+        source,
+        provider: agentName,
+        outputClass: 'empty_request',
+      });
+      return;
+    }
+
     logger.info('SESSION', `Generator auto-starting (${source}) using ${agentName}`, {
       sessionId: session.sessionDbId,
       queueDepth: actualQueueDepth,
