@@ -23,12 +23,6 @@ const INSTALL_TIMEOUT_MS = (() => {
   return 5 * 60 * 1000;
 })();
 
-function treeSitterInstallTimeoutMs(): number {
-  const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
-  if (override && Number.isFinite(Number(override))) return Number(override);
-  return INSTALL_TIMEOUT_MS;
-}
-
 /**
  * Platform-specific manual-install instructions, surfaced as the PRIMARY ABORT
  * message when auto-install fails or the binary can't be found afterward.
@@ -281,6 +275,7 @@ export async function isTreeSitterCliBinaryUsable(targetDir: string): Promise<bo
 export async function ensureTreeSitterCliBinary(
   targetDir: string,
   isUsable: (targetDir: string) => boolean | Promise<boolean> = isTreeSitterCliBinaryUsable,
+  installTimeoutMs: number = INSTALL_TIMEOUT_MS,
 ): Promise<void> {
   const binaryPath = treeSitterCliBinaryPath(targetDir);
   if (await isUsable(targetDir)) return;
@@ -297,7 +292,7 @@ export async function ensureTreeSitterCliBinary(
   await new Promise<void>((resolve, reject) => {
     execFile(process.execPath, [installScript], {
       cwd: cliDir,
-      timeout: treeSitterInstallTimeoutMs(),
+      timeout: installTimeoutMs,
       maxBuffer: 16 * 1024 * 1024,
       windowsHide: true,
     }, (error, stdout, stderr) => {
@@ -495,7 +490,11 @@ export async function ensureUv(
   return { uvPath, version };
 }
 
-export async function installPluginDependencies(targetDir: string, bunPath: string): Promise<void> {
+export async function installPluginDependencies(
+  targetDir: string,
+  bunPath: string,
+  treeSitterTimeoutMs: number = INSTALL_TIMEOUT_MS,
+): Promise<void> {
   if (!existsSync(join(targetDir, 'package.json'))) {
     throw new Error(`installPluginDependencies: no package.json at ${targetDir}`);
   }
@@ -528,7 +527,7 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
   }
 
   try {
-    await ensureTreeSitterCliBinary(targetDir);
+    await ensureTreeSitterCliBinary(targetDir, isTreeSitterCliBinaryUsable, treeSitterTimeoutMs);
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     const cause = Object.assign(

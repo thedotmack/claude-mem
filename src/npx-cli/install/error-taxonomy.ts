@@ -101,7 +101,7 @@ export const ERROR_CATEGORIES: ErrorCategory[] = [
     severity: ErrorSeverity.ABORT,
     match: (_cause, ctx) => ctx.component === 'tree-sitter-cli-cache',
     remediation: () =>
-      'The cached tree-sitter CLI could not be provisioned. Re-run `npx claude-mem install`; if it persists, check the reported install output and network connectivity.',
+      'The cached tree-sitter CLI could not be provisioned. Re-run `npx claude-mem install`; if it persists, check the reported install output and network connectivity. For a timeout, raise the budget with CLAUDE_MEM_INSTALL_TIMEOUT_MS and re-run.',
   },
   {
     id: 'marketplace-dir-not-writable',

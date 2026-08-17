@@ -1645,7 +1645,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
           const cacheDir = pluginCacheDirectory(version);
           if (!isInstallCurrent(cacheDir, version)) {
             const { bunPath } = await ensureBun();
-            const stopHeartbeat = startHeartbeat(message, 'Installing plugin dependencies (bun install)…');
+            const stopHeartbeat = startHeartbeat(message, 'Installing plugin dependencies (Bun + tree-sitter CLI)…');
             try {
               await installPluginDependencies(cacheDir, bunPath);
             } finally {

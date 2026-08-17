@@ -380,27 +380,19 @@ describe('setup-runtime install marker', () => {
         'setTimeout(() => {}, 5000);',
       ].join('\n'));
       writeFileSync(fixture.eventsPath, '');
-      const previousTimeout = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
-      process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = '2000';
-
       try {
-        try {
-          await installPluginDependencies(fixture.cacheDir, fixture.bunPath);
-          throw new Error('expected cache provisioner to time out');
-        } catch (error) {
-          expect(error).toMatchObject({
-            category: { id: 'tree-sitter-cli-cache-provisioning-failed' },
-            cause: { killed: true },
-          });
-        }
-        expect(readFileSync(fixture.eventsPath, 'utf-8').trim().split('\n')).toEqual([
-          'bun install --frozen-lockfile --ignore-scripts',
-          'provision',
-        ]);
-      } finally {
-        if (previousTimeout === undefined) delete process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
-        else process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = previousTimeout;
+        await installPluginDependencies(fixture.cacheDir, fixture.bunPath, 2000);
+        throw new Error('expected cache provisioner to time out');
+      } catch (error) {
+        expect(error).toMatchObject({
+          category: { id: 'tree-sitter-cli-cache-provisioning-failed' },
+          cause: { killed: true },
+        });
       }
+      expect(readFileSync(fixture.eventsPath, 'utf-8').trim().split('\n')).toEqual([
+        'bun install --frozen-lockfile --ignore-scripts',
+        'provision',
+      ]);
     });
   });
 });
