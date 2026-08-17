@@ -6,8 +6,10 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlin
 import { logger } from '../../utils/logger.js';
 import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE, injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
 import { getWorkerHost, getWorkerPort } from '../../shared/worker-utils.js';
+import { getMcpServerAbsolutePath, getNodeAbsolutePath } from './install-paths.js';
 
 const OPENCODE_PLUGIN_CONFIG_PATH = './plugins/claude-mem.js';
+const OPENCODE_MCP_SERVER_KEY = 'claude-mem';
 
 type OpenCodeConfig = {
   $schema?: string;
@@ -66,6 +68,64 @@ export function removeOpenCodePluginReference(config: OpenCodeConfig): OpenCodeC
   };
 }
 
+function getOpenCodeMcpEntry(config: OpenCodeConfig): Record<string, unknown> {
+  return (config.mcp && typeof config.mcp === 'object')
+    ? config.mcp as Record<string, unknown>
+    : {};
+}
+
+/**
+ * Register claude-mem's MCP server in opencode.json as a local MCP server that
+ * launches `node <absolute-path-to-mcp-server.cjs>` — OpenCode does NOT do
+ * `${CLAUDE_PLUGIN_ROOT}` substitution, so the path must be baked absolute
+ * (Rule B in install-paths.ts). Other MCP servers are preserved untouched.
+ * Returns the config unchanged (no mcp entry) when the server script cannot be
+ * resolved, so a broken build never corrupts the user's opencode.json.
+ */
+export function addOpenCodeMcpReference(config: OpenCodeConfig): OpenCodeConfig {
+  const mcpServerPath = getMcpServerAbsolutePath();
+  if (!mcpServerPath) return config;
+
+  const command = [getNodeAbsolutePath(), mcpServerPath];
+  const existingMcp = getOpenCodeMcpEntry(config);
+  const current = existingMcp[OPENCODE_MCP_SERVER_KEY];
+  if (
+    current
+    && typeof current === 'object'
+    && (current as { type?: unknown }).type === 'local'
+    && Array.isArray((current as { command?: unknown }).command)
+    && JSON.stringify((current as { command: unknown[] }).command) === JSON.stringify(command)
+  ) {
+    return config;
+  }
+
+  return {
+    ...config,
+    mcp: {
+      ...existingMcp,
+      [OPENCODE_MCP_SERVER_KEY]: { type: 'local', command },
+    },
+  };
+}
+
+/**
+ * Remove only claude-mem's MCP entry from opencode.json, preserving every other
+ * MCP server. The `mcp` block itself is dropped when it becomes empty.
+ */
+export function removeOpenCodeMcpReference(config: OpenCodeConfig): OpenCodeConfig {
+  const existingMcp = getOpenCodeMcpEntry(config);
+  if (!(OPENCODE_MCP_SERVER_KEY in existingMcp)) {
+    return config;
+  }
+
+  const { [OPENCODE_MCP_SERVER_KEY]: _removed, ...remainingMcp } = existingMcp;
+  const next: OpenCodeConfig = { ...config, mcp: remainingMcp };
+  if (Object.keys(remainingMcp).length === 0) {
+    delete next.mcp;
+  }
+  return next;
+}
+
 export function registerOpenCodePluginInConfig(): number {
   const configPath = getOpenCodeConfigPath();
   const defaultConfig: OpenCodeConfig = {
@@ -76,7 +136,12 @@ export function registerOpenCodePluginInConfig(): number {
     const config = existsSync(configPath)
       ? JSON.parse(readFileSync(configPath, 'utf-8')) as OpenCodeConfig
       : defaultConfig;
-    const updatedConfig = addOpenCodePluginReference(config);
+    const withPlugin = addOpenCodePluginReference(config);
+    const updatedConfig = addOpenCodeMcpReference(withPlugin);
+
+    if (withPlugin.mcp === updatedConfig.mcp && updatedConfig.mcp === undefined) {
+      logger.warn('OPENCODE', 'MCP server script not found — registered plugin without MCP entry', { path: configPath });
+    }
 
     writeFileSync(configPath, `${JSON.stringify(updatedConfig, null, 2)}\n`, 'utf-8');
     console.log(`  Plugin registered in: ${configPath}`);
@@ -98,7 +163,7 @@ export function deregisterOpenCodePluginFromConfig(): number {
 
   try {
     const config = JSON.parse(readFileSync(configPath, 'utf-8')) as OpenCodeConfig;
-    const updatedConfig = removeOpenCodePluginReference(config);
+    const updatedConfig = removeOpenCodeMcpReference(removeOpenCodePluginReference(config));
 
     writeFileSync(configPath, `${JSON.stringify(updatedConfig, null, 2)}\n`, 'utf-8');
     console.log(`  Plugin deregistered from: ${configPath}`);
@@ -284,6 +349,27 @@ export function checkOpenCodeStatus(): number {
     console.log(`  Has claude-mem context: ${hasContextTags ? 'yes' : 'no'}`);
   } else {
     console.log(`  Exists: no`);
+  }
+  console.log('');
+
+  console.log(`MCP server (opencode.json):`);
+  try {
+    if (existsSync(getOpenCodeConfigPath())) {
+      const config = JSON.parse(readFileSync(getOpenCodeConfigPath(), 'utf-8')) as OpenCodeConfig;
+      const mcpEntry = getOpenCodeMcpEntry(config)[OPENCODE_MCP_SERVER_KEY];
+      if (mcpEntry && typeof mcpEntry === 'object') {
+        const command = (mcpEntry as { command?: unknown }).command;
+        console.log(`  Registered: yes`);
+        console.log(`  Command: ${Array.isArray(command) ? command.join(' ') : 'unknown'}`);
+      } else {
+        console.log(`  Registered: no`);
+      }
+    } else {
+      console.log(`  Registered: no (${getOpenCodeConfigPath()} does not exist)`);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.log(`  Registered: unknown (could not read config: ${message})`);
   }
 
   console.log('');
