@@ -543,6 +543,40 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(session.consecutiveInvalidOutputs).toBe(0);
   });
 
+  it('finalizes an ordinary idle generator exit', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(15, 'do the thing', 1);
+    session.generatorPromise = Promise.resolve();
+    const finalizeSession = mock(() => Promise.resolve());
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+
+    await handleGeneratorExit(session, 'idle', {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+    });
+
+    expect(finalizeSession).toHaveBeenCalledWith(15);
+    expect(removeSpy).toHaveBeenCalledWith(15);
+    expect(sm.getSession(15)).toBeUndefined();
+  });
+
+  it('marks work queued during empty-output teardown for a deferred restart', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(16, 'do the thing', 1);
+    session.generatorPromise = Promise.resolve();
+    session.abortReason = 'empty-output:observer_text';
+
+    await sm.queueObservation(16, {
+      tool_name: 'Read',
+      tool_input: '{}',
+      tool_response: '{}',
+      prompt_number: 1,
+      cwd: 'C:\\work',
+    });
+
+    expect(session.restartGeneratorAfterExit).toBe(true);
+  });
+
   it('resets the idle counter to 0 on valid XML after requeues', async () => {
     const storeObservations = mock(() => ({ observationIds: [1], summaryId: null, createdAtEpoch: 0 }));
     const sm = new SessionManager(makeDbManager(storeObservations));

@@ -163,6 +163,15 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
+    if (session.generatorPromise) {
+      logger.debug('SESSION', 'Skipping duplicate generator start', {
+        sessionId: session.sessionDbId,
+        source,
+        provider: agentName,
+      });
+      return;
+    }
+
     logger.info('SESSION', `Generator auto-starting (${source}) using ${agentName}`, {
       sessionId: session.sessionDbId,
       queueDepth: actualQueueDepth,
@@ -284,10 +293,15 @@ export class SessionRoutes extends BaseRouteHandler {
             ide: session.platformSource,
           });
         }
+        const restartAfterExit = session.restartGeneratorAfterExit === true;
+        session.restartGeneratorAfterExit = false;
         await handleGeneratorExit(session, reason, {
           sessionManager: this.sessionManager,
           completionHandler: this.completionHandler,
         });
+        if (restartAfterExit && this.sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId) > 0) {
+          await this.ensureGeneratorRunning(session.sessionDbId, 'deferred-after-empty-output');
+        }
       });
     session.generatorPromise = generatorPromise;
   }

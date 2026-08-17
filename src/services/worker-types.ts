@@ -29,6 +29,8 @@ export interface ActiveSession {
    * resets after healthy output or a preserving generator release.
    */
   consecutiveInvalidOutputs: number;
+  /** Requests queued while the bounded idle generator is leaving. */
+  restartGeneratorAfterExit?: boolean;
   forceInit?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;
