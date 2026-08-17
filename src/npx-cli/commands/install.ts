@@ -1190,6 +1190,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
         { value: 'cmem', label: labels.cmem, hint: labels.cmemHint },
         { value: 'openrouter', label: labels.openrouter },
         { value: 'gemini', label: labels.gemini },
+        { value: 'opencode', label: 'OpenCode (Zen / Go API key)' },
         { value: 'claude', label: labels.claude },
       ],
       initialValue: 'cmem',
@@ -1246,10 +1247,16 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     return 'claude';
   }
 
-  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
+  const providerLabel = selectedProvider === 'gemini'
+    ? 'Gemini'
+    : selectedProvider === 'opencode'
+      ? 'OpenCode'
+      : 'OpenRouter';
   const keyEnvName = selectedProvider === 'gemini'
     ? 'CLAUDE_MEM_GEMINI_API_KEY'
-    : 'CLAUDE_MEM_OPENROUTER_API_KEY';
+    : selectedProvider === 'opencode'
+      ? 'CLAUDE_MEM_OPENCODE_API_KEY'
+      : 'CLAUDE_MEM_OPENROUTER_API_KEY';
 
   const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
   if (existingKey && existingKey.trim().length > 0) {
