@@ -37,7 +37,7 @@ export interface HookResult {
 
 export interface PlatformAdapter {
   normalizeInput(raw: unknown): NormalizedHookInput;
-  formatOutput(result: HookResult): unknown;
+  formatOutput(result: HookResult, rawInput?: unknown): unknown;
 }
 
 export interface EventHandler {

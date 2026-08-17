@@ -86,15 +86,15 @@ async function executeHookPipeline(
   adapter: ReturnType<typeof getPlatformAdapter>,
   handler: ReturnType<typeof getEventHandler>,
   platform: string,
-  options: HookCommandOptions
+  options: HookCommandOptions,
+  rawInput: unknown,
 ): Promise<number> {
-  const rawInput = await readJsonFromStdin();
   const input = adapter.normalizeInput(rawInput);
   input.platform = platform;
   const result = await handler.execute(input);
 
   // MODEL_CONTEXT: the only stdout JSON emit, via the platform adapter.
-  emitModelContext(adapter, result);
+  emitModelContext(adapter, result, rawInput);
   const exitCode = result.exitCode ?? HOOK_EXIT_CODES.SUCCESS;
   exitGraceful(options);
   return exitCode;
@@ -120,19 +120,21 @@ export async function hookCommand(platform: string, event: string, options: Hook
 
   const adapter = getPlatformAdapter(platform);
   const handler = getEventHandler(event);
+  let rawInput: unknown = undefined;
 
   try {
-    return await executeHookPipeline(adapter, handler, platform, options);
+    rawInput = await readJsonFromStdin();
+    return await executeHookPipeline(adapter, handler, platform, options, rawInput);
   } catch (error) {
     if (error instanceof AdapterRejectedInput) {
       logger.warn('HOOK', `Adapter rejected input (${error.reason}), skipping hook`);
-      emitModelContext(adapter, buildNoOpResult(event));
+      emitModelContext(adapter, buildNoOpResult(event), rawInput);
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
     if (isNonBlockingHookInputError(error)) {
       logger.warn('HOOK', `Hook input unavailable, skipping hook: ${error instanceof Error ? error.message : error}`);
-      emitModelContext(adapter, buildNoOpResult(event));
+      emitModelContext(adapter, buildNoOpResult(event), rawInput);
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
