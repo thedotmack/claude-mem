@@ -1,6 +1,6 @@
 # [plan-20] Project Identity & Injection Scope — one resolver shared by capture, sync and retrieval, and injection config that reaches the query
 
-> **Tracker:** #3608 · **Design doc:** `plans/20-project-identity-and-injection-scope.md` · **Series:** plan-14 #3602 · plan-15 #3603 · plan-16 #3604 · plan-17 #3605 · plan-18 #3606 · plan-19 #3607 · plan-20 #3608 · plan-21 #3609 · plan-22 #3610 · plan-23 #3611
+> **Tracker:** #3608 · **Design doc:** `plans/20-project-identity-and-injection-scope.md` · **Series:** plan-14 #3602 · plan-15 #3603 · plan-16 #3604 · plan-17 #3605 · plan-18 #3606 · plan-19 #3607 · plan-20 #3608 · plan-21 #3609 · plan-22 #3610 · plan-23 #3611 · plan-24 #3618
 
 ## Defect
 

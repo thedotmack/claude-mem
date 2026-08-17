@@ -1,6 +1,6 @@
 # [plan-18] Observer Response Pipeline — classify every output, never confirm a batch on failure, bound every history
 
-> **Tracker:** #3606 · **Design doc:** `plans/18-observer-response-pipeline.md` · **Series:** plan-14 #3602 · plan-15 #3603 · plan-16 #3604 · plan-17 #3605 · plan-18 #3606 · plan-19 #3607 · plan-20 #3608 · plan-21 #3609 · plan-22 #3610 · plan-23 #3611
+> **Tracker:** #3606 · **Design doc:** `plans/18-observer-response-pipeline.md` · **Series:** plan-14 #3602 · plan-15 #3603 · plan-16 #3604 · plan-17 #3605 · plan-18 #3606 · plan-19 #3607 · plan-20 #3608 · plan-21 #3609 · plan-22 #3610 · plan-23 #3611 · plan-24 #3618
 
 ## Defect
 
