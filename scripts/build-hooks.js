@@ -68,7 +68,7 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand, buil
   ];
   const claudeHook = (tail, extra = {}) => buildClaudeNodeHook({
       requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
-      scriptArgs: ['worker-service.cjs', ...tail],
+      scriptPathArg: 'worker-service.cjs', scriptArgs: tail,
       notFoundMessage: 'claude-mem: plugin scripts not found', ...extra,
   });
   const claudeSetupHook = () => buildClaudeNodeHook({

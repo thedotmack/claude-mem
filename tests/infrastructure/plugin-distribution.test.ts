@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { buildClaudeNodeHook, buildCodexWindowsCommand, buildShellCommand } from '../../src/build/hook-shell-template.js';
@@ -159,27 +159,28 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
     expect(parsed.hooks).toBeDefined();
   });
 
-  it('should reference CLAUDE_PLUGIN_ROOT in all hook commands', () => {
-    for (const command of commandHooksFrom('plugin/hooks/codex-hooks.json')) {
-      expect(command).toContain('CLAUDE_PLUGIN_ROOT');
+  it('should reference CLAUDE_PLUGIN_ROOT in all Claude hook launchers', () => {
+    for (const entry of commandHookEntriesFrom('plugin/hooks/hooks.json')) {
+      expect(entry.args?.[1]).toContain('process.env.CLAUDE_PLUGIN_ROOT');
     }
   });
 
-  it('should include CLAUDE_PLUGIN_ROOT fallback in all hook commands (#1215)', () => {
-    const expectedFallbackPath = '$_C/plugins/marketplaces/thedotmack/plugin';
+  it('should include the marketplace fallback in all Claude hook launchers (#1215)', () => {
+    const expectedFallbackPath = "plugins','marketplaces','thedotmack','plugin";
 
-    for (const command of commandHooksFrom('plugin/hooks/codex-hooks.json')) {
-      expect(command).toContain(expectedFallbackPath);
+    for (const entry of commandHookEntriesFrom('plugin/hooks/hooks.json')) {
+      expect(entry.args?.[1]).toContain(expectedFallbackPath);
     }
   });
 
-  it('should try cache path before marketplaces fallback in all hook commands (#1533)', () => {
-    const cachePath = '$_C/plugins/cache/thedotmack/claude-mem';
-    const marketplacesPath = '$_C/plugins/marketplaces/thedotmack/plugin';
+  it('should try cache path before marketplace fallback in all Claude hook launchers (#1533)', () => {
+    const cachePath = "plugins','cache','thedotmack','claude-mem";
+    const marketplacesPath = "plugins','marketplaces','thedotmack','plugin";
 
-    for (const command of commandHooksFrom('plugin/hooks/codex-hooks.json')) {
-      expect(command).toContain(cachePath);
-      expect(command.indexOf(cachePath)).toBeLessThan(command.indexOf(marketplacesPath));
+    for (const entry of commandHookEntriesFrom('plugin/hooks/hooks.json')) {
+      const payload = entry.args?.[1] ?? '';
+      expect(payload).toContain(cachePath);
+      expect(payload.indexOf(cachePath)).toBeLessThan(payload.indexOf(marketplacesPath));
     }
   });
 });
@@ -360,7 +361,7 @@ const codexHookPair = (tail: string[], options: { startupVersionCheck?: boolean 
 
 const claudeNodeHook = (tail: string[]) => buildClaudeNodeHook({
     requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
-    scriptArgs: ['worker-service.cjs', ...tail],
+    scriptPathArg: 'worker-service.cjs', scriptArgs: tail,
     notFoundMessage: 'claude-mem: plugin scripts not found',
   });
 const claudeSetupNodeHook = () => buildClaudeNodeHook({
@@ -454,22 +455,25 @@ describe('Spawn-Contract Templating - Rule A generator parity', () => {
     expect(MCP_EXPECTED).toContain('process.env.PLUGIN_ROOT');
   });
 
-  it('preserves all non-launch metadata from origin/main for all seven Claude hooks', () => {
-    const base = JSON.parse(spawnSync('git', ['show', 'origin/main:plugin/hooks/hooks.json'], {
-      cwd: projectRoot, encoding: 'utf-8',
-    }).stdout);
-    const head = readJson('plugin/hooks/hooks.json');
-    for (const dottedPath of Object.keys(RULE_A_EXPECTATIONS['plugin/hooks/hooks.json'])) {
-      const stripLauncher = (entry: any) => {
-        const copy = { ...entry };
-        delete copy.command;
-        delete copy.args;
-        delete copy.shell;
-        return copy;
-      };
-      expect(stripLauncher(hookEntryByPath(head, dottedPath))).toEqual(
-        stripLauncher(hookEntryByPath(base, dottedPath))
-      );
+  it('preserves all non-launch metadata for all seven Claude hooks', () => {
+    const parsed = readJson('plugin/hooks/hooks.json');
+    const expected: Record<string, { matcher?: string; timeout: number; async?: boolean }> = {
+      'Setup.0.0': { matcher: '*', timeout: 300 },
+      'SessionStart.0.0': { matcher: 'startup|clear|compact', timeout: 60 },
+      'SessionStart.0.1': { matcher: 'startup|clear|compact', timeout: 60 },
+      'UserPromptSubmit.0.0': { timeout: 60 },
+      'PostToolUse.0.0': { matcher: '*', timeout: 120, async: true },
+      'PreToolUse.0.0': { matcher: 'Read', timeout: 60, async: true },
+      'Stop.0.0': { timeout: 120, async: true },
+    };
+    for (const [dottedPath, metadata] of Object.entries(expected)) {
+      const [event, groupIdx] = dottedPath.split('.');
+      const matcher = parsed.hooks[event][Number(groupIdx)];
+      const entry = hookEntryByPath(parsed, dottedPath);
+      expect(matcher.matcher).toBe(metadata.matcher);
+      expect(entry.type).toBe('command');
+      expect(entry.timeout).toBe(metadata.timeout);
+      expect(entry.async).toBe(metadata.async);
     }
   });
 });
@@ -509,20 +513,26 @@ describe('Spawn-Contract Templating - Rule A Claude exec resolution matrix', () 
 
   it('resolves _P from CLAUDE_PLUGIN_ROOT when the env var points at a valid root', () => {
     const root = mkdtempSync(path.join(tmpdir(), 'cm-root-'));
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
+    makeRoot(path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0'));
     makeRoot(root);
     try {
       for (const { dottedPath, entry } of claudeEntries()) {
         const { stdout, status } = runEntry(entry, {
           CLAUDE_PLUGIN_ROOT: root,
-          HOME: mkdtempSync(path.join(tmpdir(), 'cm-home-')),
+          HOME: home,
         });
         expect(status).toBe(0);
         expect(JSON.parse(stdout)).toEqual({
-          root: path.join(root, 'scripts'), args: expectedWorkerArgs[dottedPath],
+          root: path.join(root, 'scripts'),
+          args: expectedWorkerArgs[dottedPath].map((arg) =>
+            arg === 'worker-service.cjs' ? path.join(root, 'scripts', arg) : arg
+          ),
         });
       }
     } finally {
       rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
     }
   });
 
@@ -530,11 +540,17 @@ describe('Spawn-Contract Templating - Rule A Claude exec resolution matrix', () 
     const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
     const cacheRoot = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0');
     makeRoot(cacheRoot);
+    makeRoot(path.join(home, '.claude', 'plugins', 'marketplaces', 'thedotmack', 'plugin'));
     try {
-      for (const { entry } of claudeEntries()) {
+      for (const { dottedPath, entry } of claudeEntries()) {
         const { stdout, status } = runEntry(entry, { HOME: home });
         expect(status).toBe(0);
-        expect(JSON.parse(stdout).root).toBe(path.join(cacheRoot, 'scripts'));
+        expect(JSON.parse(stdout)).toEqual({
+          root: path.join(cacheRoot, 'scripts'),
+          args: expectedWorkerArgs[dottedPath].map((arg) =>
+            arg === 'worker-service.cjs' ? path.join(cacheRoot, 'scripts', arg) : arg
+          ),
+        });
       }
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -607,6 +623,54 @@ describe('Spawn-Contract Templating - Rule A Claude exec resolution matrix', () 
       expect(result.stderr).toContain('runner failed');
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('forwards termination signals to the resolved Claude child', async () => {
+    const entry = hookEntryByPath(readJson('plugin/hooks/hooks.json'), 'UserPromptSubmit.0.0');
+    if (process.platform === 'win32') {
+      expect(entry.args?.[1]).toContain("['SIGTERM','SIGINT','SIGHUP']");
+      return;
+    }
+
+    const root = mkdtempSync(path.join(tmpdir(), 'cm-child-signal-'));
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
+    mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    writeFileSync(
+      path.join(root, 'scripts', 'bun-runner.js'),
+      "process.on('SIGTERM',()=>{process.stdout.write('signal-received');process.exit(0)});setInterval(()=>{},1000);",
+    );
+    writeFileSync(path.join(root, 'scripts', 'worker-service.cjs'), '');
+    let stdout = '';
+    try {
+      const child = spawn(entry.command, entry.args, {
+        env: { PATH: process.env.PATH ?? '', CLAUDE_PLUGIN_ROOT: root, HOME: home, USERPROFILE: home },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      child.stdout?.setEncoding('utf8');
+      child.stdout?.on('data', (chunk) => { stdout += chunk; });
+      const outcome = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          child.kill('SIGKILL');
+          reject(new Error('Claude launcher did not exit after forwarding SIGTERM'));
+        }, 5000);
+        const signalTimer = setTimeout(() => child.kill('SIGTERM'), 100);
+        child.once('error', (error) => {
+          clearTimeout(timeout);
+          clearTimeout(signalTimer);
+          reject(error);
+        });
+        child.once('close', (code, signal) => {
+          clearTimeout(timeout);
+          clearTimeout(signalTimer);
+          resolve({ code, signal });
+        });
+      });
+      expect(outcome.code).toBe(0);
+      expect(stdout).toContain('signal-received');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });
