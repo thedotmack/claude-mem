@@ -104,6 +104,7 @@ export class SessionStore {
     this.addSessionCustomTitleColumn();
     this.addSessionPlatformSourceColumn();
     this.addObservationModelColumns();
+    this.ensureReinforcementTotalColumn();
     this.ensureMergedIntoProjectColumns();
     this.addObservationSubagentColumns();
     this.addObservationsUniqueContentHashIndex();
@@ -1926,6 +1927,21 @@ export class SessionStore {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(26, new Date().toISOString());
+  }
+
+  /**
+   * Monotonic lifetime reinforcement counter. The FIFO-trimmed
+   * reinforcement_dates window (MAX_REINFORCEMENT_HISTORY=10) keeps the ACT-R
+   * spacing-effect math bounded but ERASES the durability signal — "the world
+   * has kept re-confirming this note for a year". reinforcement_total preserves
+   * that signal: it only ever increments (once per real append, never on
+   * same-day no-ops) and deliberately does NOT enter the strength formula.
+   */
+  private ensureReinforcementTotalColumn(): void {
+    const columns = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    if (columns.some(col => col.name === 'reinforcement_total')) return;
+    this.db.run('ALTER TABLE observations ADD COLUMN reinforcement_total INTEGER DEFAULT 0');
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(57, new Date().toISOString());
   }
 
   private ensureMergedIntoProjectColumns(): void {

@@ -122,6 +122,20 @@ describe('retention policy (audit G2)', () => {
       expect(candidates.map(c => c.id)).not.toContain(confirmed.id);
     });
 
+    it('type immunity: decisions are never candidates, however stale and weak', () => {
+      // One-off decisions / constraints ("why we did it this way") are needed
+      // rarely but critically — and a note the ranker never surfaced can never
+      // earn retrieval reinforcement, so without this filter retention becomes
+      // a self-fulfilling recall bias against exactly these.
+      const decision = store.storeObservation('s1', 'proj', obs({ type: 'decision', title: 'decision note', narrative: 'why we did it this way' }), 1, 0, daysAgo(400));
+      clearReinforcement(store, decision.id);
+      const bugfix = store.storeObservation('s1', 'proj', obs({ type: 'bugfix', title: 'bugfix note', narrative: 'fixed the race' }), 1, 0, daysAgo(400));
+      clearReinforcement(store, bugfix.id);
+      const { candidates } = selectRetentionCandidates(store.db, policy(), NOW);
+      expect(candidates.map(c => c.id)).not.toContain(decision.id);
+      expect(candidates.map(c => c.id)).toContain(bugfix.id); // control: same age/weakness, deletable type
+    });
+
     it('a stale, strength-0, never-surfaced, active observation IS a candidate', () => {
       const stale = store.storeObservation('s1', 'proj', obs(), 1, 0, daysAgo(120));
       clearReinforcement(store, stale.id);

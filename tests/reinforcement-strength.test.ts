@@ -102,4 +102,12 @@ describe('appendReinforcement', () => {
     expect(dates.length).toBe(10);
     expect(dates[dates.length - 1]).toBe(isoDay(TODAY)); // newest retained
   });
+  it('stays idempotent on unsorted history (membership check, not tail check)', () => {
+    // Unsorted input — as produced by a cross-device merge or manual edit.
+    // The old tail-only check would append a duplicate for TODAY here.
+    const unsorted = [isoDay(TODAY), '2020-01-01'];
+    const once = appendReinforcement(unsorted, TODAY);
+    expect(once).toBe(unsorted); // no-op, same reference
+    expect(once.filter(d => d === isoDay(TODAY)).length).toBe(1);
+  });
 });

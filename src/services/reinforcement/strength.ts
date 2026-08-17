@@ -155,6 +155,11 @@ export function isoDay(d: Date = new Date()): string {
  * Append today's date to a reinforcement-date list, FIFO-trimmed to the last
  * `maxHistory` events (the spacing-effect window). Idempotent within a day:
  * a second reinforcement on the same date is a no-op.
+ *
+ * Idempotency is a membership check (`includes`), NOT a last-element check:
+ * the old tail comparison silently relied on the array always being sorted —
+ * one unsorted migration / cross-device merge / manual edit and same-day
+ * duplicates slip through, inflating strength. O(n) with n ≤ maxHistory.
  */
 export const MAX_REINFORCEMENT_HISTORY = 10;
 
@@ -164,7 +169,7 @@ export function appendReinforcement(
   maxHistory: number = MAX_REINFORCEMENT_HISTORY,
 ): string[] {
   const day = isoDay(today);
-  if (dates.length > 0 && dates[dates.length - 1] === day) return dates;
+  if (dates.includes(day)) return dates;
   const next = [...dates, day];
   return next.length > maxHistory ? next.slice(next.length - maxHistory) : next;
 }

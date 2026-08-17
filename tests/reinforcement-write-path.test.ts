@@ -96,6 +96,21 @@ describe('Phase 1c — reinforcement on the write path', () => {
     expect(reinforceObservation(store.db, 9999, new Date(day2))).toBe(false);
   });
 
+  it('reinforcement_total counts lifetime appends, never same-day no-ops', () => {
+    const totalOf = (id: number) =>
+      (store.db.prepare('SELECT reinforcement_total FROM observations WHERE id = ?').get(id) as any)?.reinforcement_total;
+    const { id } = store.storeObservation('s1', 'proj', obs(), 1, 0, day1);
+    expect(totalOf(id) ?? 0).toBe(0); // seed does not count as a reinforcement
+    expect(reinforceObservation(store.db, id, new Date(day2))).toBe(true);
+    expect(totalOf(id)).toBe(1);
+    // Same-day no-op: neither a new date nor a counter bump.
+    expect(reinforceObservation(store.db, id, new Date(day2))).toBe(false);
+    expect(totalOf(id)).toBe(1);
+    // Next real append keeps counting even as the FIFO window stays capped.
+    expect(reinforceObservation(store.db, id, new Date(day2 + 2 * DAY))).toBe(true);
+    expect(totalOf(id)).toBe(2);
+  });
+
   // Regression: the worker writes observer output through the batch method,
   // not the single-observation one. Live testing found that path unseeded —
   // organic observations landed with NULL reinforcement_dates.
