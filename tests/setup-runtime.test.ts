@@ -341,6 +341,7 @@ describe('setup-runtime install marker', () => {
         `require('fs').appendFileSync(process.env.CLAUDE_MEM_TEST_EVENTS, 'provision\\n');`,
         "console.log('Downloading https://example/tree-sitter');",
         "console.error('release asset unavailable');",
+        "process.stdout.write('x'.repeat(5000));",
       ].join('\n'));
       writeFileSync(fixture.eventsPath, '');
 
@@ -350,7 +351,7 @@ describe('setup-runtime install marker', () => {
       const errorRecord = JSON.parse(readFileSync(join(tempDir, 'install-errors', 'last-install-error.json'), 'utf-8'));
       expect(errorRecord.details).toContain('Downloading https://example/tree-sitter');
       expect(errorRecord.details).toContain('release asset unavailable');
-      expect(errorRecord.details.length).toBeLessThanOrEqual(4000);
+      expect(errorRecord.details.length).toBe(4000);
       expect(readFileSync(fixture.eventsPath, 'utf-8').trim().split('\n')).toEqual([
         'bun install --frozen-lockfile --ignore-scripts',
         'provision',

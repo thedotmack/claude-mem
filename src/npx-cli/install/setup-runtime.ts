@@ -149,7 +149,7 @@ export function getUvVersion(): string | null {
   }
 }
 
-function describeExecError(error: unknown): string {
+function describeExecError(error: unknown, includeStdoutWithStderr = false): string {
   if (error && typeof error === 'object') {
     const e = error as { message?: string; stdout?: Buffer | string; stderr?: Buffer | string };
     const parts: string[] = [];
@@ -157,7 +157,7 @@ function describeExecError(error: unknown): string {
     const stderr = e.stderr ? e.stderr.toString().trim() : '';
     if (stderr) parts.push(`stderr: ${stderr}`);
     const stdout = e.stdout ? e.stdout.toString().trim() : '';
-    if (stdout) parts.push(`stdout: ${stdout}`);
+    if (stdout && (!stderr || includeStdoutWithStderr)) parts.push(`stdout: ${stdout}`);
     return parts.join('\n');
   }
   return String(error);
@@ -535,7 +535,7 @@ export async function installPluginDependencies(
     await ensureTreeSitterCliBinary(targetDir, isTreeSitterCliBinaryUsable, treeSitterTimeoutMs);
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
-    const details = describeExecError(err).slice(0, 4000);
+    const details = describeExecError(err, true).slice(0, 4000);
     const cause = Object.assign(
       new Error(`tree-sitter-cli provisioning failed in ${targetDir}: ${err.message}`),
       {
