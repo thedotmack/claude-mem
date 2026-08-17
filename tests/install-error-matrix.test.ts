@@ -78,7 +78,9 @@ describe('error taxonomy', () => {
     });
     expect(cat.id).toBe('tree-sitter-cli-cache-provisioning-failed');
     expect(cat.severity).toBe(ErrorSeverity.ABORT);
-    expect(cat.remediation({ platform: 'win32', dataDir: 'C:\\temp\\claude-mem' })).toContain('Re-run');
+    const remediation = cat.remediation({ platform: 'win32', dataDir: 'C:\\temp\\claude-mem' });
+    expect(remediation).toContain('C:\\temp\\claude-mem/last-install-error.json');
+    expect(remediation).toContain('CLAUDE_MEM_INSTALL_TIMEOUT_MS');
   });
 
   it('defaults unknown errors to ABORT (fail-loud)', () => {

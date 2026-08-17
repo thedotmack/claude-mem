@@ -177,6 +177,16 @@ describe('Install Non-TTY Support', () => {
       expect(markerWrite).toBeGreaterThan(installCall);
     });
 
+    it('labels the initial runtime heartbeat for Bun and tree-sitter provisioning', () => {
+      const runtimeSetupRegion = installSource.slice(
+        installSource.indexOf("title: 'Setting up runtime"),
+        installSource.indexOf("return `Runtime ready"),
+      );
+      expect(runtimeSetupRegion).toContain(
+        "startHeartbeat(message, 'Installing plugin dependencies (Bun + tree-sitter CLI)…')",
+      );
+    });
+
     it('replaces stale Codex marketplace registrations from a different source', () => {
       const registerRegion = codexInstallerSource.slice(
         codexInstallerSource.indexOf('function registerCodexMarketplace'),

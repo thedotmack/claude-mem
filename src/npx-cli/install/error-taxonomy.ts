@@ -100,8 +100,8 @@ export const ERROR_CATEGORIES: ErrorCategory[] = [
     id: 'tree-sitter-cli-cache-provisioning-failed',
     severity: ErrorSeverity.ABORT,
     match: (_cause, ctx) => ctx.component === 'tree-sitter-cli-cache',
-    remediation: () =>
-      'The cached tree-sitter CLI could not be provisioned. Re-run `npx claude-mem install`; if it persists, check the reported install output and network connectivity. For a timeout, raise the budget with CLAUDE_MEM_INSTALL_TIMEOUT_MS and re-run.',
+    remediation: (ctx) =>
+      `The cached tree-sitter CLI could not be provisioned. Re-run \`npx claude-mem install\`; if it persists, inspect ${ctx.dataDir}/last-install-error.json and check network connectivity. For a timeout, raise the budget with CLAUDE_MEM_INSTALL_TIMEOUT_MS and re-run.`,
   },
   {
     id: 'marketplace-dir-not-writable',
