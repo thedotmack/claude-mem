@@ -325,6 +325,7 @@ describe('Plugin Distribution - Non-blocking bookkeeping hooks (#3206)', () => {
     expect(sessionStart[1].command).toContain(' hook claude-code context');
     expect(sessionStart[1].async).toBe(true);
     expect(userPromptSubmit.command).toContain(' hook claude-code session-init');
+    expect(userPromptSubmit.timeout).toBe(60);
     expect(userPromptSubmit).not.toHaveProperty('async');
   });
 });
