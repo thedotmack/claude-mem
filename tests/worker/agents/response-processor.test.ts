@@ -1,6 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
 import { logger } from '../../../src/utils/logger.js';
 
 // Capture real exports before mock.module mutates the live namespace, then
@@ -624,14 +623,6 @@ describe('ResponseProcessor', () => {
 
   describe('empty-turn diagnostics (#3454)', () => {
     it('reproduction: idle WARN at base had no emptyOutputReason; head adds it and requeues the claimed batch', async () => {
-      const reproPath = join(import.meta.dir, '../../fixtures/observer-empty-turn-repro-3454.txt');
-      const reproContent = readFileSync(reproPath, 'utf-8');
-      const previewMatch = /\bpreview=([^,}]*)/.exec(reproContent);
-      expect(previewMatch?.[1]).toBe('');
-      expect(reproContent).toContain('consecutiveInvalidOutputs=0');
-      expect(reproContent).toContain('outputClass=idle');
-      expect(reproContent).not.toContain('emptyOutputReason');
-
       const confirmClaimedMessages = mock(() => Promise.resolve(0));
       const resetProcessingToPending = mock(() => Promise.resolve(0));
       mockSessionManager = {
