@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { copyFileSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync } from 'fs';
+import { appendFileSync, copyFileSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -10,6 +10,8 @@ import {
   platformBunRemediation,
   platformUvRemediation,
   ensureTreeSitterCliBinary,
+  installPluginDependencies,
+  treeSitterCliBinaryPath,
 } from '../src/npx-cli/install/setup-runtime';
 import { warnMarketplaceTreeSitterCliIfUnavailable } from '../src/npx-cli/commands/install';
 import type { InstallSummary } from '../src/npx-cli/install/error-reporter';
@@ -227,6 +229,80 @@ describe('setup-runtime install marker', () => {
 
       await expect(ensureTreeSitterCliBinary(tempDir)).resolves.toBeUndefined();
       expect(existsSync(join(cliDir, process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter'))).toBe(true);
+    });
+  });
+
+  describe('cache dependency installation', () => {
+    afterEach(() => {
+      delete process.env.CLAUDE_MEM_TEST_EVENTS;
+    });
+
+    function createCacheFixture(installScript: string) {
+      const cacheDir = join(tempDir, 'cache');
+      const cliDir = join(cacheDir, 'node_modules', 'tree-sitter-cli');
+      const eventsPath = join(tempDir, 'events.log');
+      const bunPath = join(tempDir, process.platform === 'win32' ? 'fake-bun.cmd' : 'fake-bun');
+
+      mkdirSync(cliDir, { recursive: true });
+      writeFileSync(join(cacheDir, 'package.json'), JSON.stringify({
+        dependencies: { 'tree-sitter-cli': '0.26.8' },
+      }));
+      writeFileSync(join(cliDir, 'package.json'), JSON.stringify({ bin: { 'tree-sitter': 'tree-sitter' } }));
+      writeFileSync(join(cliDir, 'install.js'), installScript);
+      writeFileSync(join(tempDir, 'fake-bun.js'), [
+        `require('fs').appendFileSync(process.env.CLAUDE_MEM_TEST_EVENTS, 'bun ' + process.argv.slice(2).join(' ') + '\\n');`,
+      ].join('\n'));
+
+      if (process.platform === 'win32') {
+        writeFileSync(bunPath, '@echo off\r\nnode "%~dp0fake-bun.js" %*\r\n');
+      } else {
+        writeFileSync(bunPath, '#!/bin/sh\nnode "$(dirname "$0")/fake-bun.js" "$@"\n');
+        chmodSync(bunPath, 0o755);
+      }
+
+      process.env.CLAUDE_MEM_TEST_EVENTS = eventsPath;
+      return { cacheDir, cliDir, eventsPath, bunPath };
+    }
+
+    function materializingInstallScript(): string {
+      const binaryName = process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter';
+      return [
+        `require('fs').appendFileSync(process.env.CLAUDE_MEM_TEST_EVENTS, 'provision\\n');`,
+        `require('fs').copyFileSync(${JSON.stringify(REPO_TREE_SITTER_BINARY)}, require('path').join(__dirname, ${JSON.stringify(binaryName)}));`,
+        process.platform === 'win32' ? '' : `require('fs').chmodSync(require('path').join(__dirname, ${JSON.stringify(binaryName)}), 0o755);`,
+      ].join('\n');
+    }
+
+    it('provisions the cache binary after script-suppressed Bun install', async () => {
+      const fixture = createCacheFixture(materializingInstallScript());
+      writeFileSync(fixture.eventsPath, '');
+
+      expect(existsSync(treeSitterCliBinaryPath(fixture.cacheDir))).toBe(false);
+      await installPluginDependencies(fixture.cacheDir, fixture.bunPath);
+      appendFileSync(fixture.eventsPath, 'returned\n');
+
+      expect(readFileSync(fixture.eventsPath, 'utf-8').trim().split('\n')).toEqual([
+        'bun install --frozen-lockfile --ignore-scripts',
+        'provision',
+        'returned',
+      ]);
+      expect(existsSync(treeSitterCliBinaryPath(fixture.cacheDir))).toBe(true);
+    });
+
+    it('rejects when cache binary provisioning cannot produce a usable executable', async () => {
+      const fixture = createCacheFixture([
+        `require('fs').appendFileSync(process.env.CLAUDE_MEM_TEST_EVENTS, 'provision\\n');`,
+      ].join('\n'));
+      writeFileSync(fixture.eventsPath, '');
+
+      await expect(installPluginDependencies(fixture.cacheDir, fixture.bunPath)).rejects.toThrow(
+        'without creating a working executable',
+      );
+      expect(readFileSync(fixture.eventsPath, 'utf-8').trim().split('\n')).toEqual([
+        'bun install --frozen-lockfile --ignore-scripts',
+        'provision',
+      ]);
+      expect(existsSync(treeSitterCliBinaryPath(fixture.cacheDir))).toBe(false);
     });
   });
 });

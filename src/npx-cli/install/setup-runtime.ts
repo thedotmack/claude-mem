@@ -510,6 +510,7 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
     throw new Error(`bun install failed in ${targetDir}\n${describeExecError(err)}`);
   }
 
+  await ensureTreeSitterCliBinary(targetDir);
   verifyCriticalModules(targetDir);
 }
 
