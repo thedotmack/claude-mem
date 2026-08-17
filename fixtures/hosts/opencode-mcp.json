@@ -1,0 +1,35 @@
+{
+  "$comment": "Checked-in OpenCode host contract (plan-23 step 1). Declares the shape of the mcp.<name> local-server entry that OpenCode's config.json accepts, so installer-generated entries can be validated against the host's actual schema rather than an inline assumption. See src/services/integrations/OpenCodeInstaller.ts (addOpenCodeMcpReference) and tests/integration/opencode-installer.test.ts.",
+  "host": "opencode",
+  "versions": ["1.16", "1.17", "1.18"],
+  "schema_url": "https://opencode.ai/config.json",
+  "entry": {
+    "description": "A single entry under the top-level `mcp` object, keyed by server name (claude-mem uses key `claude-mem`).",
+    "allowed_keys": ["type", "command", "enabled", "environment"],
+    "required_keys": ["type", "command"],
+    "type": {
+      "description": "Server transport. claude-mem registers a local server launched by the plugin runtime.",
+      "accepted_values": ["local", "remote"],
+      "claude_mem_value": "local"
+    },
+    "command": {
+      "description": "Exec argv for a local server. OpenCode performs no ${CLAUDE_PLUGIN_ROOT} substitution, so both elements must be absolute (Rule B in install-paths.ts).",
+      "type": "array",
+      "min_items": 2,
+      "claude_mem_shape": ["<node-absolute-path>", "<mcp-server.cjs-absolute-path>"]
+    },
+    "enabled": {
+      "description": "Optional toggle; absent means enabled.",
+      "type": "boolean"
+    },
+    "environment": {
+      "description": "Optional environment map passed to the local server process.",
+      "type": "object"
+    }
+  },
+  "claude_mem_entry": {
+    "key": "claude-mem",
+    "type": "local",
+    "command": ["<resolved node>", "<resolved mcp-server.cjs>"]
+  }
+}
