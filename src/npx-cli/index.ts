@@ -78,8 +78,8 @@ function parseInstallOptions(argv: string[]): InstallOptions {
   const flag = (name: string): string | undefined =>
     typeof values[name] === 'string' ? (values[name] as string) : undefined;
   const provider = flag('provider');
-  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'openrouter') {
-    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, openrouter`);
+  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'openrouter' && provider !== 'opencode') {
+    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, openrouter, opencode`);
     process.exit(1);
   }
   const runtime = flag('runtime');
