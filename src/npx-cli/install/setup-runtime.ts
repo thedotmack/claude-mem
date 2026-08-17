@@ -24,7 +24,7 @@ const INSTALL_TIMEOUT_MS = (() => {
 })();
 
 function treeSitterInstallTimeoutMs(): number {
-  const override = process.env.CLAUDE_MEM_TREE_SITTER_INSTALL_TIMEOUT_MS;
+  const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
   if (override && Number.isFinite(Number(override))) return Number(override);
   return INSTALL_TIMEOUT_MS;
 }
@@ -527,7 +527,24 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
     throw new Error(`bun install failed in ${targetDir}\n${describeExecError(err)}`);
   }
 
-  await ensureTreeSitterCliBinary(targetDir);
+  try {
+    await ensureTreeSitterCliBinary(targetDir);
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    const cause = Object.assign(
+      new Error(`tree-sitter-cli provisioning failed in ${targetDir}\n${describeExecError(err)}`),
+      {
+        code: (err as Error & { code?: number }).code,
+        killed: (err as Error & { killed?: boolean }).killed,
+      },
+    );
+    installerError(ErrorSeverity.ABORT, {
+      component: 'tree-sitter-cli-cache',
+      phase: 'dependency-install',
+      cause,
+    }, summaryOrEphemeral());
+    throw new Error('unreachable');
+  }
   verifyCriticalModules(targetDir);
 }
 

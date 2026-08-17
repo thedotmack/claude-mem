@@ -237,7 +237,7 @@ describe('setup-runtime install marker', () => {
       mkdirSync(cliDir, { recursive: true });
       writeFileSync(binaryPath, [
         '#!/usr/bin/env node',
-        "process.stdin.on('end', () => process.stdout.write('tree-sitter 0.26.8\\n'));",
+        "process.stdin.resume(); process.stdin.on('end', () => process.stdout.write('tree-sitter 0.26.8\\n'));",
       ].join('\n'));
       chmodSync(binaryPath, 0o755);
 
@@ -265,8 +265,17 @@ describe('setup-runtime install marker', () => {
   });
 
   describe('cache dependency installation', () => {
+    let previousDataDir: string | undefined;
+
+    beforeEach(() => {
+      previousDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+      process.env.CLAUDE_MEM_DATA_DIR = join(tempDir, 'install-errors');
+    });
+
     afterEach(() => {
       delete process.env.CLAUDE_MEM_TEST_EVENTS;
+      if (previousDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = previousDataDir;
     });
 
     function createCacheFixture(installScript: string) {
@@ -354,7 +363,10 @@ describe('setup-runtime install marker', () => {
         await installPluginDependencies(fixture.cacheDir, fixture.bunPath);
         throw new Error('expected cache provisioner to reject');
       } catch (error) {
-        expect(error).toMatchObject({ code: 2 });
+        expect(error).toMatchObject({
+          category: { id: 'tree-sitter-cli-cache-provisioning-failed' },
+          cause: { code: 2 },
+        });
       }
       expect(readFileSync(fixture.eventsPath, 'utf-8').trim().split('\n')).toEqual([
         'bun install --frozen-lockfile --ignore-scripts',
@@ -368,23 +380,26 @@ describe('setup-runtime install marker', () => {
         'setTimeout(() => {}, 5000);',
       ].join('\n'));
       writeFileSync(fixture.eventsPath, '');
-      const previousTimeout = process.env.CLAUDE_MEM_TREE_SITTER_INSTALL_TIMEOUT_MS;
-      process.env.CLAUDE_MEM_TREE_SITTER_INSTALL_TIMEOUT_MS = '2000';
+      const previousTimeout = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
+      process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = '2000';
 
       try {
         try {
           await installPluginDependencies(fixture.cacheDir, fixture.bunPath);
           throw new Error('expected cache provisioner to time out');
         } catch (error) {
-          expect(error).toMatchObject({ killed: true });
+          expect(error).toMatchObject({
+            category: { id: 'tree-sitter-cli-cache-provisioning-failed' },
+            cause: { killed: true },
+          });
         }
         expect(readFileSync(fixture.eventsPath, 'utf-8').trim().split('\n')).toEqual([
           'bun install --frozen-lockfile --ignore-scripts',
           'provision',
         ]);
       } finally {
-        if (previousTimeout === undefined) delete process.env.CLAUDE_MEM_TREE_SITTER_INSTALL_TIMEOUT_MS;
-        else process.env.CLAUDE_MEM_TREE_SITTER_INSTALL_TIMEOUT_MS = previousTimeout;
+        if (previousTimeout === undefined) delete process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
+        else process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS = previousTimeout;
       }
     });
   });

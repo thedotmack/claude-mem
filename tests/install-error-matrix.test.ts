@@ -71,6 +71,16 @@ describe('error taxonomy', () => {
     expect(cat.severity).toBe(ErrorSeverity.ABORT);
   });
 
+  it('classifies cache tree-sitter provisioning failures as ABORT', () => {
+    const cat = classifyError(new Error('tree-sitter install failed'), {
+      component: 'tree-sitter-cli-cache',
+      phase: 'dependency-install',
+    });
+    expect(cat.id).toBe('tree-sitter-cli-cache-provisioning-failed');
+    expect(cat.severity).toBe(ErrorSeverity.ABORT);
+    expect(cat.remediation({ platform: 'win32', dataDir: 'C:\\temp\\claude-mem' })).toContain('Re-run');
+  });
+
   it('defaults unknown errors to ABORT (fail-loud)', () => {
     const cat = classifyError(new Error('something we have never seen'), {
       component: 'mystery',
