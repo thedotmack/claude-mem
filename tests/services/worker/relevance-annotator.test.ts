@@ -19,6 +19,10 @@ describe('buildAnnotationPrompt', () => {
     expect(prompt).toContain('2. Chroma collection naming');
     expect(prompt).toContain('3. No narrative observation');
     expect(prompt).toContain('"verdict": "drop"');
+    // Hint grammar: factual link to the request, never a directive addressed
+    // at the consuming agent ("say…", "use this to…", "report…").
+    expect(prompt).toContain('relevant because');
+    expect(prompt).toContain('no directives');
   });
 
   it('truncates narratives to bound per-prompt input tokens', () => {
