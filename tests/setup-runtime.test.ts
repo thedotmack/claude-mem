@@ -264,7 +264,7 @@ describe('setup-runtime install marker', () => {
       writeFileSync(join(cacheDir, 'package.json'), JSON.stringify({
         dependencies: {
           'tree-sitter-cli': '0.26.8',
-          'provisioned-dependency': '1.0.0',
+          'provisioned-after-tree-sitter': '1.0.0',
         },
       }));
       writeFileSync(join(cliDir, 'package.json'), JSON.stringify({ bin: { 'tree-sitter': 'tree-sitter' } }));
@@ -288,8 +288,8 @@ describe('setup-runtime install marker', () => {
       const binaryName = process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter';
       return [
         `require('fs').appendFileSync(process.env.CLAUDE_MEM_TEST_EVENTS, 'provision\\n');`,
-        `require('fs').mkdirSync(require('path').join(__dirname, '..', 'provisioned-dependency'), { recursive: true });`,
-        `require('fs').writeFileSync(require('path').join(__dirname, '..', 'provisioned-dependency', 'package.json'), '{}');`,
+        `require('fs').mkdirSync(require('path').join(__dirname, '..', 'provisioned-after-tree-sitter'), { recursive: true });`,
+        `require('fs').writeFileSync(require('path').join(__dirname, '..', 'provisioned-after-tree-sitter', 'package.json'), '{}');`,
         `require('fs').copyFileSync(${JSON.stringify(REPO_TREE_SITTER_BINARY)}, require('path').join(__dirname, ${JSON.stringify(binaryName)}));`,
         process.platform === 'win32' ? '' : `require('fs').chmodSync(require('path').join(__dirname, ${JSON.stringify(binaryName)}), 0o755);`,
       ].join('\n');
@@ -308,7 +308,7 @@ describe('setup-runtime install marker', () => {
         'provision',
         'returned',
       ]);
-      expect(existsSync(join(fixture.cacheDir, 'node_modules', 'provisioned-dependency', 'package.json'))).toBe(true);
+      expect(existsSync(join(fixture.cacheDir, 'node_modules', 'provisioned-after-tree-sitter', 'package.json'))).toBe(true);
       expect(existsSync(treeSitterCliBinaryPath(fixture.cacheDir))).toBe(true);
     });
 
