@@ -9,7 +9,8 @@ import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile, readOwnedWorkerPidInfo } from "../supervisor/index.js";
 import { emitBlockingError } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
-import { checkVersionMatch, classifyPortOccupancy } from "../services/infrastructure/index.js";
+import { checkVersionMatch } from "../services/infrastructure/index.js";
+import { classifyPortOccupancy } from "../services/infrastructure/HealthMonitor.js";
 // Imported from ProcessManager.js directly (not the infrastructure barrel):
 // tests mock the barrel module wholesale, and the resolver must stay real.
 // ProcessManager imports nothing from worker-utils, so no cycle.
@@ -468,6 +469,7 @@ export async function ensureWorkerRunning(): Promise<boolean> {
   // (plain cold-start lazy-spawn — no recycle happened, nothing to amplify)
   // or when the resolved version is unreadable ('unknown').
   let expectedPluginVersion: string | null = null;
+  let recycledStaleWorker = false;
 
   if (await isWorkerPortAlive(preSpawnDeadline)) {
     // A worker is already alive. If it is a DIFFERENT version than the one
@@ -533,14 +535,17 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       });
       return false;
     }
+    recycledStaleWorker = true;
     // The killed worker's PID file is left behind; the successor's boot
     // removes it (validateWorkerPidFile returns 'stale' for a dead pid).
     // Fall through to (re)spawn + readiness wait below.
   }
 
-  const remainingMs = preSpawnDeadline - Date.now();
-  if (remainingMs <= 0) return false;
-  if ((await classifyPortOccupancy(getWorkerPort(), remainingMs)) !== 'free') return false;
+  if (!recycledStaleWorker) {
+    const remainingMs = preSpawnDeadline - Date.now();
+    if (remainingMs <= 0) return false;
+    if ((await classifyPortOccupancy(getWorkerPort(), remainingMs)) !== 'free') return false;
+  }
 
   const runtimePath = resolveWorkerRuntimePath();
   const scriptPath = resolvedScript?.scriptPath ?? null;
@@ -567,6 +572,11 @@ export async function ensureWorkerRunning(): Promise<boolean> {
   const spawnLockHeld = acquireSpawnLock();
   try {
     if (spawnLockHeld) {
+      if (!recycledStaleWorker) {
+        const remainingMs = preSpawnDeadline - Date.now();
+        if (remainingMs <= 0) return false;
+        if ((await classifyPortOccupancy(getWorkerPort(), remainingMs)) !== 'free') return false;
+      }
       logger.info('SYSTEM', 'Worker not running — lazy-spawning', { runtimePath, scriptPath });
 
       try {

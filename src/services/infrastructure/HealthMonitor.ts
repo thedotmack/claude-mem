@@ -76,7 +76,7 @@ export function classifyPortOccupancy(port: number, timeoutMs: number = 5000): P
 
   return new Promise((resolve) => {
     let settled = false;
-    let listening = false;
+    let closeRequested = false;
     let server: net.Server;
     try {
       server = net.createServer();
@@ -84,10 +84,21 @@ export function classifyPortOccupancy(port: number, timeoutMs: number = 5000): P
       resolve('indeterminate');
       return;
     }
-    const timer = setTimeout(() => {
-      if (listening) {
-        try { server.close(); } catch { /* the timeout result is indeterminate */ }
+    const closeServer = (callback?: (error?: Error) => void): void => {
+      if (closeRequested) {
+        callback?.();
+        return;
       }
+      closeRequested = true;
+      try {
+        server.close(callback);
+      } catch (error: unknown) {
+        callback?.(error instanceof Error ? error : new Error(String(error)));
+      }
+    };
+
+    const timer = setTimeout(() => {
+      closeServer();
       settle('indeterminate');
     }, timeoutMs);
 
@@ -99,12 +110,12 @@ export function classifyPortOccupancy(port: number, timeoutMs: number = 5000): P
     };
 
     server.once('error', (err: NodeJS.ErrnoException) => {
+      closeServer();
       settle(err.code === 'EADDRINUSE' ? 'occupied' : 'indeterminate');
     });
     server.once('listening', () => {
-      listening = true;
       try {
-        server.close((error?: Error) => settle(error ? 'indeterminate' : 'free'));
+        closeServer((error?: Error) => settle(error ? 'indeterminate' : 'free'));
       } catch {
         settle('indeterminate');
       }
@@ -113,6 +124,7 @@ export function classifyPortOccupancy(port: number, timeoutMs: number = 5000): P
     try {
       server.listen(port, getWorkerHost());
     } catch {
+      closeServer();
       settle('indeterminate');
     }
   });

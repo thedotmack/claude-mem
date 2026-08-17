@@ -177,8 +177,8 @@ describe('HealthMonitor', () => {
   });
 
   describe('classifyPortOccupancy', () => {
-    const mockServer = (event: 'error' | 'listening', value?: unknown) => {
-      const close = mock((callback?: (error?: Error) => void) => callback?.());
+    const mockServer = (event: 'error' | 'listening', value?: unknown, closeError?: Error) => {
+      const close = mock((callback?: (error?: Error) => void) => callback?.(closeError));
       const server = {
         once: mock((name: string, callback: (value?: unknown) => void) => {
           if (name === event) setTimeout(() => callback(value), 0);
@@ -204,6 +204,24 @@ describe('HealthMonitor', () => {
       }
     });
 
+    it('treats close failure and synchronous listen failure as indeterminate', async () => {
+      const closeFailure = mockServer('listening', undefined, new Error('close failed'));
+      const closeSpy = spyOn(net, 'createServer').mockImplementation(() => closeFailure.server as any);
+      expect(await classifyPortOccupancy(37777, 100)).toBe('indeterminate');
+      expect(closeFailure.close).toHaveBeenCalledTimes(1);
+      closeSpy.mockRestore();
+
+      const listenFailure = {
+        once: mock(() => {}),
+        listen: mock(() => { throw new Error('listen failed'); }),
+        close: mock(() => {}),
+      };
+      const listenSpy = spyOn(net, 'createServer').mockImplementation(() => listenFailure as any);
+      expect(await classifyPortOccupancy(37777, 100)).toBe('indeterminate');
+      expect(listenFailure.close).toHaveBeenCalledTimes(1);
+      listenSpy.mockRestore();
+    });
+
     it('bounds synchronous throws, timeout, and zero budget', async () => {
       const throwSpy = spyOn(net, 'createServer').mockImplementation(() => { throw new Error('setup failed'); });
       expect(await classifyPortOccupancy(37777, 100)).toBe('indeterminate');
@@ -216,6 +234,7 @@ describe('HealthMonitor', () => {
       };
       const timeoutSpy = spyOn(net, 'createServer').mockImplementation(() => timeoutServer as any);
       expect(await classifyPortOccupancy(37777, 10)).toBe('indeterminate');
+      expect(timeoutServer.close).toHaveBeenCalledTimes(1);
       expect(await classifyPortOccupancy(37777, 0)).toBe('indeterminate');
       timeoutSpy.mockRestore();
     });
