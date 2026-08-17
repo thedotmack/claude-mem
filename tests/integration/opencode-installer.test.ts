@@ -3,12 +3,15 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
+  addOpenCodeMcpReference,
   addOpenCodePluginReference,
   deregisterOpenCodePluginFromConfig,
   getOpenCodeConfigPath,
-  removeOpenCodePluginReference,
   registerOpenCodePluginInConfig,
+  removeOpenCodeMcpReference,
+  removeOpenCodePluginReference,
 } from '../../src/services/integrations/OpenCodeInstaller.js';
+import { getMcpServerAbsolutePath } from '../../src/services/integrations/install-paths.js';
 
 describe('OpenCode installer config registration', () => {
   let tempDir: string;
@@ -75,6 +78,10 @@ describe('OpenCode installer config registration', () => {
     const config = JSON.parse(readFileSync(getOpenCodeConfigPath(), 'utf-8'));
     expect(config.$schema).toBe('https://opencode.ai/config.json');
     expect(config.plugin).toEqual(['./plugins/claude-mem.js']);
+    expect(config.mcp?.['claude-mem']).toMatchObject({ type: 'local' });
+    const mcpCommand = config.mcp['claude-mem'].command as string[];
+    expect(mcpCommand[0]).toBe(process.execPath);
+    expect(mcpCommand[1]).toBe(getMcpServerAbsolutePath());
   });
 
   it('preserves existing config fields when registering the plugin', () => {
@@ -90,12 +97,14 @@ describe('OpenCode installer config registration', () => {
     const config = JSON.parse(readFileSync(getOpenCodeConfigPath(), 'utf-8'));
     expect(config.plugin).toEqual(['context-mode', './plugins/claude-mem.js']);
     expect(config.provider).toEqual({ openai: { models: {} } });
+    expect(config.mcp?.['claude-mem']).toMatchObject({ type: 'local' });
   });
 
   it('removes the plugin reference from opencode.json during deregistration', () => {
     writeFileSync(getOpenCodeConfigPath(), JSON.stringify({
       $schema: 'https://opencode.ai/config.json',
       plugin: ['context-mode', './plugins/claude-mem.js'],
+      mcp: { 'claude-mem': { type: 'local', command: ['node', '/x/mcp-server.cjs'] } },
     }), 'utf-8');
 
     const result = deregisterOpenCodePluginFromConfig();
@@ -103,5 +112,54 @@ describe('OpenCode installer config registration', () => {
     expect(result).toBe(0);
     const config = JSON.parse(readFileSync(getOpenCodeConfigPath(), 'utf-8'));
     expect(config.plugin).toEqual(['context-mode']);
+    expect('mcp' in config).toBe(false);
+  });
+
+  it('adds the claude-mem MCP entry while preserving other MCP servers', () => {
+    const config = addOpenCodeMcpReference({
+      $schema: 'https://opencode.ai/config.json',
+      plugin: ['./plugins/claude-mem.js'],
+      mcp: { context7: { enabled: true } },
+    });
+
+    expect(config.mcp).toMatchObject({ context7: { enabled: true } });
+    expect(config.mcp?.['claude-mem']).toMatchObject({ type: 'local' });
+    const mcpCommand = (config.mcp?.['claude-mem'] as { command: string[] }).command;
+    expect(mcpCommand[0]).toBe(process.execPath);
+    expect(mcpCommand[1]).toBe(getMcpServerAbsolutePath());
+  });
+
+  it('is idempotent for an already-registered claude-mem MCP entry', () => {
+    const config: { $schema: string; plugin: string[]; mcp: Record<string, unknown> } = {
+      $schema: 'https://opencode.ai/config.json',
+      plugin: ['./plugins/claude-mem.js'],
+      mcp: {
+        'claude-mem': { type: 'local', command: [process.execPath, getMcpServerAbsolutePath()!] },
+        context7: { enabled: true },
+      },
+    };
+
+    expect(addOpenCodeMcpReference(config)).toBe(config);
+  });
+
+  it('removes only the claude-mem MCP entry, preserving other servers', () => {
+    const config = removeOpenCodeMcpReference({
+      plugin: ['./plugins/claude-mem.js'],
+      mcp: {
+        'claude-mem': { type: 'local', command: ['node', '/x/mcp-server.cjs'] },
+        context7: { enabled: true },
+      },
+    });
+
+    expect(config.mcp).toEqual({ context7: { enabled: true } });
+  });
+
+  it('drops the mcp block when it becomes empty', () => {
+    const config = removeOpenCodeMcpReference({
+      plugin: ['./plugins/claude-mem.js'],
+      mcp: { 'claude-mem': { type: 'local', command: ['node', '/x/mcp-server.cjs'] } },
+    });
+
+    expect('mcp' in config).toBe(false);
   });
 });
