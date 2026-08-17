@@ -27,7 +27,7 @@ import { createHash, randomBytes } from 'crypto';
 import { chmodSync, existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { logger } from '../../utils/logger.js';
-import { canReadSettingsDocument, updateSettingsDocument } from '../../shared/settings-document.js';
+import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { createPostgresPool, type PostgresPool } from '../../storage/postgres/pool.js';
 import { parsePostgresConfig } from '../../storage/postgres/config.js';
 import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
@@ -156,10 +156,6 @@ export async function rotateServerApiKey(options: RotateOptions = {}): Promise<B
       await pool.end().catch(() => undefined);
     }
   }
-}
-
-export function canPersistServerSettings(settingsPath: string): boolean {
-  return canReadSettingsDocument(settingsPath);
 }
 
 export function persistServerSettings(

@@ -41,14 +41,16 @@ function readSelectedRuntime(): InstallRuntimeId {
 export function clearServerRuntimeSettings(
   keys: readonly string[],
   settingsPath: string = USER_SETTINGS_PATH,
-): void {
-  if (!existsSync(settingsPath)) return;
+): boolean {
+  if (!existsSync(settingsPath)) return true;
   const result = updateSettingsDocument(settingsPath, {}, {}, document => {
     for (const key of keys) delete document[key];
   });
   if (result.status === 'refused') {
     console.warn('[uninstall] Could not write settings during server runtime cleanup:', result.error instanceof Error ? result.error.message : String(result.error));
+    return false;
   }
+  return true;
 }
 
 function removeMarketplaceDirectory(): boolean {
@@ -280,8 +282,11 @@ export async function runUninstallCommand(): Promise<void> {
     } else {
       p.log.info('Server runtime detected (externally managed stack — leaving Docker/pg/redis untouched).');
     }
-    clearServerRuntimeSettings(SERVER_RUNTIME_SETTINGS_KEYS);
-    p.log.info('Server runtime settings cleared from ~/.claude-mem/settings.json.');
+    if (clearServerRuntimeSettings(SERVER_RUNTIME_SETTINGS_KEYS)) {
+      p.log.info('Server runtime settings cleared from ~/.claude-mem/settings.json.');
+    } else {
+      p.log.error('Could not clear server runtime settings from ~/.claude-mem/settings.json. Repair the file and rerun uninstall.');
+    }
   }
 
   await p.tasks([

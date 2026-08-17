@@ -44,10 +44,6 @@ function loadDocument(path: string): { exists: boolean; document?: SettingsDocum
   }
 }
 
-export function canReadSettingsDocument(path: string): boolean {
-  return !loadDocument(path).error;
-}
-
 export function updateSettingsDocument(
   path: string,
   updates: SettingsDocument,

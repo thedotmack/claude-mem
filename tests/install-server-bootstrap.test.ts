@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { persistServerSettings, canPersistServerSettings } from '../src/services/hooks/server-bootstrap.js';
+import { persistServerSettings } from '../src/services/hooks/server-bootstrap.js';
 
 const VALUES = { apiKey: 'cmem_testkey', projectId: 'proj-test' };
 
@@ -147,36 +147,5 @@ describe('persistServerSettings: rotation retry marker', () => {
 
     persistServerSettings(settingsPath, VALUES);
     expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID).toBeUndefined();
-  });
-});
-
-describe('canPersistServerSettings: rotation up-front guard', () => {
-  it('returns false for corrupt JSON, proving rotation will refuse before revoking the old key', () => {
-    const corruptBytes = '{"CLAUDE_MEM_SERVER_API_KEY":"cmem_oldkey"';
-    writeFileSync(settingsPath, corruptBytes, 'utf-8');
-
-    const result = canPersistServerSettings(settingsPath);
-
-    expect(result).toBe(false);
-    expect(readFileSync(settingsPath, 'utf-8')).toBe(corruptBytes);
-  });
-
-  it('returns false for a root array', () => {
-    writeFileSync(settingsPath, '["sentinel"]', 'utf-8');
-    expect(canPersistServerSettings(settingsPath)).toBe(false);
-  });
-
-  it('returns false for a root null', () => {
-    writeFileSync(settingsPath, 'null', 'utf-8');
-    expect(canPersistServerSettings(settingsPath)).toBe(false);
-  });
-
-  it('returns true when the file is missing', () => {
-    expect(canPersistServerSettings(settingsPath)).toBe(true);
-  });
-
-  it('returns true for a valid JSON object', () => {
-    writeFileSync(settingsPath, '{"CLAUDE_MEM_SERVER_API_KEY":"cmem_oldkey"}', 'utf-8');
-    expect(canPersistServerSettings(settingsPath)).toBe(true);
   });
 });
