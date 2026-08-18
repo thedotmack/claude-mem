@@ -286,15 +286,34 @@ export default function claudeMemBridge(pi: HookAPI): void {
   // reached /api/sessions/init makes the worker create an empty-project
   // sdk_sessions row for it (handleSummarizeByClaudeId calls createSDKSession
   // with an empty project).
+  //
+  // The summarize is chained onto the captured init promise, exactly like
+  // session_compact: `initialized` flips synchronously inside fireInit, before
+  // the init POST settles, so an unchained summarize can reach the worker
+  // first. It would then INSERT the sdk_sessions row itself with
+  // user_prompt='' — a column only that INSERT ever writes, so the later init
+  // repairs `project` but never the prompt — and would queue a summarize
+  // generator against a session with no prompts and no observations.
+  //
+  // id / pendingInit / previousAssistant are captured BEFORE the reset below:
+  // the detached chain runs after this handler has returned and cleared the
+  // module fields, so reading them inside the callback would send an empty
+  // last_assistant_message.
   pi.on("session_shutdown", async () => {
     const id = sid;
+    const pendingInit = initPromise;
+    const previousAssistant = lastAssistant;
+
     if (id && initialized) {
-      void post("/api/sessions/summarize", {
-        contentSessionId: id,
-        last_assistant_message: lastAssistant,
-        platformSource: "omp",
-      });
+      void (pendingInit ?? Promise.resolve()).then(() =>
+        post("/api/sessions/summarize", {
+          contentSessionId: id,
+          last_assistant_message: previousAssistant,
+          platformSource: "omp",
+        })
+      );
     }
+
     sid = undefined;
     initialized = false;
     initPromise = undefined;
