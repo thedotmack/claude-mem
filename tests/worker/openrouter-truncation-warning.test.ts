@@ -89,4 +89,40 @@ describe('OpenRouter max_tokens truncation', () => {
     expect(result.content).toBe('');
     expect(errorSpy.mock.calls[0]?.[2]).toMatchObject({ finishReason: 'length', maxTokens: 4096 });
   });
+
+  it('does not call a capped summary reply an observation block', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async () => respondWith({
+      model: 'test/model',
+      choices: [{ message: { content: '<summary><request>partial summ' }, finish_reason: 'length' }],
+      usage: { prompt_tokens: 900, completion_tokens: 4096, total_tokens: 4996 },
+    }));
+    warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+
+    await makeProvider().runQuery(HISTORY);
+
+    // query() is shared by the observation and summary turns, so the wording
+    // must not claim a response type the caller never told it about.
+    const truncationWarning = warnSpy.mock.calls.find(
+      call => typeof call[1] === 'string' && call[1].includes('max_tokens')
+    );
+    expect(truncationWarning?.[1]).not.toContain('observation');
+  });
+
+  it('leaves output tokens undefined when the gateway reports no completion usage', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async () => respondWith({
+      model: 'test/model',
+      choices: [{ message: { content: '<observation><type>bugfix</type><title>cut' }, finish_reason: 'length' }],
+      usage: { prompt_tokens: 900 },
+    }));
+    warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+
+    await makeProvider().runQuery(HISTORY);
+
+    const truncationWarning = warnSpy.mock.calls.find(
+      call => typeof call[1] === 'string' && call[1].includes('max_tokens')
+    );
+    // Unknown usage stays unknown: reporting 0 output tokens next to non-empty
+    // content reads as a provider bug that isn't there.
+    expect((truncationWarning?.[2] as Record<string, unknown>).outputTokens).toBeUndefined();
+  });
 });

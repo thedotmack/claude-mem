@@ -404,10 +404,10 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const servedModel = typeof data.model === 'string' && data.model ? data.model : undefined;
 
     if (truncatedByCap) {
-      logger.warn('SDK', 'OpenRouter reply hit the max_tokens cap — the observation block is cut off and will not parse', {
+      logger.warn('SDK', 'OpenRouter reply hit the max_tokens cap — the structured response is cut off and may not parse', {
         model: servedModel ?? model,
         maxTokens: OPENROUTER_MAX_OUTPUT_TOKENS,
-        outputTokens: realOutputTokens ?? 0,
+        outputTokens: realOutputTokens,
         contentChars: content.length,
         messagesInContext: history.length,
       });
