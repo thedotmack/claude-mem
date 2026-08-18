@@ -1278,10 +1278,32 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   }
 
   const apiKey = String(apiKeyResult).trim();
-  const wrote = mergeSettings({
+  const settingsToMerge: Record<string, string> = {
     CLAUDE_MEM_PROVIDER: selectedProvider,
     [keyEnvName]: apiKey,
-  });
+  };
+
+  if (selectedProvider === 'opencode' && !options.provider) {
+    const flavorResult = await p.select({
+      message: 'Which OpenCode endpoint flavor do you use?',
+      options: [
+        { value: 'go', label: 'OpenCode Go (Subscription — default: deepseek-v4-flash)' },
+        { value: 'zen', label: 'OpenCode Zen (Pay-as-you-go — default: claude-haiku-4-5)' },
+      ],
+      initialValue: 'go',
+    });
+    if (!p.isCancel(flavorResult)) {
+      if (flavorResult === 'zen') {
+        settingsToMerge.CLAUDE_MEM_OPENCODE_BASE_URL = 'https://opencode.ai/zen/v1';
+        settingsToMerge.CLAUDE_MEM_OPENCODE_MODEL = 'claude-haiku-4-5';
+      } else {
+        settingsToMerge.CLAUDE_MEM_OPENCODE_BASE_URL = 'https://opencode.ai/zen/go/v1';
+        settingsToMerge.CLAUDE_MEM_OPENCODE_MODEL = 'deepseek-v4-flash';
+      }
+    }
+  }
+
+  const wrote = mergeSettings(settingsToMerge);
   if (wrote) {
     log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
   }
