@@ -167,6 +167,7 @@ export class SessionRoutes extends BaseRouteHandler {
     session.lastGeneratorSource = source;
 
     const myController = session.abortController;
+    const isContextBoundRestart = source === 'context-bound';
 
     let skipGeneratorExitFinalization = false;
     let generatorPromise: Promise<void>;
@@ -179,9 +180,21 @@ export class SessionRoutes extends BaseRouteHandler {
         }
 
         const errorMsg = error instanceof Error ? error.message : String(error);
+        const failedContextBoundStart = isContextBoundRestart &&
+          (session.contextRolloverRestartAttempts ?? 0) > 0;
         if (provider === 'claude' && isClassified(error) && error.kind === 'setup_required') {
-          skipGeneratorExitFinalization = true;
+          skipGeneratorExitFinalization = !failedContextBoundStart;
           recordClaudeCliSetupRequired(error.message);
+          if (failedContextBoundStart) {
+            session.abortReason = 'context-bound:restart-failed';
+            recordObserverFailure(provider, {
+              message: error.message,
+              code: error.code,
+              action: error.action,
+              url: error.url,
+              requestId: error.requestId,
+            });
+          }
           logger.warn('SESSION', 'Claude generator start requires setup; future Claude starts will be skipped until repaired', {
             sessionId: session.sessionDbId,
             provider,
@@ -191,6 +204,10 @@ export class SessionRoutes extends BaseRouteHandler {
         }
 
         if (errorMsg.includes('code 143') || errorMsg.includes('signal SIGTERM')) {
+          if (failedContextBoundStart) {
+            session.abortReason = 'context-bound:restart-failed';
+            recordObserverFailure(provider, errorMsg);
+          }
           logger.warn('SESSION', 'Generator killed by external signal', {
             sessionId: session.sessionDbId,
             provider,
@@ -200,16 +217,21 @@ export class SessionRoutes extends BaseRouteHandler {
           return;
         }
 
-        // No retry: the generator failed, the in-RAM batch is dropped, and the
-        // transcript is the recovery path. The next observation ingest will
-        // start a fresh generator via ensureGeneratorRunning.
+        // Generic generator failures retain the no-retry behavior: the in-RAM
+        // batch is dropped and the transcript is the recovery path. A failed
+        // context-bound replacement is the narrow exception; its typed abort
+        // reason routes the preserved batch through bounded replacement-start
+        // recovery in GeneratorExitHandler.
         //
         // The local error line (full fidelity) and the scrubbed
         // session_compressed rollup are one logical event.
-        // No abort_reason here: every site that sets abortReason aborts the
-        // controller on its next line, so aborted generators either resolve
-        // normally (quota/overflow break) or hit the signal-aborted early
-        // return above — this catch only ever sees non-abort rejections.
+        // Ordinary non-abort rejections leave abortReason unset. The context-
+        // bound replacement exception below sets a closed internal reason so
+        // its queued batch is not finalized by the generic exit path.
+        if (failedContextBoundStart) {
+          session.abortReason = 'context-bound:restart-failed';
+        }
+
         if (isClassified(error)) {
           // The single error-level line for a classified provider failure:
           // code, message, action, link, and request id — same words the
@@ -231,7 +253,8 @@ export class SessionRoutes extends BaseRouteHandler {
           }, error);
         }
         // Observer-health ledger: repeated generator failures mean observations
-        // are being dropped — session-start context warns the user via this.
+        // are being dropped or preserved without a working reducer — session-
+        // start context warns the user via this.
         // Classified errors carry the structured detail (code/action/link/
         // request id) so the warning shows the same words as the log line.
         recordObserverFailure(provider, isClassified(error)
@@ -278,7 +301,10 @@ export class SessionRoutes extends BaseRouteHandler {
         await handleGeneratorExit(session, reason, {
           sessionManager: this.sessionManager,
           completionHandler: this.completionHandler,
-          restartGenerator: (sessionDbId, source) => this.ensureGeneratorRunning(sessionDbId, source),
+          restartGenerator: async (sessionDbId, source) => {
+            await this.ensureGeneratorRunning(sessionDbId, source);
+            return Boolean(this.sessionManager.getSession(sessionDbId)?.generatorPromise);
+          },
         });
       });
     session.generatorPromise = generatorPromise;

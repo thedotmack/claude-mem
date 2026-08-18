@@ -7,8 +7,11 @@ import { getSdkProcessForSession, ensureSdkProcessExit } from '../../../supervis
 export interface GeneratorExitDependencies {
   sessionManager: SessionManager;
   completionHandler: SessionCompletionHandler;
-  restartGenerator?: (sessionDbId: number, source: string) => Promise<void>;
+  restartGenerator?: (sessionDbId: number, source: string) => Promise<boolean | void>;
 }
+
+/** Initial replacement start plus two bounded recovery attempts. */
+export const CONTEXT_BOUND_MAX_RESTART_ATTEMPTS = 3;
 
 /**
  * Post-generator-exit handler.
@@ -20,8 +23,9 @@ export interface GeneratorExitDependencies {
  * Claude context rollover also preserves the buffer: the completed turn was
  * confirmed before the finalized usage frame requested the rollover, while
  * later turns may still be waiting in memory. If later work is already queued,
- * start its replacement generator immediately so a final summarize request
- * cannot remain stranded waiting for another ingest event.
+ * start its replacement generator immediately and bound recovery to three
+ * start attempts so a transient failure cannot strand a final summarize
+ * request or recreate the old unbounded retry storm.
  *
  * For non-quota exits we do NOT respawn on remaining buffered work: the old
  * respawn-on-pending loop, driven by the durable pending_messages queue, was the
@@ -56,6 +60,10 @@ export async function handleGeneratorExit(
     });
 
     if (abortCategory === 'context-bound' && pendingCount > 0) {
+      if (reason === 'context-bound') {
+        session.contextRolloverRestartAttempts = 0;
+      }
+
       if (!restartGenerator) {
         logger.warn('SESSION', 'Claude context rollover has queued work but no restart callback', {
           sessionId: sessionDbId,
@@ -64,14 +72,35 @@ export async function handleGeneratorExit(
         return;
       }
 
+      const restartAttempt = (session.contextRolloverRestartAttempts ?? 0) + 1;
+      session.contextRolloverRestartAttempts = restartAttempt;
+
       try {
-        await restartGenerator(sessionDbId, 'context-bound');
+        const started = await restartGenerator(sessionDbId, 'context-bound');
+        if (started === false) {
+          throw new Error('Replacement generator did not start');
+        }
       } catch (error) {
         const normalized = error instanceof Error ? error : new Error(String(error));
-        logger.error('SESSION', 'Failed to restart Claude after context rollover; buffered work preserved', {
+        const willRetry = restartAttempt < CONTEXT_BOUND_MAX_RESTART_ATTEMPTS;
+        logger.error('SESSION', willRetry
+          ? 'Failed to restart Claude after context rollover; retrying with buffered work preserved'
+          : 'Failed to restart Claude after context rollover; buffered work preserved', {
           sessionId: sessionDbId,
           pendingCount,
+          restartAttempt,
+          maxRestartAttempts: CONTEXT_BOUND_MAX_RESTART_ATTEMPTS,
         }, normalized);
+
+        if (willRetry) {
+          await handleGeneratorExit(session, 'context-bound:restart-failed', deps);
+        } else {
+          logger.error('SESSION', 'Claude context rollover restart attempts exhausted; buffered work remains available', {
+            sessionId: sessionDbId,
+            pendingCount,
+            restartAttempts: restartAttempt,
+          });
+        }
       }
     }
     return;

@@ -199,11 +199,21 @@ function safeUsageTokens(value: number | null | undefined): number {
  * sacrificed to make room for the next one.
  */
 export function requestClaudeContextRollover(
-  session: Pick<ActiveSession, 'abortController' | 'abortReason'>,
+  session: Pick<ActiveSession, 'abortController' | 'abortReason' | 'contextRolloverRestartAttempts'>,
   usage: ClaudeContextUsage | null | undefined,
   maxTokens: number,
+  turnSource?: string,
 ): number | null {
-  if (!usage) return null;
+  // A fresh SDK query always begins with a synthetic init/continuation turn.
+  // Rolling over on that turn can loop forever when a user configures a limit
+  // below the prompt size: the queued observation is never reached. Wait for
+  // a real buffered observation or summarize turn before applying the guard.
+  if (!usage || turnSource === 'init') return null;
+
+  // A finalized real turn proves that a replacement generator started and
+  // processed queued work. Later failures belong to the normal lifecycle, not
+  // this rollover's bounded startup-recovery budget.
+  session.contextRolloverRestartAttempts = 0;
 
   const contextTokens =
     safeUsageTokens(usage.input_tokens) +
@@ -495,7 +505,12 @@ export class ClaudeProvider {
             });
           }
 
-          const contextTokens = requestClaudeContextRollover(session, resultUsage, maxContextTokens);
+          const contextTokens = requestClaudeContextRollover(
+            session,
+            resultUsage,
+            maxContextTokens,
+            session.lastGeneratorSource,
+          );
           if (contextTokens !== null) {
             logger.warn('SDK', 'Claude observer context threshold reached; rolling over after the saved turn', {
               sessionId: session.sessionDbId,

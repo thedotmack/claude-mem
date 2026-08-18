@@ -94,6 +94,31 @@ describe('Claude observer context rollover', () => {
     expect(session.abortController.signal.aborted).toBe(false);
   });
 
+  it('does not roll over on the synthetic init turn', () => {
+    const session = {
+      abortController: new AbortController(),
+      abortReason: null,
+    };
+
+    expect(requestClaudeContextRollover(session, {
+      input_tokens: 150_000,
+    }, 150_000, 'init')).toBeNull();
+    expect(session.abortController.signal.aborted).toBe(false);
+  });
+
+  it('clears the replacement-start retry budget after a finalized real turn', () => {
+    const session = {
+      abortController: new AbortController(),
+      abortReason: null,
+      contextRolloverRestartAttempts: 2,
+    };
+
+    expect(requestClaudeContextRollover(session, {
+      input_tokens: 1_000,
+    }, 150_000, 'ingest')).toBeNull();
+    expect(session.contextRolloverRestartAttempts).toBe(0);
+  });
+
   it('preserves queued work and immediately restarts after a context rollover', async () => {
     const sessionManager = new SessionManager(makeDbManager());
     const session = sessionManager.initializeSession(1, 'prompt', 1);
@@ -147,6 +172,72 @@ describe('Claude observer context rollover', () => {
 
     expect(restartGenerator).not.toHaveBeenCalled();
     expect(sessionManager.getSession(3)).toBe(session);
+  });
+
+  it('retries a rejected replacement start and hands queued work to the successful start', async () => {
+    const sessionManager = new SessionManager(makeDbManager());
+    const session = sessionManager.initializeSession(4, 'prompt', 1);
+    session.currentProvider = 'claude';
+    session.generatorPromise = Promise.resolve();
+    await sessionManager.queueObservation(4, {
+      tool_name: 'Read',
+      tool_input: {},
+      tool_response: { durable: 'retry me' },
+      prompt_number: 1,
+      toolUseId: 'rollover-retry-once',
+    });
+
+    let attempt = 0;
+    const restartGenerator = mock(async () => {
+      attempt += 1;
+      if (attempt === 1) throw new Error('transient replacement failure');
+      session.generatorPromise = Promise.resolve();
+      session.currentProvider = 'claude';
+    });
+    const finalizeSession = mock(() => Promise.resolve());
+
+    await handleGeneratorExit(session, 'context-bound', {
+      sessionManager,
+      completionHandler: { finalizeSession } as never,
+      restartGenerator,
+    });
+
+    expect(restartGenerator).toHaveBeenCalledTimes(2);
+    expect(finalizeSession).not.toHaveBeenCalled();
+    expect(sessionManager.getMessageBuffer().getPendingCount(4)).toBe(1);
+    expect(session.generatorPromise).not.toBeNull();
+  });
+
+  it('bounds persistent replacement failures without deleting queued work', async () => {
+    const sessionManager = new SessionManager(makeDbManager());
+    const session = sessionManager.initializeSession(5, 'prompt', 1);
+    session.currentProvider = 'claude';
+    session.generatorPromise = Promise.resolve();
+    await sessionManager.queueObservation(5, {
+      tool_name: 'Read',
+      tool_input: {},
+      tool_response: { durable: 'never delete me' },
+      prompt_number: 1,
+      toolUseId: 'rollover-retry-bounded',
+    });
+
+    const restartGenerator = mock(async () => {
+      throw new Error('persistent replacement failure');
+    });
+    const finalizeSession = mock(() => Promise.resolve());
+
+    await handleGeneratorExit(session, 'context-bound', {
+      sessionManager,
+      completionHandler: { finalizeSession } as never,
+      restartGenerator,
+    });
+
+    expect(restartGenerator).toHaveBeenCalledTimes(3);
+    expect(finalizeSession).not.toHaveBeenCalled();
+    expect(sessionManager.getSession(5)).toBe(session);
+    expect(sessionManager.getMessageBuffer().getPendingCount(5)).toBe(1);
+    expect(session.generatorPromise).toBeNull();
+    expect(session.currentProvider).toBeNull();
   });
 
   it('still finalizes ordinary idle exits so the preservation rule cannot leak sessions', async () => {
