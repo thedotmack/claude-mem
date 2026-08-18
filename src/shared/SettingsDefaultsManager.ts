@@ -67,6 +67,13 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: string;
   CLAUDE_MEM_SEMANTIC_INJECT_MIN_SCORE: string;
   CLAUDE_MEM_SEMANTIC_INJECT_GLOBAL_LIMIT: string;
+  // Working memory: task-scoped scratch state (separate table, no ACT-R /
+  // dedup / embeddings). Cost is ~0 (no LLM), so the master flag defaults on.
+  CLAUDE_MEM_WORKING_ENABLED: string;
+  CLAUDE_MEM_WORKING_MAX_KEYS: string;
+  CLAUDE_MEM_WORKING_MAX_TOKENS: string;
+  CLAUDE_MEM_WORKING_JOURNAL_SIZE: string;
+  CLAUDE_MEM_WORKING_TTL_DAYS: string;
   // Semantic memory layer: episode→fact consolidation (opt-in, default off)
   // and the `## Project Knowledge` injection block cap.
   CLAUDE_MEM_CONSOLIDATION_ENABLED: string;
@@ -191,6 +198,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: '5',           // Top-N most relevant observations to inject per prompt
     CLAUDE_MEM_SEMANTIC_INJECT_MIN_SCORE: '0',       // Cosine floor for injected vector hits; OFF by default — measured 2026-08-05 on the live e5 corpus: the similarity band is too compressed for an absolute floor to separate (obvious nonsense scores within ~0.05 cos of genuine queries — both pass 0.90, both die at 0.95). Plumbing kept for other models/bands; the evidence-backed alternative is an LLM relevance filter over candidates (deferred, quota cost per prompt)
     CLAUDE_MEM_SEMANTIC_INJECT_GLOBAL_LIMIT: '0',    // Cross-project semantic injection: how many OTHER-project hits (observations via Chroma + facts via FTS, combined cap) to add as a separate context section. '0' = off, current-project-only behavior.
+    CLAUDE_MEM_WORKING_ENABLED: 'true',              // Working memory master switch (task-scoped scratch state, no LLM cost)
+    CLAUDE_MEM_WORKING_MAX_KEYS: '8',                // Intent slots per task (eval knob: 3/6/12/24); overflow = 409 with the current key list
+    CLAUDE_MEM_WORKING_MAX_TOKENS: '1000',           // Render token budget (chars/4) over intent + journal values
+    CLAUDE_MEM_WORKING_JOURNAL_SIZE: '5',            // Observer journal ring length per task
+    CLAUDE_MEM_WORKING_TTL_DAYS: '7',                // Lazy expiry: expires_at = updated + TTL, filtered on read
     CLAUDE_MEM_CONSOLIDATION_ENABLED: 'false',       // Distill episodes into durable semantic facts (one LLM call per run, opt-in)
     CLAUDE_MEM_DEDUP_JUDGE_ENABLED: 'false',         // Semantic dedup judge per observation batch (one LLM call per kept observation, opt-in)
     CLAUDE_MEM_CONSOLIDATE_MIN_INTERVAL_HOURS: '12', // Per-project throttle: min hours between consolidation runs
