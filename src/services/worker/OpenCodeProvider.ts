@@ -300,7 +300,7 @@ export class OpenCodeProvider extends OpenAICompatibleProvider<OpenCodeConfig> {
     const rawModel: unknown = (settings as Record<string, string>).CLAUDE_MEM_OPENCODE_MODEL;
     const model = typeof rawModel === 'string' && rawModel.trim()
       ? rawModel
-      : 'claude-3-7-sonnet';
+      : 'deepseek-v4-flash';
 
     const baseUrl = (settings as Record<string, string>).CLAUDE_MEM_OPENCODE_BASE_URL || process.env.OPENCODE_BASE_URL || '';
     const apiUrl = resolveOpenCodeChatCompletionsUrl(baseUrl);

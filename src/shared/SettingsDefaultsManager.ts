@@ -135,7 +135,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
     CLAUDE_MEM_OPENCODE_API_KEY: '',  // Empty by default, can be set via UI or env (OPENCODE_API_KEY)
-    CLAUDE_MEM_OPENCODE_MODEL: 'claude-3-7-sonnet',  // Default OpenCode model
+    CLAUDE_MEM_OPENCODE_MODEL: 'deepseek-v4-flash',  // Default OpenCode Go model
     CLAUDE_MEM_OPENCODE_BASE_URL: 'https://opencode.ai/zen/go/v1',  // Default OpenCode Go base URL
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',

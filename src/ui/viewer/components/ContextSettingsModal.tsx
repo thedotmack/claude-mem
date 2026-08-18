@@ -465,13 +465,13 @@ export function ContextSettingsModal({
                   </FormField>
                   <FormField
                     label="OpenCode Model"
-                    tooltip="Model identifier from OpenCode (e.g., claude-3-7-sonnet, claude-3-5-sonnet, gpt-4o, deepseek-r1)"
+                    tooltip="Model identifier from OpenCode (e.g., deepseek-v4-flash, kimi-k3, or claude-3-7-sonnet for Zen)"
                   >
                     <input
                       type="text"
-                      value={formState.CLAUDE_MEM_OPENCODE_MODEL || 'claude-3-7-sonnet'}
+                      value={formState.CLAUDE_MEM_OPENCODE_MODEL || 'deepseek-v4-flash'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENCODE_MODEL', e.target.value)}
-                      placeholder="e.g., claude-3-7-sonnet"
+                      placeholder="e.g., deepseek-v4-flash, kimi-k3"
                     />
                   </FormField>
                   <FormField
