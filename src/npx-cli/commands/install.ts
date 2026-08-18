@@ -666,7 +666,6 @@ function copyPluginToMarketplace(): void {
     '.agents',
     '.codex-plugin',
     'plugin',
-    'package.json',
     'package-lock.json',
     'openclaw',
     'dist',
@@ -688,6 +687,30 @@ function copyPluginToMarketplace(): void {
       force: true,
     });
   }
+
+  writeTrimmedMarketplacePackageJson(packageRoot, marketplaceDir);
+}
+
+/**
+ * Write a runtime-only package.json into the marketplace directory.
+ *
+ * The root package.json declares ~40 dev-only tree-sitter grammars whose peer
+ * ranges conflict (@derekstride/tree-sitter-sql wants tree-sitter@^0.21.0 while
+ * @tree-sitter-grammars/tree-sitter-lua wants tree-sitter@^0.22.4). Copying it
+ * verbatim makes `npm install --omit=dev` still resolve those dev edges and
+ * abort with ERESOLVE (#3636). A consumer install needs only the two live
+ * runtime deps, so we strip devDependencies and trustedDependencies before npm
+ * ever sees the graph.
+ */
+export function writeTrimmedMarketplacePackageJson(packageRoot: string, marketplaceDir: string): void {
+  const sourcePath = join(packageRoot, 'package.json');
+  if (!existsSync(sourcePath)) return;
+
+  const pkg = JSON.parse(readFileSync(sourcePath, 'utf-8')) as Record<string, unknown>;
+  delete pkg.devDependencies;
+  delete pkg.trustedDependencies;
+
+  writeFileSync(join(marketplaceDir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
 }
 
 function copyPluginToCache(version: string): void {
