@@ -443,7 +443,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         beforeMessages: session.conversationHistory.length,
         beforeTokens: estimatedHistoryTokens,
         contextWindowTokens,
-        error: error instanceof Error ? error.message : String(error)
+        rawError: error instanceof Error ? error.message : String(error)
       });
       return;
     }
@@ -452,7 +452,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       ? `${continuationPrompt}\n\n<recent_project_timeline>\n${timeline}\n</recent_project_timeline>`
       : continuationPrompt;
     const beforeMessages = session.conversationHistory.length;
-    session.conversationHistory = [{ role: 'user', content }];
+    session.conversationHistory.splice(
+      0,
+      session.conversationHistory.length,
+      { role: 'user', content }
+    );
 
     const afterTokens = this.estimateTokens(content);
     logger.info('SDK', 'Observer history compacted', {

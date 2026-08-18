@@ -45,7 +45,7 @@ See [OpenRouter Provider](usage/openrouter-provider) for detailed configuration,
 
 ### Observer Compaction Settings
 
-These apply to the Gemini and OpenRouter observer providers. When the observer's conversation history nears the model's context window, claude-mem compacts it (clears the history and re-injects a recent-observations timeline) to keep token usage bounded.
+These apply to the Gemini and OpenRouter observer providers. When the observer's conversation history nears the model's context window, claude-mem replaces it with a continuation prompt and a recent-observations timeline to keep token usage bounded.
 
 | Setting                                      | Default                     | Description                           |
 |----------------------------------------------|-----------------------------|---------------------------------------|

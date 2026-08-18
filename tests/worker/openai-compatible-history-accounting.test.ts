@@ -101,9 +101,9 @@ describe('OpenAICompatibleProvider history and accounting', () => {
       { type: 'summarize', last_assistant_message: 'the last assistant message' },
     ]);
     const provider = new TestProvider([
-      { content: 'init response text', tokensUsed: 100, inputTokens: 90, outputTokens: 10 },
-      { content: 'observation response text', tokensUsed: 200, inputTokens: 170, outputTokens: 30 },
-      { content: 'summary response text', tokensUsed: 400, inputTokens: 330, outputTokens: 70 },
+      { content: '<skip_observation reason="test init"/>', tokensUsed: 100, inputTokens: 90, outputTokens: 10 },
+      { content: '<skip_observation reason="test observation"/>', tokensUsed: 200, inputTokens: 170, outputTokens: 30 },
+      { content: '<skip_summary reason="test summary"/>', tokensUsed: 400, inputTokens: 330, outputTokens: 70 },
     ], sessionManager);
     const session = makeSession();
 
@@ -113,15 +113,15 @@ describe('OpenAICompatibleProvider history and accounting', () => {
     expect(session.conversationHistory).toHaveLength(6);
     const assistants = session.conversationHistory.filter(m => m.role === 'assistant');
     expect(assistants.map(m => m.content)).toEqual([
-      'init response text',
-      'observation response text',
-      'summary response text',
+      '<skip_observation reason="test init"/>',
+      '<skip_observation reason="test observation"/>',
+      '<skip_summary reason="test summary"/>',
     ]);
     expect(
-      session.conversationHistory.filter(m => m.content === 'observation response text')
+      session.conversationHistory.filter(m => m.content === '<skip_observation reason="test observation"/>')
     ).toHaveLength(1);
     expect(
-      session.conversationHistory.filter(m => m.content === 'summary response text')
+      session.conversationHistory.filter(m => m.content === '<skip_summary reason="test summary"/>')
     ).toHaveLength(1);
 
     // Usage flowed through the provider's accumulateUsage call sites (init +
