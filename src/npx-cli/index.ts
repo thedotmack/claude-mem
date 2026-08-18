@@ -67,6 +67,9 @@ function parseInstallOptions(argv: string[]): InstallOptions {
       ide: { type: 'string' },
       provider: { type: 'string' },
       model: { type: 'string' },
+      'opencode-flavor': { type: 'string' },
+      'opencode-base-url': { type: 'string' },
+      'opencode-model': { type: 'string' },
       runtime: { type: 'string' },
       'server-url': { type: 'string' },
       'no-auto-start': { type: 'boolean' },
@@ -78,8 +81,14 @@ function parseInstallOptions(argv: string[]): InstallOptions {
   const flag = (name: string): string | undefined =>
     typeof values[name] === 'string' ? (values[name] as string) : undefined;
   const provider = flag('provider');
-  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'openrouter' && provider !== 'opencode') {
-    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, openrouter, opencode`);
+  const allowedProviders = ['claude', 'gemini', 'openrouter', 'opencode', 'opencode-go', 'opencode-zen'];
+  if (provider !== undefined && !allowedProviders.includes(provider)) {
+    console.error(`Unknown --provider: ${provider}. Allowed: ${allowedProviders.join(', ')}`);
+    process.exit(1);
+  }
+  const opencodeFlavor = flag('opencode-flavor');
+  if (opencodeFlavor !== undefined && opencodeFlavor !== 'go' && opencodeFlavor !== 'zen') {
+    console.error(`Unknown --opencode-flavor: ${opencodeFlavor}. Allowed: go, zen`);
     process.exit(1);
   }
   const runtime = flag('runtime');
@@ -91,6 +100,9 @@ function parseInstallOptions(argv: string[]): InstallOptions {
     ide: flag('ide'),
     provider: provider as InstallOptions['provider'],
     model: flag('model'),
+    opencodeFlavor: opencodeFlavor as InstallOptions['opencodeFlavor'],
+    opencodeBaseUrl: flag('opencode-base-url'),
+    opencodeModel: flag('opencode-model'),
     noAutoStart: values['no-auto-start'] === true,
     disableAutoMemory: values['disable-auto-memory'] === true,
     runtime: runtime as InstallOptions['runtime'],

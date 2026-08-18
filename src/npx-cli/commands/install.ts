@@ -835,9 +835,9 @@ type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'opencode';
  * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
  * it configures the generic OpenAI-compatible path (base URL + model + key) and
  * persists CLAUDE_MEM_PROVIDER='openrouter'. The worker only understands
- * 'claude' | 'gemini' | 'openrouter', so 'cmem' must never reach settings.json.
+ * 'claude' | 'gemini' | 'openrouter' | 'opencode', so 'cmem' must never reach settings.json.
  */
-type ProviderChoice = ProviderId | 'cmem';
+type ProviderChoice = ProviderId | 'cmem' | 'opencode-go' | 'opencode-zen';
 type ClaudeAccessMode = 'subscription' | 'api-key';
 type ClaudeApiMode = 'direct' | 'gateway';
 // Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
@@ -1242,6 +1242,14 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     return 'openrouter';
   }
 
+  if (selectedProvider === 'opencode-zen') {
+    selectedProvider = 'opencode';
+    options.opencodeFlavor = 'zen';
+  } else if (selectedProvider === 'opencode-go') {
+    selectedProvider = 'opencode';
+    options.opencodeFlavor = 'go';
+  }
+
   if (selectedProvider === 'claude') {
     await runClaudeAuthFlow();
     return 'claude';
@@ -1258,48 +1266,55 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
       ? 'CLAUDE_MEM_OPENCODE_API_KEY'
       : 'CLAUDE_MEM_OPENROUTER_API_KEY';
 
-  const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
-  if (existingKey && existingKey.trim().length > 0) {
-    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: selectedProvider });
-    if (wrote) log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
-    return selectedProvider;
+  let apiKey = (getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined) || '';
+
+  if (!apiKey || apiKey.trim().length === 0) {
+    if (isInteractive) {
+      const apiKeyResult = await p.password({
+        message: `Paste your ${providerLabel} API key:`,
+        mask: '*',
+        validate: (v?: string) => (!v || v.trim().length === 0) ? 'API key required' : undefined,
+      });
+
+      if (p.isCancel(apiKeyResult)) {
+        log.warn(`API key prompt cancelled — falling back to Claude provider.`);
+        persistClaudeProvider();
+        return 'claude';
+      }
+
+      apiKey = String(apiKeyResult).trim();
+    }
   }
 
-  const apiKeyResult = await p.password({
-    message: `Paste your ${providerLabel} API key:`,
-    mask: '*',
-    validate: (v?: string) => (!v || v.trim().length === 0) ? 'API key required' : undefined,
-  });
-
-  if (p.isCancel(apiKeyResult)) {
-    log.warn(`API key prompt cancelled — falling back to Claude provider.`);
-    persistClaudeProvider();
-    return 'claude';
-  }
-
-  const apiKey = String(apiKeyResult).trim();
   const settingsToMerge: Record<string, string> = {
     CLAUDE_MEM_PROVIDER: selectedProvider,
-    [keyEnvName]: apiKey,
   };
+  if (apiKey && apiKey.trim().length > 0) {
+    settingsToMerge[keyEnvName] = apiKey.trim();
+  }
 
-  if (selectedProvider === 'opencode' && !options.provider) {
-    const flavorResult = await p.select({
-      message: 'Which OpenCode endpoint flavor do you use?',
-      options: [
-        { value: 'go', label: 'OpenCode Go (Subscription — default: deepseek-v4-flash)' },
-        { value: 'zen', label: 'OpenCode Zen (Pay-as-you-go — default: claude-haiku-4-5)' },
-      ],
-      initialValue: 'go',
-    });
-    if (!p.isCancel(flavorResult)) {
-      if (flavorResult === 'zen') {
-        settingsToMerge.CLAUDE_MEM_OPENCODE_BASE_URL = 'https://opencode.ai/zen/v1';
-        settingsToMerge.CLAUDE_MEM_OPENCODE_MODEL = 'claude-haiku-4-5';
-      } else {
-        settingsToMerge.CLAUDE_MEM_OPENCODE_BASE_URL = 'https://opencode.ai/zen/go/v1';
-        settingsToMerge.CLAUDE_MEM_OPENCODE_MODEL = 'deepseek-v4-flash';
+  if (selectedProvider === 'opencode') {
+    let flavor = options.opencodeFlavor;
+    if (!flavor && isInteractive) {
+      const flavorResult = await p.select<'go' | 'zen'>({
+        message: 'Which OpenCode endpoint flavor do you use?',
+        options: [
+          { value: 'go', label: 'OpenCode Go (Subscription — default: deepseek-v4-flash)' },
+          { value: 'zen', label: 'OpenCode Zen (Pay-as-you-go — default: claude-haiku-4-5)' },
+        ],
+        initialValue: 'go',
+      });
+      if (!p.isCancel(flavorResult)) {
+        flavor = flavorResult;
       }
+    }
+
+    if (flavor === 'zen') {
+      settingsToMerge.CLAUDE_MEM_OPENCODE_BASE_URL = options.opencodeBaseUrl || 'https://opencode.ai/zen/v1';
+      settingsToMerge.CLAUDE_MEM_OPENCODE_MODEL = options.opencodeModel || options.model || 'claude-haiku-4-5';
+    } else {
+      settingsToMerge.CLAUDE_MEM_OPENCODE_BASE_URL = options.opencodeBaseUrl || 'https://opencode.ai/zen/go/v1';
+      settingsToMerge.CLAUDE_MEM_OPENCODE_MODEL = options.opencodeModel || options.model || 'deepseek-v4-flash';
     }
   }
 
@@ -1913,7 +1928,10 @@ async function promptTelemetryOptIn(): Promise<void> {
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter' | 'opencode';
+  provider?: 'claude' | 'gemini' | 'openrouter' | 'opencode' | 'opencode-go' | 'opencode-zen';
+  opencodeFlavor?: 'go' | 'zen';
+  opencodeBaseUrl?: string;
+  opencodeModel?: string;
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;
