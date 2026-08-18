@@ -188,6 +188,20 @@ export default function claudeMemBridge(pi: HookAPI): void {
   // Code's SessionStart clear/compact path): rotate id; the next
   // before_agent_start re-inits with the post-compact prompt.
   pi.on("session_compact", async () => {
+    const id = sid;
+    const pendingInit = initPromise;
+    const previousAssistant = lastAssistant;
+
+    if (id && initialized) {
+      void (pendingInit ?? Promise.resolve()).then(() =>
+        post("/api/sessions/summarize", {
+          contentSessionId: id,
+          last_assistant_message: previousAssistant,
+          platformSource: "omp",
+        })
+      );
+    }
+
     newSid();
   });
 
