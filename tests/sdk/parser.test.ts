@@ -49,7 +49,7 @@ describe('parseAgentXml — observations', () => {
     expect(result[0].narrative).toBe('The token refresh logic skips expired tokens.');
   });
 
-  it('returns a populated observation when only narrative is present (no title)', () => {
+  it('synthesizes fallback title when title tag is omitted', () => {
     const xml = `<observation>
       <type>bugfix</type>
       <narrative>Patched the null pointer dereference in session handler.</narrative>
@@ -58,12 +58,12 @@ describe('parseAgentXml — observations', () => {
     const result = expectObservation(xml);
 
     expect(result).toHaveLength(1);
-    expect(result[0].title).toBeNull();
+    expect(result[0].title).toBe('Patched the null pointer dereference in session handler');
     expect(result[0].type).toBe('bugfix');
     expect(result[0].narrative).toBe('Patched the null pointer dereference in session handler.');
   });
 
-  it('returns a populated observation when only facts are present', () => {
+  it('returns a populated observation and derives title when only facts are present', () => {
     const xml = `<observation>
       <type>discovery</type>
       <facts><fact>File limit is hardcoded to 5</fact></facts>
@@ -72,6 +72,7 @@ describe('parseAgentXml — observations', () => {
     const result = expectObservation(xml);
 
     expect(result).toHaveLength(1);
+    expect(result[0].title).toBe('File limit is hardcoded to 5');
     expect(result[0].facts).toEqual(['File limit is hardcoded to 5']);
   });
 
