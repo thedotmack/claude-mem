@@ -302,6 +302,7 @@ const stubbedProcessKill = ((pid: number, signal?: string | number) => {
 process.kill = stubbedProcessKill;
 
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
+import { ChromaUnavailableError } from '../../../src/services/worker/search/errors.js';
 import {
   getDependencyStatus,
   resetDependencyStatusesForTesting,
@@ -784,6 +785,28 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('connection in backoff');
     expect(prewarmSpawnCalls.length).toBe(1);
+  });
+
+  it('classifies a mid-handshake transport death as ChromaUnavailableError without error-tracking noise', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    // The MCP SDK throws a bare `Error: Not connected` when the subprocess dies
+    // between `initialize` and `notifications/initialized`.
+    connectImpl = async () => {
+      throw new Error('Not connected');
+    };
+
+    const failure = await mgr.callTool('chroma_list_collections', { limit: 1 }).catch(error => error);
+
+    expect(failure).toBeInstanceOf(ChromaUnavailableError);
+    expect((failure as Error).message).toContain('Not connected');
+    // Logged at warn, not error, so the transient failure never reaches the
+    // error sink (captureException).
+    expect(logEntries.some(entry => entry.level === 'error' && entry.message === 'Connection attempt failed')).toBe(false);
+    expect(logEntries.some(entry => entry.level === 'warn' && entry.message === 'Connection attempt failed; Chroma unavailable')).toBe(true);
+    expect(getDependencyStatus('chroma')).toMatchObject({
+      dependency: 'chroma',
+      kind: 'vector_search_unavailable',
+    });
   });
 
   it('captures a bounded chroma-mcp stderr tail on MCP connect failure', async () => {
