@@ -268,6 +268,7 @@ export default function claudeMemBridge(pi: HookAPI): void {
       void post("/api/sessions/summarize", {
         contentSessionId: id,
         last_assistant_message: lastAssistant,
+        platformSource: "omp",
       });
     }
     sid = undefined;
