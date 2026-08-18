@@ -102,6 +102,25 @@ describe('renderWorkingMemoryBlock', () => {
     expect(block).toContain('(updated 12:04)');
   });
 
+  it('appends the no-intent nudge to a journal-only block (intent absence is the trigger)', () => {
+    const block = renderWorkingMemoryBlock({
+      entries: [
+        entry({ key: 'journal:1', kind: 'journal', source: 'observer', value: 'Read src/x.ts' }),
+      ],
+    });
+    expect(block).toContain('- [journal] Read src/x.ts');
+    expect(block).toContain('No intent recorded');
+
+    // With at least one intent entry the nudge disappears.
+    const withIntent = renderWorkingMemoryBlock({
+      entries: [
+        entry({ key: 'hyp', value: 'cache bug' }),
+        entry({ key: 'journal:1', kind: 'journal', source: 'observer', value: 'Read src/x.ts' }),
+      ],
+    });
+    expect(withIntent).not.toContain('No intent recorded');
+  });
+
   it('groups multiple tasks into separate sections', () => {
     const block = renderWorkingMemoryBlock({
       entries: [

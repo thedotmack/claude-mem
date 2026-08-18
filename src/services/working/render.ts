@@ -42,6 +42,16 @@ function renderTaskSection(taskKey: string, entries: WorkingEntry[]): string {
   return lines.join('\n');
 }
 
+/**
+ * Nudge appended to a journal-only block: the empty-set reminder alone is not
+ * enough, because the observer journal fills the set by itself and the
+ * empty-set branch then never fires — the agent never learns it should record
+ * intent (observed live: sessions showed journal-only Working Memory blocks
+ * for hours). Intent absence, not set emptiness, is the trigger.
+ */
+export const WORKING_MEMORY_NO_INTENT_NUDGE =
+  '_No intent recorded — if your toolset has working_set, record your current hypothesis/plan._';
+
 /** Returns null when there is nothing live to show (caller injects the reminder). */
 export function renderWorkingMemoryBlock(payload: WorkingRenderPayload): string | null {
   if (payload.entries.length === 0) return null;
@@ -53,8 +63,12 @@ export function renderWorkingMemoryBlock(payload: WorkingRenderPayload): string 
     byTask.set(entry.task_key, bucket);
   }
 
-  return [...byTask.keys()]
+  const block = [...byTask.keys()]
     .sort()
     .map(taskKey => renderTaskSection(taskKey, byTask.get(taskKey)!))
     .join('\n\n');
+
+  return payload.entries.some(entry => entry.kind === 'intent')
+    ? block
+    : `${block}\n\n${WORKING_MEMORY_NO_INTENT_NUDGE}`;
 }
