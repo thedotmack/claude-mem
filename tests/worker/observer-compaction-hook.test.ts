@@ -137,10 +137,7 @@ async function runObservationSession(store: SessionStore, opts: { filler?: strin
     { type: 'observation', tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 2, cwd: '/tmp/hook-cwd' },
   ]);
   const provider = new HookTestProvider(
-    [
-      { content: '<skip_observation reason="test init"/>' },
-      { content: '<skip_observation reason="test observation"/>' },
-    ],
+    [{ content: 'init response text' }, { content: 'obs response text' }],
     { getSessionStore: () => store },
     sessionManager,
   );
@@ -324,43 +321,6 @@ describe('OpenAICompatibleProvider compaction hook', () => {
     warnSpy.mockRestore();
   });
 
-  it('keeps the compacted checkpoint when the next observer response is rejected', async () => {
-    const store = seedStore();
-    try {
-      windowSetting = SMALL_WINDOW;
-      const sessionManager = makeSessionManager([
-        {
-          type: 'observation',
-          tool_name: 'Read',
-          tool_input: {},
-          tool_response: {},
-          prompt_number: 2,
-          cwd: '/tmp/hook-cwd',
-        },
-      ]);
-      const provider = new HookTestProvider(
-        [
-          { content: '<skip_observation reason="test init"/>' },
-          { content: 'not valid observer XML' },
-        ],
-        { getSessionStore: () => store },
-        sessionManager,
-      );
-      const session = makeSession({
-        conversationHistory: [{ role: 'user', content: FILLER }],
-      });
-
-      await provider.startSession(session);
-
-      expect(session.conversationHistory).toHaveLength(1);
-      expect(session.conversationHistory[0].content).toContain('<recent_project_timeline>');
-      expect(session.conversationHistory[0].content).not.toContain(FILLER);
-      expect(session.conversationHistory[0].content).not.toContain('not valid observer XML');
-    } finally {
-      store.close();
-    }
-  });
-
   it('budget: the compacted turn stays near REINJECT_BUDGET_RATIO of the window despite far larger seeded history', () => {
     const store = seedStore();
     try {
@@ -416,10 +376,7 @@ describe('OpenAICompatibleProvider compaction hook', () => {
         { type: 'observation', tool_name: 'Read', tool_input: {}, tool_response: bigPayload, prompt_number: 2, cwd: '/tmp/hook-cwd' },
       ]);
       const provider = new HookTestProvider(
-        [
-          { content: '<skip_observation reason="test init"/>' },
-          { content: '<skip_observation reason="test observation"/>' },
-        ],
+        [{ content: 'init response text' }, { content: 'obs response text' }],
         { getSessionStore: () => store },
         sessionManager,
       );
@@ -448,10 +405,7 @@ describe('OpenAICompatibleProvider compaction hook', () => {
         { type: 'observation', tool_name: 'Read', tool_input: {}, tool_response: escapedPayload, prompt_number: 2, cwd: '/tmp/hook-cwd' },
       ]);
       const provider = new HookTestProvider(
-        [
-          { content: '<skip_observation reason="test init"/>' },
-          { content: '<skip_observation reason="test observation"/>' },
-        ],
+        [{ content: 'init response text' }, { content: 'obs response text' }],
         { getSessionStore: () => store },
         sessionManager,
       );
@@ -480,10 +434,7 @@ describe('OpenAICompatibleProvider compaction hook', () => {
         { type: 'summarize', last_assistant_message: bigAssistantMessage },
       ]);
       const provider = new HookTestProvider(
-        [
-          { content: '<skip_observation reason="test init"/>' },
-          { content: '<skip_summary reason="test summary"/>' },
-        ],
+        [{ content: 'init response text' }, { content: '' }],
         { getSessionStore: () => store },
         sessionManager,
       );

@@ -223,7 +223,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     responseContext: ReturnType<typeof snapshotResponseContext>
   ): Promise<void> {
     if (initResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
       const tokensUsed = initResponse.tokensUsed || 0;
       this.accumulateUsage(session, initResponse);
       session.lastUsage = this.buildLastUsage(initResponse);
@@ -264,7 +263,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     let tokensUsed = 0;
     if (obsResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
       tokensUsed = obsResponse.tokensUsed || 0;
       this.accumulateUsage(session, obsResponse);
       // Both sides or nothing: a backend reporting only one of the two counts
@@ -313,7 +311,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     let tokensUsed = 0;
     if (summaryResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
       tokensUsed = summaryResponse.tokensUsed || 0;
       this.accumulateUsage(session, summaryResponse);
       session.lastUsage = this.buildLastUsage(summaryResponse);
