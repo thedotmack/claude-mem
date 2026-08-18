@@ -185,7 +185,16 @@ export class RelevanceAnnotator {
     // configured provider name — is what turns the feature off.
 
     const allowDrop = settings.CLAUDE_MEM_SEMANTIC_ANNOTATE_ALLOW_DROP !== 'false';
-    const timeoutMs = Math.max(parseInt(settings.CLAUDE_MEM_SEMANTIC_ANNOTATE_TIMEOUT_MS, 10) || 4000, 500);
+    // Hard cap at 20s even if configured higher: the annotation sits inside
+    // the /api/context/semantic request, which the hook fetches with a 30s
+    // API timeout. An annotation budget that (with search latency) exceeds
+    // the hook budget kills the ENTIRE injection, not just the hints —
+    // observed live 2026-08-18: 30s annotation timeout + slow backend →
+    // "Worker unavailable, skipping hook", prompts got no context at all.
+    const timeoutMs = Math.min(
+      Math.max(parseInt(settings.CLAUDE_MEM_SEMANTIC_ANNOTATE_TIMEOUT_MS, 10) || 4000, 500),
+      20000,
+    );
 
     const trimmed = candidates.slice(0, MAX_CANDIDATES);
     const startedAt = Date.now();
