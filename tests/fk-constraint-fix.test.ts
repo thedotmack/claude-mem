@@ -1,6 +1,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../src/services/sqlite/SessionStore.js';
+import { ClaudeProvider } from '../src/services/worker/ClaudeProvider.js';
 
 describe('FK Constraint Fix (Issue #846)', () => {
   let store: SessionStore;
@@ -173,5 +174,48 @@ describe('FK Constraint Fix (Issue #846)', () => {
     );
 
     expect(result.id).toBeGreaterThan(0);
+  });
+
+  it('ClaudeProvider start must reset the carried memory id in memory only, never in the database (#3628)', () => {
+    // Drive the changed provider path directly. A second generator pass over a
+    // session that already has child rows must leave the stored
+    // memory_session_id untouched. A NULL write here would cascade into the
+    // NOT NULL child columns and roll back the storage transaction.
+    const sessionDbId = store.createSDKSession('provider-reset-id', 'test-project', 'test prompt');
+    const memorySessionId = 'carried-memory-id';
+
+    store.ensureMemorySessionIdRegistered(sessionDbId, memorySessionId);
+    store.storeObservation(
+      memorySessionId,
+      'test-project',
+      {
+        type: 'discovery',
+        title: 'Existing child row',
+        subtitle: null,
+        facts: [],
+        narrative: null,
+        concepts: [],
+        files_read: [],
+        files_modified: []
+      }
+    );
+
+    // Fail the test if the provider writes to memory_session_id at all.
+    let updateCalled = false;
+    const originalUpdate = store.updateMemorySessionId.bind(store);
+    store.updateMemorySessionId = (id, value) => {
+      updateCalled = true;
+      return originalUpdate(id, value);
+    };
+
+    const dbManager = { getSessionStore: () => store } as any;
+    const provider = new ClaudeProvider(dbManager, {} as any);
+    const session = { sessionDbId, memorySessionId } as any;
+
+    (provider as any).resetCarriedMemorySessionId(session);
+
+    expect(updateCalled).toBe(false);
+    expect(session.memorySessionId).toBeNull();
+    expect(store.getSessionById(sessionDbId)?.memory_session_id).toBe(memorySessionId);
   });
 });
