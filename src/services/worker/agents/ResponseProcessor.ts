@@ -12,6 +12,7 @@ import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
 import { recordObserverSuccess } from '../../../shared/observer-health.js';
+import { clearQuotaCooldown } from '../../../shared/quota-cooldown.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import type { ActiveSession, PendingMessage } from '../../worker-types.js';
@@ -426,8 +427,10 @@ export async function processAgentResponse(
   session.lastSummaryStored = result.summaryId !== null;
 
   // A completed store proves the observer pipeline works end-to-end — clear
-  // the failure streak in the observer-health ledger.
+  // the failure streak in the observer-health ledger and release the quota
+  // circuit breaker for the active provider (the allowance is available again).
   recordObserverSuccess();
+  if (session.currentProvider) clearQuotaCooldown(session.currentProvider);
 
   // Telemetry: counts, enums, and REAL usage only (lastUsage is never an
   // estimate — providers leave it null when the API gave no usage split).
