@@ -2641,12 +2641,16 @@ export class SessionStore {
       );
 
       for (const observation of observations) {
-        const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+        if (!observation.title && !observation.narrative && (!observation.facts || observation.facts.length === 0)) {
+          continue;
+        }
+        const title = observation.title || (observation.narrative ? observation.narrative.slice(0, 100) : `${observation.type} observation`);
+        const contentHash = computeObservationContentHash(memorySessionId, title, observation.narrative);
         const inserted = obsStmt.get(
           memorySessionId,
           project,
           observation.type,
-          observation.title,
+          title,
           observation.subtitle,
           JSON.stringify(observation.facts),
           observation.narrative,
