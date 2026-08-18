@@ -45,7 +45,9 @@ const LIMIT_FLAGS_OFFSET = 16;
 
 const PROCESS_TERMINATE = 0x0001;
 const PROCESS_SET_QUOTA = 0x0100;
-const PROCESS_ACCESS = PROCESS_SET_QUOTA | PROCESS_TERMINATE; // 0x0101
+// IsProcessInJob needs query access on top of the assign rights.
+const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+const PROCESS_ACCESS = PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION; // 0x1101
 
 const TH32CS_SNAPPROCESS = 0x2;
 // x64 sizeof(PROCESSENTRY32W). dwSize MUST be initialized to this before
@@ -63,6 +65,7 @@ interface Kernel32Symbols {
   SetInformationJobObject: (job: any, cls: number, info: any, len: number) => number;
   OpenProcess: (access: number, inherit: number, pid: number) => number | null;
   AssignProcessToJobObject: (job: any, process: any) => number;
+  IsProcessInJob: (process: any, job: any, result: any) => number;
   CloseHandle: (handle: any) => number;
   GetLastError: () => number;
   CreateToolhelp32Snapshot: (flags: number, pid: number) => number | null;
@@ -79,7 +82,6 @@ let initFailed = false; // one-time failure latch: never retry, never re-warn
 let jobHandle: number | null = null;
 let k32: Kernel32Symbols | null = null;
 let ptrFn: ((buf: ArrayBufferView | ArrayBuffer) => number | bigint) | null = null;
-const assignedPids = new Set<number>();
 
 /**
  * Lazy, one-time init. Loads bun:ffi + kernel32, creates the Job Object and
@@ -107,6 +109,7 @@ function ensureInitialized(): boolean {
       SetInformationJobObject: { args: [FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.u32], returns: FFIType.i32 },
       OpenProcess: { args: [FFIType.u32, FFIType.i32, FFIType.u32], returns: FFIType.ptr },
       AssignProcessToJobObject: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+      IsProcessInJob: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
       CloseHandle: { args: [FFIType.ptr], returns: FFIType.i32 },
       GetLastError: { args: [], returns: FFIType.u32 },
       CreateToolhelp32Snapshot: { args: [FFIType.u32, FFIType.u32], returns: FFIType.ptr },
@@ -183,16 +186,40 @@ export function isWorkerJobObjectAvailable(): boolean {
 }
 
 /**
+ * True only when `procHandle` is already a member of OUR job. Best-effort: any
+ * failure returns false, which just means the caller attempts the assign (which
+ * is itself harmless if it turns out to be a member).
+ */
+function isAlreadyInWorkerJob(procHandle: number): boolean {
+  if (!k32 || jobHandle === null || ptrFn === null) return false;
+  try {
+    const out = new Uint8Array(4); // BOOL
+    if (!k32.IsProcessInJob(procHandle, jobHandle, toPtr(out))) return false;
+    return new DataView(out.buffer).getUint32(0, true) !== 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Assign a single PID into the worker Job Object so the kernel kills it when
- * the worker dies. Deduped via a module-level Set. Best-effort: returns false
- * on any failure without throwing.
+ * the worker dies. Best-effort: returns false on any failure without throwing.
+ *
+ * Every call goes to the kernel. An earlier revision memoized assigned PIDs in
+ * a module-level Set to skip the syscalls, but a PID number does not identify a
+ * process: Windows recycles PIDs, the worker is long-lived, and the SDK pool
+ * spawns repeatedly, so a NEW child could draw a number already in the set and
+ * be reported as assigned while never joining the job — silently outside the
+ * kill-on-close backstop this module exists to provide. There is also no sound
+ * way to repair such a cache, because confirming identity requires opening the
+ * process, which is the very call the cache was there to avoid. So we open the
+ * process every time and ask the kernel whether it is already a member.
  */
 export function assignPidToWorkerJob(pid: number, label: string): boolean {
   if (!ensureInitialized() || !k32 || jobHandle === null) return false;
 
   try {
     if (!pid || pid <= 0) return false;
-    if (assignedPids.has(pid)) return true;
 
     const procHandle = k32.OpenProcess(PROCESS_ACCESS, 0, pid);
     if (!procHandle) {
@@ -206,6 +233,11 @@ export function assignPidToWorkerJob(pid: number, label: string): boolean {
     }
 
     try {
+      // Already one of ours? Then this is a no-op success. Asking the kernel
+      // (handle-based, so identity-correct) is what replaces the old PID cache:
+      // it keeps repeat assigns idempotent without ever trusting a PID number.
+      if (isAlreadyInWorkerJob(procHandle)) return true;
+
       const ok = k32.AssignProcessToJobObject(jobHandle, procHandle);
       if (!ok) {
         const err = safeLastError();
@@ -220,7 +252,6 @@ export function assignPidToWorkerJob(pid: number, label: string): boolean {
         });
         return false;
       }
-      assignedPids.add(pid);
       return true;
     } finally {
       // Always release the process handle — the job holds its own reference to
@@ -363,5 +394,4 @@ export function __resetWorkerJobObjectForTesting(): void {
   ptrFn = null;
   initialized = false;
   initFailed = false;
-  assignedPids.clear();
 }
