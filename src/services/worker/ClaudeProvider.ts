@@ -163,6 +163,59 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   return new ClassifiedProviderError(message, { kind: 'transient', cause: err });
 }
 
+export const DEFAULT_CLAUDE_MAX_TOKENS = 150_000;
+const MIN_CLAUDE_MAX_TOKENS = 1_000;
+const MAX_CLAUDE_MAX_TOKENS = 1_000_000;
+
+/**
+ * Resolve the proactive Claude observer context threshold. Environment
+ * overrides bypass the settings route, so apply the same strict bounds here
+ * and fail safe to the default instead of accepting partial numeric strings.
+ */
+export function resolveClaudeMaxTokens(raw: string | undefined): number {
+  const normalized = raw?.trim() ?? '';
+  if (!/^\d+$/.test(normalized)) return DEFAULT_CLAUDE_MAX_TOKENS;
+
+  const value = Number(normalized);
+  return Number.isSafeInteger(value) && value >= MIN_CLAUDE_MAX_TOKENS && value <= MAX_CLAUDE_MAX_TOKENS
+    ? value
+    : DEFAULT_CLAUDE_MAX_TOKENS;
+}
+
+type ClaudeContextUsage = {
+  input_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+  cache_read_input_tokens?: number | null;
+};
+
+function safeUsageTokens(value: number | null | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/**
+ * Request a fresh SDK observer after a completed turn reaches the context
+ * threshold. This is called from the finalized `result` frame, after the
+ * assistant frame has been awaited and stored, so the current batch is not
+ * sacrificed to make room for the next one.
+ */
+export function requestClaudeContextRollover(
+  session: Pick<ActiveSession, 'abortController' | 'abortReason'>,
+  usage: ClaudeContextUsage | null | undefined,
+  maxTokens: number,
+): number | null {
+  if (!usage) return null;
+
+  const contextTokens =
+    safeUsageTokens(usage.input_tokens) +
+    safeUsageTokens(usage.cache_creation_input_tokens) +
+    safeUsageTokens(usage.cache_read_input_tokens);
+  if (contextTokens === 0 || contextTokens < maxTokens) return null;
+
+  session.abortReason = 'context-bound';
+  session.abortController.abort();
+  return contextTokens;
+}
+
 export class ClaudeProvider {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -221,6 +274,7 @@ export class ClaudeProvider {
 
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const maxConcurrent = parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2;
+    const maxContextTokens = resolveClaudeMaxTokens(settings.CLAUDE_MEM_CLAUDE_MAX_TOKENS);
     // waitForSlot reserves the slot it grants (#3287). The spawn factory
     // releases the reservation once the spawned process is a registry record;
     // the finally below covers every path where the spawn never happens
@@ -439,6 +493,17 @@ export class ClaudeProvider {
                   ? Math.round((finalInput / finalOutput) * 100) / 100
                   : undefined,
             });
+          }
+
+          const contextTokens = requestClaudeContextRollover(session, resultUsage, maxContextTokens);
+          if (contextTokens !== null) {
+            logger.warn('SDK', 'Claude observer context threshold reached; rolling over after the saved turn', {
+              sessionId: session.sessionDbId,
+              contextTokens,
+              maxContextTokens,
+              pendingCount: this.sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId),
+            });
+            break;
           }
         }
       }
