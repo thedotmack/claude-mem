@@ -204,7 +204,14 @@ export class ClaudeProvider {
       // Observer spawns intentionally opt out of Claude transcript persistence.
       // A carried session_id from an earlier no-persist spawn is therefore not
       // safe to feed back into `resume` on a later fresh process.
-      this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
+      //
+      // Reset the in-memory ID only. Do NOT write NULL to the database: the
+      // stored ID is never read back for resumption (hasRealMemorySessionId
+      // and shouldResume below are both false), and the foreign key that links
+      // observations and session_summaries carries ON UPDATE CASCADE plus a
+      // NOT NULL column. A NULL write cascades into the child rows and violates
+      // NOT NULL, which rolls back the whole storage transaction (#3628).
+      // Legitimate re-keying flows through ensureMemorySessionIdRegistered.
       session.memorySessionId = null;
     }
 
