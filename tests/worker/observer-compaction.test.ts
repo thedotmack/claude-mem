@@ -281,6 +281,64 @@ describe('buildCompactionTimeline', () => {
     }
   });
 
+  it('evicts by rendered timeline time when a summary uses its look-ahead timestamp', () => {
+    const store = new SessionStore(':memory:');
+    const previousSessionCount = process.env.CLAUDE_MEM_CONTEXT_SESSION_COUNT;
+    process.env.CLAUDE_MEM_CONTEXT_SESSION_COUNT = '10';
+    try {
+      const project = 'compaction-rendered-order';
+      const newestEpoch = 1_700_000_010_000;
+
+      // The first ten summaries are displayed and the eleventh is look-ahead.
+      // prepareSummariesForTimeline renders the tenth summary at the eleventh
+      // summary's timestamp, which is older than its own stored timestamp.
+      for (let i = 0; i < 11; i++) {
+        const memorySessionId = `rendered-order-memory-${i}`;
+        createSession(store, project, memorySessionId);
+        store.storeSummary(
+          memorySessionId,
+          project,
+          {
+            request: i === 9 ? 'OLDER_DISPLAYED_SUMMARY' : `ORDER_SUMMARY_${i}`,
+            investigated: 'investigated',
+            learned: 'learned',
+            completed: 'completed',
+            next_steps: 'next',
+            notes: null,
+          },
+          1,
+          0,
+          newestEpoch - i * 1000,
+        );
+      }
+
+      // This observation is older than the tenth summary's stored timestamp,
+      // but newer than that summary's derived display timestamp.
+      seedObservation(store, {
+        project,
+        memorySessionId: 'rendered-order-memory-0',
+        title: 'NEWER_DISPLAYED_OBSERVATION',
+        narrative: '',
+        createdAtEpoch: newestEpoch - 9500,
+      });
+
+      const unbounded = buildCompactionTimeline(store, project, '/tmp/compaction-test', 1_000_000);
+      const oneRowTooSmall = Math.ceil(unbounded.length / 4) - 1;
+      const output = buildCompactionTimeline(store, project, '/tmp/compaction-test', oneRowTooSmall);
+
+      expect(output).toContain('NEWER_DISPLAYED_OBSERVATION');
+      expect(output).not.toContain('OLDER_DISPLAYED_SUMMARY');
+      expect(Math.ceil(output.length / 4)).toBeLessThanOrEqual(oneRowTooSmall);
+    } finally {
+      if (previousSessionCount === undefined) {
+        delete process.env.CLAUDE_MEM_CONTEXT_SESSION_COUNT;
+      } else {
+        process.env.CLAUDE_MEM_CONTEXT_SESSION_COUNT = previousSessionCount;
+      }
+      store.close();
+    }
+  });
+
   it('renders an empty string for a project with no observations', () => {
     const store = new SessionStore(':memory:');
     try {
