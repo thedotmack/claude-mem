@@ -210,6 +210,22 @@ function jsonResponse(status: number, body: unknown, headers?: Record<string, st
   });
 }
 
+// Returns a fresh Response per call (Response bodies are single-use) and
+// records every request body so a test can assert the retry budget / passthrough.
+// An unexpected extra call throws rather than silently reusing a response.
+class SequenceCapturingFetch {
+  calls = 0;
+  bodies: unknown[] = [];
+  constructor(private readonly responses: Array<() => Response>) {}
+  fetch: typeof fetch = async (_input, init) => {
+    this.bodies.push(init?.body ? JSON.parse(String(init.body)) : undefined);
+    const make = this.responses[this.calls];
+    this.calls += 1;
+    if (!make) throw new Error(`SequenceCapturingFetch: unexpected request #${this.calls}`);
+    return make();
+  };
+}
+
 describe('ClaudeObservationProvider', () => {
   it('returns synthetic skip when prompt builder reports skippedAll', async () => {
     const provider = new ClaudeObservationProvider({ apiKey: 'fake', fetchImpl: async () => {
@@ -436,5 +452,135 @@ describe('OpenRouterObservationProvider', () => {
     await provider.generate(makeContext());
     const body = JSON.parse(String(capturing.lastInit?.body)) as { model?: string };
     expect(body.model).toBe('deepseek-chat');
+  });
+});
+
+// #3630 — empty HTTP 200 caused by budget spent on hidden thinking/reasoning.
+describe('empty-response budget-bump retry (#3630)', () => {
+  it('Claude retries once with a larger budget on empty text + stop_reason=max_tokens', async () => {
+    const seq = new SequenceCapturingFetch([
+      () => jsonResponse(200, { content: [], stop_reason: 'max_tokens', usage: { output_tokens: 4096 } }),
+      () => jsonResponse(200, {
+        content: [{ type: 'text', text: '<observation><type>x</type><title>t</title></observation>' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 5, output_tokens: 20 },
+      }),
+    ]);
+    const provider = new ClaudeObservationProvider({ apiKey: 'fake', fetchImpl: seq.fetch });
+    const result = await provider.generate(makeContext());
+    expect(seq.calls).toBe(2);
+    expect((seq.bodies[0] as { max_tokens?: number }).max_tokens).toBe(4096);
+    expect((seq.bodies[1] as { max_tokens?: number }).max_tokens).toBe(8192);
+    expect(result.rawText).toContain('<observation>');
+  });
+
+  it('Claude does not retry when empty text has a normal stop reason', async () => {
+    const seq = new SequenceCapturingFetch([
+      () => jsonResponse(200, { content: [], stop_reason: 'end_turn' }),
+    ]);
+    const provider = new ClaudeObservationProvider({ apiKey: 'fake', fetchImpl: seq.fetch });
+    const result = await provider.generate(makeContext());
+    expect(seq.calls).toBe(1);
+    expect(result.rawText).toBe('');
+  });
+
+  it('Claude does not retry when an empty response carries no stop reason', async () => {
+    const seq = new SequenceCapturingFetch([
+      () => jsonResponse(200, { content: [] }),
+    ]);
+    const provider = new ClaudeObservationProvider({ apiKey: 'fake', fetchImpl: seq.fetch });
+    const result = await provider.generate(makeContext());
+    expect(seq.calls).toBe(1);
+    expect(result.rawText).toBe('');
+  });
+
+  it('Claude keeps the retry budget even when providerParams also sets max_tokens', async () => {
+    const seq = new SequenceCapturingFetch([
+      () => jsonResponse(200, { content: [], stop_reason: 'max_tokens' }),
+      () => jsonResponse(200, { content: [{ type: 'text', text: '<observation><type>x</type><title>t</title></observation>' }] }),
+    ]);
+    const provider = new ClaudeObservationProvider({
+      apiKey: 'fake',
+      providerParams: { max_tokens: 123 },
+      fetchImpl: seq.fetch,
+    });
+    const result = await provider.generate(makeContext());
+    expect(seq.calls).toBe(2);
+    expect((seq.bodies[0] as { max_tokens?: number }).max_tokens).toBe(4096);
+    expect((seq.bodies[1] as { max_tokens?: number }).max_tokens).toBe(8192);
+    expect(result.rawText).toContain('<observation>');
+  });
+
+  it('Claude merges providerParams into the request body', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }),
+    );
+    const provider = new ClaudeObservationProvider({
+      apiKey: 'fake',
+      providerParams: { thinking: { type: 'disabled' } },
+      fetchImpl: capturing.fetch,
+    });
+    await provider.generate(makeContext());
+    const body = JSON.parse(String(capturing.lastInit?.body)) as { thinking?: unknown };
+    expect(body.thinking).toEqual({ type: 'disabled' });
+  });
+
+  it('OpenRouter retries once with a larger budget on empty text + finish_reason=length', async () => {
+    const seq = new SequenceCapturingFetch([
+      () => jsonResponse(200, { choices: [{ message: { content: '' }, finish_reason: 'length' }] }),
+      () => jsonResponse(200, {
+        choices: [{ message: { content: '<observation><type>x</type><title>o</title></observation>' }, finish_reason: 'stop' }],
+        usage: { total_tokens: 30 },
+      }),
+    ]);
+    const provider = new OpenRouterObservationProvider({ apiKey: 'fake', fetchImpl: seq.fetch });
+    const result = await provider.generate(makeContext());
+    expect(seq.calls).toBe(2);
+    expect((seq.bodies[1] as { max_tokens?: number }).max_tokens).toBe(8192);
+    expect(result.rawText).toContain('<observation>');
+  });
+
+  it('OpenRouter merges providerParams into the request body', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
+    );
+    const provider = new OpenRouterObservationProvider({
+      apiKey: 'fake',
+      providerParams: { reasoning: { effort: 'none' } },
+      fetchImpl: capturing.fetch,
+    });
+    await provider.generate(makeContext());
+    const body = JSON.parse(String(capturing.lastInit?.body)) as { reasoning?: unknown };
+    expect(body.reasoning).toEqual({ effort: 'none' });
+  });
+
+  it('Gemini retries once with a larger budget on empty text + finishReason=MAX_TOKENS', async () => {
+    const seq = new SequenceCapturingFetch([
+      () => jsonResponse(200, { candidates: [{ content: { parts: [] }, finishReason: 'MAX_TOKENS' }] }),
+      () => jsonResponse(200, {
+        candidates: [{ content: { parts: [{ text: '<observation><type>x</type><title>g</title></observation>' }] }, finishReason: 'STOP' }],
+        usageMetadata: { totalTokenCount: 40 },
+      }),
+    ]);
+    const provider = new GeminiObservationProvider({ apiKey: 'fake', fetchImpl: seq.fetch });
+    const result = await provider.generate(makeContext());
+    expect(seq.calls).toBe(2);
+    const secondConfig = (seq.bodies[1] as { generationConfig?: { maxOutputTokens?: number } }).generationConfig;
+    expect(secondConfig?.maxOutputTokens).toBe(8192);
+    expect(result.rawText).toContain('<observation>');
+  });
+
+  it('Gemini merges providerParams into generationConfig', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, { candidates: [{ content: { parts: [{ text: 'ok' }] } }] }),
+    );
+    const provider = new GeminiObservationProvider({
+      apiKey: 'fake',
+      providerParams: { thinkingConfig: { thinkingBudget: 0 } },
+      fetchImpl: capturing.fetch,
+    });
+    await provider.generate(makeContext());
+    const body = JSON.parse(String(capturing.lastInit?.body)) as { generationConfig?: { thinkingConfig?: unknown } };
+    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: 0 });
   });
 });

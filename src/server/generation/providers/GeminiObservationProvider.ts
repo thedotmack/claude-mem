@@ -7,6 +7,7 @@ import {
   parseRetryAfterMs,
 } from './shared/error-classification.js';
 import { buildServerGenerationPrompt } from './shared/prompt-builder.js';
+import { generateWithEmptyResponseRetry, type RawGenerationResult } from './shared/empty-response.js';
 import type {
   ServerGenerationContext,
   ServerGenerationProvider,
@@ -24,12 +25,20 @@ export interface GeminiObservationProviderOptions {
   apiKey: string;
   model?: string;
   maxOutputTokens?: number;
+  /**
+   * Optional `generationConfig` passthrough (#3630). Merged into the
+   * generateContent `generationConfig` so a model that runs thinking by default
+   * can be told to stop, e.g. `{ thinkingConfig: { thinkingBudget: 0 } }`.
+   * Unset means the config is unchanged.
+   */
+  providerParams?: Record<string, unknown>;
   fetchImpl?: typeof fetch;
 }
 
 interface GeminiResponse {
   candidates?: Array<{
     content?: { parts?: Array<{ text?: string }> };
+    finishReason?: string;
   }>;
   usageMetadata?: { totalTokenCount?: number };
   error?: { code?: number; status?: string; message?: string };
@@ -130,6 +139,7 @@ export class GeminiObservationProvider implements ServerGenerationProvider {
   private readonly apiKey: string;
   private readonly model: string;
   private readonly maxOutputTokens: number;
+  private readonly providerParams?: Record<string, unknown>;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: GeminiObservationProviderOptions) {
@@ -142,6 +152,7 @@ export class GeminiObservationProvider implements ServerGenerationProvider {
     this.apiKey = options.apiKey;
     this.model = options.model ?? DEFAULT_MODEL;
     this.maxOutputTokens = options.maxOutputTokens ?? 4096;
+    this.providerParams = options.providerParams;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -158,11 +169,25 @@ export class GeminiObservationProvider implements ServerGenerationProvider {
       };
     }
 
+    // #3630 — an empty HTTP 200 with a MAX_TOKENS finish reason means the budget
+    // was spent before any text (e.g. hidden thinking on a gateway model). The
+    // shared shell retries once with a larger budget before giving up.
+    return generateWithEmptyResponseRetry(
+      { providerLabel: this.providerLabel, modelId: this.model, maxOutputTokens: this.maxOutputTokens },
+      budget => this.requestGeneration(prompt, budget, signal),
+    );
+  }
+
+  private async requestGeneration(
+    prompt: string,
+    maxOutputTokens: number,
+    signal?: AbortSignal,
+  ): Promise<RawGenerationResult> {
     const url = `${GEMINI_API_URL}/${encodeURIComponent(this.model)}:generateContent?key=${encodeURIComponent(this.apiKey)}`;
 
     let response: Response;
     try {
-      response = await this.postGenerateContent(url, prompt, signal);
+      response = await this.postGenerateContent(url, prompt, maxOutputTokens, signal);
     } catch (networkError) {
       const err = networkError instanceof Error ? networkError : new Error(String(networkError));
       throw classifyGeminiServerError({
@@ -200,11 +225,8 @@ export class GeminiObservationProvider implements ServerGenerationProvider {
       });
     }
 
-    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '';
-    if (!rawText) {
-      logger.warn('SDK', 'Gemini returned empty content', { provider: 'gemini', model: this.model });
-    }
-
+    const candidate = data.candidates?.[0];
+    const rawText = candidate?.content?.parts?.[0]?.text?.trim() ?? '';
     const tokensUsed = typeof data.usageMetadata?.totalTokenCount === 'number'
       ? data.usageMetadata.totalTokenCount
       : undefined;
@@ -212,12 +234,11 @@ export class GeminiObservationProvider implements ServerGenerationProvider {
     return {
       rawText,
       ...(tokensUsed !== undefined ? { tokensUsed } : {}),
-      providerLabel: this.providerLabel,
-      modelId: this.model,
+      ...(typeof candidate?.finishReason === 'string' ? { stopReason: candidate.finishReason } : {}),
     };
   }
 
-  private postGenerateContent(url: string, prompt: string, signal?: AbortSignal): Promise<Response> {
+  private postGenerateContent(url: string, prompt: string, maxOutputTokens: number, signal?: AbortSignal): Promise<Response> {
     return this.fetchImpl(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -225,7 +246,9 @@ export class GeminiObservationProvider implements ServerGenerationProvider {
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         generationConfig: {
           temperature: 0.3,
-          maxOutputTokens: this.maxOutputTokens,
+          ...(this.providerParams ?? {}),
+          // Budget last so a passthrough value can't clobber the retry budget.
+          maxOutputTokens,
         },
       }),
       signal,

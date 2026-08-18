@@ -6,6 +6,7 @@ import {
   parseRetryAfterMs,
 } from './shared/error-classification.js';
 import { buildServerGenerationPrompt } from './shared/prompt-builder.js';
+import { generateWithEmptyResponseRetry, type RawGenerationResult } from './shared/empty-response.js';
 import type {
   ServerGenerationContext,
   ServerGenerationProvider,
@@ -26,12 +27,19 @@ export interface ClaudeObservationProviderOptions {
   apiKey: string;
   model?: string;
   maxOutputTokens?: number;
+  /**
+   * Optional request-body passthrough (#3630). Merged into the Messages request
+   * so a gateway that runs thinking by default can be told to stop, e.g.
+   * `{ thinking: { type: 'disabled' } }`. Unset means the body is unchanged.
+   */
+  providerParams?: Record<string, unknown>;
   fetchImpl?: typeof fetch;
 }
 
 interface AnthropicMessagesResponse {
   content?: Array<{ type?: string; text?: string }>;
   usage?: { input_tokens?: number; output_tokens?: number };
+  stop_reason?: string;
   error?: { type?: string; message?: string };
 }
 
@@ -40,6 +48,7 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
   private readonly apiKey: string;
   private readonly model: string;
   private readonly maxOutputTokens: number;
+  private readonly providerParams?: Record<string, unknown>;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: ClaudeObservationProviderOptions) {
@@ -52,6 +61,7 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
     this.apiKey = options.apiKey;
     this.model = options.model ?? DEFAULT_MODEL;
     this.maxOutputTokens = options.maxOutputTokens ?? 4096;
+    this.providerParams = options.providerParams;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -70,9 +80,23 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
       };
     }
 
+    // #3630 — an empty HTTP 200 with a truncation stop reason means the budget
+    // was spent before any text (e.g. hidden thinking on a gateway model). The
+    // shared shell retries once with a larger budget before giving up.
+    return generateWithEmptyResponseRetry(
+      { providerLabel: this.providerLabel, modelId: this.model, maxOutputTokens: this.maxOutputTokens },
+      budget => this.requestGeneration(prompt, budget, signal),
+    );
+  }
+
+  private async requestGeneration(
+    prompt: string,
+    maxOutputTokens: number,
+    signal?: AbortSignal,
+  ): Promise<RawGenerationResult> {
     let response: Response;
     try {
-      response = await this.postMessages(prompt, signal);
+      response = await this.postMessages(prompt, maxOutputTokens, signal);
     } catch (networkError) {
       const err = networkError instanceof Error ? networkError : new Error(String(networkError));
       throw classifyClaudeServerError({
@@ -117,13 +141,6 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
       .join('\n')
       .trim();
 
-    if (!rawText) {
-      logger.warn('SDK', 'Anthropic returned empty content array', {
-        provider: 'claude',
-        model: this.model,
-      });
-    }
-
     const usage = data.usage ?? {};
     const tokensUsed =
       typeof usage.input_tokens === 'number' || typeof usage.output_tokens === 'number'
@@ -133,12 +150,11 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
     return {
       rawText,
       ...(tokensUsed !== undefined ? { tokensUsed } : {}),
-      providerLabel: this.providerLabel,
-      modelId: this.model,
+      ...(typeof data.stop_reason === 'string' ? { stopReason: data.stop_reason } : {}),
     };
   }
 
-  private postMessages(prompt: string, signal?: AbortSignal): Promise<Response> {
+  private postMessages(prompt: string, maxOutputTokens: number, signal?: AbortSignal): Promise<Response> {
     return this.fetchImpl(ANTHROPIC_API_URL, {
       method: 'POST',
       headers: {
@@ -148,9 +164,11 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
       },
       body: JSON.stringify({
         model: this.model,
-        max_tokens: this.maxOutputTokens,
         temperature: 0.3,
         messages: [{ role: 'user', content: prompt }],
+        ...(this.providerParams ?? {}),
+        // Budget last so a passthrough value can't clobber the retry budget.
+        max_tokens: maxOutputTokens,
       }),
       signal,
     });

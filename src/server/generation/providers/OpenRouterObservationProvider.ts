@@ -7,6 +7,7 @@ import {
   classifyHttpProviderError,
 } from './shared/error-classification.js';
 import { buildServerGenerationPrompt } from './shared/prompt-builder.js';
+import { generateWithEmptyResponseRetry, type RawGenerationResult } from './shared/empty-response.js';
 import type {
   ServerGenerationContext,
   ServerGenerationProvider,
@@ -27,13 +28,19 @@ export interface OpenRouterObservationProviderOptions {
    */
   baseUrl?: string;
   maxOutputTokens?: number;
+  /**
+   * Optional request-body passthrough (#3630). Merged into the chat-completions
+   * request so a gateway that runs reasoning by default can be told to stop,
+   * e.g. `{ reasoning: { effort: 'none' } }`. Unset means the body is unchanged.
+   */
+  providerParams?: Record<string, unknown>;
   siteUrl?: string;
   appName?: string;
   fetchImpl?: typeof fetch;
 }
 
 interface OpenRouterResponse {
-  choices?: Array<{ message?: { content?: string } }>;
+  choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
   usage?: { total_tokens?: number };
   error?: { code?: string | number; message?: string };
 }
@@ -44,6 +51,7 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
   private readonly model: string;
   private readonly apiUrl: string;
   private readonly maxOutputTokens: number;
+  private readonly providerParams?: Record<string, unknown>;
   private readonly siteUrl: string;
   private readonly appName: string;
   private readonly fetchImpl: typeof fetch;
@@ -60,6 +68,7 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
     this.model = options.model ?? DEFAULT_MODEL;
     this.apiUrl = resolveOpenRouterChatCompletionsUrl(options.baseUrl);
     this.maxOutputTokens = options.maxOutputTokens ?? 4096;
+    this.providerParams = options.providerParams;
     this.siteUrl = options.siteUrl ?? 'https://github.com/thedotmack/claude-mem';
     this.appName = options.appName ?? 'claude-mem';
     this.fetchImpl = options.fetchImpl ?? fetch;
@@ -78,9 +87,23 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
       };
     }
 
+    // #3630 — an empty HTTP 200 with a `length` finish reason means the budget
+    // was spent before any text (e.g. hidden reasoning on a gateway model). The
+    // shared shell retries once with a larger budget before giving up.
+    return generateWithEmptyResponseRetry(
+      { providerLabel: this.providerLabel, modelId: this.model, maxOutputTokens: this.maxOutputTokens },
+      budget => this.requestGeneration(prompt, budget, signal),
+    );
+  }
+
+  private async requestGeneration(
+    prompt: string,
+    maxOutputTokens: number,
+    signal?: AbortSignal,
+  ): Promise<RawGenerationResult> {
     let response: Response;
     try {
-      response = await this.postChatCompletion(prompt, signal);
+      response = await this.postChatCompletion(prompt, maxOutputTokens, signal);
     } catch (networkError) {
       const err = networkError instanceof Error ? networkError : new Error(String(networkError));
       throw classifyHttpProviderError({
@@ -121,25 +144,18 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
       });
     }
 
-    const rawText = data.choices?.[0]?.message?.content?.trim() ?? '';
-    if (!rawText) {
-      logger.warn('SDK', 'OpenRouter returned empty content', {
-        provider: 'openrouter',
-        model: this.model,
-      });
-    }
-
+    const choice = data.choices?.[0];
+    const rawText = choice?.message?.content?.trim() ?? '';
     const tokensUsed = typeof data.usage?.total_tokens === 'number' ? data.usage.total_tokens : undefined;
 
     return {
       rawText,
       ...(tokensUsed !== undefined ? { tokensUsed } : {}),
-      providerLabel: this.providerLabel,
-      modelId: this.model,
+      ...(typeof choice?.finish_reason === 'string' ? { stopReason: choice.finish_reason } : {}),
     };
   }
 
-  private postChatCompletion(prompt: string, signal?: AbortSignal): Promise<Response> {
+  private postChatCompletion(prompt: string, maxOutputTokens: number, signal?: AbortSignal): Promise<Response> {
     return this.fetchImpl(this.apiUrl, {
       method: 'POST',
       headers: {
@@ -152,7 +168,9 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
         model: this.model,
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.3,
-        max_tokens: this.maxOutputTokens,
+        ...(this.providerParams ?? {}),
+        // Budget last so a passthrough value can't clobber the retry budget.
+        max_tokens: maxOutputTokens,
       }),
       signal,
     });
