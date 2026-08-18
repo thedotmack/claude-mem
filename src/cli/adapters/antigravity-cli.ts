@@ -5,8 +5,8 @@ export const antigravityCliAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
 
-    // unverified: confirm Antigravity sets GEMINI_* env vars on first real hook firing
     const cwd = r.cwd
+      ?? (Array.isArray(r.workspacePaths) && r.workspacePaths[0] ? r.workspacePaths[0] : undefined)
       ?? process.env.GEMINI_CWD
       ?? process.env.GEMINI_PROJECT_DIR
       ?? process.env.CLAUDE_PROJECT_DIR
@@ -16,14 +16,15 @@ export const antigravityCliAdapter: PlatformAdapter = {
     }
 
     const sessionId = r.session_id
+      ?? r.conversationId
       ?? process.env.GEMINI_SESSION_ID
       ?? undefined;
 
     const hookEventName: string | undefined = r.hook_event_name;
 
-    let toolName: string | undefined = r.tool_name;
-    let toolInput: unknown = r.tool_input;
-    let toolResponse: unknown = r.tool_response;
+    let toolName: string | undefined = r.tool_name ?? r.toolCall?.name;
+    let toolInput: unknown = r.tool_input ?? r.toolCall?.args;
+    let toolResponse: unknown = r.tool_response ?? r.error ?? r.output;
 
     if (hookEventName === 'AfterAgent' && r.prompt_response) {
       toolName = toolName ?? 'AntigravityProvider';
@@ -31,7 +32,7 @@ export const antigravityCliAdapter: PlatformAdapter = {
       toolResponse = toolResponse ?? { response: r.prompt_response };
     }
 
-    if (hookEventName === 'BeforeTool' && toolName && !toolResponse) {
+    if ((hookEventName === 'BeforeTool' || hookEventName === 'PreToolUse') && toolName && !toolResponse) {
       toolResponse = { _preExecution: true };
     }
 
@@ -44,6 +45,11 @@ export const antigravityCliAdapter: PlatformAdapter = {
       toolResponse = toolResponse ?? { details: r.details };
     }
 
+    // Default toolResponse if none provided so observation handler does not drop tool steps
+    if (toolName && !toolResponse) {
+      toolResponse = { status: 'completed', stepIdx: r.stepIdx };
+    }
+
     return {
       sessionId,
       cwd,
@@ -51,7 +57,7 @@ export const antigravityCliAdapter: PlatformAdapter = {
       toolName,
       toolInput,
       toolResponse,
-      transcriptPath: r.transcript_path,
+      transcriptPath: r.transcript_path ?? r.transcriptPath,
     };
   },
 
@@ -59,14 +65,18 @@ export const antigravityCliAdapter: PlatformAdapter = {
     const output: Record<string, unknown> = {};
 
     output.continue = result.continue ?? true;
+    output.decision = 'allow';
 
     if (result.suppressOutput !== undefined) {
       output.suppressOutput = result.suppressOutput;
     }
 
-    if (result.systemMessage) {
+    const rawMessage = result.systemMessage || result.hookSpecificOutput?.additionalContext;
+    if (rawMessage) {
       const ansiRegex = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
-      output.systemMessage = result.systemMessage.replace(ansiRegex, '');
+      const cleanMessage = rawMessage.replace(ansiRegex, '');
+      output.systemMessage = cleanMessage;
+      output.injectSteps = [{ ephemeralMessage: cleanMessage }];
     }
 
     if (result.hookSpecificOutput) {
