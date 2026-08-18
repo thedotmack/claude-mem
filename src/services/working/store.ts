@@ -95,9 +95,14 @@ function limitKeyList(rows: WorkingEntry[]): Array<{ key: string; chars: number 
 }
 
 /**
- * Upsert one intent slot. New keys beyond maxKeys, or a total value size
- * beyond the token budget, fail with WorkingLimitError listing the current
- * keys — the agent must explicitly drop/merge before writing again.
+ * Upsert one intent slot. New keys beyond maxKeys, or a total INTENT value
+ * size beyond the token budget, fail with WorkingLimitError listing the
+ * current keys — the agent must explicitly drop/merge before writing again.
+ *
+ * The token budget counts intent rows ONLY: the observer journal writes
+ * without a budget check (bounded by its own ring), so letting journal rows
+ * into the agent's budget would let the observer starve the agent — the two
+ * channels must not intersect on the budget either.
  */
 export function setEntry(
   db: Database,
@@ -108,15 +113,14 @@ export function setEntry(
   limits: WorkingLimits,
   now: number = Date.now(),
 ): WorkingEntry {
-  const rows = liveRows(db, project, taskKey, now);
+  const rows = liveRows(db, project, taskKey, now).filter(row => row.kind === 'intent');
   const existing = rows.find(row => row.key === key);
 
   if (!existing) {
-    const intentCount = rows.filter(row => row.kind === 'intent').length;
-    if (intentCount >= limits.maxKeys) {
+    if (rows.length >= limits.maxKeys) {
       throw new WorkingLimitError(
-        `working memory full: ${intentCount}/${limits.maxKeys} intent slots used — drop or merge a key first`,
-        limitKeyList(rows.filter(row => row.kind === 'intent')),
+        `working memory full: ${rows.length}/${limits.maxKeys} intent slots used — drop or merge a key first`,
+        limitKeyList(rows),
       );
     }
   }
@@ -222,23 +226,34 @@ export function closeTask(db: Database, project: string, taskKey: string): numbe
   return result.changes;
 }
 
-/** Refresh updated/expires on read-confirmed entries ("still relevant"). */
-export function touchTtl(
-  db: Database,
-  project: string,
-  taskKey: string,
-  key: string,
-  limits: WorkingLimits,
-  now: number = Date.now(),
-): void {
-  const result = db.prepare(`
-    UPDATE working_memory
-    SET updated_at_epoch = ?, expires_at_epoch = ?
-    WHERE project = ? AND task_key = ? AND key = ?
-  `).run(now, now + limits.ttlDays * DAY_MS, project, taskKey, key);
-  if (result.changes === 0) {
-    throw new WorkingNotFoundError(`no working-memory entry for key '${key}' in task '${taskKey}'`);
+/**
+ * Global render budget across tasks. Write-time budgets are per task, so
+ * without this cap N open tasks would inject N × maxTokens — and working
+ * memory stops being small, i.e. stops being working memory. Tasks are kept
+ * whole (no mid-task slicing) and ordered freshest-first; the freshest task
+ * is always included, even if it alone exceeds the budget.
+ */
+export function capTasksForRender(entries: WorkingEntry[], limits: WorkingLimits): WorkingEntry[] {
+  const byTask = new Map<string, WorkingEntry[]>();
+  for (const entry of entries) {
+    const bucket = byTask.get(entry.task_key) ?? [];
+    bucket.push(entry);
+    byTask.set(entry.task_key, bucket);
   }
+  const tasks = [...byTask.entries()].sort((a, b) => {
+    const latest = (rows: WorkingEntry[]) => Math.max(...rows.map(r => r.updated_at_epoch));
+    return latest(b[1]) - latest(a[1]);
+  });
+
+  const kept: WorkingEntry[] = [];
+  let budgetChars = limits.maxTokens * CHARS_PER_TOKEN;
+  for (const [, rows] of tasks) {
+    const taskChars = rows.reduce((sum, row) => sum + row.value.length, 0);
+    if (kept.length > 0 && taskChars > budgetChars) continue;
+    kept.push(...rows);
+    budgetChars -= taskChars;
+  }
+  return kept;
 }
 
 /**

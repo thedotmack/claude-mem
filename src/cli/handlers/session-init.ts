@@ -14,6 +14,7 @@ import { shouldTrackProject as defaultShouldTrackProject } from '../../shared/sh
 import { loadFromFileOnce as defaultLoadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { isInternalProtocolPayload } from '../../utils/tag-stripping.js';
+import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE } from '../../utils/context-injection.js';
 import {
   renderWorkingMemoryBlock,
   WORKING_MEMORY_EMPTY_REMINDER,
@@ -262,7 +263,10 @@ export const sessionInitHandler: EventHandler = {
         suppressOutput: true,
         hookSpecificOutput: {
           hookEventName: 'UserPromptSubmit',
-          additionalContext
+          // Wrapped so the strip-tags pass (tag-stripping.ts) removes injected
+          // memory from transcripts before distillation — otherwise an
+          // unverified working-memory hypothesis comes back as an observation.
+          additionalContext: `${CONTEXT_TAG_OPEN}\n${additionalContext}\n${CONTEXT_TAG_CLOSE}`
         }
       };
     }

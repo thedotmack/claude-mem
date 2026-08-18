@@ -6,12 +6,12 @@ import {
   appendJournal,
   closeTask,
   DEFAULT_TASK_KEY,
+  capTasksForRender,
   dropEntry,
   estimateTokens,
   listEntries,
   promoteEntry,
   setEntry,
-  touchTtl,
   WorkingLimitError,
   WorkingNotFoundError,
   type WorkingLimits,
@@ -96,21 +96,35 @@ describe('working memory store', () => {
     expect((caught as WorkingLimitError).keys.map(k => k.key)).toEqual(['plan']);
   });
 
-  it('rejects writes that exceed the token budget (journal counts toward it)', () => {
-    const lim = limits({ maxKeys: 10, maxTokens: 5 }); // 20 chars total
-    appendJournal(store.db, 'proj', DEFAULT_TASK_KEY, '1234567890', lim, NOW); // 10 chars of journal
+  it('token budget counts intent rows only — the journal can never starve the agent', () => {
+    const lim = limits({ maxKeys: 10, maxTokens: 5 }); // 20 chars of intent budget
+    appendJournal(store.db, 'proj', DEFAULT_TASK_KEY, 'x'.repeat(4000), lim, NOW); // fat journal row
 
+    // A small intent write succeeds despite the journal being way over budget:
+    // the journal is bounded by its ring, not by the agent's token budget.
+    const ok = setEntry(store.db, 'proj', DEFAULT_TASK_KEY, 'small', 'fits', lim, NOW);
+    expect(ok.value).toBe('fits');
+
+    // …while intent-only overflow is still rejected.
     let caught: unknown = null;
     try {
-      setEntry(store.db, 'proj', DEFAULT_TASK_KEY, 'big', 'x'.repeat(11), lim, NOW); // 10 + 11 > 20
+      setEntry(store.db, 'proj', DEFAULT_TASK_KEY, 'big', 'x'.repeat(17), lim, NOW); // 4 + 17 > 20
     } catch (error) {
       caught = error;
     }
     expect(caught).toBeInstanceOf(WorkingLimitError);
-    expect((caught as WorkingLimitError).keys.some(k => k.chars === 10)).toBe(true);
+  });
 
-    const ok = setEntry(store.db, 'proj', DEFAULT_TASK_KEY, 'small', 'x'.repeat(10), lim, NOW);
-    expect(ok.key).toBe('small');
+  it('capTasksForRender keeps whole freshest tasks within the global budget', () => {
+    const lim = limits({ maxTokens: 10 }); // 40 chars global
+    setEntry(store.db, 'proj', 'old-task', 'k', 'o'.repeat(30), lim, NOW);
+    setEntry(store.db, 'proj', 'mid-task', 'k', 'm'.repeat(30), lim, NOW + DAY_MS);
+    setEntry(store.db, 'proj', 'new-task', 'k', 'n'.repeat(30), lim, NOW + 2 * DAY_MS);
+
+    const capped = capTasksForRender(listEntries(store.db, 'proj', undefined, NOW + 3 * DAY_MS), lim);
+    const tasks = [...new Set(capped.map(e => e.task_key))];
+    // Only the freshest task fits the 40-char budget; the rest wait for TTL/close.
+    expect(tasks).toEqual(['new-task']);
   });
 
   it('keeps the journal as a ring of journalSize, evicting the oldest', () => {
@@ -136,18 +150,6 @@ describe('working memory store', () => {
     // The expired row is filtered, not deleted — no timers anywhere.
     const raw = store.db.prepare('SELECT COUNT(*) AS n FROM working_memory').get() as { n: number };
     expect(raw.n).toBe(2);
-  });
-
-  it('touchTtl slides the expiry window', () => {
-    const lim = limits({ ttlDays: 1 });
-    setEntry(store.db, 'proj', DEFAULT_TASK_KEY, 'k', 'v', lim, NOW);
-    touchTtl(store.db, 'proj', DEFAULT_TASK_KEY, 'k', lim, NOW + 2 * DAY_MS);
-
-    const entries = listEntries(store.db, 'proj', DEFAULT_TASK_KEY, NOW + 2.5 * DAY_MS);
-    expect(entries.length).toBe(1);
-    expect(entries[0].expires_at_epoch).toBe(NOW + 3 * DAY_MS);
-
-    expect(() => touchTtl(store.db, 'proj', DEFAULT_TASK_KEY, 'missing', lim, NOW)).toThrow(WorkingNotFoundError);
   });
 
   it('promote stores a real observation and clears the slot', () => {

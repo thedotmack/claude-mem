@@ -12,6 +12,7 @@ import {
   closeTask,
   DEFAULT_TASK_KEY,
   dropEntry,
+  capTasksForRender,
   estimateTokens,
   listEntries,
   promoteEntry,
@@ -103,7 +104,13 @@ export class WorkingRoutes extends BaseRouteHandler {
     const taskKey = taskParam || undefined;
 
     const db = this.dbManager.getSessionStore().db;
-    const entries = listEntries(db, project, taskKey);
+    let entries = listEntries(db, project, taskKey);
+    // Cross-task render budget: without a task filter the injection sees every
+    // task of the project, and per-task write budgets alone would let N tasks
+    // inject N × maxTokens.
+    if (taskKey === undefined) {
+      entries = capTasksForRender(entries, limits);
+    }
     res.json({
       project,
       task_key: taskKey ?? null,

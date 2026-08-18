@@ -10,10 +10,13 @@ export interface WorkingRenderPayload {
 
 /**
  * Reminder injected when the set is empty and the prompt is substantial — the
- * agent should have a hypothesis/plan recorded by now.
+ * agent should have a hypothesis/plan recorded by now. Conditional phrasing:
+ * the hook cannot know whether this session's toolset actually exposes the
+ * working_* MCP tools, so the wording must not read as a command to call a
+ * possibly-absent tool.
  */
 export const WORKING_MEMORY_EMPTY_REMINDER =
-  'Working memory is empty — record your current hypothesis/plan via working_set';
+  'Working memory is empty. If your toolset has working_set, record your current hypothesis/plan there.';
 
 function formatTimeHHMM(epochMs: number): string {
   return new Date(epochMs).toISOString().slice(11, 16);

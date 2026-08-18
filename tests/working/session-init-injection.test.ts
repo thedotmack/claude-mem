@@ -114,9 +114,14 @@ describe('sessionInitHandler working-memory injection', () => {
     expect(run.exitCode).toBe(0);
 
     const result = parseResult(run.stdout);
-    expect(result.hookSpecificOutput.additionalContext).toContain(
-      'Working memory is empty — record your current hypothesis/plan via working_set'
+    const ctx = result.hookSpecificOutput.additionalContext;
+    expect(ctx).toContain(
+      'Working memory is empty. If your toolset has working_set'
     );
+    // The whole injection is tag-wrapped so stripTags can keep it out of
+    // future distillation (no self-ingestion of injected memory).
+    expect(ctx).toContain('<claude-mem-context>');
+    expect(ctx).toContain('</claude-mem-context>');
   });
 
   it('is fail-open: a worker error leaves the hook result intact', () => {

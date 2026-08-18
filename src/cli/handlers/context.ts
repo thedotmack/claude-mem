@@ -17,6 +17,7 @@ import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE } from '../../utils/context-injection.js';
 import { callMcpToolOnce } from '../../shared/mcp-client.js';
 
 async function requestSessionStartContext(args: {
@@ -169,7 +170,11 @@ export const contextHandler: EventHandler = {
     return {
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
-        additionalContext
+        // Same strip-tags protection as the per-prompt path (session-init.ts):
+        // injected memory must not come back as new observations.
+        additionalContext: additionalContext
+          ? `${CONTEXT_TAG_OPEN}\n${additionalContext}\n${CONTEXT_TAG_CLOSE}`
+          : additionalContext
       },
       systemMessage
     };

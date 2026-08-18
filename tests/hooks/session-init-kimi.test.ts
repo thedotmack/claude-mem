@@ -58,7 +58,7 @@ describe('session-init — Kimi first-prompt context delivery', () => {
     const result = await sessionInitHandler.execute(input as any);
 
     expect(calls.some(c => c.url.startsWith('/api/context/inject'))).toBe(true);
-    expect(result.hookSpecificOutput?.additionalContext).toBe(CTX);
+    expect(result.hookSpecificOutput?.additionalContext).toBe(`<claude-mem-context>\n${CTX}\n</claude-mem-context>`);
   });
 
   it('skips delivery on later prompts — even when contextInjected=false (observer dies on idle)', async () => {
