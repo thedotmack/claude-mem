@@ -139,7 +139,13 @@ export function registerOpenCodePluginInConfig(): number {
     const withPlugin = addOpenCodePluginReference(config);
     const updatedConfig = addOpenCodeMcpReference(withPlugin);
 
-    if (withPlugin.mcp === updatedConfig.mcp && updatedConfig.mcp === undefined) {
+    // Warn whenever the claude-mem MCP entry is absent from the final config —
+    // addOpenCodeMcpReference only fails to emit it when the server script
+    // cannot be resolved. Keying off the entry's presence (rather than whether
+    // the whole `mcp` block is undefined) keeps the warning firing even when
+    // an unrelated MCP server already exists.
+    const mcpEntry = getOpenCodeMcpEntry(updatedConfig);
+    if (!(OPENCODE_MCP_SERVER_KEY in mcpEntry)) {
       logger.warn('OPENCODE', 'MCP server script not found — registered plugin without MCP entry', { path: configPath });
     }
 
