@@ -1,10 +1,10 @@
 import { describe, it, expect } from "bun:test";
+import ClaudeMemPlugin from "../../src/integrations/opencode-plugin/index";
 import {
-  ClaudeMemPlugin,
   parseSearchResponse,
   REGISTERED_OPENCODE_HOOKS,
   REAL_OPENCODE_EVENT_TYPES,
-} from "../../src/integrations/opencode-plugin/index";
+} from "../../src/integrations/opencode-plugin/constants";
 
 /**
  * Regression guard for plan-08 (OpenCode event-contract correctness).
