@@ -469,6 +469,7 @@ export class SearchRoutes extends BaseRouteHandler {
           narrative: obs.narrative,
           project: obs.project,
         })),
+        project,
       );
       let dropped = 0;
       let kept = 0;

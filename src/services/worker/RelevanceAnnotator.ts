@@ -66,13 +66,23 @@ const MAX_CANDIDATES = 20;
  * Pure prompt builder (exported for tests). One numbered list so the model can
  * answer with compact per-index verdicts; narratives are truncated to bound
  * the input tokens of a per-prompt call.
+ *
+ * `currentProject` is named explicitly and foreign candidates are tagged
+ * `[from project: X]` because without it the critic confabulated shared
+ * context — observed live: a memory from project `dex` kept for a query in
+ * `mllab` with the hint "in the same dex project" (there is no "same").
  */
-export function buildAnnotationPrompt(userQuery: string, candidates: AnnotationCandidate[]): string {
+export function buildAnnotationPrompt(
+  userQuery: string,
+  candidates: AnnotationCandidate[],
+  currentProject?: string,
+): string {
   const list = candidates
     .slice(0, MAX_CANDIDATES)
     .map((c, i) => {
       const narrative = (c.narrative ?? '').slice(0, NARRATIVE_MAX_CHARS);
-      const project = c.project ? ` [project: ${c.project}]` : '';
+      const foreign = c.project && c.project !== currentProject;
+      const project = foreign ? ` [from project: ${c.project}]` : '';
       return `${i + 1}. ${c.title}${project}\n${narrative}`;
     })
     .join('\n\n');
@@ -92,11 +102,18 @@ export function buildAnnotationPrompt(userQuery: string, candidates: AnnotationC
     '  draws its own conclusions. Form: "relevant because <link to the request>".',
     '- "drop" — it is NOT applicable here. When in doubt, drop. Do not stretch.',
     '',
+    'Candidates tagged [from project: X] come from a DIFFERENT project than the',
+    'one being worked on. Keep such a memory only if it helps WITHOUT knowing',
+    'that project\'s internals; a merely similarly-worded request is NOT',
+    'applicability — drop it. Never claim the projects are the same.',
+    '',
     'Good hint: "captured during the same Chroma EF failure you are debugging now".',
     'Bad hint:  "use this to explain the Chroma failure" (directive + restates content).',
     '',
     'Answer with ONLY a JSON array, no prose, no markdown fence:',
     '[{"i": 1, "verdict": "keep", "hint": "..."}, {"i": 2, "verdict": "drop"}]',
+    '',
+    `CURRENT PROJECT: ${currentProject ?? '(unknown)'}`,
     '',
     'CURRENT REQUEST:',
     userQuery.slice(0, 2000),
@@ -152,7 +169,7 @@ export class RelevanceAnnotator {
    * Annotate candidates against the current user query. Never throws; every
    * non-'ok' outcome means "inject unannotated" (fail-open).
    */
-  async annotate(userQuery: string, candidates: AnnotationCandidate[]): Promise<AnnotationResponse> {
+  async annotate(userQuery: string, candidates: AnnotationCandidate[], currentProject?: string): Promise<AnnotationResponse> {
     const none = (outcome: AnnotationOutcome, model = '', startedAt = Date.now()): AnnotationResponse =>
       ({ outcome, verdicts: null, durationMs: Date.now() - startedAt, model });
 
@@ -201,7 +218,7 @@ export class RelevanceAnnotator {
           // tokens on a thinking block before the JSON verdict array.
           max_tokens: 2048,
           temperature: 0,
-          messages: [{ role: 'user', content: buildAnnotationPrompt(userQuery, trimmed) }],
+          messages: [{ role: 'user', content: buildAnnotationPrompt(userQuery, trimmed, currentProject) }],
         }),
         signal: abortController.signal,
       });
