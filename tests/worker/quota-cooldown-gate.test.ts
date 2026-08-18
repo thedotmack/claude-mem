@@ -49,7 +49,11 @@ describe('quota-cooldown breaker', () => {
     Date.now = realDateNow;
   });
 
+  // Reset AFTER each test too: the cooldown Map is process-global, so a leaked
+  // 'claude' cooldown would make the gate skip generator starts in other test
+  // files (e.g. claude-setup-gate) that run after this one.
   afterEach(() => {
+    resetQuotaCooldownsForTesting();
     Date.now = realDateNow;
   });
 
@@ -94,7 +98,11 @@ describe('quota-cooldown generator gate', () => {
     Date.now = realDateNow;
   });
 
+  // Do not leak this file's quota cooldowns (or dependency statuses) into files
+  // that run afterwards — the state is process-global.
   afterEach(() => {
+    resetQuotaCooldownsForTesting();
+    resetDependencyStatusesForTesting();
     Date.now = realDateNow;
   });
 
