@@ -185,8 +185,9 @@ export default function claudeMemBridge(pi: HookAPI): void {
   });
 
   // Compaction starts a new logical session in claude-mem too (matches Claude
-  // Code's SessionStart clear/compact path): rotate id; the next
-  // before_agent_start re-inits with the post-compact prompt.
+  // Code's SessionStart clear/compact path): finalize the session that is
+  // ending, then rotate the id. The next before_agent_start re-inits with the
+  // post-compact prompt.
   pi.on("session_compact", async () => {
     const id = sid;
     const pendingInit = initPromise;
@@ -203,6 +204,11 @@ export default function claudeMemBridge(pi: HookAPI): void {
     }
 
     newSid();
+    // lastAssistant belongs to the logical session that just ended. newSid()
+    // resets sid/initialized/initPromise but not this field, so without the
+    // reset a compact followed directly by session_shutdown would attribute the
+    // pre-compaction response to the replacement id.
+    lastAssistant = "";
   });
 
   // before_agent_start fires once per user prompt — init for the current session
@@ -276,9 +282,13 @@ export default function claudeMemBridge(pi: HookAPI): void {
   });
 
   // session_shutdown: finalize the claude-mem session and drop in-memory state.
+  // Only an initialized session is finalized: summarizing an id that never
+  // reached /api/sessions/init makes the worker create an empty-project
+  // sdk_sessions row for it (handleSummarizeByClaudeId calls createSDKSession
+  // with an empty project).
   pi.on("session_shutdown", async () => {
     const id = sid;
-    if (id) {
+    if (id && initialized) {
       void post("/api/sessions/summarize", {
         contentSessionId: id,
         last_assistant_message: lastAssistant,

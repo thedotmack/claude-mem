@@ -94,4 +94,36 @@ describe('OMP Claude Mem hook', () => {
       platformSource: 'omp',
     });
   });
+
+  it('finalizes only the pre-compaction session when compaction is followed directly by shutdown', async () => {
+    const requests: CapturedRequest[] = [];
+    installFetchCapture(requests);
+    const handlers = registerHook();
+
+    await handlers.session_start?.();
+    await handlers.before_agent_start?.(
+      { prompt: 'before compaction' },
+      { cwd: '/tmp/omp-hook-compaction-shutdown-test' },
+    );
+    await handlers.agent_end?.({
+      messages: [{ role: 'assistant', content: 'precompact answer' }],
+    });
+    await handlers.session_compact?.();
+    await handlers.session_shutdown?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const initSession = String(
+      requests.find(request => request.path === '/api/sessions/init')?.body.contentSessionId,
+    );
+    const summaries = requests.filter(request => request.path === '/api/sessions/summarize');
+
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.body).toMatchObject({
+      contentSessionId: initSession,
+      last_assistant_message: 'precompact answer',
+      platformSource: 'omp',
+    });
+  });
 });
