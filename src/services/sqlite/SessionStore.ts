@@ -2405,6 +2405,12 @@ export class SessionStore {
           WHERE id = ? AND (project IS NULL OR project = '')
         `).run(project, existing.id);
       }
+      if (storedUserPrompt && storedUserPrompt !== '[media prompt]') {
+        this.db.prepare(`
+          UPDATE sdk_sessions SET user_prompt = ?
+          WHERE id = ? AND (user_prompt IS NULL OR user_prompt = '' OR user_prompt = '[media prompt]')
+        `).run(storedUserPrompt, existing.id);
+      }
       if (customTitle) {
         // SELECT-then-UPDATE, never a decision on `.run().changes`
         // (bun:sqlite reports unreliable `changes` after RETURNING statements
@@ -2635,12 +2641,16 @@ export class SessionStore {
       );
 
       for (const observation of observations) {
-        const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+        if (!observation.title && !observation.narrative && (!observation.facts || observation.facts.length === 0)) {
+          continue;
+        }
+        const title = observation.title || (observation.narrative ? observation.narrative.slice(0, 100) : `${observation.type} observation`);
+        const contentHash = computeObservationContentHash(memorySessionId, title, observation.narrative);
         const inserted = obsStmt.get(
           memorySessionId,
           project,
           observation.type,
-          observation.title,
+          title,
           observation.subtitle,
           JSON.stringify(observation.facts),
           observation.narrative,

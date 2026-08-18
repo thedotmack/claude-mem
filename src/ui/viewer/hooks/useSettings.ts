@@ -33,7 +33,16 @@ export function useSettings() {
     });
 
     if (!response.ok) {
-      setSaveStatus(`✗ Error: ${response.status === 401 ? 'Unauthorized' : response.statusText}`);
+      let errorMessage = response.status === 401 ? 'Unauthorized' : response.statusText;
+      try {
+        const errorData = await response.json();
+        if (errorData.error) {
+          errorMessage = errorData.error;
+        }
+      } catch {
+        // fallback
+      }
+      setSaveStatus(`✗ Error: ${errorMessage}`);
       setIsSaving(false);
       return;
     }

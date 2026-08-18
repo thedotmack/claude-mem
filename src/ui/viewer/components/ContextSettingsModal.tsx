@@ -341,6 +341,7 @@ export function ContextSettingsModal({
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter (multi-model)</option>
+                  <option value="opencode">OpenCode (Zen / Go)</option>
                 </select>
               </FormField>
 
@@ -444,6 +445,76 @@ export function ContextSettingsModal({
                       value={formState.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_APP_NAME', e.target.value)}
                       placeholder="claude-mem"
+                    />
+                  </FormField>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'opencode' && (
+                <>
+                  <FormField
+                    label="OpenCode Preset"
+                    tooltip="Switch between OpenCode Go (Subscription) and OpenCode Zen (Pay-as-you-go catalog)"
+                  >
+                    <select
+                      value={
+                        formState.CLAUDE_MEM_OPENCODE_BASE_URL === 'https://opencode.ai/zen/v1'
+                          ? 'zen'
+                          : formState.CLAUDE_MEM_OPENCODE_BASE_URL === 'https://opencode.ai/zen/go/v1' || !formState.CLAUDE_MEM_OPENCODE_BASE_URL
+                            ? 'go'
+                            : 'custom'
+                      }
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === 'go') {
+                          updateSetting('CLAUDE_MEM_OPENCODE_BASE_URL', 'https://opencode.ai/zen/go/v1');
+                          if (!formState.CLAUDE_MEM_OPENCODE_MODEL || formState.CLAUDE_MEM_OPENCODE_MODEL === 'claude-haiku-4-5' || formState.CLAUDE_MEM_OPENCODE_MODEL === 'claude-3-7-sonnet') {
+                            updateSetting('CLAUDE_MEM_OPENCODE_MODEL', 'deepseek-v4-flash');
+                          }
+                        } else if (val === 'zen') {
+                          updateSetting('CLAUDE_MEM_OPENCODE_BASE_URL', 'https://opencode.ai/zen/v1');
+                          if (!formState.CLAUDE_MEM_OPENCODE_MODEL || formState.CLAUDE_MEM_OPENCODE_MODEL === 'deepseek-v4-flash') {
+                            updateSetting('CLAUDE_MEM_OPENCODE_MODEL', 'claude-haiku-4-5');
+                          }
+                        }
+                      }}
+                    >
+                      <option value="go">OpenCode Go (Subscription — default: deepseek-v4-flash)</option>
+                      <option value="zen">OpenCode Zen (Pay-as-you-go — default: claude-haiku-4-5)</option>
+                      <option value="custom">Custom Endpoint</option>
+                    </select>
+                  </FormField>
+                  <FormField
+                    label="OpenCode API Key"
+                    tooltip="Your OpenCode Zen / Go API key (or set OPENCODE_API_KEY env var)"
+                  >
+                    <input
+                      type="password"
+                      value={formState.CLAUDE_MEM_OPENCODE_API_KEY || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENCODE_API_KEY', e.target.value)}
+                      placeholder="Enter OpenCode API key..."
+                    />
+                  </FormField>
+                  <FormField
+                    label="OpenCode Model"
+                    tooltip="Model identifier (e.g. deepseek-v4-flash, kimi-k3 for Go; claude-haiku-4-5, claude-sonnet-4-5 for Zen)"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENCODE_MODEL || 'deepseek-v4-flash'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENCODE_MODEL', e.target.value)}
+                      placeholder="e.g., deepseek-v4-flash or claude-haiku-4-5"
+                    />
+                  </FormField>
+                  <FormField
+                    label="OpenCode Endpoint URL"
+                    tooltip="Endpoint URL (default: https://opencode.ai/zen/go/v1 for OpenCode Go, or https://opencode.ai/zen/v1 for Zen)"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENCODE_BASE_URL || 'https://opencode.ai/zen/go/v1'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENCODE_BASE_URL', e.target.value)}
+                      placeholder="https://opencode.ai/zen/go/v1"
                     />
                   </FormField>
                 </>

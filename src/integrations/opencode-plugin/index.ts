@@ -1,46 +1,18 @@
 import { z } from "zod";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
+import {
+  REAL_OPENCODE_EVENT_TYPES,
+  RealOpenCodeEventType,
+  REGISTERED_OPENCODE_HOOKS,
+  parseSearchResponse,
+} from "./constants.js";
 
 /**
  * OpenCode plugin event contract.
  *
  * A plugin is an async function that receives a context object and returns an
- * object whose keys are OpenCode's real hook names. The hooks claude-mem binds
- * to are (authoritative source: plans/08-opencode-integration.md "Fix sequence"
- * step 1, cross-checked against OpenCode's documented plugin API):
- *
- *   - `tool.execute.after`            (input, output) — fires after every tool run
- *   - `chat.message`                  ({}, output)    — fires on each chat message
- *   - `event`                         ({ event })     — generic bus; event.type carries the name
- *   - `experimental.session.compacting`               — fires when a session compacts
- *
- * The generic `event` hook delivers bus events whose discriminant is
- * `event.type`. The only bus event types claude-mem reacts to are
- * `session.deleted` (forget the session mapping) and `session.idle` (best-effort
- * summarize). Session creation/observation capture is driven by the dedicated
- * `tool.execute.after` / `chat.message` hooks above, not by bus events — that is
- * the #2435 fix: the old code subscribed to non-existent bus types
- * (`session.created`, `message.updated`, `session.compacted`, `file.edited`)
- * and therefore captured nothing.
- *
- * REAL_OPENCODE_EVENT_TYPES is the allowlist of bus `event.type` values the
- * plugin is permitted to switch on. The contract test asserts the plugin only
- * references names in this list so a future typo fails CI.
+ * object whose keys are OpenCode's real hook names.
  */
-export const REAL_OPENCODE_EVENT_TYPES = [
-  "session.idle",
-  "session.deleted",
-] as const;
-
-type RealOpenCodeEventType = (typeof REAL_OPENCODE_EVENT_TYPES)[number];
-
-/** The hook keys this plugin returns. The contract test asserts these are the real OpenCode hook names. */
-export const REGISTERED_OPENCODE_HOOKS = [
-  "tool.execute.after",
-  "chat.message",
-  "event",
-  "experimental.session.compacting",
-] as const;
 
 interface OpenCodeProject {
   name?: string;
@@ -90,17 +62,22 @@ interface BusEvent {
   };
 }
 
-function resolveWorkerPort(): string {
-  // Canonical resolution: CLAUDE_MEM_WORKER_PORT env override, else the
-  // UID-derived default — identical to the rest of the codebase (#2406).
-  return SettingsDefaultsManager.get("CLAUDE_MEM_WORKER_PORT");
+import path from "path";
+import os from "os";
+
+function getWorkerBaseUrl(): string {
+  try {
+    const dataDir = process.env.CLAUDE_MEM_DATA_DIR || path.join(os.homedir(), ".claude-mem");
+    const settingsPath = path.join(dataDir, "settings.json");
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    return `http://${settings.CLAUDE_MEM_WORKER_HOST}:${settings.CLAUDE_MEM_WORKER_PORT}`;
+  } catch {
+    const host = SettingsDefaultsManager.get("CLAUDE_MEM_WORKER_HOST");
+    const port = SettingsDefaultsManager.get("CLAUDE_MEM_WORKER_PORT");
+    return `http://${host}:${port}`;
+  }
 }
 
-function resolveWorkerHost(): string {
-  return SettingsDefaultsManager.get("CLAUDE_MEM_WORKER_HOST");
-}
-
-const WORKER_BASE_URL = `http://${resolveWorkerHost()}:${resolveWorkerPort()}`;
 const MAX_TOOL_RESPONSE_LENGTH = 1000;
 
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
@@ -109,7 +86,8 @@ function workerPostFireAndForget(
   path: string,
   body: Record<string, unknown>,
 ): void {
-  fetch(`${WORKER_BASE_URL}${path}`, {
+  const baseUrl = getWorkerBaseUrl();
+  fetch(`${baseUrl}${path}`, {
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify(body),
@@ -122,8 +100,9 @@ function workerPostFireAndForget(
 }
 
 async function workerGetText(path: string): Promise<string | null> {
+  const baseUrl = getWorkerBaseUrl();
   try {
-    const response = await fetch(`${WORKER_BASE_URL}${path}`, { headers: JSON_HEADERS });
+    const response = await fetch(`${baseUrl}${path}`, { headers: JSON_HEADERS });
     if (!response.ok) {
       console.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
       return null;
@@ -167,14 +146,19 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
  * the session the first time we see any activity for it (tool run or chat
  * message). This guarantees a session row exists before observations arrive.
  */
-function ensureSessionInitialized(openCodeSessionId: string, projectName: string): string {
+function ensureSessionInitialized(
+  openCodeSessionId: string,
+  projectName: string,
+  userPrompt: string = "",
+): string {
   const contentSessionId = getOrCreateContentSessionId(openCodeSessionId);
-  if (!initializedSessionIds.has(openCodeSessionId)) {
+  const alreadyInitialized = initializedSessionIds.has(openCodeSessionId);
+  if (!alreadyInitialized || userPrompt) {
     initializedSessionIds.add(openCodeSessionId);
     workerPostFireAndForget("/api/sessions/init", {
       contentSessionId,
       project: projectName,
-      prompt: "",
+      prompt: userPrompt,
     });
   }
   return contentSessionId;
@@ -208,20 +192,30 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       });
     },
 
-    // Capture assistant chat messages as observations.
+    // Capture user prompts and assistant chat messages.
     "chat.message": async (
       _input: Record<string, unknown>,
       output: ChatMessageOutput,
     ): Promise<void> => {
       const sessionID = output.message?.sessionID;
       if (!sessionID) return;
-      if (output.message?.role !== "assistant") return;
 
-      const contentSessionId = ensureSessionInitialized(sessionID, projectName);
       const messageText = (output.parts || [])
         .filter((part) => part.type === "text" && typeof part.text === "string")
         .map((part) => part.text as string)
-        .join("\n");
+        .join("\n")
+        .trim();
+
+      if (output.message?.role === "user") {
+        if (messageText) {
+          ensureSessionInitialized(sessionID, projectName, messageText);
+        }
+        return;
+      }
+
+      if (output.message?.role !== "assistant") return;
+
+      const contentSessionId = ensureSessionInitialized(sessionID, projectName);
       if (!messageText) return;
 
       workerPostFireAndForget("/api/sessions/observations", {
@@ -300,41 +294,5 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
     },
   };
 };
-
-/**
- * The worker returns Claude-style `{ content: [{ type: 'text', text: '...' }] }`
- * blocks, NOT `{ items: [...] }` (#2406). Concatenate the text blocks and return
- * them verbatim; an empty block list or a "No observations found" body becomes a
- * clear no-results message.
- */
-export function parseSearchResponse(text: string, query: string): string {
-  let data: unknown;
-  try {
-    data = JSON.parse(text);
-  } catch (error: unknown) {
-    console.warn(
-      "[claude-mem] Failed to parse search results:",
-      error instanceof Error ? error.message : String(error),
-    );
-    return "Failed to parse search results.";
-  }
-
-  const content = (data as { content?: Array<{ type?: string; text?: string }> }).content;
-  if (!Array.isArray(content) || content.length === 0) {
-    return `No results found for "${query}".`;
-  }
-
-  const rendered = content
-    .filter((block) => block.type === "text" && typeof block.text === "string")
-    .map((block) => block.text as string)
-    .join("\n")
-    .trim();
-
-  if (!rendered) {
-    return `No results found for "${query}".`;
-  }
-
-  return rendered;
-}
 
 export default ClaudeMemPlugin;
