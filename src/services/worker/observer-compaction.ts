@@ -1,4 +1,3 @@
-
 import type { Database } from 'bun:sqlite';
 import type { Observation, SessionSummary } from '../context/types.js';
 import { CHARS_PER_TOKEN_ESTIMATE } from '../context/types.js';
