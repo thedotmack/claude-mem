@@ -58,6 +58,13 @@ export interface ActiveSession {
   pendingCompressionEvent?: Record<string, unknown> | null;
   /** Cumulative total_cost_usd from the SDK's latest result message — per-compression cost is the delta between results. */
   lastResultTotalCostUsd?: number | null;
+  /**
+   * Generation of the quota cooldown this generator is re-probing (set when the
+   * quota breaker admits a post-cooldown probe). A successful store clears the
+   * cooldown only if this generation still matches, so a stale success cannot
+   * wipe a cooldown a concurrent session armed later. Null for a normal start.
+   */
+  quotaProbeGeneration?: number | null;
 }
 
 export interface PendingMessage {

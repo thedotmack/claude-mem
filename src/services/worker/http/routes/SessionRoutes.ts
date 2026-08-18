@@ -30,6 +30,12 @@ import {
 } from '../../../../shared/dependency-health.js';
 import { findClaudeExecutable } from '../../../../shared/find-claude-executable.js';
 import { recordObserverFailure } from '../../../../shared/observer-health.js';
+import {
+  QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  getQuotaCooldown,
+  isQuotaCooldownActive,
+  recordQuotaExhausted,
+} from '../../../../shared/quota-cooldown.js';
 import { isClassified, describeProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
 
@@ -81,6 +87,29 @@ export class SessionRoutes extends BaseRouteHandler {
     const selectedProvider = this.getSelectedProvider();
 
     if (!session.generatorPromise) {
+      const quotaCooldown = getQuotaCooldown(selectedProvider);
+      if (quotaCooldown && isQuotaCooldownActive(quotaCooldown, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS)) {
+        // The provider's inference allowance is exhausted. Starting a generator
+        // per observation only earns the same cap and makes the gateway emit
+        // another cap event, so skip the start until the cooldown lets one probe
+        // through. The user already saw the remedy in the session-start warning.
+        logger.warn('SESSION', 'Skipping generator start while inference allowance is exhausted', {
+          sessionId: sessionDbId,
+          source,
+          provider: selectedProvider,
+          message: quotaCooldown.message,
+        });
+        return;
+      }
+      // An expired cooldown admits exactly one recovery probe. Re-arm it
+      // synchronously (a fresh generation) BEFORE the first await below, so a
+      // concurrent session sees an active cooldown and does not also probe — only
+      // one capped request per window, even across sessions. The probe's success
+      // clears this generation; its failure leaves the fresh arm standing.
+      session.quotaProbeGeneration = quotaCooldown
+        ? recordQuotaExhausted(selectedProvider, quotaCooldown.message).generation
+        : null;
+
       if (selectedProvider === 'claude') {
         const claudeStatus = getDependencyStatus('claude_cli');
         if (claudeStatus?.kind === 'setup_required') {
@@ -197,6 +226,16 @@ export class SessionRoutes extends BaseRouteHandler {
           });
           myController.abort();
           return;
+        }
+
+        if (isClassified(error) && error.kind === 'quota_exhausted') {
+          // Arm the circuit breaker: the allowance is gone until the billing
+          // cycle resets, so ensureGeneratorRunning stops starting a generator
+          // per observation (each start only earns another gateway cap event).
+          // Fall through so the failure is still logged, recorded in the
+          // observer-health ledger, and counted — the breaker only gates future
+          // starts.
+          recordQuotaExhausted(provider, error.message);
         }
 
         // No retry: the generator failed, the in-RAM batch is dropped, and the
