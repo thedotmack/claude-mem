@@ -253,26 +253,69 @@ function buildServerGenerationProviderFromEnv(): ServerGenerationProvider | null
   }
 }
 
+// #3630 — a gateway model with thinking on by default can spend the whole
+// output-token budget on reasoning and return empty text. Let operators raise
+// the budget and/or pass provider-specific request params (e.g. disable
+// thinking) via env, following the CLAUDE_MEM_SERVER_MODEL pattern.
+function parseServerMaxOutputTokens(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  const raw = (env.CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS ?? '').trim();
+  if (!raw) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    logger.warn('SYSTEM', 'server: ignoring invalid CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS; expected a positive integer', {
+      value: raw,
+    });
+    return undefined;
+  }
+  return parsed;
+}
+
+function parseServerProviderParams(env: NodeJS.ProcessEnv = process.env): Record<string, unknown> | undefined {
+  const raw = (env.CLAUDE_MEM_SERVER_PROVIDER_PARAMS ?? '').trim();
+  if (!raw) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('SYSTEM', 'server: ignoring invalid CLAUDE_MEM_SERVER_PROVIDER_PARAMS; expected a JSON object', {}, err);
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    logger.warn('SYSTEM', 'server: ignoring CLAUDE_MEM_SERVER_PROVIDER_PARAMS; expected a JSON object');
+    return undefined;
+  }
+  return parsed as Record<string, unknown>;
+}
+
 function instantiateServerGenerationProvider(provider: string): ServerGenerationProvider | null {
+  const maxOutputTokens = parseServerMaxOutputTokens();
+  const providerParams = parseServerProviderParams();
   if (provider === 'claude' || provider === 'anthropic') {
     const apiKey = process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
     if (!apiKey) return null;
-    const opts: { apiKey: string; model?: string } = { apiKey };
+    const opts: { apiKey: string; model?: string; maxOutputTokens?: number; providerParams?: Record<string, unknown> } = { apiKey };
     if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+    if (maxOutputTokens !== undefined) opts.maxOutputTokens = maxOutputTokens;
+    if (providerParams !== undefined) opts.providerParams = providerParams;
     return new ClaudeObservationProvider(opts);
   }
   if (provider === 'gemini') {
     const apiKey = process.env.GEMINI_API_KEY ?? process.env.CLAUDE_MEM_GEMINI_API_KEY ?? '';
     if (!apiKey) return null;
-    const opts: { apiKey: string; model?: string } = { apiKey };
+    const opts: { apiKey: string; model?: string; maxOutputTokens?: number; providerParams?: Record<string, unknown> } = { apiKey };
     if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+    if (maxOutputTokens !== undefined) opts.maxOutputTokens = maxOutputTokens;
+    if (providerParams !== undefined) opts.providerParams = providerParams;
     return new GeminiObservationProvider(opts);
   }
   if (provider === 'openrouter') {
     const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.CLAUDE_MEM_OPENROUTER_API_KEY ?? '';
     if (!apiKey) return null;
-    const opts: { apiKey: string; model?: string; baseUrl?: string } = { apiKey };
+    const opts: { apiKey: string; model?: string; baseUrl?: string; maxOutputTokens?: number; providerParams?: Record<string, unknown> } = { apiKey };
     if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+    if (maxOutputTokens !== undefined) opts.maxOutputTokens = maxOutputTokens;
+    if (providerParams !== undefined) opts.providerParams = providerParams;
     // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL.
     const baseUrl = process.env.CLAUDE_MEM_OPENROUTER_BASE_URL ?? process.env.OPENROUTER_BASE_URL;
     if (baseUrl) opts.baseUrl = baseUrl;
