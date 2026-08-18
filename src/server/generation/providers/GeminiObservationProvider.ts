@@ -246,8 +246,9 @@ export class GeminiObservationProvider implements ServerGenerationProvider {
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         generationConfig: {
           temperature: 0.3,
-          maxOutputTokens,
           ...(this.providerParams ?? {}),
+          // Budget last so a passthrough value can't clobber the retry budget.
+          maxOutputTokens,
         },
       }),
       signal,

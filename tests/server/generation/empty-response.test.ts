@@ -25,10 +25,12 @@ describe('empty-response helpers (#3630)', () => {
     expect(isTruncationStopReason(undefined)).toBe(false);
   });
 
-  it('shouldRetryEmptyResponse only retries empty text that was truncated or has no stop reason', () => {
+  it('shouldRetryEmptyResponse only retries empty text with a recognized truncation reason', () => {
     expect(shouldRetryEmptyResponse('', 'max_tokens')).toBe(true);
-    expect(shouldRetryEmptyResponse('', null)).toBe(true);
-    expect(shouldRetryEmptyResponse('', undefined)).toBe(true);
+    expect(shouldRetryEmptyResponse('', 'length')).toBe(true);
+    // No reason is not a confirmed truncation — do not spend a billed retry.
+    expect(shouldRetryEmptyResponse('', null)).toBe(false);
+    expect(shouldRetryEmptyResponse('', undefined)).toBe(false);
     expect(shouldRetryEmptyResponse('', 'end_turn')).toBe(false);
     expect(shouldRetryEmptyResponse('some text', 'max_tokens')).toBe(false);
   });

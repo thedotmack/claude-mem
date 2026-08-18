@@ -31,12 +31,13 @@ export function isTruncationStopReason(reason: string | null | undefined): boole
   return lower === 'max_tokens' || lower === 'length';
 }
 
-// Retry only when the text is empty AND the model either hit the budget or gave
-// no stop reason at all. A genuine completion (end_turn / stop / STOP) with
-// empty text will not be fixed by a larger budget, so a retry would waste a
-// call.
+// Retry only when the text is empty AND the model reported that it hit the
+// budget. A genuine completion (end_turn / stop / STOP) with empty text will not
+// be fixed by a larger budget, and an absent stop reason (content filtered,
+// choice-less / candidate-less response) is not a confirmed truncation — a retry
+// in either case would just waste a billed call.
 export function shouldRetryEmptyResponse(rawText: string, reason: string | null | undefined): boolean {
-  return rawText.length === 0 && (reason == null || isTruncationStopReason(reason));
+  return rawText.length === 0 && isTruncationStopReason(reason);
 }
 
 // The raw shape a provider extracts from one HTTP response, before it is turned

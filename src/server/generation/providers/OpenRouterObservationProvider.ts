@@ -168,8 +168,9 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
         model: this.model,
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.3,
-        max_tokens: maxOutputTokens,
         ...(this.providerParams ?? {}),
+        // Budget last so a passthrough value can't clobber the retry budget.
+        max_tokens: maxOutputTokens,
       }),
       signal,
     });

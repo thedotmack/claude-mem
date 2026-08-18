@@ -484,6 +484,33 @@ describe('empty-response budget-bump retry (#3630)', () => {
     expect(result.rawText).toBe('');
   });
 
+  it('Claude does not retry when an empty response carries no stop reason', async () => {
+    const seq = new SequenceCapturingFetch([
+      () => jsonResponse(200, { content: [] }),
+    ]);
+    const provider = new ClaudeObservationProvider({ apiKey: 'fake', fetchImpl: seq.fetch });
+    const result = await provider.generate(makeContext());
+    expect(seq.calls).toBe(1);
+    expect(result.rawText).toBe('');
+  });
+
+  it('Claude keeps the retry budget even when providerParams also sets max_tokens', async () => {
+    const seq = new SequenceCapturingFetch([
+      () => jsonResponse(200, { content: [], stop_reason: 'max_tokens' }),
+      () => jsonResponse(200, { content: [{ type: 'text', text: '<observation><type>x</type><title>t</title></observation>' }] }),
+    ]);
+    const provider = new ClaudeObservationProvider({
+      apiKey: 'fake',
+      providerParams: { max_tokens: 123 },
+      fetchImpl: seq.fetch,
+    });
+    const result = await provider.generate(makeContext());
+    expect(seq.calls).toBe(2);
+    expect((seq.bodies[0] as { max_tokens?: number }).max_tokens).toBe(4096);
+    expect((seq.bodies[1] as { max_tokens?: number }).max_tokens).toBe(8192);
+    expect(result.rawText).toContain('<observation>');
+  });
+
   it('Claude merges providerParams into the request body', async () => {
     const capturing = new CapturingFetch(
       jsonResponse(200, { content: [{ type: 'text', text: 'ok' }] }),

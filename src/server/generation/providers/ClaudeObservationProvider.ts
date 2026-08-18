@@ -164,10 +164,11 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
       },
       body: JSON.stringify({
         model: this.model,
-        max_tokens: maxOutputTokens,
         temperature: 0.3,
         messages: [{ role: 'user', content: prompt }],
         ...(this.providerParams ?? {}),
+        // Budget last so a passthrough value can't clobber the retry budget.
+        max_tokens: maxOutputTokens,
       }),
       signal,
     });

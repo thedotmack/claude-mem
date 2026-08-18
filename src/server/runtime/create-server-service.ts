@@ -257,11 +257,13 @@ function buildServerGenerationProviderFromEnv(): ServerGenerationProvider | null
 // output-token budget on reasoning and return empty text. Let operators raise
 // the budget and/or pass provider-specific request params (e.g. disable
 // thinking) via env, following the CLAUDE_MEM_SERVER_MODEL pattern.
-function parseServerMaxOutputTokens(env: NodeJS.ProcessEnv = process.env): number | undefined {
+export function parseServerMaxOutputTokens(env: NodeJS.ProcessEnv = process.env): number | undefined {
   const raw = (env.CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS ?? '').trim();
   if (!raw) return undefined;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
+  // Require a whole-string positive integer. Number.parseInt would silently
+  // accept a numeric prefix (e.g. "1e3" → 1), producing a one-token budget.
+  const parsed = /^\d+$/.test(raw) ? Number.parseInt(raw, 10) : NaN;
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     logger.warn('SYSTEM', 'server: ignoring invalid CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS; expected a positive integer', {
       value: raw,
     });
@@ -270,7 +272,7 @@ function parseServerMaxOutputTokens(env: NodeJS.ProcessEnv = process.env): numbe
   return parsed;
 }
 
-function parseServerProviderParams(env: NodeJS.ProcessEnv = process.env): Record<string, unknown> | undefined {
+export function parseServerProviderParams(env: NodeJS.ProcessEnv = process.env): Record<string, unknown> | undefined {
   const raw = (env.CLAUDE_MEM_SERVER_PROVIDER_PARAMS ?? '').trim();
   if (!raw) return undefined;
   let parsed: unknown;
