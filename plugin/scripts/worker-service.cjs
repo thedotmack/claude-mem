@@ -1684,7 +1684,10 @@ For more info: https://docs.claude-mem.ai/antigravity-cli/setup
     `).get(qe,c,e);if(u){if(r&&this.db.prepare(`
           UPDATE sdk_sessions SET project = ?
           WHERE id = ? AND (project IS NULL OR project = '')
-        `).run(r,u.id),s){let p=this.db.prepare("SELECT custom_title FROM sdk_sessions WHERE id = ?").get(u.id);p&&p.custom_title===null&&(this.db.prepare(`
+        `).run(r,u.id),l&&l!=="[media prompt]"&&this.db.prepare(`
+          UPDATE sdk_sessions SET user_prompt = ?
+          WHERE id = ? AND (user_prompt IS NULL OR user_prompt = '' OR user_prompt = '[media prompt]')
+        `).run(l,u.id),s){let p=this.db.prepare("SELECT custom_title FROM sdk_sessions WHERE id = ?").get(u.id);p&&p.custom_title===null&&(this.db.prepare(`
             UPDATE sdk_sessions SET custom_title = ?
             WHERE id = ? AND custom_title IS NULL
           `).run(s,u.id),this.enqueueSetTitleOp(e,c,s))}return u.id}let d=this.db.prepare(`

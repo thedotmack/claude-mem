@@ -2405,6 +2405,12 @@ export class SessionStore {
           WHERE id = ? AND (project IS NULL OR project = '')
         `).run(project, existing.id);
       }
+      if (storedUserPrompt && storedUserPrompt !== '[media prompt]') {
+        this.db.prepare(`
+          UPDATE sdk_sessions SET user_prompt = ?
+          WHERE id = ? AND (user_prompt IS NULL OR user_prompt = '' OR user_prompt = '[media prompt]')
+        `).run(storedUserPrompt, existing.id);
+      }
       if (customTitle) {
         // SELECT-then-UPDATE, never a decision on `.run().changes`
         // (bun:sqlite reports unreliable `changes` after RETURNING statements

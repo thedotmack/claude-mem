@@ -62,17 +62,22 @@ interface BusEvent {
   };
 }
 
-function resolveWorkerPort(): string {
-  // Canonical resolution: CLAUDE_MEM_WORKER_PORT env override, else the
-  // UID-derived default — identical to the rest of the codebase (#2406).
-  return SettingsDefaultsManager.get("CLAUDE_MEM_WORKER_PORT");
+import path from "path";
+import os from "os";
+
+function getWorkerBaseUrl(): string {
+  try {
+    const dataDir = process.env.CLAUDE_MEM_DATA_DIR || path.join(os.homedir(), ".claude-mem");
+    const settingsPath = path.join(dataDir, "settings.json");
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    return `http://${settings.CLAUDE_MEM_WORKER_HOST}:${settings.CLAUDE_MEM_WORKER_PORT}`;
+  } catch {
+    const host = SettingsDefaultsManager.get("CLAUDE_MEM_WORKER_HOST");
+    const port = SettingsDefaultsManager.get("CLAUDE_MEM_WORKER_PORT");
+    return `http://${host}:${port}`;
+  }
 }
 
-function resolveWorkerHost(): string {
-  return SettingsDefaultsManager.get("CLAUDE_MEM_WORKER_HOST");
-}
-
-const WORKER_BASE_URL = `http://${resolveWorkerHost()}:${resolveWorkerPort()}`;
 const MAX_TOOL_RESPONSE_LENGTH = 1000;
 
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
@@ -81,7 +86,8 @@ function workerPostFireAndForget(
   path: string,
   body: Record<string, unknown>,
 ): void {
-  fetch(`${WORKER_BASE_URL}${path}`, {
+  const baseUrl = getWorkerBaseUrl();
+  fetch(`${baseUrl}${path}`, {
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify(body),
@@ -94,8 +100,9 @@ function workerPostFireAndForget(
 }
 
 async function workerGetText(path: string): Promise<string | null> {
+  const baseUrl = getWorkerBaseUrl();
   try {
-    const response = await fetch(`${WORKER_BASE_URL}${path}`, { headers: JSON_HEADERS });
+    const response = await fetch(`${baseUrl}${path}`, { headers: JSON_HEADERS });
     if (!response.ok) {
       console.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
       return null;
@@ -139,14 +146,19 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
  * the session the first time we see any activity for it (tool run or chat
  * message). This guarantees a session row exists before observations arrive.
  */
-function ensureSessionInitialized(openCodeSessionId: string, projectName: string): string {
+function ensureSessionInitialized(
+  openCodeSessionId: string,
+  projectName: string,
+  userPrompt: string = "",
+): string {
   const contentSessionId = getOrCreateContentSessionId(openCodeSessionId);
-  if (!initializedSessionIds.has(openCodeSessionId)) {
+  const alreadyInitialized = initializedSessionIds.has(openCodeSessionId);
+  if (!alreadyInitialized || userPrompt) {
     initializedSessionIds.add(openCodeSessionId);
     workerPostFireAndForget("/api/sessions/init", {
       contentSessionId,
       project: projectName,
-      prompt: "",
+      prompt: userPrompt,
     });
   }
   return contentSessionId;
@@ -180,20 +192,30 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       });
     },
 
-    // Capture assistant chat messages as observations.
+    // Capture user prompts and assistant chat messages.
     "chat.message": async (
       _input: Record<string, unknown>,
       output: ChatMessageOutput,
     ): Promise<void> => {
       const sessionID = output.message?.sessionID;
       if (!sessionID) return;
-      if (output.message?.role !== "assistant") return;
 
-      const contentSessionId = ensureSessionInitialized(sessionID, projectName);
       const messageText = (output.parts || [])
         .filter((part) => part.type === "text" && typeof part.text === "string")
         .map((part) => part.text as string)
-        .join("\n");
+        .join("\n")
+        .trim();
+
+      if (output.message?.role === "user") {
+        if (messageText) {
+          ensureSessionInitialized(sessionID, projectName, messageText);
+        }
+        return;
+      }
+
+      if (output.message?.role !== "assistant") return;
+
+      const contentSessionId = ensureSessionInitialized(sessionID, projectName);
       if (!messageText) return;
 
       workerPostFireAndForget("/api/sessions/observations", {
