@@ -101,6 +101,14 @@ export class SessionRoutes extends BaseRouteHandler {
         });
         return;
       }
+      // An expired cooldown admits exactly one recovery probe. Re-arm it
+      // synchronously (a fresh generation) BEFORE the first await below, so a
+      // concurrent session sees an active cooldown and does not also probe — only
+      // one capped request per window, even across sessions. The probe's success
+      // clears this generation; its failure leaves the fresh arm standing.
+      session.quotaProbeGeneration = quotaCooldown
+        ? recordQuotaExhausted(selectedProvider, quotaCooldown.message).generation
+        : null;
 
       if (selectedProvider === 'claude') {
         const claudeStatus = getDependencyStatus('claude_cli');

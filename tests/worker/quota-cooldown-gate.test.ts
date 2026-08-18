@@ -9,17 +9,18 @@ import {
   getQuotaCooldown,
   isQuotaCooldownActive,
   recordQuotaExhausted,
-  clearQuotaCooldown,
+  clearQuotaCooldownIfCurrent,
   resetQuotaCooldownsForTesting,
 } from '../../src/shared/quota-cooldown.js';
+import { resetDependencyStatusesForTesting } from '../../src/shared/dependency-health.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 
 const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
 
-function makeSession(): ActiveSession {
+function makeSession(sessionDbId = 42): ActiveSession {
   return {
-    sessionDbId: 42,
-    contentSessionId: 'content-42',
+    sessionDbId,
+    contentSessionId: `content-${sessionDbId}`,
     memorySessionId: null,
     project: 'project',
     platformSource: 'claude',
@@ -61,12 +62,23 @@ describe('quota-cooldown breaker', () => {
     expect(isQuotaCooldownActive(state, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS)).toBe(false);
   });
 
-  it('is keyed per provider and cleared explicitly', () => {
+  it('is keyed per provider', () => {
     recordQuotaExhausted('openrouter', 'capped');
     expect(getQuotaCooldown('openrouter')).not.toBeNull();
     expect(getQuotaCooldown('gemini')).toBeNull();
+  });
 
-    clearQuotaCooldown('openrouter');
+  it('clears only the matching cooldown generation (a stale success cannot wipe a newer one)', () => {
+    const stale = recordQuotaExhausted('openrouter', 'first cap');
+    const fresh = recordQuotaExhausted('openrouter', 'second cap');
+    expect(fresh.generation).toBeGreaterThan(stale.generation);
+
+    // A success owned by the older generation must not clear the newer cooldown.
+    clearQuotaCooldownIfCurrent('openrouter', stale.generation);
+    expect(getQuotaCooldown('openrouter')).not.toBeNull();
+
+    // The owning generation clears it.
+    clearQuotaCooldownIfCurrent('openrouter', fresh.generation);
     expect(getQuotaCooldown('openrouter')).toBeNull();
   });
 });
@@ -76,6 +88,9 @@ describe('quota-cooldown generator gate', () => {
 
   beforeEach(() => {
     resetQuotaCooldownsForTesting();
+    // A leaked claude_cli setup-required status (e.g. from claude-setup-gate)
+    // would trip the Claude gate and skip the start before the quota path runs.
+    resetDependencyStatusesForTesting();
     Date.now = realDateNow;
   });
 
@@ -92,16 +107,20 @@ describe('quota-cooldown generator gate', () => {
       }),
       removeSessionImmediate: () => {},
     };
-    return new SessionRoutes(
+    const routes = new SessionRoutes(
       sessionManager as any,
       {} as any,
-      provider as any,           // claude (default selected in the test env)
+      provider as any,           // claude generator
       { startSession: async () => {} } as any,
       { startSession: async () => {} } as any,
       {} as any,
       {} as any,
       { finalizeSession: async () => {} } as any,
     );
+    // Pin the selected provider so the test does not depend on env-driven
+    // provider selection leaking in from other test files.
+    (routes as any).getSelectedProvider = () => 'claude';
+    return routes;
   }
 
   it('skips the generator start while the selected provider is in quota cooldown', async () => {
@@ -145,5 +164,34 @@ describe('quota-cooldown generator gate', () => {
     session.generatorPromise = null;
     await gated.ensureGeneratorRunning(session.sessionDbId, 'observation');
     expect(restarts).toBe(0);
+  });
+
+  it('admits exactly one probe after the cooldown expires (a concurrent session stays suppressed)', async () => {
+    const armed = recordQuotaExhausted('claude', "You've used your inference allowance");
+
+    // Cooldown has elapsed for both sessions.
+    Date.now = () => realDateNow() + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
+
+    const sessionA = makeSession(1);
+    let startsA = 0;
+    const routesA = makeRoutes(sessionA, { startSession: async () => { startsA += 1; } });
+    await routesA.ensureGeneratorRunning(sessionA.sessionDbId, 'observation');
+    await sessionA.generatorPromise;
+
+    // A admitted the single probe and re-armed the cooldown with a fresh
+    // generation, so B — reaching the gate afterwards — is suppressed.
+    expect(startsA).toBe(1);
+    const reArmed = getQuotaCooldown('claude');
+    expect(reArmed).not.toBeNull();
+    expect(reArmed!.generation).toBeGreaterThan(armed.generation);
+    expect(sessionA.quotaProbeGeneration).toBe(reArmed!.generation);
+
+    const sessionB = makeSession(2);
+    let startsB = 0;
+    const routesB = makeRoutes(sessionB, { startSession: async () => { startsB += 1; } });
+    await routesB.ensureGeneratorRunning(sessionB.sessionDbId, 'observation');
+
+    expect(startsB).toBe(0);
+    expect(sessionB.generatorPromise).toBeNull();
   });
 });

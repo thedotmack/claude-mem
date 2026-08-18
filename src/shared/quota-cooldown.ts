@@ -16,10 +16,18 @@
  * probe per cooldown window per provider.
  *
  * The gate lives in the worker and mirrors the Claude setup-required gate in
- * dependency-health.ts: skip while the cooldown is active, let one probe through
- * once it expires, and clear on a successful store. In-memory (not file-backed)
- * is enough — the state only needs to survive within one long-lived worker
- * process, and a restart re-probes at most once per provider.
+ * dependency-health.ts: skip while the cooldown is active, admit exactly one
+ * probe once it expires, and clear on that probe's success.
+ *
+ * Concurrency: the cooldown is shared per provider across all sessions, so arm
+ * and clear are versioned by `generation`. Admitting a probe re-arms the
+ * cooldown (a fresh generation), so a concurrent session sees it active and does
+ * not also probe; the probe's success clears only its own generation, so a stale
+ * in-flight success cannot wipe a cooldown another session armed later.
+ *
+ * In-memory (not file-backed) is enough — the state only needs to survive within
+ * one long-lived worker process, and a restart re-probes at most once per
+ * provider.
  */
 
 export interface QuotaCooldownState {
@@ -29,6 +37,8 @@ export interface QuotaCooldownState {
   message: string;
   /** Epoch ms the breaker was armed. */
   recordedAtMs: number;
+  /** Incremented on every arm; identifies this cooldown instance for safe clearing. */
+  generation: number;
 }
 
 /**
@@ -41,9 +51,15 @@ export interface QuotaCooldownState {
 export const QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS = 30 * 60_000; // 30 minutes
 
 const cooldowns = new Map<string, QuotaCooldownState>();
+let generationCounter = 0;
 
 export function recordQuotaExhausted(provider: string, message: string): QuotaCooldownState {
-  const state: QuotaCooldownState = { provider, message, recordedAtMs: Date.now() };
+  const state: QuotaCooldownState = {
+    provider,
+    message,
+    recordedAtMs: Date.now(),
+    generation: ++generationCounter,
+  };
   cooldowns.set(provider, state);
   return state;
 }
@@ -60,10 +76,18 @@ export function isQuotaCooldownActive(
   return nowMs - state.recordedAtMs < cooldownMs;
 }
 
-export function clearQuotaCooldown(provider: string): void {
-  cooldowns.delete(provider);
+/**
+ * Clear the cooldown for a provider only if it is still the instance identified
+ * by `generation`. A stale success (a generator that started before the cap and
+ * finished after another session armed a newer cooldown) carries an older
+ * generation and must not reopen the suppression window.
+ */
+export function clearQuotaCooldownIfCurrent(provider: string, generation: number): void {
+  const current = cooldowns.get(provider);
+  if (current && current.generation === generation) cooldowns.delete(provider);
 }
 
 export function resetQuotaCooldownsForTesting(): void {
   cooldowns.clear();
+  generationCounter = 0;
 }
