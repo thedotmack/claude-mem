@@ -65,6 +65,22 @@ export interface KillProcessTreeOptions {
    * No effect on Windows: `taskkill /T /F` is unconditionally immediate there.
    */
   signalMode?: 'graceful' | 'immediate';
+
+  /**
+   * The root's start token, captured when the caller first learned the PID.
+   *
+   * Supply this whenever the PID was captured BEFORE an await — a PID is not a
+   * stable handle, and by the time the kill runs the OS may have reissued the
+   * number to something unrelated. On mismatch this function does nothing at
+   * all: it does not signal the root, and it does not enumerate descendants
+   * from it either (they would be the replacement's children, and on Windows
+   * `taskkill /T` would take that whole subtree down).
+   *
+   * Callers holding their own pre-captured descendant snapshot should reap it
+   * themselves after this returns — that snapshot is still valid even when the
+   * root's identity is not.
+   */
+  expectedStartToken?: string | null;
 }
 
 /**
@@ -85,6 +101,15 @@ export async function killProcessTree(
   options: KillProcessTreeOptions = {}
 ): Promise<void> {
   const immediate = options.signalMode === 'immediate';
+
+  // Root identity gate. Runs before the platform split and before any
+  // enumeration: if this PID no longer names the process the caller captured,
+  // both signalling it and walking its children are wrong.
+  if (options.expectedStartToken !== undefined && !isSameProcess(pid, options.expectedStartToken)) {
+    logger.warn('PROCESS', 'Skipping tree-kill: root PID was reused since it was captured', { pid });
+    return;
+  }
+
   logger.debug('PROCESS', `Killing process tree rooted at PID ${pid}`, { immediate });
 
   if (process.platform === 'win32') {
@@ -126,7 +151,21 @@ export async function killProcessTree(
     const firstSignal: NodeJS.Signals = immediate ? 'SIGKILL' : 'SIGTERM';
     const descendantsBeforeTerm = await collectDescendantIdentities(pid);
     // Signal leaves first, then the root.
+    //
+    // Revalidated even though the tokens were captured moments ago: capturing
+    // them is not free (a `ps` spawn per PID on macOS, a PowerShell CIM query
+    // on Windows), so with a multi-level chain there is real elapsed time
+    // between enumerating the first descendant and signalling it. Long enough
+    // for that PID to exit and be reissued — after which this loop would
+    // SIGTERM, or in immediate mode SIGKILL, an unrelated process.
     for (const child of descendantsBeforeTerm) {
+      if (!isSameProcess(child.pid, child.startToken)) {
+        logger.debug('PROCESS', `Skipping ${firstSignal}: descendant PID was reused since enumeration`, {
+          pid: child.pid,
+          rootPid: pid,
+        });
+        continue;
+      }
       try {
         process.kill(child.pid, firstSignal);
       } catch {

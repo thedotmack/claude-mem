@@ -219,6 +219,13 @@ export class ProcessRegistry {
     });
 
     const aliveRecords = sessionRecords.filter(r => isPidAlive(r.pid));
+    // Identities captured up front. The SIGKILL phase below runs after a 5s
+    // waitForExit, and a record whose process exits during that window can
+    // have its PID reissued — force-killing it would hit a stranger, and the
+    // tree-kill form would take that stranger's children too.
+    const startTokens = new Map<number, string | null>(
+      aliveRecords.map(r => [r.pid, captureProcessStartToken(r.pid)])
+    );
     for (const record of aliveRecords) {
       try {
         if (process.platform === 'win32') {
@@ -259,9 +266,18 @@ export class ProcessRegistry {
         pgid: record.pgid,
         sessionId: sessionIdNum
       });
+      const expectedStartToken = startTokens.get(record.pid) ?? null;
+      if (!isSameProcess(record.pid, expectedStartToken)) {
+        logger.warn('SYSTEM', 'Skipping SIGKILL: session process PID was reused during the grace window', {
+          pid: record.pid,
+          sessionId: sessionIdNum,
+        });
+        continue;
+      }
+
       try {
         if (process.platform === 'win32') {
-          await killProcessTree(record.pid);
+          await killProcessTree(record.pid, { expectedStartToken });
         } else if (typeof record.pgid === 'number') {
           process.kill(-record.pgid, 'SIGKILL');
         } else {
@@ -375,6 +391,10 @@ export async function ensureSdkProcessExit(
 
   if (proc.exitCode !== null) return;
 
+  // Captured BEFORE the exit race below. That race waits up to timeoutMs, and
+  // a PID that exits inside it can be reissued before the force-kill runs.
+  const expectedStartToken = captureProcessStartToken(pid);
+
   const exitPromise = new Promise<void>((resolve) => {
     proc.once('exit', () => resolve());
   });
@@ -390,12 +410,20 @@ export async function ensureSdkProcessExit(
   logger.warn('PROCESS', `PID ${pid} did not exit after ${timeoutMs}ms, sending SIGKILL to process group`, {
     pid, pgid, timeoutMs,
   });
+  if (!isSameProcess(pid, expectedStartToken)) {
+    logger.warn('PROCESS', 'Skipping force-kill: SDK process PID was reused while awaiting exit', {
+      pid,
+      pgid,
+    });
+    return;
+  }
+
   try {
     if (process.platform === 'win32') {
       // proc.kill() only reaches the direct child — on Windows that is often a
       // `.cmd`/`.exe` shim whose real payload keeps running (and keeps the
       // inherited socket open). Tree-kill the whole chain instead.
-      await killProcessTree(pid);
+      await killProcessTree(pid, { expectedStartToken });
     } else if (typeof pgid === 'number') {
       process.kill(-pgid, 'SIGKILL');
     } else {

@@ -66,6 +66,19 @@ function spawnTermProofChild(): { rootPid: number } {
   return { rootPid };
 }
 
+/**
+ * A root whose direct child is a plain `sleep` — it dies to the INITIAL signal
+ * in either mode (SIGTERM in graceful, SIGKILL in immediate). That makes the
+ * initial-signal guard observable: skipped means it is still alive afterwards,
+ * because nothing else in the run will signal it.
+ */
+function spawnTermKillableChild(): { rootPid: number } {
+  const child = spawn('/bin/sh', ['-c', 'sleep 300 & wait'], { stdio: 'ignore' });
+  const rootPid = child.pid!;
+  strays.push(rootPid);
+  return { rootPid };
+}
+
 function directChildOf(rootPid: number): number {
   const out = execFileSync('pgrep', ['-P', String(rootPid)], { encoding: 'utf-8' });
   const pids = out.split('\n').map(l => Number.parseInt(l.trim(), 10)).filter(n => Number.isFinite(n) && n > 0);
@@ -126,6 +139,82 @@ describe.if(isPosix)('killProcessTree revalidates descendant identity before SIG
     expect(isPidAlive(bystander)).toBe(true);
 
     try { process.kill(bystander, 'SIGKILL'); } catch { /* fine */ }
+  }, 30_000);
+});
+
+describe.if(isPosix)('killProcessTree revalidates identity before the INITIAL signal', () => {
+  // The delayed escalation was guarded first; this covers the first signal,
+  // which fires right after enumeration. That gap is not free — capturing a
+  // token spawns `ps` per PID on macOS — so a PID can be reissued inside it.
+  // Both halves, in both modes.
+
+  for (const mode of ['graceful', 'immediate'] as const) {
+    const opts = mode === 'immediate' ? { signalMode: 'immediate' as const } : {};
+
+    it(`[${mode}] signals a descendant whose identity is UNCHANGED`, async () => {
+      const { rootPid } = spawnTermKillableChild();
+      await settle();
+      const target = directChildOf(rootPid);
+      expect(isPidAlive(target)).toBe(true);
+
+      await killProcessTree(rootPid, opts);
+
+      const died = await waitUntil(() => !isPidAlive(target), 10_000);
+      expect(died).toBe(true);
+    }, 30_000);
+
+    it(`[${mode}] SKIPS a descendant whose PID was reused since enumeration`, async () => {
+      const { rootPid } = spawnTermKillableChild();
+      await settle();
+      const bystander = directChildOf(rootPid);
+      expect(isPidAlive(bystander)).toBe(true);
+
+      forcedReuse.add(bystander);
+
+      await killProcessTree(rootPid, opts);
+      await settle(1_000);
+
+      // Never signalled: the initial pass skipped it on identity, and the
+      // union pass skips it for the same reason.
+      expect(isPidAlive(bystander)).toBe(true);
+
+      try { process.kill(bystander, 'SIGKILL'); } catch { /* fine */ }
+    }, 30_000);
+  }
+});
+
+describe.if(isPosix)('killProcessTree refuses a ROOT whose PID was reused', () => {
+  // Guards the shape behind P1 #4: a root PID captured before an await (the
+  // MCP transport close) and force-killed afterwards. On a mismatch nothing
+  // may happen at all — no root signal, and no descendant enumeration either,
+  // since those children belong to the replacement.
+
+  it('kills the tree when the root token still matches', async () => {
+    const { rootPid } = spawnTermKillableChild();
+    await settle();
+    const child = directChildOf(rootPid);
+    const token = realIdentitySnapshot.captureProcessStartToken(rootPid);
+
+    await killProcessTree(rootPid, { expectedStartToken: token });
+
+    expect(await waitUntil(() => !isPidAlive(rootPid), 10_000)).toBe(true);
+    expect(await waitUntil(() => !isPidAlive(child), 10_000)).toBe(true);
+  }, 30_000);
+
+  it('is a complete no-op when the root token differs', async () => {
+    const { rootPid } = spawnTermKillableChild();
+    await settle();
+    const child = directChildOf(rootPid);
+
+    await killProcessTree(rootPid, { expectedStartToken: 'stale-token-from-a-dead-process' });
+    await settle(1_000);
+
+    // Root untouched AND its children never enumerated or signalled.
+    expect(isPidAlive(rootPid)).toBe(true);
+    expect(isPidAlive(child)).toBe(true);
+
+    try { process.kill(rootPid, 'SIGKILL'); } catch { /* fine */ }
+    try { process.kill(child, 'SIGKILL'); } catch { /* fine */ }
   }, 30_000);
 });
 

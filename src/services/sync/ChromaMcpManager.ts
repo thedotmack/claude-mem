@@ -932,6 +932,11 @@ export class ChromaMcpManager {
     // re-parent and drop out of the walk, so a post-mortem scan finds nothing
     // to reap. collectDescendantPids() enumerates on Windows too — a
     // POSIX-only walk returned [] there and left the chain untracked.
+    // The ROOT's identity, captured BEFORE close(). uvx can exit during the
+    // close, and on Windows the escalation below is unconditional — so without
+    // this, a reused PID would be handed to `taskkill /PID <pid> /T /F`, force
+    // terminating an unrelated process AND its entire descendant tree.
+    const rootStartToken = trackedPid ? captureProcessStartToken(trackedPid) : null;
     const descendantsBeforeClose = trackedPid
       ? await ChromaMcpManager.snapshotDescendantIdentities(trackedPid)
       : [];
@@ -966,7 +971,10 @@ export class ChromaMcpManager {
 
     if (trackedPid && mustEscalate) {
       try {
-        await killProcessTree(trackedPid);
+        // expectedStartToken makes this a no-op if the PID was reused; the
+        // identity-validated descendant reap below still runs, which is the
+        // part that matters once the real root is gone.
+        await killProcessTree(trackedPid, { expectedStartToken: rootStartToken });
       } catch (error) {
         logger.warn('CHROMA_MCP', 'failed to kill prior chroma-mcp tree (best-effort)', {
           pid: trackedPid,
@@ -984,7 +992,9 @@ export class ChromaMcpManager {
     // second walk is not guaranteed to see everything — which is exactly why
     // it UNIONS with the pre-close set rather than replacing it. Between the
     // two, a descendant has to be invisible at BOTH sample points to escape.
-    const descendantsAfterClose = trackedPid
+    // Only re-scan when the root is still the process we recorded — walking a
+    // reused PID would enumerate a stranger's children and then reap them.
+    const descendantsAfterClose = trackedPid && isSameProcess(trackedPid, rootStartToken)
       ? await ChromaMcpManager.snapshotDescendantIdentities(trackedPid)
       : [];
     ChromaMcpManager.reapOrphanedDescendants([...descendantsBeforeClose, ...descendantsAfterClose]);
