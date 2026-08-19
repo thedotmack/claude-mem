@@ -2,13 +2,13 @@
 import { getCredential } from '../../shared/EnvManager.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { openRouterAttributionHeaders, OPENROUTER_APP_TITLE } from '../../shared/openrouter-attribution.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager, DEFAULT_OPENROUTER_MODEL } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
-import { ClassifiedProviderError, type ProviderErrorClass } from './provider-errors.js';
+import { ClassifiedProviderError, isClassified, type ProviderErrorClass } from './provider-errors.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 
@@ -142,6 +142,16 @@ export function classifyOpenRouterError(input: {
     return new ClassifiedProviderError(
       describe('auth error'),
       { kind: 'auth_invalid', cause: input.cause, ...detail },
+    );
+  }
+
+  // A deprecated model 404s on every request forever. Mark it distinctly so
+  // the query can fall back to the working default model once, instead of
+  // failing every observation the same way (#3659).
+  if ((status === 404 || status === 400) && lower.includes('deprecated')) {
+    return new ClassifiedProviderError(
+      describe('model deprecated'),
+      { kind: 'model_deprecated', cause: input.cause, ...detail },
     );
   }
 
@@ -320,50 +330,70 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       estimatedTokens
     });
 
-    let priorRequestId: string | null = null;
+    // One withRetry pass against a single model. Request-id dedup state stays
+    // scoped to the model so the deprecation fallback below starts clean.
+    const fetchForModel = (activeModel: string): Promise<OpenRouterResponse> => {
+      let priorRequestId: string | null = null;
+      return withRetry<OpenRouterResponse>(async (attemptSignal) => {
+        let response: Response;
+        try {
+          response = await this.fetchChatCompletion(apiUrl, apiKey, activeModel, messages, siteUrl, appName, priorRequestId, attemptSignal);
+        } catch (networkError: unknown) {
+          const err = networkError instanceof Error ? networkError : new Error(String(networkError));
+          throw classifyOpenRouterError({ cause: err });
+        }
 
-    const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
-      let response: Response;
-      try {
-        response = await this.fetchChatCompletion(apiUrl, apiKey, model, messages, siteUrl, appName, priorRequestId, attemptSignal);
-      } catch (networkError: unknown) {
-        const err = networkError instanceof Error ? networkError : new Error(String(networkError));
-        throw classifyOpenRouterError({ cause: err });
-      }
+        const requestId = response.headers.get('x-request-id') ?? response.headers.get('x-openrouter-request-id');
+        if (requestId) {
+          priorRequestId = requestId;
+        } else {
+          logger.debug('SDK', 'OpenRouter response missing request-id header; retry dedup is best-effort');
+        }
 
-      const requestId = response.headers.get('x-request-id') ?? response.headers.get('x-openrouter-request-id');
-      if (requestId) {
-        priorRequestId = requestId;
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw classifyOpenRouterError({
+            status: response.status,
+            bodyText: errorText,
+            headers: response.headers,
+            cause: new Error(`OpenRouter API error: ${response.status} - ${errorText}`),
+            ...(requestId ? { requestId } : {}),
+          });
+        }
+
+        const responseData = await response.json() as OpenRouterResponse;
+
+        if (responseData.error) {
+          // Per OpenRouter spec, errors can come in 200 responses too.
+          throw classifyOpenRouterError({
+            status: response.status,
+            bodyText: JSON.stringify(responseData),
+            headers: response.headers,
+            cause: new Error(`OpenRouter API error: ${responseData.error.code} - ${responseData.error.message}`),
+            ...(requestId ? { requestId } : {}),
+          });
+        }
+
+        return responseData;
+      }, { label: `OpenRouter ${activeModel}` });
+    };
+
+    let data: OpenRouterResponse;
+    try {
+      data = await fetchForModel(model);
+    } catch (error: unknown) {
+      // A deprecated model never recovers on retry. Fall back to the working
+      // default once so this session captures memories instead of failing
+      // every observation (#3659). A custom base URL is a private gateway that
+      // does not know our OpenRouter model id, so leave it untouched there.
+      const usingOpenRouter = apiUrl.includes('openrouter.ai');
+      if (isClassified(error) && error.kind === 'model_deprecated' && usingOpenRouter && model !== DEFAULT_OPENROUTER_MODEL) {
+        logger.warn('SDK', `OpenRouter model ${model} is deprecated; falling back to ${DEFAULT_OPENROUTER_MODEL}`);
+        data = await fetchForModel(DEFAULT_OPENROUTER_MODEL);
       } else {
-        logger.debug('SDK', 'OpenRouter response missing request-id header; retry dedup is best-effort');
+        throw error;
       }
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw classifyOpenRouterError({
-          status: response.status,
-          bodyText: errorText,
-          headers: response.headers,
-          cause: new Error(`OpenRouter API error: ${response.status} - ${errorText}`),
-          ...(requestId ? { requestId } : {}),
-        });
-      }
-
-      const responseData = await response.json() as OpenRouterResponse;
-
-      if (responseData.error) {
-        // Per OpenRouter spec, errors can come in 200 responses too.
-        throw classifyOpenRouterError({
-          status: response.status,
-          bodyText: JSON.stringify(responseData),
-          headers: response.headers,
-          cause: new Error(`OpenRouter API error: ${responseData.error.code} - ${responseData.error.message}`),
-          ...(requestId ? { requestId } : {}),
-        });
-      }
-
-      return responseData;
-    }, { label: `OpenRouter ${model}` });
+    }
 
     if (!data.choices?.[0]?.message?.content) {
       logger.error('SDK', 'Empty response from OpenRouter');
@@ -423,7 +453,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       ? rawModel
       : Array.isArray(rawModel) && rawModel.length > 0
         ? rawModel.map(String).join(',')
-        : 'xiaomi/mimo-v2-flash:free';
+        : DEFAULT_OPENROUTER_MODEL;
 
     // Base URL: settings value wins, then OPENROUTER_BASE_URL env var, else
     // the default OpenRouter endpoint (unchanged behavior). #2382/#2590/#2622/#2393.

@@ -28,7 +28,7 @@ OpenRouter actively supports democratizing AI access by offering free models. Th
 
 | Model | ID | Parameters | Context | Best For |
 |-------|------|------------|---------|----------|
-| **Xiaomi MiMo-V2-Flash** | `xiaomi/mimo-v2-flash:free` | 309B (15B active, MoE) | 256K | Reasoning, coding, agents |
+| **Poolside Laguna S 2.1** | `poolside/laguna-s-2.1:free` | — | — | Default; coding, reasoning |
 | **Gemini 2.0 Flash** | `google/gemini-2.0-flash-exp:free` | — | 1M | General purpose |
 | **Gemini 2.5 Flash** | `google/gemini-2.5-flash-preview:free` | — | 1M | Latest capabilities |
 | **DeepSeek R1** | `deepseek/deepseek-r1:free` | 671B | 64K | Reasoning, analysis |
@@ -37,7 +37,7 @@ OpenRouter actively supports democratizing AI access by offering free models. Th
 | **Mistral Nemo** | `mistralai/mistral-nemo:free` | 12B | 128K | Efficient performance |
 
 <Note>
-**Default Model**: Claude-mem uses `xiaomi/mimo-v2-flash:free` by default—a 309B parameter mixture-of-experts model that ranks #1 on SWE-bench Verified and excels at coding and reasoning tasks.
+**Default Model**: Claude-mem uses `poolside/laguna-s-2.1:free` by default—a free model that handles coding and reasoning observations well. You can switch to any other model at any time.
 </Note>
 
 ### Free Model Considerations
@@ -73,7 +73,7 @@ All free models support:
 |---------|--------|---------|-------------|
 | `CLAUDE_MEM_PROVIDER` | `claude`, `gemini`, `openrouter` | `claude` | AI provider for observation extraction |
 | `CLAUDE_MEM_OPENROUTER_API_KEY` | string | — | Your OpenRouter API key |
-| `CLAUDE_MEM_OPENROUTER_MODEL` | string | `xiaomi/mimo-v2-flash:free` | Model identifier (see list above) |
+| `CLAUDE_MEM_OPENROUTER_MODEL` | string | `poolside/laguna-s-2.1:free` | Model identifier (see list above) |
 | `CLAUDE_MEM_OPENROUTER_SITE_URL` | string | — | Optional: URL for analytics attribution |
 | `CLAUDE_MEM_OPENROUTER_APP_NAME` | string | `claude-mem` | Optional: App name for analytics |
 
@@ -95,7 +95,7 @@ Edit `~/.claude-mem/settings.json`:
 {
   "CLAUDE_MEM_PROVIDER": "openrouter",
   "CLAUDE_MEM_OPENROUTER_API_KEY": "sk-or-v1-your-key-here",
-  "CLAUDE_MEM_OPENROUTER_MODEL": "xiaomi/mimo-v2-flash:free"
+  "CLAUDE_MEM_OPENROUTER_MODEL": "poolside/laguna-s-2.1:free"
 }
 ```
 
@@ -111,11 +111,10 @@ The settings file takes precedence over the environment variable.
 
 ### For Free Usage (No Cost)
 
-**Recommended**: `xiaomi/mimo-v2-flash:free`
-- Best-in-class performance on coding benchmarks
-- 256K context window handles large observations
-- 65K max completion tokens
-- Mixture-of-experts architecture (15B active parameters)
+**Recommended**: `poolside/laguna-s-2.1:free`
+- Free to run, so observation extraction costs nothing
+- Handles coding and reasoning observations well
+- Set as the claude-mem default
 
 **Alternatives**:
 - `google/gemini-2.0-flash-exp:free` - 1M context, Google's flagship
@@ -143,7 +142,7 @@ Logs include detailed usage information:
 
 ```
 OpenRouter API usage: {
-  model: "xiaomi/mimo-v2-flash:free",
+  model: "poolside/laguna-s-2.1:free",
   inputTokens: 2500,
   outputTokens: 1200,
   totalTokens: 3700,
@@ -262,7 +261,7 @@ Content-Type: application/json
 **Request Format**:
 ```json
 {
-  "model": "xiaomi/mimo-v2-flash:free",
+  "model": "poolside/laguna-s-2.1:free",
   "messages": [
     {"role": "system", "content": "..."},
     {"role": "user", "content": "..."}
@@ -284,7 +283,7 @@ Content-Type: application/json
 | **Setup** | Automatic | API key required | API key required |
 
 <Tip>
-**Recommendation**: Start with OpenRouter's free `xiaomi/mimo-v2-flash:free` model for zero-cost observation extraction. If you need higher quality or encounter rate limits, switch to Claude or add OpenRouter credits for premium models.
+**Recommendation**: Start with OpenRouter's free `poolside/laguna-s-2.1:free` model for zero-cost observation extraction. If you need higher quality or encounter rate limits, switch to Claude or add OpenRouter credits for premium models.
 </Tip>
 
 ## Next Steps

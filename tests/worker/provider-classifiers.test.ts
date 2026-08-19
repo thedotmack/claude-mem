@@ -201,6 +201,24 @@ describe('classifyOpenRouterError', () => {
     expect(err.kind).toBe('transient');
   });
 
+  it('classifies a deprecated-model 404 as model_deprecated, not a plain bad request', () => {
+    const err = classifyOpenRouterError({
+      status: 404,
+      bodyText: JSON.stringify({ error: { message: 'This model has been deprecated', code: 404 } }),
+      cause: new Error('404'),
+    });
+    expect(err.kind).toBe('model_deprecated');
+  });
+
+  it('still classifies a non-deprecation 404 as unrecoverable', () => {
+    const err = classifyOpenRouterError({
+      status: 404,
+      bodyText: 'No endpoints found for that model',
+      cause: new Error('404'),
+    });
+    expect(err.kind).toBe('unrecoverable');
+  });
+
   // --- Gateway taxonomy envelope: { error: { code, message, action, url, request_id } } ---
 
   it('carries an allowance_exhausted envelope verbatim as quota_exhausted', () => {
