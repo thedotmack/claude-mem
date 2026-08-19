@@ -95,6 +95,12 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'hooks + MCP integration',
     },
     {
+      id: 'omp',
+      label: 'OMP',
+      detected: isCommandInPath('omp') || existsSync(join(home, '.omp')),
+      hint: 'native hooks integration',
+    },
+    {
       id: 'goose',
       label: 'Goose',
       detected:
