@@ -8,10 +8,11 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { styleText } from 'node:util';
-import { isPluginInstalled, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
+import { IS_WINDOWS, isPluginInstalled, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
 import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../../shared/paths.js';
+import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 
 type CheckStatus = 'ok' | 'warn' | 'fail';
 
@@ -115,7 +116,20 @@ export async function runDoctorCommand(): Promise<void> {
     required: false, // worker can be intentionally stopped; don't hard-fail
   });
 
-  // 6. Last recorded install error (surface remediation if present).
+  // 6. Windows Git Bash reachability. All claude-mem hooks run via
+  // `"shell": "bash"`; on Windows, Claude Code resolves that through Git for
+  // Windows with no WSL fallback. No-op on macOS/Linux.
+  if (IS_WINDOWS) {
+    const gitBash = checkWindowsGitBash();
+    checks.push({
+      name: 'Git Bash (Windows)',
+      status: gitBash.ok ? 'ok' : 'fail',
+      detail: gitBash.detail,
+      required: true,
+    });
+  }
+
+  // 7. Last recorded install error (surface remediation if present).
   const lastErrorPath = join(dataDir, 'last-install-error.json');
   if (existsSync(lastErrorPath)) {
     let detail = `present at ${lastErrorPath}`;
