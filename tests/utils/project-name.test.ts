@@ -1,7 +1,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { homedir } from 'os';
-import { getProjectName, getProjectContext } from '../../src/utils/project-name.js';
+import { getProjectName, getProjectContext, buildWorktreeProjectKey } from '../../src/utils/project-name.js';
 
 describe('getProjectName', () => {
   describe('tilde expansion', () => {
@@ -172,6 +172,52 @@ describe('getProjectContext', () => {
       expect(project).toBe('main-repo/my-worktree');
       expect(project).not.toBe('main-repo');
       expect(project).not.toBe('my-worktree');
+    });
+  });
+
+  // #3641 — Codex CLI puts worktrees at ~/.codex/worktrees/<id>/<repo>, so the
+  // worktree basename equals the repo name and the naive compound key doubles
+  // to <repo>/<repo>. That doubled key matches neither injection nor search.
+  describe('#3641 — doubled worktree key collapses to the repo name', () => {
+    let tmp: string;
+    let doubledCheckout: string;
+
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      tmp = mkdtempSync(join(tmpdir(), 'cm-wt-doubled-'));
+      // Mirror the Codex layout: the worktree checkout basename equals the
+      // parent repo basename (both 'q-companies-master').
+      const mainRepo = join(tmp, 'q-companies-master');
+      const worktreeGitDir = join(mainRepo, '.git', 'worktrees', 'q-companies-master');
+      doubledCheckout = join(tmp, 'codex-6389', 'q-companies-master');
+
+      mkdirSync(worktreeGitDir, { recursive: true });
+      mkdirSync(doubledCheckout, { recursive: true });
+      writeFileSync(join(doubledCheckout, '.git'), `gitdir: ${worktreeGitDir}\n`);
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('buildWorktreeProjectKey collapses when worktree name equals parent', () => {
+      expect(buildWorktreeProjectKey('q-companies-master', 'q-companies-master')).toBe('q-companies-master');
+    });
+
+    it('buildWorktreeProjectKey keeps the compound key when names differ', () => {
+      expect(buildWorktreeProjectKey('main-repo', 'feature-x')).toBe('main-repo/feature-x');
+    });
+
+    it('getProjectContext collapses the doubled key to the parent name', () => {
+      const ctx = getProjectContext(doubledCheckout);
+      expect(ctx.isWorktree).toBe(true);
+      expect(ctx.primary).toBe('q-companies-master');
+      expect(ctx.parent).toBe('q-companies-master');
+      expect(ctx.allProjects).toEqual(['q-companies-master']);
     });
   });
 

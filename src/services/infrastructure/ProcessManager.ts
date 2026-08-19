@@ -9,6 +9,7 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { removeOwnedPidFile } from '../../supervisor/shutdown.js';
 import { getSupervisor, validateWorkerPidFile, type ValidateWorkerPidStatus } from '../../supervisor/index.js';
 import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
+import { buildWorktreeProjectKey } from '../../utils/project-name.js';
 import { paths } from '../../shared/paths.js';
 
 const DATA_DIR = paths.dataDir();
@@ -221,7 +222,7 @@ function classifyCwdForRemap(cwd: string): CwdClassification {
     ? path.dirname(commonDir)
     : commonDir.replace(/\.git$/, '');
   const parent = path.basename(parentRepoDir);
-  return { kind: 'worktree', project: `${parent}/${leaf}` };
+  return { kind: 'worktree', project: buildWorktreeProjectKey(parent, leaf) };
 }
 
 export function runOneTimeCwdRemap(dataDirectory?: string): void {
@@ -352,6 +353,142 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: s
     mkdirSync(effectiveDataDir, { recursive: true });
     writeFileSync(markerPath, new Date().toISOString());
     logger.info('SYSTEM', 'cwd-remap marker written', { markerPath });
+  } finally {
+    db.close();
+  }
+}
+
+const DOUBLED_PROJECT_COLLAPSE_MARKER_FILENAME = '.doubled-project-collapse-applied-v1';
+
+/**
+ * Return the collapsed form `A` of a doubled worktree key `A/A`, or null when
+ * `project` is not a doubled key. #3641 — Codex worktrees whose basename equals
+ * the repo name were written as `<repo>/<repo>`; those rows stay orphaned from
+ * recall until collapsed to `<repo>`. A compound key always has exactly one
+ * slash (both halves are path basenames), so an equal split is a doubled key.
+ */
+function collapseDoubledProjectName(project: string): string | null {
+  const slash = project.indexOf('/');
+  if (slash <= 0) return null;
+  const parent = project.slice(0, slash);
+  const child = project.slice(slash + 1);
+  return parent === child ? parent : null;
+}
+
+/**
+ * #3641 — one-time collapse of already-written doubled project names. Fixing
+ * the write path (buildWorktreeProjectKey) stops new doubled names, but existing
+ * users keep observations filed under `<repo>/<repo>` that neither session-start
+ * injection nor search will match. The cwd-remap pass cannot rescue them: Codex
+ * worktrees are ephemeral, so their cwd no longer exists and classifyCwdForRemap
+ * skips them. This pass rewrites the doubled names by string match, independent
+ * of whether the worktree path survives.
+ */
+export function runOneTimeDoubledProjectCollapse(dataDirectory?: string): void {
+  const effectiveDataDir = dataDirectory ?? DATA_DIR;
+  const markerPath = path.join(effectiveDataDir, DOUBLED_PROJECT_COLLAPSE_MARKER_FILENAME);
+  const dbPath = path.join(effectiveDataDir, 'claude-mem.db');
+
+  if (existsSync(markerPath)) {
+    logger.debug('SYSTEM', 'doubled-project-collapse marker exists, skipping');
+    return;
+  }
+
+  if (!existsSync(dbPath)) {
+    mkdirSync(effectiveDataDir, { recursive: true });
+    writeFileSync(markerPath, new Date().toISOString());
+    logger.debug('SYSTEM', 'No DB present, doubled-project-collapse marker written without work', { dbPath });
+    return;
+  }
+
+  logger.warn('SYSTEM', 'Running one-time doubled project-name collapse', { dbPath });
+
+  try {
+    executeDoubledProjectCollapse(dbPath, effectiveDataDir, markerPath);
+  } catch (err: unknown) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    logger.error('SYSTEM', 'doubled-project-collapse failed, marker not written (will retry on next startup)', {}, error);
+  }
+}
+
+function executeDoubledProjectCollapse(dbPath: string, effectiveDataDir: string, markerPath: string): void {
+  const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
+
+  const probe = new Database(dbPath, { readonly: true });
+  const hasSessions = probe.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='sdk_sessions'"
+  ).get() as { name: string } | undefined;
+  probe.close();
+
+  if (!hasSessions) {
+    mkdirSync(effectiveDataDir, { recursive: true });
+    writeFileSync(markerPath, new Date().toISOString());
+    logger.info('SYSTEM', 'sdk_sessions table not present, doubled-project-collapse skipped');
+    return;
+  }
+
+  const { applySqliteConnectionPragmas } = require('../sqlite/connection.js') as typeof import('../sqlite/connection.js');
+  const db = new Database(dbPath);
+  applySqliteConnectionPragmas(db);
+  try {
+    const projectRows = db.prepare(`
+      SELECT DISTINCT project FROM (
+        SELECT project FROM sdk_sessions      WHERE project LIKE '%/%'
+        UNION SELECT project FROM observations      WHERE project LIKE '%/%'
+        UNION SELECT project FROM session_summaries WHERE project LIKE '%/%'
+      ) WHERE project IS NOT NULL
+    `).all() as Array<{ project: string }>;
+
+    const remaps = new Map<string, string>();
+    for (const { project } of projectRows) {
+      const collapsed = collapseDoubledProjectName(project);
+      if (collapsed) remaps.set(project, collapsed);
+    }
+
+    if (remaps.size === 0) {
+      logger.info('SYSTEM', 'doubled-project-collapse: no doubled names found');
+    } else {
+      const backup = `${dbPath}.bak-doubled-collapse-${Date.now()}`;
+      copyFileSync(dbPath, backup);
+      logger.info('SYSTEM', 'DB backed up before doubled-project-collapse', { backup });
+
+      const updSession = db.prepare('UPDATE sdk_sessions      SET project = ? WHERE project = ?');
+      const updObs     = db.prepare('UPDATE observations      SET project = ? WHERE project = ?');
+      const updSum     = db.prepare('UPDATE session_summaries SET project = ? WHERE project = ?');
+
+      // Same two-lane sync contract as the cwd-remap: on synced DBs the pure-SQL
+      // emitRemapProject bumps sync_rev and queues the remap op; pre-migration
+      // DBs take the legacy plain-UPDATE path.
+      const syncLane = hasSyncLane(db);
+
+      let sessionN = 0, obsN = 0, sumN = 0;
+      const tx = db.transaction(() => {
+        for (const [doubled, collapsed] of remaps) {
+          sessionN += updSession.run(collapsed, doubled).changes;
+          if (syncLane) {
+            const remap = emitRemapProject(db, { project: doubled }, { project: collapsed });
+            obsN += remap.observations;
+            sumN += remap.summaries;
+          } else {
+            obsN += updObs.run(collapsed, doubled).changes;
+            sumN += updSum.run(collapsed, doubled).changes;
+          }
+        }
+      });
+      tx();
+
+      logger.info('SYSTEM', 'doubled-project-collapse applied', {
+        doubledNames: remaps.size,
+        sessions: sessionN,
+        observations: obsN,
+        summaries: sumN,
+        backup
+      });
+    }
+
+    mkdirSync(effectiveDataDir, { recursive: true });
+    writeFileSync(markerPath, new Date().toISOString());
+    logger.info('SYSTEM', 'doubled-project-collapse marker written', { markerPath });
   } finally {
     db.close();
   }

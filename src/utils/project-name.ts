@@ -76,6 +76,24 @@ export interface ProjectContext {
   allProjects: string[];
 }
 
+/**
+ * Build the worktree compound project key from its parent and worktree names.
+ *
+ * #3641 — Codex CLI puts worktrees at `~/.codex/worktrees/<id>/<repo>`, so the
+ * worktree basename equals the repo name and the naive `<parent>/<worktree>`
+ * key doubles to `<repo>/<repo>`. That doubled key matches neither session-start
+ * injection nor search, so every observation is orphaned. A worktree named after
+ * its repo adds no distinguishing information, so collapse the key to the parent
+ * name alone. This is the one shared resolver — both getProjectContext and
+ * ProcessManager.classifyCwdForRemap call it so the write path and the migration
+ * path agree.
+ */
+export function buildWorktreeProjectKey(parentProjectName: string, worktreeName: string): string {
+  return worktreeName === parentProjectName
+    ? parentProjectName
+    : `${parentProjectName}/${worktreeName}`;
+}
+
 export function getProjectContext(cwd: string | null | undefined): ProjectContext {
   const cwdProjectName = getProjectName(cwd);
 
@@ -91,12 +109,15 @@ export function getProjectContext(cwd: string | null | undefined): ProjectContex
   const worktreeInfo = detectWorktree(findGitRepoRoot(expandedCwd) ?? expandedCwd);
 
   if (worktreeInfo.isWorktree && worktreeInfo.parentProjectName) {
-    const composite = `${worktreeInfo.parentProjectName}/${cwdProjectName}`;
+    const composite = buildWorktreeProjectKey(worktreeInfo.parentProjectName, cwdProjectName);
+    const allProjects = composite === worktreeInfo.parentProjectName
+      ? [worktreeInfo.parentProjectName]
+      : [worktreeInfo.parentProjectName, composite];
     return {
       primary: composite,
       parent: worktreeInfo.parentProjectName,
       isWorktree: true,
-      allProjects: [worktreeInfo.parentProjectName, composite]
+      allProjects
     };
   }
 
