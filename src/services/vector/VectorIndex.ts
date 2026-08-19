@@ -23,6 +23,11 @@ export class VectorIndex {
     ensureVectorSchema(db);
   }
 
+  /** Identity of the vector space currently being written. */
+  get modelId(): string {
+    return this.embedder.modelId;
+  }
+
   /**
    * Insert or update documents.
    *
