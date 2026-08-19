@@ -65,10 +65,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      # DATA_DIR is resolved into a module-level const at import time
-      # (src/shared/paths.ts), so this MUST be set in the job env — assigning
-      # it from inside a test is a silent no-op that falls back to $HOME.
-      CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}/claude-mem-data
       CLAUDE_MEM_TEST_CHROMA: '1'
       CLAUDE_MEM_TEST_CHROMA_POLLUTED_ENV: '1'
       # Production default is 120s; a cold uvx resolve + chromadb build blows
@@ -100,20 +96,37 @@ jobs:
       - name: Build
         run: npm run build
 
+      # CLAUDE_MEM_DATA_DIR is set per-step, not on the job.
+      #
+      # `runner` is not a valid context in `jobs.<id>.env` (only github, needs,
+      # strategy, matrix, vars, secrets, inputs are), so a job-level
+      # ${{ runner.temp }} makes Actions reject the whole file with
+      # "Unrecognized named-value: 'runner'" — a startup_failure with zero jobs
+      # and no logs. Step-level env is where `runner` IS valid.
+      #
+      # It has to reach the process environment rather than be set from inside
+      # a test: src/shared/paths.ts resolves DATA_DIR into a module-level const
+      # at import time, so a later assignment is a silent no-op that would fall
+      # back to the real home directory.
+      #
       # Bun's per-test default timeout is 5s; a cold Chroma build needs far
       # more. Deliberately NOT retried — a retry would paper over exactly the
       # orphan race these tests exist to catch.
       - name: Chroma lifecycle round-trip (+ hostile Python env)
+        env:
+          CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}/claude-mem-data
         run: bun test tests/integration/chroma-windows-lifecycle.test.ts --timeout 600000
 
       - name: Worker-recycle orphan gate (#3482)
+        env:
+          CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}/claude-mem-data
         run: bun test tests/integration/worker-recycle-orphans.test.ts --timeout 600000
 
       # Diagnostic only — never fails the job. Identity filtering happens
       # inside the test; this is a human-readable postmortem when it goes red.
       - name: Surviving uv/python processes (diagnostic)
         if: always()
-        run: ps -eo pid,ppid,comm | grep -E '(uv|python)' || true
+        run: pgrep -a -f 'uv|python' || true
 
   sync-hub:
     name: sync-hub worker (DO anti-pattern grep · vitest · WS suite)

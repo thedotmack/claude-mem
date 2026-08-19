@@ -57,11 +57,6 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 25
     env:
-      # Isolate every claude-mem path under the runner's temp dir. DATA_DIR is
-      # resolved into a module-level const at import time (src/shared/paths.ts),
-      # so this MUST be set in the job env — setting it from inside a test is a
-      # silent no-op that would fall back to the real profile directory.
-      CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}\claude-mem-data
       # Opt in to the gated suites; they are skipped everywhere else.
       CLAUDE_MEM_TEST_CHROMA: '1'
       CLAUDE_MEM_TEST_CHROMA_POLLUTED_ENV: '1'
@@ -96,8 +91,22 @@ jobs:
       # the recycle test's version-mismatch probe needs a built worker present.
       - run: npm run build
 
+      # CLAUDE_MEM_DATA_DIR is set per-step, not on the job.
+      #
+      # `runner` is not a valid context in `jobs.<id>.env` (only github, needs,
+      # strategy, matrix, vars, secrets, inputs are), so a job-level
+      # ${{ runner.temp }} makes Actions reject the whole file with
+      # "Unrecognized named-value: 'runner'" — a startup_failure with zero jobs
+      # and no logs. Step-level env is where `runner` IS valid.
+      #
+      # It has to reach the process environment rather than be set from inside
+      # a test: src/shared/paths.ts resolves DATA_DIR into a module-level const
+      # at import time, so a later assignment is a silent no-op that would fall
+      # back to the real profile directory.
       - name: Chroma lifecycle round-trip (+ hostile Python env)
         shell: pwsh
+        env:
+          CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}\claude-mem-data
         run: |
           $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
           # Bun's per-test default timeout is 5s; a cold Chroma build needs far
@@ -109,6 +118,8 @@ jobs:
       # chroma chain), passes once the recycle path tree-kills on Windows.
       - name: Worker-recycle orphan gate (#3482)
         shell: pwsh
+        env:
+          CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}\claude-mem-data
         run: |
           $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
           & $bun test tests/integration/worker-recycle-orphans.test.ts --timeout 600000
