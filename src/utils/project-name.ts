@@ -1,15 +1,8 @@
-import { homedir } from 'os'
 import path from 'path';
 import { execFileSync } from 'child_process';
+import { expandHome } from '../shared/expand-home.js';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
-
-function expandTilde(p: string): string {
-  if (p === '~' || p.startsWith('~/')) {
-    return p.replace(/^~/, homedir())
-  }
-  return p
-}
 
 /**
  * Resolve the git repository ROOT for a directory, so a project's name is
@@ -35,13 +28,16 @@ function findGitRepoRoot(dir: string): string | null {
   }
 }
 
-export function getProjectName(cwd: string | null | undefined): string {
+export function getProjectName(
+  cwd: string | null | undefined,
+  platform: NodeJS.Platform = process.platform,
+): string {
   if (!cwd || cwd.trim() === '') {
     logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
     return 'unknown-project';
   }
 
-  const expanded = expandTilde(cwd)
+  const expanded = expandHome(cwd, platform);
 
   // #2663 — derive the project name from the git repo root when inside a repo so
   // the name is stable across subdirectories/worktrees. Fall back to the cwd
@@ -76,14 +72,17 @@ export interface ProjectContext {
   allProjects: string[];
 }
 
-export function getProjectContext(cwd: string | null | undefined): ProjectContext {
-  const cwdProjectName = getProjectName(cwd);
+export function getProjectContext(
+  cwd: string | null | undefined,
+  platform: NodeJS.Platform = process.platform,
+): ProjectContext {
+  const cwdProjectName = getProjectName(cwd, platform);
 
   if (!cwd) {
     return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
   }
 
-  const expandedCwd = expandTilde(cwd);
+  const expandedCwd = expandHome(cwd, platform);
   // #3262 — detectWorktree stats `<cwd>/.git`, which only exists at the
   // worktree root. Resolve the git working-tree root first (same pattern as
   // getProjectName / #2663) so sessions started in a subdirectory still get
