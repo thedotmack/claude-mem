@@ -5,10 +5,15 @@ import { LocalEmbedder } from '../../src/services/vector/LocalEmbedder.js';
 
 const db = new Database(':memory:');
 db.run('PRAGMA foreign_keys = ON');
-db.run(`CREATE TABLE observations (id INTEGER PRIMARY KEY, project TEXT, merged_into_project TEXT, platform_source TEXT)`);
-db.run(`CREATE TABLE session_summaries (id INTEGER PRIMARY KEY, project TEXT, merged_into_project TEXT, platform_source TEXT)`);
-db.prepare('INSERT INTO observations VALUES (?,?,?,?)').run(7, 'alpha', null, 'claude');
-db.prepare('INSERT INTO session_summaries VALUES (?,?,?,?)').run(9, 'alpha', null, 'claude');
+// Real column layout: scope lives on the parent rows / sdk_sessions, never
+// denormalised onto the vector rows.
+db.run(`CREATE TABLE sdk_sessions (id INTEGER PRIMARY KEY, content_session_id TEXT, memory_session_id TEXT, project TEXT, platform_source TEXT)`);
+db.run(`CREATE TABLE observations (id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT, merged_into_project TEXT)`);
+db.run(`CREATE TABLE session_summaries (id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT, merged_into_project TEXT)`);
+db.run(`CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, content_session_id TEXT)`);
+db.prepare('INSERT INTO sdk_sessions VALUES (?,?,?,?,?)').run(1, 'cs-1', 'sess-1', 'alpha', 'claude');
+db.prepare('INSERT INTO observations VALUES (?,?,?,?)').run(7, 'sess-1', 'alpha', null);
+db.prepare('INSERT INTO session_summaries VALUES (?,?,?,?)').run(9, 'sess-1', 'alpha', null);
 
 const index = new VectorIndex(db, new LocalEmbedder());
 const sync = new VectorSync(index);

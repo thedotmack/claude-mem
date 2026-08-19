@@ -1,7 +1,7 @@
 import type { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
 import type { Embedder, VectorDoc, VectorDocKind, VectorHit, VectorQuery } from './types.js';
-import { VECTOR_TABLES, decodeEmbedding, encodeEmbedding, ensureVectorSchema } from './schema.js';
+import { VECTOR_TABLES, decodeEmbedding, encodeEmbedding, ensureVectorSchema, hasColumn } from './schema.js';
 
 interface CandidateRow {
   doc_id: string;
@@ -101,28 +101,43 @@ export class VectorIndex {
     const hits: VectorHit[] = [];
 
     for (const kind of q.kinds) {
-      const { table, parent } = VECTOR_TABLES[kind];
+      const spec = VECTOR_TABLES[kind];
       const where: string[] = [];
       const params: (string | number)[] = [];
 
       if (q.project) {
-        // Mirrors buildWhereFilter's $or: [{project}, {merged_into_project}]
-        where.push(`(p.project = ? OR p.merged_into_project = ?)`);
-        params.push(q.project, q.project);
+        // Mirrors buildWhereFilter's $or: [{project}, {merged_into_project}].
+        // merged_into_project only exists once its ALTER TABLE migration has
+        // run, so an unmigrated store scopes on project alone rather than
+        // erroring out and failing search closed.
+        const merged =
+          spec.mergedExpr && spec.mergedRequires && hasColumn(this.db, ...spec.mergedRequires)
+            ? spec.mergedExpr
+            : null;
+        if (merged) {
+          where.push(`(${spec.projectExpr} = ? OR ${merged} = ?)`);
+          params.push(q.project, q.project);
+        } else {
+          where.push(`${spec.projectExpr} = ?`);
+          params.push(q.project);
+        }
       }
-      if (q.platformSource) {
-        where.push(`p.platform_source = ?`);
+
+      if (q.platformSource && spec.platformExpr && spec.platformRequires
+          && hasColumn(this.db, ...spec.platformRequires)) {
+        where.push(`${spec.platformExpr} = ?`);
         params.push(q.platformSource);
       }
+
       // A model change invalidates comparability; never mix vector spaces.
-      where.push(`v.model_id = ?`);
+      where.push('v.model_id = ?');
       params.push(this.embedder.modelId);
 
       const rows = this.db.prepare(`
         SELECT v.doc_id, v.sqlite_id, v.field_type, v.fact_index, v.embedding
-        FROM ${table} v
-        JOIN ${parent} p ON p.id = v.sqlite_id
-        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+        FROM ${spec.table} v
+        ${spec.joinSql}
+        WHERE ${where.join(' AND ')}
       `).all(...params) as CandidateRow[];
 
       for (const row of rows) {
