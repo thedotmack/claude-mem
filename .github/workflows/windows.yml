@@ -4,7 +4,10 @@ on:
   pull_request:
     paths:
       - 'src/**'
+      - 'tests/**'
       - 'plugin/scripts/**'
+      - 'scripts/**'
+      - 'tests/scripts/**'
       - 'package.json'
       - 'bunfig.toml'
       - '.github/workflows/windows.yml'
@@ -18,7 +21,7 @@ jobs:
     # can't detect it ("unknown version undefined") and native tree-sitter
     # rebuilds fail during `npm install`. Revisit when node-gyp gains VS18 support.
     runs-on: windows-2022
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -33,12 +36,179 @@ jobs:
 
       - run: npm install --no-audit --no-fund
 
-      # Build only — the build-and-sync script also runs marketplace sync + worker
-      # restart from a hardcoded ~/.claude/plugins path that doesn't exist on CI.
       - run: npm run build
 
-      # Covers the Windows-only bun resolver path that Linux CI skips.
+      # Covers the Windows-only bun resolver path that Linux CI skips, plus the
+      # scripts that replaced rsync and tail: mirror pattern matching, --delete
+      # protection and -a metadata reconciliation against real NTFS paths, and
+      # the bounded log tail under a constrained heap.
       - shell: pwsh
         run: |
           $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
-          & $bun test tests/bun-runner.test.ts
+          & $bun test tests/bun-runner.test.ts tests/scripts/mirror-dir.test.ts tests/scripts/worker-logs.test.ts
+
+      # The step that used to be impossible on Windows: sync-marketplace shelled
+      # out to rsync. Runs the real script against a scratch USERPROFILE (Node's
+      # os.homedir() reads it on Windows) so the runner's own profile is
+      # untouched, then asserts the rsync semantics it replaced — stale files
+      # deleted, already-installed deps and excluded trees left alone.
+      - name: Exercise marketplace sync
+        shell: pwsh
+        run: |
+          $env:PATH = "$(Join-Path $env:USERPROFILE '.bun\bin');$env:PATH"
+
+          $scratchHome = Join-Path $env:RUNNER_TEMP 'sync-home'
+          $marketplace = Join-Path $scratchHome '.claude\plugins\marketplaces\thedotmack'
+          $dep = Join-Path $marketplace 'node_modules\pre-existing-dep'
+          New-Item -ItemType Directory -Force -Path $dep | Out-Null
+          Set-Content -Path (Join-Path $marketplace 'STALE-FROM-OLD-BUILD.js') -Value 'stale'
+          Set-Content -Path (Join-Path $dep 'index.js') -Value 'installed'
+
+          $env:USERPROFILE = $scratchHome
+          node scripts/sync-marketplace.cjs
+
+          if (-not (Test-Path (Join-Path $marketplace 'plugin\.claude-plugin\plugin.json'))) {
+            throw 'sync did not populate the marketplace'
+          }
+          if (Test-Path (Join-Path $marketplace 'STALE-FROM-OLD-BUILD.js')) {
+            throw 'sync left a stale file behind (--delete equivalence broken)'
+          }
+          if (-not (Test-Path (Join-Path $dep 'index.js'))) {
+            throw 'sync deleted installed deps that --delete protected'
+          }
+          if (Test-Path (Join-Path $marketplace 'workers')) {
+            throw 'sync copied the excluded workers/ tree'
+          }
+
+      # worker:logs replaced `tail -n 50` + `date +%F`, neither of which exists
+      # in native PowerShell. Set-Content writes CRLF, so this also covers a
+      # Windows-native line ending that the bun test (LF) does not.
+      - name: Exercise worker log tail
+        shell: pwsh
+        run: |
+          $env:USERPROFILE = Join-Path $env:RUNNER_TEMP 'log-home'
+          $logs = Join-Path $env:USERPROFILE '.claude-mem\logs'
+          New-Item -ItemType Directory -Force -Path $logs | Out-Null
+          $stamp = Get-Date -Format 'yyyy-MM-dd'
+          Set-Content -Path (Join-Path $logs "worker-$stamp.log") -Value (1..60 | ForEach-Object { "line $_" })
+
+          $out = node scripts/worker-logs.cjs
+          if ($out.Count -ne 50) { throw "expected 50 lines, got $($out.Count)" }
+          if ($out[0].TrimEnd() -ne 'line 11') { throw "expected first line 'line 11', got '$($out[0])'" }
+          if ($out[49].TrimEnd() -ne 'line 60') { throw "expected last line 'line 60', got '$($out[49])'" }
+
+  # The reason Windows Chroma bugs kept shipping: the build job above never
+  # spawns Chroma, so #3482 (worker recycle orphans the uvx -> uv -> python
+  # tree and wedges the worker port), #3540 (leaked uv build dirs) and #3552
+  # (foreign interpreter inherited into the uvx child) were all invisible to
+  # CI. This job runs the real thing.
+  chroma-windows:
+    name: chroma lifecycle · worker-recycle orphan gate
+    # Same windows-2022 pin and rationale as the build job above: the
+    # windows-latest image moved to windows-2025 / VS18, which npm's bundled
+    # node-gyp@11.5.0 cannot detect, breaking native rebuilds on `npm install`.
+    runs-on: windows-2022
+    timeout-minutes: 25
+    env:
+      # Opt in to the gated suites; they are skipped everywhere else.
+      CLAUDE_MEM_TEST_CHROMA: '1'
+      CLAUDE_MEM_TEST_CHROMA_POLLUTED_ENV: '1'
+      # Production default is 120s, which a cold uvx resolve + chromadb build
+      # blows straight through on a CI runner. 600s is the accepted maximum
+      # (CHROMA_PREWARM_TIMEOUT_BOUNDS in ChromaMcpManager.ts).
+      CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: '600000'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Bun (worker runtime + test runner)
+        run: |
+          irm bun.sh/install.ps1 | iex
+        shell: pwsh
+
+      # Caching uv's downloads AND its managed Python keeps a cold chromadb
+      # resolve off the critical path; without it this job pays ~10 minutes on
+      # every run and routinely exceeds the timeout.
+      - name: Install uv (with cache)
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-python: true
+
+      - run: npm install --no-audit --no-fund
+
+      # Required: resolveWorkerScript() falls back to <cwd>/plugin/scripts, so
+      # the recycle test's version-mismatch probe needs a built worker present.
+      - run: npm run build
+
+      # The reuse suite (tests/shared/kill-process-tree-pid-reuse.test.ts) is
+      # describe.if(isPosix) throughout — its fixtures need /bin/sh, pgrep and
+      # SIGTERM semantics — so it runs on ubuntu only and would skip entirely
+      # here. These are the same guarantees expressed with a cmd.exe fixture,
+      # so the Windows implementations (CIM enumeration, taskkill exit-code
+      # classification, the root identity gate) actually execute.
+      - name: Tree-kill end-to-end (Windows implementations)
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
+          & $bun test tests/shared/kill-process-tree-cross-platform.test.ts --timeout 120000
+
+      # De-risks the one thing that cannot be checked off-Windows: the CIM
+      # enumeration derives each descendant's start token from the same row that
+      # discovered it, and captureProcessStartToken re-reads it later. If those
+      # two disagree on FORMAT, every comparison fails, every descendant is
+      # skipped as "reused", and #2313 returns silently while the code still
+      # looks guarded. This asserts they agree on a real Windows process table.
+      - name: Process-identity format agreement
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
+          & $bun test tests/shared/kill-process-tree-identity.test.ts --timeout 120000
+
+      # CLAUDE_MEM_DATA_DIR is set per-step, not on the job.
+      #
+      # `runner` is not a valid context in `jobs.<id>.env` (only github, needs,
+      # strategy, matrix, vars, secrets, inputs are), so a job-level
+      # ${{ runner.temp }} makes Actions reject the whole file with
+      # "Unrecognized named-value: 'runner'" — a startup_failure with zero jobs
+      # and no logs. Step-level env is where `runner` IS valid.
+      #
+      # It has to reach the process environment rather than be set from inside
+      # a test: src/shared/paths.ts resolves DATA_DIR into a module-level const
+      # at import time, so a later assignment is a silent no-op that would fall
+      # back to the real profile directory.
+      - name: Chroma lifecycle round-trip (+ hostile Python env)
+        shell: pwsh
+        env:
+          CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}\claude-mem-data
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
+          # Bun's per-test default timeout is 5s; a cold Chroma build needs far
+          # more. Deliberately NOT retried — a retry would paper over exactly
+          # the orphan/port race this job exists to catch.
+          & $bun test tests/integration/chroma-windows-lifecycle.test.ts --timeout 600000
+
+      # THE regression gate. Fails on main (single-PID SIGKILL orphans the
+      # chroma chain), passes once the recycle path tree-kills on Windows.
+      - name: Worker-recycle orphan gate (#3482)
+        shell: pwsh
+        env:
+          CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}\claude-mem-data
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
+          & $bun test tests/integration/worker-recycle-orphans.test.ts --timeout 600000
+
+      # Diagnostic only — never fails the job. Ancestry/identity filtering is
+      # done inside the tests; this is just a human-readable postmortem for
+      # when the gate above goes red.
+      - name: Surviving uv/python processes (diagnostic)
+        if: always()
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_Process |
+            Where-Object { $_.Name -match '^(uv|uvx|python)(\.exe)? } |
+            Select-Object ProcessId, ParentProcessId, Name, CreationDate |
+            Format-Table -AutoSize
