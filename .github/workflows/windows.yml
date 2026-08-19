@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'src/**'
+      - 'tests/**'
       - 'plugin/scripts/**'
       - 'package.json'
       - 'bunfig.toml'
@@ -42,3 +43,84 @@ jobs:
         run: |
           $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
           & $bun test tests/bun-runner.test.ts
+
+  # The reason Windows Chroma bugs kept shipping: the build job above never
+  # spawns Chroma, so #3482 (worker recycle orphans the uvx -> uv -> python
+  # tree and wedges the worker port), #3540 (leaked uv build dirs) and #3552
+  # (foreign interpreter inherited into the uvx child) were all invisible to
+  # CI. This job runs the real thing.
+  chroma-windows:
+    name: chroma lifecycle · worker-recycle orphan gate
+    # Same windows-2022 pin and rationale as the build job above: the
+    # windows-latest image moved to windows-2025 / VS18, which npm's bundled
+    # node-gyp@11.5.0 cannot detect, breaking native rebuilds on `npm install`.
+    runs-on: windows-2022
+    timeout-minutes: 25
+    env:
+      # Isolate every claude-mem path under the runner's temp dir. DATA_DIR is
+      # resolved into a module-level const at import time (src/shared/paths.ts),
+      # so this MUST be set in the job env — setting it from inside a test is a
+      # silent no-op that would fall back to the real profile directory.
+      CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}\claude-mem-data
+      # Opt in to the gated suites; they are skipped everywhere else.
+      CLAUDE_MEM_TEST_CHROMA: '1'
+      CLAUDE_MEM_TEST_CHROMA_POLLUTED_ENV: '1'
+      # Production default is 120s, which a cold uvx resolve + chromadb build
+      # blows straight through on a CI runner. 600s is the accepted maximum
+      # (CHROMA_PREWARM_TIMEOUT_BOUNDS in ChromaMcpManager.ts).
+      CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: '600000'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Bun (worker runtime + test runner)
+        run: |
+          irm bun.sh/install.ps1 | iex
+        shell: pwsh
+
+      # Caching uv's downloads AND its managed Python keeps a cold chromadb
+      # resolve off the critical path; without it this job pays ~10 minutes on
+      # every run and routinely exceeds the timeout.
+      - name: Install uv (with cache)
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-python: true
+
+      - run: npm install --no-audit --no-fund
+
+      # Required: resolveWorkerScript() falls back to <cwd>/plugin/scripts, so
+      # the recycle test's version-mismatch probe needs a built worker present.
+      - run: npm run build
+
+      - name: Chroma lifecycle round-trip (+ hostile Python env)
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
+          # Bun's per-test default timeout is 5s; a cold Chroma build needs far
+          # more. Deliberately NOT retried — a retry would paper over exactly
+          # the orphan/port race this job exists to catch.
+          & $bun test tests/integration/chroma-windows-lifecycle.test.ts --timeout 600000
+
+      # THE regression gate. Fails on main (single-PID SIGKILL orphans the
+      # chroma chain), passes once the recycle path tree-kills on Windows.
+      - name: Worker-recycle orphan gate (#3482)
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
+          & $bun test tests/integration/worker-recycle-orphans.test.ts --timeout 600000
+
+      # Diagnostic only — never fails the job. Ancestry/identity filtering is
+      # done inside the tests; this is just a human-readable postmortem for
+      # when the gate above goes red.
+      - name: Surviving uv/python processes (diagnostic)
+        if: always()
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_Process |
+            Where-Object { $_.Name -match '^(uv|uvx|python)(\.exe)?$' } |
+            Select-Object ProcessId, ParentProcessId, Name, CreationDate |
+            Format-Table -AutoSize

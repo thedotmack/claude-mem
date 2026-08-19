@@ -55,6 +55,66 @@ jobs:
       - name: Test (openclaw)
         run: bun test openclaw
 
+  # #3482 was first characterised as a Windows bug, but a bare SIGKILL on the
+  # stale worker orphans the identical uvx -> uv -> python chain on POSIX (the
+  # descendants re-parent to init instead of surviving a single-PID
+  # TerminateProcess). Running the gate here — not only on the Windows job —
+  # means the regression is proven on the runner every PR already uses.
+  chroma-recycle-gate:
+    name: chroma round-trip · worker-recycle orphan gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # DATA_DIR is resolved into a module-level const at import time
+      # (src/shared/paths.ts), so this MUST be set in the job env — assigning
+      # it from inside a test is a silent no-op that falls back to $HOME.
+      CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}/claude-mem-data
+      CLAUDE_MEM_TEST_CHROMA: '1'
+      CLAUDE_MEM_TEST_CHROMA_POLLUTED_ENV: '1'
+      # Production default is 120s; a cold uvx resolve + chromadb build blows
+      # through it. 600s is the accepted maximum (CHROMA_PREWARM_TIMEOUT_BOUNDS).
+      CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: '600000'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Bun (worker runtime + test runner)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install uv (with cache)
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-python: true
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      # resolveWorkerScript() falls back to <cwd>/plugin/scripts, so the
+      # recycle gate's version-mismatch probe needs a built worker present.
+      - name: Build
+        run: npm run build
+
+      # Bun's per-test default timeout is 5s; a cold Chroma build needs far
+      # more. Deliberately NOT retried — a retry would paper over exactly the
+      # orphan race these tests exist to catch.
+      - name: Chroma lifecycle round-trip (+ hostile Python env)
+        run: bun test tests/integration/chroma-windows-lifecycle.test.ts --timeout 600000
+
+      - name: Worker-recycle orphan gate (#3482)
+        run: bun test tests/integration/worker-recycle-orphans.test.ts --timeout 600000
+
+      # Diagnostic only — never fails the job. Identity filtering happens
+      # inside the test; this is a human-readable postmortem when it goes red.
+      - name: Surviving uv/python processes (diagnostic)
+        if: always()
+        run: ps -eo pid,ppid,comm | grep -E '(uv|python)' || true
+
   sync-hub:
     name: sync-hub worker (DO anti-pattern grep · vitest · WS suite)
     runs-on: ubuntu-latest
