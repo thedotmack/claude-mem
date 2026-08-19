@@ -26,10 +26,22 @@ import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 const WINDOWS_START_TOKEN_CACHE_TTL_MS = 5_000;
 const windowsStartTokenCache = new Map<number, { token: string | null; capturedAtMs: number }>();
 
+/**
+ * Count of RAW platform reads (cache misses and deliberate bypasses alike).
+ * Test-only observability: it is the one way to assert that the kill path
+ * really re-reads the OS instead of being served a cached verdict, and it
+ * works on every platform, so the assertion is not vacuous off-Windows.
+ */
+let rawProbeCount = 0;
+export function __identityProbeCountForTesting(): number {
+  return rawProbeCount;
+}
+
 function queryWindowsCreationDate(pid: number): string | null {
   // CreationDate is a CIM DATETIME (yyyyMMddHHmmss.ffffff±UTCoffset) that is
   // unique-enough per (pid, boot) to detect PID reuse. `-NoProfile` keeps it
   // fast; sanitizeEnv keeps the spawn-env discipline uniform (#2357/#2375).
+  rawProbeCount += 1;
   const result = spawnSync(
     'powershell.exe',
     [
@@ -52,10 +64,12 @@ function queryWindowsCreationDate(pid: number): string | null {
   return null;
 }
 
-function captureWindowsStartToken(pid: number): string | null {
-  const cached = windowsStartTokenCache.get(pid);
-  if (cached && Date.now() - cached.capturedAtMs < WINDOWS_START_TOKEN_CACHE_TTL_MS) {
-    return cached.token;
+function captureWindowsStartToken(pid: number, bypassCache = false): string | null {
+  if (!bypassCache) {
+    const cached = windowsStartTokenCache.get(pid);
+    if (cached && Date.now() - cached.capturedAtMs < WINDOWS_START_TOKEN_CACHE_TTL_MS) {
+      return cached.token;
+    }
   }
 
   let token: string | null = null;
@@ -73,10 +87,11 @@ function captureWindowsStartToken(pid: number): string | null {
   return token;
 }
 
-export function captureProcessStartToken(pid: number): string | null {
+function readStartToken(pid: number, bypassCache: boolean): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
 
   if (process.platform === 'linux') {
+    rawProbeCount += 1;
     try {
       const raw = readFileSync(`/proc/${pid}/stat`, 'utf-8');
       const tailStart = raw.lastIndexOf(') ');
@@ -94,9 +109,10 @@ export function captureProcessStartToken(pid: number): string | null {
   }
 
   if (process.platform === 'win32') {
-    return captureWindowsStartToken(pid);
+    return captureWindowsStartToken(pid, bypassCache);
   }
 
+  rawProbeCount += 1;
   try {
     const result = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], {
       encoding: 'utf-8',
@@ -132,9 +148,34 @@ export function captureProcessStartToken(pid: number): string | null {
  * (/proc and ps are uncached) and best-effort on Windows — no worse than the
  * unchecked behavior it replaces.
  */
+/**
+ * Cached identity read. Windows caches per-pid for 5s (a CIM query is
+ * ~100-300ms); POSIX always reads fresh, so the cache is Windows-only.
+ *
+ * Use this for OWNERSHIP checks that may run repeatedly inside one decision
+ * window — verifyPidFileOwnership is the reason the cache exists. Do NOT use
+ * it to authorize a kill: see isSameProcess below.
+ */
+export function captureProcessStartToken(pid: number): string | null {
+  return readStartToken(pid, false);
+}
+
 export function isSameProcess(pid: number, snapshotToken: string | null): boolean {
   if (snapshotToken === null) return true;
-  const currentToken = captureProcessStartToken(pid);
+  // DELIBERATELY BYPASSES THE CACHE.
+  //
+  // Every caller of this function is authorizing an irreversible kill, and the
+  // cache makes that authorization a tautology on Windows: the snapshot
+  // capture populates the entry, and this revalidation reads the SAME entry
+  // back, so within the 5s TTL it always matches — 100% of the time, not as a
+  // race. A reused PID is then certified as the original and handed to
+  // `taskkill /PID <pid> /T /F`, taking an unrelated process AND its whole
+  // descendant tree with it.
+  //
+  // The uncached reader is intentionally NOT exported: the only way to obtain
+  // a bypassing read is through this predicate, so a caller cannot acquire a
+  // raw probe and use it somewhere the cache is actually wanted.
+  const currentToken = readStartToken(pid, true);
   if (currentToken === null) return true;
   return currentToken === snapshotToken;
 }

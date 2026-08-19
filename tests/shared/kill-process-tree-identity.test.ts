@@ -1,7 +1,11 @@
 import { describe, it, expect, afterAll } from 'bun:test';
 import { spawn } from 'child_process';
 import { collectDescendantIdentities } from '../../src/shared/kill-process-tree.js';
-import { captureProcessStartToken } from '../../src/shared/process-identity.js';
+import {
+  captureProcessStartToken,
+  isSameProcess,
+  __identityProbeCountForTesting,
+} from '../../src/shared/process-identity.js';
 
 /**
  * Format-agreement guard for the atomic descendant enumeration.
@@ -82,4 +86,60 @@ describe('descendant enumeration agrees with captureProcessStartToken', () => {
 
     try { process.kill(rootPid, 'SIGKILL'); } catch { /* fine */ }
   }, 30_000);
+});
+
+/**
+ * The identity cache must never authorize a kill.
+ *
+ * On Windows captureProcessStartToken caches per-pid for 5s. Because a
+ * snapshot capture populates that entry and the revalidation reads it back,
+ * the check was a TAUTOLOGY there — always true inside the TTL, not a race —
+ * so a reused PID was certified as the original and passed to
+ * `taskkill /PID <pid> /T /F` along with its whole subtree.
+ *
+ * The probe counter makes the fix observable on EVERY platform: whatever the
+ * caching policy, isSameProcess must perform a fresh read each time it is
+ * asked to authorize a kill. The Windows-only half (that the cached accessor
+ * really does serve from cache) is asserted separately, and this file runs in
+ * the Windows CI job for exactly that reason.
+ */
+describe('identity revalidation never trusts the cache', () => {
+  it('isSameProcess performs a fresh read on every call', () => {
+    const token = captureProcessStartToken(process.pid);
+    expect(token).not.toBeNull();
+
+    const before = __identityProbeCountForTesting();
+    isSameProcess(process.pid, token);
+    const afterFirst = __identityProbeCountForTesting();
+    isSameProcess(process.pid, token);
+    const afterSecond = __identityProbeCountForTesting();
+
+    // Each authorization re-reads the OS; neither call may be served from a
+    // cached verdict.
+    expect(afterFirst).toBeGreaterThan(before);
+    expect(afterSecond).toBeGreaterThan(afterFirst);
+  });
+
+  it('still returns the correct verdict while bypassing the cache', () => {
+    const token = captureProcessStartToken(process.pid);
+
+    expect(isSameProcess(process.pid, token)).toBe(true);
+    expect(isSameProcess(process.pid, 'a-token-from-some-other-process')).toBe(false);
+    // Unreadable snapshot token must still mean "proceed" — refusing has to
+    // stay strictly narrower than killing, or #2313 comes back.
+    expect(isSameProcess(process.pid, null)).toBe(true);
+  });
+
+  it.if(process.platform === 'win32')('the cached accessor DOES serve from cache (Windows)', () => {
+    // Establishes that the cache the fix bypasses is real on this platform —
+    // without this, the assertion above could pass on a build where caching
+    // silently stopped working, and the bypass would be proving nothing.
+    captureProcessStartToken(process.pid);
+
+    const before = __identityProbeCountForTesting();
+    captureProcessStartToken(process.pid);
+    const after = __identityProbeCountForTesting();
+
+    expect(after).toBe(before);
+  });
 });
