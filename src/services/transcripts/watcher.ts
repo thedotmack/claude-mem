@@ -161,7 +161,10 @@ export class TranscriptWatcher {
     const matches = this.resolveWatchFiles(resolvedPath);
     for (const filePath of matches) {
       if (!this.tailers.has(filePath)) {
-        void this.addTailer(filePath, watch, schema);
+        // A file that appears after startup is a new session, so read it from
+        // the beginning even under startAtEnd — otherwise its first line (which
+        // carries the Codex subagent marker) is skipped.
+        void this.addTailer(filePath, watch, schema, true);
       }
     }
   }
@@ -237,14 +240,15 @@ export class TranscriptWatcher {
   private async addTailer(
     filePath: string,
     watch: WatchTarget,
-    schema: TranscriptSchema
+    schema: TranscriptSchema,
+    readFromStart = false
   ): Promise<void> {
     if (this.tailers.has(filePath)) return;
 
     const sessionIdOverride = this.extractSessionIdFromPath(filePath);
 
     let offset = this.state.offsets[filePath] ?? 0;
-    if (offset === 0 && watch.startAtEnd) {
+    if (offset === 0 && watch.startAtEnd && !readFromStart) {
       try {
         offset = statSync(filePath).size;
       } catch (error: unknown) {

@@ -92,7 +92,7 @@ import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
 import { SessionCompletionHandler } from './worker/session/SessionCompletionHandler.js';
 import { setIngestContext, attachIngestGeneratorStarter } from './worker/http/shared.js';
-import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, filterNativeHookBackedCodexWatches, loadTranscriptWatchConfig } from './transcripts/config.js';
+import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, scopeNativeHookBackedCodexWatches, loadTranscriptWatchConfig } from './transcripts/config.js';
 import { TranscriptWatcher } from './transcripts/watcher.js';
 import { SyncApply } from './sync/SyncApply.js';
 import { SyncClient } from './sync/SyncClient.js';
@@ -728,15 +728,15 @@ export class WorkerService implements WorkerRef {
     }
 
     const allowCodexTranscriptIngestion = settings.CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION === 'true';
-    const { config: transcriptConfig, removed } = filterNativeHookBackedCodexWatches(
+    const { config: transcriptConfig, scoped } = scopeNativeHookBackedCodexWatches(
       loadTranscriptWatchConfig(configPath),
       allowCodexTranscriptIngestion
     );
     const statePath = expandHomePath(transcriptConfig.stateFile ?? DEFAULT_STATE_PATH);
 
-    if (removed > 0) {
-      logger.warn('TRANSCRIPT', 'Skipped Codex transcript watch because native Codex hooks are authoritative', {
-        removed,
+    if (scoped > 0) {
+      logger.info('TRANSCRIPT', 'Scoped Codex transcript watch to subagent sessions; native hooks own top-level sessions', {
+        scoped,
         optInSetting: 'CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION=true',
       });
     }
