@@ -1,9 +1,9 @@
 
 import { SessionSearch } from '../../sqlite/SessionSearch.js';
 import { SessionStore } from '../../sqlite/SessionStore.js';
-import { ChromaSync } from '../../sync/ChromaSync.js';
+import { VectorSync } from '../../vector/VectorSync.js';
 
-import { ChromaSearchStrategy } from './strategies/ChromaSearchStrategy.js';
+import { VectorSearchStrategy } from './strategies/VectorSearchStrategy.js';
 import { SQLiteSearchStrategy } from './strategies/SQLiteSearchStrategy.js';
 import { HybridSearchStrategy } from './strategies/HybridSearchStrategy.js';
 
@@ -23,19 +23,19 @@ interface NormalizedParams extends StrategySearchOptions {
 }
 
 export class SearchOrchestrator {
-  private chromaStrategy: ChromaSearchStrategy | null = null;
+  private chromaStrategy: VectorSearchStrategy | null = null;
   private sqliteStrategy: SQLiteSearchStrategy;
   private hybridStrategy: HybridSearchStrategy | null = null;
 
   constructor(
     private sessionSearch: SessionSearch,
     private sessionStore: SessionStore,
-    private chromaSync: ChromaSync | null
+    private chromaSync: VectorSync | null
   ) {
     this.sqliteStrategy = new SQLiteSearchStrategy(sessionSearch);
 
     if (chromaSync) {
-      this.chromaStrategy = new ChromaSearchStrategy(chromaSync, sessionStore);
+      this.chromaStrategy = new VectorSearchStrategy(chromaSync.getIndex(), sessionStore);
       this.hybridStrategy = new HybridSearchStrategy(chromaSync, sessionStore, sessionSearch);
     }
   }

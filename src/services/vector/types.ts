@@ -40,6 +40,8 @@ export interface VectorHit {
   fieldType: string;
   factIndex: number | null;
   score: number;
+  /** From the parent row; the search layer filters on recency with it. */
+  createdAtEpoch: number | null;
 }
 
 /** Query scoping. Mirrors ChromaSearchStrategy.buildWhereFilter exactly. */

@@ -8,12 +8,12 @@ db.run('PRAGMA foreign_keys = ON');
 // Real column layout: scope lives on the parent rows / sdk_sessions, never
 // denormalised onto the vector rows.
 db.run(`CREATE TABLE sdk_sessions (id INTEGER PRIMARY KEY, content_session_id TEXT, memory_session_id TEXT, project TEXT, platform_source TEXT)`);
-db.run(`CREATE TABLE observations (id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT, merged_into_project TEXT)`);
-db.run(`CREATE TABLE session_summaries (id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT, merged_into_project TEXT)`);
-db.run(`CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, content_session_id TEXT)`);
+db.run(`CREATE TABLE observations (id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT, merged_into_project TEXT, created_at_epoch INTEGER)`);
+db.run(`CREATE TABLE session_summaries (id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT, merged_into_project TEXT, created_at_epoch INTEGER)`);
+db.run(`CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, content_session_id TEXT, created_at_epoch INTEGER)`);
 db.prepare('INSERT INTO sdk_sessions VALUES (?,?,?,?,?)').run(1, 'cs-1', 'sess-1', 'alpha', 'claude');
-db.prepare('INSERT INTO observations VALUES (?,?,?,?)').run(7, 'sess-1', 'alpha', null);
-db.prepare('INSERT INTO session_summaries VALUES (?,?,?,?)').run(9, 'sess-1', 'alpha', null);
+db.prepare('INSERT INTO observations VALUES (?,?,?,?,?)').run(7, 'sess-1', 'alpha', null, Date.now());
+db.prepare('INSERT INTO session_summaries VALUES (?,?,?,?,?)').run(9, 'sess-1', 'alpha', null, Date.now());
 
 const index = new VectorIndex(db, new LocalEmbedder());
 const sync = new VectorSync(index);

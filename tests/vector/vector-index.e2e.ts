@@ -16,20 +16,20 @@ db.run(`CREATE TABLE sdk_sessions (
   id INTEGER PRIMARY KEY, content_session_id TEXT, memory_session_id TEXT,
   project TEXT, platform_source TEXT)`);
 db.run(`CREATE TABLE observations (
-  id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT, merged_into_project TEXT)`);
+  id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT, merged_into_project TEXT, created_at_epoch INTEGER)`);
 db.run(`CREATE TABLE session_summaries (
-  id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT, merged_into_project TEXT)`);
+  id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT, merged_into_project TEXT, created_at_epoch INTEGER)`);
 db.run(`CREATE TABLE user_prompts (
-  id INTEGER PRIMARY KEY, content_session_id TEXT, prompt_text TEXT)`);
+  id INTEGER PRIMARY KEY, content_session_id TEXT, prompt_text TEXT, created_at_epoch INTEGER)`);
 
 db.prepare('INSERT INTO sdk_sessions VALUES (?,?,?,?,?)').run(1, 'cs-a', 'ms-a', 'alpha', 'claude');
 db.prepare('INSERT INTO sdk_sessions VALUES (?,?,?,?,?)').run(2, 'cs-b', 'ms-b', 'beta', 'codex');
-db.prepare('INSERT INTO observations VALUES (?,?,?,?)').run(1, 'ms-a', 'alpha', null);
-db.prepare('INSERT INTO observations VALUES (?,?,?,?)').run(2, 'ms-a', 'alpha', null);
-db.prepare('INSERT INTO observations VALUES (?,?,?,?)').run(3, 'ms-b', 'beta', null);
+db.prepare('INSERT INTO observations VALUES (?,?,?,?,?)').run(1, 'ms-a', 'alpha', null, Date.now());
+db.prepare('INSERT INTO observations VALUES (?,?,?,?,?)').run(2, 'ms-a', 'alpha', null, Date.now());
+db.prepare('INSERT INTO observations VALUES (?,?,?,?,?)').run(3, 'ms-b', 'beta', null, Date.now());
 // a row remapped into alpha — must be reachable when scoping by alpha
-db.prepare('INSERT INTO observations VALUES (?,?,?,?)').run(4, 'ms-b', 'legacy', 'alpha');
-db.prepare('INSERT INTO user_prompts VALUES (?,?,?)').run(10, 'cs-a', 'p');
+db.prepare('INSERT INTO observations VALUES (?,?,?,?,?)').run(4, 'ms-b', 'legacy', 'alpha', Date.now());
+db.prepare('INSERT INTO user_prompts VALUES (?,?,?,?)').run(10, 'cs-a', 'p', Date.now());
 
 const index = new VectorIndex(db, new LocalEmbedder());
 let pass = 0, fail = 0;

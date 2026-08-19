@@ -9,6 +9,7 @@ interface CandidateRow {
   field_type: string;
   fact_index: number | null;
   embedding: Uint8Array;
+  created_at_epoch: number | null;
 }
 
 /**
@@ -139,7 +140,8 @@ export class VectorIndex {
       params.push(this.embedder.modelId);
 
       const rows = this.db.prepare(`
-        SELECT v.doc_id, v.sqlite_id, v.field_type, v.fact_index, v.embedding
+        SELECT v.doc_id, v.sqlite_id, v.field_type, v.fact_index, v.embedding,
+               p.created_at_epoch AS created_at_epoch
         FROM ${spec.table} v
         ${spec.joinSql}
         WHERE ${where.join(' AND ')}
@@ -152,6 +154,7 @@ export class VectorIndex {
           sqliteId: row.sqlite_id,
           fieldType: row.field_type,
           factIndex: row.fact_index,
+          createdAtEpoch: row.created_at_epoch,
           score: dot(probe, decodeEmbedding(row.embedding)),
         });
       }

@@ -6,20 +6,20 @@ import { LocalEmbedder } from '../../src/services/vector/LocalEmbedder.js';
 const db = new Database(':memory:');
 db.run('PRAGMA foreign_keys = ON');
 db.run(`CREATE TABLE sdk_sessions (id INTEGER PRIMARY KEY, content_session_id TEXT, memory_session_id TEXT, project TEXT, platform_source TEXT)`);
-db.run(`CREATE TABLE observations (id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT, merged_into_project TEXT, narrative TEXT, facts TEXT)`);
-db.run(`CREATE TABLE session_summaries (id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT, merged_into_project TEXT, request TEXT, learned TEXT)`);
-db.run(`CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, content_session_id TEXT, prompt_text TEXT)`);
+db.run(`CREATE TABLE observations (id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT, merged_into_project TEXT, narrative TEXT, facts TEXT, created_at_epoch INTEGER)`);
+db.run(`CREATE TABLE session_summaries (id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT, merged_into_project TEXT, request TEXT, learned TEXT, created_at_epoch INTEGER)`);
+db.run(`CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, content_session_id TEXT, prompt_text TEXT, created_at_epoch INTEGER)`);
 db.prepare('INSERT INTO sdk_sessions VALUES (?,?,?,?,?)').run(1,'cs-1','ms-1','alpha','claude');
 
 // A pre-existing corpus, as an upgrading user would have.
-const obs = db.prepare('INSERT INTO observations VALUES (?,?,?,?,?,?)');
+const obs = db.prepare('INSERT INTO observations VALUES (?,?,?,?,?,?,?)');
 for (let i = 1; i <= 5; i++) {
-  obs.run(i, 'ms-1', 'alpha', null, `narrative number ${i} about shared state`, JSON.stringify([`fact a${i}`, `fact b${i}`]));
+  obs.run(i, 'ms-1', 'alpha', null, `narrative number ${i} about shared state`, JSON.stringify([`fact a${i}`, `fact b${i}`]), Date.now());
 }
 // one row with malformed facts JSON — must not stall the whole backfill
-obs.run(6, 'ms-1', 'alpha', null, 'narrative six', '{not valid json');
-db.prepare('INSERT INTO session_summaries VALUES (?,?,?,?,?,?)').run(1,'ms-1','alpha',null,'the request','the lesson');
-db.prepare('INSERT INTO user_prompts VALUES (?,?,?)').run(1,'cs-1','how do agents avoid clobbering');
+obs.run(6, 'ms-1', 'alpha', null, 'narrative six', '{not valid json', Date.now());
+db.prepare('INSERT INTO session_summaries VALUES (?,?,?,?,?,?,?)').run(1,'ms-1','alpha',null,'the request','the lesson',Date.now());
+db.prepare('INSERT INTO user_prompts VALUES (?,?,?,?)').run(1,'cs-1','how do agents avoid clobbering',Date.now());
 
 const index = new VectorIndex(db, new LocalEmbedder());
 const backfill = new VectorBackfill(db, index);
