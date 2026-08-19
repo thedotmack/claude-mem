@@ -5,6 +5,11 @@ import path from 'path';
 import { logger } from '../utils/logger.js';
 import { sanitizeEnv } from './env-sanitizer.js';
 import { paths } from '../shared/paths.js';
+// Moved to shared/ so kill-process-tree.ts can use it without closing an
+// import cycle (process-registry already imports kill-process-tree). Re-exported
+// here so every existing caller keeps its import path.
+import { captureProcessStartToken, isSameProcess } from '../shared/process-identity.js';
+export { captureProcessStartToken, isSameProcess };
 import { killProcessTree } from '../shared/kill-process-tree.js';
 
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;
@@ -64,104 +69,6 @@ export interface PidInfo {
   port: number;
   startedAt: string;
   startToken?: string;
-}
-
-// Windows lacks a cheap /proc-style start-time read and `ps lstart`, so we
-// shell to PowerShell's CIM (wmic is removed on Windows 11). The lookup is
-// ~100-300ms, so cache per-pid for 5s to avoid re-shelling when the same PID
-// is validated repeatedly within one spawn-decision window.
-const WINDOWS_START_TOKEN_CACHE_TTL_MS = 5_000;
-const windowsStartTokenCache = new Map<number, { token: string | null; capturedAtMs: number }>();
-
-function queryWindowsCreationDate(pid: number): string | null {
-  // CreationDate is a CIM DATETIME (yyyyMMddHHmmss.ffffff±UTCoffset) that is
-  // unique-enough per (pid, boot) to detect PID reuse. `-NoProfile` keeps it
-  // fast; sanitizeEnv keeps the spawn-env discipline uniform (#2357/#2375).
-  const result = spawnSync(
-    'powershell.exe',
-    [
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      `(Get-CimInstance Win32_Process -Filter \"ProcessId=${pid}\").CreationDate.ToString('yyyyMMddHHmmss.ffffff')`
-    ],
-    {
-      encoding: 'utf-8',
-      timeout: 5000,
-      windowsHide: true,
-      env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
-    }
-  );
-  if (result.status === 0) {
-    const trimmed = result.stdout.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-  return null;
-}
-
-function captureWindowsStartToken(pid: number): string | null {
-  const cached = windowsStartTokenCache.get(pid);
-  if (cached && Date.now() - cached.capturedAtMs < WINDOWS_START_TOKEN_CACHE_TTL_MS) {
-    return cached.token;
-  }
-
-  let token: string | null = null;
-  try {
-    token = queryWindowsCreationDate(pid);
-  } catch (error: unknown) {
-    logger.debug('SYSTEM', 'captureProcessStartToken: powershell CIM lookup failed', {
-      pid,
-      error: error instanceof Error ? error.message : String(error)
-    });
-    token = null;
-  }
-
-  windowsStartTokenCache.set(pid, { token, capturedAtMs: Date.now() });
-  return token;
-}
-
-export function captureProcessStartToken(pid: number): string | null {
-  if (!Number.isInteger(pid) || pid <= 0) return null;
-
-  if (process.platform === 'linux') {
-    try {
-      const raw = readFileSync(`/proc/${pid}/stat`, 'utf-8');
-      const tailStart = raw.lastIndexOf(') ');
-      if (tailStart < 0) return null;
-      const fields = raw.slice(tailStart + 2).split(' ');
-      const starttime = fields[19];
-      return starttime && /^\d+$/.test(starttime) ? starttime : null;
-    } catch (error: unknown) {
-      logger.debug('SYSTEM', 'captureProcessStartToken: /proc read failed', {
-        pid,
-        error: error instanceof Error ? error.message : String(error)
-      });
-      return null;
-    }
-  }
-
-  if (process.platform === 'win32') {
-    return captureWindowsStartToken(pid);
-  }
-
-  try {
-    const result = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], {
-      encoding: 'utf-8',
-      timeout: 2000,
-      // Uniform spawn-env discipline: sanitize even for read-only system
-      // binaries so the spawn-env CI check stays a single rule (#2357/#2375).
-      env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
-    });
-    if (result.status !== 0) return null;
-    const token = result.stdout.trim();
-    return token.length > 0 ? token : null;
-  } catch (error: unknown) {
-    logger.debug('SYSTEM', 'captureProcessStartToken: ps exec failed', {
-      pid,
-      error: error instanceof Error ? error.message : String(error)
-    });
-    return null;
-  }
 }
 
 export function verifyPidFileOwnership(info: PidInfo | null): info is PidInfo {

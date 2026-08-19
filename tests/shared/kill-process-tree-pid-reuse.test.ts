@@ -1,0 +1,150 @@
+import { describe, it, expect, afterAll, afterEach, mock } from 'bun:test';
+import { spawn, execFileSync } from 'child_process';
+
+// Capture the real module before mock.module mutates the live namespace, and
+// re-register it in afterAll — bun's mock.module is process-global and
+// mock.restore() does NOT undo it (same discipline as the chroma suite).
+import * as realProcessIdentity from '../../src/shared/process-identity.js';
+const realIdentitySnapshot = { ...realProcessIdentity };
+
+/**
+ * Forces the identity verdict for specific PIDs so the reuse branch is
+ * DETERMINISTIC. A genuine PID-reuse race cannot be reproduced reliably
+ * in-process (PID assignment is the kernel's to choose), and a harness that
+ * spins until the number wraps would be slow and flaky in the primary suite.
+ * Overriding the decision function exercises the same production branch
+ * without gambling on the scheduler.
+ */
+const forcedReuse = new Set<number>();
+
+mock.module('../../src/shared/process-identity.js', () => ({
+  ...realIdentitySnapshot,
+  isSameProcess: (pid: number, token: string | null) =>
+    forcedReuse.has(pid) ? false : realIdentitySnapshot.isSameProcess(pid, token),
+}));
+
+const { killProcessTree } = await import('../../src/shared/kill-process-tree.js');
+const { isPidAlive } = await import('../../src/supervisor/process-registry.js');
+
+const isPosix = process.platform !== 'win32';
+const strays: number[] = [];
+
+function settle(ms = 500): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await settle(50);
+  }
+  return predicate();
+}
+
+/**
+ * A root whose DIRECT CHILD ignores SIGTERM.
+ *
+ * The child has to survive the graceful pass to be observable at the union
+ * pass — that union is the only place a stale PID is signalled, so it is the
+ * only place the identity check can be seen to matter.
+ *
+ * The returned pid is the direct child specifically, resolved via `pgrep -P`.
+ * collectDescendantPids returns leaves-FIRST, so its [0] is the child's own
+ * transient `sleep`, which dies to the plain SIGTERM pass no matter what the
+ * identity check decides — targeting that would make both assertions below
+ * pass for the wrong reason.
+ */
+function spawnTermProofChild(): { rootPid: number } {
+  const child = spawn(
+    '/bin/sh',
+    ['-c', `/bin/sh -c "trap '' TERM; while :; do sleep 1; done" & wait`],
+    { stdio: 'ignore' }
+  );
+  const rootPid = child.pid!;
+  strays.push(rootPid);
+  return { rootPid };
+}
+
+function directChildOf(rootPid: number): number {
+  const out = execFileSync('pgrep', ['-P', String(rootPid)], { encoding: 'utf-8' });
+  const pids = out.split('\n').map(l => Number.parseInt(l.trim(), 10)).filter(n => Number.isFinite(n) && n > 0);
+  if (pids.length === 0) throw new Error(`fixture has no direct child of ${rootPid}`);
+  return pids[0]!;
+}
+
+afterEach(() => {
+  forcedReuse.clear();
+});
+
+afterAll(async () => {
+  for (const pid of strays) {
+    try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+  }
+  mock.module('../../src/shared/process-identity.js', () => realIdentitySnapshot);
+});
+
+describe.if(isPosix)('killProcessTree revalidates descendant identity before SIGKILL', () => {
+  // BOTH halves are required. Without the "still killed" case the skip case
+  // would pass for a process that was never going to be killed anyway.
+  //
+  // Only the GRACEFUL path is asserted here, and that is not an omission:
+  // immediate mode SIGKILLs the pre-scan set in its first pass, so nothing it
+  // could later skip is still alive to observe. Its identity check still
+  // guards the (real, but untestable in-process) case where a target dies in
+  // pass 1 and the OS reissues the number before pass 2.
+
+  it('kills a descendant whose identity is UNCHANGED', async () => {
+    const { rootPid } = spawnTermProofChild();
+    await settle();
+    const termProof = directChildOf(rootPid);
+
+    // Sanity: it must actually be TERM-proof, or this proves nothing.
+    process.kill(termProof, 'SIGTERM');
+    await settle(300);
+    expect(isPidAlive(termProof)).toBe(true);
+
+    // No forced reuse: identity matches, so the union pass must SIGKILL it.
+    await killProcessTree(rootPid);
+
+    const died = await waitUntil(() => !isPidAlive(termProof), 10_000);
+    expect(died).toBe(true);
+  }, 30_000);
+
+  it('SKIPS a descendant whose PID was reused since the scan', async () => {
+    const { rootPid } = spawnTermProofChild();
+    await settle();
+    const bystander = directChildOf(rootPid);
+
+    // Stand in for "this PID now names an unrelated process". Pre-fix, the
+    // union SIGKILLed it regardless; post-fix it must be left alone.
+    forcedReuse.add(bystander);
+
+    await killProcessTree(rootPid);
+    await settle(1_000);
+
+    expect(isPidAlive(bystander)).toBe(true);
+
+    try { process.kill(bystander, 'SIGKILL'); } catch { /* fine */ }
+  }, 30_000);
+});
+
+describe('isSameProcess fallback semantics', () => {
+  // Refusing to kill must stay strictly NARROWER than killing: a token we
+  // could not read must never strand a live orphan (#2313).
+  const { isSameProcess, captureProcessStartToken } = realIdentitySnapshot;
+
+  it('proceeds when no token was captured at snapshot time', () => {
+    expect(isSameProcess(process.pid, null)).toBe(true);
+  });
+
+  it('proceeds when the token matches', () => {
+    const token = captureProcessStartToken(process.pid);
+    expect(token).not.toBeNull();
+    expect(isSameProcess(process.pid, token)).toBe(true);
+  });
+
+  it('refuses only when a readable token genuinely differs', () => {
+    expect(isSameProcess(process.pid, 'definitely-not-this-processes-start-token')).toBe(false);
+  });
+});

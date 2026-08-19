@@ -14,7 +14,7 @@ import { killProcessTree, collectDescendantPids } from '../../shared/kill-proces
 import { stripForeignPythonEnv } from '../../shared/uvx-env.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
-import { captureProcessStartToken, isPidAlive } from '../../supervisor/process-registry.js';
+import { captureProcessStartToken, isSameProcess, isPidAlive } from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
 
@@ -1062,16 +1062,9 @@ export class ChromaMcpManager {
       seen.add(pid);
       if (!isPidAlive(pid)) continue;
 
-      if (startToken !== null) {
-        const currentToken = captureProcessStartToken(pid);
-        if (currentToken !== null && currentToken !== startToken) {
-          logger.debug('CHROMA_MCP', 'Skipping reap: PID was recycled since the snapshot', {
-            pid,
-            expected: startToken,
-            actual: currentToken,
-          });
-          continue;
-        }
+      if (!isSameProcess(pid, startToken)) {
+        logger.debug('CHROMA_MCP', 'Skipping reap: PID was recycled since the snapshot', { pid });
+        continue;
       }
 
       try {

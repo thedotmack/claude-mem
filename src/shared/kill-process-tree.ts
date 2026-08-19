@@ -17,6 +17,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../utils/logger.js';
+import { captureProcessStartToken, isSameProcess } from './process-identity.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -123,11 +124,11 @@ export async function killProcessTree(
   // (CodeRabbit review on PR #2282).
   try {
     const firstSignal: NodeJS.Signals = immediate ? 'SIGKILL' : 'SIGTERM';
-    const descendantsBeforeTerm = await collectDescendantPids(pid);
+    const descendantsBeforeTerm = await collectDescendantIdentities(pid);
     // Signal leaves first, then the root.
     for (const child of descendantsBeforeTerm) {
       try {
-        process.kill(child, firstSignal);
+        process.kill(child.pid, firstSignal);
       } catch {
         // Already gone — fine.
       }
@@ -157,13 +158,33 @@ export async function killProcessTree(
     // init and drop out of `pgrep -P <root>`. Without the union, those
     // re-parented descendants would never receive SIGKILL even though they
     // were definitely children before SIGTERM (CodeRabbit review on PR
-    // #2282). Dedupe via Set since `descendantsBeforeKill` typically
+    // #2282). Dedupe via Map since `descendantsBeforeKill` typically
     // overlaps with `descendantsBeforeTerm`.
-    const descendantsBeforeKill = await collectDescendantPids(pid);
-    const killTargets = Array.from(new Set([...descendantsBeforeTerm, ...descendantsBeforeKill]));
-    for (const child of killTargets) {
+    //
+    // The union is also the ONLY place a stale PID can be signalled, which is
+    // why identity is revalidated below. Members of the post-wait scan were
+    // enumerated microseconds ago; members present ONLY in the pre-TERM scan
+    // are absent from it for one of two reasons — they re-parented after the
+    // root died (still alive, and exactly what the union exists to reap), or
+    // they exited during the grace window (in which case the OS may have
+    // reissued the number to an unrelated process). A start token separates
+    // those two cases; without it the second one gets SIGKILLed.
+    const descendantsBeforeKill = await collectDescendantIdentities(pid);
+    const killTargets = new Map<number, string | null>();
+    // Pre-TERM first, then let the fresher post-wait token win on collision.
+    for (const child of descendantsBeforeTerm) killTargets.set(child.pid, child.startToken);
+    for (const child of descendantsBeforeKill) killTargets.set(child.pid, child.startToken);
+
+    for (const [childPid, startToken] of killTargets) {
+      if (!isSameProcess(childPid, startToken)) {
+        logger.debug('PROCESS', 'Skipping SIGKILL: descendant PID was reused since the scan', {
+          pid: childPid,
+          rootPid: pid,
+        });
+        continue;
+      }
       try {
-        process.kill(child, 'SIGKILL');
+        process.kill(childPid, 'SIGKILL');
       } catch {
         // Already dead — fine.
       }
@@ -211,6 +232,22 @@ export async function collectDescendantPids(rootPid: number): Promise<number[]> 
   return process.platform === 'win32'
     ? collectDescendantPidsWindows(rootPid)
     : collectDescendantPidsPosix(rootPid);
+}
+
+/** Descendant PIDs paired with the start token that proves their identity. */
+interface DescendantIdentity {
+  pid: number;
+  startToken: string | null;
+}
+
+/**
+ * collectDescendantPids, but each PID carries the identity it had at scan
+ * time. A PID held across any wait is not a stable handle — the OS can reissue
+ * it — so anything that signals later must revalidate against this token.
+ */
+async function collectDescendantIdentities(rootPid: number): Promise<DescendantIdentity[]> {
+  const pids = await collectDescendantPids(rootPid);
+  return pids.map(pid => ({ pid, startToken: captureProcessStartToken(pid) }));
 }
 
 async function collectDescendantPidsPosix(rootPid: number): Promise<number[]> {

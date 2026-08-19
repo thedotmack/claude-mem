@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, rmSync } from 'fs';
 import { logger } from '../utils/logger.js';
-import { captureProcessStartToken, isPidAlive, waitForExit, type ManagedProcessRecord, type ProcessRegistry } from './process-registry.js';
+import { captureProcessStartToken, isSameProcess, isPidAlive, waitForExit, type ManagedProcessRecord, type ProcessRegistry } from './process-registry.js';
 import { paths } from '../shared/paths.js';
 import { killProcessTree, collectDescendantPids } from '../shared/kill-process-tree.js';
 
@@ -30,6 +30,12 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
   // liveness has to be evaluated over the whole tree, and the tree has to be
   // recorded while the root is still around to enumerate it from.
   const descendantsByRecord = new Map<string, Array<{ pid: number; startToken: string | null }>>();
+  // The ROOT's identity, captured alongside its descendants. The force phase
+  // below can run after the root has already exited (a live descendant keeps
+  // the record in `survivors`), and by then the OS may have reissued the root's
+  // PID — tree-killing from a reused root would take an unrelated process AND
+  // its children with it.
+  const rootTokenByRecord = new Map<string, string | null>();
 
   for (const record of childRecords) {
     if (!isPidAlive(record.pid)) {
@@ -37,6 +43,7 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
       continue;
     }
 
+    rootTokenByRecord.set(record.id, captureProcessStartToken(record.pid));
     const descendantPids = await collectDescendantPids(record.pid);
     descendantsByRecord.set(
       record.id,
@@ -74,8 +81,23 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
   );
 
   for (const record of survivors) {
+    // Only tree-kill from a root that is still the process we recorded. When
+    // the PID has been reused, the replacement is an unrelated process and
+    // signalProcess would take its whole subtree down; the identity-validated
+    // descendant reap in the finally block still runs, which is the part that
+    // actually matters once the real root is gone.
+    const rootIsSame = isSameProcess(record.pid, rootTokenByRecord.get(record.id) ?? null);
+    if (!rootIsSame) {
+      logger.warn('SYSTEM', 'Skipping tree-kill: root PID was reused during the grace window', {
+        pid: record.pid,
+        type: record.type,
+      });
+    }
+
     try {
-      await signalProcess(record, 'SIGKILL');
+      if (rootIsSame) {
+        await signalProcess(record, 'SIGKILL');
+      }
     } catch (error: unknown) {
       if (error instanceof Error) {
         logger.debug('SYSTEM', 'Failed to force kill child process', {
@@ -196,15 +218,12 @@ function reapSnapshotDescendants(
   for (const { pid, startToken } of entries) {
     if (pid === rootPid || !isPidAlive(pid)) continue;
 
-    if (startToken !== null) {
-      const currentToken = captureProcessStartToken(pid);
-      if (currentToken !== null && currentToken !== startToken) {
-        logger.debug('SYSTEM', 'Skipping reap: PID was recycled during the grace window', {
-          pid,
-          rootPid,
-        });
-        continue;
-      }
+    if (!isSameProcess(pid, startToken)) {
+      logger.debug('SYSTEM', 'Skipping reap: PID was recycled during the grace window', {
+        pid,
+        rootPid,
+      });
+      continue;
     }
 
     try {
