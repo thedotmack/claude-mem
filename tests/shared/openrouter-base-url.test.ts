@@ -4,6 +4,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   DEFAULT_OPENROUTER_API_URL,
   resolveOpenRouterChatCompletionsUrl,
+  isOfficialOpenRouterUrl,
 } from '../../src/shared/openrouter-base-url.js';
 
 describe('resolveOpenRouterChatCompletionsUrl', () => {
@@ -61,5 +62,31 @@ describe('resolveOpenRouterChatCompletionsUrl', () => {
   it('matches the /chat/completions suffix case-insensitively', () => {
     const mixed = 'https://x.example.com/v1/Chat/Completions';
     expect(resolveOpenRouterChatCompletionsUrl(mixed)).toBe(mixed);
+  });
+});
+
+describe('isOfficialOpenRouterUrl', () => {
+  it('accepts the default OpenRouter endpoint', () => {
+    expect(isOfficialOpenRouterUrl(DEFAULT_OPENROUTER_API_URL)).toBe(true);
+  });
+
+  it('accepts an openrouter.ai subdomain', () => {
+    expect(isOfficialOpenRouterUrl('https://api.openrouter.ai/v1/chat/completions')).toBe(true);
+  });
+
+  it('rejects a custom gateway that merely has openrouter.ai in its path', () => {
+    expect(isOfficialOpenRouterUrl('https://gateway.invalid/openrouter.ai/chat/completions')).toBe(false);
+  });
+
+  it('rejects a look-alike host that ends in openrouter.ai without a dot boundary', () => {
+    expect(isOfficialOpenRouterUrl('https://notopenrouter.ai/chat/completions')).toBe(false);
+  });
+
+  it('rejects a custom OpenAI-compatible gateway', () => {
+    expect(isOfficialOpenRouterUrl('https://api.deepseek.com/chat/completions')).toBe(false);
+  });
+
+  it('returns false for an unparseable URL', () => {
+    expect(isOfficialOpenRouterUrl('not a url')).toBe(false);
   });
 });

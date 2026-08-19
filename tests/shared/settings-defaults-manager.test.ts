@@ -312,6 +312,47 @@ describe('SettingsDefaultsManager', () => {
       });
     });
 
+    // OpenRouter deprecated the shipped default xiaomi/mimo-v2-flash:free, so
+    // installs that seeded it capture nothing. The persisted value wins over
+    // DEFAULTS, so only this on-disk rewrite reaches existing installs (#3659).
+    describe('OpenRouter model migration', () => {
+      it('should migrate the exact deprecated default to the current default', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_OPENROUTER_MODEL).toBe(
+          SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL
+        );
+        expect(result.CLAUDE_MEM_OPENROUTER_MODEL).not.toBe('xiaomi/mimo-v2-flash:free');
+      });
+
+      it('should persist the migrated model back to the file, keeping other keys', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',
+          CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-test',
+        }));
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_OPENROUTER_MODEL).not.toBe('xiaomi/mimo-v2-flash:free');
+        expect(parsed.CLAUDE_MEM_OPENROUTER_API_KEY).toBe('sk-or-test');
+      });
+
+      it('should preserve a model the user deliberately chose', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_OPENROUTER_MODEL: 'deepseek/deepseek-r1:free',
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_OPENROUTER_MODEL).toBe('deepseek/deepseek-r1:free');
+      });
+    });
+
     describe('edge cases', () => {
       it('should handle empty object in file', () => {
         writeFileSync(settingsPath, '{}');

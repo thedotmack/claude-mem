@@ -19,6 +19,18 @@ import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 // the feature dead on arrival for every pre-existing install.
 const LEGACY_TELEGRAM_TRIGGER_TYPES = 'security_alert';
 
+// OpenRouter deprecated our shipped default model — every request for
+// xiaomi/mimo-v2-flash:free now returns 404 "This model has been deprecated",
+// so every install that kept the seeded default captured nothing (#3659).
+// Persisted values win over DEFAULTS, so changing the constant alone reaches
+// only new installs; the migration below rewrites the one exact stale value on
+// disk for existing installs. This cannot distinguish a user who deliberately
+// set this same id from the seeded default — they read identically — so such a
+// user is migrated too. That is the recoverable side of the trade: the model
+// no longer exists for anyone, and the target model is a working free one.
+export const DEFAULT_OPENROUTER_MODEL = 'poolside/laguna-s-2.1:free';
+const LEGACY_OPENROUTER_MODEL = 'xiaomi/mimo-v2-flash:free';
+
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
@@ -127,7 +139,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',  // Google-maintained alias → current GA Flash model (stays valid for new API keys)
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',  // Rate limiting ON by default for free tier users
     CLAUDE_MEM_OPENROUTER_API_KEY: '',  // Empty by default, can be set via UI or env
-    CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',  // Default OpenRouter model (free tier)
+    CLAUDE_MEM_OPENROUTER_MODEL: DEFAULT_OPENROUTER_MODEL,  // Default OpenRouter model (free tier)
     CLAUDE_MEM_OPENROUTER_BASE_URL: '',  // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL (e.g. https://api.deepseek.com, http://localhost:1234/v1). Empty = default OpenRouter endpoint.
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
@@ -228,6 +240,34 @@ export class SettingsDefaultsManager {
     return result;
   }
 
+  /**
+   * Rewrite one exact stale default to the current default and persist it. A
+   * fresh settings.json is seeded with every default, so a shipped default
+   * frozen on disk can never be reached by changing DEFAULTS alone — only this
+   * on-disk rewrite reaches existing installs. Any value other than the exact
+   * legacy string is user-customized and is left untouched.
+   */
+  private static migrateLegacyDefault(
+    flatSettings: Record<string, any>,
+    key: keyof SettingsDefaults,
+    legacyValue: string,
+    settingsPath: string,
+    label: string,
+  ): Record<string, any> {
+    if (flatSettings[key] !== legacyValue) return flatSettings;
+
+    const migrated = { ...flatSettings, [key]: this.DEFAULTS[key] };
+    try {
+      writeJsonFileAtomic(settingsPath, migrated);
+      // stderr, never stdout: CLI commands promise machine-readable JSON on stdout.
+      console.warn(`[SETTINGS] Migrated ${label} off the legacy default:`, settingsPath);
+    } catch (error: unknown) {
+      console.warn(`[SETTINGS] Failed to migrate ${label}:`, settingsPath, error instanceof Error ? error.message : String(error));
+      // Continue with the in-memory migration even if the write fails.
+    }
+    return migrated;
+  }
+
   static loadFromFile(settingsPath: string, applyEnvOverrides = true): SettingsDefaults {
     try {
       if (!existsSync(settingsPath)) {
@@ -261,21 +301,8 @@ export class SettingsDefaultsManager {
         }
       }
 
-      if (flatSettings.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES === LEGACY_TELEGRAM_TRIGGER_TYPES) {
-        flatSettings = {
-          ...flatSettings,
-          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: this.DEFAULTS.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES,
-        };
-
-        try {
-          writeJsonFileAtomic(settingsPath, flatSettings);
-          // stderr, never stdout — same JSON-on-stdout contract as above.
-          console.warn('[SETTINGS] Migrated Telegram trigger types off the legacy default:', settingsPath);
-        } catch (error: unknown) {
-          console.warn('[SETTINGS] Failed to migrate Telegram trigger types:', settingsPath, error instanceof Error ? error.message : String(error));
-          // Continue with the in-memory migration even if the write fails
-        }
-      }
+      flatSettings = this.migrateLegacyDefault(flatSettings, 'CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES', LEGACY_TELEGRAM_TRIGGER_TYPES, settingsPath, 'Telegram trigger types');
+      flatSettings = this.migrateLegacyDefault(flatSettings, 'CLAUDE_MEM_OPENROUTER_MODEL', LEGACY_OPENROUTER_MODEL, settingsPath, 'OpenRouter model');
 
       const result: SettingsDefaults = { ...this.DEFAULTS };
       for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {

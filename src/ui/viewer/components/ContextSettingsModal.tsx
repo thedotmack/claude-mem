@@ -419,9 +419,9 @@ export function ContextSettingsModal({
                   >
                     <input
                       type="text"
-                      value={formState.CLAUDE_MEM_OPENROUTER_MODEL || 'xiaomi/mimo-v2-flash:free'}
+                      value={formState.CLAUDE_MEM_OPENROUTER_MODEL || 'poolside/laguna-s-2.1:free'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_MODEL', e.target.value)}
-                      placeholder="e.g., xiaomi/mimo-v2-flash:free"
+                      placeholder="e.g., poolside/laguna-s-2.1:free"
                     />
                   </FormField>
                   <FormField
