@@ -2,11 +2,10 @@
 
 import { describe, expect, it } from 'bun:test';
 import {
-  OPENROUTER_APP_CATEGORY_PAIRS,
+  OPENROUTER_APP_CATEGORIES,
   OPENROUTER_APP_TITLE,
   OPENROUTER_APP_URL,
   openRouterAttributionHeaders,
-  pickOpenRouterCategories,
 } from '../../src/shared/openrouter-attribution.js';
 
 // OpenRouter's recognized category slugs. Unrecognized values are dropped
@@ -57,24 +56,17 @@ describe('openRouterAttributionHeaders', () => {
     expect(h).not.toHaveProperty('X-Title');
   });
 
-  it('always sends a valid category pair, even for a custom site URL', () => {
-    expect(OPENROUTER_APP_CATEGORY_PAIRS).toContain(
-      openRouterAttributionHeaders('https://example.com')['X-OpenRouter-Categories'],
-    );
+  it('always sends categories, even for a custom site URL', () => {
+    expect(openRouterAttributionHeaders('https://example.com')['X-OpenRouter-Categories'])
+      .toBe(OPENROUTER_APP_CATEGORIES);
   });
 });
 
-describe('OPENROUTER_APP_CATEGORY_PAIRS', () => {
-  const all = OPENROUTER_APP_CATEGORY_PAIRS.flatMap((p) => p.split(','));
+describe('OPENROUTER_APP_CATEGORIES', () => {
+  const all = OPENROUTER_APP_CATEGORIES.split(',');
 
   it('sends at most 2 categories per request', () => {
-    for (const pair of OPENROUTER_APP_CATEGORY_PAIRS) {
-      expect(pair.split(',').length).toBeLessThanOrEqual(2);
-    }
-  });
-
-  it('stays under the 10-category-per-app ceiling', () => {
-    expect(all.length).toBeLessThanOrEqual(10);
+    expect(all.length).toBeLessThanOrEqual(2);
   });
 
   it('uses only categories OpenRouter recognizes', () => {
@@ -92,14 +84,6 @@ describe('OPENROUTER_APP_CATEGORY_PAIRS', () => {
   });
 
   it('has no stray whitespace', () => {
-    for (const pair of OPENROUTER_APP_CATEGORY_PAIRS) {
-      expect(pair).toBe(pair.split(',').map((c) => c.trim()).join(','));
-    }
-  });
-
-  it('only ever picks a defined pair', () => {
-    for (let i = 0; i < 200; i++) {
-      expect(OPENROUTER_APP_CATEGORY_PAIRS).toContain(pickOpenRouterCategories());
-    }
+    expect(OPENROUTER_APP_CATEGORIES).toBe(all.map((c) => c.trim()).join(','));
   });
 });

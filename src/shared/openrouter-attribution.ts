@@ -29,41 +29,28 @@ export const OPENROUTER_APP_URL = 'https://github.com/thedotmack/claude-mem';
 export const OPENROUTER_APP_TITLE = 'Claude-Mem';
 
 /**
- * Marketplace categories. OpenRouter accepts at most 2 per request but stores
- * up to 10 per app, so a request sends one PAIR and the app accumulates the
- * union over time. That is the only way to hold more than two.
+ * Marketplace categories. Max 2 per request, 10 per app, merged server-side.
  *
- * Why these four:
- *   cli-agent          — what claude-mem is; the crowded headline category.
- *   ide-extension      — it ships as a plugin to agent harnesses.
- *   writing-assistant  — the observation/digest workload is prose generation.
- *   creative-writing   — the narrative reports (timeline, weekly digests).
+ * Only two are claimed, because only two do anything:
+ *   cli-agent        — what claude-mem is. Shown on the app's own page.
+ *   creative-writing — the one category that buys visible placement. The
+ *                      /apps marketplace renders a top-5 box per GROUP, and
+ *                      Creative is the only group claude-mem can enter at its
+ *                      current volume; the Coding box's 5th slot is ~16x our
+ *                      daily tokens. Justified by the narrative reports
+ *                      (timeline, weekly digests), not a fiction claim.
  *
- * Deliberately NOT claimed: video-gen / image-gen / audio-gen (claude-mem
- * generates no media) and roleplay / game. Those would rank well precisely
- * because they are uncontested, which is the tell that they would be false.
+ * Not claimed: ide-extension and writing-assistant rank well (#4 and #1) in
+ * categories with no visible surface, so they bought nothing and cost a
+ * rotation mechanism to hold. video-gen / image-gen / audio-gen and
+ * roleplay / game would be false — claude-mem generates no media and runs no
+ * roleplay — and image-gen/audio-gen are uncontested, which is the tell.
  *
  * OpenRouter drops unrecognized values silently — a typo costs the category
  * with no error — so these are checked against its published list in
  * tests/shared/openrouter-attribution.test.ts.
  */
-export const OPENROUTER_APP_CATEGORY_PAIRS = [
-  'cli-agent,ide-extension',
-  'writing-assistant,creative-writing',
-] as const;
-
-/**
- * Pick the pair for one request.
- *
- * Random, not a rotating counter: the cmem.ai gateway runs serverless, where a
- * per-process counter restarts at 0 on every cold start and would send the
- * first pair almost exclusively — the later categories would never register.
- */
-export function pickOpenRouterCategories(): string {
-  return OPENROUTER_APP_CATEGORY_PAIRS[
-    Math.floor(Math.random() * OPENROUTER_APP_CATEGORY_PAIRS.length)
-  ];
-}
+export const OPENROUTER_APP_CATEGORIES = 'cli-agent,creative-writing';
 
 /**
  * Attribution headers for an OpenRouter chat-completions request.
@@ -82,6 +69,6 @@ export function openRouterAttributionHeaders(
   return {
     'HTTP-Referer': siteUrl || OPENROUTER_APP_URL,
     'X-OpenRouter-Title': appName || OPENROUTER_APP_TITLE,
-    'X-OpenRouter-Categories': pickOpenRouterCategories(),
+    'X-OpenRouter-Categories': OPENROUTER_APP_CATEGORIES,
   };
 }
