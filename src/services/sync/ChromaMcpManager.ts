@@ -76,6 +76,31 @@ class ChromaMcpConnectionCancelledError extends Error {
   }
 }
 
+/**
+ * A child PID paired with the start token captured WHILE IT WAS ALIVE.
+ *
+ * killProcessTree self-captures the root token when a caller does not supply
+ * one, which is safe only if the process is still alive at the moment of the
+ * call. Every deferred cleanup in this class violates that: `onclose` fires
+ * BECAUSE the child died, and the prewarm paths kill a handle that may have
+ * exited already. Self-capture there reads whatever now owns the number — so
+ * it would bind to a replacement and then validate it against itself.
+ *
+ * Pairing the token with the PID at spawn time makes that structural: the two
+ * travel together, so no cleanup path in this class can forget to carry it.
+ */
+interface TrackedChild {
+  pid: number;
+  startToken: string | null;
+}
+
+/** Capture identity while the child is provably ours — call right after spawn. */
+function trackChild(child: ChildProcess): TrackedChild | null {
+  const pid = child.pid;
+  if (!pid) return null;
+  return { pid, startToken: captureProcessStartToken(pid) };
+}
+
 interface ChromaWriterLockPayload {
   pid: number;
   ownerId: string;
@@ -92,6 +117,8 @@ export class ChromaMcpManager {
   private lastConnectionFailureTimestamp: number = 0;
   private connecting: Promise<void> | null = null;
   private activePrewarmChild: ChildProcess | null = null;
+  /** Identity of activePrewarmChild, captured at spawn while it was alive. */
+  private activePrewarmTracked: TrackedChild | null = null;
   private connectionGeneration: number = 0;
   private intentionallyClosingTransports = new WeakSet<object>();
   private readonly chromaWriterOwnerId = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
@@ -272,7 +299,11 @@ export class ChromaMcpManager {
     logger.info('CHROMA_MCP', 'Connected to chroma-mcp successfully');
 
     const currentTransport = this.transport;
-    const currentTrackedPid = (this.transport as unknown as { _process?: ChildProcess })._process?.pid;
+    // Captured HERE, while the child is alive and attached — not in the
+    // onclose handler below, which by definition runs after it has died.
+    const transportChild = (this.transport as unknown as { _process?: ChildProcess })._process;
+    const currentTracked = transportChild ? trackChild(transportChild) : null;
+    const currentTrackedPid = currentTracked?.pid;
     this.transport.onclose = () => {
       if (this.transport !== currentTransport) {
         logger.debug('CHROMA_MCP', 'Ignoring stale onclose from previous transport');
@@ -297,13 +328,13 @@ export class ChromaMcpManager {
       // does not use process groups. Sweep the descendant tree using the
       // captured PID — best-effort; pgrep returns nothing if everything
       // already exited (#2313).
-      this.scheduleUnexpectedCloseCleanup(currentTrackedPid);
+      this.scheduleUnexpectedCloseCleanup(currentTracked);
     };
   }
 
-  private scheduleUnexpectedCloseCleanup(pid: number | undefined): void {
+  private scheduleUnexpectedCloseCleanup(tracked: TrackedChild | null): void {
     let cleanup: Promise<void>;
-    cleanup = this.cleanupUnexpectedCloseSubprocess(pid).finally(() => {
+    cleanup = this.cleanupUnexpectedCloseSubprocess(tracked).finally(() => {
       if (this.unexpectedCloseCleanup === cleanup) {
         this.unexpectedCloseCleanup = null;
       }
@@ -311,10 +342,16 @@ export class ChromaMcpManager {
     this.unexpectedCloseCleanup = cleanup;
   }
 
-  private async cleanupUnexpectedCloseSubprocess(pid: number | undefined): Promise<void> {
+  private async cleanupUnexpectedCloseSubprocess(tracked: TrackedChild | null): Promise<void> {
+    const pid = tracked?.pid;
     try {
-      if (pid) {
-        await killProcessTree(pid);
+      if (tracked) {
+        // The spawn-time token is REQUIRED here, not an optimisation. This
+        // path runs because the child already exited, so killProcessTree's
+        // self-capture would read whatever now holds that PID and validate the
+        // replacement against itself — then `taskkill /T /F` would take that
+        // stranger and its whole subtree down.
+        await killProcessTree(tracked.pid, { expectedStartToken: tracked.startToken });
       }
     } catch (error) {
       logger.debug('CHROMA_MCP', 'Background tree-kill after onclose finished (best-effort)', {
@@ -324,6 +361,11 @@ export class ChromaMcpManager {
     } finally {
       this.releaseChromaWriterLock();
     }
+  }
+
+  /** Test seam: await the background onclose cleanup deterministically. */
+  async waitForUnexpectedCloseCleanupForTesting(): Promise<void> {
+    await this.waitForUnexpectedCloseCleanup();
   }
 
   private async waitForUnexpectedCloseCleanup(): Promise<void> {
@@ -626,6 +668,8 @@ export class ChromaMcpManager {
       windowsHide: process.platform === 'win32',
     });
     this.activePrewarmChild = child;
+    const prewarmTracked = trackChild(child);
+    this.activePrewarmTracked = prewarmTracked;
 
     const stdoutTail = ChromaMcpManager.captureOutputTail(child.stdout);
     const stderrTail = ChromaMcpManager.captureOutputTail(child.stderr);
@@ -684,7 +728,10 @@ export class ChromaMcpManager {
 
       if (pid) {
         try {
-          await killProcessTree(pid);
+          // Token from spawn time: by here the prewarm may already have exited
+          // (that is often WHY we are in this branch), so self-capture would
+          // read a replacement rather than the child we spawned.
+          await killProcessTree(pid, { expectedStartToken: prewarmTracked?.startToken ?? null });
         } catch (killError) {
           logger.debug('CHROMA_MCP', 'prewarm process tree kill finished (best-effort)', {
             pid,
@@ -704,6 +751,7 @@ export class ChromaMcpManager {
       }
       if (this.activePrewarmChild === child) {
         this.activePrewarmChild = null;
+        this.activePrewarmTracked = null;
       }
     }
   }
@@ -1097,17 +1145,20 @@ export class ChromaMcpManager {
 
   private async disposeActivePrewarm(): Promise<void> {
     const prewarmChild = this.activePrewarmChild;
+    const tracked = this.activePrewarmTracked;
     if (!prewarmChild) {
       return;
     }
     if (this.activePrewarmChild === prewarmChild) {
       this.activePrewarmChild = null;
+      this.activePrewarmTracked = null;
     }
 
     const pid = prewarmChild.pid;
     if (pid) {
       try {
-        await killProcessTree(pid);
+        // Spawn-time identity: this handle may already have exited.
+        await killProcessTree(pid, { expectedStartToken: tracked?.startToken ?? null });
       } catch (error) {
         logger.warn('CHROMA_MCP', 'failed to kill in-flight chroma-mcp prewarm tree (best-effort)', {
           pid,

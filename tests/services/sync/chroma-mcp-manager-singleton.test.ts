@@ -225,10 +225,15 @@ mock.module('../../../src/supervisor/env-sanitizer.js', () => ({
 // implementation runs (observed through the child_process mock below), and an
 // individual test can substitute a stub it can hold open.
 let killProcessTreeOverride: ((pid: number) => Promise<void>) | null = null;
+/** Every killProcessTree call, so wiring of the identity token is assertable. */
+const killProcessTreeCalls: Array<{ pid: number; options?: { expectedStartToken?: string | null } }> = [];
 mock.module('../../../src/shared/kill-process-tree.js', () => ({
   ...realKillProcessTreeSnapshot,
-  killProcessTree: (pid: number) =>
-    (killProcessTreeOverride ?? realKillProcessTreeSnapshot.killProcessTree)(pid),
+  killProcessTree: (pid: number, options?: { expectedStartToken?: string | null }) =>
+    ((): Promise<void> => {
+      killProcessTreeCalls.push({ pid, options });
+      return (killProcessTreeOverride ?? realKillProcessTreeSnapshot.killProcessTree)(pid, options);
+    })(),
 }));
 
 // Replace child_process.execFile so the static killProcessTree implementation
@@ -334,6 +339,7 @@ function resetState(): void {
   transportCount = 0;
   transportInstances.length = 0;
   prewarmSpawnCalls.length = 0;
+  killProcessTreeCalls.length = 0;
   killTreeCalls.length = 0;
   deadPids.clear();
   logEntries.length = 0;
@@ -407,6 +413,29 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     expect(transportCount).toBe(1);
     expect(prewarmSpawnCalls.length).toBe(1);
+  });
+
+  it('onclose cleanup carries the spawn-time identity token, not self-capture', async () => {
+    // onclose fires BECAUSE the child died, so killProcessTree's self-capture
+    // would read whatever now owns that PID and validate the replacement
+    // against itself. The token must therefore be captured while the child was
+    // alive and passed down. Asserting the wiring, because a real PID-reuse
+    // race cannot be driven here.
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    const closedPid = transportInstances[0]!._process.pid;
+    killProcessTreeCalls.length = 0;
+
+    transportInstances[0]!.onclose?.();
+    await mgr.waitForUnexpectedCloseCleanupForTesting();
+
+    const cleanupCall = killProcessTreeCalls.find(call => call.pid === closedPid);
+    expect(cleanupCall).toBeDefined();
+    // The key must be PRESENT — omitting it is what silently re-enables
+    // self-capture on a path where self-capture is guaranteed to be too late.
+    expect(cleanupCall!.options).toBeDefined();
+    expect(Object.prototype.hasOwnProperty.call(cleanupCall!.options!, 'expectedStartToken')).toBe(true);
   });
 
   it('never passes a foreign Python interpreter to the uvx child (#3552)', async () => {

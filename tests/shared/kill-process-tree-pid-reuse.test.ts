@@ -339,6 +339,52 @@ describe.if(isPosix)('descendant identity comes from the discovering observation
   }, 30_000);
 });
 
+describe.if(isPosix)('a caller-supplied token beats self-capture for a DEAD pid', () => {
+  // The rule this encodes: any site that retains a PID from a live
+  // ChildProcess and kills it later must capture the start token WHILE that
+  // child is alive. Self-capture is only sufficient when the caller can
+  // guarantee liveness at the moment of the call.
+  //
+  // ChromaMcpManager's onclose cleanup is the canonical violation: it runs
+  // BECAUSE the child died, so self-capture is guaranteed to be too late and
+  // would read whatever now owns the number, then validate that replacement
+  // against itself.
+
+  it('SKIPS the kill when the spawn-time token no longer matches', async () => {
+    const { rootPid } = spawnTermKillableChild();
+    await settle();
+    const child = directChildOf(rootPid);
+
+    // Stand in for "this PID now belongs to someone else by the time cleanup
+    // runs". A caller passing its spawn-time token detects that; self-capture
+    // cannot, because it would read the replacement.
+    probeSeesReplacement.set(rootPid, 'token-of-whatever-now-owns-this-pid');
+
+    await killProcessTree(rootPid, { expectedStartToken: 'token-captured-while-the-child-was-alive' });
+    await settle(1_000);
+
+    expect(isPidAlive(rootPid)).toBe(true);
+    expect(isPidAlive(child)).toBe(true);
+
+    try { process.kill(rootPid, 'SIGKILL'); } catch { /* fine */ }
+    try { process.kill(child, 'SIGKILL'); } catch { /* fine */ }
+  }, 30_000);
+
+  it('still kills when the spawn-time token matches the live process', async () => {
+    const { rootPid } = spawnTermKillableChild();
+    await settle();
+    const child = directChildOf(rootPid);
+
+    const token = realIdentitySnapshot.captureProcessStartToken(rootPid);
+    expect(token).not.toBeNull();
+
+    await killProcessTree(rootPid, { expectedStartToken: token });
+
+    expect(await waitUntil(() => !isPidAlive(rootPid), 10_000)).toBe(true);
+    expect(await waitUntil(() => !isPidAlive(child), 10_000)).toBe(true);
+  }, 30_000);
+});
+
 describe('isSameProcess fallback semantics', () => {
   // Refusing to kill must stay strictly NARROWER than killing: a token we
   // could not read must never strand a live orphan (#2313).
