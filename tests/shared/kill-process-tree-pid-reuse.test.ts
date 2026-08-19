@@ -218,6 +218,67 @@ describe.if(isPosix)('killProcessTree refuses a ROOT whose PID was reused', () =
   }, 30_000);
 });
 
+describe.if(isPosix)('killProcessTree is root-safe BY DEFAULT, with no token passed', () => {
+  // The structural fix. Root identity used to be opt-in via
+  // expectedStartToken, so any call site that omitted it reopened the reuse
+  // hole — which is why successive review rounds each found another one.
+  // killProcessTree now captures the root's token itself at entry and
+  // revalidates before every signal, so omitting the option is safe.
+  //
+  // These call killProcessTree(pid) with NO options at all, which is the
+  // shape ~11 of the 13 real call sites use.
+
+  it('kills the tree when the root identity is intact (no token passed)', async () => {
+    const { rootPid } = spawnTermKillableChild();
+    await settle();
+    const child = directChildOf(rootPid);
+
+    await killProcessTree(rootPid);
+
+    expect(await waitUntil(() => !isPidAlive(rootPid), 10_000)).toBe(true);
+    expect(await waitUntil(() => !isPidAlive(child), 10_000)).toBe(true);
+  }, 30_000);
+
+  it('does NOT signal a reused root when no token was passed', async () => {
+    const { rootPid } = spawnTermKillableChild();
+    await settle();
+    const child = directChildOf(rootPid);
+
+    // The root's PID now names an unrelated process. Pre-fix this was
+    // unguarded whenever the caller omitted expectedStartToken, so the root
+    // (and via taskkill /T on Windows, its whole subtree) was terminated.
+    forcedReuse.add(rootPid);
+
+    await killProcessTree(rootPid);
+    await settle(1_000);
+
+    expect(isPidAlive(rootPid)).toBe(true);
+    // Descendants are not enumerated from a reused root either — they would
+    // be the replacement's children.
+    expect(isPidAlive(child)).toBe(true);
+
+    try { process.kill(rootPid, 'SIGKILL'); } catch { /* fine */ }
+    try { process.kill(child, 'SIGKILL'); } catch { /* fine */ }
+  }, 30_000);
+
+  it('does NOT signal a reused root in immediate mode either', async () => {
+    const { rootPid } = spawnTermKillableChild();
+    await settle();
+    const child = directChildOf(rootPid);
+
+    forcedReuse.add(rootPid);
+
+    await killProcessTree(rootPid, { signalMode: 'immediate' });
+    await settle(1_000);
+
+    expect(isPidAlive(rootPid)).toBe(true);
+    expect(isPidAlive(child)).toBe(true);
+
+    try { process.kill(rootPid, 'SIGKILL'); } catch { /* fine */ }
+    try { process.kill(child, 'SIGKILL'); } catch { /* fine */ }
+  }, 30_000);
+});
+
 describe('isSameProcess fallback semantics', () => {
   // Refusing to kill must stay strictly NARROWER than killing: a token we
   // could not read must never strand a live orphan (#2313).

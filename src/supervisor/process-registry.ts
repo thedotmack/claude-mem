@@ -232,7 +232,13 @@ export class ProcessRegistry {
           // Windows has no process groups, and process.kill() force-terminates
           // exactly one PID — a `.cmd` shim dies while the real child it wraps
           // survives. taskkill /T is the only teardown that reaches descendants.
-          await killProcessTree(record.pid);
+          //
+          // The token is passed rather than left to killProcessTree's own
+          // self-capture because this loop captured it EARLIER (before the
+          // preceding iterations' awaits), which is the stronger guarantee.
+          await killProcessTree(record.pid, {
+            expectedStartToken: startTokens.get(record.pid) ?? null,
+          });
         } else if (typeof record.pgid === 'number') {
           process.kill(-record.pgid, 'SIGTERM');
         } else {

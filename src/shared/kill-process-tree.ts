@@ -69,12 +69,25 @@ export interface KillProcessTreeOptions {
   /**
    * The root's start token, captured when the caller first learned the PID.
    *
-   * Supply this whenever the PID was captured BEFORE an await — a PID is not a
-   * stable handle, and by the time the kill runs the OS may have reissued the
-   * number to something unrelated. On mismatch this function does nothing at
-   * all: it does not signal the root, and it does not enumerate descendants
-   * from it either (they would be the replacement's children, and on Windows
-   * `taskkill /T` would take that whole subtree down).
+   * OPTIONAL, and omitting it is safe: when it is absent this function
+   * captures the root's token itself at entry and revalidates before every
+   * signal it sends. Root-identity checking is therefore the DEFAULT, not
+   * something a call site can lose by forgetting an argument.
+   *
+   * Supplying it buys a strictly stronger guarantee, and only callers who
+   * captured the PID before their OWN await can offer it:
+   *
+   *   - self-captured (default): detects reuse happening DURING this
+   *     function's awaits — descendant enumeration and the graceful settle.
+   *   - caller-supplied: additionally detects reuse that happened BEFORE
+   *     entry, which self-capture cannot see because by then it would be
+   *     reading the replacement's token. ChromaMcpManager needs this: its PID
+   *     is captured before `await transport.close()`.
+   *
+   * On mismatch this function does nothing at all — it does not signal the
+   * root, and it does not enumerate descendants from it either (they would be
+   * the replacement's children, and on Windows `taskkill /T` would take that
+   * whole subtree down).
    *
    * Callers holding their own pre-captured descendant snapshot should reap it
    * themselves after this returns — that snapshot is still valid even when the
@@ -102,10 +115,19 @@ export async function killProcessTree(
 ): Promise<void> {
   const immediate = options.signalMode === 'immediate';
 
-  // Root identity gate. Runs before the platform split and before any
-  // enumeration: if this PID no longer names the process the caller captured,
-  // both signalling it and walking its children are wrong.
-  if (options.expectedStartToken !== undefined && !isSameProcess(pid, options.expectedStartToken)) {
+  // Root identity, self-captured when the caller did not supply one. Making
+  // this the default is deliberate: when it was opt-in, every call site that
+  // omitted the option silently reopened the reuse hole, and each review round
+  // found another one. Safe by construction now — a call site can only weaken
+  // this by passing an explicitly wrong token, not by forgetting an argument.
+  const rootStartToken = options.expectedStartToken !== undefined
+    ? options.expectedStartToken
+    : captureProcessStartToken(pid);
+
+  /** Re-read before every signal: each await below reopens the reuse window. */
+  const rootIsIntact = (): boolean => isSameProcess(pid, rootStartToken);
+
+  if (!rootIsIntact()) {
     logger.warn('PROCESS', 'Skipping tree-kill: root PID was reused since it was captured', { pid });
     return;
   }
@@ -172,14 +194,26 @@ export async function killProcessTree(
         // Already gone — fine.
       }
     }
-    try {
-      process.kill(pid, firstSignal);
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code !== 'ESRCH') {
-        logger.debug('PROCESS', `Failed to ${firstSignal} PID ${pid}`, { code }, err);
+    // Descendant enumeration above is an await, so the root may have exited
+    // and had its PID reissued while it ran. Its descendants stay valid
+    // targets (they were the real root's children and must still be reaped),
+    // but the root itself must not be signalled if the number now names
+    // something else — so this SKIPS the root signal without returning.
+    if (rootIsIntact()) {
+      try {
+        process.kill(pid, firstSignal);
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== 'ESRCH') {
+          logger.debug('PROCESS', `Failed to ${firstSignal} PID ${pid}`, { code }, err);
+        }
       }
+    } else {
+      logger.warn('PROCESS', 'Skipping root signal: PID was reused during descendant enumeration', {
+        pid,
+        signal: firstSignal,
+      });
     }
 
     // Graceful mode waits for SIGTERM to propagate before escalating. Immediate
@@ -208,7 +242,8 @@ export async function killProcessTree(
     // they exited during the grace window (in which case the OS may have
     // reissued the number to an unrelated process). A start token separates
     // those two cases; without it the second one gets SIGKILLed.
-    const descendantsBeforeKill = await collectDescendantIdentities(pid);
+    // Never walk a reused root: those children belong to the replacement.
+    const descendantsBeforeKill = rootIsIntact() ? await collectDescendantIdentities(pid) : [];
     const killTargets = new Map<number, string | null>();
     // Pre-TERM first, then let the fresher post-wait token win on collision.
     for (const child of descendantsBeforeTerm) killTargets.set(child.pid, child.startToken);
@@ -231,7 +266,7 @@ export async function killProcessTree(
     // In immediate mode the root already received SIGKILL in the pass above,
     // and SIGKILL is not survivable — re-sending it would be pure noise (and
     // would misrepresent the signal sequence to anything observing it).
-    if (!immediate) {
+    if (!immediate && rootIsIntact()) {
       try {
         process.kill(pid, 'SIGKILL');
       } catch {

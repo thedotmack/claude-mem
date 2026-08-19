@@ -103,7 +103,12 @@ describe.if(isPosix)('the #3378 invariant is enforced, not just documented', () 
 
     const child = spawn(
       '/bin/sh',
-      ['-c', `trap 'touch "${marker}"; exit 0' TERM; sleep 300 & wait`],
+      // The root must OUTLIVE its child. `sleep 300 & wait` ends as soon as the
+      // descendant pass kills the sleep, and the root then exits on its own
+      // before the root signal lands — the trap never fires and the assertion
+      // measures fixture timing rather than delivered signals. A self-looping
+      // root stays alive until it is signalled directly.
+      ['-c', `trap 'touch "${marker}"; exit 0' TERM; while :; do sleep 1; done`],
       { stdio: 'ignore' }
     );
     const rootPid = child.pid!;
@@ -131,7 +136,12 @@ describe.if(isPosix)('the #3378 invariant is enforced, not just documented', () 
 
     const child = spawn(
       '/bin/sh',
-      ['-c', `trap 'touch "${marker}"; exit 0' TERM; sleep 300 & wait`],
+      // The root must OUTLIVE its child. `sleep 300 & wait` ends as soon as the
+      // descendant pass kills the sleep, and the root then exits on its own
+      // before the root signal lands — the trap never fires and the assertion
+      // measures fixture timing rather than delivered signals. A self-looping
+      // root stays alive until it is signalled directly.
+      ['-c', `trap 'touch "${marker}"; exit 0' TERM; while :; do sleep 1; done`],
       { stdio: 'ignore' }
     );
     const rootPid = child.pid!;
