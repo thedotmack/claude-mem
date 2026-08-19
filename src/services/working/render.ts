@@ -23,13 +23,17 @@ function formatTimeHHMM(epochMs: number): string {
 }
 
 /**
- * Nudge appended to a task section with no intent entries. Intent absence is
- * the trigger (not set emptiness): the observer journal fills the set by
- * itself, so an emptiness-gated reminder never fires — sessions ran
- * journal-only Working Memory for hours (observed live).
+ * Nudge appended to a task section with no intent entries. Two design notes:
+ * the trigger is intent absence (not set emptiness — the observer journal
+ * fills the set by itself), and the text carries the live journal count so
+ * the line CHANGES as work accumulates. A static nudge becomes invisible
+ * boilerplate within hours; a counter that ticks up on every prompt is
+ * salient and mildly accusatory in exactly the intended way.
  */
-export const WORKING_MEMORY_NO_INTENT_NUDGE =
-  '_No intent recorded — if your toolset has working_set, record your current hypothesis/plan._';
+export function noIntentNudge(journalCount: number): string {
+  const suffix = journalCount === 1 ? 'call' : 'calls';
+  return `_No intent recorded — ${journalCount} tool ${suffix} journaled without one. State your current hypothesis or next step via working_set (one line is enough)._`;
+}
 
 function renderTaskSection(taskKey: string, entries: WorkingEntry[]): string {
   const intents = entries
@@ -52,7 +56,7 @@ function renderTaskSection(taskKey: string, entries: WorkingEntry[]): string {
   // holding intent must not silence the nudge for a journal-only task —
   // that is the same "never fires" bug one level down.
   if (intents.length === 0) {
-    lines.push('', WORKING_MEMORY_NO_INTENT_NUDGE);
+    lines.push('', noIntentNudge(journal.length));
   }
   return lines.join('\n');
 }
