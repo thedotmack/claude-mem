@@ -52,6 +52,8 @@ export type Component =
   | 'SYSTEM'
   | 'TELEGRAM'
   | 'TRANSCRIPT'
+  | 'VECTOR_INDEX'
+  | 'VECTOR_SYNC'
   | 'WINDSURF'
   | 'WORKER';
 
