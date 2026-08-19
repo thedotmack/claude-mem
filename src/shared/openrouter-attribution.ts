@@ -29,10 +29,41 @@ export const OPENROUTER_APP_URL = 'https://github.com/thedotmack/claude-mem';
 export const OPENROUTER_APP_TITLE = 'Claude-Mem';
 
 /**
- * Marketplace categories. Max 2 per request, 10 per app. OpenRouter drops
- * unrecognized values silently, so these must come from its published list.
+ * Marketplace categories. OpenRouter accepts at most 2 per request but stores
+ * up to 10 per app, so a request sends one PAIR and the app accumulates the
+ * union over time. That is the only way to hold more than two.
+ *
+ * Why these four:
+ *   cli-agent          — what claude-mem is; the crowded headline category.
+ *   ide-extension      — it ships as a plugin to agent harnesses.
+ *   writing-assistant  — the observation/digest workload is prose generation.
+ *   creative-writing   — the narrative reports (timeline, weekly digests).
+ *
+ * Deliberately NOT claimed: video-gen / image-gen / audio-gen (claude-mem
+ * generates no media) and roleplay / game. Those would rank well precisely
+ * because they are uncontested, which is the tell that they would be false.
+ *
+ * OpenRouter drops unrecognized values silently — a typo costs the category
+ * with no error — so these are checked against its published list in
+ * tests/shared/openrouter-attribution.test.ts.
  */
-export const OPENROUTER_APP_CATEGORIES = 'cli-agent,programming-app';
+export const OPENROUTER_APP_CATEGORY_PAIRS = [
+  'cli-agent,ide-extension',
+  'writing-assistant,creative-writing',
+] as const;
+
+/**
+ * Pick the pair for one request.
+ *
+ * Random, not a rotating counter: the cmem.ai gateway runs serverless, where a
+ * per-process counter restarts at 0 on every cold start and would send the
+ * first pair almost exclusively — the later categories would never register.
+ */
+export function pickOpenRouterCategories(): string {
+  return OPENROUTER_APP_CATEGORY_PAIRS[
+    Math.floor(Math.random() * OPENROUTER_APP_CATEGORY_PAIRS.length)
+  ];
+}
 
 /**
  * Attribution headers for an OpenRouter chat-completions request.
@@ -51,6 +82,6 @@ export function openRouterAttributionHeaders(
   return {
     'HTTP-Referer': siteUrl || OPENROUTER_APP_URL,
     'X-OpenRouter-Title': appName || OPENROUTER_APP_TITLE,
-    'X-OpenRouter-Categories': OPENROUTER_APP_CATEGORIES,
+    'X-OpenRouter-Categories': pickOpenRouterCategories(),
   };
 }

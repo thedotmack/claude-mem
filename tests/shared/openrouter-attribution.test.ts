@@ -2,10 +2,11 @@
 
 import { describe, expect, it } from 'bun:test';
 import {
-  OPENROUTER_APP_CATEGORIES,
+  OPENROUTER_APP_CATEGORY_PAIRS,
   OPENROUTER_APP_TITLE,
   OPENROUTER_APP_URL,
   openRouterAttributionHeaders,
+  pickOpenRouterCategories,
 } from '../../src/shared/openrouter-attribution.js';
 
 // OpenRouter's recognized category slugs. Unrecognized values are dropped
@@ -21,6 +22,7 @@ describe('OpenRouter app identity', () => {
   // This is the one value that must never drift. OpenRouter keys the public
   // leaderboard on the referer URL, so changing it mints a brand-new app and
   // strands every token the existing entry (app id 2605040) has earned.
+  // Deliberately no rank here — the daily rank moves and would rot.
   it('pins the app URL that owns the ranking', () => {
     expect(OPENROUTER_APP_URL).toBe('https://github.com/thedotmack/claude-mem');
   });
@@ -55,24 +57,49 @@ describe('openRouterAttributionHeaders', () => {
     expect(h).not.toHaveProperty('X-Title');
   });
 
-  it('always sends categories, even for a custom site URL', () => {
-    expect(openRouterAttributionHeaders('https://example.com')['X-OpenRouter-Categories'])
-      .toBe(OPENROUTER_APP_CATEGORIES);
+  it('always sends a valid category pair, even for a custom site URL', () => {
+    expect(OPENROUTER_APP_CATEGORY_PAIRS).toContain(
+      openRouterAttributionHeaders('https://example.com')['X-OpenRouter-Categories'],
+    );
   });
 });
 
-describe('OPENROUTER_APP_CATEGORIES', () => {
-  const parsed = OPENROUTER_APP_CATEGORIES.split(',');
+describe('OPENROUTER_APP_CATEGORY_PAIRS', () => {
+  const all = OPENROUTER_APP_CATEGORY_PAIRS.flatMap((p) => p.split(','));
 
   it('sends at most 2 categories per request', () => {
-    expect(parsed.length).toBeLessThanOrEqual(2);
+    for (const pair of OPENROUTER_APP_CATEGORY_PAIRS) {
+      expect(pair.split(',').length).toBeLessThanOrEqual(2);
+    }
+  });
+
+  it('stays under the 10-category-per-app ceiling', () => {
+    expect(all.length).toBeLessThanOrEqual(10);
   });
 
   it('uses only categories OpenRouter recognizes', () => {
-    for (const c of parsed) expect(RECOGNIZED_CATEGORIES).toContain(c);
+    for (const c of all) expect(RECOGNIZED_CATEGORIES).toContain(c);
+  });
+
+  it('claims no media-generation or roleplay category', () => {
+    for (const c of ['video-gen', 'image-gen', 'audio-gen', 'roleplay', 'game']) {
+      expect(all).not.toContain(c);
+    }
+  });
+
+  it('claims no category twice', () => {
+    expect(new Set(all).size).toBe(all.length);
   });
 
   it('has no stray whitespace', () => {
-    expect(OPENROUTER_APP_CATEGORIES).toBe(parsed.map((c) => c.trim()).join(','));
+    for (const pair of OPENROUTER_APP_CATEGORY_PAIRS) {
+      expect(pair).toBe(pair.split(',').map((c) => c.trim()).join(','));
+    }
+  });
+
+  it('only ever picks a defined pair', () => {
+    for (let i = 0; i < 200; i++) {
+      expect(OPENROUTER_APP_CATEGORY_PAIRS).toContain(pickOpenRouterCategories());
+    }
   });
 });
