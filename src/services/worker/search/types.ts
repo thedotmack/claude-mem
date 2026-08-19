@@ -6,7 +6,13 @@ export type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSea
 export const SEARCH_CONSTANTS = {
   RECENCY_WINDOW_MS: 90 * 24 * 60 * 60 * 1000,
   DEFAULT_LIMIT: 20,
-  CHROMA_BATCH_SIZE: 100
+  CHROMA_BATCH_SIZE: 100,
+  /**
+   * The vector stage hands more candidates to hydration than the caller's
+   * limit, because hydration re-applies type / concept / file / date filters
+   * in SQL and would otherwise return short whenever those filters bite.
+   */
+  OVERFETCH_FACTOR: 4
 } as const;
 
 export type ChromaDocType = 'observation' | 'session_summary' | 'user_prompt';

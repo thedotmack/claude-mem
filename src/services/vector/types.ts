@@ -33,6 +33,8 @@ export interface VectorDoc {
 
 /** A scored hit. `score` is cosine similarity in [-1, 1]; higher is nearer. */
 export interface VectorHit {
+  /** Which table this hit came from, so callers can route it. */
+  kind: VectorDocKind;
   docId: string;
   sqliteId: number;
   fieldType: string;

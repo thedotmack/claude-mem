@@ -127,6 +127,7 @@ export class VectorIndex {
 
       for (const row of rows) {
         hits.push({
+          kind,
           docId: row.doc_id,
           sqliteId: row.sqlite_id,
           fieldType: row.field_type,
