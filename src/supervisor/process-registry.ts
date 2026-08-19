@@ -5,6 +5,7 @@ import path from 'path';
 import { logger } from '../utils/logger.js';
 import { sanitizeEnv } from './env-sanitizer.js';
 import { paths } from '../shared/paths.js';
+import { killProcessTree } from '../shared/kill-process-tree.js';
 
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;
 const REAP_SESSION_SIGKILL_TIMEOUT_MS = 1_000;
@@ -313,7 +314,12 @@ export class ProcessRegistry {
     const aliveRecords = sessionRecords.filter(r => isPidAlive(r.pid));
     for (const record of aliveRecords) {
       try {
-        if (typeof record.pgid === 'number' && process.platform !== 'win32') {
+        if (process.platform === 'win32') {
+          // Windows has no process groups, and process.kill() force-terminates
+          // exactly one PID — a `.cmd` shim dies while the real child it wraps
+          // survives. taskkill /T is the only teardown that reaches descendants.
+          await killProcessTree(record.pid);
+        } else if (typeof record.pgid === 'number') {
           process.kill(-record.pgid, 'SIGTERM');
         } else {
           process.kill(record.pid, 'SIGTERM');
@@ -347,7 +353,9 @@ export class ProcessRegistry {
         sessionId: sessionIdNum
       });
       try {
-        if (typeof record.pgid === 'number' && process.platform !== 'win32') {
+        if (process.platform === 'win32') {
+          await killProcessTree(record.pid);
+        } else if (typeof record.pgid === 'number') {
           process.kill(-record.pgid, 'SIGKILL');
         } else {
           process.kill(record.pid, 'SIGKILL');
@@ -476,13 +484,31 @@ export async function ensureSdkProcessExit(
     pid, pgid, timeoutMs,
   });
   try {
-    if (typeof pgid === 'number' && process.platform !== 'win32') {
+    if (process.platform === 'win32') {
+      // proc.kill() only reaches the direct child — on Windows that is often a
+      // `.cmd`/`.exe` shim whose real payload keeps running (and keeps the
+      // inherited socket open). Tree-kill the whole chain instead.
+      await killProcessTree(pid);
+    } else if (typeof pgid === 'number') {
       process.kill(-pgid, 'SIGKILL');
     } else {
       proc.kill('SIGKILL');
     }
-  } catch {
-    // Already dead — fine.
+  } catch (error: unknown) {
+    // A bare swallow here used to be accurate — process.kill()/proc.kill()
+    // only ever raised ESRCH ("already dead — fine"). killProcessTree() also
+    // raises ProcessTreeKillError for a genuine failure (Windows taskkill
+    // access-denied), and silently discarding that would hide a live SDK tree
+    // behind a clean-looking teardown. ESRCH stays tolerated; anything else is
+    // surfaced.
+    const errno = (error as NodeJS.ErrnoException).code;
+    if (errno !== 'ESRCH') {
+      logger.warn('PROCESS', `Force-kill of SDK process PID ${pid} failed`, {
+        pid,
+        pgid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   const sigkillExit = new Promise<void>((resolve) => {
@@ -763,12 +789,26 @@ export function spawnSdkProcess(
 }
 
 function sigtermDuplicateSdkProcess(record: ManagedProcessRecord, sessionDbId: number): void {
-  if (typeof record.pgid === 'number') {
-    if (process.platform !== 'win32') {
-      process.kill(-record.pgid, 'SIGTERM');
-    } else {
-      process.kill(record.pid, 'SIGTERM');
-    }
+  if (process.platform === 'win32') {
+    // The SDK spawn factory is synchronous (it must return SpawnedSdkProcess
+    // to its caller), so the tree-kill cannot be awaited here. That matches
+    // the pre-existing contract: this function only *starts* the teardown —
+    // process.kill() never waited for the duplicate to exit either. taskkill
+    // /T is what makes the teardown reach the duplicate's descendants instead
+    // of orphaning them.
+    //
+    // killProcessTree now REJECTS on a genuine kill failure, so this
+    // fire-and-forget call must terminate its own promise chain — an
+    // unhandled rejection here would take the worker down on a duplicate that
+    // merely failed to die.
+    killProcessTree(record.pid).catch((error: unknown) => {
+      logger.warn('PROCESS', `Tree-kill of duplicate SDK process PID ${record.pid} failed`, {
+        sessionDbId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  } else if (typeof record.pgid === 'number') {
+    process.kill(-record.pgid, 'SIGTERM');
   } else {
     process.kill(record.pid, 'SIGTERM');
   }
