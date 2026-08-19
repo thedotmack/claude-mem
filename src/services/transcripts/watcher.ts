@@ -11,6 +11,17 @@ interface TailState {
   partial: string;
 }
 
+// A bulk backfill can walk hundreds of rollout files and tens of thousands of
+// lines. The watcher runs on the same Bun event loop that serves worker HTTP,
+// so awaiting each line back-to-back starves live hook capture. Hand a
+// macrotask back to the loop periodically so the HTTP listener stays
+// responsive during the scan (#3653).
+const YIELD_EVERY_N_LINES = 100;
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise<void>(resolve => setImmediate(resolve));
+}
+
 class FileTailer {
   private watcher: ReturnType<typeof fsWatch> | null = null;
   private tailState: TailState;
@@ -75,10 +86,14 @@ class FileTailer {
     const lines = combined.split('\n');
     this.tailState.partial = lines.pop() ?? '';
 
+    let processed = 0;
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       await this.onLine(trimmed);
+      if (++processed % YIELD_EVERY_N_LINES === 0) {
+        await yieldToEventLoop();
+      }
     }
   }
 }
@@ -122,6 +137,7 @@ export class TranscriptWatcher {
 
     for (const filePath of files) {
       await this.addTailer(filePath, watch, schema);
+      await yieldToEventLoop();
     }
 
     const watchRoot = this.deepestNonGlobAncestor(resolvedPath);
