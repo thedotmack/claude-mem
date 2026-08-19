@@ -104,7 +104,9 @@ describe('sessionInitHandler working-memory injection', () => {
     const additional = result.hookSpecificOutput.additionalContext as string;
     expect(additional).toContain('## Working Memory — task: default');
     expect(additional).toContain('- [intent] hypothesis: route order bug');
-    expect(additional).toContain('- [journal] Read src/routes.ts');
+    // Journal rows never enter the prompt (they stay in DB/API) — decided
+    // after live sessions showed a journal-only block reads as command spam.
+    expect(additional).not.toContain('- [journal]');
   });
 
   it('injects the empty-set reminder when the set is empty and the prompt is substantial', () => {

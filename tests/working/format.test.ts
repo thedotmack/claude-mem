@@ -75,7 +75,7 @@ describe('renderWorkingMemoryBlock', () => {
     expect(renderWorkingMemoryBlock({ entries: [] })).toBeNull();
   });
 
-  it('renders intents sorted by key, journal as a timeline, with an updated stamp', () => {
+  it('renders intents sorted by key with an updated stamp; journal rows stay out of the prompt', () => {
     const block = renderWorkingMemoryBlock({
       entries: [
         entry({ id: 1, key: 'next', value: 'run tests', updated_at_epoch: 2000 }),
@@ -89,8 +89,6 @@ describe('renderWorkingMemoryBlock', () => {
       '## Working Memory — task: default (updated 00:00)',
       '- [intent] hypothesis: cache bug',
       '- [intent] next: run tests',
-      '- [journal] Read src/x.ts',
-      '- [journal] Bash failed: bun test (exit 1)',
     ].join('\n'));
   });
 
@@ -102,37 +100,13 @@ describe('renderWorkingMemoryBlock', () => {
     expect(block).toContain('(updated 12:04)');
   });
 
-  it('appends the no-intent nudge to a journal-only block (intent absence is the trigger)', () => {
+  it('a journal-only set renders as null (caller falls back to the one-line reminder)', () => {
     const block = renderWorkingMemoryBlock({
       entries: [
         entry({ key: 'journal:1', kind: 'journal', source: 'observer', value: 'Read src/x.ts' }),
       ],
     });
-    expect(block).toContain('- [journal] Read src/x.ts');
-    expect(block).toContain('No intent recorded');
-
-    // With at least one intent entry the nudge disappears.
-    const withIntent = renderWorkingMemoryBlock({
-      entries: [
-        entry({ key: 'hyp', value: 'cache bug' }),
-        entry({ key: 'journal:1', kind: 'journal', source: 'observer', value: 'Read src/x.ts' }),
-      ],
-    });
-    expect(withIntent).not.toContain('No intent recorded');
-  });
-
-  it('per-task nudge: intent in one task does not silence the nudge of a journal-only task', () => {
-    const block = renderWorkingMemoryBlock({
-      entries: [
-        entry({ task_key: 'busy', key: 'hyp', value: 'cache bug' }),
-        entry({ task_key: 'quiet', key: 'journal:1', kind: 'journal', source: 'observer', value: 'Read src/x.ts' }),
-      ],
-    });
-    const sections = block!.split(/(?=## Working Memory — task: )/);
-    const busySection = sections.find(s => s.includes('task: busy')) ?? '';
-    const quietSection = sections.find(s => s.includes('task: quiet')) ?? '';
-    expect(busySection).not.toContain('No intent recorded');
-    expect(quietSection).toContain('No intent recorded');
+    expect(block).toBeNull();
   });
 
   it('groups multiple tasks into separate sections', () => {
