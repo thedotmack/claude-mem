@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 
-const { closeSync, openSync, readFileSync, readSync, watchFile } = require('fs');
+const { closeSync, fstatSync, openSync, readSync, watchFile } = require('fs');
 const path = require('path');
 const os = require('os');
 
 const LINE_COUNT = 50;
 const POLL_INTERVAL_MS = 250;
+const CHUNK_SIZE = 64 * 1024;
 
 function todaysLogPath() {
   const now = new Date();
@@ -17,39 +18,80 @@ function todaysLogPath() {
   return path.join(os.homedir(), '.claude-mem', 'logs', `worker-${stamp}.log`);
 }
 
-function readAppended(logPath, from, to) {
-  const buffer = Buffer.alloc(to - from);
-  const fd = openSync(logPath, 'r');
-  try {
-    const bytes = readSync(fd, buffer, 0, buffer.length, from);
-    return buffer.subarray(0, bytes);
-  } finally {
-    closeSync(fd);
+function readAt(fd, position, length) {
+  const buffer = Buffer.alloc(length);
+  const bytes = readSync(fd, buffer, 0, length, position);
+  if (bytes !== length) {
+    throw new Error(`short read at ${position}: expected ${length} bytes, got ${bytes}`);
   }
+  return buffer;
+}
+
+function countNewlines(buffer) {
+  let count = 0;
+  let index = buffer.indexOf(0x0a);
+  while (index !== -1) {
+    count++;
+    index = buffer.indexOf(0x0a, index + 1);
+  }
+  return count;
+}
+
+// Worker logs grow without bound, so this walks backwards in fixed chunks until
+// it has one more newline than it needs, rather than decoding the whole file to
+// keep its last few lines. Reading one newline past the target also guarantees
+// the chunk boundary is discarded with the partial line in front of it, so a
+// multi-byte character split across chunks can never reach the output.
+function readLastLines(fd, size, lineCount) {
+  const chunks = [];
+  let position = size;
+  let newlines = 0;
+
+  while (position > 0 && newlines <= lineCount) {
+    const length = Math.min(CHUNK_SIZE, position);
+    position -= length;
+    const chunk = readAt(fd, position, length);
+    chunks.unshift(chunk);
+    newlines += countNewlines(chunk);
+  }
+
+  const lines = Buffer.concat(chunks).toString('utf-8').split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines.slice(-lineCount);
 }
 
 const follow = process.argv.includes('--follow');
 const logPath = todaysLogPath();
 
-let contents;
+let fd;
 try {
-  contents = readFileSync(logPath, 'utf-8');
+  fd = openSync(logPath, 'r');
 } catch (error) {
   console.error('\x1b[31m%s\x1b[0m', `Cannot read worker log ${logPath}: ${error.message}`);
   process.exit(1);
 }
 
-const lines = contents.split('\n');
-if (lines[lines.length - 1] === '') lines.pop();
-if (lines.length > 0) console.log(lines.slice(-LINE_COUNT).join('\n'));
+let size;
+try {
+  size = fstatSync(fd).size;
+  const lines = readLastLines(fd, size, LINE_COUNT);
+  if (lines.length > 0) console.log(lines.join('\n'));
+} finally {
+  closeSync(fd);
+}
 
 if (follow) {
-  let offset = Buffer.byteLength(contents);
+  let offset = size;
   watchFile(logPath, { interval: POLL_INTERVAL_MS }, current => {
     if (current.size < offset) offset = 0;
     if (current.size === offset) return;
-    const appended = readAppended(logPath, offset, current.size);
-    offset += appended.length;
-    process.stdout.write(appended);
+    const appended = openSync(logPath, 'r');
+    try {
+      const buffer = readAt(appended, offset, current.size - offset);
+      offset += buffer.length;
+      process.stdout.write(buffer);
+    } finally {
+      closeSync(appended);
+    }
   });
 }

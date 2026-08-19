@@ -38,12 +38,13 @@ jobs:
       - run: npm run build
 
       # Covers the Windows-only bun resolver path that Linux CI skips, plus the
-      # mirror that replaced rsync in the sync script (pattern matching and
-      # --delete protection, exercised against real NTFS paths).
+      # scripts that replaced rsync and tail: mirror pattern matching, --delete
+      # protection and -a metadata reconciliation against real NTFS paths, and
+      # the bounded log tail under a constrained heap.
       - shell: pwsh
         run: |
           $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
-          & $bun test tests/bun-runner.test.ts tests/scripts/mirror-dir.test.ts
+          & $bun test tests/bun-runner.test.ts tests/scripts/mirror-dir.test.ts tests/scripts/worker-logs.test.ts
 
       # The step that used to be impossible on Windows: sync-marketplace shelled
       # out to rsync. Runs the real script against a scratch USERPROFILE (Node's
@@ -79,7 +80,8 @@ jobs:
           }
 
       # worker:logs replaced `tail -n 50` + `date +%F`, neither of which exists
-      # in native PowerShell.
+      # in native PowerShell. Set-Content writes CRLF, so this also covers a
+      # Windows-native line ending that the bun test (LF) does not.
       - name: Exercise worker log tail
         shell: pwsh
         run: |
@@ -91,4 +93,5 @@ jobs:
 
           $out = node scripts/worker-logs.cjs
           if ($out.Count -ne 50) { throw "expected 50 lines, got $($out.Count)" }
-          if ($out[0] -ne 'line 11') { throw "expected first line 'line 11', got '$($out[0])'" }
+          if ($out[0].TrimEnd() -ne 'line 11') { throw "expected first line 'line 11', got '$($out[0])'" }
+          if ($out[49].TrimEnd() -ne 'line 60') { throw "expected last line 'line 60', got '$($out[49])'" }

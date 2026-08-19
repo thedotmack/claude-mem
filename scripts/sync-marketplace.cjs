@@ -89,7 +89,7 @@ function main() {
     const marketplace = mirrorDirectory(rootDir, INSTALLED_PATH, {
       exclude: getMarketplaceExcludes(rootDir)
     });
-    console.log(`Marketplace: ${marketplace.copied} copied, ${marketplace.deleted} stale removed`);
+    console.log(`Marketplace: ${marketplace.copied} copied, ${marketplace.metadata} metadata reconciled, ${marketplace.deleted} stale removed`);
 
     console.log('Running bun install in marketplace...');
     execSync('bun install', { cwd: INSTALLED_PATH, stdio: 'inherit' });
@@ -103,7 +103,7 @@ function main() {
     const cache = mirrorDirectory(pluginDir, CACHE_VERSION_PATH, {
       exclude: ['.git', ...getGitignoreExcludes(pluginDir)]
     });
-    console.log(`Cache: ${cache.copied} copied, ${cache.deleted} stale removed`);
+    console.log(`Cache: ${cache.copied} copied, ${cache.metadata} metadata reconciled, ${cache.deleted} stale removed`);
 
     console.log(`Running bun install in cache folder (version ${version})...`);
     execSync(`bun install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });

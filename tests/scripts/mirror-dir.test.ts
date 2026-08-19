@@ -1,10 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import {
+  chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
@@ -16,16 +19,22 @@ import { dirname, join } from 'path';
  *
  * rsync does not exist on Windows and nothing in this repo installs it, so
  * Windows users could not run `npm run build-and-sync` at all. These tests pin
- * the two rsync behaviours the sync depends on:
+ * the rsync behaviours the sync depends on:
  *
  *   1. `--delete` removes destination files the source no longer has (without
  *      it you rebuild and silently keep testing stale code).
  *   2. `--delete` still *protects* excluded paths on the receiving side, so the
  *      marketplace's .git and node_modules survive every sync.
+ *   3. `-a` metadata is reconciled even when the size+mtime quick check skips
+ *      the content copy. A source that drops the executable bit without
+ *      changing size or mtime must not leave an executable at the destination.
  *
  * They run on Linux, macOS and Windows CI - the mirror is pure fs/path, so
- * this is where the cross-platform claim is actually checked.
+ * this is where the cross-platform claim is actually checked. Permission cases
+ * are POSIX-gated: chmod only moves the read-only bit on Windows.
  */
+
+const POSIX_ONLY = process.platform === 'win32' ? it.skip : it;
 
 const { mirrorDirectory } = require('../../scripts/mirror-dir.cjs');
 const { getMarketplaceExcludes } = require('../../scripts/sync-marketplace.cjs');
@@ -189,6 +198,77 @@ describe('mirrorDirectory', () => {
     mirrorDirectory(source, dest);
 
     expect(read(dest, 'thing')).toBe('now a file');
+  });
+
+  // The quick check exists to skip copying *content*, not to skip reconciling
+  // *metadata*. chmod changes neither size nor mtime, so without an explicit
+  // reconcile the destination silently keeps the old mode - and the direction
+  // that bites is a revoked executable bit staying executable.
+  POSIX_ONLY('reconciles permissions when only the mode changed', () => {
+    write(source, 'tool.sh', 'run me');
+    chmodSync(join(source, 'tool.sh'), 0o755);
+    mirrorDirectory(source, dest);
+    expect(lstatSync(join(dest, 'tool.sh')).mode & 0o777).toBe(0o755);
+
+    const before = lstatSync(join(source, 'tool.sh'));
+    chmodSync(join(source, 'tool.sh'), 0o644);
+    const after = lstatSync(join(source, 'tool.sh'));
+    expect(after.size).toBe(before.size);
+    expect(Math.floor(after.mtimeMs / 1000)).toBe(Math.floor(before.mtimeMs / 1000));
+
+    const stats = mirrorDirectory(source, dest);
+
+    expect(lstatSync(join(dest, 'tool.sh')).mode & 0o777).toBe(0o644);
+    expect(stats.copied).toBe(0);
+    expect(stats.metadata).toBe(1);
+  });
+
+  POSIX_ONLY('reconciles directory permissions', () => {
+    write(source, 'nested/child.js', 'child');
+    mirrorDirectory(source, dest);
+
+    chmodSync(join(source, 'nested'), 0o700);
+    const stats = mirrorDirectory(source, dest);
+
+    expect(lstatSync(join(dest, 'nested')).mode & 0o777).toBe(0o700);
+    expect(stats.copied).toBe(0);
+  });
+
+  it('preserves directory modification times', () => {
+    write(source, 'nested/child.js', 'child');
+    const stamp = new Date('2020-01-01T01:01:00Z');
+    utimesSync(join(source, 'nested'), stamp, stamp);
+
+    mirrorDirectory(source, dest);
+
+    expect(Math.floor(lstatSync(join(dest, 'nested')).mtimeMs / 1000)).toBe(
+      Math.floor(stamp.getTime() / 1000)
+    );
+  });
+
+  it('copies content when only the mtime changed and the size is identical', () => {
+    write(source, 'same-size.js', 'aaa');
+    mirrorDirectory(source, dest);
+
+    write(source, 'same-size.js', 'bbb');
+    const stamp = new Date('2020-01-01T01:01:00Z');
+    utimesSync(join(source, 'same-size.js'), stamp, stamp);
+
+    const stats = mirrorDirectory(source, dest);
+
+    expect(stats.copied).toBe(1);
+    expect(read(dest, 'same-size.js')).toBe('bbb');
+    expect(Math.floor(lstatSync(join(dest, 'same-size.js')).mtimeMs / 1000)).toBe(
+      Math.floor(stamp.getTime() / 1000)
+    );
+  });
+
+  it('is a complete no-op when nothing changed', () => {
+    write(source, 'a.js', 'one');
+    write(source, 'nested/b.js', 'two');
+    mirrorDirectory(source, dest);
+
+    expect(mirrorDirectory(source, dest)).toEqual({ copied: 0, metadata: 0, deleted: 0 });
   });
 });
 
