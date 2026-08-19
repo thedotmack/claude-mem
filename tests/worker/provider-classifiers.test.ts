@@ -210,6 +210,15 @@ describe('classifyOpenRouterError', () => {
     expect(err.kind).toBe('model_deprecated');
   });
 
+  it('classifies a deprecated-model error inside a 200 envelope as model_deprecated', () => {
+    const err = classifyOpenRouterError({
+      status: 200,
+      bodyText: JSON.stringify({ error: { message: 'This model has been deprecated', code: 404 } }),
+      cause: new Error('200 error envelope'),
+    });
+    expect(err.kind).toBe('model_deprecated');
+  });
+
   it('still classifies a non-deprecation 404 as unrecoverable', () => {
     const err = classifyOpenRouterError({
       status: 404,

@@ -1,6 +1,6 @@
 
 import { getCredential } from '../../shared/EnvManager.js';
-import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
+import { resolveOpenRouterChatCompletionsUrl, isOfficialOpenRouterUrl } from '../../shared/openrouter-base-url.js';
 import { openRouterAttributionHeaders, OPENROUTER_APP_TITLE } from '../../shared/openrouter-attribution.js';
 import { SettingsDefaultsManager, DEFAULT_OPENROUTER_MODEL } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -145,10 +145,11 @@ export function classifyOpenRouterError(input: {
     );
   }
 
-  // A deprecated model 404s on every request forever. Mark it distinctly so
-  // the query can fall back to the working default model once, instead of
-  // failing every observation the same way (#3659).
-  if ((status === 404 || status === 400) && lower.includes('deprecated')) {
+  // A deprecated model never recovers on retry. OpenRouter reports it as a
+  // 404/400 or as an error envelope inside a 200, so key off the body marker,
+  // not the status, and mark it distinctly so the query can fall back to the
+  // working default model once (#3659).
+  if (lower.includes('deprecated')) {
     return new ClassifiedProviderError(
       describe('model deprecated'),
       { kind: 'model_deprecated', cause: input.cause, ...detail },
@@ -386,7 +387,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       // default once so this session captures memories instead of failing
       // every observation (#3659). A custom base URL is a private gateway that
       // does not know our OpenRouter model id, so leave it untouched there.
-      const usingOpenRouter = apiUrl.includes('openrouter.ai');
+      const usingOpenRouter = isOfficialOpenRouterUrl(apiUrl);
       if (isClassified(error) && error.kind === 'model_deprecated' && usingOpenRouter && model !== DEFAULT_OPENROUTER_MODEL) {
         logger.warn('SDK', `OpenRouter model ${model} is deprecated; falling back to ${DEFAULT_OPENROUTER_MODEL}`);
         data = await fetchForModel(DEFAULT_OPENROUTER_MODEL);

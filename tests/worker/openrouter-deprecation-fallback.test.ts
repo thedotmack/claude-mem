@@ -29,6 +29,15 @@ function deprecatedResponse(): Response {
   );
 }
 
+// OpenRouter can also report a deprecated model as an error envelope inside a
+// 200 response.
+function deprecated200Response(): Response {
+  return new Response(
+    JSON.stringify({ error: { message: 'This model has been deprecated', code: 404 } }),
+    { status: 200, headers: { 'content-type': 'application/json' } },
+  );
+}
+
 function modelFromRequest(init: RequestInit | undefined): string {
   return JSON.parse(String(init?.body)).model;
 }
@@ -59,6 +68,42 @@ describe('OpenRouter deprecated-model fallback', () => {
 
     expect(result.content).toBe('ok');
     expect(models).toEqual(['xiaomi/mimo-v2-flash:free', DEFAULT_OPENROUTER_MODEL]);
+  });
+
+  it('falls back when the deprecation arrives as an error envelope inside a 200', async () => {
+    const models: string[] = [];
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      const model = modelFromRequest(init as RequestInit);
+      models.push(model);
+      return model === DEFAULT_OPENROUTER_MODEL ? okResponse(model) : deprecated200Response();
+    });
+
+    const result = await provider.run(history, {
+      apiKey: 'k',
+      model: 'xiaomi/mimo-v2-flash:free',
+      apiUrl: 'https://openrouter.ai/api/v1/chat/completions',
+    });
+
+    expect(result.content).toBe('ok');
+    expect(models).toEqual(['xiaomi/mimo-v2-flash:free', DEFAULT_OPENROUTER_MODEL]);
+  });
+
+  it('does not fall back on a gateway that merely has openrouter.ai in its path', async () => {
+    let calls = 0;
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      calls++;
+      return deprecatedResponse();
+    });
+
+    await expect(
+      provider.run(history, {
+        apiKey: 'k',
+        model: 'some/deprecated-model',
+        apiUrl: 'https://gateway.invalid/openrouter.ai/chat/completions',
+      }),
+    ).rejects.toThrow();
+
+    expect(calls).toBe(1);
   });
 
   it('does not fall back when the deprecated model is already the default', async () => {
