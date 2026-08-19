@@ -13,6 +13,7 @@ import * as realPaths from '../../../src/shared/paths.js';
 import * as realLogger from '../../../src/utils/logger.js';
 import * as realSupervisor from '../../../src/supervisor/index.ts';
 import * as realEnvSanitizer from '../../../src/supervisor/env-sanitizer.js';
+import * as realKillProcessTree from '../../../src/shared/kill-process-tree.js';
 import * as realSdkClientStdio from '@modelcontextprotocol/sdk/client/stdio.js';
 import * as realSdkClientIndex from '@modelcontextprotocol/sdk/client/index.js';
 const realSettingsSnapshot = { ...realSettingsDefaultsManager };
@@ -20,6 +21,7 @@ const realPathsSnapshot = { ...realPaths };
 const realLoggerSnapshot = { ...realLogger };
 const realSupervisorSnapshot = { ...realSupervisor };
 const realEnvSanitizerSnapshot = { ...realEnvSanitizer };
+const realKillProcessTreeSnapshot = { ...realKillProcessTree };
 const realSdkClientStdioSnapshot = { ...realSdkClientStdio };
 const realSdkClientIndexSnapshot = { ...realSdkClientIndex };
 const realChildProcess = require('node:child_process');
@@ -196,7 +198,12 @@ mock.module('../../../src/utils/logger.js', () => ({
 const killTreeCalls: number[] = [];
 const deadPids = new Set<number>();
 let execSyncCalls = 0;
-const prewarmSpawnCalls: Array<{ command: string; args: string[]; child: FakeChildProcess }> = [];
+const prewarmSpawnCalls: Array<{
+  command: string;
+  args: string[];
+  child: FakeChildProcess;
+  env?: Record<string, string>;
+}> = [];
 let prewarmSpawnBehavior: 'success' | 'timeout' | 'failure' = 'success';
 let prewarmStdout = '';
 let prewarmStderr = '';
@@ -213,6 +220,22 @@ mock.module('../../../src/supervisor/env-sanitizer.js', () => ({
   sanitizeEnv: (env: NodeJS.ProcessEnv) => env,
 }));
 
+// killProcessTree now lives in a shared module so every teardown path uses one
+// implementation. Route it through a swappable override: by default the real
+// implementation runs (observed through the child_process mock below), and an
+// individual test can substitute a stub it can hold open.
+let killProcessTreeOverride: ((pid: number) => Promise<void>) | null = null;
+/** Every killProcessTree call, so wiring of the identity token is assertable. */
+const killProcessTreeCalls: Array<{ pid: number; options?: { expectedStartToken?: string | null } }> = [];
+mock.module('../../../src/shared/kill-process-tree.js', () => ({
+  ...realKillProcessTreeSnapshot,
+  killProcessTree: (pid: number, options?: { expectedStartToken?: string | null }) =>
+    ((): Promise<void> => {
+      killProcessTreeCalls.push({ pid, options });
+      return (killProcessTreeOverride ?? realKillProcessTreeSnapshot.killProcessTree)(pid, options);
+    })(),
+}));
+
 // Replace child_process.execFile so the static killProcessTree implementation
 // can be observed without actually shelling out. We feed pgrep an empty stdout
 // (no descendants) so the only signal target is the root pid.
@@ -220,9 +243,9 @@ mock.module('child_process', () => {
   const original = require('node:child_process');
   return {
     ...original,
-    spawn: (command: string, args: string[]) => {
+    spawn: (command: string, args: string[], opts?: { env?: Record<string, string> }) => {
       const child = new FakeChildProcess();
-      prewarmSpawnCalls.push({ command, args, child });
+      prewarmSpawnCalls.push({ command, args, child, env: opts?.env });
       queueMicrotask(() => {
         if (prewarmStdout) child.stdout.write(prewarmStdout);
         if (prewarmStderr) child.stderr.write(prewarmStderr);
@@ -300,6 +323,7 @@ afterAll(() => {
   mock.module('../../../src/utils/logger.js', () => realLoggerSnapshot);
   mock.module('../../../src/supervisor/index.ts', () => realSupervisorSnapshot);
   mock.module('../../../src/supervisor/env-sanitizer.js', () => realEnvSanitizerSnapshot);
+  mock.module('../../../src/shared/kill-process-tree.js', () => realKillProcessTreeSnapshot);
   mock.module('child_process', () => realChildProcess);
   // The MCP SDK mocks must be re-registered too: leaking FakeClient (no
   // listTools, canned callTool) breaks tests/server/mcp/recall-mcp-server.test.ts
@@ -315,6 +339,7 @@ function resetState(): void {
   transportCount = 0;
   transportInstances.length = 0;
   prewarmSpawnCalls.length = 0;
+  killProcessTreeCalls.length = 0;
   killTreeCalls.length = 0;
   deadPids.clear();
   logEntries.length = 0;
@@ -388,6 +413,70 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     expect(transportCount).toBe(1);
     expect(prewarmSpawnCalls.length).toBe(1);
+  });
+
+  it('onclose cleanup carries the spawn-time identity token, not self-capture', async () => {
+    // onclose fires BECAUSE the child died, so killProcessTree's self-capture
+    // would read whatever now owns that PID and validate the replacement
+    // against itself. The token must therefore be captured while the child was
+    // alive and passed down. Asserting the wiring, because a real PID-reuse
+    // race cannot be driven here.
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    const closedPid = transportInstances[0]!._process.pid;
+    killProcessTreeCalls.length = 0;
+
+    transportInstances[0]!.onclose?.();
+    // Poll the observable side effect rather than awaiting an internal promise
+    // — that kept a test-only method off ChromaMcpManager's public surface.
+    // If the cleanup never runs, this times out and the test fails, which is
+    // the same assertion.
+    await waitForCondition(() => killProcessTreeCalls.some(call => call.pid === closedPid));
+
+    const cleanupCall = killProcessTreeCalls.find(call => call.pid === closedPid);
+    expect(cleanupCall).toBeDefined();
+    // The key must be PRESENT — omitting it is what silently re-enables
+    // self-capture on a path where self-capture is guaranteed to be too late.
+    expect(cleanupCall!.options).toBeDefined();
+    expect(Object.prototype.hasOwnProperty.call(cleanupCall!.options!, 'expectedStartToken')).toBe(true);
+  });
+
+  it('never passes a foreign Python interpreter to the uvx child (#3552)', async () => {
+    // Pollute the ambient env exactly as an activated venv / conda shell would.
+    const polluted = {
+      VIRTUAL_ENV: '/home/u/.venvs/proj',
+      PYTHONHOME: '/usr/lib/python3.9',
+      PYTHONPATH: '/home/u/.venvs/proj/lib/python3.9/site-packages',
+      CONDA_PREFIX: '/opt/conda/envs/ml',
+      CONDA_DEFAULT_ENV: 'ml',
+    };
+    const saved = new Map<string, string | undefined>();
+    for (const [key, value] of Object.entries(polluted)) {
+      saved.set(key, process.env[key]);
+      process.env[key] = value;
+    }
+
+    try {
+      const mgr = ChromaMcpManager.getInstance();
+      await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+      // This is the env handed to the real uvx spawn, not a reconstruction.
+      const spawnEnv = prewarmSpawnCalls[0]?.env;
+      expect(spawnEnv).toBeDefined();
+
+      for (const key of Object.keys(polluted)) {
+        expect(spawnEnv?.[key]).toBeUndefined();
+      }
+      // The strip must not have taken the rest of the env with it.
+      expect(spawnEnv?.ANONYMIZED_TELEMETRY).toBe('false');
+      expect(spawnEnv?.PATH ?? spawnEnv?.Path).toBeTruthy();
+    } finally {
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   it('serializes Chroma mutations while leaving read-only queries responsive', async () => {
@@ -735,14 +824,10 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
   });
 
   it('keeps the writer lock until unexpected-close tree cleanup finishes', async () => {
-    const managerForTesting = ChromaMcpManager as unknown as typeof ChromaMcpManager & {
-      killProcessTree: (pid: number) => Promise<void>;
-    };
-    const originalKillProcessTree = managerForTesting.killProcessTree;
     const cleanupStartedForPids: number[] = [];
     let finishCleanup: (() => void) | null = null;
 
-    managerForTesting.killProcessTree = async (pid: number) => {
+    killProcessTreeOverride = async (pid: number) => {
       cleanupStartedForPids.push(pid);
       await new Promise<void>((resolve) => {
         finishCleanup = resolve;
@@ -765,7 +850,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
       await waitForCondition(() => !existsSync(chromaWriterLockPath()));
     } finally {
       finishCleanup?.();
-      managerForTesting.killProcessTree = originalKillProcessTree;
+      killProcessTreeOverride = null;
     }
   });
 

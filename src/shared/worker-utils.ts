@@ -15,6 +15,7 @@ import { checkVersionMatch } from "../services/infrastructure/index.js";
 // ProcessManager imports nothing from worker-utils, so no cycle.
 import { resolveWorkerRuntimePath } from "../services/infrastructure/ProcessManager.js";
 import { acquireSpawnLock, releaseSpawnLock } from "./worker-spawn-gate.js";
+import { killProcessTree } from "./kill-process-tree.js";
 
 function readTimeoutEnv(
   envName: string,
@@ -510,18 +511,28 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       });
       return false;
     }
+    // #3482 — a single-PID kill here orphans the stale worker's whole spawn
+    // chain (uvx -> uv -> python -> chroma-mcp). Those descendants inherited
+    // the worker's listening socket, so they keep the port bound after the
+    // root dies: waitForWorkerPortClosed() below never succeeds, every hook
+    // hard-blocks, and the recycle repeats forever (834 health-check failures
+    // observed). This is NOT Windows-specific — on POSIX the same descendants
+    // simply re-parent to init and survive identically.
+    //
+    // 'immediate' is required, not incidental: it sends SIGKILL with no
+    // SIGTERM and no grace window, so the #3378 invariant above still holds
+    // exactly as written — SIGKILL is uncatchable, so zero stale-version
+    // shutdown code runs anywhere in the tree. A graceful tree-kill would let
+    // the stale worker execute the dying install's handoff logic, which is the
+    // restart storm that invariant exists to prevent.
     try {
-      process.kill(stalePidInfo.pid, 'SIGKILL');
+      await killProcessTree(stalePidInfo.pid, { signalMode: 'immediate' });
     } catch (error: unknown) {
-      // ESRCH: it exited between the health probe and the kill — the port is
-      // free (or about to be) either way.
-      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
-        logger.error('SYSTEM', 'Could not kill stale worker', {
-          pid: stalePidInfo.pid,
-          port: stalePidInfo.port,
-        }, error instanceof Error ? error : new Error(String(error)));
-        return false;
-      }
+      logger.error('SYSTEM', 'Could not kill stale worker', {
+        pid: stalePidInfo.pid,
+        port: stalePidInfo.port,
+      }, error instanceof Error ? error : new Error(String(error)));
+      return false;
     }
     if (!(await waitForWorkerPortClosed())) {
       logger.error('SYSTEM', 'Stale worker port still open after SIGKILL; skipping spawn this hook event', {
