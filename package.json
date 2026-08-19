@@ -35,6 +35,7 @@
   "files": [
     "dist",
     ".agents/plugins/marketplace.json",
+    ".claude-plugin",
     ".codex-plugin",
     "plugin/.claude-plugin",
     "plugin/.codex-plugin",
