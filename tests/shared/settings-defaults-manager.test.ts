@@ -459,6 +459,7 @@ describe('SettingsDefaultsManager', () => {
       expect(defaults.CLAUDE_MEM_CODEX_REASONING_EFFORT).toBe('');
       expect(defaults.CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES).toBe('20');
       expect(defaults.CLAUDE_MEM_CODEX_MAX_TOKENS).toBe('100000');
+      expect(defaults.CLAUDE_MEM_CODEX_MAX_OBSERVATIONS_PER_PROMPT).toBe('6');
 
       expect(defaults.CLAUDE_MEM_DATA_DIR).toBeDefined();
       expect(defaults.CLAUDE_MEM_LOG_LEVEL).toBeDefined();

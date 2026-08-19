@@ -59,6 +59,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES: string;
   CLAUDE_MEM_CODEX_MAX_TOKENS: string;
   CLAUDE_MEM_CODEX_TIMEOUT_MS: string;
+  CLAUDE_MEM_CODEX_MAX_OBSERVATIONS_PER_PROMPT: string;
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
   CLAUDE_MEM_PYTHON_VERSION: string;
@@ -162,6 +163,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES: '20',  // Max messages in Codex context window
     CLAUDE_MEM_CODEX_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
     CLAUDE_MEM_CODEX_TIMEOUT_MS: '120000',  // Per Codex exec attempt timeout
+    CLAUDE_MEM_CODEX_MAX_OBSERVATIONS_PER_PROMPT: '6',  // Hard cap for Codex subprocess compression spam
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',

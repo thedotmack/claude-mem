@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
 const { execSync } = require('child_process');
-const { existsSync, readFileSync } = require('fs');
+const { existsSync, readFileSync, writeFileSync } = require('fs');
 const path = require('path');
 const os = require('os');
 
 const INSTALLED_PATH = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 const CACHE_BASE_PATH = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
+const SKIP_INSTALL = process.env.CLAUDE_MEM_SYNC_SKIP_INSTALL === '1';
 
 function getCurrentBranch() {
   try {
@@ -69,6 +70,37 @@ function getPluginVersion() {
   }
 }
 
+function getCommandVersion(command) {
+  try {
+    return execSync(`${command} --version`, {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).trim() || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function writeInstallMarker(targetDir, version) {
+  const marker = {
+    version,
+    bun: getCommandVersion('bun'),
+    uv: getCommandVersion('uv'),
+    installedAt: new Date().toISOString(),
+  };
+  writeFileSync(path.join(targetDir, '.install-version'), `${JSON.stringify(marker)}\n`);
+}
+
+function runBunInstall(label, cwd) {
+  if (SKIP_INSTALL) {
+    console.log(`Skipping bun install in ${label} (CLAUDE_MEM_SYNC_SKIP_INSTALL=1)...`);
+    return;
+  }
+
+  console.log(`Running bun install in ${label}...`);
+  execSync('bun install', { cwd, stdio: 'inherit' });
+}
+
 console.log('Syncing to marketplace...');
 try {
   const rootDir = path.join(__dirname, '..');
@@ -79,26 +111,24 @@ try {
     { stdio: 'inherit' }
   );
 
-  console.log('Running bun install in marketplace...');
-  execSync(
-    'cd ~/.claude/plugins/marketplaces/thedotmack/ && bun install',
-    { stdio: 'inherit' }
-  );
-
   const version = getPluginVersion();
+  runBunInstall('marketplace', INSTALLED_PATH);
+  writeInstallMarker(path.join(INSTALLED_PATH, 'plugin'), version);
+
   const CACHE_VERSION_PATH = path.join(CACHE_BASE_PATH, version);
 
   const pluginDir = path.join(rootDir, 'plugin');
   const pluginGitignoreExcludes = getGitignoreExcludes(pluginDir);
+  const testOnlyCacheExcludes = SKIP_INSTALL ? ' --exclude=node_modules' : '';
 
   console.log(`Syncing to cache folder (version ${version})...`);
   execSync(
-    `rsync -av --delete --exclude=.git ${pluginGitignoreExcludes} plugin/ "${CACHE_VERSION_PATH}/"`,
+    `rsync -av --delete --exclude=.git --exclude=.install-version${testOnlyCacheExcludes} ${pluginGitignoreExcludes} plugin/ "${CACHE_VERSION_PATH}/"`,
     { stdio: 'inherit' }
   );
 
-  console.log(`Running bun install in cache folder (version ${version})...`);
-  execSync(`bun install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
+  runBunInstall(`cache folder (version ${version})`, CACHE_VERSION_PATH);
+  writeInstallMarker(CACHE_VERSION_PATH, version);
 
   console.log('\x1b[32m%s\x1b[0m', 'Sync complete!');
 

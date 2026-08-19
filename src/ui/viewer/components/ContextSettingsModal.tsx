@@ -439,6 +439,18 @@ export function ContextSettingsModal({
                       onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_TIMEOUT_MS', e.target.value)}
                     />
                   </FormField>
+                  <FormField
+                    label="Codex Observations Per Prompt"
+                    tooltip="Hard cap for Codex observations generated from one user prompt"
+                  >
+                    <input
+                      type="number"
+                      min="1"
+                      max="50"
+                      value={formState.CLAUDE_MEM_CODEX_MAX_OBSERVATIONS_PER_PROMPT || '6'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_MAX_OBSERVATIONS_PER_PROMPT', e.target.value)}
+                    />
+                  </FormField>
                 </>
               )}
 

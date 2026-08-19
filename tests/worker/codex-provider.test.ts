@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, mock } from 'bun:test';
 import { existsSync, rmSync, statSync } from 'fs';
 import {
   buildCodexExecEnv,
@@ -11,7 +11,113 @@ import {
   normalizeCodexExecutablePath,
   parseCodexReasoningEffort,
   parseCodexExecJsonl,
+  sanitizeCodexObservationResponse,
 } from '../../src/services/worker/CodexProvider.js';
+import type { ActiveSession, PendingMessage } from '../../src/services/worker-types.js';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
+
+const modeManager = ModeManager.getInstance() as { loadMode?: (modeId: string) => unknown };
+modeManager.loadMode?.('code');
+
+function createProviderFlowSession(overrides: Partial<ActiveSession> = {}): ActiveSession {
+  return {
+    sessionDbId: 1,
+    contentSessionId: 'codex-session-1',
+    memorySessionId: 'codex-memory-1',
+    project: 'test-project',
+    platformSource: 'codex',
+    userPrompt: 'Check claude-mem Codex provider',
+    abortController: new AbortController(),
+    generatorPromise: null,
+    lastPromptNumber: 1,
+    startTime: Date.now(),
+    cumulativeInputTokens: 0,
+    cumulativeOutputTokens: 0,
+    earliestPendingTimestamp: Date.now() - 1000,
+    claimedMessageIds: [1],
+    conversationHistory: [],
+    currentProvider: 'codex',
+    consecutiveRestarts: 0,
+    consecutiveInvalidOutputs: 0,
+    lastGeneratorActivity: Date.now(),
+    ...overrides,
+  };
+}
+
+class TestCodexProvider extends CodexProvider {
+  private readonly responses: string[];
+  readonly queryCalls = mock(() => {});
+
+  constructor(dbManager: never, sessionManager: never, responses: string[]) {
+    super(dbManager, sessionManager);
+    this.responses = [...responses];
+  }
+
+  protected getConfig(): any {
+    return {
+      apiKey: 'codex-cli-auth',
+      model: 'gpt-5.4-mini',
+      codexPath: 'codex',
+      reasoningEffort: 'low',
+      maxContextMessages: 20,
+      maxEstimatedTokens: 100000,
+      timeoutMs: 120000,
+      maxObservationsPerPrompt: 6,
+    };
+  }
+
+  protected async query(): Promise<any> {
+    this.queryCalls();
+    return {
+      content: this.responses.shift() ?? '',
+      tokensUsed: 12,
+      inputTokens: 10,
+      outputTokens: 2,
+      servedModel: 'gpt-5.4-mini',
+    };
+  }
+}
+
+function createProviderFlowHarness(
+  message: PendingMessage,
+  responses: string[],
+  options: { existingObservationCount?: number } = {},
+) {
+  const storeObservations = mock(() => ({
+    observationIds: [101],
+    summaryId: null,
+    createdAtEpoch: 1700000000000,
+  }));
+  const confirmClaimedMessages = mock(() => Promise.resolve(1));
+  const countObservationsForPrompt = mock(() => options.existingObservationCount ?? 0);
+
+  const dbManager = {
+    getSessionStore: () => ({
+      storeObservations,
+      ensureMemorySessionIdRegistered: mock(() => {}),
+      countObservationsForPrompt,
+    }),
+    getChromaSync: () => ({
+      syncObservation: mock(() => Promise.resolve()),
+      syncSummary: mock(() => Promise.resolve()),
+    }),
+  } as never;
+
+  const sessionManager = {
+    getMessageIterator: async function* () {
+      yield message;
+    },
+    confirmClaimedMessages,
+    resetProcessingToPending: mock(() => Promise.resolve(0)),
+  } as never;
+
+  return {
+    provider: new TestCodexProvider(dbManager, sessionManager, responses),
+    storeObservations,
+    confirmClaimedMessages,
+    countObservationsForPrompt,
+  };
+}
 
 describe('parseCodexExecJsonl', () => {
   it('extracts the final assistant message and Codex usage from exec JSONL', () => {
@@ -249,7 +355,7 @@ describe('buildCodexExecEnv', () => {
 });
 
 describe('buildCodexObservationPrompt', () => {
-  it('adds anti-fragmentation rules for Codex observation generation', () => {
+  it('adds strict anti-fragmentation rules for Codex observation generation', () => {
     const prompt = buildCodexObservationPrompt({
       id: 1,
       tool_name: 'Bash',
@@ -259,9 +365,203 @@ describe('buildCodexObservationPrompt', () => {
       cwd: '/repo',
     });
 
-    expect(prompt).toContain('at most 3 <observation>...</observation> blocks');
-    expect(prompt).toContain('Prefer one observation per tool use');
+    expect(prompt).toContain('at most 1 <observation>...</observation> blocks');
+    expect(prompt).toContain('Usually emit zero observations');
+    expect(prompt).toContain('Do not create observations for routine probes');
     expect(prompt).toContain('Every emitted observation must include a non-empty <narrative>');
+    expect(prompt).toContain('Never emit facts-only observations');
     expect(prompt).toContain('Do not split a single command output');
+  });
+});
+
+describe('sanitizeCodexObservationResponse', () => {
+  it('drops facts-only Codex observations and keeps only one substantive block', () => {
+    const response = `
+<observation>
+  <type>discovery</type>
+  <title>Working tree was clean</title>
+  <facts>
+    <fact>git status --short returned no output.</fact>
+  </facts>
+</observation>
+<observation>
+  <type>discovery</type>
+  <title>Codex provider is active</title>
+  <facts>
+    <fact>The worker health endpoint reported provider=codex.</fact>
+  </facts>
+  <narrative>The durable runtime conclusion is that claude-mem is actively using the Codex provider after restart.</narrative>
+</observation>
+<observation>
+  <type>discovery</type>
+  <title>Duplicate runtime state</title>
+  <facts>
+    <fact>The same provider state was checked again.</fact>
+  </facts>
+  <narrative>This repeats the same runtime conclusion and should be left for a later batch only if it changes.</narrative>
+</observation>`;
+
+    const sanitized = sanitizeCodexObservationResponse(response);
+
+    expect(sanitized).toContain('Codex provider is active');
+    expect(sanitized).toContain('actively using the Codex provider');
+    expect(sanitized).not.toContain('Working tree was clean');
+    expect(sanitized).not.toContain('Duplicate runtime state');
+    expect(sanitized.match(/<observation>/g)).toHaveLength(1);
+  });
+
+  it('returns an empty response when Codex emits only facts-only observations', () => {
+    const sanitized = sanitizeCodexObservationResponse(`
+<observation>
+  <type>bugfix</type>
+  <title>Command availability was checked</title>
+  <facts>
+    <fact>pandoc exists at /usr/bin/pandoc.</fact>
+  </facts>
+</observation>`);
+
+    expect(sanitized).toBe('');
+  });
+
+  it('returns an empty response when Codex emits an untitled observation', () => {
+    const sanitized = sanitizeCodexObservationResponse(`
+<observation>
+  <type>bugfix</type>
+  <facts><fact>The failing test named a concrete compatibility error.</fact></facts>
+  <narrative>The durable debugging conclusion is useful, but without a title this would render as an anonymous spam card.</narrative>
+</observation>`);
+
+    expect(sanitized).toBe('');
+  });
+});
+
+describe('CodexProvider observation response sanitation', () => {
+  it('uses the Codex sanitizer before storing observation output', () => {
+    const provider = new CodexProvider(null as never, null as never) as unknown as {
+      sanitizeObservationResponseContent(content: string, config: unknown): string;
+    };
+
+    const sanitized = provider.sanitizeObservationResponseContent(`
+<observation>
+  <type>discovery</type>
+  <title>Facts only</title>
+  <facts><fact>This should be skipped.</fact></facts>
+</observation>`, {});
+
+    expect(sanitized).toBe('');
+  });
+
+  it('does not store facts-only XML returned by the Codex observation turn', async () => {
+    const { provider, storeObservations, confirmClaimedMessages } = createProviderFlowHarness({
+      type: 'observation',
+      tool_name: 'Bash',
+      tool_input: { cmd: 'command -v pandoc || true' },
+      tool_response: { output: '/usr/bin/pandoc' },
+      prompt_number: 2,
+      cwd: '/repo',
+    }, [
+      '',
+      `<observation>
+        <type>discovery</type>
+        <title>Pandoc availability was checked</title>
+        <facts><fact>pandoc exists at /usr/bin/pandoc.</fact></facts>
+      </observation>`,
+    ]);
+    const session = createProviderFlowSession();
+
+    await provider.startSession(session);
+
+    expect(storeObservations).not.toHaveBeenCalled();
+    expect(confirmClaimedMessages).toHaveBeenCalledWith(session.sessionDbId);
+  });
+
+  it('does not store untitled XML returned by the Codex observation turn', async () => {
+    const { provider, storeObservations, confirmClaimedMessages } = createProviderFlowHarness({
+      type: 'observation',
+      tool_name: 'Bash',
+      tool_input: { cmd: 'npm test -- --watchAll=false src/tasks/TaskFeed.test.js' },
+      tool_response: { output: 'TypeError: usePermissions is not a function' },
+      prompt_number: 2,
+      cwd: '/repo',
+    }, [
+      '',
+      `<observation>
+        <type>bugfix</type>
+        <facts><fact>The test failed with TypeError: usePermissions is not a function.</fact></facts>
+        <narrative>The failing test identifies a concrete compatibility problem, but an untitled card should not be stored by the Codex provider.</narrative>
+      </observation>`,
+    ]);
+    const session = createProviderFlowSession();
+
+    await provider.startSession(session);
+
+    expect(storeObservations).not.toHaveBeenCalled();
+    expect(confirmClaimedMessages).toHaveBeenCalledWith(session.sessionDbId);
+  });
+
+  it('skips Codex observation compression once the prompt budget is exhausted', async () => {
+    const { provider, storeObservations, confirmClaimedMessages, countObservationsForPrompt } = createProviderFlowHarness({
+      type: 'observation',
+      tool_name: 'Bash',
+      tool_input: { cmd: 'git diff --stat' },
+      tool_response: { output: 'frontend/src/tasks/TaskFeed.js | 20 ++++++++++' },
+      prompt_number: 2,
+      cwd: '/repo',
+    }, [
+      '',
+      `<observation>
+        <type>bugfix</type>
+        <title>This should not be requested</title>
+        <facts><fact>Budget was already exhausted.</fact></facts>
+        <narrative>The provider should not have called Codex for this message.</narrative>
+      </observation>`,
+    ], { existingObservationCount: 6 });
+    const session = createProviderFlowSession();
+
+    await provider.startSession(session);
+
+    expect(countObservationsForPrompt).toHaveBeenCalledWith('codex-memory-1', 2);
+    expect(provider.queryCalls).toHaveBeenCalledTimes(1);
+    expect(storeObservations).not.toHaveBeenCalled();
+    expect(confirmClaimedMessages).toHaveBeenCalledWith(session.sessionDbId);
+  });
+
+  it('stores only the first substantive Codex observation from a noisy response', async () => {
+    const { provider, storeObservations } = createProviderFlowHarness({
+      type: 'observation',
+      tool_name: 'Bash',
+      tool_input: { cmd: 'curl -fsS http://127.0.0.1:37700/api/health' },
+      tool_response: { output: '{"status":"ok","ai":{"provider":"codex"}}' },
+      prompt_number: 2,
+      cwd: '/repo',
+    }, [
+      '',
+      `<observation>
+        <type>discovery</type>
+        <title>Worker health was checked</title>
+        <facts><fact>The health endpoint returned ok.</fact></facts>
+      </observation>
+      <observation>
+        <type>discovery</type>
+        <title>Codex provider is active</title>
+        <facts><fact>The worker health payload reported ai.provider=codex.</fact></facts>
+        <narrative>The durable runtime conclusion is that claude-mem compression is currently routed through the Codex provider.</narrative>
+      </observation>
+      <observation>
+        <type>discovery</type>
+        <title>Duplicate Codex provider check</title>
+        <facts><fact>The same health payload was inspected twice.</fact></facts>
+        <narrative>This repeats the provider conclusion and should not produce another memory card.</narrative>
+      </observation>`,
+    ]);
+    const session = createProviderFlowSession();
+
+    await provider.startSession(session);
+
+    expect(storeObservations).toHaveBeenCalledTimes(1);
+    const [, , observations] = storeObservations.mock.calls[0];
+    expect(observations).toHaveLength(1);
+    expect(observations[0].title).toBe('Codex provider is active');
+    expect(observations[0].narrative).toContain('compression is currently routed through the Codex provider');
   });
 });

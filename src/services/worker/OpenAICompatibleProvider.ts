@@ -4,7 +4,7 @@ import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt, type Observation } from '../../sdk/prompts.js';
-import type { ActiveSession, ConversationMessage } from '../worker-types.js';
+import type { ActiveSession, ConversationMessage, PendingMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
@@ -83,6 +83,20 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   /** Hook for providers that need stricter observation-output contracts. */
   protected buildObservationPrompt(obs: Observation, _config: TConfig): string {
     return buildObservationPrompt(obs);
+  }
+
+  /** Hook for providers that need to enforce their output contract before storage. */
+  protected sanitizeObservationResponseContent(content: string, _config: TConfig): string {
+    return content;
+  }
+
+  /** Hook for providers that need to skip low-value observation turns before paying query cost. */
+  protected async shouldProcessObservationMessage(
+    _session: ActiveSession,
+    _message: PendingMessage,
+    _config: TConfig
+  ): Promise<boolean> {
+    return true;
   }
 
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
@@ -200,7 +214,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
   private async processObservationMessage(
     session: ActiveSession,
-    message: { prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; cwd?: string },
+    message: PendingMessage,
     worker: WorkerRef | undefined,
     config: TConfig,
     originalTimestamp: number | null,
@@ -212,6 +226,13 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     if (!session.memorySessionId) {
       throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
+    }
+
+    if (!(await this.shouldProcessObservationMessage(session, message, config))) {
+      await this.sessionManager.confirmClaimedMessages(session.sessionDbId);
+      session.earliestPendingTimestamp = null;
+      worker?.broadcastProcessingStatus?.();
+      return;
     }
 
     const obsPrompt = this.buildObservationPrompt({
@@ -230,8 +251,14 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     const obsResponse = await this.query(session.conversationHistory, config);
 
     let tokensUsed = 0;
+    const sanitizedContent = obsResponse.content
+      ? this.sanitizeObservationResponseContent(obsResponse.content, config)
+      : '';
+
     if (obsResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
+      if (sanitizedContent) {
+        session.conversationHistory.push({ role: 'assistant', content: sanitizedContent });
+      }
       tokensUsed = obsResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
@@ -240,9 +267,9 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       session.lastUsage = this.buildLastUsage(obsResponse);
     }
 
-    if (obsResponse.content || this.forwardEmptyMessageResponse) {
+    if (sanitizedContent || this.forwardEmptyMessageResponse) {
       await processAgentResponse(
-        obsResponse.content || '', session, this.dbManager, this.sessionManager,
+        sanitizedContent || '', session, this.dbManager, this.sessionManager,
         worker, tokensUsed, originalTimestamp, this.providerName, lastCwd, obsResponse.servedModel ?? config.model, responseContext
       );
     } else {
