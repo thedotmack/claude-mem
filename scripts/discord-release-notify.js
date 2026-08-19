@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { readFileSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -28,11 +28,12 @@ function loadEnv() {
 
 function getReleaseNotes(version) {
   try {
-    const notes = execSync(`gh release view ${version} --json body --jq '.body'`, {
+    const result = spawnSync('gh', ['release', 'view', version, '--json', 'body', '--jq', '.body'], {
       encoding: 'utf-8',
       cwd: projectRoot,
-    }).trim();
-    return notes;
+    });
+    if (result.status !== 0) return null;
+    return result.stdout.trim();
   } catch {
     return null;
   }
