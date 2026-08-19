@@ -96,6 +96,13 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Same format-agreement guard as the Windows job, for the /proc (Linux)
+      # enumeration path: the table read and captureProcessStartToken must
+      # produce identical tokens, or every descendant is skipped as "reused"
+      # and the orphan bug returns silently.
+      - name: Process-identity format agreement
+        run: bun test tests/shared/kill-process-tree-identity.test.ts --timeout 120000
+
       # CLAUDE_MEM_DATA_DIR is set per-step, not on the job.
       #
       # `runner` is not a valid context in `jobs.<id>.env` (only github, needs,

@@ -91,6 +91,18 @@ jobs:
       # the recycle test's version-mismatch probe needs a built worker present.
       - run: npm run build
 
+      # De-risks the one thing that cannot be checked off-Windows: the CIM
+      # enumeration derives each descendant's start token from the same row that
+      # discovered it, and captureProcessStartToken re-reads it later. If those
+      # two disagree on FORMAT, every comparison fails, every descendant is
+      # skipped as "reused", and #2313 returns silently while the code still
+      # looks guarded. This asserts they agree on a real Windows process table.
+      - name: Process-identity format agreement
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
+          & $bun test tests/shared/kill-process-tree-identity.test.ts --timeout 120000
+
       # CLAUDE_MEM_DATA_DIR is set per-step, not on the job.
       #
       # `runner` is not a valid context in `jobs.<id>.env` (only github, needs,

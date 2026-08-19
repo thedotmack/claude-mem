@@ -2,7 +2,7 @@ import { existsSync, readFileSync, rmSync } from 'fs';
 import { logger } from '../utils/logger.js';
 import { captureProcessStartToken, isSameProcess, isPidAlive, waitForExit, type ManagedProcessRecord, type ProcessRegistry } from './process-registry.js';
 import { paths } from '../shared/paths.js';
-import { killProcessTree, collectDescendantPids } from '../shared/kill-process-tree.js';
+import { killProcessTree, collectDescendantIdentities } from '../shared/kill-process-tree.js';
 
 const PID_FILE = paths.workerPid();
 
@@ -44,11 +44,10 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
     }
 
     rootTokenByRecord.set(record.id, captureProcessStartToken(record.pid));
-    const descendantPids = await collectDescendantPids(record.pid);
-    descendantsByRecord.set(
-      record.id,
-      descendantPids.map(pid => ({ pid, startToken: captureProcessStartToken(pid) }))
-    );
+    // Identity from the same table read that found the PID — see
+    // collectDescendantIdentities. Probing tokens after enumeration would risk
+    // binding to a replacement process and then validating it.
+    descendantsByRecord.set(record.id, await collectDescendantIdentities(record.pid));
 
     try {
       await signalProcess(record, 'SIGTERM');

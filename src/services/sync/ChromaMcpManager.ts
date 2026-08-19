@@ -10,7 +10,7 @@ import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
-import { killProcessTree, collectDescendantPids } from '../../shared/kill-process-tree.js';
+import { killProcessTree, collectDescendantIdentities } from '../../shared/kill-process-tree.js';
 import { stripForeignPythonEnv } from '../../shared/uvx-env.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
@@ -1045,8 +1045,11 @@ export class ChromaMcpManager {
   private static async snapshotDescendantIdentities(
     rootPid: number
   ): Promise<Array<{ pid: number; startToken: string | null }>> {
-    const pids = await collectDescendantPids(rootPid);
-    return pids.map(pid => ({ pid, startToken: captureProcessStartToken(pid) }));
+    // Identity comes from the SAME process-table read that discovered the PID.
+    // Enumerating first and probing each PID afterwards would let a reissued
+    // number have the REPLACEMENT's token captured, which the later check would
+    // then happily validate — certifying a stranger as a legitimate target.
+    return collectDescendantIdentities(rootPid);
   }
 
   /**

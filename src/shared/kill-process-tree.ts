@@ -15,6 +15,7 @@
  */
 
 import { execFile } from 'child_process';
+import { readdirSync, readFileSync } from 'fs';
 import { promisify } from 'util';
 import { logger } from '../utils/logger.js';
 import { captureProcessStartToken, isSameProcess } from './process-identity.js';
@@ -286,93 +287,131 @@ export async function killProcessTree(
   }
 }
 
-/**
- * Every transitive descendant of `rootPid`, bottom-up (leaves first) so callers
- * can signal leaves before their ancestors.
- *
- * Works on Windows as well as POSIX. That is load-bearing, not a nicety: the
- * chroma teardown snapshots descendants BEFORE closing the transport, because
- * once the root exits its children re-parent and become unreachable from it.
- * A POSIX-only walk returned [] on Windows and left the uvx -> uv -> python
- * chain with nothing tracking it — the #3482 shape, on the target platform.
- *
- * Returns [] when the tree genuinely has no descendants. When the process
- * table cannot be ENUMERATED at all (no pgrep in a slim container, PowerShell
- * timeout) it also returns [], but logs a warning first — that case silently
- * degrades tree-kill to a single-PID kill, and an operator debugging a
- * #3482-shaped loop needs to see why.
- */
-export async function collectDescendantPids(rootPid: number): Promise<number[]> {
-  return process.platform === 'win32'
-    ? collectDescendantPidsWindows(rootPid)
-    : collectDescendantPidsPosix(rootPid);
-}
-
-/** Descendant PIDs paired with the start token that proves their identity. */
-interface DescendantIdentity {
+/** Descendant PID paired with the start token that proves its identity. */
+export interface DescendantIdentity {
   pid: number;
   startToken: string | null;
 }
 
-/**
- * collectDescendantPids, but each PID carries the identity it had at scan
- * time. A PID held across any wait is not a stable handle — the OS can reissue
- * it — so anything that signals later must revalidate against this token.
- */
-async function collectDescendantIdentities(rootPid: number): Promise<DescendantIdentity[]> {
-  const pids = await collectDescendantPids(rootPid);
-  return pids.map(pid => ({ pid, startToken: captureProcessStartToken(pid) }));
+/** One process-table row: discovery and identity from a SINGLE observation. */
+interface ProcessTableRow {
+  pid: number;
+  ppid: number;
+  startToken: string | null;
 }
 
-async function collectDescendantPidsPosix(rootPid: number): Promise<number[]> {
-  const seen = new Set<number>();
-  const collected: number[] = [];
+/**
+ * Read the whole process table once, with each row's identity taken from the
+ * SAME observation that discovered it.
+ *
+ * This atomicity is the point, not an optimisation. Enumerating PIDs first and
+ * probing each one for its token afterwards is worse than having no check at
+ * all: if a discovered PID exits and the number is reissued in between, the
+ * probe captures the REPLACEMENT's token, and the later isSameProcess() call
+ * then compares that replacement against itself, matches, and certifies an
+ * unrelated process as a legitimate kill target.
+ *
+ * Token formats deliberately match captureProcessStartToken() on every
+ * platform, because that is what the later revalidation re-reads. A mismatch
+ * would make every comparison fail and silently skip every descendant —
+ * resurrecting the orphan bug (#2313) instead of fixing it. That agreement is
+ * asserted by test rather than assumed.
+ */
+async function readProcessTable(): Promise<ProcessTableRow[]> {
+  if (process.platform === 'win32') return readProcessTableWindows();
+  if (process.platform === 'linux') return readProcessTableLinux();
+  return readProcessTablePosix();
+}
 
-  async function walk(pid: number): Promise<void> {
-    let stdout = '';
-    try {
-      const result = await execFileAsync('pgrep', ['-P', String(pid)], { timeout: 2_000 });
-      stdout = result.stdout;
-    } catch (error) {
-      // pgrep exits 1 whenever a PID has no children — the expected leaf case
-      // on every recursive walk. ANY other failure means we could not look,
-      // which is materially different from having looked and found nothing.
-      const code = (error as { code?: number | string }).code;
-      if (code !== 1) {
-        logger.warn('PROCESS', 'Cannot enumerate child processes — tree-kill degrades to a single-PID kill', {
-          pid,
-          code: typeof code === 'number' ? String(code) : code,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      return;
-    }
-    const children = stdout
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line.length > 0)
-      .map(line => Number.parseInt(line, 10))
-      .filter(n => Number.isFinite(n) && n > 0 && !seen.has(n));
-
-    for (const child of children) {
-      seen.add(child);
-      await walk(child);
-      // Bottom-up: push after recursion so leaves come first.
-      collected.push(child);
-    }
+/**
+ * Linux: one read of /proc/<pid>/stat yields ppid (field 4) and starttime
+ * (field 22) together — genuinely atomic per process, and starttime is exactly
+ * what captureProcessStartToken() returns on this platform.
+ */
+function readProcessTableLinux(): ProcessTableRow[] {
+  const rows: ProcessTableRow[] = [];
+  let entries: string[];
+  try {
+    entries = readdirSync('/proc');
+  } catch (error) {
+    logger.warn('PROCESS', 'Cannot read /proc — tree-kill degrades to a single-PID kill', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return rows;
   }
 
-  await walk(rootPid);
-  return collected;
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    let raw: string;
+    try {
+      raw = readFileSync(`/proc/${entry}/stat`, 'utf-8');
+    } catch {
+      // Exited between readdir and read. Safe: a row we never observed simply
+      // is not a target.
+      continue;
+    }
+    // comm (field 2) is parenthesised and may contain spaces, so split after it.
+    const tailStart = raw.lastIndexOf(') ');
+    if (tailStart < 0) continue;
+    const fields = raw.slice(tailStart + 2).split(' ');
+    const ppid = Number.parseInt(fields[1] ?? '', 10);
+    const starttime = fields[19];
+    if (!Number.isFinite(ppid)) continue;
+    rows.push({
+      pid: Number.parseInt(entry, 10),
+      ppid,
+      startToken: starttime && /^\d+$/.test(starttime) ? starttime : null,
+    });
+  }
+  return rows;
 }
 
 /**
- * Windows has no pgrep and no process groups, so the whole parent/child table
- * is read once via CIM and walked in memory — one PowerShell spawn instead of
- * one per node. Same source `captureProcessStartToken` uses, so identities
- * stay consistent between enumeration and verification.
+ * macOS/BSD: `ps -eo pid=,ppid=,lstart=` is one snapshot carrying all three.
+ * Its lstart is byte-identical to `ps -p <pid> -o lstart=`, which is what
+ * captureProcessStartToken() uses here. LC_ALL/LANG are pinned for the same
+ * reason they are pinned there — a locale-formatted date would not compare
+ * equal on the revalidation.
  */
-async function collectDescendantPidsWindows(rootPid: number): Promise<number[]> {
+async function readProcessTablePosix(): Promise<ProcessTableRow[]> {
+  let stdout: string;
+  try {
+    const result = await execFileAsync('ps', ['-eo', 'pid=,ppid=,lstart='], {
+      timeout: 10_000,
+      maxBuffer: 32 * 1024 * 1024,
+      env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
+    });
+    stdout = result.stdout;
+  } catch (error) {
+    logger.warn('PROCESS', 'Cannot enumerate the process table — tree-kill degrades to a single-PID kill', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  }
+
+  const rows: ProcessTableRow[] = [];
+  for (const line of stdout.split('\n')) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+    if (!match) continue;
+    const startToken = match[3]!.trim();
+    rows.push({
+      pid: Number.parseInt(match[1]!, 10),
+      ppid: Number.parseInt(match[2]!, 10),
+      startToken: startToken.length > 0 ? startToken : null,
+    });
+  }
+  return rows;
+}
+
+/**
+ * Windows: the CIM query already returned the parent link, so asking for
+ * CreationDate in the same row makes identity part of that one observation
+ * instead of N follow-up PowerShell probes — which were both the race above
+ * and, at ~100-300ms each, the dominant cost of enumeration.
+ *
+ * The ToString format matches captureProcessStartToken()'s exactly.
+ */
+async function readProcessTableWindows(): Promise<ProcessTableRow[]> {
   let stdout: string;
   try {
     const result = await execFileAsync(
@@ -381,44 +420,73 @@ async function collectDescendantPidsWindows(rootPid: number): Promise<number[]> 
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Csv -NoTypeInformation',
+        "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,@{Name='StartToken';Expression={$_.CreationDate.ToString('yyyyMMddHHmmss.ffffff')}} | ConvertTo-Csv -NoTypeInformation",
       ],
       { timeout: 30_000, windowsHide: true, maxBuffer: 32 * 1024 * 1024 }
     );
     stdout = result.stdout;
   } catch (error) {
-    logger.warn('PROCESS', 'Cannot enumerate Windows process table — tree-kill degrades to a single-PID kill', {
-      rootPid,
+    logger.warn('PROCESS', 'Cannot enumerate the Windows process table — tree-kill degrades to a single-PID kill', {
       error: error instanceof Error ? error.message : String(error),
     });
     return [];
   }
 
-  const childrenByParent = new Map<number, number[]>();
+  const rows: ProcessTableRow[] = [];
   for (const line of stdout.split(/\r?\n/).slice(1)) {
-    const match = line.match(/^"(\d+)","(\d+)"/);
+    const match = line.match(/^"(\d+)","(\d+)","(.*)"$/);
     if (!match) continue;
-    const pid = Number.parseInt(match[1]!, 10);
-    const ppid = Number.parseInt(match[2]!, 10);
-    const siblings = childrenByParent.get(ppid);
-    if (siblings) siblings.push(pid);
-    else childrenByParent.set(ppid, [pid]);
+    const startToken = match[3]!.trim();
+    rows.push({
+      pid: Number.parseInt(match[1]!, 10),
+      ppid: Number.parseInt(match[2]!, 10),
+      startToken: startToken.length > 0 ? startToken : null,
+    });
+  }
+  return rows;
+}
+
+/**
+ * Every transitive descendant of `rootPid`, each carrying the identity it had
+ * in the same table read that discovered it. Bottom-up (leaves first) so
+ * callers can signal leaves before their ancestors.
+ *
+ * Works on Windows as well as POSIX. That is load-bearing, not a nicety: the
+ * chroma teardown snapshots descendants BEFORE closing the transport, because
+ * once the root exits its children re-parent and become unreachable from it.
+ *
+ * Returns [] both when the tree genuinely has no descendants and when the
+ * table could not be read; the latter logs a warning first, because it
+ * silently degrades tree-kill to a single-PID kill.
+ */
+export async function collectDescendantIdentities(rootPid: number): Promise<DescendantIdentity[]> {
+  const rows = await readProcessTable();
+
+  const childrenByParent = new Map<number, ProcessTableRow[]>();
+  for (const row of rows) {
+    const siblings = childrenByParent.get(row.ppid);
+    if (siblings) siblings.push(row);
+    else childrenByParent.set(row.ppid, [row]);
   }
 
   const seen = new Set<number>([rootPid]);
-  const collected: number[] = [];
+  const collected: DescendantIdentity[] = [];
 
-  // Depth-first, pushing after recursion so the result stays leaves-first like
-  // the POSIX walk — callers rely on that ordering.
   const walk = (pid: number): void => {
     for (const child of childrenByParent.get(pid) ?? []) {
-      if (seen.has(child)) continue;
-      seen.add(child);
-      walk(child);
-      collected.push(child);
+      if (seen.has(child.pid)) continue;
+      seen.add(child.pid);
+      walk(child.pid);
+      // Push after recursion so leaves come first.
+      collected.push({ pid: child.pid, startToken: child.startToken });
     }
   };
   walk(rootPid);
 
   return collected;
+}
+
+/** PID-only view, for callers that do not signal what they enumerate. */
+export async function collectDescendantPids(rootPid: number): Promise<number[]> {
+  return (await collectDescendantIdentities(rootPid)).map(entry => entry.pid);
 }

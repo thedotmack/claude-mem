@@ -17,10 +17,28 @@ const realIdentitySnapshot = { ...realProcessIdentity };
  */
 const forcedReuse = new Set<number>();
 
+/**
+ * Simulates a PROBE landing on a different process than the enumeration saw —
+ * i.e. the PID was reassigned between discovery and token capture. Any
+ * captureProcessStartToken() call for this PID returns the replacement's
+ * token, and identity comparisons are judged against that same value, exactly
+ * as they would be if the number really had been reissued.
+ */
+const probeSeesReplacement = new Map<number, string>();
+
 mock.module('../../src/shared/process-identity.js', () => ({
   ...realIdentitySnapshot,
-  isSameProcess: (pid: number, token: string | null) =>
-    forcedReuse.has(pid) ? false : realIdentitySnapshot.isSameProcess(pid, token),
+  captureProcessStartToken: (pid: number) =>
+    probeSeesReplacement.get(pid) ?? realIdentitySnapshot.captureProcessStartToken(pid),
+  isSameProcess: (pid: number, token: string | null) => {
+    if (forcedReuse.has(pid)) return false;
+    const replacement = probeSeesReplacement.get(pid);
+    if (replacement !== undefined) {
+      if (token === null) return true;
+      return token === replacement;
+    }
+    return realIdentitySnapshot.isSameProcess(pid, token);
+  },
 }));
 
 const { killProcessTree } = await import('../../src/shared/kill-process-tree.js');
@@ -88,6 +106,7 @@ function directChildOf(rootPid: number): number {
 
 afterEach(() => {
   forcedReuse.clear();
+  probeSeesReplacement.clear();
 });
 
 afterAll(async () => {
@@ -276,6 +295,47 @@ describe.if(isPosix)('killProcessTree is root-safe BY DEFAULT, with no token pas
 
     try { process.kill(rootPid, 'SIGKILL'); } catch { /* fine */ }
     try { process.kill(child, 'SIGKILL'); } catch { /* fine */ }
+  }, 30_000);
+});
+
+describe.if(isPosix)('descendant identity comes from the discovering observation', () => {
+  // The failure this guards is worse than missing a reuse: enumerate-then-probe
+  // could bind a descendant to the REPLACEMENT's token and then have the later
+  // check compare that replacement against itself, match, and certify an
+  // unrelated process as a legitimate kill target.
+  //
+  // The reassignment interval itself is kernel-timed and cannot be driven
+  // deterministically. What CAN be driven is its observable consequence: make
+  // every probe for one PID report a different process than the process table
+  // did. Under enumerate-then-probe the stored token IS the replacement's, so
+  // the comparison matches and the process is signalled. Sourcing identity from
+  // the discovering read makes the two disagree, so it is skipped.
+
+  it('does NOT signal a descendant whose probe disagrees with the table read', async () => {
+    const { rootPid } = spawnTermKillableChild();
+    await settle();
+    const bystander = directChildOf(rootPid);
+    expect(isPidAlive(bystander)).toBe(true);
+
+    probeSeesReplacement.set(bystander, 'token-of-an-unrelated-replacement-process');
+
+    await killProcessTree(rootPid);
+    await settle(1_000);
+
+    expect(isPidAlive(bystander)).toBe(true);
+
+    try { process.kill(bystander, 'SIGKILL'); } catch { /* fine */ }
+  }, 30_000);
+
+  it('still signals a descendant when table and probe agree', async () => {
+    const { rootPid } = spawnTermKillableChild();
+    await settle();
+    const target = directChildOf(rootPid);
+    expect(isPidAlive(target)).toBe(true);
+
+    await killProcessTree(rootPid);
+
+    expect(await waitUntil(() => !isPidAlive(target), 10_000)).toBe(true);
   }, 30_000);
 });
 
