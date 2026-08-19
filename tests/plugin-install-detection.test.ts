@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { isPluginInstalled, marketplaceDirectory } from '../src/npx-cli/utils/paths.js';
+import { hasInstallArtifacts } from '../src/npx-cli/commands/uninstall.js';
 
 // A real install lands both the marketplace root manifest and the nested
 // plugin.json. Before #3656 the installer shipped only the nested plugin.json,
@@ -53,5 +54,18 @@ describe('isPluginInstalled marketplace-manifest guard (#3656)', () => {
     writeNestedPluginJson();
     writeMarketplaceManifest();
     expect(isPluginInstalled()).toBe(true);
+  });
+
+  // Uninstall must not inherit the stricter health check: a legacy install with
+  // only the nested manifest still has artifacts to clean up, so a
+  // non-interactive uninstall must not early-exit (#3656).
+  it('hasInstallArtifacts stays true for a legacy install the health check rejects', () => {
+    writeNestedPluginJson();
+    expect(isPluginInstalled()).toBe(false);
+    expect(hasInstallArtifacts()).toBe(true);
+  });
+
+  it('hasInstallArtifacts is false only when nothing is left behind', () => {
+    expect(hasInstallArtifacts()).toBe(false);
   });
 });
