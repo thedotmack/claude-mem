@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { resolveOpenRouterChatCompletionsUrl } from '../../../shared/openrouter-base-url.js';
+import { openRouterAttributionHeaders, OPENROUTER_APP_URL, OPENROUTER_APP_TITLE } from '../../../shared/openrouter-attribution.js';
 import { logger } from '../../../utils/logger.js';
 import {
   ServerClassifiedProviderError,
@@ -60,8 +61,8 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
     this.model = options.model ?? DEFAULT_MODEL;
     this.apiUrl = resolveOpenRouterChatCompletionsUrl(options.baseUrl);
     this.maxOutputTokens = options.maxOutputTokens ?? 4096;
-    this.siteUrl = options.siteUrl ?? 'https://github.com/thedotmack/claude-mem';
-    this.appName = options.appName ?? 'claude-mem';
+    this.siteUrl = options.siteUrl ?? OPENROUTER_APP_URL;
+    this.appName = options.appName ?? OPENROUTER_APP_TITLE;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -144,8 +145,7 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
-        'HTTP-Referer': this.siteUrl,
-        'X-Title': this.appName,
+        ...openRouterAttributionHeaders(this.siteUrl, this.appName),
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
