@@ -22,6 +22,15 @@ function formatTimeHHMM(epochMs: number): string {
   return new Date(epochMs).toISOString().slice(11, 16);
 }
 
+/**
+ * Nudge appended to a task section with no intent entries. Intent absence is
+ * the trigger (not set emptiness): the observer journal fills the set by
+ * itself, so an emptiness-gated reminder never fires — sessions ran
+ * journal-only Working Memory for hours (observed live).
+ */
+export const WORKING_MEMORY_NO_INTENT_NUDGE =
+  '_No intent recorded — if your toolset has working_set, record your current hypothesis/plan._';
+
 function renderTaskSection(taskKey: string, entries: WorkingEntry[]): string {
   const intents = entries
     .filter(entry => entry.kind === 'intent')
@@ -39,18 +48,14 @@ function renderTaskSection(taskKey: string, entries: WorkingEntry[]): string {
   for (const entry of journal) {
     lines.push(`- [journal] ${entry.value}`);
   }
+  // Per task, not per block: with the default cross-task render, one task
+  // holding intent must not silence the nudge for a journal-only task —
+  // that is the same "never fires" bug one level down.
+  if (intents.length === 0) {
+    lines.push('', WORKING_MEMORY_NO_INTENT_NUDGE);
+  }
   return lines.join('\n');
 }
-
-/**
- * Nudge appended to a journal-only block: the empty-set reminder alone is not
- * enough, because the observer journal fills the set by itself and the
- * empty-set branch then never fires — the agent never learns it should record
- * intent (observed live: sessions showed journal-only Working Memory blocks
- * for hours). Intent absence, not set emptiness, is the trigger.
- */
-export const WORKING_MEMORY_NO_INTENT_NUDGE =
-  '_No intent recorded — if your toolset has working_set, record your current hypothesis/plan._';
 
 /** Returns null when there is nothing live to show (caller injects the reminder). */
 export function renderWorkingMemoryBlock(payload: WorkingRenderPayload): string | null {
@@ -63,12 +68,8 @@ export function renderWorkingMemoryBlock(payload: WorkingRenderPayload): string 
     byTask.set(entry.task_key, bucket);
   }
 
-  const block = [...byTask.keys()]
+  return [...byTask.keys()]
     .sort()
     .map(taskKey => renderTaskSection(taskKey, byTask.get(taskKey)!))
     .join('\n\n');
-
-  return payload.entries.some(entry => entry.kind === 'intent')
-    ? block
-    : `${block}\n\n${WORKING_MEMORY_NO_INTENT_NUDGE}`;
 }

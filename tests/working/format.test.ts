@@ -121,6 +121,20 @@ describe('renderWorkingMemoryBlock', () => {
     expect(withIntent).not.toContain('No intent recorded');
   });
 
+  it('per-task nudge: intent in one task does not silence the nudge of a journal-only task', () => {
+    const block = renderWorkingMemoryBlock({
+      entries: [
+        entry({ task_key: 'busy', key: 'hyp', value: 'cache bug' }),
+        entry({ task_key: 'quiet', key: 'journal:1', kind: 'journal', source: 'observer', value: 'Read src/x.ts' }),
+      ],
+    });
+    const sections = block!.split(/(?=## Working Memory — task: )/);
+    const busySection = sections.find(s => s.includes('task: busy')) ?? '';
+    const quietSection = sections.find(s => s.includes('task: quiet')) ?? '';
+    expect(busySection).not.toContain('No intent recorded');
+    expect(quietSection).toContain('No intent recorded');
+  });
+
   it('groups multiple tasks into separate sections', () => {
     const block = renderWorkingMemoryBlock({
       entries: [

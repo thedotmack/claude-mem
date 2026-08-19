@@ -232,6 +232,12 @@ export function closeTask(db: Database, project: string, taskKey: string): numbe
  * memory stops being small, i.e. stops being working memory. Tasks are kept
  * whole (no mid-task slicing) and ordered freshest-first; the freshest task
  * is always included, even if it alone exceeds the budget.
+ *
+ * The budget counts INTENT rows only — same semantics as setEntry's write
+ * budget. Journal rows ride along (bounded by ring size × journal line cap);
+ * counting them here would let one task's fat journal evict OTHER tasks'
+ * intent entries from the injection — the channels must not intersect on the
+ * render budget either.
  */
 export function capTasksForRender(entries: WorkingEntry[], limits: WorkingLimits): WorkingEntry[] {
   const byTask = new Map<string, WorkingEntry[]>();
@@ -248,10 +254,12 @@ export function capTasksForRender(entries: WorkingEntry[], limits: WorkingLimits
   const kept: WorkingEntry[] = [];
   let budgetChars = limits.maxTokens * CHARS_PER_TOKEN;
   for (const [, rows] of tasks) {
-    const taskChars = rows.reduce((sum, row) => sum + row.value.length, 0);
-    if (kept.length > 0 && taskChars > budgetChars) continue;
+    const intentChars = rows
+      .filter(row => row.kind === 'intent')
+      .reduce((sum, row) => sum + row.value.length, 0);
+    if (kept.length > 0 && intentChars > budgetChars) continue;
     kept.push(...rows);
-    budgetChars -= taskChars;
+    budgetChars -= intentChars;
   }
   return kept;
 }

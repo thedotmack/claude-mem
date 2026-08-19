@@ -127,6 +127,19 @@ describe('working memory store', () => {
     expect(tasks).toEqual(['new-task']);
   });
 
+  it('capTasksForRender: a fat journal never evicts another task’s intent', () => {
+    const lim = limits({ maxTokens: 10 }); // 40 chars of INTENT budget
+    setEntry(store.db, 'proj', 'quiet', 'k', 'q'.repeat(20), lim, NOW + DAY_MS);
+    setEntry(store.db, 'proj', 'loud', 'k', 'l'.repeat(20), lim, NOW + 2 * DAY_MS);
+    // 4000 chars of journal on the loud task — over any budget, but ring-bounded.
+    appendJournal(store.db, 'proj', 'loud', 'j'.repeat(4000), lim, NOW + 2 * DAY_MS);
+
+    const capped = capTasksForRender(listEntries(store.db, 'proj', undefined, NOW + 3 * DAY_MS), lim);
+    const tasks = [...new Set(capped.map(e => e.task_key))];
+    // 20 + 20 intent chars fit the 40-char budget; the journal is ignored by it.
+    expect(tasks).toEqual(['loud', 'quiet']);
+  });
+
   it('keeps the journal as a ring of journalSize, evicting the oldest', () => {
     const lim = limits({ journalSize: 3 });
     for (let i = 1; i <= 5; i++) {
