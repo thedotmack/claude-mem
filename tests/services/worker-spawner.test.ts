@@ -1,6 +1,19 @@
 
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, afterAll, mock } from 'bun:test';
 import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
+import * as realProcessManager from '../../src/services/infrastructure/ProcessManager.js';
+import * as realHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
+import * as realSpawnGate from '../../src/shared/worker-spawn-gate.js';
+
+// bun's mock.module() is process-global and survives this file: the whole
+// suite runs in one bun process, so without a restore every test file that
+// loads ProcessManager/HealthMonitor after this one gets the stubs below
+// (and exports missing from the stub factories vanish entirely). Snapshot
+// the real modules before mocking and re-register them in afterAll — same
+// pattern as worker-utils-version-recycle.test.ts.
+const realProcessManagerSnapshot = { ...realProcessManager };
+const realHealthMonitorSnapshot = { ...realHealthMonitor };
+const realSpawnGateSnapshot = { ...realSpawnGate };
 
 const processManager = {
   cleanStalePidFile: mock(() => 'dead' as 'alive' | 'dead'),
@@ -25,6 +38,12 @@ mock.module('../../src/services/infrastructure/HealthMonitor.js', () => healthMo
 mock.module('../../src/shared/worker-spawn-gate.js', () => spawnGate);
 
 const { ensureWorkerStarted } = await import('../../src/services/worker-spawner.js');
+
+afterAll(() => {
+  mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManagerSnapshot);
+  mock.module('../../src/services/infrastructure/HealthMonitor.js', () => realHealthMonitorSnapshot);
+  mock.module('../../src/shared/worker-spawn-gate.js', () => realSpawnGateSnapshot);
+});
 
 type TimedProbe = (port: number, timeout: number) => Promise<boolean>;
 
