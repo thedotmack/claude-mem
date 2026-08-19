@@ -91,6 +91,18 @@ jobs:
       # the recycle test's version-mismatch probe needs a built worker present.
       - run: npm run build
 
+      # The reuse suite (tests/shared/kill-process-tree-pid-reuse.test.ts) is
+      # describe.if(isPosix) throughout — its fixtures need /bin/sh, pgrep and
+      # SIGTERM semantics — so it runs on ubuntu only and would skip entirely
+      # here. These are the same guarantees expressed with a cmd.exe fixture,
+      # so the Windows implementations (CIM enumeration, taskkill exit-code
+      # classification, the root identity gate) actually execute.
+      - name: Tree-kill end-to-end (Windows implementations)
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
+          & $bun test tests/shared/kill-process-tree-cross-platform.test.ts --timeout 120000
+
       # De-risks the one thing that cannot be checked off-Windows: the CIM
       # enumeration derives each descendant's start token from the same row that
       # discovered it, and captureProcessStartToken re-reads it later. If those

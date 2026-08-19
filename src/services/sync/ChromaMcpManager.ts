@@ -363,11 +363,6 @@ export class ChromaMcpManager {
     }
   }
 
-  /** Test seam: await the background onclose cleanup deterministically. */
-  async waitForUnexpectedCloseCleanupForTesting(): Promise<void> {
-    await this.waitForUnexpectedCloseCleanup();
-  }
-
   private async waitForUnexpectedCloseCleanup(): Promise<void> {
     const cleanup = this.unexpectedCloseCleanup;
     if (cleanup) {

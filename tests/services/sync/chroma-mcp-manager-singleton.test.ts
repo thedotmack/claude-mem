@@ -428,7 +428,11 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     killProcessTreeCalls.length = 0;
 
     transportInstances[0]!.onclose?.();
-    await mgr.waitForUnexpectedCloseCleanupForTesting();
+    // Poll the observable side effect rather than awaiting an internal promise
+    // — that kept a test-only method off ChromaMcpManager's public surface.
+    // If the cleanup never runs, this times out and the test fails, which is
+    // the same assertion.
+    await waitForCondition(() => killProcessTreeCalls.some(call => call.pid === closedPid));
 
     const cleanupCall = killProcessTreeCalls.find(call => call.pid === closedPid);
     expect(cleanupCall).toBeDefined();

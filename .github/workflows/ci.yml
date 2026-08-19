@@ -96,6 +96,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Same end-to-end tree-kill assertions the Windows job runs, so the two
+      # platforms are held to an identical contract rather than each being
+      # verified by whatever happens to run there.
+      - name: Tree-kill end-to-end (Linux implementations)
+        run: bun test tests/shared/kill-process-tree-cross-platform.test.ts --timeout 120000
+
       # Same format-agreement guard as the Windows job, for the /proc (Linux)
       # enumeration path: the table read and captureProcessStartToken must
       # produce identical tokens, or every descendant is skipped as "reused"

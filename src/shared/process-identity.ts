@@ -28,9 +28,16 @@ const windowsStartTokenCache = new Map<number, { token: string | null; capturedA
 
 /**
  * Count of RAW platform reads (cache misses and deliberate bypasses alike).
- * Test-only observability: it is the one way to assert that the kill path
- * really re-reads the OS instead of being served a cached verdict, and it
- * works on every platform, so the assertion is not vacuous off-Windows.
+ *
+ * DELIBERATE TEST SEAM, kept after review rather than fenced. It is a
+ * monotonic read-only counter: calling it cannot mutate state, change a
+ * verdict, or affect any kill decision, so there is nothing for a non-test
+ * caller to abuse. It exists because "isSameProcess must re-read the OS on
+ * every authorization" is otherwise unobservable from outside — and that
+ * property is what stops a cached verdict certifying a reused PID
+ * (round 6). Removing it would delete a real gate to save zero risk.
+ *
+ * The double-underscore prefix marks it as non-API; nothing in src/ imports it.
  */
 let rawProbeCount = 0;
 export function __identityProbeCountForTesting(): number {
