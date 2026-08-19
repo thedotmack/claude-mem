@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { Database } from 'bun:sqlite';
@@ -61,6 +61,19 @@ describe('runOneTimeDoubledProjectCollapse', () => {
     const { sessions, observations } = projectsFor('doubled-mem');
     expect(sessions).toEqual(['q-companies-master']);
     expect(observations).toEqual(['q-companies-master']);
+
+    // The backup is a SQLite snapshot (VACUUM INTO), so it must be a valid,
+    // queryable DB holding the pre-collapse rows — not an empty/partial copy.
+    const backupName = readdirSync(dir).find(f => f.startsWith('claude-mem.db.bak-doubled-collapse-'));
+    expect(backupName).toBeDefined();
+    const backup = new Database(join(dir, backupName!), { readonly: true });
+    try {
+      const preCollapse = (backup.prepare('SELECT project FROM observations WHERE memory_session_id = ?')
+        .all('doubled-mem') as Array<{ project: string }>).map(r => r.project);
+      expect(preCollapse).toEqual(['q-companies-master/q-companies-master']);
+    } finally {
+      backup.close();
+    }
   });
 
   it('leaves a genuine `<parent>/<worktree>` compound name untouched', () => {

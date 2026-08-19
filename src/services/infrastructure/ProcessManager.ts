@@ -448,8 +448,11 @@ function executeDoubledProjectCollapse(dbPath: string, effectiveDataDir: string,
     if (remaps.size === 0) {
       logger.info('SYSTEM', 'doubled-project-collapse: no doubled names found');
     } else {
+      // Snapshot through SQLite rather than copyFileSync: in WAL mode committed
+      // rows can still live in the -wal sidecar, so a bare main-file copy can
+      // omit them. VACUUM INTO writes one consistent file with the WAL folded in.
       const backup = `${dbPath}.bak-doubled-collapse-${Date.now()}`;
-      copyFileSync(dbPath, backup);
+      db.prepare('VACUUM INTO ?').run(backup);
       logger.info('SYSTEM', 'DB backed up before doubled-project-collapse', { backup });
 
       const updSession = db.prepare('UPDATE sdk_sessions      SET project = ? WHERE project = ?');
