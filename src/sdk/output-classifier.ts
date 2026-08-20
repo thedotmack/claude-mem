@@ -95,3 +95,31 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
     /\/login\b.{0,40}\b(?:to\s+authenticate|again|to\s+continue|and\s+retry|reauthenticate|credentials|provider|claude)\b/.test(text)
   );
 }
+
+/**
+ * Detect a direct closed observation block that the parser can inspect after
+ * excluding observations contained by a summary. A summary-first response can
+ * still contain a sibling observation, so the scan is independent of root order.
+ */
+export function hasClosedObservationBlock(raw: unknown): boolean {
+  if (typeof raw !== 'string') return false;
+  if (/<skip_summary(?:\s+reason="[^"]*")?\s*\/>/.test(raw)) return false;
+  const observationRegex = /<observation>([\s\S]*?)<\/observation>/g;
+  let observationMatch;
+  while ((observationMatch = observationRegex.exec(raw)) !== null) {
+    const observationStart = observationMatch.index;
+    const observationEnd = observationStart + observationMatch[0].length;
+    const summaryRegex = /<summary\b[^>]*>([\s\S]*?)<\/summary>/gi;
+    let nestedInSummary = false;
+    let summaryMatch;
+    while ((summaryMatch = summaryRegex.exec(raw)) !== null) {
+      const summaryEnd = summaryMatch.index + summaryMatch[0].length;
+      if (observationStart >= summaryMatch.index && observationEnd <= summaryEnd) {
+        nestedInSummary = true;
+        break;
+      }
+    }
+    if (!nestedInSummary) return true;
+  }
+  return false;
+}
