@@ -17,12 +17,59 @@ the three connection values issued by **cmem.ai → Connect**.
 Confirm only its length. Preserve every unrelated setting and keep
 `~/.claude-mem/settings.json` mode `0600`.
 
-## 1. Check status
+## 0. Ensure a SyncHub-capable build
 
-Resolve the worker port and query the always-registered status route:
+SyncHub requires claude-mem **>= 13.12.0**. Self-update before anything else,
+since older builds have no `/api/sync/*` routes and every later step will fail.
+
+Do not judge this from a manifest on disk. The launcher prefers a *cached*
+plugin over the marketplace checkout, so an up-to-date marketplace clone can sit
+next to an older cached build that is the one actually serving. Ask the running
+worker instead — `/api/health` reports both its version and the path it was
+loaded from:
 
 ```bash
 PORT="${CLAUDE_MEM_WORKER_PORT:-$(node -e "const fs=require('fs'),p=require('path'),os=require('os');const uid=(typeof process.getuid==='function'?process.getuid():77);const fallback=String(37700+(uid%100));try{const s=JSON.parse(fs.readFileSync(p.join(os.homedir(),'.claude-mem','settings.json'),'utf-8'));process.stdout.write(String(s.CLAUDE_MEM_WORKER_PORT||fallback));}catch{process.stdout.write(fallback);}" 2>/dev/null)}"
+curl -s "http://127.0.0.1:${PORT}/api/health"
+# {"status":"ok","version":"13.12.4","workerPath":"…/plugin/scripts/worker-service.cjs"}
+```
+
+Version **>= 13.12.0** → go to step 1. Otherwise update the marketplace
+checkout, restart, and re-read `/api/health`:
+
+```bash
+DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/thedotmack"
+git -C "$DIR" pull --ff-only
+curl -s -X POST "http://127.0.0.1:${PORT}/api/admin/restart"
+START=$(date +%s)
+# Poll for the successor; do not read health once. The restart endpoint acks
+# before the outgoing worker releases the listener, so an immediate read is
+# answered by the process being replaced and still reports the pre-update
+# build. Accept a reading only once its uptime is shorter than the time since
+# the restart was requested — that is what proves it is the new process.
+for _ in $(seq 1 15); do
+  sleep 2
+  curl -s -m 2 "http://127.0.0.1:${PORT}/api/health" \
+    | CMEM_SINCE=$(( $(date +%s) - START )) node -pe 'const j=JSON.parse(require("fs").readFileSync(0,"utf8"));if(!(j.uptime<+process.env.CMEM_SINCE))process.exit(1);j.version+" "+j.workerPath' 2>/dev/null && break
+done
+```
+
+Connection failures and 503s during that window are expected, not a diagnosis —
+there is a real gap between the old worker exiting and the new one listening.
+
+If `/api/health` still reports an older version after that restart, the launcher
+is starting a stale cached copy — `workerPath` names the offending file, and
+cached builds live under
+`${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/thedotmack/claude-mem/<version>`.
+Report the running version and `workerPath`, and stop. Never continue to step 1
+against a build below 13.12.0: its `/api/sync/*` routes do not exist, so every
+later check would misreport.
+
+## 1. Check status
+
+Reusing `$PORT` from step 0, query the always-registered status route:
+
+```bash
 curl -s "http://127.0.0.1:${PORT}/api/sync/status"
 ```
 
