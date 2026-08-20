@@ -340,7 +340,7 @@ export function ContextSettingsModal({
                 >
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
-                  <option value="openrouter">OpenRouter (multi-model)</option>
+                  <option value="openrouter">OpenRouter / Custom endpoint (BYOK)</option>
                 </select>
               </FormField>
 
@@ -415,13 +415,24 @@ export function ContextSettingsModal({
                   </FormField>
                   <FormField
                     label="OpenRouter Model"
-                    tooltip="Model identifier from OpenRouter (e.g., anthropic/claude-3.5-sonnet, google/gemini-2.0-flash-thinking-exp)"
+                    tooltip="Model identifier from OpenRouter or a custom OpenAI-compatible endpoint"
                   >
                     <input
                       type="text"
                       value={formState.CLAUDE_MEM_OPENROUTER_MODEL || 'xiaomi/mimo-v2-flash:free'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_MODEL', e.target.value)}
                       placeholder="e.g., xiaomi/mimo-v2-flash:free"
+                    />
+                  </FormField>
+                  <FormField
+                    label="OpenRouter Base URL"
+                    tooltip="Optional OpenAI-compatible base URL. Leave blank to use openrouter.ai."
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENROUTER_BASE_URL || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_BASE_URL', e.target.value)}
+                      placeholder="https://api.openrouter.ai/api/v1"
                     />
                   </FormField>
                   <FormField

@@ -13,6 +13,7 @@ import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsMana
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from '../../../../shared/atomic-json.js';
+import { isHttpUrl } from '../../../../shared/openrouter-base-url.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
@@ -85,6 +86,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
       'CLAUDE_MEM_OPENROUTER_API_KEY',
+      'CLAUDE_MEM_OPENROUTER_BASE_URL',
       'CLAUDE_MEM_OPENROUTER_MODEL',
       'CLAUDE_MEM_OPENROUTER_SITE_URL',
       'CLAUDE_MEM_OPENROUTER_APP_NAME',
@@ -239,6 +241,13 @@ export class SettingsRoutes extends BaseRouteHandler {
       } catch (error) {
         logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENROUTER_SITE_URL, error: error instanceof Error ? error.message : String(error) });
         return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_SITE_URL must be a valid URL' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_OPENROUTER_BASE_URL) {
+      if (!isHttpUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)) {
+        logger.debug('SETTINGS', 'Invalid OpenRouter base URL protocol', { url: settings.CLAUDE_MEM_OPENROUTER_BASE_URL });
+        return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_BASE_URL must be an HTTP(S) URL' };
       }
     }
 

@@ -14,6 +14,7 @@ import { parseJsonWithBom, writeJsonFileAtomic as writeSettingsJsonAtomic } from
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
 import { formatHostForUrl } from '../../shared/worker-utils.js';
+import { isHttpUrl } from '../../shared/openrouter-base-url.js';
 import {
   ensureBun,
   ensureUv,
@@ -1246,14 +1247,68 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     return 'claude';
   }
 
-  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
+  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter / custom endpoint';
   const keyEnvName = selectedProvider === 'gemini'
     ? 'CLAUDE_MEM_GEMINI_API_KEY'
     : 'CLAUDE_MEM_OPENROUTER_API_KEY';
 
+  const openRouterSettings: Record<string, string> = {};
+  if (!options.provider && selectedProvider === 'openrouter') {
+    const existingBaseUrl = getSetting('CLAUDE_MEM_OPENROUTER_BASE_URL');
+    const endpointResult = await p.select<'openrouter' | 'custom'>({
+      message: 'Which OpenRouter-compatible endpoint do you want to use?',
+      options: [
+        { value: 'openrouter', label: 'openrouter.ai' },
+        { value: 'custom', label: 'Custom OpenAI-compatible endpoint' },
+      ],
+      initialValue: existingBaseUrl ? 'custom' : 'openrouter',
+    });
+
+    if (p.isCancel(endpointResult)) {
+      p.cancel('Installation cancelled.');
+      process.exit(0);
+    }
+
+    if (endpointResult === 'custom') {
+      const baseUrlResult = await p.text({
+        message: 'OpenAI-compatible base URL:',
+        placeholder: existingBaseUrl || 'http://localhost:1234/v1',
+        defaultValue: existingBaseUrl || '',
+        validate: (v?: string) => {
+          const value = v?.trim() ?? '';
+          if (!value) return 'Base URL required';
+          return isHttpUrl(value) ? undefined : 'Enter an HTTP(S) URL, for example http://localhost:1234/v1';
+        },
+      });
+
+      if (p.isCancel(baseUrlResult)) {
+        p.cancel('Installation cancelled.');
+        process.exit(0);
+      }
+
+      const existingModel = getSetting('CLAUDE_MEM_OPENROUTER_MODEL') || 'openai/gpt-oss-20b';
+      const modelResult = await p.text({
+        message: 'Model id for this endpoint:',
+        placeholder: existingModel,
+        defaultValue: existingModel,
+        validate: (v?: string) => (!v || v.trim().length === 0) ? 'Model required' : undefined,
+      });
+
+      if (p.isCancel(modelResult)) {
+        p.cancel('Installation cancelled.');
+        process.exit(0);
+      }
+
+      openRouterSettings.CLAUDE_MEM_OPENROUTER_BASE_URL = String(baseUrlResult).trim();
+      openRouterSettings.CLAUDE_MEM_OPENROUTER_MODEL = String(modelResult).trim();
+    } else if (existingBaseUrl) {
+      openRouterSettings.CLAUDE_MEM_OPENROUTER_BASE_URL = '';
+    }
+  }
+
   const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
   if (existingKey && existingKey.trim().length > 0) {
-    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: selectedProvider });
+    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: selectedProvider, ...openRouterSettings });
     if (wrote) log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
     return selectedProvider;
   }
@@ -1273,6 +1328,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   const apiKey = String(apiKeyResult).trim();
   const wrote = mergeSettings({
     CLAUDE_MEM_PROVIDER: selectedProvider,
+    ...openRouterSettings,
     [keyEnvName]: apiKey,
   });
   if (wrote) {
