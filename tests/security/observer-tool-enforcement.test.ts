@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { readFileSync, existsSync, rmSync } from 'fs';
+import { join } from 'path';
 import {
   buildHardenedSdkOptions,
   OBSERVER_DISALLOWED_TOOLS,
@@ -8,7 +9,10 @@ import {
   recordObserverToolAttempt,
   getObserverAuditLogPath,
 } from '../../src/utils/observer-audit.js';
-import { OBSERVER_SESSIONS_DIR } from '../../src/shared/paths.js';
+import {
+  DATA_DIR,
+  OBSERVER_SESSIONS_DIR,
+} from '../../src/shared/paths.js';
 
 const BASE_INPUT = {
   source: 'Observer' as const,
@@ -73,6 +77,15 @@ describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () =
       const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
       expect(opts.cwd).toBe(OBSERVER_SESSIONS_DIR);
       expect(opts.cwd).not.toBe(process.cwd());
+    });
+
+    it('persists internal SDK sessions outside the user Claude config directory', () => {
+      const opts = buildHardenedSdkOptions({
+        ...BASE_INPUT,
+        env: { CLAUDE_CONFIG_DIR: '/user/claude-config' },
+      });
+      expect(opts.env?.CLAUDE_CONFIG_DIR).toBe(join(DATA_DIR, 'observer-claude-config'));
+      expect(opts.env?.CLAUDE_CONFIG_DIR).not.toBe('/user/claude-config');
     });
 
     it('exposes a canUseTool callback', () => {
