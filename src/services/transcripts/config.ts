@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
-import { paths } from '../../shared/paths.js';
+import { expandHome, paths } from '../../shared/paths.js';
 import type { TranscriptSchema, TranscriptWatchConfig } from './types.js';
 
 export const DEFAULT_CONFIG_PATH = paths.transcriptsConfig();
@@ -55,10 +55,7 @@ export function filterNativeHookBackedCodexWatches(
 
 export function expandHomePath(inputPath: string): string {
   if (!inputPath) return inputPath;
-  if (inputPath.startsWith('~')) {
-    return join(homedir(), inputPath.slice(1));
-  }
-  return inputPath;
+  return expandHome(inputPath);
 }
 
 export function loadTranscriptWatchConfig(path = DEFAULT_CONFIG_PATH): TranscriptWatchConfig {
