@@ -62,13 +62,18 @@ function stripHardcodedDirname(filePath) {
  * #1215, #1533). See src/build/hook-shell-template.ts and CLAUDE.md →
  * "Spawn-Contract Resolution".
  */
-function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
+function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand, buildClaudeNodeHook) {
   const ccTrailing = (...tail) => [
     'node', '"$_P/scripts/bun-runner.js"', '"$_P/scripts/worker-service.cjs"', ...tail,
   ];
-  const claudeHook = (tail, extra = {}) => buildShellCommand({
-    host: 'claude-code', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
-    trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found', ...extra,
+  const claudeHook = (tail, extra = {}) => buildClaudeNodeHook({
+      requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
+      scriptPathArg: 'worker-service.cjs', scriptArgs: tail,
+      notFoundMessage: 'claude-mem: plugin scripts not found', ...extra,
+  });
+  const claudeSetupHook = () => buildClaudeNodeHook({
+      requireFile: 'version-check.js', scriptArgs: [],
+      notFoundMessage: 'claude-mem: version-check.js not found',
   });
   const codexHook = (tail) => buildShellCommand({
     host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
@@ -94,11 +99,7 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
     'plugin/hooks/hooks.json': {
       kind: 'hooks',
       commands: {
-        'Setup.0.0': buildShellCommand({
-          host: 'claude-code-setup', requireFile: 'version-check.js',
-          trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
-          notFoundMessage: 'claude-mem: version-check.js not found',
-        }),
+        'Setup.0.0': claudeSetupHook(),
         // `start` already emits its own single, valid status JSON via
         // buildStatusOutput ({"continue":true,"status":"ready","suppressOutput":true}).
         // Appending a trailingJson echo would print a SECOND JSON object on
@@ -161,9 +162,9 @@ async function verifyShellTemplateCanonical() {
   });
   const moduleSource = bundled.outputFiles[0].text;
   const dataUrl = 'data:text/javascript;base64,' + Buffer.from(moduleSource).toString('base64');
-  const { buildShellCommand, buildCodexWindowsCommand } = await import(dataUrl);
+  const { buildShellCommand, buildCodexWindowsCommand, buildClaudeNodeHook } = await import(dataUrl);
 
-  const manifest = shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand);
+  const manifest = shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand, buildClaudeNodeHook);
 
   // The regeneration mode the mismatch errors point at: after an intentional
   // generator change, rewrite the committed launcher strings from the same
@@ -200,7 +201,30 @@ async function verifyShellTemplateCanonical() {
           entry.command = expectedCommand;
           dirty = true;
         }
-        if (typeof expected !== 'string') {
+        if (typeof expected !== 'string' && expected.args) {
+          const actualArgs = entry?.args ?? null;
+          if (JSON.stringify(actualArgs) !== JSON.stringify(expected.args)) {
+            if (!writeMode || !entry) {
+              throw new Error(
+                `Hand-edited args detected in ${filePath} (${dottedPath}). It no longer matches src/build/hook-shell-template.ts. ` +
+                `Regenerate via \`node scripts/build-hooks.js --write-shell-templates\` after an intentional generator change.`
+              );
+            }
+            entry.args = expected.args;
+            dirty = true;
+          }
+          if (Object.prototype.hasOwnProperty.call(entry ?? {}, 'shell')) {
+            if (!writeMode || !entry) {
+              throw new Error(
+                `Stale shell field detected in ${filePath} (${dottedPath}). ` +
+                `Regenerate via \`node scripts/build-hooks.js --write-shell-templates\` after an intentional generator change.`
+              );
+            }
+            delete entry.shell;
+            dirty = true;
+          }
+        }
+        if (typeof expected !== 'string' && expected.commandWindows !== undefined) {
           const actualWindows = entry?.commandWindows ?? null;
           if (actualWindows !== expected.commandWindows) {
             if (!writeMode || !entry) {
