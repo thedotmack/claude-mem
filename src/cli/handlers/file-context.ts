@@ -10,7 +10,7 @@ import { statSync } from 'fs';
 import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { getProjectContext } from '../../utils/project-name.js';
-import { wasFileContextInjected, recordFileContextInjection } from './file-context-dedupe.js';
+import { claimFileContextInjection } from './file-context-dedupe.js';
 
 const FILE_READ_GATE_MIN_BYTES = 1_500;
 
@@ -269,12 +269,17 @@ async function buildFileContextTimeline(input: NormalizedHookInput, filePath: st
     return null;
   }
 
+  // Never empty: the `observations.length === 0` guard above already returned,
+  // and deduplicateObservations only ever drops same-session duplicates and
+  // truncates to DISPLAY_LIMIT, so at least one row always survives.
+  const dedupedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT);
+
   // #3480 — skip re-injecting the same still-valid timeline for a file already
-  // surfaced this session. Re-injects only when a newer observation has landed.
-  // ponytail: read-before-write, so two concurrent Reads of the same file in one
-  // session can still double-inject — acceptable; the common repeated-Read case
-  // (sequential) is deduped. Tighten with a lock only if that ever matters.
-  if (wasFileContextInjected(input.sessionId, absolutePath, newestObservationMs)) {
+  // surfaced this session; re-inject only once a newer observation has landed.
+  // Claimed last, after every other reason to bail out, so a suppressed
+  // injection never burns the claim — and claiming IS recording, so two
+  // concurrent Reads of this file cannot both inject.
+  if (!claimFileContextInjection(input.sessionId, absolutePath, newestObservationMs)) {
     logger.debug('HOOK', 'File context already surfaced this session, skipping re-injection', {
       filePath: relativePath,
       sessionId: input.sessionId,
@@ -283,12 +288,5 @@ async function buildFileContextTimeline(input: NormalizedHookInput, filePath: st
     return null;
   }
 
-  const dedupedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT);
-  if (dedupedObservations.length === 0) {
-    return null;
-  }
-
-  const timeline = formatFileTimeline(dedupedObservations, filePath);
-  recordFileContextInjection(input.sessionId, absolutePath, newestObservationMs);
-  return timeline;
+  return formatFileTimeline(dedupedObservations, filePath);
 }

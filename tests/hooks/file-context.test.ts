@@ -1,8 +1,10 @@
 
 import { describe, it, expect, beforeEach, afterEach, afterAll, spyOn, mock } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { mkdirSync, mkdtempSync, writeFileSync, utimesSync, rmSync } from 'fs';
 import { tmpdir, homedir } from 'os';
 import { join } from 'path';
+import { resolveDbPath } from '../../src/shared/paths.js';
 
 // Capture the REAL modules BEFORE mocking so afterAll can restore them.
 // bun's `mock.module` is process-global and sticky; `mock.restore()` does NOT
@@ -54,6 +56,7 @@ mock.module('../../src/utils/project-filter.js', () => ({
 }));
 
 import { fileContextHandler } from '../../src/cli/handlers/file-context.js';
+import { claimFileContextInjection } from '../../src/cli/handlers/file-context-dedupe.js';
 import { logger } from '../../src/utils/logger.js';
 
 const PADDING = 'x'.repeat(2_000); 
@@ -88,9 +91,9 @@ beforeEach(() => {
   testFile = join(tmpDir, 'test.md');
   writeFileSync(testFile, PADDING);
 
-  // #3480 — the per-(session,file) dedupe store persists under DATA_DIR. Point
-  // it at a fresh per-test dir so each test starts with an empty store and the
-  // real ~/.claude-mem is never touched.
+  // #3480 — the per-(session,file) injection gate persists in the SQLite DB
+  // under DATA_DIR. Point it at a fresh per-test dir so each test starts with an
+  // empty gate table and the real ~/.claude-mem is never touched.
   prevDataDir = process.env.CLAUDE_MEM_DATA_DIR;
   process.env.CLAUDE_MEM_DATA_DIR = join(tmpDir, 'data');
 
@@ -364,6 +367,118 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
     });
     expect(second.continue).toBe(true);
     expect(second.hookSpecificOutput).toBeUndefined();
+  });
+
+  it('persists the injection gate as a SQLite row, not a JSON side-store (#3608 step 4)', async () => {
+    const future = Date.now() + 60_000;
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(makeObservationsResponse([{ id: 1, created_at_epoch: future }]))
+    );
+
+    const injected = await fileContextHandler.execute({
+      sessionId: 'sess-sqlite-gate',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+    expect(injected.hookSpecificOutput?.additionalContext).toContain('prior observations');
+
+    // The gate is a row in the main database keyed by (session, file) and
+    // carrying the observation epoch it was served at — see plan-20 #3608.
+    const db = new Database(resolveDbPath(), { readonly: true });
+    try {
+      const row = db.query(`
+        SELECT file_path, observation_epoch
+        FROM file_context_injections
+        WHERE session_id = ?
+      `).get('sess-sqlite-gate') as { file_path: string; observation_epoch: number } | null;
+
+      expect(row).not.toBeNull();
+      expect(row!.file_path).toBe(testFile);
+      expect(row!.observation_epoch).toBe(future);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('grants the injection claim to exactly one caller for the same (session, file, epoch) (#3608 step 4)', () => {
+    // Claiming IS recording: a check-then-write gate would hand both callers a
+    // green light and inject the same block twice.
+    const epoch = Date.now() + 60_000;
+    const claims = [
+      claimFileContextInjection('sess-claim', testFile, epoch),
+      claimFileContextInjection('sess-claim', testFile, epoch),
+    ];
+    expect(claims.filter(Boolean)).toHaveLength(1);
+  });
+
+  it('never rolls the stored epoch back to an older observation (#3608 step 4)', async () => {
+    const newer = Date.now() + 120_000;
+    const older = Date.now() + 60_000;
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(makeObservationsResponse([{ id: 2, created_at_epoch: newer }]))
+    );
+    await fileContextHandler.execute({
+      sessionId: 'sess-monotonic',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+
+    // A hook that finishes late carrying an OLDER epoch must neither inject nor
+    // downgrade the row — otherwise the next Read re-injects a stale timeline.
+    fetchSpy.mockRestore();
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(makeObservationsResponse([{ id: 1, created_at_epoch: older }]))
+    );
+    const late = await fileContextHandler.execute({
+      sessionId: 'sess-monotonic',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+    expect(late.hookSpecificOutput).toBeUndefined();
+
+    const db = new Database(resolveDbPath(), { readonly: true });
+    try {
+      const row = db.query(`
+        SELECT observation_epoch FROM file_context_injections WHERE session_id = ?
+      `).get('sess-monotonic') as { observation_epoch: number } | null;
+      expect(row!.observation_epoch).toBe(newer);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('fails open when the gate database cannot be opened (#3608 step 4)', async () => {
+    const future = Date.now() + 60_000;
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(makeObservationsResponse([{ id: 1, created_at_epoch: future }]))
+    );
+
+    // Data dir nested under a regular FILE: every mkdir/open against it fails
+    // with ENOTDIR, so the gate is unusable. A broken gate must never break a
+    // Read — it degrades to "always inject", never to an error or a swallowed
+    // injection.
+    const blocker = join(tmpDir, 'not-a-directory');
+    writeFileSync(blocker, '');
+    process.env.CLAUDE_MEM_DATA_DIR = join(blocker, 'data');
+
+    const first = await fileContextHandler.execute({
+      sessionId: 'sess-broken-gate',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+    const second = await fileContextHandler.execute({
+      sessionId: 'sess-broken-gate',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+
+    expect(first.hookSpecificOutput?.additionalContext).toContain('prior observations');
+    expect(second.hookSpecificOutput?.additionalContext).toContain('prior observations');
   });
 
   it('re-injects when a NEW observation is recorded since the last injection (#3480)', async () => {
