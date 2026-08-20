@@ -95,6 +95,39 @@ interface StoredUserPrompt {
   platform_source: string;
 }
 
+function parseStringListField(
+  rawValue: string | null | undefined,
+  fieldName: 'facts' | 'concepts',
+  rowId: number,
+): string[] {
+  if (!rawValue) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue);
+    if (!Array.isArray(parsed)) {
+      logger.warn('CHROMA_SYNC', 'Expected JSON array in observation list field, using plain string fallback', {
+        fieldName,
+        rowId,
+        parsedType: typeof parsed,
+      });
+      if (typeof parsed === 'string') {
+        return parsed.trim() ? [parsed] : [];
+      }
+      return rawValue.trim() ? [rawValue] : [];
+    }
+    return parsed.filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  } catch (error) {
+    logger.warn('CHROMA_SYNC', 'Malformed observation list field, using plain string fallback', {
+      fieldName,
+      rowId,
+      errorName: error instanceof Error ? error.name : 'NonError',
+    });
+    return rawValue.trim() ? [rawValue] : [];
+  }
+}
+
 export class ChromaSync {
   private project: string;
   private collectionName: string;
@@ -153,8 +186,8 @@ export class ChromaSync {
   private formatObservationDocs(obs: StoredObservation): ChromaDocument[] {
     const documents: ChromaDocument[] = [];
 
-    const facts = obs.facts ? JSON.parse(obs.facts) : [];
-    const concepts = obs.concepts ? JSON.parse(obs.concepts) : [];
+    const facts = parseStringListField(obs.facts, 'facts', obs.id);
+    const concepts = parseStringListField(obs.concepts, 'concepts', obs.id);
     // parseFileList is SQLite-shaped (`bun:sqlite` in the import chain) —
     // resolve it through the deferred loader so this method stays out of
     // the SDK bundle's import graph. Plan §3.
