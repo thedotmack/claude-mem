@@ -8,6 +8,7 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
+import { isClassified } from './provider-errors.js';
 import {
   processAgentResponse,
   snapshotResponseContext,
@@ -110,7 +111,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       const initResponse = await this.query(session.conversationHistory, config);
       await this.handleInitResponse(initResponse, session, worker, model, initContext);
     } catch (error: unknown) {
-      if (error instanceof Error) {
+      // Classified errors are logged once, at SessionRoutes' `Observer failed`
+      // line; here they're debug-level so one failure isn't five error lines.
+      if (isClassified(error)) {
+        logger.debug('SDK', `${this.providerName} init query failed`, { sessionId: session.sessionDbId, model, kind: error.kind }, error);
+      } else if (error instanceof Error) {
         logger.error('SDK', `${this.providerName} init query failed`, { sessionId: session.sessionDbId, model }, error);
       } else {
         logger.error('SDK', `${this.providerName} init query failed with non-Error`, { sessionId: session.sessionDbId, model }, new Error(String(error)));
@@ -121,7 +126,9 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     try {
       await this.runMessageLoop(session, worker, config, mode);
     } catch (error: unknown) {
-      if (error instanceof Error) {
+      if (isClassified(error)) {
+        logger.debug('SDK', `${this.providerName} message loop failed`, { sessionId: session.sessionDbId, model, kind: error.kind }, error);
+      } else if (error instanceof Error) {
         logger.error('SDK', `${this.providerName} message loop failed`, { sessionId: session.sessionDbId, model }, error);
       } else {
         logger.error('SDK', `${this.providerName} message loop failed with non-Error`, { sessionId: session.sessionDbId, model }, new Error(String(error)));
@@ -302,7 +309,12 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       throw error;
     }
 
-    logger.failure('SDK', `${this.providerName} agent error`, { sessionDbId: session.sessionDbId }, error instanceof Error ? error : new Error(String(error)));
+    if (isClassified(error)) {
+      // Logged once at SessionRoutes' `Observer failed` line.
+      logger.debug('SDK', `${this.providerName} agent error`, { sessionDbId: session.sessionDbId, kind: error.kind }, error);
+    } else {
+      logger.failure('SDK', `${this.providerName} agent error`, { sessionDbId: session.sessionDbId }, error instanceof Error ? error : new Error(String(error)));
+    }
     throw error;
   }
 

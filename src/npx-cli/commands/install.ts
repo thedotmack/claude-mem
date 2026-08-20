@@ -45,6 +45,7 @@ import {
   costPer1kObservations,
   fetchBlendedRates,
 } from '../cmem-pro-costs.js';
+import { PRO_TRIAL_PITCH, proTrialUrl } from '../../shared/pro-promo.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
@@ -2341,6 +2342,15 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `Memory injection starts on your second session in a project.`,
     `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine.`,
     ``,
+    // Suppressed when the trial was just activated in this same run — pitching
+    // an offer the user already accepted 30 seconds ago reads as broken.
+    ...(trialActivated
+      ? []
+      : [
+          `${styleText(['bold', 'cyan'], PRO_TRIAL_PITCH)}`,
+          `  ${styleText('underline', proTrialUrl('installer'))}`,
+          ``,
+        ]),
     `${styleText('dim', 'How it works: /how-it-works   ·   Disable first-session hint: CLAUDE_MEM_WELCOME_HINT_ENABLED=false')}`,
     `${styleText('dim', 'Note: close all Claude Code sessions before uninstalling, or ~/.claude-mem will be recreated by active hooks.')}`,
   ];

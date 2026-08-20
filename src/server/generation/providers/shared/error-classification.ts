@@ -83,7 +83,13 @@ export function classifyHttpProviderError(input: ClassifyHttpInput): ServerClass
     lower.includes('quota exceeded') ||
     lower.includes('insufficient credits') ||
     lower.includes('insufficient_quota') ||
-    lower.includes('resource_exhausted')
+    lower.includes('resource_exhausted') ||
+    lower.includes('key limit exceeded') ||
+    // "Rate limit exceeded" on a 429 is a rate limit, not quota — the generic
+    // marker only applies off the 429 path (the key-limit marker always wins).
+    (lower.includes('limit exceeded') && status !== 429) ||
+    lower.includes('negative credit') ||
+    status === 402
   ) {
     return new ServerClassifiedProviderError(
       `${providerLabel} quota exhausted${status !== undefined ? ` (status ${status})` : ''}`,

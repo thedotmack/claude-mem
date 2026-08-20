@@ -26,6 +26,11 @@ import { shouldShowSummary, renderSummaryFields } from './sections/SummaryRender
 import { renderPreviouslySection, renderFooter } from './sections/FooterRenderer.js';
 import { renderAgentEmptyState } from './formatters/AgentFormatter.js';
 import { renderHumanEmptyState } from './formatters/HumanFormatter.js';
+import {
+  readObserverHealth,
+  isObserverUnhealthy,
+  renderObserverHealthWarning,
+} from '../../shared/observer-health.js';
 
 const VERSION_MARKER_PATH = path.join(
   homedir(),
@@ -168,6 +173,21 @@ function buildInjectStats(
   };
 }
 
+/**
+ * Prepend the observer-health outage warning when the observer is failing.
+ * Applied to EVERY context path (including empty-state, missing-DB, and the
+ * no-memories-yet welcome hint in SearchRoutes) so the outage is surfaced even
+ * when there is nothing else to render.
+ */
+export function withObserverHealthWarning(text: string): string {
+  const health = readObserverHealth();
+  if (!isObserverUnhealthy(health)) {
+    return text;
+  }
+  const warning = renderObserverHealthWarning(health);
+  return text ? `${warning}\n\n${text}` : warning;
+}
+
 export async function generateContextWithStats(
   input?: ContextInput,
   forHuman: boolean = false
@@ -186,7 +206,7 @@ export async function generateContextWithStats(
 
   const rawDb = initializeDatabase();
   if (!rawDb) {
-    return { text: '', stats: null };
+    return { text: withObserverHealthWarning(''), stats: null };
   }
 
   try {
@@ -199,7 +219,7 @@ export async function generateContextWithStats(
     const summaries = querySummariesMulti(db, queryProjects, config, platformSource);
 
     if (observations.length === 0 && summaries.length === 0) {
-      return { text: renderEmptyState(project, forHuman), stats: null };
+      return { text: withObserverHealthWarning(renderEmptyState(project, forHuman)), stats: null };
     }
 
     const output = buildContextOutput(
@@ -212,7 +232,10 @@ export async function generateContextWithStats(
       forHuman
     );
 
-    return { text: output, stats: buildInjectStats(observations, summaries, Boolean(input?.full)) };
+    return {
+      text: withObserverHealthWarning(output),
+      stats: buildInjectStats(observations, summaries, Boolean(input?.full)),
+    };
   } finally {
     rawDb.close();
   }
