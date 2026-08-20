@@ -62,7 +62,7 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
   const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
   const monthlySpendLimit =
     /\bmonthly\s+(?:spend|usage)\s+limit\b/.test(text) &&
-    /\b(?:hit|reached|exceeded|exhausted|raise|reset|resets)\b/.test(text);
+    /\b(?:hit|reached|exceeded|exhausted)\b/.test(text);
 
   return (
     /\bcc_cli_limit_message\b/.test(text) ||

@@ -76,11 +76,15 @@ describe('isQuotaLimitedObserverOutput', () => {
   });
 
   it('does not treat neutral monthly spend-limit prose as exhaustion', () => {
-    expect(
-      isQuotaLimitedObserverOutput(
-        'The monthly spend limit setting is available in your account settings.',
-      ),
-    ).toBe(false);
+    const neutralMessages = [
+      'The monthly spend limit setting is available in your account settings.',
+      'You can raise your monthly spend limit in Settings.',
+      'Your monthly usage limit resets on the first of each month.',
+    ];
+
+    for (const message of neutralMessages) {
+      expect(isQuotaLimitedObserverOutput(message)).toBe(false);
+    }
   });
 
   it('does not treat context-window prose as quota prose', () => {
