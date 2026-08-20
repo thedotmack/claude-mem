@@ -158,3 +158,117 @@ describe('VectorIndex', () => {
     expect(index.countIndexed('observation')).toBe(before - 1);
   });
 });
+
+/**
+ * A parent row and its vector documents are a set: the backfill's NOT EXISTS
+ * predicate is satisfied by the FIRST vector row for a parent, so a parent
+ * left half-written is never revisited. These fixtures build their own
+ * database because they deliberately provoke write failures.
+ */
+function freshDb(options: { withPrompts?: boolean } = {}): Database {
+  const db = new Database(':memory:');
+  db.run('PRAGMA foreign_keys = ON');
+  db.run(`CREATE TABLE sdk_sessions (id INTEGER PRIMARY KEY, content_session_id TEXT,
+          memory_session_id TEXT, project TEXT, platform_source TEXT)`);
+  db.run(`CREATE TABLE observations (id INTEGER PRIMARY KEY, memory_session_id TEXT,
+          project TEXT, merged_into_project TEXT, text TEXT, narrative TEXT, facts TEXT,
+          created_at_epoch INTEGER)`);
+  db.run(`CREATE TABLE session_summaries (id INTEGER PRIMARY KEY, memory_session_id TEXT,
+          project TEXT, merged_into_project TEXT, created_at_epoch INTEGER)`);
+  if (options.withPrompts !== false) {
+    db.run(`CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, content_session_id TEXT,
+            prompt_text TEXT, created_at_epoch INTEGER)`);
+  }
+  db.prepare('INSERT INTO sdk_sessions VALUES (?,?,?,?,?)').run(1, 'cs-a', 'ms-a', 'alpha', 'claude');
+  const obs = db.prepare(`INSERT INTO observations
+    (id, memory_session_id, project, merged_into_project, text, narrative, facts, created_at_epoch)
+    VALUES (?,?,?,?,?,?,?,?)`);
+  obs.run(1, 'ms-a', 'alpha', null, null, 'n1', null, Date.now());
+  obs.run(2, 'ms-a', 'alpha', null, null, 'n2', null, Date.now());
+  return db;
+}
+
+function docsFor(db: Database, sqliteId: number): number {
+  const row = db.prepare(
+    'SELECT COUNT(*) AS n FROM vec_observation_docs WHERE sqlite_id = ?',
+  ).get(sqliteId) as { n: number };
+  return row.n;
+}
+
+describe('VectorIndex per-parent write atomicity', () => {
+  it('leaves a parent with zero documents when one of its documents fails', async () => {
+    const db = freshDb();
+    const index = new VectorIndex(db, new FakeEmbedder());
+
+    const attempt = index.upsert('observation', [
+      { docId: 'obs_1_n', sqliteId: 1, fieldType: 'narrative', factIndex: null, text: 'one' },
+      { docId: 'obs_2_n', sqliteId: 2, fieldType: 'narrative', factIndex: null, text: 'two' },
+      // NOT NULL on field_type: this row cannot be inserted, so parent 2 must
+      // end up with NO documents rather than a half-written set that the
+      // backfill would then treat as already indexed.
+      { docId: 'obs_2_f0', sqliteId: 2, fieldType: null as unknown as string, factIndex: 0, text: 'three' },
+    ]);
+
+    await expect(attempt).rejects.toThrow();
+    expect(docsFor(db, 2)).toBe(0);
+    // Parents written before the failure keep their documents.
+    expect(docsFor(db, 1)).toBe(1);
+    db.close();
+  });
+
+  it('skips a vanished parent without aborting the rest of the batch', async () => {
+    const db = freshDb();
+    const index = new VectorIndex(db, new FakeEmbedder());
+
+    // sqlite_id 404 was deleted between the backfill SELECT and this INSERT.
+    const written = await index.upsert('observation', [
+      { docId: 'obs_404_n', sqliteId: 404, fieldType: 'narrative', factIndex: null, text: 'gone' },
+      { docId: 'obs_1_n', sqliteId: 1, fieldType: 'narrative', factIndex: null, text: 'one' },
+      { docId: 'obs_1_f0', sqliteId: 1, fieldType: 'fact', factIndex: 0, text: 'one fact' },
+    ]);
+
+    expect(written).toBe(2);
+    expect(docsFor(db, 1)).toBe(2);
+    expect(docsFor(db, 404)).toBe(0);
+    db.close();
+  });
+});
+
+describe('VectorIndex read-side resilience', () => {
+  it('skips malformed embedding blobs instead of failing the whole scope', async () => {
+    const db = freshDb();
+    const index = new VectorIndex(db, new FakeEmbedder());
+    await index.upsert('observation', [
+      { docId: 'obs_1_n', sqliteId: 1, fieldType: 'narrative', factIndex: null, text: 'stale cache read' },
+      { docId: 'obs_2_n', sqliteId: 2, fieldType: 'narrative', factIndex: null, text: 'stale cache read' },
+    ]);
+    const corrupt = db.prepare('UPDATE vec_observation_docs SET embedding = ? WHERE doc_id = ?');
+    // Right float alignment, wrong dimensionality: dot() would walk off the
+    // end and score NaN, which sorts unpredictably against every real hit.
+    corrupt.run(new Uint8Array(8), 'obs_2_n');
+
+    const hits = await index.query({ text: 'stale cache read', kinds: ['observation'], limit: 5 });
+    expect(hits.map((h) => h.docId)).toEqual(['obs_1_n']);
+    expect(hits.every((h) => Number.isFinite(h.score))).toBe(true);
+
+    // Not even a whole number of float32s: decoding throws outright.
+    corrupt.run(new Uint8Array(7), 'obs_2_n');
+    const again = await index.query({ text: 'stale cache read', kinds: ['observation'], limit: 5 });
+    expect(again.map((h) => h.docId)).toEqual(['obs_1_n']);
+    db.close();
+  });
+
+  it('skips a kind whose parent table does not exist', async () => {
+    const db = freshDb({ withPrompts: false });
+    const index = new VectorIndex(db, new FakeEmbedder());
+    await index.upsert('observation', [
+      { docId: 'obs_1_n', sqliteId: 1, fieldType: 'narrative', factIndex: null, text: 'two writers race' },
+    ]);
+
+    const hits = await index.query({
+      text: 'two writers race', kinds: ['observation', 'prompt'], limit: 5,
+    });
+    expect(hits.map((h) => h.docId)).toEqual(['obs_1_n']);
+    db.close();
+  });
+});

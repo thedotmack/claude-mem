@@ -2,6 +2,11 @@ import type { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
 import type { Embedder, VectorDoc, VectorDocKind, VectorHit, VectorQuery } from './types.js';
 import { VECTOR_TABLES, decodeEmbedding, encodeEmbedding, ensureVectorSchema, hasColumn } from './schema.js';
+import { logger } from '../../utils/logger.js';
+
+const BYTES_PER_FLOAT32 = 4;
+
+const PARENT_SAVEPOINT = 'vector_index_parent';
 
 interface CandidateRow {
   doc_id: string;
@@ -79,20 +84,50 @@ export class VectorIndex {
         embedding = excluded.embedding
     `);
 
+    const byParent = new Map<number, Array<{ doc: VectorDoc; vector: Float32Array }>>();
     for (let i = 0; i < stale.length; i++) {
       const doc = stale[i];
-      write.run(
-        doc.docId,
-        doc.sqliteId,
-        doc.fieldType,
-        doc.factIndex,
-        hashes.get(doc.docId)!,
-        this.embedder.modelId,
-        this.embedder.dims,
-        encodeEmbedding(vectors[i]),
-      );
+      const bucket = byParent.get(doc.sqliteId);
+      if (bucket) bucket.push({ doc, vector: vectors[i] });
+      else byParent.set(doc.sqliteId, [{ doc, vector: vectors[i] }]);
     }
-    return stale.length;
+
+    let written = 0;
+    for (const [sqliteId, entries] of byParent) {
+      const committed = this.writeParent(kind, sqliteId, () => {
+        for (const { doc, vector } of entries) {
+          write.run(
+            doc.docId,
+            doc.sqliteId,
+            doc.fieldType,
+            doc.factIndex,
+            hashes.get(doc.docId)!,
+            this.embedder.modelId,
+            this.embedder.dims,
+            encodeEmbedding(vector),
+          );
+        }
+      });
+      if (committed) written += entries.length;
+    }
+    return written;
+  }
+
+  private writeParent(kind: VectorDocKind, sqliteId: number, run: () => void): boolean {
+    this.db.run(`SAVEPOINT ${PARENT_SAVEPOINT}`);
+    try {
+      run();
+    } catch (error) {
+      this.db.run(`ROLLBACK TO ${PARENT_SAVEPOINT}`);
+      this.db.run(`RELEASE ${PARENT_SAVEPOINT}`);
+      if (isMissingParent(error)) {
+        logger.warn('VECTOR_INDEX', 'Skipped vanished parent row', { kind, sqliteId });
+        return false;
+      }
+      throw error;
+    }
+    this.db.run(`RELEASE ${PARENT_SAVEPOINT}`);
+    return true;
   }
 
   /**
@@ -108,6 +143,7 @@ export class VectorIndex {
 
     for (const kind of q.kinds) {
       const spec = VECTOR_TABLES[kind];
+      if (!this.tableExists(spec.parent)) continue;
       const where: string[] = [];
       const params: (string | number)[] = [];
 
@@ -147,7 +183,18 @@ export class VectorIndex {
         WHERE ${where.join(' AND ')}
       `).all(...params) as CandidateRow[];
 
+      const expectedBytes = probe.length * BYTES_PER_FLOAT32;
+      let skipped = 0;
       for (const row of rows) {
+        if (!row.embedding || row.embedding.byteLength !== expectedBytes) {
+          skipped++;
+          continue;
+        }
+        const score = dot(probe, decodeEmbedding(row.embedding));
+        if (!Number.isFinite(score)) {
+          skipped++;
+          continue;
+        }
         hits.push({
           kind,
           docId: row.doc_id,
@@ -155,7 +202,12 @@ export class VectorIndex {
           fieldType: row.field_type,
           factIndex: row.fact_index,
           createdAtEpoch: row.created_at_epoch,
-          score: dot(probe, decodeEmbedding(row.embedding)),
+          score,
+        });
+      }
+      if (skipped > 0) {
+        logger.warn('VECTOR_INDEX', 'Skipped malformed embeddings', {
+          kind, skipped, expectedBytes,
         });
       }
     }
@@ -170,6 +222,13 @@ export class VectorIndex {
     this.db.prepare(`DELETE FROM ${table} WHERE sqlite_id = ?`).run(sqliteId);
   }
 
+  private tableExists(table: string): boolean {
+    const row = this.db.prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+    ).get(table) as { name: string } | undefined;
+    return Boolean(row);
+  }
+
   countIndexed(kind: VectorDocKind): number {
     const { table } = VECTOR_TABLES[kind];
     const row = this.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
@@ -181,6 +240,12 @@ export class VectorIndex {
  * Cosine similarity. Embeddings are unit-length by contract (Embedder
  * normalizes), so the dot product IS the cosine and the norms drop out.
  */
+function isMissingParent(error: unknown): boolean {
+  const code = (error as { code?: string } | null)?.code;
+  if (code) return code === 'SQLITE_CONSTRAINT_FOREIGNKEY';
+  return error instanceof Error && /FOREIGN KEY constraint failed/i.test(error.message);
+}
+
 function dot(a: Float32Array, b: Float32Array): number {
   let sum = 0;
   for (let i = 0; i < a.length; i++) sum += a[i] * b[i];
