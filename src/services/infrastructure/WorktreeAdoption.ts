@@ -4,7 +4,6 @@ import { existsSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
-import { ChromaSync, MergedIntoProjectTarget } from '../sync/ChromaSync.js';
 import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
 import { paths } from '../../shared/paths.js';
 import { openConfiguredSqliteDatabase } from '../sqlite/connection.js';
@@ -190,7 +189,6 @@ export async function adoptMergedWorktrees(opts: {
     return result;
   }
 
-  const adoptedChromaTargets: MergedIntoProjectTarget[] = [];
 
   let db: import('bun:sqlite').Database | null = null;
   try {
@@ -265,10 +263,8 @@ export async function adoptMergedWorktrees(opts: {
         sumChanges = updateSum.run(parentProject, worktreeProject).changes;
       }
       for (const r of rows) {
-        adoptedChromaTargets.push({ docType: 'observation', sqliteId: r.id });
       }
       for (const r of summaryRows) {
-        adoptedChromaTargets.push({ docType: 'session_summary', sqliteId: r.id });
       }
       result.adoptedObservations += obsChanges;
       result.adoptedSummaries += sumChanges;
@@ -310,29 +306,10 @@ export async function adoptMergedWorktrees(opts: {
     db?.close();
   }
 
-  if (!dryRun && adoptedChromaTargets.length > 0) {
-    const chromaSync = new ChromaSync('claude-mem');
-    try {
-      await chromaSync.updateMergedIntoProject(adoptedChromaTargets, parentProject);
-      result.chromaUpdates = adoptedChromaTargets.length;
-    } catch (err) {
-      if (err instanceof Error) {
-        logger.error(
-          'SYSTEM',
-          'Worktree adoption Chroma patch failed (SQL already committed)',
-          { parentProject, sqliteIdCount: adoptedChromaTargets.length },
-          err
-        );
-      } else {
-        logger.error(
-          'SYSTEM',
-          'Worktree adoption Chroma patch failed (SQL already committed)',
-          { parentProject, sqliteIdCount: adoptedChromaTargets.length, error: String(err) }
-        );
-      }
-      result.chromaFailed = adoptedChromaTargets.length;
-    }
-  }
+  // The Chroma patch that used to live here is gone. merged_into_project is
+  // read from the base row by JOIN at query time, so adoption no longer has a
+  // duplicated copy to reconcile — and the window where SQL was committed but
+  // the index patch failed no longer exists.
 
   if (
     result.adoptedObservations > 0 ||

@@ -15,8 +15,6 @@ import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { getAuthMethodDescription } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
-import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
-import { ChromaSync } from './sync/ChromaSync.js';
 import { openConfiguredSqliteDatabase } from './sqlite/connection.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
@@ -105,7 +103,6 @@ import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
 import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
-import { ChromaRoutes } from './worker/http/routes/ChromaRoutes.js';
 import { CloudSyncRoutes } from './worker/http/routes/CloudSyncRoutes.js';
 
 import { CorpusStore } from './worker/knowledge/CorpusStore.js';
@@ -221,7 +218,6 @@ export class WorkerService implements WorkerRef {
 
   private searchRoutes: SearchRoutes | null = null;
 
-  private chromaMcpManager: ChromaMcpManager | null = null;
   private transcriptWatcher: TranscriptWatcher | null = null;
   private syncClient: SyncClient | null = null;
   private initializationComplete: Promise<void>;
@@ -314,7 +310,6 @@ export class WorkerService implements WorkerRef {
 
   private registerRoutes(): void {
 
-    this.server.registerRoutes(new ChromaRoutes());
 
     this.server.app.get('/api/context/inject', async (req, res, next) => {
       if (!this.initializationCompleteFlag || !this.searchRoutes) {
@@ -476,13 +471,8 @@ export class WorkerService implements WorkerRef {
       logger.info('WORKER', 'Checking for one-time CWD remap...');
       runOneTimeCwdRemap();
 
-      const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
-      if (chromaEnabled) {
-        this.chromaMcpManager = ChromaMcpManager.getInstance();
-        logger.info('SYSTEM', 'ChromaMcpManager initialized (lazy - connects on first use)');
-      } else {
-        logger.info('SYSTEM', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, skipping ChromaMcpManager');
-      }
+      // No vector subprocess to start. The index lives in claude-mem.db and is
+      // constructed by DatabaseManager, which also drives the one-time backfill.
 
       logger.info('WORKER', 'Initializing database manager...');
       await this.dbManager.initialize();
@@ -643,14 +633,6 @@ export class WorkerService implements WorkerRef {
       });
 
       await this.startTranscriptWatcher(settings);
-
-      if (this.chromaMcpManager) {
-        ChromaSync.backfillAllProjects(this.dbManager.getSessionStore()).then(() => {
-          logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
-        }).catch(error => {
-          logger.error('CHROMA_SYNC', 'Backfill failed (non-blocking)', {}, error as Error);
-        });
-      }
 
       // Cloud sync startup drain (non-blocking). The database is the queue:
       // eligible post-launch writes remain `synced_at IS NULL`, so this one
@@ -819,8 +801,7 @@ export class WorkerService implements WorkerRef {
         server: this.server.getHttpServer(),
         sessionManager: this.sessionManager,
         mcpClient: this.mcpClient,
-        dbManager: this.dbManager,
-        chromaMcpManager: this.chromaMcpManager || undefined
+        dbManager: this.dbManager
       }),
       gracefulDeadlineMs: getPlatformTimeout(10000),
       restartHandoff: {
