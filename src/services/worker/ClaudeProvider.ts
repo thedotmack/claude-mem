@@ -403,15 +403,16 @@ export class ClaudeProvider {
 
           // An assistant frame with no input count is the SSE-synthesizing
           // gateway signature: message_start carried no usage, so discoveryTokens
-          // collapsed to output only. Queue the stored rows for the result
-          // message to correct once the finalized per-turn usage arrives.
+          // collapsed to output only. Queue only the rows this turn inserted (not
+          // rows deduplicated onto earlier turns) so the result message corrects
+          // this turn's usage without overwriting a historical row.
           const assistantReportedNoInput =
             !usage ||
             ((usage.input_tokens || 0) === 0 &&
               (usage.cache_creation_input_tokens || 0) === 0 &&
               (usage.cache_read_input_tokens || 0) === 0);
           pendingDiscoveryBackfill = stored && assistantReportedNoInput
-            ? { observationIds: stored.observationIds, summaryId: stored.summaryId }
+            ? { observationIds: stored.insertedObservationIds, summaryId: stored.summaryId }
             : null;
         }
 

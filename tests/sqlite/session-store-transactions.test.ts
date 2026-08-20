@@ -129,4 +129,18 @@ describe('SessionStore.storeObservations', () => {
   it('updateDiscoveryTokens is a no-op with no rows to patch', () => {
     expect(() => store.updateDiscoveryTokens([], null, 4096)).not.toThrow();
   });
+
+  it('insertedObservationIds excludes a row deduplicated onto an earlier turn', () => {
+    const mem = session('mem-dedup-insert');
+    const duplicate = obs({ title: 'Same', narrative: 'same' });
+
+    const first = store.storeObservations(mem, 'project', [duplicate], null, 1);
+    expect(first.insertedObservationIds).toEqual(first.observationIds);
+
+    const second = store.storeObservations(mem, 'project', [duplicate], null, 2);
+    // The later turn returns the historical id for sync, but must report it as
+    // NOT newly inserted so a result-usage backfill leaves the original untouched.
+    expect(second.observationIds).toEqual(first.observationIds);
+    expect(second.insertedObservationIds).toEqual([]);
+  });
 });

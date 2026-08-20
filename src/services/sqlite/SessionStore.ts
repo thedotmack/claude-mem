@@ -2614,12 +2614,16 @@ export class SessionStore {
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
     generatedByModel?: string
-  ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
+  ): { observationIds: number[]; insertedObservationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
     const storeTx = this.db.transaction(() => {
       const observationIds: number[] = [];
+      // IDs of rows this turn physically inserted, excluding rows that
+      // deduplicated onto earlier turns. Only these may take a later
+      // result-usage discovery_tokens correction; a historical row keeps its own.
+      const insertedObservationIds: number[] = [];
 
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
@@ -2660,6 +2664,7 @@ export class SessionStore {
 
         if (inserted) {
           observationIds.push(inserted.id);
+          insertedObservationIds.push(inserted.id);
           continue;
         }
 
@@ -2698,7 +2703,7 @@ export class SessionStore {
         summaryId = Number(result.lastInsertRowid);
       }
 
-      return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
+      return { observationIds, insertedObservationIds, summaryId, createdAtEpoch: timestampEpoch };
     });
 
     return storeTx();
