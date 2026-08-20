@@ -395,13 +395,6 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         ...(costUsd !== undefined ? { costUSD: costUsd.toFixed(6) } : {}),
         messagesInContext: history.length
       });
-
-      if (tokensUsed > 50000) {
-        logger.warn('SDK', 'High token usage detected - consider reducing context', {
-          totalTokens: tokensUsed,
-          ...(costUsd !== undefined ? { costUSD: costUsd.toFixed(6) } : {}),
-        });
-      }
     }
 
     return { content, tokensUsed, inputTokens: realInputTokens, outputTokens: realOutputTokens, costUsd, servedModel };
