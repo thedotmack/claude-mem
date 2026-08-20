@@ -1,6 +1,8 @@
-import { describe, it, expect, afterEach } from 'bun:test';
+import { describe, it, expect, afterEach, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { logger } from '../../src/utils/logger.js';
+import { replayV7RebuildOnSummaries } from '../fixtures/session-store-v7-fixture.js';
 import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
 import { SQLITE_BUSY_TIMEOUT_MS, SQLITE_JOURNAL_SIZE_LIMIT_BYTES } from '../../src/services/sqlite/connection.js';
 import { queryObservationsMulti } from '../../src/services/context/ObservationCompiler.js';
@@ -976,6 +978,219 @@ describe('SessionStore migrations', () => {
     } finally {
       db.close();
     }
+  });
+
+  describe('v11 discovery_tokens column repair (#3446)', () => {
+    it('repairs drifted session_summaries.discovery_tokens on next construction so storeSummary succeeds', () => {
+      const db = new Database(':memory:');
+      try {
+        new SessionStore(db);
+        const memId = 'mem-3446-ss';
+        db.prepare(`
+          INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+          VALUES ('content-3446-ss', ?, 'proj-3446', ?, 1751234567000, 'active')
+        `).run(memId, new Date().toISOString());
+
+        // Reproduce issue Step 4: rebuild session_summaries from the 14-col literal
+        replayV7RebuildOnSummaries(db);
+
+        // Confirm damage: row 11 present, discovery_tokens absent (issue Step 4)
+        expect(db.prepare('SELECT version FROM schema_versions WHERE version = 11').get()).not.toBeNull();
+        const damagedCols = (db.query('PRAGMA table_info(session_summaries)').all() as Array<{ name: string }>).map(c => c.name);
+        expect(damagedCols).not.toContain('discovery_tokens');
+        // ux_session_summaries_origin dropped with the table, confirming Step 5 territory
+        const damagedIndexes = (db.query('PRAGMA index_list(session_summaries)').all() as Array<{ name: string }>).map(i => i.name);
+        expect(damagedIndexes).not.toContain('ux_session_summaries_origin');
+
+        // Head: re-run migration chain — must repair discovery_tokens
+        new SessionStore(db);
+
+        const repairedCols = (db.query('PRAGMA table_info(session_summaries)').all() as Array<{ name: string }>).map(c => c.name);
+        expect(repairedCols).toContain('discovery_tokens');
+        // v41 also restored ux_session_summaries_origin (issue Step 5)
+        const repairedIndexes = (db.query('PRAGMA index_list(session_summaries)').all() as Array<{ name: string }>).map(i => i.name);
+        expect(repairedIndexes).toContain('ux_session_summaries_origin');
+
+        // storeSummary must now succeed (it names discovery_tokens in its INSERT)
+        const result = new SessionStore(db).storeSummary(memId, 'proj-3446', {
+          request: 'req', investigated: 'inv', learned: 'learned',
+          completed: 'done', next_steps: 'next', notes: null,
+        });
+        expect(typeof result.id).toBe('number');
+        expect(result.id).toBeGreaterThan(0);
+      } finally {
+        db.close();
+      }
+    });
+
+    it('repairs drifted observations.discovery_tokens on next construction', () => {
+      const db = new Database(':memory:');
+      try {
+        new SessionStore(db);
+
+        // Drop discovery_tokens from observations while leaving row 11 stamped
+        db.run('ALTER TABLE observations DROP COLUMN discovery_tokens');
+        expect(db.prepare('SELECT version FROM schema_versions WHERE version = 11').get()).not.toBeNull();
+        const damagedCols = (db.query('PRAGMA table_info(observations)').all() as Array<{ name: string }>).map(c => c.name);
+        expect(damagedCols).not.toContain('discovery_tokens');
+
+        new SessionStore(db);
+
+        const repairedCols = (db.query('PRAGMA table_info(observations)').all() as Array<{ name: string }>).map(c => c.name);
+        expect(repairedCols).toContain('discovery_tokens');
+      } finally {
+        db.close();
+      }
+    });
+
+    it('healthy post-v11 DB: construction emits no DDL against either table (negative space)', () => {
+      const db = new Database(':memory:');
+      try {
+        new SessionStore(db);
+
+        const ddlSnapshot = () => (db.prepare(`
+          SELECT type, name, tbl_name, sql
+          FROM sqlite_master
+          WHERE tbl_name IN ('observations', 'session_summaries')
+            AND type IN ('table', 'index', 'trigger')
+          ORDER BY type, name
+        `).all() as Array<{ type: string; name: string; tbl_name: string; sql: string }>);
+        const versionSnapshot = () => (db.prepare('SELECT version FROM schema_versions ORDER BY version').all() as Array<{ version: number }>);
+
+        const ddlBefore = ddlSnapshot();
+        const versionsBefore = versionSnapshot();
+
+        new SessionStore(db);
+
+        expect(ddlSnapshot()).toEqual(ddlBefore);
+        expect(versionSnapshot()).toEqual(versionsBefore);
+      } finally {
+        db.close();
+      }
+    });
+
+    it('repair preserves all existing summary rows and observations.discovery_tokens values', () => {
+      const db = new Database(':memory:');
+      try {
+        const store = new SessionStore(db);
+        const memId = 'mem-3446-pres';
+        db.prepare(`
+          INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch, status)
+          VALUES ('content-3446-pres', ?, 'proj-3446-pres', ?, 1751234567000, 'active')
+        `).run(memId, new Date().toISOString());
+
+        store.storeSummary(memId, 'proj-3446-pres', {
+          request: 'preserve-req', investigated: 'inv', learned: 'learned',
+          completed: 'done', next_steps: 'next', notes: 'preserve-note',
+        }, 1, 42);
+
+        // Observation with a non-default discovery_tokens value to preserve
+        db.prepare(`
+          INSERT INTO observations (memory_session_id, project, type, title, created_at, created_at_epoch, discovery_tokens)
+          VALUES (?, 'proj-3446-pres', 'discovery', 'obs-preserve', ?, ?, 99)
+        `).run(memId, new Date().toISOString(), Date.now());
+
+        replayV7RebuildOnSummaries(db);
+
+        new SessionStore(db);
+
+        const summaryCount = (db.prepare('SELECT COUNT(*) AS n FROM session_summaries').get() as { n: number }).n;
+        expect(summaryCount).toBe(1);
+
+        const summary = db.prepare("SELECT notes FROM session_summaries WHERE request = 'preserve-req'").get() as { notes: string } | undefined;
+        expect(summary?.notes).toBe('preserve-note');
+
+        const obs = db.prepare("SELECT discovery_tokens FROM observations WHERE title = 'obs-preserve'").get() as { discovery_tokens: number } | undefined;
+        expect(obs?.discovery_tokens).toBe(99);
+
+        // No index dropped on observations
+        const obsIndexes = (db.query('PRAGMA index_list(observations)').all() as Array<{ name: string }>).map(i => i.name);
+        expect(obsIndexes).toContain('ux_observations_session_hash');
+      } finally {
+        db.close();
+      }
+    });
+
+    it('repair is idempotent: two consecutive constructions over a damaged DB yield one ALTER and identical DDL', () => {
+      const db = new Database(':memory:');
+      try {
+        new SessionStore(db);
+        replayV7RebuildOnSummaries(db);
+
+        new SessionStore(db);
+        const ddlAfterFirst = (db.prepare(`
+          SELECT type, name, tbl_name, sql FROM sqlite_master
+          WHERE tbl_name IN ('observations', 'session_summaries')
+            AND type IN ('table', 'index', 'trigger')
+          ORDER BY type, name
+        `).all() as Array<{ type: string; name: string; tbl_name: string; sql: string }>);
+        const v11CountAfterFirst = (db.prepare('SELECT COUNT(*) AS n FROM schema_versions WHERE version = 11').get() as { n: number }).n;
+        expect((db.query('PRAGMA table_info(session_summaries)').all() as Array<{ name: string }>).map(c => c.name)).toContain('discovery_tokens');
+
+        new SessionStore(db);
+        const ddlAfterSecond = (db.prepare(`
+          SELECT type, name, tbl_name, sql FROM sqlite_master
+          WHERE tbl_name IN ('observations', 'session_summaries')
+            AND type IN ('table', 'index', 'trigger')
+          ORDER BY type, name
+        `).all() as Array<{ type: string; name: string; tbl_name: string; sql: string }>);
+        const v11CountAfterSecond = (db.prepare('SELECT COUNT(*) AS n FROM schema_versions WHERE version = 11').get() as { n: number }).n;
+
+        expect(ddlAfterSecond).toEqual(ddlAfterFirst);
+        expect(v11CountAfterSecond).toBe(v11CountAfterFirst);
+        expect(v11CountAfterFirst).toBe(1);
+      } finally {
+        db.close();
+      }
+    });
+
+    it('logger.warn fires for drift (v11 stamp present, column absent); logger.debug does not', () => {
+      const db = new Database(':memory:');
+      const warnSpy = spyOn(logger, 'warn');
+      const debugSpy = spyOn(logger, 'debug');
+      try {
+        new SessionStore(db);
+        replayV7RebuildOnSummaries(db);
+        warnSpy.mockClear();
+        debugSpy.mockClear();
+
+        new SessionStore(db);
+
+        const warnCalls = warnSpy.mock.calls.filter(c => String(c[1]).includes('#3446'));
+        expect(warnCalls.length).toBeGreaterThan(0);
+        const debugCalls = debugSpy.mock.calls.filter(c => String(c[1]).includes('discovery_tokens'));
+        expect(debugCalls.length).toBe(0);
+      } finally {
+        warnSpy.mockRestore();
+        debugSpy.mockRestore();
+        db.close();
+      }
+    });
+
+    it('logger.debug fires (no warn) on first-time v11 application on legacy pre-v11 DB', () => {
+      const db = new Database(':memory:');
+      const warnSpy = spyOn(logger, 'warn');
+      const debugSpy = spyOn(logger, 'debug');
+      try {
+        new SessionStore(db);
+        db.run('ALTER TABLE observations DROP COLUMN discovery_tokens');
+        db.run('ALTER TABLE session_summaries DROP COLUMN discovery_tokens');
+        db.run('DELETE FROM schema_versions WHERE version = 11');
+        warnSpy.mockClear();
+        debugSpy.mockClear();
+
+        new SessionStore(db);
+
+        const warnCalls = warnSpy.mock.calls.filter(c => String(c[1]).includes('#3446'));
+        expect(warnCalls.length).toBe(0);
+        const debugCalls = debugSpy.mock.calls.filter(c => String(c[1]).includes('discovery_tokens'));
+        expect(debugCalls.length).toBeGreaterThan(0);
+      } finally {
+        warnSpy.mockRestore();
+        debugSpy.mockRestore();
+        db.close();
+      }
+    });
   });
 
   it('v49 requeues corrected native rows for sync and leaves replicas and invalid JSON untouched', () => {
