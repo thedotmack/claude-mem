@@ -497,11 +497,13 @@ async function isWorkerPortAlive(timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): P
   return false;
 }
 
-export async function ensureWorkerRunning(): Promise<boolean> {
-  return ensureWorkerRunningWithinBudget(null);
-}
-
-async function ensureWorkerRunningWithinBudget(deadlineAt: number | null): Promise<boolean> {
+/**
+ * timeoutMs bounds the whole probe/spawn/readiness sequence, so a caller that
+ * is spending a hook deadline cannot be held past it (#3434). Callers outside
+ * a budget omit it and keep the standalone per-step timeouts.
+ */
+export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> {
+  const deadlineAt = timeoutMs === undefined ? null : Date.now() + timeoutMs;
   // Resolve ONCE and use the result for both the staleness check and the
   // (re)spawn script below. Detection and spawn sharing this single oracle
   // is what guarantees a mismatch clears in one recycle instead of
@@ -687,16 +689,9 @@ async function ensureWorkerRunningWithinBudget(deadlineAt: number | null): Promi
 
 let aliveCache: boolean | null = null;
 
-export async function ensureWorkerAliveOnce(): Promise<boolean> {
+export async function ensureWorkerAliveOnce(timeoutMs?: number): Promise<boolean> {
   if (aliveCache !== null) return aliveCache;
-  aliveCache = await ensureWorkerRunning();
-  return aliveCache;
-}
-
-async function ensureWorkerAliveOnceWithinBudget(timeoutMs?: number): Promise<boolean> {
-  if (aliveCache !== null) return aliveCache;
-  const deadlineAt = timeoutMs === undefined ? null : Date.now() + timeoutMs;
-  aliveCache = await ensureWorkerRunningWithinBudget(deadlineAt);
+  aliveCache = await ensureWorkerRunning(timeoutMs);
   return aliveCache;
 }
 
@@ -868,7 +863,7 @@ export async function executeWithWorkerFallback<T = unknown>(
   const startedAt = Date.now();
   const boundedStartup = options.workerStartupTimeoutMs !== undefined;
   const preflightTimeoutMs = options.workerStartupTimeoutMs ?? options.timeoutMs;
-  const alive = await ensureWorkerAliveOnceWithinBudget(preflightTimeoutMs);
+  const alive = await ensureWorkerAliveOnce(preflightTimeoutMs);
   if (!alive) {
     if (!boundedStartup) {
       await recordWorkerUnreachable();
