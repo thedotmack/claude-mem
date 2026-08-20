@@ -56,7 +56,7 @@ class TestCodexProvider extends CodexProvider {
   protected getConfig(): any {
     return {
       apiKey: 'codex-cli-auth',
-      model: 'gpt-5.4-mini',
+      model: 'gpt-5.6-luna',
       codexPath: 'codex',
       reasoningEffort: 'low',
       maxContextMessages: 20,
@@ -73,7 +73,7 @@ class TestCodexProvider extends CodexProvider {
       tokensUsed: 12,
       inputTokens: 10,
       outputTokens: 2,
-      servedModel: 'gpt-5.4-mini',
+      servedModel: 'gpt-5.6-luna',
     };
   }
 }
@@ -101,6 +101,7 @@ function createProviderFlowHarness(
       syncObservation: mock(() => Promise.resolve()),
       syncSummary: mock(() => Promise.resolve()),
     }),
+    getCloudSync: () => ({ notify: mock(() => {}) }),
   } as never;
 
   const sessionManager = {
@@ -108,6 +109,7 @@ function createProviderFlowHarness(
       yield message;
     },
     confirmClaimedMessages,
+    getClaimedMessages: mock(() => [message]),
     resetProcessingToPending: mock(() => Promise.resolve(0)),
   } as never;
 

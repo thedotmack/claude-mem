@@ -267,6 +267,7 @@ export class SettingsDefaultsManager {
         const defaults = this.getAllDefaults();
         try {
           writeJsonFileAtomic(settingsPath, defaults);
+          ensureSettingsFileSecureMode(settingsPath);
           // stderr, never stdout: this fires on the first boot in a fresh data
           // dir, and CLI commands like `start` promise machine-readable JSON
           // on stdout to the hook framework.
