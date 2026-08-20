@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../../src/services/sqlite/SessionSearch.js';
-import { ChromaSync } from '../../../src/services/sync/ChromaSync.js';
 
 // Read-side source-scoping (#2389): /api/search must honor platformSource so a
 // codex (or other-agent) search returns only codex-sourced rows and never
@@ -142,66 +141,10 @@ describe('search platform_source scoping', () => {
     expect(results.sessions[0].request).toBe('codex file summary');
   });
 
-  it('writes platform_source metadata for Chroma prompt docs', () => {
-    const sync = new ChromaSync('scoping-project');
-    const doc = (sync as any).formatUserPromptDoc({
-      id: 123,
-      content_session_id: 'shared-prompt-raw-id',
-      prompt_number: 1,
-      prompt_text: 'overlap prompt from codex',
-      created_at_epoch: Date.now(),
-      memory_session_id: 'codex-mem',
-      project: 'scoping-project',
-      platform_source: 'codex',
-    });
-
-    expect(doc.metadata.platform_source).toBe('codex');
-  });
-
-  it('writes platform_source metadata for Chroma observation docs', () => {
-    const sync = new ChromaSync('scoping-project');
-    const docs = (sync as any).formatObservationDocs({
-      id: 124,
-      memory_session_id: 'codex-mem',
-      project: 'scoping-project',
-      merged_into_project: null,
-      platform_source: 'codex',
-      text: null,
-      type: 'discovery',
-      title: 'Codex observation',
-      subtitle: null,
-      facts: JSON.stringify(['fact']),
-      narrative: 'codex narrative',
-      concepts: JSON.stringify([]),
-      files_read: JSON.stringify([]),
-      files_modified: JSON.stringify([]),
-      prompt_number: 1,
-      created_at_epoch: Date.now(),
-    });
-
-    expect(docs.length).toBeGreaterThan(0);
-    expect(docs.every((doc: any) => doc.metadata.platform_source === 'codex')).toBe(true);
-  });
-
-  it('writes platform_source metadata for Chroma summary docs', () => {
-    const sync = new ChromaSync('scoping-project');
-    const docs = (sync as any).formatSummaryDocs({
-      id: 125,
-      memory_session_id: 'codex-mem',
-      project: 'scoping-project',
-      merged_into_project: null,
-      platform_source: 'codex',
-      request: 'codex summary request',
-      investigated: null,
-      learned: null,
-      completed: null,
-      next_steps: null,
-      notes: null,
-      prompt_number: 1,
-      created_at_epoch: Date.now(),
-    });
-
-    expect(docs.length).toBeGreaterThan(0);
-    expect(docs.every((doc: any) => doc.metadata.platform_source === 'codex')).toBe(true);
-  });
+  // The three "writes platform_source metadata for Chroma * docs" cases that
+  // lived here are gone with the denormalised copy they asserted on.
+  // platform_source is no longer duplicated onto each document; it is read from
+  // sdk_sessions by JOIN at query time. The behaviour they protected — platform
+  // scoping actually filtering — is covered in tests/vector/vector-index.e2e.ts
+  // ("platform_source scopes via sdk_sessions join").
 });
