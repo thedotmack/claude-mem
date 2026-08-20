@@ -431,9 +431,9 @@ async function waitForWorkerReadiness(timeoutMs: number = HOOK_READINESS_TIMEOUT
  * parsed regardless of status — same contract as restart-verify.ts. Returns
  * null when the worker is unreachable or the payload is malformed.
  */
-async function fetchWorkerHealthVersion(): Promise<string | null> {
+async function fetchWorkerHealthVersion(timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<string | null> {
   try {
-    const response = await workerHttpRequest('/api/health', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
+    const response = await workerHttpRequest('/api/health', { timeoutMs });
     const body = await response.json() as { version?: unknown };
     return typeof body.version === 'string' ? body.version : null;
   } catch (error: unknown) {
@@ -469,8 +469,8 @@ async function waitForWorkerPortClosed(timeoutMs = 5000): Promise<boolean> {
  * version, warn and return — the NEXT hook event retries. Recycling again in
  * the same invocation re-creates the restart storm.
  */
-async function warnIfVersionStillMismatched(expectedPluginVersion: string): Promise<void> {
-  const observedVersion = await fetchWorkerHealthVersion();
+async function warnIfVersionStillMismatched(expectedPluginVersion: string, timeoutMs: number): Promise<void> {
+  const observedVersion = await fetchWorkerHealthVersion(timeoutMs);
   if (observedVersion !== null && observedVersion !== expectedPluginVersion) {
     logger.warn('SYSTEM', 'Worker is ready but still reports a stale version; not recycling again in this hook invocation (one recycle per hook event)', {
       pluginVersion: expectedPluginVersion,
@@ -525,7 +525,11 @@ async function ensureWorkerRunningWithinBudget(deadlineAt: number | null): Promi
     // worker is still squatting the port), recycle it so the resolved
     // version takes over — otherwise the stale worker keeps serving
     // indefinitely.
-    const { matches, pluginVersion, workerVersion } = await checkVersionMatch(getWorkerPort(), resolvedScript?.version ?? null);
+    const { matches, pluginVersion, workerVersion } = await checkVersionMatch(
+      getWorkerPort(),
+      resolvedScript?.version ?? null,
+      getBoundedHealthTimeoutMs(getRemainingBudgetMs(deadlineAt)),
+    );
     if (pluginVersion !== 'unknown') {
       expectedPluginVersion = pluginVersion;
     }
@@ -536,7 +540,10 @@ async function ensureWorkerRunningWithinBudget(deadlineAt: number | null): Promi
         return false;
       }
       if (expectedPluginVersion !== null) {
-        await warnIfVersionStillMismatched(expectedPluginVersion);
+        await warnIfVersionStillMismatched(
+          expectedPluginVersion,
+          getBoundedHealthTimeoutMs(getRemainingBudgetMs(deadlineAt)),
+        );
       }
       return true;
     }
@@ -670,7 +677,10 @@ async function ensureWorkerRunningWithinBudget(deadlineAt: number | null): Promi
   // Amplifier guard: even if the worker that won the port is still stale,
   // never recycle a second time in the same hook invocation.
   if (expectedPluginVersion !== null) {
-    await warnIfVersionStillMismatched(expectedPluginVersion);
+    await warnIfVersionStillMismatched(
+      expectedPluginVersion,
+      getBoundedHealthTimeoutMs(getRemainingBudgetMs(deadlineAt)),
+    );
   }
   return true;
 }
