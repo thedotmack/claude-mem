@@ -50,6 +50,7 @@ const OUTPUT_SHARE = 0.013;
 /** The models each prompt option actually runs on. */
 const MODEL_IDS = {
   openrouter: 'deepseek/deepseek-v4-flash',
+  orcarouter: 'openai/gpt-4o-mini',
   gemini: 'google/gemini-2.5-flash-lite',
   claude: 'anthropic/claude-haiku-4.5',
 } as const;
@@ -67,6 +68,7 @@ type Rates = Record<OptionKey, number>;
  */
 const FALLBACK_BLENDED_PER_M: Rates = {
   openrouter: 0.1418,
+  orcarouter: 0.1559,
   gemini: 0.1039,
   claude: 1.052,
 };
@@ -126,6 +128,7 @@ export interface ProviderLabels {
   cmem: string;
   cmemHint: string;
   openrouter: string;
+  orcarouter: string;
   gemini: string;
   claude: string;
   /** False when any rate came from the fallback table. */
@@ -152,6 +155,8 @@ export async function buildProviderLabels(): Promise<ProviderLabels> {
     cmemHint: `${CMEM_PRO_TRIAL_DAYS} days free, then $${CMEM_PRO_MONTHLY_USD}/mo`,
     openrouter:
       `OpenRouter / any OpenAI-compatible key    (~$${costPer1kObservations(rates.openrouter)}/1k observations, billed to you)`,
+    orcarouter:
+      `OrcaRouter gateway key                    (~$${costPer1kObservations(rates.orcarouter)}/1k observations, billed to you)`,
     gemini:
       `Gemini API key                            (~$${costPer1kObservations(rates.gemini)}/1k observations, billed to you)`,
     claude:
@@ -191,8 +196,8 @@ export const CMEM_PRO_TRIAL_DAYS = 7;
  * CMEM Pro settings, written as a plain `openrouter` provider config: the
  * worker's OpenRouter client is a generic OpenAI-compatible client whose base
  * URL and model are both settings-driven, so CMEM Pro needs no provider code.
- * The worker only understands 'claude' | 'gemini' | 'openrouter' — 'cmem' is an
- * installer-prompt-only value and must never reach settings.json.
+ * The worker only understands 'claude' | 'gemini' | 'openrouter' | 'orcarouter'
+ * — 'cmem' is an installer-prompt-only value and must never reach settings.json.
  */
 export const CMEM_PRO_BASE_URL = `${CMEM_PRO_ORIGIN}/api/inference/v1`;
 export const CMEM_PRO_MODEL = 'cmem-observer';

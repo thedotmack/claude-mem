@@ -51,11 +51,12 @@ export interface ClaudeMemEnv {
   ANTHROPIC_AUTH_TOKEN?: string;
   GEMINI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
+  ORCAROUTER_API_KEY?: string;
 }
 
 /**
  * The only env keys ever copied out of ~/.claude-mem/.env. This is the
- * whitelist that load/save/buildIsolatedEnv enforce — only these five keys
+ * whitelist that load/save/buildIsolatedEnv enforce — only these six keys
  * cross the boundary. Do NOT replace the per-key copy loops with
  * Object.assign(result, parsed): that would let arbitrary keys (a leaked
  * CLAUDE_CODE_* or a typo'd ANTHROPIC_* variant) through (see #2375).
@@ -66,6 +67,7 @@ const CREDENTIAL_KEYS = [
   'ANTHROPIC_AUTH_TOKEN',
   'GEMINI_API_KEY',
   'OPENROUTER_API_KEY',
+  'ORCAROUTER_API_KEY',
 ] as const;
 
 // Node's stdlib .env parser (util.parseEnv, Node ≥20.12 / stable in 24):

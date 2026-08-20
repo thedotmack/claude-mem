@@ -830,12 +830,13 @@ function mergeSettings(updates: Record<string, string>): boolean {
   }
 }
 
-type ProviderId = 'claude' | 'gemini' | 'openrouter';
+type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'orcarouter';
 /**
  * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
  * it configures the generic OpenAI-compatible path (base URL + model + key) and
  * persists CLAUDE_MEM_PROVIDER='openrouter'. The worker only understands
- * 'claude' | 'gemini' | 'openrouter', so 'cmem' must never reach settings.json.
+ * 'claude' | 'gemini' | 'openrouter' | 'orcarouter', so 'cmem' must never reach
+ * settings.json.
  */
 type ProviderChoice = ProviderId | 'cmem';
 type ClaudeAccessMode = 'subscription' | 'api-key';
@@ -1189,6 +1190,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
       options: [
         { value: 'cmem', label: labels.cmem, hint: labels.cmemHint },
         { value: 'openrouter', label: labels.openrouter },
+        { value: 'orcarouter', label: labels.orcarouter },
         { value: 'gemini', label: labels.gemini },
         { value: 'claude', label: labels.claude },
       ],
@@ -1246,10 +1248,13 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     return 'claude';
   }
 
-  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
+  const providerLabel = selectedProvider === 'gemini' ? 'Gemini'
+    : (selectedProvider === 'orcarouter' ? 'OrcaRouter' : 'OpenRouter');
   const keyEnvName = selectedProvider === 'gemini'
     ? 'CLAUDE_MEM_GEMINI_API_KEY'
-    : 'CLAUDE_MEM_OPENROUTER_API_KEY';
+    : (selectedProvider === 'orcarouter'
+        ? 'CLAUDE_MEM_ORCAROUTER_API_KEY'
+        : 'CLAUDE_MEM_OPENROUTER_API_KEY');
 
   const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
   if (existingKey && existingKey.trim().length > 0) {
@@ -1884,7 +1889,7 @@ async function promptTelemetryOptIn(): Promise<void> {
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter';
+  provider?: 'claude' | 'gemini' | 'openrouter' | 'orcarouter';
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;
