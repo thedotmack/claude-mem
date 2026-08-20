@@ -8,6 +8,7 @@ const realChromaMcpManagerSnapshot = { ...realChromaMcpManager };
 
 let existingObservationIds = new Set<number>();
 const addDocumentCalls: string[][] = [];
+let addFailuresRemaining = 0;
 
 mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
   ChromaMcpManager: {
@@ -33,6 +34,10 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
 
         if (toolName === 'chroma_add_documents') {
           addDocumentCalls.push((args.ids as string[]) ?? []);
+          if (addFailuresRemaining > 0) {
+            addFailuresRemaining -= 1;
+            throw new Error('simulated transient Chroma add failure');
+          }
           return {};
         }
 
@@ -44,6 +49,7 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
 
 import { ChromaSync } from '../../../src/services/sync/ChromaSync.js';
 import { ChromaSyncState } from '../../../src/services/sync/ChromaSyncState.js';
+import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 
 afterAll(() => {
   mock.module('../../../src/services/sync/ChromaMcpManager.js', () => realChromaMcpManagerSnapshot);
@@ -138,6 +144,7 @@ describe('ChromaSync watermark gap persistence', () => {
     process.env.CLAUDE_MEM_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-watermarks-'));
     existingObservationIds = new Set<number>();
     addDocumentCalls.length = 0;
+    addFailuresRemaining = 0;
     ChromaSyncState.replace(project, { observations: 0, summaries: 0, prompts: 0, pending: {} });
   });
 
@@ -213,6 +220,14 @@ describe('ChromaSync watermark gap persistence', () => {
     const sync = new ChromaSync(project) as ChromaSync & {
       addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
     };
+    (sync as any).formatObservationDocs = () => Array.from(
+      { length: 102 },
+      (_, index) => ({
+        id: index === 0 ? 'obs_1_narrative' : `obs_1_fact_${index - 1}`,
+        document: `Document ${index}`,
+        metadata: { sqlite_id: 1 },
+      }),
+    );
     let callCount = 0;
     sync.addDocuments = async (documents) => {
       addDocumentCalls.push(documents.map(document => document.id));
@@ -235,5 +250,134 @@ describe('ChromaSync watermark gap persistence', () => {
     expect(ChromaSyncState.get(project).observations).toBe(1);
     expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
     expect(addDocumentCalls.some(batch => batch.includes('obs_1_fact_100'))).toBe(true);
+  });
+
+  it('packs complete source rows into document batches instead of one MCP call per row', async () => {
+    const rows = Array.from({ length: 120 }, (_, index) => makeObservationRow(index + 1, project));
+    const sync = new ChromaSync(project) as ChromaSync & {
+      addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
+    };
+    sync.addDocuments = async (documents) => {
+      addDocumentCalls.push(documents.map(document => document.id));
+      return documents.length;
+    };
+
+    await sync.ensureBackfilled(project, makeStoreFromRows(project, rows));
+
+    expect(addDocumentCalls.map(batch => batch.length)).toEqual([100, 20]);
+    expect(ChromaSyncState.get(project).observations).toBe(120);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
+  });
+
+  it('persists every uncertain row in a partial packed batch and repairs it on retry', async () => {
+    const rows = Array.from({ length: 120 }, (_, index) => makeObservationRow(index + 1, project));
+    const sync = new ChromaSync(project) as ChromaSync & {
+      addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
+    };
+    let callCount = 0;
+    sync.addDocuments = async (documents) => {
+      addDocumentCalls.push(documents.map(document => document.id));
+      callCount += 1;
+      return callCount === 1 ? 0 : documents.length;
+    };
+
+    await sync.ensureBackfilled(project, makeStoreFromRows(project, rows));
+
+    expect(ChromaSyncState.get(project).observations).toBe(120);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual(
+      Array.from({ length: 100 }, (_, index) => index + 1),
+    );
+
+    addDocumentCalls.length = 0;
+    sync.addDocuments = async (documents) => {
+      addDocumentCalls.push(documents.map(document => document.id));
+      return documents.length;
+    };
+    await sync.ensureBackfilled(project, makeStoreFromRows(project, rows));
+
+    expect(addDocumentCalls.map(batch => batch.length)).toEqual([100]);
+    expect(ChromaSyncState.get(project).observations).toBe(120);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
+  });
+
+  it('indexes only the latest exact prompt replay within each session', async () => {
+    const store = new SessionStore(':memory:');
+    const contentSessionId = 'codex-replay-session';
+    const sessionDbId = store.createSDKSession(contentSessionId, project, 'initial', undefined, 'codex');
+    const olderReplayId = store.saveUserPrompt(contentSessionId, 1, 'Repeated prompt', sessionDbId);
+    const uniquePromptId = store.saveUserPrompt(contentSessionId, 2, 'Unique prompt', sessionDbId);
+    const latestReplayId = store.saveUserPrompt(contentSessionId, 3, 'Repeated prompt', sessionDbId);
+    const sync = new ChromaSync(project);
+
+    try {
+      await sync.ensureBackfilled(project, store);
+    } finally {
+      store.close();
+    }
+
+    const writtenIds = addDocumentCalls.flat();
+    expect(writtenIds).not.toContain(`prompt_${olderReplayId}`);
+    expect(writtenIds).toContain(`prompt_${uniquePromptId}`);
+    expect(writtenIds).toContain(`prompt_${latestReplayId}`);
+    expect(ChromaSyncState.get(project).prompts).toBe(latestReplayId);
+  });
+
+  it('includes prompt-only projects in the all-project backfill', async () => {
+    const store = new SessionStore(':memory:');
+    const promptOnlyProject = `${project}-prompt-only`;
+    const contentSessionId = 'prompt-only-session';
+    const sessionDbId = store.createSDKSession(
+      contentSessionId,
+      promptOnlyProject,
+      'initial',
+      undefined,
+      'codex',
+    );
+    const promptId = store.saveUserPrompt(contentSessionId, 1, 'Prompt without observations', sessionDbId);
+
+    try {
+      await ChromaSync.backfillAllProjects(store);
+    } finally {
+      store.close();
+    }
+
+    expect(addDocumentCalls.flat()).toContain(`prompt_${promptId}`);
+    expect(ChromaSyncState.get(promptOnlyProject).prompts).toBe(promptId);
+  });
+
+  it('repairs a transient pending batch before reporting all-project completion', async () => {
+    const store = new SessionStore(':memory:');
+    const repairProject = `${project}-repair`;
+    const contentSessionId = 'repair-session';
+    const sessionDbId = store.createSDKSession(contentSessionId, repairProject, 'initial', undefined, 'codex');
+    const promptId = store.saveUserPrompt(contentSessionId, 1, 'Repair this prompt', sessionDbId);
+    addFailuresRemaining = 1;
+
+    try {
+      await ChromaSync.backfillAllProjects(store);
+    } finally {
+      store.close();
+    }
+
+    expect(addDocumentCalls.flat().filter(id => id === `prompt_${promptId}`)).toHaveLength(2);
+    expect(ChromaSyncState.getPending(repairProject, 'prompts')).toEqual([]);
+    expect(ChromaSyncState.get(repairProject).prompts).toBe(promptId);
+  });
+
+  it('rejects all-project completion while a pending batch remains unresolved', async () => {
+    const store = new SessionStore(':memory:');
+    const brokenProject = `${project}-broken`;
+    const contentSessionId = 'broken-session';
+    const sessionDbId = store.createSDKSession(contentSessionId, brokenProject, 'initial', undefined, 'codex');
+    store.saveUserPrompt(contentSessionId, 1, 'Still broken', sessionDbId);
+    addFailuresRemaining = 2;
+
+    try {
+      await expect(ChromaSync.backfillAllProjects(store)).rejects.toThrow('Chroma backfill incomplete');
+    } finally {
+      store.close();
+    }
+
+    expect(ChromaSyncState.getPending(brokenProject, 'prompts')).not.toEqual([]);
   });
 });

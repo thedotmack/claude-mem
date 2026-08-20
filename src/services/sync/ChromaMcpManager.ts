@@ -24,6 +24,8 @@ const MCP_CONNECTION_TIMEOUT_MS = 30_000;
 const DEFAULT_CHROMA_PREWARM_TIMEOUT_MS = 120_000;
 const CHROMA_PREWARM_TIMEOUT_SETTING = 'CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS';
 const CHROMA_PREWARM_TIMEOUT_BOUNDS = { min: 1, max: 600_000 } as const;
+const DEFAULT_CHROMA_MUTATION_TIMEOUT_MS = 600_000;
+const CHROMA_MUTATION_TIMEOUT_BOUNDS = { min: 60_000, max: 3_600_000 } as const;
 const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
 const RECONNECT_BACKOFF_MS = 10_000;
 const CHROMA_WRITER_LOCK_FILENAME = '.claude-mem-chroma-writer.lock';
@@ -50,6 +52,10 @@ const CHROMA_MCP_PINNED_VERSION = '0.2.6';
 // These pins are runtime-only (uvx --with) so we don't have to fork
 // chroma-mcp upstream — they apply only to claude-mem's spawned subprocess.
 const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
+  // The bridge below patches verified chromadb 1.5.9 internals (default
+  // embedding reuse and the SQLite FTS NUL guard). Do not let uvx silently
+  // resolve a future, incompatible chromadb release underneath it.
+  'chromadb==1.5.9',
   'onnxruntime>=1.20',
   'protobuf<7',
 ];
@@ -93,6 +99,7 @@ export class ChromaMcpManager {
   private mutationTail: Promise<void> = Promise.resolve();
   private pendingMutationCalls = 0;
   private readonly maxPendingMutationCalls: number;
+  private readonly mutationTimeoutMs: number;
   private readonly serializeMutations: boolean;
   private acceptingLocalMutations = true;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
@@ -103,6 +110,13 @@ export class ChromaMcpManager {
     this.maxPendingMutationCalls = Number.isInteger(configuredLimit) && configuredLimit > 0
       ? configuredLimit
       : DEFAULT_MAX_PENDING_MUTATIONS;
+    const configuredMutationTimeout = Number.parseInt(settings.CLAUDE_MEM_CHROMA_MUTATION_TIMEOUT_MS, 10);
+    this.mutationTimeoutMs = Number.isInteger(configuredMutationTimeout)
+      ? Math.min(
+          CHROMA_MUTATION_TIMEOUT_BOUNDS.max,
+          Math.max(CHROMA_MUTATION_TIMEOUT_BOUNDS.min, configuredMutationTimeout)
+        )
+      : DEFAULT_CHROMA_MUTATION_TIMEOUT_MS;
     this.serializeMutations = (settings.CLAUDE_MEM_CHROMA_MODE || 'local') !== 'remote';
   }
 
@@ -528,20 +542,29 @@ export class ChromaMcpManager {
 
   private static buildLauncherPrefix(pythonVersion: string): string[] {
     const depOverrideFlags = CHROMA_MCP_DEP_OVERRIDES.flatMap(spec => ['--with', spec]);
+    const bridgeScript = ChromaMcpManager.resolveBridgeScript();
     return [
       '--python', pythonVersion,
       ...depOverrideFlags,
       '--from', `chroma-mcp==${CHROMA_MCP_PINNED_VERSION}`,
-      'chroma-mcp',
+      ...(bridgeScript ? ['python', bridgeScript] : ['chroma-mcp']),
     ];
   }
 
   private static buildPrewarmCommandArgs(commandArgs: string[]): string[] {
-    const executableIndex = commandArgs.indexOf('chroma-mcp');
-    const launcherPrefix = executableIndex >= 0
-      ? commandArgs.slice(0, executableIndex + 1)
-      : commandArgs;
+    const pythonIndex = commandArgs.indexOf('python');
+    const executableIndex = pythonIndex >= 0 ? pythonIndex + 1 : commandArgs.indexOf('chroma-mcp');
+    const launcherPrefix = executableIndex >= 0 ? commandArgs.slice(0, executableIndex + 1) : commandArgs;
     return [...launcherPrefix, '--help'];
+  }
+
+  private static resolveBridgeScript(): string | null {
+    const entryDir = process.argv[1] ? path.dirname(path.resolve(process.argv[1])) : '';
+    const candidates = [
+      entryDir ? path.join(entryDir, 'chroma-mcp-bridge.py') : '',
+      path.join(process.cwd(), 'plugin', 'scripts', 'chroma-mcp-bridge.py'),
+    ].filter(Boolean);
+    return candidates.find(candidate => fs.existsSync(candidate)) ?? null;
   }
 
   private static parseBoundedTimeoutMs(rawValue: string | undefined): number | null {
@@ -716,8 +739,19 @@ export class ChromaMcpManager {
     const callGeneration = this.connectionGeneration;
     await this.ensureConnected();
 
+    // Chroma embedding/index mutations routinely exceed the MCP SDK's
+    // 60-second default once a persistent collection grows. The SDK treats
+    // that deadline as a request failure; our reconnect path then tears down
+    // chroma-mcp while SQLite/FTS5 may still be committing, which can leave the
+    // persistent index malformed. Give mutations a bounded, configurable
+    // deadline while keeping read/query latency at the SDK default.
+    const requestOptions = ChromaMcpManager.isMutationTool(toolName)
+      ? { timeout: this.mutationTimeoutMs }
+      : undefined;
+
     logger.debug('CHROMA_MCP', `Calling tool: ${toolName}`, {
-      arguments: JSON.stringify(toolArguments).slice(0, 200)
+      arguments: JSON.stringify(toolArguments).slice(0, 200),
+      ...(requestOptions ? { timeoutMs: requestOptions.timeout } : {})
     });
 
     let result;
@@ -725,7 +759,7 @@ export class ChromaMcpManager {
       result = await this.client!.callTool({
         name: toolName,
         arguments: toolArguments
-      });
+      }, undefined, requestOptions);
     } catch (transportError) {
       logger.warn('CHROMA_MCP', `Transport error during "${toolName}", reconnecting and retrying once`, {
         error: transportError instanceof Error ? transportError.message : String(transportError)
@@ -748,7 +782,7 @@ export class ChromaMcpManager {
         result = await this.client!.callTool({
           name: toolName,
           arguments: toolArguments
-        });
+        }, undefined, requestOptions);
       } catch (retryError) {
         this.connected = false;
         throw new Error(`chroma-mcp transport error during "${toolName}" (retry failed): ${retryError instanceof Error ? retryError.message : String(retryError)}`);
