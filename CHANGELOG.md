@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.15.3] - 2026-08-20
+
+## What's Changed
+
+### OpenRouter attribution overhaul
+- Renamed the OpenRouter app entry to **Claude-Mem** (display title only — the ranking identity is the referer URL, which is unchanged, so the accumulated leaderboard history stays intact)
+- Centralized all attribution headers into a shared module (`src/shared/openrouter-attribution.ts`) so the worker and server providers can never drift apart and split the app entry
+- Migrated from the legacy `X-Title` header to the canonical `X-OpenRouter-Title`
+- Claimed marketplace categories via `X-OpenRouter-Categories: cli-agent,creative-writing`
+- Env overrides (`CLAUDE_MEM_OPENROUTER_SITE_URL` / `CLAUDE_MEM_OPENROUTER_APP_NAME`) still work for forks and self-hosted gateways
+
+### Fixes
+- wowerpoint skill: corrected the share URL format (dropped the `/d/` path segment)
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.15.2...v13.15.3
+
 ## [13.15.2] - 2026-08-16
 
 ## Observer errors now tell you what happened and what to do
