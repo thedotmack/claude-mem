@@ -69,7 +69,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   protected abstract missingApiKeyError(): Error;
 
   /** Issue the actual HTTP request and normalize its response. */
-  protected abstract query(history: ConversationMessage[], config: TConfig): Promise<ProviderQueryResult>;
+  protected abstract query(
+    history: ConversationMessage[],
+    config: TConfig,
+    abortSignal?: AbortSignal,
+  ): Promise<ProviderQueryResult>;
 
   /** Estimate token count for a single message body. */
   protected abstract estimateTokens(text: string): number;
@@ -127,7 +131,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     try {
       session.lastPromptSentAt = Date.now();
       session.lastGeneratorSource = 'init';
-      const initResponse = await this.query(session.conversationHistory, config);
+      const initResponse = await this.query(session.conversationHistory, config, session.abortController.signal);
       await this.handleInitResponse(initResponse, session, worker, model, initContext);
     } catch (error: unknown) {
       // Classified errors are logged once, at SessionRoutes' `Observer failed`
@@ -248,7 +252,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'ingest';
-    const obsResponse = await this.query(session.conversationHistory, config);
+    const obsResponse = await this.query(session.conversationHistory, config, session.abortController.signal);
 
     let tokensUsed = 0;
     const sanitizedContent = obsResponse.content
@@ -312,7 +316,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         sessionId: session.sessionDbId, model: summaryModel
       });
     }
-    const summaryResponse = await this.query(session.conversationHistory, summaryConfig);
+    const summaryResponse = await this.query(session.conversationHistory, summaryConfig, session.abortController.signal);
 
     let tokensUsed = 0;
     if (summaryResponse.content) {
