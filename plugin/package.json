@@ -6,6 +6,7 @@
   "type": "module",
   "dependencies": {
     "zod": "^4.4.3",
+    "@huggingface/transformers": "^4.2.0",
     "tree-sitter-cli": "^0.26.5",
     "tree-sitter-c": "^0.24.1",
     "tree-sitter-cpp": "^0.23.4",
@@ -33,7 +34,8 @@
     "shell-quote": "^1.8.3"
   },
   "overrides": {
-    "tree-sitter": "^0.25.0"
+    "tree-sitter": "^0.25.0",
+    "onnxruntime-node": "1.21.0"
   },
   "trustedDependencies": [
     "tree-sitter-cli"
