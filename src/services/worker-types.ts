@@ -30,6 +30,13 @@ export interface ActiveSession {
    * accumulate respawn debt.
    */
   consecutiveInvalidOutputs: number;
+  /**
+   * Consecutive empty assistant responses for claimed observation/summary
+   * batches. Bounds the leave-queue-intact retry path: once the guard
+   * threshold is hit the batch is dropped loudly instead of being re-claimed
+   * and re-queried on every generator start.
+   */
+  consecutiveEmptyResponses: number;
   forceInit?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;
