@@ -3,6 +3,7 @@ import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import { ingestObservation } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
+import { requireLocalhost, requireWorkerToken } from '../../../worker/http/middleware.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTags, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
@@ -298,6 +299,17 @@ export class SessionRoutes extends BaseRouteHandler {
       validateBody(SessionRoutes.summarizeByClaudeIdSchema),
       this.handleSummarizeByClaudeId.bind(this)
     );
+    // Destructive: aborts an in-flight generator, reaps its SDK subprocess and
+    // discards queued work. Gated on proof the caller can read this user's
+    // claude-mem data dir (the worker's own start token), "is localhost" is
+    // not a sufficient authority to end someone else's live session.
+    app.post(
+      '/api/sessions/end',
+      requireLocalhost,
+      requireWorkerToken,
+      validateBody(SessionRoutes.endByClaudeIdSchema),
+      this.handleEndByClaudeId.bind(this)
+    );
   }
 
   private static readonly sessionInitByClaudeIdSchema = z.object({
@@ -325,6 +337,11 @@ export class SessionRoutes extends BaseRouteHandler {
     contentSessionId: z.string().min(1),
     last_assistant_message: z.string().optional(),
     agentId: z.string().optional(),
+    platformSource: z.string().optional(),
+  }).passthrough();
+
+  private static readonly endByClaudeIdSchema = z.object({
+    contentSessionId: z.string().min(1),
     platformSource: z.string().optional(),
   }).passthrough();
 
@@ -365,6 +382,24 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     res.json({ status: 'queued' });
+  });
+
+  private handleEndByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    // SessionEnd (#3073): reap the tracked session for this Claude Code content
+    // session, if one is still live. deleteSession aborts any in-flight
+    // generator, reaps the SDK subprocess, and flushes, so a session that ends
+    // mid-generation no longer orphans its child process. A no-op when nothing
+    // is tracked (the common case: the generator already finished).
+    const { contentSessionId } = req.body;
+    // Scope by platform: the same contentSessionId can be live under two
+    // platforms at once, and ending the wrong one aborts a running generator
+    // that nobody asked to stop.
+    // Optional, not normalized-with-a-default: if the caller did not say which
+    // platform, we must NOT invent one: a wrong guess ends the wrong session.
+    // Passing undefined lets SessionManager refuse an ambiguous match instead.
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    const reaped = await this.sessionManager.endBySessionIdentity(contentSessionId, platformSource);
+    res.json({ status: 'ok', reaped });
   });
 
   private handleSummarizeByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {

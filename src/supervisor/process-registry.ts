@@ -17,6 +17,46 @@ export interface ManagedProcessInfo {
   sessionId?: string | number;
   startedAt: string;
   pgid?: number;
+  /**
+   * Process start token (see captureProcessStartToken), stamped by
+   * ProcessRegistry.register at registration time.
+   *
+   * A bare PID is not an identity: PIDs are reused, and the registry outlives
+   * its processes (supervisor.json survives an unclean worker death; see #3450),
+   * so a persisted record can name a PID that now belongs to something else
+   * entirely. Any path that SIGNALS a registry record must first prove the PID
+   * is still the process we registered. That check is verifyManagedProcessIdentity.
+   *
+   * Optional because records persisted by older versions predate this field.
+   * Those are treated as unverifiable, never as verified.
+   */
+  startToken?: string | null;
+  /**
+   * Identity of the worker generation that spawned this process: the pid and
+   * start token of the process that called ProcessRegistry.register. Stamped
+   * automatically at registration time.
+   *
+   * A verified-live record is not by itself a licence to kill: supervisor.json
+   * is shared across worker generations, so a live SDK subprocess of the
+   * CURRENT worker sits next to the orphans of a dead one. Any cleanup that
+   * reaps "what a dead worker left behind" (PortReclaim rung 3a) must first
+   * prove the record's owner is that dead worker, and this linkage is the
+   * only way to do so. Records without it are never reaped by that path.
+   *
+   * Optional because records persisted by older versions predate these fields.
+   */
+  ownerPid?: number;
+  ownerStartToken?: string | null;
+}
+
+let currentProcessStartToken: string | null | undefined;
+
+/** The registering process's own start token, captured once per process. */
+function ownStartToken(): string | null {
+  if (currentProcessStartToken === undefined) {
+    currentProcessStartToken = captureProcessStartToken(process.pid);
+  }
+  return currentProcessStartToken;
 }
 
 export interface ManagedProcessRecord extends ManagedProcessInfo {
@@ -183,6 +223,85 @@ export function verifyPidFileOwnership(info: PidInfo | null): info is PidInfo {
   return match;
 }
 
+/**
+ * STRICT identity check for a registry record we are about to SIGNAL.
+ *
+ * Deliberately stricter than verifyPidFileOwnership, which answers "may this
+ * worker keep running?" and so resolves ambiguity toward leaving things alone
+ * (a missing or unreadable token returns true). This answers "may we kill
+ * this?", where the same ambiguity must resolve the other way: a record with
+ * no stored token, or whose token cannot be read back, is UNVERIFIABLE and
+ * therefore off-limits.
+ *
+ * This is the policy from #3448 applied to registry records: tokenless,
+ * mismatched, or dead is refused with no signal sent. It is what lets
+ * PortReclaim reap the inherited-socket holder (#3450) without ever repeating
+ * the unproven-ownership kill that blocked #3405.
+ */
+export function verifyManagedProcessIdentity(record: ManagedProcessInfo): boolean {
+  if (!isPidAlive(record.pid)) return false;
+
+  if (!record.startToken) {
+    logger.debug('SYSTEM', 'verifyManagedProcessIdentity: no start token on record, refusing as unverifiable', {
+      pid: record.pid,
+      type: record.type
+    });
+    return false;
+  }
+
+  const currentToken = captureProcessStartToken(record.pid);
+  if (currentToken === null) {
+    logger.debug('SYSTEM', 'verifyManagedProcessIdentity: could not read current start token, refusing as unverifiable', {
+      pid: record.pid,
+      type: record.type
+    });
+    return false;
+  }
+
+  const match = currentToken === record.startToken;
+  if (!match) {
+    logger.debug('SYSTEM', 'verifyManagedProcessIdentity: start-token mismatch (PID reused): refusing', {
+      pid: record.pid,
+      type: record.type,
+      stored: record.startToken,
+      current: currentToken
+    });
+  }
+  return match;
+}
+
+/**
+ * Read supervisor.json WITHOUT constructing a ProcessRegistry.
+ *
+ * ProcessRegistry.initialize() prunes dead entries and persists, which is
+ * correct for the worker that owns the file but wrong for a hook process:
+ * hooks run many-at-once, and concurrent rewrites of a shared JSON file are
+ * exactly how settings.json ends up truncated (#3080). PortReclaim runs inside
+ * hooks and only ever needs to READ, so it gets a read-only door.
+ *
+ * The path is resolved per call (not from the import-time constant) so a test
+ * or a caller that repoints CLAUDE_MEM_DATA_DIR sees the right file.
+ * Unreadable or malformed content yields an empty list, never a throw.
+ */
+export function readPersistedRegistryRecords(registryPath?: string): ManagedProcessRecord[] {
+  const resolvedPath = registryPath ?? paths.supervisorRegistry();
+  try {
+    if (!existsSync(resolvedPath)) return [];
+    const raw = JSON.parse(readFileSync(resolvedPath, 'utf-8')) as PersistedRegistry;
+    const processes = raw?.processes;
+    if (!processes || typeof processes !== 'object') return [];
+    return Object.entries(processes)
+      .filter(([, info]) => info && typeof info.pid === 'number')
+      .map(([id, info]) => ({ ...info, id }));
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Could not read supervisor registry', {
+      registryPath: resolvedPath,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return [];
+  }
+}
+
 export class ProcessRegistry {
   private readonly registryPath: string;
   private readonly entries = new Map<string, ManagedProcessInfo>();
@@ -233,7 +352,18 @@ export class ProcessRegistry {
 
   register(id: string, processInfo: ManagedProcessInfo, processRef?: ChildProcess): void {
     this.initialize();
-    this.entries.set(id, processInfo);
+    // Stamp the start token here rather than at each call site so every
+    // registered process ('worker', 'chroma-mcp', 'sdk:*') carries the same
+    // identity proof without the three registrars having to remember to. The
+    // capture is a cold-path syscall (cached 5s per pid on Windows) and all
+    // three registration sites fire at most once per process spawn.
+    const startToken = processInfo.startToken ?? captureProcessStartToken(processInfo.pid);
+    // Owner linkage: the registering process IS the owning worker generation.
+    // Stamped here for the same reason as the start token; every registrar
+    // gets it without having to remember to.
+    const ownerPid = processInfo.ownerPid ?? process.pid;
+    const ownerStartToken = processInfo.ownerStartToken ?? ownStartToken();
+    this.entries.set(id, { ...processInfo, startToken, ownerPid, ownerStartToken });
     if (processRef) {
       this.runtimeProcesses.set(id, processRef);
     }
