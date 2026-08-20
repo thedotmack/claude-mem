@@ -352,7 +352,10 @@ const codexHookPair = (tail: string[], options: { startupVersionCheck?: boolean 
   commandWindows: buildCodexWindowsCommand(tail, options),
 });
 
-type RuleAExpectation = string | { command: string; commandWindows: string };
+const SESSION_INIT_HOOK_TIMEOUT_SECONDS = 15;
+const SESSION_INIT_HOOK_PATH = 'UserPromptSubmit.0.0';
+
+type RuleAExpectation = string | { command: string; commandWindows?: string; timeout?: number };
 
 const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
   'plugin/hooks/hooks.json': {
@@ -369,14 +372,20 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
     // every session.
     'SessionStart.0.0': claudeHook(['start']),
     'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
-    'UserPromptSubmit.0.0': claudeHook(['hook', 'claude-code', 'session-init']),
+    'UserPromptSubmit.0.0': {
+      command: claudeHook(['hook', 'claude-code', 'session-init']),
+      timeout: SESSION_INIT_HOOK_TIMEOUT_SECONDS,
+    },
     'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
     'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
     'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
   },
   'plugin/hooks/codex-hooks.json': {
     'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context'], { startupVersionCheck: true }),
-    'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
+    'UserPromptSubmit.0.0': {
+      ...codexHookPair(['hook', 'codex', 'session-init']),
+      timeout: SESSION_INIT_HOOK_TIMEOUT_SECONDS,
+    },
     'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
     'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
     'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
@@ -412,7 +421,7 @@ describe('Spawn-Contract Templating - Rule A generator parity', () => {
         const entry = hookEntryByPath(parsed, dottedPath);
         const expectedCommand = typeof expected === 'string' ? expected : expected.command;
         expect(entry?.command ?? null).toBe(expectedCommand);
-        if (typeof expected !== 'string') {
+        if (typeof expected !== 'string' && expected.commandWindows !== undefined) {
           expect(entry?.commandWindows ?? null).toBe(expected.commandWindows);
         }
       });
@@ -422,6 +431,15 @@ describe('Spawn-Contract Templating - Rule A generator parity', () => {
   it('plugin/.mcp.json mcp-search command equals buildShellCommand output', () => {
     const parsed = readJson('plugin/.mcp.json');
     expect(parsed.mcpServers['mcp-search'].args[1]).toBe(MCP_EXPECTED);
+  });
+
+  it('bounds UserPromptSubmit session-init hooks below the legacy 60 second stall (#3434)', () => {
+    for (const filePath of ['plugin/hooks/hooks.json', 'plugin/hooks/codex-hooks.json']) {
+      const parsed = readJson(filePath);
+      expect(hookEntryByPath(parsed, SESSION_INIT_HOOK_PATH)?.timeout).toBe(
+        SESSION_INIT_HOOK_TIMEOUT_SECONDS
+      );
+    }
   });
 
   it('never leaks a raw ${CLAUDE_PLUGIN_ROOT} into the resolved trailing command', () => {

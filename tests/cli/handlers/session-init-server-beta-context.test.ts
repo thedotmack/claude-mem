@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it, mock, spyOn } from 'bun:tes
 import { homedir } from 'os';
 import { join } from 'path';
 
+import { HOOK_TIMEOUTS } from '../../../src/shared/hook-constants.js';
 import * as realSettingsDefaultsManager from '../../../src/shared/SettingsDefaultsManager.js';
 import * as realHookSettings from '../../../src/shared/hook-settings.js';
 import * as realWorkerUtils from '../../../src/shared/worker-utils.js';
@@ -12,6 +13,7 @@ const realHookSettingsSnapshot = { ...realHookSettings };
 const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 const realRuntimeSelectorSnapshot = { ...realRuntimeSelector };
 const originalInternalEnv = process.env.CLAUDE_MEM_INTERNAL;
+const SESSION_INIT_TIMEOUT_MS = HOOK_TIMEOUTS.SESSION_INIT_REQUEST;
 
 const serverBetaCalls: {
   startSession: unknown[];
@@ -141,6 +143,9 @@ describe('sessionInitHandler server semantic injection', () => {
             },
           },
         }),
+        // Stubbed with its siblings: the real reader touches settings.json,
+        // which prints a creation notice on stderr in a fresh data dir.
+        getSessionInitRequestTimeoutMs: () => ${SESSION_INIT_TIMEOUT_MS},
         shouldTrackProject: () => true,
         executeWithWorkerFallback: async () => {
           workerFallbackCalled = true;
