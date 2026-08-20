@@ -1,5 +1,6 @@
-import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'fs';
+import { existsSync } from 'fs';
 import { join } from 'path';
+import { readJsonFileWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../utils/logger.js';
 
@@ -62,8 +63,18 @@ function load(): Record<string, ProjectWatermarks> {
     cache = {};
     return cache;
   }
-  const raw = readFileSync(path, 'utf8');
-  const parsed = JSON.parse(raw) as Record<string, Partial<ProjectWatermarks>>;
+  let parsed: Record<string, Partial<ProjectWatermarks>>;
+  try {
+    parsed = readJsonFileWithBom<Record<string, Partial<ProjectWatermarks>>>(path);
+  } catch (error) {
+    // A truncated or corrupt state file must not abort the sync pipeline. Treat
+    // it as empty and rebuild from the SQLite watermarks on the next backfill.
+    logger.warn('CHROMA_SYNC', 'Unreadable chroma-sync-state.json, treating as empty', {
+      path
+    }, error instanceof Error ? error : new Error(String(error)));
+    cache = {};
+    return cache;
+  }
   const normalized: Record<string, ProjectWatermarks> = {};
   for (const [project, marks] of Object.entries(parsed)) {
     normalized[project] = normalizeProjectWatermarks(marks);
@@ -74,12 +85,7 @@ function load(): Record<string, ProjectWatermarks> {
 
 function persist(): void {
   if (!cache) return;
-  const path = statePath();
-  const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
-  if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(cache, null, 2), 'utf8');
-  renameSync(tmp, path);
+  writeJsonFileAtomic(statePath(), cache);
 }
 
 export const ChromaSyncState = {
