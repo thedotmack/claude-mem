@@ -18,6 +18,8 @@ const toggleMcpSchema = z.object({
   enabled: z.boolean(),
 }).passthrough();
 
+const updateSettingsSchema = z.object({}).passthrough();
+
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(
     private settingsManager: SettingsManager
@@ -27,7 +29,7 @@ export class SettingsRoutes extends BaseRouteHandler {
 
   setupRoutes(app: express.Application): void {
     app.get('/api/settings', this.handleGetSettings.bind(this));
-    app.post('/api/settings', this.handleUpdateSettings.bind(this));
+    app.post('/api/settings', validateBody(updateSettingsSchema), this.handleUpdateSettings.bind(this));
     app.get('/api/settings/dependency-health', this.handleGetDependencyHealth.bind(this));
 
     app.get('/api/mcp/status', this.handleGetMcpStatus.bind(this));
