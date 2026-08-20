@@ -315,3 +315,52 @@ describe('parseAgentXml — concept normalization (#3379)', () => {
     expect(result[0].concepts).toEqual([]);
   });
 });
+
+// #3592: the active mode's `observation_types` enum is advisory — it is rendered
+// into the observer's prompt but never enforced at the parse site. These pin the
+// two branches as they behave today, so that whichever way the enum is eventually
+// enforced, the change is visible in the diff rather than silent.
+describe('parseAgentXml — observation type against the mode enum', () => {
+  it('preserves a type that is outside the enum', () => {
+    const xml = `<observation>
+      <type>sample-gate</type>
+      <title>Type the mode never declared</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('sample-gate');
+  });
+
+  it('falls back to the first declared type when <type> is absent', () => {
+    const xml = `<observation>
+      <title>No type element at all</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    // Positional, not neutral: the fallback is observation_types[0], which in the
+    // bundled `code` mode is `bugfix`. An untyped observation is therefore filed
+    // as a bug fix rather than as unclassified.
+    expect(result[0].type).toBe('bugfix');
+  });
+
+  it('follows the enum order rather than any fixed default', () => {
+    const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
+    modeManager.activeMode = {
+      observation_types: [{ id: 'refactor' }, { id: 'bugfix' }, { id: 'discovery' }],
+      observation_concepts: [],
+    };
+
+    const xml = `<observation>
+      <title>No type, reordered enum</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('refactor');
+  });
+});
