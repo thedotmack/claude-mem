@@ -279,14 +279,23 @@ describe('ChromaSync watermark gap persistence', () => {
   it('preserves JSON-looking plain-string list fields without logging raw memory content', async () => {
     const secretFact = 'TREX_SECRET_OBSERVATION_TOKEN_9f3a7c_DO_NOT_LOG';
     const jsonLookingFact = `{"note":"${secretFact}"}`;
-    const jsonScalarConcept = '"数字化改造"';
+    const decodedJsonScalarConcept = '数字化改造';
+    const jsonScalarConcept = JSON.stringify(decodedJsonScalarConcept);
+    const malformedSecretFact = 'TREX_MALFORMED_SECRET_4b1e_DO_NOT_LOG';
+    const malformedJsonFact = `{"note":"${malformedSecretFact}"`;
     const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
     const rowId = 1;
+    const malformedRowId = 2;
     const cjkRow = {
       ...makeObservationRow(rowId, project),
       facts: jsonLookingFact,
       concepts: jsonScalarConcept,
       narrative: 'json-looking fallback row',
+    };
+    const malformedRow = {
+      ...makeObservationRow(malformedRowId, project),
+      facts: malformedJsonFact,
+      narrative: 'malformed fallback row',
     };
     ChromaSyncState.replace(project, {
       observations: 0,
@@ -297,16 +306,18 @@ describe('ChromaSync watermark gap persistence', () => {
     const sync = new ChromaSync(project);
 
     try {
-      await sync.ensureBackfilled(project, makeStoreFromRows(project, [cjkRow]));
+      await sync.ensureBackfilled(project, makeStoreFromRows(project, [cjkRow, malformedRow]));
     } finally {
       warnSpy.mockRestore();
     }
 
     expect(addDocumentPayloads.flatMap(payload => payload.documents)).toContain(jsonLookingFact);
+    expect(addDocumentPayloads.flatMap(payload => payload.documents)).toContain(malformedJsonFact);
     expect(addDocumentPayloads.flatMap(payload => payload.metadatas).some(metadata => (
-      metadata.concepts === jsonScalarConcept
+      metadata.concepts === decodedJsonScalarConcept
     ))).toBe(true);
     expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(secretFact);
-    expect(ChromaSyncState.get(project).observations).toBe(rowId);
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(malformedSecretFact);
+    expect(ChromaSyncState.get(project).observations).toBe(malformedRowId);
   });
 });

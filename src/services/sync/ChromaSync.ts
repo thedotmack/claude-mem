@@ -112,6 +112,9 @@ function parseStringListField(
         rowId,
         parsedType: typeof parsed,
       });
+      if (typeof parsed === 'string') {
+        return parsed.trim() ? [parsed] : [];
+      }
       return rawValue.trim() ? [rawValue] : [];
     }
     return parsed.filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
