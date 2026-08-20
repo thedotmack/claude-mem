@@ -25,6 +25,41 @@ import {
   type CanonicalMutation,
 } from '../sync/CanonicalContent.js';
 
+let warnedMissingIterate = false;
+
+/**
+ * Iterate a prepared statement's rows, preferring the streaming `.iterate()`
+ * added in Bun v1.1.31 and falling back to the materializing `.all()` on
+ * older runtimes.
+ *
+ * package.json declares `engines.bun >= 1.1.31`, but engines is advisory —
+ * nothing enforces it when the plugin is installed through the Claude Code
+ * marketplace. On an older Bun the bare `.iterate()` call threw
+ * "…iterate is not a function" from inside schema migration v46, which runs
+ * during background init. That rejection left the worker permanently
+ * `initialized:false` while still serving 200 on /api/health, so every hook
+ * silently skipped until the failure counter began blocking them outright.
+ *
+ * Falling back keeps the migration correct on old runtimes (it only costs
+ * peak memory, and this scan runs once per install) and the one-time warning
+ * names the real cause instead of a cryptic TypeError.
+ */
+function streamRows(statement: {
+  iterate?: () => Iterable<unknown>;
+  all: () => unknown[];
+}): Iterable<unknown> {
+  if (typeof statement.iterate === 'function') return statement.iterate();
+  if (!warnedMissingIterate) {
+    warnedMissingIterate = true;
+    logger.warn('DB', 'bun:sqlite lacks Statement.iterate(); falling back to .all()', {
+      bunVersion: typeof Bun !== 'undefined' ? Bun.version : 'unknown',
+      requiredBunVersion: '>=1.1.31',
+      impact: 'migration rows are materialized in memory; upgrade Bun to restore streaming',
+    });
+  }
+  return statement.all();
+}
+
 interface IndexColumnInfo {
   seqno: number;
   cid: number;
@@ -611,12 +646,12 @@ export class SessionStore {
           throw new Error(`schema v46: missing ${target.table}.${target.column}`);
         }
 
-        for (const raw of this.db.query(`
+        for (const raw of streamRows(this.db.query(`
           SELECT CAST(id AS TEXT) AS row_id,
                  typeof(${target.column}) AS storage_type,
                  CAST(${target.column} AS TEXT) AS revision
           FROM ${target.table}
-        `).iterate()) {
+        `))) {
           const row = raw as { row_id: string; storage_type: string; revision: string | null };
           if (row.storage_type === 'real') {
             throw new Error(
