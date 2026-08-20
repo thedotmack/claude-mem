@@ -159,8 +159,12 @@ export class SessionSearch {
     const conditions: string[] = [];
 
     if (filters.project) {
-      conditions.push(`${tableAlias}.project = ?`);
-      params.push(filters.project);
+      // #3641 — match the OR disjunction used by every other read path
+      // (SessionStore, PaginationHelper, ObservationCompiler). Without it the
+      // FTS/filter path ignores merged_into_project, so adopted worktree
+      // observations stay invisible to search even after adoption.
+      conditions.push(`(${tableAlias}.project = ? OR ${tableAlias}.merged_into_project = ?)`);
+      params.push(filters.project, filters.project);
     }
 
     // Source-scoping (#2389): when a platformSource is supplied, restrict to

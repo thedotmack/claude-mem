@@ -42,6 +42,7 @@ import {
   removePidFileIfOwner,
   getPlatformTimeout,
   runOneTimeCwdRemap,
+  runOneTimeDoubledProjectCollapse,
   cleanStalePidFile,
   verifyPidFileOwnership,
   spawnDaemon,
@@ -475,6 +476,9 @@ export class WorkerService implements WorkerRef {
 
       logger.info('WORKER', 'Checking for one-time CWD remap...');
       runOneTimeCwdRemap();
+
+      logger.info('WORKER', 'Checking for one-time doubled project-name collapse...');
+      runOneTimeDoubledProjectCollapse();
 
       const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
       if (chromaEnabled) {
