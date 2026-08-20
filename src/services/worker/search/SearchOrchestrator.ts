@@ -35,7 +35,7 @@ export class SearchOrchestrator {
     this.sqliteStrategy = new SQLiteSearchStrategy(sessionSearch);
 
     if (chromaSync) {
-      this.chromaStrategy = new VectorSearchStrategy(chromaSync.getIndex(), sessionStore);
+      this.chromaStrategy = new VectorSearchStrategy(chromaSync, sessionStore);
       this.hybridStrategy = new HybridSearchStrategy(chromaSync, sessionStore, sessionSearch);
     }
   }

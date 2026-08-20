@@ -151,10 +151,19 @@ export class VectorSync {
     return {
       ids: hits.map((h) => h.sqliteId),
       distances: hits.map((h) => 1 - h.score),
-      metadatas: hits.map((h) => ({ created_at_epoch: h.createdAtEpoch })),
+      metadatas: hits.map((h) => ({
+        created_at_epoch: h.createdAtEpoch,
+        doc_type: KIND_TO_DOC_TYPE[h.kind],
+      })),
     };
   }
 }
+
+const KIND_TO_DOC_TYPE: Record<VectorDocKind, string> = {
+  observation: 'observation',
+  summary: 'session_summary',
+  prompt: 'user_prompt',
+};
 
 const DOC_TYPE_TO_KIND: Record<string, VectorDocKind> = {
   observation: 'observation',
