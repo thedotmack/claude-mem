@@ -50,6 +50,15 @@ describe('Project Filter', () => {
         expect(isProjectExcluded(`${home}/secret`, '~/secret')).toBe(true);
         expect(isProjectExcluded(`${home}/projects/secret`, '~/projects/*')).toBe(true);
       });
+
+      it('does not glue the home directory onto a ~name pattern', () => {
+        const home = homedir();
+        // `~backup/*` used to expand by concatenation to `<home>backup/*`, a path with no
+        // separator between the home directory and the pattern. That excluded a sibling of the
+        // home directory nobody named, and left a real `~backup` directory unexcluded.
+        expect(isProjectExcluded(`${home}backup/thing`, '~backup/*')).toBe(false);
+        expect(isProjectExcluded('/opt/~backup/thing', '~backup/*')).toBe(false);
+      });
     });
 
     describe('with multiple patterns', () => {

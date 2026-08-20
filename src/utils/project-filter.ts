@@ -1,12 +1,10 @@
 
-import { homedir } from 'os';
 import { basename } from 'path';
+import { expandHome } from '../shared/paths.js';
 import { logger } from './logger.js';
 
 function globToRegex(pattern: string): RegExp {
-  let expanded = pattern.startsWith('~')
-    ? homedir() + pattern.slice(1)
-    : pattern;
+  let expanded = expandHome(pattern);
 
   expanded = expanded.replace(/\\/g, '/');
 
