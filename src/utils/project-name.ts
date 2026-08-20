@@ -14,7 +14,7 @@ function expandTilde(p: string): string {
   return p
 }
 
-function resolveProjectPath(cwd: string | null | undefined): string | null {
+export function resolveHookProjectPath(cwd: string | null | undefined): string | null {
   const claudeProjectDir = process.env[CLAUDE_PROJECT_DIR_ENV]?.trim();
   if (claudeProjectDir) {
     return claudeProjectDir;
@@ -50,13 +50,12 @@ function findGitRepoRoot(dir: string): string | null {
 }
 
 export function getProjectName(cwd: string | null | undefined): string {
-  const projectPath = resolveProjectPath(cwd);
-  if (!projectPath) {
+  if (!cwd || cwd.trim() === '') {
     logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
     return UNKNOWN_PROJECT_NAME;
   }
 
-  const expanded = expandTilde(projectPath)
+  const expanded = expandTilde(cwd)
 
   // #2663 — derive the project name from the git repo root when inside a repo so
   // the name is stable across subdirectories/worktrees. Fall back to the cwd
@@ -69,15 +68,15 @@ export function getProjectName(cwd: string | null | undefined): string {
   if (basename === '') {
     const isWindows = process.platform === 'win32';
     if (isWindows) {
-      const driveMatch = projectPath.match(/^([A-Z]):\\/i);
+      const driveMatch = cwd.match(/^([A-Z]):\\/i);
       if (driveMatch) {
         const driveLetter = driveMatch[1].toUpperCase();
         const projectName = `drive-${driveLetter}`;
-        logger.info('PROJECT_NAME', 'Drive root detected', { cwd: projectPath, projectName });
+        logger.info('PROJECT_NAME', 'Drive root detected', { cwd, projectName });
         return projectName;
       }
     }
-    logger.warn('PROJECT_NAME', 'Root directory detected, using fallback', { cwd: projectPath });
+    logger.warn('PROJECT_NAME', 'Root directory detected, using fallback', { cwd });
     return UNKNOWN_PROJECT_NAME;
   }
 
@@ -94,12 +93,11 @@ export interface ProjectContext {
 export function getProjectContext(cwd: string | null | undefined): ProjectContext {
   const cwdProjectName = getProjectName(cwd);
 
-  const projectPath = resolveProjectPath(cwd);
-  if (!projectPath) {
+  if (!cwd) {
     return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
   }
 
-  const expandedCwd = expandTilde(projectPath);
+  const expandedCwd = expandTilde(cwd);
   // #3262 — detectWorktree stats `<cwd>/.git`, which only exists at the
   // worktree root. Resolve the git working-tree root first (same pattern as
   // getProjectName / #2663) so sessions started in a subdirectory still get
