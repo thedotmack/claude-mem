@@ -9,7 +9,7 @@ import { SettingsManager } from '../../SettingsManager.js';
 import { ModeManager } from '../../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
-import { SettingsDefaultsManager, writeSettingsFileSecure } from '../../../../shared/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager, ensureSettingsFileSecureMode } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from '../../../../shared/atomic-json.js';
@@ -132,6 +132,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
 
     writeJsonFileAtomic(settingsPath, settings);
+    ensureSettingsFileSecureMode(settingsPath);
 
     clearPortCache();
 
@@ -337,6 +338,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
 
       writeJsonFileAtomic(settingsPath, defaults);
+      ensureSettingsFileSecureMode(settingsPath);
       logger.info('SETTINGS', 'Created settings file with defaults', { settingsPath });
     }
   }

@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'bun:test';
+import { mkdtempSync, rmSync, statSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import {
   SETTINGS_ROUTE_KEYS,
   SettingsRoutes,
@@ -12,6 +15,23 @@ function validateSettings(settings: Record<string, unknown>): { valid: boolean; 
 }
 
 describe('SettingsRoutes Codex settings', () => {
+  it('creates API settings files with owner-only permissions because they can contain provider credentials', () => {
+    if (process.platform === 'win32') return;
+
+    const tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-settings-route-'));
+    const settingsPath = join(tempDir, 'settings.json');
+    const routes = new SettingsRoutes({} as never) as unknown as {
+      ensureSettingsFile(path: string): void;
+    };
+
+    try {
+      routes.ensureSettingsFile(settingsPath);
+      expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('allows the Codex observations-per-prompt cap to be persisted', () => {
     expect(SETTINGS_ROUTE_KEYS).toContain('CLAUDE_MEM_CODEX_MAX_OBSERVATIONS_PER_PROMPT');
   });
