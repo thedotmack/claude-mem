@@ -2704,6 +2704,35 @@ export class SessionStore {
     return storeTx();
   }
 
+  /**
+   * Correct discovery_tokens for a turn's rows after the fact. The claude path
+   * stores discovery_tokens from the streamed assistant frame, which an
+   * SSE-synthesizing gateway leaves at 0 input tokens; the SDK result message
+   * carries the finalized per-turn usage that back-patches those rows.
+   */
+  updateDiscoveryTokens(
+    observationIds: number[],
+    summaryId: number | null,
+    discoveryTokens: number
+  ): void {
+    if (observationIds.length === 0 && summaryId === null) return;
+
+    const updateTx = this.db.transaction(() => {
+      if (observationIds.length > 0) {
+        const obsStmt = this.db.prepare('UPDATE observations SET discovery_tokens = ? WHERE id = ?');
+        for (const id of observationIds) {
+          obsStmt.run(discoveryTokens, id);
+        }
+      }
+      if (summaryId !== null) {
+        this.db.prepare('UPDATE session_summaries SET discovery_tokens = ? WHERE id = ?')
+          .run(discoveryTokens, summaryId);
+      }
+    });
+
+    updateTx();
+  }
+
   getSessionSummariesByIds(
     ids: number[],
     options: { orderBy?: 'date_desc' | 'date_asc' | 'relevance'; limit?: number; project?: string; platformSource?: string } = {}

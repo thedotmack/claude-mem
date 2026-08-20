@@ -293,6 +293,11 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         messages,
         temperature: 0.3,  // Lower temperature for structured extraction
         max_tokens: 4096,
+        // Force a single JSON body. A gateway that defaults to streaming would
+        // return text/event-stream, which response.json() cannot parse — every
+        // observation dies. false is the OpenAI-spec default, so it is safe for
+        // openrouter.ai and strict custom gateways alike.
+        stream: false,
         // Ask openrouter.ai for usage accounting (token counts + cost).
         // Only sent to openrouter.ai — strict custom gateways may reject
         // unknown body fields.

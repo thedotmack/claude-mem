@@ -269,6 +269,11 @@ export class ClaudeProvider {
         }),
       });
 
+      // Rows stored on the turn whose discovery_tokens came from an assistant
+      // frame with no input count (an SSE-synthesizing gateway zeroes it). The
+      // turn's result message carries the finalized usage that corrects them.
+      let pendingDiscoveryBackfill: { observationIds: number[]; summaryId: number | null } | null = null;
+
       for await (const message of queryResult) {
         // Quota-aware wall-clock guard (#2234): the SDK pushes `system` events
         // with subtype `rate_limit` carrying live subscription quota state.
@@ -382,7 +387,7 @@ export class ClaudeProvider {
             throw new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env');
           }
 
-          await processAgentResponse(
+          const stored = await processAgentResponse(
             textContent,
             session,
             this.dbManager,
@@ -395,6 +400,19 @@ export class ClaudeProvider {
             modelId,
             activeResponseContext.current
           );
+
+          // An assistant frame with no input count is the SSE-synthesizing
+          // gateway signature: message_start carried no usage, so discoveryTokens
+          // collapsed to output only. Queue the stored rows for the result
+          // message to correct once the finalized per-turn usage arrives.
+          const assistantReportedNoInput =
+            !usage ||
+            ((usage.input_tokens || 0) === 0 &&
+              (usage.cache_creation_input_tokens || 0) === 0 &&
+              (usage.cache_read_input_tokens || 0) === 0);
+          pendingDiscoveryBackfill = stored && assistantReportedNoInput
+            ? { observationIds: stored.observationIds, summaryId: stored.summaryId }
+            : null;
         }
 
         if (message.type === 'result') {
@@ -410,6 +428,24 @@ export class ClaudeProvider {
             cache_read_input_tokens?: number;
             output_tokens?: number;
           } | undefined;
+          // Correct discovery_tokens for rows the turn stored with a zeroed
+          // assistant frame, using the same input + cache-write + output basis
+          // the live path derives from that frame.
+          if (pendingDiscoveryBackfill && resultUsage) {
+            const backfillDiscovery =
+              (resultUsage.input_tokens || 0) +
+              (resultUsage.cache_creation_input_tokens || 0) +
+              (resultUsage.output_tokens || 0);
+            if (backfillDiscovery > 0) {
+              this.dbManager.getSessionStore().updateDiscoveryTokens(
+                pendingDiscoveryBackfill.observationIds,
+                pendingDiscoveryBackfill.summaryId,
+                backfillDiscovery
+              );
+            }
+          }
+          pendingDiscoveryBackfill = null;
+
           const totalCostUsd = (message as any).total_cost_usd as number | undefined;
           let turnCostUsd: number | undefined;
           if (typeof totalCostUsd === 'number') {
