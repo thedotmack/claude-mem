@@ -29,6 +29,7 @@ import { buildHardenedSdkOptions } from '../../sdk/hardened-options.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { resolveTierAlias } from './model-aliases.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
+import { describeObserverOutputShape, formatEmptyOutputReason } from '../../sdk/output-classifier.js';
 import { clearDependencyStatus, recordClaudeCliSetupRequired } from '../../shared/dependency-health.js';
 
 /**
@@ -327,6 +328,7 @@ export class ClaudeProvider {
 
         if (message.type === 'assistant') {
           const content = message.message.content;
+          const emptyOutputReason = formatEmptyOutputReason(describeObserverOutputShape(content));
           const textContent = Array.isArray(content)
             ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
             : typeof content === 'string' ? content : '';
@@ -393,7 +395,8 @@ export class ClaudeProvider {
             'SDK',
             cwdTracker.lastCwd,
             modelId,
-            activeResponseContext.current
+            activeResponseContext.current,
+            emptyOutputReason
           );
         }
 

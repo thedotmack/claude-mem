@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'bun:test';
 import {
   classifyObserverOutput,
+  describeObserverOutputShape,
+  formatEmptyOutputReason,
   isAuthFailureObserverOutput,
   isQuotaLimitedObserverOutput,
   previewOutput,
@@ -111,5 +113,134 @@ describe('previewOutput', () => {
 
   it('describes non-string input', () => {
     expect(previewOutput(42)).toContain('non-string');
+  });
+});
+
+describe('describeObserverOutputShape and formatEmptyOutputReason (#3454)', () => {
+  it('returns no-content-blocks for null', () => {
+    const r = describeObserverOutputShape(null);
+    expect(r.shape).toBe('no-content-blocks');
+    expect(r.blockKinds).toEqual([]);
+    expect(formatEmptyOutputReason(r)).toBe('no-content-blocks');
+  });
+
+  it('returns no-content-blocks for undefined', () => {
+    const r = describeObserverOutputShape(undefined);
+    expect(r.shape).toBe('no-content-blocks');
+    expect(formatEmptyOutputReason(r)).toBe('no-content-blocks');
+  });
+
+  it('returns unrecognized-content for a plain object', () => {
+    const r = describeObserverOutputShape({});
+    expect(r.shape).toBe('unrecognized-content');
+    expect(r.blockKinds).toEqual([]);
+    expect(formatEmptyOutputReason(r)).toBe('unrecognized-content');
+  });
+
+  it('returns unrecognized-content for a number', () => {
+    const r = describeObserverOutputShape(42);
+    expect(r.shape).toBe('unrecognized-content');
+  });
+
+  it('returns no-content-blocks for an empty array', () => {
+    const r = describeObserverOutputShape([]);
+    expect(r.shape).toBe('no-content-blocks');
+    expect(r.blockKinds).toEqual([]);
+  });
+
+  it('returns text for a non-blank string', () => {
+    const r = describeObserverOutputShape('<observation/>');
+    expect(r.shape).toBe('text');
+    expect(r.blockKinds).toEqual([]);
+    expect(formatEmptyOutputReason(r)).toBeUndefined();
+  });
+
+  it('returns blank-text for whitespace string', () => {
+    const r = describeObserverOutputShape('   ');
+    expect(r.shape).toBe('blank-text');
+    expect(formatEmptyOutputReason(r)).toBe('blank-text');
+  });
+
+  it('returns text for array with non-blank text block', () => {
+    const r = describeObserverOutputShape([{ type: 'text', text: 'hello' }]);
+    expect(r.shape).toBe('text');
+    expect(r.blockKinds).toEqual(['text']);
+    expect(formatEmptyOutputReason(r)).toBeUndefined();
+  });
+
+  it('returns blank-text for array with blank text block', () => {
+    const r = describeObserverOutputShape([{ type: 'text', text: '' }]);
+    expect(r.shape).toBe('blank-text');
+    expect(r.blockKinds).toEqual(['text']);
+    expect(formatEmptyOutputReason(r)).toBe('blank-text');
+  });
+
+  it('returns non-text-blocks-only(tool_use) for tool_use block', () => {
+    const r = describeObserverOutputShape([{ type: 'tool_use', name: 'bash', input: {} }]);
+    expect(r.shape).toBe('non-text-blocks-only');
+    expect(r.blockKinds).toEqual(['tool_use']);
+    expect(formatEmptyOutputReason(r)).toBe('non-text-blocks-only(tool_use)');
+  });
+
+  it('returns non-text-blocks-only(thinking,tool_use) for mixed non-text blocks', () => {
+    const r = describeObserverOutputShape([
+      { type: 'thinking', thinking: 'thought' },
+      { type: 'tool_use', name: 'bash', input: {} },
+    ]);
+    expect(r.shape).toBe('non-text-blocks-only');
+    expect(r.blockKinds).toEqual(['thinking', 'tool_use']);
+    expect(formatEmptyOutputReason(r)).toBe('non-text-blocks-only(thinking,tool_use)');
+  });
+
+  it('whitelist boundary: unknown type becomes "other" and output contains no input substring', () => {
+    const malicious = 'wat-<script>alert(1)</script>';
+    const r = describeObserverOutputShape([{ type: malicious }]);
+    expect(r.shape).toBe('non-text-blocks-only');
+    expect(r.blockKinds).toEqual(['other']);
+    const reason = formatEmptyOutputReason(r);
+    expect(reason).toBe('non-text-blocks-only(other)');
+    expect(reason).not.toContain(malicious);
+  });
+
+  it('totality: nested array [[]]] does not throw', () => {
+    expect(() => describeObserverOutputShape([[]])).not.toThrow();
+  });
+
+  it('totality: array with null element does not throw', () => {
+    expect(() => describeObserverOutputShape([null])).not.toThrow();
+    const r = describeObserverOutputShape([null]);
+    expect(r.blockKinds).toContain('other');
+  });
+
+  it('totality: array of primitives does not throw', () => {
+    expect(() => describeObserverOutputShape([1, 'raw', true, undefined])).not.toThrow();
+    const r = describeObserverOutputShape([1, 'raw', true, undefined]);
+    expect(r.blockKinds).toEqual(['other']);
+  });
+
+  it('totality: array with plain object (no type) does not throw', () => {
+    expect(() => describeObserverOutputShape([{}])).not.toThrow();
+    const r = describeObserverOutputShape([{}]);
+    expect(r.blockKinds).toContain('other');
+  });
+
+  it('totality: block with throwing type getter does not throw', () => {
+    const evil = Object.defineProperty({}, 'type', {
+      get() { throw new Error('boom'); },
+    });
+    expect(() => describeObserverOutputShape([evil])).not.toThrow();
+    const r = describeObserverOutputShape([evil]);
+    expect(r.blockKinds).toContain('other');
+  });
+
+  it('totality: block with throwing text getter does not throw (Preservation Invariant 2)', () => {
+    const block = Object.defineProperties({}, {
+      type: { get() { return 'text'; }, enumerable: true },
+      text: { get() { throw new Error('boom'); }, enumerable: true },
+    });
+    expect(() => describeObserverOutputShape([block])).not.toThrow();
+    const r = describeObserverOutputShape([block]);
+    expect(r.blockKinds).toContain('text');
+    expect(r.shape).toBe('blank-text');
   });
 });
