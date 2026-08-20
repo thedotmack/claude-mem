@@ -133,8 +133,7 @@ export class TranscriptEventProcessor {
         }
         break;
       case 'user_message':
-        if (typeof fields.message === 'string') session.lastUserMessage = fields.message;
-        if (typeof fields.prompt === 'string') session.lastUserMessage = fields.prompt;
+        await this.handleUserMessage(session, fields);
         break;
       case 'assistant_message':
         if (typeof fields.message === 'string') session.lastAssistantMessage = fields.message;
@@ -168,6 +167,21 @@ export class TranscriptEventProcessor {
 
   private async handleSessionInit(session: SessionState, fields: Record<string, unknown>): Promise<void> {
     const prompt = typeof fields.prompt === 'string' ? fields.prompt : '';
+    await this.anchorUserPrompt(session, prompt);
+  }
+
+  private async handleUserMessage(session: SessionState, fields: Record<string, unknown>): Promise<void> {
+    const prompt = typeof fields.message === 'string'
+      ? fields.message
+      : typeof fields.prompt === 'string' ? fields.prompt : '';
+    await this.anchorUserPrompt(session, prompt);
+  }
+
+  // Write a user_prompts row for the turn through the same init endpoint the
+  // hook path uses. Without this anchor a transcript-ingested turn resolves to
+  // prompt number 0, and the observer sends every batch as an empty
+  // continuation the model rejects as prose — dropping the work (#3653).
+  private async anchorUserPrompt(session: SessionState, prompt: string): Promise<void> {
     const cwd = session.cwd ?? process.cwd();
     if (prompt) {
       session.lastUserMessage = prompt;
