@@ -369,9 +369,9 @@ export function ContextSettingsModal({
                   >
                     <input
                       type="text"
-                      value={formState.CLAUDE_MEM_CODEX_MODEL || 'gpt-5.3-codex-spark'}
+                      value={formState.CLAUDE_MEM_CODEX_MODEL || 'gpt-5.6-luna'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_MODEL', e.target.value)}
-                      placeholder="gpt-5.3-codex-spark"
+                      placeholder="gpt-5.6-luna"
                     />
                   </FormField>
                   <FormField
@@ -390,7 +390,7 @@ export function ContextSettingsModal({
                     tooltip="Optional Codex reasoning effort passed to codex exec"
                   >
                     <select
-                      value={formState.CLAUDE_MEM_CODEX_REASONING_EFFORT || ''}
+                      value={formState.CLAUDE_MEM_CODEX_REASONING_EFFORT || 'low'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_REASONING_EFFORT', e.target.value)}
                     >
                       <option value="">model default</option>

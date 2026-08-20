@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from 'fs';
+import { chmodSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
@@ -454,9 +454,9 @@ describe('SettingsDefaultsManager', () => {
       expect(defaults.CLAUDE_MEM_PROVIDER).toBeDefined();
       expect(defaults.CLAUDE_MEM_GEMINI_API_KEY).toBeDefined();
       expect(defaults.CLAUDE_MEM_OPENROUTER_API_KEY).toBeDefined();
-      expect(defaults.CLAUDE_MEM_CODEX_MODEL).toBe('gpt-5.3-codex-spark');
+      expect(defaults.CLAUDE_MEM_CODEX_MODEL).toBe('gpt-5.6-luna');
       expect(defaults.CLAUDE_MEM_CODEX_PATH).toBe('codex');
-      expect(defaults.CLAUDE_MEM_CODEX_REASONING_EFFORT).toBe('');
+      expect(defaults.CLAUDE_MEM_CODEX_REASONING_EFFORT).toBe('low');
       expect(defaults.CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES).toBe('20');
       expect(defaults.CLAUDE_MEM_CODEX_MAX_TOKENS).toBe('100000');
       expect(defaults.CLAUDE_MEM_CODEX_MAX_OBSERVATIONS_PER_PROMPT).toBe('6');
