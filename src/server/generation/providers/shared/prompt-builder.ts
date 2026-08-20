@@ -131,6 +131,24 @@ function buildEventBlock(event: PostgresAgentEvent): EventBlockResult {
   };
 }
 
+/**
+ * Bytes this event contributes to the prompt.
+ *
+ * Measured on the block the prompt actually carries, not estimated from the raw
+ * row: the payload is pretty-printed, privacy-stripped, truncated, XML-escaped
+ * and wrapped in metadata tags above, and a caller that budgets the input has to
+ * agree with all of it. Deriving the number a second time is what let the two
+ * drift apart in the first place.
+ *
+ * Returns 0 for an event whose block is dropped, so it costs no budget either.
+ */
+export function eventBlockBytes(event: PostgresAgentEvent): number {
+  const { body } = buildEventBlock(event);
+  if (body.length === 0) return 0;
+  // + 1 for the '\n' that joins this block to the next one
+  return Buffer.byteLength(body, 'utf8') + 1;
+}
+
 function loadActiveModeOrFallback(): ModeConfig | { observation_types: ReadonlyArray<Pick<ObservationType, 'id'>> } {
   try {
     return ModeManager.getInstance().getActiveMode();
