@@ -172,6 +172,26 @@ export class ClaudeProvider {
     this.sessionManager = sessionManager;
   }
 
+  /**
+   * Reset a carried memory_session_id before a fresh SDK spawn. Observer spawns
+   * opt out of Claude transcript persistence, so a session_id carried from an
+   * earlier no-persist spawn is not safe to feed back into `resume` on a later
+   * fresh process.
+   *
+   * Reset the in-memory ID only. Do NOT write NULL to the database: the stored
+   * ID is never read back for resumption (hasRealMemorySessionId and
+   * shouldResume in startSession are both false), and the foreign key that
+   * links observations and session_summaries carries ON UPDATE CASCADE plus a
+   * NOT NULL column. A NULL write cascades into the child rows and violates
+   * NOT NULL, which rolls back the whole storage transaction (#3628).
+   * Legitimate re-keying flows through ensureMemorySessionIdRegistered.
+   */
+  private resetCarriedMemorySessionId(session: ActiveSession): void {
+    if (session.memorySessionId) {
+      session.memorySessionId = null;
+    }
+  }
+
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     const cwdTracker = { lastCwd: undefined as string | undefined };
     const observerExtraArgs = ['--no-session-persistence'];
@@ -200,13 +220,7 @@ export class ClaudeProvider {
     const activeResponseContext = { current: snapshotResponseContext(session) };
     const messageGenerator = this.createMessageGenerator(session, cwdTracker, activeResponseContext);
 
-    if (session.memorySessionId) {
-      // Observer spawns intentionally opt out of Claude transcript persistence.
-      // A carried session_id from an earlier no-persist spawn is therefore not
-      // safe to feed back into `resume` on a later fresh process.
-      this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
-      session.memorySessionId = null;
-    }
+    this.resetCarriedMemorySessionId(session);
 
     const hasRealMemorySessionId = false;
     const shouldResume = false;
