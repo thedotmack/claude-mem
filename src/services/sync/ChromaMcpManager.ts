@@ -10,7 +10,7 @@ import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
-import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
+import { sanitizeEnv, stripForeignPythonEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { captureProcessStartToken, isPidAlive } from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
@@ -671,6 +671,11 @@ export class ChromaMcpManager {
         timeoutMs,
         ...(pid ? { pid } : {}),
         error: errorMessage,
+        // Parent contamination signals (#3552): child env is scrubbed, but these
+        // tell operators why a prior unclean spawn may have failed.
+        parentHadVirtualEnv: Boolean(process.env.VIRTUAL_ENV),
+        parentHadPythonPath: Boolean(process.env.PYTHONPATH),
+        parentHadPythonHome: Boolean(process.env.PYTHONHOME),
         ...(stdout ? { stdoutTail: stdout } : {}),
         ...(stderr ? { stderrTail: stderr } : {})
       });
@@ -1371,7 +1376,12 @@ export class ChromaMcpManager {
 
   private static getUvxPreflightEnv(): Record<string, string> {
     const baseEnv: Record<string, string> = {};
-    for (const [key, value] of Object.entries(sanitizeEnv(process.env))) {
+    // sanitizeEnv strips host Claude Code vars; stripForeignPythonEnv then
+    // removes activated-venv / conda leakage so uvx --python stays hermetic
+    // even when the worker was started from a foreign virtualenv (#3552).
+    for (const [key, value] of Object.entries(
+      stripForeignPythonEnv(sanitizeEnv(process.env)),
+    )) {
       if (value !== undefined) {
         baseEnv[key] = value;
       }

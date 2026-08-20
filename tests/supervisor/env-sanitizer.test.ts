@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { sanitizeEnv } from '../../src/supervisor/env-sanitizer.js';
+import { sanitizeEnv, stripForeignPythonEnv } from '../../src/supervisor/env-sanitizer.js';
 
 describe('sanitizeEnv', () => {
   it('strips variables with CLAUDECODE_ prefix', () => {
@@ -207,6 +207,60 @@ describe('sanitizeEnv', () => {
     expect(result.CLAUDE_CODE_RANDOM_OTHER).toBeUndefined();
     expect(result.CLAUDE_CODE_INTERNAL_FLAG).toBeUndefined();
 
+    expect(result.PATH).toBe('/usr/bin');
+  });
+});
+
+describe('stripForeignPythonEnv (#3552)', () => {
+  it('strips VIRTUAL_ENV / PYTHONPATH / PYTHONHOME and keeps UV cache vars', () => {
+    const result = stripForeignPythonEnv({
+      VIRTUAL_ENV: 'C:\\Users\\me\\AppData\\Local\\other-app\\venv',
+      PYTHONPATH: 'C:\\Users\\me\\AppData\\Local\\other-app\\venv\\Lib\\site-packages',
+      PYTHONHOME: 'C:\\Python311',
+      UV_CACHE_DIR: 'C:\\Users\\me\\.cache\\uv',
+      PATH: 'C:\\Windows\\System32',
+      HOME: 'C:\\Users\\me',
+    }, 'win32');
+
+    expect(result.VIRTUAL_ENV).toBeUndefined();
+    expect(result.PYTHONPATH).toBeUndefined();
+    expect(result.PYTHONHOME).toBeUndefined();
+    expect(result.UV_CACHE_DIR).toBe('C:\\Users\\me\\.cache\\uv');
+    expect(result.HOME).toBe('C:\\Users\\me');
+    expect(result.PATH).toBe('C:\\Windows\\System32');
+  });
+
+  it('removes VIRTUAL_ENV Scripts prefix from Windows PATH', () => {
+    const venv = 'C:\\Users\\me\\AppData\\Local\\other-app\\venv';
+    const result = stripForeignPythonEnv({
+      VIRTUAL_ENV: venv,
+      PATH: `${venv}\\Scripts;C:\\Windows\\System32;C:\\Program Files\\nodejs`,
+    }, 'win32');
+
+    expect(result.VIRTUAL_ENV).toBeUndefined();
+    expect(result.PATH).toBe('C:\\Windows\\System32;C:\\Program Files\\nodejs');
+  });
+
+  it('removes heuristic .venv/bin entries on POSIX PATH without VIRTUAL_ENV', () => {
+    const result = stripForeignPythonEnv({
+      PATH: '/home/me/proj/.venv/bin:/usr/bin:/bin',
+    }, 'linux');
+
+    expect(result.PATH).toBe('/usr/bin:/bin');
+  });
+
+  it('strips conda activation vars and CONDA_PREFIX PATH entries', () => {
+    const prefix = '/home/me/miniconda3/envs/ml';
+    const result = stripForeignPythonEnv({
+      CONDA_PREFIX: prefix,
+      CONDA_DEFAULT_ENV: 'ml',
+      CONDA_SHLVL: '1',
+      PATH: `${prefix}/bin:/usr/bin`,
+    }, 'linux');
+
+    expect(result.CONDA_PREFIX).toBeUndefined();
+    expect(result.CONDA_DEFAULT_ENV).toBeUndefined();
+    expect(result.CONDA_SHLVL).toBeUndefined();
     expect(result.PATH).toBe('/usr/bin');
   });
 });
