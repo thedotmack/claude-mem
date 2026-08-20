@@ -1,6 +1,5 @@
 import path from "path";
 import { readFileSync, existsSync, writeFileSync, renameSync, mkdirSync, readdirSync, statSync } from "fs";
-import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
@@ -13,8 +12,12 @@ import { checkVersionMatch } from "../services/infrastructure/index.js";
 // Imported from ProcessManager.js directly (not the infrastructure barrel):
 // tests mock the barrel module wholesale, and the resolver must stay real.
 // ProcessManager imports nothing from worker-utils, so no cycle.
-import { resolveWorkerRuntimePath } from "../services/infrastructure/ProcessManager.js";
+import {
+  resolveWorkerRuntimePath,
+  spawnDetachedWorkerDaemon,
+} from "../services/infrastructure/ProcessManager.js";
 import { acquireSpawnLock, releaseSpawnLock } from "./worker-spawn-gate.js";
+import { sanitizeEnv } from "../supervisor/env-sanitizer.js";
 
 function readTimeoutEnv(
   envName: string,
@@ -563,11 +566,20 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       logger.info('SYSTEM', 'Worker not running — lazy-spawning', { runtimePath, scriptPath });
 
       try {
-        const proc = spawnHidden(runtimePath, [scriptPath, '--daemon'], {
-          detached: true,
-          stdio: ['ignore', 'ignore', 'ignore'],
-        });
-        proc.unref();
+        // Windows: Start-Process -WindowStyle Hidden (never Node detached —
+        // detached allocates its own console on win32, #3521). Unix: setsid /
+        // detached via spawnDetachedWorkerDaemon.
+        const spawned = spawnDetachedWorkerDaemon(
+          runtimePath,
+          scriptPath,
+          sanitizeEnv({
+            ...process.env,
+            CLAUDE_MEM_WORKER_PORT: String(getWorkerPort()),
+          }),
+        );
+        if (spawned === undefined) {
+          return false;
+        }
       } catch (error: unknown) {
         if (error instanceof Error) {
           logger.error('SYSTEM', 'Lazy-spawn of worker failed', { runtimePath, scriptPath }, error);
