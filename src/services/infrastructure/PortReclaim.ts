@@ -25,16 +25,19 @@ import { signalProcess } from '../../supervisor/shutdown.js';
  *
  * The ladder, in order:
  *
- *   1. PID file names a VERIFIED live owner (alive + token match + same port)
- *      that does not answer /api/health  -> it is our wedged worker. SIGTERM,
- *      bounded wait, re-verify the SAME token, SIGKILL.
+ *   1. PID file names a VERIFIED live owner (alive + readable, matching token
+ *      + same port) that does not answer /api/health -> it is our wedged
+ *      worker. SIGTERM, bounded wait, re-verify the SAME token, SIGKILL.
+ *      Tokenless or unreadable is not verified: nothing is signalled.
  *   2. That verified owner DOES answer /api/health (readiness merely false)
  *      -> it is initializing. Never reclaimed.
  *   3a. The owner is dead but the port is still bound: the ghost socket. The
  *      socket is held by a child that inherited the handle (#3450 traces it to
  *      the uvx -> uv -> chroma-mcp -> python chain). Reap the registry records
  *      claude-mem wrote when it spawned those children, each one identity-
- *      verified before it is signalled.
+ *      verified before it is signalled AND linked (ownerPid/ownerStartToken)
+ *      to a worker generation that is provably gone. A live worker's own
+ *      children share the same registry file and are never touched.
  *   3b. Ownership cannot be proven: no PID file, tokenless, token mismatch,
  *      a foreign listener, or 3a did not recover the port. Signal NOTHING and
  *      tell the caller to fail over to a different port.
@@ -47,6 +50,9 @@ import { signalProcess } from '../../supervisor/shutdown.js';
 
 /** How long to wait for a SIGTERM'd worker to exit before escalating. */
 const OWNER_SIGTERM_GRACE_MS = 5_000;
+
+/** How long to wait for a SIGKILL'd worker to actually disappear. */
+const OWNER_SIGKILL_CONFIRM_MS = 2_000;
 
 /** How long to wait for the port to come back after a reclaim. */
 const PORT_RECOVERY_WAIT_MS = 5_000;
@@ -122,12 +128,48 @@ async function confirmPortRecovered(port: number, timeoutMs: number): Promise<bo
 }
 
 /**
- * Reap the children claude-mem's own registry says it spawned.
+ * Is this record's owning worker generation provably gone?
  *
- * Every PID here comes from a record claude-mem wrote at spawn time, and each
- * is re-verified by start token immediately before being signalled, so a PID
- * that has since been recycled onto an unrelated process is skipped rather
- * than killed. Records that are dead, tokenless, or mismatched are left alone.
+ * supervisor.json is shared across generations, so a live, identity-verified
+ * child record may belong to the CURRENT worker (an active SDK session, the
+ * live chroma launcher) rather than to the dead one whose socket we are
+ * reclaiming. Being verified-live is therefore not enough to signal it; its
+ * owner has to be the worker we know is gone. That is true when the owner is
+ * exactly the one rung 1 just terminated, or when the owner pid is dead or
+ * has been recycled onto a different process. A record with no owner linkage
+ * (persisted by an older claude-mem) cannot be tied to any generation and is
+ * left alone; the caller fails over instead.
+ */
+function ownerIsGone(record: ManagedProcessRecord, terminatedOwner: PidInfo | null): boolean {
+  if (typeof record.ownerPid !== 'number' || !record.ownerStartToken) return false;
+
+  if (
+    terminatedOwner !== null &&
+    record.ownerPid === terminatedOwner.pid &&
+    record.ownerStartToken === terminatedOwner.startToken
+  ) {
+    return true;
+  }
+
+  if (!isPidAlive(record.ownerPid)) return true;
+
+  const currentOwnerToken = captureProcessStartToken(record.ownerPid);
+  // Unreadable token: the owner may still be running. Resolve toward leaving
+  // its children alone.
+  if (currentOwnerToken === null) return false;
+  return currentOwnerToken !== record.ownerStartToken;
+}
+
+/**
+ * Reap the children a dead worker generation left behind, according to
+ * claude-mem's own registry.
+ *
+ * Every PID here comes from a record claude-mem wrote at spawn time. A record
+ * is signalled only when BOTH hold: its owner worker is provably gone
+ * (ownerIsGone), and the record itself is re-verified by start token
+ * immediately beforehand, so a PID recycled onto an unrelated process is
+ * skipped rather than killed. Records that are dead, tokenless, mismatched,
+ * unlinked to an owner, or owned by a live worker are left alone.
  *
  * The 'worker' record is excluded: the worker is rung 1's business, reached
  * through the PID file. This reaps what it left behind.
@@ -136,32 +178,53 @@ async function confirmPortRecovered(port: number, timeoutMs: number): Promise<bo
  * links in the chroma chain run as plain `python.exe`, so a name filter both
  * misses the actual handle holders and risks unrelated processes.
  */
-async function reapRegisteredChildren(currentPid: number): Promise<number> {
+async function reapRegisteredChildren(currentPid: number, terminatedOwner: PidInfo | null): Promise<number> {
   const candidates = readPersistedRegistryRecords().filter(
     record => record.pid !== currentPid && record.type !== 'worker' && record.id !== 'worker'
   );
 
-  const verified: ManagedProcessRecord[] = [];
+  const orphans: ManagedProcessRecord[] = [];
   for (const record of candidates) {
+    if (!ownerIsGone(record, terminatedOwner)) {
+      logger.debug('SYSTEM', 'Skipping registered child during port reclaim: owner generation not proven gone', {
+        id: record.id,
+        pid: record.pid,
+        ownerPid: record.ownerPid ?? null,
+      });
+      continue;
+    }
     if (verifyManagedProcessIdentity(record)) {
-      verified.push(record);
+      orphans.push(record);
     }
   }
 
-  if (verified.length === 0) return 0;
+  if (orphans.length === 0) return 0;
 
   logger.warn('SYSTEM', 'Reaping identity-verified child processes left behind by a dead worker', {
-    count: verified.length,
-    records: verified.map(record => ({ id: record.id, pid: record.pid, type: record.type })),
+    count: orphans.length,
+    records: orphans.map(record => ({ id: record.id, pid: record.pid, type: record.type })),
   });
 
-  for (const record of verified) {
+  let signalled = 0;
+  for (const record of orphans) {
+    // Re-verify immediately before THIS signal: an earlier iteration awaited,
+    // and in that window this record's PID may have exited and been recycled.
+    // The batch check above decides what is an orphan; this one decides
+    // whether the PID is still that orphan right now.
+    if (!verifyManagedProcessIdentity(record)) {
+      logger.debug('SYSTEM', 'Registered child changed identity before it could be signalled; skipping', {
+        id: record.id,
+        pid: record.pid,
+      });
+      continue;
+    }
     // SIGKILL directly: these are orphans of a worker that is already gone, so
     // there is no graceful-shutdown path left for them to take. On Windows
     // signalProcess uses `taskkill /T`, which is what reaches the grandchildren
     // (`python.exe`) actually holding the inherited handle.
     try {
       await signalProcess(record, 'SIGKILL');
+      signalled += 1;
     } catch (error: unknown) {
       logger.debug('SYSTEM', 'Failed to signal registered child during port reclaim', {
         id: record.id,
@@ -171,16 +234,31 @@ async function reapRegisteredChildren(currentPid: number): Promise<number> {
     }
   }
 
-  return verified.length;
+  return signalled;
+}
+
+async function waitUntilDead(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && isPidAlive(pid)) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  return !isPidAlive(pid);
 }
 
 /**
  * Rung 1: terminate a worker we have positively identified as ours.
  *
- * The start token is re-verified immediately before SIGKILL so that a PID
- * recycled during the SIGTERM grace window is never the thing we force-kill.
+ * The start token is re-verified, strictly, immediately before SIGKILL so
+ * that a PID recycled during the SIGTERM grace window is never the thing we
+ * force-kill. Anything short of a readable, matching token means no SIGKILL.
+ *
+ * Returns true only when the owner is conclusively gone (observed dead after
+ * SIGTERM or after SIGKILL). The caller uses that to decide whether the
+ * owner's linked children may be reaped as orphans: a worker that survived
+ * (escalation refused, SIGKILL failed, or still alive after it) is still a
+ * live generation and its children are not orphans.
  */
-async function terminateVerifiedOwner(info: PidInfo): Promise<void> {
+async function terminateVerifiedOwner(info: PidInfo): Promise<boolean> {
   const record: ManagedProcessRecord = {
     id: 'worker',
     pid: info.pid,
@@ -203,22 +281,26 @@ async function terminateVerifiedOwner(info: PidInfo): Promise<void> {
     });
   }
 
-  const deadline = Date.now() + OWNER_SIGTERM_GRACE_MS;
-  while (Date.now() < deadline && isPidAlive(info.pid)) {
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-
-  if (!isPidAlive(info.pid)) return;
+  if (await waitUntilDead(info.pid, OWNER_SIGTERM_GRACE_MS)) return true;
 
   // Still alive. Escalate, but only after proving it is still the SAME
-  // process. If the token no longer matches, this PID was recycled while we
-  // waited and force-killing it would hit a stranger.
+  // process. This is a kill decision, so it fails closed like
+  // verifyManagedProcessIdentity: no persisted token, an unreadable current
+  // token, or a mismatch all mean we cannot re-prove identity, and a PID
+  // recycled during the grace window would otherwise take the SIGKILL meant
+  // for our worker. (SIGTERM above was sent under verifyPidFileOwnership's
+  // more permissive "may keep running" rule; escalation gets the strict one.)
   const currentToken = captureProcessStartToken(info.pid);
-  if (info.startToken && currentToken !== null && currentToken !== info.startToken) {
-    logger.warn('SYSTEM', 'Wedged worker PID was recycled during the SIGTERM grace window; not escalating', {
+  if (!info.startToken || currentToken === null || currentToken !== info.startToken) {
+    logger.warn('SYSTEM', 'Cannot re-prove the wedged worker\'s identity after the SIGTERM grace window; not escalating to SIGKILL', {
       pid: info.pid,
+      reason: !info.startToken
+        ? 'pid file has no start token'
+        : currentToken === null
+          ? 'current start token unreadable'
+          : 'start token mismatch (PID recycled)',
     });
-    return;
+    return false;
   }
 
   try {
@@ -228,7 +310,10 @@ async function terminateVerifiedOwner(info: PidInfo): Promise<void> {
       pid: info.pid,
       error: error instanceof Error ? error.message : String(error),
     });
+    return false;
   }
+
+  return waitUntilDead(info.pid, OWNER_SIGKILL_CONFIRM_MS);
 }
 
 /**
@@ -260,11 +345,34 @@ export async function reclaimWorkerPort(
       return { kind: 'owner-initializing' };
     }
 
+    // verifyPidFileOwnership answers "may this worker keep running?" and so
+    // tolerates a tokenless pid file or an unreadable current token. Rung 1
+    // is a kill decision and gets the strict rule instead: no readable,
+    // matching start token means we cannot prove the live PID is our worker
+    // rather than a recycled one, so nothing is signalled and we fail over.
+    if (!verifyManagedProcessIdentity({
+      pid: pidInfo.pid,
+      type: 'worker',
+      startedAt: pidInfo.startedAt,
+      startToken: pidInfo.startToken,
+    })) {
+      const reason = 'pid-file owner is alive but its identity cannot be proven by start token';
+      logger.warn('SYSTEM', 'Cannot prove the live pid-file owner is our worker: leaving it untouched and failing over', {
+        pid: pidInfo.pid,
+        port,
+        reason,
+      });
+      return { kind: 'unprovable', reason };
+    }
+
     // Rung 1.
-    await terminateVerifiedOwner(pidInfo);
+    const ownerGone = await terminateVerifiedOwner(pidInfo);
     // The worker's own children outlive it and are what pin the socket, so
     // clear them too; otherwise rung 1 recreates the ghost socket it just fixed.
-    await reapRegisteredChildren(currentPid);
+    // Only ITS children, and only once it is conclusively gone: if the owner
+    // survived, its children are a live generation's and ownerIsGone's normal
+    // liveness/token rule decides (i.e. leaves them alone).
+    await reapRegisteredChildren(currentPid, ownerGone ? pidInfo : null);
 
     if (await confirmPortRecovered(port, PORT_RECOVERY_WAIT_MS)) {
       return { kind: 'reclaimed', via: 'verified-owner' };
@@ -273,8 +381,10 @@ export async function reclaimWorkerPort(
   }
 
   // Rung 3a: no verified live owner. If the port is still bound, the holder is
-  // something our worker left behind. Reap only what our registry vouches for.
-  const reaped = await reapRegisteredChildren(currentPid);
+  // something a dead worker left behind. Reap only what our registry vouches
+  // for AND can tie to a worker generation that is provably gone; a child of
+  // the live worker, or an unlinked record, is never signalled from here.
+  const reaped = await reapRegisteredChildren(currentPid, null);
   if (reaped > 0 && (await confirmPortRecovered(port, PORT_RECOVERY_WAIT_MS))) {
     logger.info('SYSTEM', 'Worker port recovered by reaping registered orphans of a dead worker', { port, reaped });
     return { kind: 'reclaimed', via: 'registered-children' };
