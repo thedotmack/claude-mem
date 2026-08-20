@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'fs';
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, chmodSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import path from 'path';
@@ -36,6 +36,55 @@ function commandHookEntriesFrom(relativePath: string): any[] {
 function mcpStartupCommandFrom(relativePath: string): string {
   const parsed = readJson(relativePath);
   return parsed.mcpServers['mcp-search'].args[1];
+}
+
+/** PATH export through the first `; _C=` marker in Claude hook commands. */
+function claudePathPreludeFrom(command: string): string {
+  const marker = '; _C=';
+  const end = command.indexOf(marker);
+  expect(end).toBeGreaterThan(0);
+  return command.slice(0, end + 1);
+}
+
+function posixPath(p: string): string {
+  return p.replace(/\\/g, '/');
+}
+
+/** Map Windows %TEMP% paths to Git bash /tmp/... so shell-eval assertions match locally and on CI. */
+function normalizeShellPath(p: string): string {
+  const posix = posixPath(p).replace(/\/+$/, '');
+  const tempMapped = posix.match(
+    /^(?:[A-Za-z]:)?\/(?:Users\/[^/]+\/)?AppData\/Local\/Temp\/(.+)$/i,
+  );
+  if (tempMapped) {
+    return `/tmp/${tempMapped[1]}`;
+  }
+  return posix;
+}
+
+function expectResolvedPath(stdout: string, expectedRoot: string): void {
+  const match = stdout.match(/RESOLVED=(.+)/);
+  expect(match).not.toBeNull();
+  expect(normalizeShellPath(match![1].trim())).toBe(normalizeShellPath(expectedRoot));
+}
+
+function bashExecutable(): string {
+  if (process.platform === 'win32') {
+    const gitBash = 'C:/Program Files/Git/bin/bash.exe';
+    if (existsSync(gitBash)) {
+      return gitBash;
+    }
+  }
+  return 'bash';
+}
+
+function installFakeNvmNode(home: string, version: string): string {
+  const nodeBin = path.join(home, '.nvm', 'versions', 'node', `v${version}`, 'bin');
+  mkdirSync(nodeBin, { recursive: true });
+  const nodePath = path.join(nodeBin, 'node');
+  writeFileSync(nodePath, '#!/bin/sh\necho "fake-node"\n');
+  chmodSync(nodePath, 0o755);
+  return nodeBin;
 }
 
 describe('Plugin Distribution - Skills', () => {
@@ -180,6 +229,19 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
     for (const command of commandHooksFrom('plugin/hooks/hooks.json')) {
       expect(command).toContain(cachePath);
       expect(command.indexOf(cachePath)).toBeLessThan(command.indexOf(marketplacesPath));
+    }
+  });
+
+  it('should not spawn a login shell to rebuild PATH on every Claude hook (#3190)', () => {
+    for (const command of commandHooksFrom('plugin/hooks/hooks.json')) {
+      expect(command).not.toContain('SHELL -lc');
+    }
+  });
+
+  it('should quote NVM ls path inside export PATH (#3190)', () => {
+    for (const command of commandHooksFrom('plugin/hooks/hooks.json')) {
+      expect(command).toMatch(/ls "\$HOME\/\.nvm\/versions\/node"/);
+      expect(command).not.toMatch(/ls \\"\$HOME\/\.nvm\/versions\/node\\"/);
     }
   });
 });
@@ -460,7 +522,7 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
   }
 
   function shellEval(command: string, env: Record<string, string>): { status: number | null; stdout: string; stderr: string } {
-    const result = spawnSync('bash', ['-c', command], {
+    const result = spawnSync(bashExecutable(), ['-c', command], {
       env: { PATH: process.env.PATH ?? '', ...env },
       encoding: 'utf-8',
     });
@@ -486,7 +548,7 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
           CLAUDE_PLUGIN_ROOT: root,
           HOME: mkdtempSync(path.join(tmpdir(), 'cm-home-')),
         });
-        expect(stdout).toContain(`RESOLVED=${root}`);
+        expectResolvedPath(stdout, root);
       }
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -505,7 +567,7 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
         const { stdout } = shellEval(instrument(command), { HOME: home });
         // The version-sort producer yields a trailing slash; the hook trims it
         // via _R="${_R%/}".
-        expect(stdout).toContain(`RESOLVED=${cacheRoot}`);
+        expectResolvedPath(stdout, cacheRoot);
       }
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -534,7 +596,7 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     try {
       for (const { command } of claudeCommands()) {
         const { stdout } = shellEval(instrument(command), { HOME: home });
-        expect(stdout).toContain(`RESOLVED=${newRoot}`);
+        expectResolvedPath(stdout, newRoot);
       }
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -552,6 +614,23 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
       });
       expect(result.status).not.toBe(0);
       expect(result.stderr ?? '').toMatch(/claude-mem: .* not found/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('prepends the highest NVM node bin to PATH without login shell (#3190)', () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-nvm-only-'));
+    installFakeNvmNode(home, '18.20.0');
+    const newestBin = installFakeNvmNode(home, '20.11.0');
+    const prelude = claudePathPreludeFrom(commandHooksFrom('plugin/hooks/hooks.json')[0]);
+    try {
+      const { status, stdout } = shellEval(`${prelude} printf '%s' "$PATH"`, {
+        HOME: home,
+        PATH: '/usr/bin:/bin',
+      });
+      expect(status).toBe(0);
+      expect(normalizeShellPath((stdout ?? '').split(':')[0])).toBe(normalizeShellPath(newestBin));
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
