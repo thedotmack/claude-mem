@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import {
   ClaudeMemPlugin,
   parseSearchResponse,
+  isConnectionRefusedError,
   REGISTERED_OPENCODE_HOOKS,
   REAL_OPENCODE_EVENT_TYPES,
 } from "../../src/integrations/opencode-plugin/index";
@@ -161,5 +162,40 @@ describe("OpenCode search client response-shape contract", () => {
     });
     const rendered = parseSearchResponse(emptyResponse, "zzz");
     expect(rendered).toContain("No observations found");
+  });
+});
+
+describe("isConnectionRefusedError (worker-down warning suppression)", () => {
+  // The plugin stays quiet when the worker is simply not running. OpenCode
+  // hosts plugins under Bun, whose fetch rejects a refused connection with
+  // code 'ConnectionRefused' and no 'ECONNREFUSED' anywhere in the message;
+  // Node's undici puts ECONNREFUSED only on error.cause. A regression to
+  // message-only matching would spam a warning on every event while the
+  // worker is down.
+  it("recognizes Bun's ConnectionRefused shape", () => {
+    const bunRefusal = Object.assign(
+      new Error("Unable to connect. Is the computer able to access the url?"),
+      { code: "ConnectionRefused" }
+    );
+    expect(isConnectionRefusedError(bunRefusal)).toBe(true);
+  });
+
+  it("recognizes undici's fetch failed with cause ECONNREFUSED", () => {
+    const undiciRefusal = new TypeError("fetch failed");
+    (undiciRefusal as { cause?: unknown }).cause = Object.assign(
+      new Error("connect ECONNREFUSED 127.0.0.1:37777"),
+      { code: "ECONNREFUSED" }
+    );
+    expect(isConnectionRefusedError(undiciRefusal)).toBe(true);
+  });
+
+  it("recognizes a legacy message-embedded ECONNREFUSED", () => {
+    expect(isConnectionRefusedError(new Error("connect ECONNREFUSED 127.0.0.1:37777"))).toBe(true);
+  });
+
+  it("does not swallow unrelated failures", () => {
+    expect(isConnectionRefusedError(new Error("TLS handshake exploded"))).toBe(false);
+    expect(isConnectionRefusedError(new Error("Unable to connect. Is the computer able to access the url?"))).toBe(false);
+    expect(isConnectionRefusedError("string error")).toBe(false);
   });
 });
