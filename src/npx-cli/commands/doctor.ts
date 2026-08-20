@@ -8,7 +8,7 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { styleText } from 'node:util';
-import { isPluginInstalled, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
+import { resolvePluginRoot, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
 import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../../shared/paths.js';
@@ -66,34 +66,52 @@ export async function runDoctorCommand(): Promise<void> {
     required: false,
   });
 
-  // 3. Plugin installed in the marketplace.
-  const installed = isPluginInstalled();
+  // 3. Plugin installed. Resolve the root the runtime actually loads (cache,
+  // $CLAUDE_PLUGIN_ROOT, or marketplace) so the report names the real location
+  // instead of assuming the marketplace copy.
+  const pluginRoot = resolvePluginRoot();
+  const installed = pluginRoot !== null;
   checks.push({
     name: 'Plugin installed',
     status: installed ? 'ok' : 'fail',
-    detail: installed ? marketplaceDirectory() : 'run `npx claude-mem install`',
+    detail: installed ? pluginRoot : 'run `npx claude-mem install`',
     required: true,
   });
 
-  // 4. Marketplace runtime root materialized.
+  // 4. Marketplace runtime root. Only required when the marketplace copy is the
+  // root the runtime resolves; a cache-based install is healthy without it, so
+  // an absent or stale marketplace only warns in that case.
   const marketplaceDir = marketplaceDirectory();
-  const marketplaceNodeModules = join(marketplaceDir, 'node_modules');
-  const marketplaceMarker = join(marketplaceDir, '.install-version');
-  const depsPresent = existsSync(marketplaceNodeModules);
-  const markerPresent = existsSync(marketplaceMarker);
-  const marketplaceCurrent = installed && isInstallCurrent(marketplaceDir, readPluginVersion());
-  const marketplaceDetail = marketplaceCurrent
-    ? 'node_modules and install marker present'
-    : !depsPresent
+  const marketplacePluginRoot = join(marketplaceDir, 'plugin');
+  const marketplacePresent = existsSync(join(marketplacePluginRoot, '.claude-plugin', 'plugin.json'));
+  const marketplaceIsActiveRoot = pluginRoot === marketplacePluginRoot;
+  const depsPresent = existsSync(join(marketplaceDir, 'node_modules'));
+  const markerPresent = existsSync(join(marketplaceDir, '.install-version'));
+  const marketplaceCurrent = marketplacePresent && isInstallCurrent(marketplaceDir, readPluginVersion());
+
+  let marketplaceStatus: CheckStatus;
+  let marketplaceDetail: string;
+  if (!marketplacePresent) {
+    marketplaceStatus = 'warn';
+    marketplaceDetail = installed
+      ? `not materialized — runtime loads from ${pluginRoot}`
+      : 'not materialized — run `npx claude-mem install`';
+  } else if (marketplaceCurrent) {
+    marketplaceStatus = 'ok';
+    marketplaceDetail = 'node_modules and install marker present';
+  } else {
+    marketplaceStatus = marketplaceIsActiveRoot ? 'fail' : 'warn';
+    marketplaceDetail = !depsPresent
       ? 'node_modules missing — run `npx claude-mem repair`'
       : !markerPresent
         ? 'install marker missing — run `npx claude-mem repair`'
         : 'install marker stale — run `npx claude-mem repair`';
+  }
   checks.push({
     name: 'Marketplace runtime',
-    status: installed ? (marketplaceCurrent ? 'ok' : 'fail') : 'warn',
+    status: marketplaceStatus,
     detail: marketplaceDetail,
-    required: installed,
+    required: marketplaceIsActiveRoot,
   });
 
   // 5. Worker health.
