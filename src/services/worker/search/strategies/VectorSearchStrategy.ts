@@ -71,12 +71,13 @@ export class VectorSearchStrategy {
 
     logger.debug('SEARCH', 'VectorSearchStrategy: querying in-file index', { query, searchType });
 
-    // Over-fetch: hydration re-applies type / concept / file / date filters in
+    // Fixed candidate pool, matching what the Chroma strategy always
+    // requested. Hydration re-applies type / concept / file / date filters in
     // SQL, so the semantic stage must supply more candidates than the caller's
     // limit or results come back short whenever those filters bite.
     const results = await this.vectorSync.queryChroma(
       query,
-      limit * SEARCH_CONSTANTS.OVERFETCH_FACTOR,
+      SEARCH_CONSTANTS.SEMANTIC_CANDIDATE_POOL,
       whereFilter
     );
 

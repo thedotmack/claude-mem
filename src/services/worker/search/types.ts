@@ -8,11 +8,12 @@ export const SEARCH_CONSTANTS = {
   DEFAULT_LIMIT: 20,
   CHROMA_BATCH_SIZE: 100,
   /**
-   * The vector stage hands more candidates to hydration than the caller's
-   * limit, because hydration re-applies type / concept / file / date filters
-   * in SQL and would otherwise return short whenever those filters bite.
+   * Candidate pool handed to hydration, which re-applies type / concept /
+   * file / date filters in SQL and would otherwise return short whenever
+   * those filters bite. Fixed at 100 to match the size the Chroma strategy
+   * always requested, so retrieval breadth is unchanged.
    */
-  OVERFETCH_FACTOR: 4
+  SEMANTIC_CANDIDATE_POOL: 100
 } as const;
 
 export type ChromaDocType = 'observation' | 'session_summary' | 'user_prompt';
