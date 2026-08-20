@@ -13,11 +13,38 @@ export interface ShutdownCascadeOptions {
   registry: ProcessRegistry;
   currentPid?: number;
   pidFilePath?: string;
+  /**
+   * Restart-safety latch: put this process's registry into read-only mode for
+   * the rest of its life, keeping the kill side intact.
+   *
+   * This registry is process-local after a once-guarded initialize(), so its
+   * map is a snapshot frozen at boot, and persist() rewrites supervisor.json in
+   * full from that snapshot. Once a restart has handed off, the successor may
+   * already have written its OWN 'worker' record to the shared file, so any
+   * write from here can erase it.
+   *
+   * Implemented via registry.suspendWrites() rather than by skipping call sites
+   * here, because signalling a child makes that child's 'exit' handler call
+   * unregister() asynchronously, from outside this function.
+   *
+   * Same posture as removeOwnedPidFile() below: a dying process does not touch
+   * what its successor now owns. The predecessor's stale records are left
+   * behind, and the successor's periodic health check prunes them on a later
+   * pass (pruneDeadEntries only persists when it removes something, and the
+   * abandoned records supply exactly that trigger).
+   */
+  preserveRegistryForSuccessor?: boolean;
 }
 
 export async function runShutdownCascade(options: ShutdownCascadeOptions): Promise<void> {
   const currentPid = options.currentPid ?? process.pid;
   const pidFilePath = options.pidFilePath ?? PID_FILE;
+
+  // Before the first read: getAll() can trigger initialize(), which persists.
+  if (options.preserveRegistryForSuccessor) {
+    options.registry.suspendWrites();
+  }
+
   const allRecords = options.registry.getAll();
   const childRecords = [...allRecords]
     .filter(record => record.pid !== currentPid)
@@ -75,6 +102,9 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
 
   await waitForExit(survivors, 1000);
 
+  // These still run under preserveRegistryForSuccessor — suspendWrites() has
+  // made them in-memory only, so the bookkeeping stays consistent while the
+  // successor's file is left untouched.
   for (const record of childRecords) {
     options.registry.unregister(record.id);
   }
@@ -82,6 +112,8 @@ export async function runShutdownCascade(options: ShutdownCascadeOptions): Promi
     options.registry.unregister(record.id);
   }
 
+  // Owner-guarded, so it is safe on both paths: it deletes only a PID file this
+  // process actually owns and leaves a successor's file alone.
   removeOwnedPidFile(pidFilePath, currentPid);
 
   options.registry.pruneDeadEntries();
