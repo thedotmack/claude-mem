@@ -116,6 +116,10 @@ export class DatabaseManager {
    * and blocking startup on that would make the worker look hung. Batches are
    * spaced so indexing never competes with live capture; the pass simply
    * resumes next boot if the process exits partway.
+   *
+   * The re-arm is driven by the batch's own report rather than by a second
+   * isComplete() probe, so the chain stops on the pass that finishes the scan
+   * instead of one full COUNT(*) sweep of three tables later.
    */
   private scheduleBackfill(delayMs = 5_000): void {
     if (!this.backfill || !this.vectorIndex) return;
@@ -125,7 +129,11 @@ export class DatabaseManager {
           logger.info('DB', 'Vector backfill complete');
           return;
         }
-        await this.backfill!.runBatch();
+        const progress = await this.backfill!.runBatch();
+        if (progress.every((p) => p.remaining === 0)) {
+          logger.info('DB', 'Vector backfill complete');
+          return;
+        }
         this.scheduleBackfill(1_000);
       } catch (error) {
         // A failed pass must never take the worker with it; search degrades

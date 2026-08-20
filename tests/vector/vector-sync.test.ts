@@ -11,6 +11,18 @@ const OBSERVATION = {
   concepts: [], files_read: [], files_modified: [],
 };
 
+/**
+ * The flat pre-v8 shape. `text` is the BASE observations column and predates
+ * narrative/facts, so a caller replaying an old row carries it and nothing
+ * else; ChromaSync rendered that row as obs_<id>_text.
+ */
+const LEGACY_OBSERVATION = {
+  type: 'discovery', title: null, subtitle: null,
+  facts: [], narrative: null,
+  text: 'a flat legacy observation about a stale cache read',
+  concepts: [], files_read: [], files_modified: [],
+};
+
 describe('VectorSync', () => {
   let db: Database;
   let index: VectorIndex;
@@ -29,6 +41,7 @@ describe('VectorSync', () => {
             prompt_text TEXT, created_at_epoch INTEGER)`);
     db.prepare('INSERT INTO sdk_sessions VALUES (?,?,?,?,?)').run(1, 'cs-1', 'sess-1', 'alpha', 'claude');
     db.prepare('INSERT INTO observations VALUES (?,?,?,?,?)').run(7, 'sess-1', 'alpha', null, Date.now());
+    db.prepare('INSERT INTO observations VALUES (?,?,?,?,?)').run(8, 'sess-1', 'alpha', null, Date.now());
     db.prepare('INSERT INTO session_summaries VALUES (?,?,?,?,?)').run(9, 'sess-1', 'alpha', null, Date.now());
     db.prepare('INSERT INTO user_prompts VALUES (?,?,?,?)').run(11, 'cs-1', 'a prompt', Date.now());
 
@@ -64,6 +77,22 @@ describe('VectorSync', () => {
   it('indexes a user prompt', async () => {
     await sync.syncUserPrompt(11, 'sess-1', 'alpha', 'how do agents avoid clobbering', 1, Date.now(), 'claude');
     expect(index.countIndexed('prompt')).toBe(1);
+  });
+
+  it('emits obs_<id>_text for an observation carrying the legacy text field', async () => {
+    await sync.syncObservation(8, 'sess-1', 'alpha', LEGACY_OBSERVATION as any, 1, Date.now(), 'claude');
+    const ids = (db.prepare('SELECT doc_id FROM vec_observation_docs WHERE sqlite_id = 8')
+      .all() as { doc_id: string }[]).map((r) => r.doc_id);
+    expect(ids).toEqual(['obs_8_text']);
+  });
+
+  it('makes a legacy text observation retrievable', async () => {
+    const hits = await index.query({
+      text: 'a flat legacy observation about a stale cache read',
+      kinds: ['observation'], project: 'alpha', limit: 3,
+    });
+    expect(hits[0].sqliteId).toBe(8);
+    expect(hits[0].fieldType).toBe('text');
   });
 
   it('makes written documents retrievable', async () => {

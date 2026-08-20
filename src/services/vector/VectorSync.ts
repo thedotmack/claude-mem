@@ -5,6 +5,19 @@ import type { VectorDocKind } from './types.js';
 import { logger } from '../../utils/logger.js';
 
 /**
+ * What syncObservation accepts.
+ *
+ * ParsedObservation is the v8+ shape and has no `text`; the BASE observations
+ * column does, and it is the ONLY populated content column on every row
+ * captured before v8 (schema v8 adds narrative/facts by bare ALTER TABLE and
+ * backfills neither). A caller replaying a stored row therefore has a `text`
+ * to hand even though the parser never produces one, and ChromaSync rendered
+ * exactly that as obs_<id>_text. Accepting it here keeps the document families
+ * this class emits equal to the ones it replaces.
+ */
+export type SyncableObservation = ParsedObservation & { text?: string | null };
+
+/**
  * Write-path shim over VectorIndex.
  *
  * Signature-compatible with the ChromaSync methods it replaces, so the six
@@ -35,7 +48,8 @@ export class VectorSync {
     return this.index;
   }
 
-  private observationDocs(observationId: number, obs: ParsedObservation): VectorDoc[] {
+  /** Ordering matches ChromaSync.formatObservationDocs: narrative, text, facts. */
+  private observationDocs(observationId: number, obs: SyncableObservation): VectorDoc[] {
     const docs: VectorDoc[] = [];
     if (obs.narrative) {
       docs.push({
@@ -44,6 +58,15 @@ export class VectorSync {
         fieldType: 'narrative',
         factIndex: null,
         text: obs.narrative,
+      });
+    }
+    if (obs.text) {
+      docs.push({
+        docId: `obs_${observationId}_text`,
+        sqliteId: observationId,
+        fieldType: 'text',
+        factIndex: null,
+        text: obs.text,
       });
     }
     obs.facts.forEach((fact, index) => {
@@ -62,7 +85,7 @@ export class VectorSync {
     observationId: number,
     _memorySessionId: string,
     project: string,
-    obs: ParsedObservation,
+    obs: SyncableObservation,
     _promptNumber: number,
     _createdAtEpoch: number,
     _platformSource?: string,

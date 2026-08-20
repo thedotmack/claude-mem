@@ -25,8 +25,12 @@ describe('VectorIndex', () => {
     db.run('PRAGMA foreign_keys = ON');
     db.run(`CREATE TABLE sdk_sessions (id INTEGER PRIMARY KEY, content_session_id TEXT,
             memory_session_id TEXT, project TEXT, platform_source TEXT)`);
+    // `text` is the BASE observations column (NOT NULL until schema v9);
+    // narrative/facts only arrive at v8. A fixture without it cannot represent
+    // a pre-v8 row, which is most of an upgrading install's corpus.
     db.run(`CREATE TABLE observations (id INTEGER PRIMARY KEY, memory_session_id TEXT,
-            project TEXT, merged_into_project TEXT, created_at_epoch INTEGER)`);
+            project TEXT, merged_into_project TEXT, text TEXT, narrative TEXT, facts TEXT,
+            created_at_epoch INTEGER)`);
     db.run(`CREATE TABLE session_summaries (id INTEGER PRIMARY KEY, memory_session_id TEXT,
             project TEXT, merged_into_project TEXT, created_at_epoch INTEGER)`);
     db.run(`CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, content_session_id TEXT,
@@ -34,11 +38,15 @@ describe('VectorIndex', () => {
 
     db.prepare('INSERT INTO sdk_sessions VALUES (?,?,?,?,?)').run(1, 'cs-a', 'ms-a', 'alpha', 'claude');
     db.prepare('INSERT INTO sdk_sessions VALUES (?,?,?,?,?)').run(2, 'cs-b', 'ms-b', 'beta', 'codex');
-    const obs = db.prepare('INSERT INTO observations VALUES (?,?,?,?,?)');
-    obs.run(1, 'ms-a', 'alpha', null, Date.now());
-    obs.run(2, 'ms-a', 'alpha', null, Date.now());
-    obs.run(3, 'ms-b', 'beta', null, Date.now());
-    obs.run(4, 'ms-b', 'legacy', 'alpha', Date.now()); // remapped into alpha
+    const obs = db.prepare(`INSERT INTO observations
+      (id, memory_session_id, project, merged_into_project, text, narrative, facts, created_at_epoch)
+      VALUES (?,?,?,?,?,?,?,?)`);
+    obs.run(1, 'ms-a', 'alpha', null, null, 'n1', null, Date.now());
+    obs.run(2, 'ms-a', 'alpha', null, null, 'n2', null, Date.now());
+    obs.run(3, 'ms-b', 'beta', null, null, 'n3', null, Date.now());
+    obs.run(4, 'ms-b', 'legacy', 'alpha', null, 'n4', null, Date.now()); // remapped into alpha
+    // Pre-v8 shape: only the flat text column was ever written.
+    obs.run(5, 'ms-a', 'alpha', null, 'a flat legacy row about a stale cache read', null, null, Date.now());
     db.prepare('INSERT INTO user_prompts VALUES (?,?,?,?)').run(10, 'cs-a', 'p', Date.now());
 
     index = new VectorIndex(db, new FakeEmbedder());
@@ -113,6 +121,19 @@ describe('VectorIndex', () => {
       text: 'agents overwriting', kinds: ['prompt'], project: 'beta', limit: 3,
     });
     expect(hits.length).toBe(0);
+  });
+
+  it('indexes and retrieves a pre-v8 text document', async () => {
+    await index.upsert('observation', [
+      { docId: 'obs_5_text', sqliteId: 5, fieldType: 'text', factIndex: null,
+        text: 'a flat legacy row about a stale cache read' },
+    ]);
+    const hits = await index.query({
+      text: 'a flat legacy row about a stale cache read',
+      kinds: ['observation'], project: 'alpha', limit: 3,
+    });
+    expect(hits[0].docId).toBe('obs_5_text');
+    expect(hits[0].fieldType).toBe('text');
   });
 
   it('does not re-embed unchanged text', async () => {

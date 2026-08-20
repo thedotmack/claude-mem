@@ -23,46 +23,92 @@ export interface BackfillProgress {
  * are simply re-embedded from it. Measured cost is ~4 minutes for a
  * 141,476-document store on slow hardware.
  *
- * Resumable with no bookkeeping. "What still needs embedding" is a LEFT JOIN,
- * not a bookmark, so an interrupted run resumes by asking the same question
- * again. That is the direct payoff of vectors living in the same database:
+ * Resumable with no persisted bookkeeping. An interrupted run resumes by asking
+ * the same question of the same database on next boot; nothing to reset by hand.
+ * That is the direct payoff of vectors living in the same database:
  * chroma-sync-state.json existed only to answer this, and it is exactly the
  * file #3012 victims had to delete by hand before a re-embed would proceed.
+ *
+ * The pass is a KEYSET SCAN, not a set difference, and that distinction is
+ * load-bearing. "Rows with no vector" asks a ROW-level question, but progress
+ * is only ever recordable at DOCUMENT granularity — one vector row per emitted
+ * document. A parent row that emits ZERO documents can therefore never satisfy
+ * it, and with ORDER BY id LIMIT n the lowest-id doc-less rows are re-selected
+ * in every batch, so the window never advances and the caller's re-arm timer
+ * spins forever. Doc-less rows are ordinary: an observation with only
+ * title+concepts (parser.ts skips only when all four content fields are empty),
+ * a session_summaries row with all six text fields NULL, a user_prompts row
+ * with ''. Carrying a cursor makes "examined" representable independently of
+ * "embedded", so those rows are passed over exactly once and the pass ends.
  */
 export class VectorBackfill {
+  /**
+   * Highest parent id already examined, per kind. Advances monotonically, which
+   * is what lets a doc-less row be passed over instead of re-selected forever.
+   */
+  private readonly cursor = new Map<VectorDocKind, number>();
+  /** Kinds whose scan has reached the end of the table. */
+  private readonly finished = new Set<VectorDocKind>();
+
   constructor(
     private readonly db: Database,
     private readonly index: VectorIndex,
   ) {}
 
-  /** Rows of this kind that have no vector for the current model. */
+  /**
+   * Rows of this kind still AHEAD of the cursor that have no vector.
+   *
+   * The NOT EXISTS clause stays because it is a cheap skip for rows a previous
+   * process already embedded; the cursor is what guarantees termination.
+   */
   private pendingCount(kind: VectorDocKind, modelId: string): number {
+    if (this.finished.has(kind)) return 0;
     const { table, parent } = VECTOR_TABLES[kind];
     const row = this.db.prepare(`
       SELECT COUNT(*) AS n FROM ${parent} p
-      WHERE NOT EXISTS (
-        SELECT 1 FROM ${table} v WHERE v.sqlite_id = p.id AND v.model_id = ?
-      )
-    `).get(modelId) as { n: number };
+      WHERE p.id > ?
+        AND NOT EXISTS (
+          SELECT 1 FROM ${table} v WHERE v.sqlite_id = p.id AND v.model_id = ?
+        )
+    `).get(this.cursorFor(kind), modelId) as { n: number };
     return row.n;
   }
 
-  private nextBatch(kind: VectorDocKind, modelId: string): VectorDoc[] {
+  private cursorFor(kind: VectorDocKind): number {
+    return this.cursor.get(kind) ?? 0;
+  }
+
+  private nextBatch(kind: VectorDocKind, modelId: string): { docs: VectorDoc[]; lastId: number | null } {
     const { table, parent } = VECTOR_TABLES[kind];
     const cols = this.selectColumns(kind);
     const rows = this.db.prepare(`
       SELECT p.id AS id, ${cols} FROM ${parent} p
-      WHERE NOT EXISTS (
-        SELECT 1 FROM ${table} v WHERE v.sqlite_id = p.id AND v.model_id = ?
-      )
+      WHERE p.id > ?
+        AND NOT EXISTS (
+          SELECT 1 FROM ${table} v WHERE v.sqlite_id = p.id AND v.model_id = ?
+        )
       ORDER BY p.id
       LIMIT ${BATCH_SIZE}
-    `).all(modelId) as Record<string, unknown>[];
-    return rows.flatMap((row) => this.toDocs(kind, row));
+    `).all(this.cursorFor(kind), modelId) as Record<string, unknown>[];
+    if (rows.length === 0) return { docs: [], lastId: null };
+    // ORDER BY p.id, so the last row carries the high-water mark.
+    const lastId = Number(rows[rows.length - 1].id);
+    return { docs: rows.flatMap((row) => this.toDocs(kind, row)), lastId };
   }
 
+  /**
+   * Columns are probed rather than assumed. observations.text is in the BASE
+   * table while narrative/facts only arrive at schema v8, so BOTH halves can be
+   * absent depending on how old the store is, and naming a missing column is a
+   * hard SQL error that would abort the whole migration.
+   */
   private selectColumns(kind: VectorDocKind): string {
-    if (kind === 'observation') return 'p.narrative AS narrative, p.facts AS facts';
+    if (kind === 'observation') {
+      return ['narrative', 'text', 'facts']
+        .filter((c) => hasColumn(this.db, 'observations', c))
+        .map((c) => `p.${c} AS ${c}`)
+        .join(', ') || `NULL AS narrative`;
+    }
     if (kind === 'summary') {
       return ['request', 'investigated', 'learned', 'completed', 'next_steps', 'notes']
         .filter((c) => hasColumn(this.db, 'session_summaries', c))
@@ -79,6 +125,13 @@ export class VectorBackfill {
     if (kind === 'observation') {
       if (row.narrative) {
         docs.push({ docId: `obs_${id}_narrative`, sqliteId: id, fieldType: 'narrative', factIndex: null, text: String(row.narrative) });
+      }
+      // The flat pre-v8 field. It is the only content an observation captured
+      // before schema v8 has, so dropping it makes most of an upgrading
+      // install's corpus unsearchable. Ordered after narrative, as ChromaSync
+      // emitted it.
+      if (row.text) {
+        docs.push({ docId: `obs_${id}_text`, sqliteId: id, fieldType: 'text', factIndex: null, text: String(row.text) });
       }
       // facts is a JSON array column; a malformed value must not stall the
       // whole backfill, so it degrades to "this row has no fact documents".
@@ -122,11 +175,22 @@ export class VectorBackfill {
       const { parent } = VECTOR_TABLES[kind];
       if (!this.tableExists(parent)) continue;
 
-      const docs = this.nextBatch(kind, modelId);
+      const { docs, lastId } = this.nextBatch(kind, modelId);
       let embedded = 0;
       if (docs.length > 0) {
         embedded = await this.index.upsert(kind, docs);
       }
+
+      if (lastId === null) {
+        // The scan ran off the end of the table: this kind is done. Any row
+        // still without a vector is one that renders to no document at all.
+        this.finished.add(kind);
+      } else {
+        // Advanced only after a successful upsert, so a throwing batch leaves
+        // the cursor where it was and the caller can retry the same window.
+        this.cursor.set(kind, lastId);
+      }
+
       const remaining = this.pendingCount(kind, modelId);
       progress.push({ kind, processed: docs.length, embedded, remaining });
 
@@ -144,7 +208,12 @@ export class VectorBackfill {
     return Boolean(row);
   }
 
-  /** True when every kind is fully embedded for the current model. */
+  /**
+   * True when every kind's scan has nothing left ahead of its cursor.
+   *
+   * Not "every row has a vector" — that can never become true in the presence
+   * of a doc-less row, and asserting it is what wedged the caller's timer.
+   */
   isComplete(modelId: string): boolean {
     return (['observation', 'summary', 'prompt'] as VectorDocKind[])
       .filter((k) => this.tableExists(VECTOR_TABLES[k].parent))
