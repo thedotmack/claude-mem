@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import { logger } from '../utils/logger.js';
 import { sanitizeEnv } from './env-sanitizer.js';
-import { OBSERVER_SESSIONS_DIR, paths } from '../shared/paths.js';
+import { ensureDir, OBSERVER_SESSIONS_DIR, paths } from '../shared/paths.js';
 
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;
 const REAP_SESSION_SIGKILL_TIMEOUT_MS = 1_000;
@@ -619,6 +619,8 @@ export interface SpawnSdkOptions {
   command: string;
   args: string[];
   extraArgs?: string[];
+  // Part of the Claude SDK callback contract. Accepted at this trust boundary
+  // so callers remain compatible, but deliberately ignored for isolation.
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
@@ -648,8 +650,8 @@ export function normalizeSpawnSdkArgs(args: string[], extraArgs: string[] = []):
   return filteredArgs;
 }
 
-export function normalizeSpawnSdkCwd(_cwd: string | undefined): string {
-  return OBSERVER_SESSIONS_DIR;
+export function normalizeSpawnSdkCwd(sessionDbId: number): string {
+  return path.join(OBSERVER_SESSIONS_DIR, String(sessionDbId));
 }
 
 export function spawnSdkProcess(
@@ -661,7 +663,17 @@ export function spawnSdkProcess(
   const useCmdWrapper = process.platform === 'win32' && options.command.endsWith('.cmd');
   const env = sanitizeEnv(options.env ?? process.env);
   const filteredArgs = normalizeSpawnSdkArgs(options.args, options.extraArgs);
-  const cwd = normalizeSpawnSdkCwd(options.cwd);
+  const cwd = normalizeSpawnSdkCwd(sessionDbId);
+  try {
+    ensureDir(cwd);
+  } catch (error: unknown) {
+    const cause = error instanceof Error ? error : new Error(String(error));
+    logger.error('SDK_SPAWN', `[session-${sessionDbId}] failed to create observer session directory`, {
+      sessionDbId,
+      cwd,
+    }, cause);
+    return null;
+  }
 
   const isWin = process.platform === 'win32';
   const child = useCmdWrapper
