@@ -1390,6 +1390,7 @@ async function main() {
       console.log(`  Repo:                 ${result.repoPath}`);
       console.log(`  Worktrees scanned:    ${result.scannedWorktrees}`);
       console.log(`  Merged branches:      ${result.mergedBranches.join(', ') || '(none)'}`);
+      console.log(`  Orphaned worktrees:   ${result.orphanedWorktrees.join(', ') || '(none)'}`);
       console.log(`  Observations adopted: ${result.adoptedObservations}`);
       console.log(`  Summaries adopted:    ${result.adoptedSummaries}`);
       console.log(`  Chroma docs updated:  ${result.chromaUpdates}`);
