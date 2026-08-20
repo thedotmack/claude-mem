@@ -20,6 +20,7 @@ interface SessionState {
   lastUserMessage?: string;
   lastAssistantMessage?: string;
   pendingTools?: Map<string, { toolName: string; toolInput: unknown }>;
+  isSubagent?: boolean;
 }
 
 export class TranscriptEventProcessor {
@@ -119,6 +120,28 @@ export class TranscriptEventProcessor {
     if (cwd) session.cwd = cwd;
     const project = this.resolveProject(entry, watch, schema, event, session);
     if (project) session.project = project;
+
+    // Codex writes the subagent marker on the first (session_meta) line; learn
+    // it from whichever line carries it so later ingest events can be gated.
+    if (watch.subagentSource && !session.isSubagent) {
+      const marker = resolveFieldSpec({ path: watch.subagentSource.path }, entry, { watch, schema } as any);
+      if (typeof marker === 'string' && marker === watch.subagentSource.value) {
+        session.isSubagent = true;
+      }
+    }
+
+    // When native hooks own top-level sessions, ingest only confirmed subagent
+    // rollouts. session_context still runs so a later marker line can flip the
+    // session on; session_end still runs so the suppressed session is dropped
+    // from the map instead of lingering.
+    if (
+      watch.subagentOnly &&
+      !session.isSubagent &&
+      event.action !== 'session_context' &&
+      event.action !== 'session_end'
+    ) {
+      return;
+    }
 
     const fields = resolveFields(event.fields, entry, { watch, schema, session: session as unknown as Record<string, unknown> });
 
@@ -309,8 +332,12 @@ export class TranscriptEventProcessor {
   }
 
   private async handleSessionEnd(session: SessionState, watch: WatchTarget): Promise<void> {
-    await this.queueSummary(session);
-    await this.updateContext(session, watch);
+    // A suppressed top-level session reaches here only to be cleaned up; its
+    // summary and context belong to the native hooks, not the transcript watch.
+    if (!watch.subagentOnly || session.isSubagent) {
+      await this.queueSummary(session);
+      await this.updateContext(session, watch);
+    }
     session.pendingTools?.clear();
     const key = this.getSessionKey(watch, session.sessionId);
     this.sessions.delete(key);

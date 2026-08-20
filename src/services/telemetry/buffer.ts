@@ -41,6 +41,10 @@ interface SessionCompressedRecord {
   compression_ms?: number;
   outcome?: string;
   model?: string;
+  // Platform that produced the session (claude | codex | cursor | …). Constant
+  // across a session's records, so the rollup carries it once — this is the
+  // only capture-side signal that tells Codex sessions from Claude Code ones.
+  platform?: string;
   // Per-turn observation accounting (ResponseProcessor compressionProps):
   // `count` is the number of observations created in this compression turn,
   // and obs_type_* is that turn's type breakdown. Summing these across the
@@ -145,9 +149,13 @@ function computeSessionCompressedRollup(
   let obsTypeDecision = 0;
   let obsTypeRefactor = 0;
   let obsTypeOther = 0;
+  let platform: string | undefined;
   const modelFrequency: Map<string, number> = new Map();
 
   for (const r of records) {
+    if (!platform && typeof r.platform === 'string' && r.platform) {
+      platform = r.platform;
+    }
     if (typeof r.tokens_input === 'number' && Number.isFinite(r.tokens_input)) {
       totalTokensInput += r.tokens_input;
     }
@@ -236,6 +244,11 @@ function computeSessionCompressedRollup(
       }
     }
     rollup.top_model = topModel;
+  }
+
+  // Platform dimension: only present when a record carried it.
+  if (platform) {
+    rollup.platform = platform;
   }
 
   return rollup;

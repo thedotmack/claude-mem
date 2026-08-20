@@ -119,4 +119,54 @@ describe('TranscriptWatcher startAtEnd', () => {
     expect(prompts).toContain('live prompt');
     expect(prompts).not.toContain('historical prompt that must not be replayed');
   });
+
+  it('reads a file discovered after startup from the beginning even under startAtEnd', async () => {
+    const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e5763b';
+    const filePath = join(tmpRoot, `${sessionId}.jsonl`);
+    const statePath = join(tmpRoot, 'state.json');
+
+    // A subagent rollout created after startup: its first line must be read so
+    // the session is captured (top-level sessions are owned by native hooks).
+    writeFileSync(
+      filePath,
+      `${JSON.stringify({
+        type: 'event',
+        payload: {
+          type: 'user_message',
+          session_id: sessionId,
+          message: 'first line of a newly created session',
+        },
+      })}\n`,
+      'utf8',
+    );
+
+    const schema: TranscriptSchema = {
+      name: 'codex-test',
+      events: [
+        {
+          name: 'user-message',
+          match: { path: 'payload.type', equals: 'user_message' },
+          action: 'session_init',
+          fields: {
+            sessionId: 'payload.session_id',
+            prompt: 'payload.message',
+          },
+        },
+      ],
+    };
+    const watch: WatchTarget = {
+      name: 'codex',
+      path: join(tmpRoot, '*.jsonl'),
+      schema,
+      startAtEnd: true,
+    };
+    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+
+    // readFromStart=true is what handleRootWatchEvent passes for new files.
+    await (watcher as any).addTailer(filePath, watch, schema, true);
+    await waitForAsyncTail();
+    watcher.stop();
+
+    expect(sessionInitCalls.map(call => call.prompt)).toContain('first line of a newly created session');
+  });
 });
