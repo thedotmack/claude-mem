@@ -602,6 +602,32 @@ async function buildHooks() {
     const npxCliStats = fs.statSync(`${npxCliOutDir}/index.js`);
     console.log(`✓ npx-cli built (${(npxCliStats.size / 1024).toFixed(2)} KB)`);
 
+    console.log(`\n🔧 Building bug-report CLI...`);
+    const bugReportOutDir = 'dist/bug-report';
+    if (!fs.existsSync(bugReportOutDir)) {
+      fs.mkdirSync(bugReportOutDir, { recursive: true });
+    }
+    await build({
+      entryPoints: ['scripts/bug-report/cli.ts'],
+      bundle: true,
+      platform: 'node',
+      target: 'node20',
+      format: 'esm',
+      outfile: `${bugReportOutDir}/index.js`,
+      minify: true,
+      logLevel: 'error',
+      external: [
+        'fs', 'fs/promises', 'path', 'os', 'child_process', 'url',
+        'crypto', 'http', 'https', 'net', 'stream', 'util', 'events',
+        'buffer', 'querystring', 'readline', 'tty', 'assert',
+        'bun:sqlite',
+      ],
+    });
+
+    fs.chmodSync(`${bugReportOutDir}/index.js`, 0o755);
+    const bugReportStats = fs.statSync(`${bugReportOutDir}/index.js`);
+    console.log(`✓ bug-report built (${(bugReportStats.size / 1024).toFixed(2)} KB)`);
+
     if (fs.existsSync('openclaw/src/index.ts')) {
       console.log(`\n🔧 Building OpenClaw plugin...`);
       const openclawOutDir = 'openclaw/dist';
@@ -686,6 +712,7 @@ async function buildHooks() {
       'plugin/.mcp.json',
       '.codex-plugin/plugin.json',
       '.agents/plugins/marketplace.json',
+      'dist/bug-report/index.js',
     ];
     for (const filePath of requiredDistributionFiles) {
       if (!fs.existsSync(filePath)) {
