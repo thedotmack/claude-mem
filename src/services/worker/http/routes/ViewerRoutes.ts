@@ -9,30 +9,34 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { SessionManager } from '../../SessionManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 
-const VIEWER_HTML_CANDIDATE_PATHS: readonly string[] = (() => {
+// Read on first request, not at import. Hook processes share this module but
+// never serve the viewer, so caching at import made every hook spawn read
+// viewer.html and log a boot line for nothing (#3665).
+let viewerHtmlCache: { bytes: Buffer | null } | undefined;
+
+function getViewerHtmlBytes(): Buffer | null {
+  if (viewerHtmlCache) {
+    return viewerHtmlCache.bytes;
+  }
   const packageRoot = getPackageRoot();
-  return [
+  const candidates = [
     path.join(packageRoot, 'ui', 'viewer.html'),
     path.join(packageRoot, 'plugin', 'ui', 'viewer.html'),
   ];
-})();
-
-const resolvedViewerHtmlPath: string | null =
-  VIEWER_HTML_CANDIDATE_PATHS.find((candidate) => existsSync(candidate)) ?? null;
-
-const viewerHtmlBytes: Buffer | null = resolvedViewerHtmlPath
-  ? readFileSync(resolvedViewerHtmlPath)
-  : null;
-
-if (resolvedViewerHtmlPath) {
-  logger.info('SYSTEM', 'Cached viewer.html at boot', {
-    path: resolvedViewerHtmlPath,
-    bytes: viewerHtmlBytes!.byteLength,
-  });
-} else {
-  logger.warn('SYSTEM', 'viewer.html not found at any expected location at boot', {
-    candidates: VIEWER_HTML_CANDIDATE_PATHS,
-  });
+  const resolvedPath = candidates.find((candidate) => existsSync(candidate)) ?? null;
+  const bytes = resolvedPath ? readFileSync(resolvedPath) : null;
+  if (resolvedPath) {
+    logger.debug('SYSTEM', 'Cached viewer.html on first request', {
+      path: resolvedPath,
+      bytes: bytes!.byteLength,
+    });
+  } else {
+    logger.warn('SYSTEM', 'viewer.html not found at any expected location', {
+      candidates,
+    });
+  }
+  viewerHtmlCache = { bytes };
+  return bytes;
 }
 
 export class ViewerRoutes extends BaseRouteHandler {
@@ -64,6 +68,7 @@ export class ViewerRoutes extends BaseRouteHandler {
   });
 
   private handleViewerUI = this.wrapHandler((req: Request, res: Response): void => {
+    const viewerHtmlBytes = getViewerHtmlBytes();
     if (!viewerHtmlBytes) {
       throw new Error('Viewer UI not found at any expected location');
     }
