@@ -5,6 +5,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { logger } from "../../utils/logger.js";
+import { selectTreeSitterBinary } from "../../shared/tree-sitter-binary.js";
 
 const _require = typeof __filename !== 'undefined'
   ? createRequire(__filename)
@@ -359,8 +360,8 @@ function getTreeSitterBin(): string {
 
   try {
     const pkgPath = _require.resolve("tree-sitter-cli/package.json");
-    const binPath = join(dirname(pkgPath), "tree-sitter");
-    if (existsSync(binPath)) {
+    const binPath = selectTreeSitterBinary(dirname(pkgPath));
+    if (binPath) {
       cachedBinPath = binPath;
       return binPath;
     }

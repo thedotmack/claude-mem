@@ -1,5 +1,11 @@
-import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { exec, execSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'child_process';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'fs';
+import {
+  exec,
+  execFile,
+  execSync,
+  spawnSync,
+  type SpawnSyncOptionsWithStringEncoding,
+} from 'child_process';
 import { createRequire } from 'module';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -7,6 +13,7 @@ import { ErrorSeverity } from './error-taxonomy.js';
 import { installerError, type InstallSummary } from './error-reporter.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
+import { selectTreeSitterBinary } from '../../shared/tree-sitter-binary.js';
 import { IS_WINDOWS } from '../utils/paths.js';
 import { parseJsonWithBom } from '../../shared/atomic-json.js';
 
@@ -142,7 +149,7 @@ export function getUvVersion(): string | null {
   }
 }
 
-function describeExecError(error: unknown): string {
+function describeExecError(error: unknown, includeStdoutWithStderr = false): string {
   if (error && typeof error === 'object') {
     const e = error as { message?: string; stdout?: Buffer | string; stderr?: Buffer | string };
     const parts: string[] = [];
@@ -150,7 +157,7 @@ function describeExecError(error: unknown): string {
     const stderr = e.stderr ? e.stderr.toString().trim() : '';
     if (stderr) parts.push(`stderr: ${stderr}`);
     const stdout = e.stdout ? e.stdout.toString().trim() : '';
-    if (!stderr && stdout) parts.push(`stdout: ${stdout}`);
+    if (stdout && (!stderr || includeStdoutWithStderr)) parts.push(`stdout: ${stdout}`);
     return parts.join('\n');
   }
   return String(error);
@@ -241,6 +248,72 @@ function installUv(): void {
  * we resolve subpaths, never a pinned version.
  */
 const ZOD_REQUIRED_SUBPATHS = ['zod/v3', 'zod/v4', 'zod/v4-mini'] as const;
+const TREE_SITTER_VERSION_TIMEOUT_MS = 10_000;
+
+function treeSitterCliPackageDir(targetDir: string): string {
+  return join(targetDir, 'node_modules', 'tree-sitter-cli');
+}
+
+export function treeSitterCliBinaryPath(targetDir: string): string {
+  return selectTreeSitterBinary(treeSitterCliPackageDir(targetDir))
+    ?? join(treeSitterCliPackageDir(targetDir), IS_WINDOWS ? 'tree-sitter.exe' : 'tree-sitter');
+}
+
+export async function isTreeSitterCliBinaryUsable(targetDir: string): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    const child = execFile(treeSitterCliBinaryPath(targetDir), ['--version'], {
+      encoding: 'utf-8',
+      timeout: TREE_SITTER_VERSION_TIMEOUT_MS,
+      windowsHide: true,
+    }, (error, stdout) => {
+      resolve(!error && /^tree-sitter \d+\.\d+\.\d+(?:\s|$)/.test((stdout ?? '').trim()));
+    });
+    child.stdin?.end();
+  });
+}
+
+export async function ensureTreeSitterCliBinary(
+  targetDir: string,
+  isUsable: (targetDir: string) => boolean | Promise<boolean> = isTreeSitterCliBinaryUsable,
+  installTimeoutMs: number = INSTALL_TIMEOUT_MS,
+): Promise<void> {
+  const cliDir = treeSitterCliPackageDir(targetDir);
+  if (existsSync(cliDir) && !statSync(cliDir).isDirectory()) {
+    throw new Error(`tree-sitter-cli package path is not a directory: ${cliDir}`);
+  }
+  const binaryPath = treeSitterCliBinaryPath(targetDir);
+  if (await isUsable(targetDir)) return;
+
+  const installScript = join(cliDir, 'install.js');
+  if (!existsSync(installScript)) {
+    throw new Error(`tree-sitter-cli install script not found: ${installScript}`);
+  }
+
+  let installOutput: { stdout: string; stderr: string } | undefined;
+  await new Promise<void>((resolve, reject) => {
+    const child = execFile(process.execPath, [installScript], {
+      cwd: cliDir,
+      timeout: installTimeoutMs,
+      maxBuffer: 16 * 1024 * 1024,
+      windowsHide: true,
+    }, (error, stdout, stderr) => {
+      if (error) {
+        reject(Object.assign(error, { stdout, stderr }));
+        return;
+      }
+      installOutput = { stdout, stderr };
+      resolve();
+    });
+    child.stdin?.end();
+  });
+
+  if (!(await isUsable(targetDir))) {
+    throw Object.assign(
+      new Error(`tree-sitter-cli install completed without creating a working executable ${binaryPath}`),
+      installOutput,
+    );
+  }
+}
 
 export function verifyCriticalModules(targetDir: string): void {
   const pkg = JSON.parse(readFileSync(join(targetDir, 'package.json'), 'utf-8'));
@@ -423,7 +496,11 @@ export async function ensureUv(
   return { uvPath, version };
 }
 
-export async function installPluginDependencies(targetDir: string, bunPath: string): Promise<void> {
+export async function installPluginDependencies(
+  targetDir: string,
+  bunPath: string,
+  treeSitterTimeoutMs: number = INSTALL_TIMEOUT_MS,
+): Promise<void> {
   if (!existsSync(join(targetDir, 'package.json'))) {
     throw new Error(`installPluginDependencies: no package.json at ${targetDir}`);
   }
@@ -455,6 +532,32 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
     throw new Error(`bun install failed in ${targetDir}\n${describeExecError(err)}`);
   }
 
+  try {
+    await ensureTreeSitterCliBinary(targetDir, isTreeSitterCliBinaryUsable, treeSitterTimeoutMs);
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    const processError = err as Error & { code?: number; killed?: boolean };
+    const details = describeExecError(err, true).slice(0, 4000);
+    const failure = processError.killed
+      ? 'timed out'
+      : processError.code !== undefined
+        ? `exited with code ${processError.code}`
+        : err.message;
+    const cause = Object.assign(
+      new Error(`tree-sitter-cli provisioning failed in ${targetDir}: ${failure}`),
+      {
+        code: processError.code,
+        killed: processError.killed,
+      },
+    );
+    installerError(ErrorSeverity.ABORT, {
+      component: 'tree-sitter-cli-cache',
+      phase: 'dependency-install',
+      cause,
+      details,
+    }, summaryOrEphemeral());
+    throw new Error('unreachable');
+  }
   verifyCriticalModules(targetDir);
 }
 
