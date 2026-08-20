@@ -1,5 +1,23 @@
-import { describe, it, expect } from 'bun:test';
+import { afterAll, beforeEach, describe, it, expect } from 'bun:test';
 import { claudeCodeAdapter } from '../../../src/cli/adapters/claude-code.js';
+import { AdapterRejectedInput } from '../../../src/cli/adapters/errors.js';
+
+const CLAUDE_PROJECT_DIR_ENV = 'CLAUDE_PROJECT_DIR';
+const SDK_TEMP_CWD = '/tmp/sdk-subagent';
+const DECLARED_PROJECT_DIR = '/tmp/declared-project';
+const savedClaudeProjectDir = process.env[CLAUDE_PROJECT_DIR_ENV];
+
+beforeEach(() => {
+  delete process.env[CLAUDE_PROJECT_DIR_ENV];
+});
+
+afterAll(() => {
+  if (savedClaudeProjectDir !== undefined) {
+    process.env[CLAUDE_PROJECT_DIR_ENV] = savedClaudeProjectDir;
+  } else {
+    delete process.env[CLAUDE_PROJECT_DIR_ENV];
+  }
+});
 
 describe('claudeCodeAdapter.normalizeInput — subagent fields', () => {
   it('extracts agentId and agentType when both are present', () => {
@@ -14,6 +32,22 @@ describe('claudeCodeAdapter.normalizeInput — subagent fields', () => {
     expect(normalized.cwd).toBe('/tmp');
     expect(normalized.agentId).toBe('agent-abc');
     expect(normalized.agentType).toBe('Explore');
+  });
+
+  it('anchors an SDK subagent cwd to CLAUDE_PROJECT_DIR', () => {
+    process.env[CLAUDE_PROJECT_DIR_ENV] = DECLARED_PROJECT_DIR;
+
+    const normalized = claudeCodeAdapter.normalizeInput({
+      session_id: 'sdk-session',
+      cwd: SDK_TEMP_CWD,
+      agent_id: 'sdk-agent',
+    });
+
+    expect(normalized.cwd).toBe(DECLARED_PROJECT_DIR);
+  });
+
+  it('rejects a non-string cwd with the adapter error contract', () => {
+    expect(() => claudeCodeAdapter.normalizeInput({ cwd: 42 })).toThrow(AdapterRejectedInput);
   });
 
   it('leaves agentId and agentType undefined when fields are absent (main-session payload)', () => {
