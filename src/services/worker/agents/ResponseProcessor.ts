@@ -382,10 +382,21 @@ export async function processAgentResponse(
   }
 
   const { observations, summary } = parsed;
-  const summaryForStore = normalizeSummaryForStorage(summary);
   const claimedMessages = sessionManager.getClaimedMessages(session.sessionDbId);
   const fileEvidence = extractObservationFileEvidence(claimedMessages);
   const sanitizedObservations = sanitizeObservationFiles(observations, fileEvidence);
+  // Include claimed-message file evidence even for summary-only responses
+  // (no parsed observations), otherwise files_read/files_edited persist as [].
+  const summaryForStore = attachObservationFilesToSummary(
+    normalizeSummaryForStorage(summary),
+    [
+      {
+        files_read: fileEvidence.files_read,
+        files_modified: fileEvidence.files_modified,
+      },
+      ...sanitizedObservations,
+    ]
+  );
 
   const sessionStore = dbManager.getSessionStore();
   sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId, getWorkerPort());
@@ -532,6 +543,8 @@ function normalizeSummaryForStorage(summary: ParsedSummary | null): {
   completed: string;
   next_steps: string;
   notes: string | null;
+  files_read: string[];
+  files_edited: string[];
 } | null {
   if (!summary) return null;
   if (summary.skipped) return null;
@@ -542,7 +555,47 @@ function normalizeSummaryForStorage(summary: ParsedSummary | null): {
     learned: summary.learned || '',
     completed: summary.completed || '',
     next_steps: summary.next_steps || '',
-    notes: summary.notes
+    notes: summary.notes,
+    files_read: [],
+    files_edited: [],
+  };
+}
+
+export function attachObservationFilesToSummary(
+  summary: {
+    request: string;
+    investigated: string;
+    learned: string;
+    completed: string;
+    next_steps: string;
+    notes: string | null;
+    files_read?: string[];
+    files_edited?: string[];
+  } | null,
+  observations: Array<{ files_read?: string[] | null; files_modified?: string[] | null }>
+): {
+  request: string;
+  investigated: string;
+  learned: string;
+  completed: string;
+  next_steps: string;
+  notes: string | null;
+  files_read: string[];
+  files_edited: string[];
+} | null {
+  if (!summary) return null;
+  const filesRead = dedupeStable([
+    ...(summary.files_read ?? []),
+    ...observations.flatMap((obs) => obs.files_read ?? []),
+  ]);
+  const filesEdited = dedupeStable([
+    ...(summary.files_edited ?? []),
+    ...observations.flatMap((obs) => obs.files_modified ?? []),
+  ]);
+  return {
+    ...summary,
+    files_read: filesRead,
+    files_edited: filesEdited,
   };
 }
 

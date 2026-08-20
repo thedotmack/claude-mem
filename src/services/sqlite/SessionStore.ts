@@ -39,6 +39,31 @@ interface RecentSessionStatusRow {
   has_summary: boolean;
 }
 
+/** Roll observation file lists into session_summaries.files_read / files_edited. */
+export function rollupObservationFileLists(
+  observations: Array<{ files_read?: string[] | null; files_modified?: string[] | null }>
+): { files_read: string[]; files_edited: string[] } {
+  const filesRead: string[] = [];
+  const filesEdited: string[] = [];
+  const seenRead = new Set<string>();
+  const seenEdited = new Set<string>();
+
+  for (const observation of observations) {
+    for (const filePath of observation.files_read ?? []) {
+      if (!filePath || seenRead.has(filePath)) continue;
+      seenRead.add(filePath);
+      filesRead.push(filePath);
+    }
+    for (const filePath of observation.files_modified ?? []) {
+      if (!filePath || seenEdited.has(filePath)) continue;
+      seenEdited.add(filePath);
+      filesEdited.push(filePath);
+    }
+  }
+
+  return { files_read: filesRead, files_edited: filesEdited };
+}
+
 interface SessionObservationRow {
   title: string;
   subtitle: string;
@@ -2550,6 +2575,8 @@ export class SessionStore {
       completed: string;
       next_steps: string;
       notes: string | null;
+      files_read?: string[];
+      files_edited?: string[];
     },
     promptNumber?: number,
     discoveryTokens: number = 0,
@@ -2561,8 +2588,8 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO session_summaries
       (memory_session_id, project, request, investigated, learned, completed,
-       next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       next_steps, files_read, files_edited, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -2573,6 +2600,8 @@ export class SessionStore {
       summary.learned,
       summary.completed,
       summary.next_steps,
+      JSON.stringify(summary.files_read ?? []),
+      JSON.stringify(summary.files_edited ?? []),
       summary.notes,
       promptNumber || null,
       discoveryTokens,
@@ -2609,6 +2638,8 @@ export class SessionStore {
       completed: string;
       next_steps: string;
       notes: string | null;
+      files_read?: string[];
+      files_edited?: string[];
     } | null,
     promptNumber?: number,
     discoveryTokens: number = 0,
@@ -2674,11 +2705,14 @@ export class SessionStore {
 
       let summaryId: number | null = null;
       if (summary) {
+        const rolledUp = rollupObservationFileLists(observations);
+        const filesRead = summary.files_read ?? rolledUp.files_read;
+        const filesEdited = summary.files_edited ?? rolledUp.files_edited;
         const summaryStmt = this.db.prepare(`
           INSERT INTO session_summaries
           (memory_session_id, project, request, investigated, learned, completed,
-           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           next_steps, files_read, files_edited, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const result = summaryStmt.run(
@@ -2689,6 +2723,8 @@ export class SessionStore {
           summary.learned,
           summary.completed,
           summary.next_steps,
+          JSON.stringify(filesRead),
+          JSON.stringify(filesEdited),
           summary.notes,
           promptNumber || null,
           discoveryTokens,
