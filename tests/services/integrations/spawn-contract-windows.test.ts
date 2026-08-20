@@ -43,6 +43,16 @@ describe('Windows #2696 - chroma-mcp spawns uvx directly', () => {
   });
 });
 
+describe('Windows #3540 - chroma-mcp tree-kill gives uvx a grace period', () => {
+  it('graceful pass omits /F so uv can clean up its build dir', () => {
+    expect(ChromaMcpManager.buildTaskkillTreeArgs(1234, false)).toEqual(['/PID', '1234', '/T']);
+  });
+
+  it('force pass appends /F to escalate after the grace window', () => {
+    expect(ChromaMcpManager.buildTaskkillTreeArgs(1234, true)).toEqual(['/PID', '1234', '/T', '/F']);
+  });
+});
+
 describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', () => {
   it('shared spawn wrapper wraps .cmd shims with cmd.exe and windowsHide', () => {
     const invocation = buildSpawnSyncInvocation(

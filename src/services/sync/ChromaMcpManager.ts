@@ -10,6 +10,7 @@ import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
+import { sweepStaleUvBuildDirs } from '../../shared/uv-cache.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { captureProcessStartToken, isPidAlive } from '../../supervisor/process-registry.js';
@@ -33,6 +34,10 @@ const DEFAULT_MAX_PENDING_MUTATIONS = 5_000;
 const CHROMA_MUTATION_TOOL_PATTERN = /^chroma_(?:add|create|delete|modify|update|upsert)_/;
 
 const CHROMA_MCP_PINNED_VERSION = '0.2.6';
+
+// Windows tree-kill grace window: how long `taskkill /T` gets to shut the
+// chroma-mcp tree down cleanly before we escalate to `taskkill /T /F` (#3540).
+const WINDOWS_TASKKILL_GRACE_MS = 500;
 
 // Override transitive dep resolutions for chroma-mcp 0.2.6 (issue #2371).
 //
@@ -96,6 +101,7 @@ export class ChromaMcpManager {
   private readonly serializeMutations: boolean;
   private acceptingLocalMutations = true;
   private static uvxAvailabilityProbe: ((command: string, env: Record<string, string>, platform: NodeJS.Platform) => boolean) | null = null;
+  private static uvBuildSweepStarted = false;
 
   private constructor() {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
@@ -152,6 +158,10 @@ export class ChromaMcpManager {
 
   private async connectInternal(): Promise<void> {
     const connectionGeneration = this.connectionGeneration;
+
+    // Reclaim disk from uvx builds that earlier force-kills orphaned (#3540).
+    // Once per process, off the connect path so it never blocks a spawn.
+    ChromaMcpManager.sweepStaleUvBuildDirsOnce();
 
     // Singleton invariant (#2313): kill any pre-existing chroma-mcp subprocess
     // tree before spawning a new one. The MCP SDK's transport.close() only
@@ -1031,8 +1041,11 @@ export class ChromaMcpManager {
    * POSIX: Sends SIGTERM to the process, then uses `pkill -P` to signal
    * children recursively. Falls back to single-PID kill if pkill is unavailable.
    *
-   * Windows: Uses `taskkill /T /F /PID` for full subtree teardown (same
-   * pattern as shutdown.ts).
+   * Windows: Runs `taskkill /T` first and only escalates to `taskkill /T /F`
+   * after a grace window, mirroring the POSIX SIGTERM->SIGKILL path and
+   * shutdown.ts. A graceless `/F` mid-build stops `uv` before it can delete
+   * its ephemeral uvx build directory, orphaning ~200MB of scratch files that
+   * nothing sweeps — tens of GB across normal reconnects (#3540).
    *
    * Best-effort — swallows ESRCH (already dead) and logs other errors.
    */
@@ -1040,18 +1053,9 @@ export class ChromaMcpManager {
     logger.debug('CHROMA_MCP', `Killing process tree rooted at PID ${pid}`);
 
     if (process.platform === 'win32') {
-      try {
-        await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], {
-          timeout: 5_000,
-          windowsHide: true
-        });
-      } catch (error) {
-        // taskkill exits non-zero when the process is already dead — that's fine.
-        logger.debug('CHROMA_MCP', `taskkill tree-kill finished (may already be dead)`, {
-          pid,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
+      await ChromaMcpManager.runTaskkillTree(pid, false);
+      await new Promise(resolve => setTimeout(resolve, WINDOWS_TASKKILL_GRACE_MS));
+      await ChromaMcpManager.runTaskkillTree(pid, true);
       return;
     }
 
@@ -1111,6 +1115,47 @@ export class ChromaMcpManager {
     } catch (error) {
       logger.debug('CHROMA_MCP', `Process tree kill completed (best-effort)`, {
         pid,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  /**
+   * Build the `taskkill` argument list for a tree-kill. `/F` (force) is only
+   * appended on the escalation pass, so the graceful pass lets `uv` clean up
+   * (#3540). Mirrors the `['/PID', pid, '/T']` + optional `/F` shape in
+   * shutdown.ts.
+   */
+  static buildTaskkillTreeArgs(pid: number, force: boolean): string[] {
+    const args = ['/PID', String(pid), '/T'];
+    if (force) {
+      args.push('/F');
+    }
+    return args;
+  }
+
+  private static sweepStaleUvBuildDirsOnce(): void {
+    if (ChromaMcpManager.uvBuildSweepStarted) {
+      return;
+    }
+    ChromaMcpManager.uvBuildSweepStarted = true;
+    void sweepStaleUvBuildDirs().catch(() => {
+      // Best-effort — a failed sweep must never disturb the connection.
+    });
+  }
+
+  private static async runTaskkillTree(pid: number, force: boolean): Promise<void> {
+    try {
+      await execFileAsync('taskkill', ChromaMcpManager.buildTaskkillTreeArgs(pid, force), {
+        timeout: 5_000,
+        windowsHide: true
+      });
+    } catch (error) {
+      // taskkill exits non-zero when the process is already gone — expected on
+      // the force pass after a clean graceful exit.
+      logger.debug('CHROMA_MCP', 'taskkill tree-kill finished (may already be dead)', {
+        pid,
+        force,
         error: error instanceof Error ? error.message : String(error)
       });
     }
