@@ -4,9 +4,12 @@ import type { SessionCompletionHandler } from './SessionCompletionHandler.js';
 import { logger } from '../../../utils/logger.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../../supervisor/process-registry.js';
 
+export type GeneratorExitOutcome = 'not-started' | 'preserved' | 'handled';
+
 export interface GeneratorExitDependencies {
   sessionManager: SessionManager;
   completionHandler: SessionCompletionHandler;
+  restartGenerator?: () => Promise<GeneratorExitOutcome>;
 }
 
 /**
@@ -30,7 +33,7 @@ export async function handleGeneratorExit(
   reason: ActiveSession['abortReason'],
   deps: GeneratorExitDependencies
 ): Promise<void> {
-  const { sessionManager, completionHandler } = deps;
+  const { sessionManager, completionHandler, restartGenerator } = deps;
   const sessionDbId = session.sessionDbId;
 
   const tracked = getSdkProcessForSession(sessionDbId);
@@ -48,6 +51,31 @@ export async function handleGeneratorExit(
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
     });
     return;
+  }
+
+  const isOrdinaryExit = reason === null;
+  const hasPendingSummarize = typeof sessionManager.hasPendingSummarize === 'function'
+    && sessionManager.hasPendingSummarize(sessionDbId);
+  if (isOrdinaryExit && hasPendingSummarize) {
+    if (sessionManager.claimSummarizeRescue(sessionDbId)) {
+      await sessionManager.resetProcessingToPending(sessionDbId);
+      if (restartGenerator) {
+        logger.info('SESSION', 'Generator exited with summarize buffered; starting one rescue pass', {
+          sessionId: sessionDbId,
+        });
+        const rescueOutcome = await restartGenerator();
+        if (rescueOutcome !== 'not-started') {
+          return;
+        }
+        logger.warn('SESSION', 'Summarize rescue did not start a generator; finalizing session', {
+          sessionId: sessionDbId,
+        });
+      }
+    } else {
+      logger.warn('SESSION', 'Dropping summarize after bounded rescue attempt', {
+        sessionId: sessionDbId,
+      });
+    }
   }
 
   logger.info('SESSION', 'Generator exited — finalizing session', { sessionId: sessionDbId, reason });

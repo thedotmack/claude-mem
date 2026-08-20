@@ -15,7 +15,7 @@ interface IngestContext {
   sessionManager: SessionManager;
   dbManager: DatabaseManager;
   eventBroadcaster: SessionEventBroadcaster;
-  ensureGeneratorRunning?: (sessionDbId: number, source: string) => void | Promise<void>;
+  ensureGeneratorRunning?: (sessionDbId: number, source: string) => boolean | Promise<boolean>;
 }
 
 let ctx: IngestContext | null = null;
@@ -25,7 +25,7 @@ export function setIngestContext(next: IngestContext): void {
 }
 
 export function attachIngestGeneratorStarter(
-  ensureGeneratorRunning: (sessionDbId: number, source: string) => void | Promise<void>,
+  ensureGeneratorRunning: (sessionDbId: number, source: string) => boolean | Promise<boolean>,
 ): void {
   requireContext().ensureGeneratorRunning = ensureGeneratorRunning;
 }

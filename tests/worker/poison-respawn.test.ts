@@ -307,6 +307,180 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(sm.getMessageBuffer().getPendingCount(8)).toBe(1);
   });
 
+  it('rescues a claimed summarize once before finalizing', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(12, 'do the thing', 1);
+    await sm.queueSummarize(12, 'last answer');
+    const iterator = sm.getMessageIterator(12);
+    const claimed = await iterator.next();
+    expect(claimed.done).toBe(false);
+    await iterator.return?.();
+
+    const finalizeSession = mock(() => Promise.resolve());
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+    const rescue = mock(async () => {
+      const rescueIterator = sm.getMessageIterator(12);
+      const rescued = await rescueIterator.next();
+      expect(rescued.done).toBe(false);
+      await sm.confirmClaimedMessages(12);
+      await rescueIterator.return?.();
+      return 'handled';
+    });
+
+    await handleGeneratorExit(session, null, {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+      restartGenerator: rescue,
+    });
+
+    expect(rescue).toHaveBeenCalledTimes(1);
+    expect(finalizeSession).not.toHaveBeenCalled();
+    expect(removeSpy).not.toHaveBeenCalled();
+    expect(sm.hasPendingSummarize(12)).toBe(false);
+  });
+
+  it('rescues a pending summarize and bounds a second ordinary exit', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(13, 'do the thing', 1);
+    await sm.queueSummarize(13, 'last answer');
+
+    const finalizeSession = mock(() => Promise.resolve());
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+    const rescue = mock(async () => 'handled' as const);
+
+    await handleGeneratorExit(session, null, {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+      restartGenerator: rescue,
+    });
+    expect(rescue).toHaveBeenCalledTimes(1);
+    expect(finalizeSession).not.toHaveBeenCalled();
+
+    await handleGeneratorExit(session, null, {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+      restartGenerator: rescue,
+    });
+
+    expect(rescue).toHaveBeenCalledTimes(1);
+    expect(finalizeSession).toHaveBeenCalledTimes(1);
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith('SESSION', 'Dropping summarize after bounded rescue attempt', {
+      sessionId: 13,
+    });
+  });
+
+  it('finalizes when the summarize rescue launch is skipped', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(15, 'do the thing', 1);
+    await sm.queueSummarize(15, 'last answer');
+
+    const finalizeSession = mock(() => Promise.resolve());
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+    const rescue = mock(async () => 'not-started' as const);
+
+    await handleGeneratorExit(session, null, {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+      restartGenerator: rescue,
+    });
+
+    expect(rescue).toHaveBeenCalledTimes(1);
+    expect(finalizeSession).toHaveBeenCalledTimes(1);
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+    expect(sm.getSession(15)).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith('SESSION', 'Summarize rescue did not start a generator; finalizing session', {
+      sessionId: 15,
+    });
+  });
+
+  it('finalizes observation-only ordinary exits immediately', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(14, 'do the thing', 1);
+    await sm.queueObservation(14, {
+      tool_name: 'Read',
+      tool_input: {},
+      tool_response: {},
+      prompt_number: 1,
+      toolUseId: 'tu-14',
+    });
+
+    const finalizeSession = mock(() => Promise.resolve());
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+    const rescue = mock(async () => true);
+
+    await handleGeneratorExit(session, null, {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+      restartGenerator: rescue,
+    });
+
+    expect(rescue).not.toHaveBeenCalled();
+    expect(finalizeSession).toHaveBeenCalledTimes(1);
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+    expect(sm.getSession(14)).toBeUndefined();
+  });
+
+  it('rescues a mixed observation-plus-summarize buffer on ordinary exit', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(17, 'do the thing', 1);
+    await sm.queueObservation(17, {
+      tool_name: 'Read',
+      tool_input: {},
+      tool_response: {},
+      prompt_number: 1,
+      toolUseId: 'tu-17',
+    });
+    await sm.queueSummarize(17, 'last answer');
+
+    const finalizeSession = mock(() => Promise.resolve());
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+    const rescue = mock(async () => {
+      const rescueIterator = sm.getMessageIterator(17);
+      const first = await rescueIterator.next();
+      const second = await rescueIterator.next();
+      expect(first.done).toBe(false);
+      expect(second.done).toBe(false);
+      expect(first.value.type).toBe('observation');
+      expect(second.value.type).toBe('summarize');
+      await sm.confirmClaimedMessages(17);
+      await rescueIterator.return?.();
+      return 'handled' as const;
+    });
+
+    await handleGeneratorExit(session, null, {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+      restartGenerator: rescue,
+    });
+
+    expect(rescue).toHaveBeenCalledTimes(1);
+    expect(finalizeSession).not.toHaveBeenCalled();
+    expect(removeSpy).not.toHaveBeenCalled();
+    expect(sm.hasPendingSummarize(17)).toBe(false);
+  });
+
+  it('does not rescue summarize during shutdown teardown', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(16, 'do the thing', 1);
+    await sm.queueSummarize(16, 'last answer');
+
+    const finalizeSession = mock(() => Promise.resolve());
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+    const rescue = mock(async () => 'handled' as const);
+
+    await handleGeneratorExit(session, 'shutdown', {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+      restartGenerator: rescue,
+    });
+
+    expect(rescue).not.toHaveBeenCalled();
+    expect(finalizeSession).toHaveBeenCalledTimes(1);
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+    expect(sm.getSession(16)).toBeUndefined();
+  });
+
   it('quota generator exit keeps the active session and in-memory buffer', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(6, 'do the thing', 1);

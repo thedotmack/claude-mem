@@ -9,6 +9,7 @@ import { telemetryBuffer } from '../telemetry/buffer.js';
 export class SessionManager {
   private dbManager: DatabaseManager;
   private sessions: Map<number, ActiveSession> = new Map();
+  private readonly summarizeRescues = new Set<number>();
   private onPendingMutate?: () => void;
   private readonly buffer = new SessionMessageBuffer(() => this.onPendingMutate?.());
 
@@ -214,6 +215,19 @@ export class SessionManager {
     }
   }
 
+  hasPendingSummarize(sessionDbId: number): boolean {
+    const types = this.buffer.peekTypes(sessionDbId);
+    return types.some(message => message.message_type === 'summarize');
+  }
+
+  claimSummarizeRescue(sessionDbId: number): boolean {
+    if (this.summarizeRescues.has(sessionDbId)) {
+      return false;
+    }
+    this.summarizeRescues.add(sessionDbId);
+    return true;
+  }
+
   async clearPendingForSession(sessionDbId: number): Promise<number> {
     return this.buffer.clear(sessionDbId);
   }
@@ -305,6 +319,7 @@ export class SessionManager {
     }
 
     this.buffer.dispose(sessionDbId);
+    this.summarizeRescues.delete(sessionDbId);
     this.sessions.delete(sessionDbId);
     logger.info('SESSION', 'Session deleted', {
       sessionId: sessionDbId,
@@ -328,6 +343,7 @@ export class SessionManager {
     }
 
     this.buffer.dispose(sessionDbId);
+    this.summarizeRescues.delete(sessionDbId);
     this.sessions.delete(sessionDbId);
     logger.info('SESSION', 'Session removed from active sessions', {
       sessionId: sessionDbId,
