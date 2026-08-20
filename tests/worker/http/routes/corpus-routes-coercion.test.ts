@@ -211,4 +211,68 @@ describe('CorpusRoutes Type Coercion', () => {
     expect(statusSpy).toHaveBeenCalledWith(400);
     expect(mockBuild).not.toHaveBeenCalled();
   });
+
+  it('accepts camelCase dateStart/dateEnd and maps them to the snake_case filter', async () => {
+    const { req, res } = createMockReqRes({
+      name: 'camel-dates',
+      dateStart: '2026-07-31',
+      dateEnd: '2026-08-01',
+    });
+
+    handler(req as Request, res as Response);
+    await flushPromises();
+
+    expect(mockBuild).toHaveBeenCalledWith('camel-dates', '', {
+      date_start: '2026-07-31',
+      date_end: '2026-08-01',
+    });
+  });
+
+  it('prefers snake_case date_start when both conventions are sent', async () => {
+    const { req, res } = createMockReqRes({
+      name: 'snake-dates',
+      date_start: '2026-01-01',
+      dateStart: '2026-07-31',
+    });
+
+    handler(req as Request, res as Response);
+    await flushPromises();
+
+    expect(mockBuild).toHaveBeenCalledWith('snake-dates', '', {
+      date_start: '2026-01-01',
+    });
+  });
+
+  it('adds a warning when the built corpus matched 0 observations', async () => {
+    const { req, res, jsonSpy } = createMockReqRes({
+      name: 'empty-corpus',
+      dateStart: '2099-01-01',
+    });
+
+    handler(req as Request, res as Response);
+    await flushPromises();
+
+    const payload = jsonSpy.mock.calls[0][0] as { warning?: string; observations?: unknown };
+    expect(payload.warning).toContain('0 observations');
+    expect(payload.observations).toBeUndefined();
+  });
+
+  it('omits the warning when observations matched', async () => {
+    mockBuild.mockImplementation((name: string, _description: string, filter: unknown) => {
+      const corpus = createCorpus(name, filter);
+      corpus.stats.observation_count = 3;
+      return Promise.resolve(corpus);
+    });
+
+    const { req, res, jsonSpy } = createMockReqRes({
+      name: 'non-empty-corpus',
+      query: 'hooks',
+    });
+
+    handler(req as Request, res as Response);
+    await flushPromises();
+
+    const payload = jsonSpy.mock.calls[0][0] as { warning?: string };
+    expect(payload.warning).toBeUndefined();
+  });
 });
