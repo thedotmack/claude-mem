@@ -2,7 +2,17 @@
 import net from 'net';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+
+// A hook asks for the worker's version while it is spending a bounded
+// session-init budget, so the probe must never outlive that budget: a worker
+// that answers the liveness check and then stalls on the version request used
+// to hold the hook open past its host deadline (#3434). Callers inside a
+// budget pass their remaining time; everyone else gets the liveness bound.
+const WORKER_VERSION_PROBE_TIMEOUT_MS = HOOK_TIMEOUTS.HEALTH_CHECK;
+
+const HTTP_GET = 'GET';
 
 function getWorkerHost(): string {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_HOST;
@@ -18,9 +28,12 @@ function formatHostForUrl(host: string): string {
 async function httpRequestToWorker(
   port: number,
   endpointPath: string,
-  method: string = 'GET'
+  method: string = HTTP_GET,
+  timeoutMs?: number
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
-  const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, { method });
+  const init: RequestInit = { method };
+  if (timeoutMs !== undefined) init.signal = AbortSignal.timeout(timeoutMs);
+  const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, init);
   let body = '';
   try {
     body = await response.text();
@@ -145,9 +158,12 @@ export async function httpShutdown(port: number, reason: 'stop' | 'restart' = 's
   }
 }
 
-export async function getRunningWorkerVersion(port: number): Promise<string | null> {
+export async function getRunningWorkerVersion(
+  port: number,
+  timeoutMs: number = WORKER_VERSION_PROBE_TIMEOUT_MS
+): Promise<string | null> {
   try {
-    const result = await httpRequestToWorker(port, '/api/health');
+    const result = await httpRequestToWorker(port, '/api/health', HTTP_GET, timeoutMs);
     if (!result.ok) return null;
     const data = JSON.parse(result.body) as { version: string };
     return data.version;
@@ -169,10 +185,18 @@ export interface VersionCheckResult {
  * spawn. The caller supplies it so detection and respawn can never consult
  * different oracles (the 2026-07-22 restart storm). Either side unknown →
  * matches, since a recycle could not change the outcome deterministically.
+ *
+ * timeoutMs bounds the version probe so a wedged worker cannot stall a caller
+ * that is spending a deadline (#3434); an expired probe reads as "unknown",
+ * which is the existing no-recycle fallback.
  */
-export async function checkVersionMatch(port: number, expectedVersion: string | null): Promise<VersionCheckResult> {
+export async function checkVersionMatch(
+  port: number,
+  expectedVersion: string | null,
+  timeoutMs: number = WORKER_VERSION_PROBE_TIMEOUT_MS
+): Promise<VersionCheckResult> {
   const pluginVersion = expectedVersion ?? 'unknown';
-  const workerVersion = await getRunningWorkerVersion(port);
+  const workerVersion = await getRunningWorkerVersion(port, timeoutMs);
 
   if (!workerVersion || pluginVersion === 'unknown') {
     return { matches: true, pluginVersion, workerVersion };

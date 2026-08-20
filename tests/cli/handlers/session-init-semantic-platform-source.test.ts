@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it, mock, spyOn } from 'bun:tes
 import { homedir } from 'os';
 import { join } from 'path';
 
+import { HOOK_TIMEOUTS } from '../../../src/shared/hook-constants.js';
 import * as realSettingsDefaultsManager from '../../../src/shared/SettingsDefaultsManager.js';
 import * as realHookSettings from '../../../src/shared/hook-settings.js';
 import * as realWorkerUtils from '../../../src/shared/worker-utils.js';
@@ -10,6 +11,7 @@ const realSettingsSnapshot = { ...realSettingsDefaultsManager };
 const realHookSettingsSnapshot = { ...realHookSettings };
 const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 const originalInternalEnv = process.env.CLAUDE_MEM_INTERNAL;
+const SESSION_INIT_TIMEOUT_MS = HOOK_TIMEOUTS.SESSION_INIT_REQUEST;
 
 mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
   SettingsDefaultsManager: {
@@ -97,6 +99,9 @@ describe('sessionInitHandler semantic injection platform source', () => {
           CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: '7',
         }),
         resolveRuntimeContext: () => ({ runtime: 'worker' }),
+        // Stubbed with its siblings: the real reader touches settings.json,
+        // which prints a creation notice on stderr in a fresh data dir.
+        getSessionInitRequestTimeoutMs: () => ${SESSION_INIT_TIMEOUT_MS},
         shouldTrackProject: () => true,
         executeWithWorkerFallback: async (apiPath, method, body) => {
           workerCallLog.push({ path: apiPath, method, body });
