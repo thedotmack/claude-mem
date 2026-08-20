@@ -23,6 +23,19 @@ Reject and redeploy the subagent if it reports conclusions without sources.
 
 ## Plan Structure
 
+### Primary Goal (top of the document, before Phase 0)
+
+Every plan opens with a **Primary goal** section: one or two sentences describing the *user-visible outcome* the plan exists to produce — not the mechanism. Write it so a reader with no context knows what "done" looks like.
+
+- Good: "A paying user whose observer stops working finds out within one session and is told the one thing to do about it."
+- Bad: "Add a 6-code error taxonomy to the gateway."
+
+Then, directly under **every phase title** (Phase 0 through the final verification phase), add a short paragraph:
+
+> **How this serves the primary goal:** …
+
+If you cannot write that paragraph honestly for a phase, the phase does not belong in the plan. This is the scope test.
+
 ### Phase 0: Documentation Discovery (ALWAYS FIRST)
 
 Before planning implementation, deploy "Documentation Discovery" subagents to:
@@ -48,6 +61,31 @@ The orchestrator consolidates findings into a single Phase 0 output.
 2. Check for anti-patterns (grep for known bad patterns)
 3. Run tests to confirm functionality
 
+## Presenting the Plan to the User
+
+After writing the plan file, present it in chat using this exact format — and only this format. Under 15 lines total. Emojis are the section markers. One line per step. Define jargon in the line where it first appears; assume the reader has none of the conversation's context.
+
+```
+## 🎯 Goal
+<the primary goal, one sentence>
+
+## 🧨 Now
+<what's broken / the current state, one sentence>
+
+## 🧠 Idea
+<the design in one sentence>
+
+## 🛠️ Steps
+- 1️⃣ **<phase name>** → <what it does, one line>
+- 2️⃣ **<phase name>** → …
+- N️⃣ **Verify** → <how we prove it worked>
+
+## 🚫 Not now
+<explicit deferrals, one line, separated by ·>
+```
+
+Do not add sections. Do not add sub-bullets. Do not restate file paths or line numbers here — those live in the plan file. If the user wants detail, they will open the file or ask.
+
 ## Key Principles
 
 - Documentation Availability ≠ Usage: Explicitly require reading docs
@@ -61,7 +99,3 @@ The orchestrator consolidates findings into a single Phase 0 output.
 - Adding parameters not in documentation
 - Skipping verification steps
 - Assuming structure without checking examples
-
-## See Also
-
-- `oh-my-issues` — the issue-side sibling. When the plan you're being asked to make is rooted in a bug or feature backlog rather than a fresh idea, route through `oh-my-issues` first to cluster issues by root cause into plan masters and `plans/0X-*.md` design docs. `make-plan` then operates on the design doc for one plan slice.
