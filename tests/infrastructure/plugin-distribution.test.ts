@@ -225,6 +225,13 @@ describe('Plugin Distribution - Startup Root Resolution', () => {
 });
 
 describe('Plugin Distribution - package.json Files Field', () => {
+  it('runs bug-report from the bundled distribution entry', () => {
+    const packageJson = readJson('package.json');
+
+    expect(packageJson.scripts['bug-report']).toBe('node dist/bug-report/index.js');
+    expect(packageJson.files).toContain('dist');
+  });
+
   it('should include bundled plugin entries in root package.json files field', () => {
     const packageJsonPath = path.join(projectRoot, 'package.json');
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
@@ -237,7 +244,7 @@ describe('Plugin Distribution - package.json Files Field', () => {
     expect(packageJson.files).toContain('plugin/sqlite');
   });
 
-  it('npm tarball includes sqlite runtime modules required by the worker', () => {
+  it('npm tarball includes generated runtime entries', () => {
     const result = spawnSync('npm', ['pack', '--dry-run', '--json'], {
       cwd: projectRoot,
       encoding: 'utf-8',
@@ -247,6 +254,7 @@ describe('Plugin Distribution - package.json Files Field', () => {
     const packed = JSON.parse(result.stdout);
     const filePaths = new Set(packed[0].files.map((file: { path: string }) => file.path));
 
+    expect(filePaths.has('dist/bug-report/index.js')).toBe(true);
     expect(filePaths.has('plugin/sqlite/SessionStore.js')).toBe(true);
     expect(filePaths.has('plugin/sqlite/observations/files.js')).toBe(true);
   });
@@ -262,6 +270,7 @@ describe('Plugin Distribution - Build Script Verification', () => {
     expect(content).toContain('plugin/sqlite/SessionStore.js');
     expect(content).toContain('plugin/sqlite/observations/files.js');
     expect(content).toContain('plugin/.claude-plugin/plugin.json');
+    expect(content).toContain('dist/bug-report/index.js');
   });
 });
 
