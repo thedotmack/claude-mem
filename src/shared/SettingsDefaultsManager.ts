@@ -26,10 +26,10 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORKER_HOST: string;
   CLAUDE_MEM_API_TIMEOUT_MS: string;
   CLAUDE_MEM_SKIP_TOOLS: string;
-  CLAUDE_MEM_PROVIDER: string;  
-  CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  
+  CLAUDE_MEM_PROVIDER: string;
+  CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;
   CLAUDE_MEM_GEMINI_API_KEY: string;
-  CLAUDE_MEM_GEMINI_MODEL: string;  
+  CLAUDE_MEM_GEMINI_MODEL: string;
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: string;
   CLAUDE_MEM_OPENROUTER_API_KEY: string;
   CLAUDE_MEM_OPENROUTER_MODEL: string;
@@ -53,24 +53,24 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: string;
   CLAUDE_MEM_WELCOME_HINT_ENABLED: string;
   CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: string;
-  CLAUDE_MEM_FOLDER_USE_LOCAL_MD: string;  
-  CLAUDE_MEM_TRANSCRIPTS_ENABLED: string;  
-  CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: string;  
+  CLAUDE_MEM_FOLDER_USE_LOCAL_MD: string;
+  CLAUDE_MEM_TRANSCRIPTS_ENABLED: string;
+  CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: string;
   CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: string;
-  CLAUDE_MEM_MAX_CONCURRENT_AGENTS: string;  
-  CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: string;  
-  CLAUDE_MEM_EXCLUDED_PROJECTS: string;  
+  CLAUDE_MEM_MAX_CONCURRENT_AGENTS: string;
+  CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: string;
+  CLAUDE_MEM_EXCLUDED_PROJECTS: string;
   CLAUDE_MEM_FOLDER_MD_EXCLUDE: string;
   CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: string;
-  CLAUDE_MEM_SEMANTIC_INJECT: string;        
-  CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: string;  
+  CLAUDE_MEM_SEMANTIC_INJECT: string;
+  CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: string;
   CLAUDE_MEM_TIER_ROUTING_ENABLED: string;
   CLAUDE_MEM_TIER_SIMPLE_MODEL: string;
   CLAUDE_MEM_TIER_SUMMARY_MODEL: string;
-  CLAUDE_MEM_TIER_FAST_MODEL: string;        // #2289 — resolved by $TIER:fast in CLAUDE_MEM_MODEL
-  CLAUDE_MEM_TIER_SMART_MODEL: string;       // #2289 — resolved by $TIER:smart in CLAUDE_MEM_MODEL
-  CLAUDE_MEM_CHROMA_ENABLED: string;   
-  CLAUDE_MEM_CHROMA_MODE: string;      
+  CLAUDE_MEM_TIER_FAST_MODEL: string;        // #2289 —resolved by $TIER:fast in CLAUDE_MEM_MODEL
+  CLAUDE_MEM_TIER_SMART_MODEL: string;       // #2289 —resolved by $TIER:smart in CLAUDE_MEM_MODEL
+  CLAUDE_MEM_CHROMA_ENABLED: string;
+  CLAUDE_MEM_CHROMA_MODE: string;
   CLAUDE_MEM_CHROMA_HOST: string;
   CLAUDE_MEM_CHROMA_PORT: string;
   CLAUDE_MEM_CHROMA_SSL: string;
@@ -128,7 +128,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',  // Rate limiting ON by default for free tier users
     CLAUDE_MEM_OPENROUTER_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',  // Default OpenRouter model (free tier)
-    CLAUDE_MEM_OPENROUTER_BASE_URL: '',  // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL (e.g. https://api.deepseek.com, http://localhost:1234/v1). Empty = default OpenRouter endpoint.
+    CLAUDE_MEM_OPENROUTER_BASE_URL: '',  // #2382/#2590/#2622/#2393 —optional OpenAI-compatible base URL (e.g. https://api.deepseek.com, http://localhost:1234/v1). Empty = default OpenRouter endpoint.
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
@@ -153,17 +153,17 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: join(homedir(), '.claude-mem', 'transcript-watch.json'),
     CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: 'false',
     CLAUDE_MEM_MAX_CONCURRENT_AGENTS: '2',  // Max concurrent Claude SDK agent subprocesses
-    CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '3',  // Plan 05 Phase 8 — escalate to exit code 2 after N consecutive worker-unreachable hook invocations
+    CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: 'auto',  // Plan 05 Phase 8 —escalate to exit code 2 after N consecutive worker-unreachable hook invocations
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
-    CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: '[]',  // #2400 — JSON array of glob patterns; when a folder matches AND its generated CLAUDE.md would be empty/skeleton, skip injection (avoids polluting non-content dirs with empty skeletons). Default [] preserves existing behavior.
+    CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: '[]',  // #2400 —JSON array of glob patterns; when a folder matches AND its generated CLAUDE.md would be empty/skeleton, skip injection (avoids polluting non-content dirs with empty skeletons). Default [] preserves existing behavior.
     CLAUDE_MEM_SEMANTIC_INJECT: 'false',             // Inject relevant past observations on every UserPromptSubmit (experimental, disabled by default)
     CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: '5',           // Top-N most relevant observations to inject per prompt
     CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',         // Route observations to models by complexity
-    CLAUDE_MEM_TIER_SIMPLE_MODEL: 'haiku', // Portable tier alias — works across Direct API, Bedrock, Vertex, Azure (see #1463)
+    CLAUDE_MEM_TIER_SIMPLE_MODEL: 'haiku', // Portable tier alias —works across Direct API, Bedrock, Vertex, Azure (see #1463)
     CLAUDE_MEM_TIER_SUMMARY_MODEL: '',                // Empty = use default model for summaries
-    CLAUDE_MEM_TIER_FAST_MODEL: 'haiku',              // #2289 — $TIER:fast resolves here (portable alias)
-    CLAUDE_MEM_TIER_SMART_MODEL: 'sonnet',            // #2289 — $TIER:smart resolves here (portable alias)
+    CLAUDE_MEM_TIER_FAST_MODEL: 'haiku',              // #2289 —$TIER:fast resolves here (portable alias)
+    CLAUDE_MEM_TIER_SMART_MODEL: 'sonnet',            // #2289 —$TIER:smart resolves here (portable alias)
     CLAUDE_MEM_CHROMA_ENABLED: 'true',         // Set to 'false' to disable Chroma and use SQLite-only search
     CLAUDE_MEM_CHROMA_MODE: 'local',           // 'local' uses persistent chroma-mcp via uvx, 'remote' connects to existing server
     CLAUDE_MEM_CHROMA_HOST: '127.0.0.1',
@@ -215,6 +215,11 @@ export class SettingsDefaultsManager {
 
   static getInt(key: keyof SettingsDefaults): number {
     const value = this.get(key);
+    // #2996 (round 14): 'auto' is a sentinel for threshold defaults.
+    // Return a platform-appropriate numeric fallback instead of NaN.
+    if (value === 'auto') {
+      return process.platform === 'win32' ? 10 : 3;
+    }
     return parseInt(value, 10);
   }
 
