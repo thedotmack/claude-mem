@@ -1,8 +1,22 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import { createProcessRegistry, isPidAlive, normalizeSpawnSdkArgs } from '../../src/supervisor/process-registry.js';
+import { OBSERVER_SESSIONS_DIR } from '../../src/shared/paths.js';
+import { createProcessRegistry, isPidAlive, normalizeSpawnSdkArgs, normalizeSpawnSdkCwd, spawnSdkProcess } from '../../src/supervisor/process-registry.js';
+
+const TEST_SESSION_ID = process.pid;
+const SDK_CWD_PROBE = 'console.log(process.cwd())';
+const EXPECTED_SDK_CWD = path.join(OBSERVER_SESSIONS_DIR, String(TEST_SESSION_ID));
+const PARENT_PATH = '..';
+const DIRECTORY_COLLISION = 'directory collision';
+
+function assertIsolatedObserverSessionsDir(): void {
+  const relativePath = path.relative(tmpdir(), OBSERVER_SESSIONS_DIR);
+  if (relativePath === PARENT_PATH || relativePath.startsWith(`${PARENT_PATH}${path.sep}`) || path.isAbsolute(relativePath)) {
+    throw new Error(`Refusing to mutate non-test observer directory: ${OBSERVER_SESSIONS_DIR}`);
+  }
+}
 
 function makeTempDir(): string {
   return path.join(tmpdir(), `claude-mem-supervisor-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -381,6 +395,42 @@ describe('supervisor ProcessRegistry', () => {
         'session-123',
         '--no-session-persistence',
       ]);
+    });
+  });
+
+  describe('normalizeSpawnSdkCwd', () => {
+    it('jails SDK subprocess cwd to the observer sessions directory (#3357)', () => {
+      expect(normalizeSpawnSdkCwd(TEST_SESSION_ID)).toBe(EXPECTED_SDK_CWD);
+    });
+
+    it('applies the observer sessions cwd to direct SDK spawns', async () => {
+      assertIsolatedObserverSessionsDir();
+      tempDirs.push(EXPECTED_SDK_CWD);
+      const projectDir = makeTempDir();
+      tempDirs.push(projectDir);
+      mkdirSync(projectDir, { recursive: true });
+
+      const result = spawnSdkProcess(TEST_SESSION_ID, {
+        command: process.execPath,
+        args: ['--eval', SDK_CWD_PROBE],
+        cwd: projectDir,
+      });
+
+      expect(result).not.toBeNull();
+      const output = await new Response(result!.process.stdout).text();
+      expect(output.trim()).toBe(realpathSync(EXPECTED_SDK_CWD));
+    });
+
+    it('returns null when the observer session directory cannot be created', () => {
+      assertIsolatedObserverSessionsDir();
+      mkdirSync(OBSERVER_SESSIONS_DIR, { recursive: true });
+      tempDirs.push(EXPECTED_SDK_CWD);
+      writeFileSync(EXPECTED_SDK_CWD, DIRECTORY_COLLISION);
+
+      expect(spawnSdkProcess(TEST_SESSION_ID, {
+        command: process.execPath,
+        args: ['--eval', SDK_CWD_PROBE],
+      })).toBeNull();
     });
   });
 
