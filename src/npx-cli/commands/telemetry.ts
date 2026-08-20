@@ -86,6 +86,7 @@ const EVENT_NAMES = [
   'install_failed',
   'uninstall_completed',
   'worker_started',
+  'worker_start_failed',
   'worker_stopped',
   'session_compressed',
   'context_injected',

@@ -1,8 +1,9 @@
 
 import path from 'path';
-import { existsSync, mkdirSync, writeFileSync, unlinkSync, statSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, appendFileSync, unlinkSync, statSync } from 'fs';
 import { logger } from '../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
+import { captureCliEvent } from './telemetry/cli-telemetry.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import {
   cleanStalePidFile,
@@ -65,6 +66,41 @@ function clearWorkerSpawnAttempted(): void {
     // successful spawn. A stale marker on disk is harmless — the worst case
     // is one suppressed retry within the cooldown window, then it self-heals.
   }
+}
+
+/**
+ * A worker we spawned is dead and not serving after boot (#3557). This covers
+ * both a worker that never bound the port and one that bound, then crashed —
+ * this path cannot tell them apart, so the diagnosis stays neutral rather than
+ * claiming "never bound". Drop the durable markers so the next session start
+ * can tell the user, and emit the telemetry event that closes the measurement
+ * hole — every other boot dies silently today. Best-effort: capture must never
+ * break because a marker or an event could not be written.
+ */
+async function recordWorkerBootFailure(port: number, spawnedPid: number | undefined): Promise<void> {
+  const diagnostic = [
+    `[worker-spawner] worker is dead and unreachable on port ${port} after boot — issue #3557`,
+    `  spawned pid: ${spawnedPid ?? 'n/a'}`,
+    `  platform: ${process.platform}`,
+    `  timestamp: ${new Date().toISOString()}`,
+  ].join('\n');
+
+  try {
+    const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
+    const logsDir = path.join(dataDir, 'logs');
+    mkdirSync(logsDir, { recursive: true });
+    appendFileSync(path.join(logsDir, 'runner-errors.log'), diagnostic + '\n\n');
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(path.join(dataDir, 'CAPTURE_BROKEN'), diagnostic + '\n');
+  } catch (error) {
+    logger.warn('SYSTEM', 'Failed to persist worker boot-failure marker', {},
+      error instanceof Error ? error : new Error(String(error)));
+  }
+
+  await captureCliEvent('worker_start_failed', {
+    outcome: 'dead',
+    error_category: 'unreachable_after_boot',
+  });
 }
 
 export type WorkerStartResult = 'ready' | 'warming' | 'dead';
@@ -165,6 +201,9 @@ export async function ensureWorkerStarted(
         logger.error('SYSTEM', spawnLockHeld
           ? 'Worker exited before readiness endpoint became available'
           : 'Spawn-lock holder never produced a live worker before readiness timed out');
+        // Only the launcher that actually spawned owns the marker — a lock
+        // loser would double-write the holder's failure.
+        if (spawnLockHeld) await recordWorkerBootFailure(port, spawnedPid);
         return 'dead';
       }
       logger.warn('SYSTEM', spawnLockHeld
