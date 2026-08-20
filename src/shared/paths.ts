@@ -3,7 +3,8 @@ import { homedir } from 'os';
 import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
-import { parseJsonWithBom } from './atomic-json.js';
+import { readJsonFileWithBom } from './atomic-json.js';
+import { settingsTarget } from './settings-document.js';
 
 function getDirname(): string {
   if (typeof __dirname !== 'undefined') {
@@ -44,9 +45,10 @@ export function resolveDataDir(): string {
   const settingsPath = join(defaultDataDir, 'settings.json');
   try {
     if (existsSync(settingsPath)) {
-      const raw = parseJsonWithBom<Record<string, any>>(readFileSync(settingsPath, 'utf-8'));
-      const settings = raw.env ?? raw;
-      if (settings.CLAUDE_MEM_DATA_DIR) {
+      const raw = readJsonFileWithBom<unknown>(settingsPath);
+      if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return defaultDataDir;
+      const settings = settingsTarget(raw as Record<string, unknown>);
+      if (typeof settings.CLAUDE_MEM_DATA_DIR === 'string' && settings.CLAUDE_MEM_DATA_DIR) {
         return expandHome(settings.CLAUDE_MEM_DATA_DIR);
       }
     }
