@@ -14,6 +14,7 @@ import {
   sanitizeCodexObservationResponse,
 } from '../../src/services/worker/CodexProvider.js';
 import type { ActiveSession, PendingMessage } from '../../src/services/worker-types.js';
+import type { ProviderQueryResult } from '../../src/services/worker/OpenAICompatibleProvider.js';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 
 const modeManager = ModeManager.getInstance() as { loadMode?: (modeId: string) => unknown };
@@ -47,6 +48,7 @@ function createProviderFlowSession(overrides: Partial<ActiveSession> = {}): Acti
 class TestCodexProvider extends CodexProvider {
   private readonly responses: string[];
   readonly queryCalls = mock(() => {});
+  readonly querySignals: Array<AbortSignal | undefined> = [];
 
   constructor(dbManager: never, sessionManager: never, responses: string[]) {
     super(dbManager, sessionManager);
@@ -66,8 +68,9 @@ class TestCodexProvider extends CodexProvider {
     };
   }
 
-  protected async query(): Promise<any> {
+  protected async query(_history: ConversationMessage[], _config: unknown, abortSignal?: AbortSignal): Promise<any> {
     this.queryCalls();
+    this.querySignals.push(abortSignal);
     return {
       content: this.responses.shift() ?? '',
       tokensUsed: 12,
@@ -79,7 +82,7 @@ class TestCodexProvider extends CodexProvider {
 }
 
 function createProviderFlowHarness(
-  message: PendingMessage,
+  message: PendingMessage | PendingMessage[],
   responses: string[],
   options: { existingObservationCount?: number } = {},
 ) {
@@ -106,7 +109,9 @@ function createProviderFlowHarness(
 
   const sessionManager = {
     getMessageIterator: async function* () {
-      yield message;
+      for (const pendingMessage of Array.isArray(message) ? message : [message]) {
+        yield pendingMessage;
+      }
     },
     confirmClaimedMessages,
     getClaimedMessages: mock(() => [message]),
@@ -310,6 +315,68 @@ describe('CodexProvider prompt formatting', () => {
     expect(prompt).toContain('--- 1. USER ---');
     expect(prompt).toContain(oversizedLatestMessage);
     expect(prompt).not.toContain('older context that can be dropped');
+  });
+});
+
+describe('CodexProvider session cancellation', () => {
+  it('forwards the owning session abort signal to the active Codex retry attempt', async () => {
+    const provider = new CodexProvider(null as never, null as never) as unknown as {
+      query(history: ConversationMessage[], config: unknown, abortSignal?: AbortSignal): Promise<ProviderQueryResult>;
+      queryCodexExec(history: ConversationMessage[], config: unknown, attemptSignal: AbortSignal): Promise<ProviderQueryResult>;
+    };
+    const sessionController = new AbortController();
+    let attemptSignal: AbortSignal | undefined;
+    let resolveQuery: ((result: ProviderQueryResult) => void) | undefined;
+
+    provider.queryCodexExec = async (_history, _config, signal) => {
+      attemptSignal = signal;
+      return new Promise<ProviderQueryResult>(resolve => {
+        resolveQuery = resolve;
+      });
+    };
+
+    const query = provider.query([], {
+      model: 'gpt-5.6-luna',
+      timeoutMs: 120000,
+    }, sessionController.signal);
+
+    try {
+      await Bun.sleep(0);
+      sessionController.abort();
+      await Bun.sleep(0);
+
+      expect(attemptSignal?.aborted).toBe(true);
+    } finally {
+      resolveQuery?.({ content: '' });
+      await query.catch(() => {});
+    }
+  });
+
+  it('forwards the owning session signal through init, observation, and summary queries', async () => {
+    const pendingMessages: PendingMessage[] = [
+      {
+        type: 'observation',
+        tool_name: 'Bash',
+        tool_input: { cmd: 'git status --short' },
+        tool_response: { output: '' },
+        prompt_number: 2,
+        cwd: '/repo',
+      },
+      {
+        type: 'summarize',
+        last_assistant_message: 'Finished checking the repository state.',
+      },
+    ];
+    const { provider } = createProviderFlowHarness(pendingMessages, ['', '', '']);
+    const session = createProviderFlowSession();
+
+    await provider.startSession(session);
+
+    expect(provider.querySignals).toEqual([
+      session.abortController.signal,
+      session.abortController.signal,
+      session.abortController.signal,
+    ]);
   });
 });
 

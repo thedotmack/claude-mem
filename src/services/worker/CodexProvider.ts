@@ -473,13 +473,18 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
     return false;
   }
 
-  protected async query(history: ConversationMessage[], config: CodexConfig): Promise<ProviderQueryResult> {
+  protected async query(
+    history: ConversationMessage[],
+    config: CodexConfig,
+    abortSignal?: AbortSignal,
+  ): Promise<ProviderQueryResult> {
     return withRetry(
       attemptSignal => this.queryCodexExec(history, config, attemptSignal),
       {
         label: `Codex ${config.model}`,
         maxRetries: 1,
         perAttemptTimeoutMs: config.timeoutMs,
+        abortSignal,
       },
     );
   }
