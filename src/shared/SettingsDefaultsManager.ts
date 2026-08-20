@@ -45,6 +45,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: string;
   CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: string;
   CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: string;
+  CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: string;
+  CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: string;
   CLAUDE_MEM_CONTEXT_FULL_COUNT: string;
   CLAUDE_MEM_CONTEXT_FULL_FIELD: string;
   CLAUDE_MEM_CONTEXT_SESSION_COUNT: string;
@@ -140,6 +142,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'false',
     CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: 'false',
     CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: 'true',
+    CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: '',  // Comma-separated observation types to inject. Empty = every type in the active mode
+    CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: '',  // Comma-separated observation concepts to inject. Empty = every concept in the active mode
     CLAUDE_MEM_CONTEXT_FULL_COUNT: '0',
     CLAUDE_MEM_CONTEXT_FULL_FIELD: 'narrative',
     CLAUDE_MEM_CONTEXT_SESSION_COUNT: '10',
