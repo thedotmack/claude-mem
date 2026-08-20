@@ -52,8 +52,39 @@ Gateway credentials live in `~/.claude-mem/.env`, not `settings.json`.
 | `ANTHROPIC_BASE_URL` | none | LiteLLM or Anthropic-compatible gateway URL for the Claude Agent SDK path |
 | `ANTHROPIC_AUTH_TOKEN` | none | Optional LiteLLM master key or virtual key |
 | `ANTHROPIC_API_KEY` | none | Direct Anthropic API key; normally omit this in LiteLLM gateway mode |
+| `OLLAMA_BASE_URL` | none | Ollama gateway URL for Claude Code-based models, e.g. `https://cloud.ollama.ai` |
+| `OLLAMA_API_KEY` | none | Ollama Cloud API key for secure model access |
+| `OLLAMA_MODEL` | `minimax-m3:cloud` | Ollama model identifier to use when communicating with Ollama Cloud (tested locally: `minimax-m3:cloud`) |
 
 Use [LiteLLM Gateway](configuration/litellm-gateway) when you want `CLAUDE_MEM_PROVIDER=claude` to route through LiteLLM while preserving the Claude Agent SDK worker path.
+
+### Ollama Setup
+
+To use Ollama (local gateway or Ollama Cloud) with `claude-mem`, persist the gateway credentials in `~/.claude-mem/.env` (the worker reads this file at startup). Example `~/.claude-mem/.env`:
+
+```text
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_API_KEY=your-ollama-api-key
+OLLAMA_MODEL=minimax-m3:cloud
+```
+
+Quick checks and testing:
+
+- Ensure the Ollama service is running and the model is installed locally (`$OLLAMA_BASE_URL/v1/models` lists available models).
+- Use the provided helper to print a curl example and run a quick request:
+
+```powershell
+Set-Location -Path 'C:\Claude\claude-mem'
+& 'C:\Claude\scripts\test_ollama.ps1'
+```
+
+- The recommended tested model is `minimax-m3:cloud`; if you prefer a different model, set `OLLAMA_MODEL` accordingly and verify it appears in the model list.
+
+Notes:
+
+- `~/.claude-mem/.env` is used for gateway credentials only; core settings remain in `~/.claude-mem/settings.json`.
+- If you run Ollama on a remote host, set `OLLAMA_BASE_URL` to the reachable URL (include scheme and port).
+
 
 ### System Configuration
 
