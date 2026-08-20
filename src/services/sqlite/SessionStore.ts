@@ -25,6 +25,16 @@ import {
   type CanonicalMutation,
 } from '../sync/CanonicalContent.js';
 
+/**
+ * Coerce a value to something bun:sqlite can bind. The cloud/export shape
+ * (CloudSync `toCloud`) carries columns like facts/concepts/files_read as real
+ * arrays, but locally they are stored as JSON strings. bun's driver rejects
+ * arrays/objects with "Binding expected string, TypedArray, boolean, number,
+ * bigint or null", so re-stringify any non-primitive right before binding.
+ */
+const coerceBindValue = <T>(value: T): T | string | null =>
+  typeof value === 'object' && value !== null ? JSON.stringify(value) : value ?? null;
+
 interface IndexColumnInfo {
   seqno: number;
   cid: number;
@@ -3090,14 +3100,14 @@ export class SessionStore {
     const result = stmt.run(
       summary.memory_session_id,
       summary.project,
-      summary.request,
-      summary.investigated,
-      summary.learned,
-      summary.completed,
-      summary.next_steps,
-      summary.files_read,
-      summary.files_edited,
-      summary.notes,
+      coerceBindValue(summary.request),
+      coerceBindValue(summary.investigated),
+      coerceBindValue(summary.learned),
+      coerceBindValue(summary.completed),
+      coerceBindValue(summary.next_steps),
+      coerceBindValue(summary.files_read),
+      coerceBindValue(summary.files_edited),
+      coerceBindValue(summary.notes),
       summary.prompt_number,
       summary.discovery_tokens || 0,
       summary.created_at,
@@ -3129,7 +3139,7 @@ export class SessionStore {
     const existing = this.db.prepare(`
       SELECT id FROM observations
       WHERE memory_session_id = ? AND title = ? AND created_at_epoch = ?
-    `).get(obs.memory_session_id, obs.title, obs.created_at_epoch) as { id: number } | undefined;
+    `).get(obs.memory_session_id, coerceBindValue(obs.title), obs.created_at_epoch) as { id: number } | undefined;
 
     if (existing) {
       return { imported: false, id: existing.id };
@@ -3147,15 +3157,15 @@ export class SessionStore {
     const result = stmt.run(
       obs.memory_session_id,
       obs.project,
-      obs.text,
+      coerceBindValue(obs.text),
       obs.type,
-      obs.title,
-      obs.subtitle,
-      obs.facts,
-      obs.narrative,
-      obs.concepts,
-      obs.files_read,
-      obs.files_modified,
+      coerceBindValue(obs.title),
+      coerceBindValue(obs.subtitle),
+      coerceBindValue(obs.facts),
+      coerceBindValue(obs.narrative),
+      coerceBindValue(obs.concepts),
+      coerceBindValue(obs.files_read),
+      coerceBindValue(obs.files_modified),
       obs.prompt_number,
       obs.discovery_tokens || 0,
       obs.agent_type ?? null,
@@ -3238,7 +3248,7 @@ export class SessionStore {
       sessionDbId,
       prompt.content_session_id,
       prompt.prompt_number,
-      prompt.prompt_text,
+      coerceBindValue(prompt.prompt_text),
       prompt.created_at,
       prompt.created_at_epoch
     );
