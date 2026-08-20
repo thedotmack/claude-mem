@@ -63,6 +63,26 @@ describe('isQuotaLimitedObserverOutput', () => {
     ).toBe(true);
   });
 
+  it('detects the monthly spend-limit message from Claude Code', () => {
+    expect(
+      isQuotaLimitedObserverOutput(
+        "You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message",
+      ),
+    ).toBe(true);
+  });
+
+  it('detects the Claude Code limit-message marker', () => {
+    expect(isQuotaLimitedObserverOutput('Usage is unavailable (cc_cli_limit_message)')).toBe(true);
+  });
+
+  it('does not treat neutral monthly spend-limit prose as exhaustion', () => {
+    expect(
+      isQuotaLimitedObserverOutput(
+        'The monthly spend limit setting is available in your account settings.',
+      ),
+    ).toBe(false);
+  });
+
   it('does not treat context-window prose as quota prose', () => {
     expect(
       isQuotaLimitedObserverOutput('I hit the context window and cannot produce valid XML.'),
