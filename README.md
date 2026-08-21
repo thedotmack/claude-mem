@@ -1,4 +1,4 @@
-<h1 align="center">
+<h1 align="center"> 
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
     <picture>
