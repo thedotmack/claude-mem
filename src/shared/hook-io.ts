@@ -9,7 +9,7 @@
  *
  * Intent vocabulary:
  *  - DIAGNOSTIC        operator-visible logs, never reaches the model. stderr.
- *  - MODEL_CONTEXT     content the assistant consumes. stdout JSON only.
+ *  - MODEL_CONTEXT     content the assistant consumes. stdout payload (JSON envelope, or raw text when the adapter returns a string — e.g. kimi context injection).
  *  - USER_HINT         short advisory shown to the human, via HookResult.systemMessage.
  *  - BLOCKING_FEEDBACK error message the model must see (stderr + exit 2).
  *  - EXIT_SIGNAL       pure status, no payload (exit 0).
@@ -107,12 +107,14 @@ export function emitDiagnostic(line: string): void {
 }
 
 /**
- * Emit the model-bound JSON payload to stdout. Calls adapter.formatOutput and
- * JSON.stringify exactly once. Throws if called twice in the same emitter
- * lifetime (guards against double-emit corrupting the stdout JSON stream).
+ * Emit the model-bound payload to stdout. Calls adapter.formatOutput once, then
+ * writes either the raw string it returned or a JSON-stringified object. Throws
+ * if called twice in the same emitter lifetime (guards against double-emit
+ * corrupting the stdout stream).
  *
  * Uses console.log (not process.stdout.write) on purpose: the trailing newline
- * is what Claude Code's / Codex's hook parser expects.
+ * is what Claude Code's / Codex's hook parser expects; Kimi context injection
+ * also expects a plain text line.
  */
 export function emitModelContext(adapter: PlatformAdapter, result: HookResult): void {
   if (moduleHasEmitted) {
@@ -120,7 +122,7 @@ export function emitModelContext(adapter: PlatformAdapter, result: HookResult): 
   }
   moduleHasEmitted = true;
   const output = adapter.formatOutput(result);
-  console.log(JSON.stringify(output));
+  console.log(typeof output === 'string' ? output : JSON.stringify(output));
 }
 
 let moduleHasEmitted = false;
