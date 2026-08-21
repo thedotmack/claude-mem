@@ -95,6 +95,14 @@ export interface ServerOptions {
   // (the same headers helmet's defaults emit) before any route runs. Opt-in so
   // the in-plugin worker runtime is unchanged; the server runtime sets it.
   securityHeaders?: boolean;
+  // SECURITY (patched locally, thedotmack/claude-mem#1251 finding C-2):
+  // when true (default), reject any request whose socket isn't loopback,
+  // before any route runs. The in-plugin worker has no auth of its own —
+  // localhost-only binding is its entire access boundary. The Docker/Postgres
+  // server runtime (ServerService.ts, `securityHeaders: true`) is explicitly
+  // meant to be reachable over the network and gates access with its own
+  // BetterAuth/API-key layer instead, so it opts out with `false`.
+  restrictToLocalhost?: boolean;
 }
 
 // #2572 — hand-rolled security headers.
@@ -126,6 +134,19 @@ export class Server {
     this.options = options;
     this.app = express();
     this.app.disable('x-powered-by');
+    // SECURITY (patched locally, see thedotmack/claude-mem#1251 finding
+    // C-2): only 3 admin routes were gated behind requireLocalhost; the
+    // other 30+ endpoints (including /api/settings, /api/observations,
+    // /api/memory/save) accepted requests from anywhere with no auth at
+    // all. Apply the localhost check globally, first, so nothing on the
+    // (unauthenticated) in-plugin worker is reachable off-box even if
+    // CLAUDE_MEM_WORKER_HOST is ever misconfigured to a non-loopback
+    // address. Skipped when the caller opts out (see ServerOptions) for
+    // the server runtime, which is meant to be network-reachable and
+    // authenticates requests itself.
+    if (this.options.restrictToLocalhost !== false) {
+      this.app.use(requireLocalhost);
+    }
     this.setupSecurityHeaders();
     this.setupCors();
     this.setupPreBodyParserRoutes();

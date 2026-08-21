@@ -123,6 +123,12 @@ export class ServerService {
       // #2572 — server runtime is reachable over the network in Docker, so it
       // emits hardening headers (the worker, loopback-only, does not).
       securityHeaders: true,
+      // SECURITY (patched locally, thedotmack/claude-mem#1251): the shared
+      // Server class defaults to loopback-only, but this runtime is
+      // intentionally network-reachable (see the securityHeaders comment
+      // above) and authenticates requests itself (BetterAuth / API keys),
+      // so it opts out of the loopback restriction rather than inheriting it.
+      restrictToLocalhost: false,
       getInitializationComplete: () => this.graph.postgres.bootstrap.initialized,
       getMcpReady: () => true,
       onShutdown: () => this.stop(),
