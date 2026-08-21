@@ -8,8 +8,8 @@ import type { VectorHit } from '../../src/services/vector/types.js';
  * The fixture mirrors the REAL column layout, including where scope actually
  * lives: observations and session_summaries carry `project` themselves and
  * reach platform_source through sdk_sessions.memory_session_id, while
- * user_prompts carry neither and reach both through
- * sdk_sessions.content_session_id.
+ * user_prompts carry neither and reach both through the foreign key
+ * sdk_sessions.id = user_prompts.session_db_id.
  *
  * An earlier version of this file invented a flat schema where every table had
  * every column. It passed while prompt scoping was querying columns that do not
@@ -33,8 +33,11 @@ describe('VectorIndex', () => {
             created_at_epoch INTEGER)`);
     db.run(`CREATE TABLE session_summaries (id INTEGER PRIMARY KEY, memory_session_id TEXT,
             project TEXT, merged_into_project TEXT, created_at_epoch INTEGER)`);
-    db.run(`CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, content_session_id TEXT,
-            prompt_text TEXT, created_at_epoch INTEGER)`);
+    // session_db_id, with its foreign key, is how a prompt reaches its session
+    // — matching SessionStore's user_prompts table (schema v34).
+    db.run(`CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, session_db_id INTEGER,
+            content_session_id TEXT, prompt_text TEXT, created_at_epoch INTEGER,
+            FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE)`);
 
     db.prepare('INSERT INTO sdk_sessions VALUES (?,?,?,?,?)').run(1, 'cs-a', 'ms-a', 'alpha', 'claude');
     db.prepare('INSERT INTO sdk_sessions VALUES (?,?,?,?,?)').run(2, 'cs-b', 'ms-b', 'beta', 'codex');
@@ -47,7 +50,7 @@ describe('VectorIndex', () => {
     obs.run(4, 'ms-b', 'legacy', 'alpha', null, 'n4', null, Date.now()); // remapped into alpha
     // Pre-v8 shape: only the flat text column was ever written.
     obs.run(5, 'ms-a', 'alpha', null, 'a flat legacy row about a stale cache read', null, null, Date.now());
-    db.prepare('INSERT INTO user_prompts VALUES (?,?,?,?)').run(10, 'cs-a', 'p', Date.now());
+    db.prepare('INSERT INTO user_prompts VALUES (?,?,?,?,?)').run(10, 1, 'cs-a', 'p', Date.now());
 
     index = new VectorIndex(db, new FakeEmbedder());
     await index.upsert('observation', [
@@ -108,7 +111,7 @@ describe('VectorIndex', () => {
     expect(hits.every((h) => h.sqliteId === 3 || h.sqliteId === 4)).toBe(true);
   });
 
-  it('scopes prompts through sdk_sessions.content_session_id', async () => {
+  it('scopes prompts through sdk_sessions.id = user_prompts.session_db_id', async () => {
     const hits = await index.query({
       text: 'agents overwriting', kinds: ['prompt'], project: 'alpha', limit: 3,
     });
@@ -176,8 +179,11 @@ function freshDb(options: { withPrompts?: boolean } = {}): Database {
   db.run(`CREATE TABLE session_summaries (id INTEGER PRIMARY KEY, memory_session_id TEXT,
           project TEXT, merged_into_project TEXT, created_at_epoch INTEGER)`);
   if (options.withPrompts !== false) {
-    db.run(`CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, content_session_id TEXT,
-            prompt_text TEXT, created_at_epoch INTEGER)`);
+    // session_db_id, with its foreign key, is how a prompt reaches its session
+    // — matching SessionStore's user_prompts table (schema v34).
+    db.run(`CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, session_db_id INTEGER,
+            content_session_id TEXT, prompt_text TEXT, created_at_epoch INTEGER,
+            FOREIGN KEY (session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE)`);
   }
   db.prepare('INSERT INTO sdk_sessions VALUES (?,?,?,?,?)').run(1, 'cs-a', 'ms-a', 'alpha', 'claude');
   const obs = db.prepare(`INSERT INTO observations

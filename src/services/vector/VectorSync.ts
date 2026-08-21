@@ -24,21 +24,26 @@ export type SyncableObservation = ParsedObservation & { text?: string | null };
  * call sites reached through DatabaseManager.getChromaSync() do not change
  * shape. What changes is underneath:
  *
- *  - No watermark bump. ChromaSync had to advance ChromaSyncState only on a
+ *  - No watermark bump. ChromaSync had to advance a watermark file only on a
  *    confirmed full write, because a partial write to a separate store would
  *    otherwise be skipped forever by the next backfill (PR #2282). Writing
- *    into the same database removes the failure it was guarding: the vector
- *    lands in the caller's transaction or nothing does. The watermark file,
- *    and the "reset chroma-sync-state.json or the re-embed is suppressed"
- *    recovery step from #3012, both stop existing.
+ *    into the same database removes the failure it was guarding: "which rows
+ *    have no vector" is now a question the database itself answers, so a
+ *    partial write is simply re-selected next pass. The watermark file, and
+ *    the "reset chroma-sync-state.json or the re-embed is suppressed" recovery
+ *    step from #3012, both stop existing.
  *
  *  - No duplicated metadata. ChromaSync copied project, merged_into_project,
  *    platform_source, concepts and file lists onto every document, which is
  *    why they could drift out of sync with SQLite. They now live only in the
  *    base tables and are reached by JOIN at query time.
  *
- * Document ids stay byte-identical (obs_<id>_narrative / _text / _fact_<n>)
- * so anything holding a reference to one still resolves.
+ * Document ids stay byte-identical to the ones ChromaSync wrote — the three
+ * observation forms (obs_<id>_narrative, obs_<id>_text, obs_<id>_fact_<n>)
+ * plus summary_<id>_<field> and prompt_<id>. Nothing outside this package
+ * reads them today; the point is that this class and VectorBackfill mint the
+ * same id for the same document, and that the scheme a future reader would
+ * expect is the one it already knows.
  */
 export class VectorSync {
   constructor(private readonly index: VectorIndex) {}
@@ -109,7 +114,7 @@ export class VectorSync {
   ): Promise<void> {
     if (!promptText) return;
     const embedded = await this.index.upsert('prompt', [{
-      docId: `pr_${promptId}`,
+      docId: `prompt_${promptId}`,
       sqliteId: promptId,
       fieldType: 'prompt_text',
       factIndex: null,
@@ -139,7 +144,7 @@ export class VectorSync {
     const docs: VectorDoc[] = fields
       .filter(([, value]) => Boolean(value))
       .map(([field, value]) => ({
-        docId: `sum_${summaryId}_${field}`,
+        docId: `summary_${summaryId}_${field}`,
         sqliteId: summaryId,
         fieldType: field,
         factIndex: null,
@@ -195,7 +200,7 @@ const DOC_TYPE_TO_KIND: Record<string, VectorDocKind> = {
 };
 
 /**
- * Unpacks the Chroma filter shape ChromaSearchStrategy.buildWhereFilter still
+ * Unpacks the Chroma-shaped filter VectorSearchStrategy.buildWhereFilter still
  * produces: a bare object, or {$and: [...]}, whose clauses are {doc_type},
  * {platform_source}, or {$or: [{project}, {merged_into_project}]}.
  */

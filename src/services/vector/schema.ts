@@ -1,5 +1,6 @@
 import type { Database } from 'bun:sqlite';
 import type { VectorDocKind } from './types.js';
+import { DEFAULT_PLATFORM_SOURCE } from '../../shared/platform-source.js';
 
 /**
  * One table per document kind.
@@ -25,18 +26,29 @@ export interface VectorTableSpec {
   mergedExpr: string | null;
   /** Table+column that must exist for mergedExpr to be usable. */
   mergedRequires: [table: string, column: string] | null;
-  /** Expression yielding platform_source, when that column exists. */
+  /**
+   * Expression yielding platform_source, when that column exists. NULL and ''
+   * both resolve to DEFAULT_PLATFORM_SOURCE rather than dropping out, so rows
+   * captured before the column was populated still match a 'claude' scope.
+   */
   platformExpr: string | null;
   platformRequires: [table: string, column: string] | null;
 }
+
+const PLATFORM_SOURCE_EXPR =
+  `COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}')`;
 
 /**
  * Scope does not live in the same place for every kind, which is why this is
  * data rather than a hardcoded WHERE clause:
  *   observations / session_summaries carry `project` themselves and reach
  *   platform_source through sdk_sessions.memory_session_id;
- *   user_prompts carry neither and reach both through
- *   sdk_sessions.content_session_id.
+ *   user_prompts carry neither and reach both through the foreign key
+ *   sdk_sessions.id = user_prompts.session_db_id.
+ *
+ * The prompt join is an INNER join, so a prompt whose session_db_id is NULL —
+ * possible only on a row the schema-34 migration could not resolve to a
+ * session — is not reachable by a scoped query.
  */
 export const VECTOR_TABLES: Record<VectorDocKind, VectorTableSpec> = {
   observation: {
@@ -48,7 +60,7 @@ export const VECTOR_TABLES: Record<VectorDocKind, VectorTableSpec> = {
     projectExpr: 'p.project',
     mergedExpr: 'p.merged_into_project',
     mergedRequires: ['observations', 'merged_into_project'],
-    platformExpr: 's.platform_source',
+    platformExpr: PLATFORM_SOURCE_EXPR,
     platformRequires: ['sdk_sessions', 'platform_source'],
   },
   summary: {
@@ -60,7 +72,7 @@ export const VECTOR_TABLES: Record<VectorDocKind, VectorTableSpec> = {
     projectExpr: 'p.project',
     mergedExpr: 'p.merged_into_project',
     mergedRequires: ['session_summaries', 'merged_into_project'],
-    platformExpr: 's.platform_source',
+    platformExpr: PLATFORM_SOURCE_EXPR,
     platformRequires: ['sdk_sessions', 'platform_source'],
   },
   prompt: {
@@ -68,11 +80,11 @@ export const VECTOR_TABLES: Record<VectorDocKind, VectorTableSpec> = {
     parent: 'user_prompts',
     joinSql:
       'JOIN user_prompts p ON p.id = v.sqlite_id ' +
-      'LEFT JOIN sdk_sessions s ON s.content_session_id = p.content_session_id',
+      'JOIN sdk_sessions s ON s.id = p.session_db_id',
     projectExpr: 's.project',
     mergedExpr: null,
     mergedRequires: null,
-    platformExpr: 's.platform_source',
+    platformExpr: PLATFORM_SOURCE_EXPR,
     platformRequires: ['sdk_sessions', 'platform_source'],
   },
 };
@@ -84,6 +96,11 @@ export const VECTOR_TABLES: Record<VectorDocKind, VectorTableSpec> = {
  * a store that has not run them yet is a real state a worker can open. Querying
  * a column that is not there is a hard SQL error, and search failing closed on
  * an old store would be a worse bug than not scoping by it.
+ *
+ * One column is deliberately NOT probed: user_prompts.session_db_id, named
+ * unconditionally in the prompt joinSql above. It predates every store this
+ * code can open — SessionStore creates user_prompts with it and migrates older
+ * tables to it before any query runs — so a probe would only ever return true.
  */
 export function hasColumn(db: Database, table: string, column: string): boolean {
   try {

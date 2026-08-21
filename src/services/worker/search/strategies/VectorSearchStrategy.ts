@@ -9,12 +9,14 @@ import {
 import { SessionStore } from '../../../sqlite/SessionStore.js';
 import { logger } from '../../../../utils/logger.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
+import type { VectorDocKind } from '../../../vector/types.js';
 
 /**
  * Anything exposing the semantic-query surface. Structural on purpose: the
  * production implementation is VectorSync, and the existing suite passes
- * hand-rolled objects with just this method. Depending on the concrete class
- * would break every one of those mocks for no gain.
+ * hand-rolled objects carrying queryChroma alone. Depending on the concrete
+ * class would break every one of those doubles for no gain, which is also why
+ * the second member, getIndex(), is optional.
  */
 export interface SemanticQuerySource {
   queryChroma(
@@ -22,15 +24,56 @@ export interface SemanticQuerySource {
     limit: number,
     whereFilter?: Record<string, any>
   ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }>;
+  /**
+   * Optional. Present on VectorSync; absent on the hand-rolled test doubles,
+   * which is why it is optional rather than required.
+   */
+  getIndex?(): SemanticIndexProbe;
 }
+
+/** The part of VectorIndex this strategy reads to tell empty from irrelevant. */
+export interface SemanticIndexProbe {
+  countIndexed(kind: VectorDocKind): number;
+}
+
+/**
+ * Raised when the index holds no vectors for the kinds being searched while
+ * the corpus itself is non-empty — the state an upgrading install sits in
+ * until the one-time backfill has written its first documents.
+ *
+ * A thrown error rather than an empty result on purpose: callers treat an
+ * empty StrategySearchResult as an answer, and the answer would be wrong.
+ * SearchOrchestrator converts this into ChromaUnavailableError, the same
+ * signal every other semantic-layer failure raises.
+ */
+export class SemanticIndexNotReadyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SemanticIndexNotReadyError';
+  }
+}
+
+const ALL_KINDS: VectorDocKind[] = ['observation', 'summary', 'prompt'];
+
+const KINDS_BY_SEARCH_TYPE: Record<string, VectorDocKind[]> = {
+  observations: ['observation'],
+  sessions: ['summary'],
+  prompts: ['prompt'],
+};
 
 /**
  * Semantic search backed by the in-file vector index.
  *
- * Drop-in for ChromaSearchStrategy: same options in, same StrategySearchResult
- * out, same SessionStore hydration, and the same consumed interface. Only the
- * nearest-neighbour lookup moves — in-process against claude-mem.db rather than
- * over MCP stdio to a Python subprocess.
+ * Stands in for the strategy that queried Chroma: same options in, same
+ * SessionStore hydration, and the same consumed interface. Only the
+ * nearest-neighbour lookup moves — in-process against claude-mem.db rather
+ * than over MCP stdio to a Python subprocess.
+ *
+ * One case does NOT return a StrategySearchResult. A query that matches
+ * nothing, against an index holding no vectors at all, over a store that does
+ * have content, and with no platformSource, throws SemanticIndexNotReadyError
+ * instead — see the search() body for why an empty answer would be a lie
+ * there.
  *
  * `strategy: 'chroma'` and `usedChroma` are kept deliberately. Both are read by
  * SearchOrchestrator and HybridSearchStrategy; renaming them would pull files
@@ -81,7 +124,20 @@ export class VectorSearchStrategy {
       whereFilter
     );
 
-    if (!results?.ids?.length) return this.emptyResult();
+    if (!results?.ids?.length) {
+      // A platform-scoped zero is already degraded to keyword search one level
+      // up, so that path is left to run; an error there would replace a usable
+      // fallback with no results at all.
+      if (!platformSource && this.indexIsUnpopulated(searchType)) {
+        logger.warn('SEARCH', 'Semantic index holds no vectors yet; refusing to report zero matches as an answer', {
+          searchType,
+        });
+        throw new SemanticIndexNotReadyError(
+          'Semantic index is still being built (one-time backfill in progress); use keyword search until it finishes',
+        );
+      }
+      return this.emptyResult();
+    }
 
     // Recency window, matching the previous strategy's filterByRecency.
     const startEpoch = dateRange?.start ?? (Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS);
@@ -135,7 +191,38 @@ export class VectorSearchStrategy {
     };
   }
 
-  /** Identical filter shape to ChromaSearchStrategy.buildWhereFilter. */
+  /**
+   * True when the index has nothing at all for the kinds just searched AND the
+   * store has content to have indexed. Both halves matter: an index that is
+   * empty because the corpus is empty returns a truthful zero, and only an
+   * empty-index-over-a-non-empty-corpus is the backfill window.
+   *
+   * Probing is best-effort. A source without getIndex(), a store without
+   * getAllProjects(), or a throwing probe all fall back to the previous
+   * behaviour of reporting the zero.
+   */
+  private indexIsUnpopulated(searchType: string): boolean {
+    try {
+      const probe = this.vectorSync.getIndex?.();
+      if (!probe || typeof probe.countIndexed !== 'function') return false;
+
+      const kinds = KINDS_BY_SEARCH_TYPE[searchType] ?? ALL_KINDS;
+      for (const kind of kinds) {
+        if (probe.countIndexed(kind) > 0) return false;
+      }
+      return this.storeHasContent();
+    } catch {
+      return false;
+    }
+  }
+
+  private storeHasContent(): boolean {
+    const getAllProjects = (this.sessionStore as Partial<SessionStore>).getAllProjects;
+    if (typeof getAllProjects !== 'function') return false;
+    return getAllProjects.call(this.sessionStore).length > 0;
+  }
+
+  /** The Chroma filter shape, still spoken here and unpacked in VectorSync. */
   private buildWhereFilter(
     searchType: string,
     project?: string,

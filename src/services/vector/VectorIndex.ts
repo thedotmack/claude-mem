@@ -18,8 +18,9 @@ interface CandidateRow {
 }
 
 /**
- * In-file vector index. Writes go through the caller's transaction, so a
- * document and its embedding commit together or not at all.
+ * In-file vector index. Vectors are rows in the same database file as the
+ * content they describe, so there is no second store to fall out of step with
+ * and no cross-store write to reconcile.
  */
 export class VectorIndex {
   constructor(
@@ -41,9 +42,13 @@ export class VectorIndex {
    * is compared first and only genuinely new or edited rows are embedded. That
    * makes a re-sync cheap and makes this safe to call unconditionally.
    *
-   * NOT wrapped in its own transaction — the caller owns the transaction so the
-   * vector lands atomically with the row it describes. That is the entire point
-   * of moving off the sidecar.
+   * Atomicity is per parent row, not per call and not shared with the parent
+   * row's own insert. Every caller indexes AFTER the row is committed, on a
+   * detached promise, so there is no enclosing transaction to join. What this
+   * does guarantee is that one row's documents land together: each parent's
+   * writes run inside a SAVEPOINT, so a row whose parent vanished between the
+   * embed and the write is rolled back and skipped instead of aborting the
+   * whole batch. Vectors are removed with their parent by ON DELETE CASCADE.
    */
   async upsert(kind: VectorDocKind, docs: VectorDoc[]): Promise<number> {
     if (docs.length === 0) return 0;
@@ -135,7 +140,11 @@ export class VectorIndex {
    *
    * Scoping happens in SQL and scoring in JS. Project scope is what keeps the
    * scan small: it is a JOIN predicate, not a post-filter, so a query touches
-   * one project's slice rather than the whole corpus.
+   * one project's slice rather than the whole corpus. That depends on
+   * idx_observations_project existing (it does — SessionStore creates it):
+   * with it, EXPLAIN QUERY PLAN drives from observations by project and looks
+   * each vector up by sqlite_id; without it, SQLite drives from the model_id
+   * index instead and reads every row in the table.
    */
   async query(q: VectorQuery): Promise<VectorHit[]> {
     const [probe] = await this.embedder.embed([q.text]);
@@ -237,8 +246,8 @@ export class VectorIndex {
 }
 
 /**
- * Cosine similarity. Embeddings are unit-length by contract (Embedder
- * normalizes), so the dot product IS the cosine and the norms drop out.
+ * A write that failed because the parent row is gone — the row was deleted
+ * between selecting it and writing its vector.
  */
 function isMissingParent(error: unknown): boolean {
   const code = (error as { code?: string } | null)?.code;
@@ -246,6 +255,10 @@ function isMissingParent(error: unknown): boolean {
   return error instanceof Error && /FOREIGN KEY constraint failed/i.test(error.message);
 }
 
+/**
+ * Cosine similarity. Embeddings are unit-length by contract (Embedder
+ * normalizes), so the dot product IS the cosine and the norms drop out.
+ */
 function dot(a: Float32Array, b: Float32Array): number {
   let sum = 0;
   for (let i = 0; i < a.length; i++) sum += a[i] * b[i];

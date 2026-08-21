@@ -2,6 +2,9 @@ import { describe, it, expect, beforeAll } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { VectorIndex } from '../../src/services/vector/VectorIndex.js';
 import { VectorBackfill } from '../../src/services/vector/VectorBackfill.js';
+import { LocalEmbedder } from '../../src/services/vector/LocalEmbedder.js';
+import { VectorSync } from '../../src/services/vector/VectorSync.js';
+import { VectorSearchStrategy } from '../../src/services/worker/search/strategies/VectorSearchStrategy.js';
 import { FakeEmbedder } from './fake-embedder.js';
 
 /**
@@ -205,5 +208,201 @@ describe('VectorBackfill with doc-less rows', () => {
     }
     expect(armed).toBe(false);
     expect(rearms).toBeLessThanOrEqual(25);
+  });
+});
+
+/**
+ * Regression: peak memory during a backfill pass must be bounded by DOCUMENTS,
+ * not by parent rows.
+ *
+ * BATCH_SIZE caps rows, but one observation renders to narrative + text + one
+ * document per fact, so a row-capped batch can hand the embedder an unbounded
+ * array. A transformer embeds a batch in one padded forward pass whose
+ * activations scale with the batch, which is how 200 rows became gigabytes of
+ * resident memory on the low-memory machines this index exists to serve.
+ */
+class RecordingEmbedder extends FakeEmbedder {
+  readonly callSizes: number[] = [];
+  async embed(texts: string[]): Promise<Float32Array[]> {
+    this.callSizes.push(texts.length);
+    return super.embed(texts);
+  }
+}
+
+describe('VectorBackfill document batching', () => {
+  const ROWS = 60; // deliberately BELOW BATCH_SIZE, so rows cannot be the bound
+  const FACTS_PER_ROW = 50;
+  const DOCS_PER_ROW = FACTS_PER_ROW + 1; // facts + narrative
+  const TOTAL_DOCS = ROWS * DOCS_PER_ROW;
+  /** Documents per embed call the backfill is allowed to reach. */
+  const DOC_CAP = 1024;
+
+  let db: Database;
+  let index: VectorIndex;
+  let backfill: VectorBackfill;
+  let embedder: RecordingEmbedder;
+
+  beforeAll(async () => {
+    db = createCorpusDb();
+    const obs = insertObs(db);
+    for (let i = 1; i <= ROWS; i++) {
+      const facts = Array.from({ length: FACTS_PER_ROW }, (_, f) => `fact ${f} of row ${i} about contention`);
+      obs.run(i, 'ms-1', 'alpha', null, null, `narrative ${i} about a wide row`,
+        JSON.stringify(facts), Date.now());
+    }
+    embedder = new RecordingEmbedder();
+    index = new VectorIndex(db, embedder);
+    backfill = new VectorBackfill(db, index);
+    await drain(backfill, index.modelId, 100);
+  });
+
+  it('never hands the embedder more documents than the cap', () => {
+    const largest = Math.max(...embedder.callSizes);
+    expect(largest).toBeLessThanOrEqual(DOC_CAP);
+  });
+
+  it('still embeds every document behind the cap', () => {
+    expect(index.countIndexed('observation')).toBe(TOTAL_DOCS);
+    expect(backfill.isComplete(index.modelId)).toBe(true);
+  });
+});
+
+/**
+ * Regression: LocalEmbedder must bound the batch it hands the model.
+ *
+ * The caller's array size is not the model's batch size to choose. One padded
+ * forward pass over N documents allocates activations proportional to N, so an
+ * uncapped array is an uncapped allocation. The subclass replaces the model
+ * call, so this exercises the batching without loading the ONNX runtime.
+ */
+class ProbeEmbedder extends LocalEmbedder {
+  readonly callSizes: number[] = [];
+  protected async encode(texts: string[]): Promise<Float32Array[]> {
+    this.callSizes.push(texts.length);
+    return texts.map(() => new Float32Array(this.dims));
+  }
+}
+
+describe('LocalEmbedder batching', () => {
+  const CHUNK_CAP = 32;
+
+  it('splits a large array into capped model calls', async () => {
+    const embedder = new ProbeEmbedder();
+    const vectors = await embedder.embed(Array.from({ length: 1000 }, (_, i) => `document ${i}`));
+
+    expect(vectors).toHaveLength(1000);
+    expect(Math.max(...embedder.callSizes)).toBeLessThanOrEqual(CHUNK_CAP);
+    expect(embedder.callSizes.reduce((a, b) => a + b, 0)).toBe(1000);
+  });
+
+  it('preserves input order across chunk boundaries', async () => {
+    class OrderedProbe extends LocalEmbedder {
+      protected async encode(texts: string[]): Promise<Float32Array[]> {
+        return texts.map((text) => {
+          const vec = new Float32Array(this.dims);
+          vec[0] = Number(text);
+          return vec;
+        });
+      }
+    }
+    const vectors = await new OrderedProbe().embed(
+      Array.from({ length: 100 }, (_, i) => String(i)),
+    );
+    expect(vectors.map((v) => v[0])).toEqual(Array.from({ length: 100 }, (_, i) => i));
+  });
+
+  it('returns nothing for an empty array without calling the model', async () => {
+    const embedder = new ProbeEmbedder();
+    expect(await embedder.embed([])).toEqual([]);
+    expect(embedder.callSizes).toEqual([]);
+  });
+});
+
+/**
+ * Regression: while the one-time backfill is still running, the index holds
+ * nothing to match against. A zero-hit lookup against an unpopulated index is
+ * not the same fact as "the corpus contains nothing relevant", and returning
+ * it as a successful empty search hides an upgrade in progress behind an
+ * answer that looks authoritative.
+ */
+describe('VectorSearchStrategy while the backfill is unfinished', () => {
+  let db: Database;
+  let index: VectorIndex;
+  let backfill: VectorBackfill;
+  let strategy: VectorSearchStrategy;
+
+  const hydrated = {
+    id: 1,
+    project: 'alpha',
+    narrative: 'narrative number 1 about shared state',
+    created_at_epoch: Date.now(),
+  };
+
+  beforeAll(() => {
+    db = createCorpusDb();
+    const obs = insertObs(db);
+    for (let i = 1; i <= 3; i++) {
+      obs.run(i, 'ms-1', 'alpha', null, null, `narrative number ${i} about shared state`,
+        JSON.stringify([`fact a${i}`]), Date.now());
+    }
+    index = new VectorIndex(db, new FakeEmbedder());
+    backfill = new VectorBackfill(db, index);
+
+    const sessionStore = {
+      getAllProjects: () => ['alpha'],
+      getObservationsByIds: () => [hydrated],
+      getSessionSummariesByIds: () => [],
+      getUserPromptsByIds: () => [],
+    };
+    strategy = new VectorSearchStrategy(new VectorSync(index), sessionStore as any);
+  });
+
+  it('refuses to report an unpopulated index as zero matches', async () => {
+    expect(index.countIndexed('observation')).toBe(0);
+    await expect(
+      strategy.search({ query: 'shared state', searchType: 'observations', project: 'alpha' }),
+    ).rejects.toThrow(/not ready|still building|backfill/i);
+  });
+
+  it('answers normally once the backfill has populated the index', async () => {
+    await drain(backfill, index.modelId, 20);
+    expect(index.countIndexed('observation')).toBeGreaterThan(0);
+
+    const result = await strategy.search({
+      query: 'narrative number 1 about shared state',
+      searchType: 'observations',
+      project: 'alpha',
+    });
+    expect(result.results.observations).toEqual([hydrated]);
+    expect(result.usedChroma).toBe(true);
+  });
+});
+
+/**
+ * A platform-scoped zero has its own keyword fallback one level up
+ * (SearchOrchestrator), and that fallback returns real rows. Signalling
+ * "not ready" there would replace working results with an error, so the
+ * unpopulated-index signal stays out of that path.
+ */
+describe('VectorSearchStrategy with a platform-scoped query', () => {
+  it('still returns an empty result so the caller can fall back', async () => {
+    const db = createCorpusDb();
+    insertObs(db).run(1, 'ms-1', 'alpha', null, null, 'narrative about shared state', null, Date.now());
+    const index = new VectorIndex(db, new FakeEmbedder());
+    const sessionStore = {
+      getAllProjects: () => ['alpha'],
+      getObservationsByIds: () => [],
+      getSessionSummariesByIds: () => [],
+      getUserPromptsByIds: () => [],
+    };
+    const strategy = new VectorSearchStrategy(new VectorSync(index), sessionStore as any);
+
+    const result = await strategy.search({
+      query: 'shared state',
+      searchType: 'observations',
+      project: 'alpha',
+      platformSource: 'cursor',
+    });
+    expect(result.results.observations).toEqual([]);
   });
 });

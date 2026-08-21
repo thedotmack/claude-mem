@@ -30,8 +30,11 @@ describe('embedding codec', () => {
   });
 
   it('encodes a subarray view, honouring byteOffset', () => {
-    // LocalEmbedder slices a batch result, so views with a non-zero byteOffset
-    // reach this path in production.
+    // No caller passes a non-zero-offset view today: LocalEmbedder copies each
+    // row of the batch into a fresh Float32Array, which always starts at zero.
+    // That copy is the only thing standing between encodeEmbedding and reading
+    // a neighbouring row's bytes, and dropping it is an obvious optimisation
+    // for someone to try. This pins the codec so that change stays safe.
     const backing = new Float32Array([0, 0, 7, 8]);
     const back = decodeEmbedding(encodeEmbedding(backing.subarray(2)));
     expect(Array.from(back)).toEqual([7, 8]);

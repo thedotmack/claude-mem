@@ -112,10 +112,10 @@ export class DatabaseManager {
   /**
    * Drives the one-time re-embed on a timer instead of at boot.
    *
-   * An upgrading install has a full corpus to embed (~4 min for 141k docs),
-   * and blocking startup on that would make the worker look hung. Batches are
-   * spaced so indexing never competes with live capture; the pass simply
-   * resumes next boot if the process exits partway.
+   * An upgrading install has its whole existing corpus to embed, and blocking
+   * startup on that would make the worker look hung. Batches are spaced so
+   * indexing never competes with live capture; the pass simply resumes next
+   * boot if the process exits partway.
    *
    * The re-arm is driven by the batch's own report rather than by a second
    * isComplete() probe, so the chain stops on the pass that finishes the scan

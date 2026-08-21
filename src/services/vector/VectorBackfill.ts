@@ -4,8 +4,23 @@ import { VECTOR_TABLES, hasColumn } from './schema.js';
 import type { VectorDoc, VectorDocKind } from './types.js';
 import { logger } from '../../utils/logger.js';
 
-/** Rows per pass. Bounded so a large store never holds the loop for long. */
+/**
+ * Rows SELECTed per pass — an upper bound, not a count of rows processed. A
+ * pass admits fewer whenever MAX_DOCS_PER_BATCH bites first. Bounded so a
+ * large store never holds the loop for long.
+ */
 const BATCH_SIZE = 200;
+
+/**
+ * Documents per pass.
+ *
+ * A row renders to narrative + text + one document per fact, so BATCH_SIZE
+ * bounds rows but not documents, and what a pass costs is counted in
+ * documents. Rows are admitted whole: a pass stops before crossing the cap
+ * rather than splitting a row, and a single row wider than the cap is still
+ * passed in one piece.
+ */
+const MAX_DOCS_PER_BATCH = 1024;
 
 export interface BackfillProgress {
   kind: VectorDocKind;
@@ -18,10 +33,11 @@ export interface BackfillProgress {
  * One-time re-embed of an existing corpus.
  *
  * Existing installs have their vectors in Chroma. They are not migrated: the
- * #3012 recovery showed only ~1,000 of 141,476 vectors were recoverable from
+ * #3012 recovery reports that almost nothing was recoverable from
  * chroma.sqlite3, and SQLite is the source of truth anyway, so the documents
- * are simply re-embedded from it. Measured cost is ~4 minutes for a
- * 141,476-document store on slow hardware.
+ * are simply re-embedded from it. How long that takes is a function of corpus
+ * size and hardware; it runs in the background and search stays usable
+ * throughout, so it is not a startup cost the user waits on.
  *
  * Resumable with no persisted bookkeeping. An interrupted run resumes by asking
  * the same question of the same database on next boot; nothing to reset by hand.
@@ -91,9 +107,20 @@ export class VectorBackfill {
       LIMIT ${BATCH_SIZE}
     `).all(this.cursorFor(kind), modelId) as Record<string, unknown>[];
     if (rows.length === 0) return { docs: [], lastId: null };
-    // ORDER BY p.id, so the last row carries the high-water mark.
-    const lastId = Number(rows[rows.length - 1].id);
-    return { docs: rows.flatMap((row) => this.toDocs(kind, row)), lastId };
+
+    // Rows arrive in id order, so the high-water mark is the last row ADMITTED
+    // — not the last row selected. The loop can stop early once the document
+    // cap is reached, and the rows it did not admit must stay ahead of the
+    // cursor so the next pass picks them up.
+    const docs: VectorDoc[] = [];
+    let lastId: number | null = null;
+    for (const row of rows) {
+      const rowDocs = this.toDocs(kind, row);
+      if (docs.length > 0 && docs.length + rowDocs.length > MAX_DOCS_PER_BATCH) break;
+      for (const doc of rowDocs) docs.push(doc);
+      lastId = Number(row.id);
+    }
+    return { docs, lastId };
   }
 
   /**
@@ -148,13 +175,13 @@ export class VectorBackfill {
     if (kind === 'summary') {
       for (const [field, value] of Object.entries(row)) {
         if (field === 'id' || !value) continue;
-        docs.push({ docId: `sum_${id}_${field}`, sqliteId: id, fieldType: field, factIndex: null, text: String(value) });
+        docs.push({ docId: `summary_${id}_${field}`, sqliteId: id, fieldType: field, factIndex: null, text: String(value) });
       }
       return docs;
     }
 
     if (row.prompt_text) {
-      docs.push({ docId: `pr_${id}`, sqliteId: id, fieldType: 'prompt_text', factIndex: null, text: String(row.prompt_text) });
+      docs.push({ docId: `prompt_${id}`, sqliteId: id, fieldType: 'prompt_text', factIndex: null, text: String(row.prompt_text) });
     }
     return docs;
   }

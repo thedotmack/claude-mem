@@ -1,10 +1,15 @@
 /**
  * Vector index contract.
  *
- * Replaces the Chroma sidecar. Embeddings live as rows in claude-mem.db, so a
- * document and its vector are written in ONE transaction by ONE writer — the
- * property the Chroma split could not offer (see #3012: two chroma-mcp writers
- * on one data dir grew the index to 157GB).
+ * Replaces the Chroma sidecar. Embeddings live as rows in claude-mem.db, held
+ * to the row they describe by a foreign key with ON DELETE CASCADE, and there
+ * is exactly one process writing them. That is the property the Chroma split
+ * could not offer — #3012 reports two chroma-mcp writers on one data dir
+ * inflating the index by orders of magnitude.
+ *
+ * It is NOT one transaction with the parent row. Callers index after the row
+ * is committed, on a detached promise; the atomicity that does exist is
+ * per-parent-row and is described on VectorIndex.upsert.
  *
  * Deliberately NOT a SQLite extension. bun:sqlite on macOS links Apple's
  * libsqlite3, built with SQLITE_OMIT_LOAD_EXTENSION, so vec0 cannot load at
@@ -19,7 +24,14 @@ export type VectorDocKind = 'observation' | 'summary' | 'prompt';
 
 /** A document to index. `text` is embedded; everything else is provenance. */
 export interface VectorDoc {
-  /** Stable id, byte-identical to the Chroma id it replaces (e.g. obs_123_fact_4). */
+  /**
+   * Primary key of the vector row, byte-identical to the Chroma id it replaces.
+   * The five forms are obs_<id>_narrative, obs_<id>_text, obs_<id>_fact_<n>,
+   * summary_<id>_<field> and prompt_<id>. Both writers — the live path
+   * (VectorSync) and the one-time backfill (VectorBackfill) — must mint the
+   * same id for the same document; tests/vector/doc-id-parity.test.ts holds
+   * them to it.
+   */
   docId: string;
   /** Row id in the owning table (observations.id, session_summaries.id, ...). */
   sqliteId: number;
@@ -44,7 +56,10 @@ export interface VectorHit {
   createdAtEpoch: number | null;
 }
 
-/** Query scoping. Mirrors ChromaSearchStrategy.buildWhereFilter exactly. */
+/**
+ * Query scoping, unpacked from the Chroma-shaped filter that
+ * VectorSearchStrategy.buildWhereFilter still produces.
+ */
 export interface VectorQuery {
   text: string;
   kinds: VectorDocKind[];
