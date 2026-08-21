@@ -130,5 +130,16 @@ describe('buildKimiHooksBlock', () => {
       expect(t).toBeGreaterThanOrEqual(1);
       expect(t).toBeLessThanOrEqual(600);
     }
+
+    // SessionStart only starts the worker; context injection happens on UserPromptSubmit.
+    const sessionStartMatch = block.match(/event = "SessionStart"[\s\S]*?event = "UserPromptSubmit"/);
+    expect(sessionStartMatch).toBeDefined();
+    expect(sessionStartMatch![0]).toContain(" start'");
+    expect(sessionStartMatch![0]).not.toContain('hook kimi context');
+
+    const userPromptSubmitMatch = block.match(/event = "UserPromptSubmit"[\s\S]*?event = "PostToolUse"/);
+    expect(userPromptSubmitMatch).toBeDefined();
+    expect(userPromptSubmitMatch![0]).toContain('hook kimi session-init');
+    expect(userPromptSubmitMatch![0]).toContain('hook kimi context');
   });
 });
