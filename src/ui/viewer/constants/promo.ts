@@ -17,7 +17,7 @@ export const PRO_TRIAL_SHORT = 'Get 2x more from your Max plan';
 // Pro fallback upsell (lockstep with src/shared/pro-promo.ts — no dollar
 // allowance/cap values, ever; $30 is the public subscription price).
 export const PRO_FALLBACK_UPSELL =
-  'Trial allowance used — claude-mem switched to your fallback provider. Pay for your trial now and get 6x more usage for just $30:';
+  "Achievement unlocked: you're one of the heaviest memory users this cycle, so claude-mem switched to your fallback provider — nothing stopped. Want it all back? Pay for your trial now and get 6x more usage for just $30:";
 
 /** Dashboard URL, tagged so cmem.ai can attribute viewer-sourced pay-now clicks. */
 export const PRO_FALLBACK_URL = 'https://cmem.ai/dashboard?from=fallback-viewer';

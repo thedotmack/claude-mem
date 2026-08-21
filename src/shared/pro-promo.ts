@@ -61,10 +61,13 @@ export function proFallbackUrl(source: ProPromoSource): string {
   return `${PRO_DASHBOARD_URL}?from=fallback-${source}`;
 }
 
+// Cap-hit framing is a celebration, not a paywall: the user out-used the trial
+// because the product works, fallback already kept them running, and THIS is
+// the best-timed upgrade moment. Never phrase it as "limit reached, pay now."
 export const PRO_FALLBACK_UPSELL =
-  'Trial allowance used — claude-mem switched to your fallback provider. Pay for your trial now and get 6x more usage for just $30:';
+  "Achievement unlocked: you're one of the heaviest memory users this cycle, so claude-mem switched to your fallback provider — nothing stopped. Want it all back? Pay for your trial now and get 6x more usage for just $30:";
 
 /** One-line upsell + link, for plain-text surfaces (hook banners). */
 export function proFallbackLine(source: ProPromoSource): string {
-  return `${String.fromCodePoint(0x26A0, 0xFE0F)} ${PRO_FALLBACK_UPSELL} ${proFallbackUrl(source)}`;
+  return `${String.fromCodePoint(0x1F3C6)} ${PRO_FALLBACK_UPSELL} ${proFallbackUrl(source)}`;
 }
