@@ -91,13 +91,13 @@ The installer detects Kimi via the `~/.kimi-code/` directory or the `kimi` binar
 
 ```bash
 # Install only the Kimi harness
-claude-mem kimi install
+npx claude-mem kimi install
 
 # Check whether hooks and MCP are registered
-claude-mem kimi status
+npx claude-mem kimi status
 
 # Remove the claude-mem managed block (preserves other config)
-claude-mem kimi uninstall
+npx claude-mem kimi uninstall
 ```
 
 ### What Gets Installed
@@ -129,15 +129,15 @@ The first time the installer modifies `config.toml`, it writes a backup to `conf
 
 ## Commands
 
-### `claude-mem kimi install`
+### `npx claude-mem kimi install`
 
 Install or upgrade the Kimi harness. If the managed block already exists, it is replaced in place (upgrade-safe).
 
-### `claude-mem kimi status`
+### `npx claude-mem kimi status`
 
 Report whether the managed hook block is present in `config.toml`.
 
-### `claude-mem kimi uninstall`
+### `npx claude-mem kimi uninstall`
 
 Remove exactly the claude-mem managed block from `config.toml`, leaving all other Kimi configuration untouched.
 

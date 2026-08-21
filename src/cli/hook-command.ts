@@ -13,6 +13,7 @@ import {
 } from '../shared/hook-io.js';
 import {
   recordWorkerUnreachable,
+  resetWorkerUnreachableState,
   setActiveHookType,
   getActiveHookType,
   isWorkerUnavailableError,
@@ -69,6 +70,7 @@ async function executeHookPipeline(
 
 export async function hookCommand(platform: string, event: string, options: HookCommandOptions = {}): Promise<number> {
   resetHookIoState();
+  resetWorkerUnreachableState();
   // Register the hook event for the threshold-gated hook_failed telemetry
   // (closed enum enforced inside; non-enum events just omit hook_type).
   setActiveHookType(event);

@@ -120,11 +120,11 @@ export function emitModelContext(adapter: PlatformAdapter, result: HookResult): 
   if (moduleHasEmitted) {
     throw new Error('emitModelContext called twice');
   }
-  moduleHasEmitted = true;
   const output = adapter.formatOutput(result);
   if (output === '') {
     return;
   }
+  moduleHasEmitted = true;
   console.log(typeof output === 'string' ? output : JSON.stringify(output));
 }
 

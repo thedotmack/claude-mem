@@ -148,6 +148,31 @@ describe('emitModelContext', () => {
       out.restore();
     }
   });
+
+  it('empty emit does not trip the double-emit guard', () => {
+    const emptyAdapter: PlatformAdapter = {
+      normalizeInput: (raw) => raw as never,
+      formatOutput: () => '',
+    };
+    const out = captureStdout();
+    try {
+      emitModelContext(emptyAdapter, {});
+      expect(() => emitModelContext(fakeAdapter, {})).not.toThrow();
+      expect(out.chunks).toHaveLength(1);
+    } finally {
+      out.restore();
+    }
+  });
+
+  it('two real emits still throw', () => {
+    const out = captureStdout();
+    try {
+      emitModelContext(fakeAdapter, {});
+      expect(() => emitModelContext(fakeAdapter, {})).toThrow('emitModelContext called twice');
+    } finally {
+      out.restore();
+    }
+  });
 });
 
 describe('emitBlockingError', () => {

@@ -750,8 +750,32 @@ export function isWorkerUnavailableError(error: unknown): boolean {
   return false;
 }
 
+let workerUnreachableRecordedThisProcess = false;
+
+/**
+ * Reset the per-process worker-unreachable flag. hookCommand calls this at the
+ * start of each invocation so the fail-loud counter is incremented at most once
+ * per hook process, not once per worker API attempt within a composite handler.
+ */
+export function resetWorkerUnreachableState(): void {
+  workerUnreachableRecordedThisProcess = false;
+}
+
+/**
+ * Increment the persisted consecutive-failure counter when the worker is
+ * unreachable. The counter tracks consecutive hook invocations (processes),
+ * not individual worker API attempts; a module-level flag deduplicates
+ * multiple unreachable-worker calls within the same process (e.g. the
+ * composite `session-init-context` handler). The threshold branch fires only
+ * on the increment that crosses it, and only once per process.
+ */
 export async function recordWorkerUnreachable(): Promise<number> {
   const state = readHookFailureState();
+  if (workerUnreachableRecordedThisProcess) {
+    return state.consecutiveFailures;
+  }
+  workerUnreachableRecordedThisProcess = true;
+
   const next: HookFailureState = {
     consecutiveFailures: state.consecutiveFailures + 1,
     lastFailureAt: Date.now(),
