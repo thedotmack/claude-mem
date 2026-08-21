@@ -24,8 +24,8 @@ export const KIMI_MARKER_END = '# <<< claude-mem kimi hooks <<<';
 export function buildKimiHooksBlock(bunPath: string, workerPath: string): string {
   const run = (suffix: string) => `'"${bunPath}" "${workerPath}" ${suffix}'`;
   const rules = [
-    { event: 'SessionStart', matcher: 'startup|resume', command: run(`start && "${bunPath}" "${workerPath}" hook kimi context`), timeout: 120 },
-    { event: 'UserPromptSubmit', matcher: undefined, command: run('hook kimi session-init'), timeout: 60 },
+    { event: 'SessionStart', matcher: 'startup|resume', command: run('start'), timeout: 120 },
+    { event: 'UserPromptSubmit', matcher: undefined, command: run(`hook kimi session-init && "${bunPath}" "${workerPath}" hook kimi context`), timeout: 120 },
     { event: 'PostToolUse', matcher: undefined, command: run('hook kimi observation'), timeout: 120 },
     { event: 'PreToolUse', matcher: 'Read', command: run('hook kimi file-context'), timeout: 60 },
     { event: 'Stop', matcher: undefined, command: run('hook kimi summarize'), timeout: 120 },

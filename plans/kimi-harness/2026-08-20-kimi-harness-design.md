@@ -51,8 +51,8 @@ with the Claude Code integration.
 
 | Kimi hook event | matcher | claude-mem internal event | Notes |
 | --- | --- | --- | --- |
-| `SessionStart` | `startup\|resume` | worker start + `context` | stdout is appended to Kimi context |
-| `UserPromptSubmit` | (all) | `session-init` | blockable event; we always exit 0 |
+| `SessionStart` | `startup\|resume` | worker start | warms up the worker only |
+| `UserPromptSubmit` | (all) | `session-init` + `context` | blockable event; we always exit 0; stdout is appended to Kimi context |
 | `PostToolUse` | (all) | `observation` | success-only; `PostToolUseFailure` unused in v1 |
 | `PreToolUse` | `Read` | `file-context` | mirrors Claude's matcher |
 | `Stop` | (all) | `summarize` | |
@@ -65,6 +65,11 @@ Unused in v1 (Claude integration likewise ignores them): `SessionEnd`,
 Kimi hook semantics respected: exit 0 = allow (stdout may append to context);
 non-zero/timeout/crash fails open. All claude-mem hooks exit 0 on any internal
 error. Timeouts stay within Kimi's 1–600s range.
+
+> Correction from live verification with Kimi Code CLI v0.38.0: Kimi does not
+> append `SessionStart` hook stdout to the model's context, but it does append
+> `UserPromptSubmit` hook stdout. Therefore context injection was moved from
+> `SessionStart` to `UserPromptSubmit`, chained after `session-init`.
 
 ## 4. Hook command delivery
 
@@ -113,7 +118,7 @@ clobber existing keys; preserve existing formatting via `JSON.stringify(_, null,
 ### Deliberate exclusions
 
 - No writes to the user's `AGENTS.md` or `~/.agents/` — memory context reaches
-  the session through the SessionStart hook's stdout injection only.
+  the session through the UserPromptSubmit hook's stdout injection only.
 - No plugin-bundle packaging (`~/.kimi-code/plugins/`) — config-merge only.
 - No writes to `~/.claude-mem/settings.json` — observation compression is a
   property of the already-running worker, not of the harness. On the author's
