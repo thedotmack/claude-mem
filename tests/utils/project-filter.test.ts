@@ -51,6 +51,17 @@ describe('Project Filter', () => {
         expect(isProjectExcluded(`${home}/projects/secret`, '~/projects/*')).toBe(true);
       });
 
+      it('expands a Windows-form ~\\ pattern', () => {
+        const home = homedir();
+        // `expandHome` recognises `~` and `~/`, not `~\`. Expanding before normalising
+        // separators left a Windows-written exclusion as a literal `~/...`, which matches no
+        // absolute path — so the entry silently stopped excluding anything. Failing open on a
+        // deny-list is the wrong direction to be wrong in, which is why this has a test.
+        expect(isProjectExcluded(`${home}/projects/secret`, '~\\projects\\secret')).toBe(true);
+        expect(isProjectExcluded(`${home}/projects/secret`, '~\\projects\\*')).toBe(true);
+        expect(isProjectExcluded(home, '~\\')).toBe(true);
+      });
+
       it('does not glue the home directory onto a ~name pattern', () => {
         const home = homedir();
         // `~backup/*` used to expand by concatenation to `<home>backup/*`, a path with no
