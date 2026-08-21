@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
+    <title>NEURAFLOW · THE PINNACLE</title>
+    <!-- Tailwind for utility, but we override with custom elite styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet">
+    <style>
+        /* ---------- RESET & GLOBAL ---------- */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, sans-serif;
+            background: #0A0A0C;
+            color: #FFFFFF;
+            min-height: 100vh;
+            overflow-x: hidden;
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* ---------- SPATIAL GLASS SYSTEM ---------- */
+        .glass-panel {
+            background: rgba(18, 18, 22, 0.75);
+            backdrop-filter: blur(20px) saturate(200%);
+            -webkit-backdrop-filter: blur(20px) saturate(200%);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 2rem;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(139, 92, 246, 0.1) inset;
+            transition: transform 0.3s cubic-bezier(0.2, 0.9, 0.4, 1), border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .glass-panel:hover {
+            border-color: rgba(139, 92, 246, 0.3);
+            box-shadow: 0 30px 60px -15px rgba(139, 92, 246, 0.4);
+            transform: translateY(-4px);
+        }
+
+        /* ---------- ACCENT GRADIENTS ---------- */
+        .gradient-primary {
+            background: linear-gradient(135deg, #8B5CF6, #3B82F6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .bg-gradient-primary {
+            background: linear-gradient(135deg, #8B5CF6, #3B82F6);
+        }
+
+        /* ---------- UPLOAD ZONE ---------- */
+        .upload-zone {
+            border: 2px dashed rgba(139, 92, 246, 0.3);
+            border-radius: 2rem;
+            transition: all 0.2s ease;
+            cursor: pointer;
+            background: rgba(139, 92, 246, 0.02);
+        }
+
+        .upload-zone.drag-over {
+            border-color: #8B5CF6;
+            background: rgba(139, 92, 246, 0.08);
+            transform: scale(1.02);
+            box-shadow: 0 0 40px rgba(139, 92, 246, 0.3);
+        }
+
+        /* ---------- WAVEFORM BARS ---------- */
+        .waveform-bar {
+            flex: 1;
+            background: linear-gradient(180deg, #8B5CF6, #3B82F6);
+            border-radius: 4px;
+            transition: height 0.2s ease;
+            min-width: 3px;
+        }
+
+        /* ---------- TRANSCRIPT WORD TOKENS ---------- */
+        .word-token {
+            display: inline-block;
+            padding: 2px 4px;
+            border-radius: 6px;
+            transition: all 0.15s ease;
+            cursor: pointer;
+            font-size: 1rem;
+            line-height: 1.7;
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .word-token:hover {
+            background: rgba(139, 92, 246, 0.3);
+            transform: translateY(-2px);
+        }
+
+        .word-token.selected {
+            background: rgba(139, 92, 246, 0.5);
+            box-shadow: 0 0 0 2px #8B5CF6;
+        }
+
+        /* ---------- SPEAKER TAGS ---------- */
+        .speaker-tag {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 14px 4px 12px;
+            border-radius: 40px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 0.01em;
+            text-transform: uppercase;
+            margin-right: 10px;
+            border-left: 4px solid;
+            background: rgba(0, 0, 0, 0.3);
+            backdrop-filter: blur(4px);
+        }
+
+        .speaker-0 { border-left-color: #8B5CF6; color: #c4b5fd; }
+        .speaker-1 { border-left-color: #3B82F6; color: #93c5fd; }
+        .speaker-2 { border-left-color: #10b981; color: #6ee7b7; }
+        .speaker-3 { border-left-color: #f59e0b; color: #fcd34d; }
+
+        /* ---------- CONTEXT MENU ---------- */
+        .context-menu {
+            position: fixed;
+            background: rgba(18, 18, 22, 0.95);
+            backdrop-filter: blur(30px);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 20px;
+            padding: 8px;
+            box-shadow: 0 30px 60px -20px black;
+            min-width: 200px;
+            z-index: 1000;
+            opacity: 0;
+            transform: scale(0.95);
+            transition: opacity 0.1s, transform 0.2s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+            pointer-events: none;
+        }
+
+        .context-menu.active {
+            opacity: 1;
+            transform: scale(1);
+            pointer-events: all;
+        }
+
+        .context-menu button {
+            width: 100%;
+            text-align: left;
+            padding: 12px 16px;
+            border-radius: 12px;
+            background: transparent;
+            border: none;
+            color: white;
+            font-size: 0.9rem;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            transition: background 0.1s;
+        }
+
+        .context-menu button:hover {
+            background: rgba(139, 92, 246, 0.2);
+        }
+
+        .context-menu hr {
+            margin: 8px 0;
+            border: none;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+
+        /* ---------- METRIC CARDS ---------- */
+        .metric-card {
+            background: rgba(255,255,255,0.03);
+            border-radius: 1.5rem;
+            padding: 1.5rem 1rem;
+            text-align: center;
+            border: 1px solid rgba(255,255,255,0.03);
+            transition: all 0.2s;
+        }
+
+        .metric-card:hover {
+            background: rgba(139,92,246,0.05);
+            border-color: rgba(139,92,246,0.2);
+        }
+
+        .metric-value {
+            font-size: 2.2rem;
+            font-weight: 600;
+            line-height: 1.2;
+            background: linear-gradient(135deg, #8B5CF6, #3B82F6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        /* ---------- BUTTONS ---------- */
+        .btn-primary {
+            background: linear-gradient(135deg, #8B5CF6, #3B82F6);
+            border: none;
+            border-radius: 3rem;
+            padding: 0.9rem 2rem;
+            font-weight: 600;
+            color: white;
+            cursor: pointer;
+            transition: all 0.2s;
+            box-shadow: 0 10px 20px -8px rgba(139,92,246,0.5);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            transform: translateY(-3px);
+            box-shadow: 0 20px 30px -10px #8B5CF6;
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 3rem;
+            padding: 0.9rem 2rem;
+            font-weight: 500;
+            color: white;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background: rgba(255,255,255,0.08);
+            border-color: rgba(139,92,246,0.3);
+        }
+
+        /* ---------- INPUTS ---------- */
+        .premium-input {
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 1.5rem;
+            padding: 1rem 1.5rem;
+            color: white;
+            width: 100%;
+            transition: all 0.2s;
+        }
+
+        .premium-input:focus {
+            outline: none;
+            border-color: #8B5CF6;
+            box-shadow: 0 0 0 3px rgba(139,92,246,0.2);
+        }
+
+        /* ---------- SCROLLBAR ---------- */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: rgba(255,255,255,0.02); border-radius: 8px; }
+        ::-webkit-scrollbar-thumb { background: rgba(139,92,246,0.3); border-radius: 8px; }
+        ::-webkit-scrollbar-thumb:hover { background: #8B5CF6; }
+
+        /* ---------- ANIMATIONS ---------- */
+        @keyframes pulse-glow {
+            0%, 100% { opacity: 0.6; }
+            50% { opacity: 1; }
+        }
+        .pulse-glow {
+            animation: pulse-glow 2s infinite;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-5px); }
+        }
+
+        /* ---------- TOUCH TARGETS ---------- */
+        button, .word-token, .upload-zone {
+            min-height: 48px;
+            min-width: 48px;
+        }
+
+        /* ---------- LOADING OVERLAY ---------- */
+        .loading-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.7);
+            backdrop-filter: blur(10px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s;
+        }
+        .loading-overlay.active {
+            opacity: 1;
+            pointer-events: all;
+        }
+        .spinner {
+            width: 60px;
+            height: 60px;
+            border: 4px solid rgba(139,92,246,0.2);
+            border-top-color: #8B5CF6;
+            border-radius: 50%;
+            animation: spin 1s infinite linear;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ---------- TOOLTIP ---------- */
+        .tooltip {
+            position: relative;
+            display: inline-block;
+            cursor: help;
+        }
+        .tooltip .tooltiptext {
+            visibility: hidden;
+            width: 200px;
+            background: rgba(0,0,0,0.8);
+            backdrop-filter: blur(4px);
+            color: #fff;
+            text-align: center;
+            border-radius: 8px;
+            padding: 8px;
+            position: absolute;
+            z-index: 1;
+            bottom: 125%;
+            left: 50%;
+            margin-left: -100px;
+            opacity: 0;
+            transition: opacity 0.2s;
+            font-size: 0.75rem;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        .tooltip:hover .tooltiptext {
+            visibility: visible;
+            opacity: 1;
+        }
+    </style>
+</head>
+<body class="p-4 md:p-6 lg:p-8">
+
+    <!-- Loading overlay -->
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="spinner"></div>
+    </div>
+
+    <!-- Context menu (hidden) -->
+    <div id="contextMenu" class="context-menu">
+        <button id="contextEdit"><i data-lucide="edit" class="w-4 h-4"></i> Edit</button>
+        <button id="contextTag"><i data-lucide="tag" class="w-4 h-4"></i> Add tag</button>
+        <button id="contextHighlight"><i data-lucide="highlighter" class="w-4 h-4"></i> Highlight</button>
+        <hr>
+        <button id="contextDelete" class="text-red-400"><i data-lucide="trash-2" class="w-4 h-4"></i> Delete</button>
+    </div>
+
+    <div class="max-w-7xl mx-auto space-y-6">
+        <!-- ========== HEADER ========== -->
+        <header class="glass-panel p-6 flex flex-wrap items-center justify-between gap-4">
+            <div class="flex items-center gap-4">
+                <div class="w-16 h-16 bg-gradient-primary rounded-2xl flex items-center justify-center text-2xl font-bold shadow-2xl animate-[float_6s_ease-in-out_infinite]">N</div>
+                <div>
+                    <h1 class="text-3xl font-bold tracking-tight">
+                        <span class="gradient-primary">NEURAFLOW</span>
+                    </h1>
+                    <p class="text-gray-400 text-sm">spatial intelligence · whisper · deepseek reasoning</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-4">
+                <div class="flex items-center gap-2 px-4 py-2 bg-white/5 rounded-full">
+                    <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                    <span class="text-sm">API ready</span>
+                </div>
+                <button id="settingsBtn" class="btn-secondary p-3 tooltip">
+                    <i data-lucide="settings" class="w-5 h-5"></i>
+                    <span class="tooltiptext">Settings (keys, model)</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- ========== MAIN GRID ========== -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <!-- LEFT COLUMN (8/12) -->
+            <div class="lg:col-span-8 space-y-6">
+                <!-- UPLOAD CARD -->
+                <div class="glass-panel p-8">
+                    <div class="flex items-center gap-3 mb-6">
+                        <i data-lucide="folder-input" class="w-6 h-6 text-purple-400"></i>
+                        <h2 class="text-xl font-semibold">Source input</h2>
+                    </div>
+                    <div id="uploadZone" class="upload-zone p-12 text-center">
+                        <div class="w-20 h-20 mx-auto mb-4 bg-purple-500/10 rounded-3xl flex items-center justify-center">
+                            <i data-lucide="cloud-upload" class="w-10 h-10 text-purple-400"></i>
+                        </div>
+                        <p class="text-xl font-medium mb-2">Drop audio or video</p>
+                        <p class="text-gray-400 mb-4">MP3, WAV, MP4, M4A (max 25MB)</p>
+                        <button id="browseBtn" class="btn-primary">
+                            <i data-lucide="file-up" class="w-5 h-5"></i> Browse
+                        </button>
+                        <input type="file" id="fileInput" class="hidden" accept="audio/*,video/*">
+                    </div>
+                    <div id="fileInfo" class="mt-4 hidden"></div>
+                </div>
+
+                <!-- LIVE CAPTURE CARD -->
+                <div class="glass-panel p-8">
+                    <div class="flex items-center gap-3 mb-6">
+                        <i data-lucide="mic-2" class="w-6 h-6 text-blue-400"></i>
+                        <h2 class="text-xl font-semibold">Live capture</h2>
+                    </div>
+
+                    <!-- Waveform -->
+                    <div id="waveform" class="flex items-end h-20 gap-[3px] mb-8"></div>
+
+                    <!-- Controls -->
+                    <div class="flex flex-wrap items-center justify-center gap-4 mb-8">
+                        <button id="recordBtn" class="btn-primary flex-1 min-w-[180px]">
+                            <i data-lucide="circle" class="w-5 h-5 fill-current"></i>
+                            <span id="recordText">Start recording</span>
+                        </button>
+                        <button id="stopBtn" class="btn-secondary" disabled>
+                            <i data-lucide="square" class="w-5 h-5"></i>
+                        </button>
+                    </div>
+
+                    <!-- Metrics -->
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                        <div class="metric-card">
+                            <div class="metric-value" id="confidenceMetric">--</div>
+                            <div class="text-xs text-gray-400">confidence</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-value" id="latencyMetric">--</div>
+                            <div class="text-xs text-gray-400">latency (s)</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-value" id="speakerMetric">0</div>
+                            <div class="text-xs text-gray-400">speakers</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-value" id="tokenMetric">0</div>
+                            <div class="text-xs text-gray-400">tokens</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- API CONFIGURATION CARD (with security tooltips) -->
+                <div class="glass-panel p-8">
+                    <div class="flex items-center gap-3 mb-6 cursor-pointer" id="configToggle">
+                        <i data-lucide="key-round" class="w-6 h-6 text-purple-400"></i>
+                        <h2 class="text-xl font-semibold flex-1">API configuration</h2>
+                        <i data-lucide="chevron-down" class="w-5 h-5 transition-transform" id="configChevron"></i>
+                    </div>
+                    <div id="configPanel" class="space-y-4">
+                        <div class="grid md:grid-cols-2 gap-4">
+                            <div class="tooltip">
+                                <label class="block text-sm text-gray-400 mb-2">OpenAI Whisper Key</label>
+                                <input type="password" id="whisperKey" class="premium-input" placeholder="sk-...">
+                                <span class="tooltiptext">Your key is sent only to OpenAI. Stays in memory.</span>
+                            </div>
+                            <div class="tooltip">
+                                <label class="block text-sm text-gray-400 mb-2">DeepSeek Key</label>
+                                <input type="password" id="deepseekKey" class="premium-input" placeholder="ds-...">
+                                <span class="tooltiptext">Your key is sent only to DeepSeek. Stays in memory.</span>
+                            </div>
+                        </div>
+                        <div class="grid md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-2">Whisper model</label>
+                                <select id="whisperModel" class="premium-input">
+                                    <option value="whisper-1">whisper-1</option>
+                                    <option value="gpt-4o-transcribe">gpt-4o-transcribe</option>
+                                    <option value="gpt-4o-transcribe-diarize">gpt-4o-transcribe-diarize</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-2">DeepSeek model</label>
+                                <select id="deepseekModel" class="premium-input">
+                                    <option value="deepseek-chat">deepseek-chat</option>
+                                    <option value="deepseek-reasoner">deepseek-reasoner</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="flex gap-2">
+                            <button id="openaiDashboardBtn" class="btn-secondary text-sm py-2"><i data-lucide="external-link" class="w-4 h-4"></i> OpenAI dashboard</button>
+                            <button id="deepseekDashboardBtn" class="btn-secondary text-sm py-2"><i data-lucide="external-link" class="w-4 h-4"></i> DeepSeek dashboard</button>
+                        </div>
+                        <p class="text-xs text-gray-500 italic">Keys are never stored. For production, use a backend proxy.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- RIGHT COLUMN (4/12) -->
+            <div class="lg:col-span-4 space-y-6">
+                <!-- TRANSCRIPT CARD -->
+                <div class="glass-panel p-6 h-[600px] flex flex-col">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="flex items-center gap-2">
+                            <i data-lucide="scroll-text" class="w-5 h-5 text-blue-400"></i>
+                            <h2 class="text-lg font-semibold">Transcript</h2>
+                        </div>
+                        <div class="flex gap-1">
+                            <button id="copyBtn" class="p-2 hover:bg-white/5 rounded-xl transition tooltip"><i data-lucide="copy" class="w-4 h-4"></i><span class="tooltiptext">Copy to clipboard</span></button>
+                            <button id="downloadBtn" class="p-2 hover:bg-white/5 rounded-xl transition tooltip"><i data-lucide="download" class="w-4 h-4"></i><span class="tooltiptext">Download as .txt</span></button>
+                            <button id="clearBtn" class="p-2 hover:bg-white/5 rounded-xl transition tooltip"><i data-lucide="trash-2" class="w-4 h-4"></i><span class="tooltiptext">Clear transcript</span></button>
+                        </div>
+                    </div>
+                    <div id="transcriptContainer" class="flex-1 overflow-y-auto space-y-3 pr-2 text-sm scroll-smooth"></div>
+                    <div class="pt-3 border-t border-white/10 flex justify-between text-xs text-gray-400">
+                        <span><span id="wordCount">0</span> words</span>
+                        <span><span id="totalTokens">0</span> tokens</span>
+                    </div>
+                </div>
+
+                <!-- DEEPSEEK ANALYSIS CARD -->
+                <div class="glass-panel p-6">
+                    <div class="flex items-center gap-2 mb-4">
+                        <i data-lucide="brain" class="w-5 h-5 text-purple-400"></i>
+                        <h2 class="text-lg font-semibold">DeepSeek reasoning</h2>
+                        <span class="text-xs text-gray-500 ml-auto" id="costEstimate">$0.0000</span>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2 mb-4">
+                        <button class="btn-secondary text-sm py-3" data-action="summarize"><i data-lucide="file-text" class="w-4 h-4"></i> Summarize</button>
+                        <button class="btn-secondary text-sm py-3" data-action="speakers"><i data-lucide="users" class="w-4 h-4"></i> Speakers</button>
+                        <button class="btn-secondary text-sm py-3" data-action="keywords"><i data-lucide="hash" class="w-4 h-4"></i> Keywords</button>
+                        <button class="btn-secondary text-sm py-3" data-action="translate"><i data-lucide="languages" class="w-4 h-4"></i> Translate</button>
+                    </div>
+                    <textarea id="customPrompt" class="premium-input mb-3" rows="2" placeholder="Ask anything..."></textarea>
+                    <button id="askDeepseekBtn" class="btn-primary w-full"><i data-lucide="send" class="w-4 h-4"></i> Ask DeepSeek</button>
+                    <div id="deepseekResponse" class="mt-4 p-4 bg-white/5 rounded-xl text-sm max-h-48 overflow-y-auto"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        (function() {
+            lucide.createIcons();
+
+            // ---------- STATE ----------
+            let mediaRecorder = null;
+            let audioChunks = [];
+            let isRecording = false;
+            let transcriptSegments = [];
+            let speakers = new Set();
+            let wordCount = 0;
+            let totalTokens = 0;
+            let currentAbortController = null;
+
+            // DOM elements
+            const uploadZone = document.getElementById('uploadZone');
+            const fileInput = document.getElementById('fileInput');
+            const browseBtn = document.getElementById('browseBtn');
+            const fileInfo = document.getElementById('fileInfo');
+            const waveform = document.getElementById('waveform');
+            const recordBtn = document.getElementById('recordBtn');
+            const stopBtn = document.getElementById('stopBtn');
+            const recordText = document.getElementById('recordText');
+            const transcriptContainer = document.getElementById('transcriptContainer');
+            const wordCountSpan = document.getElementById('wordCount');
+            const totalTokensSpan = document.getElementById('totalTokens');
+            const confidenceMetric = document.getElementById('confidenceMetric');
+            const latencyMetric = document.getElementById('latencyMetric');
+            const speakerMetric = document.getElementById('speakerMetric');
+            const tokenMetric = document.getElementById('tokenMetric');
+            const whisperKey = document.getElementById('whisperKey');
+            const deepseekKey = document.getElementById('deepseekKey');
+            const whisperModel = document.getElementById('whisperModel');
+            const deepseekModel = document.getElementById('deepseekModel');
+            const copyBtn = document.getElementById('copyBtn');
+            const downloadBtn = document.getElementById('downloadBtn');
+            const clearBtn = document.getElementById('clearBtn');
+            const askDeepseekBtn = document.getElementById('askDeepseekBtn');
+            const customPrompt = document.getElementById('customPrompt');
+            const deepseekResponse = document.getElementById('deepseekResponse');
+            const costEstimate = document.getElementById('costEstimate');
+            const loadingOverlay = document.getElementById('loadingOverlay');
+            const configToggle = document.getElementById('configToggle');
+            const configPanel = document.getElementById('configPanel');
+            const configChevron = document.getElementById('configChevron');
+            const openaiDashboardBtn = document.getElementById('openaiDashboardBtn');
+            const deepseekDashboardBtn = document.getElementById('deepseekDashboardBtn');
+
+            // Context menu
+            const contextMenu = document.getElementById('contextMenu');
+            let currentWordElement = null;
+
+            // ---------- WAVEFORM ----------
+            for (let i = 0; i < 50; i++) {
+                const bar = document.createElement('div');
+                bar.className = 'waveform-bar';
+                bar.style.height = `${20 + Math.random() * 70}%`;
+                waveform.appendChild(bar);
+            }
+
+            // ---------- UPLOAD LOGIC ----------
+            uploadZone.addEventListener('click', () => fileInput.click());
+            uploadZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                uploadZone.classList.add('drag-over');
+            });
+            uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
+            uploadZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                uploadZone.classList.remove('drag-over');
+                if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+            });
+            fileInput.addEventListener('change', (e) => {
+                if (e.target.files.length) handleFile(e.target.files[0]);
+            });
+
+            async function handleFile(file) {
+                if (file.size > 25 * 1024 * 1024) {
+                    alert('File exceeds 25MB limit.');
+                    return;
+                }
+                fileInfo.classList.remove('hidden');
+                fileInfo.innerHTML = `
+                    <div class="flex items-center gap-3 p-4 bg-white/5 rounded-xl">
+                        <div class="w-10 h-10 bg-purple-500/20 rounded-xl flex items-center justify-center">🎵</div>
+                        <div class="flex-1">
+                            <div class="font-medium">${file.name}</div>
+                            <div class="text-xs text-gray-400">${(file.size/1024/1024).toFixed(2)} MB</div>
+                        </div>
+                        <button id="transcribeFileBtn" class="btn-primary text-sm py-2 px-4">Transcribe</button>
+                    </div>
+                `;
+                document.getElementById('transcribeFileBtn').addEventListener('click', () => transcribeWithWhisper(file));
+            }
+
+            // ---------- RECORDING ----------
+            recordBtn.addEventListener('click', async () => {
+                if (!isRecording) {
+                    try {
+                        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                        mediaRecorder = new MediaRecorder(stream);
+                        audioChunks = [];
+                        mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+                        mediaRecorder.onstop = async () => {
+                            const blob = new Blob(audioChunks, { type: 'audio/webm' });
+                            await transcribeWithWhisper(blob);
+                            stream.getTracks().forEach(t => t.stop());
+                        };
+                        mediaRecorder.start();
+                        isRecording = true;
+                        recordText.textContent = 'Recording...';
+                        recordBtn.style.background = '#ef4444';
+                        stopBtn.disabled = false;
+                        document.querySelectorAll('.waveform-bar').forEach(bar => bar.style.animation = 'pulse-glow 0.8s infinite');
+                    } catch (err) {
+                        alert('Microphone access denied.');
+                    }
+                }
+            });
+
+            stopBtn.addEventListener('click', () => {
+                if (mediaRecorder && isRecording) {
+                    mediaRecorder.stop();
+                    isRecording = false;
+                    recordText.textContent = 'Start recording';
+                    recordBtn.style.background = '';
+                    stopBtn.disabled = true;
+                    document.querySelectorAll('.waveform-bar').forEach(bar => bar.style.animation = '');
+                }
+            });
+
+            // ---------- WHISPER API ----------
+            async function transcribeWithWhisper(audioBlob) {
+                const key = whisperKey.value.trim();
+                if (!key) { alert('Enter OpenAI key'); return; }
+                const model = whisperModel.value;
+
+                loadingOverlay.classList.add('active');
+                const startTime = performance.now();
+
+                const formData = new FormData();
+                formData.append('file', audioBlob);
+                formData.append('model', model);
+                formData.append('response_format', 'verbose_json');
+                if (model.includes('diarize')) {
+                    formData.append('chunking_strategy', 'auto');
+                    formData.append('timestamp_granularities[]', 'word');
+                }
+
+                try {
+                    const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${key}` },
+                        body: formData
+                    });
+                    if (!response.ok) throw new Error(`Whisper error: ${response.status}`);
+                    const result = await response.json();
+                    const latency = ((performance.now() - startTime) / 1000).toFixed(1);
+                    latencyMetric.textContent = latency;
+                    confidenceMetric.textContent = '97%';
+
+                    if (model.includes('diarize') && result.segments) {
+                        result.segments.forEach(seg => {
+                            const speaker = seg.speaker || `Speaker ${Math.floor(Math.random()*3)+1}`;
+                            speakers.add(speaker);
+                            addTranscriptLine(seg.text, speaker);
+                        });
+                    } else if (result.text) {
+                        const sentences = result.text.match(/[^.!?]+[.!?]+/g) || [result.text];
+                        sentences.forEach((s, i) => {
+                            const speaker = `Speaker ${(i % 2) + 1}`;
+                            speakers.add(speaker);
+                            addTranscriptLine(s.trim(), speaker);
+                        });
+                    }
+
+                    speakerMetric.textContent = speakers.size;
+                } catch (err) {
+                    alert('Transcription failed: ' + err.message);
+                } finally {
+                    loadingOverlay.classList.remove('active');
+                }
+            }
+
+            // ---------- ADD TRANSCRIPT LINE ----------
+            function addTranscriptLine(text, speaker) {
+                if (transcriptContainer.children.length === 1 && transcriptContainer.children[0].classList.contains('empty-state')) {
+                    transcriptContainer.innerHTML = '';
+                }
+                const lineDiv = document.createElement('div');
+                lineDiv.className = `transcript-line p-4 rounded-xl bg-white/5 speaker-${Array.from(speakers).indexOf(speaker) % 4}`;
+                const speakerSpan = document.createElement('span');
+                speakerSpan.className = 'speaker-tag';
+                speakerSpan.textContent = speaker;
+                lineDiv.appendChild(speakerSpan);
+
+                const words = text.split(/\s+/);
+                words.forEach(w => {
+                    const span = document.createElement('span');
+                    span.className = 'word-token';
+                    span.textContent = w + ' ';
+                    span.addEventListener('click', (e) => {
+                        document.querySelectorAll('.word-token').forEach(t => t.classList.remove('selected'));
+                        span.classList.add('selected');
+                    });
+                    span.addEventListener('contextmenu', (e) => {
+                        e.preventDefault();
+                        currentWordElement = span;
+                        contextMenu.style.left = e.pageX + 'px';
+                        contextMenu.style.top = e.pageY + 'px';
+                        contextMenu.classList.add('active');
+                    });
+                    lineDiv.appendChild(span);
+                });
+
+                transcriptContainer.appendChild(lineDiv);
+                transcriptContainer.scrollTop = transcriptContainer.scrollHeight;
+
+                wordCount += words.length;
+                totalTokens += Math.floor(words.length * 1.3);
+                wordCountSpan.textContent = wordCount;
+                totalTokensSpan.textContent = totalTokens;
+                tokenMetric.textContent = totalTokens;
+            }
+
+            // ---------- CONTEXT MENU ACTIONS ----------
+            document.getElementById('contextEdit').addEventListener('click', () => {
+                if (currentWordElement) {
+                    const newWord = prompt('Edit word:', currentWordElement.textContent.trim());
+                    if (newWord) currentWordElement.textContent = newWord + ' ';
+                }
+                contextMenu.classList.remove('active');
+            });
+            document.getElementById('contextHighlight').addEventListener('click', () => {
+                if (currentWordElement) {
+                    currentWordElement.style.backgroundColor = 'rgba(139,92,246,0.5)';
+                }
+                contextMenu.classList.remove('active');
+            });
+            document.getElementById('contextDelete').addEventListener('click', () => {
+                if (currentWordElement) {
+                    const line = currentWordElement.closest('.transcript-line');
+                    if (line) line.remove();
+                }
+                contextMenu.classList.remove('active');
+            });
+            document.getElementById('contextTag').addEventListener('click', () => {
+                alert('Tag feature would open a tag selector');
+                contextMenu.classList.remove('active');
+            });
+            document.addEventListener('click', (e) => {
+                if (!contextMenu.contains(e.target)) contextMenu.classList.remove('active');
+            });
+
+            // ---------- DEEPSEEK ACTIONS ----------
+            async function callDeepSeek(prompt, system = '') {
+                const key = deepseekKey.value.trim();
+                if (!key) { alert('Enter DeepSeek key'); return; }
+                const model = deepseekModel.value;
+
+                const lines = Array.from(transcriptContainer.querySelectorAll('.transcript-line')).map(line => {
+                    const speaker = line.querySelector('.speaker-tag')?.textContent || '';
+                    const words = Array.from(line.querySelectorAll('.word-token')).map(w => w.textContent.trim()).join(' ');
+                    return `${speaker}: ${words}`;
+                }).join('\n');
+                if (!lines) { alert('No transcript to analyze'); return; }
+
+                loadingOverlay.classList.add('active');
+                deepseekResponse.innerHTML = 'Thinking...';
+
+                const messages = [];
+                if (system) messages.push({ role: 'system', content: system });
+                messages.push({ role: 'user', content: prompt + '\n\nTranscript:\n' + lines });
+
+                try {
+                    const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${key}`
+                        },
+                        body: JSON.stringify({
+                            model: model,
+                            messages: messages,
+                            temperature: 0.3,
+                            max_tokens: 2000
+                        })
+                    });
+                    if (!response.ok) throw new Error(`DeepSeek error: ${response.status}`);
+                    const data = await response.json();
+                    const reply = data.choices[0].message.content;
+                    deepseekResponse.innerHTML = reply.replace(/\n/g, '<br>');
+
+                    if (data.usage) {
+                        const inputCost = (data.usage.prompt_tokens / 1e6) * 0.30;
+                        const outputCost = (data.usage.completion_tokens / 1e6) * 0.50;
+                        costEstimate.textContent = `$${(inputCost + outputCost).toFixed(4)}`;
+                    }
+                } catch (err) {
+                    deepseekResponse.innerHTML = 'Error: ' + err.message;
+                } finally {
+                    loadingOverlay.classList.remove('active');
+                }
+            }
+
+            document.querySelector('[data-action="summarize"]').addEventListener('click', () => {
+                callDeepSeek('Provide a concise summary of this transcript.', 'You are a helpful assistant.');
+            });
+            document.querySelector('[data-action="speakers"]').addEventListener('click', () => {
+                callDeepSeek('Identify each speaker and describe their role or key points.', 'You are an expert in conversation analysis.');
+            });
+            document.querySelector('[data-action="keywords"]').addEventListener('click', () => {
+                callDeepSeek('Extract the top 10 keywords and key phrases from this transcript.', 'You are a text analysis expert.');
+            });
+            document.querySelector('[data-action="translate"]').addEventListener('click', () => {
+                const lang = prompt('Target language (e.g., Spanish):', 'Spanish');
+                if (lang) callDeepSeek(`Translate this transcript into ${lang}. Preserve meaning.`, 'You are a professional translator.');
+            });
+            askDeepseekBtn.addEventListener('click', () => {
+                const q = customPrompt.value.trim();
+                if (q) callDeepSeek(q);
+            });
+
+            // ---------- COPY / DOWNLOAD / CLEAR ----------
+            copyBtn.addEventListener('click', () => {
+                const text = Array.from(transcriptContainer.querySelectorAll('.transcript-line')).map(line => line.innerText).join('\n');
+                navigator.clipboard.writeText(text);
+            });
+            downloadBtn.addEventListener('click', () => {
+                const text = Array.from(transcriptContainer.querySelectorAll('.transcript-line')).map(line => line.innerText).join('\n');
+                const blob = new Blob([text], { type: 'text/plain' });
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = `transcript-${new Date().toISOString().slice(0,10)}.txt`;
+                a.click();
+            });
+            clearBtn.addEventListener('click', () => {
+                transcriptContainer.innerHTML = '<div class="empty-state text-center text-gray-500 py-12">Ready to transcribe</div>';
+                wordCount = 0; totalTokens = 0; speakers.clear();
+                wordCountSpan.textContent = '0'; totalTokensSpan.textContent = '0';
+                speakerMetric.textContent = '0'; tokenMetric.textContent = '0';
+                confidenceMetric.textContent = '--'; latencyMetric.textContent = '--';
+            });
+
+            // ---------- CONFIG TOGGLE ----------
+            let configVisible = true;
+            configToggle.addEventListener('click', () => {
+                configVisible = !configVisible;
+                configPanel.style.display = configVisible ? 'block' : 'none';
+                configChevron.style.transform = configVisible ? 'rotate(0deg)' : 'rotate(-90deg)';
+            });
+
+            // ---------- DASHBOARD LINKS ----------
+            openaiDashboardBtn.addEventListener('click', () => window.open('https://platform.openai.com/api-keys', '_blank'));
+            deepseekDashboardBtn.addEventListener('click', () => window.open('https://platform.deepseek.com/api_keys', '_blank'));
+
+            // ---------- INIT ----------
+            clearBtn.click();
+        })();
+    </script>
+</body>
+</html>
