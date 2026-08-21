@@ -22,11 +22,52 @@ export function extractLastMessage(
 }
 
 /**
+ * Kimi Code wire.jsonl is event-sourced; role is carried by envelope type:
+ * - user:      {"type":"context.append_message","message":{"role":"user",...}}
+ * - assistant: {"type":"context.append_loop_event","event":{"type":"content.part",
+ *              ...,"part":{"type":"text","text":"..."}}}  (part.type "think" is reasoning — skipped)
+ */
+function kimiWireRole(line: any): 'user' | 'assistant' | undefined {
+  if (line?.type === 'context.append_message') {
+    const role = line.message?.role;
+    return role === 'user' || role === 'assistant' ? role : undefined;
+  }
+  if (
+    line?.type === 'context.append_loop_event' &&
+    line.event?.type === 'content.part' &&
+    line.event?.part?.type === 'text'
+  ) {
+    return 'assistant';
+  }
+  return undefined;
+}
+
+function kimiWireText(line: any, role: 'user' | 'assistant'): string {
+  if (role === 'user' && line?.type === 'context.append_message') {
+    const content = line.message?.content;
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content
+        .filter((c: any) => !!c && typeof c === 'object' && c.type === 'text' && typeof c.text === 'string')
+        .map((c: any) => c.text)
+        .join('\n');
+    }
+    return '';
+  }
+  if (role === 'assistant' && line?.type === 'context.append_loop_event') {
+    const text = line.event?.part?.text;
+    return typeof text === 'string' ? text : '';
+  }
+  return '';
+}
+
+/**
  * Extract last message from a JSONL transcript.
  *
  * Supports two field conventions for the per-line role marker:
  * - Claude Code:  `{"type":"assistant",...}`
  * - Cursor:       `{"role":"assistant",...}`
+ * - Kimi Code:    wire.jsonl `context.append_message` / `context.append_loop_event`
  *
  * The most recent assistant turn is often a pure tool_use block with no text
  * content (especially in Cursor, where the agent's last action before the
@@ -58,31 +99,35 @@ export function extractLastMessageFromJsonl(
       // flood the log with noise for a documented, tolerated condition.
       continue;
     }
-    const lineRole = line.type ?? line.role;
+    const kimiRole = kimiWireRole(line);
+    const lineRole = kimiRole ?? line.type ?? line.role;
     if (lineRole !== role) continue;
     foundMatchingRole = true;
 
-    if (!line.message?.content) continue;
-
     let text = '';
-    const msgContent = line.message.content;
-    if (typeof msgContent === 'string') {
-      text = msgContent;
-    } else if (Array.isArray(msgContent)) {
-      text = msgContent
-        .filter(
-          (c: any): c is { type: 'text'; text: string } =>
-            !!c && typeof c === 'object' && c.type === 'text' && typeof c.text === 'string'
-        )
-        .map((c) => c.text)
-        .join('\n');
+    if (kimiRole) {
+      text = kimiWireText(line, role);
     } else {
-      // Unknown content shape (null, number, plain object, etc.) — skip rather
-      // than throw. A single weird line should not crash the entire summary
-      // pipeline; we already tolerate malformed JSONL via the parse-catch
-      // above, and this is the same class of defensive forward compat
-      // (CodeRabbit / Greptile review on PR #2282).
-      continue;
+      if (!line.message?.content) continue;
+      const msgContent = line.message.content;
+      if (typeof msgContent === 'string') {
+        text = msgContent;
+      } else if (Array.isArray(msgContent)) {
+        text = msgContent
+          .filter(
+            (c: any): c is { type: 'text'; text: string } =>
+              !!c && typeof c === 'object' && c.type === 'text' && typeof c.text === 'string'
+          )
+          .map((c) => c.text)
+          .join('\n');
+      } else {
+        // Unknown content shape (null, number, plain object, etc.) — skip rather
+        // than throw. A single weird line should not crash the entire summary
+        // pipeline; we already tolerate malformed JSONL via the parse-catch
+        // above, and this is the same class of defensive forward compat
+        // (CodeRabbit / Greptile review on PR #2282).
+        continue;
+      }
     }
 
     if (stripSystemReminders) {

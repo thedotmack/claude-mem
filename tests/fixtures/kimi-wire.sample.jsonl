@@ -1,0 +1,9 @@
+{"type":"metadata","protocol_version":"1.5","created_at":1787268414138}
+{"type":"profile.bind","agentId":"main","modelAlias":"kimi-code/k3","profileName":"agent"}
+{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"First user question"}]}}
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"u1","turnId":"0","step":1,"part":{"type":"think","think":"reasoning that must be skipped"}},"time":1787268414200}
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"u2","turnId":"0","step":1,"part":{"type":"text","text":"Intermediate assistant text"}},"time":1787268414300}
+{"type":"context.append_loop_event","event":{"type":"tool.call","toolName":"Bash","callId":"c1","input":{"command":"ls"}},"time":1787268414400}
+{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"Second user question"}]}}
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"u3","turnId":"1","step":1,"part":{"type":"text","text":"Final answer text"}},"time":1787268414500}
+{"type":"turn.ended","turnId":"1","time":1787268414600}
