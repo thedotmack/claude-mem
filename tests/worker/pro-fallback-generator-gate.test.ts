@@ -172,6 +172,27 @@ describe('pro-fallback generator gate', () => {
     expect(counters.openRouterStarts).toBe(1);
   });
 
+  it('preserves the batch on a definitive Pro stop even when the marker write failed', async () => {
+    process.env.CLAUDE_MEM_FALLBACK_PROVIDER = 'claude';
+    const { routes, session, counters } = makeHarness(async () => {
+      // Marker persistence is fail-soft: simulate a failed write by throwing
+      // the definitive classified error WITHOUT activating the marker.
+      throw new ClassifiedProviderError('OpenRouter error allowance_exhausted (status 402)', {
+        kind: 'quota_exhausted',
+        cause: new Error('402'),
+        code: 'allowance_exhausted',
+      });
+    });
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    await session.generatorPromise;
+
+    expect(isFallbackActive()).toBe(false);
+    // Preservation keys off the classified code, not the marker state.
+    expect(counters.finalizerCalls).toBe(0);
+    expect(counters.removeSessionImmediateCalls).toBe(0);
+  });
+
   it('keeps the pre-existing finalize path for a quota failure that is not a definitive Pro stop', async () => {
     process.env.CLAUDE_MEM_FALLBACK_PROVIDER = 'claude';
     const { routes, session, counters } = makeHarness(async () => {

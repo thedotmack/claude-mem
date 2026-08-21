@@ -268,13 +268,15 @@ export class SessionRoutes extends BaseRouteHandler {
             error: errorMsg,
           }, error);
         }
-        // Definitive Pro-gateway stop: OpenRouterProvider flipped the fallback
-        // marker before rethrowing (isFallbackActive confirms it — the same
-        // codes from a non-Pro gateway do not activate it). Preserve the
-        // claimed batch instead of letting the ordinary failure path dispose
-        // the session buffer.
+        // Definitive Pro-gateway stop: preserve the claimed batch instead of
+        // letting the ordinary failure path dispose the session buffer. Keyed
+        // off the classified code alone, NOT isFallbackActive() — marker
+        // persistence is fail-soft, and a failed write must not demote a
+        // definitive quota/auth stop back into the disposal path. Worst case a
+        // non-Pro gateway emitting these cmem-shaped codes gets preservation
+        // too, which is the safe direction.
         if (provider === 'openrouter' && isClassified(error)
-            && isProFallbackGatewayCode(error.code) && isFallbackActive()) {
+            && isProFallbackGatewayCode(error.code)) {
           proFallbackPauseReason = error.kind === 'auth_invalid' ? 'auth:pro_fallback' : 'quota:pro_fallback';
         }
         // Observer-health ledger: repeated generator failures mean observations
