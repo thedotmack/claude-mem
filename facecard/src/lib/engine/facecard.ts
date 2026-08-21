@@ -1,6 +1,6 @@
 import { findOption, QUESTIONS } from "./questions";
 import { applyDelta, baseEmotions } from "./emotions";
-import type { Emotions, FaceCard, FaceCardStats, StatKey } from "./types";
+import type { EmotionDelta, EmotionKey, Emotions, FaceCard, FaceCardStats, StatKey } from "./types";
 
 const STAT_KEYS: StatKey[] = ["confidence", "ambition", "loyalty", "risk", "chaos"];
 
@@ -30,13 +30,33 @@ export function computeStats(answers: Record<string, string>): FaceCardStats {
   return stats;
 }
 
+/**
+ * How much of the questionnaire's emotional weight carries into scene one.
+ * Character creation sets a starting *lean*, not an extreme: applied raw, a
+ * strongly-themed card saturates at 0/100 before the story begins, which would
+ * pin every scene to one cinematographic look and force the same ending down
+ * every branch. Damping keeps headroom so the player's choices still move the
+ * needle — the choices have to matter more than the quiz did.
+ */
+const START_LEAN = 0.4;
+
 export function computeStartingEmotions(answers: Record<string, string>): Emotions {
-  let e = baseEmotions();
+  const totals = new Map<EmotionKey, number>();
   for (const q of QUESTIONS) {
     const opt = findOption(q.key, answers[q.key] ?? "");
-    if (opt) e = applyDelta(e, opt.emotions);
+    if (!opt) continue;
+    for (const [key, value] of Object.entries(opt.emotions)) {
+      if (typeof value !== "number") continue;
+      const k = key as EmotionKey;
+      totals.set(k, (totals.get(k) ?? 0) + value);
+    }
   }
-  return e;
+
+  const damped: EmotionDelta = {};
+  for (const [key, total] of totals) {
+    damped[key] = Math.round(total * START_LEAN);
+  }
+  return applyDelta(baseEmotions(), damped);
 }
 
 export function collectTraits(answers: Record<string, string>): string[] {
