@@ -338,6 +338,28 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
       };
     }
 
+    case 'kimi': {
+      return {
+        title: 'Kimi Code: installing hooks + MCP',
+        task: async (message) => {
+          message('Loading Kimi installer…');
+          const { installKimiHooks, configureKimiMcp } = await import('../../services/integrations/KimiHooksInstaller.js');
+          message('Installing Kimi hooks…');
+          const { result: hooksResult, output: hooksOutput } = await bufferConsole(async () => installKimiHooks());
+          if (hooksResult !== 0) {
+            recordFailure('Kimi Code: hook installation failed', hooksOutput);
+            return `Kimi Code: hook installation failed ${styleText('red', 'FAIL')}`;
+          }
+          message('Configuring Kimi MCP…');
+          const { result: mcpResult } = await bufferConsole(async () => configureKimiMcp());
+          if (mcpResult === 0) {
+            return `Kimi Code: hooks + MCP installed ${styleText('green', 'OK')}`;
+          }
+          return `Kimi Code: hooks installed; MCP setup failed — run \`npx claude-mem kimi install\` ${styleText('yellow', '!')}`;
+        },
+      };
+    }
+
     case 'opencode': {
       return {
         title: 'OpenCode: installing plugin',

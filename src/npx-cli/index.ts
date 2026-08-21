@@ -55,7 +55,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
 
 ${styleText('bold', 'IDE Identifiers')}:
   claude-code, cursor, opencode, openclaw,
-  windsurf, codex-cli, copilot-cli, antigravity, goose,
+  windsurf, codex-cli, kimi, copilot-cli, antigravity, goose,
   roo-code, warp
 `);
 }
