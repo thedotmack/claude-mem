@@ -46,3 +46,25 @@ export const PRO_TRIAL_PITCH = 'Get 2x more use out of your Max plan for free (3
 export function proTrialLine(source: ProPromoSource): string {
   return `${String.fromCodePoint(0x2728)} ${PRO_TRIAL_PITCH} ${proTrialUrl(source)}`;
 }
+
+// --- Pro fallback upsell -----------------------------------------------------
+// Shown ONLY while the pro-fallback marker is active (src/shared/pro-fallback.ts):
+// the trial allowance ran out and memory generation moved to the user's
+// fallback provider. NO dollar allowance/cap values here, ever — $30 is the
+// subscription price, which is public.
+
+/** Account dashboard, where "pay for your trial now" happens. */
+export const PRO_DASHBOARD_URL = 'https://cmem.ai/dashboard';
+
+/** Dashboard URL tagged with the fallback surface the user clicked from. */
+export function proFallbackUrl(source: ProPromoSource): string {
+  return `${PRO_DASHBOARD_URL}?from=fallback-${source}`;
+}
+
+export const PRO_FALLBACK_UPSELL =
+  'Trial allowance used — claude-mem switched to your fallback provider. Pay for your trial now and get 6x more usage for just $30:';
+
+/** One-line upsell + link, for plain-text surfaces (hook banners). */
+export function proFallbackLine(source: ProPromoSource): string {
+  return `${String.fromCodePoint(0x26A0, 0xFE0F)} ${PRO_FALLBACK_UPSELL} ${proFallbackUrl(source)}`;
+}

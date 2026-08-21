@@ -8,7 +8,8 @@ import {
 } from '../../shared/worker-utils.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { proTrialLine } from '../../shared/pro-promo.js';
+import { proTrialLine, proFallbackLine } from '../../shared/pro-promo.js';
+import { isFallbackActive } from '../../shared/pro-fallback.js';
 
 export const userMessageHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -39,7 +40,10 @@ export const userMessageHandler: EventHandler = {
       "\n\n" + String.fromCodePoint(0x1F4A1) + " Wrap any message with <private> ... </private> to prevent storing sensitive information.\n" +
       "\n" + String.fromCodePoint(0x1F4AC) + " Community https://discord.gg/J4wttp9vDu" +
       `\n` + String.fromCodePoint(0x1F4FA) + ` Watch live in browser http://localhost:${port}/\n` +
-      proTrialLine('context-banner') + `\n`;
+      proTrialLine('context-banner') + `\n` +
+      // Pro fallback upsell — ONLY while the pro-fallback marker is active
+      // (trial allowance used → running on the fallback provider).
+      (isFallbackActive() ? proFallbackLine('context-banner') + `\n` : '');
 
     return { exitCode: HOOK_EXIT_CODES.SUCCESS, systemMessage: bannerText };
   },

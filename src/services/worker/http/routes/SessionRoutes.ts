@@ -30,6 +30,7 @@ import {
 } from '../../../../shared/dependency-health.js';
 import { findClaudeExecutable } from '../../../../shared/find-claude-executable.js';
 import { recordObserverFailure } from '../../../../shared/observer-health.js';
+import { isFallbackActive, resolveFallbackProvider } from '../../../../shared/pro-fallback.js';
 import { isClassified, describeProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
 
@@ -69,6 +70,22 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
+      // Pro fallback mode: a definitive CMEM Pro gateway failure (allowance
+      // exhausted / subscription inactive) wrote a 24h marker; serve on the
+      // configured fallback provider until it expires (Pro is then retried).
+      // Fallback 'none' (or 'gemini' without a key) keeps openrouter — it
+      // fails and surfaces through the observer-health warning as before.
+      if (isFallbackActive()) {
+        const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+        const fallback = resolveFallbackProvider({
+          fallbackProvider: settings.CLAUDE_MEM_FALLBACK_PROVIDER,
+          geminiAvailable: isGeminiAvailable(),
+        });
+        if (fallback) {
+          logger.info('SESSION', `[pro-fallback] Pro allowance unavailable — using fallback provider`, { provider: fallback });
+          return fallback;
+        }
+      }
       return 'openrouter';
     }
     return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';

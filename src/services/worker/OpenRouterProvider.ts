@@ -8,7 +8,8 @@ import { logger } from '../../utils/logger.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
-import { ClassifiedProviderError, type ProviderErrorClass } from './provider-errors.js';
+import { ClassifiedProviderError, isClassified, type ProviderErrorClass } from './provider-errors.js';
+import { activateFallback, isCmemProBaseUrl } from '../../shared/pro-fallback.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 
@@ -38,6 +39,29 @@ const GATEWAY_CODE_TO_KIND: Record<string, ProviderErrorClass> = {
   upstream_unavailable: 'transient',
   bad_request: 'unrecoverable',
 };
+
+/**
+ * Gateway codes that mean Pro definitively cannot serve until the user acts
+ * (pays / reactivates) — the trigger for pro-fallback mode. Deliberately NOT
+ * key_invalid: a bad key is a local misconfiguration, not an exhausted trial.
+ */
+const PRO_FALLBACK_GATEWAY_CODES = new Set(['allowance_exhausted', 'subscription_inactive']);
+
+/**
+ * When a classified failure is a definitive Pro-gateway stop, persist the
+ * fallback marker so provider resolution (SessionRoutes / worker-service)
+ * switches to CLAUDE_MEM_FALLBACK_PROVIDER for the next 24h. Only fires when
+ * the configured base URL actually is the CMEM Pro gateway — the same codes
+ * from an arbitrary custom gateway must not flip a Pro-specific mode.
+ */
+function maybeActivateProFallback(error: unknown, apiUrl: string): void {
+  if (!isClassified(error)) return;
+  const code = error.code;
+  if (!code || !PRO_FALLBACK_GATEWAY_CODES.has(code)) return;
+  if (!isCmemProBaseUrl(apiUrl)) return;
+  logger.warn('SDK', '[pro-fallback] Definitive CMEM Pro gateway failure — activating fallback provider', { code });
+  activateFallback(code);
+}
 
 interface UpstreamErrorEnvelope {
   code?: unknown;
@@ -323,6 +347,9 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     let priorRequestId: string | null = null;
 
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
+      // (Failures below are classified by classifyOpenRouterError; definitive
+      // Pro-gateway stops additionally flip the pro-fallback marker in the
+      // catch after withRetry gives up.)
       let response: Response;
       try {
         response = await this.fetchChatCompletion(apiUrl, apiKey, model, messages, siteUrl, appName, priorRequestId, attemptSignal);
@@ -363,7 +390,10 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       }
 
       return responseData;
-    }, { label: `OpenRouter ${model}` });
+    }, { label: `OpenRouter ${model}` }).catch((error: unknown) => {
+      maybeActivateProFallback(error, apiUrl);
+      throw error;
+    });
 
     if (!data.choices?.[0]?.message?.content) {
       logger.error('SDK', 'Empty response from OpenRouter');
