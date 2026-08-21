@@ -1,5 +1,7 @@
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it, spyOn } from 'bun:test';
 import { getEventHandler } from '../../../src/cli/handlers/index.js';
+import { sessionInitHandler } from '../../../src/cli/handlers/session-init.js';
+import { contextHandler } from '../../../src/cli/handlers/context.js';
 import type { NormalizedHookInput } from '../../../src/cli/types.js';
 
 const ORIGINAL_PORT = process.env.CLAUDE_MEM_WORKER_PORT;
@@ -31,5 +33,43 @@ describe('sessionInitContextHandler composite', () => {
     expect(result).toBeDefined();
     expect(result.hookSpecificOutput).toBeDefined();
     expect(typeof result.hookSpecificOutput).toBe('object');
+  });
+
+  it('prepends session-init semantic additionalContext to context output', async () => {
+    const handler = getEventHandler('session-init-context');
+    const input: NormalizedHookInput = {
+      sessionId: 't',
+      cwd: process.cwd(),
+      platform: 'kimi',
+    };
+
+    const sessionInitSpy = spyOn(sessionInitHandler, 'execute').mockImplementation(async () => ({
+      continue: true,
+      suppressOutput: true,
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext: 'semantic context from session-init',
+      },
+    }));
+    const contextSpy = spyOn(contextHandler, 'execute').mockImplementation(async () => ({
+      continue: true,
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext: 'timeline context from context handler',
+      },
+    }));
+
+    try {
+      const result = await handler.execute(input);
+
+      expect(result.hookSpecificOutput).toBeDefined();
+      expect(result.hookSpecificOutput!.additionalContext).toBe(
+        'semantic context from session-init\n\ntimeline context from context handler'
+      );
+      expect(result.hookSpecificOutput!.hookEventName).toBe('SessionStart');
+    } finally {
+      sessionInitSpy.mockRestore();
+      contextSpy.mockRestore();
+    }
   });
 });
