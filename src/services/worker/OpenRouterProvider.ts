@@ -48,6 +48,15 @@ const GATEWAY_CODE_TO_KIND: Record<string, ProviderErrorClass> = {
 const PRO_FALLBACK_GATEWAY_CODES = new Set(['allowance_exhausted', 'subscription_inactive']);
 
 /**
+ * True when a classified error carries a definitive Pro-gateway stop code.
+ * Exported so SessionRoutes can route these failures through the quota/auth
+ * preservation path (batch retained) instead of the finalize-and-dispose path.
+ */
+export function isProFallbackGatewayCode(code: string | undefined): code is string {
+  return !!code && PRO_FALLBACK_GATEWAY_CODES.has(code);
+}
+
+/**
  * When a classified failure is a definitive Pro-gateway stop, persist the
  * fallback marker so provider resolution (SessionRoutes / worker-service)
  * switches to CLAUDE_MEM_FALLBACK_PROVIDER for the next 24h. Only fires when
@@ -57,7 +66,7 @@ const PRO_FALLBACK_GATEWAY_CODES = new Set(['allowance_exhausted', 'subscription
 function maybeActivateProFallback(error: unknown, apiUrl: string): void {
   if (!isClassified(error)) return;
   const code = error.code;
-  if (!code || !PRO_FALLBACK_GATEWAY_CODES.has(code)) return;
+  if (!isProFallbackGatewayCode(code)) return;
   if (!isCmemProBaseUrl(apiUrl)) return;
   logger.warn('SDK', '[pro-fallback] Definitive CMEM Pro gateway failure — activating fallback provider', { code });
   activateFallback(code);

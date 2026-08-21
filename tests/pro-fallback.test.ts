@@ -7,10 +7,13 @@ import {
   clearFallback,
   isCmemProBaseUrl,
   isFallbackActive,
+  isProFallbackHoldActive,
   readProFallbackState,
   resolveFallbackProvider,
+  PRO_FALLBACK_PROBE_INTERVAL_MS,
   PRO_FALLBACK_TTL_MS,
 } from '../src/shared/pro-fallback.js';
+import { isProFallbackGatewayCode } from '../src/services/worker/OpenRouterProvider.js';
 
 describe('pro-fallback state file', () => {
   let dir: string;
@@ -92,6 +95,67 @@ describe('pro-fallback state file', () => {
   });
 });
 
+describe('isProFallbackHoldActive (no-usable-fallback dispatch hold)', () => {
+  let dir: string;
+  let filePath: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'claude-mem-pro-hold-'));
+    filePath = join(dir, 'pro-fallback.json');
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('is inactive when no marker exists', () => {
+    expect(isProFallbackHoldActive(filePath)).toBe(false);
+  });
+
+  it('holds while the marker is fresher than the probe interval', () => {
+    const now = Date.now();
+    activateFallback('allowance_exhausted', filePath, now);
+    expect(isProFallbackHoldActive(filePath, now)).toBe(true);
+    expect(isProFallbackHoldActive(filePath, now + PRO_FALLBACK_PROBE_INTERVAL_MS - 1)).toBe(true);
+  });
+
+  it('lifts after the probe interval while the marker itself stays active', () => {
+    const now = Date.now();
+    activateFallback('allowance_exhausted', filePath, now);
+    const probeTime = now + PRO_FALLBACK_PROBE_INTERVAL_MS + 1;
+    expect(isProFallbackHoldActive(filePath, probeTime)).toBe(false);
+    // The 24h fallback marker is still on — only the dispatch hold lifted.
+    expect(isFallbackActive(filePath, probeTime)).toBe(true);
+  });
+
+  it('re-arms when a failed probe re-writes the marker', () => {
+    const now = Date.now();
+    activateFallback('allowance_exhausted', filePath, now);
+    const probeTime = now + PRO_FALLBACK_PROBE_INTERVAL_MS + 1;
+    expect(isProFallbackHoldActive(filePath, probeTime)).toBe(false);
+    activateFallback('allowance_exhausted', filePath, probeTime);
+    expect(isProFallbackHoldActive(filePath, probeTime)).toBe(true);
+  });
+
+  it('is inactive past the 24h TTL (marker self-clears)', () => {
+    const now = Date.now();
+    activateFallback('allowance_exhausted', filePath, now);
+    expect(isProFallbackHoldActive(filePath, now + PRO_FALLBACK_TTL_MS + 1)).toBe(false);
+    expect(existsSync(filePath)).toBe(false);
+  });
+});
+
+describe('isProFallbackGatewayCode', () => {
+  it('matches only the definitive Pro stop codes', () => {
+    expect(isProFallbackGatewayCode('allowance_exhausted')).toBe(true);
+    expect(isProFallbackGatewayCode('subscription_inactive')).toBe(true);
+    expect(isProFallbackGatewayCode('key_invalid')).toBe(false);
+    expect(isProFallbackGatewayCode('rate_limited')).toBe(false);
+    expect(isProFallbackGatewayCode(undefined)).toBe(false);
+    expect(isProFallbackGatewayCode('')).toBe(false);
+  });
+});
+
 describe('resolveFallbackProvider (provider resolution honors the fallback)', () => {
   it("returns 'claude' for fallback=claude regardless of gemini availability", () => {
     expect(resolveFallbackProvider({ fallbackProvider: 'claude', geminiAvailable: false })).toBe('claude');
@@ -103,7 +167,7 @@ describe('resolveFallbackProvider (provider resolution honors the fallback)', ()
     expect(resolveFallbackProvider({ fallbackProvider: 'gemini', geminiAvailable: false })).toBeNull();
   });
 
-  it("returns null for fallback=none (caller keeps openrouter → observer-health warning)", () => {
+  it("returns null for fallback=none (caller keeps openrouter and holds dispatch while the marker is fresh)", () => {
     expect(resolveFallbackProvider({ fallbackProvider: 'none', geminiAvailable: true })).toBeNull();
   });
 

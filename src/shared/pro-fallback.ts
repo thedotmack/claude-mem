@@ -106,6 +106,35 @@ export function isFallbackActive(
 }
 
 /**
+ * While the fallback marker is active but no fallback provider can serve
+ * ('none', or 'gemini' without a key), generation must not send every queued
+ * batch to the known-exhausted Pro gateway. Instead the caller holds queued
+ * work while the marker is fresher than this interval, letting one probe
+ * request through per interval: a definitive failure re-writes the marker
+ * (re-arming the hold), while a success simply drains the buffer. Net effect:
+ * at most one doomed request per interval, queued observations retained, and
+ * recovery within one interval of the user paying.
+ */
+export const PRO_FALLBACK_PROBE_INTERVAL_MS = 5 * 60 * 1000;
+
+/**
+ * True while dispatch to the Pro gateway should be held (see
+ * PRO_FALLBACK_PROBE_INTERVAL_MS). Callers apply this only when no usable
+ * fallback provider exists — with a usable fallback, resolution never routes
+ * to the Pro gateway while the marker is active in the first place.
+ */
+export function isProFallbackHoldActive(
+  filePath: string = defaultFallbackFilePath(),
+  nowMs: number = Date.now(),
+): boolean {
+  if (!isFallbackActive(filePath, nowMs)) return false;
+  const state = readProFallbackState(filePath);
+  if (!state) return false;
+  const activatedAtMs = Date.parse(state.activatedAt);
+  return Number.isFinite(activatedAtMs) && nowMs - activatedAtMs < PRO_FALLBACK_PROBE_INTERVAL_MS;
+}
+
+/**
  * Is this OpenRouter base URL the CMEM Pro inference gateway?
  *
  * Deliberately a tiny duplicate of the origin logic in

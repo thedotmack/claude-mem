@@ -9,7 +9,7 @@ import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
 import { GeminiProvider, isGeminiSelected, isGeminiAvailable } from '../../GeminiProvider.js';
-import { OpenRouterProvider, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterProvider.js';
+import { OpenRouterProvider, isOpenRouterSelected, isOpenRouterAvailable, isProFallbackGatewayCode } from '../../OpenRouterProvider.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -30,7 +30,7 @@ import {
 } from '../../../../shared/dependency-health.js';
 import { findClaudeExecutable } from '../../../../shared/find-claude-executable.js';
 import { recordObserverFailure } from '../../../../shared/observer-health.js';
-import { isFallbackActive, resolveFallbackProvider } from '../../../../shared/pro-fallback.js';
+import { isFallbackActive, isProFallbackHoldActive, resolveFallbackProvider } from '../../../../shared/pro-fallback.js';
 import { isClassified, describeProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
 
@@ -73,8 +73,10 @@ export class SessionRoutes extends BaseRouteHandler {
       // Pro fallback mode: a definitive CMEM Pro gateway failure (allowance
       // exhausted / subscription inactive) wrote a 24h marker; serve on the
       // configured fallback provider until it expires (Pro is then retried).
-      // Fallback 'none' (or 'gemini' without a key) keeps openrouter — it
-      // fails and surfaces through the observer-health warning as before.
+      // Fallback 'none' (or 'gemini' without a key) keeps openrouter —
+      // ensureGeneratorRunning then holds dispatch while the marker is fresh
+      // (isProFallbackHoldActive) so queued work is retained instead of being
+      // consumed by the exhausted gateway's failure path.
       if (isFallbackActive()) {
         const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
         const fallback = resolveFallbackProvider({
@@ -98,6 +100,20 @@ export class SessionRoutes extends BaseRouteHandler {
     const selectedProvider = this.getSelectedProvider();
 
     if (!session.generatorPromise) {
+      if (selectedProvider === 'openrouter' && isProFallbackHoldActive()) {
+        // Pro fallback marker is active but no usable fallback provider exists
+        // (otherwise getSelectedProvider would have returned it): hold queued
+        // work instead of dispatching to the known-exhausted Pro gateway. The
+        // buffer is preserved; once the probe interval elapses, the next
+        // ingest sends one probe, which either succeeds (allowance restored)
+        // or re-arms the marker and this hold.
+        logger.warn('SESSION', '[pro-fallback] No usable fallback provider — holding queued work instead of dispatching to the exhausted Pro gateway', {
+          sessionId: sessionDbId,
+          source,
+          pendingCount: this.sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
+        });
+        return;
+      }
       if (selectedProvider === 'claude') {
         const claudeStatus = getDependencyStatus('claude_cli');
         if (claudeStatus?.kind === 'setup_required') {
@@ -185,6 +201,12 @@ export class SessionRoutes extends BaseRouteHandler {
     const myController = session.abortController;
 
     let skipGeneratorExitFinalization = false;
+    // Set when a definitive CMEM Pro gateway stop (allowance_exhausted /
+    // subscription_inactive) killed the generator: routes the exit through
+    // handleGeneratorExit's quota/auth preservation branch so the claimed
+    // batch stays buffered for the next generator start, which resolves to
+    // the fallback provider via the marker — a lossless switch.
+    let proFallbackPauseReason: string | null = null;
     let generatorPromise: Promise<void>;
 
     generatorPromise = agent.startSession(session, this.workerService)
@@ -246,6 +268,15 @@ export class SessionRoutes extends BaseRouteHandler {
             error: errorMsg,
           }, error);
         }
+        // Definitive Pro-gateway stop: OpenRouterProvider flipped the fallback
+        // marker before rethrowing (isFallbackActive confirms it — the same
+        // codes from a non-Pro gateway do not activate it). Preserve the
+        // claimed batch instead of letting the ordinary failure path dispose
+        // the session buffer.
+        if (provider === 'openrouter' && isClassified(error)
+            && isProFallbackGatewayCode(error.code) && isFallbackActive()) {
+          proFallbackPauseReason = error.kind === 'auth_invalid' ? 'auth:pro_fallback' : 'quota:pro_fallback';
+        }
         // Observer-health ledger: repeated generator failures mean observations
         // are being dropped — session-start context warns the user via this.
         // Classified errors carry the structured detail (code/action/link/
@@ -291,7 +322,11 @@ export class SessionRoutes extends BaseRouteHandler {
             ide: session.platformSource,
           });
         }
-        await handleGeneratorExit(session, reason, {
+        // proFallbackPauseReason is deliberately NOT recorded as an abort
+        // above: the catch already emitted the one 'error' outcome for this
+        // failure. It only steers handleGeneratorExit into its quota/auth
+        // preservation branch (buffer retained, session kept alive).
+        await handleGeneratorExit(session, reason ?? proFallbackPauseReason, {
           sessionManager: this.sessionManager,
           completionHandler: this.completionHandler,
         });
