@@ -37,7 +37,7 @@ describe('error taxonomy', () => {
   it('exposes ErrorSeverity, ERROR_CATEGORIES, classifyError', () => {
     expect(ErrorSeverity.ABORT).toBe('ABORT');
     expect(Array.isArray(ERROR_CATEGORIES)).toBe(true);
-    expect(ERROR_CATEGORIES.length).toBeGreaterThanOrEqual(12);
+    expect(ERROR_CATEGORIES.length).toBeGreaterThanOrEqual(11);
   });
 
   it('has no SILENT severity', () => {
@@ -52,14 +52,6 @@ describe('error taxonomy', () => {
     });
     expect(cat.id).toBe('bun-missing-after-install');
     expect(cat.severity).toBe(ErrorSeverity.ABORT);
-  });
-
-  it('classifies a missing uv error as ABORT (uv-missing-after-install)', () => {
-    const cat = classifyError(new Error('uv installed but version probe failed.'), {
-      component: 'uv-install',
-      phase: 'setup-runtime',
-    });
-    expect(cat.id).toBe('uv-missing-after-install');
   });
 
   it('classifies ERESOLVE stderr as tree-sitter-eresolve ABORT', () => {
@@ -198,7 +190,7 @@ describe('npm install ERESOLVE detection', () => {
  * Aborted), whether an InstallAbortError is thrown, exit semantics (would-exit-1),
  * and that remediation text is present where expected.
  */
-type Scenario = 'happy' | 'eresolve' | 'missing-uv' | 'missing-bun';
+type Scenario = 'happy' | 'eresolve' | 'missing-bun';
 
 interface Outcome {
   status: 'Complete' | 'Partial' | 'Aborted';
@@ -224,13 +216,6 @@ function simulateInstall(_ide: string, scenario: Scenario): Outcome {
           cause: new Error('npm error code ERESOLVE\nWhile resolving: tree-sitter'),
         }, summary);
         break;
-      case 'missing-uv':
-        installerError(ErrorSeverity.ABORT, {
-          component: 'uv-install',
-          phase: 'setup-runtime',
-          cause: new Error('uv binary not found after auto-install attempt'),
-        }, summary);
-        break;
       case 'missing-bun':
         installerError(ErrorSeverity.ABORT, {
           component: 'bun-install',
@@ -249,8 +234,8 @@ function simulateInstall(_ide: string, scenario: Scenario): Outcome {
   return { status, aborted: false };
 }
 
-describe('cross-IDE failure matrix (11 IDEs x 4 scenarios)', () => {
-  const scenarios: Scenario[] = ['happy', 'eresolve', 'missing-uv', 'missing-bun'];
+describe('cross-IDE failure matrix (11 IDEs x 3 scenarios)', () => {
+  const scenarios: Scenario[] = ['happy', 'eresolve', 'missing-bun'];
 
   let prevMatrixDataDir: string | undefined;
   beforeEach(() => {
@@ -268,8 +253,8 @@ describe('cross-IDE failure matrix (11 IDEs x 4 scenarios)', () => {
     else process.env.CLAUDE_MEM_DATA_DIR = prevMatrixDataDir;
   });
 
-  it('produces 44 cells (11 IDEs x 4 scenarios)', () => {
-    expect(CANONICAL_IDES.length * scenarios.length).toBe(44);
+  it('produces 33 cells (11 IDEs x 3 scenarios)', () => {
+    expect(CANONICAL_IDES.length * scenarios.length).toBe(33);
   });
 
   for (const ide of CANONICAL_IDES) {
@@ -286,9 +271,6 @@ describe('cross-IDE failure matrix (11 IDEs x 4 scenarios)', () => {
           expect(outcome.remediation && outcome.remediation.length).toBeGreaterThan(0);
         }
 
-        if (scenario === 'missing-uv') {
-          expect(outcome.remediation).toContain('uv');
-        }
         if (scenario === 'missing-bun') {
           expect(outcome.remediation).toContain('Bun');
         }

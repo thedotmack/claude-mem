@@ -8,7 +8,6 @@ import {
   writeInstallMarker,
   isInstallCurrent,
   platformBunRemediation,
-  platformUvRemediation,
 } from '../src/npx-cli/install/setup-runtime';
 
 const SETUP_RUNTIME_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'npx-cli', 'install', 'setup-runtime.ts');
@@ -57,12 +56,11 @@ describe('setup-runtime install marker', () => {
     });
 
     it('returns parsed marker when file is valid', () => {
-      writeInstallMarker(tempDir, '1.2.3', '1.0.0', '0.5.0');
+      writeInstallMarker(tempDir, '1.2.3', '1.0.0');
       const marker = readInstallMarker(tempDir);
       expect(marker).not.toBeNull();
       expect(marker?.version).toBe('1.2.3');
       expect(marker?.bun).toBe('1.0.0');
-      expect(marker?.uv).toBe('0.5.0');
     });
 
     it('returns parsed marker when file is a legacy plain-text version', () => {
@@ -79,8 +77,8 @@ describe('setup-runtime install marker', () => {
   });
 
   describe('writeInstallMarker', () => {
-    it('writes a JSON file with the canonical schema { version, bun, uv, installedAt }', () => {
-      writeInstallMarker(tempDir, '12.4.7', '1.2.0', '0.4.18');
+    it('writes a JSON file with the canonical schema { version, bun, installedAt }', () => {
+      writeInstallMarker(tempDir, '12.4.7', '1.2.0');
 
       const path = join(tempDir, '.install-version');
       expect(existsSync(path)).toBe(true);
@@ -88,21 +86,20 @@ describe('setup-runtime install marker', () => {
       const parsed = JSON.parse(readFileSync(path, 'utf-8'));
       expect(parsed.version).toBe('12.4.7');
       expect(parsed.bun).toBe('1.2.0');
-      expect(parsed.uv).toBe('0.4.18');
       expect(typeof parsed.installedAt).toBe('string');
       expect(() => new Date(parsed.installedAt).toISOString()).not.toThrow();
     });
 
-    it('only writes the four documented fields', () => {
-      writeInstallMarker(tempDir, '1.0.0', '1.0.0', '0.1.0');
+    it('only writes the three documented fields', () => {
+      writeInstallMarker(tempDir, '1.0.0', '1.0.0');
       const parsed = JSON.parse(readFileSync(join(tempDir, '.install-version'), 'utf-8'));
-      expect(Object.keys(parsed).sort()).toEqual(['bun', 'installedAt', 'uv', 'version'].sort());
+      expect(Object.keys(parsed).sort()).toEqual(['bun', 'installedAt', 'version'].sort());
     });
   });
 
   describe('isInstallCurrent', () => {
     it('returns false when node_modules is missing', () => {
-      writeInstallMarker(tempDir, '1.0.0', '1.0.0', '0.1.0');
+      writeInstallMarker(tempDir, '1.0.0', '1.0.0');
       expect(isInstallCurrent(tempDir, '1.0.0')).toBe(false);
     });
 
@@ -114,7 +111,7 @@ describe('setup-runtime install marker', () => {
     it('returns false when marker version does not match expected', () => {
       mkdirSync(join(tempDir, 'node_modules'));
       const bunVersion = probeBunVersion() ?? '1.0.0';
-      writeInstallMarker(tempDir, '1.0.0', bunVersion, '0.1.0');
+      writeInstallMarker(tempDir, '1.0.0', bunVersion);
       expect(isInstallCurrent(tempDir, '2.0.0')).toBe(false);
     });
 
@@ -124,7 +121,7 @@ describe('setup-runtime install marker', () => {
         return;
       }
       mkdirSync(join(tempDir, 'node_modules'));
-      writeInstallMarker(tempDir, '1.0.0', bunVersion, '0.1.0');
+      writeInstallMarker(tempDir, '1.0.0', bunVersion);
       expect(isInstallCurrent(tempDir, '1.0.0')).toBe(true);
     });
 
@@ -147,17 +144,11 @@ describe('setup-runtime install marker', () => {
       expect(text).toContain('claude-mem install');
     });
 
-    it('uv remediation is non-empty and references uv install', () => {
-      const text = platformUvRemediation();
-      expect(text.length).toBeGreaterThan(0);
-      expect(text.toLowerCase()).toContain('uv');
-      expect(text).toContain('claude-mem install');
-    });
   });
 });
 
 describe('setup-runtime Windows spawn hygiene', () => {
-  it('does not use shell: IS_WINDOWS for bun/uv version probes', () => {
+  it('does not use shell: IS_WINDOWS for bun version probes', () => {
     const source = readFileSync(SETUP_RUNTIME_SOURCE_PATH, 'utf-8');
     const sharedSpawnSource = readFileSync(SHARED_SPAWN_SOURCE_PATH, 'utf-8');
     expect(source).not.toContain('shell: IS_WINDOWS');

@@ -163,7 +163,7 @@ describe('Install Non-TTY Support', () => {
         installSource.indexOf("title: 'Setting up runtime"),
         installSource.indexOf("return `Runtime ready"),
       );
-      expect(runtimeSetupRegion).toContain("writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion)");
+      expect(runtimeSetupRegion).toContain("writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion)");
     });
 
     it('replaces stale Codex marketplace registrations from a different source', () => {
@@ -240,8 +240,8 @@ describe('Install Non-TTY Support', () => {
       const markerHelperStart = installSource.indexOf('function writeMarketplaceInstallMarkers(');
       const markerHelperEnd = installSource.indexOf('/**\n * Install marketplace dependencies', markerHelperStart);
       const markerHelperRegion = installSource.slice(markerHelperStart, markerHelperEnd);
-      expect(markerHelperRegion).toContain('writeInstallMarker(marketplaceDir, version, bunVersion, uvVersion)');
-      expect(markerHelperRegion).toContain("writeInstallMarker(join(marketplaceDir, 'plugin'), version, bunVersion, uvVersion)");
+      expect(markerHelperRegion).toContain('writeInstallMarker(marketplaceDir, version, bunVersion)');
+      expect(markerHelperRegion).toContain("writeInstallMarker(join(marketplaceDir, 'plugin'), version, bunVersion)");
 
       const start = installSource.indexOf("title: 'Installing marketplace dependencies'");
       const end = installSource.indexOf('await runTasks(tasks);', start);
@@ -260,11 +260,11 @@ describe('Install Non-TTY Support', () => {
       expect(repairRegion).toContain("title: 'Setting up runtime'");
       expect(repairRegion).toContain("title: 'Repairing marketplace runtime'");
       expect(repairRegion).toContain('copyPluginToCache(version)');
-      expect(repairRegion).toContain('writeInstallMarker(cacheDir, version, bunVersion, uvVersion)');
+      expect(repairRegion).toContain('writeInstallMarker(cacheDir, version, bunVersion)');
       expect(repairRegion).toContain('Repopulating marketplace root from npm package');
       expect(repairRegion).toContain('copyPluginToMarketplace()');
       expect(repairRegion).toContain('await runNpmInstallInMarketplace(summary)');
-      expect(repairRegion).toContain('writeMarketplaceInstallMarkers(marketplaceDir, version, bunVersion, uvVersion)');
+      expect(repairRegion).toContain('writeMarketplaceInstallMarkers(marketplaceDir, version, bunVersion)');
     });
 
     it('removes legacy Codex AGENTS context only after marketplace registration succeeds', () => {

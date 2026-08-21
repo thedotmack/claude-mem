@@ -144,9 +144,13 @@ scope for Phase 9.
 
 ## Chroma vector status
 
+`GET /api/chroma/status` has since been removed from the local worker as well:
+semantic search runs on a vector index inside `claude-mem.db`, with no separate
+service to report the status of.
+
 | Legacy path                | Native server-beta replacement | Adapter | Status      |
 | -------------------------- | ------------------------------ | ------- | ----------- |
-| `GET /api/chroma/status`   | _(none — server-beta is Postgres-only)_ | _(none)_ | unsupported |
+| `GET /api/chroma/status`   | _(none — server-beta is Postgres-only)_ | _(none)_ | removed |
 
 ## Anti-pattern guards (referenced in Phase 9)
 

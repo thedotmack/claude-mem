@@ -135,10 +135,10 @@
 // SessionSearch.ts:76-152; user_prompts: SessionStore.ts:867-895) index them
 // automatically. There is no FTS-external write path in this module.
 //
-// CHROMA: newly inserted rows are forwarded to Chroma AFTER commit,
-// fire-and-forget (.then().catch() — the ResponseProcessor.ts pattern).
-// The ChromaSyncLike instance is injected; Phase 3's SyncClient wires
-// DatabaseManager.getChromaSync() here. Omitting it skips Chroma (the boot
+// SEMANTIC INDEX: newly inserted rows are handed to the vector index AFTER
+// commit, fire-and-forget (.then().catch() — the ResponseProcessor.ts
+// pattern). The writer is injected; Phase 3's SyncClient wires
+// DatabaseManager.getChromaSync() here. Omitting it skips indexing (the boot
 // backfill pass reconciles later).
 //
 // KNOWN LIMITATIONS (accepted for Phase 2 — documented, not bugs to trip on):
@@ -183,8 +183,8 @@ export interface SyncOp {
 }
 
 /**
- * Structural subset of ChromaSync (ChromaSync.ts:375-530) so tests can stub
- * it and Phase 3 can pass the real instance.
+ * Structural subset of the semantic write path (now VectorSync) so tests can
+ * stub it and Phase 3 can pass the real instance.
  */
 export interface ChromaSyncLike {
   syncObservation(

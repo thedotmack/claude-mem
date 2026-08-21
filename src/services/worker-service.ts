@@ -142,7 +142,7 @@ export function buildStatusOutput(
 export type { WorkerShutdownReason } from './worker-shutdown.js';
 
 // Clean-shutdown sentinel — same marker-file pattern as the one-time markers
-// in ProcessManager.ts (.chroma-cleaned-v10.3). Written in the graceful
+// in ProcessManager.ts (.cwd-remap-applied-v1). Written in the graceful
 // shutdown path, consumed (read + deleted) at the next startup: sentinel
 // present = previous run stopped cleanly; stale PID file with no sentinel =
 // previous run died without reaching the graceful-shutdown path (crash).
@@ -323,7 +323,6 @@ export class WorkerService implements WorkerRef {
 
     this.server.app.use(['/api', '/v1'], async (req, res, next) => {
       if (
-        req.path === '/chroma/status' ||
         req.path === '/health' ||
         req.path === '/readiness' ||
         req.path === '/version' ||
@@ -488,7 +487,7 @@ export class WorkerService implements WorkerRef {
       adoptMergedWorktreesForAllKnownRepos({}).then(adoptions => {
         if (adoptions) {
           for (const adoption of adoptions) {
-            if (adoption.adoptedObservations > 0 || adoption.adoptedSummaries > 0 || adoption.chromaUpdates > 0) {
+            if (adoption.adoptedObservations > 0 || adoption.adoptedSummaries > 0) {
               logger.info('SYSTEM', 'Merged worktrees adopted in background', adoption);
             }
             if (adoption.errors.length > 0) {
@@ -1373,10 +1372,6 @@ async function main() {
       console.log(`  Merged branches:      ${result.mergedBranches.join(', ') || '(none)'}`);
       console.log(`  Observations adopted: ${result.adoptedObservations}`);
       console.log(`  Summaries adopted:    ${result.adoptedSummaries}`);
-      console.log(`  Chroma docs updated:  ${result.chromaUpdates}`);
-      if (result.chromaFailed > 0) {
-        console.log(`  Chroma sync failures: ${result.chromaFailed} (will retry on next run)`);
-      }
       for (const err of result.errors) {
         console.log(`  ! ${err.worktree}: ${err.error}`);
       }
@@ -1490,12 +1485,6 @@ export function formatDependencyHealthHint(health: WorkerHealthSnapshot): string
   const labels = dependencies.statuses.map(status => {
     if (status.dependency === 'claude_cli' && status.kind === 'setup_required') {
       return 'Claude CLI setup required';
-    }
-    if (status.dependency === 'uvx' && status.kind === 'vector_search_unavailable') {
-      return 'uvx unavailable for vector search';
-    }
-    if (status.dependency === 'chroma' && status.kind === 'vector_search_unavailable') {
-      return 'Chroma unavailable for vector search';
     }
     return `${status.dependency}: ${status.kind}`;
   });
