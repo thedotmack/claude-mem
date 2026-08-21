@@ -9,7 +9,7 @@ icon: terminal
 The Kimi Code harness gives claude-mem persistent memory to agents running in the Kimi Code CLI. It handles three things:
 
 1. **Observation recording** — Captures tool usage from Kimi's hook system and sends it to the claude-mem worker for AI processing
-2. **Context injection** — Injects the observation timeline into each new session via the `SessionStart` hook's stdout, keeping `MEMORY.md` free for agent-curated memory
+2. **Context injection** — Injects the observation timeline into each prompt via the `UserPromptSubmit` hook's stdout (chained after `session-init`), keeping `MEMORY.md` free for agent-curated memory
 3. **MCP search tools** — Registers the `mcp-search` stdio server so you can query memory manually from inside a Kimi session
 
 <Info>
