@@ -172,7 +172,7 @@ const CMEM_PRO_ORIGIN = (process.env.CMEM_PRO_ORIGIN?.trim() || 'https://cmem.ai
 export const CMEM_PRO_SIGNUP_URL = `${CMEM_PRO_ORIGIN}/pro?from=installer`;
 
 /**
- * The 7-day card-upfront trial funnel (plan 2026-08-08-seven-day-trial-npx-funnel).
+ * The 30-day card-upfront trial funnel (plan 2026-08-08-seven-day-trial-npx-funnel).
  *
  * `start` creates the cmem.ai account + emails a sign-in link and answers with
  * a pairing id/secret plus a device-authorization `user_code` the human types
@@ -185,7 +185,7 @@ export const CMEM_PRO_SIGNUP_URL = `${CMEM_PRO_ORIGIN}/pro?from=installer`;
  */
 export const CMEM_PRO_TRIAL_START_URL = `${CMEM_PRO_ORIGIN}/api/pro/trial/start`;
 export const CMEM_PRO_TRIAL_POLL_URL = `${CMEM_PRO_ORIGIN}/api/pro/trial/poll`;
-export const CMEM_PRO_TRIAL_DAYS = 7;
+export const CMEM_PRO_TRIAL_DAYS = 30;
 
 /**
  * CMEM Pro settings, written as a plain `openrouter` provider config: the

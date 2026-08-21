@@ -1208,7 +1208,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     p.note(
       `${CMEM_PRO_TRIAL_DAYS} days free, then $${CMEM_PRO_MONTHLY_USD}/mo — card required, cancel anytime.\n`
         + `Opening ${CMEM_PRO_SIGNUP_URL}\n`
-        + "Sign in, start your free week, and copy the key you're shown.",
+        + "Sign in, start your free month, and copy the key you're shown.",
       `cmem Pro — ${CMEM_PRO_TRIAL_DAYS} days free`,
     );
     openBrowser(CMEM_PRO_SIGNUP_URL);
@@ -1238,6 +1238,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
       'Next: finish cloud sync in the browser — press NEXT on the page.',
       'CMEM Pro ready',
     );
+    await promptProFallbackProvider();
     return 'openrouter';
   }
 
@@ -1279,6 +1280,55 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
   }
   return selectedProvider;
+}
+
+type FallbackChoice = 'claude' | 'gemini' | 'none';
+
+/**
+ * Second choice of the Pro paths: what claude-mem should run on when the Pro
+ * allowance runs out (allowance_exhausted / subscription_inactive from the
+ * gateway flips the 24h pro-fallback marker — see src/shared/pro-fallback.ts).
+ * Asked right after Pro is configured, while the user is still in provider
+ * headspace. openrouter is deliberately absent: its settings slots carry the
+ * Pro token. Non-TTY / cancel: the 'claude' default in SettingsDefaultsManager
+ * stands, so there is nothing to write.
+ */
+async function promptProFallbackProvider(): Promise<void> {
+  if (!isInteractive) return;
+
+  const fallbackResult = await p.select<FallbackChoice>({
+    message: 'If your Pro allowance runs out, claude-mem can keep working on a fallback provider. Fall back to:',
+    options: [
+      { value: 'claude', label: 'Claude plan (recommended)', hint: 'no key needed' },
+      { value: 'gemini', label: 'Gemini API key', hint: 'requires Gemini API key' },
+      { value: 'none', label: 'No fallback', hint: 'pause memory generation instead' },
+    ],
+    initialValue: 'claude',
+  });
+
+  let choice: FallbackChoice = p.isCancel(fallbackResult) ? 'claude' : fallbackResult;
+
+  if (choice === 'gemini') {
+    // Same key slot and prompt shape as the gemini branch of promptProvider —
+    // an already-stored key is reused, never re-asked.
+    const existingKey = getSetting('CLAUDE_MEM_GEMINI_API_KEY');
+    if (!existingKey || existingKey.trim().length === 0) {
+      const apiKeyResult = await p.password({
+        message: 'Paste your Gemini API key:',
+        mask: '*',
+        validate: (v?: string) => (!v || v.trim().length === 0) ? 'API key required' : undefined,
+      });
+      if (p.isCancel(apiKeyResult)) {
+        log.warn('Gemini key prompt cancelled — using your Claude plan as the fallback instead.');
+        choice = 'claude';
+      } else {
+        mergeSettings({ CLAUDE_MEM_GEMINI_API_KEY: String(apiKeyResult).trim() });
+      }
+    }
+  }
+
+  const wrote = mergeSettings({ CLAUDE_MEM_FALLBACK_PROVIDER: choice });
+  if (wrote) log.info(`Saved fallback=${choice} to ~/.claude-mem/settings.json`);
 }
 
 async function promptClaudeModel(options: InstallOptions): Promise<void> {
@@ -1358,7 +1408,7 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
   }
 }
 
-// --- cmem Pro 7-day trial opt-in --------------------------------------------
+// --- cmem Pro 30-day trial opt-in -------------------------------------------
 // The first interaction of the install (replaces the old CMEM Online waitlist
 // opt-in — one funnel, not two). Entering an email POSTs to cmem.ai, which
 // creates the account server-side and emails a sign-in link; the response is a
@@ -1397,6 +1447,13 @@ interface TrialPairing {
    * to settings, never sent to telemetry.
    */
   userCode: string | null;
+  /**
+   * OAuth signup path: a cmem.ai login URL that claims this pairing after a
+   * GitHub/Google sign-in — the email-free route for brand-new accounts. Null
+   * when the server predates the OAuth-signup contract; the flow then works
+   * exactly as before (email link only). Display-only, like userCode.
+   */
+  claimUrl: string | null;
 }
 
 interface StoredTrialState {
@@ -1441,7 +1498,7 @@ async function startTrialPairing(email: string): Promise<TrialPairing | null> {
       signal: controller.signal,
     });
     if (!res.ok) return null;
-    const body = await res.json() as { pairing_id?: unknown; secret?: unknown; poll_interval?: unknown; user_code?: unknown };
+    const body = await res.json() as { pairing_id?: unknown; secret?: unknown; poll_interval?: unknown; user_code?: unknown; claim_url?: unknown };
     if (typeof body.pairing_id !== 'string' || typeof body.secret !== 'string') return null;
     // Clamp the server-controlled cadence to [1s, 30s]: the 240s poll budget
     // is only checked at the top of the loop, so an unclamped interval could
@@ -1455,7 +1512,12 @@ async function startTrialPairing(email: string): Promise<TrialPairing | null> {
     const userCode = typeof body.user_code === 'string' && body.user_code.trim().length > 0
       ? body.user_code.trim()
       : null;
-    return { pairingId: body.pairing_id, secret: body.secret, pollIntervalMs: pollIntervalS * 1000, userCode };
+    // claim_url arrived with the OAuth-signup contract; optional so older
+    // servers behave exactly as today — see TrialPairing.claimUrl.
+    const claimUrl = typeof body.claim_url === 'string' && body.claim_url.trim().length > 0
+      ? body.claim_url.trim()
+      : null;
+    return { pairingId: body.pairing_id, secret: body.secret, pollIntervalMs: pollIntervalS * 1000, userCode, claimUrl };
   } catch {
     // [ANTI-PATTERN IGNORED]: network/timeout failures here are NOT silent — every caller pairs the null return with a log.warn telling the user how to start the trial later; the install itself must proceed regardless.
     return null;
@@ -1551,6 +1613,16 @@ function sleepUnlessCancelled(ms: number, isCancelled: () => boolean): Promise<v
  * pairing-hijack hole, so it must be impossible to miss. No-op when the
  * server didn't send a code (older contract: no approval step exists).
  */
+/**
+ * OAuth alternative to the emailed sign-in link: print the claim URL when the
+ * server sent one (OAuth-signup contract). No-op for older servers — the
+ * email-only flow stays byte-for-byte what it was.
+ */
+function noteTrialClaimUrl(pairing: TrialPairing): void {
+  if (!pairing.claimUrl) return;
+  log.info(`Or sign in with GitHub/Google to claim: ${styleText('underline', pairing.claimUrl)}`);
+}
+
 function noteTrialUserCode(pairing: TrialPairing): void {
   if (!pairing.userCode) return;
   p.note(
@@ -1608,6 +1680,7 @@ async function promptProTrialOptIn(version: string): Promise<TrialPairing | null
       'Check your email — click the sign-in link and add a card ($0 today).\nInstall continues; we pick it up automatically.',
       'Link sent',
     );
+    noteTrialClaimUrl(pairing);
     noteTrialUserCode(pairing);
     await captureCliEvent('trial_link_sent', { version, duration_ms: Date.now() - resendStartedAt });
     return pairing;
@@ -1622,7 +1695,7 @@ async function promptProTrialOptIn(version: string): Promise<TrialPairing | null
 
   p.note(
     [
-      styleText(['bold', 'cyan'], 'Free week of Pro: cloud memory generation + sync across machines.'),
+      styleText(['bold', 'cyan'], 'Free month of Pro: cloud memory generation + sync across machines.'),
       '',
       'Memory generation runs on our metered models instead of your',
       `Anthropic plan — the default Haiku path burns ~$${haikuPer1k}/1k observations`,
@@ -1654,7 +1727,7 @@ async function promptProTrialOptIn(version: string): Promise<TrialPairing | null
   await captureCliEvent('trial_email_submitted', { version });
 
   const spin = p.spinner();
-  spin.start('Starting your free week — sending the sign-in link…');
+  spin.start('Starting your free month — sending the sign-in link…');
   const startRequestAt = Date.now();
   const pairing = await startTrialPairing(email);
   if (!pairing) {
@@ -1680,6 +1753,7 @@ async function promptProTrialOptIn(version: string): Promise<TrialPairing | null
     'Check your email — click the sign-in link and add a card ($0 today).\nInstall continues; we pick it up automatically.',
     'Link sent',
   );
+  noteTrialClaimUrl(pairing);
   noteTrialUserCode(pairing);
   await captureCliEvent('trial_link_sent', { version, duration_ms: Date.now() - startRequestAt });
   return pairing;
@@ -1787,7 +1861,7 @@ async function completeTrialPairing(pairing: TrialPairing, version: string): Pro
           : `in ${CMEM_PRO_TRIAL_DAYS} days`;
         spin.stop('cmem Pro credentials received.');
         p.note(
-          `✓ Free week active — cloud generation + sync ON.\n$${CMEM_PRO_MONTHLY_USD}/mo starts ${endsAtLabel}; cancel anytime at cmem.ai.`,
+          `✓ Free month active — cloud generation + sync ON.\n$${CMEM_PRO_MONTHLY_USD}/mo starts ${endsAtLabel}; cancel anytime at cmem.ai.`,
           'cmem Pro ready',
         );
         await captureCliEvent('trial_activated', { version, duration_ms: Date.now() - startedAt });
@@ -2011,6 +2085,12 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     selectedProvider = await completeTrialPairing(trialPairing, version);
   }
   const trialActivated = selectedProvider === 'openrouter';
+  if (trialActivated) {
+    // Outside completeTrialPairing on purpose: its poll loop holds a raw
+    // stdin data listener, and prompting is done from the normal clean-stdin
+    // state every other clack prompt in this file runs in.
+    await promptProFallbackProvider();
+  }
   if (selectedProvider === null) {
     selectedProvider = await promptProvider(options);
   }
@@ -2225,7 +2305,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `IDEs:        ${styleText('cyan', selectedIDEs.join(', '))}`,
   ];
   if (trialActivated) {
-    summaryLines.push(`Cloud sync:  ${styleText('cyan', 'ON (cmem Pro free week)')}`);
+    summaryLines.push(`Cloud sync:  ${styleText('cyan', 'ON (cmem Pro free month)')}`);
   }
   if (autoMemoryStatus === 'disabled') {
     summaryLines.push(`Auto-memory: ${styleText('cyan', 'disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);

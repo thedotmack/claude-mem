@@ -18,7 +18,8 @@ import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { callMcpToolOnce } from '../../shared/mcp-client.js';
-import { proTrialLine } from '../../shared/pro-promo.js';
+import { proTrialLine, proFallbackLine } from '../../shared/pro-promo.js';
+import { isFallbackActive } from '../../shared/pro-fallback.js';
 
 async function requestSessionStartContext(args: {
   projects: string[];
@@ -159,9 +160,17 @@ export const contextHandler: EventHandler = {
     // back to the plain additionalContext for terminal display.
     const displayContent = coloredTimeline || (platform === 'antigravity-cli' ? additionalContext : '');
 
-    const systemMessage = showTerminalOutput && displayContent
+    let systemMessage = showTerminalOutput && displayContent
       ? `${displayContent}\n\nView Observations Live @ http://localhost:${port}\n${proTrialLine('session-start')}`
       : undefined;
+
+    // Pro fallback upsell: shown ONLY while the pro-fallback marker is active
+    // (trial allowance used → running on the fallback provider). Codex is
+    // excluded from systemMessage entirely (hook-output limit, see above).
+    if (input.platform !== 'codex' && isFallbackActive()) {
+      const fallbackLine = proFallbackLine('session-start');
+      systemMessage = systemMessage ? `${systemMessage}\n${fallbackLine}` : fallbackLine;
+    }
 
     return {
       hookSpecificOutput: {

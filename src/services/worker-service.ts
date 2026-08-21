@@ -9,7 +9,8 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
-import { DATA_DIR, DB_PATH, ensureDir } from '../shared/paths.js';
+import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir } from '../shared/paths.js';
+import { isFallbackActive, resolveFallbackProvider } from '../shared/pro-fallback.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
@@ -278,7 +279,23 @@ export class WorkerService implements WorkerRef {
       workerPath: __filename,
       getAiStatus: () => {
         let provider = 'claude';
-        if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
+        if (isOpenRouterSelected() && isOpenRouterAvailable()) {
+          provider = 'openrouter';
+          // Mirror of SessionRoutes.getSelectedProvider: while the Pro
+          // fallback marker is active, status reports the provider actually
+          // serving (fallback 'none' / keyless 'gemini' keep openrouter).
+          if (isFallbackActive()) {
+            const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+            const fallback = resolveFallbackProvider({
+              fallbackProvider: settings.CLAUDE_MEM_FALLBACK_PROVIDER,
+              geminiAvailable: isGeminiAvailable(),
+            });
+            if (fallback) {
+              logger.info('WORKER', `[pro-fallback] Pro allowance unavailable — reporting fallback provider`, { provider: fallback });
+              provider = fallback;
+            }
+          }
+        }
         else if (isGeminiSelected() && isGeminiAvailable()) provider = 'gemini';
         return {
           provider,
