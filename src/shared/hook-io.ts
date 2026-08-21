@@ -122,6 +122,9 @@ export function emitModelContext(adapter: PlatformAdapter, result: HookResult): 
   }
   moduleHasEmitted = true;
   const output = adapter.formatOutput(result);
+  if (output === '') {
+    return;
+  }
   console.log(typeof output === 'string' ? output : JSON.stringify(output));
 }
 

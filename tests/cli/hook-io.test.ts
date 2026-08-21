@@ -134,6 +134,20 @@ describe('emitModelContext', () => {
       out.restore();
     }
   });
+
+  it('skips stdout when the adapter returns an empty string', () => {
+    const emptyAdapter: PlatformAdapter = {
+      normalizeInput: (raw) => raw as never,
+      formatOutput: () => '',
+    };
+    const out = captureStdout();
+    try {
+      emitModelContext(emptyAdapter, {});
+      expect(out.chunks).toHaveLength(0);
+    } finally {
+      out.restore();
+    }
+  });
 });
 
 describe('emitBlockingError', () => {

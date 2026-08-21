@@ -47,7 +47,7 @@ Kimi Code CLI
     The hook sends the user prompt to `POST /api/sessions/init` so the worker can create or continue the session. This is a blockable Kimi event; claude-mem always exits 0 so the prompt is never blocked.
   </Step>
   <Step title="Tool is about to read a file (PreToolUse Read)">
-    Before Kimi executes a `Read` tool, the hook records file-context metadata to `POST /api/sessions/observations`. This mirrors the Claude Code `PreToolUse` matcher.
+    Before Kimi executes a `Read` tool, the hook queries `GET /api/observations/by-file` for the target path and injects the returned timeline as additional context. This mirrors the Claude Code `PreToolUse` matcher.
   </Step>
   <Step title="Tool use recorded (PostToolUse)">
     After a successful tool use, the hook sends the tool name, input, and response to `POST /api/sessions/observations`. This is fire-and-forget — it does not block the agent from continuing work.
