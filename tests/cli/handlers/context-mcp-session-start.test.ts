@@ -94,7 +94,7 @@ describe('contextHandler Codex SessionStart MCP path', () => {
       platform: 'codex',
     });
 
-    expect(result.hookSpecificOutput?.additionalContext).toBe('context from mcp');
+    expect(result.hookSpecificOutput?.additionalContext).toBe('<claude-mem-context>\ncontext from mcp\n</claude-mem-context>');
     expect(mcpCalls).toEqual([{
       name: 'session_start_context',
       args: {
@@ -115,7 +115,7 @@ describe('contextHandler Codex SessionStart MCP path', () => {
       platform: 'codex',
     });
 
-    expect(result.hookSpecificOutput?.additionalContext).toBe('context from mcp');
+    expect(result.hookSpecificOutput?.additionalContext).toBe('<claude-mem-context>\ncontext from mcp\n</claude-mem-context>');
     expect(result.systemMessage).toBeUndefined();
     expect(mcpCalls).toEqual([{
       name: 'session_start_context',
@@ -136,7 +136,7 @@ describe('contextHandler Codex SessionStart MCP path', () => {
       platform: 'codex',
     });
 
-    expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
+    expect(result.hookSpecificOutput?.additionalContext).toBe('<claude-mem-context>\ncontext from worker\n</claude-mem-context>');
     expect(mcpCalls).toHaveLength(1);
     expect(workerCalls).toEqual([{
       path: '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=codex',
@@ -153,7 +153,7 @@ describe('contextHandler Codex SessionStart MCP path', () => {
       platform: 'claude-code',
     });
 
-    expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
+    expect(result.hookSpecificOutput?.additionalContext).toBe('<claude-mem-context>\ncontext from worker\n</claude-mem-context>');
     expect(mcpCalls).toHaveLength(0);
     expect(workerCalls).toEqual([{
       path: '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=claude',

@@ -38,6 +38,7 @@ import {
   type ServerRuntimeContext,
 } from '../services/hooks/runtime-selector.js';
 import { normalizePlatformSource } from '../shared/platform-source.js';
+import { getProjectContext } from '../utils/project-name.js';
 import { getAdvertisedMcpToolsForRuntime } from './mcp-tool-visibility.js';
 
 let mcpServerDirResolutionFailed = false;
@@ -71,7 +72,7 @@ function errorIfWorkerScriptMissing(): void {
 
 async function callWorker(
   endpoint: string,
-  opts: { query?: Record<string, any>; body?: Record<string, any>; text?: boolean } = {}
+  opts: { query?: Record<string, any>; body?: Record<string, any>; text?: boolean; method?: 'POST' | 'PUT' | 'DELETE' } = {}
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint });
 
@@ -79,7 +80,7 @@ async function callWorker(
     let response: Response;
     if (opts.body) {
       response = await workerHttpRequest(endpoint, {
-        method: 'POST',
+        method: opts.method ?? 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(opts.body)
       });
@@ -683,6 +684,109 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     },
     handler: async (args: any) => {
       return await callWorker('/api/observations/batch', { body: args });
+    }
+  },
+  // Working memory tools: task-scoped scratch state (hypotheses, plan,
+  // excluded options) — privileged agent knowledge the transcript cannot
+  // reconstruct. Facts about the world do NOT belong here; those are
+  // observations. The slot limit is part of the mechanism: on overflow the
+  // worker answers 409 with the current keys, and the agent must explicitly
+  // working_drop/merge before writing again. Nothing here flows into
+  // long-term memory automatically — only working_promote crosses over.
+  {
+    name: 'working_set',
+    description: 'Upsert a working-memory slot (hypothesis/plan/state) for the current task. NOT for world facts — those are observations. Limited slots: on overflow you get a 409 with the current key list and must working_drop or merge first. Params: key, value, task?',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        key: { type: 'string', description: 'Slot name (upserted per task)' },
+        value: { type: 'string', description: 'Plain text: hypothesis, plan, current state' },
+        task: { type: 'string', description: "Task scope (default 'default')" }
+      },
+      required: ['key', 'value'],
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      const project = getProjectContext(process.cwd()).primary;
+      return await callWorker('/api/working', {
+        method: 'PUT',
+        body: { project, task: args?.task, key: args?.key, value: args?.value }
+      });
+    }
+  },
+  {
+    name: 'working_drop',
+    description: 'Drop a working-memory slot that is resolved, wrong, or worth less than a new one. Params: key, task?',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        key: { type: 'string', description: 'Slot name to drop' },
+        task: { type: 'string', description: "Task scope (default 'default')" }
+      },
+      required: ['key'],
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      const project = getProjectContext(process.cwd()).primary;
+      return await callWorker('/api/working', {
+        method: 'DELETE',
+        body: { project, task: args?.task, key: args?.key }
+      });
+    }
+  },
+  {
+    name: 'working_list',
+    description: 'List live working-memory entries (intent slots + observer journal) for the current project. Params: task?',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: 'Task scope (omit for all tasks of the project)' }
+      },
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      const project = getProjectContext(process.cwd()).primary;
+      return formatJsonResult(await fetchWorkerJson('/api/working', {
+        project,
+        ...(args?.task !== undefined ? { task: args.task } : {})
+      }));
+    }
+  },
+  {
+    name: 'working_promote',
+    description: 'Promote a CONFIRMED working-memory hypothesis into long-term memory (creates an observation, clears the slot). The ONLY way working memory crosses over — call it once the world confirmed the hypothesis, never for speculation. Params: key, type? (decision|discovery), task?',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        key: { type: 'string', description: 'Slot name to promote' },
+        type: { type: 'string', description: "Observation type: 'decision' (default) or 'discovery'" },
+        task: { type: 'string', description: "Task scope (default 'default')" }
+      },
+      required: ['key'],
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      const project = getProjectContext(process.cwd()).primary;
+      return await callWorker('/api/working/promote', {
+        body: { project, task: args?.task, key: args?.key, type: args?.type }
+      });
+    }
+  },
+  {
+    name: 'working_close',
+    description: 'Close a task: drop its entire working-memory set (intent slots + journal). Call when the task is done. Params: task?',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: "Task scope (default 'default')" }
+      },
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      const project = getProjectContext(process.cwd()).primary;
+      return await callWorker('/api/working/close', {
+        body: { project, task: args?.task }
+      });
     }
   },
   {

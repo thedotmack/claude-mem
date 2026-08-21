@@ -128,6 +128,7 @@ export class SessionStore {
     this.ensureSemanticFactsTable();
     this.ensureDeletedObservationsTable();
     this.ensureObservationEchoColumns();
+    this.ensureWorkingMemoryTable();
   }
 
   /**
@@ -347,6 +348,55 @@ export class SessionStore {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(55, new Date().toISOString());
+  }
+
+  /**
+   * Working memory (version 56).
+   *
+   * Task-scoped scratch state, deliberately NOT another kind of observation:
+   * no ACT-R strength, no dedup, no embeddings, no FTS — every entry is
+   * relevant by definition, so none of the ranking machinery applies. Two
+   * non-overlapping writers share the table:
+   *   - intent rows (source 'agent'): the agent's hypotheses/plan, upserted by
+   *     (project, task_key, key) under a hard slot limit — the limit IS the
+   *     mechanism (overflow is an error that forces an explicit drop/merge).
+   *   - journal rows (source 'observer'): a mechanical ring buffer of what
+   *     happened (tool calls), written without any LLM involvement.
+   * Expiry is lazy: expires_at_epoch = updated + TTL, filtered on read, no
+   * timers. Rows never flow into observations automatically — only an
+   * explicit working_promote crosses over (see src/services/working/store.ts).
+   *
+   * Idempotent — the sqlite_master check is the real guard, the version row
+   * is bookkeeping.
+   */
+  private ensureWorkingMemoryTable(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(56) as SchemaVersion | undefined;
+    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'working_memory'").all() as TableNameRow[];
+    const hasTable = tables.length > 0;
+
+    if (applied && hasTable) return;
+
+    if (!hasTable) {
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS working_memory (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project TEXT NOT NULL,
+          task_key TEXT NOT NULL DEFAULT 'default',
+          key TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          value TEXT NOT NULL,
+          source TEXT NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          updated_at_epoch INTEGER NOT NULL,
+          expires_at_epoch INTEGER NOT NULL,
+          UNIQUE(project, task_key, key)
+        )
+      `);
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_working_memory_project_task ON working_memory(project, task_key)');
+      logger.debug('DB', 'Created working_memory table (task-scoped working memory)');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(56, new Date().toISOString());
   }
 
   private getIndexColumns(indexName: string): string[] {

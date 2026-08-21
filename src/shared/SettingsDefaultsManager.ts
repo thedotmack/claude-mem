@@ -77,6 +77,13 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SEMANTIC_ANNOTATE_MODEL: string;
   CLAUDE_MEM_SEMANTIC_ANNOTATE_ALLOW_DROP: string;
   CLAUDE_MEM_SEMANTIC_ANNOTATE_DEBUG_LOG: string;
+  // Working memory: task-scoped scratch state (separate table, no ACT-R /
+  // dedup / embeddings). Cost is ~0 (no LLM), so the master flag defaults on.
+  CLAUDE_MEM_WORKING_ENABLED: string;
+  CLAUDE_MEM_WORKING_MAX_KEYS: string;
+  CLAUDE_MEM_WORKING_MAX_TOKENS: string;
+  CLAUDE_MEM_WORKING_JOURNAL_SIZE: string;
+  CLAUDE_MEM_WORKING_TTL_DAYS: string;
   // Semantic memory layer: episode→fact consolidation (opt-in, default off)
   // and the `## Project Knowledge` injection block cap.
   CLAUDE_MEM_CONSOLIDATION_ENABLED: string;
@@ -206,6 +213,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_SEMANTIC_ANNOTATE_MODEL: '$TIER:simple', // Critic model — resolves via model-aliases (default haiku)
     CLAUDE_MEM_SEMANTIC_ANNOTATE_ALLOW_DROP: 'true',  // 'false' = hints only, never remove a memory from the injection
     CLAUDE_MEM_SEMANTIC_ANNOTATE_DEBUG_LOG: 'false',  // Opt-in JSONL dump of every annotation (full prompt text, verdicts, hints) to <dataDir>/logs/semantic-annotate.jsonl for manual quality review
+    CLAUDE_MEM_WORKING_ENABLED: 'true',              // Working memory master switch (task-scoped scratch state, no LLM cost)
+    CLAUDE_MEM_WORKING_MAX_KEYS: '8',                // Intent slots per task (eval knob: 3/6/12/24); overflow = 409 with the current key list
+    CLAUDE_MEM_WORKING_MAX_TOKENS: '1000',           // Render token budget (chars/4) over intent + journal values
+    CLAUDE_MEM_WORKING_JOURNAL_SIZE: '5',            // Observer journal ring length per task
+    CLAUDE_MEM_WORKING_TTL_DAYS: '7',                // Lazy expiry: expires_at = updated + TTL, filtered on read
     CLAUDE_MEM_CONSOLIDATION_ENABLED: 'false',       // Distill episodes into durable semantic facts (one LLM call per run, opt-in)
     CLAUDE_MEM_DEDUP_JUDGE_ENABLED: 'false',         // Semantic dedup judge per observation batch (one LLM call per kept observation, opt-in)
     CLAUDE_MEM_CONSOLIDATE_MIN_INTERVAL_HOURS: '12', // Per-project throttle: min hours between consolidation runs

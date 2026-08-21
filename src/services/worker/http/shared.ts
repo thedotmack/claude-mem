@@ -10,6 +10,8 @@ import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import { getProjectContext } from '../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../shared/platform-source.js';
 import { PrivacyCheckValidator } from '../validation/PrivacyCheckValidator.js';
+import { formatJournalLine } from '../../working/journal.js';
+import { appendJournal, DEFAULT_TASK_KEY, workingLimitsFromSettings } from '../../working/store.js';
 
 interface IngestContext {
   sessionManager: SessionManager;
@@ -117,6 +119,22 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   const cleanedToolResponse = payload.toolResponse !== undefined
     ? stripMemoryTags(JSON.stringify(payload.toolResponse))
     : '{}';
+
+  // Working-memory journal: the observer channel — a mechanical one-line
+  // record of what just happened, appended next to (never instead of) the
+  // observation queue. Lives here so the SKIP_TOOLS / privacy / project
+  // exclusions above apply to it for free. Fail-open by design: the journal
+  // is a free side-channel and must never break ingest.
+  if (String(settings.CLAUDE_MEM_WORKING_ENABLED).toLowerCase() === 'true') {
+    try {
+      const line = formatJournalLine(payload.toolName, payload.toolInput, payload.toolResponse);
+      appendJournal(store.db, project, DEFAULT_TASK_KEY, line, workingLimitsFromSettings(settings));
+    } catch (error) {
+      logger.warn('INGEST', 'Working-memory journal append failed (ignored)', {
+        toolName: payload.toolName,
+      }, error instanceof Error ? error : new Error(String(error)));
+    }
+  }
 
   await sessionManager.queueObservation(sessionDbId, {
     tool_name: payload.toolName,

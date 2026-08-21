@@ -14,6 +14,12 @@ import { shouldTrackProject as defaultShouldTrackProject } from '../../shared/sh
 import { loadFromFileOnce as defaultLoadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { isInternalProtocolPayload } from '../../utils/tag-stripping.js';
+import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE } from '../../utils/context-injection.js';
+import {
+  renderWorkingMemoryBlock,
+  WORKING_MEMORY_EMPTY_REMINDER,
+} from '../../services/working/render.js';
+import type { WorkingEntry, WorkingLimits } from '../../services/working/store.js';
 import {
   resolveRuntimeContext as defaultResolveRuntimeContext,
   logServerFallback as defaultLogServerFallback,
@@ -41,6 +47,12 @@ interface SemanticContextResponse {
     durationMs: number;
     timedOut: boolean;
   };
+}
+
+interface WorkingMemoryResponse {
+  entries: WorkingEntry[];
+  tokens: number;
+  limits: WorkingLimits;
 }
 
 const defaultDependencies = {
@@ -218,6 +230,39 @@ export const sessionInitHandler: EventHandler = {
       }
     }
 
+    // Working memory rides EVERY prompt (unlike the semantic block, no length
+    // gate): stale state must stay visible to the agent's eyes — that
+    // visibility is the structural defense against "forgot to write". When the
+    // set is empty and the prompt is substantial, a one-line reminder nudges
+    // the agent to record its hypothesis/plan. Fail-open: a worker hiccup
+    // must never break the hook.
+    const workingEnabled = String(settings.CLAUDE_MEM_WORKING_ENABLED ?? 'true').toLowerCase() === 'true';
+    if (workingEnabled) {
+      try {
+        const workingResult = await dependencies.executeWithWorkerFallback<WorkingMemoryResponse>(
+          `/api/working?project=${encodeURIComponent(project)}`,
+          'GET',
+        );
+        if (!dependencies.isWorkerFallback(workingResult) && workingResult) {
+          const block = renderWorkingMemoryBlock({ entries: workingResult.entries ?? [] });
+          const workingText = block ?? (
+            prompt && prompt.length >= 20 && prompt !== '[media prompt]'
+              ? WORKING_MEMORY_EMPTY_REMINDER
+              : ''
+          );
+          if (workingText) {
+            additionalContext = additionalContext
+              ? `${additionalContext}\n\n${workingText}`
+              : workingText;
+          }
+        }
+      } catch (error: unknown) {
+        logger.warn('HOOK', 'Working-memory injection failed (ignored)', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
     logger.info('HOOK', `INIT_COMPLETE | sessionDbId=${sessionDbId} | promptNumber=${promptNumber} | project=${project}`, {
       sessionId: sessionDbId
     });
@@ -228,7 +273,10 @@ export const sessionInitHandler: EventHandler = {
         suppressOutput: true,
         hookSpecificOutput: {
           hookEventName: 'UserPromptSubmit',
-          additionalContext
+          // Wrapped so the strip-tags pass (tag-stripping.ts) removes injected
+          // memory from transcripts before distillation — otherwise an
+          // unverified working-memory hypothesis comes back as an observation.
+          additionalContext: `${CONTEXT_TAG_OPEN}\n${additionalContext}\n${CONTEXT_TAG_CLOSE}`
         }
       };
     }
