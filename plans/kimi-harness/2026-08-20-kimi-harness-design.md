@@ -52,7 +52,7 @@ with the Claude Code integration.
 | Kimi hook event | matcher | claude-mem internal event | Notes |
 | --- | --- | --- | --- |
 | `SessionStart` | `startup\|resume` | worker start | warms up the worker only |
-| `UserPromptSubmit` | (all) | `session-init` + `context` | blockable event; we always exit 0; stdout is appended to Kimi context |
+| `UserPromptSubmit` | (all) | `session-init-context` | composite hook; blockable event; we always exit 0; stdout is appended to Kimi context |
 | `PostToolUse` | (all) | `observation` | success-only; `PostToolUseFailure` unused in v1 |
 | `PreToolUse` | `Read` | `file-context` | mirrors Claude's matcher |
 | `Stop` | (all) | `summarize` | |
@@ -69,7 +69,9 @@ error. Timeouts stay within Kimi's 1–600s range.
 > Correction from live verification with Kimi Code CLI v0.38.0: Kimi does not
 > append `SessionStart` hook stdout to the model's context, but it does append
 > `UserPromptSubmit` hook stdout. Therefore context injection was moved from
-> `SessionStart` to `UserPromptSubmit`, chained after `session-init`.
+> `SessionStart` to `UserPromptSubmit` via a single composite `session-init-context`
+> event, because shell-chaining `session-init && context` consumes stdin in the
+> first command and leaves the second with EOF.
 
 ## 4. Hook command delivery
 

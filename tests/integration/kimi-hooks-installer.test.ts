@@ -81,7 +81,7 @@ describe('installKimiHooks', () => {
     expect(installKimiHooks()).toBe(0);
     const config = readFileSync(path.join(home, 'config.toml'), 'utf-8');
     expect(config).toContain(KIMI_MARKER_BEGIN);
-    expect(config).toContain('hook kimi context');
+    expect(config).toContain('hook kimi session-init-context');
     expect(config).toContain('hook kimi observation');
     expect(config).toContain('hook kimi summarize');
     expect(config).toContain('default_model'); // user content preserved
@@ -139,7 +139,7 @@ describe('buildKimiHooksBlock', () => {
 
     const userPromptSubmitMatch = block.match(/event = "UserPromptSubmit"[\s\S]*?event = "PostToolUse"/);
     expect(userPromptSubmitMatch).toBeDefined();
-    expect(userPromptSubmitMatch![0]).toContain('hook kimi session-init');
-    expect(userPromptSubmitMatch![0]).toContain('hook kimi context');
+    expect(userPromptSubmitMatch![0]).toContain('hook kimi session-init-context');
+    expect(userPromptSubmitMatch![0]).not.toContain('&&');
   });
 });
