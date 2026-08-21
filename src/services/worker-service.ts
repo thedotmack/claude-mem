@@ -91,6 +91,9 @@ import {
   handleCursorCommand
 } from './integrations/CursorHooksInstaller.js';
 import {
+  handleKimiCommand
+} from './integrations/KimiHooksInstaller.js';
+import {
   handleAntigravityCliCommand
 } from './integrations/AntigravityCliHooksInstaller.js';
 import { notifyGrokBotIndex, watchGrokBotIndexSettings } from './integrations/GrokBotIndexWriter.js';
@@ -1493,6 +1496,13 @@ async function main() {
       const subcommand = process.argv[3];
       const cursorResult = await handleCursorCommand(subcommand, process.argv.slice(4));
       process.exit(cursorResult);
+      break;
+    }
+
+    case 'kimi': {
+      const kimiSubcommand = process.argv[3];
+      const kimiResult = await handleKimiCommand(kimiSubcommand, process.argv.slice(4));
+      process.exit(kimiResult);
       break;
     }
 
