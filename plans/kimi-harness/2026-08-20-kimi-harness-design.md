@@ -115,6 +115,21 @@ clobber existing keys; preserve existing formatting via `JSON.stringify(_, null,
 - No writes to the user's `AGENTS.md` or `~/.agents/` — memory context reaches
   the session through the SessionStart hook's stdout injection only.
 - No plugin-bundle packaging (`~/.kimi-code/plugins/`) — config-merge only.
+- No writes to `~/.claude-mem/settings.json` — observation compression is a
+  property of the already-running worker, not of the harness. On the author's
+  machine the worker is configured for a local Ollama backend
+  (`CLAUDE_MEM_PROVIDER=openrouter` → `http://localhost:11434/v1`,
+  model `claude-mem-gemma`); Kimi-captured observations flow through that
+  pipeline unchanged, and the installer must leave it untouched.
+
+### Kimi tool-name note
+
+`CLAUDE_MEM_SKIP_TOOLS` defaults list Claude tool names (`TodoWrite`,
+`BashOutput`, ...). Kimi's equivalents have different names (`TodoList`,
+`TaskList`, `TaskOutput`, `TaskStop`, `CronCreate`, `CronList`, `CronDelete`,
+`ReadMediaFile`, ...). Implementation-time decision: extend the default skip
+list with the Kimi names so chatter tools are not recorded as observations.
+The adapter itself passes `tool_name` through unmodified.
 
 ## 6. Transcript support
 
@@ -156,7 +171,10 @@ Run: `bun test` (full suite must stay green).
 - Verification before PR: install into a scratch `KIMI_CODE_HOME`, run a real
   Kimi session, confirm observations land in the worker DB
   (`/api/sessions/init`, `/api/sessions/observations`, `/api/sessions/summarize`)
-  and SessionStart context injection renders.
+  and SessionStart context injection renders. On the author's machine,
+  compression must run through the existing local Ollama pipeline
+  (`claude-mem-gemma`); the verification asserts no change to
+  `~/.claude-mem/settings.json`.
 - PR opened from the user's fork (percy-raskova/claude-mem); maintainer
   (Alex) pinged on Discord after local verification.
 
