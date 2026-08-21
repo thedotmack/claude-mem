@@ -1,26 +1,35 @@
 import type { Database } from 'bun:sqlite';
-import { VectorIndex } from './VectorIndex.js';
+import { MAX_EMBED_CHARS, MAX_EMBED_DOCS, VectorIndex } from './VectorIndex.js';
 import { VECTOR_TABLES, hasColumn } from './schema.js';
 import type { VectorDoc, VectorDocKind } from './types.js';
 import { logger } from '../../utils/logger.js';
 
 /**
  * Rows SELECTed per pass — an upper bound, not a count of rows processed. A
- * pass admits fewer whenever MAX_DOCS_PER_BATCH bites first. Bounded so a
- * large store never holds the loop for long.
+ * pass admits fewer whenever a document or character budget bites first.
+ * Bounded so a large store never holds the loop for long.
  */
 const BATCH_SIZE = 200;
 
 /**
- * Documents per pass.
+ * What a pass may accumulate, in documents AND in characters.
  *
  * A row renders to narrative + text + one document per fact, so BATCH_SIZE
- * bounds rows but not documents, and what a pass costs is counted in
- * documents. Rows are admitted whole: a pass stops before crossing the cap
- * rather than splitting a row, and a single row wider than the cap is still
- * passed in one piece.
+ * bounds rows but not documents — and a document count bounds nothing at all,
+ * because what a pass costs is counted in bytes. 1,020 documents of 400KB
+ * facts is 340M characters; 3,060 short ones is under a megabyte. Both apply,
+ * and the scan stops at whichever binds first.
+ *
+ * Rows are still admitted whole, because a parent row is the unit the index
+ * writes atomically and a row split across passes would be invisible to the
+ * NOT EXISTS skip on resume. A pass therefore stops admitting rows once a
+ * budget is reached, having taken the row that crossed it — an overshoot of at
+ * most one row. What a wide row no longer buys is an oversized embedder call:
+ * VectorIndex re-slices whatever it is handed under these same caps, which is
+ * why they are imported here rather than restated.
  */
-const MAX_DOCS_PER_BATCH = 1024;
+const MAX_DOCS_PER_BATCH = MAX_EMBED_DOCS;
+const MAX_CHARS_PER_BATCH = MAX_EMBED_CHARS;
 
 export interface BackfillProgress {
   kind: VectorDocKind;
@@ -94,6 +103,20 @@ export class VectorBackfill {
     return this.cursor.get(kind) ?? 0;
   }
 
+  /**
+   * The next pass's documents, and the highest row id it examined.
+   *
+   * Rows are pulled ONE AT A TIME. .all() materialised every selected row —
+   * facts blobs and all — before the cap could look at any of them, so the cap
+   * could only ever choose what to do with allocations that had already
+   * happened: a batch strictly under the 1,024-document cap still resident-set
+   * a gigabyte. Iterating means one row's content is live at a time and the
+   * scan stops READING, not just stops admitting, the moment a budget is spent.
+   *
+   * Rows arrive in id order, so the high-water mark is the last row ADMITTED —
+   * not the last row selected. Rows the scan never reached stay ahead of the
+   * cursor for the next pass.
+   */
   private nextBatch(kind: VectorDocKind, modelId: string): { docs: VectorDoc[]; lastId: number | null } {
     const { table, parent } = VECTOR_TABLES[kind];
     const cols = this.selectColumns(kind);
@@ -105,19 +128,19 @@ export class VectorBackfill {
         )
       ORDER BY p.id
       LIMIT ${BATCH_SIZE}
-    `).all(this.cursorFor(kind), modelId) as Record<string, unknown>[];
-    if (rows.length === 0) return { docs: [], lastId: null };
+    `).iterate(this.cursorFor(kind), modelId) as IterableIterator<Record<string, unknown>>;
 
-    // Rows arrive in id order, so the high-water mark is the last row ADMITTED
-    // — not the last row selected. The loop can stop early once the document
-    // cap is reached, and the rows it did not admit must stay ahead of the
-    // cursor so the next pass picks them up.
     const docs: VectorDoc[] = [];
+    let chars = 0;
     let lastId: number | null = null;
     for (const row of rows) {
-      const rowDocs = this.toDocs(kind, row);
-      if (docs.length > 0 && docs.length + rowDocs.length > MAX_DOCS_PER_BATCH) break;
-      for (const doc of rowDocs) docs.push(doc);
+      // Checked BEFORE the row is rendered, so a full pass never parses a
+      // facts blob it is not going to admit — and never holds it either.
+      if (docs.length >= MAX_DOCS_PER_BATCH || chars >= MAX_CHARS_PER_BATCH) break;
+      for (const doc of this.toDocs(kind, row)) {
+        docs.push(doc);
+        chars += doc.text.length;
+      }
       lastId = Number(row.id);
     }
     return { docs, lastId };

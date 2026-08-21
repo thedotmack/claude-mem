@@ -6,6 +6,7 @@ import { LocalEmbedder } from '../../src/services/vector/LocalEmbedder.js';
 import { VectorSync } from '../../src/services/vector/VectorSync.js';
 import { VectorSearchStrategy } from '../../src/services/worker/search/strategies/VectorSearchStrategy.js';
 import { FakeEmbedder } from './fake-embedder.js';
+import type { Embedder } from '../../src/services/vector/types.js';
 
 /**
  * The observations fixture carries `text` because the real one does: it is in
@@ -404,5 +405,271 @@ describe('VectorSearchStrategy with a platform-scoped query', () => {
       platformSource: 'cursor',
     });
     expect(result.results.observations).toEqual([]);
+  });
+});
+
+/**
+ * Records what actually reached the embedder, and samples RSS at the moment a
+ * pass has finished accumulating — which is where peak allocation sits.
+ *
+ * Deliberately NOT FakeEmbedder: tokenising a 400KB string per document would
+ * allocate more than the code under test does, and the double would be what
+ * the measurement measured.
+ */
+class SamplingEmbedder implements Embedder {
+  readonly modelId = 'test/sampling/384';
+  readonly dims = 384;
+  peakRss = 0;
+  readonly callDocs: number[] = [];
+  readonly callChars: number[] = [];
+
+  async embed(texts: string[]): Promise<Float32Array[]> {
+    this.callDocs.push(texts.length);
+    let chars = 0;
+    for (const text of texts) chars += text.length;
+    this.callChars.push(chars);
+    this.sample();
+    return texts.map(() => new Float32Array(this.dims));
+  }
+
+  sample(): void {
+    this.peakRss = Math.max(this.peakRss, process.memoryUsage.rss());
+  }
+}
+
+/** Rows whose facts are `factChars` wide, so bytes vary independently of count. */
+function seedWideRows(db: Database, rows: number, factsPerRow: number, factChars: number): void {
+  const obs = insertObs(db);
+  for (let i = 1; i <= rows; i++) {
+    const facts = Array.from({ length: factsPerRow }, (_, f) => `f${f}r${i} `.padEnd(factChars, 'x'));
+    obs.run(i, 'ms-1', 'alpha', null, null, `narrative ${i}`, JSON.stringify(facts), Date.now());
+  }
+}
+
+/** Documents the backfill contract allows into one embedder call. */
+const DOC_CAP = 1024;
+/** Characters the backfill contract allows into one embedder call. */
+const CHAR_CAP = 4 * 1024 * 1024;
+
+/**
+ * Regression: peak resident memory during the one-time indexing must be bounded
+ * by BYTES, not by document count.
+ *
+ * A document cap bounds nothing on its own. This corpus and a 400-BYTE-fact
+ * corpus of the same shape render to the identical 1,020 documents and produce
+ * the identical 1,020-document embedder call, yet this one allocated 910MB
+ * against the other's 12MB — a batch strictly UNDER the 1,024-document cap
+ * resident-setting most of a gigabyte on exactly the low-memory machines this
+ * index exists to serve. Two causes, both measured: the row SELECT materialised
+ * every row's facts blob before any cap could be consulted, and the cap counted
+ * documents while the cost was in characters.
+ *
+ * Measured as a delta from a pre-drain baseline. RSS never shrinks, so anything
+ * this process already allocated only makes the assertion more forgiving —
+ * never falsely red.
+ */
+describe('VectorBackfill peak memory on a byte-heavy corpus', () => {
+  const ROWS = 170;
+  const FACTS_PER_ROW = 5;
+  const CHARS_PER_FACT = 400_000;
+  const TOTAL_DOCS = ROWS * (FACTS_PER_ROW + 1); // facts + narrative
+  /** Measured 910MB before, 49MB after. Anything near the old figure is a fail. */
+  const RSS_CEILING_BYTES = 250 * 1024 * 1024;
+
+  let index: VectorIndex;
+  let backfill: VectorBackfill;
+  let embedder: SamplingEmbedder;
+  let peakDelta: number;
+
+  beforeAll(async () => {
+    const db = createCorpusDb();
+    seedWideRows(db, ROWS, FACTS_PER_ROW, CHARS_PER_FACT);
+
+    Bun.gc(true);
+    const baseline = process.memoryUsage.rss();
+
+    embedder = new SamplingEmbedder();
+    embedder.peakRss = baseline;
+    index = new VectorIndex(db, embedder);
+    backfill = new VectorBackfill(db, index);
+
+    let passes = 0;
+    while (!backfill.isComplete(index.modelId) && passes < 5_000) {
+      await backfill.runBatch();
+      embedder.sample();
+      passes++;
+    }
+    peakDelta = embedder.peakRss - baseline;
+  });
+
+  it('keeps peak resident memory off the gigabyte scale', () => {
+    expect(peakDelta).toBeLessThan(RSS_CEILING_BYTES);
+  });
+
+  it('never hands the embedder more characters than the cap', () => {
+    expect(Math.max(...embedder.callChars)).toBeLessThanOrEqual(CHAR_CAP);
+  });
+
+  it('still indexes every document behind the budget', () => {
+    expect(index.countIndexed('observation')).toBe(TOTAL_DOCS);
+    expect(backfill.isComplete(index.modelId)).toBe(true);
+  });
+});
+
+/**
+ * Regression: the document cap must apply to the FIRST row too.
+ *
+ * The old guard read `docs.length > 0 && docs.length + rowDocs.length > CAP`,
+ * which exempted the opening row of every pass entirely — so one row wide
+ * enough produced a single embedder call of 12,001 documents, twelve times the
+ * cap, and no cap on a later row could undo it. A pass over 60 narrow rows
+ * never triggered this, which is why a batching test built from narrow rows
+ * passed while a single wide row went through whole.
+ */
+describe('VectorBackfill with one row wider than the cap', () => {
+  const FACTS = 12_000;
+  let index: VectorIndex;
+  let embedder: SamplingEmbedder;
+
+  beforeAll(async () => {
+    const db = createCorpusDb();
+    seedWideRows(db, 1, FACTS, 200);
+    embedder = new SamplingEmbedder();
+    index = new VectorIndex(db, embedder);
+    const backfill = new VectorBackfill(db, index);
+    await drain(backfill, index.modelId, 200);
+  });
+
+  it('never exceeds the document cap on a single wide row', () => {
+    expect(Math.max(...embedder.callDocs)).toBeLessThanOrEqual(DOC_CAP);
+  });
+
+  it('still indexes every document of that row', () => {
+    expect(index.countIndexed('observation')).toBe(FACTS + 1);
+  });
+});
+
+/**
+ * Regression: LocalEmbedder must bound a forward pass by BYTES as well as by
+ * document count.
+ *
+ * A document count is not a size. Thirty-two documents is a few kilobytes of
+ * ordinary narrative and megabytes of 400KB facts, and the tokenizer walks
+ * every character of both before the model truncates anything — so a fixed
+ * 32-document chunk left the largest chunk the caller could produce entirely
+ * unbounded in bytes.
+ */
+describe('LocalEmbedder chunking by size', () => {
+  const CHUNK_CHAR_CAP = 256 * 1024;
+
+  class SizeProbe extends LocalEmbedder {
+    readonly callChars: number[] = [];
+    protected async encode(texts: string[]): Promise<Float32Array[]> {
+      let chars = 0;
+      for (const text of texts) chars += text.length;
+      this.callChars.push(chars);
+      return texts.map(() => new Float32Array(this.dims));
+    }
+  }
+
+  it('splits on characters well before the document count is reached', async () => {
+    const embedder = new SizeProbe();
+    // 8 documents — a quarter of the document chunk — but 1MB of text.
+    const vectors = await embedder.embed(
+      Array.from({ length: 8 }, (_, i) => `doc ${i} `.padEnd(128 * 1024, 'x')),
+    );
+
+    expect(vectors).toHaveLength(8);
+    expect(Math.max(...embedder.callChars)).toBeLessThanOrEqual(CHUNK_CHAR_CAP);
+  });
+
+  it('still passes a single oversized document through rather than stalling', async () => {
+    const embedder = new SizeProbe();
+    const vectors = await embedder.embed([`x`.repeat(CHUNK_CHAR_CAP * 3)]);
+    expect(vectors).toHaveLength(1);
+    expect(embedder.callChars).toHaveLength(1);
+  });
+});
+
+/**
+ * Regression: countIndexed must answer about the same population query() reads.
+ *
+ * It was an unscoped COUNT(*) while query() filters on project AND model_id, so
+ * "does this scope hold any vectors" was answered from a different set of rows
+ * than the search itself would touch. Both halves are user-visible, and the
+ * model half reaches all the way out to search: VectorSearchStrategy asks this
+ * question to tell an unpopulated index apart from a genuinely empty answer,
+ * and a non-zero count made it hand back an authoritative "no matches" for an
+ * index it could not read a single vector out of.
+ */
+describe('VectorIndex.countIndexed scoping', () => {
+  function seedTwoProjects(): Database {
+    const db = createCorpusDb();
+    db.prepare('INSERT INTO sdk_sessions VALUES (?,?,?,?,?)').run(2, 'cs-2', 'ms-2', 'beta', 'claude');
+    const obs = insertObs(db);
+    // beta gets indexed content; alpha has rows and nothing indexed.
+    for (let i = 1; i <= 100; i++) {
+      obs.run(i, 'ms-2', 'beta', null, null, `beta narrative ${i}`, JSON.stringify([`beta fact ${i}`]), Date.now());
+    }
+    for (let i = 201; i <= 350; i++) {
+      obs.run(i, 'ms-1', 'alpha', null, null, `alpha narrative ${i}`, null, Date.now());
+    }
+    return db;
+  }
+
+  it("does not report another project's vectors as this project's", async () => {
+    const db = seedTwoProjects();
+    const index = new VectorIndex(db, new FakeEmbedder());
+    // Index beta only, leaving alpha's 150 rows with no vectors at all.
+    await index.upsert('observation', [
+      { docId: 'obs_1_narrative', sqliteId: 1, fieldType: 'narrative', factIndex: null, text: 'beta narrative 1' },
+      { docId: 'obs_2_narrative', sqliteId: 2, fieldType: 'narrative', factIndex: null, text: 'beta narrative 2' },
+    ]);
+
+    expect(index.countIndexed('observation', { project: 'beta' })).toBe(2);
+    expect(index.countIndexed('observation', { project: 'alpha' })).toBe(0);
+  });
+
+  it('does not count vectors written under a model it can no longer read', async () => {
+    const db = createCorpusDb();
+    seedWideRows(db, 3, 1, 40);
+    const old = new VectorIndex(db, new FakeEmbedder());
+    const backfill = new VectorBackfill(db, old);
+    await drain(backfill, old.modelId, 20);
+    expect(old.countIndexed('observation')).toBeGreaterThan(0);
+
+    class OtherModel extends FakeEmbedder {
+      readonly modelId = 'test/other-model/384';
+    }
+    const rebuilt = new VectorIndex(db, new OtherModel());
+    expect(rebuilt.countIndexed('observation')).toBe(0);
+  });
+
+  /**
+   * The same fact one level up, on the path a real search takes: after a model
+   * change every vector is unreadable, query() returns nothing, and the strategy
+   * has to say so rather than reporting the corpus as holding no match.
+   */
+  it('lets search tell a stale index apart from an empty answer', async () => {
+    const db = createCorpusDb();
+    seedWideRows(db, 3, 1, 40);
+    const old = new VectorIndex(db, new FakeEmbedder());
+    await drain(new VectorBackfill(db, old), old.modelId, 20);
+
+    class OtherModel extends FakeEmbedder {
+      readonly modelId = 'test/other-model/384';
+    }
+    const rebuilt = new VectorIndex(db, new OtherModel());
+    const sessionStore = {
+      getAllProjects: () => ['alpha'],
+      getObservationsByIds: () => [],
+      getSessionSummariesByIds: () => [],
+      getUserPromptsByIds: () => [],
+    };
+    const strategy = new VectorSearchStrategy(new VectorSync(rebuilt), sessionStore as any);
+
+    await expect(
+      strategy.search({ query: 'narrative 1', searchType: 'observations', project: 'alpha' }),
+    ).rejects.toThrow(/not ready|still building|backfill/i);
   });
 });

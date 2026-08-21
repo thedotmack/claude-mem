@@ -55,6 +55,11 @@ export class SemanticIndexNotReadyError extends Error {
 
 const ALL_KINDS: VectorDocKind[] = ['observation', 'summary', 'prompt'];
 
+/** A DateRange bound as milliseconds; NaN when the string does not parse. */
+function toEpoch(bound: string | number): number {
+  return typeof bound === 'number' ? bound : new Date(bound).getTime();
+}
+
 const KINDS_BY_SEARCH_TYPE: Record<string, VectorDocKind[]> = {
   observations: ['observation'],
   sessions: ['summary'],
@@ -139,9 +144,30 @@ export class VectorSearchStrategy {
       return this.emptyResult();
     }
 
-    // Recency window, matching the previous strategy's filterByRecency.
-    const startEpoch = dateRange?.start ?? (Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS);
-    const endEpoch = dateRange?.end;
+    // Date window. Two defects lived on these three lines.
+    //
+    // Bounds were compared raw. DateRange.start/end is `string | number` and
+    // callers hand it ISO strings — mcp-server declares dateStart/dateEnd as
+    // strings and SearchOrchestrator.normalizeParams passes them through
+    // uncoerced. `number < string` coerces via Number(), Number('2026-01-01')
+    // is NaN, so every comparison was false and the range excluded nothing.
+    // Coerced here the way SearchManager already coerces it.
+    //
+    // And the 90-day floor was applied whenever start was absent, which made an
+    // END-ONLY query return the most recent 90 days — the inverse of what was
+    // asked. The default stands in for an absent range, not an absent start.
+    //
+    // A bound that does not parse leaves NaN, which the falsy guards below
+    // drop: an unreadable bound is ignored rather than excluding every row.
+    let startEpoch: number | undefined;
+    let endEpoch: number | undefined;
+
+    if (dateRange) {
+      if (dateRange.start) startEpoch = toEpoch(dateRange.start);
+      if (dateRange.end) endEpoch = toEpoch(dateRange.end);
+    } else {
+      startEpoch = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+    }
 
     const obsIds: number[] = [];
     const sessionIds: number[] = [];

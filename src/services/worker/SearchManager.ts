@@ -6,6 +6,8 @@ import { FormattingService } from './FormattingService.js';
 import { TimelineService } from './TimelineService.js';
 import type { TimelineItem } from './TimelineService.js';
 import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
+import type { VectorDocKind } from '../vector/types.js';
+import type { IndexScope } from '../vector/VectorIndex.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
@@ -348,10 +350,95 @@ export class SearchManager {
   }
 
   /**
+   * The FTS5 keyword search every degraded path runs. One body, because three
+   * copies of it drifting apart is how a fallback ends up scoped differently
+   * from the search it is standing in for.
+   */
+  private keywordSearch(
+    query: string | undefined,
+    options: any,
+    scope: {
+      obs_type: any;
+      concepts: any;
+      files: any;
+      searchObservations: boolean;
+      searchSessions: boolean;
+      searchPrompts: boolean;
+    }
+  ): {
+    observations: ObservationSearchResult[];
+    sessions: SessionSummarySearchResult[];
+    prompts: UserPromptSearchResult[];
+  } {
+    const { obs_type, concepts, files, searchObservations, searchSessions, searchPrompts } = scope;
+    return {
+      observations: searchObservations
+        ? this.sessionSearch.searchObservations(query, { ...options, type: obs_type, concepts, files })
+        : [],
+      sessions: searchSessions ? this.sessionSearch.searchSessions(query, options) : [],
+      prompts: searchPrompts ? this.sessionSearch.searchUserPrompts(query, options) : [],
+    };
+  }
+
+  /**
+   * The vector kinds a search with these collection flags would read.
+   */
+  private searchedVectorKinds(scope: {
+    searchObservations: boolean;
+    searchSessions: boolean;
+    searchPrompts: boolean;
+  }): VectorDocKind[] {
+    const kinds: VectorDocKind[] = [];
+    if (scope.searchObservations) kinds.push('observation');
+    if (scope.searchSessions) kinds.push('summary');
+    if (scope.searchPrompts) kinds.push('prompt');
+    return kinds;
+  }
+
+  /**
+   * True when the vectors this search would have read do not exist yet.
+   *
+   * This is the fresh-upgrade window: the one-time backfill has not reached
+   * these rows, so the semantic layer answers zero for every query — minutes on
+   * a small history, hours on a large one. Reported as a result, that zero is
+   * indistinguishable from "nothing matches", which is why it is treated as an
+   * absent answer instead and the keyword path runs.
+   *
+   * The count is asked in the SAME scope the query ran in (project, and the
+   * model the embedder is currently on). An unscoped count answers a different
+   * question and answers it wrongly: another project's vectors, or vectors left
+   * behind by a previous model, would report this scope as ready while every
+   * search over it returns nothing.
+   *
+   * Best-effort by construction. The suite — and SearchOrchestrator's own
+   * doubles — pass objects carrying queryChroma alone, so an absent getIndex(),
+   * an absent countIndexed, or a throwing probe all leave the previous
+   * behaviour in place rather than inventing a fallback.
+   */
+  private semanticScopeIsUnindexed(options: any, kinds: VectorDocKind[]): boolean {
+    const getIndex = (this.chromaSync as Partial<VectorSync> | null)?.getIndex;
+    if (typeof getIndex !== 'function') return false;
+    try {
+      const index = getIndex.call(this.chromaSync);
+      if (typeof index?.countIndexed !== 'function') return false;
+      const indexScope: IndexScope = options.project ? { project: options.project } : {};
+      for (const kind of kinds) {
+        if (index.countIndexed(kind, indexScope) > 0) return false;
+      }
+      return true;
+    } catch (probeError) {
+      const errorObject = probeError instanceof Error ? probeError : new Error(String(probeError));
+      logger.debug('SEARCH', 'Vector index readiness probe failed; treating the index as populated', {}, errorObject);
+      return false;
+    }
+  }
+
+  /**
    * PATH 2 body for search(): Chroma semantic query -> date-window filter ->
    * SQLite hydration, with a scoped FTS5 fallback when a platform-scoped
-   * query matches nothing in Chroma. Extracted so search()'s try block stays
-   * narrow; any error here is handled by search()'s Chroma-failure fallback.
+   * query matches nothing in Chroma, or when the index holds no vectors for
+   * the scope being searched. Extracted so search()'s try block stays narrow;
+   * any error here is handled by search()'s Chroma-failure fallback.
    */
   private async performChromaSemanticSearch(
     query: string,
@@ -370,12 +457,14 @@ export class SearchManager {
     sessions: SessionSummarySearchResult[];
     prompts: UserPromptSearchResult[];
     platformScopedChromaZeroFallback: boolean;
+    unindexedScopeFallback: boolean;
   }> {
     const { obs_type, concepts, files, searchObservations, searchSessions, searchPrompts } = scope;
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
     let platformScopedChromaZeroFallback = false;
+    let unindexedScopeFallback = false;
 
     const chromaResults = await this.queryChroma(query, 100, whereFilter);
     logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
@@ -450,22 +539,21 @@ export class SearchManager {
       if (options.platformSource) {
         logger.debug('SEARCH', 'Platform-scoped ChromaDB search found no matches; falling back to scoped FTS5 search', {});
         platformScopedChromaZeroFallback = true;
-
-        if (searchObservations) {
-          observations = this.sessionSearch.searchObservations(query, { ...options, type: obs_type, concepts, files });
-        }
-        if (searchSessions) {
-          sessions = this.sessionSearch.searchSessions(query, options);
-        }
-        if (searchPrompts) {
-          prompts = this.sessionSearch.searchUserPrompts(query, options);
-        }
+        ({ observations, sessions, prompts } = this.keywordSearch(query, options, scope));
+      } else if (this.semanticScopeIsUnindexed(options, this.searchedVectorKinds(scope))) {
+        // Nothing is indexed for this scope yet, so the zero above carries no
+        // information about the corpus — only about the backfill's progress.
+        logger.warn('SEARCH', 'Vector index holds no vectors for this scope yet; answering from FTS5 keyword search', {
+          hasProject: Boolean(options.project),
+        });
+        unindexedScopeFallback = true;
+        ({ observations, sessions, prompts } = this.keywordSearch(query, options, scope));
       } else {
         logger.debug('SEARCH', 'ChromaDB found no matches (final result, no FTS5 fallback)', {});
       }
     }
 
-    return { observations, sessions, prompts, platformScopedChromaZeroFallback };
+    return { observations, sessions, prompts, platformScopedChromaZeroFallback, unindexedScopeFallback };
   }
 
   async search(args: any, telemetryOut?: SearchTelemetryEnvelope): Promise<any> {
@@ -476,6 +564,7 @@ export class SearchManager {
     let prompts: UserPromptSearchResult[] = [];
     let chromaFailed = false;
     let platformScopedChromaZeroFallback = false;
+    let unindexedScopeFallback = false;
     let chromaFailureReason: { message: string; isConnectionError: boolean } | null = null;
 
     // `type` historically doubles as a document-category selector
@@ -538,10 +627,12 @@ export class SearchManager {
           ? whereFilters[0]
           : { $and: whereFilters };
 
+      const keywordScope = { obs_type: effectiveObsType, concepts, files, searchObservations, searchSessions, searchPrompts };
+
       try {
-        const chromaOutcome = await this.performChromaSemanticSearch(query, whereFilter, options, { obs_type: effectiveObsType, concepts, files, searchObservations, searchSessions, searchPrompts });
+        const chromaOutcome = await this.performChromaSemanticSearch(query, whereFilter, options, keywordScope);
         chromaSucceeded = true;
-        ({ observations, sessions, prompts, platformScopedChromaZeroFallback } = chromaOutcome);
+        ({ observations, sessions, prompts, platformScopedChromaZeroFallback, unindexedScopeFallback } = chromaOutcome);
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
         chromaFailureReason = {
@@ -551,30 +642,16 @@ export class SearchManager {
         logger.warn('SEARCH', 'ChromaDB semantic search failed, falling back to FTS5 keyword search', {}, errorObject);
         chromaFailed = true;
 
-        if (searchObservations) {
-          observations = this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
-        }
-        if (searchSessions) {
-          sessions = this.sessionSearch.searchSessions(query, options);
-        }
-        if (searchPrompts) {
-          prompts = this.sessionSearch.searchUserPrompts(query, options);
-        }
+        ({ observations, sessions, prompts } = this.keywordSearch(query, options, keywordScope));
       }
     }
     // PATH 3: FTS5 KEYWORD SEARCH (Chroma not initialized)
     else if (query) {
       logger.debug('SEARCH', 'ChromaDB not initialized — falling back to FTS5 keyword search', {});
       try {
-        if (searchObservations) {
-          observations = this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
-        }
-        if (searchSessions) {
-          sessions = this.sessionSearch.searchSessions(query, options);
-        }
-        if (searchPrompts) {
-          prompts = this.sessionSearch.searchUserPrompts(query, options);
-        }
+        ({ observations, sessions, prompts } = this.keywordSearch(query, options, {
+          obs_type: effectiveObsType, concepts, files, searchObservations, searchSessions, searchPrompts,
+        }));
       } catch (ftsError) {
         const errorObject = ftsError instanceof Error ? ftsError : new Error(String(ftsError));
         logger.error('WORKER', 'FTS5 fallback search failed', {}, errorObject);
@@ -595,13 +672,20 @@ export class SearchManager {
         searchStrategy = 'filter_only';
         fallbackReason = 'none';
       } else if (this.chromaSync) {
-        // PATH 2: Chroma semantic search, degrading to FTS5 on error or
-        // platform-scoped zeroes caused by pre-platform Chroma metadata.
-        searchStrategy = chromaFailed || platformScopedChromaZeroFallback ? 'fts' : 'chroma';
+        // PATH 2: Chroma semantic search, degrading to FTS5 on error, on
+        // platform-scoped zeroes caused by pre-platform Chroma metadata, or on
+        // a scope the vector index has not been built for yet. The last one
+        // reuses chroma_not_initialized — the vector store exists but holds
+        // nothing readable for this scope, which is the same "no index to
+        // search" the null-chromaSync path reports — rather than widening a
+        // closed enum that ships in the telemetry contract.
+        searchStrategy = chromaFailed || platformScopedChromaZeroFallback || unindexedScopeFallback ? 'fts' : 'chroma';
         if (chromaFailed) {
           fallbackReason = chromaFailureReason?.isConnectionError ? 'chroma_connection' : 'chroma_error';
         } else if (platformScopedChromaZeroFallback) {
           fallbackReason = 'chroma_error';
+        } else if (unindexedScopeFallback) {
+          fallbackReason = 'chroma_not_initialized';
         } else {
           fallbackReason = 'none';
         }
