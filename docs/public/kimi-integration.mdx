@@ -105,7 +105,7 @@ claude-mem kimi uninstall
 The installer writes a marker-delimited managed block into `$KIMI_CODE_HOME/config.toml` (default `~/.kimi-code/config.toml`) containing six `[[hooks]]` rules:
 
 ```toml
-# >>> claude-mem kimi hooks (managed; do not edit) >>>
+# >>> claude-mem kimi hooks (managed by claude-mem; do not edit) >>>
 [[hooks]]
 event = "SessionStart"
 matcher = "startup|resume"
@@ -135,11 +135,11 @@ Install or upgrade the Kimi harness. If the managed block already exists, it is 
 
 ### `claude-mem kimi status`
 
-Report whether the managed hook block is present and how many rules are registered, plus MCP registration status.
+Report whether the managed hook block is present in `config.toml`.
 
 ### `claude-mem kimi uninstall`
 
-Remove exactly the claude-mem managed block from `config.toml` and the `claude-mem` entry from `mcp.json`, leaving all other Kimi configuration untouched.
+Remove exactly the claude-mem managed block from `config.toml`, leaving all other Kimi configuration untouched.
 
 ## Error Handling
 
