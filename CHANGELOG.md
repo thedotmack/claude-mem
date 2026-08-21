@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Kimi Code CLI harness
+
+- Kimi Code CLI harness: first-class integration with hooks (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `PreToolUse`, `Stop`, `PreCompact`), MCP registration, `claude-mem kimi install|status|uninstall`, and `npx claude-mem install` auto-detection
+
 ## [13.15.3] - 2026-08-20
 
 ## What's Changed

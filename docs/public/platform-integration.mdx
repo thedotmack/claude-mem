@@ -65,6 +65,21 @@ npm run worker:logs           # View worker logs
 npm run worker:status         # Check worker status
 ```
 
+## Supported Harnesses
+
+The worker API is harness-agnostic. claude-mem ships first-party installers and adapters for the following platforms:
+
+| Harness | Platform identifier | Hook / MCP config location | Installer command |
+| --- | --- | --- | --- |
+| Claude Code | `claude` | Native plugin hooks (`~/.claude/...`) | `/plugin marketplace add thedotmack/claude-mem` |
+| Codex CLI | `codex` | `~/.codex/config.toml` | `npx claude-mem install --ide codex` |
+| Cursor | `cursor` | `~/.cursor/hooks.json`, `~/.cursor/mcp.json` | `npx claude-mem install --ide cursor` |
+| Windsurf | `windsurf` | `~/.codeium/windsurf/hooks.json` | `npx claude-mem install --ide windsurf` |
+| OpenCode | `opencode` | `~/.config/opencode/opencode.json` | `npx claude-mem install --ide opencode` |
+| OpenClaw | `openclaw` | OpenClaw gateway plugin config | `curl -fsSL https://install.cmem.ai/openclaw.sh \| bash` |
+| Antigravity CLI | `antigravity-cli` | `~/.gemini/settings.json`, `~/.gemini/.../mcp_config.json` | `npx claude-mem install --ide antigravity` |
+| Kimi Code | `kimi` | `~/.kimi-code/config.toml`, `~/.kimi-code/mcp.json` | `claude-mem kimi install` |
+
 ## Worker Architecture
 
 ### Request Flow
