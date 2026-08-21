@@ -64,7 +64,7 @@ export const OBSERVER_DISALLOWED_TOOLS = [
 
 export interface HardenedSdkOptionsInput {
   /** Which call site is constructing options — flows into audit entries. */
-  source: 'Observer' | 'KnowledgeAgent';
+  source: 'Observer' | 'KnowledgeAgent' | 'RelevanceAnnotator';
   /** Identifiers carried into the audit log for post-incident correlation. */
   sessionDbId?: number;
   contentSessionId?: string;

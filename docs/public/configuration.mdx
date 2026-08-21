@@ -349,9 +349,23 @@ Episodes melt into knowledge: an opt-in consolidation job periodically distills 
 | `CLAUDE_MEM_CONSOLIDATE_MIN_INTERVAL_HOURS` | `12` | Per-project throttle: minimum hours between consolidation runs |
 | `CLAUDE_MEM_CONSOLIDATE_MIN_OBSERVATIONS` | `20` | Per-project throttle: minimum new observations since the last run |
 | `CLAUDE_MEM_FACTS_INJECT_COUNT` | `15` | Cap on the `## Project Knowledge` block rendered above the timeline |
-| `CLAUDE_MEM_SEMANTIC_INJECT_MIN_SCORE` | `0` (off) | Cosine-similarity floor for vector hits eligible for per-prompt semantic injection (`## Relevant Past Work`). Off by default: measured on the live e5-small corpus, the similarity band is too compressed for an absolute floor to separate relevant from irrelevant (obvious nonsense lands within ~0.05 cos of genuine queries — everything passes 0.90, everything dies at 0.95). The plumbing remains for models with a wider band; the evidence-backed guard is an LLM relevance filter over candidates (deferred — it costs one LLM call per prompt) |
+| `CLAUDE_MEM_SEMANTIC_INJECT_MIN_SCORE` | `0` (off) | Cosine-similarity floor for vector hits eligible for per-prompt semantic injection (`## Relevant Past Work`). Off by default: measured on the live e5-small corpus, the similarity band is too compressed for an absolute floor to separate relevant from irrelevant (obvious nonsense lands within ~0.05 cos of genuine queries — everything passes 0.90, everything dies at 0.95). The plumbing remains for models with a wider band; the evidence-backed guard is the relevance annotation layer below |
 
 Consolidation verdicts can add, update (the old fact is superseded and hands half its reinforcement history to the successor), or delete (a tombstone — rows are never physically removed). Every new or updated fact must cite the observations it was distilled from; uncited verdicts are discarded. The whole pass is defensive — any failure degrades to a no-op.
+
+### Relevance Annotation ("Why now")
+
+Semantic retrieval ranks by similarity, but similar ≠ applicable: a memory captured against a different state of the world can mislead when replayed verbatim. This opt-in layer inserts one **batched** cheap-model call between retrieval and injection: every candidate memory gets a one-line `**Why now:** …` hint (how it helps with the *current* prompt) or a drop verdict that removes it from the injection. When the critic succeeds, the injection switches to **compact mode** — the hint *replaces* the full narrative and the header gains the observation id (`### title (date) #123`), so the model can expand anything via `get_observations([id])`; when the critic is off or fails, the legacy full-narrative format is kept (fail-open). Requires the Claude provider and `CLAUDE_MEM_SEMANTIC_INJECT=true`; applies to both the current-project and cross-project sections.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_SEMANTIC_ANNOTATE` | `false` | Opt-in master switch — costs one LLM call per prompt with semantic hits, so it is off by default |
+| `CLAUDE_MEM_SEMANTIC_ANNOTATE_TIMEOUT_MS` | `4000` | Hard cap on the critic call; on timeout the injection goes out unannotated (fail-open) |
+| `CLAUDE_MEM_SEMANTIC_ANNOTATE_MODEL` | `$TIER:simple` | Critic model (resolves to `CLAUDE_MEM_TIER_SIMPLE_MODEL`, default haiku) |
+| `CLAUDE_MEM_SEMANTIC_ANNOTATE_ALLOW_DROP` | `true` | `false` = render hints only, never remove a memory |
+| `CLAUDE_MEM_SEMANTIC_ANNOTATE_DEBUG_LOG` | `false` | Opt-in JSONL dump of every annotation (full query, candidates, verdicts) to `~/.claude-mem/logs/semantic-annotate.jsonl` for manual quality review |
+
+Observability: every annotated injection is logged by the worker (`semantic_annotate` with outcome, kept/dropped counts, latency) and folded into the `context_injected_rollup` telemetry (`total_annotated`, `total_annotation_dropped`, `avg_annotation_ms`, `annotation_outcomes_*`).
 
 ```json
 {

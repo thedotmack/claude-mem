@@ -365,6 +365,28 @@ describe('flush() — context_injected_rollup', () => {
     expect(typeof p.window_start_ts).toBe('number');
   });
 
+  it('aggregates the relevance-annotation channel (hints, drops, latency, outcomes)', () => {
+    telemetryBuffer.record('context_injected', null, {
+      outcome: 'ok', tokens_injected: 500,
+      annotated_count: 4, annotation_dropped: 1, annotation_ms: 900, annotation_outcome: 'ok',
+    });
+    telemetryBuffer.record('context_injected', null, {
+      outcome: 'ok',
+      annotated_count: 2, annotation_dropped: 3, annotation_ms: 4100, annotation_outcome: 'timeout',
+    });
+    telemetryBuffer.record('context_injected', null, { outcome: 'ok' }); // no annotation fields — skipped
+
+    telemetryBuffer.flush();
+
+    const p = (postHogCaptureCalls[0] as { properties: Record<string, unknown> }).properties;
+    expect(p.total_annotated).toBe(6);
+    expect(p.total_annotation_dropped).toBe(4);
+    expect(p.avg_annotation_ms).toBe(2500);
+    expect(p.annotation_outcomes_ok).toBe(1);
+    expect(p.annotation_outcomes_timeout).toBe(1);
+    expect(p.annotation_outcomes_error).toBe(0);
+  });
+
   it('does NOT flush per-session session_compressed buckets', () => {
     telemetryBuffer.record('session_compressed', 1, { outcome: 'ok' });
     telemetryBuffer.record('context_injected', null, { outcome: 'ok', tokens_injected: 100 });

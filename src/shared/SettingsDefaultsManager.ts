@@ -67,6 +67,16 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: string;
   CLAUDE_MEM_SEMANTIC_INJECT_MIN_SCORE: string;
   CLAUDE_MEM_SEMANTIC_INJECT_GLOBAL_LIMIT: string;
+  // Relevance annotation layer over semantic injection (opt-in, default off):
+  // one batched cheap-model call per prompt annotates each candidate with a
+  // "why this helps now" hint and may drop inapplicable memories (critique
+  // stage). Lives here (not env-only) so settings.json can enable it —
+  // loadFromFile drops keys absent from DEFAULTS.
+  CLAUDE_MEM_SEMANTIC_ANNOTATE: string;
+  CLAUDE_MEM_SEMANTIC_ANNOTATE_TIMEOUT_MS: string;
+  CLAUDE_MEM_SEMANTIC_ANNOTATE_MODEL: string;
+  CLAUDE_MEM_SEMANTIC_ANNOTATE_ALLOW_DROP: string;
+  CLAUDE_MEM_SEMANTIC_ANNOTATE_DEBUG_LOG: string;
   // Semantic memory layer: episode→fact consolidation (opt-in, default off)
   // and the `## Project Knowledge` injection block cap.
   CLAUDE_MEM_CONSOLIDATION_ENABLED: string;
@@ -189,8 +199,13 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: '[]',  // #2400 — JSON array of glob patterns; when a folder matches AND its generated CLAUDE.md would be empty/skeleton, skip injection (avoids polluting non-content dirs with empty skeletons). Default [] preserves existing behavior.
     CLAUDE_MEM_SEMANTIC_INJECT: 'false',             // Inject relevant past observations on every UserPromptSubmit (experimental, disabled by default)
     CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: '5',           // Top-N most relevant observations to inject per prompt
-    CLAUDE_MEM_SEMANTIC_INJECT_MIN_SCORE: '0',       // Cosine floor for injected vector hits; OFF by default — measured 2026-08-05 on the live e5 corpus: the similarity band is too compressed for an absolute floor to separate (obvious nonsense scores within ~0.05 cos of genuine queries — both pass 0.90, both die at 0.95). Plumbing kept for other models/bands; the evidence-backed alternative is an LLM relevance filter over candidates (deferred, quota cost per prompt)
+    CLAUDE_MEM_SEMANTIC_INJECT_MIN_SCORE: '0',       // Cosine floor for injected vector hits; OFF by default — measured 2026-08-05 on the live e5 corpus: the similarity band is too compressed for an absolute floor to separate (obvious nonsense scores within ~0.05 cos of genuine queries — both pass 0.90, both die at 0.95). Plumbing kept for other models/bands; the evidence-backed alternative is the LLM relevance filter over candidates, implemented behind CLAUDE_MEM_SEMANTIC_ANNOTATE.
     CLAUDE_MEM_SEMANTIC_INJECT_GLOBAL_LIMIT: '0',    // Cross-project semantic injection: how many OTHER-project hits (observations via Chroma + facts via FTS, combined cap) to add as a separate context section. '0' = off, current-project-only behavior.
+    CLAUDE_MEM_SEMANTIC_ANNOTATE: 'false',            // Relevance annotation: one batched LLM call per prompt adds a "Why now:" hint per injected memory and may drop inapplicable ones. Opt-in — this is the per-prompt-quota-cost filter previously deferred (see MIN_SCORE comment above), now implemented behind this flag.
+    CLAUDE_MEM_SEMANTIC_ANNOTATE_TIMEOUT_MS: '4000',  // Hard cap on the annotation call; on timeout the injection goes out unannotated (fail-open)
+    CLAUDE_MEM_SEMANTIC_ANNOTATE_MODEL: '$TIER:simple', // Critic model — resolves via model-aliases (default haiku)
+    CLAUDE_MEM_SEMANTIC_ANNOTATE_ALLOW_DROP: 'true',  // 'false' = hints only, never remove a memory from the injection
+    CLAUDE_MEM_SEMANTIC_ANNOTATE_DEBUG_LOG: 'false',  // Opt-in JSONL dump of every annotation (full prompt text, verdicts, hints) to <dataDir>/logs/semantic-annotate.jsonl for manual quality review
     CLAUDE_MEM_CONSOLIDATION_ENABLED: 'false',       // Distill episodes into durable semantic facts (one LLM call per run, opt-in)
     CLAUDE_MEM_DEDUP_JUDGE_ENABLED: 'false',         // Semantic dedup judge per observation batch (one LLM call per kept observation, opt-in)
     CLAUDE_MEM_CONSOLIDATE_MIN_INTERVAL_HOURS: '12', // Per-project throttle: min hours between consolidation runs

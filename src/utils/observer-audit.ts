@@ -24,7 +24,7 @@ const KEEP_GENERATIONS = 3;
 const MAX_INPUT_BYTES = 4096;
 
 export interface ObserverToolAttempt {
-  source: 'Observer' | 'KnowledgeAgent';
+  source: 'Observer' | 'KnowledgeAgent' | 'RelevanceAnnotator';
   sessionDbId?: number;
   contentSessionId?: string;
   project?: string;

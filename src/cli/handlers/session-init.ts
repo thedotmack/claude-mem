@@ -34,6 +34,13 @@ interface SemanticContextResponse {
   count: number;
   globalContext?: string;
   globalCount?: number;
+  annotations?: {
+    attempted: boolean;
+    kept: number;
+    dropped: number;
+    durationMs: number;
+    timedOut: boolean;
+  };
 }
 
 const defaultDependencies = {
@@ -199,6 +206,9 @@ export const sessionInitHandler: EventHandler = {
         additionalContext = additionalContext
           ? `${additionalContext}\n\n${semanticResult.context}`
           : semanticResult.context;
+      }
+      if (!dependencies.isWorkerFallback(semanticResult) && semanticResult?.annotations?.attempted) {
+        logger.debug('HOOK', `Semantic annotation: kept=${semanticResult.annotations.kept} dropped=${semanticResult.annotations.dropped} in ${semanticResult.annotations.durationMs}ms${semanticResult.annotations.timedOut ? ' (timed out)' : ''}`, { sessionId: sessionDbId, ...semanticResult.annotations });
       }
       if (!dependencies.isWorkerFallback(semanticResult) && semanticResult?.globalContext) {
         logger.debug('HOOK', `Cross-project semantic injection: ${semanticResult.globalCount} memories for prompt`, { sessionId: sessionDbId, count: semanticResult.globalCount });
