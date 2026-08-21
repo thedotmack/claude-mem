@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { styleText } from 'node:util';
 import { isPluginInstalled, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
-import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
+import { getBunVersion, isInstallCurrent } from '../install/setup-runtime.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../../shared/paths.js';
 
@@ -23,12 +23,12 @@ interface CheckResult {
   required: boolean;
 }
 
-function probeVersion(bin: 'bun' | 'uv'): string | null {
+function probeBunVersion(): string | null {
   try {
-    return bin === 'bun' ? getBunVersion() : getUvVersion();
+    return getBunVersion();
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
-    console.warn(`[doctor] Failed to probe \`${bin} --version\`:`, err);
+    console.warn('[doctor] Failed to probe `bun --version`:', err);
     return null;
   }
 }
@@ -49,7 +49,7 @@ export async function runDoctorCommand(): Promise<void> {
   const dataDir = resolveDataDir();
 
   // 1. Bun (required — hooks run on Bun).
-  const bunVersion = probeVersion('bun');
+  const bunVersion = probeBunVersion();
   checks.push({
     name: 'Bun runtime',
     status: bunVersion ? 'ok' : 'fail',
@@ -57,16 +57,7 @@ export async function runDoctorCommand(): Promise<void> {
     required: true,
   });
 
-  // 2. uv (warn-only — only needed for vector search).
-  const uvVersion = probeVersion('uv');
-  checks.push({
-    name: 'uv (vector search)',
-    status: uvVersion ? 'ok' : 'warn',
-    detail: uvVersion ? uvVersion : 'not found — vector/semantic search disabled until installed',
-    required: false,
-  });
-
-  // 3. Plugin installed in the marketplace.
+  // 2. Plugin installed in the marketplace.
   const installed = isPluginInstalled();
   checks.push({
     name: 'Plugin installed',
@@ -75,7 +66,7 @@ export async function runDoctorCommand(): Promise<void> {
     required: true,
   });
 
-  // 4. Marketplace runtime root materialized.
+  // 3. Marketplace runtime root materialized.
   const marketplaceDir = marketplaceDirectory();
   const marketplaceNodeModules = join(marketplaceDir, 'node_modules');
   const marketplaceMarker = join(marketplaceDir, '.install-version');
@@ -96,7 +87,7 @@ export async function runDoctorCommand(): Promise<void> {
     required: installed,
   });
 
-  // 5. Worker health.
+  // 4. Worker health.
   const workerHost = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_HOST');
   const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
   let workerStatus: CheckStatus = 'fail';
@@ -115,7 +106,7 @@ export async function runDoctorCommand(): Promise<void> {
     required: false, // worker can be intentionally stopped; don't hard-fail
   });
 
-  // 6. Last recorded install error (surface remediation if present).
+  // 5. Last recorded install error (surface remediation if present).
   const lastErrorPath = join(dataDir, 'last-install-error.json');
   if (existsSync(lastErrorPath)) {
     let detail = `present at ${lastErrorPath}`;

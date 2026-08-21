@@ -16,7 +16,6 @@ import { ensureWorkerStarted, type WorkerStartResult } from '../../services/work
 import { formatHostForUrl } from '../../shared/worker-utils.js';
 import {
   ensureBun,
-  ensureUv,
   installPluginDependencies,
   writeInstallMarker,
   isInstallCurrent,
@@ -703,13 +702,12 @@ function writeMarketplaceInstallMarkers(
   marketplaceDir: string,
   version: string,
   bunVersion: string,
-  uvVersion: string,
 ): void {
-  writeInstallMarker(marketplaceDir, version, bunVersion, uvVersion);
+  writeInstallMarker(marketplaceDir, version, bunVersion);
   // Hooks execute from marketplace/plugin, and Codex caches only that nested
   // directory. Keep the runtime marker beside the package.json the hook reads
   // so SessionStart does not report a completed install as missing.
-  writeInstallMarker(join(marketplaceDir, 'plugin'), version, bunVersion, uvVersion);
+  writeInstallMarker(join(marketplaceDir, 'plugin'), version, bunVersion);
 }
 
 /**
@@ -1935,7 +1933,6 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // Captured by the runtime-setup task below; reported on install_completed
   // so funnel dropoff can be sliced by toolchain versions.
   let installedBunVersion: string | undefined;
-  let installedUvVersion: string | undefined;
 
   if (isInteractive) {
     await playBanner();
@@ -2083,10 +2080,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
         task: async (message) => {
           message('Checking Bun…');
           const { version: bunVersion } = await ensureBun(summary);
-          message('Checking uv…');
-          const { version: uvVersion } = await ensureUv(summary);
           installedBunVersion = bunVersion;
-          installedUvVersion = uvVersion;
           const cacheDir = pluginCacheDirectory(version);
           if (!isInstallCurrent(cacheDir, version)) {
             const { bunPath } = await ensureBun();
@@ -2096,10 +2090,10 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             } finally {
               stopHeartbeat();
             }
-            writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
+            writeInstallMarker(cacheDir, version, bunVersion);
           }
-          writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion);
-          return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
+          writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion);
+          return `Runtime ready (Bun ${bunVersion}) ${styleText('green', 'OK')}`;
         },
       },
     ];
@@ -2127,7 +2121,6 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
               marketplaceDirectory(),
               version,
               installedBunVersion ?? 'unknown',
-              installedUvVersion ?? 'unknown',
             );
           } finally {
             stopHeartbeat();
@@ -2389,7 +2382,6 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     interactive: isInteractive,
     install_method: detectInstallMethod(),
     bun_version: installedBunVersion,
-    uv_version: installedUvVersion,
     claude_code_version: detectClaudeCodeVersion(),
   }, { person: true });
 }
@@ -2399,7 +2391,6 @@ async function runRepairCommandInner(summary: InstallSummary): Promise<void> {
   const cacheDir = pluginCacheDirectory(version);
   const marketplaceDir = marketplaceDirectory();
   let bunVersion = 'unknown';
-  let uvVersion = 'unknown';
 
   if (isInteractive) {
     p.intro(styleText(['bgCyan', 'black'], ' claude-mem repair '));
@@ -2415,9 +2406,6 @@ async function runRepairCommandInner(summary: InstallSummary): Promise<void> {
         message('Checking Bun…');
         const bun = await ensureBun(summary);
         bunVersion = bun.version;
-        message('Checking uv…');
-        const uv = await ensureUv(summary);
-        uvVersion = uv.version;
         // Repair must regenerate the cache if it was wiped (e.g. user ran
         // `rm -rf ~/.claude/plugins/cache`). Without this, bun install would
         // fail immediately with no package.json to install against.
@@ -2428,8 +2416,8 @@ async function runRepairCommandInner(summary: InstallSummary): Promise<void> {
         message('Reinstalling plugin dependencies…');
         const { bunPath } = bun;
         await installPluginDependencies(cacheDir, bunPath);
-        writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
-        return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
+        writeInstallMarker(cacheDir, version, bunVersion);
+        return `Runtime ready (Bun ${bunVersion}) ${styleText('green', 'OK')}`;
       },
     },
     {
@@ -2441,7 +2429,7 @@ async function runRepairCommandInner(summary: InstallSummary): Promise<void> {
         const stopHeartbeat = startHeartbeat(message, 'Running npm install…');
         try {
           await runNpmInstallInMarketplace(summary);
-          writeMarketplaceInstallMarkers(marketplaceDir, version, bunVersion, uvVersion);
+          writeMarketplaceInstallMarkers(marketplaceDir, version, bunVersion);
         } finally {
           stopHeartbeat();
         }

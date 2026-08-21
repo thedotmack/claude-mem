@@ -42,7 +42,6 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'install_method',
   'interactive',
   'bun_version',
-  'uv_version',
   'claude_code_version',
   // context_injected depth/economics — integers, booleans, and our own enums.
   'observation_count',

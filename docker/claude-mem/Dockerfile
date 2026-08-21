@@ -22,12 +22,6 @@ RUN curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}" \
  && chmod -R a+rX /usr/local/bun
 ENV PATH="/usr/local/bun/bin:${PATH}"
 
-ARG UV_VERSION=0.11.7
-ENV UV_INSTALL_DIR="/usr/local/bin"
-RUN set -eux \
- && curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh \
- && { chmod a+rX /usr/local/bin/uv /usr/local/bin/uvx 2>/dev/null || true; }
-
 RUN mkdir -p /usr/local/share/npm-global \
  && chown -R node:node /usr/local/share/npm-global
 ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global

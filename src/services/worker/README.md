@@ -28,7 +28,6 @@ Hook or MCP client
 - `/api/search`, `/api/timeline`, `/api/context/*` - search and context preview/injection
 - `/api/corpus/*` - knowledge-agent corpora
 - `/api/logs` - local worker logs
-- `/api/chroma/status` - Chroma integration status
 
 There are no worker HTTP endpoints for switching git branches. Non-stable
 release lines are run from source; see `docs/public/branches.mdx`.
@@ -45,7 +44,7 @@ Route handlers live in `src/services/worker/http/routes/`:
 - `CorpusRoutes.ts`
 - `MemoryRoutes.ts`
 - `LogsRoutes.ts`
-- `ChromaRoutes.ts`
+- `CloudSyncRoutes.ts`
 
 Keep new endpoints in the nearest existing route class unless the behavior is a
 new top-level API area.

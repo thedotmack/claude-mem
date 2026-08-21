@@ -26,45 +26,13 @@ export function platformBunRemediation(): string {
     : 'Install Bun manually: `curl -fsSL https://bun.sh/install | bash` (or `brew install oven-sh/bun/bun`), then re-run `npx claude-mem install`.';
 }
 
-export function platformUvRemediation(): string {
-  return IS_WINDOWS
-    ? 'Install uv manually: `winget install astral-sh.uv` (or `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`), then re-run `npx claude-mem install`.'
-    : 'Install uv manually: `curl -LsSf https://astral.sh/uv/install.sh | sh` (or `brew install uv`), then re-run `npx claude-mem install`.';
-}
-
-function userHasOptedOutOfVectorSearch(): boolean {
-  // Read the settings file directly (the value is not in the typed defaults).
-  // Honors both a top-level key and an `env`-nested key.
-  let raw: unknown;
-  try {
-    if (!existsSync(USER_SETTINGS_PATH)) return false;
-    raw = parseJsonWithBom(readFileSync(USER_SETTINGS_PATH, 'utf-8'));
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    console.warn(`claude-mem: could not read ${USER_SETTINGS_PATH} while checking vector-search opt-out:`, err);
-    return false;
-  }
-  if (!raw || typeof raw !== 'object') return false;
-  const record = raw as Record<string, unknown>;
-  const envBlock = (record.env && typeof record.env === 'object')
-    ? (record.env as Record<string, unknown>)
-    : {};
-  const value = record.CLAUDE_MEM_DISABLE_VECTOR_SEARCH ?? envBlock.CLAUDE_MEM_DISABLE_VECTOR_SEARCH;
-  return value === true || value === 'true' || value === '1';
-}
-
 const BUN_COMMON_PATHS = IS_WINDOWS
   ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
   : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun', '/opt/homebrew/bin/bun', '/home/linuxbrew/.linuxbrew/bin/bun'];
 
-const UV_COMMON_PATHS = IS_WINDOWS
-  ? [join(homedir(), '.local', 'bin', 'uv.exe'), join(homedir(), '.cargo', 'bin', 'uv.exe')]
-  : [join(homedir(), '.local', 'bin', 'uv'), join(homedir(), '.cargo', 'bin', 'uv'), '/usr/local/bin/uv', '/opt/homebrew/bin/uv'];
-
 interface MarkerSchema {
   version: string;
   bun?: string;
-  uv?: string;
   installedAt?: string;
 }
 
@@ -120,28 +88,6 @@ export function getBunVersion(): string | null {
   }
 }
 
-function getUvPath(): string | null {
-  return getToolPath('uv', UV_COMMON_PATHS);
-}
-
-function isUvInstalled(): boolean {
-  return getUvPath() !== null;
-}
-
-export function getUvVersion(): string | null {
-  const uvPath = getUvPath();
-  if (!uvPath) return null;
-
-  try {
-    const result = spawnVersionProbe(uvPath, ['--version']);
-    return result.status === 0 ? result.stdout.trim() : null;
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    console.warn('claude-mem: uv --version probe failed:', err);
-    return null;
-  }
-}
-
 function describeExecError(error: unknown): string {
   if (error && typeof error === 'object') {
     const e = error as { message?: string; stdout?: Buffer | string; stderr?: Buffer | string };
@@ -189,44 +135,6 @@ function installBun(): void {
       : '  - curl -fsSL https://bun.sh/install | bash\n  - Or: brew install oven-sh/bun/bun';
     throw new Error(
       `Failed to install Bun. Please install manually:\n${manualInstructions}\nThen restart your terminal and try again.\n` +
-        `Underlying error: ${describeExecError(err)}`,
-    );
-  }
-}
-
-/** Run the platform-specific uv installer, then confirm the binary is resolvable. */
-function runUvInstaller(): void {
-  if (IS_WINDOWS) {
-    execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
-      stdio: 'pipe',
-      timeout: INSTALL_TIMEOUT_MS,
-      shell: process.env.ComSpec ?? 'cmd.exe',
-    });
-  } else {
-    execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
-      stdio: 'pipe',
-      timeout: INSTALL_TIMEOUT_MS,
-      shell: '/bin/bash',
-    });
-  }
-
-  if (!isUvInstalled()) {
-    throw new Error(
-      'uv installation completed but binary not found. Please restart your terminal and try again.',
-    );
-  }
-}
-
-function installUv(): void {
-  try {
-    runUvInstaller();
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    const manualInstructions = IS_WINDOWS
-      ? '  - winget install astral-sh.uv\n  - Or: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"'
-      : '  - curl -LsSf https://astral.sh/uv/install.sh | sh\n  - Or: brew install uv (macOS)';
-    throw new Error(
-      `Failed to install uv. Please install manually:\n${manualInstructions}\nThen restart your terminal and try again.\n` +
         `Underlying error: ${describeExecError(err)}`,
     );
   }
@@ -355,74 +263,6 @@ export async function ensureBun(summary?: InstallSummary): Promise<{ bunPath: st
   return { bunPath, version };
 }
 
-export async function ensureUv(
-  summary?: InstallSummary,
-  options: { allowVectorSearchOptOut?: boolean } = {},
-): Promise<{ uvPath: string; version: string }> {
-  const sum = summaryOrEphemeral(summary);
-  if (!isUvInstalled()) {
-    try {
-      installUv();
-    } catch (error: unknown) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      if (options.allowVectorSearchOptOut && userHasOptedOutOfVectorSearch()) {
-        installerError(ErrorSeverity.WARN_CONTINUE, {
-          component: 'uv-install',
-          phase: 'setup-runtime',
-          cause: err,
-        }, sum);
-        return { uvPath: '', version: 'unknown' };
-      }
-      // installerError(ABORT) reports the cause loudly and always throws.
-      installerError(ErrorSeverity.ABORT, {
-        component: 'uv-install',
-        phase: 'setup-runtime',
-        cause: err,
-        remediation: platformUvRemediation(),
-      }, sum);
-    }
-  }
-
-  let uvPath = getUvPath();
-  if (!uvPath) {
-    // Re-probe UV_COMMON_PATHS directly — PATH may not yet include ~/.local/bin
-    // in the current shell even though the install just wrote the binary there.
-    uvPath = UV_COMMON_PATHS.find(existsSync) ?? null;
-  }
-  if (!uvPath) {
-    if (options.allowVectorSearchOptOut && userHasOptedOutOfVectorSearch()) {
-      installerError(ErrorSeverity.WARN_CONTINUE, {
-        component: 'uv-install',
-        phase: 'setup-runtime',
-        cause: new Error('uv binary not found after install; vector search disabled — continuing.'),
-      }, sum);
-      return { uvPath: '', version: 'unknown' };
-    }
-    installerError(ErrorSeverity.ABORT, {
-      component: 'uv-install',
-      phase: 'setup-runtime',
-      cause: new Error('uv binary not found after auto-install attempt'),
-      remediation: platformUvRemediation(),
-    }, sum);
-    throw new Error('unreachable'); // installerError(ABORT) always throws
-  }
-
-  let version = getUvVersion();
-  if (!version) {
-    await new Promise((r) => setTimeout(r, 1000));
-    version = getUvVersion();
-  }
-  if (!version) {
-    installerError(ErrorSeverity.WARN_CONTINUE, {
-      component: 'uv-version-probe',
-      phase: 'setup-runtime',
-      cause: new Error(`uv at ${uvPath} did not respond to --version after retry`),
-    }, sum);
-    return { uvPath, version: 'unknown' };
-  }
-  return { uvPath, version };
-}
-
 export async function installPluginDependencies(targetDir: string, bunPath: string): Promise<void> {
   if (!existsSync(join(targetDir, 'package.json'))) {
     throw new Error(`installPluginDependencies: no package.json at ${targetDir}`);
@@ -483,12 +323,10 @@ export function writeInstallMarker(
   targetDir: string,
   version: string,
   bunVersion: string,
-  uvVersion: string,
 ): void {
   const payload: MarkerSchema = {
     version,
     bun: bunVersion,
-    uv: uvVersion,
     installedAt: new Date().toISOString(),
   };
   writeFileSync(markerPath(targetDir), JSON.stringify(payload));

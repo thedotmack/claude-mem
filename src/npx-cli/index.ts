@@ -29,7 +29,7 @@ ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem install --disable-auto-memory')}   Explicitly disable Claude Code native auto-memory
   ${styleText('cyan', 'npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server brings up Docker pg+redis, generates an API key, injects the IDE MCP config)
   ${styleText('cyan', 'npx claude-mem install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
-  ${styleText('cyan', 'npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
+  ${styleText('cyan', 'npx claude-mem repair')}                Repair runtime (re-runs Bun setup and bun install in plugin cache)
   ${styleText('cyan', 'npx claude-mem update')}               Update to latest version
   ${styleText('cyan', 'npx claude-mem uninstall')}            Remove plugin and configs
   ${styleText('cyan', 'npx claude-mem version')}              Print version
@@ -39,7 +39,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem stop')}                 Stop worker service
   ${styleText('cyan', 'npx claude-mem restart')}              Restart worker service
   ${styleText('cyan', 'npx claude-mem status')}               Show worker status
-  ${styleText('cyan', 'npx claude-mem doctor')}               Diagnose install/runtime health (bun, uv, worker)
+  ${styleText('cyan', 'npx claude-mem doctor')}               Diagnose install/runtime health (bun, plugin, worker)
   ${styleText('cyan', 'npx claude-mem telemetry status|enable|disable')}   Manage anonymous telemetry (on by default, opt-out)
   ${styleText('cyan', 'npx claude-mem server start')}         Start server service
   ${styleText('cyan', 'npx claude-mem server stop')}          Stop server service

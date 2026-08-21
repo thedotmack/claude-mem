@@ -62,7 +62,6 @@ describe('scrubProperties', () => {
       interactive: true,
       install_method: 'npm',
       bun_version: '1.3.9',
-      uv_version: '0.7.2',
       claude_code_version: '2.0.14',
     });
 
@@ -73,7 +72,6 @@ describe('scrubProperties', () => {
       interactive: true,
       install_method: 'npm',
       bun_version: '1.3.9',
-      uv_version: '0.7.2',
       claude_code_version: '2.0.14',
     });
   });

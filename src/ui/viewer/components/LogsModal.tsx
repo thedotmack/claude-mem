@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 
 type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
-type LogComponent = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA';
+type LogComponent = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA' | 'VECTOR_INDEX' | 'VECTOR_SYNC';
 
 interface ParsedLogLine {
   raw: string;
@@ -30,6 +30,8 @@ const LOG_COMPONENTS: { key: LogComponent; label: string; icon: string; color: s
   { key: 'HTTP', label: 'HTTP', icon: '🌐', color: '#39d353' },
   { key: 'SESSION', label: 'Session', icon: '📋', color: '#db61a2' },
   { key: 'CHROMA', label: 'Chroma', icon: '🔮', color: '#a855f7' },
+  { key: 'VECTOR_INDEX', label: 'Vector index', icon: '🧭', color: '#a855f7' },
+  { key: 'VECTOR_SYNC', label: 'Vector sync', icon: '🔁', color: '#c084fc' },
 ];
 
 function parseLogLine(line: string): ParsedLogLine {
@@ -82,7 +84,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     new Set(['DEBUG', 'INFO', 'WARN', 'ERROR'])
   );
   const [activeComponents, setActiveComponents] = useState<Set<LogComponent>>(
-    new Set(['HOOK', 'WORKER', 'SDK', 'PARSER', 'DB', 'SYSTEM', 'HTTP', 'SESSION', 'CHROMA'])
+    new Set(LOG_COMPONENTS.map(component => component.key))
   );
   const [alignmentOnly, setAlignmentOnly] = useState(false);
 
@@ -234,7 +236,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
 
   const setAllComponents = useCallback((enabled: boolean) => {
     if (enabled) {
-      setActiveComponents(new Set(['HOOK', 'WORKER', 'SDK', 'PARSER', 'DB', 'SYSTEM', 'HTTP', 'SESSION', 'CHROMA']));
+      setActiveComponents(new Set(LOG_COMPONENTS.map(component => component.key)));
     } else {
       setActiveComponents(new Set());
     }

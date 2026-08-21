@@ -7,13 +7,10 @@ import {
 import { buildSpawnSyncInvocation } from '../../../src/shared/spawn.js';
 
 // Windows spawn-contract fixes:
-//   #2696 — removed with the chroma-mcp subprocess. There is no uvx invocation
-//           left to get wrong: the vector index runs in-process.
-//   #2696 — ChromaDB MCP subprocess: spawn uvx.exe DIRECTLY, never `cmd.exe /c uvx`.
-//           cmd.exe parses the `>`/`<` in the dep-override specs (onnxruntime>=1.20,
-//           protobuf<7) as shell redirection — even pre-quoted, Node's cmd.exe
-//           arg-quoting re-mangles them — so cmd.exe dies with "The directory name
-//           is invalid" and semantic search silently degrades to keyword-only.
+//   #2696 — was: spawn uvx.exe DIRECTLY for the ChromaDB MCP subprocess, never
+//           `cmd.exe /c uvx`. No longer covered here: the subprocess is gone and
+//           the vector index runs in-process, so there is no uvx invocation left
+//           to get wrong.
 //   #2695 — Codex CLI: spawnSync ENOENT for codex.cmd
 
 describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', () => {

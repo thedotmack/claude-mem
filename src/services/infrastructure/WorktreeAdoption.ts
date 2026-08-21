@@ -17,8 +17,6 @@ export interface AdoptionResult {
   mergedBranches: string[];
   adoptedObservations: number;
   adoptedSummaries: number;
-  chromaUpdates: number;
-  chromaFailed: number;
   dryRun: boolean;
   errors: Array<{ worktree: string; error: string }>;
 }
@@ -148,8 +146,6 @@ export async function adoptMergedWorktrees(opts: {
     mergedBranches: [],
     adoptedObservations: 0,
     adoptedSummaries: 0,
-    chromaUpdates: 0,
-    chromaFailed: 0,
     dryRun,
     errors: []
   };
@@ -212,16 +208,6 @@ export async function adoptMergedWorktrees(opts: {
       return result;
     }
 
-    const selectObsForPatch = db.prepare(
-      `SELECT id FROM observations
-       WHERE project = ?
-         AND (merged_into_project IS NULL OR merged_into_project = ?)`
-    );
-    const selectSumForPatch = db.prepare(
-      `SELECT id FROM session_summaries
-       WHERE project = ?
-         AND (merged_into_project IS NULL OR merged_into_project = ?)`
-    );
     const updateObs = db.prepare(
       'UPDATE observations SET merged_into_project = ? WHERE project = ? AND merged_into_project IS NULL'
     );
@@ -239,14 +225,6 @@ export async function adoptMergedWorktrees(opts: {
 
     const adoptWorktreeInTransaction = (wt: WorktreeEntry) => {
       const worktreeProject = getProjectContext(wt.path).primary;
-      const rows = selectObsForPatch.all(
-        worktreeProject,
-        parentProject
-      ) as Array<{ id: number }>;
-      const summaryRows = selectSumForPatch.all(
-        worktreeProject,
-        parentProject
-      ) as Array<{ id: number }>;
 
       let obsChanges: number;
       let sumChanges: number;
@@ -261,10 +239,6 @@ export async function adoptMergedWorktrees(opts: {
       } else {
         obsChanges = updateObs.run(parentProject, worktreeProject).changes;
         sumChanges = updateSum.run(parentProject, worktreeProject).changes;
-      }
-      for (const r of rows) {
-      }
-      for (const r of summaryRows) {
       }
       result.adoptedObservations += obsChanges;
       result.adoptedSummaries += sumChanges;
@@ -314,7 +288,6 @@ export async function adoptMergedWorktrees(opts: {
   if (
     result.adoptedObservations > 0 ||
     result.adoptedSummaries > 0 ||
-    result.chromaUpdates > 0 ||
     result.errors.length > 0
   ) {
     logger.info('SYSTEM', 'Worktree adoption applied', {
@@ -324,8 +297,6 @@ export async function adoptMergedWorktrees(opts: {
       mergedBranches: result.mergedBranches,
       adoptedObservations: result.adoptedObservations,
       adoptedSummaries: result.adoptedSummaries,
-      chromaUpdates: result.chromaUpdates,
-      chromaFailed: result.chromaFailed,
       errors: result.errors.length
     });
   }

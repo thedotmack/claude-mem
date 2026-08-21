@@ -51,11 +51,6 @@ const BUN_REMEDIATION = (ctx: RemediationContext): string =>
     ? 'Install Bun manually then re-run `npx claude-mem install`. Windows: `winget install Oven-sh.Bun` (or `powershell -c "irm bun.sh/install.ps1 | iex"`).'
     : 'Install Bun manually then re-run `npx claude-mem install`. macOS/Linux: `curl -fsSL https://bun.sh/install | bash` (or `brew install oven-sh/bun/bun`).';
 
-const UV_REMEDIATION = (ctx: RemediationContext): string =>
-  ctx.platform === 'win32'
-    ? 'Install uv manually then re-run `npx claude-mem install`. Windows: `winget install astral-sh.uv` (or `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`).'
-    : 'Install uv manually then re-run `npx claude-mem install`. macOS/Linux: `curl -LsSf https://astral.sh/uv/install.sh | sh` (or `brew install uv`).';
-
 /**
  * The canonical category list. Ordered most-specific-first; `classifyError`
  * returns the first matching category. The trailing `unknown-install-error`
@@ -74,20 +69,6 @@ export const ERROR_CATEGORIES: ErrorCategory[] = [
       );
     },
     remediation: BUN_REMEDIATION,
-  },
-  {
-    id: 'uv-missing-after-install',
-    severity: ErrorSeverity.ABORT,
-    match: (cause) => {
-      const m = causeMessage(cause);
-      return (
-        m.includes('uv executable not found') ||
-        m.includes('uv installed but version probe failed') ||
-        m.includes('uv binary not found') ||
-        m.includes('Failed to install uv')
-      );
-    },
-    remediation: UV_REMEDIATION,
   },
   {
     id: 'tree-sitter-eresolve',

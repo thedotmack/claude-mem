@@ -44,7 +44,7 @@ const COLLECTED_FIELDS = [
   'is_update        whether an install was an update',
   'interactive      whether the installer ran in a TTY',
   'install_method   npm / bun / pnpm / yarn (launcher of the CLI)',
-  'bun_version / uv_version / claude_code_version',
+  'bun_version / claude_code_version',
   '                 toolchain versions detected during install',
   'mode             active claude-mem mode id',
   'model            model id used for compression',

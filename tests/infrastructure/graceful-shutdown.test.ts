@@ -92,8 +92,7 @@ describe('GracefulShutdown', () => {
     // getSupervisor().stop() which runs runShutdownCascade against
     // paths.supervisorRegistry() — since the Phase 6 data-dir isolation
     // above, that registry resolves into a temp dir (empty), so the cascade
-    // no longer SIGTERMs the developer's real worker/chroma-mcp or waits on
-    // their exit. The historic 5s overrun came from the test exercising the
+    // no longer SIGTERMs the developer's real worker or waits on its exit. The historic 5s overrun came from the test exercising the
     // REAL ~/.claude-mem/supervisor.json before isolation.
     it('should call shutdown steps in correct order', async () => {
       const callOrder: string[] = [];
@@ -126,12 +125,6 @@ describe('GracefulShutdown', () => {
         })
       };
 
-      const mockChromaMcpManager = {
-        stop: mock(async () => {
-          callOrder.push('chromaMcpManager.stop');
-        })
-      };
-
       writePidFile({ pid: 12345, port: 37777, startedAt: new Date().toISOString() });
       expect(existsSync(PID_FILE)).toBe(true);
 
@@ -139,8 +132,7 @@ describe('GracefulShutdown', () => {
         server: mockServer,
         sessionManager: mockSessionManager,
         mcpClient: mockMcpClient,
-        dbManager: mockDbManager,
-        chromaMcpManager: mockChromaMcpManager
+        dbManager: mockDbManager
       };
 
       await performGracefulShutdown(config);
@@ -149,7 +141,6 @@ describe('GracefulShutdown', () => {
       expect(callOrder).toContain('serverClose');
       expect(callOrder).toContain('sessionManager.shutdownAll');
       expect(callOrder).toContain('mcpClient.close');
-      expect(callOrder).toContain('chromaMcpManager.stop');
       expect(callOrder).toContain('dbManager.close');
 
       expect(callOrder.indexOf('serverClose')).toBeLessThan(callOrder.indexOf('sessionManager.shutdownAll'));
@@ -157,8 +148,6 @@ describe('GracefulShutdown', () => {
       expect(callOrder.indexOf('sessionManager.shutdownAll')).toBeLessThan(callOrder.indexOf('mcpClient.close'));
 
       expect(callOrder.indexOf('mcpClient.close')).toBeLessThan(callOrder.indexOf('dbManager.close'));
-
-      expect(callOrder.indexOf('chromaMcpManager.stop')).toBeLessThan(callOrder.indexOf('dbManager.close'));
     }, 15000);
 
     it('should remove its OWN PID file during shutdown (owner guard)', async () => {
@@ -247,7 +236,7 @@ describe('GracefulShutdown', () => {
       expect(mockSessionManager.shutdownAll).toHaveBeenCalledTimes(1);
     });
 
-    it('should stop chroma server before database close', async () => {
+    it('should close the MCP client before database close', async () => {
       const callOrder: string[] = [];
 
       const mockSessionManager: ShutdownableService = {
@@ -268,30 +257,23 @@ describe('GracefulShutdown', () => {
         })
       };
 
-      const mockChromaMcpManager = {
-        stop: mock(async () => {
-          callOrder.push('chromaMcpManager');
-        })
-      };
-
       const config: GracefulShutdownConfig = {
         server: null,
         sessionManager: mockSessionManager,
         mcpClient: mockMcpClient,
-        dbManager: mockDbManager,
-        chromaMcpManager: mockChromaMcpManager
+        dbManager: mockDbManager
       };
 
       await performGracefulShutdown(config);
 
-      expect(callOrder).toEqual(['sessionManager', 'mcpClient', 'chromaMcpManager', 'dbManager']);
+      expect(callOrder).toEqual(['sessionManager', 'mcpClient', 'dbManager']);
     });
 
     it('resolves on ERR_SERVER_NOT_RUNNING from server.close and still runs every remaining step (#3380)', async () => {
       // Node's http.Server.close(cb) reports ERR_SERVER_NOT_RUNNING when the
       // handle is not listening. An already-closed server is the desired end
-      // state — teardown (session drain, MCP close, chroma stop, db close,
-      // supervisor stop) must still run.
+      // state — teardown (session drain, MCP close, db close, supervisor stop)
+      // must still run.
       const mockServer = {
         closeAllConnections: mock(() => {}),
         close: mock((cb: (err?: Error) => void) => {
@@ -308,10 +290,6 @@ describe('GracefulShutdown', () => {
       const mockDbManager: CloseableDatabase = {
         close: mock(async () => {})
       };
-      const mockChromaMcpManager = {
-        stop: mock(async () => {})
-      };
-
       // Same module instance performGracefulShutdown uses — the spy calls
       // through to the real (no-op against the temp registry) cascade.
       const supervisorStopSpy = spyOn(getSupervisor(), 'stop');
@@ -321,15 +299,13 @@ describe('GracefulShutdown', () => {
           server: mockServer,
           sessionManager: mockSessionManager,
           mcpClient: mockMcpClient,
-          dbManager: mockDbManager,
-          chromaMcpManager: mockChromaMcpManager
+          dbManager: mockDbManager
         };
 
         await expect(performGracefulShutdown(config)).resolves.toBeUndefined();
 
         expect(mockSessionManager.shutdownAll).toHaveBeenCalledTimes(1);
         expect(mockMcpClient.close).toHaveBeenCalledTimes(1);
-        expect(mockChromaMcpManager.stop).toHaveBeenCalledTimes(1);
         expect(mockDbManager.close).toHaveBeenCalledTimes(1);
         expect(supervisorStopSpy).toHaveBeenCalledTimes(1);
       } finally {

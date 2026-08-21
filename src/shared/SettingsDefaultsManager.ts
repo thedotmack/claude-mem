@@ -164,8 +164,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TIER_SUMMARY_MODEL: '',                // Empty = use default model for summaries
     CLAUDE_MEM_TIER_FAST_MODEL: 'haiku',              // #2289 — $TIER:fast resolves here (portable alias)
     CLAUDE_MEM_TIER_SMART_MODEL: 'sonnet',            // #2289 — $TIER:smart resolves here (portable alias)
-    CLAUDE_MEM_CHROMA_ENABLED: 'true',         // Set to 'false' to disable Chroma and use SQLite-only search
-    CLAUDE_MEM_CHROMA_MODE: 'local',           // 'local' uses persistent chroma-mcp via uvx, 'remote' connects to existing server
+    CLAUDE_MEM_CHROMA_ENABLED: 'true',         // Set to 'false' to turn semantic search off and use SQLite-only search. Keeps the CHROMA name so an install that opted out stays opted out; it now gates the in-file vector index.
+    // The keys below are INERT: nothing reads them since semantic search moved
+    // in-process. They are kept only so an existing settings file round-trips
+    // unchanged; removing them is a separate change with its own migration.
+    CLAUDE_MEM_CHROMA_MODE: 'local',
     CLAUDE_MEM_CHROMA_HOST: '127.0.0.1',
     CLAUDE_MEM_CHROMA_PORT: '8000',
     CLAUDE_MEM_CHROMA_SSL: 'false',
@@ -173,7 +176,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_TENANT: 'default_tenant',
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
     CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: '120000',
-    CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: '5000', // Bound burst imports without changing normal live indexing
+    CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: '5000',
     // Worker-native cloud sync: credentials come from cmem.ai → Connect.
     CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
     CLAUDE_MEM_CLOUD_SYNC_USER_ID: '',

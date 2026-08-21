@@ -1,8 +1,6 @@
-export type DependencyStatusKind =
-  | 'setup_required'
-  | 'vector_search_unavailable';
+export type DependencyStatusKind = 'setup_required';
 
-export type DependencyName = 'claude_cli' | 'uvx' | 'chroma';
+export type DependencyName = 'claude_cli';
 
 export interface DependencyStatus {
   dependency: DependencyName;
@@ -17,14 +15,6 @@ export const CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS = 30_000;
 export const CLAUDE_CLI_SETUP_REMEDIATION =
   'Install or update Claude Code CLI, then restart claude-mem. Try `claude update`, ' +
   '`npm install -g @anthropic-ai/claude-code@latest`, or set CLAUDE_CODE_PATH in ~/.claude-mem/settings.json.';
-
-export const UVX_VECTOR_SEARCH_REMEDIATION =
-  'Install uv/uvx and make uvx visible to the worker PATH, then restart claude-mem. ' +
-  'Try `curl -LsSf https://astral.sh/uv/install.sh | sh` or `brew install uv`.';
-
-export const CHROMA_VECTOR_SEARCH_REMEDIATION =
-  'Stop the other claude-mem worker using the same Chroma data directory, or configure a distinct ' +
-  'CLAUDE_MEM_DATA_DIR / remote Chroma instance, then restart claude-mem.';
 
 const statuses = new Map<DependencyName, DependencyStatus>();
 
@@ -52,14 +42,6 @@ export function recordDependencyStatus(
 
 export function recordClaudeCliSetupRequired(message: string): DependencyStatus {
   return recordDependencyStatus('claude_cli', 'setup_required', message, CLAUDE_CLI_SETUP_REMEDIATION);
-}
-
-export function recordUvxVectorSearchUnavailable(message: string): DependencyStatus {
-  return recordDependencyStatus('uvx', 'vector_search_unavailable', message, UVX_VECTOR_SEARCH_REMEDIATION);
-}
-
-export function recordChromaVectorSearchUnavailable(message: string): DependencyStatus {
-  return recordDependencyStatus('chroma', 'vector_search_unavailable', message, CHROMA_VECTOR_SEARCH_REMEDIATION);
 }
 
 export function clearDependencyStatus(dependency: DependencyName): void {

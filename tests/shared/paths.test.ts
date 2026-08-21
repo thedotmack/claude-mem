@@ -11,7 +11,6 @@ describe('paths namespace', () => {
       'workerPid',
       'settings',
       'database',
-      'chroma',
       'transcriptsConfig',
     ];
     for (const key of required) {

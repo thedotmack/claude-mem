@@ -39,7 +39,7 @@ export class InstallAbortError extends Error {
 }
 
 export interface ErrorContext {
-  /** 'cursor', 'codex-cli', 'marketplace-npm-install', 'uv-install', etc. */
+  /** 'cursor', 'codex-cli', 'marketplace-npm-install', etc. */
   component: string;
   /** 'setup-runtime', 'ide-install', 'marketplace-deps', etc. */
   phase: string;
