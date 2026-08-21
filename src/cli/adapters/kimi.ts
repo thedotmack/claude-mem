@@ -59,6 +59,6 @@ export const kimiAdapter: PlatformAdapter = {
     // Claude/Codex hookSpecificOutput JSON envelope for context injection.
     const context = result?.hookSpecificOutput?.additionalContext;
     if (typeof context === 'string' && context.length > 0) return context;
-    return {};
+    return '';
   },
 };

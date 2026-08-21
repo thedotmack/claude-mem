@@ -54,6 +54,24 @@ describe('managed block merge', () => {
     expect(restored).not.toContain(KIMI_MARKER_BEGIN);
     expect(restored).toContain('default_model');
   });
+
+  test('removeManagedBlock only collapses blank lines at the seam', () => {
+    const user = 'a = 1\n\n\n\nb = 2\n';
+    const merged = upsertManagedBlock(user, block);
+    const restored = removeManagedBlock(merged);
+    expect(restored).not.toContain(KIMI_MARKER_BEGIN);
+    // Unrelated triple blank lines in user content must stay untouched.
+    expect(restored).toContain('a = 1\n\n\n\nb = 2');
+    // The seam at the end should leave exactly one terminating newline.
+    expect(restored).toMatch(/b = 2\n$/);
+  });
+
+  test('removeManagedBlock leaves at most one blank line at the join', () => {
+    const merged = `a = 1\n\n\n${block}\n\n\nb = 2\n`;
+    const restored = removeManagedBlock(merged);
+    expect(restored).not.toContain(KIMI_MARKER_BEGIN);
+    expect(restored).toBe('a = 1\n\nb = 2\n');
+  });
 });
 
 describe('installKimiHooks', () => {

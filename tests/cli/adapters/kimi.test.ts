@@ -62,8 +62,8 @@ describe('kimiAdapter.formatOutput', () => {
       .toBe('memory digest');
   });
 
-  test('returns empty object otherwise', () => {
-    expect(kimiAdapter.formatOutput({})).toEqual({});
+  test('returns empty string otherwise', () => {
+    expect(kimiAdapter.formatOutput({})).toBe('');
   });
 });
 

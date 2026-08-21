@@ -9,7 +9,6 @@
  * variable substitution on hook commands.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import path from 'path';
 import { kimiCodeHome, kimiConfigPath, kimiMcpJsonPath } from '../../shared/kimi-paths.js';
 import {
   getBunAbsolutePath,
@@ -57,7 +56,11 @@ export function removeManagedBlock(content: string): string {
   const begin = content.indexOf(KIMI_MARKER_BEGIN);
   const end = content.indexOf(KIMI_MARKER_END);
   if (begin === -1 || end === -1 || end <= begin) return content;
-  return (content.slice(0, begin) + content.slice(end + KIMI_MARKER_END.length)).replace(/\n{3,}/g, '\n\n');
+  const prefix = content.slice(0, begin).replace(/\n+$/, '');
+  const suffix = content.slice(end + KIMI_MARKER_END.length).replace(/^\n+/, '');
+  if (prefix.length === 0) return suffix;
+  if (suffix.length === 0) return `${prefix}\n`;
+  return `${prefix}\n\n${suffix}`;
 }
 
 function backupOnce(configPath: string): void {
