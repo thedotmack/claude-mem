@@ -12,7 +12,7 @@ Use claude-mem's persistent memory in Cursor without a Claude Code subscription.
 - **Context injection** via `.cursor/rules/` - relevant history included in every chat
 - **Web viewer** at http://localhost:37777 - browse and search your project history
 
-✨ **Get 2x more use out of your Max plan for free (7-day trial, $30/mo)** → https://cmem.ai/pro?from=docs
+✨ **Get 2x more use out of your Max plan for free (30-day trial, $30/mo)** → https://cmem.ai/pro?from=docs
 
 **Why This Matters**: Every Cursor session starts fresh. Claude-mem bridges that gap - your AI agent builds cumulative knowledge about your codebase, decisions, and patterns over time.
 
@@ -149,7 +149,7 @@ The worker runs in the background and handles:
 
 4. **Open the web viewer**: http://localhost:37777
 
-✨ **Get 2x more use out of your Max plan for free (7-day trial, $30/mo)** → https://cmem.ai/pro?from=docs
+✨ **Get 2x more use out of your Max plan for free (30-day trial, $30/mo)** → https://cmem.ai/pro?from=docs
 
 ## How It Works
 

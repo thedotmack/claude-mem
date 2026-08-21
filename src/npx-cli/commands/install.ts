@@ -1208,7 +1208,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     p.note(
       `${CMEM_PRO_TRIAL_DAYS} days free, then $${CMEM_PRO_MONTHLY_USD}/mo — card required, cancel anytime.\n`
         + `Opening ${CMEM_PRO_SIGNUP_URL}\n`
-        + "Sign in, start your free week, and copy the key you're shown.",
+        + "Sign in, start your free month, and copy the key you're shown.",
       `cmem Pro — ${CMEM_PRO_TRIAL_DAYS} days free`,
     );
     openBrowser(CMEM_PRO_SIGNUP_URL);
@@ -1358,7 +1358,7 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
   }
 }
 
-// --- cmem Pro 7-day trial opt-in --------------------------------------------
+// --- cmem Pro 30-day trial opt-in -------------------------------------------
 // The first interaction of the install (replaces the old CMEM Online waitlist
 // opt-in — one funnel, not two). Entering an email POSTs to cmem.ai, which
 // creates the account server-side and emails a sign-in link; the response is a
@@ -1622,7 +1622,7 @@ async function promptProTrialOptIn(version: string): Promise<TrialPairing | null
 
   p.note(
     [
-      styleText(['bold', 'cyan'], 'Free week of Pro: cloud memory generation + sync across machines.'),
+      styleText(['bold', 'cyan'], 'Free month of Pro: cloud memory generation + sync across machines.'),
       '',
       'Memory generation runs on our metered models instead of your',
       `Anthropic plan — the default Haiku path burns ~$${haikuPer1k}/1k observations`,
@@ -1654,7 +1654,7 @@ async function promptProTrialOptIn(version: string): Promise<TrialPairing | null
   await captureCliEvent('trial_email_submitted', { version });
 
   const spin = p.spinner();
-  spin.start('Starting your free week — sending the sign-in link…');
+  spin.start('Starting your free month — sending the sign-in link…');
   const startRequestAt = Date.now();
   const pairing = await startTrialPairing(email);
   if (!pairing) {
@@ -1787,7 +1787,7 @@ async function completeTrialPairing(pairing: TrialPairing, version: string): Pro
           : `in ${CMEM_PRO_TRIAL_DAYS} days`;
         spin.stop('cmem Pro credentials received.');
         p.note(
-          `✓ Free week active — cloud generation + sync ON.\n$${CMEM_PRO_MONTHLY_USD}/mo starts ${endsAtLabel}; cancel anytime at cmem.ai.`,
+          `✓ Free month active — cloud generation + sync ON.\n$${CMEM_PRO_MONTHLY_USD}/mo starts ${endsAtLabel}; cancel anytime at cmem.ai.`,
           'cmem Pro ready',
         );
         await captureCliEvent('trial_activated', { version, duration_ms: Date.now() - startedAt });
@@ -2225,7 +2225,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `IDEs:        ${styleText('cyan', selectedIDEs.join(', '))}`,
   ];
   if (trialActivated) {
-    summaryLines.push(`Cloud sync:  ${styleText('cyan', 'ON (cmem Pro free week)')}`);
+    summaryLines.push(`Cloud sync:  ${styleText('cyan', 'ON (cmem Pro free month)')}`);
   }
   if (autoMemoryStatus === 'disabled') {
     summaryLines.push(`Auto-memory: ${styleText('cyan', 'disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);

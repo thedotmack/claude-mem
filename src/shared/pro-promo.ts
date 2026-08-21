@@ -1,5 +1,5 @@
 /**
- * cmem Pro 7-day-trial promo copy — the single source of truth for every place
+ * cmem Pro 30-day-trial promo copy — the single source of truth for every place
  * claude-mem tells an existing user the trial exists.
  *
  * Almost nobody running the free plugin knows the trial is there, so the pitch
@@ -36,7 +36,7 @@ export function proTrialUrl(source: ProPromoSource): string {
 }
 
 /** The offer itself, without a URL — for surfaces that link separately. */
-export const PRO_TRIAL_PITCH = 'Get 2x more use out of your Max plan for free (7-day trial, $30/mo)';
+export const PRO_TRIAL_PITCH = 'Get 2x more use out of your Max plan for free (30-day trial, $30/mo)';
 
 /**
  * One-line pitch + link, for plain-text surfaces (hook banners, welcome hint).
