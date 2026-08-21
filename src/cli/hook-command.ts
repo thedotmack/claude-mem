@@ -13,8 +13,10 @@ import {
 } from '../shared/hook-io.js';
 import {
   recordWorkerUnreachable,
+  resetWorkerUnreachableState,
   setActiveHookType,
   getActiveHookType,
+  isWorkerUnavailableError,
 } from '../shared/worker-utils.js';
 import { captureCliEvent } from '../services/telemetry/cli-telemetry.js';
 import { logger } from '../utils/logger.js';
@@ -38,40 +40,6 @@ export function buildNoOpResult(event: string): HookResult {
     result.hookSpecificOutput = { hookEventName: 'SessionStart', additionalContext: '' };
   }
   return result;
-}
-
-export function isWorkerUnavailableError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  const lower = message.toLowerCase();
-
-  const transportPatterns = [
-    'econnrefused',
-    'econnreset',
-    'epipe',
-    'etimedout',
-    'enotfound',
-    'econnaborted',
-    'enetunreach',
-    'ehostunreach',
-    'fetch failed',
-    'unable to connect',
-    'socket hang up',
-  ];
-  if (transportPatterns.some(p => lower.includes(p))) return true;
-
-  if (lower.includes('timed out') || lower.includes('timeout')) return true;
-
-  if (/failed:\s*5\d{2}/.test(message) || /status[:\s]+5\d{2}/.test(message)) return true;
-
-  if (/failed:\s*429/.test(message) || /status[:\s]+429/.test(message)) return true;
-
-  if (/failed:\s*4\d{2}/.test(message) || /status[:\s]+4\d{2}/.test(message)) return false;
-
-  if (error instanceof TypeError || error instanceof ReferenceError || error instanceof SyntaxError) {
-    return false;
-  }
-
-  return false;
 }
 
 export function isNonBlockingHookInputError(error: unknown): boolean {
@@ -102,6 +70,7 @@ async function executeHookPipeline(
 
 export async function hookCommand(platform: string, event: string, options: HookCommandOptions = {}): Promise<number> {
   resetHookIoState();
+  resetWorkerUnreachableState();
   // Register the hook event for the threshold-gated hook_failed telemetry
   // (closed enum enforced inside; non-enum events just omit hook_type).
   setActiveHookType(event);
@@ -173,3 +142,5 @@ export async function hookCommand(platform: string, event: string, options: Hook
     stderrBuffer.restore();
   }
 }
+
+export { isWorkerUnavailableError } from '../shared/worker-utils.js';

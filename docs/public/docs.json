@@ -86,7 +86,8 @@
           "branches",
           "troubleshooting",
           "platform-integration",
-          "openclaw-integration"
+          "openclaw-integration",
+          "kimi-integration"
         ]
       },
       {

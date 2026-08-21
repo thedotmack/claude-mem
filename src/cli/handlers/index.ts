@@ -1,6 +1,7 @@
 
-import type { EventHandler } from '../types.js';
+import type { EventHandler, HookResult } from '../types.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { isWorkerUnavailableError } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { contextHandler } from './context.js';
 import { sessionInitHandler } from './session-init.js';
@@ -13,15 +14,53 @@ import { fileContextHandler } from './file-context.js';
 export type EventType =
   | 'context'           
   | 'session-init'      
+  | 'session-init-context'
   | 'observation'       
   | 'summarize'         
   | 'user-message'      
   | 'file-edit'         
   | 'file-context';     
 
+export const sessionInitContextHandler: EventHandler = {
+  async execute(input) {
+    let sessionInitResult: HookResult | undefined;
+    try {
+      sessionInitResult = await sessionInitHandler.execute(input);
+    } catch (error: unknown) {
+      if (isWorkerUnavailableError(error)) {
+        throw error;
+      }
+      logger.warn('HOOK', 'session-init-context: session-init failed, continuing to context', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    const contextResult = await contextHandler.execute(input);
+
+    const semanticContext = sessionInitResult?.hookSpecificOutput?.additionalContext;
+    if (!semanticContext) {
+      return contextResult;
+    }
+
+    const contextAdditionalContext = contextResult.hookSpecificOutput?.additionalContext;
+    const mergedContext = contextAdditionalContext
+      ? `${semanticContext}\n\n${contextAdditionalContext}`
+      : semanticContext;
+
+    return {
+      ...contextResult,
+      hookSpecificOutput: {
+        ...(contextResult.hookSpecificOutput ?? { hookEventName: 'SessionStart' }),
+        additionalContext: mergedContext,
+      },
+    };
+  }
+};
+
 const handlers: Record<EventType, EventHandler> = {
   'context': contextHandler,
   'session-init': sessionInitHandler,
+  'session-init-context': sessionInitContextHandler,
   'observation': observationHandler,
   'summarize': summarizeHandler,
   'user-message': userMessageHandler,

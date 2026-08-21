@@ -1,0 +1,152 @@
+---
+title: Kimi Code Integration
+description: Persistent memory for Kimi Code CLI — hook-based observation recording, prompt-submit context injection, and MCP search tools
+icon: terminal
+---
+
+## Overview
+
+The Kimi Code harness gives claude-mem persistent memory to agents running in the Kimi Code CLI. It handles three things:
+
+1. **Observation recording** — Captures tool usage from Kimi's hook system and sends it to the claude-mem worker for AI processing
+2. **Context injection** — Injects the observation timeline into each prompt via the `UserPromptSubmit` hook's stdout (chained after `session-init`), keeping `MEMORY.md` free for agent-curated memory
+3. **MCP search tools** — Registers the `mcp-search` stdio server so you can query memory manually from inside a Kimi session
+
+<Info>
+Kimi Code uses a Claude-Code-like hook system driven by `~/.kimi-code/config.toml`. The claude-mem installer merges hook rules into that file and registers an MCP server in `~/.kimi-code/mcp.json` without touching your personal `AGENTS.md` or `~/.agents/` files.
+</Info>
+
+## How It Works
+
+```plaintext
+Kimi Code CLI
+  │
+  ├── SessionStart (startup|resume) ──→ worker start
+  ├── UserPromptSubmit ───────────────→ Init session + context injection
+  ├── PostToolUse ────────────────────→ Record observation
+  ├── PreToolUse (Read) ──────────────→ File-context observation
+  ├── Stop ───────────────────────────→ Summarize session
+  └── PreCompact (manual|auto) ───────→ Summarize session
+                    │
+                    ▼
+         Claude-Mem Worker (per-user port)
+           ├── POST /api/sessions/init
+           ├── POST /api/sessions/observations
+           ├── POST /api/sessions/summarize
+           ├── POST /api/sessions/complete
+           └── GET  /api/context/inject ──→ Prompt-submit context
+```
+
+### Event Lifecycle
+
+<Steps>
+  <Step title="Session starts (SessionStart startup|resume)">
+    When Kimi starts or resumes a session, the hook starts the claude-mem worker if it is not already running. This hook only warms up the worker; its stdout is not appended to Kimi's context.
+  </Step>
+  <Step title="User prompt submitted (UserPromptSubmit)">
+    The single composite `session-init-context` hook sends the user prompt to `POST /api/sessions/init` so the worker can create or continue the session, then appends the injected observation timeline to Kimi's context via stdout. This is a blockable Kimi event; claude-mem always exits 0 so the prompt is never blocked.
+  </Step>
+  <Step title="Tool is about to read a file (PreToolUse Read)">
+    Before Kimi executes a `Read` tool, the hook queries `GET /api/observations/by-file` for the target path and injects the returned timeline as additional context. This mirrors the Claude Code `PreToolUse` matcher.
+  </Step>
+  <Step title="Tool use recorded (PostToolUse)">
+    After a successful tool use, the hook sends the tool name, input, and response to `POST /api/sessions/observations`. This is fire-and-forget — it does not block the agent from continuing work.
+  </Step>
+  <Step title="Session stops (Stop)">
+    When the session stops, the hook extracts the last assistant message and sends it to `POST /api/sessions/summarize`.
+  </Step>
+  <Step title="Context compacted (PreCompact manual|auto)">
+    Before Kimi compacts context manually or automatically, the hook triggers another summarize call so the session state is preserved before compression.
+  </Step>
+</Steps>
+
+### Event Mapping
+
+| Kimi hook event | matcher | claude-mem internal event | Notes |
+| --- | --- | --- | --- |
+| `SessionStart` | `startup\|resume` | worker start | warms up the worker only |
+| `UserPromptSubmit` | (all) | `session-init-context` | composite hook; blockable event; we always exit 0; stdout is appended to Kimi context |
+| `PostToolUse` | (all) | `observation` | success-only; `PostToolUseFailure` unused in v1 |
+| `PreToolUse` | `Read` | `file-context` | mirrors Claude's matcher |
+| `Stop` | (all) | `summarize` | |
+| `PreCompact` | `manual\|auto` | `summarize` | |
+
+Unused in v1 (the Claude integration likewise ignores them): `SessionEnd`, `SessionHeartbeat`, `SubagentStart/Stop`, `TurnStarted`, `Notification`, `PermissionRequest/Result`, `Interrupt`, `PostCompact`, `UserPromptQueued`.
+
+### Context Injection
+
+The `UserPromptSubmit` hook injects cross-session observation context into each Kimi prompt by writing the worker's formatted context to stdout. The content comes from `GET /api/context/inject?projects=<project>`, which generates a markdown timeline from the SQLite database. The composite `session-init-context` event performs the `session-init` and `context` work in a single process so the hook payload is consumed only once.
+
+This approach keeps `MEMORY.md` under your control for curated long-term memory (decisions, preferences, durable facts), while the observation timeline is delivered through the prompt-submit context where it belongs.
+
+## Installation
+
+Run the interactive installer and let it auto-detect Kimi Code:
+
+```bash
+npx claude-mem install
+```
+
+The installer detects Kimi via the `~/.kimi-code/` directory or the `kimi` binary on `PATH`. You can also manage the harness directly:
+
+```bash
+# Install only the Kimi harness
+npx claude-mem kimi install
+
+# Check whether hooks and MCP are registered
+npx claude-mem kimi status
+
+# Remove the claude-mem managed block (preserves other config)
+npx claude-mem kimi uninstall
+```
+
+### What Gets Installed
+
+The installer writes a marker-delimited managed block into `$KIMI_CODE_HOME/config.toml` (default `~/.kimi-code/config.toml`) containing six `[[hooks]]` rules:
+
+```toml
+# >>> claude-mem kimi hooks (managed by claude-mem; do not edit) >>>
+[[hooks]]
+event = "SessionStart"
+matcher = "startup|resume"
+command = "..."
+timeout = 60
+# ... remaining rules ...
+# <<< claude-mem kimi hooks <<<
+```
+
+Only the four fields `event`, `matcher`, `command`, and `timeout` are written. Timeouts range from 60–120 seconds.
+
+The installer also merges the `mcp-search` stdio MCP server into `$KIMI_CODE_HOME/mcp.json` under `mcpServers` if it is absent, preserving any servers already configured.
+
+<Info>
+`KIMI_CODE_HOME` is honored when set; otherwise the default root is `~/.kimi-code`.
+</Info>
+
+<Warning>
+The first time the installer modifies `config.toml`, it writes a backup to `config.toml.bak-<YYYYMMDD>` before making any changes.
+</Warning>
+
+## Commands
+
+### `npx claude-mem kimi install`
+
+Install or upgrade the Kimi harness. If the managed block already exists, it is replaced in place (upgrade-safe).
+
+### `npx claude-mem kimi status`
+
+Report whether the managed hook block is present in `config.toml`.
+
+### `npx claude-mem kimi uninstall`
+
+Remove exactly the claude-mem managed block from `config.toml`, leaving all other Kimi configuration untouched.
+
+## Error Handling
+
+All Kimi hooks fail open: if the worker is unreachable, the command crashes, or any internal error occurs, the hook exits 0 so Kimi never blocks a session. This matches Kimi's own hook semantics, where exit 0 means allow and stdout may append to context.
+
+## Requirements
+
+- Kimi Code CLI installed and configured
+- Claude-mem worker service running (auto-started by the `SessionStart` hook if needed)
+- Network access between the Kimi process and the worker on the per-user port
