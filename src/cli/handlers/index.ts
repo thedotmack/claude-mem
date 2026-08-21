@@ -14,6 +14,7 @@ import { fileContextHandler } from './file-context.js';
 export type EventType =
   | 'context'           
   | 'session-init'      
+  | 'session-init-context'
   | 'observation'       
   | 'summarize'         
   | 'session-end'
@@ -21,9 +22,23 @@ export type EventType =
   | 'file-edit'         
   | 'file-context';     
 
+export const sessionInitContextHandler: EventHandler = {
+  async execute(input) {
+    try {
+      await sessionInitHandler.execute(input);
+    } catch (error: unknown) {
+      logger.warn('HOOK', 'session-init-context: session-init failed, continuing to context', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return contextHandler.execute(input);
+  }
+};
+
 const handlers: Record<EventType, EventHandler> = {
   'context': contextHandler,
   'session-init': sessionInitHandler,
+  'session-init-context': sessionInitContextHandler,
   'observation': observationHandler,
   'summarize': summarizeHandler,
   'session-end': sessionEndHandler,

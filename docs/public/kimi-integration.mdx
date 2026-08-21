@@ -44,7 +44,7 @@ Kimi Code CLI
     When Kimi starts or resumes a session, the hook starts the claude-mem worker if it is not already running. This hook only warms up the worker; its stdout is not appended to Kimi's context.
   </Step>
   <Step title="User prompt submitted (UserPromptSubmit)">
-    The hook sends the user prompt to `POST /api/sessions/init` so the worker can create or continue the session, then appends the injected observation timeline to Kimi's context via stdout. This is a blockable Kimi event; claude-mem always exits 0 so the prompt is never blocked.
+    The single composite `session-init-context` hook sends the user prompt to `POST /api/sessions/init` so the worker can create or continue the session, then appends the injected observation timeline to Kimi's context via stdout. This is a blockable Kimi event; claude-mem always exits 0 so the prompt is never blocked.
   </Step>
   <Step title="Tool is about to read a file (PreToolUse Read)">
     Before Kimi executes a `Read` tool, the hook queries `GET /api/observations/by-file` for the target path and injects the returned timeline as additional context. This mirrors the Claude Code `PreToolUse` matcher.
@@ -65,7 +65,7 @@ Kimi Code CLI
 | Kimi hook event | matcher | claude-mem internal event | Notes |
 | --- | --- | --- | --- |
 | `SessionStart` | `startup\|resume` | worker start | warms up the worker only |
-| `UserPromptSubmit` | (all) | `session-init` + `context` | blockable event; we always exit 0; stdout is appended to Kimi context |
+| `UserPromptSubmit` | (all) | `session-init-context` | composite hook; blockable event; we always exit 0; stdout is appended to Kimi context |
 | `PostToolUse` | (all) | `observation` | success-only; `PostToolUseFailure` unused in v1 |
 | `PreToolUse` | `Read` | `file-context` | mirrors Claude's matcher |
 | `Stop` | (all) | `summarize` | |
@@ -75,7 +75,7 @@ Unused in v1 (the Claude integration likewise ignores them): `SessionEnd`, `Sess
 
 ### Context Injection
 
-The `UserPromptSubmit` hook injects cross-session observation context into each Kimi prompt by writing the worker's formatted context to stdout. The content comes from `GET /api/context/inject?projects=<project>`, which generates a markdown timeline from the SQLite database. The preceding `session-init` call ensures the session exists before the context is fetched.
+The `UserPromptSubmit` hook injects cross-session observation context into each Kimi prompt by writing the worker's formatted context to stdout. The content comes from `GET /api/context/inject?projects=<project>`, which generates a markdown timeline from the SQLite database. The composite `session-init-context` event performs the `session-init` and `context` work in a single process so the hook payload is consumed only once.
 
 This approach keeps `MEMORY.md` under your control for curated long-term memory (decisions, preferences, durable facts), while the observation timeline is delivered through the prompt-submit context where it belongs.
 
