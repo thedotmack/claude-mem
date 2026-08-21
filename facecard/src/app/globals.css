@@ -1,0 +1,235 @@
+@import "tailwindcss";
+
+/* ═══════════════════════════════════════════════════════════════════════
+   FACE CARD — liquid glass design system
+   Deep black ground, one warm accent, physical translucent surfaces.
+   No neon, no RGB, no gradients-for-the-sake-of-gradients.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+@theme {
+  --color-ink: #000000;
+  --color-paper: #F5F3F0;
+  --color-muted: rgba(245, 243, 240, 0.56);
+  --color-faint: rgba(245, 243, 240, 0.34);
+  --color-gold: #D8B072;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI",
+    Inter, system-ui, sans-serif;
+}
+
+:root {
+  --glass-tint: 255, 255, 255;
+  --edge: rgba(255, 255, 255, 0.14);
+  --spring: cubic-bezier(0.22, 1.2, 0.36, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: dark;
+}
+
+* { -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  background: #000;
+  color: var(--color-paper);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overscroll-behavior-y: none;
+}
+
+body {
+  min-height: 100dvh;
+  margin: 0;
+}
+
+/* Respect users who don't want motion — animations become instant states. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ───────────────────────────────────────────────────────────── glass */
+
+.glass {
+  position: relative;
+  background:
+    linear-gradient(157deg, rgba(var(--glass-tint), 0.115) 0%, rgba(var(--glass-tint), 0.042) 46%, rgba(var(--glass-tint), 0.07) 100%);
+  backdrop-filter: blur(30px) saturate(175%);
+  -webkit-backdrop-filter: blur(30px) saturate(175%);
+  border: 1px solid var(--edge);
+  border-radius: 26px;
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.24),
+    inset 0 -1px 0 0 rgba(255, 255, 255, 0.055),
+    inset 0 0 40px 0 rgba(255, 255, 255, 0.035),
+    0 28px 70px -22px rgba(0, 0, 0, 0.95),
+    0 4px 16px -6px rgba(0, 0, 0, 0.7);
+  overflow: hidden;
+}
+
+/* Specular sweep — the highlight that makes the surface read as physical. */
+.glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(133deg, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0) 34%);
+  opacity: 0.85;
+}
+
+/* Refracted bottom edge — light bending through the far side of the slab. */
+.glass::after {
+  content: "";
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  bottom: -1px;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent);
+}
+
+.glass-quiet {
+  background: rgba(var(--glass-tint), 0.045);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 20px;
+}
+
+/* Choice cards physically react when pressed (spec §15). */
+.choice-card {
+  transition: transform 0.42s var(--spring), box-shadow 0.42s var(--spring), border-color 0.3s;
+  will-change: transform;
+}
+.choice-card:hover { transform: translateY(-3px) scale(1.012); border-color: rgba(255, 255, 255, 0.26); }
+.choice-card:active { transform: translateY(1px) scale(0.977); }
+.choice-card[data-picked="true"] {
+  transform: scale(1.03);
+  border-color: rgba(216, 176, 114, 0.75);
+  box-shadow: 0 0 0 1px rgba(216, 176, 114, 0.45), 0 22px 60px -16px rgba(216, 176, 114, 0.35);
+}
+.choice-card[data-dimmed="true"] { opacity: 0.28; transform: scale(0.97); filter: blur(1px); }
+
+/* ──────────────────────────────────────────────────────── typography */
+
+.display {
+  font-weight: 700;
+  letter-spacing: -0.045em;
+  line-height: 0.94;
+  text-wrap: balance;
+}
+.kicker {
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+.script-slug {
+  font-size: 0.66rem;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: rgba(245, 243, 240, 0.42);
+}
+
+/* ───────────────────────────────────────────────────────── animation */
+
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(26px) scale(0.985); filter: blur(8px); }
+  to   { opacity: 1; transform: none; filter: blur(0); }
+}
+@keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+@keyframes materialize {
+  from { opacity: 0; transform: scale(0.94) translateY(30px); filter: blur(18px); }
+  to   { opacity: 1; transform: none; filter: blur(0); }
+}
+@keyframes breathe {
+  0%, 100% { opacity: 0.32 }
+  50%      { opacity: 0.78 }
+}
+@keyframes grainShift {
+  0%   { transform: translate(0, 0) }
+  25%  { transform: translate(-2%, 1%) }
+  50%  { transform: translate(1%, -2%) }
+  75%  { transform: translate(2%, 2%) }
+  100% { transform: translate(0, 0) }
+}
+
+.rise { animation: riseIn 0.85s var(--ease-out) both; }
+.fade { animation: fadeIn 1.1s ease both; }
+.materialize { animation: materialize 1.25s var(--ease-out) both; }
+.breathe { animation: breathe 3.4s ease-in-out infinite; }
+
+/* ────────────────────────────────────────────────── cinematic layers */
+
+.film-grain {
+  position: absolute;
+  inset: -12%;
+  pointer-events: none;
+  opacity: 0.5;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)' opacity='0.45'/%3E%3C/svg%3E");
+  animation: grainShift 0.9s steps(4) infinite;
+}
+
+.letterbox::before,
+.letterbox::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0;
+  height: 5.5vh;
+  background: #000;
+  z-index: 30;
+  pointer-events: none;
+}
+.letterbox::before { top: 0 }
+.letterbox::after { bottom: 0 }
+
+/* Ken Burns moves are chosen by the emotion engine, not at random. */
+@keyframes kbPush   { from { transform: scale(1.03) } to { transform: scale(1.17) } }
+@keyframes kbPull   { from { transform: scale(1.17) } to { transform: scale(1.03) } }
+@keyframes kbDrift  { from { transform: scale(1.1) translate(-1.5%, 0) } to { transform: scale(1.1) translate(1.5%, -1%) } }
+@keyframes kbCrane  { from { transform: scale(1.14) translateY(3%) } to { transform: scale(1.06) translateY(-2%) } }
+@keyframes kbHand   {
+  0%   { transform: scale(1.1) translate(0, 0) rotate(0deg) }
+  25%  { transform: scale(1.11) translate(0.5%, -0.4%) rotate(0.25deg) }
+  50%  { transform: scale(1.1) translate(-0.4%, 0.5%) rotate(-0.2deg) }
+  75%  { transform: scale(1.12) translate(0.3%, 0.3%) rotate(0.15deg) }
+  100% { transform: scale(1.1) translate(0, 0) rotate(0deg) }
+}
+
+.kb-push  { animation: kbPush  var(--kb-dur, 22s) linear both }
+.kb-pull  { animation: kbPull  var(--kb-dur, 22s) linear both }
+.kb-drift { animation: kbDrift var(--kb-dur, 26s) ease-in-out both }
+.kb-crane { animation: kbCrane var(--kb-dur, 20s) ease-out both }
+.kb-hand  { animation: kbHand  var(--kb-dur, 6s) ease-in-out infinite }
+
+/* ─────────────────────────────────────────────────────────── utility */
+
+.no-scrollbar::-webkit-scrollbar { display: none }
+.no-scrollbar { scrollbar-width: none }
+
+.safe-b { padding-bottom: max(1rem, env(safe-area-inset-bottom)) }
+.safe-t { padding-top: max(1rem, env(safe-area-inset-top)) }
+
+/* Vertical-first: the movie stage is 9:16 and centred on every screen. */
+.stage {
+  position: relative;
+  width: 100%;
+  max-width: min(100vw, calc(100dvh * 9 / 16));
+  aspect-ratio: 9 / 16;
+  margin-inline: auto;
+  overflow: hidden;
+  background: #000;
+}
+@media (max-width: 640px) {
+  .stage { max-width: 100vw; height: 100dvh; aspect-ratio: auto }
+}
+
+input, textarea, select, button { font: inherit; color: inherit }
+input:focus-visible, button:focus-visible, a:focus-visible, textarea:focus-visible {
+  outline: 2px solid rgba(216, 176, 114, 0.7);
+  outline-offset: 3px;
+}
