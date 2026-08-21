@@ -137,6 +137,15 @@ describe('expandHomePath', () => {
     expect(expandHomePath('~/.codex/sessions')).toBe(join(homedir(), '.codex/sessions'));
   });
 
+  it('expands the Windows ~\\ form as well', () => {
+    // The replaced inline version sliced one character off any leading tilde, so a config
+    // written on Windows as `~\\.codex\\sessions` resolved. Routing through a helper that
+    // recognises only `~` and `~/` would have left it literal, and the config would fail to
+    // load with the unresolved path in the error.
+    expect(expandHomePath('~\\')).toBe(homedir());
+    expect(expandHomePath('~\\.codex\\sessions')).toBe(join(homedir(), '.codex\\sessions'));
+  });
+
   it('leaves ~user/ paths alone instead of reparenting them under this user home', () => {
     // `~alice/transcripts` names alice's home, not a directory inside ours.
     // Rewriting it to <home>/alice/transcripts pointed the watcher at a path
