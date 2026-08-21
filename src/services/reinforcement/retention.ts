@@ -22,6 +22,17 @@ import { effectiveStrength, parseReinforcementDates, readTunables } from './stre
  *             AND superseded_by IS NULL              (not a tombstone —
  *                                                    tombstones are erasure
  *                                                    cascade territory, G5)
+ *             AND type != 'decision'                 (type immunity: one-off
+ *                                                    decisions/constraints —
+ *                                                    "why we did it this way" —
+ *                                                    are needed rarely but
+ *                                                    critically, and a note the
+ *                                                    ranker never surfaced can
+ *                                                    never earn retrieval
+ *                                                    reinforcement, so without
+ *                                                    immunity retention becomes
+ *                                                    a self-fulfilling recall
+ *                                                    bias against exactly these)
  *   immune    ⇔ reinforcement history has >= 2 dates (the world re-confirmed
  *               the note at least once beyond its creation seed)
  *
@@ -118,6 +129,7 @@ export function selectRetentionCandidates(
     WHERE created_at_epoch < ?
       AND COALESCE(relevance_count, 0) = 0
       AND superseded_by IS NULL
+      AND type != 'decision'
     ORDER BY created_at_epoch ASC
   `).all(cutoffEpoch) as PrefilterRow[];
 

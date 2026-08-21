@@ -26,8 +26,11 @@ export function seedReinforcement(epochMs: number): { dates: string; lastReinfor
 
 /**
  * Reinforce one observation: append today's date to its history (FIFO-trimmed,
- * idempotent within a day) and bump `last_reinforced`. Used by the exact-hash
- * dedup path on write, and later by retrieval-feedback / the semantic judge.
+ * idempotent within a day), bump `last_reinforced`, and increment the
+ * monotonic `reinforcement_total` counter (lifetime durability signal — the
+ * FIFO window drops old dates, the counter never does; it does NOT enter the
+ * strength formula). Used by the exact-hash dedup path on write, and later by
+ * retrieval-feedback / the semantic judge.
  *
  * Returns true if the row was changed (false on same-day no-op or missing row).
  */
@@ -43,7 +46,7 @@ export function reinforceObservation(db: Database, id: number, today: Date = new
     return false; // same-day no-op
   }
 
-  db.prepare('UPDATE observations SET reinforcement_dates = ?, last_reinforced = ? WHERE id = ?').run(
+  db.prepare('UPDATE observations SET reinforcement_dates = ?, last_reinforced = ?, reinforcement_total = COALESCE(reinforcement_total, 0) + 1 WHERE id = ?').run(
     JSON.stringify(next),
     next[next.length - 1],
     id,
