@@ -18,6 +18,43 @@ const toggleMcpSchema = z.object({
   enabled: z.boolean(),
 }).passthrough();
 
+// SECURITY (patched locally, see thedotmack/claude-mem#1251 finding C-4):
+// GET /api/settings returned every credential (Gemini/OpenRouter/Chroma API
+// keys, cloud-sync token, Telegram bot token, server API keys) in cleartext
+// to any caller, and this endpoint has no auth in front of it. Mask secret
+// fields before they ever leave the process — the settings UI only needs to
+// show "a key is configured", not the key itself.
+//
+// An explicit allowlist, not a /API_KEY|_TOKEN|SECRET/i regex: that pattern
+// also matched CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS/SHOW_WORK_TOKENS (boolean
+// display prefs, not credentials), corrupting "false" into "*alse" on every
+// GET and breaking the next settings save with a validation 400.
+const SECRET_SETTING_KEYS = new Set([
+  'CLAUDE_MEM_GEMINI_API_KEY',
+  'CLAUDE_MEM_OPENROUTER_API_KEY',
+  'CLAUDE_MEM_CHROMA_API_KEY',
+  'CLAUDE_MEM_CLOUD_SYNC_TOKEN',
+  'CLAUDE_MEM_TELEGRAM_BOT_TOKEN',
+  'CLAUDE_MEM_SERVER_API_KEY',
+  'CLAUDE_MEM_SERVER_BETA_API_KEY',
+]);
+
+function maskSecretValue(value: unknown): unknown {
+  if (typeof value !== 'string' || value.length === 0) return value;
+  if (value.length <= 4) return '*'.repeat(value.length);
+  return `${'*'.repeat(value.length - 4)}${value.slice(-4)}`;
+}
+
+function redactSecretSettings<T extends object>(settings: T): T {
+  const redacted: Record<string, unknown> = { ...(settings as Record<string, unknown>) };
+  for (const key of SECRET_SETTING_KEYS) {
+    if (key in redacted) {
+      redacted[key] = maskSecretValue(redacted[key]);
+    }
+  }
+  return redacted as T;
+}
+
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(
     private settingsManager: SettingsManager
@@ -38,7 +75,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     const settingsPath = paths.settings();
     this.ensureSettingsFile(settingsPath);
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-    res.json(settings);
+    res.json(redactSecretSettings(settings));
   });
 
   private handleGetDependencyHealth = this.wrapHandler((_req: Request, res: Response): void => {
@@ -178,9 +215,15 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     if (settings.CLAUDE_MEM_WORKER_HOST) {
       const host = settings.CLAUDE_MEM_WORKER_HOST;
-      const validHostPattern = /^(127\.0\.0\.1|0\.0\.0\.0|localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
+      // SECURITY (patched locally, see thedotmack/claude-mem#1251 finding
+      // C-3): this used to accept 0.0.0.0 and any arbitrary IPv4, which lets
+      // the worker's unauthenticated HTTP API (including /api/settings) be
+      // reached from other machines on the network. The worker has no
+      // legitimate reason to bind anywhere but loopback, so reject anything
+      // else outright instead of trusting the caller's choice of interface.
+      const validHostPattern = /^(127\.0\.0\.1|::1|localhost)$/;
       if (!validHostPattern.test(host)) {
-        return { valid: false, error: 'CLAUDE_MEM_WORKER_HOST must be a valid IP address (e.g., 127.0.0.1, 0.0.0.0)' };
+        return { valid: false, error: 'CLAUDE_MEM_WORKER_HOST must be a loopback address (127.0.0.1, ::1, or localhost) — binding to other interfaces is disabled for security' };
       }
     }
 
