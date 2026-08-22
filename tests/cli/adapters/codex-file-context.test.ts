@@ -43,6 +43,16 @@ describe('extractFilePaths', () => {
     expect(paths).toEqual([]);
   });
 
+  it('fails open when shell-quote cannot parse a Bash expansion', () => {
+    expect(() => extractFilePaths('Bash', {
+      command: 'PORT="${CLAUDE_MEM_WORKER_PORT:-$(node -e "const x=1")}"; cat README.md',
+    }, tmpDir)).not.toThrow();
+
+    expect(extractFilePaths('Bash', {
+      command: 'echo "${}"',
+    }, tmpDir)).toEqual([]);
+  });
+
   it('extracts MCP read tool path arrays', () => {
     const paths = extractFilePaths('mcp__local_filesystem__read_file', {
       paths: ['README.md', 'notes.txt', 'missing.txt'],

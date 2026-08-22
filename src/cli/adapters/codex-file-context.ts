@@ -88,7 +88,15 @@ function extractFromBash(toolInput: unknown, cwd: string): string[] {
   const command = normalizeCommand((toolInput as { command?: unknown } | undefined)?.command);
   if (!command) return [];
 
-  const tokens = parse(command);
+  let tokens: ParsedToken[];
+  try {
+    tokens = parse(command);
+  } catch {
+    // File-path enrichment is best-effort metadata. shell-quote rejects some
+    // valid shell expansions (for example ${VAR:-$(...)}); that must not turn
+    // a capture hook into a blocking error for the underlying command.
+    return [];
+  }
   const paths: string[] = [];
 
   for (const segment of splitSegments(tokens)) {
