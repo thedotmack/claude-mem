@@ -6,7 +6,7 @@ import {
   type ChildProcess,
   type SpawnSyncOptionsWithStringEncoding,
 } from 'node:child_process';
-import { extname } from 'node:path';
+import { dirname, extname, join } from 'node:path';
 
 export type SpawnHiddenOptions = SpawnOptions;
 
@@ -31,8 +31,59 @@ export interface SpawnSyncInvocation {
   options: SpawnSyncOptionsWithStringEncoding;
 }
 
+type VoltaWhichRunner = (
+  command: string,
+  args: readonly string[],
+  options: SpawnSyncOptionsWithStringEncoding,
+) => { status: number | null; stdout: string };
+
+const VOLTA_SHIM_RESOLUTION_TIMEOUT_MS = 5_000;
+
+const runVoltaWhich: VoltaWhichRunner = (command, args, options) =>
+  spawnSync(command, args, options);
+
 export function quoteWindowsCmdArgument(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
+}
+
+export function selectWindowsCommandCandidate(
+  candidates: string[],
+  resolveShim?: (shimPath: string) => string | null,
+): string | null {
+  const native = candidates.find(candidate =>
+    WINDOWS_NATIVE_EXTENSIONS.has(extname(candidate).toLowerCase()));
+  if (native) return native;
+
+  const shim = candidates.find(candidate =>
+    WINDOWS_CMD_EXTENSIONS.has(extname(candidate).toLowerCase()));
+  if (shim && resolveShim) {
+    const resolved = resolveShim(shim);
+    if (resolved && WINDOWS_NATIVE_EXTENSIONS.has(extname(resolved).toLowerCase())) {
+      return resolved;
+    }
+  }
+
+  return shim ?? candidates[0] ?? null;
+}
+
+export function resolveVoltaShim(
+  command: string,
+  shimPath: string,
+  run: VoltaWhichRunner = runVoltaWhich,
+): string | null {
+  if (!/[\\/]volta[\\/]bin[\\/]/i.test(shimPath)) return null;
+  try {
+    const result = run(join(dirname(shimPath), 'volta.exe'), ['which', command], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: VOLTA_SHIM_RESOLUTION_TIMEOUT_MS,
+      windowsHide: true,
+    });
+    if (result.status !== 0 || !result.stdout.trim()) return null;
+    return result.stdout.split(/\r?\n/).map(line => line.trim()).find(Boolean) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export function lookupWindowsCommand(command: string): string | null {
@@ -48,10 +99,10 @@ export function lookupWindowsCommand(command: string): string | null {
       .split(/\r?\n/)
       .map(line => line.trim())
       .filter(Boolean);
-    return candidates.find(candidate => WINDOWS_NATIVE_EXTENSIONS.has(extname(candidate).toLowerCase()))
-      ?? candidates.find(candidate => WINDOWS_COMMAND_EXTENSIONS.has(extname(candidate).toLowerCase()))
-      ?? candidates[0]
-      ?? null;
+    return selectWindowsCommandCandidate(
+      candidates,
+      shimPath => resolveVoltaShim(command, shimPath),
+    );
   } catch {
     // where exits non-zero when absent and can throw if PATH is malformed.
     return null;
