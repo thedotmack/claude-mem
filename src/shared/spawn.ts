@@ -31,6 +31,17 @@ export interface SpawnSyncInvocation {
   options: SpawnSyncOptionsWithStringEncoding;
 }
 
+type VoltaWhichRunner = (
+  command: string,
+  args: readonly string[],
+  options: SpawnSyncOptionsWithStringEncoding,
+) => { status: number | null; stdout: string };
+
+const VOLTA_SHIM_RESOLUTION_TIMEOUT_MS = 5_000;
+
+const runVoltaWhich: VoltaWhichRunner = (command, args, options) =>
+  spawnSync(command, args, options);
+
 export function quoteWindowsCmdArgument(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
@@ -55,12 +66,17 @@ export function selectWindowsCommandCandidate(
   return shim ?? candidates[0] ?? null;
 }
 
-function resolveVoltaShim(command: string, shimPath: string): string | null {
+export function resolveVoltaShim(
+  command: string,
+  shimPath: string,
+  run: VoltaWhichRunner = runVoltaWhich,
+): string | null {
   if (!/[\\/]volta[\\/]bin[\\/]/i.test(shimPath)) return null;
   try {
-    const result = spawnSync(join(dirname(shimPath), 'volta.exe'), ['which', command], {
+    const result = run(join(dirname(shimPath), 'volta.exe'), ['which', command], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: VOLTA_SHIM_RESOLUTION_TIMEOUT_MS,
       windowsHide: true,
     });
     if (result.status !== 0 || !result.stdout.trim()) return null;
