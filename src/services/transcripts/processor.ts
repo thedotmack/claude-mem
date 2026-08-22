@@ -133,11 +133,10 @@ export class TranscriptEventProcessor {
         }
         break;
       case 'user_message':
-        if (typeof fields.message === 'string') session.lastUserMessage = fields.message;
-        if (typeof fields.prompt === 'string') session.lastUserMessage = fields.prompt;
+        session.lastUserMessage = this.resolveMessageText(fields.message) ?? this.resolveMessageText(fields.prompt) ?? session.lastUserMessage;
         break;
       case 'assistant_message':
-        if (typeof fields.message === 'string') session.lastAssistantMessage = fields.message;
+        session.lastAssistantMessage = this.resolveMessageText(fields.message) ?? session.lastAssistantMessage;
         break;
       case 'tool_use':
         await this.handleToolUse(session, fields);
@@ -164,6 +163,23 @@ export class TranscriptEventProcessor {
     const project = typeof fields.project === 'string' ? fields.project : undefined;
     if (cwd) session.cwd = cwd;
     if (project) session.project = project;
+  }
+
+  /**
+   * Normalize a message field to text. Transcripts that store messages as
+   * content-block arrays (e.g. DeepSeek Harness assistant messages with
+   * reasoning/text blocks) are joined by newline; strings pass through.
+   */
+  private resolveMessageText(value: unknown): string | undefined {
+    if (typeof value === 'string') return value;
+    if (!Array.isArray(value)) return undefined;
+    const parts: string[] = [];
+    for (const block of value) {
+      if (block && typeof block === 'object' && typeof (block as { text?: unknown }).text === 'string') {
+        parts.push((block as { text: string }).text);
+      }
+    }
+    return parts.length > 0 ? parts.join('\n') : undefined;
   }
 
   private async handleSessionInit(session: SessionState, fields: Record<string, unknown>): Promise<void> {
