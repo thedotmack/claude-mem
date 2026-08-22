@@ -196,7 +196,17 @@ export async function processSessionSummaryResponse(
 
   const summary = parsed.summary ?? null;
   const skipped = summary?.skipped === true;
-  const summaryContent = summary ? renderSummaryContent(summary) : '';
+
+  // Defence in depth: a provider that answers with <observation> blocks instead of
+  // a <summary> block used to be dropped here silently — parsed.summary was null,
+  // the content was judged empty, the job completed and parsed.observations was
+  // never looked at. Fold those blocks into the summary body rather than
+  // discarding a response the model was billed for.
+  const fallbackObservations = !summary && !skipped ? parsed.observations : [];
+  const summaryContent = summary
+    ? renderSummaryContent(summary)
+    : fallbackObservations.map(o => renderObservationContent(o)).join('\n\n');
+
   const privateContentDetected = skipped || summaryContent.trim().length === 0;
 
   const rendered: RenderedObservation[] = privateContentDetected
@@ -466,6 +476,15 @@ function renderObservationContent(observation: ParsedObservation): string {
   if (observation.narrative) parts.push(observation.narrative);
   if (observation.facts && observation.facts.length > 0) {
     parts.push(observation.facts.map(f => `- ${f}`).join('\n'));
+  }
+  // The parser treats concepts as content: an observation whose only populated
+  // field is <concepts> survives its empty-observation guard. This renderer did
+  // not, so that observation rendered to '' and was dropped by the empty-content
+  // skip in persistGeneratedObservations - accepted, discarded, job completed.
+  // Rendered last-resort only, so responses that carry prose keep the body they
+  // already have and no existing content changes shape.
+  if (parts.length === 0 && observation.concepts && observation.concepts.length > 0) {
+    parts.push(`Concepts: ${observation.concepts.join(', ')}`);
   }
   return parts.join('\n\n').trim();
 }
