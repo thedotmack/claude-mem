@@ -477,6 +477,15 @@ function renderObservationContent(observation: ParsedObservation): string {
   if (observation.facts && observation.facts.length > 0) {
     parts.push(observation.facts.map(f => `- ${f}`).join('\n'));
   }
+  // The parser treats concepts as content: an observation whose only populated
+  // field is <concepts> survives its empty-observation guard. This renderer did
+  // not, so that observation rendered to '' and was dropped by the empty-content
+  // skip in persistGeneratedObservations - accepted, discarded, job completed.
+  // Rendered last-resort only, so responses that carry prose keep the body they
+  // already have and no existing content changes shape.
+  if (parts.length === 0 && observation.concepts && observation.concepts.length > 0) {
+    parts.push(`Concepts: ${observation.concepts.join(', ')}`);
+  }
   return parts.join('\n\n').trim();
 }
 
