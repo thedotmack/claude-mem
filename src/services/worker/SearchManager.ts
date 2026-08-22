@@ -1,7 +1,7 @@
 
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
-import { VectorSync } from '../vector/VectorSync.js';
+import { VectorSync, DOC_TYPE_TO_KIND } from '../vector/VectorSync.js';
 import { FormattingService } from './FormattingService.js';
 import { TimelineService } from './TimelineService.js';
 import type { TimelineItem } from './TimelineService.js';
@@ -70,30 +70,58 @@ const INDEXABLE_CONTENT: Record<VectorDocKind, { scalar: string[]; jsonArray: st
 };
 
 /**
- * A readiness verdict, with the two counters that make it stale.
+ * A readiness verdict, with the counters that make it stale.
  *
  * `complete` is the answer to "does every indexable in-scope row of this kind
- * carry a vector this model can read". The counters are MAX(parent.id) and
- * MAX(vector.rowid) as they stood when the answer was taken: a backfill batch
- * landing, a live capture writing a vector, or a new row arriving all move one
- * of them, which is precisely when the answer can change from "not yet" to
- * "ready" or back.
+ * carry a vector this model can read". The counters are MAX(parent.id),
+ * MAX(vector.rowid) and COUNT(vector) as they stood when the answer was taken:
+ * a backfill batch landing, a live capture writing a vector, or a new row
+ * arriving all move one of them, which is precisely when the answer can change
+ * from "not yet" to "ready" or back.
+ *
+ * The count is here because the two maxima do not fall. VectorBackfill deletes
+ * the committed slices of a row whose remaining slices threw
+ * (discardPartialRow), and that delete can be the last write for a while — the
+ * batch rethrows immediately after it — so unless the row happened to hold the
+ * top rowid, neither maximum moved and a scope that had just lost a row's
+ * vectors kept answering "complete". Measured against the tree before this fix,
+ * deleting the vectors of one row in the middle of a fully backfilled 20-row
+ * project: the next search reported search_strategy 'chroma', fallback_reason
+ * 'none', and returned 19 rows, with that row's id absent.
  */
 interface ScopeReadiness {
   complete: boolean;
   parentMax: number;
   vectorMax: number;
+  vectorCount: number;
   takenAt: number;
 }
 
 /**
- * Backstop for the changes the two counters above cannot see: a vector deleted
- * without any other write (VectorBackfill discards a partially written row that
- * way), and an in-place UPDATE that gives content to a row that had none. Both
- * are narrow, and both resolve within this window rather than persisting for
- * the life of the worker.
+ * How long a "complete" verdict may outlive the state it was taken over.
+ *
+ * The counters above move on a vector insert, a vector delete, and a new parent
+ * row — all but two edits that exactly cancel between one probe and the next,
+ * a delete whose rowids an equal-sized insert then reuses. What no cheap signal
+ * sees at all is an in-place UPDATE that gives
+ * content to a parent row that had none: no id is minted, no vector is written
+ * or removed, and finding it out costs the content scan the memo exists to
+ * avoid. That row is genuinely owed a vector and genuinely absent from semantic
+ * answers, and until this window expires the search will still call itself
+ * index-backed. Measured on THIS tree, not only the one before it: give a
+ * narrative to a previously doc-less row in a fully backfilled project and the
+ * next search reports search_strategy 'chroma', fallback_reason 'none', with
+ * that row's id absent from the results — for as long as the memo is reused.
+ *
+ * So the TTL is the answer for that case rather than a backstop for a gap that
+ * is otherwise closed, and what it bounds is stated in the user's terms: for up
+ * to a minute after such an edit, a search can report a semantic answer that is
+ * missing that row. After it expires the scan runs again and the scope drops to
+ * keyword search until the row is indexed. Nothing here makes "complete" exact;
+ * it makes the window over which it can be wrong a minute long instead of the
+ * life of the worker.
  */
-const READINESS_TTL_MS = 60_000;
+export const READINESS_TTL_MS = 60_000;
 
 /** Distinct (kind, model, project, platform) scopes remembered before the map
  *  is dropped whole. A worker serving many projects re-measures rather than
@@ -182,6 +210,30 @@ export class SearchManager {
    * pipeline for the single-doc-type hybrid searches. Returns the hydrated rows
    * (empty when Chroma yields nothing recent); callers own their own FTS
    * fallback and formatting so per-caller behavior is preserved exactly.
+   *
+   * Readiness is asked here, on the same probe and the same memo as
+   * performChromaSemanticSearch, because an index that covers part of a scope
+   * does not answer with a zero the callers could notice: it answers from the
+   * slice it has. Measured against the tree before this gate, on a 20-row
+   * project with 1 row indexed: searchObservations replied "Found 1
+   * observation(s)" and getTimelineByQuery listed that same single row — 19 of
+   * the user's rows silently absent from an answer reported as a success.
+   *
+   * An incomplete scope returns [] rather than falling back here, because each
+   * of the three callers — searchObservations, getTimelineByQuery, and the
+   * anchor pick in timeline() — already treats an empty semantic answer as
+   * "run my own keyword search", each with its own options, limit and
+   * formatting. Reproducing those three fallbacks here is how they would drift
+   * apart. The caller does lose something: the partial semantic answer it used
+   * to get. That loss is the point. An incomplete scope did not reach its
+   * keyword fallback before, because its semantic answer was never empty -- it
+   * was short, drawn from whatever slice happened to be indexed and reported as
+   * though it were the whole corpus.
+   *
+   * Scope, stated because a gate is easy to over-credit: this covers the three
+   * call sites of this method. /api/search/by-file does not pass through here —
+   * SearchRoutes.handleSearchByFile goes to SearchOrchestrator.findByFile and
+   * HybridSearchStrategy — and is still ungated.
    */
   private async hybridSemanticHydrate<T>(
     query: string,
@@ -190,6 +242,17 @@ export class SearchManager {
     platformSource: string | undefined,
     hydrate: (ids: number[]) => T[]
   ): Promise<T[]> {
+    // A doc_type absent from the map is one readiness has no table for, so the
+    // search is left ungated rather than blocked on a question it cannot ask.
+    const kind = DOC_TYPE_TO_KIND[docType];
+    if (kind && this.semanticScopeIsIncomplete({ project, platformSource }, [kind])) {
+      logger.warn('SEARCH', 'Vector index covers too little of this scope; leaving the semantic answer empty so the caller runs its keyword fallback', {
+        docType,
+        hasProject: Boolean(project),
+      });
+      return [];
+    }
+
     const whereFilter = this.buildDocTypeWhereFilter(docType, project, platformSource);
     const chromaResults = await this.queryChroma(query, 100, whereFilter);
     logger.debug('SEARCH', 'Chroma returned semantic matches', { matchCount: chromaResults?.ids?.length ?? 0 });
@@ -554,26 +617,44 @@ export class SearchManager {
    * the join shape is not the one this query was written against.
    *
    * Memoised, because the scan behind it is not free and the answer changes
-   * only when the corpus or the index does. It ran on EVERY semantic search,
-   * per searched kind, for the life of the worker — not just during the
-   * one-time indexing window it exists to cover. Measured on a fully indexed
-   * single-project store, in-memory SQLite, Bun 1.3.8, M-series, 20 runs:
+   * only when the corpus or the index does. Without the memo it ran on EVERY
+   * semantic search, for the life of the worker — not just during the one-time
+   * indexing window it exists to cover.
    *
-   *   corpus     per search, before      after: memo hit    after: scan
-   *   20,000     36.5ms                  0.24ms             28ms
-   *   100,000    200ms                   0.21ms             140ms
+   * The unit below is one SEARCH, and one search is not one call: readiness is
+   * asked once per searched KIND. Counted through SearchManager.search on a
+   * fully indexed store — 3 calls on an unfiltered search (observations,
+   * summaries and prompts), cold AND warm; 1 on a search filtered to
+   * observations. An earlier version of this header said the scan runs "never
+   * more than once per search". It does not, and the figures below are a whole
+   * unfiltered search — three calls' worth.
    *
-   * A memo hit is the two MAX lookups below and a map read. The scan runs only
-   * when either MAX has moved since the last verdict, or the verdict is over a
-   * minute old — never more than once per search, and in a settled corpus at
-   * most once a minute per scope.
+   * Measured on a fully indexed single-project store, in-memory SQLite, Bun
+   * 1.3.8 on an M-series Mac, 10 cold runs and 200 warm per figure, given as
+   * the run-to-run band rather than a point:
    *
-   * The scan itself also got cheaper, and the ordering below is why: it stops
-   * at the first row still owed a vector instead of counting every row, and it
-   * disposes of already-indexed rows on an index seek before any content test.
-   * The shape that defeats both shortcuts — every row unindexed AND doc-less,
-   * so the array term runs on all of them and nothing matches — measured 48ms
-   * over 20,000 such rows.
+   *   observations   memo miss, per search   memo hit, per search
+   *   20,000         46-58ms                 1.3-1.9ms
+   *   100,000        304ms                   2.6ms
+   *
+   * A memo hit is not just a map read: per kind it is two table-existence
+   * probes, a pragma_table_info probe per content column, and the three
+   * aggregates below. The COUNT(*) among them — the signal that catches a
+   * deleted vector — costs 0.07ms over 200,000 vector rows measured alone
+   * (SQLite answers it by scanning the covering index on sqlite_id, not the
+   * rows), and the same benchmark against the tree without it came out no
+   * faster: 1.3-4.6ms at 20,000 and 3.9ms at 100,000.
+   *
+   * The scan runs when any of the three counters has moved since the last
+   * verdict, or the verdict is older than READINESS_TTL_MS — in a settled
+   * corpus, at most once a minute per scope.
+   *
+   * The scan itself is ordered to stop early: at the first row still owed a
+   * vector rather than counting every row, and disposing of already-indexed
+   * rows on an index seek before any content test. The shape that defeats both
+   * shortcuts — every row unindexed AND doc-less, so the array term runs on all
+   * of them and nothing matches — measured 50-105ms, median 66ms, for the
+   * observation kind alone over 20,000 such rows.
    */
   private scopeIndexIsComplete(
     db: Database,
@@ -587,11 +668,13 @@ export class SearchManager {
     const indexable = this.indexableSql(db, kind);
     if (indexable === null) return null;
 
-    // Both are index maxima, so this is two B-tree seeks rather than a scan.
+    // Two index maxima (a B-tree seek each) and one COUNT, which the query plan
+    // answers as SCAN ... USING COVERING INDEX rather than off the rows.
     const generation = db.prepare(`
       SELECT (SELECT COALESCE(MAX(id), 0) FROM ${spec.parent}) AS parentMax,
-             (SELECT COALESCE(MAX(rowid), 0) FROM ${spec.table}) AS vectorMax
-    `).get() as { parentMax: number; vectorMax: number };
+             (SELECT COALESCE(MAX(rowid), 0) FROM ${spec.table}) AS vectorMax,
+             (SELECT COUNT(*) FROM ${spec.table}) AS vectorCount
+    `).get() as { parentMax: number; vectorMax: number; vectorCount: number };
 
     const key = [kind, modelId, scope.project ?? '', scope.platformSource ?? ''].join('\t');
     const cached = this.scopeReadiness.get(key);
@@ -600,6 +683,7 @@ export class SearchManager {
       cached
       && cached.parentMax === generation.parentMax
       && cached.vectorMax === generation.vectorMax
+      && cached.vectorCount === generation.vectorCount
       && now - cached.takenAt < READINESS_TTL_MS
     ) {
       return cached.complete;
@@ -665,6 +749,7 @@ export class SearchManager {
       complete,
       parentMax: generation.parentMax,
       vectorMax: generation.vectorMax,
+      vectorCount: generation.vectorCount,
       takenAt: now,
     });
     return complete;

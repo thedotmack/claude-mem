@@ -4,12 +4,13 @@ import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
 import { FormattingService } from '../../src/services/worker/FormattingService.js';
 import { TimelineService } from '../../src/services/worker/TimelineService.js';
-import { SearchManager } from '../../src/services/worker/SearchManager.js';
+import { SearchManager, READINESS_TTL_MS } from '../../src/services/worker/SearchManager.js';
 import { VectorIndex } from '../../src/services/vector/VectorIndex.js';
 import { VectorSync } from '../../src/services/vector/VectorSync.js';
 import { VectorBackfill } from '../../src/services/vector/VectorBackfill.js';
 import type { Embedder } from '../../src/services/vector/types.js';
 import { FakeEmbedder } from './fake-embedder.js';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
 
 /**
  * Index readiness, driven through the entry point the gated search uses.
@@ -26,12 +27,13 @@ import { FakeEmbedder } from './fake-embedder.js';
  *
  *  1. It is not "the only path a user's query travels". /api/search/observations
  *     reaches SearchManager.searchObservations and /api/timeline/by-query
- *     reaches getTimelineByQuery; both run their own Chroma path
- *     (hybridSemanticHydrate) with NO readiness gate, falling back to keyword
- *     search only when the semantic answer comes back empty — which is exactly
- *     the failure this gate exists because a part-built index does NOT produce.
- *     /api/search/by-file is ungated too. Nothing here measures those; the gate
- *     does not cover them.
+ *     reaches getTimelineByQuery, and both run their own Chroma path
+ *     (hybridSemanticHydrate) rather than this one. Those two are now gated on
+ *     the same probe and memo, and the second describe block below measures
+ *     them through those two public methods. /api/search/by-file is still
+ *     ungated — SearchRoutes.handleSearchByFile goes to
+ *     SearchOrchestrator.findByFile and HybridSearchStrategy, neither of which
+ *     is touched here — and nothing below measures it.
  *  2. The MCP `search` tool does not always reach the worker at all: on a
  *     server-beta install, a plain text query for observations is routed to
  *     /v1/search and never touches SearchManager.
@@ -511,5 +513,243 @@ describe('search readiness against a partially built index', () => {
 
     expect(telemetry.search_strategy).toBe('fts');
     expect(new Set(result.observations.map((o: { id: number }) => o.id)).size).toBe(OBSERVATION_COUNT);
+  });
+});
+
+/**
+ * Observation ids as a caller reads them off the two sibling paths' rendered
+ * output: `| #12 |` in the FormattingService table searchObservations returns,
+ * `- ID: 12` in the list getTimelineByQuery returns. Read from the text those
+ * methods actually hand back, so the count asserted is the count a user sees.
+ */
+function idsInObservationTable(text: string): number[] {
+  return [...text.matchAll(/\|\s*#(\d+)\s*\|/g)].map((m) => Number(m[1]));
+}
+
+function idsInTimelineList(text: string): number[] {
+  return [...text.matchAll(/- ID:\s*(\d+)/g)].map((m) => Number(m[1]));
+}
+
+/**
+ * The gate on the OTHER two search paths, and the memo's blind spots.
+ *
+ * These do not go through SearchManager.search at all. /api/search/observations
+ * reaches searchObservations and /api/timeline/by-query reaches
+ * getTimelineByQuery; both call hybridSemanticHydrate, and both fall back to
+ * keyword search only when the semantic answer is EMPTY — which a part-built
+ * index does not produce. It answers from the slice it has, and the caller
+ * renders that as a success.
+ *
+ * Every case here drives one of those two public methods and counts the
+ * DISTINCT observation ids in the text it returns, because that is the quantity
+ * that goes wrong: rows the user has, missing from an answer reported as found.
+ * No case asserts a flag, a strategy label, or a coverage number.
+ */
+describe('readiness on the sibling search paths', () => {
+  let db: Database;
+  let store: SessionStore;
+  let search: SessionSearch;
+  let index: VectorIndex;
+  let manager: SearchManager;
+
+  const newManager = (idx: VectorIndex, sync?: VectorSync) => new SearchManager(
+    search,
+    store,
+    (sync ?? new VectorSync(idx)) as any,
+    new FormattingService(),
+    new TimelineService(),
+  );
+
+  beforeEach(() => {
+    // searchObservations renders through FormattingService, which asks
+    // ModeManager for a type icon; without a mode loaded that throws before any
+    // assertion is reached. The worker loads one at boot.
+    ModeManager.getInstance().loadMode('code');
+    db = new Database(':memory:');
+    db.run('PRAGMA foreign_keys = ON');
+    store = new SessionStore(db);
+    search = new SessionSearch(db);
+    seedCorpus(store, PROJECT);
+    index = new VectorIndex(db, new FakeEmbedder());
+    manager = newManager(index);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  /**
+   * DEFECT. Measured against the tree before this gate, with 1 of 20 rows
+   * indexed: searchObservations returned the header "Found 1 observation(s)
+   * matching "watermark"" and a single row, id 1. The other 19 rows the user
+   * has were absent from an answer that reported success — the same defect
+   * already fixed on SearchManager.search, on an endpoint that had not been
+   * fixed with it.
+   */
+  it('searchObservations returns every row the user has, not the slice already indexed', async () => {
+    const ids = observationIds(db, PROJECT);
+    await indexRows(index, db, [ids[0]]);
+
+    const response = await manager.searchObservations({ query: 'watermark', project: PROJECT, limit: 50 });
+    const returned = new Set(idsInObservationTable(response.content[0].text as string));
+
+    expect([...returned].sort((a, b) => a - b)).toEqual(ids);
+    expect(returned.size).toBe(OBSERVATION_COUNT);
+  });
+
+  /**
+   * DEFECT, the same one on the other endpoint. Measured against the tree
+   * before this gate, 1 of 20 indexed: getTimelineByQuery listed one match,
+   * id 1, and called it "Found 1 observation(s)".
+   */
+  it('getTimelineByQuery returns every row the user has, not the slice already indexed', async () => {
+    const ids = observationIds(db, PROJECT);
+    await indexRows(index, db, [ids[0]]);
+
+    const response = await manager.getTimelineByQuery({
+      query: 'watermark', project: PROJECT, mode: 'interactive', limit: 50,
+    });
+    const returned = new Set(idsInTimelineList(response.content[0].text as string));
+
+    expect([...returned].sort((a, b) => a - b)).toEqual(ids);
+    expect(returned.size).toBe(OBSERVATION_COUNT);
+  });
+
+  /**
+   * The other half of the gate: it has to STOP firing. A gate that always fell
+   * back would pass both cases above while turning semantic search off, so this
+   * counts the semantic queries the path issues — zero while the scope is
+   * incomplete (no embedding work spent on an answer that would be discarded),
+   * one once the backfill has finished.
+   *
+   * The first count is a reproduction, not a guard: against the tree before the
+   * gate it measured 1, the query whose partial answer the two cases above are
+   * about. The second is what keeps this from being satisfied by disabling
+   * semantic search.
+   */
+  it('spends no semantic query while incomplete, and resumes querying once indexed', async () => {
+    const sync = new VectorSync(index) as any;
+    const realQuery = sync.queryChroma.bind(sync);
+    let semanticQueries = 0;
+    sync.queryChroma = (...args: unknown[]) => { semanticQueries++; return realQuery(...args); };
+    const gated = newManager(index, sync);
+
+    await indexRows(index, db, [observationIds(db, PROJECT)[0]]);
+    await gated.searchObservations({ query: 'watermark', project: PROJECT, limit: 50 });
+    expect(semanticQueries).toBe(0);
+
+    await backfillToCompletion(db, index);
+    const response = await gated.searchObservations({ query: 'watermark', project: PROJECT, limit: 50 });
+    expect(semanticQueries).toBe(1);
+    expect(idsInObservationTable(response.content[0].text as string).length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * The memo's blind spots, driven through SearchManager.search.
+ *
+ * The memo answers "is this scope indexed" without rescanning while its
+ * counters stand still. Two edits move no counter: a vector deleted with no
+ * other write, and an in-place UPDATE that gives content to a row that had
+ * none. Both leave a scope genuinely short of coverage while it keeps reporting
+ * a complete semantic answer, and the assertions below are on the rows in that
+ * answer, not on the counters.
+ */
+describe('readiness memo staleness', () => {
+  let db: Database;
+  let store: SessionStore;
+  let search: SessionSearch;
+  let index: VectorIndex;
+  let manager: SearchManager;
+
+  const runSearch = async (args: Record<string, unknown> = {}) => {
+    const telemetry: Record<string, unknown> = {};
+    const result = await manager.search({
+      query: 'watermark', project: PROJECT, format: 'json', limit: 50, ...args,
+    }, telemetry);
+    return { result, telemetry, ids: new Set<number>(result.observations.map((o: { id: number }) => o.id)) };
+  };
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.run('PRAGMA foreign_keys = ON');
+    store = new SessionStore(db);
+    search = new SessionSearch(db);
+    seedCorpus(store, PROJECT);
+    index = new VectorIndex(db, new FakeEmbedder());
+    manager = new SearchManager(
+      search, store, new VectorSync(index) as any, new FormattingService(), new TimelineService(),
+    );
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  /**
+   * DEFECT. VectorBackfill.discardPartialRow deletes the committed slices of a
+   * row whose remaining slices threw, and that delete is frequently the only
+   * write in the window. MAX(parent.id) cannot fall, and MAX(vector.rowid) only
+   * falls if the deleted row happened to hold the top rowid — so a row in the
+   * MIDDLE of the table takes its vectors away without moving either counter.
+   *
+   * Measured against the tree before the count was added to the memo's
+   * counters, on a fully backfilled 20-row project: the next search reported
+   * search_strategy 'chroma' with fallback_reason 'none' and returned 19 rows,
+   * the emptied row's id absent.
+   */
+  it('notices a row whose vectors were deleted with no other write', async () => {
+    await backfillToCompletion(db, index);
+    expect((await runSearch()).ids.size).toBe(OBSERVATION_COUNT);
+
+    const ids = observationIds(db, PROJECT);
+    const emptied = ids[Math.floor(ids.length / 2)];
+    index.deleteByParent('observation', emptied);
+
+    // The state the assertion is about: one row of twenty carries no vector,
+    // and nothing else about the store has changed.
+    const withVectors = (db.prepare(
+      'SELECT COUNT(DISTINCT sqlite_id) AS n FROM vec_observation_docs',
+    ).get() as { n: number }).n;
+    expect(withVectors).toBe(OBSERVATION_COUNT - 1);
+
+    const after = await runSearch();
+    expect(after.ids.has(emptied)).toBe(true);
+    expect(after.ids.size).toBe(OBSERVATION_COUNT);
+  });
+
+  /**
+   * GUARD, not a reproduction — it passes against the unfixed tree too, which
+   * has the same TTL.
+   *
+   * What it pins is the bound this effort is claiming rather than closing. An
+   * in-place UPDATE that gives content to a doc-less row mints no id and writes
+   * no vector, so no counter moves and the memo keeps answering "complete" with
+   * that row missing from every semantic result. Measured, immediately after
+   * such an UPDATE, on BOTH trees: search_strategy 'chroma', fallback_reason
+   * 'none', the amended row's id absent. Only READINESS_TTL_MS ends that, and
+   * the comment on it states the window in those terms.
+   *
+   * Time is moved by ageing the memo entries, because there is no clock seam to
+   * inject one through and a test that slept a minute would not be run.
+   */
+  it('does not let a stale "complete" outlive the readiness TTL', async () => {
+    const amended = seedDocLessObservation(store, PROJECT, 1);
+    await backfillToCompletion(db, index);
+    expect((await runSearch()).ids.size).toBe(OBSERVATION_COUNT);
+
+    db.run('UPDATE observations SET narrative = ? WHERE id = ?', [
+      'a watermark bump skipped the amended row', amended,
+    ]);
+
+    const memo = (manager as unknown as {
+      scopeReadiness: Map<string, { takenAt: number }>;
+    }).scopeReadiness;
+    expect(memo.size).toBeGreaterThan(0);
+    for (const entry of memo.values()) entry.takenAt -= READINESS_TTL_MS + 1_000;
+
+    const after = await runSearch();
+    expect(after.ids.has(amended)).toBe(true);
+    expect(after.ids.size).toBe(OBSERVATION_COUNT + 1);
   });
 });

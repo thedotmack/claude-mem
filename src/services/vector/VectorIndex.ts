@@ -1,4 +1,4 @@
-import type { Database } from 'bun:sqlite';
+import type { Database, Statement } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
 import type { Embedder, IndexScope, VectorDoc, VectorDocKind, VectorHit, VectorQuery } from './types.js';
 import { VECTOR_TABLES, encodeEmbedding, ensureVectorSchema, hasColumn } from './schema.js';
@@ -7,6 +7,17 @@ import { logger } from '../../utils/logger.js';
 const BYTES_PER_FLOAT32 = 4;
 
 const PARENT_SAVEPOINT = 'vector_index_parent';
+
+/**
+ * Wraps one embedder call's worth of writes, with the per-parent savepoints
+ * nested inside it.
+ *
+ * A SAVEPOINT taken outside any transaction opens one, and only the OUTERMOST
+ * release commits — so the per-parent savepoints stop being per-parent commits
+ * and become what they read as: rollback points. Nesting is the whole trick;
+ * nothing about a parent's rollback changes.
+ */
+const SLICE_SAVEPOINT = 'vector_index_slice';
 
 /**
  * Documents handed to the embedder in one call.
@@ -82,6 +93,11 @@ export class VectorIndex {
    * writes run inside a SAVEPOINT, so a row whose parent vanished between the
    * embed and the write is rolled back and skipped instead of aborting the
    * whole batch. Vectors are removed with their parent by ON DELETE CASCADE.
+   *
+   * Those savepoints are nested inside one per slice (see writeSlice), so the
+   * unit of ROLLBACK stays the parent row while the unit of COMMIT becomes the
+   * slice. What a caller can still count on is unchanged: after this returns,
+   * every parent it reports is on disk whole, and no parent is on disk in part.
    */
   async upsert(kind: VectorDocKind, docs: VectorDoc[]): Promise<number> {
     if (docs.length === 0) return 0;
@@ -134,23 +150,7 @@ export class VectorIndex {
         else byParent.set(entry.doc.sqliteId, [{ entry, vector: vectors[i] }]);
       }
 
-      for (const [sqliteId, entries] of byParent) {
-        const committed = this.writeParent(kind, sqliteId, () => {
-          for (const { entry, vector } of entries) {
-            write.run(
-              entry.doc.docId,
-              entry.doc.sqliteId,
-              entry.doc.fieldType,
-              entry.doc.factIndex,
-              entry.hash,
-              this.embedder.modelId,
-              this.embedder.dims,
-              encodeEmbedding(vector),
-            );
-          }
-        });
-        if (committed) written += entries.length;
-      }
+      written += this.writeSlice(kind, byParent, write);
     }
     return written;
   }
@@ -186,6 +186,71 @@ export class VectorIndex {
       start = end;
     }
     return vectors;
+  }
+
+  /**
+   * Write one slice's parents under a single transaction.
+   *
+   * Nothing here awaits, which is what makes the transaction safe to open at
+   * all: the vectors are already in hand, so no other task on this connection
+   * can interleave a write into it and no live capture write is held behind it
+   * for longer than the writes themselves take.
+   *
+   * What it buys is commits. A savepoint taken with no transaction in progress
+   * starts one and releasing it ends one, so writeParent was committing once
+   * per parent row, each commit its own WAL append: counted off the WAL of a
+   * 20,000-row backfill, 20,125 commits against 242 with this savepoint around
+   * them. Nesting the per-parent savepoints inside this one leaves each parent
+   * its own rollback point and leaves the slice with one commit.
+   *
+   * The slice is RELEASED on the failure path too, not rolled back, because the
+   * per-parent commits this replaces left every parent that had already been
+   * written whole on disk. Rolling back here would discard them instead —
+   * batching the commits must not turn one row's failure into the loss of its
+   * neighbours. writeParent has already undone the failing parent by then, so
+   * what is released is whole rows only.
+   */
+  private writeSlice(
+    kind: VectorDocKind,
+    byParent: Map<number, Array<{ entry: StaleDoc; vector: Float32Array }>>,
+    write: Statement,
+  ): number {
+    let written = 0;
+    this.db.run(`SAVEPOINT ${SLICE_SAVEPOINT}`);
+    try {
+      for (const [sqliteId, entries] of byParent) {
+        const committed = this.writeParent(kind, sqliteId, () => {
+          for (const { entry, vector } of entries) {
+            write.run(
+              entry.doc.docId,
+              entry.doc.sqliteId,
+              entry.doc.fieldType,
+              entry.doc.factIndex,
+              entry.hash,
+              this.embedder.modelId,
+              this.embedder.dims,
+              encodeEmbedding(vector),
+            );
+          }
+        });
+        if (committed) written += entries.length;
+      }
+    } catch (error) {
+      // Best effort, and deliberately not allowed to replace the error the
+      // caller needs to see: a slice whose transaction SQLite already unwound
+      // has no savepoint left to release.
+      try {
+        this.db.run(`RELEASE ${SLICE_SAVEPOINT}`);
+      } catch (releaseError) {
+        logger.warn('VECTOR_INDEX', 'Could not release the slice savepoint', {
+          kind,
+          error: releaseError instanceof Error ? releaseError.message : String(releaseError),
+        });
+      }
+      throw error;
+    }
+    this.db.run(`RELEASE ${SLICE_SAVEPOINT}`);
+    return written;
   }
 
   private writeParent(kind: VectorDocKind, sqliteId: number, run: () => void): boolean {

@@ -193,7 +193,13 @@ const KIND_TO_DOC_TYPE: Record<VectorDocKind, string> = {
   prompt: 'user_prompt',
 };
 
-const DOC_TYPE_TO_KIND: Record<string, VectorDocKind> = {
+/**
+ * Chroma doc_type (what the semantic layer's filters and metadata speak) to the
+ * vector kind the index is keyed by. Exported because SearchManager's readiness
+ * gate asks the same question; a second copy of this mapping is a thing that can
+ * drift.
+ */
+export const DOC_TYPE_TO_KIND: Record<string, VectorDocKind> = {
   observation: 'observation',
   session_summary: 'summary',
   user_prompt: 'prompt',

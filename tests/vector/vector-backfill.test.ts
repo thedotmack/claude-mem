@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeAll } from 'bun:test';
+import { describe, it, expect, afterAll, beforeAll } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { VectorIndex } from '../../src/services/vector/VectorIndex.js';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { closeSync, existsSync, mkdtempSync, openSync, readSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { VectorBackfill, jsonArrayStrings } from '../../src/services/vector/VectorBackfill.js';
@@ -18,8 +18,8 @@ import type { Embedder } from '../../src/services/vector/types.js';
  * observation captured before v8 therefore has text and nothing else, and a
  * fixture without the column cannot see that those rows exist.
  */
-function createCorpusDb(): Database {
-  const db = new Database(':memory:');
+function createCorpusDb(path = ':memory:'): Database {
+  const db = new Database(path);
   db.run('PRAGMA foreign_keys = ON');
   db.run(`CREATE TABLE sdk_sessions (id INTEGER PRIMARY KEY, content_session_id TEXT,
           memory_session_id TEXT, project TEXT, platform_source TEXT)`);
@@ -1175,3 +1175,244 @@ describe('VectorIndex.countIndexed scoping', () => {
     ).rejects.toThrow(/not ready|still building|backfill/i);
   });
 });
+
+/**
+ * Regression: an indexing pass must not pay one durable COMMIT per parent row.
+ *
+ * VectorIndex writes each parent inside a SAVEPOINT so that one row's failure
+ * discards only that row. A savepoint taken with no transaction in progress
+ * OPENS one, and releasing it COMMITS — so every parent row was its own
+ * transaction, and a pass of ~170 rows was ~170 commits, each a WAL append the
+ * next row waited on. Measured here through runBatch() on a file-backed WAL
+ * store with the worker's own pragmas: 402 commits for these 400 rows before
+ * the slice savepoint, 5 after — that 5 being one per embedder call, which is
+ * one or two per pass.
+ *
+ * What it counts is COMMITS, and it says nothing about seconds on its own: a
+ * shared machine cannot be asserted against. The seconds those commits stand
+ * for were measured out of band, on this corpus shape at 20,000 rows / 120,000
+ * documents with the embedder stubbed out, the trees interleaved on one
+ * machine, median of sixteen runs each: 16.5s of CPU with the per-parent
+ * commits against 14.2s without them, over a wall clock of 26.1s against
+ * 23.4s. Neither the memory ceiling nor the atomicity those commits paid for
+ * moves with it — the describes above and below are what hold that.
+ *
+ * Commits are read from the WAL itself rather than from the SQL that was
+ * executed, so it holds an implementation that opens its transaction some other
+ * way: a frame header carries the database size after commit, and only a commit
+ * frame's is non-zero. Automatic checkpointing is off because a checkpoint
+ * recycles the frames being counted — the measurement's own setting, never the
+ * subject's.
+ *
+ * The document count is here to keep the ceiling honest: a pass that committed
+ * less by indexing less would satisfy it otherwise.
+ */
+describe('VectorBackfill commits per pass on a file-backed store', () => {
+  const ROWS = 400;
+  const FACTS_PER_ROW = 4;
+  const DOCS_PER_ROW = FACTS_PER_ROW + 2; // narrative + text + one per fact
+  /** Measured 402 before, 5 after. One per row is what this rules out. */
+  const COMMIT_CEILING = ROWS / 10;
+
+  let dir: string;
+  let commits: number;
+  let indexed: number;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'vector-commits-'));
+    const dbPath = join(dir, 'store.db');
+    const db = createCorpusDb(dbPath);
+    applyWorkerPragmas(db);
+    // Checkpointing would recycle the frames this test counts. It is the
+    // measurement's own setting; the code under test never sees it.
+    db.run('PRAGMA wal_autocheckpoint = 0');
+    seedNarrowRows(db, ROWS, FACTS_PER_ROW);
+
+    const index = new VectorIndex(db, new FakeEmbedder());
+    const backfill = new VectorBackfill(db, index);
+    // Counted as a DELTA across the drain: seeding the fixture and creating the
+    // vector tables commit too, and neither is what this is about.
+    const before = walCommitFrames(`${dbPath}-wal`);
+    await drain(backfill, index.modelId, 100);
+    commits = walCommitFrames(`${dbPath}-wal`) - before;
+
+    indexed = index.countIndexed('observation');
+    db.close();
+  }, 300_000);
+
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('does not commit once per parent row', () => {
+    expect(commits).toBeLessThan(COMMIT_CEILING);
+  });
+
+  it('still indexes every document behind those commits', () => {
+    expect(indexed).toBe(ROWS * DOCS_PER_ROW);
+  });
+});
+
+/**
+ * GUARD, not a defect test: it passes on the tree before the slice savepoint
+ * too, and it is here to keep the cheap way of removing those commits out.
+ *
+ * Batching a pass's commits is only worth having if a row is still all-or-
+ * nothing. The obvious way to batch them — one transaction per slice, rolled
+ * back when anything in it throws — costs exactly that: it discards the rows
+ * that had already been written WHOLE alongside the one that failed, which is
+ * strictly worse than the per-parent commits it replaces. Run against a tree
+ * whose slice rolls back instead of releasing, ONE case below goes red — the
+ * first, rows 1-4 reporting 0 documents each. The other two stay green there,
+ * which is the point of splitting them: discarding the whole slice satisfies
+ * both "the failing row has nothing" and "the failure was reported".
+ *
+ * The failure is injected at the write, part-way through the fifth row of a
+ * twelve-row slice, because that is the state the guarantee is about: some of
+ * that row's documents already written, the rest never to be. What must survive
+ * is every row before it, whole; what must not is any part of the row itself.
+ *
+ * Read back through a REOPENED connection. A savepoint that is never released
+ * holds its writes in an open transaction that looks identical from inside the
+ * process and is discarded when the connection closes, so asserting on the live
+ * connection would report a transaction that never committed as durable.
+ */
+describe('VectorBackfill when a row fails part-way through a batch', () => {
+  const ROWS = 12;
+  const FAIL_ROW = 5;
+  const FACTS_PER_ROW = 4;
+  const DOCS_PER_ROW = FACTS_PER_ROW + 2;
+  /** Row 5's third document: two of its own already written, four to come. */
+  const FAIL_AT_WRITE = (FAIL_ROW - 1) * DOCS_PER_ROW + 3;
+
+  let dir: string;
+  let rejected = false;
+  let docsPerRow: Map<number, number>;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'vector-atomicity-'));
+    const dbPath = join(dir, 'store.db');
+    const db = createCorpusDb(dbPath);
+    applyWorkerPragmas(db);
+    seedNarrowRows(db, ROWS, FACTS_PER_ROW);
+
+    const failing = failingVectorWriteDb(db, FAIL_AT_WRITE);
+    const index = new VectorIndex(failing, new FakeEmbedder());
+    const backfill = new VectorBackfill(failing, index);
+    await backfill.runBatch(['observation']).then(
+      () => { rejected = false; },
+      () => { rejected = true; },
+    );
+    db.close();
+
+    const reopened = new Database(dbPath);
+    docsPerRow = new Map(
+      (reopened.prepare(
+        'SELECT sqlite_id AS id, COUNT(*) AS n FROM vec_observation_docs GROUP BY sqlite_id',
+      ).all() as { id: number; n: number }[]).map((row) => [Number(row.id), Number(row.n)]),
+    );
+    reopened.close();
+  }, 300_000);
+
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('keeps every row that was written whole before the failure', () => {
+    for (let id = 1; id < FAIL_ROW; id++) {
+      expect(docsPerRow.get(id) ?? 0).toBe(DOCS_PER_ROW);
+    }
+  });
+
+  it('leaves the failing row with none of its documents', () => {
+    expect(docsPerRow.get(FAIL_ROW) ?? 0).toBe(0);
+  });
+
+  it('reports the failure rather than swallowing it', () => {
+    expect(rejected).toBe(true);
+  });
+});
+
+/** The worker's connection settings, as applySqliteConnectionPragmas sets them. */
+function applyWorkerPragmas(db: Database): void {
+  db.run('PRAGMA busy_timeout = 5000');
+  db.run('PRAGMA foreign_keys = ON');
+  db.run('PRAGMA synchronous = NORMAL');
+  db.run('PRAGMA journal_size_limit = 4194304');
+  db.run('PRAGMA journal_mode = WAL');
+}
+
+/** Rows of ordinary width: the shape almost all of a real corpus has. */
+function seedNarrowRows(db: Database, rows: number, factsPerRow: number): void {
+  const obs = insertObs(db);
+  for (let i = 1; i <= rows; i++) {
+    obs.run(i, 'ms-1', 'alpha', null,
+      `flat capture ${i} about a stale lease held past its expiry`,
+      `narrative ${i} about two writers landing on one row`,
+      JSON.stringify(Array.from({ length: factsPerRow },
+        (_, f) => `fact ${f} of row ${i}: the retry re-read the row, not the snapshot`)),
+      Date.now());
+  }
+}
+
+/**
+ * Commit frames in a WAL file.
+ *
+ * Frame header bytes 4-7 hold the database size in pages after the commit, and
+ * are zero on every frame that is not one — so this counts transactions that
+ * actually reached the file, whatever SQL opened them.
+ */
+function walCommitFrames(walPath: string): number {
+  if (!existsSync(walPath)) return 0;
+  const size = statSync(walPath).size;
+  if (size < 32) return 0;
+  const fd = openSync(walPath, 'r');
+  try {
+    const header = Buffer.alloc(32);
+    readSync(fd, header, 0, 32, 0);
+    const frameBytes = 24 + header.readUInt32BE(8); // page size follows the salt
+    const frameHeader = Buffer.alloc(24);
+    let commits = 0;
+    for (let at = 32; at + frameBytes <= size; at += frameBytes) {
+      readSync(fd, frameHeader, 0, 24, at);
+      if (frameHeader.readUInt32BE(4) !== 0) commits++;
+    }
+    return commits;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * A connection whose Nth vector write throws, and which is otherwise the real
+ * one.
+ *
+ * The failure has to land at the write to be the failure this is about: a
+ * throwing embedder fails a whole slice before any of it is written, which is
+ * not a row half-written. `db.query` returns a cached statement for SQL it has
+ * seen before, hence the WeakSet — wrapping one twice would count an execution
+ * more than once and fire on the wrong write.
+ */
+function failingVectorWriteDb(db: Database, failAt: number): Database {
+  let writes = 0;
+  const wrapped = new WeakSet<object>();
+
+  const wrap = (stmt: Record<string, unknown>, sql: string) => {
+    if (!/INSERT INTO vec_observation_docs/.test(sql) || wrapped.has(stmt)) return stmt;
+    wrapped.add(stmt);
+    const original = stmt.run as (...args: unknown[]) => unknown;
+    stmt.run = (...args: unknown[]) => {
+      writes++;
+      if (writes === failAt) throw new Error('injected write failure');
+      return original.apply(stmt, args);
+    };
+    return stmt;
+  };
+
+  return new Proxy(db, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (prop === 'query' || prop === 'prepare') {
+        return (sql: string, ...rest: unknown[]) =>
+          wrap((value as (...a: unknown[]) => Record<string, unknown>).call(target, sql, ...rest), sql);
+      }
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) as unknown as Database;
+}
