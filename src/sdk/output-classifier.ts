@@ -65,7 +65,7 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
   }
 
   const negatedExhaustion =
-    /\b(?:not|never|didn['’]t|hasn['’]t|haven['’]t|isn['’]t|wasn['’]t)\s+(?:been\s+)?(?:hit|reached|exceeded|exhausted)\b/.test(text);
+    /\b(?:not|never|didn['’]t|hasn['’]t|haven['’]t|isn['’]t|wasn['’]t)\s+(?:yet\s+)?(?:been\s+)?(?:hit|reached|exceeded|exhausted)\b/.test(text);
   if (negatedExhaustion) {
     return false;
   }

@@ -90,6 +90,7 @@ describe('isQuotaLimitedObserverOutput', () => {
   it('does not treat negated monthly spend-limit prose as exhaustion', () => {
     const negatedMessages = [
       'You have not hit your monthly spend limit.',
+      'You have not yet hit your monthly spend limit.',
       'Your monthly spend limit has not been reached.',
     ];
 
