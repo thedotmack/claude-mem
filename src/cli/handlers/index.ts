@@ -5,6 +5,7 @@ import { isWorkerUnavailableError } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { contextHandler } from './context.js';
 import { sessionInitHandler } from './session-init.js';
+import { hasInjected, markInjected } from '../../shared/kimi-context-gate.js';
 import { observationHandler } from './observation.js';
 import { summarizeHandler } from './summarize.js';
 import { sessionEndHandler } from './session-end.js';
@@ -37,9 +38,40 @@ export const sessionInitContextHandler: EventHandler = {
       });
     }
 
+    const semanticContext = sessionInitResult?.hookSpecificOutput?.additionalContext;
+
+    // Kimi fires this composite on EVERY UserPromptSubmit (SessionStart stdout
+    // is not appended by Kimi, so injection had to move here). Gate the
+    // timeline fetch to once per session; summarizeHandler clears the marker
+    // on kimi PreCompact so the first prompt after compaction re-injects.
+    // The composite is only wired for kimi, but guard on platform anyway so a
+    // future non-kimi wiring is not silently gated.
+    if (input.platform === 'kimi' && input.sessionId && hasInjected(input.sessionId)) {
+      logger.debug('HOOK', 'session-init-context: timeline already injected this session, skipping context fetch', {
+        sessionId: input.sessionId,
+      });
+      if (!semanticContext) {
+        return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+      }
+      return {
+        continue: true,
+        suppressOutput: true,
+        hookSpecificOutput: {
+          hookEventName: 'UserPromptSubmit',
+          additionalContext: semanticContext,
+        },
+      };
+    }
+
     const contextResult = await contextHandler.execute(input);
 
-    const semanticContext = sessionInitResult?.hookSpecificOutput?.additionalContext;
+    // Mark only when a non-empty timeline was actually emitted — a worker
+    // outage (empty fallback) must not burn the session's one-shot.
+    const injectedTimeline = contextResult.hookSpecificOutput?.additionalContext;
+    if (input.platform === 'kimi' && input.sessionId && typeof injectedTimeline === 'string' && injectedTimeline.length > 0) {
+      markInjected(input.sessionId);
+    }
+
     if (!semanticContext) {
       return contextResult;
     }

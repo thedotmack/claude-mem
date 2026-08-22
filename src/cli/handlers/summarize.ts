@@ -11,6 +11,7 @@ import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
+import { clearInjected } from '../../shared/kimi-context-gate.js';
 import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
 import type { ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
 import { isServerClientError } from '../../services/hooks/server-client.js';
@@ -78,6 +79,14 @@ export const summarizeHandler: EventHandler = {
     if (!sessionId) {
       logger.warn('HOOK', 'summarize: No sessionId provided, skipping');
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
+    // Kimi PreCompact (and Stop) route here. Clear the once-per-session
+    // injection marker BEFORE any early return below: even when there is
+    // nothing to summarize, the first prompt after a compaction must
+    // re-inject a fresh timeline (see src/shared/kimi-context-gate.ts).
+    if (input.platform === 'kimi') {
+      clearInjected(sessionId);
     }
 
     let lastAssistantMessage = '';
