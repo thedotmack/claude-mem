@@ -15,6 +15,8 @@ interface TailState {
 class FileTailer {
   private watcher: ReturnType<typeof fsWatch> | null = null;
   private tailState: TailState;
+  private reading = false;
+  private readQueued = false;
 
   constructor(
     private filePath: string,
@@ -42,7 +44,30 @@ class FileTailer {
     this.readNewData().catch(() => undefined);
   }
 
+  /**
+   * Serialized read entry point. A notification or poke received while a read
+   * is still dispatching lines (and has not yet committed its offset) would
+   * otherwise start a second read from the same offset, duplicating side
+   * effects. Instead the re-entrant call is coalesced and re-runs after the
+   * current pass commits, so each byte range is dispatched exactly once.
+   */
   private async readNewData(): Promise<void> {
+    if (this.reading) {
+      this.readQueued = true;
+      return;
+    }
+    this.reading = true;
+    try {
+      do {
+        this.readQueued = false;
+        await this.readNewDataOnce();
+      } while (this.readQueued);
+    } finally {
+      this.reading = false;
+    }
+  }
+
+  private async readNewDataOnce(): Promise<void> {
     if (!existsSync(this.filePath)) return;
 
     let size = 0;
@@ -123,13 +148,18 @@ class FileTailer {
       try {
         plain = decompressZstdFrame(buffer, frame);
       } catch (error: unknown) {
-        logger.warn('TRANSCRIPT', 'Failed to decompress zstd transcript frame', {
+        // Stop at the first failed complete frame instead of skipping it. The
+        // durable offset only advances through the last consecutively decoded
+        // frame, so a corrupted frame is retried on the next change event
+        // rather than being permanently skipped (its events would otherwise be
+        // silently lost once a later frame advanced the offset past it).
+        logger.warn('TRANSCRIPT', 'Failed to decompress zstd transcript frame; retrying on next change', {
           file: this.filePath,
           start: frame.start,
           end: frame.end,
           error: error instanceof Error ? error.message : String(error)
         });
-        continue;
+        break;
       }
 
       const combined = this.tailState.partial + plain;

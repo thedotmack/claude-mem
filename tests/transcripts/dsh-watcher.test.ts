@@ -7,6 +7,8 @@ import type { NormalizedHookInput } from '../../src/cli/types.js';
 import type { TranscriptSchema, WatchTarget } from '../../src/services/transcripts/types.js';
 
 const sessionInitCalls: NormalizedHookInput[] = [];
+/** Optional per-dispatch delay so tests can hold a read in-flight. */
+let handlerDelayMs = 0;
 
 // Snapshot the real module BEFORE mock.module mutates the live namespace, then
 // re-register it in afterAll (same pattern as watcher-start-at-end.test.ts).
@@ -17,6 +19,9 @@ mock.module('../../src/cli/handlers/session-init.js', () => ({
   sessionInitHandler: {
     execute: async (input: NormalizedHookInput) => {
       sessionInitCalls.push(input);
+      if (handlerDelayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, handlerDelayMs));
+      }
       return { continue: true, suppressOutput: true };
     },
   },
@@ -131,5 +136,93 @@ describe('TranscriptWatcher zstd (DSH session logs)', () => {
     const prompts = sessionInitCalls.map(call => call.prompt);
     expect(prompts.filter(p => p === 'already seen')).toHaveLength(1);
     expect(prompts.filter(p => p === 'brand new')).toHaveLength(1);
+  });
+
+  it('does not advance the offset past a corrupt frame; retries it on the next change', async () => {
+    const sessionId = 'c3a94b21-1111-2222-3333-444455556666';
+    const sessionDir = join(tmpRoot, `session-${sessionId}`);
+    mkdirSync(sessionDir, { recursive: true });
+    const filePath = join(sessionDir, 'session.jsonl.zstd');
+    const statePath = join(tmpRoot, 'state.json');
+
+    // Structurally complete frame with a wrong checksum: scanZstdFrames
+    // locates it, but zstdDecompressSync rejects it.
+    const corruptFrame = () => {
+      const b = Buffer.alloc(21);
+      b.writeUInt32LE(0xfd2fb528, 0); // magic
+      b.writeUInt8(0x24, 4); // descriptor: single-segment + checksum
+      b.writeUInt8(8, 5); // frame content size = 8
+      b.writeUIntLE(0x41, 6, 3); // block header: last(1) + raw(0) + size 8
+      b.fill(0xab, 9, 17); // 8 payload bytes
+      b.fill(0xff, 17, 21); // wrong 4-byte checksum
+      return b;
+    };
+
+    const goodFrameA = zstdFrame([userMessageEvent(0, 'before corrupt')]);
+    const goodFrameC = zstdFrame([userMessageEvent(2, 'after corrupt')]);
+
+    const watch: WatchTarget = {
+      name: 'dsh',
+      path: join(tmpRoot, '**', '*.jsonl.zstd'),
+      schema: dshSchema,
+    };
+    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+
+    // Frame A (valid) + corrupt frame + frame C (valid).
+    writeFileSync(filePath, Buffer.concat([goodFrameA, corruptFrame(), goodFrameC]));
+    await (watcher as any).addTailer(filePath, watch, dshSchema);
+    await waitForAsyncTail();
+
+    // Frame A dispatched; frame C withheld because the corrupt frame stops the
+    // pass, and the durable offset never advances past it.
+    expect(sessionInitCalls.map(call => call.prompt)).toContain('before corrupt');
+    expect(sessionInitCalls.map(call => call.prompt)).not.toContain('after corrupt');
+    const offsets = JSON.parse((await import('fs')).readFileSync(statePath, 'utf8')).offsets as Record<string, number>;
+    expect(offsets[filePath]).toBe(goodFrameA.length);
+
+    // Rewrite with a valid frame in place of the corrupt one: the withheld
+    // event is now replayed, and the offset advances to the end of the file.
+    writeFileSync(filePath, Buffer.concat([goodFrameA, goodFrameC]));
+    (watcher as any).tailers.get(filePath)?.poke();
+    await waitForAsyncTail();
+    watcher.stop();
+
+    expect(sessionInitCalls.map(call => call.prompt)).toContain('after corrupt');
+    expect(sessionInitCalls.filter(c => c.prompt === 'before corrupt')).toHaveLength(1);
+    const finalOffsets = JSON.parse((await import('fs')).readFileSync(statePath, 'utf8')).offsets as Record<string, number>;
+    expect(finalOffsets[filePath]).toBe(goodFrameA.length + goodFrameC.length);
+  });
+
+  it('coalesces a poke received mid-read instead of dispatching twice', async () => {
+    const sessionId = 'f7b21c33-4444-5555-6666-777788889999';
+    const sessionDir = join(tmpRoot, `session-${sessionId}`);
+    mkdirSync(sessionDir, { recursive: true });
+    const filePath = join(sessionDir, 'session.jsonl.zstd');
+    const statePath = join(tmpRoot, 'state.json');
+
+    const watch: WatchTarget = {
+      name: 'dsh',
+      path: join(tmpRoot, '**', '*.jsonl.zstd'),
+      schema: dshSchema,
+    };
+    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+
+    writeFileSync(filePath, zstdFrame([userMessageEvent(0, 'only once')]));
+
+    // Hold the first dispatch in-flight so the poke lands mid-read.
+    handlerDelayMs = 150;
+    try {
+      await (watcher as any).addTailer(filePath, watch, dshSchema);
+      await waitForAsyncTail();
+      (watcher as any).tailers.get(filePath)?.poke();
+      await waitForAsyncTail();
+      // Let the second (coalesced) pass finish if one started.
+      await new Promise(resolve => setTimeout(resolve, 300));
+    } finally {
+      handlerDelayMs = 0;
+    }
+    watcher.stop();
+
+    expect(sessionInitCalls.filter(c => c.prompt === 'only once')).toHaveLength(1);
   });
 });
