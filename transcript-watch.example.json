@@ -99,6 +99,56 @@
           "action": "session_end"
         }
       ]
+    },
+    "dsh": {
+      "name": "dsh",
+      "version": "0.1",
+      "description": "Schema for DeepSeek Harness (DSH) session logs under ~/.dsh/sessions.",
+      "events": [
+        {
+          "name": "session-meta",
+          "match": { "path": "type", "equals": "session" },
+          "action": "session_context",
+          "fields": {
+            "cwd": "cwd"
+          }
+        },
+        {
+          "name": "user-message",
+          "match": { "path": "type", "equals": "user/message" },
+          "action": "user_message",
+          "fields": {
+            "message": "data.content[0].text"
+          }
+        },
+        {
+          "name": "assistant-message",
+          "match": { "path": "type", "equals": "assistant/message" },
+          "action": "assistant_message",
+          "fields": {
+            "message": "data.message.content"
+          }
+        },
+        {
+          "name": "tool-use",
+          "match": { "path": "type", "equals": "tool/call" },
+          "action": "tool_use",
+          "fields": {
+            "toolId": "data.callId",
+            "toolName": "data.name",
+            "toolInput": "data.arguments"
+          }
+        },
+        {
+          "name": "tool-result",
+          "match": { "path": "type", "equals": "tool/result" },
+          "action": "tool_result",
+          "fields": {
+            "toolId": "data.message.content[0].toolCallId",
+            "toolResponse": "data.message.content[0].content[0].text"
+          }
+        }
+      ]
     }
   },
   "watches": [
@@ -107,6 +157,11 @@
       "path": "~/.codex/sessions/**/*.jsonl",
       "schema": "codex",
       "startAtEnd": true
+    },
+    {
+      "name": "dsh",
+      "path": "~/.dsh/sessions",
+      "schema": "dsh"
     }
   ],
   "stateFile": "~/.claude-mem/transcript-watch-state.json"
