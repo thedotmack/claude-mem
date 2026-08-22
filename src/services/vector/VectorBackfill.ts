@@ -39,17 +39,42 @@ const MAX_CHARS_PER_BATCH = MAX_EMBED_CHARS;
  * RSS of a run is 190-200MB against 385-420MB when the row was rendered whole
  * (a fresh process, 22MB before it opened the store). What
  * the piece removes is a JS copy of the column and a live copy of every
- * document in it. Any column at or under this width is read in a single query,
- * which is every ordinary row.
+ * document in it. This is the path a column too wide for the eager read takes;
+ * an ordinary row never reaches it, having arrived whole already.
  */
 const FACTS_CHUNK_CHARS = MAX_EMBED_CHARS;
 
 /**
+ * Characters of any one content column taken in a row's single eager read.
+ *
+ * This read is SPECULATIVE — every column of every row, whether or not it turns
+ * out to be small — so its width is what a wrong guess costs, not what a right
+ * one is allowed to be. Far below the slice for that reason: at 64Ki a column
+ * that overshoots wastes a 64KB read before falling back to the path it would
+ * have taken anyway, where at slice width the same overshoot wasted 4MB and
+ * measurably raised the peak of a 100MB row. Wide enough that ordinary content
+ * never overshoots: the widest thing an observation carries is its facts array,
+ * a few KB of short strings.
+ *
+ * The read asks for one character MORE than this, so a value that comes back at
+ * the full width is known to have been cut rather than merely to have ended
+ * there.
+ */
+const EAGER_READ_CHARS = 64 * 1024;
+
+/**
  * Content columns per kind, in the order their documents are emitted.
  *
- * Read one at a time rather than as one SELECT: a row's columns are the very
- * things that can be large, and naming them together materialises all of them
- * before the first can be embedded and released.
+ * A row's columns are read TOGETHER, in one statement, each cut at
+ * EAGER_READ_CHARS. Reading them one query at a time instead bounded the same
+ * bytes but charged every row a primary-key lookup per column plus a schema
+ * probe — a cost only the rare wide row should pay, levied on the ordinary
+ * narrow ones that are almost all of a corpus. Measured on 20,000 rows /
+ * 120,000 documents with the embedder stubbed out, the two trees interleaved on
+ * one machine, median of six runs: 12.9s per column against 11.9s for this, and
+ * 6.7s against 5.9s of user CPU. A column that did come back cut is then read
+ * on its own, which is the wide-row path unchanged — it is just no longer the
+ * path every row takes.
  */
 const SCALAR_COLUMNS: Record<VectorDocKind, { table: string; columns: string[] }> = {
   observation: { table: 'observations', columns: ['narrative', 'text'] },
@@ -71,6 +96,17 @@ interface PassResult {
   processed: number;
   embedded: number;
   lastId: number | null;
+}
+
+/** This store's shape for one kind, settled once per pass rather than per row. */
+interface RowPlan {
+  table: string;
+  /** Scalar content columns this store actually has, in emit order. */
+  columns: string[];
+  /** Whether fact documents are renderable — observations, with the column. */
+  facts: boolean;
+  /** Reads one row's content: every column, cut, in a single statement. */
+  sql: string;
 }
 
 /**
@@ -176,7 +212,7 @@ export class VectorBackfill {
    * overshoot costs a slice of memory rather than the row's weight.
    */
   private async runPass(kind: VectorDocKind, modelId: string): Promise<PassResult> {
-    const columns = this.scalarColumns(kind);
+    const plan = this.planFor(kind);
     const buffer = new SliceBuffer(this.index, kind);
     let processed = 0;
     let chars = 0;
@@ -186,7 +222,7 @@ export class VectorBackfill {
       for (const id of this.pendingIds(kind, modelId)) {
         if (processed >= MAX_DOCS_PER_BATCH || chars >= MAX_CHARS_PER_BATCH) break;
         buffer.openRow(id);
-        for (const doc of this.rowDocs(kind, id, columns)) {
+        for (const doc of this.rowDocs(kind, id, plan)) {
           processed++;
           chars += doc.text.length;
           await buffer.add(doc);
@@ -233,17 +269,31 @@ export class VectorBackfill {
   }
 
   /**
-   * Content columns this store actually has, for this kind.
+   * What one pass needs to know about this store's shape, worked out once.
    *
    * Columns are probed rather than assumed. observations.text is in the BASE
    * table while narrative/facts only arrive at schema v8, so BOTH halves can be
    * absent depending on how old the store is, and reading a missing column is a
    * hard SQL error that would abort the whole migration. Probed once per pass:
-   * the answer cannot change under a running process.
+   * the answer cannot change under a running process, and asking again per row
+   * — which is what the facts probe used to do — costs an uncached statement
+   * compile and a table_info scan on every row of the corpus.
    */
-  private scalarColumns(kind: VectorDocKind): string[] {
+  private planFor(kind: VectorDocKind): RowPlan {
     const { table, columns } = SCALAR_COLUMNS[kind];
-    return columns.filter((column) => hasColumn(this.db, table, column));
+    const present = columns.filter((column) => hasColumn(this.db, table, column));
+    const facts = kind === 'observation' && hasColumn(this.db, 'observations', 'facts');
+    // One character past the cut, so a value returned at full width is known to
+    // be longer than the cut rather than merely equal to it.
+    const width = EAGER_READ_CHARS + 1;
+    const selected = present.map((column, at) => `substr(${column}, 1, ${width}) AS c${at}`);
+    if (facts) selected.push(`substr(facts, 1, ${width}) AS facts`);
+    return {
+      table,
+      columns: present,
+      facts,
+      sql: `SELECT ${selected.join(', ')} FROM ${table} WHERE id = ?`,
+    };
   }
 
   /**
@@ -251,12 +301,19 @@ export class VectorBackfill {
    *
    * A generator rather than an array: the caller embeds and releases each slice
    * before pulling the next document, which is the whole point — a row with
-   * 100MB of facts is never a 100MB array of documents.
+   * 100MB of facts is never a 100MB array of documents. The row's content
+   * arrives in ONE statement, each column cut at EAGER_READ_CHARS, so the
+   * ordinary row costs one lookup and still cannot hand back more than a slice
+   * per column; only a column that came back cut is read again on its own.
    */
-  private *rowDocs(kind: VectorDocKind, id: number, columns: string[]): Generator<VectorDoc> {
-    const { table } = SCALAR_COLUMNS[kind];
-    for (const column of columns) {
-      const value = this.readColumn(table, column, id);
+  private *rowDocs(kind: VectorDocKind, id: number, plan: RowPlan): Generator<VectorDoc> {
+    if (plan.columns.length === 0 && !plan.facts) return;
+    const row = this.db.query(plan.sql).get(id) as Record<string, unknown> | undefined;
+    if (!row) return;
+
+    for (let at = 0; at < plan.columns.length; at++) {
+      const column = plan.columns[at];
+      const value = this.whole(plan.table, column, id, row[`c${at}`]);
       if (!value) continue;
       yield {
         docId: scalarDocId(kind, id, column),
@@ -266,22 +323,46 @@ export class VectorBackfill {
         text: value,
       };
     }
-    if (kind === 'observation') yield* this.factDocs(id);
+    if (plan.facts) yield* this.factDocs(id, row.facts);
+  }
+
+  /**
+   * The eagerly read piece when it IS the whole value, else the value read on
+   * its own.
+   *
+   * A cut piece is discarded rather than stitched onto: a scalar column becomes
+   * exactly one document, so it has to be whole before it can be embedded at
+   * all, and re-reading it costs what reading it always cost.
+   */
+  private whole(table: string, column: string, id: number, piece: unknown): string | null {
+    if (piece === null || piece === undefined) return null;
+    const text = String(piece);
+    // UTF-16 length only ever OVERSTATES the characters SQLite counted, so this
+    // can send a value that just fits down the re-read path — never keep a cut
+    // one.
+    if (text.length <= EAGER_READ_CHARS) return text;
+    return this.readColumn(table, column, id);
   }
 
   /**
    * The fact documents of one observation.
    *
    * facts is a JSON array column, and it is the column that gets large: it is
-   * read in pieces and split into elements a piece at a time, so what this
-   * process holds is one piece and one document rather than the blob and every
-   * document it renders to. A malformed value degrades to "this row has no fact
-   * documents" rather than stalling the whole backfill.
+   * split into elements a piece at a time, so what this process holds is one
+   * piece and one document rather than the blob and every document it renders
+   * to. `piece` is the eager read of the column: when it is the whole value —
+   * which it is for every row whose facts fit in EAGER_READ_CHARS — the split
+   * runs off it with no further query, and when it came back cut the pieces are read from
+   * the column as before, first piece included. A malformed value degrades to
+   * "this row has no fact documents" rather than stalling the whole backfill.
    */
-  private *factDocs(id: number): Generator<VectorDoc> {
-    if (!hasColumn(this.db, 'observations', 'facts')) return;
-    const read = (offset: number, width: number): string =>
-      this.readColumnSlice('observations', 'facts', id, offset, width);
+  private *factDocs(id: number, piece: unknown): Generator<VectorDoc> {
+    if (piece === null || piece === undefined) return;
+    const eager = String(piece);
+    const read = eager.length <= EAGER_READ_CHARS
+      ? readerOver(eager)
+      : (offset: number, width: number): string =>
+          this.readColumnSlice('observations', 'facts', id, offset, width);
     for (const { index, text } of jsonArrayStrings(read)) {
       yield {
         docId: `obs_${id}_fact_${index}`,
@@ -580,6 +661,31 @@ function elementEnd(source: string, from: number): number {
     if (code === 0x2c && depth === 0) return at;                // ,
   }
   return -1;
+}
+
+/**
+ * Serves a value already in hand the way readColumnSlice serves one still in
+ * the column: 1-based, counted in code points, short at the end.
+ *
+ * The splitter is the same either way. What changes is only where the pieces
+ * come from, so a column narrow enough to have been read whole costs no
+ * further query while a wide one keeps paying per piece.
+ */
+function readerOver(value: string): (offset: number, width: number) => string {
+  return (offset, width) => {
+    const from = utf16IndexOf(value, offset - 1);
+    return value.slice(from, utf16IndexOf(value, offset - 1 + width));
+  };
+}
+
+/** UTF-16 index of code point number `count`, or the end of `value`. */
+function utf16IndexOf(value: string, count: number): number {
+  let at = 0;
+  for (let seen = 0; seen < count && at < value.length; seen++) {
+    const code = value.charCodeAt(at);
+    at += code >= 0xd800 && code <= 0xdbff && at + 1 < value.length ? 2 : 1;
+  }
+  return at;
 }
 
 /**

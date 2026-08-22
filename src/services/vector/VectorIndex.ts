@@ -280,11 +280,26 @@ export class VectorIndex {
    * top-K exactly — same hits, same order.
    */
   async query(q: VectorQuery): Promise<VectorHit[]> {
-    // A non-positive limit asks for no hits; nothing below would keep one.
-    // Checked before embedding so it costs nothing either.
-    if (!(q.limit > 0)) return [];
+    // Derive the capacity FIRST and guard on that same number, because the
+    // guard and the cap disagreeing is how a fractional limit crashed: 0.5
+    // passed `q.limit > 0` and then floored to a TopHits of capacity 0, whose
+    // wouldKeep reads hits[hits.length - 1] on an empty array. Guarding on the
+    // floored value keeps every input out of that state.
+    //
+    // `limit` counts hits, so a fractional one is worth floor(limit) of them —
+    // the same count Array.slice(0, limit) returned in the unbounded scan this
+    // replaced, for every non-negative input including Infinity (no cap: every
+    // hit in scope, ranked) and NaN (none). The parity tests in
+    // tests/vector/vector-search-memory.test.ts compare against that scan
+    // directly. Negative limits are the one deliberate divergence: slice(0, -1)
+    // counted from the END and returned all but the last hit, which is not what
+    // asking for -1 hits means; a negative limit asks for nothing and gets it.
+    //
+    // Checked before embedding so a query that keeps nothing costs nothing.
+    const capacity = Math.floor(q.limit);
+    if (!(capacity > 0)) return [];
     const [probe] = await this.embedder.embed([q.text]);
-    const best = new TopHits(Math.floor(q.limit));
+    const best = new TopHits(capacity);
     const expectedBytes = probe.length * BYTES_PER_FLOAT32;
     // One decode buffer for the whole scan, refilled per row.
     //
@@ -405,6 +420,12 @@ export class VectorIndex {
  * Insertion is a binary search plus a splice over an array of at most K, which
  * for the K search asks for (100 candidates) is cheaper than sorting the whole
  * candidate set was.
+ *
+ * `capacity` must be at least 1 — a positive integer, or Infinity for a query
+ * that asked for no cap. query() is the only place this class is constructed,
+ * and it derives the capacity and its own return-empty guard from one value so
+ * that a capacity below 1 never reaches here; at 0, wouldKeep would read
+ * hits[-1].
  */
 class TopHits {
   private readonly hits: VectorHit[] = [];

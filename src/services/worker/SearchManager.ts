@@ -37,29 +37,69 @@ export interface SearchTelemetryEnvelope {
 }
 
 /**
- * How much of a scope the vector index must cover before its answer is taken as
- * the answer.
+ * Content columns whose non-emptiness makes a parent row INDEXABLE — that is,
+ * a row the backfill will render at least one document from.
  *
- * Deliberately not 1.0, and the gap is not slack. A parent row that renders to
- * no document at all — an observation carrying only a title and concepts, a
- * session_summaries row with all six text fields NULL, a user_prompts row
- * holding '' — is never given a vector, and VectorBackfill is built around
- * exactly that: its cursor exists so those rows are passed over once, and
- * isComplete() reports done with them still vectorless. An equality test
- * against the row count could therefore never become true on a corpus holding
- * one, and every search over a fully built index would answer from keyword
- * search forever.
+ * These are VectorBackfill's own rendering rules (SCALAR_COLUMNS, plus the
+ * facts array observations render one document per non-empty string from),
+ * restated because they are private to that module. The live-capture writer,
+ * VectorSync, renders the same document families from the same fields under the
+ * same emptiness test, so a row carrying none of this content — an observation
+ * with only a title and concepts, a session_summaries row with all six text
+ * fields NULL, a user_prompts row holding '' — gets a vector from neither
+ * writer. Readiness has to be able to tell those apart from rows that simply
+ * have not been reached yet.
  *
- * 0.9 leaves room for that residue while still catching the state this guard
- * exists for. During the one-time backfill a scope climbs from 0 through the
- * whole range, and the reading that provoked this — 1 row indexed of 20 — is
- * 0.05. The two errors are not symmetric, which is why the floor sits high:
- * fall back too eagerly and the user gets keyword hits on rows that exist; fail
- * to fall back and the user is told rows they have do not exist. The stated
- * limitation is the other end of the same trade — a corpus where more than a
- * tenth of its rows render to no document stays on keyword search permanently.
+ * Restating rules invites drift, so the direction that drift can break in is
+ * the one pinned by test: a column named here that the backfill does NOT
+ * render would leave its rows counted as owed-a-vector forever and the scope
+ * permanently on keyword search. tests/vector/search-index-readiness.test.ts
+ * seeds a row whose only content is each of these columns, runs the real
+ * VectorBackfill to completion, and requires the search to be index-backed
+ * afterwards. Drift the other way — the backfill rendering something not named
+ * here — costs nothing: that row gets its vector regardless and is simply not
+ * required to have one.
  */
-const MIN_INDEXED_COVERAGE = 0.9;
+const INDEXABLE_CONTENT: Record<VectorDocKind, { scalar: string[]; jsonArray: string[] }> = {
+  observation: { scalar: ['narrative', 'text'], jsonArray: ['facts'] },
+  summary: {
+    scalar: ['request', 'investigated', 'learned', 'completed', 'next_steps', 'notes'],
+    jsonArray: [],
+  },
+  prompt: { scalar: ['prompt_text'], jsonArray: [] },
+};
+
+/**
+ * A readiness verdict, with the two counters that make it stale.
+ *
+ * `complete` is the answer to "does every indexable in-scope row of this kind
+ * carry a vector this model can read". The counters are MAX(parent.id) and
+ * MAX(vector.rowid) as they stood when the answer was taken: a backfill batch
+ * landing, a live capture writing a vector, or a new row arriving all move one
+ * of them, which is precisely when the answer can change from "not yet" to
+ * "ready" or back.
+ */
+interface ScopeReadiness {
+  complete: boolean;
+  parentMax: number;
+  vectorMax: number;
+  takenAt: number;
+}
+
+/**
+ * Backstop for the changes the two counters above cannot see: a vector deleted
+ * without any other write (VectorBackfill discards a partially written row that
+ * way), and an in-place UPDATE that gives content to a row that had none. Both
+ * are narrow, and both resolve within this window rather than persisting for
+ * the life of the worker.
+ */
+const READINESS_TTL_MS = 60_000;
+
+/** Distinct (kind, model, project, platform) scopes remembered before the map
+ *  is dropped whole. A worker serving many projects re-measures rather than
+ *  growing without bound. */
+const READINESS_CACHE_LIMIT = 64;
+
 
 /** Whether a table is present, so a readiness probe never hard-errors on an
  *  older store that has not created it yet. */
@@ -72,6 +112,11 @@ function tableExists(db: Database, table: string): boolean {
 
 export class SearchManager {
   private orchestrator: SearchOrchestrator;
+
+  /** Last readiness verdict per (kind, model, project, platform) scope. */
+  private readonly scopeReadiness = new Map<string, ScopeReadiness>();
+  /** Result of the one-time JSON1 probe; null until it has been made. */
+  private jsonFunctionsAvailable: boolean | null = null;
 
   constructor(
     private sessionSearch: SessionSearch,
@@ -432,26 +477,40 @@ export class SearchManager {
   }
 
   /**
-   * True when the vectors this search would read cover materially less of the
-   * scope than the rows the user actually has.
+   * True when the vectors this search would read do not yet cover every row of
+   * this scope that CAN carry a vector.
    *
-   * The predecessor asked `countIndexed(kind, scope) > 0`, which answers "has
-   * the backfill started" — not a question search can act on. A scope with ONE
-   * row of twenty indexed does not return a zero to notice: it returns that one
-   * row's documents, and the caller reports success. Measured on a seeded
-   * store: 20 observations, 1 indexed, `totalResults` 2, no fallback, 19 rows
-   * the user has silently absent. And that is not an edge state — every user
-   * upgrading an existing history sits in it for the entire run of the one-time
-   * backfill, which is the whole window this guard exists to cover.
+   * Two predecessors got this wrong in opposite directions, and the shape of
+   * both mistakes is the same: the question was asked about the wrong
+   * population.
    *
-   * So the comparison is coverage, not presence: parent rows that have a vector
-   * readable by the CURRENT model, over parent rows in scope. Both halves come
-   * out of one statement over one row population, because the failure this
-   * whole area keeps reproducing is two counts quietly answering about
-   * different sets of rows. Scoping (project OR merged_into_project, platform
-   * source) mirrors VectorIndex.scopeSql, since the population that matters is
-   * the one query() would read; the model filter is what makes vectors left
-   * behind by a previous model read as unindexed rather than as ready.
+   * The first asked `countIndexed(kind, scope) > 0` — "has the backfill
+   * started". A scope with ONE row of twenty indexed does not return a zero to
+   * notice downstream: it returns that one row's documents and the caller
+   * reports success. Measured on a seeded store: 20 observations, 1 indexed,
+   * `totalResults` 2, no fallback, 19 rows the user has silently absent.
+   *
+   * The second compared indexed rows against ALL in-scope rows and accepted 0.9
+   * of them. Two consequences, both measured. A row that renders no document at
+   * all is never given a vector by anything — VectorBackfill is built around
+   * that fact — so it sat in the denominator permanently: a 20-row project with
+   * 3 such rows reported 0.85 with the backfill genuinely finished, and stayed
+   * on keyword search for good. And the 10% the floor allowed was not slack: at
+   * 0.95 coverage the index answered and one row in twenty was quietly missing
+   * from a result the caller was told was semantic.
+   *
+   * So the population is INDEXABLE rows — the ones that will be given a vector
+   * — and the bar is all of them. A row that can never carry a vector is not
+   * evidence of an unfinished index, and a row that can is not something to
+   * round away. There is no partial-credit band left in which a user is told
+   * "here is what we found" over a corpus the index has only most of.
+   *
+   * The cost of being wrong is asymmetric and that is why the bar sits at the
+   * top: falling back too eagerly gives the user keyword hits on rows that
+   * exist; failing to fall back tells the user that rows they have do not
+   * exist. If INDEXABLE_CONTENT ever over-claims relative to what the backfill
+   * renders, the failure lands on the first side — that scope keeps answering
+   * from keyword search, degraded but complete.
    *
    * Best-effort by construction. The suite — and SearchOrchestrator's own
    * doubles — pass objects carrying queryChroma alone, so an absent getIndex(),
@@ -475,14 +534,10 @@ export class SearchManager {
       if (options.platformSource) indexScope.platformSource = normalizePlatformSource(options.platformSource);
 
       for (const kind of kinds) {
-        const coverage = this.scopeIndexCoverage(db, kind, modelId, indexScope);
-        if (coverage === null) continue;
-        if (coverage < MIN_INDEXED_COVERAGE) {
-          logger.debug('SEARCH', 'Vector index coverage below the readiness floor', {
-            kind, coverage, floor: MIN_INDEXED_COVERAGE,
-          });
-          return true;
-        }
+        const complete = this.scopeIndexIsComplete(db, kind, modelId, indexScope);
+        if (complete === null || complete) continue;
+        logger.debug('SEARCH', 'Vector index does not yet cover every indexable row in this scope', { kind });
+        return true;
       }
       return false;
     } catch (probeError) {
@@ -493,33 +548,76 @@ export class SearchManager {
   }
 
   /**
-   * Fraction of this kind's in-scope parent rows that carry a vector readable
+   * Whether every INDEXABLE in-scope row of this kind carries a vector readable
    * by `modelId`. `null` when the question does not apply — the tables are not
-   * there, the scope holds no rows of this kind at all (an empty scope is not
-   * an incomplete one), or the join shape is not the one this query was written
-   * against.
+   * there, this store has none of the content columns the kind renders from, or
+   * the join shape is not the one this query was written against.
+   *
+   * Memoised, because the scan behind it is not free and the answer changes
+   * only when the corpus or the index does. It ran on EVERY semantic search,
+   * per searched kind, for the life of the worker — not just during the
+   * one-time indexing window it exists to cover. Measured on a fully indexed
+   * single-project store, in-memory SQLite, Bun 1.3.8, M-series, 20 runs:
+   *
+   *   corpus     per search, before      after: memo hit    after: scan
+   *   20,000     36.5ms                  0.24ms             28ms
+   *   100,000    200ms                   0.21ms             140ms
+   *
+   * A memo hit is the two MAX lookups below and a map read. The scan runs only
+   * when either MAX has moved since the last verdict, or the verdict is over a
+   * minute old — never more than once per search, and in a settled corpus at
+   * most once a minute per scope.
+   *
+   * The scan itself also got cheaper, and the ordering below is why: it stops
+   * at the first row still owed a vector instead of counting every row, and it
+   * disposes of already-indexed rows on an index seek before any content test.
+   * The shape that defeats both shortcuts — every row unindexed AND doc-less,
+   * so the array term runs on all of them and nothing matches — measured 48ms
+   * over 20,000 such rows.
    */
-  private scopeIndexCoverage(
+  private scopeIndexIsComplete(
     db: Database,
     kind: VectorDocKind,
     modelId: string,
     scope: IndexScope,
-  ): number | null {
+  ): boolean | null {
     const spec = VECTOR_TABLES[kind];
     if (!tableExists(db, spec.parent) || !tableExists(db, spec.table)) return null;
 
-    // VECTOR_TABLES.joinSql is written outwards from the vector table. Coverage
-    // has to ask from the parent side instead, because the rows it is counting
-    // are precisely the ones with NO vector to join from. Every hop after the
-    // first is identical, so it is reused rather than restated — and a joinSql
-    // that no longer opens with that hop is not something to guess about.
+    const indexable = this.indexableSql(db, kind);
+    if (indexable === null) return null;
+
+    // Both are index maxima, so this is two B-tree seeks rather than a scan.
+    const generation = db.prepare(`
+      SELECT (SELECT COALESCE(MAX(id), 0) FROM ${spec.parent}) AS parentMax,
+             (SELECT COALESCE(MAX(rowid), 0) FROM ${spec.table}) AS vectorMax
+    `).get() as { parentMax: number; vectorMax: number };
+
+    const key = [kind, modelId, scope.project ?? '', scope.platformSource ?? ''].join('\t');
+    const cached = this.scopeReadiness.get(key);
+    const now = Date.now();
+    if (
+      cached
+      && cached.parentMax === generation.parentMax
+      && cached.vectorMax === generation.vectorMax
+      && now - cached.takenAt < READINESS_TTL_MS
+    ) {
+      return cached.complete;
+    }
+
+    // VECTOR_TABLES.joinSql is written outwards from the vector table. Readiness
+    // has to ask from the parent side instead, because the rows it is looking
+    // for are precisely the ones with NO vector to join from. Every hop after
+    // the first is identical, so it is reused rather than restated — and a
+    // joinSql that no longer opens with that hop is not something to guess
+    // about.
     const firstHop = `JOIN ${spec.parent} p ON p.id = v.sqlite_id `;
     if (!spec.joinSql.startsWith(firstHop)) return null;
     const parentJoins = spec.joinSql.slice(firstHop.length);
 
     // Mirrors VectorIndex.scopeSql, minus its model_id clause: that one moves
-    // into the EXISTS below, where it decides whether a row counts as indexed
-    // rather than which rows are in scope.
+    // into the NOT EXISTS below, where it decides whether a row counts as
+    // indexed rather than which rows are in scope.
     const where: string[] = [];
     const params: (string | number)[] = [];
     if (scope.project) {
@@ -541,19 +639,102 @@ export class SearchManager {
       params.push(scope.platformSource);
     }
 
+    // "Is there a row still owed a vector", not "how many" — so a scope that is
+    // not ready stops at the first such row instead of counting them all. The
+    // NOT EXISTS is written first because it is an index seek that disposes of
+    // every already-indexed row before the content test is reached, which in the
+    // steady state is all of them.
     const row = db.prepare(`
-      SELECT COUNT(*) AS total,
-             SUM(CASE WHEN EXISTS (
-               SELECT 1 FROM ${spec.table} v
-               WHERE v.sqlite_id = p.id AND v.model_id = ?
-             ) THEN 1 ELSE 0 END) AS indexed
-      FROM ${spec.parent} p
-      ${parentJoins}
-      ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
-    `).get(modelId, ...params) as { total: number; indexed: number | null } | undefined;
+      SELECT EXISTS (
+        SELECT 1
+        FROM ${spec.parent} p
+        ${parentJoins}
+        WHERE NOT EXISTS (
+                SELECT 1 FROM ${spec.table} v
+                WHERE v.sqlite_id = p.id AND v.model_id = ?
+              )
+          AND (${indexable})
+          ${where.length > 0 ? `AND ${where.join(' AND ')}` : ''}
+      ) AS pending
+    `).get(modelId, ...params) as { pending: number } | undefined;
 
-    if (!row || row.total === 0) return null;
-    return (row.indexed ?? 0) / row.total;
+    const complete = !row || row.pending === 0;
+
+    if (this.scopeReadiness.size >= READINESS_CACHE_LIMIT) this.scopeReadiness.clear();
+    this.scopeReadiness.set(key, {
+      complete,
+      parentMax: generation.parentMax,
+      vectorMax: generation.vectorMax,
+      takenAt: now,
+    });
+    return complete;
+  }
+
+  /**
+   * SQL predicate, over a parent row aliased `p`, for "this row renders at
+   * least one document".
+   *
+   * Columns are probed rather than assumed, exactly as VectorBackfill probes
+   * them: observations.text is in the base table while narrative/facts arrive
+   * at schema v8, so either half can be missing depending on how old the store
+   * is, and naming an absent column is a hard SQL error. `null` when this store
+   * has none of them — there is then no row of this kind that could be indexed,
+   * and no readiness question to answer.
+   *
+   * The scalar terms come first so that on ordinary rows the array term is
+   * never reached. The array term matches VectorBackfill's fact rendering:
+   * elements that are non-empty JSON strings, and nothing else. Its one
+   * divergence is malformed JSON, where the backfill takes the elements it
+   * parsed before the damage and this returns false — an UNDER-count, which
+   * costs nothing: those rows are given vectors anyway, they are merely not
+   * required to have one.
+   */
+  private indexableSql(db: Database, kind: VectorDocKind): string | null {
+    const { parent } = VECTOR_TABLES[kind];
+    const { scalar, jsonArray } = INDEXABLE_CONTENT[kind];
+    const terms: string[] = [];
+
+    for (const column of scalar) {
+      if (hasColumn(db, parent, column)) {
+        terms.push(`(p.${column} IS NOT NULL AND p.${column} <> '')`);
+      }
+    }
+
+    if (this.hasJsonFunctions(db)) {
+      for (const column of jsonArray) {
+        if (!hasColumn(db, parent, column)) continue;
+        // Nested CASE rather than AND: json_type() and json_each() raise on a
+        // value json_valid() rejects, and CASE is where SQLite guarantees the
+        // guard is evaluated before what it guards.
+        terms.push(
+          `(CASE WHEN json_valid(p.${column}) THEN (`
+          + ` CASE WHEN json_type(p.${column}) = 'array' THEN EXISTS (`
+          + ` SELECT 1 FROM json_each(p.${column}) je WHERE je.type = 'text' AND je.value <> ''`
+          + ` ) ELSE 0 END) ELSE 0 END)`,
+        );
+      }
+    }
+
+    if (terms.length === 0) return null;
+    return terms.join(' OR ');
+  }
+
+  /**
+   * Whether this SQLite build has the JSON1 functions the array term needs.
+   * Probed once — it cannot change under a running process. Without them the
+   * array term is simply dropped, which under-counts indexable rows in the
+   * harmless direction described above.
+   */
+  private hasJsonFunctions(db: Database): boolean {
+    if (this.jsonFunctionsAvailable === null) {
+      try {
+        db.prepare(`SELECT 1 FROM json_each('["x"]') je WHERE json_valid('[]') AND je.type = 'text'`).get();
+        this.jsonFunctionsAvailable = true;
+      } catch {
+        this.jsonFunctionsAvailable = false;
+      }
+    }
+    return this.jsonFunctionsAvailable;
   }
 
   /**

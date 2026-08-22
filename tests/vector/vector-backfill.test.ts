@@ -455,6 +455,125 @@ const DOC_CAP = 1024;
 const CHAR_CAP = 4 * 1024 * 1024;
 
 /**
+ * Counts every statement the code under test EXECUTES, keyed by its SQL.
+ *
+ * Wraps the Database rather than the code, so what it sees is what a real
+ * caller's connection sees. `db.query` hands back a cached Statement for a SQL
+ * string it has seen before, hence the WeakSet: wrapping the same object twice
+ * would nest the counters inside each other and count one execution many times.
+ */
+function countingDb(db: Database): { db: Database; executed: string[] } {
+  const executed: string[] = [];
+  const wrapped = new WeakSet<object>();
+
+  const wrap = (stmt: Record<string, unknown>, sql: string) => {
+    if (wrapped.has(stmt)) return stmt;
+    wrapped.add(stmt);
+    for (const method of ['get', 'all', 'run', 'iterate', 'values']) {
+      const original = stmt[method];
+      if (typeof original !== 'function') continue;
+      stmt[method] = (...args: unknown[]) => {
+        executed.push(sql);
+        return (original as (...a: unknown[]) => unknown).apply(stmt, args);
+      };
+    }
+    return stmt;
+  };
+
+  const proxy = new Proxy(db, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (prop === 'query' || prop === 'prepare') {
+        return (sql: string, ...rest: unknown[]) =>
+          wrap((value as (...a: unknown[]) => Record<string, unknown>).call(target, sql, ...rest), sql);
+      }
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+
+  return { db: proxy as unknown as Database, executed };
+}
+
+/**
+ * Regression: an ordinary row must cost ONE read, not one read per column.
+ *
+ * Bounding the memory of a wide row turned the scan into a per-row, per-column
+ * one: each content column fetched by its own primary-key lookup, plus a schema
+ * probe — `SELECT name FROM pragma_table_info(?)` on a freshly compiled
+ * statement — asked again on every row to find out whether `facts` exists. That
+ * is a cost only the rare wide row should pay, and it was levied on the narrow
+ * rows that are almost all of a corpus. It is not covered by the memory tests
+ * above, which is why it shipped: every one of them still passes with it in
+ * place.
+ *
+ * What this pins is the QUERY COUNT, through `runBatch` — the call a real
+ * indexing run makes. Counting rather than timing is deliberate: elapsed time is
+ * what a user feels but is not assertable on a shared machine. The seconds it
+ * stands for were measured out of band, on this corpus shape at 20,000 rows /
+ * 120,000 documents with the embedder stubbed out, the two trees interleaved on
+ * one machine, median of six runs: 12.9s with the per-column reads, 11.9s
+ * without them — and 6.7s against 5.9s of user CPU.
+ *
+ * That gap is SMALLER than the whole slowdown those reads arrived with, and
+ * this test does not claim otherwise. The rest of it is not a read cost at all.
+ * The scan used to be abandoned part-way — the loop broke out of the row
+ * iterator — and while any statement is unfinished SQLite defers the
+ * auto-commit of the writes that follow it, so a pass's ~170 per-parent commits
+ * collapsed into one. Draining the scan for its ids restored them, and it is
+ * commits, not reads: holding one unrelated unfinished statement open across a
+ * pass and changing nothing else takes the same run from 11.4s to 9.6s and its
+ * system time from 4.6s to 3.3s. Where those commits should batch is a question
+ * about VectorIndex.writeParent, and nothing here measures it.
+ */
+describe('VectorBackfill statements per row on an ordinary corpus', () => {
+  const ROWS = 600;
+  const FACTS_PER_ROW = 4;
+  const DOCS_PER_ROW = FACTS_PER_ROW + 2; // narrative + text + one per fact
+
+  /** A per-row content read: the row named by primary key, from its table. */
+  const isRowRead = (sql: string) => /FROM observations\b/.test(sql) && /WHERE id = \?/.test(sql);
+  const isSchemaProbe = (sql: string) => sql.includes('pragma_table_info');
+
+  let index: VectorIndex;
+  let executed: string[];
+
+  beforeAll(async () => {
+    const raw = createCorpusDb();
+    const obs = insertObs(raw);
+    for (let i = 1; i <= ROWS; i++) {
+      obs.run(i, 'ms-1', 'alpha', null, `flat capture ${i} about a stale lease`,
+        `narrative ${i} about two writers on one row`,
+        JSON.stringify(Array.from({ length: FACTS_PER_ROW },
+          (_, f) => `fact ${f} of row ${i}: the retry re-read the row, not the snapshot`)),
+        Date.now());
+    }
+
+    const counting = countingDb(raw);
+    executed = counting.executed;
+    index = new VectorIndex(counting.db, new FakeEmbedder());
+    const backfill = new VectorBackfill(counting.db, index);
+    await drain(backfill, index.modelId, 100);
+  });
+
+  it('reads each row once, not once per content column', () => {
+    // Measured: 1,800 before this change — narrative, text and facts each
+    // fetched on their own, for every one of the 600 rows.
+    expect(executed.filter(isRowRead)).toHaveLength(ROWS);
+  });
+
+  it('does not re-ask the schema on every row', () => {
+    // Measured: 636 before this change, 40 after — the difference being one
+    // probe per row, each on a statement compiled fresh for the occasion.
+    expect(executed.filter(isSchemaProbe).length).toBeLessThan(ROWS);
+  });
+
+  it('still indexes every document behind those reads', () => {
+    // A pass that reads less by rendering less is not a pass that reads less.
+    expect(index.countIndexed('observation')).toBe(ROWS * DOCS_PER_ROW);
+  });
+});
+
+/**
  * Regression: peak resident memory during the one-time indexing must be bounded
  * by BYTES, not by document count.
  *
@@ -470,6 +589,12 @@ const CHAR_CAP = 4 * 1024 * 1024;
  * Measured as a delta from a pre-drain baseline. RSS never shrinks, so anything
  * this process already allocated only makes the assertion more forgiving —
  * never falsely red.
+ *
+ * Which of the three carry the defect, run against the tree this was written
+ * against: the ceiling and the character cap both go red there — 667MB
+ * resident and one embedder call of 340,002,102 characters. The document count
+ * is green there, and is here to keep the other two honest: a pass that bounded
+ * memory by indexing less would satisfy them.
  */
 describe('VectorBackfill peak memory on a byte-heavy corpus', () => {
   const ROWS = 170;
@@ -503,7 +628,7 @@ describe('VectorBackfill peak memory on a byte-heavy corpus', () => {
       passes++;
     }
     peakDelta = embedder.peakRss - baseline;
-  });
+  }, 300_000);
 
   it('keeps peak resident memory off the gigabyte scale', () => {
     expect(peakDelta).toBeLessThan(RSS_CEILING_BYTES);
@@ -581,6 +706,14 @@ describe('VectorBackfill with one row wider than the document cap', () => {
  * the run does, RSS never shrinks, and a peak measured after that in the same
  * process reports the seeder rather than the code under test — which is how a
  * memory assertion passes while the defect is untouched.
+ *
+ * Only the RSS ceiling carries this defect. Run against the tree this was
+ * written against, the same probe on the same row reports 399MB — red — but
+ * 251 documents indexed and a largest embedder call of 4,000,050 characters,
+ * both green. The byte budget one commit earlier had already capped the CALL;
+ * what was still unbounded was what the process HELD while filling it. The two
+ * green assertions are here so the ceiling cannot be met by indexing less or by
+ * never filling a call, not as a second demonstration.
  */
 describe('VectorBackfill peak memory on one pathological row', () => {
   const FACTS = 250;
@@ -730,14 +863,21 @@ if (mode === 'seed') {
 `;
 
 /**
- * Regression: a row written in slices must stay all-or-nothing.
+ * GUARD, not a defect test: this passes on the tree before the slicing was
+ * introduced too — all four assertions, verified by running this describe
+ * against it. There a wide row reached the index in ONE upsert call, and
+ * VectorIndex.sliceUnderCaps never splits a parent across slices, so the
+ * embedder threw before any of that row's vectors had been written. Nothing
+ * had to compensate because nothing had been committed.
  *
- * Bounding memory means a wide row's documents are embedded and written in
- * slices rather than in one call, and slices commit as they go — so a failure
- * part-way through one leaves committed vectors for a row whose remaining
- * documents were never written. That row is invisible to the resume skip,
- * which asks only whether the row has ANY vector: it would be passed over
- * forever, missing most of its facts, with nothing to report it.
+ * What it guards is the property slicing put at risk and VectorBackfill now
+ * has to maintain itself. A wide row's documents are embedded and written in
+ * slices, and slices commit as they go, so a failure part-way through one
+ * leaves committed vectors for a row whose remaining documents were never
+ * written. That row is invisible to the resume skip, which asks only whether
+ * the row has ANY vector: it would be passed over forever, missing most of its
+ * facts, with nothing to report it. Remove discardPartialRow and this describe
+ * goes red — which is what makes it worth keeping.
  */
 describe('VectorBackfill when a wide row fails part-way', () => {
   const NARROW_ID = 1;

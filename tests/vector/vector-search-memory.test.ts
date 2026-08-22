@@ -299,6 +299,72 @@ describe('ranking parity with the unbounded scan', () => {
   it('returns nothing for a limit that asks for nothing', async () => {
     expect(await index.query({ text: QUERY, kinds: ['observation'], project: PROJECT, limit: 0 })).toEqual([]);
   });
+
+  /**
+   * The whole domain of `limit`, measured as the number of hits that come back
+   * from query() on the corpus above.
+   *
+   * query() is a public method of an exported class and `limit` is a plain
+   * number, so every one of these values is something a caller can hand it.
+   * The repository's own caller does not: VectorSync.queryChroma forwards
+   * SEARCH_CONSTANTS.SEMANTIC_CANDIDATE_POOL, an integer 100, and it is the
+   * only call site in src/. So one case here is a defect test and the rest are
+   * guards, and they are labelled as such:
+   *
+   *  - DEFECT, 0 < limit < 1: the guard tested `q.limit > 0` while the cap used
+   *    Math.floor(q.limit), so 0.5 passed the guard and built a TopHits of
+   *    capacity 0. Its wouldKeep then read hits[-1].score on the first
+   *    candidate row and threw a TypeError out of query(). Both cases in that
+   *    range throw on the parent commit; every other case here passes on it
+   *    unchanged.
+   *  - GUARD, everything else: floor(limit) hits for a non-negative limit,
+   *    which is the count Array.slice(0, limit) gave in the unbounded scan
+   *    (Infinity: no cap, the whole scope; NaN: none), and nothing at all for a
+   *    negative one, where slice(0, -1) instead counted from the end and
+   *    returned all but the last hit.
+   */
+  const CORPUS_SIZE = 400;
+
+  const LIMIT_CASES: Array<{ label: string; limit: number; hits: number }> = [
+    { label: 'a negative integer', limit: -1, hits: 0 },
+    { label: 'a negative fraction', limit: -0.5, hits: 0 },
+    { label: 'zero', limit: 0, hits: 0 },
+    { label: 'a fraction below one', limit: 0.5, hits: 0 },
+    { label: 'a fraction just below one', limit: 0.999999, hits: 0 },
+    { label: 'one', limit: 1, hits: 1 },
+    { label: 'a fraction just above one', limit: 1.5, hits: 1 },
+    { label: 'a larger fraction', limit: 7.25, hits: 7 },
+    { label: 'more than the scope holds', limit: 1e9, hits: CORPUS_SIZE },
+    { label: 'Infinity', limit: Number.POSITIVE_INFINITY, hits: CORPUS_SIZE },
+    { label: 'NaN', limit: Number.NaN, hits: 0 },
+  ];
+
+  it('sanity: the parity scope holds every one of its vectors', () => {
+    expect(index.countIndexed('observation', { project: PROJECT })).toBe(CORPUS_SIZE);
+  });
+
+  for (const { label, limit, hits } of LIMIT_CASES) {
+    it(`returns ${hits} hits for ${label} (limit ${limit})`, async () => {
+      const actual = await index.query({
+        text: QUERY, kinds: ['observation'], project: PROJECT, limit,
+      });
+      expect(actual.length).toBe(hits);
+    });
+  }
+
+  // Counting hits says the call survived; comparing them says it ranked the
+  // same as before. Negative limits are excluded because they are the one
+  // place the answer deliberately differs from slice's from-the-end reading.
+  for (const { label, limit } of LIMIT_CASES.filter((c) => !(c.limit < 0))) {
+    it(`ranks ${label} (limit ${limit}) exactly as the unbounded scan did`, async () => {
+      const expected = referenceTopK(db, probe, ['observation'], PROJECT, limit);
+      const actual = await index.query({
+        text: QUERY, kinds: ['observation'], project: PROJECT, limit,
+      });
+      expect(actual.map((h) => h.docId)).toEqual(expected.map((h) => h.docId));
+      expect(actual.map((h) => h.score)).toEqual(expected.map((h) => h.score));
+    });
+  }
 });
 
 /**
