@@ -8,6 +8,8 @@ import type { TimelineItem } from './TimelineService.js';
 import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 import type { VectorDocKind } from '../vector/types.js';
 import type { IndexScope } from '../vector/VectorIndex.js';
+import { VECTOR_TABLES, hasColumn } from '../vector/schema.js';
+import type { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
@@ -32,6 +34,40 @@ export interface SearchTelemetryEnvelope {
   search_strategy?: 'chroma' | 'fts' | 'filter_only';
   chroma_available?: boolean;
   fallback_reason?: 'none' | 'chroma_connection' | 'chroma_error' | 'chroma_not_initialized';
+}
+
+/**
+ * How much of a scope the vector index must cover before its answer is taken as
+ * the answer.
+ *
+ * Deliberately not 1.0, and the gap is not slack. A parent row that renders to
+ * no document at all — an observation carrying only a title and concepts, a
+ * session_summaries row with all six text fields NULL, a user_prompts row
+ * holding '' — is never given a vector, and VectorBackfill is built around
+ * exactly that: its cursor exists so those rows are passed over once, and
+ * isComplete() reports done with them still vectorless. An equality test
+ * against the row count could therefore never become true on a corpus holding
+ * one, and every search over a fully built index would answer from keyword
+ * search forever.
+ *
+ * 0.9 leaves room for that residue while still catching the state this guard
+ * exists for. During the one-time backfill a scope climbs from 0 through the
+ * whole range, and the reading that provoked this — 1 row indexed of 20 — is
+ * 0.05. The two errors are not symmetric, which is why the floor sits high:
+ * fall back too eagerly and the user gets keyword hits on rows that exist; fail
+ * to fall back and the user is told rows they have do not exist. The stated
+ * limitation is the other end of the same trade — a corpus where more than a
+ * tenth of its rows render to no document stays on keyword search permanently.
+ */
+const MIN_INDEXED_COVERAGE = 0.9;
+
+/** Whether a table is present, so a readiness probe never hard-errors on an
+ *  older store that has not created it yet. */
+function tableExists(db: Database, table: string): boolean {
+  const row = db.prepare(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+  ).get(table) as { name: string } | undefined;
+  return Boolean(row);
 }
 
 export class SearchManager {
@@ -396,36 +432,59 @@ export class SearchManager {
   }
 
   /**
-   * True when the vectors this search would have read do not exist yet.
+   * True when the vectors this search would read cover materially less of the
+   * scope than the rows the user actually has.
    *
-   * This is the fresh-upgrade window: the one-time backfill has not reached
-   * these rows, so the semantic layer answers zero for every query — minutes on
-   * a small history, hours on a large one. Reported as a result, that zero is
-   * indistinguishable from "nothing matches", which is why it is treated as an
-   * absent answer instead and the keyword path runs.
+   * The predecessor asked `countIndexed(kind, scope) > 0`, which answers "has
+   * the backfill started" — not a question search can act on. A scope with ONE
+   * row of twenty indexed does not return a zero to notice: it returns that one
+   * row's documents, and the caller reports success. Measured on a seeded
+   * store: 20 observations, 1 indexed, `totalResults` 2, no fallback, 19 rows
+   * the user has silently absent. And that is not an edge state — every user
+   * upgrading an existing history sits in it for the entire run of the one-time
+   * backfill, which is the whole window this guard exists to cover.
    *
-   * The count is asked in the SAME scope the query ran in (project, and the
-   * model the embedder is currently on). An unscoped count answers a different
-   * question and answers it wrongly: another project's vectors, or vectors left
-   * behind by a previous model, would report this scope as ready while every
-   * search over it returns nothing.
+   * So the comparison is coverage, not presence: parent rows that have a vector
+   * readable by the CURRENT model, over parent rows in scope. Both halves come
+   * out of one statement over one row population, because the failure this
+   * whole area keeps reproducing is two counts quietly answering about
+   * different sets of rows. Scoping (project OR merged_into_project, platform
+   * source) mirrors VectorIndex.scopeSql, since the population that matters is
+   * the one query() would read; the model filter is what makes vectors left
+   * behind by a previous model read as unindexed rather than as ready.
    *
    * Best-effort by construction. The suite — and SearchOrchestrator's own
    * doubles — pass objects carrying queryChroma alone, so an absent getIndex(),
-   * an absent countIndexed, or a throwing probe all leave the previous
-   * behaviour in place rather than inventing a fallback.
+   * an index without a modelId, a store without a database handle, or a
+   * throwing probe all leave the previous behaviour in place rather than
+   * inventing a fallback.
    */
-  private semanticScopeIsUnindexed(options: any, kinds: VectorDocKind[]): boolean {
+  private semanticScopeIsIncomplete(options: any, kinds: VectorDocKind[]): boolean {
     const getIndex = (this.chromaSync as Partial<VectorSync> | null)?.getIndex;
     if (typeof getIndex !== 'function') return false;
     try {
       const index = getIndex.call(this.chromaSync);
-      if (typeof index?.countIndexed !== 'function') return false;
-      const indexScope: IndexScope = options.project ? { project: options.project } : {};
+      const modelId = index?.modelId;
+      if (typeof modelId !== 'string' || modelId.length === 0) return false;
+
+      const db = (this.sessionStore as Partial<SessionStore> | null)?.db;
+      if (!db || typeof db.prepare !== 'function') return false;
+
+      const indexScope: IndexScope = {};
+      if (options.project) indexScope.project = options.project;
+      if (options.platformSource) indexScope.platformSource = normalizePlatformSource(options.platformSource);
+
       for (const kind of kinds) {
-        if (index.countIndexed(kind, indexScope) > 0) return false;
+        const coverage = this.scopeIndexCoverage(db, kind, modelId, indexScope);
+        if (coverage === null) continue;
+        if (coverage < MIN_INDEXED_COVERAGE) {
+          logger.debug('SEARCH', 'Vector index coverage below the readiness floor', {
+            kind, coverage, floor: MIN_INDEXED_COVERAGE,
+          });
+          return true;
+        }
       }
-      return true;
+      return false;
     } catch (probeError) {
       const errorObject = probeError instanceof Error ? probeError : new Error(String(probeError));
       logger.debug('SEARCH', 'Vector index readiness probe failed; treating the index as populated', {}, errorObject);
@@ -434,11 +493,75 @@ export class SearchManager {
   }
 
   /**
+   * Fraction of this kind's in-scope parent rows that carry a vector readable
+   * by `modelId`. `null` when the question does not apply — the tables are not
+   * there, the scope holds no rows of this kind at all (an empty scope is not
+   * an incomplete one), or the join shape is not the one this query was written
+   * against.
+   */
+  private scopeIndexCoverage(
+    db: Database,
+    kind: VectorDocKind,
+    modelId: string,
+    scope: IndexScope,
+  ): number | null {
+    const spec = VECTOR_TABLES[kind];
+    if (!tableExists(db, spec.parent) || !tableExists(db, spec.table)) return null;
+
+    // VECTOR_TABLES.joinSql is written outwards from the vector table. Coverage
+    // has to ask from the parent side instead, because the rows it is counting
+    // are precisely the ones with NO vector to join from. Every hop after the
+    // first is identical, so it is reused rather than restated — and a joinSql
+    // that no longer opens with that hop is not something to guess about.
+    const firstHop = `JOIN ${spec.parent} p ON p.id = v.sqlite_id `;
+    if (!spec.joinSql.startsWith(firstHop)) return null;
+    const parentJoins = spec.joinSql.slice(firstHop.length);
+
+    // Mirrors VectorIndex.scopeSql, minus its model_id clause: that one moves
+    // into the EXISTS below, where it decides whether a row counts as indexed
+    // rather than which rows are in scope.
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    if (scope.project) {
+      const merged =
+        spec.mergedExpr && spec.mergedRequires && hasColumn(db, ...spec.mergedRequires)
+          ? spec.mergedExpr
+          : null;
+      if (merged) {
+        where.push(`(${spec.projectExpr} = ? OR ${merged} = ?)`);
+        params.push(scope.project, scope.project);
+      } else {
+        where.push(`${spec.projectExpr} = ?`);
+        params.push(scope.project);
+      }
+    }
+    if (scope.platformSource && spec.platformExpr && spec.platformRequires
+        && hasColumn(db, ...spec.platformRequires)) {
+      where.push(`${spec.platformExpr} = ?`);
+      params.push(scope.platformSource);
+    }
+
+    const row = db.prepare(`
+      SELECT COUNT(*) AS total,
+             SUM(CASE WHEN EXISTS (
+               SELECT 1 FROM ${spec.table} v
+               WHERE v.sqlite_id = p.id AND v.model_id = ?
+             ) THEN 1 ELSE 0 END) AS indexed
+      FROM ${spec.parent} p
+      ${parentJoins}
+      ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
+    `).get(modelId, ...params) as { total: number; indexed: number | null } | undefined;
+
+    if (!row || row.total === 0) return null;
+    return (row.indexed ?? 0) / row.total;
+  }
+
+  /**
    * PATH 2 body for search(): Chroma semantic query -> date-window filter ->
-   * SQLite hydration, with a scoped FTS5 fallback when a platform-scoped
-   * query matches nothing in Chroma, or when the index holds no vectors for
-   * the scope being searched. Extracted so search()'s try block stays narrow;
-   * any error here is handled by search()'s Chroma-failure fallback.
+   * SQLite hydration, with a scoped FTS5 fallback when the index covers too
+   * little of the scope being searched, or when a platform-scoped query matches
+   * nothing in Chroma. Extracted so search()'s try block stays narrow; any
+   * error here is handled by search()'s Chroma-failure fallback.
    */
   private async performChromaSemanticSearch(
     query: string,
@@ -457,14 +580,29 @@ export class SearchManager {
     sessions: SessionSummarySearchResult[];
     prompts: UserPromptSearchResult[];
     platformScopedChromaZeroFallback: boolean;
-    unindexedScopeFallback: boolean;
+    incompleteScopeFallback: boolean;
   }> {
     const { obs_type, concepts, files, searchObservations, searchSessions, searchPrompts } = scope;
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
     let platformScopedChromaZeroFallback = false;
-    let unindexedScopeFallback = false;
+
+    // Readiness is decided BEFORE the query, not from the shape of its answer.
+    // A materially incomplete scope does not announce itself with a zero — it
+    // answers from the slice already indexed and looks like a result — so there
+    // is nothing to notice downstream. Asking first also spends no embedding
+    // work on an answer that is about to be discarded.
+    if (this.semanticScopeIsIncomplete(options, this.searchedVectorKinds(scope))) {
+      logger.warn('SEARCH', 'Vector index covers too little of this scope; answering from FTS5 keyword search', {
+        hasProject: Boolean(options.project),
+      });
+      return {
+        ...this.keywordSearch(query, options, scope),
+        platformScopedChromaZeroFallback: false,
+        incompleteScopeFallback: true,
+      };
+    }
 
     const chromaResults = await this.queryChroma(query, 100, whereFilter);
     logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
@@ -540,20 +678,15 @@ export class SearchManager {
         logger.debug('SEARCH', 'Platform-scoped ChromaDB search found no matches; falling back to scoped FTS5 search', {});
         platformScopedChromaZeroFallback = true;
         ({ observations, sessions, prompts } = this.keywordSearch(query, options, scope));
-      } else if (this.semanticScopeIsUnindexed(options, this.searchedVectorKinds(scope))) {
-        // Nothing is indexed for this scope yet, so the zero above carries no
-        // information about the corpus — only about the backfill's progress.
-        logger.warn('SEARCH', 'Vector index holds no vectors for this scope yet; answering from FTS5 keyword search', {
-          hasProject: Boolean(options.project),
-        });
-        unindexedScopeFallback = true;
-        ({ observations, sessions, prompts } = this.keywordSearch(query, options, scope));
       } else {
+        // Reaching here means the readiness gate above passed: the index covers
+        // this scope, so a zero is the index's real answer about the corpus and
+        // is reported as one rather than masked by a keyword result.
         logger.debug('SEARCH', 'ChromaDB found no matches (final result, no FTS5 fallback)', {});
       }
     }
 
-    return { observations, sessions, prompts, platformScopedChromaZeroFallback, unindexedScopeFallback };
+    return { observations, sessions, prompts, platformScopedChromaZeroFallback, incompleteScopeFallback: false };
   }
 
   async search(args: any, telemetryOut?: SearchTelemetryEnvelope): Promise<any> {
@@ -564,7 +697,7 @@ export class SearchManager {
     let prompts: UserPromptSearchResult[] = [];
     let chromaFailed = false;
     let platformScopedChromaZeroFallback = false;
-    let unindexedScopeFallback = false;
+    let incompleteScopeFallback = false;
     let chromaFailureReason: { message: string; isConnectionError: boolean } | null = null;
 
     // `type` historically doubles as a document-category selector
@@ -632,7 +765,7 @@ export class SearchManager {
       try {
         const chromaOutcome = await this.performChromaSemanticSearch(query, whereFilter, options, keywordScope);
         chromaSucceeded = true;
-        ({ observations, sessions, prompts, platformScopedChromaZeroFallback, unindexedScopeFallback } = chromaOutcome);
+        ({ observations, sessions, prompts, platformScopedChromaZeroFallback, incompleteScopeFallback } = chromaOutcome);
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
         chromaFailureReason = {
@@ -674,17 +807,17 @@ export class SearchManager {
       } else if (this.chromaSync) {
         // PATH 2: Chroma semantic search, degrading to FTS5 on error, on
         // platform-scoped zeroes caused by pre-platform Chroma metadata, or on
-        // a scope the vector index has not been built for yet. The last one
-        // reuses chroma_not_initialized — the vector store exists but holds
-        // nothing readable for this scope, which is the same "no index to
+        // a scope the vector index covers too little of to answer for. The last
+        // one reuses chroma_not_initialized — the vector store exists but is
+        // not yet a usable index of this scope, which is the same "no index to
         // search" the null-chromaSync path reports — rather than widening a
         // closed enum that ships in the telemetry contract.
-        searchStrategy = chromaFailed || platformScopedChromaZeroFallback || unindexedScopeFallback ? 'fts' : 'chroma';
+        searchStrategy = chromaFailed || platformScopedChromaZeroFallback || incompleteScopeFallback ? 'fts' : 'chroma';
         if (chromaFailed) {
           fallbackReason = chromaFailureReason?.isConnectionError ? 'chroma_connection' : 'chroma_error';
         } else if (platformScopedChromaZeroFallback) {
           fallbackReason = 'chroma_error';
-        } else if (unindexedScopeFallback) {
+        } else if (incompleteScopeFallback) {
           fallbackReason = 'chroma_not_initialized';
         } else {
           fallbackReason = 'none';

@@ -9,7 +9,7 @@ import {
 import { SessionStore } from '../../../sqlite/SessionStore.js';
 import { logger } from '../../../../utils/logger.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
-import type { VectorDocKind } from '../../../vector/types.js';
+import type { IndexScope, VectorDocKind } from '../../../vector/types.js';
 
 /**
  * Anything exposing the semantic-query surface. Structural on purpose: the
@@ -31,9 +31,19 @@ export interface SemanticQuerySource {
   getIndex?(): SemanticIndexProbe;
 }
 
-/** The part of VectorIndex this strategy reads to tell empty from irrelevant. */
+/**
+ * The part of VectorIndex this strategy reads to tell empty from irrelevant.
+ *
+ * `scope` is not optional decoration. VectorIndex.countIndexed has always
+ * accepted it, but this interface omitted it and so this file could not pass
+ * one: the count came back over every project in the store, and a project
+ * holding rows and not one vector of its own read as populated because someone
+ * else's vectors existed. Measured on a two-project store — 150 rows in the
+ * unindexed project, 2 vectors in the other — the unscoped count answered 2 and
+ * the search reported a confident zero.
+ */
 export interface SemanticIndexProbe {
-  countIndexed(kind: VectorDocKind): number;
+  countIndexed(kind: VectorDocKind, scope?: IndexScope): number;
 }
 
 /**
@@ -133,7 +143,7 @@ export class VectorSearchStrategy {
       // A platform-scoped zero is already degraded to keyword search one level
       // up, so that path is left to run; an error there would replace a usable
       // fallback with no results at all.
-      if (!platformSource && this.indexIsUnpopulated(searchType)) {
+      if (!platformSource && this.indexIsUnpopulated(searchType, project)) {
         logger.warn('SEARCH', 'Semantic index holds no vectors yet; refusing to report zero matches as an answer', {
           searchType,
         });
@@ -223,29 +233,44 @@ export class VectorSearchStrategy {
    * empty because the corpus is empty returns a truthful zero, and only an
    * empty-index-over-a-non-empty-corpus is the backfill window.
    *
+   * The count is taken in the SAME scope the query just ran in. Asked
+   * unscoped it answers about a different population than the search read:
+   * another project's vectors reported this project as indexed, and the zero
+   * this method exists to catch was handed back as an answer.
+   *
    * Probing is best-effort. A source without getIndex(), a store without
    * getAllProjects(), or a throwing probe all fall back to the previous
    * behaviour of reporting the zero.
    */
-  private indexIsUnpopulated(searchType: string): boolean {
+  private indexIsUnpopulated(searchType: string, project?: string): boolean {
     try {
       const probe = this.vectorSync.getIndex?.();
       if (!probe || typeof probe.countIndexed !== 'function') return false;
 
+      const scope: IndexScope = project ? { project } : {};
       const kinds = KINDS_BY_SEARCH_TYPE[searchType] ?? ALL_KINDS;
       for (const kind of kinds) {
-        if (probe.countIndexed(kind) > 0) return false;
+        if (probe.countIndexed(kind, scope) > 0) return false;
       }
-      return this.storeHasContent();
+      return this.storeHasContent(project);
     } catch {
       return false;
     }
   }
 
-  private storeHasContent(): boolean {
+  /**
+   * Whether there is content in THIS scope that the backfill would have
+   * indexed. Scoped for the same reason the count above is: with a global
+   * check, a project that has never been used at all — no sessions, nothing to
+   * index, a truthful empty answer — would raise not-ready the moment any
+   * OTHER project held vectors, and SearchOrchestrator turns that into a thrown
+   * ChromaUnavailableError rather than an empty corpus.
+   */
+  private storeHasContent(project?: string): boolean {
     const getAllProjects = (this.sessionStore as Partial<SessionStore>).getAllProjects;
     if (typeof getAllProjects !== 'function') return false;
-    return getAllProjects.call(this.sessionStore).length > 0;
+    const projects = getAllProjects.call(this.sessionStore);
+    return project ? projects.includes(project) : projects.length > 0;
   }
 
   /** The Chroma filter shape, still spoken here and unpacked in VectorSync. */

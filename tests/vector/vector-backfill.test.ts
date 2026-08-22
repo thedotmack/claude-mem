@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeAll } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { VectorIndex } from '../../src/services/vector/VectorIndex.js';
-import { VectorBackfill } from '../../src/services/vector/VectorBackfill.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { VectorBackfill, jsonArrayStrings } from '../../src/services/vector/VectorBackfill.js';
 import { LocalEmbedder } from '../../src/services/vector/LocalEmbedder.js';
 import { VectorSync } from '../../src/services/vector/VectorSync.js';
 import { VectorSearchStrategy } from '../../src/services/worker/search/strategies/VectorSearchStrategy.js';
@@ -525,8 +528,13 @@ describe('VectorBackfill peak memory on a byte-heavy corpus', () => {
  * cap, and no cap on a later row could undo it. A pass over 60 narrow rows
  * never triggered this, which is why a batching test built from narrow rows
  * passed while a single wide row went through whole.
+ *
+ * This measures DOCUMENTS PER EMBEDDER CALL and nothing else. These facts are
+ * 200 characters each, so the whole row is 2.4MB and every assertion below
+ * would hold at 400KB a fact, where the same row is 4.8GB. The bytes are the
+ * describe after this one.
  */
-describe('VectorBackfill with one row wider than the cap', () => {
+describe('VectorBackfill with one row wider than the document cap', () => {
   const FACTS = 12_000;
   let index: VectorIndex;
   let embedder: SamplingEmbedder;
@@ -546,6 +554,355 @@ describe('VectorBackfill with one row wider than the cap', () => {
 
   it('still indexes every document of that row', () => {
     expect(index.countIndexed('observation')).toBe(FACTS + 1);
+  });
+});
+
+/**
+ * Regression: one row of pathological SIZE must not cost its own weight in
+ * resident memory.
+ *
+ * The describe above measures DOCUMENTS, and a document count is not a size:
+ * 12,000 facts of 200 characters is 2.4MB, and the same 12,000 documents at
+ * 400KB each is 4.8GB. Everything it asserts held while a single 100MB row
+ * resident-set 420MB — the caps were checked BEFORE the row was rendered, so
+ * the first row of a pass was admitted at any size, and then it was rendered,
+ * parsed and held whole: SQLite's copy of the column, a JS copy of it,
+ * JSON.parse's copy of every element, all live until the row's last document
+ * had been embedded.
+ *
+ * Measured by the probe below on the row below (one column, 100MB of facts) —
+ * peak RSS of a fresh process that opens the store and runs the backfill to
+ * completion: 419-421MB before, 191-200MB after, from a 22MB start. The
+ * residue is SQLite's own materialisation of the column, which is the floor
+ * for a value this size and is not the caller's to avoid; what the ceiling
+ * here rules out is holding two more copies of it.
+ *
+ * It runs in a CHILD process on purpose. Seeding a 100MB row costs more than
+ * the run does, RSS never shrinks, and a peak measured after that in the same
+ * process reports the seeder rather than the code under test — which is how a
+ * memory assertion passes while the defect is untouched.
+ */
+describe('VectorBackfill peak memory on one pathological row', () => {
+  const FACTS = 250;
+  const CHARS_PER_FACT = 400_000; // 100MB, in one facts column
+  /** 419-421MB before the fix, 191-200MB after. The old figure fails here. */
+  const RSS_CEILING_BYTES = 300 * 1024 * 1024;
+
+  let probe: {
+    startRss: number;
+    peakRss: number;
+    indexed: number;
+    maxCallChars: number;
+    passes: number;
+  };
+
+  beforeAll(async () => {
+    probe = await runInChildProcess(FACTS, CHARS_PER_FACT);
+  }, 300_000);
+
+  it('keeps peak resident memory near what reading the column costs', () => {
+    // Not "small": ~200MB for a 100MB column, because SQLite materialises the
+    // value and the documents rendered out of it are real allocations. What is
+    // gone is holding those, and a JS copy of the whole column, all at once.
+    expect(probe.peakRss).toBeLessThan(RSS_CEILING_BYTES);
+  });
+
+  it('still indexes every document of that row', () => {
+    // narrative + one per fact. A pass that bounds memory by dropping
+    // documents is not a pass that bounds memory.
+    expect(probe.indexed).toBe(FACTS + 1);
+  });
+
+  it('never hands the embedder more characters than the cap', () => {
+    expect(probe.maxCallChars).toBeLessThanOrEqual(CHAR_CAP + CHARS_PER_FACT);
+  });
+});
+
+/**
+ * Seeds a store with ONE huge row and indexes it, each in its own process.
+ *
+ * The JSON is built inside SQLite rather than in JS: a 100MB array assembled by
+ * the harness would be the harness's allocation, not the subject's.
+ */
+async function runInChildProcess(facts: number, charsPerFact: number) {
+  const dir = mkdtempSync(join(tmpdir(), 'claude-mem-backfill-rss-'));
+  const dbPath = join(dir, 'store.db');
+  const probePath = join(dir, 'probe.ts');
+  const srcDir = join(import.meta.dir, '..', '..', 'src');
+  await Bun.write(probePath, PROBE_SOURCE);
+
+  try {
+    await runProbe(['seed', dbPath, srcDir, String(facts), String(charsPerFact)], probePath);
+    const out = await runProbe(['run', dbPath, srcDir], probePath);
+    return JSON.parse(out) as {
+      startRss: number; peakRss: number; indexed: number; maxCallChars: number; passes: number;
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function runProbe(args: string[], probePath: string): Promise<string> {
+  const proc = Bun.spawn([process.execPath, probePath, ...args], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const [out, err, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  if (code !== 0) throw new Error(`probe ${args[0]} failed (${code}): ${err}\n${out}`);
+  return out;
+}
+
+/**
+ * Runs in its own process, so `peakRss` is this run's high-water mark and
+ * nothing else's. No backticks or interpolation in here: it is source text.
+ */
+const PROBE_SOURCE = `
+import { Database } from 'bun:sqlite';
+
+const [mode, dbPath, srcDir, facts, chars] = process.argv.slice(2);
+
+if (mode === 'seed') {
+  const db = new Database(dbPath, { create: true });
+  db.run('CREATE TABLE sdk_sessions (id INTEGER PRIMARY KEY, content_session_id TEXT, memory_session_id TEXT, project TEXT, platform_source TEXT)');
+  db.run('CREATE TABLE observations (id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT, merged_into_project TEXT, text TEXT, narrative TEXT, facts TEXT, created_at_epoch INTEGER)');
+  db.run('CREATE TABLE session_summaries (id INTEGER PRIMARY KEY, memory_session_id TEXT, project TEXT, merged_into_project TEXT, request TEXT, learned TEXT, created_at_epoch INTEGER)');
+  db.run('CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, content_session_id TEXT, prompt_text TEXT, created_at_epoch INTEGER)');
+  db.prepare('INSERT INTO sdk_sessions VALUES (?,?,?,?,?)').run(1, 'cs-1', 'ms-1', 'alpha', 'claude');
+  // hex(zeroblob(n)) is 2n characters; replacing each '00' with 'xx' keeps the
+  // width and never leaves the ASCII range.
+  db.run(
+    'WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM n WHERE i+1 < ' + facts + ') ' +
+    'INSERT INTO observations (id, memory_session_id, project, merged_into_project, text, narrative, facts, created_at_epoch) ' +
+    "SELECT 1, 'ms-1', 'alpha', NULL, NULL, 'narrative one', " +
+    "(SELECT json_group_array('f' || i || ' ' || replace(hex(zeroblob(" + Math.floor(Number(chars) / 2) + ")), '00', 'xx')) FROM n), " +
+    '1700000000000',
+  );
+  const row = db.prepare('SELECT length(facts) AS n FROM observations WHERE id = 1').get();
+  console.log(JSON.stringify({ jsonChars: row.n }));
+  db.close();
+} else {
+  const { VectorIndex } = await import(srcDir + '/services/vector/VectorIndex.ts');
+  const { VectorBackfill } = await import(srcDir + '/services/vector/VectorBackfill.ts');
+
+  // Deliberately not FakeEmbedder: tokenising a 400KB string per document
+  // would allocate more than the code under test does.
+  class ProbeEmbedder {
+    modelId = 'test/probe/384';
+    dims = 384;
+    peakRss = 0;
+    maxCallChars = 0;
+    async embed(texts) {
+      let chars = 0;
+      for (const text of texts) chars += text.length;
+      this.maxCallChars = Math.max(this.maxCallChars, chars);
+      this.sample();
+      return texts.map(() => new Float32Array(this.dims));
+    }
+    sample() { this.peakRss = Math.max(this.peakRss, process.memoryUsage.rss()); }
+  }
+
+  const db = new Database(dbPath, { readwrite: true });
+  db.run('PRAGMA foreign_keys = ON');
+  const startRss = process.memoryUsage.rss();
+  const embedder = new ProbeEmbedder();
+  const index = new VectorIndex(db, embedder);
+  const backfill = new VectorBackfill(db, index);
+
+  let passes = 0;
+  while (!backfill.isComplete(index.modelId) && passes < 5000) {
+    await backfill.runBatch();
+    embedder.sample();
+    passes++;
+  }
+  embedder.sample();
+  console.log(JSON.stringify({
+    startRss,
+    peakRss: embedder.peakRss,
+    indexed: index.countIndexed('observation'),
+    maxCallChars: embedder.maxCallChars,
+    passes,
+  }));
+}
+`;
+
+/**
+ * Regression: a row written in slices must stay all-or-nothing.
+ *
+ * Bounding memory means a wide row's documents are embedded and written in
+ * slices rather than in one call, and slices commit as they go — so a failure
+ * part-way through one leaves committed vectors for a row whose remaining
+ * documents were never written. That row is invisible to the resume skip,
+ * which asks only whether the row has ANY vector: it would be passed over
+ * forever, missing most of its facts, with nothing to report it.
+ */
+describe('VectorBackfill when a wide row fails part-way', () => {
+  const NARROW_ID = 1;
+  const WIDE_ID = 2;
+  const FACTS = 4_000; // several slices' worth of documents
+
+  class FailingEmbedder implements Embedder {
+    readonly modelId = 'test/failing/384';
+    readonly dims = 384;
+    calls = 0;
+    failOnCall = Number.POSITIVE_INFINITY;
+    async embed(texts: string[]): Promise<Float32Array[]> {
+      this.calls++;
+      if (this.calls >= this.failOnCall) throw new Error('embedder exploded');
+      return texts.map(() => new Float32Array(this.dims));
+    }
+  }
+
+  let db: Database;
+  let index: VectorIndex;
+  let backfill: VectorBackfill;
+  let embedder: FailingEmbedder;
+  let rejected: unknown;
+
+  const vectorsFor = (id: number): number =>
+    (db.prepare('SELECT COUNT(*) AS n FROM vec_observation_docs WHERE sqlite_id = ?')
+      .get(id) as { n: number }).n;
+
+  beforeAll(async () => {
+    db = createCorpusDb();
+    const obs = insertObs(db);
+    obs.run(NARROW_ID, 'ms-1', 'alpha', null, null, 'a narrow row about locks',
+      JSON.stringify(['one fact']), Date.now());
+    obs.run(WIDE_ID, 'ms-1', 'alpha', null, null, 'a wide row about locks',
+      JSON.stringify(Array.from({ length: FACTS }, (_, f) => `fact ${f} of the wide row`)),
+      Date.now());
+
+    embedder = new FailingEmbedder();
+    index = new VectorIndex(db, embedder);
+    backfill = new VectorBackfill(db, index);
+
+    // Third slice: the wide row has committed slices behind it by then.
+    embedder.failOnCall = 3;
+    rejected = await backfill.runBatch().then(() => null, (error) => error);
+  });
+
+  it('reports the failure rather than swallowing it', () => {
+    expect((rejected as Error)?.message).toMatch(/exploded/);
+  });
+
+  it('leaves the failed row with zero documents indexed', () => {
+    expect(embedder.calls).toBeGreaterThanOrEqual(3);
+    expect(vectorsFor(WIDE_ID)).toBe(0);
+  });
+
+  it('keeps the rows that were written whole before the failure', () => {
+    expect(vectorsFor(NARROW_ID)).toBeGreaterThan(0);
+  });
+
+  it('indexes the row completely when the pass is retried', async () => {
+    embedder.failOnCall = Number.POSITIVE_INFINITY;
+    await drain(backfill, index.modelId, 200);
+    expect(vectorsFor(WIDE_ID)).toBe(FACTS + 1);
+    expect(backfill.isComplete(index.modelId)).toBe(true);
+  });
+});
+
+/**
+ * The facts column is read in pieces, and a piece boundary falls wherever the
+ * column's size puts it — mid-element, mid-escape, mid-surrogate-pair. These
+ * check the splitting against JSON.parse, which is the answer it has to match,
+ * at every width including ones that make every element straddle a boundary.
+ */
+describe('jsonArrayStrings across piece boundaries', () => {
+  /** Serves `source` the way SQLite's substr does: 1-based, in code points. */
+  function readerFor(source: string) {
+    const points = Array.from(source);
+    return (offset: number, width: number) => points.slice(offset - 1, offset - 1 + width).join('');
+  }
+
+  function expected(value: unknown[]) {
+    return value.flatMap((element, index) =>
+      typeof element === 'string' && element.length > 0 ? [{ index, text: element }] : []);
+  }
+
+  const cases: unknown[][] = [
+    [],
+    ['one fact'],
+    ['', 'empty ones are skipped, and still counted', ''],
+    ['a comma, inside', 'a bracket ] inside', 'a quote " inside', 'a backslash \\ inside'],
+    ['\u{1F600} astral', 'é accented', 'tabs\tand\nnewlines'],
+    [1, null, true, 'after the non-strings', { object: 'x' }, ['nested'], 'last'],
+    ['x'.repeat(500)],
+  ];
+
+  it('yields exactly what JSON.parse would, at every piece width', () => {
+    for (const value of cases) {
+      const source = JSON.stringify(value);
+      for (const width of [1, 2, 3, 7, 64, 4096]) {
+        expect([...jsonArrayStrings(readerFor(source), width)]).toEqual(expected(value));
+      }
+    }
+  });
+
+  it('yields nothing for a value that is not a JSON array', () => {
+    for (const source of ['{not valid json', '{"a":"b"}', 'null', '"a string"', '']) {
+      expect([...jsonArrayStrings(readerFor(source), 4)]).toEqual([]);
+    }
+  });
+
+  it('counts offsets the way SQLite counts them, not the way JS does', () => {
+    // An astral character is ONE character to substr() and two UTF-16 units to
+    // JS. Reading a column in pieces means every offset after one of these is
+    // wrong by one per character if the two are confused, so this reads through
+    // SQLite itself rather than through a stand-in.
+    const db = createCorpusDb();
+    const facts = ['\u{1F600} first', 'second é', '\u{1F600}\u{1F600} third'];
+    insertObs(db).run(1, 'ms-1', 'alpha', null, null, 'narrative', JSON.stringify(facts), Date.now());
+    const read = (offset: number, width: number): string => (
+      db.prepare('SELECT substr(facts, ?, ?) AS piece FROM observations WHERE id = 1')
+        .get(offset, width) as { piece: string }
+    ).piece;
+
+    for (const width of [3, 5, 11]) {
+      expect([...jsonArrayStrings(read, width)].map((fact) => fact.text)).toEqual(facts);
+    }
+  });
+});
+
+/**
+ * The same splitting on the path a real caller takes: a facts column several
+ * times wider than one read, indexed by the backfill itself, and searchable
+ * afterwards — including the fact that straddles a piece boundary.
+ */
+describe('VectorBackfill on a facts column wider than one read', () => {
+  const FACTS = 12;
+  const CHARS_PER_FACT = 500_000; // 6MB of facts: more than one piece
+
+  let db: Database;
+  let index: VectorIndex;
+
+  beforeAll(async () => {
+    db = createCorpusDb();
+    const facts = Array.from({ length: FACTS }, (_, f) => `fact ${f} about a contended lock `.padEnd(CHARS_PER_FACT, 'x'));
+    insertObs(db).run(1, 'ms-1', 'alpha', null, null, 'a narrative', JSON.stringify(facts), Date.now());
+    index = new VectorIndex(db, new FakeEmbedder());
+    await drain(new VectorBackfill(db, index), index.modelId, 50);
+  }, 30_000);
+
+  it('indexes every fact of the row', () => {
+    expect(index.countIndexed('observation')).toBe(FACTS + 1);
+  });
+
+  it('keeps each fact whole across the boundary it was read over', () => {
+    const ids = (db.prepare('SELECT doc_id FROM vec_observation_docs WHERE field_type = ? ORDER BY fact_index')
+      .all('fact') as { doc_id: string }[]).map((row) => row.doc_id);
+    expect(ids).toEqual(Array.from({ length: FACTS }, (_, f) => `obs_1_fact_${f}`));
+  });
+
+  it('leaves a fact from the far end of the column searchable', async () => {
+    const hits = await index.query({
+      text: `fact ${FACTS - 1} about a contended lock`,
+      kinds: ['observation'], project: 'alpha', limit: 3,
+    });
+    expect(hits[0].factIndex).toBe(FACTS - 1);
   });
 });
 
@@ -596,11 +953,16 @@ describe('LocalEmbedder chunking by size', () => {
  *
  * It was an unscoped COUNT(*) while query() filters on project AND model_id, so
  * "does this scope hold any vectors" was answered from a different set of rows
- * than the search itself would touch. Both halves are user-visible, and the
- * model half reaches all the way out to search: VectorSearchStrategy asks this
- * question to tell an unpopulated index apart from a genuinely empty answer,
- * and a non-zero count made it hand back an authoritative "no matches" for an
- * index it could not read a single vector out of.
+ * than the search itself would touch.
+ *
+ * What reached a user, as measured rather than assumed. The model half reaches
+ * every caller, because the model filter applies whether or not a scope is
+ * passed: the last case below drives it through VectorSearchStrategy. The
+ * project half only reached the caller that passed a project — SearchManager,
+ * covered in search-index-readiness.test.ts — while VectorSearchStrategy asked
+ * unscoped and so read another project's vectors as this one's. It now passes
+ * its scope too; the SearchOrchestrator case in vector-search-memory.test.ts is
+ * what holds it there, and fails without it.
  */
 describe('VectorIndex.countIndexed scoping', () => {
   function seedTwoProjects(): Database {

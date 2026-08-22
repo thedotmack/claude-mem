@@ -1,7 +1,7 @@
 import type { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
-import type { Embedder, VectorDoc, VectorDocKind, VectorHit, VectorQuery } from './types.js';
-import { VECTOR_TABLES, decodeEmbedding, encodeEmbedding, ensureVectorSchema, hasColumn } from './schema.js';
+import type { Embedder, IndexScope, VectorDoc, VectorDocKind, VectorHit, VectorQuery } from './types.js';
+import { VECTOR_TABLES, encodeEmbedding, ensureVectorSchema, hasColumn } from './schema.js';
 import { logger } from '../../utils/logger.js';
 
 const BYTES_PER_FLOAT32 = 4;
@@ -30,16 +30,10 @@ export const MAX_EMBED_DOCS = 1024;
  */
 export const MAX_EMBED_CHARS = 4 * 1024 * 1024;
 
-/**
- * How much of the index a caller is asking about — the same axes query() scopes
- * on. Every field optional: an omitted one widens the question rather than
- * failing it.
- */
-export interface IndexScope {
-  /** Matches project OR merged_into_project, as the Chroma filter did. */
-  project?: string;
-  platformSource?: string;
-}
+// Declared beside VectorQuery, which it now extends, so the readiness probe and
+// the search cannot drift onto different axes. Re-exported because SearchManager
+// and the search strategy import it from here.
+export type { IndexScope } from './types.js';
 
 /** A document that needs embedding, carried with the hash that proved it stale. */
 interface StaleDoc {
@@ -265,10 +259,44 @@ export class VectorIndex {
    * with it, EXPLAIN QUERY PLAN drives from observations by project and looks
    * each vector up by sqlite_id; without it, SQLite drives from the model_id
    * index instead and reads every row in the table.
+   *
+   * Candidates are STREAMED, not materialised. .all() built one row object plus
+   * one 1,536-byte embedding plus one hit entry for every vector in scope and
+   * held them all until the scan ended, only to keep `limit` of them — on the
+   * operation a user performs more often than any other. Measured through
+   * SearchManager.search on a 384-dim index (vector-search-memory.test.ts): a
+   * search over 40,000 vectors in scope held 94MB where the same search over
+   * 10,000 held 25MB — 2,440 bytes per vector in scope, and nothing to do with
+   * the 100 candidates it returned. .iterate() keeps one row alive at a time
+   * and TopHits keeps `limit` of them, which puts both scopes under 0.1MB.
+   *
+   * The scan contains no await, so the open cursor cannot straddle a write on
+   * this connection; the one asynchronous step, embedding the probe, finishes
+   * before the first row is read.
+   *
+   * Ranking is unchanged, which TopHits documents in detail: the old code
+   * appended every hit and finished with a stable sort, so ties resolved by
+   * scan order, and offering hits in that same order reproduces the previous
+   * top-K exactly — same hits, same order.
    */
   async query(q: VectorQuery): Promise<VectorHit[]> {
+    // A non-positive limit asks for no hits; nothing below would keep one.
+    // Checked before embedding so it costs nothing either.
+    if (!(q.limit > 0)) return [];
     const [probe] = await this.embedder.embed([q.text]);
-    const hits: VectorHit[] = [];
+    const best = new TopHits(Math.floor(q.limit));
+    const expectedBytes = probe.length * BYTES_PER_FLOAT32;
+    // One decode buffer for the whole scan, refilled per row.
+    //
+    // schema.decodeEmbedding allocates a fresh copy per call, which is right
+    // for a caller that keeps the vector and wrong for one that reads a score
+    // off it and drops it: 40,000 candidates left 49MB of decoded copies on the
+    // heap at the end of a single search, which is the same corpus-shaped
+    // growth streaming was meant to remove. Nothing outlives the dot product,
+    // so the copy is made once. A row whose blob is not exactly expectedBytes
+    // is rejected below before it can be copied in.
+    const decoded = new Float32Array(probe.length);
+    const decodedBytes = new Uint8Array(decoded.buffer);
 
     for (const kind of q.kinds) {
       const spec = VECTOR_TABLES[kind];
@@ -281,21 +309,23 @@ export class VectorIndex {
         FROM ${spec.table} v
         ${spec.joinSql}
         WHERE ${where}
-      `).all(...params) as CandidateRow[];
+      `).iterate(...params) as IterableIterator<CandidateRow>;
 
-      const expectedBytes = probe.length * BYTES_PER_FLOAT32;
       let skipped = 0;
       for (const row of rows) {
         if (!row.embedding || row.embedding.byteLength !== expectedBytes) {
           skipped++;
           continue;
         }
-        const score = dot(probe, decodeEmbedding(row.embedding));
+        decodedBytes.set(row.embedding);
+        const score = dot(probe, decoded);
         if (!Number.isFinite(score)) {
           skipped++;
           continue;
         }
-        hits.push({
+        // Rejected below the cut without ever building a hit object.
+        if (!best.wouldKeep(score)) continue;
+        best.offer({
           kind,
           docId: row.doc_id,
           sqliteId: row.sqlite_id,
@@ -312,8 +342,7 @@ export class VectorIndex {
       }
     }
 
-    hits.sort((a, b) => b.score - a.score);
-    return hits.slice(0, q.limit);
+    return best.drain();
   }
 
   /** Vectors cascade with their parent row; this is for explicit removal. */
@@ -356,6 +385,60 @@ export class VectorIndex {
       WHERE ${where}
     `).get(...params) as { n: number };
     return row.n;
+  }
+}
+
+/**
+ * The best K hits seen so far, and nothing else.
+ *
+ * This exists to replace `push everything, sort, slice(0, K)` without changing
+ * a single result. That it does not is a property of two rules:
+ *
+ *  - Array.prototype.sort is stable (ES2019, and JSC implements it), so the old
+ *    code broke score ties by insertion order — kind order first, then the scan
+ *    order of the rows. Hits are still offered in exactly that order, and
+ *    insert() places an incoming hit AFTER every hit it ties with, so the
+ *    earlier one still wins.
+ *  - A hit equal to the current worst is dropped rather than swapped in, for
+ *    the same reason: at capacity, the incumbent is the earlier one.
+ *
+ * Insertion is a binary search plus a splice over an array of at most K, which
+ * for the K search asks for (100 candidates) is cheaper than sorting the whole
+ * candidate set was.
+ */
+class TopHits {
+  private readonly hits: VectorHit[] = [];
+
+  constructor(private readonly capacity: number) {}
+
+  /** Whether a score is worth building a hit object for. */
+  wouldKeep(score: number): boolean {
+    if (this.hits.length < this.capacity) return true;
+    return score > this.hits[this.hits.length - 1].score;
+  }
+
+  offer(hit: VectorHit): void {
+    if (this.hits.length >= this.capacity) {
+      if (hit.score <= this.hits[this.hits.length - 1].score) return;
+      this.hits.pop();
+    }
+    this.insert(hit);
+  }
+
+  /** Descending by score; ties keep the hit that arrived first. */
+  private insert(hit: VectorHit): void {
+    let lo = 0;
+    let hi = this.hits.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (this.hits[mid].score < hit.score) hi = mid;
+      else lo = mid + 1;
+    }
+    this.hits.splice(lo, 0, hit);
+  }
+
+  drain(): VectorHit[] {
+    return this.hits;
   }
 }
 

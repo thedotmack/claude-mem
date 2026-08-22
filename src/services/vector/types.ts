@@ -57,15 +57,31 @@ export interface VectorHit {
 }
 
 /**
- * Query scoping, unpacked from the Chroma-shaped filter that
- * VectorSearchStrategy.buildWhereFilter still produces.
+ * How much of the index a caller is asking about — the axes a query scopes on.
+ *
+ * Every field is optional: an omitted one widens the question rather than
+ * failing it. It lives here, beside VectorQuery, because the two must scope on
+ * the same axes — a readiness probe that answers about a wider population than
+ * the search reads is how "this scope holds vectors" came to be true of a
+ * project holding none.
  */
-export interface VectorQuery {
-  text: string;
-  kinds: VectorDocKind[];
+export interface IndexScope {
   /** Matches project OR merged_into_project, as the Chroma filter did. */
   project?: string;
   platformSource?: string;
+}
+
+/**
+ * Query scoping, unpacked from the Chroma-shaped filter that
+ * VectorSearchStrategy.buildWhereFilter still produces.
+ *
+ * `limit` is the K that bounds the search: the index keeps at most this many
+ * hits alive while scanning, so it is a memory ceiling and not only a result
+ * count. A caller asking for nothing gets nothing.
+ */
+export interface VectorQuery extends IndexScope {
+  text: string;
+  kinds: VectorDocKind[];
   limit: number;
 }
 
