@@ -87,6 +87,17 @@ describe('isQuotaLimitedObserverOutput', () => {
     }
   });
 
+  it('does not treat negated monthly spend-limit prose as exhaustion', () => {
+    const negatedMessages = [
+      'You have not hit your monthly spend limit.',
+      'Your monthly spend limit has not been reached.',
+    ];
+
+    for (const message of negatedMessages) {
+      expect(isQuotaLimitedObserverOutput(message)).toBe(false);
+    }
+  });
+
   it('does not treat context-window prose as quota prose', () => {
     expect(
       isQuotaLimitedObserverOutput('I hit the context window and cannot produce valid XML.'),
