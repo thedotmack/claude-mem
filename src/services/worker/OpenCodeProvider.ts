@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { getCredential } from '../../shared/EnvManager.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { DEFAULT_OPENCODE_GO_MODEL, SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
@@ -295,14 +294,14 @@ export class OpenCodeProvider extends OpenAICompatibleProvider<OpenCodeConfig> {
     const settingsPath = USER_SETTINGS_PATH;
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-    const apiKey = (settings as Record<string, string>).CLAUDE_MEM_OPENCODE_API_KEY || getCredential('OPENCODE_API_KEY') || '';
+    const apiKey = settings.CLAUDE_MEM_OPENCODE_API_KEY || process.env.OPENCODE_API_KEY || '';
 
-    const rawModel: unknown = (settings as Record<string, string>).CLAUDE_MEM_OPENCODE_MODEL;
+    const rawModel: unknown = settings.CLAUDE_MEM_OPENCODE_MODEL;
     const model = typeof rawModel === 'string' && rawModel.trim()
       ? rawModel
-      : 'deepseek-v4-flash';
+      : DEFAULT_OPENCODE_GO_MODEL;
 
-    const baseUrl = (settings as Record<string, string>).CLAUDE_MEM_OPENCODE_BASE_URL || process.env.OPENCODE_BASE_URL || '';
+    const baseUrl = settings.CLAUDE_MEM_OPENCODE_BASE_URL || process.env.OPENCODE_BASE_URL || '';
     const apiUrl = resolveOpenCodeChatCompletionsUrl(baseUrl);
 
     return { apiKey, model, apiUrl };
@@ -312,7 +311,7 @@ export class OpenCodeProvider extends OpenAICompatibleProvider<OpenCodeConfig> {
 export function isOpenCodeAvailable(): boolean {
   const settingsPath = USER_SETTINGS_PATH;
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return !!((settings as Record<string, string>).CLAUDE_MEM_OPENCODE_API_KEY || getCredential('OPENCODE_API_KEY'));
+  return !!(settings.CLAUDE_MEM_OPENCODE_API_KEY || process.env.OPENCODE_API_KEY);
 }
 
 export function isOpenCodeSelected(): boolean {

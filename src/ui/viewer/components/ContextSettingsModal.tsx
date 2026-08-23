@@ -469,17 +469,17 @@ export function ContextSettingsModal({
                         if (val === 'go') {
                           updateSetting('CLAUDE_MEM_OPENCODE_BASE_URL', 'https://opencode.ai/zen/go/v1');
                           if (!formState.CLAUDE_MEM_OPENCODE_MODEL || formState.CLAUDE_MEM_OPENCODE_MODEL === 'claude-haiku-4-5' || formState.CLAUDE_MEM_OPENCODE_MODEL === 'claude-3-7-sonnet') {
-                            updateSetting('CLAUDE_MEM_OPENCODE_MODEL', 'deepseek-v4-flash');
+                            updateSetting('CLAUDE_MEM_OPENCODE_MODEL', DEFAULT_SETTINGS.CLAUDE_MEM_OPENCODE_MODEL);
                           }
                         } else if (val === 'zen') {
                           updateSetting('CLAUDE_MEM_OPENCODE_BASE_URL', 'https://opencode.ai/zen/v1');
-                          if (!formState.CLAUDE_MEM_OPENCODE_MODEL || formState.CLAUDE_MEM_OPENCODE_MODEL === 'deepseek-v4-flash') {
+                          if (!formState.CLAUDE_MEM_OPENCODE_MODEL || formState.CLAUDE_MEM_OPENCODE_MODEL === DEFAULT_SETTINGS.CLAUDE_MEM_OPENCODE_MODEL) {
                             updateSetting('CLAUDE_MEM_OPENCODE_MODEL', 'claude-haiku-4-5');
                           }
                         }
                       }}
                     >
-                      <option value="go">OpenCode Go (Subscription — default: deepseek-v4-flash)</option>
+                      <option value="go">OpenCode Go (Subscription — default: kimi-k3)</option>
                       <option value="zen">OpenCode Zen (Pay-as-you-go — default: claude-haiku-4-5)</option>
                       <option value="custom">Custom Endpoint</option>
                     </select>
@@ -497,13 +497,13 @@ export function ContextSettingsModal({
                   </FormField>
                   <FormField
                     label="OpenCode Model"
-                    tooltip="Model identifier (e.g. deepseek-v4-flash, kimi-k3 for Go; claude-haiku-4-5, claude-sonnet-4-5 for Zen)"
+                    tooltip="Model identifier (e.g. kimi-k3 for Go; claude-haiku-4-5, claude-sonnet-4-5 for Zen)"
                   >
                     <input
                       type="text"
-                      value={formState.CLAUDE_MEM_OPENCODE_MODEL || 'deepseek-v4-flash'}
+                      value={formState.CLAUDE_MEM_OPENCODE_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_OPENCODE_MODEL}
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENCODE_MODEL', e.target.value)}
-                      placeholder="e.g., deepseek-v4-flash or claude-haiku-4-5"
+                      placeholder="e.g., kimi-k3 or claude-haiku-4-5"
                     />
                   </FormField>
                   <FormField

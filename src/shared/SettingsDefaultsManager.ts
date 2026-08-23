@@ -18,6 +18,10 @@ import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 // the trade: it is opt-out via this same key, whereas the alternative leaves
 // the feature dead on arrival for every pre-existing install.
 const LEGACY_TELEGRAM_TRIGGER_TYPES = 'security_alert';
+export const DEFAULT_OPENCODE_GO_MODEL = 'kimi-k3';
+export const DEFAULT_OPENCODE_GO_BASE_URL = 'https://opencode.ai/zen/go/v1';
+export const DEFAULT_OPENCODE_ZEN_MODEL = 'claude-haiku-4-5';
+export const DEFAULT_OPENCODE_ZEN_BASE_URL = 'https://opencode.ai/zen/v1';
 
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
@@ -135,8 +139,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
     CLAUDE_MEM_OPENCODE_API_KEY: '',  // Empty by default, can be set via UI or env (OPENCODE_API_KEY)
-    CLAUDE_MEM_OPENCODE_MODEL: 'deepseek-v4-flash',  // Default OpenCode Go model
-    CLAUDE_MEM_OPENCODE_BASE_URL: 'https://opencode.ai/zen/go/v1',  // Default OpenCode Go base URL
+    CLAUDE_MEM_OPENCODE_MODEL: DEFAULT_OPENCODE_GO_MODEL,  // Default OpenCode Go model
+    CLAUDE_MEM_OPENCODE_BASE_URL: DEFAULT_OPENCODE_GO_BASE_URL,  // Default OpenCode Go base URL
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',
