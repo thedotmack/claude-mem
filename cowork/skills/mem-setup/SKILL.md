@@ -44,8 +44,10 @@ optional.
    (the cowork-plugin skill's packaging flow). Tell the user this is why.
 3. If this machine also has a local claude-mem install (a `~/.claude-mem/`
    directory exists), optionally write the same values to
-   `~/.claude-mem/settings.json` with mode 0600 (`syncToken`, `userId`,
-   `syncHubUrl` keys) — the hook script and the local worker both read it.
+   `~/.claude-mem/settings.json` with mode 0600 (`CLAUDE_MEM_CLOUD_SYNC_TOKEN`,
+   `CLAUDE_MEM_CLOUD_SYNC_USER_ID`, `CLAUDE_MEM_CLOUD_SYNC_HUB_URL` keys — the
+   same keys the local claude-mem cloud-sync pairing writes) — the hook script
+   and the local worker both read it.
 4. Verify without exposing the secret:
 
    ```bash

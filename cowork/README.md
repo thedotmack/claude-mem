@@ -40,7 +40,8 @@ paste your values from cmem.ai → Connect. Credential sources, in order:
 1. Env vars: `CMEM_API_KEY`, `CMEM_USER_ID`, `CMEM_SYNC_HUB_URL`, `CMEM_API_BASE`
 2. `config.json` in this plugin (`apiKey`, `userId`, `syncHubUrl`) — the
    durable option in Cowork; repackage after editing so it survives sessions
-3. `~/.claude-mem/settings.json` (`syncToken`/`userId`/`syncHubUrl`) — compat
+3. `~/.claude-mem/settings.json` (`CLAUDE_MEM_CLOUD_SYNC_TOKEN` /
+   `CLAUDE_MEM_CLOUD_SYNC_USER_ID` / `CLAUDE_MEM_CLOUD_SYNC_HUB_URL`) — compat
    with a local claude-mem install's cloud-sync pairing
 
 Project naming is automatic and deliberately NOT a setting: root Cowork

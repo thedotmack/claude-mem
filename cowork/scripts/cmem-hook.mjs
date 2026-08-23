@@ -36,8 +36,10 @@ function loadConfig() {
   try {
     file = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'config.json'), 'utf8'));
   } catch { /* no config.json — other sources may still carry it */ }
-  // compat fallback: a local claude-mem install's settings (cloud-sync skill writes
-  // syncToken/userId/syncHubUrl there). Lets one credential set serve both worlds.
+  // compat fallback: a local claude-mem install's settings. The cloud-sync pairing
+  // writes CLAUDE_MEM_CLOUD_SYNC_TOKEN / _USER_ID / _HUB_URL there (see
+  // src/shared/SettingsDefaultsManager.ts); older short names are honored too.
+  // Lets one credential set serve both worlds.
   let local = {};
   try {
     local = JSON.parse(readFileSync(join(process.env.HOME || '', '.claude-mem', 'settings.json'), 'utf8'));
@@ -45,9 +47,9 @@ function loadConfig() {
   const pick = (...vals) => vals.find(v => typeof v === 'string' && v.trim()) || '';
   const cfg = {
     apiBase: (pick(process.env.CMEM_API_BASE, file.apiBase, local.apiBase) || 'https://cmem.ai').replace(/\/+$/, ''),
-    apiKey: pick(process.env.CMEM_API_KEY, file.apiKey, local.syncToken, local.apiKey, local.token),
-    userId: pick(process.env.CMEM_USER_ID, file.userId, local.userId),
-    syncHubUrl: pick(process.env.CMEM_SYNC_HUB_URL, file.syncHubUrl, local.syncHubUrl, local.hubUrl).replace(/\/+$/, ''),
+    apiKey: pick(process.env.CMEM_API_KEY, file.apiKey, local.CLAUDE_MEM_CLOUD_SYNC_TOKEN, local.syncToken, local.apiKey, local.token),
+    userId: pick(process.env.CMEM_USER_ID, file.userId, local.CLAUDE_MEM_CLOUD_SYNC_USER_ID, local.userId),
+    syncHubUrl: pick(process.env.CMEM_SYNC_HUB_URL, file.syncHubUrl, local.CLAUDE_MEM_CLOUD_SYNC_HUB_URL, local.syncHubUrl, local.hubUrl).replace(/\/+$/, ''),
     inject: {
       sessionStart: file.inject?.sessionStart !== false,   // default on
       agents: file.inject?.agents !== false,               // default on
@@ -200,7 +202,7 @@ function viewerPort() {
   // the documented default for installs that never set one
   try {
     const st = JSON.parse(readFileSync(join(process.env.HOME || '', '.claude-mem', 'settings.json'), 'utf8'));
-    const p = Number(st.workerPort ?? st.worker_port ?? st.port ?? (st.worker && st.worker.port));
+    const p = Number(st.CLAUDE_MEM_WORKER_PORT ?? st.workerPort ?? st.worker_port ?? st.port ?? (st.worker && st.worker.port));
     if (Number.isFinite(p) && p > 0) return p;
   } catch { /* no local settings — use default formula */ }
   try { return 37700 + ((process.getuid?.() ?? 0) % 100); } catch { return 37700; }

@@ -140,7 +140,7 @@ check('no stdout', out.trim() === '');
 // 7b: ~/.claude-mem/settings.json fallback supplies credentials when config is blank
 received = [];
 execSync('mkdir -p /tmp/emptyhome/.claude-mem');
-execSync(`node -e "require('fs').writeFileSync('/tmp/emptyhome/.claude-mem/settings.json',JSON.stringify({syncToken:'cm_test_fallback',userId:'u-1'}))"`);
+execSync(`node -e "require('fs').writeFileSync('/tmp/emptyhome/.claude-mem/settings.json',JSON.stringify({CLAUDE_MEM_CLOUD_SYNC_TOKEN:'cm_test_fallback',CLAUDE_MEM_CLOUD_SYNC_USER_ID:'u-1',CLAUDE_MEM_WORKER_PORT:'37777'}))"`);
 await new Promise((resolve) => {
   const child = (execFile)('node', ['/tmp/plugin-blank/scripts/cmem-hook.mjs', 'observation'], {
     env: { ...process.env, HOME: '/tmp/emptyhome', CMEM_API_BASE: `http://127.0.0.1:${PORT}`, CMEM_API_KEY: '' },
