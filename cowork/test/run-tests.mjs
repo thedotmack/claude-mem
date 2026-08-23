@@ -2,12 +2,15 @@
 // Test harness for claude-mem-cowork hooks. Mock cmem.ai server + assertions.
 import http from 'node:http';
 import { execFile } from 'node:child_process';
-import { existsSync, rmSync, readFileSync } from 'node:fs';
+import { existsSync, rmSync, readFileSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 
 import { fileURLToPath } from 'node:url';
 const PLUGIN_DIR = fileURLToPath(new URL('..', import.meta.url)).replace(/\/$/, '');
 const HOOK = PLUGIN_DIR + '/scripts/cmem-hook.mjs';
-const SPOOL = '/tmp/cmem-spool.jsonl';
+// hermetic HOME so the suite never touches the real ~/.claude-mem
+const TESTHOME = '/tmp/cmem-testhome';
+const SPOOL = TESTHOME + '/.claude-mem/cowork-spool.jsonl';
 let received = [];
 let mode = 'full'; // 'full' | 'no-hooks-endpoints' (404s, mcp only)
 
@@ -47,7 +50,7 @@ const server = http.createServer((req, res) => {
 function run(event, stdinObj, env = {}) {
   return new Promise((resolve, reject) => {
     const child = execFile('node', [HOOK, event], {
-      env: { ...process.env, CMEM_API_BASE: `http://127.0.0.1:${PORT}`, CMEM_API_KEY: 'test-key-1234', ...env },
+      env: { ...process.env, HOME: TESTHOME, CMEM_API_BASE: `http://127.0.0.1:${PORT}`, CMEM_API_KEY: 'test-key-1234', ...env },
       encoding: 'utf8', timeout: 45000
     }, (err, stdout) => err && err.code !== 0 && err.killed ? reject(err) : resolve({ out: stdout, code: err?.code || 0 }));
     child.stdin.end(typeof stdinObj === 'string' ? stdinObj : stdinObj ? JSON.stringify(stdinObj) : '');
@@ -61,7 +64,7 @@ function check(name, cond, extra) {
 }
 
 const PORT = await new Promise(r => server.listen(0, '127.0.0.1', () => r(server.address().port)));
-rmSync(SPOOL, { force: true });
+rmSync(TESTHOME, { recursive: true, force: true });
 
 // ---- 1. observation capture ----
 console.log('\n[1] PostToolUse observation');
@@ -79,6 +82,22 @@ received = [];
 await run('observation', { session_id: 's1', tool_name: 'Read', tool_use_id: 'tu_2', tool_input: {}, tool_response: 'x'.repeat(100000) });
 const ing2 = received.find(r => r.url.startsWith('/api/hooks/ingest'));
 check('response truncated to ~16KB', typeof ing2?.body.payload.tool_response === 'string' && ing2.body.payload.tool_response.length < 17000 && ing2.body.payload.tool_response.includes('truncated'));
+
+// ---- 2b. secret redaction ----
+console.log('\n[2b] secret redaction');
+received = [];
+await run('observation', {
+  session_id: 's1', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_2b',
+  tool_input: { command: 'curl -H "Authorization: Bearer sk-ant-api03-Zx9AbCdEfGh12345678" https://api.example.com' },
+  tool_response: 'export API_KEY=abc123secretvalue\nghp_AbCdEfGhIjKlMnOpQrStUvWxYz123456\npassword: hunter2secret'
+});
+const ing2b = received.find(r => r.url.startsWith('/api/hooks/ingest'));
+const sentIn = String(ing2b?.body.payload.tool_input || '');
+const sentOut = String(ing2b?.body.payload.tool_response || '');
+check('sk-ant key redacted from tool_input', !sentIn.includes('sk-ant-api03') && sentIn.includes('[cmem-redacted]'), sentIn);
+check('github token redacted from tool_response', !sentOut.includes('ghp_AbCdEf'), sentOut);
+check('key=value secrets redacted', !sentOut.includes('abc123secretvalue') && !sentOut.includes('hunter2secret'), sentOut);
+check('non-secret signal kept', sentIn.includes('https://api.example.com') && sentOut.includes('API_KEY='), sentIn + ' | ' + sentOut);
 
 // ---- 3. memory-tool feedback guard ----
 console.log('\n[3] skip guard');
@@ -156,6 +175,8 @@ console.log('\n[8] spool + flush');
 rmSync(SPOOL, { force: true });
 await run('observation', { session_id: 's2', tool_name: 'Bash', tool_use_id: 'tu_10', tool_input: { command: 'ls' } }, { CMEM_API_BASE: 'http://127.0.0.1:1' });
 check('failed POST spooled', existsSync(SPOOL) && readFileSync(SPOOL, 'utf8').includes('tu_10'));
+check('spool is user-only (0600)', existsSync(SPOOL) && (statSync(SPOOL).mode & 0o777) === 0o600, (statSync(SPOOL).mode & 0o777).toString(8));
+check('spool lives under $HOME/.claude-mem (per-user, not shared /tmp)', SPOOL === TESTHOME + '/.claude-mem/cowork-spool.jsonl' && existsSync(TESTHOME + '/.claude-mem'));
 received = [];
 await run('observation', { session_id: 's2', tool_name: 'Bash', tool_use_id: 'tu_11', tool_input: { command: 'pwd' } });
 const gotBatch = received.some(r => r.body?.batch?.some(e => e.payload?.tool_use_id === 'tu_10'));

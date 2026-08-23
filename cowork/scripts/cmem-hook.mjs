@@ -10,7 +10,7 @@
  *               fallback: POST {base}/api/mcp     (memory_search via JSON-RPC — works today)
  *
  * Design rule #1: NEVER break the session. Every hook path exits 0 no matter what.
- * Failed ingest posts are spooled to /tmp and re-flushed on later hook fires.
+ * Failed ingest posts are spooled to ~/.claude-mem (0600) and re-flushed on later hook fires.
  *
  * Usage: node cmem-hook.mjs <event>
  *   events: context | session-init | observation | agent-context |
@@ -18,12 +18,15 @@
  *   CLI:    search "query" [--limit N] | status
  */
 
-import { readFileSync, appendFileSync, writeFileSync, existsSync, renameSync } from 'node:fs';
+import { readFileSync, appendFileSync, existsSync, renameSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const SPOOL = '/tmp/cmem-spool.jsonl';
+// per-user, 0600 — never a shared world-readable temp dir (payloads may hold tool output)
+const SPOOL_DIR = join(homedir(), '.claude-mem');
+const SPOOL = join(SPOOL_DIR, 'cowork-spool.jsonl');
 const SPOOL_MAX = 200;           // max spooled events kept
 const FIELD_CAP = 16000;         // max chars per big payload field
 const PROMPT_CAP = 4000;         // max chars of user prompt / agent prompt sent
@@ -94,6 +97,43 @@ function truncate(v, cap) {
   return s.slice(0, cap) + `\n…[claude-mem truncated ${s.length - cap} chars]`;
 }
 
+// ---------- secret redaction ----------
+// Observations are memory: keep the signal (paths, code, output) but strip
+// anything secret-shaped BEFORE the envelope exists, so neither the ingest
+// POST nor the retry spool ever holds raw credentials. All patterns are
+// single-pass linear regexes over capped input (FIELD_CAP/PROMPT_CAP).
+const REDACTED = '[cmem-redacted]';
+const SECRET_PATTERNS = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, // PEM key blocks
+  /\b(?:Bearer|Basic)[ \t]+[A-Za-z0-9._~+/=-]{16,512}\b/gi,                      // Authorization headers
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,            // JWTs
+  /\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}\b/g,                                         // OpenAI/Anthropic-style keys
+  /\b[sprk]k_(?:live|test)_[A-Za-z0-9]{10,}\b/g,                                 // Stripe-style keys
+  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g,                                             // GitHub tokens
+  /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,                                           // GitHub fine-grained PATs
+  /\bglpat-[A-Za-z0-9_-]{20,}\b/g,                                               // GitLab PATs
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,                                           // Slack tokens
+  /\b(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA|AIPA)[0-9A-Z]{16}\b/g,               // AWS access key ids
+  /\bAIza[0-9A-Za-z_-]{35}\b/g,                                                  // Google API keys
+  /\bnpm_[A-Za-z0-9]{36}\b/g                                                     // npm tokens
+];
+// `password: …` / `api_key=…` style assignments — keep the key, redact the value
+const KEYVALUE_RE = /((?:api[_-]?key|apikey|access[_-]?key|secret[_-]?key|client[_-]?secret|secret|password|passwd|pwd|auth[_-]?token|token|credentials?|private[_-]?key)["']?\s*[:=]\s*["']?)(?!\[cmem-redacted\])[^\s"'`,;&]{6,}/gi;
+
+function redactSecrets(s) {
+  let out = s;
+  for (const re of SECRET_PATTERNS) out = out.replace(re, REDACTED);
+  return out.replace(KEYVALUE_RE, `$1${REDACTED}`);
+}
+
+// truncate + redact; always emits a string for non-null values so redaction
+// applies to the full serialized payload
+function clean(v, cap) {
+  if (v == null) return v;
+  const t = truncate(v, cap);
+  return redactSecrets(typeof t === 'string' ? t : JSON.stringify(t));
+}
+
 async function http(method, url, body, timeoutMs, headers = {}) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -105,7 +145,7 @@ async function http(method, url, body, timeoutMs, headers = {}) {
         'Authorization': `Bearer ${CFG.apiKey}`,
         'Content-Type': 'application/json',
         'X-CMEM-Platform': 'cowork',
-        'X-CMEM-Plugin': 'claude-mem-cowork/0.1.2',
+        'X-CMEM-Plugin': 'claude-mem-cowork/0.1.3',
         ...(CFG.userId ? { 'X-CMEM-User-Id': CFG.userId } : {}),
         ...headers
       },
@@ -134,7 +174,8 @@ function envelope(event, payload) {
 
 function spool(env) {
   try {
-    appendFileSync(SPOOL, JSON.stringify(env) + '\n');
+    mkdirSync(SPOOL_DIR, { recursive: true });
+    appendFileSync(SPOOL, JSON.stringify(env) + '\n', { mode: 0o600 });
   } catch { /* disk issues — drop silently */ }
 }
 
@@ -152,10 +193,17 @@ async function flushSpool() {
   try {
     const res = await http('POST', `${CFG.apiBase}/api/hooks/ingest`, { v: 1, batch }, HTTP_TIMEOUT_MS.normal);
     if (!res.ok) throw new Error(String(res.status));
-    try { writeFileSync(claim, ''); } catch {}
+    try { rmSync(claim, { force: true }); } catch {}
   } catch {
-    // put it back for next time
-    try { renameSync(claim, SPOOL); } catch {}
+    // put it back for next time — MERGE, never rename-over: a concurrent hook
+    // may have created a replacement spool while our request was in flight,
+    // and renameSync(claim, SPOOL) would silently drop its events
+    try {
+      appendFileSync(SPOOL, readFileSync(claim, 'utf8'), { mode: 0o600 });
+      rmSync(claim, { force: true });
+    } catch {
+      try { if (!existsSync(SPOOL)) renameSync(claim, SPOOL); } catch {}
+    }
   }
 }
 
@@ -308,7 +356,7 @@ async function onSessionInit(input) {
   await ingest('session-init', {
     session_id: input.session_id,
     cwd: input.cwd,
-    prompt: truncate(input.prompt, PROMPT_CAP)
+    prompt: clean(input.prompt, PROMPT_CAP)
   });
 }
 
@@ -322,8 +370,8 @@ async function onObservation(input) {
     cwd: input.cwd,
     tool_name: tool,
     tool_use_id: input.tool_use_id,
-    tool_input: truncate(input.tool_input, FIELD_CAP),
-    tool_response: truncate(input.tool_response ?? input.tool_result, FIELD_CAP)
+    tool_input: clean(input.tool_input, FIELD_CAP),
+    tool_response: clean(input.tool_response ?? input.tool_result, FIELD_CAP)
   });
 }
 
