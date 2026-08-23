@@ -126,11 +126,19 @@ function redactSecrets(s) {
   return out.replace(KEYVALUE_RE, `$1${REDACTED}`);
 }
 
-// truncate + redact; always emits a string for non-null values so redaction
-// applies to the full serialized payload
+// claude-mem's documented privacy convention: <private>…</private> regions are
+// never stored. Same tag list as the local plugin's src/utils/tag-stripping.ts
+// (context/system tags are dropped too so injected blocks don't echo back in).
+const STRIP_TAGS_RE = /<(private|claude-mem-context|system_instruction|system-instruction|persisted-output|system-reminder)\b[^>]*>[\s\S]*?<\/\1>/g;
+
+// strip privacy-tagged regions → truncate → redact secrets. Tag stripping runs
+// FIRST (on the full serialized value) so truncation can never cut off a
+// closing tag and leak a partial private region. Always emits a string for
+// non-null values so every pass sees the whole payload.
 function clean(v, cap) {
   if (v == null) return v;
-  const t = truncate(v, cap);
+  const s = (typeof v === 'string' ? v : JSON.stringify(v)).replace(STRIP_TAGS_RE, '');
+  const t = truncate(s, cap);
   return redactSecrets(typeof t === 'string' ? t : JSON.stringify(t));
 }
 

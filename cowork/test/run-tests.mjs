@@ -99,6 +99,24 @@ check('github token redacted from tool_response', !sentOut.includes('ghp_AbCdEf'
 check('key=value secrets redacted', !sentOut.includes('abc123secretvalue') && !sentOut.includes('hunter2secret'), sentOut);
 check('non-secret signal kept', sentIn.includes('https://api.example.com') && sentOut.includes('API_KEY='), sentIn + ' | ' + sentOut);
 
+// ---- 2c. <private> tag stripping ----
+console.log('\n[2c] private-tag stripping');
+received = [];
+await run('observation', {
+  session_id: 's1', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_2c',
+  tool_input: { command: 'echo before <private>SSN 123-45-6789</private> after' },
+  tool_response: 'ok <private>\nmulti\nline secret\n</private> done'
+});
+await run('session-init', { session_id: 's1', prompt: 'plan the launch <private>budget is $40k</private> by friday' });
+const ing2c = received.find(r => r.body?.payload?.tool_use_id === 'tu_2c');
+const init2c = received.find(r => r.body?.event === 'session-init');
+const in2c = String(ing2c?.body.payload.tool_input || '');
+const out2c = String(ing2c?.body.payload.tool_response || '');
+check('private region gone from tool_input', !in2c.includes('123-45-6789') && !in2c.includes('<private>'), in2c);
+check('multi-line private region gone from tool_response', !out2c.includes('line secret') && out2c.includes('ok') && out2c.includes('done'), out2c);
+check('private region gone from session-init prompt', init2c?.body.payload.prompt === 'plan the launch  by friday', init2c?.body.payload.prompt);
+check('surrounding signal kept', in2c.includes('before') && in2c.includes('after'), in2c);
+
 // ---- 3. memory-tool feedback guard ----
 console.log('\n[3] skip guard');
 received = [];
