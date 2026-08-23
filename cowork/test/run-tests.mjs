@@ -2,7 +2,7 @@
 // Test harness for claude-mem-cowork hooks. Mock cmem.ai server + assertions.
 import http from 'node:http';
 import { execFile } from 'node:child_process';
-import { existsSync, rmSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, rmSync, readFileSync, statSync, mkdirSync, appendFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 import { fileURLToPath } from 'node:url';
@@ -110,6 +110,19 @@ const out2d = String(ing2d?.body.payload.tool_response || '');
 check('connection-string password redacted', !in2d.includes('longpassword') && in2d.includes('postgresql://') && in2d.includes('db.internal'), in2d);
 check('redis URI credentials redacted', !out2d.includes('s3cr3tpw'), out2d);
 check('bare user@ URIs untouched (git@github.com)', out2d.includes('ssh://git@github.com/x/y'), out2d);
+received = [];
+await run('observation', {
+  session_id: 's1', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_2e',
+  tool_input: { command: 'psql postgresql://admin:pa/ss@db.internal/app && psql postgresql://admin:pa@ss@db.internal/app' },
+  tool_response: 'Cookie: sessionid=opaque-session-secret-value; theme=dark'
+});
+const ing2e = received.find(r => r.body?.payload?.tool_use_id === 'tu_2e');
+const in2e = String(ing2e?.body.payload.tool_input || '');
+const out2e = String(ing2e?.body.payload.tool_response || '');
+check('slash-containing URI password fully redacted', !in2e.includes('pa/ss'), in2e);
+check('at-sign-containing URI password fully redacted', !in2e.includes('pa@ss') && !in2e.includes(']@ss@'), in2e);
+check('URI host survives userinfo redaction', in2e.includes('db.internal/app'), in2e);
+check('Cookie header value redacted', !out2e.includes('opaque-session-secret-value'), out2e);
 
 // ---- 2c. <private> tag stripping ----
 console.log('\n[2c] private-tag stripping');
@@ -212,6 +225,18 @@ await run('observation', { session_id: 's2', tool_name: 'Bash', tool_use_id: 'tu
 const gotBatch = received.some(r => r.body?.batch?.some(e => e.payload?.tool_use_id === 'tu_10'));
 check('spool flushed as batch on next event', gotBatch);
 check('spool cleared', !existsSync(SPOOL) || readFileSync(SPOOL, 'utf8').trim() === '');
+
+// ---- 8b. spool replay order ----
+console.log('\n[8b] spool replay order');
+rmSync(SPOOL, { force: true });
+mkdirSync(TESTHOME + '/.claude-mem', { recursive: true });
+// file order NEW-then-OLD (what a failed-flush merge race can produce)
+appendFileSync(SPOOL, JSON.stringify({ v: 1, platform: 'cowork', event: 'observation', project: 'cmem_work_root', session_id: 's2', ts: 2000, payload: { tool_use_id: 'tu_newer' } }) + '\n');
+appendFileSync(SPOOL, JSON.stringify({ v: 1, platform: 'cowork', event: 'observation', project: 'cmem_work_root', session_id: 's2', ts: 1000, payload: { tool_use_id: 'tu_older' } }) + '\n');
+received = [];
+await run('observation', { session_id: 's2', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_13', tool_input: { command: 'true' } });
+const orderedBatch = received.find(r => r.body?.batch)?.body.batch.map(e => e.payload.tool_use_id);
+check('flush replays oldest-first (ts sort)', JSON.stringify(orderedBatch) === JSON.stringify(['tu_older', 'tu_newer']), JSON.stringify(orderedBatch));
 
 // ---- 9. remaining lifecycle events ----
 console.log('\n[9] lifecycle events');

@@ -18,7 +18,7 @@
  *   CLI:    search "query" [--limit N] | status
  */
 
-import { readFileSync, appendFileSync, existsSync, renameSync, mkdirSync, rmSync } from 'node:fs';
+import { readFileSync, appendFileSync, writeFileSync, existsSync, renameSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -119,15 +119,31 @@ const SECRET_PATTERNS = [
 ];
 // `password: …` / `api_key=…` style assignments — keep the key, redact the value
 const KEYVALUE_RE = /((?:api[_-]?key|apikey|access[_-]?key|secret[_-]?key|client[_-]?secret|secret|password|passwd|pwd|auth[_-]?token|token|credentials?|private[_-]?key)["']?\s*[:=]\s*["']?)(?!\[cmem-redacted\])[^\s"'`,;&]{6,}/gi;
+// Cookie/Set-Cookie header values are session credentials whatever the cookie
+// is named (sessionid=…) — redact the whole header value
+const COOKIE_RE = /\b((?:set-)?cookie)(["']?\s*[:=]\s*["']?)(?!\[cmem-redacted\])[^\n\r"']{4,}/gi;
 // connection-string credentials: scheme://user:password@host → keep scheme+host,
-// redact the userinfo (postgres://, mysql://, redis://, amqp://, mongodb://, …).
-// Only fires when a password is present (user:pass@) — bare user@ (git@github.com) is signal.
-const URI_USERINFO_RE = /\b([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/g;
+// redact the ENTIRE userinfo (postgres://, mysql://, redis://, amqp://, …).
+// Userinfo = everything up to the LAST '@' in the URI token, so passwords
+// containing literal '/', ':' or '@' are still fully covered. Only fires when
+// a password colon is present — bare user@ (ssh://git@github.com) is signal.
+const URI_RE = /\b([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^\s"'`]+)/g;
+
+function redactUriCredentials(text) {
+  return text.replace(URI_RE, (m, scheme, rest) => {
+    const at = rest.lastIndexOf('@');
+    if (at === -1) return m;
+    const userinfo = rest.slice(0, at);
+    if (!userinfo.includes(':')) return m;
+    return scheme + REDACTED + '@' + rest.slice(at + 1);
+  });
+}
 
 function redactSecrets(s) {
   let out = s;
   for (const re of SECRET_PATTERNS) out = out.replace(re, REDACTED);
-  out = out.replace(URI_USERINFO_RE, `$1${REDACTED}@`);
+  out = redactUriCredentials(out);
+  out = out.replace(COOKIE_RE, `$1$2${REDACTED}`);
   return out.replace(KEYVALUE_RE, `$1${REDACTED}`);
 }
 
@@ -202,7 +218,11 @@ async function flushSpool() {
   // claim the spool atomically so concurrent async hooks don't double-send
   const claim = SPOOL + '.' + process.pid;
   try { renameSync(SPOOL, claim); } catch { return; }
-  const batch = lines.slice(-SPOOL_MAX).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  // oldest-first replay regardless of file order (a failed-flush merge can
+  // interleave); Array.prototype.sort is stable, so same-second events keep
+  // their file order
+  const batch = lines.slice(-SPOOL_MAX).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean)
+    .sort((a, b) => (a.ts || 0) - (b.ts || 0));
   try {
     const res = await http('POST', `${CFG.apiBase}/api/hooks/ingest`, { v: 1, batch }, HTTP_TIMEOUT_MS.normal);
     if (!res.ok) throw new Error(String(res.status));
@@ -210,9 +230,22 @@ async function flushSpool() {
   } catch {
     // put it back for next time — MERGE, never rename-over: a concurrent hook
     // may have created a replacement spool while our request was in flight,
-    // and renameSync(claim, SPOOL) would silently drop its events
+    // and renameSync(claim, SPOOL) would silently drop its events. Order
+    // matters too: the claimed events are OLDER, so drain any replacement
+    // spool onto the claim's tail (old→new) before restoring.
     try {
-      appendFileSync(SPOOL, readFileSync(claim, 'utf8'), { mode: 0o600 });
+      const merge = claim + '.merge';
+      // rename is atomic: a concurrent appender either lands in the file
+      // before the move (content travels with it) or creates a fresh spool
+      try { renameSync(SPOOL, merge); appendFileSync(claim, readFileSync(merge, 'utf8')); rmSync(merge, { force: true }); } catch {}
+      try {
+        // restore without clobbering: wx fails if yet another hook recreated
+        // the spool meanwhile — then append the claim instead (the ts sort at
+        // flush time recovers chronological delivery)
+        writeFileSync(SPOOL, readFileSync(claim, 'utf8'), { flag: 'wx', mode: 0o600 });
+      } catch {
+        appendFileSync(SPOOL, readFileSync(claim, 'utf8'), { mode: 0o600 });
+      }
       rmSync(claim, { force: true });
     } catch {
       try { if (!existsSync(SPOOL)) renameSync(claim, SPOOL); } catch {}
