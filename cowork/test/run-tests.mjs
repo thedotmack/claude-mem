@@ -98,6 +98,18 @@ check('sk-ant key redacted from tool_input', !sentIn.includes('sk-ant-api03') &&
 check('github token redacted from tool_response', !sentOut.includes('ghp_AbCdEf'), sentOut);
 check('key=value secrets redacted', !sentOut.includes('abc123secretvalue') && !sentOut.includes('hunter2secret'), sentOut);
 check('non-secret signal kept', sentIn.includes('https://api.example.com') && sentOut.includes('API_KEY='), sentIn + ' | ' + sentOut);
+received = [];
+await run('observation', {
+  session_id: 's1', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_2d',
+  tool_input: { command: 'export DATABASE_URL=postgresql://admin:longpassword@db.internal/app' },
+  tool_response: 'cloned from ssh://git@github.com/x/y and redis://user2:s3cr3tpw@cache:6379/0'
+});
+const ing2d = received.find(r => r.body?.payload?.tool_use_id === 'tu_2d');
+const in2d = String(ing2d?.body.payload.tool_input || '');
+const out2d = String(ing2d?.body.payload.tool_response || '');
+check('connection-string password redacted', !in2d.includes('longpassword') && in2d.includes('postgresql://') && in2d.includes('db.internal'), in2d);
+check('redis URI credentials redacted', !out2d.includes('s3cr3tpw'), out2d);
+check('bare user@ URIs untouched (git@github.com)', out2d.includes('ssh://git@github.com/x/y'), out2d);
 
 // ---- 2c. <private> tag stripping ----
 console.log('\n[2c] private-tag stripping');

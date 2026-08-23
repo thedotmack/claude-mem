@@ -119,10 +119,15 @@ const SECRET_PATTERNS = [
 ];
 // `password: …` / `api_key=…` style assignments — keep the key, redact the value
 const KEYVALUE_RE = /((?:api[_-]?key|apikey|access[_-]?key|secret[_-]?key|client[_-]?secret|secret|password|passwd|pwd|auth[_-]?token|token|credentials?|private[_-]?key)["']?\s*[:=]\s*["']?)(?!\[cmem-redacted\])[^\s"'`,;&]{6,}/gi;
+// connection-string credentials: scheme://user:password@host → keep scheme+host,
+// redact the userinfo (postgres://, mysql://, redis://, amqp://, mongodb://, …).
+// Only fires when a password is present (user:pass@) — bare user@ (git@github.com) is signal.
+const URI_USERINFO_RE = /\b([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/g;
 
 function redactSecrets(s) {
   let out = s;
   for (const re of SECRET_PATTERNS) out = out.replace(re, REDACTED);
+  out = out.replace(URI_USERINFO_RE, `$1${REDACTED}@`);
   return out.replace(KEYVALUE_RE, `$1${REDACTED}`);
 }
 
