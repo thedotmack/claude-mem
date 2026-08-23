@@ -359,7 +359,9 @@ async function onSummarize(input) {
 }
 
 async function onSessionEnd(input) {
-  await ingest('session-end', { session_id: input.session_id, reason: input.reason });
+  // cwd matters: the envelope's project is resolved from it. Without it a
+  // spool replay or out-of-tree hook run would misfile the session summary.
+  await ingest('session-end', { session_id: input.session_id, cwd: input.cwd, reason: input.reason });
 }
 
 // ---------- CLI (used by the mem-search skill) ----------
