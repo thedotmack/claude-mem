@@ -105,7 +105,7 @@ function truncate(v, cap) {
 const REDACTED = '[cmem-redacted]';
 const SECRET_PATTERNS = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, // PEM key blocks
-  /\b(?:Bearer|Basic)[ \t]+[A-Za-z0-9._~+/=-]{16,512}\b/gi,                      // Authorization headers
+  /\b(?:Bearer|Basic|Token)[ \t]+[A-Za-z0-9._~+/=-]{16,512}\b/gi,                // auth scheme credentials
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,            // JWTs
   /\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}\b/g,                                         // OpenAI/Anthropic-style keys
   /\b[sprk]k_(?:live|test)_[A-Za-z0-9]{10,}\b/g,                                 // Stripe-style keys
@@ -120,8 +120,9 @@ const SECRET_PATTERNS = [
 // `password: …` / `api_key=…` style assignments — keep the key, redact the value
 const KEYVALUE_RE = /((?:api[_-]?key|apikey|access[_-]?key|secret[_-]?key|client[_-]?secret|secret|password|passwd|pwd|auth[_-]?token|token|credentials?|private[_-]?key)["']?\s*[:=]\s*["']?)(?!\[cmem-redacted\])[^\s"'`,;&]{6,}/gi;
 // Cookie/Set-Cookie header values are session credentials whatever the cookie
-// is named (sessionid=…) — redact the whole header value
-const COOKIE_RE = /\b((?:set-)?cookie)(["']?\s*[:=]\s*["']?)(?!\[cmem-redacted\])[^\n\r"']{4,}/gi;
+// is named (sessionid=…) — redact the whole header value. Same treatment for
+// Authorization headers regardless of scheme (Bearer, Token, ApiKey, custom…)
+const COOKIE_RE = /\b((?:set-)?cookie|(?:proxy-)?authorization)(["']?\s*[:=]\s*["']?)(?!\[cmem-redacted\])[^\n\r"']{4,}/gi;
 // connection-string credentials: scheme://user:password@host → keep scheme+host,
 // redact the ENTIRE userinfo (postgres://, mysql://, redis://, amqp://, …).
 // Userinfo = everything up to the LAST '@' in the URI token, so passwords
@@ -210,14 +211,19 @@ function spool(env) {
 
 async function flushSpool() {
   if (!existsSync(SPOOL)) return;
-  let lines;
-  try {
-    lines = readFileSync(SPOOL, 'utf8').split('\n').filter(Boolean);
-  } catch { return; }
-  if (!lines.length) { return; }
-  // claim the spool atomically so concurrent async hooks don't double-send
+  // claim FIRST, read AFTER: an event appended between a read and the rename
+  // would travel into the claim unread and be deleted with it on success.
+  // The atomic rename means later appenders write only to a fresh spool.
   const claim = SPOOL + '.' + process.pid;
   try { renameSync(SPOOL, claim); } catch { return; }
+  let lines;
+  try {
+    lines = readFileSync(claim, 'utf8').split('\n').filter(Boolean);
+  } catch {
+    try { if (!existsSync(SPOOL)) renameSync(claim, SPOOL); } catch {}
+    return;
+  }
+  if (!lines.length) { try { rmSync(claim, { force: true }); } catch {} return; }
   // oldest-first replay regardless of file order (a failed-flush merge can
   // interleave); Array.prototype.sort is stable, so same-second events keep
   // their file order

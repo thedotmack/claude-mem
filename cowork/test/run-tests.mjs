@@ -123,6 +123,21 @@ check('slash-containing URI password fully redacted', !in2e.includes('pa/ss'), i
 check('at-sign-containing URI password fully redacted', !in2e.includes('pa@ss') && !in2e.includes(']@ss@'), in2e);
 check('URI host survives userinfo redaction', in2e.includes('db.internal/app'), in2e);
 check('Cookie header value redacted', !out2e.includes('opaque-session-secret-value'), out2e);
+// Token-scheme Authorization: redacted in the request body AND in the spool on failed delivery
+received = [];
+await run('observation', {
+  session_id: 's1', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_2f',
+  tool_input: { command: 'curl -H "Authorization: Token tok-cred-9f8e7d6c5b4a"' }, tool_response: 'ok'
+});
+const in2f = String(received.find(r => r.body?.payload?.tool_use_id === 'tu_2f')?.body.payload.tool_input || '');
+check('Token-scheme Authorization redacted in request', !in2f.includes('tok-cred-9f8e7d6c5b4a'), in2f);
+rmSync(SPOOL, { force: true });
+await run('observation', {
+  session_id: 's1', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_2g',
+  tool_input: { command: 'curl -H "Authorization: Token tok-cred-9f8e7d6c5b4a"' }, tool_response: 'ok'
+}, { CMEM_API_BASE: 'http://127.0.0.1:1' });
+check('Token-scheme Authorization redacted in spool', existsSync(SPOOL) && !readFileSync(SPOOL, 'utf8').includes('tok-cred-9f8e7d6c5b4a'), readFileSync(SPOOL, 'utf8').slice(0, 200));
+rmSync(SPOOL, { force: true });
 
 // ---- 2c. <private> tag stripping ----
 console.log('\n[2c] private-tag stripping');
