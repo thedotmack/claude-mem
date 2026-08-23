@@ -17,6 +17,7 @@ class FileTailer {
   private tailState: TailState;
   private reading = false;
   private readQueued = false;
+  private closed = false;
 
   constructor(
     private filePath: string,
@@ -36,6 +37,7 @@ class FileTailer {
   }
 
   close(): void {
+    this.closed = true;
     this.watcher?.close();
     this.watcher = null;
   }
@@ -49,9 +51,12 @@ class FileTailer {
    * is still dispatching lines (and has not yet committed its offset) would
    * otherwise start a second read from the same offset, duplicating side
    * effects. Instead the re-entrant call is coalesced and re-runs after the
-   * current pass commits, so each byte range is dispatched exactly once.
+   * current pass commits, so each byte range is dispatched exactly once. Once
+   * the tailer is closed, queued passes and line dispatch are suppressed so a
+   * retiring worker never races the replacement's initial replay.
    */
   private async readNewData(): Promise<void> {
+    if (this.closed) return;
     if (this.reading) {
       this.readQueued = true;
       return;
@@ -61,14 +66,14 @@ class FileTailer {
       do {
         this.readQueued = false;
         await this.readNewDataOnce();
-      } while (this.readQueued);
+      } while (this.readQueued && !this.closed);
     } finally {
       this.reading = false;
     }
   }
 
   private async readNewDataOnce(): Promise<void> {
-    if (!existsSync(this.filePath)) return;
+    if (this.closed || !existsSync(this.filePath)) return;
 
     let size = 0;
     try {
@@ -108,6 +113,7 @@ class FileTailer {
     this.tailState.partial = lines.pop() ?? '';
 
     for (const line of lines) {
+      if (this.closed) break;
       const trimmed = line.trim();
       if (!trimmed) continue;
       await this.onLine(trimmed);
@@ -166,11 +172,13 @@ class FileTailer {
       const lines = combined.split('\n');
       this.tailState.partial = lines.pop() ?? '';
       for (const line of lines) {
+        if (this.closed) break;
         const trimmed = line.trim();
         if (!trimmed) continue;
         await this.onLine(trimmed);
       }
       processedEnd = frame.end;
+      if (this.closed) break;
     }
 
     const nextOffset = scan.tornStart !== null && scan.tornStart > processedEnd ? scan.tornStart : processedEnd;

@@ -225,4 +225,41 @@ describe('TranscriptWatcher zstd (DSH session logs)', () => {
 
     expect(sessionInitCalls.filter(c => c.prompt === 'only once')).toHaveLength(1);
   });
+
+  it('suppresses a queued read after close (no dispatch after shutdown)', async () => {
+    const sessionId = 'a9d41e55-6666-7777-8888-999900001111';
+    const sessionDir = join(tmpRoot, `session-${sessionId}`);
+    mkdirSync(sessionDir, { recursive: true });
+    const filePath = join(sessionDir, 'session.jsonl.zstd');
+    const statePath = join(tmpRoot, 'state.json');
+
+    const watch: WatchTarget = {
+      name: 'dsh',
+      path: join(tmpRoot, '**', '*.jsonl.zstd'),
+      schema: dshSchema,
+    };
+    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+
+    // Two frames: the first dispatch is held in-flight, a poke queues the
+    // second frame's read, then the tailer is closed before the hold releases.
+    writeFileSync(filePath, Buffer.concat([
+      zstdFrame([userMessageEvent(0, 'first')]),
+      zstdFrame([userMessageEvent(1, 'second')]),
+    ]));
+
+    handlerDelayMs = 150;
+    try {
+      await (watcher as any).addTailer(filePath, watch, dshSchema);
+      await waitForAsyncTail();
+      (watcher as any).tailers.get(filePath)?.poke();
+      watcher.stop(); // closes tailers while the first dispatch is in flight
+      await new Promise(resolve => setTimeout(resolve, 300));
+    } finally {
+      handlerDelayMs = 0;
+    }
+
+    const prompts = sessionInitCalls.map(call => call.prompt);
+    expect(prompts).toContain('first');
+    expect(prompts).not.toContain('second');
+  });
 });
