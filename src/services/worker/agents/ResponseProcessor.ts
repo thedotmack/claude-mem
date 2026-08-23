@@ -4,6 +4,7 @@ import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../..
 import {
   classifyObserverOutput,
   isAuthFailureObserverOutput,
+  isContextOverflowObserverOutput,
   isQuotaLimitedObserverOutput,
   previewOutput,
 } from '../../../sdk/output-classifier.js';
@@ -27,6 +28,17 @@ export interface ObservationFileEvidence {
   files_read: string[];
   files_modified: string[];
 }
+
+/**
+ * Context-overflow recovery budget (#2956). A generator whose live SDK
+ * conversation is full answers every further turn with "Prompt is too long",
+ * so the first overflow aborts it and restarts on a fresh context with the
+ * claimed batch preserved. If the fresh context overflows again on that same
+ * batch, the batch itself cannot fit: drop it and restart once more so the
+ * rest of the queue is not lost. Two is the smallest budget that both retries
+ * once and cannot loop.
+ */
+const MAX_CONSECUTIVE_CONTEXT_OVERFLOWS = 2;
 
 const READ_TOOL_NAMES = new Set(['Read']);
 const WRITE_TOOL_NAMES = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'write_file']);
@@ -345,6 +357,47 @@ export async function processAgentResponse(
       return;
     }
 
+    if (isContextOverflowObserverOutput(text)) {
+      // The SDK conversation is full: every later turn on this generator would
+      // overflow too, so the only recovery is a fresh context. Unlike the
+      // quota/auth pauses this is not waiting on the user — SessionRoutes
+      // restarts the generator immediately after the exit when work remains.
+      session.consecutiveInvalidOutputs = 0;
+      const overflows = (session.consecutiveContextOverflows ?? 0) + 1;
+      session.consecutiveContextOverflows = overflows;
+
+      if (overflows >= MAX_CONSECUTIVE_CONTEXT_OVERFLOWS) {
+        // A fresh context overflowed on the same batch: the batch itself does
+        // not fit. Drop it so the restart below cannot replay it forever.
+        const droppedMessages = await sessionManager.confirmClaimedMessages(session.sessionDbId);
+        session.earliestPendingTimestamp = null;
+        session.consecutiveContextOverflows = 0;
+        logger.error('PARSER', `${agentName} context overflow persisted on a fresh context — dropping the claimed batch and restarting`, {
+          sessionId: session.sessionDbId,
+          outputClass: 'prose',
+          droppedMessages,
+          preview: previewOutput(text),
+        });
+      } else {
+        await sessionManager.resetProcessingToPending(session.sessionDbId);
+        logger.warn('PARSER', `${agentName} returned context-overflow text — restarting generator on a fresh context and preserving queued batch`, {
+          sessionId: session.sessionDbId,
+          outputClass: 'prose',
+          consecutiveContextOverflows: overflows,
+          preview: previewOutput(text),
+        });
+      }
+
+      session.abortReason = 'overflow:observer_text';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      return;
+    }
+
     // Classify the non-XML output so a dropped batch is visible, not silent.
     // Ordinary idle/prose is a claimed no-op batch: confirm it and do not build
     // any respawn debt from repeated skip acknowledgements.
@@ -367,8 +420,10 @@ export async function processAgentResponse(
   }
 
   // Valid parse — clear the invalid-output counter so transient misses don't
-  // accumulate toward a respawn across a healthy session.
+  // accumulate toward a respawn across a healthy session, and the overflow
+  // counter: a fresh context that parses again has recovered (#2956).
   session.consecutiveInvalidOutputs = 0;
+  session.consecutiveContextOverflows = 0;
 
   if (!session.memorySessionId) {
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {

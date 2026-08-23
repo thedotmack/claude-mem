@@ -72,6 +72,38 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
 }
 
 /**
+ * Detect provider context-overflow text returned as an assistant message
+ * instead of a thrown SDK error (#2956). The Claude CLI echoes the Anthropic
+ * "Prompt is too long" rejection as plain assistant text, so it reaches
+ * processAgentResponse as non-XML prose — classifyClaudeError never sees it.
+ *
+ * Deliberately narrow: only provider/API error phrasings match. Observer prose
+ * that merely talks about its context window, and any XML-shaped output, never
+ * match — those stay ordinary prose and are confirmed/dropped as before.
+ */
+export function isContextOverflowObserverOutput(raw: unknown): boolean {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return false;
+  }
+
+  if (/<(observation|summary)\b/i.test(raw) || /<skip_summary\b/i.test(raw)) {
+    return false;
+  }
+
+  const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  return (
+    /\bprompt is too long\b/.test(text) ||
+    /\binput is too long\b/.test(text) ||
+    /\brequest payload size exceeds\b/.test(text) ||
+    /\bmaximum context length\b/.test(text) ||
+    /\bcontext[ _]length[ _]exceeded\b/.test(text) ||
+    /\btoo many (?:input )?tokens\b/.test(text) ||
+    /\b(?:exceeds?|exceeded|over|beyond) (?:the )?(?:model'?s? |maximum |max )?context (?:window|length|limit)\b/.test(text)
+  );
+}
+
+/**
  * Detect provider authentication-failure prose so claimed work can be retried
  * after the user restores provider authentication.
  */

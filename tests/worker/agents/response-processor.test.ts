@@ -565,6 +565,38 @@ describe('ResponseProcessor', () => {
     });
   });
 
+  describe('context-overflow recovery counter', () => {
+    it('resets consecutiveContextOverflows once a fresh context yields a valid parse', async () => {
+      const session = createMockSession({ consecutiveContextOverflows: 1 });
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Stored after a fresh-context restart</title>
+          <subtitle>Recovery</subtitle>
+          <narrative>The preserved batch fit on a fresh context.</narrative>
+          <facts><fact>ok</fact></facts>
+          <concepts><concept>recovery</concept></concepts>
+          <files_read><file>src/a.ts</file></files_read>
+          <files_modified></files_modified>
+        </observation>
+      `;
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+      expect(session.consecutiveContextOverflows).toBe(0);
+    });
+  });
+
   describe('parsing summary from XML response', () => {
     it('should parse summary from response', async () => {
       const session = createMockSession();

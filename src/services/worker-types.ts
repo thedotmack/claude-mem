@@ -30,6 +30,14 @@ export interface ActiveSession {
    * accumulate respawn debt.
    */
   consecutiveInvalidOutputs: number;
+  /**
+   * Consecutive observer turns that came back as provider context-overflow
+   * text ("Prompt is too long", #2956). The first overflow restarts the
+   * generator on a fresh SDK context with the claimed batch preserved; a second
+   * consecutive overflow means the batch itself does not fit, so it is dropped
+   * before restarting. Reset on every valid parse.
+   */
+  consecutiveContextOverflows: number;
   forceInit?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;

@@ -342,6 +342,121 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(session.currentProvider).toBeNull();
   });
 
+  it('restarts on bare context-overflow text (#2956) and preserves the claimed batch', async () => {
+    const storeObservations = mock(() => ({ observationIds: [], summaryId: null, createdAtEpoch: 0 }));
+    const sm = new SessionManager(makeDbManager(storeObservations));
+    const session = sm.initializeSession(12, 'do the thing', 1);
+    session.memorySessionId = 'mem-12';
+    session.consecutiveInvalidOutputs = 2;
+    await queueAndClaimOne(sm, 12);
+
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+    const worker = makeWorker();
+
+    await processAgentResponse(
+      'Prompt is too long',
+      session,
+      makeDbManager(storeObservations),
+      sm,
+      worker,
+      0,
+      null,
+      'TestAgent',
+    );
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(resetSpy).toHaveBeenCalledWith(12);
+    expect(storeObservations).not.toHaveBeenCalled();
+    expect(sm.getMessageBuffer().getPendingCount(12)).toBe(1);
+    expect(session.claimedMessageIds).toEqual([]);
+    expect(session.consecutiveInvalidOutputs).toBe(0);
+    expect(session.consecutiveContextOverflows).toBe(1);
+    expect(session.abortReason).toBe('overflow:observer_text');
+    expect(session.abortController.signal.aborted).toBe(true);
+    expect(worker.broadcastProcessingStatus).toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      'PARSER',
+      expect.stringMatching(/context-overflow/),
+      expect.objectContaining({ sessionId: 12, consecutiveContextOverflows: 1 }),
+    );
+  });
+
+  it('drops the claimed batch when a fresh context overflows on it again, and still restarts', async () => {
+    const storeObservations = mock(() => ({ observationIds: [], summaryId: null, createdAtEpoch: 0 }));
+    const sm = new SessionManager(makeDbManager(storeObservations));
+    const session = sm.initializeSession(13, 'do the thing', 1);
+    session.memorySessionId = 'mem-13';
+    session.consecutiveContextOverflows = 1; // the previous generator already overflowed on this batch
+    await queueAndClaimOne(sm, 13);
+
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+    const worker = makeWorker();
+
+    await processAgentResponse(
+      'Prompt is too long',
+      session,
+      makeDbManager(storeObservations),
+      sm,
+      worker,
+      0,
+      null,
+      'TestAgent',
+    );
+
+    expect(confirmSpy).toHaveBeenCalledWith(13);
+    expect(resetSpy).not.toHaveBeenCalled();
+    expect(storeObservations).not.toHaveBeenCalled();
+    expect(sm.getMessageBuffer().getPendingCount(13)).toBe(0);
+    expect(session.claimedMessageIds).toEqual([]);
+    expect(session.earliestPendingTimestamp).toBeNull();
+    expect(session.consecutiveContextOverflows).toBe(0);
+    expect(session.abortReason).toBe('overflow:observer_text');
+    expect(session.abortController.signal.aborted).toBe(true);
+    expect(worker.broadcastProcessingStatus).toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      'PARSER',
+      expect.stringMatching(/dropping the claimed batch/),
+      expect.objectContaining({ sessionId: 13, droppedMessages: 1 }),
+    );
+  });
+
+  it('overflow generator exit keeps the active session and in-memory buffer', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(14, 'do the thing', 1);
+    session.memorySessionId = 'mem-14';
+    session.currentProvider = 'claude';
+    session.generatorPromise = Promise.resolve();
+    await queueAndClaimOne(sm, 14);
+
+    await processAgentResponse(
+      'Prompt is too long',
+      session,
+      makeDbManager(),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'TestAgent',
+    );
+
+    const finalizeSession = mock(() => Promise.resolve());
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+
+    await handleGeneratorExit(session, session.abortReason, {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+    });
+
+    expect(finalizeSession).not.toHaveBeenCalled();
+    expect(removeSpy).not.toHaveBeenCalled();
+    expect(sm.getSession(14)).toBe(session);
+    expect(sm.getMessageBuffer().getPendingCount(14)).toBe(1);
+    expect(session.generatorPromise).toBeNull();
+    expect(session.currentProvider).toBeNull();
+  });
+
   it('confirms skip/no-op prose but preserves the same queue shape for quota pause', async () => {
     const skipSm = new SessionManager(makeDbManager());
     const skipSession = skipSm.initializeSession(4, 'do the thing', 1);

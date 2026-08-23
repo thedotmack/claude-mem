@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   classifyObserverOutput,
   isAuthFailureObserverOutput,
+  isContextOverflowObserverOutput,
   isQuotaLimitedObserverOutput,
   previewOutput,
 } from '../../src/sdk/output-classifier.js';
@@ -94,6 +95,39 @@ describe('isAuthFailureObserverOutput', () => {
     expect(isAuthFailureObserverOutput('No observations to record.')).toBe(false);
     expect(isAuthFailureObserverOutput('Please run /login in the observed project instructions.')).toBe(false);
     expect(isAuthFailureObserverOutput('The project authentication guide says to run /login before testing.')).toBe(false);
+  });
+});
+
+describe('isContextOverflowObserverOutput', () => {
+  it('detects the bare Claude CLI overflow echo (the exact production payload)', () => {
+    expect(isContextOverflowObserverOutput('Prompt is too long')).toBe(true);
+  });
+
+  it('detects Anthropic / OpenAI-style overflow error text', () => {
+    expect(isContextOverflowObserverOutput('prompt is too long: 213456 tokens > 200000 maximum')).toBe(true);
+    expect(isContextOverflowObserverOutput('Input is too long for requested model.')).toBe(true);
+    expect(isContextOverflowObserverOutput('Request payload size exceeds the limit.')).toBe(true);
+    expect(isContextOverflowObserverOutput("This model's maximum context length is 128000 tokens.")).toBe(true);
+    expect(isContextOverflowObserverOutput('Error: context_length_exceeded — too many tokens in request')).toBe(true);
+  });
+
+  it('does not treat quota or auth prose as overflow', () => {
+    expect(isContextOverflowObserverOutput('Claude usage limit reached. Your weekly limit will reset soon.')).toBe(false);
+    expect(isContextOverflowObserverOutput('Failed to authenticate. API Error: 401 · Please run /login')).toBe(false);
+  });
+
+  it('does not treat observer prose that merely mentions its context window as overflow', () => {
+    expect(isContextOverflowObserverOutput('I hit the context window, so there is no XML.')).toBe(false);
+    expect(isContextOverflowObserverOutput('The file is too long to summarize in one observation.')).toBe(false);
+    expect(isContextOverflowObserverOutput('Skipping — repeated log scan with no new findings.')).toBe(false);
+  });
+
+  it('never matches XML-shaped output, idle output, or non-strings', () => {
+    expect(isContextOverflowObserverOutput('prompt is too long <observation></observation>')).toBe(false);
+    expect(isContextOverflowObserverOutput('<summary>prompt is too long</summary>')).toBe(false);
+    expect(isContextOverflowObserverOutput('')).toBe(false);
+    expect(isContextOverflowObserverOutput(undefined)).toBe(false);
+    expect(isContextOverflowObserverOutput(42)).toBe(false);
   });
 });
 

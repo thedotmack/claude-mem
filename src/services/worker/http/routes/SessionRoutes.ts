@@ -278,8 +278,42 @@ export class SessionRoutes extends BaseRouteHandler {
           sessionManager: this.sessionManager,
           completionHandler: this.completionHandler,
         });
+        if ((reason ?? '').split(':')[0] === 'overflow') {
+          await this.restartAfterOverflow(session.sessionDbId, provider);
+        }
       });
     session.generatorPromise = generatorPromise;
+  }
+
+  /**
+   * An observer turn came back as provider context-overflow text (#2956): the
+   * live SDK conversation is full, so every further turn on that generator
+   * would overflow as well. ResponseProcessor preserved the claimed batch (or,
+   * on a repeat overflow, dropped it) and aborted; handleGeneratorExit kept the
+   * session and its buffer. Start a fresh generator right away while work is
+   * still buffered — waiting for the next ingest is not enough, because the
+   * wall is typically hit during a long read burst after which ingest stops
+   * and ensureGeneratorRunning would never be called again. An empty buffer
+   * means nothing to recover: leave the session idle like a quota pause.
+   */
+  private async restartAfterOverflow(sessionDbId: number, provider: string): Promise<void> {
+    if (!this.sessionManager.getSession(sessionDbId)) {
+      return;
+    }
+    const pendingCount = this.sessionManager.getMessageBuffer().getPendingCount(sessionDbId);
+    if (pendingCount === 0) {
+      logger.info('SESSION', 'Observer context overflow: nothing buffered, not restarting generator', {
+        sessionId: sessionDbId,
+        provider,
+      });
+      return;
+    }
+    logger.info('SESSION', 'Observer context overflow: restarting generator on a fresh context', {
+      sessionId: sessionDbId,
+      provider,
+      pendingCount,
+    });
+    await this.ensureGeneratorRunning(sessionDbId, 'observation');
   }
 
   setupRoutes(app: express.Application): void {

@@ -13,9 +13,12 @@ export interface GeneratorExitDependencies {
  * Post-generator-exit handler.
  *
  * The generator's message iterator only ends on abort (idle / shutdown) or when
- * the SDK stream throws, so most exits mean this session is done. Quota exits
- * are different: claimed work has already been reset to pending, so leave the
- * session and in-RAM buffer alive for a later generator start.
+ * the SDK stream throws, so most exits mean this session is done. Quota, auth
+ * and overflow exits are different: claimed work has already been reset to
+ * pending (or, for a repeated overflow, deliberately dropped), so leave the
+ * session and in-RAM buffer alive. Quota/auth wait for a later generator start;
+ * overflow is restarted immediately by SessionRoutes on a fresh SDK context
+ * when work is still buffered (#2956).
  *
  * For non-quota exits we do NOT respawn on remaining buffered work: the old
  * respawn-on-pending loop, driven by the durable pending_messages queue, was the
@@ -42,7 +45,7 @@ export async function handleGeneratorExit(
   session.currentProvider = null;
 
   const abortCategory = (reason ?? '').split(':')[0];
-  if (abortCategory === 'quota' || abortCategory === 'auth') {
+  if (abortCategory === 'quota' || abortCategory === 'auth' || abortCategory === 'overflow') {
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
