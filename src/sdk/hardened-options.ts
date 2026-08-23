@@ -60,7 +60,32 @@ export const OBSERVER_DISALLOWED_TOOLS = [
   'NotebookEdit',   // No notebook editing
   'AskUserQuestion',// No asking questions
   'TodoWrite',
+  'SendMessage',    // No instructing other sessions
+  'ListAgents',     // No discovering other sessions to instruct
 ] as const;
+
+/**
+ * WHY SendMessage AND ListAgents ARE ON THAT LIST
+ *
+ * Every other entry above stops the Observer from acting on the user's machine.
+ * These two stop it from asking a session that still can.
+ *
+ * An Observer with no tools, messaging a working session that has all of them,
+ * borrows that session's authority for as far as it can persuade. The system
+ * prompt's "You do not have access to tools" stays true the whole time, which
+ * is why the property is worth naming separately: what is bounded is the
+ * Observer's own reach, not the reach of what it can talk into acting.
+ *
+ * This is the case the threat model above predicts, arriving through a tool the
+ * deny-list had never heard of. It is also why the CLI spawn path deserves a
+ * second look: `tools: []`, `allowedTools: []` and `canUseTool` are Options
+ * fields with no command-line equivalent, so an Observer spawned as a `claude`
+ * subprocess is protected by this list alone. The "no single option is
+ * load-bearing" property holds for the SDK path and not for that one.
+ *
+ * ListAgents rides along because it is how a session finds peers to address.
+ * Denying the send while leaving discovery open is half a boundary.
+ */
 
 export interface HardenedSdkOptionsInput {
   /** Which call site is constructing options — flows into audit entries. */
