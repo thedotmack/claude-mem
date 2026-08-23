@@ -221,11 +221,16 @@ async function flushSpool() {
   // oldest-first replay regardless of file order (a failed-flush merge can
   // interleave); Array.prototype.sort is stable, so same-second events keep
   // their file order
-  const batch = lines.slice(-SPOOL_MAX).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean)
+  const all = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean)
     .sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  // bounded send: the oldest SPOOL_MAX go now; any remainder is re-spooled for
+  // the next flush instead of being silently dropped with the claim
+  const batch = all.slice(0, SPOOL_MAX);
+  const rest = all.slice(SPOOL_MAX);
   try {
     const res = await http('POST', `${CFG.apiBase}/api/hooks/ingest`, { v: 1, batch }, HTTP_TIMEOUT_MS.normal);
     if (!res.ok) throw new Error(String(res.status));
+    for (const env of rest) spool(env);
     try { rmSync(claim, { force: true }); } catch {}
   } catch {
     // put it back for next time — MERGE, never rename-over: a concurrent hook

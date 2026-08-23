@@ -238,6 +238,23 @@ await run('observation', { session_id: 's2', cwd: '/home/claude', tool_name: 'Ba
 const orderedBatch = received.find(r => r.body?.batch)?.body.batch.map(e => e.payload.tool_use_id);
 check('flush replays oldest-first (ts sort)', JSON.stringify(orderedBatch) === JSON.stringify(['tu_older', 'tu_newer']), JSON.stringify(orderedBatch));
 
+// ---- 8c. overflow spool never drops events ----
+console.log('\n[8c] spool overflow (SPOOL_MAX=200)');
+rmSync(SPOOL, { force: true });
+for (let i = 1; i <= 201; i++) {
+  appendFileSync(SPOOL, JSON.stringify({ v: 1, platform: 'cowork', event: 'observation', project: 'cmem_work_root', session_id: 's2', ts: 1000 + i, payload: { tool_use_id: 'e' + i } }) + '\n');
+}
+received = [];
+await run('observation', { session_id: 's2', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_14', tool_input: { command: 'true' } });
+const bigBatch = received.find(r => r.body?.batch)?.body.batch.map(e => e.payload.tool_use_id) || [];
+check('first flush sends oldest 200', bigBatch.length === 200 && bigBatch[0] === 'e1' && bigBatch[199] === 'e200', `len=${bigBatch.length} first=${bigBatch[0]} last=${bigBatch[199]}`);
+check('overflow remainder re-spooled, not dropped', existsSync(SPOOL) && readFileSync(SPOOL, 'utf8').includes('"e201"'));
+received = [];
+await run('observation', { session_id: 's2', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_15', tool_input: { command: 'true' } });
+const tailBatch = received.find(r => r.body?.batch)?.body.batch.map(e => e.payload.tool_use_id) || [];
+check('next flush delivers the remainder', tailBatch.includes('e201'), JSON.stringify(tailBatch));
+check('spool empty after full drain', !existsSync(SPOOL) || readFileSync(SPOOL, 'utf8').trim() === '');
+
 // ---- 9. remaining lifecycle events ----
 console.log('\n[9] lifecycle events');
 received = [];
