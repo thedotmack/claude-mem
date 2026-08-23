@@ -1,0 +1,200 @@
+#!/usr/bin/env node
+// Test harness for claude-mem-cowork hooks. Mock cmem.ai server + assertions.
+import http from 'node:http';
+import { execFile } from 'node:child_process';
+import { existsSync, rmSync, readFileSync } from 'node:fs';
+
+import { fileURLToPath } from 'node:url';
+const PLUGIN_DIR = fileURLToPath(new URL('..', import.meta.url)).replace(/\/$/, '');
+const HOOK = PLUGIN_DIR + '/scripts/cmem-hook.mjs';
+const SPOOL = '/tmp/cmem-spool.jsonl';
+let received = [];
+let mode = 'full'; // 'full' | 'no-hooks-endpoints' (404s, mcp only)
+
+const server = http.createServer((req, res) => {
+  let body = '';
+  req.on('data', c => body += c);
+  req.on('end', () => {
+    const rec = { method: req.method, url: req.url, auth: req.headers.authorization, body: body ? JSON.parse(body) : null };
+    received.push(rec);
+    if (req.url.startsWith('/api/hooks/ingest')) {
+      if (mode === 'no-hooks-endpoints') { res.writeHead(404); return res.end('{}'); }
+      res.writeHead(202, { 'content-type': 'application/json' });
+      return res.end('{"accepted":1}');
+    }
+    if (req.url.startsWith('/api/hooks/context')) {
+      if (mode === 'no-hooks-endpoints') { res.writeHead(404); return res.end('{}'); }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ context: '- [obs] Shipped Pro trial funnel v13.15.0\n- [obs] Parity gate 14 fail / 1 pass' }));
+    }
+    if (req.url.startsWith('/api/mcp')) {
+      const rpc = rec.body;
+      if (rpc?.method === 'tools/call') {
+        res.writeHead(200, { 'content-type': 'application/json', 'mcp-session-id': 'sess-1' });
+        const rowsJson = JSON.stringify({ freshness: 'now', rows: [
+          { kind: 'observation', project: 'cmem_work_root', title: 'Root obs A', snippet: 'root detail' },
+          { kind: 'observation', project: 'claude-mem/other', title: 'Other obs', snippet: 'nope' }
+        ]});
+        return res.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: rowsJson }] } }));
+      }
+      res.writeHead(200, { 'content-type': 'application/json', 'mcp-session-id': 'sess-1' });
+      return res.end(JSON.stringify({ jsonrpc: '2.0', id: rpc?.id ?? null, result: {} }));
+    }
+    res.writeHead(404); res.end();
+  });
+});
+
+function run(event, stdinObj, env = {}) {
+  return new Promise((resolve, reject) => {
+    const child = execFile('node', [HOOK, event], {
+      env: { ...process.env, CMEM_API_BASE: `http://127.0.0.1:${PORT}`, CMEM_API_KEY: 'test-key-1234', ...env },
+      encoding: 'utf8', timeout: 45000
+    }, (err, stdout) => err && err.code !== 0 && err.killed ? reject(err) : resolve({ out: stdout, code: err?.code || 0 }));
+    child.stdin.end(typeof stdinObj === 'string' ? stdinObj : stdinObj ? JSON.stringify(stdinObj) : '');
+  });
+}
+
+let pass = 0, fail = 0;
+function check(name, cond, extra) {
+  if (cond) { pass++; console.log(`  ✅ ${name}`); }
+  else { fail++; console.log(`  ❌ ${name}${extra ? ' — ' + extra : ''}`); }
+}
+
+const PORT = await new Promise(r => server.listen(0, '127.0.0.1', () => r(server.address().port)));
+rmSync(SPOOL, { force: true });
+
+// ---- 1. observation capture ----
+console.log('\n[1] PostToolUse observation');
+received = [];
+await run('observation', { session_id: 's1', cwd: '/home/claude', tool_name: 'Write', tool_use_id: 'tu_1', tool_input: { file_path: '/x.md', content: 'hello' }, tool_response: 'ok' });
+const ing = received.find(r => r.url.startsWith('/api/hooks/ingest'));
+check('POSTs to /api/hooks/ingest', !!ing);
+check('bearer auth sent', ing?.auth === 'Bearer test-key-1234');
+check('envelope shape', ing?.body.v === 1 && ing.body.event === 'observation' && ing.body.platform === 'cowork' && ing.body.session_id === 's1');
+check('fragment fields', ing?.body.payload.tool_name === 'Write' && ing.body.payload.tool_use_id === 'tu_1');
+
+// ---- 2. big field truncation ----
+console.log('\n[2] truncation');
+received = [];
+await run('observation', { session_id: 's1', tool_name: 'Read', tool_use_id: 'tu_2', tool_input: {}, tool_response: 'x'.repeat(100000) });
+const ing2 = received.find(r => r.url.startsWith('/api/hooks/ingest'));
+check('response truncated to ~16KB', typeof ing2?.body.payload.tool_response === 'string' && ing2.body.payload.tool_response.length < 17000 && ing2.body.payload.tool_response.includes('truncated'));
+
+// ---- 3. memory-tool feedback guard ----
+console.log('\n[3] skip guard');
+received = [];
+await run('observation', { session_id: 's1', tool_name: 'mcp__memory__memory_write', tool_use_id: 'tu_3' });
+check('memory tool calls not captured', !received.some(r => r.url.startsWith('/api/hooks/ingest')));
+
+// ---- 4. SessionStart context injection ----
+console.log('\n[4] SessionStart inject');
+received = [];
+let out = (await run('context', { session_id: 's1', cwd: '/home/claude', source: 'startup' })).out;
+let j = JSON.parse(out);
+check('hookSpecificOutput.SessionStart', j.hookSpecificOutput?.hookEventName === 'SessionStart');
+check('context block wrapped', j.hookSpecificOutput?.additionalContext.includes('<claude-mem-context') && j.hookSpecificOutput.additionalContext.includes('Parity gate'));
+check('session-start also ingested', received.some(r => r.url.startsWith('/api/hooks/ingest') && r.body?.event === 'session-start' || (r.body?.batch || []).some?.(e => e.event === 'session-start')));
+
+// ---- 5. agent-context updatedInput ----
+console.log('\n[5] PreToolUse agent inject');
+received = [];
+out = (await run('agent-context', { session_id: 's1', tool_name: 'Agent', tool_input: { description: 'fix bug', prompt: 'Fix the trial funnel installer bug' } })).out;
+j = JSON.parse(out);
+check('updatedInput present', !!j.hookSpecificOutput?.updatedInput);
+check('prompt prepended + original kept', j.hookSpecificOutput?.updatedInput.prompt.startsWith('<claude-mem-context') && j.hookSpecificOutput.updatedInput.prompt.endsWith('Fix the trial funnel installer bug'));
+check('other input fields preserved', j.hookSpecificOutput?.updatedInput.description === 'fix bug');
+out = (await run('agent-context', { session_id: 's1', tool_name: 'Agent', tool_input: { prompt: '<claude-mem-context>already</claude-mem-context> do it' } })).out;
+check('no double-injection', out.trim() === '');
+
+// ---- 6. MCP fallback when /api/hooks/* is 404 ----
+console.log('\n[6] MCP fallback (endpoints not deployed)');
+mode = 'no-hooks-endpoints';
+received = [];
+out = (await run('context', { session_id: 's1', cwd: '/home/claude', source: 'startup' })).out;
+j = out.trim() ? JSON.parse(out) : null;
+check('falls back to /api/mcp, scoped rows injected', j?.hookSpecificOutput?.additionalContext.includes('Root obs A'));
+check('other-project rows filtered out', !j?.hookSpecificOutput?.additionalContext.includes('Other obs'));
+check('404 ingest not spooled', !existsSync(SPOOL));
+// 6b: project with zero observations -> taking-notes notice with viewer link
+out = (await run('context', { session_id: 's1', cwd: '/home/claude/work/widget-app', source: 'startup' })).out;
+j = out.trim() ? JSON.parse(out) : null;
+check('empty project → taking-notes notice', j?.hookSpecificOutput?.additionalContext.includes('automatically taking notes') && j.hookSpecificOutput.additionalContext.includes('cmem_work_widget-app'));
+check('notice has live viewer link', /http:\/\/localhost:\d+/.test(j?.hookSpecificOutput?.additionalContext || ''));
+mode = 'full';
+
+// ---- 7. no key → inert (blank-config plugin copy, isolated HOME) ----
+console.log('\n[7] unpaired = inert');
+const { execSync } = await import('node:child_process');
+execSync(`rm -rf /tmp/plugin-blank /tmp/emptyhome && mkdir -p /tmp/emptyhome && cp -r ${PLUGIN_DIR} /tmp/plugin-blank`);
+execSync(`node -e "const f='/tmp/plugin-blank/config.json',fs=require('fs'),c=JSON.parse(fs.readFileSync(f));c.apiKey='';c.userId='';c.syncHubUrl='';fs.writeFileSync(f,JSON.stringify(c))"`);
+received = [];
+out = (await new Promise((resolve) => {
+  const child = (execFile)('node', ['/tmp/plugin-blank/scripts/cmem-hook.mjs', 'observation'], {
+    env: { ...process.env, HOME: '/tmp/emptyhome', CMEM_API_BASE: `http://127.0.0.1:${PORT}`, CMEM_API_KEY: '' },
+    encoding: 'utf8', timeout: 45000
+  }, (err, stdout) => resolve({ out: stdout }));
+  child.stdin.end(JSON.stringify({ session_id: 's1', tool_name: 'Write', tool_use_id: 'tu_9' }));
+})).out;
+check('no requests without key', received.length === 0);
+check('no stdout', out.trim() === '');
+// 7b: ~/.claude-mem/settings.json fallback supplies credentials when config is blank
+received = [];
+execSync('mkdir -p /tmp/emptyhome/.claude-mem');
+execSync(`node -e "require('fs').writeFileSync('/tmp/emptyhome/.claude-mem/settings.json',JSON.stringify({syncToken:'cm_test_fallback',userId:'u-1'}))"`);
+await new Promise((resolve) => {
+  const child = (execFile)('node', ['/tmp/plugin-blank/scripts/cmem-hook.mjs', 'observation'], {
+    env: { ...process.env, HOME: '/tmp/emptyhome', CMEM_API_BASE: `http://127.0.0.1:${PORT}`, CMEM_API_KEY: '' },
+    encoding: 'utf8', timeout: 45000
+  }, () => resolve());
+  child.stdin.end(JSON.stringify({ session_id: 's1', tool_name: 'Write', tool_use_id: 'tu_9b' }));
+});
+const fb = received.find(r => r.url.startsWith('/api/hooks/ingest'));
+check('~/.claude-mem/settings.json fallback used', fb?.auth === 'Bearer cm_test_fallback');
+
+// ---- 8. server down → spool, then flush ----
+console.log('\n[8] spool + flush');
+rmSync(SPOOL, { force: true });
+await run('observation', { session_id: 's2', tool_name: 'Bash', tool_use_id: 'tu_10', tool_input: { command: 'ls' } }, { CMEM_API_BASE: 'http://127.0.0.1:1' });
+check('failed POST spooled', existsSync(SPOOL) && readFileSync(SPOOL, 'utf8').includes('tu_10'));
+received = [];
+await run('observation', { session_id: 's2', tool_name: 'Bash', tool_use_id: 'tu_11', tool_input: { command: 'pwd' } });
+const gotBatch = received.some(r => r.body?.batch?.some(e => e.payload?.tool_use_id === 'tu_10'));
+check('spool flushed as batch on next event', gotBatch);
+check('spool cleared', !existsSync(SPOOL) || readFileSync(SPOOL, 'utf8').trim() === '');
+
+// ---- 9. remaining lifecycle events ----
+console.log('\n[9] lifecycle events');
+received = [];
+await run('session-init', { session_id: 's1', prompt: 'hello world' });
+await run('subagent-stop', { session_id: 's1', agent_id: 'a1', agent_type: 'general-purpose', tool_use_id: 'tu_12' });
+await run('summarize', { session_id: 's1' });
+await run('session-end', { session_id: 's1', reason: 'exit' });
+const evs = received.filter(r => r.url.startsWith('/api/hooks/ingest')).map(r => r.body.event);
+check('session-init/subagent-stop/summarize/session-end all sent', ['session-init', 'subagent-stop', 'summarize', 'session-end'].every(e => evs.includes(e)), JSON.stringify(evs));
+const initEv = received.find(r => r.body?.event === 'session-init');
+check('prompt included in session-init', initEv?.body.payload.prompt === 'hello world');
+
+// ---- 9b. project auto-naming (cmem_work_ prefix) ----
+console.log('\n[9b] project auto-naming');
+received = [];
+await run('observation', { session_id: 's3', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_20' });
+await run('observation', { session_id: 's3', cwd: '/home/claude/work/Leads Dashboard!', tool_name: 'Bash', tool_use_id: 'tu_21' });
+await run('observation', { session_id: 's3', cwd: '/tmp', tool_name: 'Bash', tool_use_id: 'tu_22' });
+const projOf = id => received.find(r => r.body?.payload?.tool_use_id === id)?.body.project;
+check('root cwd → cmem_work_root', projOf('tu_20') === 'cmem_work_root', projOf('tu_20'));
+check('project folder → cmem_work_<slug>', projOf('tu_21') === 'cmem_work_leads-dashboard', projOf('tu_21'));
+check('generic dir (/tmp) → cmem_work_root', projOf('tu_22') === 'cmem_work_root', projOf('tu_22'));
+received = [];
+await run('observation', { session_id: 's3', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_23' }, { CMEM_PROJECT: 'my-explicit' });
+check('project is NOT a setting — env override ignored', received[0]?.body.project === 'cmem_work_root', received[0]?.body.project);
+
+// ---- 10. malformed stdin never crashes ----
+console.log('\n[10] resilience');
+const r1 = await run('observation', '{{{not json');
+check('malformed stdin exits 0', r1.code === 0);
+const r2 = await run('unknown-event', '{}');
+check('unknown event exits 0', r2.code === 0);
+
+server.close();
+console.log(`\n===== ${pass} passed, ${fail} failed =====`);
+process.exit(fail ? 1 : 0);
