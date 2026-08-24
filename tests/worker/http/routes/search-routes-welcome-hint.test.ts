@@ -1,5 +1,7 @@
 
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { join } from 'path';
 import type { Request, Response } from 'express';
 import { logger } from '../../../../src/utils/logger.js';
 import * as realContextGenerator from '../../../../src/services/context-generator.js';
@@ -19,6 +21,14 @@ mock.module('../../../../src/shared/paths.js', () => ({
 }));
 
 import { SearchRoutes } from '../../../../src/services/worker/http/routes/SearchRoutes.js';
+import {
+  OBSERVER_HEALTH_FILENAME,
+  OBSERVER_UNHEALTHY_FAILURE_THRESHOLD,
+} from '../../../../src/shared/observer-health.js';
+
+// The route reads the ledger from paths.dataDir() (CLAUDE_MEM_DATA_DIR, set to a
+// per-run temp dir by tests/preload.ts), so write it there for the health case.
+const observerHealthPath = join(realPaths.paths.dataDir(), OBSERVER_HEALTH_FILENAME);
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
 
@@ -88,6 +98,7 @@ describe('SearchRoutes Welcome Hint', () => {
     loggerSpies.forEach(spy => spy.mockRestore());
     delete process.env.CLAUDE_MEM_WELCOME_HINT_ENABLED;
     delete process.env.CLAUDE_MEM_WORKER_PORT;
+    if (existsSync(observerHealthPath)) rmSync(observerHealthPath, { force: true });
   });
 
   afterAll(() => {
@@ -113,6 +124,43 @@ describe('SearchRoutes Welcome Hint', () => {
     expect(body).toContain('Memory injection starts on your second session in a project.');
     expect(body).toContain('disappears once the first observation lands');
     expect(body).not.toContain('Welcome');
+    expect(generateContextStub).not.toHaveBeenCalled();
+  });
+
+  it('prepends the observer-health warning to the welcome hint when the observer is failing', async () => {
+    // A user whose observer has failed since install has zero observations, so
+    // the welcome-hint early return is the ONLY context they ever see. The
+    // health warning must ride along with it, not wait for generateContext.
+    mkdirSync(realPaths.paths.dataDir(), { recursive: true });
+    writeFileSync(observerHealthPath, JSON.stringify({
+      consecutiveFailures: OBSERVER_UNHEALTHY_FAILURE_THRESHOLD,
+      failingSinceAt: 1_754_700_000_000,
+      lastErrorAt: 1_754_700_100_000,
+      lastErrorMessage: "You've used your $30 monthly allowance.",
+      lastErrorProvider: 'cmem-pro',
+      lastSuccessAt: null,
+      lastErrorCode: 'allowance_exhausted',
+      lastErrorAction: 'It resets on the 1st. Upgrade or add credits to keep going now.',
+      lastErrorUrl: 'https://cmem.ai/dashboard',
+    }));
+
+    const routes = new SearchRoutes(mockSearchManager);
+    const handler = captureContextInjectHandler(routes);
+
+    const res = createMockRes();
+    const req = { query: { projects: '/path/to/empty-project' } } as unknown as Request;
+
+    handler(req, res as unknown as Response);
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(res.send).toHaveBeenCalledTimes(1);
+    const body = (res.send as any).mock.calls[0][0] as string;
+    expect(body).toContain("claude-mem can't save memories right now");
+    expect(body).toContain('What to do: It resets on the 1st. Upgrade or add credits to keep going now.');
+    expect(body).toContain('# claude-mem status');
+    expect(body).toContain('disappears once the first observation lands');
+    // Warning first, hint second — same order as normal context.
+    expect(body.indexOf('What to do:')).toBeLessThan(body.indexOf('# claude-mem status'));
     expect(generateContextStub).not.toHaveBeenCalled();
   });
 

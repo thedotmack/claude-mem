@@ -10,11 +10,13 @@ import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import { groupByDate } from '../../../../shared/timeline-formatting.js';
 import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
+import { withObserverHealthWarning } from '../../../context/ContextBuilder.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
+import { proTrialLine } from '../../../../shared/pro-promo.js';
 
 const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
 
@@ -51,6 +53,7 @@ Memory injection starts on your second session in a project.
 \`/learn-codebase\` is available if the user wants to front-load the entire repo into memory in a single pass (~5 minutes on a typical repo, optional). Otherwise memory builds passively as work happens.
 
 Live activity: {viewer_url}
+{pro_trial_line}
 How it works: \`/how-it-works\`
 
 This message disappears once the first observation lands.
@@ -311,9 +314,14 @@ export class SearchRoutes extends BaseRouteHandler {
       if (!this.projectsHaveObservations(sessionStore, projects, platformSource)) {
         const port = process.env.CLAUDE_MEM_WORKER_PORT ?? settings.CLAUDE_MEM_WORKER_PORT;
         const viewerUrl = `http://localhost:${port}`;
-        const hintBody = WELCOME_HINT_TEMPLATE.replace('{viewer_url}', viewerUrl);
+        const hintBody = WELCOME_HINT_TEMPLATE
+          .replace('{viewer_url}', viewerUrl)
+          .replace('{pro_trial_line}', proTrialLine('welcome-hint'));
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        res.send(hintBody);
+        // A project with zero observations is exactly where a failing observer
+        // hides: without this the health warning (applied inside
+        // generateContextWithStats) never reached the user this early-return serves.
+        res.send(withObserverHealthWarning(hintBody));
         return;
       }
     }

@@ -99,6 +99,38 @@ describe('shared error classification', () => {
     expect(err.kind).toBe('quota_exhausted');
   });
 
+  // Mirror of the worker classifier's OpenRouter marker list (Phase 2): the
+  // "Key limit exceeded" body arrives on a 403, "Rate limit exceeded" on a
+  // 429 stays a rate limit, and a bare 402 is quota with no body marker.
+  it('classifyHttpProviderError maps a 403 "Key limit exceeded" body to quota_exhausted', () => {
+    const err = classifyHttpProviderError({
+      status: 403,
+      bodyText: 'Key limit exceeded (total limit). Manage it using https://openrouter.ai/keys/abc',
+      cause: new Error(''),
+      providerLabel: 'OpenRouter',
+    });
+    expect(err.kind).toBe('quota_exhausted');
+  });
+
+  it('classifyHttpProviderError keeps a 429 "Rate limit exceeded" body as rate_limit', () => {
+    const err = classifyHttpProviderError({
+      status: 429,
+      bodyText: 'Rate limit exceeded',
+      cause: new Error(''),
+      providerLabel: 'OpenRouter',
+    });
+    expect(err.kind).toBe('rate_limit');
+  });
+
+  it('classifyHttpProviderError maps a bare 402 to quota_exhausted', () => {
+    const err = classifyHttpProviderError({
+      status: 402,
+      cause: new Error(''),
+      providerLabel: 'OpenRouter',
+    });
+    expect(err.kind).toBe('quota_exhausted');
+  });
+
   it('classifyHttpProviderError redacts fallback response bodies from message and cause', () => {
     const rawBody = 'RAW_PROVIDER_BODY with credential sk-secret';
     const err = classifyHttpProviderError({

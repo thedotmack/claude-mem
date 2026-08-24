@@ -29,7 +29,8 @@ import {
   recordClaudeCliSetupRequired,
 } from '../../../../shared/dependency-health.js';
 import { findClaudeExecutable, isClaudeExecutableUnspawnable } from '../../../../shared/find-claude-executable.js';
-import { isClassified, ClassifiedProviderError } from '../../provider-errors.js';
+import { recordObserverFailure } from '../../../../shared/observer-health.js';
+import { isClassified, ClassifiedProviderError, describeProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
 import {
   canAttemptClaudeCliSelfHeal,
@@ -264,11 +265,33 @@ export class SessionRoutes extends BaseRouteHandler {
         // controller on its next line, so aborted generators either resolve
         // normally (quota/overflow break) or hit the signal-aborted early
         // return above — this catch only ever sees non-abort rejections.
-        logger.error('SESSION', 'Generator failed', {
-          sessionId: session.sessionDbId,
-          provider,
-          error: errorMsg,
-        }, error);
+        if (isClassified(error)) {
+          // The single error-level line for a classified provider failure:
+          // code, message, action, link, and request id — same words the
+          // gateway sent. Pass the rendered string (not the Error): classified
+          // errors are user-state (quota/auth/rate-limit), not bugs, so the
+          // errorSink/captureException isn't fired for them at all.
+          logger.error('SESSION', 'Observer failed', {
+            sessionId: session.sessionDbId,
+            provider,
+            kind: error.kind,
+            ...(error.code ? { code: error.code } : {}),
+            ...(error.requestId ? { requestId: error.requestId } : {}),
+          }, describeProviderError(error));
+        } else {
+          logger.error('SESSION', 'Generator failed', {
+            sessionId: session.sessionDbId,
+            provider,
+            error: errorMsg,
+          }, error);
+        }
+        // Observer-health ledger: repeated generator failures mean observations
+        // are being dropped — session-start context warns the user via this.
+        // Classified errors carry the structured detail (code/action/link/
+        // request id) so the warning shows the same words as the log line.
+        recordObserverFailure(provider, isClassified(error)
+          ? { message: error.message, code: error.code, action: error.action, url: error.url, requestId: error.requestId }
+          : errorMsg);
         telemetryBuffer.record('session_compressed', session.sessionDbId, {
           outcome: 'error',
           provider,
