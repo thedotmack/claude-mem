@@ -480,6 +480,13 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     },
   );
 
+  it('rolls back the failed observation prompt before a paused session restarts', async () => {
+    const result = await runReactiveProviderExit('quota_exhausted', 18);
+
+    expect(result.session.conversationHistory).toHaveLength(1);
+    expect(result.session.conversationHistory[0]?.role).toBe('user');
+  });
+
   it('preserves a worktree-adopted session without changing its parent project', async () => {
     const result = await runReactiveProviderExit('rate_limit', 14, 'parent-project');
 

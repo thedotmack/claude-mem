@@ -16,6 +16,13 @@ import {
   type WorkerRef
 } from './agents/index.js';
 
+function rollbackPrompt(session: ActiveSession, prompt: string): void {
+  const lastMessage = session.conversationHistory.at(-1);
+  if (lastMessage?.role === 'user' && lastMessage.content === prompt) {
+    session.conversationHistory.pop();
+  }
+}
+
 /**
  * Normalized result returned by a concrete provider's `query()`.
  * Optional fields (costUsd, servedModel) are populated only by providers that
@@ -111,6 +118,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       const initResponse = await this.query(session.conversationHistory, config);
       await this.handleInitResponse(initResponse, session, worker, model, initContext);
     } catch (error: unknown) {
+      rollbackPrompt(session, initPrompt);
       // Classified errors are logged once, at SessionRoutes' `Observer failed`
       // line; here they're debug-level so one failure isn't five error lines.
       if (isClassified(error)) {
@@ -222,7 +230,13 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'ingest';
-    const obsResponse = await this.query(session.conversationHistory, config);
+    let obsResponse: ProviderQueryResult;
+    try {
+      obsResponse = await this.query(session.conversationHistory, config);
+    } catch (error: unknown) {
+      rollbackPrompt(session, obsPrompt);
+      throw error;
+    }
 
     let tokensUsed = 0;
     if (obsResponse.content) {
@@ -280,7 +294,13 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         sessionId: session.sessionDbId, model: summaryModel
       });
     }
-    const summaryResponse = await this.query(session.conversationHistory, summaryConfig);
+    let summaryResponse: ProviderQueryResult;
+    try {
+      summaryResponse = await this.query(session.conversationHistory, summaryConfig);
+    } catch (error: unknown) {
+      rollbackPrompt(session, summaryPrompt);
+      throw error;
+    }
 
     let tokensUsed = 0;
     if (summaryResponse.content) {
