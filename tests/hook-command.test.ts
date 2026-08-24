@@ -1,33 +1,17 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { Readable } from 'stream';
 import {
   buildNoOpResult,
   hookCommand,
   isNonBlockingHookInputError,
   isWorkerUnavailableError,
 } from '../src/cli/hook-command.js';
+import { SAFETY_TIMEOUT_MS } from '../src/cli/stdin-reader.js';
+import { installFakeStdin, restoreStdin } from './fake-stdin.js';
 
-const realStdin = process.stdin;
-const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
 const realConsoleLog = console.log;
 
-function installFakeStdin(payload: string): void {
-  const fake = Readable.from([payload], { objectMode: false }) as unknown as NodeJS.ReadStream;
-  Object.defineProperty(fake, 'isTTY', { value: false, configurable: true });
-  Object.defineProperty(process, 'stdin', {
-    configurable: true,
-    enumerable: realStdinDescriptor?.enumerable ?? true,
-    writable: true,
-    value: fake,
-  });
-}
-
 afterEach(() => {
-  if (realStdinDescriptor) {
-    Object.defineProperty(process, 'stdin', realStdinDescriptor);
-  } else {
-    Object.defineProperty(process, 'stdin', { value: realStdin, configurable: true, writable: true });
-  }
+  restoreStdin();
   console.log = realConsoleLog;
 });
 
@@ -90,8 +74,19 @@ describe('isNonBlockingHookInputError', () => {
     ]);
   });
 
+  it('fails open through hookCommand for UserPromptSubmit stdin and emits one empty envelope', async () => {
+    installFakeStdin('{"session_id":');
+    const output: string[] = [];
+    console.log = (...args: unknown[]) => output.push(args.join(' '));
+
+    const exitCode = await hookCommand('claude-code', 'user-message', { skipExit: true });
+
+    expect(exitCode).toBe(0);
+    expect(output).toEqual(['{}']);
+  });
+
   it('classifies incomplete stdin timeout diagnostics as non-blocking', () => {
-    expect(isNonBlockingHookInputError(new Error('Incomplete JSON after 5000ms: {"session_id":...'))).toBe(true);
+    expect(isNonBlockingHookInputError(new Error(`Incomplete JSON after ${SAFETY_TIMEOUT_MS}ms: {"session_id":...`))).toBe(true);
   });
 
   it('keeps unrelated errors with a reader phrase blocking', () => {
