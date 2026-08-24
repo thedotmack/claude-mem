@@ -45,6 +45,17 @@ function maskSecretValue(value: unknown): unknown {
   return `${'*'.repeat(value.length - 4)}${value.slice(-4)}`;
 }
 
+// SECURITY (patched locally, thedotmack/claude-mem#1251): a viewer that
+// loads GET /api/settings and saves the form back unchanged now round-trips
+// the masked value from maskSecretValue, not the real key. Every value
+// maskSecretValue produces starts with at least one literal "*", which a
+// real credential will not, so treat an incoming secret value starting with
+// "*" as an unchanged placeholder and keep whatever is already stored
+// instead of overwriting the real key with the mask.
+function looksLikeMaskedPlaceholder(value: unknown): boolean {
+  return typeof value === 'string' && value.startsWith('*');
+}
+
 function redactSecretSettings<T extends object>(settings: T): T {
   const redacted: Record<string, unknown> = { ...(settings as Record<string, unknown>) };
   for (const key of SECRET_SETTING_KEYS) {
@@ -145,6 +156,9 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     for (const key of settingKeys) {
       if (req.body[key] !== undefined) {
+        if (SECRET_SETTING_KEYS.has(key) && looksLikeMaskedPlaceholder(req.body[key])) {
+          continue;
+        }
         settings[key] = req.body[key];
       }
     }
