@@ -6,7 +6,7 @@ import {
   isWorkerUnavailableError,
 } from '../src/cli/hook-command.js';
 import { SAFETY_TIMEOUT_MS } from '../src/cli/stdin-reader.js';
-import { installFakeStdin, restoreStdin } from './fake-stdin.js';
+import { installFakeStdin, installOpenFakeStdin, restoreStdin } from './fake-stdin.js';
 
 const realConsoleLog = console.log;
 
@@ -80,6 +80,20 @@ describe('isNonBlockingHookInputError', () => {
     console.log = (...args: unknown[]) => output.push(args.join(' '));
 
     const exitCode = await hookCommand('claude-code', 'user-message', { skipExit: true });
+
+    expect(exitCode).toBe(0);
+    expect(output).toEqual(['{}']);
+  });
+
+  it('fails open through hookCommand when stdin reaches the incomplete timeout path', async () => {
+    installOpenFakeStdin('{"session_id":');
+    const output: string[] = [];
+    console.log = (...args: unknown[]) => output.push(args.join(' '));
+
+    const exitCode = await hookCommand('claude-code', 'user-message', {
+      skipExit: true,
+      stdinSafetyTimeoutMs: 1,
+    });
 
     expect(exitCode).toBe(0);
     expect(output).toEqual(['{}']);
