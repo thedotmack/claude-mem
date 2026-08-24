@@ -74,12 +74,12 @@ describe('isNonBlockingHookInputError', () => {
     ]);
   });
 
-  it('fails open through hookCommand for UserPromptSubmit stdin and emits one empty envelope', async () => {
+  it('fails open through hookCommand for the UserPromptSubmit session-init hook and emits one empty envelope', async () => {
     installFakeStdin('{"session_id":');
     const output: string[] = [];
     console.log = (...args: unknown[]) => output.push(args.join(' '));
 
-    const exitCode = await hookCommand('claude-code', 'user-message', { skipExit: true });
+    const exitCode = await hookCommand('claude-code', 'session-init', { skipExit: true });
 
     expect(exitCode).toBe(0);
     expect(output).toEqual(['{}']);
@@ -90,7 +90,7 @@ describe('isNonBlockingHookInputError', () => {
     const output: string[] = [];
     console.log = (...args: unknown[]) => output.push(args.join(' '));
 
-    const exitCode = await hookCommand('claude-code', 'user-message', {
+    const exitCode = await hookCommand('claude-code', 'session-init', {
       skipExit: true,
       stdinSafetyTimeoutMs: 1,
     });
