@@ -140,10 +140,6 @@ function resolveCandidateOids(mainRepo: string): Set<string> {
 }
 
 export function hasProvenAncestry(mainRepo: string, worktreeHead: string, candidateOids: Set<string>): boolean {
-  // A detached worktree at an exact candidate tip is a fresh checkout of the
-  // parent or remote integration tip, not evidence of a merged child branch.
-  if ([...candidateOids].some(candidateOid => candidateOid === worktreeHead)) return false;
-
   for (const candidateOid of candidateOids) {
     const result = gitRun(mainRepo, ['merge-base', '--is-ancestor', worktreeHead, candidateOid]);
     if (result.status === 0 && !result.error) return true;
@@ -204,7 +200,11 @@ export async function adoptMergedWorktrees(opts: {
   } else {
     const candidateOids = resolveCandidateOids(mainRepo);
     targets = childWorktrees.filter(w =>
-      w.head !== null && hasProvenAncestry(mainRepo, w.head, candidateOids)
+      w.head !== null &&
+      // A branch at the current parent tip is a valid existing worktree;
+      // detached exact-tip checkouts are fresh inspection worktrees.
+      (w.branch !== null || !candidateOids.has(w.head)) &&
+      hasProvenAncestry(mainRepo, w.head, candidateOids)
     );
   }
 
