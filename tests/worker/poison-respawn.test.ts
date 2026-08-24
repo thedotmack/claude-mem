@@ -36,12 +36,21 @@ class ReactiveQuotaTestProvider extends OpenAICompatibleProvider<{ apiKey: strin
   protected readonly providerName = 'Gemini';
   protected readonly syntheticIdPrefix = 'gemini';
   protected readonly forwardEmptyMessageResponse = false;
-  constructor(dbManager: DatabaseManager, sessionManager: SessionManager, private readonly failure: unknown) {
+  private queryCount = 0;
+  constructor(
+    dbManager: DatabaseManager,
+    sessionManager: SessionManager,
+    private readonly failure: unknown,
+    private readonly failOnMessageLoop = false,
+  ) {
     super(dbManager, sessionManager);
   }
   protected getConfig() { return { apiKey: 'test-key', model: 'gemini-test' }; }
   protected missingApiKeyError(): Error { return new Error('missing key'); }
   protected async query(_history: ConversationMessage[], _config: { apiKey: string; model: string }): Promise<ProviderQueryResult> {
+    if (this.failOnMessageLoop && this.queryCount++ === 0) {
+      return { content: '' };
+    }
     throw this.failure;
   }
   protected estimateTokens(): number { return 0; }
@@ -49,7 +58,7 @@ class ReactiveQuotaTestProvider extends OpenAICompatibleProvider<{ apiKey: strin
 }
 
 async function runReactiveProviderExit(
-  kind: 'quota_exhausted' | 'rate_limit' | 'unrecoverable' | 'transient',
+  kind: 'quota_exhausted' | 'rate_limit' | 'auth_invalid' | 'unrecoverable' | 'transient',
   sessionDbId: number,
   project = 'origin-project',
 ): Promise<{ session: ActiveSession; sessionManager: SessionManager; finalizeSession: ReturnType<typeof mock>; removeSession: ReturnType<typeof spyOn>; error: unknown }> {
@@ -61,8 +70,11 @@ async function runReactiveProviderExit(
   await queueAndClaimOne(sessionManager, sessionDbId);
   const error = kind === 'unrecoverable' || kind === 'transient'
     ? new ClassifiedProviderError(`${kind} failure`, { kind, cause: new Error('provider') })
-    : new ClassifiedProviderError('Gemini quota exhausted (status 429)', { kind, cause: new Error('provider') });
-  const provider = new ReactiveQuotaTestProvider(makeDbManager(), sessionManager, error);
+    : new ClassifiedProviderError(
+      kind === 'auth_invalid' ? 'Gemini auth invalid (status 401)' : 'Gemini quota exhausted (status 429)',
+      { kind, cause: new Error('provider') },
+    );
+  const provider = new ReactiveQuotaTestProvider(makeDbManager(), sessionManager, error, true);
   let thrown: unknown;
   try {
     await provider.startSession(session, makeWorker());
@@ -71,6 +83,7 @@ async function runReactiveProviderExit(
   }
   const finalizeSession = mock(() => Promise.resolve());
   const removeSession = spyOn(sessionManager, 'removeSessionImmediate');
+  spies.push(removeSession);
   await handleGeneratorExit(session, session.abortReason, {
     sessionManager,
     completionHandler: { finalizeSession } as any,
@@ -430,17 +443,19 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(quotaSm.getMessageBuffer().getPendingCount(5)).toBe(1);
   });
 
-  it.each(['quota_exhausted', 'rate_limit'] as const)(
+  it.each(['quota_exhausted', 'rate_limit', 'auth_invalid'] as const)(
     'reactive %s errors preserve claimed work through provider exit',
     async (kind) => {
       const result = await runReactiveProviderExit(kind, kind === 'quota_exhausted' ? 12 : 13);
 
       expect(result.error).toBeInstanceOf(ClassifiedProviderError);
-      expect(result.session.abortReason).toBe(`quota:${kind}`);
-      expect(result.session.abortController.signal.aborted).toBe(true);
+      expect(result.session.abortReason).toBe(kind === 'auth_invalid' ? `auth:${kind}` : `quota:${kind}`);
+      expect(result.session.abortController.signal.aborted).toBe(false);
       expect(result.finalizeSession).not.toHaveBeenCalled();
       expect(result.removeSession).not.toHaveBeenCalled();
       expect(result.sessionManager.getSession(result.session.sessionDbId)).toBe(result.session);
+      expect(result.session.claimedMessageIds).toEqual([]);
+      expect(result.sessionManager.getClaimedMessages(result.session.sessionDbId)).toEqual([]);
       expect(result.sessionManager.getMessageBuffer().getPendingCount(result.session.sessionDbId)).toBe(1);
     },
   );

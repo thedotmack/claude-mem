@@ -303,22 +303,20 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
   }
 
-  protected handleSessionError(error: unknown, session: ActiveSession, _worker?: WorkerRef): never {
+  protected async handleSessionError(error: unknown, session: ActiveSession, _worker?: WorkerRef): Promise<never> {
     if (isAbortError(error)) {
       logger.warn('SDK', `${this.providerName} agent aborted`, { sessionId: session.sessionDbId });
       throw error;
     }
 
     if (isClassified(error)) {
-      if (error.kind === 'quota_exhausted' || error.kind === 'rate_limit') {
-        session.abortReason = `quota:${error.kind}`;
-        try {
-          session.abortController.abort();
-        } catch {
-          // Abort is best-effort; preserve the provider error as the cause.
-        }
+      if (error.kind === 'quota_exhausted' || error.kind === 'rate_limit' || error.kind === 'auth_invalid') {
+        await this.sessionManager.resetProcessingToPending(session.sessionDbId);
+        session.abortReason = error.kind === 'auth_invalid'
+          ? `auth:${error.kind}`
+          : `quota:${error.kind}`;
       }
-      // Logged once at SessionRoutes' `Observer failed` line.
+      // Leave the controller active so SessionRoutes records observer health before exit.
       logger.debug('SDK', `${this.providerName} agent error`, { sessionDbId: session.sessionDbId, kind: error.kind }, error);
     } else {
       logger.failure('SDK', `${this.providerName} agent error`, { sessionDbId: session.sessionDbId }, error instanceof Error ? error : new Error(String(error)));
