@@ -139,7 +139,7 @@ function resolveCandidateOids(mainRepo: string): Set<string> {
   return oids;
 }
 
-function hasProvenAncestry(mainRepo: string, worktreeHead: string, candidateOids: Set<string>): boolean {
+export function hasProvenAncestry(mainRepo: string, worktreeHead: string, candidateOids: Set<string>): boolean {
   for (const candidateOid of candidateOids) {
     const result = gitRun(mainRepo, ['merge-base', '--is-ancestor', worktreeHead, candidateOid]);
     if (result.status === 0) return true;
