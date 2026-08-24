@@ -78,6 +78,10 @@ export function isNonBlockingHookInputError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
 
+  if (lower.startsWith('malformed json at stdin eof:') || lower.startsWith('incomplete json after ')) {
+    return true;
+  }
+
   return lower.includes('transcript path') &&
     (lower.includes('missing') || lower.includes('does not exist'));
 }
