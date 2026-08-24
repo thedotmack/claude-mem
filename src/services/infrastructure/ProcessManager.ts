@@ -565,6 +565,14 @@ export function spawnDaemon(
     ? [runtimePath, scriptPath, '--daemon']
     : [scriptPath, '--daemon'];
 
+  // Pin the daemon's cwd to the claude-mem data dir (daemonWorkingDirectory).
+  // The daemon outlives the session that spawned it, but an inherited cwd can
+  // vanish underneath it: spawn one from inside a git worktree and remove the
+  // worktree, and every later child spawn in the daemon fails with ENOENT even
+  // though the binary is fine (the second trigger of the #3290 wedge). A
+  // pinned cwd also keeps the self-heal restart effective: without it the
+  // successor inherits the same dead directory and re-wedges against its
+  // restart budget.
   const child = spawnHidden(execPath, args, {
     detached: true,
     stdio: 'ignore',
