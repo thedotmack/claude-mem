@@ -394,7 +394,7 @@ describe('mutation sites', () => {
     git(repo, 'commit', '-m', 'base');
     git(repo, 'remote', 'add', 'origin', bareOrigin);
     git(repo, 'push', '-u', 'origin', 'main');
-    git(tempDir, 'clone', bareOrigin, integration);
+    git(tempDir, 'clone', '--branch', 'main', bareOrigin, integration);
 
     git(repo, 'worktree', 'add', '-b', 'feature', featureWorktree);
     writeFileSync(join(featureWorktree, 'feature.txt'), 'feature\n');
