@@ -205,10 +205,9 @@ export class SessionRoutes extends BaseRouteHandler {
         //
         // The local error line (full fidelity) and the scrubbed
         // session_compressed rollup are one logical event.
-        // No abort_reason here: every site that sets abortReason aborts the
-        // controller on its next line, so aborted generators either resolve
-        // normally (quota/overflow break) or hit the signal-aborted early
-        // return above — this catch only ever sees non-abort rejections.
+        // Reactive provider pause errors deliberately keep this controller
+        // active long enough for this catch to record observer health; the
+        // finally block consumes their abortReason and preserves the buffer.
         if (isClassified(error)) {
           // The single error-level line for a classified provider failure:
           // code, message, action, link, and request id — same words the

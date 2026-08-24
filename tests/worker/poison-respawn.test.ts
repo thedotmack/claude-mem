@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, mock, beforeAll, beforeEach, afterAll, afterEach, spyOn } from 'bun:test';
 import { logger } from '../../src/utils/logger.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import { processAgentResponse } from '../../src/services/worker/agents/ResponseProcessor.js';
@@ -9,6 +9,7 @@ import { OpenAICompatibleProvider, type ProviderQueryResult } from '../../src/se
 import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
 import type { ActiveSession, ConversationMessage } from '../../src/services/worker-types.js';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
+import type { ModeConfig } from '../../src/services/domain/types.js';
 
 function makeDbManager(storeObservations = mock(() => ({ observationIds: [], summaryId: null, createdAtEpoch: 0 }))): DatabaseManager {
   return {
@@ -108,11 +109,29 @@ async function queueAndClaimOne(sm: SessionManager, sessionDbId: number): Promis
 }
 
 let spies: ReturnType<typeof spyOn>[] = [];
+let testMode: ModeConfig;
+let previousModeId: string | null = null;
+
+beforeAll(() => {
+  const manager = ModeManager.getInstance();
+  try {
+    previousModeId = manager.getActiveModeId();
+  } catch {
+    previousModeId = null;
+  }
+  testMode = manager.loadMode('code');
+});
+
+afterAll(() => {
+  if (previousModeId && previousModeId !== 'code') {
+    ModeManager.getInstance().loadMode(previousModeId);
+  }
+});
 
 describe('observer invalid-output handling (Phase 3 recovery)', () => {
   beforeEach(() => {
-    ModeManager.getInstance().loadMode('code');
     spies = [
+      spyOn(ModeManager.getInstance(), 'getActiveMode').mockReturnValue(testMode),
       spyOn(logger, 'info').mockImplementation(() => {}),
       spyOn(logger, 'debug').mockImplementation(() => {}),
       spyOn(logger, 'warn').mockImplementation(() => {}),
@@ -498,6 +517,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     }
     const finalizeSession = mock(() => Promise.resolve());
     const removeSession = spyOn(sessionManager, 'removeSessionImmediate');
+    spies.push(removeSession);
     await handleGeneratorExit(session, session.abortReason, {
       sessionManager,
       completionHandler: { finalizeSession } as any,
