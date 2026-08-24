@@ -62,7 +62,7 @@ async function runReactiveProviderExit(
   kind: 'quota_exhausted' | 'rate_limit' | 'auth_invalid' | 'unrecoverable' | 'transient',
   sessionDbId: number,
   project = 'origin-project',
-): Promise<{ session: ActiveSession; sessionManager: SessionManager; finalizeSession: ReturnType<typeof mock>; removeSession: ReturnType<typeof spyOn>; error: unknown }> {
+): Promise<{ session: ActiveSession; sessionManager: SessionManager; finalizeSession: ReturnType<typeof mock>; removeSession: ReturnType<typeof spyOn>; error: unknown; expectedError: unknown }> {
   const sessionManager = new SessionManager(makeDbManager());
   const session = sessionManager.initializeSession(sessionDbId, 'do the thing', 1);
   session.memorySessionId = `mem-${sessionDbId}`;
@@ -89,7 +89,7 @@ async function runReactiveProviderExit(
     sessionManager,
     completionHandler: { finalizeSession } as any,
   });
-  return { session, sessionManager, finalizeSession, removeSession, error: thrown };
+  return { session, sessionManager, finalizeSession, removeSession, error: thrown, expectedError: error };
 }
 
 async function queueAndClaimOne(sm: SessionManager, sessionDbId: number): Promise<void> {
@@ -468,6 +468,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
       const result = await runReactiveProviderExit(kind, kind === 'quota_exhausted' ? 12 : 13);
 
       expect(result.error).toBeInstanceOf(ClassifiedProviderError);
+      expect(result.error).toBe(result.expectedError);
       expect(result.session.abortReason).toBe(kind === 'auth_invalid' ? `auth:${kind}` : `quota:${kind}`);
       expect(result.session.abortController.signal.aborted).toBe(false);
       expect(result.finalizeSession).not.toHaveBeenCalled();
@@ -494,6 +495,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
       const result = await runReactiveProviderExit(kind, kind === 'unrecoverable' ? 15 : 16);
 
       expect(result.error).toBeInstanceOf(ClassifiedProviderError);
+      expect(result.error).toBe(result.expectedError);
       expect(result.session.abortReason ?? null).toBeNull();
       expect(result.finalizeSession).toHaveBeenCalledWith(result.session.sessionDbId);
       expect(result.removeSession).toHaveBeenCalledWith(result.session.sessionDbId);
