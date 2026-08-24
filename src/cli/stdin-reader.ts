@@ -33,7 +33,7 @@ function tryParseJson(input: string): { success: true; value: unknown } | { succ
   }
 }
 
-const SAFETY_TIMEOUT_MS = 30000;
+export const SAFETY_TIMEOUT_MS = 30000;
 
 export async function readJsonFromStdin(): Promise<unknown> {
   if (!isStdinAvailable()) {
