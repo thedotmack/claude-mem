@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
-import { mkdirSync, rmSync, writeFileSync, appendFileSync } from 'fs';
+import { mkdirSync, rmSync, writeFileSync, appendFileSync, readFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { zstdCompressSync } from 'node:zlib';
@@ -38,6 +38,18 @@ const waitForAsyncTail = () => new Promise(resolve => setTimeout(resolve, 50));
 
 /** Compress JSONL lines into one independently decodable zstd frame. */
 const zstdFrame = (lines: string[]): Buffer => zstdCompressSync(Buffer.from(`${lines.join('\n')}\n`, 'utf8'));
+
+/** Structurally complete frame with a wrong checksum: scanned, but not decompressible. */
+const corruptZstdFrame = (): Buffer => {
+  const b = Buffer.alloc(21);
+  b.writeUInt32LE(0xfd2fb528, 0); // magic
+  b.writeUInt8(0x24, 4); // descriptor: single-segment + checksum
+  b.writeUInt8(8, 5); // frame content size = 8
+  b.writeUIntLE(0x41, 6, 3); // block header: last(1) + raw(0) + size 8
+  b.fill(0xab, 9, 17); // 8 payload bytes
+  b.fill(0xff, 17, 21); // wrong 4-byte checksum
+  return b;
+};
 
 const userMessageEvent = (seq: number, text: string): string =>
   JSON.stringify({ type: 'user/message', seq, time: Date.now(), data: { content: [{ type: 'text', text }] } });
@@ -145,19 +157,6 @@ describe('TranscriptWatcher zstd (DSH session logs)', () => {
     const filePath = join(sessionDir, 'session.jsonl.zstd');
     const statePath = join(tmpRoot, 'state.json');
 
-    // Structurally complete frame with a wrong checksum: scanZstdFrames
-    // locates it, but zstdDecompressSync rejects it.
-    const corruptFrame = () => {
-      const b = Buffer.alloc(21);
-      b.writeUInt32LE(0xfd2fb528, 0); // magic
-      b.writeUInt8(0x24, 4); // descriptor: single-segment + checksum
-      b.writeUInt8(8, 5); // frame content size = 8
-      b.writeUIntLE(0x41, 6, 3); // block header: last(1) + raw(0) + size 8
-      b.fill(0xab, 9, 17); // 8 payload bytes
-      b.fill(0xff, 17, 21); // wrong 4-byte checksum
-      return b;
-    };
-
     const goodFrameA = zstdFrame([userMessageEvent(0, 'before corrupt')]);
     const goodFrameC = zstdFrame([userMessageEvent(2, 'after corrupt')]);
 
@@ -169,7 +168,7 @@ describe('TranscriptWatcher zstd (DSH session logs)', () => {
     const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
 
     // Frame A (valid) + corrupt frame + frame C (valid).
-    writeFileSync(filePath, Buffer.concat([goodFrameA, corruptFrame(), goodFrameC]));
+    writeFileSync(filePath, Buffer.concat([goodFrameA, corruptZstdFrame(), goodFrameC]));
     await (watcher as any).addTailer(filePath, watch, dshSchema);
     await waitForAsyncTail();
 
@@ -191,6 +190,42 @@ describe('TranscriptWatcher zstd (DSH session logs)', () => {
     expect(sessionInitCalls.filter(c => c.prompt === 'before corrupt')).toHaveLength(1);
     const finalOffsets = JSON.parse((await import('fs')).readFileSync(statePath, 'utf8')).offsets as Record<string, number>;
     expect(finalOffsets[filePath]).toBe(goodFrameA.length + goodFrameC.length);
+  });
+
+  it('does not advance from a corrupt zstd frame to a later torn frame', async () => {
+    const sessionId = 'b8ec2566-2222-3333-4444-555566667777';
+    const sessionDir = join(tmpRoot, `session-${sessionId}`);
+    mkdirSync(sessionDir, { recursive: true });
+    const filePath = join(sessionDir, 'session.jsonl.zstd');
+    const statePath = join(tmpRoot, 'state.json');
+
+    const goodFrameA = zstdFrame([userMessageEvent(0, 'before corrupt and torn')]);
+    const replacementFrameB = zstdFrame([userMessageEvent(1, 'replacement frame')]);
+    const tornFrameC = zstdFrame([userMessageEvent(2, 'after torn')]).subarray(0, 12);
+
+    const watch: WatchTarget = {
+      name: 'dsh',
+      path: join(tmpRoot, '**', '*.jsonl.zstd'),
+      schema: dshSchema,
+    };
+    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+
+    writeFileSync(filePath, Buffer.concat([goodFrameA, corruptZstdFrame(), tornFrameC]));
+    await (watcher as any).addTailer(filePath, watch, dshSchema);
+    await waitForAsyncTail();
+
+    expect(sessionInitCalls.map(call => call.prompt)).toContain('before corrupt and torn');
+    const offsets = JSON.parse(readFileSync(statePath, 'utf8')).offsets as Record<string, number>;
+    expect(offsets[filePath]).toBe(goodFrameA.length);
+
+    writeFileSync(filePath, Buffer.concat([goodFrameA, replacementFrameB]));
+    (watcher as any).tailers.get(filePath)?.poke();
+    await waitForAsyncTail();
+    watcher.stop();
+
+    expect(sessionInitCalls.map(call => call.prompt)).toContain('replacement frame');
+    const finalOffsets = JSON.parse(readFileSync(statePath, 'utf8')).offsets as Record<string, number>;
+    expect(finalOffsets[filePath]).toBe(goodFrameA.length + replacementFrameB.length);
   });
 
   it('coalesces a poke received mid-read instead of dispatching twice', async () => {
@@ -261,5 +296,86 @@ describe('TranscriptWatcher zstd (DSH session logs)', () => {
     const prompts = sessionInitCalls.map(call => call.prompt);
     expect(prompts).toContain('first');
     expect(prompts).not.toContain('second');
+  });
+
+  it('persists plaintext progress only through dispatched lines during shutdown', async () => {
+    const sessionId = 'cf233077-7777-8888-9999-000011112222';
+    const sessionDir = join(tmpRoot, `session-${sessionId}`);
+    mkdirSync(sessionDir, { recursive: true });
+    const filePath = join(sessionDir, 'session.jsonl');
+    const statePath = join(tmpRoot, 'state.json');
+
+    const watch: WatchTarget = {
+      name: 'dsh',
+      path: join(tmpRoot, '**', '*.jsonl'),
+      schema: dshSchema,
+    };
+    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+    writeFileSync(filePath, `${userMessageEvent(0, 'plaintext first')}\n${userMessageEvent(1, 'plaintext second')}\n`);
+
+    handlerDelayMs = 150;
+    try {
+      await (watcher as any).addTailer(filePath, watch, dshSchema);
+      await waitForAsyncTail();
+      watcher.stop();
+      await new Promise(resolve => setTimeout(resolve, 300));
+    } finally {
+      handlerDelayMs = 0;
+    }
+
+    expect(sessionInitCalls.filter(call => call.prompt === 'plaintext first')).toHaveLength(1);
+    expect(sessionInitCalls.map(call => call.prompt)).not.toContain('plaintext second');
+
+    const replacement = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+    await (replacement as any).addTailer(filePath, watch, dshSchema);
+    await waitForAsyncTail();
+    replacement.stop();
+
+    expect(sessionInitCalls.filter(call => call.prompt === 'plaintext first')).toHaveLength(1);
+    expect(sessionInitCalls.filter(call => call.prompt === 'plaintext second')).toHaveLength(1);
+  });
+
+  it('retains the current zstd frame for replay when shutdown interrupts dispatch', async () => {
+    const sessionId = 'd0cbd7d6-8888-9999-0000-111122223333';
+    const sessionDir = join(tmpRoot, `session-${sessionId}`);
+    mkdirSync(sessionDir, { recursive: true });
+    const filePath = join(sessionDir, 'session.jsonl.zstd');
+    const statePath = join(tmpRoot, 'state.json');
+
+    const watch: WatchTarget = {
+      name: 'dsh',
+      path: join(tmpRoot, '**', '*.jsonl.zstd'),
+      schema: dshSchema,
+    };
+    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+    writeFileSync(filePath, zstdFrame([
+      userMessageEvent(0, 'zstd first'),
+      userMessageEvent(1, 'zstd second'),
+    ]));
+
+    handlerDelayMs = 150;
+    try {
+      await (watcher as any).addTailer(filePath, watch, dshSchema);
+      await waitForAsyncTail();
+      watcher.stop();
+      await new Promise(resolve => setTimeout(resolve, 300));
+    } finally {
+      handlerDelayMs = 0;
+    }
+
+    expect(sessionInitCalls.filter(call => call.prompt === 'zstd first')).toHaveLength(1);
+    expect(sessionInitCalls.map(call => call.prompt)).not.toContain('zstd second');
+    const offsets = existsSync(statePath)
+      ? JSON.parse(readFileSync(statePath, 'utf8')).offsets as Record<string, number>
+      : {};
+    expect(offsets[filePath] ?? 0).toBe(0);
+
+    const replacement = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+    await (replacement as any).addTailer(filePath, watch, dshSchema);
+    await waitForAsyncTail();
+    replacement.stop();
+
+    expect(sessionInitCalls.filter(call => call.prompt === 'zstd first')).toHaveLength(2);
+    expect(sessionInitCalls.filter(call => call.prompt === 'zstd second')).toHaveLength(1);
   });
 });

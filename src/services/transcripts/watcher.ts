@@ -94,8 +94,9 @@ class FileTailer {
       return;
     }
 
+    const startOffset = this.tailState.offset;
     const stream = createReadStream(this.filePath, {
-      start: this.tailState.offset,
+      start: startOffset,
       end: size - 1,
       encoding: 'utf8'
     });
@@ -105,18 +106,26 @@ class FileTailer {
       data += chunk as string;
     }
 
-    this.tailState.offset = size;
-    this.onOffset(this.tailState.offset);
-
-    const combined = this.tailState.partial + data;
-    const lines = combined.split('\n');
-    this.tailState.partial = lines.pop() ?? '';
-
-    for (const line of lines) {
+    const priorPartial = this.tailState.partial;
+    let pending = priorPartial;
+    let dataLineStart = 0;
+    for (let newline = data.indexOf('\n'); newline !== -1; newline = data.indexOf('\n', dataLineStart)) {
       if (this.closed) break;
+      const line = pending + data.slice(dataLineStart, newline);
+      const nextOffset = startOffset + Buffer.byteLength(data.slice(0, newline + 1), 'utf8');
+      pending = '';
+      dataLineStart = newline + 1;
       const trimmed = line.trim();
-      if (!trimmed) continue;
-      await this.onLine(trimmed);
+      if (trimmed) {
+        await this.onLine(trimmed);
+      }
+      this.tailState.offset = nextOffset;
+      this.onOffset(nextOffset);
+    }
+
+    if (!this.closed) {
+      this.tailState.partial = pending + data.slice(dataLineStart);
+      this.tailState.offset = size;
     }
   }
 
@@ -148,6 +157,7 @@ class FileTailer {
     }
 
     let processedEnd = this.tailState.offset;
+    let stoppedBeforeTorn = false;
     for (const frame of scan.frames) {
       if (frame.end <= this.tailState.offset) continue;
       let plain: string;
@@ -165,23 +175,31 @@ class FileTailer {
           end: frame.end,
           error: error instanceof Error ? error.message : String(error)
         });
+        stoppedBeforeTorn = true;
         break;
       }
 
       const combined = this.tailState.partial + plain;
       const lines = combined.split('\n');
       this.tailState.partial = lines.pop() ?? '';
+      let frameCompleted = true;
       for (const line of lines) {
-        if (this.closed) break;
+        if (this.closed) {
+          frameCompleted = false;
+          break;
+        }
         const trimmed = line.trim();
         if (!trimmed) continue;
         await this.onLine(trimmed);
       }
+      if (!frameCompleted || this.closed) {
+        stoppedBeforeTorn = true;
+        break;
+      }
       processedEnd = frame.end;
-      if (this.closed) break;
     }
 
-    const nextOffset = scan.tornStart !== null && scan.tornStart > processedEnd ? scan.tornStart : processedEnd;
+    const nextOffset = !stoppedBeforeTorn && scan.tornStart !== null && scan.tornStart > processedEnd ? scan.tornStart : processedEnd;
     if (nextOffset > this.tailState.offset) {
       this.tailState.offset = nextOffset;
       this.onOffset(nextOffset);
