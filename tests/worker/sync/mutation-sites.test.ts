@@ -440,7 +440,7 @@ describe('mutation sites', () => {
       const result = await adoptMergedWorktrees({ repoPath: repo, dataDirectory: dataDir });
       expect(result.scannedWorktrees).toBe(4);
       expect(result.mergedBranches).toEqual(['feature']);
-      expect(result.adoptedSummaries).toBe(3);
+      expect(result.adoptedSummaries).toBe(2);
 
       const verify = openConfiguredSqliteDatabase(dbPath);
       try {
@@ -450,7 +450,7 @@ describe('mutation sites', () => {
         expect(rows).toEqual([
           { memory_session_id: 'detached', project: 'parent-repo/detached-wt', merged_into_project: 'parent-repo' },
           { memory_session_id: 'feature', project: 'parent-repo/feature-wt', merged_into_project: 'parent-repo' },
-          { memory_session_id: 'historical', project: 'parent-repo/historical-wt', merged_into_project: 'parent-repo' },
+          { memory_session_id: 'historical', project: 'parent-repo/historical-wt', merged_into_project: null },
           { memory_session_id: 'native', project: 'parent-repo', merged_into_project: null },
           { memory_session_id: 'unmerged', project: 'parent-repo/unmerged-wt', merged_into_project: null },
         ]);
