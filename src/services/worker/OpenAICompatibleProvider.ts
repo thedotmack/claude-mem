@@ -310,6 +310,14 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
 
     if (isClassified(error)) {
+      if (error.kind === 'quota_exhausted' || error.kind === 'rate_limit') {
+        session.abortReason = `quota:${error.kind}`;
+        try {
+          session.abortController.abort();
+        } catch {
+          // Abort is best-effort; preserve the provider error as the cause.
+        }
+      }
       // Logged once at SessionRoutes' `Observer failed` line.
       logger.debug('SDK', `${this.providerName} agent error`, { sessionDbId: session.sessionDbId, kind: error.kind }, error);
     } else {
