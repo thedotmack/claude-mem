@@ -21,6 +21,7 @@ import { logger } from '../utils/logger.js';
 
 export interface HookCommandOptions {
   skipExit?: boolean;
+  stdinSafetyTimeoutMs?: number;
 }
 
 /**
@@ -94,7 +95,7 @@ async function executeHookPipeline(
   platform: string,
   options: HookCommandOptions
 ): Promise<number> {
-  const rawInput = await readJsonFromStdin();
+  const rawInput = await readJsonFromStdin({ safetyTimeoutMs: options.stdinSafetyTimeoutMs });
   const input = adapter.normalizeInput(rawInput);
   input.platform = platform;
   const result = await handler.execute(input);
