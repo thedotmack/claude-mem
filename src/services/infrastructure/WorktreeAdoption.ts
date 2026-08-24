@@ -37,6 +37,13 @@ export function formatAdoptionErrors(errors: AdoptionResult['errors']): string {
 interface WorktreeEntry {
   path: string;
   branch: string | null;
+  head: string | null;
+}
+
+interface GitCommandResult {
+  status: number | null;
+  stdout: string;
+  error: Error | undefined;
 }
 
 const GIT_TIMEOUT_MS = 15000;
@@ -48,7 +55,7 @@ class DryRunRollback extends Error {
   }
 }
 
-function gitCapture(cwd: string, args: string[]): string | null {
+function gitRun(cwd: string, args: string[]): GitCommandResult {
   const startTime = Date.now();
   const r = spawnSync('git', ['-C', cwd, ...args], {
     encoding: 'utf8',
@@ -66,16 +73,21 @@ function gitCapture(cwd: string, args: string[]): string | null {
       error: r.error.message,
       timedOut: r.error.name === 'ETIMEDOUT' || (r.status === null && r.signal === 'SIGTERM')
     });
-    return null;
+    return { status: r.status, stdout: '', error: r.error };
   }
 
   if (r.status !== 0) {
     logger.debug('GIT', `Git returned non-zero exit code ${r.status}: git -C ${cwd} ${args.join(' ')}`, {
       stderr: r.stderr?.toString().trim()
     });
-    return null;
+    return { status: r.status, stdout: '', error: undefined };
   }
-  return (r.stdout ?? '').trim();
+  return { status: r.status, stdout: (r.stdout ?? '').trim(), error: undefined };
+}
+
+function gitCapture(cwd: string, args: string[]): string | null {
+  const result = gitRun(cwd, args);
+  return result.status === 0 ? result.stdout : null;
 }
 
 function resolveMainRepoPath(cwd: string): string | null {
@@ -100,33 +112,41 @@ function listWorktrees(mainRepo: string): WorktreeEntry[] {
   let current: Partial<WorktreeEntry> = {};
   for (const line of raw.split('\n')) {
     if (line.startsWith('worktree ')) {
-      if (current.path) entries.push({ path: current.path, branch: current.branch ?? null });
-      current = { path: line.slice('worktree '.length).trim(), branch: null };
+      if (current.path) entries.push({ path: current.path, branch: current.branch ?? null, head: current.head ?? null });
+      current = { path: line.slice('worktree '.length).trim(), branch: null, head: null };
+    } else if (line.startsWith('HEAD ')) {
+      current.head = line.slice('HEAD '.length).trim() || null;
     } else if (line.startsWith('branch ')) {
       const refName = line.slice('branch '.length).trim();
       current.branch = refName.startsWith('refs/heads/')
         ? refName.slice('refs/heads/'.length)
         : refName;
     } else if (line === '' && current.path) {
-      entries.push({ path: current.path, branch: current.branch ?? null });
+      entries.push({ path: current.path, branch: current.branch ?? null, head: current.head ?? null });
       current = {};
     }
   }
-  if (current.path) entries.push({ path: current.path, branch: current.branch ?? null });
+  if (current.path) entries.push({ path: current.path, branch: current.branch ?? null, head: current.head ?? null });
   return entries;
 }
 
-function listMergedBranches(mainRepo: string): Set<string> {
-  const raw = gitCapture(mainRepo, [
-    'branch',
-    '--merged',
-    'HEAD',
-    '--format=%(refname:short)'
-  ]);
-  if (!raw) return new Set();
-  return new Set(
-    raw.split('\n').map(b => b.trim()).filter(b => b.length > 0)
-  );
+function resolveCandidateOids(mainRepo: string): Set<string> {
+  const oids = new Set<string>();
+  for (const ref of ['HEAD', 'origin/HEAD', 'origin/main', 'origin/master']) {
+    const result = gitRun(mainRepo, ['rev-parse', '--verify', `${ref}^{commit}`]);
+    if (result.status === 0 && result.stdout) oids.add(result.stdout);
+  }
+  return oids;
+}
+
+function hasProvenAncestry(mainRepo: string, worktreeHead: string, candidateOids: Set<string>): boolean {
+  for (const candidateOid of candidateOids) {
+    const result = gitRun(mainRepo, ['merge-base', '--is-ancestor', worktreeHead, candidateOid]);
+    if (result.status === 0) return true;
+    // Status 1 is a known negative. Spawn failures and other statuses remain
+    // conservative by simply leaving this worktree unselected.
+  }
+  return false;
 }
 
 export async function adoptMergedWorktrees(opts: {
@@ -178,8 +198,10 @@ export async function adoptMergedWorktrees(opts: {
   if (opts.onlyBranch) {
     targets = childWorktrees.filter(w => w.branch === opts.onlyBranch);
   } else {
-    const merged = listMergedBranches(mainRepo);
-    targets = childWorktrees.filter(w => w.branch !== null && merged.has(w.branch));
+    const candidateOids = resolveCandidateOids(mainRepo);
+    targets = childWorktrees.filter(w =>
+      w.head !== null && hasProvenAncestry(mainRepo, w.head, candidateOids)
+    );
   }
 
   result.mergedBranches = targets
