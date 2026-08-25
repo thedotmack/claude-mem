@@ -76,7 +76,10 @@ export async function runDoctorCommand(): Promise<void> {
     required: true,
   });
 
-  // 4. Marketplace runtime root materialized.
+  // 4. Marketplace runtime root materialized. The .install-version marker is
+  // written only by the npx installer; installs via Claude Code's own plugin
+  // marketplace flow and dev `build-and-sync` never write one, so a missing
+  // marker with node_modules present is informational, not a failure (#3661).
   const marketplaceDir = marketplaceDirectory();
   const marketplaceNodeModules = join(marketplaceDir, 'node_modules');
   const marketplaceMarker = join(marketplaceDir, '.install-version');
@@ -88,11 +91,18 @@ export async function runDoctorCommand(): Promise<void> {
     : !depsPresent
       ? 'node_modules missing — run `npx claude-mem repair`'
       : !markerPresent
-        ? 'install marker missing — run `npx claude-mem repair`'
+        ? 'node_modules present; no npx install marker (normal for marketplace/dev installs)'
         : 'install marker stale — run `npx claude-mem repair`';
+  const marketplaceStatus: CheckStatus = !installed
+    ? 'warn'
+    : marketplaceCurrent
+      ? 'ok'
+      : depsPresent && !markerPresent
+        ? 'warn'
+        : 'fail';
   checks.push({
     name: 'Marketplace runtime',
-    status: installed ? (marketplaceCurrent ? 'ok' : 'fail') : 'warn',
+    status: marketplaceStatus,
     detail: marketplaceDetail,
     required: installed,
   });

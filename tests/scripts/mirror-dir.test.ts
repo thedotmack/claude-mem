@@ -311,4 +311,28 @@ describe('marketplace sync excludes', () => {
     expect(existsSync(join(dest, 'plugin', 'removed-in-this-build.cjs'))).toBe(false);
     expect(existsSync(join(dest, 'workers'))).toBe(false);
   });
+
+  // Overlapping roots make `--delete` destructive: a source nested inside the
+  // destination is absent from the destination's own listing, so the receiver
+  // cleanup would wipe the source before it is ever read. All three overlap
+  // shapes must be refused before any filesystem mutation.
+  it('refuses a source nested inside the destination without touching it', () => {
+    const nestedSource = join(dest, 'checkout');
+    mkdirSync(nestedSource, { recursive: true });
+    writeFileSync(join(nestedSource, 'precious.txt'), 'do not delete');
+
+    expect(() => mirrorDirectory(nestedSource, dest)).toThrow(/inside destination/);
+    expect(readFileSync(join(nestedSource, 'precious.txt'), 'utf-8')).toBe('do not delete');
+  });
+
+  it('refuses a destination nested inside the source', () => {
+    const nestedDest = join(source, 'out');
+    mkdirSync(nestedDest, { recursive: true });
+
+    expect(() => mirrorDirectory(source, nestedDest)).toThrow(/inside source/);
+  });
+
+  it('refuses identical source and destination', () => {
+    expect(() => mirrorDirectory(source, source)).toThrow(/same directory/);
+  });
 });

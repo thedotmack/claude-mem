@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { spawnSync } from 'child_process';
-import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync, writeSync } from 'fs';
+import { spawn, spawnSync } from 'child_process';
+import { closeSync, mkdirSync, mkdtempSync, openSync, renameSync, rmSync, writeFileSync, writeSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -116,4 +116,40 @@ describe('worker-logs', () => {
     expect(lines[49].startsWith(`line ${line} `)).toBe(true);
     expect(lines[0].startsWith(`line ${line - 49} `)).toBe(true);
   }, 60000);
+
+  // Worker restarts rotate the log by rename-and-recreate. When the
+  // replacement lands at exactly the followed offset's byte size, a
+  // size-only follower skips it forever — file identity must be tracked too.
+  it('follows across a rename-and-recreate rotation to a same-size replacement', async () => {
+    writeFileSync(logPath, 'old line 1\n');
+
+    const child = spawn('node', [SCRIPT, '--follow'], {
+      env: { ...process.env, HOME: home, USERPROFILE: home },
+    });
+    let output = '';
+    child.stdout.on('data', (chunk) => { output += chunk; });
+
+    const waitFor = async (predicate: () => boolean, timeoutMs: number): Promise<boolean> => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (predicate()) return true;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      return predicate();
+    };
+
+    try {
+      expect(await waitFor(() => output.includes('old line 1'), 5000)).toBe(true);
+
+      // Same tick, so no poll can land between the rename and the recreate:
+      // the follower's next stat sees a new file of exactly the old offset's
+      // size. 'new line A\n' is byte-for-byte as long as 'old line 1\n'.
+      renameSync(logPath, `${logPath}.1`);
+      writeFileSync(logPath, 'new line A\n');
+
+      expect(await waitFor(() => output.includes('new line A'), 5000)).toBe(true);
+    } finally {
+      child.kill();
+    }
+  }, 15000);
 });

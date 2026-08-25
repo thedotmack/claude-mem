@@ -173,7 +173,10 @@ describe('doctor marketplace runtime hygiene', () => {
     const source = readFileSync(DOCTOR_SOURCE_PATH, 'utf-8');
     expect(source).toContain("name: 'Marketplace runtime'");
     expect(source).toContain('isInstallCurrent(marketplaceDir, readPluginVersion())');
-    expect(source).toContain('install marker missing');
+    // A missing marker with node_modules present is a warn, not a fail: the
+    // marker is written only by the npx installer, and marketplace-flow /
+    // dev-sync installs never have one (#3661).
+    expect(source).toContain('no npx install marker');
     expect(source).toContain('install marker stale');
   });
 });

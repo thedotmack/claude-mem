@@ -82,8 +82,14 @@ try {
 
 if (follow) {
   let offset = size;
-  watchFile(logPath, { interval: POLL_INTERVAL_MS }, current => {
-    if (current.size < offset) offset = 0;
+  watchFile(logPath, { interval: POLL_INTERVAL_MS }, (current, previous) => {
+    // A rename-and-recreate rotation can leave the replacement at exactly the
+    // previous offset's size, so byte counts alone cannot detect it — a change
+    // of file identity must also reset the read position. A missing file stats
+    // as all-zero, and the size === offset check below skips the read until it
+    // reappears.
+    const replaced = current.ino !== previous.ino || current.dev !== previous.dev;
+    if (replaced || current.size < offset) offset = 0;
     if (current.size === offset) return;
     const appended = openSync(logPath, 'r');
     try {

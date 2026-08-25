@@ -11,6 +11,13 @@
  *   4. `git` resolved on PATH, then ../../bin/bash.exe relative to it
  *   5. null — Claude Code throws, and every claude-mem hook throws with it
  *
+ * Step 4 here deliberately checks EVERY `git` hit on PATH, not just the first:
+ * Git for Windows puts both mingw64\bin\git.exe and cmd\git.exe on PATH, and
+ * when mingw64\bin sorts first the ../../bin derivation lands on
+ * <Git>\mingw64\bin\bash.exe, which does not exist — while the cmd\git.exe hit
+ * derives the real <Git>\bin\bash.exe. Hooks resolve fine on such machines, so
+ * a first-hit-only replica reports a false negative (#3661 tester report).
+ *
  * A Windows user who satisfied Claude Code's own requirements via PowerShell
  * (no Git for Windows at all) hits step 5 with a raw, unbranded error. This
  * module replicates the same chain so claude-mem can detect that case ahead
@@ -19,7 +26,7 @@
 
 import { existsSync } from 'fs';
 import { win32 } from 'path';
-import { lookupWindowsCommand } from '../../shared/spawn.js';
+import { lookupWindowsCommandCandidates } from '../../shared/spawn.js';
 
 export const STANDARD_GIT_BASH_PATHS = [
   'C:\\Program Files\\Git\\bin\\bash.exe',
@@ -34,13 +41,13 @@ export const GIT_BASH_REMEDIATION =
 /** Filesystem access this check needs, injectable so tests never touch the real FS. */
 export interface GitBashProbe {
   fileExists: (path: string) => boolean;
-  /** Resolve `git` on PATH the way Claude Code does — injectable for tests. */
-  lookupGitOnPath: () => string | null;
+  /** Every `git` hit on PATH, in `where` order — injectable for tests. */
+  lookupGitCandidates: () => string[];
 }
 
 const defaultProbe: GitBashProbe = {
   fileExists: existsSync,
-  lookupGitOnPath: () => lookupWindowsCommand('git'),
+  lookupGitCandidates: () => lookupWindowsCommandCandidates('git'),
 };
 
 export interface GitBashPreflightResult {
@@ -75,8 +82,7 @@ export function checkWindowsGitBash(
     }
   }
 
-  const gitOnPath = probe.lookupGitOnPath();
-  if (gitOnPath) {
+  for (const gitOnPath of probe.lookupGitCandidates()) {
     // Windows paths regardless of the host platform running this check —
     // win32.join, not the platform-dependent `path` import, so this resolves
     // correctly under tests on macOS/Linux too.

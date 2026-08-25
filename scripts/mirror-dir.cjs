@@ -6,6 +6,7 @@ const {
   mkdirSync,
   readdirSync,
   readlinkSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -193,7 +194,52 @@ function mirrorInto(sourceDir, destDir, relativeBase, rules, stats) {
   return stats;
 }
 
+// Canonical form of a path whose tail may not exist yet: realpath the deepest
+// existing ancestor, then re-append the missing segments. Symlinked roots
+// (macOS's /tmp -> /private/tmp) must compare equal to their targets or the
+// overlap guard below would miss a nested pair spelled two different ways.
+function canonicalizePath(dir) {
+  let current = path.resolve(dir);
+  const missingSegments = [];
+  for (;;) {
+    try {
+      return path.join(realpathSync(current), ...missingSegments);
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return path.join(current, ...missingSegments);
+      missingSegments.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+function isPathInside(parent, child) {
+  const relation = path.relative(parent, child);
+  return relation !== '' && relation !== '..' && !relation.startsWith(`..${path.sep}`) && !path.isAbsolute(relation);
+}
+
+// `--delete` makes overlapping roots destructive: a source nested inside the
+// destination is absent from the destination's own listing, so the receiver
+// cleanup would wipe the source before it is ever read. Refuse identical and
+// ancestor/descendant pairs before any filesystem mutation.
+function assertDisjointRoots(sourceDir, destDir) {
+  // Windows and default macOS filesystems are case-insensitive.
+  const fold = process.platform === 'linux' ? (p) => p : (p) => p.toLowerCase();
+  const source = fold(canonicalizePath(sourceDir));
+  const dest = fold(canonicalizePath(destDir));
+  if (source === dest) {
+    throw new Error(`mirrorDirectory: source and destination are the same directory: ${sourceDir}`);
+  }
+  if (isPathInside(dest, source)) {
+    throw new Error(`mirrorDirectory: source ${sourceDir} is inside destination ${destDir}`);
+  }
+  if (isPathInside(source, dest)) {
+    throw new Error(`mirrorDirectory: destination ${destDir} is inside source ${sourceDir}`);
+  }
+}
+
 function mirrorDirectory(sourceDir, destDir, options = {}) {
+  assertDisjointRoots(sourceDir, destDir);
   const rules = compileExcludes(options.exclude || []);
   return mirrorInto(sourceDir, destDir, '', rules, { copied: 0, metadata: 0, deleted: 0 });
 }

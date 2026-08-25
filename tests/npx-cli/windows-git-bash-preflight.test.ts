@@ -17,8 +17,8 @@ function probeThatMustNotBeCalled(): GitBashProbe {
     fileExists: () => {
       throw new Error('fileExists should not be called off-Windows');
     },
-    lookupGitOnPath: () => {
-      throw new Error('lookupGitOnPath should not be called off-Windows');
+    lookupGitCandidates: () => {
+      throw new Error('lookupGitCandidates should not be called off-Windows');
     },
   };
 }
@@ -27,7 +27,7 @@ describe('checkWindowsGitBash', () => {
   it('reports the actionable error when no bash is reachable anywhere in the chain', () => {
     const probe: GitBashProbe = {
       fileExists: () => false,
-      lookupGitOnPath: () => null,
+      lookupGitCandidates: () => [],
     };
 
     const result = checkWindowsGitBash('win32', {}, probe);
@@ -41,7 +41,7 @@ describe('checkWindowsGitBash', () => {
   it('passes when CLAUDE_CODE_GIT_BASH_PATH points at a real file', () => {
     const probe: GitBashProbe = {
       fileExists: (path) => path === 'D:\\custom\\bash.exe',
-      lookupGitOnPath: () => {
+      lookupGitCandidates: () => {
         throw new Error('should not fall through to PATH lookup');
       },
     };
@@ -59,7 +59,7 @@ describe('checkWindowsGitBash', () => {
   it('passes when Git is present at the standard install path', () => {
     const probe: GitBashProbe = {
       fileExists: (path) => path === STANDARD_GIT_BASH_PATHS[0],
-      lookupGitOnPath: () => {
+      lookupGitCandidates: () => {
         throw new Error('should not fall through to PATH lookup');
       },
     };
@@ -73,13 +73,33 @@ describe('checkWindowsGitBash', () => {
   it('falls through to `git` on PATH and resolves ../../bin/bash.exe relative to it', () => {
     const probe: GitBashProbe = {
       fileExists: (path) => path === 'C:\\Program Files\\Git\\bin\\bash.exe',
-      lookupGitOnPath: () => 'C:\\Program Files\\Git\\cmd\\git.exe',
+      lookupGitCandidates: () => ['C:\\Program Files\\Git\\cmd\\git.exe'],
     };
 
     const result = checkWindowsGitBash('win32', {}, probe);
 
     expect(result.ok).toBe(true);
     expect(result.resolvedPath).toBe('C:\\Program Files\\Git\\bin\\bash.exe');
+  });
+
+  // #3661 tester report: Git for Windows at a non-standard root puts both
+  // mingw64\bin\git.exe and cmd\git.exe on PATH. When mingw64\bin sorts first,
+  // its ../../bin derivation points at mingw64\bin\bash.exe (does not exist);
+  // the cmd\git.exe hit derives the real <Git>\bin\bash.exe. Every candidate
+  // must be tried, not just the first.
+  it('tries every `git` PATH hit when the first one does not yield a bash.exe', () => {
+    const probe: GitBashProbe = {
+      fileExists: (path) => path === 'D:\\JavaTool\\GIT\\bin\\bash.exe',
+      lookupGitCandidates: () => [
+        'D:\\JavaTool\\GIT\\mingw64\\bin\\git.exe',
+        'D:\\JavaTool\\GIT\\cmd\\git.exe',
+      ],
+    };
+
+    const result = checkWindowsGitBash('win32', {}, probe);
+
+    expect(result.ok).toBe(true);
+    expect(result.resolvedPath).toBe('D:\\JavaTool\\GIT\\bin\\bash.exe');
   });
 
   it('does not run at all on darwin', () => {
