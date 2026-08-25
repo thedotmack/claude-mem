@@ -22,11 +22,19 @@ export const BACKFILL_RETRY_BASE_MS = 5_000;
  */
 export const BACKFILL_MAX_ATTEMPTS = 6;
 
+/**
+ * Cadence the chain settles into once fast retries stop helping. It never stops
+ * entirely: the embedder or the database can recover long after the escalation
+ * window, and a chain that has given up leaves that project on keyword search
+ * for the rest of the worker's life.
+ */
+export const BACKFILL_RECOVERY_MS = 5 * 60_000;
+
 export type BackfillOutcome =
   | { kind: 'complete' }
   | { kind: 'continue'; delayMs: number }
   | { kind: 'retry'; delayMs: number; failures: number; message: string }
-  | { kind: 'exhausted'; failures: number; message: string };
+  | { kind: 'exhausted'; delayMs: number; failures: number; message: string };
 
 /**
  * One turn of the backfill chain: run a pass and say what happens next.
@@ -50,7 +58,9 @@ export async function stepBackfill(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const attempt = failures + 1;
-    if (attempt >= BACKFILL_MAX_ATTEMPTS) return { kind: 'exhausted', failures: attempt, message };
+    if (attempt >= BACKFILL_MAX_ATTEMPTS) {
+      return { kind: 'exhausted', delayMs: BACKFILL_RECOVERY_MS, failures: attempt, message };
+    }
     // Back off rather than re-arming at the success cadence: a permanently
     // failing embedder retried every second is the 1 Hz burn this backfill was
     // rewritten to remove. Doubling is long enough for a model download or a
@@ -178,18 +188,29 @@ export class DatabaseManager {
       try {
         const modelId = this.vectorIndex!.modelId;
         const outcome = await stepBackfill(this.backfill!, modelId, this.backfillFailures);
-        this.backfillFailures = outcome.kind === 'retry' ? outcome.failures : 0;
+        // 'exhausted' must carry its count forward too. Resetting it there
+        // sends the next tick back to the front of the escalation, so the chain
+        // cycles 5s..80s..slow..5s forever instead of settling into the slow
+        // check. Only a pass that did not throw clears it.
+        const stillFailing = outcome.kind === 'retry' || outcome.kind === 'exhausted';
+        this.backfillFailures = stillFailing ? outcome.failures : 0;
         if (outcome.kind === 'complete') {
           logger.info('DB', 'Vector backfill complete');
           return;
         }
         if (outcome.kind === 'exhausted') {
-          // Only here is 'next boot' the honest description: the pass has now
-          // failed repeatedly over minutes, so the fault is not transient.
-          logger.warn('DB', 'Vector backfill failed repeatedly; will retry next boot', {
-            error: outcome.message,
-            attempts: outcome.failures,
-          });
+          // Slow down, but never stop. The fault is no longer plausibly
+          // transient, yet an embedder or database that is down for an hour
+          // still comes back, and a chain that has stopped would leave this
+          // project on keyword search until the process restarts.
+          this.scheduleBackfill(outcome.delayMs);
+          if (outcome.failures === BACKFILL_MAX_ATTEMPTS) {
+            logger.warn('DB', 'Vector backfill still failing; checking occasionally from now on', {
+              error: outcome.message,
+              attempts: outcome.failures,
+              nextCheckMs: outcome.delayMs,
+            });
+          }
           return;
         }
         if (outcome.kind === 'retry') {
@@ -201,7 +222,12 @@ export class DatabaseManager {
         }
         this.scheduleBackfill(outcome.delayMs);
       } catch (error) {
-        logger.warn('DB', 'Vector backfill scheduler failed; will retry next boot', {
+        // Re-arm BEFORE logging: this handler exists so a fault here cannot
+        // become an unhandled rejection, and returning without a timer would
+        // strand indexing exactly as the failure path used to. A logger that
+        // throws must not be what stops it.
+        this.scheduleBackfill(BACKFILL_RECOVERY_MS);
+        logger.warn('DB', 'Vector backfill scheduler failed; checking again later', {
           error: error instanceof Error ? error.message : String(error),
         });
       }

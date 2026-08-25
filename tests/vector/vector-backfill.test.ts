@@ -10,6 +10,7 @@ import {
   DatabaseManager,
   BACKFILL_RETRY_BASE_MS,
   BACKFILL_MAX_ATTEMPTS,
+  BACKFILL_RECOVERY_MS,
 } from '../../src/services/worker/DatabaseManager.js';
 import { LocalEmbedder } from '../../src/services/vector/LocalEmbedder.js';
 import { VectorSync } from '../../src/services/vector/VectorSync.js';
@@ -1526,10 +1527,16 @@ describe('DatabaseManager.scheduleBackfill re-arm', () => {
   }
 
   /** Runs the real chain on a fake clock; returns every delay it armed. */
-  async function armedDelays(outcomes: ('throw' | 'more' | 'done')[], maxTicks = 12) {
+  async function armedDelays(
+    outcomes: ('throw' | 'more' | 'done')[],
+    maxTicks = 12,
+    faultBeforePass?: () => never,
+  ) {
     const dm = new DatabaseManager() as any;
     dm.backfill = new ScriptedBackfill(outcomes);
-    dm.vectorIndex = { modelId: 'test/fake-token-hash/384' };
+    dm.vectorIndex = faultBeforePass
+      ? { get modelId(): string { faultBeforePass(); } }
+      : { modelId: 'test/fake-token-hash/384' };
 
     const delays: number[] = [];
     let pending: (() => void) | null = null;
@@ -1571,13 +1578,54 @@ describe('DatabaseManager.scheduleBackfill re-arm', () => {
     ]);
   });
 
-  it('accumulates consecutive failures and finally stops', async () => {
+  it('stops escalating the backoff once it has tried long enough', async () => {
     // Pinning the counter to 0 would retry at a flat 5s forever.
-    const { delays } = await armedDelays(Array(BACKFILL_MAX_ATTEMPTS + 2).fill('throw'));
-    expect(delays.length).toBe(BACKFILL_MAX_ATTEMPTS);
-    expect(delays[delays.length - 1]).toBe(
+    const { delays } = await armedDelays(Array(BACKFILL_MAX_ATTEMPTS + 2).fill('throw'), 20);
+    const escalating = delays.slice(1, BACKFILL_MAX_ATTEMPTS);
+    expect(escalating[escalating.length - 1]).toBe(
       BACKFILL_RETRY_BASE_MS * 2 ** (BACKFILL_MAX_ATTEMPTS - 2),
     );
+  });
+
+  /**
+   * Regression: giving up entirely strands a project whose dependency later
+   * recovers. The first version of this fix stopped arming timers after the
+   * sixth consecutive failure, which traded "one failure strands indexing" for
+   * "a few minutes of failure strands indexing" — the same defect with a longer
+   * fuse. An outage longer than the escalation window left a project on keyword
+   * search for the rest of the worker's life.
+   */
+  it('keeps checking slowly rather than giving up for the process lifetime', async () => {
+    const { delays } = await armedDelays(Array(BACKFILL_MAX_ATTEMPTS + 3).fill('throw'), 20);
+    expect(delays.length).toBeGreaterThan(BACKFILL_MAX_ATTEMPTS);
+    expect(delays[delays.length - 1]).toBe(BACKFILL_RECOVERY_MS);
+  });
+
+  it('picks the work back up when the dependency recovers', async () => {
+    const outcomes = [
+      ...Array(BACKFILL_MAX_ATTEMPTS + 1).fill('throw'),
+      'more',
+      'done',
+    ] as ('throw' | 'more' | 'done')[];
+    const { delays, failures } = await armedDelays(outcomes, 20);
+    // A successful pass after the slow poll resets the counter and returns to
+    // the fast cadence, so recovery is not merely detected but resumed.
+    expect(delays).toContain(1_000);
+    expect(failures).toBe(0);
+  });
+
+  /**
+   * Regression: the guard that keeps a timer fault from becoming an unhandled
+   * rejection must not itself strand the chain. It was added to this callback
+   * and returned without re-arming, which is the same stranding bug one level
+   * out.
+   */
+  it('re-arms after a fault in the scheduler itself, not just in the pass', async () => {
+    const { delays } = await armedDelays(['done'], 4, () => {
+      throw new Error('scheduler-level fault');
+    });
+    expect(delays.length).toBeGreaterThan(1);
+    expect(delays[1]).toBe(BACKFILL_RECOVERY_MS);
   });
 
   it('clears the failure count once a pass succeeds', async () => {
