@@ -27,6 +27,7 @@ const {
   touchPidFile,
   spawnDaemon,
   buildWindowsDaemonStartCommand,
+  daemonWorkingDirectory,
   resolveWorkerRuntimePath,
   captureProcessStartToken,
   verifyPidFileOwnership,
@@ -686,10 +687,10 @@ describe('ProcessManager', () => {
       const runtimePath = String.raw`C:\Users\Test User\.bun\bin\bun.exe`;
       const scriptPath = String.raw`C:\Users\Test User\.claude\plugins\marketplaces\thedotmack\plugin\scripts\worker-service.cjs`;
 
-      const command = buildWindowsDaemonStartCommand(runtimePath, scriptPath);
+      const command = buildWindowsDaemonStartCommand(runtimePath, scriptPath, String.raw`C:\daemon-home`);
 
       expect(command).toBe(
-        `Start-Process -FilePath '${runtimePath}' -ArgumentList @('"${scriptPath}"','--daemon') -WindowStyle Hidden`
+        `Start-Process -FilePath '${runtimePath}' -ArgumentList @('"${scriptPath}"','--daemon') -WorkingDirectory 'C:\\daemon-home' -WindowStyle Hidden`
       );
     });
 
@@ -709,8 +710,39 @@ describe('ProcessManager', () => {
       );
 
       expect(command).toBe(
-        `Start-Process -FilePath 'C:\\Users\\O''Brien\\.bun\\bin\\bun.exe' -ArgumentList @('"C:\\Users\\O''Brien\\plugin\\scripts\\worker-service.cjs"','--daemon') -WindowStyle Hidden`
+        `Start-Process -FilePath 'C:\\Users\\O''Brien\\.bun\\bin\\bun.exe' -ArgumentList @('"C:\\Users\\O''Brien\\plugin\\scripts\\worker-service.cjs"','--daemon') -WorkingDirectory '${DATA_DIR.replace(/'/g, "''")}' -WindowStyle Hidden`
       );
+    });
+  });
+
+  // A process holds an open handle on its working directory. On Windows that locks the
+  // directory against rename and move for as long as the process lives, and a daemon
+  // outlives the session that spawned it -- so a hook-spawned daemon inheriting the
+  // project folder left it permanently locked (#3706).
+  describe('daemon working directory (#3706)', () => {
+    it('pins the daemon to a directory the user is not working in', () => {
+      const command = buildWindowsDaemonStartCommand(
+        String.raw`C:\bun\bun.exe`,
+        String.raw`C:\plugin\worker-service.cjs`
+      );
+
+      expect(command).toContain('-WorkingDirectory');
+      expect(command).toContain(`-WorkingDirectory '${DATA_DIR.replace(/'/g, "''")}'`);
+    });
+
+    it('escapes a single quote in the working directory', () => {
+      const command = buildWindowsDaemonStartCommand(
+        String.raw`C:\bun\bun.exe`,
+        String.raw`C:\plugin\worker-service.cjs`,
+        String.raw`C:\Users\O'Brien\.claude-mem`
+      );
+
+      expect(command).toContain(String.raw`-WorkingDirectory 'C:\Users\O''Brien\.claude-mem'`);
+    });
+
+    it('defaults to the claude-mem data directory, never the caller cwd', () => {
+      expect(daemonWorkingDirectory()).toBe(DATA_DIR);
+      expect(daemonWorkingDirectory()).not.toBe(process.cwd());
     });
   });
 

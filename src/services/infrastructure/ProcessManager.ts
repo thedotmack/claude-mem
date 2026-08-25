@@ -357,7 +357,26 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: s
   }
 }
 
-export function buildWindowsDaemonStartCommand(runtimePath: string, scriptPath: string): string {
+/**
+ * Where a detached daemon should stand, which is anywhere but the user's project.
+ *
+ * A process holds an open handle on its working directory. On Windows that makes the
+ * directory unrenamable and unmovable for the daemon's whole lifetime, and the daemon
+ * outlives the session that spawned it -- so a project folder became permanently locked
+ * with "The process cannot access the file because it is being used by another process"
+ * until the user found and killed bun.exe (#3706). POSIX allows the rename but still
+ * pins the directory against unmount. claude-mem's own data directory always exists by
+ * the time a daemon starts and is never a directory the user is reorganising.
+ */
+export function daemonWorkingDirectory(): string {
+  return paths.dataDir();
+}
+
+export function buildWindowsDaemonStartCommand(
+  runtimePath: string,
+  scriptPath: string,
+  workingDirectory: string = daemonWorkingDirectory()
+): string {
   const psSingleQuote = (value: string) => value.replace(/'/g, "''");
   // Windows PowerShell 5.1 joins -ArgumentList elements with spaces WITHOUT
   // quoting them when it builds the child's native command line, so a script
@@ -366,7 +385,7 @@ export function buildWindowsDaemonStartCommand(runtimePath: string, scriptPath: 
   // double quotes inside the single-quoted PS string keeps the path a single
   // argument. -FilePath is safe as-is: it is a single-string parameter and
   // never goes through that join.
-  return `Start-Process -FilePath '${psSingleQuote(runtimePath)}' -ArgumentList @('"${psSingleQuote(scriptPath)}"','--daemon') -WindowStyle Hidden`;
+  return `Start-Process -FilePath '${psSingleQuote(runtimePath)}' -ArgumentList @('"${psSingleQuote(scriptPath)}"','--daemon') -WorkingDirectory '${psSingleQuote(workingDirectory)}' -WindowStyle Hidden`;
 }
 
 export function spawnDaemon(
@@ -425,6 +444,7 @@ export function spawnDaemon(
   const child = spawnHidden(execPath, args, {
     detached: true,
     stdio: 'ignore',
+    cwd: daemonWorkingDirectory(),
     env
   });
 
