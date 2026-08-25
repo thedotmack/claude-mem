@@ -63,8 +63,8 @@ export function stripImageContent(value: unknown): unknown {
   }
 
   if (value && typeof value === 'object') {
-    if (isBase64ImageBlock(value)) return undefined;
     if (Object.getPrototypeOf(value) !== Object.prototype) return value;
+    if (isBase64ImageBlock(value)) return undefined;
 
     const record = value as Record<string, unknown>;
     const cleaned: Record<string, unknown> = {};
@@ -81,11 +81,18 @@ export function stripImageContent(value: unknown): unknown {
 function isBase64ImageBlock(value: object): boolean {
   const record = value as Record<string, unknown>;
   if (record.type !== 'image') return false;
-  if (typeof record.data === 'string') return true;
+  if (isBinaryImageData(record.data)) return true;
   const source = record.source;
   return source !== null
     && typeof source === 'object'
-    && typeof (source as Record<string, unknown>).data === 'string';
+    && isBinaryImageData((source as Record<string, unknown>).data);
+}
+
+function isBinaryImageData(value: unknown): boolean {
+  return typeof value === 'string'
+    || (typeof Buffer !== 'undefined' && Buffer.isBuffer(value))
+    || value instanceof ArrayBuffer
+    || ArrayBuffer.isView(value);
 }
 
 export async function ingestObservation(payload: ObservationPayload): Promise<IngestResult> {
@@ -146,7 +153,7 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   }
 
   const cleanedToolInput = payload.toolInput !== undefined
-    ? stripMemoryTags(JSON.stringify(payload.toolInput))
+    ? stripMemoryTags(JSON.stringify(stripImageContent(payload.toolInput)) ?? '{}')
     : '{}';
   const cleanedToolResponse = payload.toolResponse !== undefined
     ? stripMemoryTags(JSON.stringify(stripImageContent(payload.toolResponse)) ?? '{}')

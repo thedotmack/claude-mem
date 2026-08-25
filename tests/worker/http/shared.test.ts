@@ -48,4 +48,24 @@ describe('stripImageContent', () => {
     const date = new Date('2026-01-01T00:00:00.000Z');
     expect(stripImageContent(date)).toBe(date);
   });
+
+  it('removes image blocks backed by Buffer or typed-array data', () => {
+    const result = stripImageContent([
+      { type: 'image', data: Buffer.from([0xff, 0xd8, 0xff]) },
+      { type: 'image', source: { type: 'base64', data: new Uint8Array([0xff, 0xd9]) } },
+      { type: 'text', text: 'kept' },
+    ]);
+
+    expect(result).toEqual([{ type: 'text', text: 'kept' }]);
+  });
+
+  it('does not remove image-looking class instances', () => {
+    class ImageMetadata {
+      type = 'image';
+      data = 'https://example.test/image.png';
+    }
+
+    const metadata = new ImageMetadata();
+    expect(stripImageContent(metadata)).toBe(metadata);
+  });
 });
