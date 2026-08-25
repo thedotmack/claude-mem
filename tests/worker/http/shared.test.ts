@@ -38,4 +38,14 @@ describe('stripImageContent', () => {
   it('removes a result containing only an image', () => {
     expect(JSON.stringify(stripImageContent({ type: 'image', data: 'base64-image' }))).toBeUndefined();
   });
+
+  it('keeps image metadata that has a URL but no binary payload', () => {
+    const result = { type: 'image', url: 'https://example.test/screenshot.png' };
+    expect(stripImageContent(result)).toEqual(result);
+  });
+
+  it('leaves non-plain objects intact', () => {
+    const date = new Date('2026-01-01T00:00:00.000Z');
+    expect(stripImageContent(date)).toBe(date);
+  });
 });

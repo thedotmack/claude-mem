@@ -58,14 +58,15 @@ export interface ObservationPayload {
 export function stripImageContent(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value
-      .filter(item => !(item && typeof item === 'object' && (item as Record<string, unknown>).type === 'image'))
+      .filter(item => !(item && typeof item === 'object' && isBase64ImageBlock(item)))
       .map(stripImageContent);
   }
 
   if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    if (record.type === 'image') return undefined;
+    if (isBase64ImageBlock(value)) return undefined;
+    if (Object.getPrototypeOf(value) !== Object.prototype) return value;
 
+    const record = value as Record<string, unknown>;
     const cleaned: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(record)) {
       const next = stripImageContent(child);
@@ -75,6 +76,16 @@ export function stripImageContent(value: unknown): unknown {
   }
 
   return value;
+}
+
+function isBase64ImageBlock(value: object): boolean {
+  const record = value as Record<string, unknown>;
+  if (record.type !== 'image') return false;
+  if (typeof record.data === 'string') return true;
+  const source = record.source;
+  return source !== null
+    && typeof source === 'object'
+    && typeof (source as Record<string, unknown>).data === 'string';
 }
 
 export async function ingestObservation(payload: ObservationPayload): Promise<IngestResult> {
