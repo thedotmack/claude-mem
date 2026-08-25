@@ -245,12 +245,21 @@ describe('session_summaries FK left without ON UPDATE CASCADE by a half-reported
         AND name = 'idx_session_summaries_sdk_session'
     `)).toBe(1);
 
-    // AUTOINCREMENT keeps counting from where the copied rows left off.
+    // AUTOINCREMENT survived the rebuild, so ids keep counting from where the
+    // copied rows left off instead of being reused. The copied row is deleted
+    // first because that is the only state the two declarations disagree on:
+    // with it still present both AUTOINCREMENT and a plain INTEGER PRIMARY KEY
+    // hand out 2, and the assertion would pass on a rebuild that dropped the
+    // keyword. On an empty table a plain rowid restarts at 1.
+    store.db.run(`DELETE FROM session_summaries WHERE id = 1`);
     store.db.prepare(`
       INSERT INTO session_summaries (memory_session_id, project, request, created_at, created_at_epoch)
       VALUES ('mem-stale', 'proj-a', 'second summary', ?, ?)
     `).run(ISO, EPOCH + 1);
-    expect(count(store.db, `SELECT COUNT(*) AS n FROM session_summaries WHERE id = 1`)).toBe(1);
+    expect(count(
+      store.db,
+      `SELECT id AS n FROM session_summaries WHERE request = 'second summary'`
+    )).toBe(2);
 
     store.db.close();
   });
