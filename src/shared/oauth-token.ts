@@ -124,7 +124,7 @@ async function readWindowsCredentialManager(): Promise<OAuthTokenResult> {
   const psScript = `
     $ErrorActionPreference = 'SilentlyContinue'
     $candidates = @('Claude Code-credentials', 'Claude Code:credentials', 'Claude Code-credentials:${psSafeUsername}')
-    Add-Type -Namespace ClaudeMem -Name CredRead -MemberDefinition @"
+    Add-Type -Namespace ClaudeMem -Name CredApi -MemberDefinition @"
       [DllImport("Advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
       public static extern bool CredRead(string target, uint type, uint reservedFlag, out IntPtr CredentialPtr);
       [DllImport("Advapi32.dll", SetLastError=true)]
@@ -140,12 +140,12 @@ async function readWindowsCredentialManager(): Promise<OAuthTokenResult> {
 "@ -ErrorAction SilentlyContinue
     foreach ($t in $candidates) {
       $ptr = [IntPtr]::Zero
-      $ok = [ClaudeMem.CredRead]::CredRead($t, 1, 0, [ref]$ptr)
+      $ok = [ClaudeMem.CredApi]::CredRead($t, 1, 0, [ref]$ptr)
       if ($ok) {
-        $cred = [System.Runtime.InteropServices.Marshal]::PtrToStructure($ptr, [Type][ClaudeMem.CredRead+CREDENTIAL])
+        $cred = [System.Runtime.InteropServices.Marshal]::PtrToStructure($ptr, [Type][ClaudeMem.CredApi+CREDENTIAL])
         $bytes = New-Object byte[] $cred.CredentialBlobSize
         [System.Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, $cred.CredentialBlobSize)
-        [ClaudeMem.CredRead]::CredFree($ptr) | Out-Null
+        [ClaudeMem.CredApi]::CredFree($ptr) | Out-Null
         [System.Text.Encoding]::Unicode.GetString($bytes)
         exit 0
       }
