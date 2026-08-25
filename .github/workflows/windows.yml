@@ -206,9 +206,10 @@ jobs:
       # when the gate above goes red.
       - name: Surviving uv/python processes (diagnostic)
         if: always()
+        continue-on-error: true
         shell: pwsh
         run: |
           Get-CimInstance Win32_Process |
-            Where-Object { $_.Name -match '^(uv|uvx|python)(\.exe)? } |
+            Where-Object { $_.Name -match '^(uv|uvx|python)(\.exe)?$' } |
             Select-Object ProcessId, ParentProcessId, Name, CreationDate |
             Format-Table -AutoSize
