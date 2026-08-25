@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.16.0] - 2026-08-25
+
+## claude-mem for Cowork 🧠
+
+Claude started remembering Cowork tasks today — this release takes it further.
+
+### New: claude-mem-cowork plugin
+A second plugin in the marketplace, built for **Cowork** (native Claude app — mobile, web, desktop cloud sessions):
+
+- Hooks capture tool use in ephemeral Cowork containers and stream fragments to cmem.ai, where Pro runs the observer server-side
+- Compiled observations are injected into every new session and every spawned agent
+- **Fail-soft by design**: no API key → silent no-op; cmem.ai unreachable → events spool locally and flush later; every hook exits 0 unconditionally
+- Credential redaction hardened: short and whitespace-bearing values, any Authorization scheme, Cookie headers, full URI userinfo
+- mem-search + mem-setup skills bundled
+
+Install in any Cowork session:
+```
+/plugin marketplace add thedotmack/claude-mem
+/plugin install claude-mem-cowork@thedotmack
+```
+Then say "set up claude-mem".
+
+Landing page: https://cmem.ai/cowork
+
+### Also in this release
+- Memory Prize scorecard and slides (hackathon 05)
+- Overflow spool re-spools the remainder instead of dropping oldest events
+- Marketplace version alignment
+
 ## [13.15.3] - 2026-08-20
 
 ## What's Changed
