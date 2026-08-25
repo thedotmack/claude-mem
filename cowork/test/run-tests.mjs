@@ -138,6 +138,20 @@ await run('observation', {
 }, { CMEM_API_BASE: 'http://127.0.0.1:1' });
 check('Token-scheme Authorization redacted in spool', existsSync(SPOOL) && !readFileSync(SPOOL, 'utf8').includes('tok-cred-9f8e7d6c5b4a'), readFileSync(SPOOL, 'utf8').slice(0, 200));
 rmSync(SPOOL, { force: true });
+// short and whitespace-bearing key=value secrets (no minimum length, spaces allowed)
+received = [];
+await run('observation', {
+  session_id: 's1', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_2h',
+  tool_input: { command: 'login --password=ab1' },
+  tool_response: 'password: my secret pass\nGET /login?token=abc12&user=bob\ndone'
+});
+const ing2h = received.find(r => r.body?.payload?.tool_use_id === 'tu_2h');
+const in2h = String(ing2h?.body.payload.tool_input || '');
+const out2h = String(ing2h?.body.payload.tool_response || '');
+check('short password redacted', !in2h.includes('ab1') && in2h.includes('[cmem-redacted]'), in2h);
+check('whitespace-bearing password redacted through line end', !out2h.includes('my secret pass') && out2h.includes('done'), out2h);
+check('short query-string token redacted', !out2h.includes('abc12'), out2h);
+check('record delimiter preserved (&user=bob survives)', out2h.includes('&user=bob'), out2h);
 
 // ---- 2c. <private> tag stripping ----
 console.log('\n[2c] private-tag stripping');

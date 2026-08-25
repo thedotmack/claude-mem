@@ -117,8 +117,11 @@ const SECRET_PATTERNS = [
   /\bAIza[0-9A-Za-z_-]{35}\b/g,                                                  // Google API keys
   /\bnpm_[A-Za-z0-9]{36}\b/g                                                     // npm tokens
 ];
-// `password: …` / `api_key=…` style assignments — keep the key, redact the value
-const KEYVALUE_RE = /((?:api[_-]?key|apikey|access[_-]?key|secret[_-]?key|client[_-]?secret|secret|password|passwd|pwd|auth[_-]?token|token|credentials?|private[_-]?key)["']?\s*[:=]\s*["']?)(?!\[cmem-redacted\])[^\s"'`,;&]{6,}/gi;
+// `password: …` / `api_key=…` style assignments — keep the key, redact the
+// ENTIRE value through the line or record delimiter (quote, backtick, comma,
+// semicolon, ampersand, newline). No minimum length and spaces allowed inside
+// the value, so short passwords and passphrases with spaces never leak.
+const KEYVALUE_RE = /((?:api[_-]?key|apikey|access[_-]?key|secret[_-]?key|client[_-]?secret|secret|password|passwd|pwd|auth[_-]?token|token|credentials?|private[_-]?key)["']?[ \t]*[:=][ \t]*["']?)(?!\[cmem-redacted\])[^\n\r"'`,;&]+/gi;
 // Cookie/Set-Cookie header values are session credentials whatever the cookie
 // is named (sessionid=…) — redact the whole header value. Same treatment for
 // Authorization headers regardless of scheme (Bearer, Token, ApiKey, custom…)
