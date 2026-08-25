@@ -44,6 +44,17 @@ describe('stripImageContent', () => {
     expect(stripImageContent(result)).toEqual(result);
   });
 
+  it('keeps URL-backed image sources while removing base64 sources', () => {
+    const result = stripImageContent([
+      { type: 'image', source: { type: 'url', data: 'https://example.test/image.png' } },
+      { type: 'image', source: { type: 'base64', data: 'base64-image' } },
+    ]);
+
+    expect(result).toEqual([
+      { type: 'image', source: { type: 'url', data: 'https://example.test/image.png' } },
+    ]);
+  });
+
   it('leaves non-plain objects intact', () => {
     const date = new Date('2026-01-01T00:00:00.000Z');
     expect(stripImageContent(date)).toBe(date);

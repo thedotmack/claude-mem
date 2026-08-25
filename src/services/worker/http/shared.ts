@@ -83,9 +83,11 @@ function isBase64ImageBlock(value: object): boolean {
   if (record.type !== 'image') return false;
   if (isBinaryImageData(record.data)) return true;
   const source = record.source;
-  return source !== null
-    && typeof source === 'object'
-    && isBinaryImageData((source as Record<string, unknown>).data);
+  if (source === null || typeof source !== 'object') return false;
+  const sourceRecord = source as Record<string, unknown>;
+  const sourceData = sourceRecord.data;
+  if (sourceRecord.type === 'url') return false;
+  return sourceRecord.type === 'base64' && isBinaryImageData(sourceData);
 }
 
 function isBinaryImageData(value: unknown): boolean {
