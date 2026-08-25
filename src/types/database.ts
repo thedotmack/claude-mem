@@ -14,6 +14,17 @@ export interface IndexInfo {
   partial: number;
 }
 
+export interface ForeignKeyInfo {
+  id: number;
+  seq: number;
+  table: string;
+  from: string;
+  to: string | null;
+  on_update: string;
+  on_delete: string;
+  match: string;
+}
+
 export interface TableNameRow {
   name: string;
 }
