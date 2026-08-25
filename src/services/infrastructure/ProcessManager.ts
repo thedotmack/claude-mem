@@ -369,7 +369,14 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: s
  * the time a daemon starts and is never a directory the user is reorganising.
  */
 export function daemonWorkingDirectory(): string {
-  return paths.dataDir();
+  const dir = paths.dataDir();
+  // Created here rather than assumed: a cwd that does not exist makes spawn fail with
+  // ENOENT and Start-Process fail outright, so passing one turns a first run on a fresh
+  // install into a launch failure. paths.ts resolves DATA_DIR but does not create it --
+  // today something else happens to create it first, which is a coupling this must not
+  // depend on. mkdir -p is idempotent, so the usual case costs one stat.
+  mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 export function buildWindowsDaemonStartCommand(

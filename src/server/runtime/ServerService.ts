@@ -818,6 +818,10 @@ function getServerPort(): number {
 
 function spawnServerDaemon(port: number): number | undefined {
   const scriptPath = typeof __filename !== 'undefined' ? __filename : fileURLToPath(import.meta.url);
+  // A cwd that does not exist makes spawn fail with ENOENT, and paths.ts resolves
+  // DATA_DIR without creating it — so create it rather than depend on some earlier
+  // caller having done so. Idempotent.
+  mkdirSync(paths.dataDir(), { recursive: true });
   const child = spawn(process.execPath, [scriptPath, '--daemon'], {
     detached: true,
     stdio: 'ignore',

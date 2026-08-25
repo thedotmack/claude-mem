@@ -744,6 +744,20 @@ describe('ProcessManager', () => {
       expect(daemonWorkingDirectory()).toBe(DATA_DIR);
       expect(daemonWorkingDirectory()).not.toBe(process.cwd());
     });
+
+    // Passing a cwd that does not exist is worse than passing none: spawn fails with
+    // ENOENT and Start-Process refuses outright, so this fix would turn a first run on
+    // a fresh install into a launch failure. paths.ts resolves DATA_DIR but never
+    // creates it — today some earlier caller happens to, which is not a guarantee.
+    it('creates the directory it hands out, so a fresh install can spawn', () => {
+      rmSync(DATA_DIR, { recursive: true, force: true });
+      expect(existsSync(DATA_DIR)).toBe(false);
+
+      const dir = daemonWorkingDirectory();
+
+      expect(existsSync(dir)).toBe(true);
+      expect(statSync(dir).isDirectory()).toBe(true);
+    });
   });
 
   describe('SIGHUP handling', () => {
