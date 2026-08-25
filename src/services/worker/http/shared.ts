@@ -54,6 +54,29 @@ export interface ObservationPayload {
   toolUseId?: string;
 }
 
+/** Remove binary image content that the text-only observer cannot use. */
+export function stripImageContent(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value
+      .filter(item => !(item && typeof item === 'object' && (item as Record<string, unknown>).type === 'image'))
+      .map(stripImageContent);
+  }
+
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    if (record.type === 'image') return undefined;
+
+    const cleaned: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(record)) {
+      const next = stripImageContent(child);
+      if (next !== undefined) cleaned[key] = next;
+    }
+    return cleaned;
+  }
+
+  return value;
+}
+
 export async function ingestObservation(payload: ObservationPayload): Promise<IngestResult> {
   const { sessionManager, dbManager, eventBroadcaster, ensureGeneratorRunning } = requireContext();
 
@@ -115,7 +138,7 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     ? stripMemoryTags(JSON.stringify(payload.toolInput))
     : '{}';
   const cleanedToolResponse = payload.toolResponse !== undefined
-    ? stripMemoryTags(JSON.stringify(payload.toolResponse))
+    ? stripMemoryTags(JSON.stringify(stripImageContent(payload.toolResponse)) ?? '{}')
     : '{}';
 
   await sessionManager.queueObservation(sessionDbId, {
