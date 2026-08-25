@@ -416,6 +416,24 @@ describe('index-readiness probe reached through SearchOrchestrator', () => {
     ).rejects.toBeInstanceOf(ChromaUnavailableError);
   });
 
+  /**
+   * The not-ready message is shown to a user whose search just came back
+   * without semantic results, so it must stay true in every state that reaches
+   * it. Indexing can be running, or it can have stopped for good: the pass
+   * gives up after repeated failures rather than retrying forever. A message
+   * promising that it "will finish" is false in that second state and leaves
+   * the user waiting for something that is not coming.
+   */
+  it('does not promise the indexing will finish, because it can stop for good', async () => {
+    const error = await orchestrator
+      .search({ query: QUERY, project: UNINDEXED, type: 'observations' })
+      .then(() => null)
+      .catch((e: unknown) => e as Error);
+
+    expect(error).toBeInstanceOf(ChromaUnavailableError);
+    expect(error!.message).not.toMatch(/until it finishes|in progress/i);
+  });
+
   it('still answers a project that has no content at all with an empty result', async () => {
     // Not-ready is a claim about the backfill, not about an unknown project.
     // Raising it here would turn "this project has nothing" into a thrown

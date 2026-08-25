@@ -13,7 +13,10 @@ import {
 } from '../../src/services/worker/DatabaseManager.js';
 import { LocalEmbedder } from '../../src/services/vector/LocalEmbedder.js';
 import { VectorSync } from '../../src/services/vector/VectorSync.js';
-import { VectorSearchStrategy } from '../../src/services/worker/search/strategies/VectorSearchStrategy.js';
+import {
+  VectorSearchStrategy,
+  SemanticIndexNotReadyError,
+} from '../../src/services/worker/search/strategies/VectorSearchStrategy.js';
 import { FakeEmbedder } from './fake-embedder.js';
 import type { Embedder } from '../../src/services/vector/types.js';
 
@@ -442,7 +445,7 @@ describe('VectorSearchStrategy while the backfill is unfinished', () => {
     expect(index.countIndexed('observation')).toBe(0);
     await expect(
       strategy.search({ query: 'shared state', searchType: 'observations', project: 'alpha' }),
-    ).rejects.toThrow(/not ready|still building|backfill/i);
+    ).rejects.toBeInstanceOf(SemanticIndexNotReadyError);
   });
 
   it('answers normally once the backfill has populated the index', async () => {
@@ -1249,7 +1252,7 @@ describe('VectorIndex.countIndexed scoping', () => {
 
     await expect(
       strategy.search({ query: 'narrative 1', searchType: 'observations', project: 'alpha' }),
-    ).rejects.toThrow(/not ready|still building|backfill/i);
+    ).rejects.toBeInstanceOf(SemanticIndexNotReadyError);
   });
 });
 

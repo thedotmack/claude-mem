@@ -148,7 +148,11 @@ export class VectorSearchStrategy {
           searchType,
         });
         throw new SemanticIndexNotReadyError(
-          'Semantic index is still being built (one-time backfill in progress); use keyword search until it finishes',
+          // Deliberately says nothing about when this resolves. Indexing may
+          // be running, or may have stopped for good: the pass gives up after
+          // repeated failures rather than retrying forever, and a message
+          // promising it will finish would be a lie in that second state.
+          'Semantic index does not cover this project; using keyword search. If it stays this way, check the worker log for a failed indexing pass',
         );
       }
       return this.emptyResult();
