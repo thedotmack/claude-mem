@@ -5,6 +5,12 @@ import { closeSync, existsSync, mkdtempSync, openSync, readSync, rmSync, statSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { VectorBackfill, jsonArrayStrings } from '../../src/services/vector/VectorBackfill.js';
+import {
+  stepBackfill,
+  DatabaseManager,
+  BACKFILL_RETRY_BASE_MS,
+  BACKFILL_MAX_ATTEMPTS,
+} from '../../src/services/worker/DatabaseManager.js';
 import { LocalEmbedder } from '../../src/services/vector/LocalEmbedder.js';
 import { VectorSync } from '../../src/services/vector/VectorSync.js';
 import { VectorSearchStrategy } from '../../src/services/worker/search/strategies/VectorSearchStrategy.js';
@@ -195,23 +201,94 @@ describe('VectorBackfill with doc-less rows', () => {
   });
 
   /**
-   * Mirrors DatabaseManager.scheduleBackfill's recurrence exactly (check
-   * isComplete, run a batch, re-arm only if there is more to do) against a
-   * fresh backfill over the same doc-less corpus. The assertion is that the
-   * chain stops re-arming, which is what the 1 Hz spin was.
+   * Drives stepBackfill, the pass itself. The RE-ARM half of the recurrence —
+   * scheduleBackfill's timer and its persisted failure count — is pinned
+   * separately below, because that is the defect site and this test cannot see
+   * it.
+   *
+   * The previous version of this test hand-mirrored the recurrence in a local
+   * while-loop. That mirror modelled only the success branch — check
+   * isComplete, run a batch, re-arm if there is more to do — so it could not
+   * see the failure branch at all, and a transient batch failure that stopped
+   * the chain for the worker's lifetime passed it cleanly.
    */
-  it('lets a DatabaseManager-shaped re-arm loop stop', async () => {
+  it('lets the real re-arm chain stop when the work is done', async () => {
     const fresh = new VectorBackfill(db, index);
-    let rearms = 0;
-    let armed = true;
-    while (armed) {
-      if (rearms++ > 25) break;
-      if (fresh.isComplete(index.modelId)) { armed = false; break; }
-      const progress = await fresh.runBatch();
-      armed = !progress.every((p) => p.remaining === 0);
+    let steps = 0;
+    let outcome = await stepBackfill(fresh, index.modelId, 0);
+    while (outcome.kind === 'continue' && steps++ < 25) {
+      outcome = await stepBackfill(fresh, index.modelId, 0);
     }
-    expect(armed).toBe(false);
-    expect(rearms).toBeLessThanOrEqual(25);
+    expect(outcome.kind).toBe('complete');
+    expect(steps).toBeLessThanOrEqual(25);
+  });
+});
+
+/**
+ * Regression: a TRANSIENT batch failure must not stop background indexing for
+ * the lifetime of the worker.
+ *
+ * The chain re-armed itself only on the success path. Its catch logged
+ * "will retry next boot" and returned, and scheduleBackfill had exactly two
+ * callers — initialize() and that success-path recursion — so nothing re-armed.
+ * One failed embed left the corpus frozen at whatever fraction had been indexed
+ * until the process restarted. The first embed of a worker's life loads model
+ * weights over the network, so this is an ordinary event, not a rare one.
+ *
+ * It is worse on this branch than it reads: search now routes an incompletely
+ * indexed scope to keyword results deliberately, so a stalled backfill means
+ * semantic search is OFF for that project until restart rather than merely
+ * degraded.
+ *
+ * The fix must not simply re-arm, either — a permanently failing embedder would
+ * then spin forever, which is the 1 Hz burn this file's other tests exist to
+ * prevent. So both directions are asserted here.
+ */
+class FlakyEmbedder extends FakeEmbedder {
+  calls = 0;
+  constructor(private readonly failFirst: number) { super(); }
+  async embed(texts: string[]): Promise<Float32Array[]> {
+    if (this.calls++ < this.failFirst) throw new Error('transient embed failure');
+    return super.embed(texts);
+  }
+}
+
+describe('VectorBackfill retry after a failed batch', () => {
+  function corpus(embedder: Embedder) {
+    const db = createCorpusDb();
+    const obs = insertObs(db);
+    for (let i = 1; i <= 5; i++) {
+      obs.run(i, 'ms-1', 'alpha', null, null, `narrative ${i} about a transient failure`, null, Date.now());
+    }
+    const index = new VectorIndex(db, embedder);
+    return { db, index, backfill: new VectorBackfill(db, index) };
+  }
+
+  /** Drives the real recurrence, honouring whatever delay it asks for. */
+  async function drainChain(backfill: VectorBackfill, modelId: string, maxSteps = 40) {
+    let failures = 0;
+    let steps = 0;
+    for (;;) {
+      if (steps++ >= maxSteps) return { outcome: 'ran-away' as const, steps };
+      const outcome = await stepBackfill(backfill, modelId, failures);
+      if (outcome.kind === 'complete') return { outcome: 'complete' as const, steps };
+      if (outcome.kind === 'exhausted') return { outcome: 'exhausted' as const, steps };
+      failures = outcome.kind === 'retry' ? outcome.failures : 0;
+    }
+  }
+
+  it('recovers from a transient failure instead of stalling until the next boot', async () => {
+    const { index, backfill } = corpus(new FlakyEmbedder(1));
+    const result = await drainChain(backfill, index.modelId);
+    expect(result.outcome).toBe('complete');
+    expect(index.countIndexed('observation')).toBe(5);
+  });
+
+  it('gives up on a batch that never succeeds rather than retrying forever', async () => {
+    const { index, backfill } = corpus(new FlakyEmbedder(Number.MAX_SAFE_INTEGER));
+    const result = await drainChain(backfill, index.modelId);
+    expect(result.outcome).toBe('exhausted');
+    expect(index.countIndexed('observation')).toBe(0);
   });
 });
 
@@ -1416,3 +1493,92 @@ function failingVectorWriteDb(db: Database, failAt: number): Database {
     },
   }) as unknown as Database;
 }
+
+
+/**
+ * Regression: pins the DEFECT SITE itself — DatabaseManager.scheduleBackfill's
+ * re-arm and its persisted failure count.
+ *
+ * The tests above drive stepBackfill, which is the pass. The bug was not in the
+ * pass: it was in the caller, whose catch logged "will retry next boot" and
+ * returned without re-arming. A test that only drives stepBackfill cannot see
+ * that, and did not — restoring the original scheduleBackfill body verbatim
+ * left every one of them green.
+ *
+ * So this drives the real private method with a recording clock in place of
+ * setTimeout, and asserts on the schedule it actually arms. Each assertion here
+ * fails against a specific mutation of the fix: dropping the re-arm, pinning
+ * the failure counter to 0, or collapsing the backoff to 0ms.
+ */
+describe('DatabaseManager.scheduleBackfill re-arm', () => {
+  class ScriptedBackfill {
+    constructor(private readonly outcomes: ('throw' | 'more' | 'done')[]) {}
+    calls = 0;
+    isComplete(): boolean { return this.outcomes[this.calls] === 'done'; }
+    async runBatch() {
+      const step = this.outcomes[this.calls++] ?? 'done';
+      if (step === 'throw') throw new Error('transient embed failure');
+      return [{ kind: 'observation', processed: 1, remaining: step === 'more' ? 1 : 0 }];
+    }
+  }
+
+  /** Runs the real chain on a fake clock; returns every delay it armed. */
+  async function armedDelays(outcomes: ('throw' | 'more' | 'done')[], maxTicks = 12) {
+    const dm = new DatabaseManager() as any;
+    dm.backfill = new ScriptedBackfill(outcomes);
+    dm.vectorIndex = { modelId: 'test/fake-token-hash/384' };
+
+    const delays: number[] = [];
+    let pending: (() => void) | null = null;
+    const realSetTimeout = globalThis.setTimeout;
+    (globalThis as any).setTimeout = (fn: () => void, ms: number) => {
+      delays.push(ms);
+      pending = fn;
+      return { unref() {} } as any;
+    };
+    try {
+      dm.scheduleBackfill();
+      for (let i = 0; i < maxTicks; i++) {
+        const fire = pending;
+        if (!fire) break;
+        pending = null;
+        await fire();
+      }
+    } finally {
+      (globalThis as any).setTimeout = realSetTimeout;
+    }
+    return { delays, failures: dm.backfillFailures as number };
+  }
+
+  it('re-arms after a failed pass instead of stopping until the next boot', async () => {
+    // Fails once, then succeeds. The original code armed nothing after the throw.
+    const { delays } = await armedDelays(['throw', 'more', 'done']);
+    expect(delays.length).toBeGreaterThan(1);
+    expect(delays[1]).toBe(BACKFILL_RETRY_BASE_MS);
+  });
+
+  it('backs off instead of retrying at the success cadence', async () => {
+    // Collapsing the backoff to 0ms — or reusing the 1s success delay — is the
+    // hot-spin this backfill was rewritten to remove.
+    const { delays } = await armedDelays(['throw', 'throw', 'throw']);
+    expect(delays.slice(1, 4)).toEqual([
+      BACKFILL_RETRY_BASE_MS,
+      BACKFILL_RETRY_BASE_MS * 2,
+      BACKFILL_RETRY_BASE_MS * 4,
+    ]);
+  });
+
+  it('accumulates consecutive failures and finally stops', async () => {
+    // Pinning the counter to 0 would retry at a flat 5s forever.
+    const { delays } = await armedDelays(Array(BACKFILL_MAX_ATTEMPTS + 2).fill('throw'));
+    expect(delays.length).toBe(BACKFILL_MAX_ATTEMPTS);
+    expect(delays[delays.length - 1]).toBe(
+      BACKFILL_RETRY_BASE_MS * 2 ** (BACKFILL_MAX_ATTEMPTS - 2),
+    );
+  });
+
+  it('clears the failure count once a pass succeeds', async () => {
+    const { failures } = await armedDelays(['throw', 'more', 'done']);
+    expect(failures).toBe(0);
+  });
+});

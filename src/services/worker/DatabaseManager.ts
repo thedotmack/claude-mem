@@ -13,6 +13,53 @@ import { USER_SETTINGS_PATH, DB_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import type { DBSession } from '../worker-types.js';
 
+/** First wait after a failed pass; doubles per consecutive failure. */
+export const BACKFILL_RETRY_BASE_MS = 5_000;
+/**
+ * Consecutive failures after which the chain stops and genuinely does wait for
+ * the next boot. Five retries at 5/10/20/40/80s, so it keeps trying for about
+ * 2.5 minutes before concluding the fault is not transient.
+ */
+export const BACKFILL_MAX_ATTEMPTS = 6;
+
+export type BackfillOutcome =
+  | { kind: 'complete' }
+  | { kind: 'continue'; delayMs: number }
+  | { kind: 'retry'; delayMs: number; failures: number; message: string }
+  | { kind: 'exhausted'; failures: number; message: string };
+
+/**
+ * One turn of the backfill chain: run a pass and say what happens next.
+ *
+ * Extracted from the timer so the recurrence is reachable without a
+ * DatabaseManager, which needs DB_PATH, a settings file and a real
+ * LocalEmbedder (208MB of ONNX the suite deliberately avoids). That
+ * unreachability is why the retry path shipped untested: the only coverage
+ * hand-mirrored the success branch and never modelled a throw.
+ */
+export async function stepBackfill(
+  backfill: VectorBackfill,
+  modelId: string,
+  failures: number,
+): Promise<BackfillOutcome> {
+  try {
+    if (backfill.isComplete(modelId)) return { kind: 'complete' };
+    const progress = await backfill.runBatch();
+    if (progress.every((p) => p.remaining === 0)) return { kind: 'complete' };
+    return { kind: 'continue', delayMs: 1_000 };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const attempt = failures + 1;
+    if (attempt >= BACKFILL_MAX_ATTEMPTS) return { kind: 'exhausted', failures: attempt, message };
+    // Back off rather than re-arming at the success cadence: a permanently
+    // failing embedder retried every second is the 1 Hz burn this backfill was
+    // rewritten to remove. Doubling is long enough for a model download or a
+    // busy database to come good, and short enough that a genuinely broken
+    // install stops quickly instead of retrying all day.
+    return { kind: 'retry', delayMs: BACKFILL_RETRY_BASE_MS * 2 ** (attempt - 1), failures: attempt, message };
+  }
+}
+
 export class DatabaseManager {
   private db: Database | null = null;
   private sessionStore: SessionStore | null = null;
@@ -21,6 +68,7 @@ export class DatabaseManager {
   private vectorIndex: VectorIndex | null = null;
   private backfill: VectorBackfill | null = null;
   private backfillTimer: ReturnType<typeof setTimeout> | null = null;
+  private backfillFailures = 0;
   private cloudSync: CloudSync | null = null;
 
   async initialize(): Promise<void> {
@@ -124,21 +172,36 @@ export class DatabaseManager {
   private scheduleBackfill(delayMs = 5_000): void {
     if (!this.backfill || !this.vectorIndex) return;
     this.backfillTimer = setTimeout(async () => {
+      // stepBackfill absorbs its own faults, but re-arming happens out here, so
+      // the callback keeps a guard of its own: an unhandled rejection inside a
+      // timer is how a failed pass would take the worker down with it.
       try {
-        if (this.backfill!.isComplete(this.vectorIndex!.modelId)) {
+        const modelId = this.vectorIndex!.modelId;
+        const outcome = await stepBackfill(this.backfill!, modelId, this.backfillFailures);
+        this.backfillFailures = outcome.kind === 'retry' ? outcome.failures : 0;
+        if (outcome.kind === 'complete') {
           logger.info('DB', 'Vector backfill complete');
           return;
         }
-        const progress = await this.backfill!.runBatch();
-        if (progress.every((p) => p.remaining === 0)) {
-          logger.info('DB', 'Vector backfill complete');
+        if (outcome.kind === 'exhausted') {
+          // Only here is 'next boot' the honest description: the pass has now
+          // failed repeatedly over minutes, so the fault is not transient.
+          logger.warn('DB', 'Vector backfill failed repeatedly; will retry next boot', {
+            error: outcome.message,
+            attempts: outcome.failures,
+          });
           return;
         }
-        this.scheduleBackfill(1_000);
+        if (outcome.kind === 'retry') {
+          logger.warn('DB', 'Vector backfill batch failed; retrying', {
+            error: outcome.message,
+            attempt: outcome.failures,
+            retryInMs: outcome.delayMs,
+          });
+        }
+        this.scheduleBackfill(outcome.delayMs);
       } catch (error) {
-        // A failed pass must never take the worker with it; search degrades
-        // to whatever is already indexed and the next boot retries.
-        logger.warn('DB', 'Vector backfill batch failed; will retry next boot', {
+        logger.warn('DB', 'Vector backfill scheduler failed; will retry next boot', {
           error: error instanceof Error ? error.message : String(error),
         });
       }
