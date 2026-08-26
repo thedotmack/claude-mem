@@ -15,6 +15,7 @@ export interface ContextConfig {
   totalObservationCount: number;
   fullObservationCount: number;
   sessionCount: number;
+  tokenBudget: number;
 
   showReadTokens: boolean;
   showWorkTokens: boolean;

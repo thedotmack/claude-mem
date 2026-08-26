@@ -77,6 +77,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     const settingKeys = [
       'CLAUDE_MEM_MODEL',
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
+      'CLAUDE_MEM_CONTEXT_TOKEN_BUDGET',
       'CLAUDE_MEM_WORKER_PORT',
       'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
@@ -166,6 +167,13 @@ export class SettingsRoutes extends BaseRouteHandler {
       const obsCount = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
       if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_CONTEXT_TOKEN_BUDGET) {
+      const tokenBudget = parseInt(settings.CLAUDE_MEM_CONTEXT_TOKEN_BUDGET, 10);
+      if (isNaN(tokenBudget) || tokenBudget < 0 || tokenBudget > 200000) {
+        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_TOKEN_BUDGET must be between 0 and 200000' };
       }
     }
 

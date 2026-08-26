@@ -261,6 +261,18 @@ export function ContextSettingsModal({
                   onChange={(e) => updateSetting('CLAUDE_MEM_CONTEXT_SESSION_COUNT', e.target.value)}
                 />
               </FormField>
+              <FormField
+                label="Token Budget"
+                tooltip="Maximum estimated tokens for injected context (0 = unlimited, up to 200000)"
+              >
+                <input
+                  type="number"
+                  min="0"
+                  max="200000"
+                  value={formState.CLAUDE_MEM_CONTEXT_TOKEN_BUDGET || '0'}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_CONTEXT_TOKEN_BUDGET', e.target.value)}
+                />
+              </FormField>
             </CollapsibleSection>
 
             {/* Section 2: Display */}

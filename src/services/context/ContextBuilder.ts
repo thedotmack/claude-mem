@@ -11,7 +11,7 @@ import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
 
 import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
 import { loadContextConfig } from './ContextConfigLoader.js';
-import { calculateTokenEconomics } from './TokenCalculator.js';
+import { calculateTokenEconomics, applyTokenBudget } from './TokenCalculator.js';
 import {
   queryObservationsMulti,
   querySummariesMulti,
@@ -129,6 +129,8 @@ export interface ContextInjectStats {
   obs_type_other: number;
   tokens_injected: number;
   tokens_saved_vs_naive: number;
+  token_budget: number;
+  observations_trimmed_by_budget: number;
   search_strategy: string;
 }
 
@@ -137,7 +139,9 @@ const STAT_TYPE_BUCKETS = new Set(['bugfix', 'discovery', 'decision', 'refactor'
 function buildInjectStats(
   observations: Observation[],
   summaries: SessionSummary[],
-  full: boolean
+  full: boolean,
+  tokenBudget: number,
+  observationsTrimmedByBudget: number
 ): ContextInjectStats {
   const economics = calculateTokenEconomics(observations);
   const typeCounts: Record<string, number> = {
@@ -169,6 +173,8 @@ function buildInjectStats(
     obs_type_other: typeCounts.other,
     tokens_injected: economics.totalReadTokens,
     tokens_saved_vs_naive: economics.savings,
+    token_budget: tokenBudget,
+    observations_trimmed_by_budget: observationsTrimmedByBudget,
     search_strategy: full ? 'full' : 'timeline',
   };
 }
@@ -202,6 +208,7 @@ export async function generateContextWithStats(
   if (input?.full) {
     config.totalObservationCount = 999999;
     config.sessionCount = 999999;
+    config.tokenBudget = 0;
   }
 
   const rawDb = initializeDatabase();
@@ -222,9 +229,18 @@ export async function generateContextWithStats(
       return { text: withObserverHealthWarning(renderEmptyState(project, forHuman)), stats: null };
     }
 
+    // Trim once here so the rendered timeline and the inject stats describe
+    // the same observation set. Only the summaries that will actually render
+    // (sessionCount cap) count against the budget.
+    const budgetResult = applyTokenBudget(
+      observations,
+      summaries.slice(0, config.sessionCount),
+      config.tokenBudget
+    );
+
     const output = buildContextOutput(
       project,
-      observations,
+      budgetResult.observations,
       summaries,
       config,
       cwd,
@@ -234,7 +250,13 @@ export async function generateContextWithStats(
 
     return {
       text: withObserverHealthWarning(output),
-      stats: buildInjectStats(observations, summaries, Boolean(input?.full)),
+      stats: buildInjectStats(
+        budgetResult.observations,
+        summaries,
+        Boolean(input?.full),
+        config.tokenBudget,
+        budgetResult.observationsTrimmedByBudget
+      ),
     };
   } finally {
     rawDb.close();
