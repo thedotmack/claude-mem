@@ -1001,7 +1001,7 @@ function openBrowser(url: string): void {
   }
 }
 
-async function promptProvider(options: InstallOptions): Promise<ProviderId> {
+async function promptProvider(options: InstallOptions, login: TrialReadyResult | null = null): Promise<ProviderId> {
   const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
 
   const persistClaudeProvider = (authMethod?: 'subscription' | 'api-key' | 'gateway') => {
@@ -1202,11 +1202,25 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   // OpenAI-compatible client whose endpoint and model both come from settings,
   // so "use the CMEM observer model" is four settings writes and nothing else.
   if (selectedProvider === 'cmem') {
+    // Signed-in path: the browser login already delivered the key material —
+    // configure the observer directly, no paste prompt, no second browser trip.
+    if (login) {
+      const wrote = mergeSettings({
+        CLAUDE_MEM_PROVIDER: 'openrouter',
+        CLAUDE_MEM_OPENROUTER_BASE_URL: login.memoryBaseUrl,
+        CLAUDE_MEM_OPENROUTER_MODEL: login.memoryModel,
+        CLAUDE_MEM_OPENROUTER_API_KEY: login.memoryKey,
+      });
+      if (wrote) log.info('claude-mem observer configured with your signed-in memory key.');
+      return 'openrouter';
+    }
+
+    // No delivered key (login skipped/failed/offline): the paste flow stays.
     p.note(
-      `${CMEM_PRO_TRIAL_DAYS} days free, then $${CMEM_PRO_MONTHLY_USD}/mo — card required, cancel anytime.\n`
+      `Free for ${CMEM_PRO_TRIAL_DAYS} days, then $${CMEM_PRO_MONTHLY_USD}/mo — cancel anytime.\n`
         + `Opening ${CMEM_PRO_SIGNUP_URL}\n`
-        + "Sign in, start your free week, and copy the key you're shown.",
-      `cmem Pro — ${CMEM_PRO_TRIAL_DAYS} days free`,
+        + "Sign in and copy the key you're shown.",
+      'claude-mem observer',
     );
     openBrowser(CMEM_PRO_SIGNUP_URL);
 
@@ -1338,7 +1352,7 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
     options: [
       { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (recommended — fast, cheap, great for compression)' },
       { value: 'claude-sonnet-5', label: 'Sonnet 5 (balanced quality and cost)' },
-      { value: 'claude-opus-4-8', label: 'Opus 4.8 (highest quality, most expensive)' },
+      { value: 'claude-opus-4-8', label: 'Opus 4.8 (highest quality, slowest)' },
     ],
     initialValue,
   });
@@ -1755,9 +1769,9 @@ async function promptBrowserLogin(version: string): Promise<TrialPairing | null>
  * Runs immediately after promptBrowserLogin produced a pairing. Polls cmem.ai
  * until the human finishes login in the browser, then persists the account
  * state (cloud-sync trio + device name + trial/plan keys) in ONE mergeSettings
- * call and returns the delivered key material — the caller (today: the
- * jump-forward at the provider position; Phase 5: the provider prompt) decides
- * what provider settings to write with it. CLAUDE_MEM_PROVIDER and the
+ * call and returns the delivered key material — the caller hands it to the
+ * provider prompt, which decides what provider settings to write with it (the
+ * user always chooses their provider). CLAUDE_MEM_PROVIDER and the
  * OpenRouter key settings are deliberately NOT written here.
  *
  * Every failure mode — pairing expiry, poll budget exhaustion, Ctrl+C,
@@ -2256,35 +2270,19 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // email, poll, or override a provider the operator asked for by name.
   const trialPairing = options.provider ? null : await promptBrowserLogin(version);
 
-  // Jump-forward: a pairing from the sign-in means the human is doing (or has
-  // done) login in the browser — poll for the delivered key material instead
-  // of asking which provider to use, and preselect the cmem/observer path by
-  // writing the provider settings here (Phase 5 moves this choice into the
-  // provider prompt). Any failure (expired link, poll budget, Ctrl+C,
-  // cmem.ai outage, settings write) falls through to the normal prompt.
-  let selectedProvider: ProviderId | null = null;
-  if (trialPairing && !options.provider) {
-    const login = await completeTrialPairing(trialPairing, version);
-    if (login) {
-      const wrote = mergeSettings({
-        CLAUDE_MEM_PROVIDER: 'openrouter',
-        CLAUDE_MEM_OPENROUTER_BASE_URL: login.memoryBaseUrl,
-        CLAUDE_MEM_OPENROUTER_MODEL: login.memoryModel,
-        CLAUDE_MEM_OPENROUTER_API_KEY: login.memoryKey,
-      });
-      if (wrote) {
-        selectedProvider = 'openrouter';
-      } else {
-        // mergeSettings already logged the write error — fall through to the
-        // provider prompt rather than pretending the key is configured.
-        log.warn(TRIAL_FINISH_LATER_WARNING);
-      }
-    }
-  }
-  const trialActivated = selectedProvider === 'openrouter';
-  if (selectedProvider === null) {
-    selectedProvider = await promptProvider(options);
-  }
+  // EVERYONE chooses their provider: the sign-in delivers key material, it
+  // never picks a provider. The delivered key is handed to promptProvider so
+  // the recommended cmem choice configures the observer with no paste prompt
+  // and no second browser trip; any pairing failure (expired link, poll
+  // budget, Ctrl+C, cmem.ai outage) just means login === null and the prompt
+  // runs with its normal paste fallback.
+  const login = trialPairing && !options.provider
+    ? await completeTrialPairing(trialPairing, version)
+    : null;
+  // A successful pairing wrote the cloud-sync settings (inside
+  // completeTrialPairing) regardless of which provider is chosen next.
+  const signedIn = login !== null;
+  const selectedProvider = await promptProvider(options, login);
   if (selectedProvider === 'claude') {
     await promptClaudeModel(options);
   }
@@ -2338,8 +2336,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `Plugin dir:  ${styleText('cyan', marketplaceDir)}`,
     `IDEs:        ${styleText('cyan', selectedIDEs.join(', '))}`,
   ];
-  if (trialActivated) {
-    summaryLines.push(`Cloud sync:  ${styleText('cyan', 'ON (cmem Pro free week)')}`);
+  if (signedIn) {
+    summaryLines.push(`Cloud sync:  ${styleText('cyan', 'ON (signed in to cmem.ai)')}`);
   }
   if (autoMemoryStatus === 'disabled') {
     summaryLines.push(`Auto-memory: ${styleText('cyan', 'disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
@@ -2402,11 +2400,11 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       healthSpinner?.stop(`Worker not yet responding on port ${workerPort} (still starting)`);
     }
 
-    // Trial installs just wrote cloud-sync settings the worker booted with, so
+    // A sign-in just wrote cloud-sync settings the worker booted with, so
     // one cheap read of /api/sync/status confirms sync is really configured.
     // Purely informational and fail-soft — a warming worker legitimately
     // can't answer yet, and the state is always visible via the cloud-sync skill.
-    if (trialActivated && workerReady) {
+    if (signedIn && workerReady) {
       try {
         const syncResponse = await fetch(`http://${workerUrlHost}:${actualPort}/api/sync/status`, {
           signal: AbortSignal.timeout(3000),
@@ -2456,9 +2454,10 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `Memory injection starts on your second session in a project.`,
     `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine.`,
     ``,
-    // Suppressed when the trial was just activated in this same run — pitching
-    // an offer the user already accepted 30 seconds ago reads as broken.
-    ...(trialActivated
+    // Suppressed whenever the user signed in during this run (any delivered
+    // key, whatever provider they chose) — pitching an offer to someone who
+    // just created their account 30 seconds ago reads as broken.
+    ...(signedIn
       ? []
       : [
           `${styleText(['bold', 'cyan'], PRO_TRIAL_PITCH)}`,

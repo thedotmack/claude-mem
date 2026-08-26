@@ -129,7 +129,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
     CLAUDE_MEM_API_TIMEOUT_MS: String(getTimeout(HOOK_TIMEOUTS.API_REQUEST)),
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
-    CLAUDE_MEM_PROVIDER: 'claude',  // Default to Claude
+    // Deliberate divergence from the installer prompt: the interactive
+    // provider prompt defaults to 'cmem' (the hosted observer), but headless
+    // installs land here — no delivered key exists headlessly, so the settings
+    // default stays 'claude'.
+    CLAUDE_MEM_PROVIDER: 'claude',
     CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',  // Default to logged-in Claude SDK auth (not API key)
     CLAUDE_MEM_GEMINI_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',  // Google-maintained alias → current GA Flash model (stays valid for new API keys)
