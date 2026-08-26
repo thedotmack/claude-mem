@@ -6,6 +6,7 @@ import { openConfiguredSqliteDatabase } from '../sqlite/connection.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { CloudSync } from '../sync/CloudSync.js';
 import { BackupManager } from '../backup/BackupManager.js';
+import { GbrainSync } from '../sync/GbrainSync.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, DB_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
@@ -18,6 +19,7 @@ export class DatabaseManager {
   private chromaSync: ChromaSync | null = null;
   private cloudSync: CloudSync | null = null;
   private backupManager: BackupManager | null = null;
+  private gbrainSync: GbrainSync | null = null;
 
   async initialize(): Promise<void> {
     this.db = openConfiguredSqliteDatabase(DB_PATH);
@@ -35,6 +37,14 @@ export class DatabaseManager {
       this.chromaSync = new ChromaSync('claude-mem');
     } else {
       logger.info('DB', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, using SQLite-only search');
+    }
+
+    // gbrain outbound connector: fromSettings() returns null unless
+    // CLAUDE_MEM_GBRAIN_ENABLED='true', so disabled installs get free no-op
+    // `getGbrainSync()?.` call sites (same shape as Chroma/CloudSync).
+    this.gbrainSync = GbrainSync.fromSettings();
+    if (this.gbrainSync) {
+      logger.info('DB', 'gbrain sync enabled via CLAUDE_MEM_GBRAIN_ENABLED=true');
     }
 
     // Cloud sync is active iff token, user id, and Hub URL are all non-empty.
@@ -59,6 +69,7 @@ export class DatabaseManager {
 
   async close(): Promise<void> {
     this.chromaSync = null;
+    this.gbrainSync = null;
 
     this.cloudSync?.stop();
     this.cloudSync = null;
@@ -100,6 +111,10 @@ export class DatabaseManager {
 
   getBackupManager(): BackupManager | null {
     return this.backupManager;
+  }
+
+  getGbrainSync(): GbrainSync | null {
+    return this.gbrainSync;
   }
 
   getConnection(): Database {

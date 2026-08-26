@@ -18,6 +18,7 @@ import { logger } from '../utils/logger.js';
 import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
 import { HeadroomProxyManager } from './headroom/HeadroomProxyManager.js';
+import { GbrainSync } from './sync/GbrainSync.js';
 import { openConfiguredSqliteDatabase } from './sqlite/connection.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
@@ -660,6 +661,20 @@ export class WorkerService implements WorkerRef {
           logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
         }).catch(error => {
           logger.error('CHROMA_SYNC', 'Backfill failed (non-blocking)', {}, error as Error);
+        });
+      }
+
+      // gbrain outbound backfill (non-blocking, mirrors the Chroma kick).
+      // fromSettings() inside backfillAllProjects re-checks the enabled gate;
+      // the backfill flag only controls this boot-time sweep.
+      if (
+        settings.CLAUDE_MEM_GBRAIN_ENABLED === 'true' &&
+        settings.CLAUDE_MEM_GBRAIN_BACKFILL_ENABLED === 'true'
+      ) {
+        GbrainSync.backfillAllProjects(this.dbManager.getSessionStore()).then(() => {
+          logger.info('GBRAIN_SYNC', 'Backfill check complete for all projects');
+        }).catch(error => {
+          logger.warn('GBRAIN_SYNC', 'Backfill failed (non-blocking)', {}, error as Error);
         });
       }
 

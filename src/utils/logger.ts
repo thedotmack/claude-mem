@@ -29,6 +29,7 @@ export type Component =
   | 'DEDUP'
   | 'ENV'
   | 'FOLDER_INDEX'
+  | 'GBRAIN_SYNC'
   | 'GIT'
   | 'HEADROOM'
   | 'HOOK'

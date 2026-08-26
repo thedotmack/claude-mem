@@ -604,6 +604,32 @@ async function syncAndBroadcastObservations(
       }, error);
     });
 
+    // gbrain mirror (fire-and-forget, same discipline as the Chroma call).
+    // Project allowlist (CLAUDE_MEM_GBRAIN_PROJECTS) is enforced inside
+    // GbrainSync.syncObservation, so unmatched projects are free no-ops.
+    const gbrainStart = Date.now();
+    dbManager.getGbrainSync()?.syncObservation(
+      obsId,
+      context.project,
+      obs,
+      result.createdAtEpoch,
+      memorySessionId
+    ).then(() => {
+      const gbrainDuration = Date.now() - gbrainStart;
+      logger.debug('GBRAIN_SYNC', 'Observation synced', {
+        obsId,
+        duration: `${gbrainDuration}ms`,
+        type: obs.type,
+        title: obs.title || '(untitled)'
+      });
+    }).catch((error) => {
+      logger.warn('GBRAIN_SYNC', `${agentName} gbrain sync failed, continuing`, {
+        obsId,
+        type: obs.type,
+        title: obs.title || '(untitled)'
+      }, error);
+    });
+
     dbManager.getCloudSync()?.notify();
 
     broadcastObservation(worker, {
