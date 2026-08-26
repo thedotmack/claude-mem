@@ -6,6 +6,7 @@
  */
 
 import { existsSync, readFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { join } from 'path';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, isPluginInstalled, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
@@ -30,6 +31,19 @@ function probeVersion(bin: 'bun' | 'uv'): string | null {
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     console.warn(`[doctor] Failed to probe \`${bin} --version\`:`, err);
+    return null;
+  }
+}
+
+function probeHelixVersion(): string | null {
+  try {
+    const out = execFileSync(IS_WINDOWS ? 'helix.exe' : 'helix', ['--version'], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      windowsHide: true,
+    });
+    return out.trim() || null;
+  } catch {
     return null;
   }
 }
@@ -64,6 +78,20 @@ export async function runDoctorCommand(): Promise<void> {
     name: 'uv (vector search)',
     status: uvVersion ? 'ok' : 'warn',
     detail: uvVersion ? uvVersion : 'not found — vector/semantic search disabled until installed',
+    required: false,
+  });
+
+  const helixEnabled = SettingsDefaultsManager.get('CLAUDE_MEM_HELIX_ENABLED') === 'true'
+    || SettingsDefaultsManager.get('CLAUDE_MEM_DB_BACKEND').includes('helix');
+  const helixVersion = probeHelixVersion();
+  checks.push({
+    name: 'Helix CLI',
+    status: helixEnabled ? (helixVersion ? 'ok' : 'warn') : (helixVersion ? 'ok' : 'warn'),
+    detail: helixVersion
+      ? helixVersion
+      : helixEnabled
+        ? 'not found — Helix backend cannot start until installed'
+        : 'not found — only needed when CLAUDE_MEM_DB_BACKEND uses helix',
     required: false,
   });
 

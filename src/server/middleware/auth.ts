@@ -3,6 +3,8 @@
 import type { Database } from 'bun:sqlite';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { verifyServerApiKey } from '../auth/sqlite-api-key-service.js';
+import { verifyHelixServerApiKey } from '../auth/helix-api-key-service.js';
+import type { HelixAuthRepository } from '../../storage/helix/auth.js';
 import {
   hasForwardedClientHeaders,
   hasLoopbackHostHeader,
@@ -30,6 +32,12 @@ export interface RequireAuthOptions {
   requiredScopes?: string[];
   authMode?: string;
   allowLocalDevBypass?: boolean;
+  /**
+   * When the Helix backend is active, keys live in Helix's ApiKey nodes, not
+   * SQLite — verification must go through the Helix auth repository or every
+   * valid Helix-issued key is rejected with 403 (#3145 P1).
+   */
+  getHelixAuth?: () => Promise<HelixAuthRepository>;
 }
 
 export function requireServerAuth(
@@ -75,21 +83,31 @@ export function requireServerAuth(
       return;
     }
 
-    const verified = verifyServerApiKey(getDatabase(), rawKey, options.requiredScopes ?? []);
-    if (!verified) {
-      res.status(403).json({ error: 'Forbidden', message: 'Invalid API key or insufficient scope' });
+    const finish = (verified: { teamId: string | null; projectId: string | null; scopes: string[]; record: { id: string } } | null) => {
+      if (!verified) {
+        res.status(403).json({ error: 'Forbidden', message: 'Invalid API key or insufficient scope' });
+        return;
+      }
+      req.authContext = {
+        userId: null,
+        organizationId: null,
+        teamId: verified.teamId,
+        projectId: verified.projectId,
+        scopes: verified.scopes,
+        apiKeyId: verified.record.id,
+        mode: 'api-key',
+      };
+      next();
+    };
+
+    if (options.getHelixAuth) {
+      options.getHelixAuth()
+        .then(repo => verifyHelixServerApiKey(repo, rawKey, options.requiredScopes ?? []))
+        .then(finish)
+        .catch(error => next(error));
       return;
     }
 
-    req.authContext = {
-      userId: null,
-      organizationId: null,
-      teamId: verified.teamId,
-      projectId: verified.projectId,
-      scopes: verified.scopes,
-      apiKeyId: verified.record.id,
-      mode: 'api-key',
-    };
-    next();
+    finish(verifyServerApiKey(getDatabase(), rawKey, options.requiredScopes ?? []));
   };
 }
