@@ -17,6 +17,9 @@ import {
   type GeminiBadRequestCategory,
 } from '../../../src/server/generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../../../src/server/generation/providers/OpenRouterObservationProvider.js';
+import { AimlapiObservationProvider } from '../../../src/server/generation/providers/AimlapiObservationProvider.js';
+import { AIMLAPI_PARTNER_ID, AIMLAPI_SOURCE } from '../../../src/shared/aimlapi-attribution.js';
+import { AIMLAPI_DEFAULT_MODEL } from '../../../src/shared/aimlapi-base-url.js';
 import { buildServerGenerationPrompt } from '../../../src/server/generation/providers/shared/prompt-builder.js';
 import type { ServerGenerationContext } from '../../../src/server/generation/providers/shared/types.js';
 
@@ -436,5 +439,71 @@ describe('OpenRouterObservationProvider', () => {
     await provider.generate(makeContext());
     const body = JSON.parse(String(capturing.lastInit?.body)) as { model?: string };
     expect(body.model).toBe('deepseek-chat');
+  });
+});
+
+describe('AimlapiObservationProvider', () => {
+  it('parses OpenAI-style response and reports tokensUsed', async () => {
+    const fakeFetch = new FakeFetch(
+      jsonResponse(200, {
+        choices: [{ message: { content: '<observation><type>x</type><title>o</title></observation>' } }],
+        usage: { total_tokens: 100 },
+      }),
+    );
+    const provider = new AimlapiObservationProvider({ apiKey: 'fake', fetchImpl: fakeFetch.fetch });
+    const result = await provider.generate(makeContext());
+    expect(result.rawText).toContain('<observation>');
+    expect(result.tokensUsed).toBe(100);
+    expect(result.providerLabel).toBe('aimlapi');
+  });
+
+  it('classifies a 429 response as rate_limit', async () => {
+    const fakeFetch = new FakeFetch(jsonResponse(429, { error: { message: 'rl' } }));
+    const provider = new AimlapiObservationProvider({ apiKey: 'fake', fetchImpl: fakeFetch.fetch });
+    try {
+      await provider.generate(makeContext());
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ServerClassifiedProviderError);
+      expect((error as ServerClassifiedProviderError).kind).toBe('rate_limit');
+    }
+  });
+
+  it('POSTs to the default aimlapi.com URL with the default model when unconfigured', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
+    );
+    const provider = new AimlapiObservationProvider({ apiKey: 'fake', fetchImpl: capturing.fetch });
+    await provider.generate(makeContext());
+    expect(capturing.lastUrl).toBe('https://api.aimlapi.com/v1/chat/completions');
+    const body = JSON.parse(String(capturing.lastInit?.body)) as { model?: string };
+    expect(body.model).toBe(AIMLAPI_DEFAULT_MODEL);
+  });
+
+  it('appends /chat/completions to a configured base URL', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
+    );
+    const provider = new AimlapiObservationProvider({
+      apiKey: 'fake',
+      baseUrl: 'https://staging.example.test/v1/',
+      fetchImpl: capturing.fetch,
+    });
+    await provider.generate(makeContext());
+    expect(capturing.lastUrl).toBe('https://staging.example.test/v1/chat/completions');
+  });
+
+  // Attribution is the whole point of a dedicated provider over the generic
+  // OpenRouter base-URL override: every request must carry the pair.
+  it('sends the aimlapi.com attribution headers on every request', async () => {
+    const capturing = new CapturingFetch(
+      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
+    );
+    const provider = new AimlapiObservationProvider({ apiKey: 'fake', fetchImpl: capturing.fetch });
+    await provider.generate(makeContext());
+    const headers = capturing.lastInit?.headers as Record<string, string>;
+    expect(headers['X-AIMLAPI-Source']).toBe(AIMLAPI_SOURCE);
+    expect(headers['X-AIMLAPI-Partner-ID']).toBe(AIMLAPI_PARTNER_ID);
+    expect(headers['Authorization']).toBe('Bearer fake');
   });
 });

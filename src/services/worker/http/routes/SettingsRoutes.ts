@@ -144,7 +144,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (settings.CLAUDE_MEM_PROVIDER) {
     const validProviders = ['aimlapi', 'claude', 'gemini', 'openrouter'];
     if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
-      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openrouter"' };
+      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "aimlapi", "claude", "gemini", or "openrouter"' };
       }
     }
 

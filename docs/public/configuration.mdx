@@ -14,7 +14,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
 | `CLAUDE_MEM_MODEL`            | `claude-haiku-4-5-20251001`     | Claude model used to compress observations (when using the Claude provider) |
-| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `gemini`, or `openrouter` |
+| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `gemini`, `openrouter`, or `aimlapi` |
 | `CLAUDE_MEM_CLAUDE_AUTH_METHOD` | `subscription`                | Claude provider auth mode: `subscription`, `api-key`, or `gateway` |
 | `CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
@@ -42,6 +42,18 @@ See [Gemini Provider](usage/gemini-provider) for detailed configuration and free
 | `CLAUDE_MEM_OPENROUTER_APP_NAME`             | `claude-mem`                | Optional: App name for analytics      |
 
 See [OpenRouter Provider](usage/openrouter-provider) for detailed configuration, free model list, and usage guide.
+
+### aimlapi.com Provider Settings
+
+| Setting                                      | Default                     | Description                           |
+|----------------------------------------------|-----------------------------|---------------------------------------|
+| `CLAUDE_MEM_AIMLAPI_API_KEY`                 | —                           | aimlapi.com API key ([get key](https://aimlapi.com/app/keys)) |
+| `CLAUDE_MEM_AIMLAPI_MODEL`                   | `openai/gpt-5.6-terra`      | Model identifier (any aimlapi.com chat model) |
+| `CLAUDE_MEM_AIMLAPI_BASE_URL`                | —                           | Optional: OpenAI-compatible base URL override; empty = `https://api.aimlapi.com/v1` |
+| `CLAUDE_MEM_AIMLAPI_SITE_URL`                | —                           | Optional: URL sent as `HTTP-Referer` |
+| `CLAUDE_MEM_AIMLAPI_APP_NAME`                | `Claude-Mem`                | Optional: App name sent as `X-Title` |
+
+Select it with `npx claude-mem install --provider aimlapi` (or pick **aimlapi.com** in the interactive installer). The `AIMLAPI_API_KEY` environment variable is honored as a fallback for the key.
 
 ### Claude Gateway Settings
 

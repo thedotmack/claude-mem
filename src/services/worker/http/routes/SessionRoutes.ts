@@ -158,7 +158,11 @@ export class SessionRoutes extends BaseRouteHandler {
       : provider === 'openrouter'
         ? this.openRouterAgent
         : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
-    const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
+    const agentName = provider === 'aimlapi'
+      ? 'aimlapi.com'
+      : provider === 'openrouter'
+        ? 'OpenRouter'
+        : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
 
     const actualQueueDepth = this.sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId);
 

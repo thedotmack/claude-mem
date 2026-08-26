@@ -16,6 +16,12 @@
 
 /** aimlapi.com's OpenAI-compatible surface. `/v2` on this host is billing-only. */
 export const AIMLAPI_DEFAULT_BASE_URL = 'https://api.aimlapi.com/v1';
+
+/**
+ * Default observation model. One constant shared by the worker provider, the
+ * server provider and the settings defaults so they can never disagree.
+ */
+export const AIMLAPI_DEFAULT_MODEL = 'openai/gpt-5.6-terra';
 export const DEFAULT_AIMLAPI_API_URL = `${AIMLAPI_DEFAULT_BASE_URL}/chat/completions`;
 
 const CHAT_COMPLETIONS_PATH = '/chat/completions';

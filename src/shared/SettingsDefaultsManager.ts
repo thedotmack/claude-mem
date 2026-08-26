@@ -4,6 +4,7 @@ import { join } from 'path';
 import { homedir, hostname } from 'os';
 import { HOOK_TIMEOUTS, getTimeout } from './hook-constants.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
+import { AIMLAPI_DEFAULT_MODEL } from './aimlapi-base-url.js';
 
 // A fresh settings.json is seeded with EVERY default (see loadFromFile), and
 // persisted values then win over DEFAULTS. So any install created after the
@@ -137,7 +138,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
     CLAUDE_MEM_AIMLAPI_API_KEY: '',  // Empty by default, can be set via UI or env
-    CLAUDE_MEM_AIMLAPI_MODEL: 'openai/gpt-5.6-terra',  // Default aimlapi.com model
+    CLAUDE_MEM_AIMLAPI_MODEL: AIMLAPI_DEFAULT_MODEL,  // Default aimlapi.com model
     CLAUDE_MEM_AIMLAPI_BASE_URL: '',  // Optional override; empty = https://api.aimlapi.com/v1
     CLAUDE_MEM_AIMLAPI_SITE_URL: '',  // Optional: overrides the HTTP-Referer sent to aimlapi.com
     CLAUDE_MEM_AIMLAPI_APP_NAME: 'Claude-Mem',  // Display name sent as X-Title

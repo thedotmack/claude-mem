@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { resolveAimlapiChatCompletionsUrl } from '../../../shared/aimlapi-base-url.js';
+import { AIMLAPI_DEFAULT_MODEL, resolveAimlapiChatCompletionsUrl } from '../../../shared/aimlapi-base-url.js';
 import { aimlapiAttributionHeaders, AIMLAPI_APP_URL, AIMLAPI_APP_TITLE } from '../../../shared/aimlapi-attribution.js';
 import { logger } from '../../../utils/logger.js';
 import {
@@ -14,17 +14,13 @@ import type {
   ServerGenerationResult,
 } from './shared/types.js';
 
-const DEFAULT_MODEL = 'anthropic/claude-3.5-sonnet';
-
 export interface AimlapiObservationProviderOptions {
   apiKey: string;
   model?: string;
   /**
-   * Optional OpenAI-compatible base URL (#2382/#2590/#2622/#2393). When set,
-   * requests POST to `<baseUrl>/chat/completions` (or verbatim if it already
-   * ends in `/chat/completions`). When unset, the default aimlapi.com endpoint
-   * is used — behavior unchanged. Examples: https://api.deepseek.com (DeepSeek),
-   * http://localhost:1234/v1 (LM Studio), a custom gateway base.
+   * Optional OpenAI-compatible base URL. When set, requests POST to
+   * `<baseUrl>/chat/completions` (or verbatim if it already ends in
+   * `/chat/completions`). When unset, the default aimlapi.com endpoint is used.
    */
   baseUrl?: string;
   maxOutputTokens?: number;
@@ -57,8 +53,8 @@ export class AimlapiObservationProvider implements ServerGenerationProvider {
       });
     }
     this.apiKey = options.apiKey;
-    // Model is passed verbatim so arbitrary OpenAI-compatible ids work. #2393.
-    this.model = options.model ?? DEFAULT_MODEL;
+    // Model is passed verbatim so any aimlapi.com model id works.
+    this.model = options.model ?? AIMLAPI_DEFAULT_MODEL;
     this.apiUrl = resolveAimlapiChatCompletionsUrl(options.baseUrl);
     this.maxOutputTokens = options.maxOutputTokens ?? 4096;
     this.siteUrl = options.siteUrl ?? AIMLAPI_APP_URL;
