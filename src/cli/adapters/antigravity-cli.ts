@@ -32,7 +32,7 @@ export const antigravityCliAdapter: PlatformAdapter = {
       toolResponse = toolResponse ?? { response: r.prompt_response };
     }
 
-    if ((hookEventName === 'BeforeTool' || hookEventName === 'PreToolUse') && toolName && !toolResponse) {
+    if ((hookEventName === 'BeforeTool' || hookEventName === 'PreToolUse') && toolName && toolResponse === undefined) {
       toolResponse = { _preExecution: true };
     }
 

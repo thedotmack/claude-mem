@@ -233,6 +233,20 @@ describe('antigravityCliAdapter - normalizeInput', () => {
     expect(preToolUse.toolResponse).toEqual({ _preExecution: true });
   });
 
+  it('preserves explicit falsy tool responses under BeforeTool and PreToolUse', () => {
+    for (const hook of ['BeforeTool', 'PreToolUse']) {
+      for (const val of ['', 0, false]) {
+        const res = antigravityCliAdapter.normalizeInput({
+          cwd: '/tmp',
+          hook_event_name: hook,
+          tool_name: 'Read',
+          tool_response: val,
+        });
+        expect(res.toolResponse).toBe(val);
+      }
+    }
+  });
+
   it('maps Notification fields into toolName/toolInput/toolResponse', () => {
     const result = antigravityCliAdapter.normalizeInput({
       cwd: '/tmp',
