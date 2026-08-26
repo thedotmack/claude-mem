@@ -12,10 +12,12 @@ import { paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
   captureProcessStartToken,
+  isPidAlive,
   verifyPidFileOwnership,
   type PidInfo,
 } from '../../supervisor/process-registry.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
+import { killProcessTree } from '../../shared/kill-process-tree.js';
 import { ServerV1PostgresRoutes } from '../routes/v1/ServerV1PostgresRoutes.js';
 import { SessionsObservationsAdapter } from '../compat/SessionsObservationsAdapter.js';
 import { SessionsSummarizeAdapter } from '../compat/SessionsSummarizeAdapter.js';
@@ -29,6 +31,11 @@ import type { ServerServiceGraph, ServerQueueLaneMetric } from './types.js';
 const SERVER_RUNTIME = 'server-beta';
 const DEFAULT_SERVER_HOST = '127.0.0.1';
 const DEFAULT_SERVER_PORT = 37877;
+
+// `server stop` waits at least this long for the daemon to exit. Must exceed
+// runShutdownCascade's own budget (5s SIGTERM grace + 1s SIGKILL grace) so a
+// slow-but-successful shutdown is not misreported as a failure.
+const SERVER_STOP_EXIT_TIMEOUT_MS = 15_000;
 
 export interface ServerServiceOptions {
   graph: ServerServiceGraph;
@@ -360,8 +367,41 @@ export async function runServerServiceCli(argv: string[] = process.argv.slice(2)
         console.log('Server is not running');
         return;
       }
-      process.kill(existing.pid, 'SIGTERM');
-      await waitForPidExit(existing.pid, 5000);
+      if (process.platform === 'win32') {
+        // No graceful path exists here on Windows: process.kill(pid,'SIGTERM')
+        // is TerminateProcess, so runServerForeground's SIGTERM handler never
+        // runs either way. What the single-PID form additionally loses is the
+        // daemon's children — tree-kill so nothing survives holding the port.
+        //
+        // A failed tree-kill must NOT be reported as a clean stop: clearing
+        // the PID file while the server still holds its port is how the next
+        // `start` silently races a live daemon.
+        try {
+          await killProcessTree(existing.pid);
+        } catch (error) {
+          console.error(
+            `Failed to stop server (PID ${existing.pid}): ${error instanceof Error ? error.message : String(error)}`
+          );
+          console.error('The server may still be running — leaving its PID file in place.');
+          process.exit(1);
+        }
+      } else {
+        process.kill(existing.pid, 'SIGTERM');
+      }
+
+      // Even a successful signal is not proof of exit; refuse to claim success
+      // if the process is still alive when the grace window closes.
+      //
+      // The deadline must EXCEED the cascade it is waiting on, or a slow but
+      // entirely successful shutdown reports failure. runShutdownCascade gives
+      // children 5s after SIGTERM plus 1s after SIGKILL, so a legitimate stop
+      // can take just over 6s — a 5s deadline here failed those every time.
+      await waitForPidExit(existing.pid, SERVER_STOP_EXIT_TIMEOUT_MS);
+      if (isPidAlive(existing.pid)) {
+        console.error(`Server PID ${existing.pid} did not exit; leaving its PID file in place.`);
+        process.exit(1);
+      }
+
       removeServerState();
       console.log('Server stopped');
       return;
