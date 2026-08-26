@@ -1,5 +1,6 @@
-import { Client, Predicate, g, readBatch, writeBatch } from '@helix-db/helix-db'
+import { Client, Predicate, VectorDistanceMetric, g, readBatch, writeBatch } from '@helix-db/helix-db'
 import { logger } from '../../utils/logger.js'
+import { EMBEDDING_DIMENSION } from './embeddings.js'
 
 export type HelixPropertyValue =
   | string
@@ -59,11 +60,11 @@ export class HelixHttpTransport implements HelixTransport {
     if (this.indexesEnsured) return
     const batch = writeBatch()
       .varAs('text_index', g().createTextIndexNodes('MemoryItem', 'indexed_text'))
-      .varAs('vector_index', g().createVectorIndexNodes('MemoryItem', 'embedding'))
+      .varAs('vector_index', g().createVectorIndexNodes('MemoryItem', 'embedding', EMBEDDING_DIMENSION, VectorDistanceMetric.Cosine))
       .varAs('semantic_text_index', g().createTextIndexNodes('SemanticDocument', 'document'))
-      .varAs('semantic_vector_index', g().createVectorIndexNodes('SemanticDocument', 'embedding'))
+      .varAs('semantic_vector_index', g().createVectorIndexNodes('SemanticDocument', 'embedding', EMBEDDING_DIMENSION, VectorDistanceMetric.Cosine))
       .returning([])
-    await this.client.query().dynamic(batch.toDynamicRequest()).send()
+    await this.client.query(batch.toQueryRequest()).send()
     this.indexesEnsured = true
   }
 
@@ -71,7 +72,7 @@ export class HelixHttpTransport implements HelixTransport {
     const batch = writeBatch()
       .varAs('rows', g().addN(label, properties).valueMap())
       .returning(['rows'])
-    const rows = extractRows(await this.client.query().dynamic(batch.toDynamicRequest()).send())
+    const rows = extractRows(await this.client.query(batch.toQueryRequest()).send())
     return rows[0] ?? properties
   }
 
@@ -80,7 +81,7 @@ export class HelixHttpTransport implements HelixTransport {
     const batch = readBatch()
       .varAs('rows', traversal)
       .returning(['rows'])
-    return extractRows(await this.client.query().dynamic(batch.toDynamicRequest()).send())
+    return extractRows(await this.client.query(batch.toQueryRequest()).send())
   }
 
   async updateNodes(
@@ -95,7 +96,7 @@ export class HelixHttpTransport implements HelixTransport {
     const batch = writeBatch()
       .varAs('rows', traversal.valueMap())
       .returning(['rows'])
-    return extractRows(await this.client.query().dynamic(batch.toDynamicRequest()).send())
+    return extractRows(await this.client.query(batch.toQueryRequest()).send())
   }
 }
 

@@ -1,4 +1,4 @@
-const EMBEDDING_DIMENSION = 128
+export const EMBEDDING_DIMENSION = 128
 
 function hashToken(token: string): number {
   let hash = 2166136261

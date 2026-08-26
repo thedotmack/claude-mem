@@ -105,7 +105,7 @@ export class HelixManager {
         .returning(['count'])
       const client = (transport as any).client
       if (client) {
-        await client.query().dynamic(batch.toDynamicRequest()).send()
+        await client.query(batch.toQueryRequest()).send()
         return true
       }
       await transport.findNodes('Project')
