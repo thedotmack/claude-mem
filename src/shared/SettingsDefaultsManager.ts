@@ -137,7 +137,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
     CLAUDE_MEM_AIMLAPI_API_KEY: '',  // Empty by default, can be set via UI or env
-    CLAUDE_MEM_AIMLAPI_MODEL: 'openai/gpt-5.6-terra-pro',  // Default aimlapi.com model
+    CLAUDE_MEM_AIMLAPI_MODEL: 'openai/gpt-5.6-terra',  // Default aimlapi.com model
     CLAUDE_MEM_AIMLAPI_BASE_URL: '',  // Optional override; empty = https://api.aimlapi.com/v1
     CLAUDE_MEM_AIMLAPI_SITE_URL: '',  // Optional: overrides the HTTP-Referer sent to aimlapi.com
     CLAUDE_MEM_AIMLAPI_APP_NAME: 'Claude-Mem',  // Display name sent as X-Title

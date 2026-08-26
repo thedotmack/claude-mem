@@ -33,7 +33,7 @@ const str = (k: string): string => {
 
 const provider = str('CLAUDE_MEM_PROVIDER');
 const apiKey = str('CLAUDE_MEM_AIMLAPI_API_KEY') || (process.env.AIMLAPI_API_KEY ?? '').trim();
-const model = str('CLAUDE_MEM_AIMLAPI_MODEL') || 'openai/gpt-5.6-terra-pro';
+const model = str('CLAUDE_MEM_AIMLAPI_MODEL') || 'openai/gpt-5.6-terra';
 const url = resolveAimlapiChatCompletionsUrl(str('CLAUDE_MEM_AIMLAPI_BASE_URL'));
 const headers = {
   'Content-Type': 'application/json',
