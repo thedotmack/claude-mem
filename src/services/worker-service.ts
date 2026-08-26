@@ -661,6 +661,10 @@ export class WorkerService implements WorkerRef {
       // Pull loop start (plan Phase 3 task 3): immediate catch-up pull, then
       // 30 s active / 5 min idle / suspended after 1 h without sessions.
       this.syncClient?.start();
+      // Automatic local DB snapshots (opt-in via CLAUDE_MEM_BACKUP_ENABLED;
+      // null when disabled — DatabaseManager gates construction). First run
+      // lands ~5 minutes after start, then every backup interval.
+      this.dbManager.getBackupManager()?.start();
 
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
       this.mcpReady = existsSync(mcpServerPath);

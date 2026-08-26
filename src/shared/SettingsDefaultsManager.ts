@@ -89,6 +89,11 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: string;
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: string;
   CLAUDE_MEM_CLOUD_SYNC_WS: string;    // advisory WebSocket speed layer (Phase 4) — 'false' = HTTP polling only
+  // Automatic local DB snapshots (BackupManager). Opt-in via ENABLED.
+  CLAUDE_MEM_BACKUP_ENABLED: string;
+  CLAUDE_MEM_BACKUP_INTERVAL_HOURS: string;
+  CLAUDE_MEM_BACKUP_RETAIN_COUNT: string;
+  CLAUDE_MEM_BACKUP_INCLUDE_VECTORS: string;  // archive the Chroma dir too (can be 2GB+; vectors are rebuildable via backfill)
   CLAUDE_MEM_TELEGRAM_ENABLED: string;
   CLAUDE_MEM_TELEGRAM_BOT_TOKEN: string;
   CLAUDE_MEM_TELEGRAM_CHAT_ID: string;
@@ -181,6 +186,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',      // Minted at first CloudSync start, then persisted back here
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: hostname(),  // Human-readable label for the cmem.ai Devices panel
     CLAUDE_MEM_CLOUD_SYNC_WS: 'true',  // Advisory WebSocket speed layer (plan Phase 4). 'false' = HTTP polling only — sync stays fully correct, just poll-latency (prime directive #2)
+    // Automatic local DB snapshots (BackupManager). Off by default; opt-in.
+    CLAUDE_MEM_BACKUP_ENABLED: 'false',
+    CLAUDE_MEM_BACKUP_INTERVAL_HOURS: '24',   // Snapshot cadence in hours
+    CLAUDE_MEM_BACKUP_RETAIN_COUNT: '7',      // Keep the N most-recent snapshots
+    CLAUDE_MEM_BACKUP_INCLUDE_VECTORS: 'false',  // Chroma dir can be 2GB+ and vectors are rebuildable via backfill — SQLite is the source of truth
     CLAUDE_MEM_TELEGRAM_ENABLED: 'true',
     CLAUDE_MEM_TELEGRAM_BOT_TOKEN: '',
     CLAUDE_MEM_TELEGRAM_CHAT_ID: '',

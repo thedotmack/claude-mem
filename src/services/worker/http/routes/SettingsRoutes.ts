@@ -104,6 +104,10 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
       'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
+      'CLAUDE_MEM_BACKUP_ENABLED',
+      'CLAUDE_MEM_BACKUP_INTERVAL_HOURS',
+      'CLAUDE_MEM_BACKUP_RETAIN_COUNT',
+      'CLAUDE_MEM_BACKUP_INCLUDE_VECTORS',
     ];
 
     for (const key of settingKeys) {
@@ -205,6 +209,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+      'CLAUDE_MEM_BACKUP_ENABLED',
+      'CLAUDE_MEM_BACKUP_INCLUDE_VECTORS',
     ];
 
     for (const key of booleanSettings) {
@@ -224,6 +230,20 @@ export class SettingsRoutes extends BaseRouteHandler {
       const count = parseInt(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT, 10);
       if (isNaN(count) || count < 1 || count > 50) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_SESSION_COUNT must be between 1 and 50' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS) {
+      const hours = parseFloat(settings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS);
+      if (isNaN(hours) || hours < 1 || hours > 168) {
+        return { valid: false, error: 'CLAUDE_MEM_BACKUP_INTERVAL_HOURS must be between 1 and 168' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_BACKUP_RETAIN_COUNT) {
+      const count = parseInt(settings.CLAUDE_MEM_BACKUP_RETAIN_COUNT, 10);
+      if (isNaN(count) || count < 1 || count > 100) {
+        return { valid: false, error: 'CLAUDE_MEM_BACKUP_RETAIN_COUNT must be between 1 and 100' };
       }
     }
 

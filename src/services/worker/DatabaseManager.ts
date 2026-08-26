@@ -5,6 +5,7 @@ import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { openConfiguredSqliteDatabase } from '../sqlite/connection.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { CloudSync } from '../sync/CloudSync.js';
+import { BackupManager } from '../backup/BackupManager.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, DB_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
@@ -16,6 +17,7 @@ export class DatabaseManager {
   private sessionSearch: SessionSearch | null = null;
   private chromaSync: ChromaSync | null = null;
   private cloudSync: CloudSync | null = null;
+  private backupManager: BackupManager | null = null;
 
   async initialize(): Promise<void> {
     this.db = openConfiguredSqliteDatabase(DB_PATH);
@@ -46,6 +48,12 @@ export class DatabaseManager {
       this.cloudSync = new CloudSync(this.db, settings);
     }
 
+    // Automatic local snapshots are opt-in. Disabled installs get null so the
+    // lifecycle `getBackupManager()?.start()` call is a free no-op.
+    if (settings.CLAUDE_MEM_BACKUP_ENABLED === 'true') {
+      this.backupManager = new BackupManager(settings);
+    }
+
     logger.info('DB', 'Database initialized (shared connection)');
   }
 
@@ -54,6 +62,9 @@ export class DatabaseManager {
 
     this.cloudSync?.stop();
     this.cloudSync = null;
+
+    this.backupManager?.stop();
+    this.backupManager = null;
 
     this.sessionStore = null;
     this.sessionSearch = null;
@@ -85,6 +96,10 @@ export class DatabaseManager {
 
   getCloudSync(): CloudSync | null {
     return this.cloudSync;
+  }
+
+  getBackupManager(): BackupManager | null {
+    return this.backupManager;
   }
 
   getConnection(): Database {

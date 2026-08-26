@@ -90,6 +90,10 @@ export const paths = {
   serverRuntime: () => join(DATA_DIR, '.server-beta.runtime.json'),
   settings: () => join(DATA_DIR, 'settings.json'),
   database: () => join(DATA_DIR, 'claude-mem.db'),
+  // Automatic snapshot target (BackupManager). Nested under backups/auto so
+  // the manager's retention sweep never touches the legacy one-off backups
+  // that live directly in backups/.
+  backups: () => join(DATA_DIR, 'backups', 'auto'),
   chroma: () => join(DATA_DIR, 'chroma'),
   combinedCerts: () => join(DATA_DIR, 'combined_certs.pem'),
   transcriptsConfig: () => join(DATA_DIR, 'transcript-watch.json'),
