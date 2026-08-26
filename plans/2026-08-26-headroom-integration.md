@@ -125,7 +125,7 @@ The heavy tokens reaching the primary agent are `get_observations` / `search` / 
 
 **Implement:**
 1. Install path: extend the existing uv-based dependency bootstrap (the same mechanism that provides Python for Chroma — locate it via `grep -rn "uv tool\|uv sync\|ensureUv" src/services src/npx-cli`) to run `uv tool install --python 3.13 "headroom-ai[proxy]"` when `CLAUDE_MEM_HEADROOM_ENABLED` is turned on.
-2. Worker startup (`src/services/worker-service.ts`, near `initializeBackground()` `:456-458` where ModeManager loads): when enabled, spawn `headroom proxy --port 8787` as a managed child following the exact supervision pattern used for Chroma's process; skip spawning if `HeadroomService.isHealthy()` already succeeds (user-run proxy).
+2. Worker startup (`src/services/worker-service.ts`, near `initializeBackground()` `:456-458` where ModeManager loads): when enabled, spawn `headroom proxy --port 8787` as a managed child following the exact supervision pattern used for Chroma's process; skip spawning if `HeadroomService.healthCheck()` already resolves healthy (user-run proxy). NOTE (Phase 2 finding): the shipped `health()` API has no fallback path and REJECTS on network failure — `healthCheck()` returns the raw promise; callers own the degradation.
 3. `claude-mem doctor` (`src/npx-cli/commands/doctor*`): report Headroom state — enabled?, binary found (`command -v headroom`), proxy healthy?, last stats from `client.proxyStats()`.
 
 **Verification:**
@@ -140,7 +140,9 @@ The heavy tokens reaching the primary agent are `get_observations` / `search` / 
 ## Phase 5: Error-handling pass, docs, verification (FINAL)
 
 **Implement:**
-1. Error-handling phase (per project pillars — now, not earlier): wrap HeadroomService network boundaries with structured handling + a rate-limited warn log in the worker (never in hook handlers); ensure every failure path degrades to original content.
+1. Error-handling phase (per project pillars — now, not earlier): wrap HeadroomService network boundaries with structured handling + a rate-limited warn log in the worker (never in hook handlers); ensure every failure path degrades to original content. Includes the tracked Phase 2 review items: (a) `healthCheck()`/`retrieve()` rejection handling at call sites; (b) decide + implement enabled-flag gating for `retrieve()`/`healthCheck()`.
+1b. Tracked from Phase 2 review: URL-format validation for `CLAUDE_MEM_HEADROOM_URL` in `SettingsRoutes.validateSettings` (copy the `new URL(...)` check used for `CLAUDE_MEM_OPENROUTER_SITE_URL` at `SettingsRoutes.ts:247-253`; empty string must fall back to the default, not construct a client with `baseUrl: ''`).
+1c. Tracked from Phase 2 review: viewer UI controls for `CLAUDE_MEM_HEADROOM_ENABLED` (toggle) and `CLAUDE_MEM_HEADROOM_URL` (text input) — a small "Headroom" section in the settings UI (ContextSettingsModal or the appropriate sibling), so the Phase 5 "viewer renders and persists" check passes.
 2. Docs:
    - `docs/public/configuration.mdx`: rows for the three new settings in the Core Settings table (`:20`) and the Context Injection section (`:198-301`) + JSON example (`:285-299`).
    - New page `docs/public/headroom.mdx` (concept + setup + what gets compressed and what deliberately doesn't); add `"headroom"` to the "Best Practices" pages array in `docs/public/docs.json` after `"progressive-disclosure"`. Cite the existing "Adaptive Index Size"/"Cost Forecasting" future-work notes (`progressive-disclosure.mdx:596-638`) as now-implemented.
