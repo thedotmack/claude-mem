@@ -97,6 +97,13 @@ export const ERROR_CATEGORIES: ErrorCategory[] = [
       'ERESOLVE peer-dependency conflict in marketplace deps that --legacy-peer-deps could not resolve. Open an issue at https://github.com/thedotmack/claude-mem/issues with the conflicting peer ranges shown above.',
   },
   {
+    id: 'tree-sitter-cli-cache-provisioning-failed',
+    severity: ErrorSeverity.ABORT,
+    match: (_cause, ctx) => ctx.component === 'tree-sitter-cli-cache',
+    remediation: (ctx) =>
+      `The cached tree-sitter CLI could not be provisioned. Re-run \`npx claude-mem install\`; if it persists, inspect ${ctx.dataDir}/last-install-error.json and check network connectivity. For a timeout, raise the budget with CLAUDE_MEM_INSTALL_TIMEOUT_MS and re-run.`,
+  },
+  {
     id: 'marketplace-dir-not-writable',
     severity: ErrorSeverity.ABORT,
     match: (cause) => /\b(EACCES|EPERM)\b/.test(causeMessage(cause)),

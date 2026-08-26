@@ -16,6 +16,7 @@ import { ensureWorkerStarted, type WorkerStartResult } from '../../services/work
 import { formatHostForUrl } from '../../shared/worker-utils.js';
 import {
   ensureBun,
+  ensureTreeSitterCliBinary,
   ensureUv,
   installPluginDependencies,
   writeInstallMarker,
@@ -729,7 +730,10 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
 
   const baseFlags = ['install', '--omit=dev', '--ignore-scripts'];
   const strictResult = await runNpmStrict(marketplaceDir, baseFlags);
-  if (strictResult.code === 0) return;
+  if (strictResult.code === 0) {
+    await warnMarketplaceTreeSitterCliIfUnavailable(summary, marketplaceDir);
+    return;
+  }
 
   if (strictResult.timedOut) {
     installerError(ErrorSeverity.ABORT, {
@@ -761,6 +765,7 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
       message: 'tree-sitter peer-dep ERESOLVE was resolved with the --legacy-peer-deps fallback. Benign for the marketplace install; re-evaluate when tree-sitter peer ranges change.',
       remediation: 'No action required.',
     });
+    await warnMarketplaceTreeSitterCliIfUnavailable(summary, marketplaceDir);
     return;
   }
 
@@ -770,6 +775,19 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
     cause: new Error(`npm install --legacy-peer-deps still failed (exit ${legacyResult.code}): ERESOLVE`),
     details: legacyResult.stderr.slice(0, 4000),
   }, summary);
+}
+
+export async function warnMarketplaceTreeSitterCliIfUnavailable(summary: InstallSummary, marketplaceDir: string): Promise<void> {
+  if (!existsSync(join(marketplaceDir, 'node_modules', 'tree-sitter-cli'))) return;
+  try {
+    await ensureTreeSitterCliBinary(marketplaceDir);
+  } catch (error: unknown) {
+    summary.warnings.push({
+      component: 'marketplace-tree-sitter-cli',
+      message: `tree-sitter-cli binary provisioning unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      remediation: 'Smart-explore may use a PATH tree-sitter binary if available.',
+    });
+  }
 }
 
 function mergeSettings(updates: Record<string, string>): boolean {
@@ -2090,7 +2108,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
           const cacheDir = pluginCacheDirectory(version);
           if (!isInstallCurrent(cacheDir, version)) {
             const { bunPath } = await ensureBun();
-            const stopHeartbeat = startHeartbeat(message, 'Installing plugin dependencies (bun install)…');
+            const stopHeartbeat = startHeartbeat(message, 'Installing plugin dependencies (Bun + tree-sitter CLI)…');
             try {
               await installPluginDependencies(cacheDir, bunPath);
             } finally {
