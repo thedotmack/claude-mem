@@ -81,7 +81,10 @@ function getWorkerBaseUrl(): string {
 
 const MAX_TOOL_RESPONSE_LENGTH = 1000;
 
-const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
+const JSON_HEADERS: Record<string, string> = {
+  "Content-Type": "application/json",
+  "x-platform-source": "opencode",
+};
 
 function workerPostFireAndForget(
   path: string,
@@ -160,6 +163,7 @@ function ensureSessionInitialized(
       contentSessionId,
       project: projectName,
       prompt: userPrompt,
+      platformSource: "opencode",
     });
   }
   return contentSessionId;
@@ -193,6 +197,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
         tool_input: output.args || {},
         tool_response: truncate(output.output || ""),
         cwd: ctx.directory,
+        platformSource: "opencode",
       });
     },
 
@@ -228,6 +233,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
         tool_input: {},
         tool_response: truncate(messageText),
         cwd: ctx.directory,
+        platformSource: "opencode",
       });
     },
 
@@ -240,6 +246,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       workerPostFireAndForget("/api/sessions/summarize", {
         contentSessionId,
         last_assistant_message: "",
+        platformSource: "opencode",
       });
     },
 
