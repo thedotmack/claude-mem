@@ -3,7 +3,8 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { paths } from '../shared/paths.js';
 import { emitDiagnostic } from '../shared/hook-io.js';
-import { parseJsonWithBom } from '../shared/atomic-json.js';
+import { readJsonFileWithBom } from '../shared/atomic-json.js';
+import { settingsTarget } from '../shared/settings-document.js';
 
 export enum LogLevel {
   DEBUG = 0,
@@ -110,9 +111,8 @@ class Logger {
       try {
         const settingsPath = paths.settings();
         if (existsSync(settingsPath)) {
-          const settingsData = readFileSync(settingsPath, 'utf-8');
-          const settings = parseJsonWithBom<Record<string, any>>(settingsData);
-          const envLevel = (settings.CLAUDE_MEM_LOG_LEVEL || 'INFO').toUpperCase();
+          const settings = settingsTarget(readJsonFileWithBom<Record<string, unknown>>(settingsPath));
+          const envLevel = (settings.CLAUDE_MEM_LOG_LEVEL || 'INFO').toString().toUpperCase();
           this.level = LogLevel[envLevel as keyof typeof LogLevel] ?? LogLevel.INFO;
         } else {
           this.level = LogLevel.INFO;

@@ -27,7 +27,7 @@ import { createHash, randomBytes } from 'crypto';
 import { chmodSync, existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { logger } from '../../utils/logger.js';
-import { readJsonFileWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
+import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { createPostgresPool, type PostgresPool } from '../../storage/postgres/pool.js';
 import { parsePostgresConfig } from '../../storage/postgres/config.js';
 import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
@@ -103,22 +103,54 @@ export async function bootstrapServerApiKey(
   }
 }
 
+export async function revokeServerApiKey(
+  apiKeyId: string,
+  pool?: PostgresPool,
+): Promise<void> {
+  const closePool = pool === undefined;
+  const activePool = pool ?? buildPoolFromEnv();
+  try {
+    await activePool.query(
+      `UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`,
+      [apiKeyId],
+    );
+  } finally {
+    if (closePool) {
+      await activePool.end().catch(() => undefined);
+    }
+  }
+}
+
 export interface RotateOptions {
   previousApiKeyId?: string | null;
   pool?: PostgresPool;
+  beforeRevoke?: (result: BootstrapResult) => void | Promise<void>;
 }
 
 export async function rotateServerApiKey(options: RotateOptions = {}): Promise<BootstrapResult> {
   const closePool = options.pool === undefined;
   const pool = options.pool ?? buildPoolFromEnv();
   try {
-    if (options.previousApiKeyId) {
-      await pool.query(
-        `UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`,
-        [options.previousApiKeyId],
-      );
+    const result = await bootstrapServerApiKey({ pool, closePool: false });
+    let beforeRevokeCompleted = options.beforeRevoke === undefined;
+    try {
+      if (options.beforeRevoke) {
+        await options.beforeRevoke(result);
+        beforeRevokeCompleted = true;
+      }
+      if (options.previousApiKeyId) {
+        await pool.query(
+          `UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`,
+          [options.previousApiKeyId],
+        );
+      }
+    } catch (error) {
+      if (!beforeRevokeCompleted) {
+        await revokeServerApiKey(result.apiKeyId, pool).catch(() => undefined);
+      }
+      throw error;
     }
-    return await bootstrapServerApiKey({ pool, closePool: false });
+    return result;
   } finally {
     if (closePool) {
       await pool.end().catch(() => undefined);
@@ -128,50 +160,21 @@ export async function rotateServerApiKey(options: RotateOptions = {}): Promise<B
 
 export function persistServerSettings(
   settingsPath: string,
-  values: { apiKey: string; projectId: string; serverBaseUrl?: string },
-): void {
-  const dir = dirname(settingsPath);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
+  values: { apiKey: string; projectId: string; serverBaseUrl?: string; previousApiKeyId?: string | null },
+): boolean {
+  const updates: Record<string, unknown> = {
+    CLAUDE_MEM_SERVER_API_KEY: values.apiKey,
+    CLAUDE_MEM_SERVER_PROJECT_ID: values.projectId,
+  };
+  if (values.serverBaseUrl) updates.CLAUDE_MEM_SERVER_URL = values.serverBaseUrl;
+  if (values.previousApiKeyId) updates.CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID = values.previousApiKeyId;
+  const result = updateSettingsDocument(settingsPath, updates, {}, target => {
+    if (!values.previousApiKeyId) delete target.CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID;
+  });
+  if (result.status === 'refused') {
+    logger.warn('HOOK', 'Could not persist server settings; leaving existing credentials unchanged.', { settingsPath }, result.error instanceof Error ? result.error : undefined);
+    return false;
   }
-
-  let existing: Record<string, unknown> = {};
-  if (existsSync(settingsPath)) {
-    try {
-      existing = readJsonFileWithBom<Record<string, unknown>>(settingsPath);
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      logger.warn('HOOK', 'Failed to read existing settings file; starting fresh', { settingsPath }, err);
-      existing = {};
-    }
-  }
-  // Settings file format: support both the flat shape (modern) and the
-  // env-nested shape (Claude-Code-style: { env: {...}, hooks: [...], ... }).
-  // `flat` is a *reference* into `existing` — the env subtree when nested, or
-  // the root document otherwise — so mutating `flat` mutates `existing` in
-  // place. We then write the full `existing` document below (NOT `flat`), so
-  // non-env top-level keys (hooks, permissions, apiKeyHelper, ...) survive.
-  // Writing `flat` back as the whole file silently dropped them (data loss).
-  const flat = (existing.env && typeof existing.env === 'object'
-    ? existing.env
-    : existing) as Record<string, unknown>;
-
-  // Phase 1d: write the new canonical settings keys. Legacy
-  // `CLAUDE_MEM_SERVER_BETA_*` keys are dual-accepted by reads in
-  // `runtime-selector.ts`, so existing installs continue to work. Any
-  // legacy keys that already live in `flat` are left untouched (we don't
-  // delete them) so a downgrade can still find them.
-  flat.CLAUDE_MEM_SERVER_API_KEY = values.apiKey;
-  flat.CLAUDE_MEM_SERVER_PROJECT_ID = values.projectId;
-  if (values.serverBaseUrl) {
-    flat.CLAUDE_MEM_SERVER_URL = values.serverBaseUrl;
-  }
-
-  // Write the full document (via the atomic temp-file+rename writer), then
-  // tighten permissions. `writeJsonFileAtomic` creates new files under the
-  // process umask, so on first creation the API key plaintext is briefly
-  // world-readable until chmodSync narrows it to 0o600.
-  writeJsonFileAtomic(settingsPath, existing);
   // Hooks read this file on every invocation; restrict permissions so other
   // local users cannot read the API key.
   try {
@@ -179,6 +182,7 @@ export function persistServerSettings(
   } catch {
     // Non-POSIX filesystems may reject chmod; settings file remains readable.
   }
+  return true;
 }
 
 export function createRawApiKey(): string {

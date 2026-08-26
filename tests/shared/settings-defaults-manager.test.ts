@@ -217,11 +217,13 @@ describe('SettingsDefaultsManager', () => {
         const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
         expect(result.CLAUDE_MEM_MODEL).toBe('nested-model');
-        expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
-      });
+      expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
+    });
 
       it('should auto-migrate file from nested to flat schema', () => {
         const nestedSettings = {
+          theme: 'dark',
+          permissions: { defaultMode: 'auto' },
           env: {
             CLAUDE_MEM_MODEL: 'migrated-model',
           },
@@ -234,6 +236,38 @@ describe('SettingsDefaultsManager', () => {
         const parsed = JSON.parse(content);
         expect(parsed.env).toBeUndefined();
         expect(parsed.CLAUDE_MEM_MODEL).toBe('migrated-model');
+        expect(parsed.theme).toBe('dark');
+        expect(parsed.permissions).toEqual({ defaultMode: 'auto' });
+      });
+
+      it('should not overwrite the settings file when env is an array containing ["sentinel"]', () => {
+        const original = JSON.stringify({ env: ['sentinel'], CLAUDE_MEM_MODEL: 'keep-me' });
+        writeFileSync(settingsPath, original);
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        const after = readFileSync(settingsPath, 'utf-8');
+        const parsed = JSON.parse(after);
+        expect(Array.isArray(parsed)).toBe(false);
+        expect(parsed.env).toEqual(['sentinel']);
+        expect(parsed.CLAUDE_MEM_MODEL).toBe('keep-me');
+        expect(result.CLAUDE_MEM_MODEL).toBe('keep-me');
+      });
+
+      it('should preserve an object-valued env setting across repeated loads', () => {
+        const nestedValue = { enabled: true, sources: ['local'] };
+        writeFileSync(settingsPath, JSON.stringify({
+          env: {
+            env: nestedValue,
+            CLAUDE_MEM_MODEL: 'nested-model',
+          },
+        }));
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).env).toEqual(nestedValue);
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+        expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).env).toEqual(nestedValue);
       });
     });
 
@@ -479,7 +513,21 @@ describe('SettingsDefaultsManager', () => {
 
       const result = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-      expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
+        expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
+      });
+
+    it('preserves a nested setting named env during flattening', () => {
+      writeFileSync(settingsPath, JSON.stringify({
+        theme: 'dark',
+        env: { env: 'keep-me', CLAUDE_MEM_MODEL: 'nested-model' },
+      }));
+
+      SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      const migrated = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      expect(migrated.theme).toBe('dark');
+      expect(migrated.env).toBe('keep-me');
+      expect(migrated.CLAUDE_MEM_MODEL).toBe('nested-model');
     });
 
     it('should prioritize env var over default', () => {

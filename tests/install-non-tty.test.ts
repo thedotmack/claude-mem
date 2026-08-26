@@ -333,6 +333,16 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain("initialValue: 'worker'");
       expect(installSource).toContain('CLAUDE_MEM_RUNTIME');
     });
+
+    it('aborts before reporting a runtime whose settings write was refused', () => {
+      const runtimeRegion = installSource.slice(
+        installSource.indexOf('function persistRuntimeOrAbort'),
+        installSource.indexOf('async function promptProvider'),
+      );
+      expect(runtimeRegion).toContain("component: 'runtime-settings'");
+      expect(runtimeRegion).toContain('ErrorSeverity.ABORT');
+      expect(runtimeRegion).toContain('persistRuntimeOrAbort(selected, summary)');
+    });
   });
 
   describe('post-install Next Steps copy', () => {

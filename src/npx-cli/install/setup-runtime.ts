@@ -8,7 +8,8 @@ import { installerError, type InstallSummary } from './error-reporter.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
 import { IS_WINDOWS } from '../utils/paths.js';
-import { parseJsonWithBom } from '../../shared/atomic-json.js';
+import { readJsonFileWithBom } from '../../shared/atomic-json.js';
+import { settingsTarget } from '../../shared/settings-document.js';
 
 const INSTALL_TIMEOUT_MS = (() => {
   const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
@@ -38,18 +39,15 @@ function userHasOptedOutOfVectorSearch(): boolean {
   let raw: unknown;
   try {
     if (!existsSync(USER_SETTINGS_PATH)) return false;
-    raw = parseJsonWithBom(readFileSync(USER_SETTINGS_PATH, 'utf-8'));
+    raw = readJsonFileWithBom(USER_SETTINGS_PATH);
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     console.warn(`claude-mem: could not read ${USER_SETTINGS_PATH} while checking vector-search opt-out:`, err);
     return false;
   }
   if (!raw || typeof raw !== 'object') return false;
-  const record = raw as Record<string, unknown>;
-  const envBlock = (record.env && typeof record.env === 'object')
-    ? (record.env as Record<string, unknown>)
-    : {};
-  const value = record.CLAUDE_MEM_DISABLE_VECTOR_SEARCH ?? envBlock.CLAUDE_MEM_DISABLE_VECTOR_SEARCH;
+  if (Array.isArray(raw)) return false;
+  const value = settingsTarget(raw as Record<string, unknown>).CLAUDE_MEM_DISABLE_VECTOR_SEARCH;
   return value === true || value === 'true' || value === '1';
 }
 

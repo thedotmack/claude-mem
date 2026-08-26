@@ -10,7 +10,7 @@ import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { parseJsonWithBom, writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
+import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
 import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
 import { formatHostForUrl } from '../../shared/worker-utils.js';
@@ -249,6 +249,23 @@ export function disableClaudeAutoMemory(): boolean {
   settings.env = { ...env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' };
   writeJsonFileAtomic(claudeSettingsPath(), settings);
   return true;
+}
+
+function mergeSettingsOrWarn(updates: Record<string, string>, description: string): boolean {
+  const wrote = mergeSettings(updates);
+  if (!wrote) log.warn(`Could not save ${description} to ~/.claude-mem/settings.json. Repair or restore the file and rerun the installer.`);
+  return wrote;
+}
+
+function persistRuntimeOrAbort(runtime: RuntimeId, summary: InstallSummary): void {
+  if (!mergeSettings({ CLAUDE_MEM_RUNTIME: runtime })) {
+    installerError(ErrorSeverity.ABORT, {
+      component: 'runtime-settings',
+      phase: 'runtime-selection',
+      cause: new Error('Could not persist the runtime selection'),
+      remediation: 'Repair or restore ~/.claude-mem/settings.json, then rerun the installer.',
+    }, summary);
+  }
 }
 
 type ClaudeAutoMemoryChoice = 'disable' | 'leave-enabled' | 'not-applicable';
@@ -772,62 +789,25 @@ async function runNpmInstallInMarketplace(summary: InstallSummary): Promise<void
   }, summary);
 }
 
-function mergeSettings(updates: Record<string, string>): boolean {
-  const path = USER_SETTINGS_PATH;
-  try {
-    // Read the FULL document so we can write it back intact. The
-    // Claude-Code-style settings.json wraps env vars in a top-level `env`
-    // block and exposes peer keys at the root (hooks, permissions,
-    // apiKeyHelper, model, statusLine, etc.). readFlatSettings unwraps the
-    // env subtree for reads, but writing that flattened view back as the
-    // entire file silently drops every non-env top-level key — destroying
-    // user configuration that disableClaudeAutoMemory + writeJsonFileAtomic
-    // had carefully written.
-    //
-    // Track whether the file uses the env-nested shape so we mutate only the
-    // relevant subtree and preserve every other top-level key on write.
-    let document: Record<string, unknown> = {};
-    let envNested = false;
-    if (existsSync(path)) {
-      try {
-        const parsed = parseJsonWithBom(readFileSync(path, 'utf-8'));
-        if (parsed && typeof parsed === 'object') {
-          document = parsed as Record<string, unknown>;
-          envNested = typeof document.env === 'object' && document.env !== null;
-        }
-      } catch (parseError: unknown) {
-        console.warn('[install] Failed to parse existing settings.json, starting from empty:', parseError instanceof Error ? parseError.message : String(parseError));
-        document = {};
-      }
-    } else {
-      const dir = dirname(path);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-    }
-
-    const target = envNested
-      ? (document.env as Record<string, unknown>)
-      : document;
-    for (const [key, value] of Object.entries(updates)) {
-      target[key] = value;
-    }
-
-    writeSettingsJsonAtomic(path, document);
+export function mergeSettings(
+  updates: Record<string, string>,
+  settingsPath: string = USER_SETTINGS_PATH,
+): boolean {
+  const result = updateSettingsDocument(settingsPath, updates, {});
+  if (result.status === 'refused') {
+    log.warn(`Could not persist settings to ${settingsPath}: ${result.error instanceof Error ? result.error.message : String(result.error)}`);
+    return false;
+  }
     // settings.json can carry tokens (CMEM Pro setup token, provider API
     // keys); a fresh file inherits the umask (usually 0644), leaving them
     // world-readable. Tighten to owner-only. Fail-soft: a chmod failure must
     // never fail the settings write itself, but it is not silent.
     try {
-      chmodSync(path, 0o600);
+      chmodSync(settingsPath, 0o600);
     } catch (chmodError: unknown) {
-      log.warn(`Could not restrict permissions on ${path} to 0600: ${chmodError instanceof Error ? chmodError.message : String(chmodError)}`);
+      log.warn(`Could not restrict permissions on ${settingsPath} to 0600: ${chmodError instanceof Error ? chmodError.message : String(chmodError)}`);
     }
-    return true;
-  } catch (error: unknown) {
-    log.error(`Failed to write settings to ${path}: ${error instanceof Error ? error.message : String(error)}`);
-    return false;
-  }
+  return true;
 }
 
 type ProviderId = 'claude' | 'gemini' | 'openrouter';
@@ -870,7 +850,7 @@ function resolveClaudeAuthMethod(): 'subscription' | 'api-key' | 'gateway' {
 
 const DEFAULT_SERVER_RUNTIME_BASE_URL = 'http://127.0.0.1:37877';
 
-async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
+async function promptRuntime(options: InstallOptions, summary: InstallSummary): Promise<RuntimeId> {
   // #2543 — non-interactive runtime selection via `--runtime`. When the flag is
   // present we never prompt and never fall back to the worker path: we resolve
   // the requested runtime deterministically and, for the server runtime, plan +
@@ -882,15 +862,15 @@ async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
       process.exit(1);
     }
     if (requested === 'server') {
-      await setupServerRuntimeNonInteractive(options);
+      await setupServerRuntimeNonInteractive(options, summary);
       return 'server';
     }
-    mergeSettings({ CLAUDE_MEM_RUNTIME: 'worker' });
+    persistRuntimeOrAbort('worker', summary);
     return 'worker';
   }
 
   if (!isInteractive) {
-    mergeSettings({ CLAUDE_MEM_RUNTIME: 'worker' });
+    persistRuntimeOrAbort('worker', summary);
     return 'worker';
   }
 
@@ -908,9 +888,7 @@ async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
     process.exit(0);
   }
 
-  mergeSettings({
-    CLAUDE_MEM_RUNTIME: selected,
-  });
+  persistRuntimeOrAbort(selected, summary);
 
   if (selected === 'server') {
     await maybeBootstrapServerApiKey();
@@ -923,10 +901,17 @@ async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
 // provisioner executes); key generation reuses the same bootstrap path as the
 // interactive flow (createServerApiKey via server-bootstrap), and the IDE MCP
 // config target is recorded in settings so hooks resolve the server runtime.
-async function setupServerRuntimeNonInteractive(options: InstallOptions): Promise<void> {
+async function setupServerRuntimeNonInteractive(options: InstallOptions, summary: InstallSummary): Promise<void> {
   const serverBaseUrl = (options.serverUrl ?? '').trim() || DEFAULT_SERVER_RUNTIME_BASE_URL;
 
-  mergeSettings({ CLAUDE_MEM_RUNTIME: 'server', CLAUDE_MEM_SERVER_URL: serverBaseUrl });
+  if (!mergeSettings({ CLAUDE_MEM_RUNTIME: 'server', CLAUDE_MEM_SERVER_URL: serverBaseUrl })) {
+    installerError(ErrorSeverity.ABORT, {
+      component: 'runtime-settings',
+      phase: 'runtime-selection',
+      cause: new Error('Could not persist the server runtime selection'),
+      remediation: 'Repair or restore ~/.claude-mem/settings.json, then rerun the installer.',
+    }, summary);
+  }
 
   log.info(
     'Server runtime selected. Bring up the bundled stack with '
@@ -967,18 +952,31 @@ async function maybeBootstrapServerApiKey(): Promise<void> {
 }
 
 async function bootstrapAndPersistServerApiKey(): Promise<void> {
-  const { bootstrapServerApiKey, persistServerSettings } = await import(
+  const { bootstrapServerApiKey, revokeServerApiKey, persistServerSettings } = await import(
     '../../services/hooks/server-bootstrap.js'
   );
   const result = await bootstrapServerApiKey();
-  persistServerSettings(USER_SETTINGS_PATH, {
+  const persisted = persistServerSettings(USER_SETTINGS_PATH, {
     apiKey: result.rawKey,
     projectId: result.projectId,
   });
-  log.info(
-    `Provisioned local hook API key (project=${result.projectId.slice(0, 8)}…). `
-      + 'Settings saved with mode 0600.',
-  );
+  if (persisted) {
+    log.info(
+      `Provisioned local hook API key (project=${result.projectId.slice(0, 8)}…). `
+        + 'Settings saved with mode 0600.',
+    );
+  } else {
+    await revokeServerApiKey(result.apiKeyId).catch((error: unknown) => {
+      console.warn(
+        '[install] Could not revoke the unpersisted server API key. Repair settings.json before retrying.',
+        error instanceof Error ? error.message : String(error),
+      );
+    });
+    console.warn(
+      '[install] Server API key provisioned but settings.json could not be updated. '
+        + 'Repair or restore ~/.claude-mem/settings.json and rerun the installer.',
+    );
+  }
 }
 
 /**
@@ -1002,15 +1000,15 @@ function openBrowser(url: string): void {
   }
 }
 
-async function promptProvider(options: InstallOptions): Promise<ProviderId> {
+async function promptProvider(options: InstallOptions, summary: InstallSummary): Promise<ProviderId> {
   const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
 
   const persistClaudeProvider = (authMethod?: 'subscription' | 'api-key' | 'gateway') => {
     const resolvedAuthMethod = authMethod ?? resolveClaudeAuthMethod();
-    const wrote = mergeSettings({
+    const wrote = mergeSettingsOrWarn({
       CLAUDE_MEM_PROVIDER: 'claude',
       CLAUDE_MEM_CLAUDE_AUTH_METHOD: resolvedAuthMethod,
-    });
+    }, 'Claude Agent SDK configuration');
     if (wrote) log.info('Saved Claude Agent SDK configuration to ~/.claude-mem/settings.json');
   };
 
@@ -1123,7 +1121,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
         persistClaudeProvider();
         return 'claude';
       }
-      const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: options.provider });
+      const wrote = mergeSettingsOrWarn({ CLAUDE_MEM_PROVIDER: options.provider }, `provider=${options.provider}`);
       if (wrote) log.info(`Saved provider=${options.provider} to ~/.claude-mem/settings.json`);
       log.warn(`Provider=${options.provider} requested non-interactively. API key prompt skipped — set CLAUDE_MEM_${options.provider.toUpperCase()}_API_KEY and CLAUDE_MEM_PROVIDER in settings.json or env manually if not already set.`);
       return options.provider;
@@ -1232,7 +1230,15 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
       CLAUDE_MEM_OPENROUTER_MODEL: CMEM_PRO_MODEL,
       CLAUDE_MEM_OPENROUTER_API_KEY: String(keyResult).trim(),
     });
-    if (wrote) log.info('Saved CMEM Pro configuration to ~/.claude-mem/settings.json');
+    if (!wrote) {
+      installerError(ErrorSeverity.ABORT, {
+        component: 'provider-settings',
+        phase: 'provider-selection',
+        cause: new Error('Could not persist CMEM Pro settings'),
+        remediation: 'Repair or restore ~/.claude-mem/settings.json, then rerun the installer.',
+      }, summary);
+    }
+    log.info('Saved CMEM Pro configuration to ~/.claude-mem/settings.json');
 
     p.note(
       'Next: finish cloud sync in the browser — press NEXT on the page.',
@@ -1253,7 +1259,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
 
   const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
   if (existingKey && existingKey.trim().length > 0) {
-    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: selectedProvider });
+    const wrote = mergeSettingsOrWarn({ CLAUDE_MEM_PROVIDER: selectedProvider }, `provider=${selectedProvider}`);
     if (wrote) log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
     return selectedProvider;
   }
@@ -1271,10 +1277,10 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   }
 
   const apiKey = String(apiKeyResult).trim();
-  const wrote = mergeSettings({
+  const wrote = mergeSettingsOrWarn({
     CLAUDE_MEM_PROVIDER: selectedProvider,
     [keyEnvName]: apiKey,
-  });
+  }, `provider=${selectedProvider}`);
   if (wrote) {
     log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
   }
@@ -1295,14 +1301,14 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
         `Unknown Claude model: ${options.model}. Allowed: ${[...allowed].join(', ')}`,
       );
     }
-    const wrote = mergeSettings({ CLAUDE_MEM_MODEL: options.model });
+    const wrote = mergeSettingsOrWarn({ CLAUDE_MEM_MODEL: options.model }, `model=${options.model}`);
     if (wrote) {
       log.info(`Saved Claude model=${options.model} to ~/.claude-mem/settings.json`);
     }
     return;
   }
   if (options.model && allowCustomModel) {
-    const wrote = mergeSettings({ CLAUDE_MEM_MODEL: options.model });
+    const wrote = mergeSettingsOrWarn({ CLAUDE_MEM_MODEL: options.model }, `model=${options.model}`);
     if (wrote) {
       log.info(`Saved gateway model=${options.model} to ~/.claude-mem/settings.json`);
     }
@@ -1327,7 +1333,7 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
     }
 
     const selectedModel = String(result).trim();
-    const wrote = mergeSettings({ CLAUDE_MEM_MODEL: selectedModel });
+    const wrote = mergeSettingsOrWarn({ CLAUDE_MEM_MODEL: selectedModel }, `model=${selectedModel}`);
     if (wrote) {
       log.info(`Saved gateway model=${selectedModel} to ~/.claude-mem/settings.json`);
     }
@@ -1352,7 +1358,7 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
   }
   const selectedModel = result as string;
 
-  const wrote = mergeSettings({ CLAUDE_MEM_MODEL: selectedModel });
+  const wrote = mergeSettingsOrWarn({ CLAUDE_MEM_MODEL: selectedModel }, `model=${selectedModel}`);
   if (wrote) {
     log.info(`Saved Claude model=${selectedModel} to ~/.claude-mem/settings.json`);
   }
@@ -2001,7 +2007,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     selectedIDEs = ['claude-code'];
   }
 
-  const selectedRuntime = await promptRuntime(options);
+  const selectedRuntime = await promptRuntime(options, summary);
   // Jump-forward: a pairing from the trial opt-in means the human is doing
   // (or has done) login + checkout in the browser — poll for credentials
   // instead of asking which provider to use. Any failure (expired link, poll
@@ -2012,7 +2018,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   }
   const trialActivated = selectedProvider === 'openrouter';
   if (selectedProvider === null) {
-    selectedProvider = await promptProvider(options);
+    selectedProvider = await promptProvider(options, summary);
   }
   if (selectedProvider === 'claude') {
     await promptClaudeModel(options);
