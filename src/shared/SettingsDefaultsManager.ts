@@ -36,6 +36,11 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENROUTER_BASE_URL: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL: string;
   CLAUDE_MEM_OPENROUTER_APP_NAME: string;
+  CLAUDE_MEM_AIMLAPI_API_KEY: string;
+  CLAUDE_MEM_AIMLAPI_MODEL: string;
+  CLAUDE_MEM_AIMLAPI_BASE_URL: string;
+  CLAUDE_MEM_AIMLAPI_SITE_URL: string;
+  CLAUDE_MEM_AIMLAPI_APP_NAME: string;
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
   CLAUDE_MEM_PYTHON_VERSION: string;
@@ -131,6 +136,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_BASE_URL: '',  // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL (e.g. https://api.deepseek.com, http://localhost:1234/v1). Empty = default OpenRouter endpoint.
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
+    CLAUDE_MEM_AIMLAPI_API_KEY: '',  // Empty by default, can be set via UI or env
+    CLAUDE_MEM_AIMLAPI_MODEL: 'openai/gpt-5.6-terra',  // Default aimlapi.com model
+    CLAUDE_MEM_AIMLAPI_BASE_URL: '',  // Optional override; empty = https://api.aimlapi.com/v1
+    CLAUDE_MEM_AIMLAPI_SITE_URL: '',  // Optional: overrides the HTTP-Referer sent to aimlapi.com
+    CLAUDE_MEM_AIMLAPI_APP_NAME: 'Claude-Mem',  // Display name sent as X-Title
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',

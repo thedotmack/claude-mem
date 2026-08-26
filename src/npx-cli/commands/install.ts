@@ -830,12 +830,13 @@ function mergeSettings(updates: Record<string, string>): boolean {
   }
 }
 
-type ProviderId = 'claude' | 'gemini' | 'openrouter';
+type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'aimlapi';
 /**
  * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
  * it configures the generic OpenAI-compatible path (base URL + model + key) and
  * persists CLAUDE_MEM_PROVIDER='openrouter'. The worker only understands
- * 'claude' | 'gemini' | 'openrouter', so 'cmem' must never reach settings.json.
+ * 'claude' | 'gemini' | 'openrouter' | 'aimlapi', so 'cmem' must never reach
+ * settings.json.
  */
 type ProviderChoice = ProviderId | 'cmem';
 type ClaudeAccessMode = 'subscription' | 'api-key';
@@ -1188,6 +1189,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
       message: 'Which memory provider do you want to use?',
       options: [
         { value: 'cmem', label: labels.cmem, hint: labels.cmemHint },
+        { value: 'aimlapi', label: labels.aimlapi },
         { value: 'openrouter', label: labels.openrouter },
         { value: 'gemini', label: labels.gemini },
         { value: 'claude', label: labels.claude },
@@ -1246,10 +1248,18 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     return 'claude';
   }
 
-  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
-  const keyEnvName = selectedProvider === 'gemini'
-    ? 'CLAUDE_MEM_GEMINI_API_KEY'
-    : 'CLAUDE_MEM_OPENROUTER_API_KEY';
+  const providerLabel =
+    selectedProvider === 'gemini'
+      ? 'Gemini'
+      : selectedProvider === 'aimlapi'
+        ? 'aimlapi.com'
+        : 'OpenRouter';
+  const keyEnvName =
+    selectedProvider === 'gemini'
+      ? 'CLAUDE_MEM_GEMINI_API_KEY'
+      : selectedProvider === 'aimlapi'
+        ? 'CLAUDE_MEM_AIMLAPI_API_KEY'
+        : 'CLAUDE_MEM_OPENROUTER_API_KEY';
 
   const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
   if (existingKey && existingKey.trim().length > 0) {
@@ -1884,7 +1894,7 @@ async function promptTelemetryOptIn(): Promise<void> {
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter';
+  provider?: 'claude' | 'gemini' | 'openrouter' | 'aimlapi';
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;

@@ -51,6 +51,7 @@ export interface ClaudeMemEnv {
   ANTHROPIC_AUTH_TOKEN?: string;
   GEMINI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
+  AIMLAPI_API_KEY?: string;
 }
 
 /**
@@ -66,6 +67,7 @@ const CREDENTIAL_KEYS = [
   'ANTHROPIC_AUTH_TOKEN',
   'GEMINI_API_KEY',
   'OPENROUTER_API_KEY',
+  'AIMLAPI_API_KEY',
 ] as const;
 
 // Node's stdlib .env parser (util.parseEnv, Node ≥20.12 / stable in 24):
