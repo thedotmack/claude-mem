@@ -6,7 +6,7 @@ import { pathToFileURL } from 'url';
 import type { Database } from 'bun:sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
+import { getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath, isExternalWorkerMode } from '../shared/worker-utils.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../shared/paths.js';
@@ -1070,6 +1070,31 @@ async function main() {
   }
 
   const port = getWorkerPort();
+
+  // External worker mode: the worker lives in an outside supervisor (e.g. the
+  // claude-mem-local Docker container), so lifecycle commands must not spawn
+  // or tear it down. `start` degrades to a health probe; `stop`/`restart`
+  // no-op with exit 0 so build-and-sync's worker:restart step passes through
+  // without killing the external worker. `--daemon` is intentionally NOT
+  // guarded — it is how the external worker itself runs.
+  if (isExternalWorkerMode() && (command === 'start' || command === 'stop' || command === 'restart')) {
+    if (command === 'start') {
+      let healthy = false;
+      try {
+        const response = await fetchWithTimeout(`http://${getWorkerHost()}:${port}/api/health`, {}, 5000);
+        healthy = response.ok || response.status === 503;
+      } catch {
+        healthy = false;
+      }
+      const output = buildStatusOutput(healthy ? 'ready' : 'error', healthy ? undefined : 'External worker is not reachable', {
+        includeSuppressOutput: process.env.CLAUDE_MEM_CODEX_HOOK !== '1',
+      });
+      console.log(JSON.stringify(output));
+      process.exit(0);
+    }
+    console.error(`[claude-mem] External worker mode: '${command}' skipped — the worker is managed outside claude-mem (e.g. docker compose). Use scripts/claude-mem-docker.sh to control it.`);
+    process.exit(0);
+  }
 
   function exitWithStatus(status: 'ready' | 'error', message?: string): never {
     const output = buildStatusOutput(status, message, {

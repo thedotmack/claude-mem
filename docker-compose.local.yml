@@ -1,0 +1,48 @@
+# claude-mem-local — stable containerized worker for THIS machine.
+#
+# Purpose: keep memory capture alive while claude-mem itself is being
+# developed on the host. The container runs a pinned, known-good build of the
+# legacy worker (SQLite + local Chroma) against its own copy of the database
+# in the `claude-mem-local-data` volume. Host hooks talk to it over the
+# published port with CLAUDE_MEM_EXTERNAL_WORKER=true in
+# ~/.claude-mem/settings.json.
+#
+# Day-to-day control: scripts/claude-mem-docker.sh on|off|status|seed|upgrade
+#
+# The host's ~/.claude/projects is mounted read-only at the IDENTICAL absolute
+# path because hooks send transcript paths verbatim and the worker reads them
+# from disk (ObservationCompiler.extractPriorMessages).
+
+services:
+  claude-mem-local:
+    build:
+      context: .
+      dockerfile: docker/local/Dockerfile
+    image: claude-mem-local:latest
+    container_name: claude-mem-local
+    restart: unless-stopped
+    environment:
+      CLAUDE_MEM_DATA_DIR: /data/claude-mem
+      CLAUDE_MEM_WORKER_HOST: 0.0.0.0
+      CLAUDE_MEM_WORKER_PORT: "37777"
+      CLAUDE_MEM_EXTERNAL_WORKER: "false"
+      CLAUDE_CONFIG_DIR: ${HOME}/.claude
+    ports:
+      - "127.0.0.1:${CLAUDE_MEM_LOCAL_HOST_PORT:-37777}:37777"
+    volumes:
+      - claude-mem-local-data:/data/claude-mem
+      - ${HOME}/.claude/projects:${HOME}/.claude/projects:ro
+    healthcheck:
+      # Any HTTP response counts as alive — /api/health returns 503 while the
+      # queue is degraded and that must not flap the container.
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://127.0.0.1:37777/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 60s
+
+volumes:
+  claude-mem-local-data:
+    # Pin the real volume name — without this, compose prefixes it with the
+    # project name and the container would miss the seeded data.
+    name: claude-mem-local-data

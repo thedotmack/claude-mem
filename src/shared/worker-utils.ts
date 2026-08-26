@@ -144,6 +144,10 @@ export function getWorkerHost(): string {
   return cachedHost;
 }
 
+export function isExternalWorkerMode(): boolean {
+  return getWorkerSettings().CLAUDE_MEM_EXTERNAL_WORKER === 'true';
+}
+
 export function getWorkerApiRequestTimeoutMs(): number {
   if (cachedApiRequestTimeoutMs !== null) {
     return cachedApiRequestTimeoutMs;
@@ -452,6 +456,22 @@ async function isWorkerPortAlive(): Promise<boolean> {
 }
 
 export async function ensureWorkerRunning(): Promise<boolean> {
+  // External worker mode (e.g. the claude-mem-local Docker container): the
+  // worker's lifecycle belongs to an outside supervisor. Hooks only
+  // health-check it — no lazy-spawn, no PID-file validation, no version
+  // recycling — so a plugin/worker version skew during dev cannot take the
+  // worker (or memory capture) down.
+  if (isExternalWorkerMode()) {
+    if (!(await isWorkerHealthy())) {
+      logger.warn('SYSTEM', 'External worker mode: worker is not reachable; skipping hook API call', {
+        host: getWorkerHost(),
+        port: getWorkerPort(),
+      });
+      return false;
+    }
+    return waitForWorkerReadiness();
+  }
+
   // Resolve ONCE and use the result for both the staleness check and the
   // (re)spawn script below. Detection and spawn sharing this single oracle
   // is what guarantees a mismatch clears in one recycle instead of
