@@ -81,7 +81,7 @@ const parsed = existsSync(settingsPath) ? readJson(settingsPath) : {};
 const settings = parsed.env && typeof parsed.env === 'object' ? parsed.env : parsed;
 
 Object.assign(settings, updates);
-atomicWriteJson(settingsPath, parsed === settings ? settings : parsed);
+atomicWriteJson(settingsPath, parsed);
 
 console.log(JSON.stringify({
   ok: true,

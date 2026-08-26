@@ -393,7 +393,8 @@ export class GbrainSync {
     try {
       const parsed = JSON.parse(value);
       return Array.isArray(parsed) ? parsed.map(String) : [];
-    } catch {
+    } catch (error) {
+      logger.warn('GBRAIN_SYNC', 'Failed to parse stored JSON array column, exporting without it', { value }, error as Error);
       return [];
     }
   }
