@@ -39,6 +39,14 @@ export class HeadroomService {
     return HeadroomService.instance;
   }
 
+  /**
+   * Whether CLAUDE_MEM_HEADROOM_ENABLED is 'true'. Re-read per call (cheap;
+   * cached settings) so the user can flip the setting without restarting.
+   */
+  isEnabled(): boolean {
+    return this.loadHeadroomSettings().enabled;
+  }
+
   private loadHeadroomSettings(): HeadroomSettings {
     const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
     return {
