@@ -42,10 +42,8 @@ import {
   CMEM_PRO_TRIAL_DAYS,
   CMEM_PRO_TRIAL_POLL_URL,
   CMEM_PRO_TRIAL_START_URL,
-  costPer1kObservations,
-  fetchBlendedRates,
 } from '../cmem-pro-costs.js';
-import { PRO_TRIAL_PITCH, proTrialUrl } from '../../shared/pro-promo.js';
+import { PLAN_USAGE_GAIN_PERCENT, PRO_TRIAL_PITCH, proTrialUrl } from '../../shared/pro-promo.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
@@ -1180,10 +1178,8 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   if (options.provider) {
     selectedProvider = options.provider;
   } else {
-    // Rates are looked up live so the prompt never quotes a stale price. The
-    // lookup is timeout-bounded and falls back silently, so an offline install
-    // still gets a working prompt — just with last-known figures.
-    const labels = await buildProviderLabels();
+    // Static "on-plan vs off-plan" copy — no price lookup, no network.
+    const labels = buildProviderLabels();
 
     const providerResult = await p.select<ProviderChoice>({
       message: 'Which memory provider do you want to use?',
@@ -1614,26 +1610,18 @@ async function promptProTrialOptIn(version: string): Promise<TrialPairing | null
     return pairing;
   }
 
-  // The alt-path figure is live-fetched (with a bounded timeout and baked
-  // fallback) so the pitch never quotes a stale price. Framing rule: never
-  // print a $/1k figure for Pro itself — it is a flat subscription that does
-  // not bill the user's tokens.
-  const { rates } = await fetchBlendedRates();
-  const haikuPer1k = costPer1kObservations(rates.claude);
-
+  // Framing rule: no dollar figures beyond the single price-disclosure line —
+  // the pitch speaks in "% more usage from your plan".
   p.note(
     [
-      styleText(['bold', 'cyan'], 'Free week of Pro: cloud memory generation + sync across machines.'),
+      styleText(['bold', 'cyan'], 'Your account unlocks memory that runs off-plan —'),
+      styleText(['bold', 'cyan'], `get up to ${PLAN_USAGE_GAIN_PERCENT}% more usage from your plan.`),
+      'Includes a key for every provider, cloud sync, and the claude-mem observer',
+      `(free for ${CMEM_PRO_TRIAL_DAYS} days, then $${CMEM_PRO_MONTHLY_USD}/mo — cancel anytime, no card required to sign in).`,
       '',
-      'Memory generation runs on our metered models instead of your',
-      `Anthropic plan — the default Haiku path burns ~$${haikuPer1k}/1k observations`,
-      "of your plan's tokens; Pro takes $0 from it.",
-      `${CMEM_PRO_TRIAL_DAYS} days free, then $${CMEM_PRO_MONTHLY_USD}/mo — card required, cancel anytime.`,
-      '',
-      "Enter your email to start (we'll send a sign-in link) — or press",
-      'Enter to skip and use local generation.',
+      "Enter your email — we'll send a sign-in link. Press Enter to skip.",
     ].join('\n'),
-    `cmem Pro — ${CMEM_PRO_TRIAL_DAYS} days free`,
+    'Sign in to claude-mem',
   );
 
   const emailResult = await p.text({

@@ -35,8 +35,14 @@ export function proTrialUrl(source: ProPromoSource): string {
   return `${PRO_TRIAL_URL}?from=${source}`;
 }
 
+/**
+ * How much more plan usage running memory off-plan buys, as a "% more" figure.
+ * Shared so every surface quotes the same number.
+ */
+export const PLAN_USAGE_GAIN_PERCENT = 100;
+
 /** The offer itself, without a URL — for surfaces that link separately. */
-export const PRO_TRIAL_PITCH = 'Get 2x more use out of your Max plan for free (7-day trial, $30/mo)';
+export const PRO_TRIAL_PITCH = `Get up to ${PLAN_USAGE_GAIN_PERCENT}% more usage from your plan — memory runs off-plan, free for 7 days`;
 
 /**
  * One-line pitch + link, for plain-text surfaces (hook banners, welcome hint).
