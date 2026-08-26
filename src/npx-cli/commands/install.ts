@@ -835,7 +835,8 @@ type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'aimlapi';
  * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
  * it configures the generic OpenAI-compatible path (base URL + model + key) and
  * persists CLAUDE_MEM_PROVIDER='openrouter'. The worker only understands
- * 'claude' | 'gemini' | 'openrouter', so 'cmem' must never reach settings.json.
+ * 'claude' | 'gemini' | 'openrouter' | 'aimlapi', so 'cmem' must never reach
+ * settings.json.
  */
 type ProviderChoice = ProviderId | 'cmem';
 type ClaudeAccessMode = 'subscription' | 'api-key';

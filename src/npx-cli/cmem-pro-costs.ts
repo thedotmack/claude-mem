@@ -194,7 +194,8 @@ export const CMEM_PRO_TRIAL_DAYS = 7;
  * CMEM Pro settings, written as a plain `openrouter` provider config: the
  * worker's OpenRouter client is a generic OpenAI-compatible client whose base
  * URL and model are both settings-driven, so CMEM Pro needs no provider code.
- * The worker only understands 'claude' | 'gemini' | 'openrouter' — 'cmem' is an
+ * The worker only understands 'claude' | 'gemini' | 'openrouter' | 'aimlapi' —
+ * 'cmem' is an
  * installer-prompt-only value and must never reach settings.json.
  */
 export const CMEM_PRO_BASE_URL = `${CMEM_PRO_ORIGIN}/api/inference/v1`;
