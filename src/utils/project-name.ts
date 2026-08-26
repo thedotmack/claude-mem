@@ -4,11 +4,25 @@ import { execFileSync } from 'child_process';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
 
+const CLAUDE_PROJECT_DIR_ENV = 'CLAUDE_PROJECT_DIR';
+const UNKNOWN_PROJECT_NAME = 'unknown-project';
+
 function expandTilde(p: string): string {
   if (p === '~' || p.startsWith('~/')) {
     return p.replace(/^~/, homedir())
   }
   return p
+}
+
+export function resolveHookProjectPath(cwd: string | null | undefined): string | null {
+  const claudeProjectDir = process.env[CLAUDE_PROJECT_DIR_ENV]?.trim();
+  if (claudeProjectDir) {
+    return claudeProjectDir;
+  }
+  if (!cwd || cwd.trim() === '') {
+    return null;
+  }
+  return cwd;
 }
 
 /**
@@ -38,7 +52,7 @@ function findGitRepoRoot(dir: string): string | null {
 export function getProjectName(cwd: string | null | undefined): string {
   if (!cwd || cwd.trim() === '') {
     logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
-    return 'unknown-project';
+    return UNKNOWN_PROJECT_NAME;
   }
 
   const expanded = expandTilde(cwd)
@@ -63,7 +77,7 @@ export function getProjectName(cwd: string | null | undefined): string {
       }
     }
     logger.warn('PROJECT_NAME', 'Root directory detected, using fallback', { cwd });
-    return 'unknown-project';
+    return UNKNOWN_PROJECT_NAME;
   }
 
   return basename;
