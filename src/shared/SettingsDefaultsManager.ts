@@ -89,6 +89,14 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: string;
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: string;
   CLAUDE_MEM_CLOUD_SYNC_WS: string;    // advisory WebSocket speed layer (Phase 4) — 'false' = HTTP polling only
+  // claude-mem sign-in funnel state, written by the installer's browser-login
+  // step (install.ts promptBrowserLogin/completeTrialPairing). Declared here so
+  // loadFromFile round-trips them instead of dropping unknown keys.
+  CLAUDE_MEM_PRO_TRIAL_EMAIL: string;
+  CLAUDE_MEM_PRO_TRIAL_AT: string;
+  CLAUDE_MEM_PRO_TRIAL_STATE: string;
+  CLAUDE_MEM_PRO_TRIAL_ENDS_AT: string;
+  CLAUDE_MEM_PRO_PLAN: string;
   CLAUDE_MEM_TELEGRAM_ENABLED: string;
   CLAUDE_MEM_TELEGRAM_BOT_TOKEN: string;
   CLAUDE_MEM_TELEGRAM_CHAT_ID: string;
@@ -181,6 +189,13 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',      // Minted at first CloudSync start, then persisted back here
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: hostname(),  // Human-readable label for the cmem.ai Devices panel
     CLAUDE_MEM_CLOUD_SYNC_WS: 'true',  // Advisory WebSocket speed layer (plan Phase 4). 'false' = HTTP polling only — sync stays fully correct, just poll-latency (prime directive #2)
+    // claude-mem sign-in funnel state: all empty until the installer's
+    // browser-login step writes them.
+    CLAUDE_MEM_PRO_TRIAL_EMAIL: '',     // Email the sign-in link was sent to (don't-re-nag marker)
+    CLAUDE_MEM_PRO_TRIAL_AT: '',        // ISO timestamp of the last sign-in link send
+    CLAUDE_MEM_PRO_TRIAL_STATE: '',     // 'link_sent' (started, credentials never picked up) | 'active' (done)
+    CLAUDE_MEM_PRO_TRIAL_ENDS_AT: '',   // ISO date the free week ends (from poll trial.ends_at); '' when absent
+    CLAUDE_MEM_PRO_PLAN: '',            // 'trial' | 'pro' | 'none' — plan reported by the poll on ready
     CLAUDE_MEM_TELEGRAM_ENABLED: 'true',
     CLAUDE_MEM_TELEGRAM_BOT_TOKEN: '',
     CLAUDE_MEM_TELEGRAM_CHAT_ID: '',

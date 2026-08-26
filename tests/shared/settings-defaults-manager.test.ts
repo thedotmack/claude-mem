@@ -312,6 +312,53 @@ describe('SettingsDefaultsManager', () => {
       });
     });
 
+    // loadFromFile only carries keys declared in DEFAULTS, so before the five
+    // Pro sign-in keys were declared, an installer-written settings.json lost
+    // them on every load (the round-trip-loss gap fixed by the install-first
+    // login flow plan, Phase 4).
+    describe('CMEM Pro sign-in keys round-trip', () => {
+      const proKeys = {
+        CLAUDE_MEM_PRO_TRIAL_EMAIL: 'dev@example.com',
+        CLAUDE_MEM_PRO_TRIAL_AT: '2026-08-26T12:00:00.000Z',
+        CLAUDE_MEM_PRO_TRIAL_STATE: 'active',
+        CLAUDE_MEM_PRO_TRIAL_ENDS_AT: '2026-09-02T12:00:00.000Z',
+        CLAUDE_MEM_PRO_PLAN: 'trial',
+      };
+
+      it('should surface all five Pro keys from a settings.json that contains them', () => {
+        writeFileSync(settingsPath, JSON.stringify(proKeys));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_PRO_TRIAL_EMAIL).toBe('dev@example.com');
+        expect(result.CLAUDE_MEM_PRO_TRIAL_AT).toBe('2026-08-26T12:00:00.000Z');
+        expect(result.CLAUDE_MEM_PRO_TRIAL_STATE).toBe('active');
+        expect(result.CLAUDE_MEM_PRO_TRIAL_ENDS_AT).toBe('2026-09-02T12:00:00.000Z');
+        expect(result.CLAUDE_MEM_PRO_PLAN).toBe('trial');
+      });
+
+      it('should default all five Pro keys to empty strings', () => {
+        const defaults = SettingsDefaultsManager.getAllDefaults();
+
+        expect(defaults.CLAUDE_MEM_PRO_TRIAL_EMAIL).toBe('');
+        expect(defaults.CLAUDE_MEM_PRO_TRIAL_AT).toBe('');
+        expect(defaults.CLAUDE_MEM_PRO_TRIAL_STATE).toBe('');
+        expect(defaults.CLAUDE_MEM_PRO_TRIAL_ENDS_AT).toBe('');
+        expect(defaults.CLAUDE_MEM_PRO_PLAN).toBe('');
+      });
+
+      it('should keep the Pro keys on disk when loading rewrites the file (nested-schema migration)', () => {
+        writeFileSync(settingsPath, JSON.stringify({ env: proKeys }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_PRO_TRIAL_STATE).toBe('active');
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_PRO_TRIAL_EMAIL).toBe('dev@example.com');
+        expect(parsed.CLAUDE_MEM_PRO_PLAN).toBe('trial');
+      });
+    });
+
     describe('edge cases', () => {
       it('should handle empty object in file', () => {
         writeFileSync(settingsPath, '{}');
