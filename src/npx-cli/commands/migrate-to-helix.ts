@@ -1,4 +1,3 @@
-import { Database } from 'bun:sqlite'
 import { styleText } from 'node:util'
 import { DB_PATH } from '../../shared/paths.js'
 import { ProjectsRepository, ServerSessionsRepository, AgentEventsRepository, MemoryItemsRepository, AuthRepository } from '../../storage/sqlite/index.js'
@@ -12,6 +11,11 @@ import {
 } from '../../storage/helix/index.js'
 
 export async function runMigrateToHelixCommand(): Promise<void> {
+  // Lazy: a static 'bun:sqlite' import gets hoisted to the bundle's top level
+  // by esbuild (external, no code-splitting), which crashes the whole CLI
+  // under Node's ESM loader (ERR_UNSUPPORTED_ESM_URL_SCHEME). This command
+  // only runs under Bun, so resolve the module at call time.
+  const { Database } = await import('bun:sqlite')
   const db = new Database(DB_PATH, { readonly: true })
   const manager = new HelixManager()
   const transport = await manager.getTransport()
