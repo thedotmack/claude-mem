@@ -112,10 +112,8 @@ export class HelixSync implements VectorSync {
     return transport
   }
 
-  private async upsertDocument(docKey: string, document: HelixDocument): Promise<void> {
-    const transport = await this.transport()
-    const rows = await transport.findNodes('SemanticDocument', { doc_key: docKey })
-    const properties: HelixNode = {
+  private toNodeProperties(docKey: string, document: HelixDocument): HelixNode {
+    return {
       doc_key: docKey,
       document_id: document.id,
       sqlite_id: Number(document.metadata.sqlite_id),
@@ -131,6 +129,12 @@ export class HelixSync implements VectorSync {
       document: document.document,
       embedding: createDeterministicEmbedding(document.document)
     }
+  }
+
+  private async upsertDocument(docKey: string, document: HelixDocument): Promise<void> {
+    const transport = await this.transport()
+    const rows = await transport.findNodes('SemanticDocument', { doc_key: docKey })
+    const properties = this.toNodeProperties(docKey, document)
     if (rows.length > 0) {
       await transport.updateNodes('SemanticDocument', { doc_key: docKey }, properties)
     } else {
@@ -138,8 +142,12 @@ export class HelixSync implements VectorSync {
     }
   }
 
+  // Sequential on purpose: Helix rejects concurrent write transactions with
+  // "transaction conflict", so parallel upserts fail under any real load.
   async addDocuments(documents: HelixDocument[]): Promise<number> {
-    await Promise.all(documents.map(document => this.upsertDocument(document.id, document)))
+    for (const document of documents) {
+      await this.upsertDocument(document.id, document)
+    }
     return documents.length
   }
 
@@ -277,9 +285,16 @@ export class HelixSync implements VectorSync {
 
     let synced = 0
     const flushBatch: HelixDocument[] = []
+    // Direct sequential inserts: the pre-fetched `existing` set already proves
+    // these doc_keys are absent, so the per-doc find in upsertDocument is
+    // skipped, and Helix rejects concurrent write transactions anyway.
     const flush = async () => {
       if (flushBatch.length === 0) return
-      synced += await this.addDocuments(flushBatch.splice(0, flushBatch.length))
+      for (const doc of flushBatch.splice(0, flushBatch.length)) {
+        await transport.insertNode('SemanticDocument', this.toNodeProperties(doc.id, doc))
+        synced += 1
+      }
+      logger.debug('HELIX', 'Backfill progress', { synced })
     }
     const enqueue = async (doc: HelixDocument) => {
       if (existing.has(doc.id)) return
