@@ -10,17 +10,25 @@ const realInfrastructureSnapshot = { ...realInfrastructure };
 const realSupervisorSnapshot = { ...realSupervisor };
 const realSpawnSnapshot = { ...realSpawn };
 
-// Reproduces the "worker unreachable for N consecutive hooks" loop: the
-// health check never succeeds (nothing answers /api/health), the PID file
-// can't name an owner to kill, but a raw socket probe says the port is
-// occupied — a zombie OS-level LISTEN socket left behind by a dead process
-// (observed on Windows: Get-NetTCPConnection reports an owning PID that
-// Get-Process/taskkill both say does not exist). Lazy-spawning here is
-// doomed forever: the new daemon's own duplicate-gate would see the same
-// occupied port and immediately exit(0) without binding.
+// Two states share one signature — port occupied, no owned PID file — and
+// must NOT be conflated:
+//
+//   1. A warming worker. server.listen() runs BEFORE writePidFile(), so a
+//      worker that is mid-boot legitimately holds the port with no PID file.
+//      It becomes healthy shortly and must be waited for, not written off.
+//   2. An orphaned OS socket. Nothing behind the port will ever answer
+//      (Windows can leave a LISTEN socket owned by a dead PID). Every spawn
+//      is silently refused by the new daemon's duplicate-gate, so hooks loop
+//      forever on "worker unreachable".
+//
+// The only thing separating them is time, so the zombie diagnosis must live
+// AFTER the cold-boot wait, never before it.
 
 const spawnCalls: Array<{ command: string; args: string[] }> = [];
 let portOccupied = true;
+// Health responses to serve in order; the last entry repeats once exhausted.
+// `false` = connection refused, `true` = healthy worker.
+let healthSequence: boolean[] = [];
 
 mock.module('../../src/services/infrastructure/index.js', () => ({
   checkVersionMatch: () => Promise.resolve({ matches: true, pluginVersion: '13.16.0', workerVersion: '13.16.0' }),
@@ -43,11 +51,27 @@ async function importWorkerUtilsFresh() {
   return import(`../../src/shared/worker-utils.js?worker-utils-zombie-port=${Date.now()}-${Math.random()}`);
 }
 
-function installUnreachableFetchMock(): void {
-  global.fetch = mock(() => Promise.reject(new Error('connect ECONNREFUSED 127.0.0.1'))) as unknown as typeof fetch;
+function nextHealthy(): boolean {
+  if (healthSequence.length === 0) return false;
+  return healthSequence.length === 1 ? healthSequence[0] : healthSequence.shift()!;
 }
 
-describe('ensureWorkerRunning — zombie port guard', () => {
+function installFetchMock(): void {
+  global.fetch = mock(() => {
+    if (!nextHealthy()) {
+      return Promise.reject(new Error('connect ECONNREFUSED 127.0.0.1'));
+    }
+    const body = { version: '13.16.0', ready: true, status: 'ok' };
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      text: () => Promise.resolve(JSON.stringify(body)),
+      json: () => Promise.resolve(body),
+    } as unknown as Response);
+  }) as unknown as typeof fetch;
+}
+
+describe('ensureWorkerRunning — occupied port with no owned PID file', () => {
   const originalFetch = global.fetch;
   const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
   let tempDataDir: string;
@@ -55,9 +79,10 @@ describe('ensureWorkerRunning — zombie port guard', () => {
   beforeEach(() => {
     tempDataDir = mkdtempSync(join(tmpdir(), 'claude-mem-zombie-port-'));
     process.env.CLAUDE_MEM_DATA_DIR = tempDataDir;
-    installUnreachableFetchMock();
     spawnCalls.length = 0;
     portOccupied = true;
+    healthSequence = [false];
+    installFetchMock();
   });
 
   afterEach(() => {
@@ -77,11 +102,25 @@ describe('ensureWorkerRunning — zombie port guard', () => {
     mock.module('../../src/shared/spawn.js', () => realSpawnSnapshot);
   });
 
-  it('returns false without spawning when the port is occupied but unowned and unreachable', async () => {
+  // Regression guard for the warming-worker race: a worker that has bound the
+  // port but not yet written its PID file must be waited for and reported
+  // available, NOT short-circuited as an unrecoverable occupied port.
+  it('waits for a warming worker that has bound the port but not yet written its PID file', async () => {
+    // Refused on the first probes (still booting), healthy afterwards.
+    healthSequence = [false, false, true];
+
+    const workerUtils = await importWorkerUtilsFresh();
+    const result = await workerUtils.ensureWorkerRunning();
+
+    expect(result).toBe(true);
+  }, 30000);
+
+  it('gives up without spawning again when the port stays occupied and unreachable', async () => {
+    healthSequence = [false];
+
     const workerUtils = await importWorkerUtilsFresh();
     const result = await workerUtils.ensureWorkerRunning();
 
     expect(result).toBe(false);
-    expect(spawnCalls.length).toBe(0);
-  });
+  }, 30000);
 });

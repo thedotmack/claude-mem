@@ -535,23 +535,6 @@ export async function ensureWorkerRunning(): Promise<boolean> {
     // Fall through to (re)spawn + readiness wait below.
   }
 
-  // Zombie-port guard: the port is occupied at the OS level (a real bind
-  // attempt fails) but nothing behind it answers /api/health, AND the PID
-  // file doesn't name a killable owner. Windows can leave a LISTEN socket
-  // behind for a process that has already died (observed with no
-  // Get-NetTCPConnection-visible owner and taskkill reporting "not found").
-  // Spawning here is doomed: the new daemon's own duplicate-gate
-  // (isPortInUse) will see the same occupied port and immediately exit(0)
-  // without ever binding, so the loop repeats every hook forever. Fail once
-  // with a specific, actionable message instead of retrying blindly.
-  if (readOwnedWorkerPidInfo() === null && (await isPortInUse(getWorkerPort()))) {
-    logger.error('SYSTEM', 'Worker port is occupied by an unreachable, unkillable process (likely a stale OS socket); lazy-spawn would be silently refused on this port', {
-      port: getWorkerPort(),
-      fix: 'Set CLAUDE_MEM_WORKER_PORT to a different port in claude-mem settings, or reboot to release the stuck port',
-    });
-    return false;
-  }
-
   const runtimePath = resolveWorkerRuntimePath();
   const scriptPath = resolvedScript?.scriptPath ?? null;
 
@@ -611,6 +594,24 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       logger.warn('SYSTEM', spawnLockHeld
         ? 'Worker port did not open after lazy-spawn within the cold-boot wait (~15s)'
         : 'Spawn-lock holder\'s worker port did not open within the cold-boot wait (~15s)');
+      // Zombie-socket diagnosis. Only reachable once the full cold-boot wait
+      // has expired, so a worker that merely bound late (server.listen runs
+      // BEFORE writePidFile — a warming worker legitimately has an occupied
+      // port and no PID file) has already had its chance to answer. If the
+      // port is STILL occupied with no reachable worker and no PID file
+      // naming a killable owner, the socket is orphaned at the OS level:
+      // Windows can leave a LISTEN socket behind for a process that no
+      // longer exists (Get-NetTCPConnection reports an owning PID that
+      // Get-Process and taskkill both say is gone). Every future spawn is
+      // doomed — the new daemon's duplicate-gate sees the occupied port and
+      // exit(0)s without binding — so name the actual fix instead of letting
+      // the generic "unreachable" counter climb forever.
+      if (readOwnedWorkerPidInfo() === null && (await isPortInUse(getWorkerPort()))) {
+        logger.error('SYSTEM', 'Worker port is occupied by an unreachable process that no PID file claims (likely an orphaned OS socket); every lazy-spawn on this port will be silently refused', {
+          port: getWorkerPort(),
+          fix: 'Set CLAUDE_MEM_WORKER_PORT to a different port in claude-mem settings, or reboot to release the stuck port',
+        });
+      }
       return false;
     }
   } finally {
