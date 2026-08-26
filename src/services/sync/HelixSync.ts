@@ -5,11 +5,22 @@ import type { HelixNode, HelixTransport } from '../../storage/helix/transport.js
 import { ensureHelixSchema } from '../../storage/helix/schema.js'
 import { HelixManager } from './HelixManager.js'
 import type { VectorSearchMetadata, VectorSearchResult, VectorSync } from './VectorSync.js'
+import type { SessionStore } from '../sqlite/SessionStore.js'
 
 export interface HelixDocument {
   id: string;
   document: string;
   metadata: Record<string, string | number>;
+}
+
+function parseJsonArray(value: unknown): string[] {
+  if (typeof value !== 'string' || value === '') return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.map(String) : []
+  } catch {
+    return []
+  }
 }
 
 function buildObservationDocument(observation: {
@@ -248,6 +259,127 @@ export class HelixSync implements VectorSync {
 
   async queryChroma(query: string, limit: number, whereFilter?: Record<string, unknown>): Promise<VectorSearchResult> {
     return await this.queryHelix(query, limit, whereFilter)
+  }
+
+  /**
+   * Backfill every SQLite observation, session summary, and user prompt into
+   * Helix. Idempotent: existing doc_keys are fetched once up front and
+   * skipped, so a restart resumes where the last run stopped. Mirrors the
+   * Chroma startup backfill's role without its watermark machinery — the
+   * Helix store itself is the source of truth for what already landed.
+   */
+  async backfillAllProjects(store: SessionStore): Promise<void> {
+    const transport = await this.transport()
+    const existing = new Set(
+      (await transport.findNodes('SemanticDocument')).map(row => String(row.doc_key))
+    )
+    logger.info('HELIX', 'Backfill starting', { existingDocs: existing.size })
+
+    let synced = 0
+    const flushBatch: HelixDocument[] = []
+    const flush = async () => {
+      if (flushBatch.length === 0) return
+      synced += await this.addDocuments(flushBatch.splice(0, flushBatch.length))
+    }
+    const enqueue = async (doc: HelixDocument) => {
+      if (existing.has(doc.id)) return
+      flushBatch.push(doc)
+      if (flushBatch.length >= 100) await flush()
+    }
+
+    const observations = store.db.prepare(`
+      SELECT
+        o.*,
+        COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
+      FROM observations o
+      LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id
+      ORDER BY o.id ASC
+    `).all() as Array<Record<string, unknown>>
+    for (const row of observations) {
+      await enqueue({
+        id: `observation:${row.id}`,
+        document: buildObservationDocument({
+          type: String(row.type ?? ''),
+          title: row.title as string | null,
+          subtitle: row.subtitle as string | null,
+          facts: parseJsonArray(row.facts),
+          narrative: row.narrative as string | null,
+          concepts: parseJsonArray(row.concepts)
+        }),
+        metadata: {
+          sqlite_id: Number(row.id),
+          doc_type: 'observation',
+          memory_session_id: String(row.memory_session_id ?? ''),
+          project: String(row.project ?? ''),
+          prompt_number: Number(row.prompt_number ?? 0),
+          created_at_epoch: Number(row.created_at_epoch ?? 0),
+          platform_source: normalizePlatformSource(row.platform_source as string | null)
+        }
+      })
+    }
+
+    const summaries = store.db.prepare(`
+      SELECT
+        ss.*,
+        COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
+      FROM session_summaries ss
+      LEFT JOIN sdk_sessions s ON s.memory_session_id = ss.memory_session_id
+      ORDER BY ss.id ASC
+    `).all() as Array<Record<string, unknown>>
+    for (const row of summaries) {
+      await enqueue({
+        id: `summary:${row.id}`,
+        document: buildSummaryDocument({
+          request: String(row.request ?? ''),
+          investigated: String(row.investigated ?? ''),
+          learned: String(row.learned ?? ''),
+          completed: String(row.completed ?? ''),
+          next_steps: String(row.next_steps ?? ''),
+          notes: row.notes as string | null
+        }),
+        metadata: {
+          sqlite_id: Number(row.id),
+          doc_type: 'session_summary',
+          memory_session_id: String(row.memory_session_id ?? ''),
+          project: String(row.project ?? ''),
+          prompt_number: Number(row.prompt_number ?? 0),
+          created_at_epoch: Number(row.created_at_epoch ?? 0),
+          platform_source: normalizePlatformSource(row.platform_source as string | null)
+        }
+      })
+    }
+
+    const prompts = store.db.prepare(`
+      SELECT
+        up.*,
+        s.project,
+        s.memory_session_id,
+        COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
+      FROM user_prompts up
+      JOIN sdk_sessions s ON up.session_db_id = s.id
+      ORDER BY up.id ASC
+    `).all() as Array<Record<string, unknown>>
+    for (const row of prompts) {
+      await enqueue({
+        id: `prompt:${row.id}`,
+        document: String(row.prompt_text ?? ''),
+        metadata: {
+          sqlite_id: Number(row.id),
+          doc_type: 'user_prompt',
+          memory_session_id: String(row.memory_session_id ?? ''),
+          project: String(row.project ?? ''),
+          prompt_number: Number(row.prompt_number ?? 0),
+          created_at_epoch: Number(row.created_at_epoch ?? 0),
+          platform_source: normalizePlatformSource(row.platform_source as string | null)
+        }
+      })
+    }
+    await flush()
+
+    logger.info('HELIX', 'Backfill complete', {
+      synced,
+      totalRows: observations.length + summaries.length + prompts.length
+    })
   }
 
   async updateMergedIntoProject(sqliteIds: number[], parentProject: string): Promise<void> {

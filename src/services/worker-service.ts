@@ -17,6 +17,7 @@ import { getAuthMethodDescription } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
 import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
+import { HelixSync } from './sync/HelixSync.js';
 import { openConfiguredSqliteDatabase } from './sqlite/connection.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
@@ -479,10 +480,14 @@ export class WorkerService implements WorkerRef {
       logger.info('WORKER', 'Checking for one-time CWD remap...');
       runOneTimeCwdRemap();
 
-      const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
+      const helixEnabled = settings.CLAUDE_MEM_HELIX_ENABLED === 'true'
+        || (settings.CLAUDE_MEM_DB_BACKEND || '').includes('helix');
+      const chromaEnabled = !helixEnabled && settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
       if (chromaEnabled) {
         this.chromaMcpManager = ChromaMcpManager.getInstance();
         logger.info('SYSTEM', 'ChromaMcpManager initialized (lazy - connects on first use)');
+      } else if (helixEnabled) {
+        logger.info('SYSTEM', 'Helix backend active — skipping ChromaMcpManager');
       } else {
         logger.info('SYSTEM', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, skipping ChromaMcpManager');
       }
@@ -653,6 +658,15 @@ export class WorkerService implements WorkerRef {
         }).catch(error => {
           logger.error('CHROMA_SYNC', 'Backfill failed (non-blocking)', {}, error as Error);
         });
+      } else {
+        const vectorSync = this.dbManager.getChromaSync();
+        if (vectorSync instanceof HelixSync) {
+          vectorSync.backfillAllProjects(this.dbManager.getSessionStore()).then(() => {
+            logger.info('HELIX', 'Backfill check complete for all projects');
+          }).catch(error => {
+            logger.error('HELIX', 'Backfill failed (non-blocking)', {}, error as Error);
+          });
+        }
       }
 
       // Cloud sync startup drain (non-blocking). The database is the queue:

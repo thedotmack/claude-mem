@@ -11,6 +11,7 @@ import { CreateServerSessionSchema } from '../../../core/schemas/session.js'
 import { LocalStorageFactory } from '../../../storage/LocalStorageFactory.js'
 import { requireServerAuth } from '../../middleware/auth.js'
 import type { HelixTransport } from '../../../storage/helix/transport.js'
+import type { HelixAuthRepository } from '../../../storage/helix/auth.js'
 
 declare const __DEFAULT_PACKAGE_VERSION__: string
 const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
@@ -58,15 +59,23 @@ export class ServerV1Routes implements RouteHandler {
   }
 
   setupRoutes(app: Application): void {
+    const getHelixAuth = this.storageFactory.getBackend() === 'helix'
+      ? async () => {
+          const repo = await this.storageFactory.auth()
+          return repo as HelixAuthRepository
+        }
+      : undefined
     const readAuth = requireServerAuth(this.options.getDatabase, {
       authMode: this.options.authMode,
       allowLocalDevBypass: this.options.allowLocalDevBypass,
       requiredScopes: ['memories:read'],
+      getHelixAuth,
     })
     const writeAuth = requireServerAuth(this.options.getDatabase, {
       authMode: this.options.authMode,
       allowLocalDevBypass: this.options.allowLocalDevBypass,
       requiredScopes: ['memories:write'],
+      getHelixAuth,
     })
 
     app.get('/healthz', (_req, res) => {
