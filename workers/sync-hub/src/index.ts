@@ -31,6 +31,7 @@
  *                                        deliberately untouched.
  */
 
+import { handleBackupRequest } from "./backup-routes";
 import { CONTROL_PLANE_PROBE_CRON, runControlPlaneProbe } from "./control-plane-probe";
 import type { PushOp } from "./do/SyncHub";
 import {
@@ -871,6 +872,18 @@ export default {
 		if (pathname === "/internal/v1/sync/reset") {
 			if (request.method !== "POST") return errorResponse(405, "use POST");
 			return handleHubReset(request, env);
+		}
+
+		// Encrypted backup routes (pro-backup plan Phase 3, src/backup-routes.ts).
+		// Same fail-closed authenticateRequest as /v1/sync/* — nothing in the
+		// backup surface runs before the token↔user binding is verified.
+		if (pathname.startsWith("/v1/backup/")) {
+			const backupAuth = await authenticateRequest(request, env);
+			if (!backupAuth.ok) return backupAuth.response;
+			return handleBackupRequest(request, url, env, {
+				userId: backupAuth.userId,
+				deviceId: backupAuth.deviceId,
+			});
 		}
 
 		if (

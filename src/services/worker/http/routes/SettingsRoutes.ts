@@ -108,6 +108,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_BACKUP_INTERVAL_HOURS',
       'CLAUDE_MEM_BACKUP_RETAIN_COUNT',
       'CLAUDE_MEM_BACKUP_INCLUDE_VECTORS',
+      'CLAUDE_MEM_BACKUP_CLOUD',
+      'CLAUDE_MEM_BACKUP_ENCRYPTION_KEY',
     ];
 
     for (const key of settingKeys) {
@@ -211,6 +213,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
       'CLAUDE_MEM_BACKUP_ENABLED',
       'CLAUDE_MEM_BACKUP_INCLUDE_VECTORS',
+      'CLAUDE_MEM_BACKUP_CLOUD',
     ];
 
     for (const key of booleanSettings) {

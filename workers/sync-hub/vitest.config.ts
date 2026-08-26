@@ -256,6 +256,11 @@ export default defineConfig({
 					KILL_SWITCH_CACHE_MS: "0",
 					INTERNAL_PROJECTOR_URL: "https://projector.test/api/internal/sync/project",
 					CMEM_INTERNAL_PROJECTOR_SECRET: "test-projector-secret",
+					// Backup routes (test/backup-routes.test.ts): tiny caps so the
+					// 413 over-size and retention-trim paths are exercisable with
+					// kilobyte payloads instead of the production 2 GiB / 10 copies.
+					BACKUP_MAX_BYTES: "4096",
+					BACKUP_RETAIN_CLOUD: "3",
 				},
 				outboundService: mockOutbound,
 			},

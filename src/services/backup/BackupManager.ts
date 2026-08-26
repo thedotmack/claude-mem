@@ -1,14 +1,29 @@
 
-import { join, dirname } from 'path';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, statfsSync, unlinkSync } from 'fs';
+import { join, dirname, basename } from 'path';
+import { copyFileSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, statfsSync, unlinkSync } from 'fs';
+import { Readable } from 'stream';
 import { Database } from 'bun:sqlite';
-import { DB_PATH, paths } from '../../shared/paths.js';
+import { DB_PATH, USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
+import { parseJsonWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { buildSyncAuthHeaders } from '../sync/sync-auth-headers.js';
+import { encryptFile, mintEncryptionKeyBase64 } from './backup-crypto.js';
 
 /** Settings keys BackupManager reads (subset of SettingsDefaults). */
 export interface BackupSettingKeys {
   CLAUDE_MEM_BACKUP_INTERVAL_HOURS?: string;
   CLAUDE_MEM_BACKUP_RETAIN_COUNT?: string;
+  /** 'true' = encrypt + upload each snapshot to the sync hub (Phase 3). */
+  CLAUDE_MEM_BACKUP_CLOUD?: string;
+  /** base64 AES-256 key; minted + persisted on first cloud-enabled snapshot. */
+  CLAUDE_MEM_BACKUP_ENCRYPTION_KEY?: string;
+  // Cloud-sync credentials (same gating predicate as CloudSync.isConfigured).
+  CLAUDE_MEM_CLOUD_SYNC_TOKEN?: string;
+  CLAUDE_MEM_CLOUD_SYNC_USER_ID?: string;
+  CLAUDE_MEM_CLOUD_SYNC_HUB_URL?: string;
+  CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID?: string;
+  CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME?: string;
 }
 
 export interface BackupManagerOptions {
@@ -22,6 +37,14 @@ export interface BackupManagerOptions {
   initialDelayMs?: number;
   /** Injectable clock (tests). */
   now?: () => number;
+  /** Injectable for tests; defaults to globalThis.fetch (CloudSync pattern). */
+  fetchImpl?: typeof fetch;
+  /** settings.json path where a freshly minted encryption key is persisted. */
+  settingsPath?: string;
+  /** Timeout for the upload-url request; default 30s. */
+  requestTimeoutMs?: number;
+  /** Timeout for the streamed snapshot PUT; default 10 min (600MB+ files). */
+  uploadTimeoutMs?: number;
 }
 
 export interface BackupSnapshotResult {
@@ -38,6 +61,12 @@ export interface BackupStatus {
   snapshotCount: number;
   lastError: string | null;
   nextRunAt: number | null;
+  /** CLAUDE_MEM_BACKUP_CLOUD === 'true' AND cloud-sync credentials present. */
+  cloudEnabled: boolean;
+  lastUploadAt: number | null;
+  lastUploadKey: string | null;
+  /** Phase 4 wires the hub's addon_required signal here; always false for now. */
+  addonRequired: boolean;
 }
 
 /**
@@ -70,6 +99,21 @@ export class BackupManager {
   private readonly initialDelayMs: number;
   private readonly now: () => number;
 
+  // Cloud upload (Phase 3). The token is held in memory only — NEVER logged.
+  private readonly cloudSetting: string;
+  private readonly token: string;
+  private readonly userId: string;
+  private readonly hubUrl: string;
+  private readonly deviceName: string;
+  private readonly fetchImpl: typeof fetch;
+  private readonly settingsPath: string;
+  private readonly requestTimeoutMs: number;
+  private readonly uploadTimeoutMs: number;
+  private deviceId: string;
+  private encryptionKey: string;
+  /** Fail closed: minted-key persistence failed — no uploads this session. */
+  private cloudDisabledForSession = false;
+
   private timer: ReturnType<typeof setTimeout> | null = null;
   private started = false;
   private stopped = false;
@@ -80,6 +124,8 @@ export class BackupManager {
   private lastSnapshotBytes: number | null = null;
   private lastError: string | null = null;
   private nextRunAt: number | null = null;
+  private lastUploadAt: number | null = null;
+  private lastUploadKey: string | null = null;
 
   constructor(settings: BackupSettingKeys, options: BackupManagerOptions = {}) {
     const intervalHours = Number.parseFloat(settings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS ?? '');
@@ -91,6 +137,28 @@ export class BackupManager {
     this.preflightDir = options.preflightDir ?? dirname(this.dbPath);
     this.initialDelayMs = options.initialDelayMs ?? 5 * 60_000;
     this.now = options.now ?? Date.now;
+
+    this.cloudSetting = settings.CLAUDE_MEM_BACKUP_CLOUD ?? '';
+    this.token = settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN ?? '';
+    this.userId = settings.CLAUDE_MEM_CLOUD_SYNC_USER_ID ?? '';
+    // Same normalization as CloudSync: empty means sync (and uploads) are off.
+    this.hubUrl = (settings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL ?? '').trim().replace(/\/+$/, '');
+    this.deviceId = (settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID ?? '').trim();
+    this.deviceName = (settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME ?? '').slice(0, 80);
+    this.encryptionKey = settings.CLAUDE_MEM_BACKUP_ENCRYPTION_KEY ?? '';
+    this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
+    this.settingsPath = options.settingsPath ?? USER_SETTINGS_PATH;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
+    this.uploadTimeoutMs = options.uploadTimeoutMs ?? 600_000;
+  }
+
+  /**
+   * Cloud upload is on ⇔ CLAUDE_MEM_BACKUP_CLOUD === 'true' AND the
+   * cloud-sync credentials are configured — the same token+userId+hubUrl
+   * all-non-empty predicate as CloudSync.isConfigured().
+   */
+  private cloudConfigured(): boolean {
+    return this.cloudSetting === 'true' && this.token !== '' && this.userId !== '' && this.hubUrl !== '';
   }
 
   /** Arm the cadence loop; the first run lands ~5 minutes after worker start. */
@@ -122,6 +190,10 @@ export class BackupManager {
       snapshotCount: this.listSnapshotNames().length,
       lastError: this.lastError,
       nextRunAt: this.nextRunAt,
+      cloudEnabled: this.cloudConfigured(),
+      lastUploadAt: this.lastUploadAt,
+      lastUploadKey: this.lastUploadKey,
+      addonRequired: false,
     };
   }
 
@@ -210,6 +282,9 @@ export class BackupManager {
     try {
       const result = await this.createSnapshot();
       await this.applyRetention();
+      // Cloud upload never fails the local cycle: an upload error is recorded
+      // in lastError and retried on the NEXT cadence cycle (no tight loop).
+      await this.maybeUploadToCloud(result);
       logger.info('BACKUP', 'Snapshot cycle complete', { path: result.path, bytes: result.bytes, method: result.method });
       return result;
     } catch (error) {
@@ -232,6 +307,182 @@ export class BackupManager {
       const normalized = error instanceof Error ? error : new Error(String(error));
       logger.error('BACKUP', 'Snapshot cycle failed', {}, normalized);
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Cloud upload (pro-backup plan Phase 3)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Encrypt the fresh snapshot and stream it to the sync hub. Skipped when
+   * CLAUDE_MEM_BACKUP_CLOUD !== 'true' or the cloud-sync credentials are
+   * incomplete. Never throws: failures are logged (token NEVER logged —
+   * tokenLength only), recorded in lastError, and retried on the next
+   * cadence cycle.
+   */
+  private async maybeUploadToCloud(snapshot: BackupSnapshotResult): Promise<void> {
+    if (!this.cloudConfigured()) {
+      if (this.cloudSetting === 'true') {
+        logger.debug('BACKUP', 'Cloud upload skipped: cloud-sync credentials are not configured', {
+          tokenLength: this.token.length,
+          hasUserId: this.userId !== '',
+          hasHubUrl: this.hubUrl !== '',
+        });
+      }
+      return;
+    }
+    if (this.cloudDisabledForSession) {
+      logger.debug('BACKUP', 'Cloud upload disabled for this session (encryption key persistence failed earlier)');
+      return;
+    }
+
+    const encryptionKey = this.resolveEncryptionKey();
+    if (encryptionKey === null) return; // failed closed; already logged
+
+    const deviceId = this.resolveUploadDeviceId();
+    if (deviceId === '') {
+      logger.warn('BACKUP', 'Cloud upload skipped: no cloud-sync device id yet (CloudSync mints it); will retry next cycle');
+      return;
+    }
+
+    const encPath = `${snapshot.path}.enc`;
+    try {
+      await encryptFile(snapshot.path, encPath, encryptionKey);
+      const encBytes = statSync(encPath).size;
+      const key = await this.uploadEncryptedSnapshot(encPath, encBytes, deviceId, basename(snapshot.path));
+      this.lastUploadAt = this.now();
+      this.lastUploadKey = key;
+      this.lastError = null;
+      logger.info('BACKUP', 'Snapshot uploaded to cloud', { key, encBytes, tokenLength: this.token.length });
+    } catch (error) {
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      this.lastError = normalized.message;
+      logger.error('BACKUP', 'Cloud upload failed; will retry next cycle', { tokenLength: this.token.length }, normalized);
+    } finally {
+      try {
+        if (existsSync(encPath)) unlinkSync(encPath);
+      } catch (cleanupError) {
+        const normalized = cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError));
+        logger.warn('BACKUP', 'Could not delete temporary encrypted snapshot', { encPath }, normalized);
+      }
+    }
+  }
+
+  /**
+   * POST /v1/backup/upload-url for {key, url}, then stream the encrypted
+   * file to the returned url with a PUT. Returns the object key.
+   */
+  private async uploadEncryptedSnapshot(encPath: string, encBytes: number, deviceId: string, name: string): Promise<string> {
+    const authHeaders = buildSyncAuthHeaders({
+      token: this.token,
+      userId: this.userId,
+      deviceId,
+      deviceName: this.deviceName,
+    });
+
+    const urlRes = await this.fetchImpl(`${this.hubUrl}/v1/backup/upload-url`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders },
+      body: JSON.stringify({ name, bytes: encBytes }),
+      signal: AbortSignal.timeout(this.requestTimeoutMs),
+    });
+    if (!urlRes.ok) {
+      const body = (await urlRes.text().catch(() => '')).slice(0, 200);
+      throw new Error(`backup upload-url ${urlRes.status}: ${body}`);
+    }
+    const parsed = (await urlRes.json().catch(() => null)) as { key?: unknown; url?: unknown } | null;
+    if (!parsed || typeof parsed.key !== 'string' || typeof parsed.url !== 'string') {
+      throw new Error('backup upload-url: response missing {key, url}');
+    }
+
+    // Stream the file — never buffer 600MB+ snapshots into memory.
+    const body = Readable.toWeb(createReadStream(encPath)) as unknown as ReadableStream;
+    const putRes = await this.fetchImpl(parsed.url, {
+      method: 'PUT',
+      headers: {
+        ...authHeaders,
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(encBytes),
+      },
+      body,
+      // Node/Bun fetch requires half-duplex for streamed request bodies.
+      duplex: 'half',
+      signal: AbortSignal.timeout(this.uploadTimeoutMs),
+    } as RequestInit);
+    if (!putRes.ok) {
+      const putBody = (await putRes.text().catch(() => '')).slice(0, 200);
+      throw new Error(`backup upload PUT ${putRes.status}: ${putBody}`);
+    }
+    return parsed.key;
+  }
+
+  /**
+   * Resolve the AES key: use the configured one, else mint 32 random bytes
+   * and persist them to settings.json first (device-id persistence pattern,
+   * CloudSync.resolveDeviceId). Fail closed: when persistence fails the key
+   * is discarded and cloud upload stays disabled for this session — an
+   * upload under an unpersisted key would be undecryptable after restart.
+   */
+  private resolveEncryptionKey(): string | null {
+    if (this.encryptionKey !== '') return this.encryptionKey;
+
+    const minted = mintEncryptionKeyBase64();
+    try {
+      this.persistSettingsKey('CLAUDE_MEM_BACKUP_ENCRYPTION_KEY', minted);
+    } catch (error) {
+      this.cloudDisabledForSession = true;
+      this.lastError = 'failed to persist minted backup encryption key — cloud upload disabled this session';
+      logger.error('BACKUP', 'Could not persist a freshly minted encryption key; disabling cloud upload rather than uploading a backup that could never be decrypted', {
+        settingsPath: this.settingsPath,
+      }, error instanceof Error ? error : new Error(String(error)));
+      return null;
+    }
+    this.encryptionKey = minted;
+    logger.info('BACKUP', 'Minted new backup encryption key (stored in settings.json; it never leaves this machine)');
+    return minted;
+  }
+
+  /**
+   * The upload key embeds the cloud-sync device id. CloudSync mints and
+   * persists it on its own first configured start, which can land after this
+   * manager was constructed — so an empty id is re-read from settings.json
+   * once per cycle rather than minted here (a second minter would fork
+   * device identity).
+   */
+  private resolveUploadDeviceId(): string {
+    if (this.deviceId !== '') return this.deviceId;
+    try {
+      if (existsSync(this.settingsPath)) {
+        const settings = parseJsonWithBom<Record<string, unknown>>(readFileSync(this.settingsPath, 'utf-8'));
+        const source = settings.env && typeof settings.env === 'object'
+          ? settings.env as Record<string, unknown>
+          : settings;
+        const fromFile = source.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID;
+        if (typeof fromFile === 'string' && fromFile.trim() !== '') {
+          this.deviceId = fromFile.trim();
+        }
+      }
+    } catch (error) {
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      logger.warn('BACKUP', 'Could not re-read settings for the cloud-sync device id', { settingsPath: this.settingsPath }, normalized);
+    }
+    return this.deviceId;
+  }
+
+  // Same read-mutate-write pattern as CloudSync.persistDeviceId: tolerate the
+  // legacy nested {env:{...}} shape rather than writing a mixed schema.
+  private persistSettingsKey(key: string, value: string): void {
+    let settings: Record<string, unknown>;
+    if (existsSync(this.settingsPath)) {
+      settings = parseJsonWithBom<Record<string, unknown>>(readFileSync(this.settingsPath, 'utf-8'));
+    } else {
+      settings = { ...SettingsDefaultsManager.getAllDefaults() };
+    }
+    const target = settings.env && typeof settings.env === 'object'
+      ? settings.env as Record<string, unknown>
+      : settings;
+    target[key] = value;
+    writeJsonFileAtomic(this.settingsPath, settings);
   }
 
   // -------------------------------------------------------------------------
