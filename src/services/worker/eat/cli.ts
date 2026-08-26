@@ -1,7 +1,7 @@
 import { existsSync } from 'fs';
 import { basename, resolve } from 'path';
 import { styleText } from 'node:util';
-import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
+import { buildWorkerUrl } from '../../../shared/worker-utils.js';
 import type { EatReport } from './types.js';
 
 const USAGE = [
@@ -112,9 +112,9 @@ export async function runEatCommand(args: string[]): Promise<number> {
     body.input = parsed.positional;
   }
 
-  const workerHost = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_HOST');
-  const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
-  const eatUrl = `http://${workerHost}:${workerPort}/api/eat`;
+  // buildWorkerUrl resolves host/port from the user's settings file (with env
+  // overrides) — SettingsDefaultsManager.get alone would ignore settings.json.
+  const eatUrl = buildWorkerUrl('/api/eat');
 
   const response = await fetch(eatUrl, {
     method: 'POST',
@@ -133,8 +133,25 @@ export async function runEatCommand(args: string[]): Promise<number> {
   });
 
   if (!response.ok) {
-    const detail = await response.text();
-    console.error(styleText('red', `EAT failed: HTTP ${response.status} ${detail}`));
+    const raw = await response.text();
+    let parsed: { error?: string; detail?: string; request_id?: string } | null = null;
+    try {
+      parsed = JSON.parse(raw) as { error?: string; detail?: string; request_id?: string };
+    } catch {
+      // Non-JSON error body — fall through to the raw-text message below.
+    }
+    if (parsed?.error === undefined) {
+      console.error(styleText('red', `EAT failed: HTTP ${response.status} ${raw}`));
+      return 1;
+    }
+    const detailPart = parsed.detail ? ` — ${parsed.detail}` : '';
+    const requestIdPart = parsed.request_id ? ` (request_id: ${parsed.request_id})` : '';
+    console.error(styleText('red', `EAT failed: ${parsed.error}${detailPart}${requestIdPart}`));
+    if (parsed.error === 'digest_failed' && /credential/i.test(parsed.detail ?? '')) {
+      console.error(
+        `Configure a model key: set the ${styleText('bold', 'CLAUDE_MEM_OPENROUTER_API_KEY')} credential (~/.claude-mem/.env or settings) or the ${styleText('bold', 'AI_GATEWAY_API_KEY')} env var.`
+      );
+    }
     return 1;
   }
 

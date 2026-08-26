@@ -2,7 +2,9 @@ import { generateText, Output, type LanguageModel } from 'ai';
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { z } from 'zod';
 import { getCredential } from '../../../shared/EnvManager.js';
+import { logger } from '../../../utils/logger.js';
 import type { SettingsDefaults } from '../../../shared/SettingsDefaultsManager.js';
+import { EatError } from './errors.js';
 import type { EatChunk, EatDigestResult } from './types.js';
 
 export function buildEatModel(settings: SettingsDefaults): LanguageModel {
@@ -13,7 +15,10 @@ export function buildEatModel(settings: SettingsDefaults): LanguageModel {
   if (process.env.AI_GATEWAY_API_KEY) {
     return settings.CLAUDE_MEM_EAT_MODEL;
   }
-  throw new Error('No EAT model credentials: set the CLAUDE_MEM_OPENROUTER_API_KEY setting, the OPENROUTER_API_KEY credential, or the AI_GATEWAY_API_KEY env var');
+  throw new EatError(
+    'digest_failed',
+    'No EAT model credentials: set the CLAUDE_MEM_OPENROUTER_API_KEY credential (~/.claude-mem/.env or settings) or the AI_GATEWAY_API_KEY env var'
+  );
 }
 
 function buildDigestSchema(modeTypes: string[]) {
@@ -37,5 +42,6 @@ export async function digestChunk(chunk: EatChunk, modeTypes: string[], model: L
     maxOutputTokens: 8_000,
   });
   const modelId = typeof model === 'string' ? model : model.modelId;
+  logger.debug('INGEST', 'EAT chunk digested', { chunk_index: chunk.index, observations: output.observations.length, model: modelId });
   return { observations: output.observations, model: modelId };
 }

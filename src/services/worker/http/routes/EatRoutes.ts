@@ -6,8 +6,9 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import { runEatPipeline } from '../../eat/pipeline.js';
+import { EatError } from '../../eat/errors.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
-import type { EatReport } from '../../eat/types.js';
+import type { EatPipelineResult, EatReport } from '../../eat/types.js';
 
 const MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
 
@@ -37,21 +38,32 @@ export class EatRoutes extends BaseRouteHandler {
 
   private handleEat = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { input, content, mcp, project, dry_run, recursive } = req.body as z.infer<typeof eatSchema>;
+    const request_id = randomUUID();
 
     const providedSources = [input, content, mcp].filter(value => value !== undefined).length;
     if (providedSources !== 1) {
-      res.status(400).json({ error: 'invalid_request', detail: 'Provide exactly one of input, content, or mcp' });
+      res.status(400).json({ error: 'invalid_request', detail: 'Provide exactly one of input, content, or mcp', request_id });
       return;
     }
 
     const payload = content ?? input ?? '';
     if (Buffer.byteLength(payload, 'utf-8') > MAX_PAYLOAD_BYTES) {
-      res.status(413).json({ error: 'payload_too_large' });
+      res.status(413).json({ error: 'payload_too_large', request_id });
       return;
     }
 
-    const request_id = randomUUID();
-    const result = await runEatPipeline(input, { content, recursive, mcp });
+    let result: EatPipelineResult;
+    try {
+      result = await runEatPipeline(input, { content, recursive, mcp, requestId: request_id });
+    } catch (error) {
+      if (error instanceof EatError) {
+        // Memorable-style structured failure: { error: <code>, detail, request_id }.
+        logger.warn('HTTP', 'EAT request failed', { request_id, code: error.code, detail: error.message });
+        res.status(error.statusCode).json({ error: error.code, detail: error.message, request_id });
+        return;
+      }
+      throw error; // Unexpected — wrapHandler turns it into a 500.
+    }
 
     if (dry_run) {
       const report: EatReport = {

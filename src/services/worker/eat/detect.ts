@@ -1,4 +1,5 @@
 import { existsSync, statSync } from 'fs';
+import { EatError } from './errors.js';
 import type { EatSource } from './types.js';
 
 export function detectSource(input: string | undefined, hasStdin: boolean): EatSource {
@@ -6,7 +7,7 @@ export function detectSource(input: string | undefined, hasStdin: boolean): EatS
     return { kind: 'stdin', locator: 'stdin' };
   }
   if (input === undefined) {
-    throw new Error('No input provided: pass a file, directory, URL, or text, or pipe stdin');
+    throw new EatError('invalid_request', 'No input provided: pass a file, directory, URL, or text, or pipe stdin');
   }
   if (/^https?:\/\//.test(input)) {
     return { kind: 'url', locator: input };

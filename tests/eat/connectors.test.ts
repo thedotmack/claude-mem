@@ -13,6 +13,8 @@ const readResourceCalls: string[] = [];
 let closeCalls = 0;
 let listedResources: Array<{ uri: string; name: string }> = [];
 let contentsByUri: Record<string, Array<Record<string, unknown>>> = {};
+let listResourcesError: Error | null = null;
+let readResourceErrorsByUri: Record<string, Error> = {};
 
 mock.module('@ai-sdk/mcp', () => ({
   createMCPClient: async (config: Record<string, unknown>) => {
@@ -20,10 +22,13 @@ mock.module('@ai-sdk/mcp', () => ({
     return {
       listResources: async () => {
         listResourcesCalls++;
+        if (listResourcesError !== null) throw listResourcesError;
         return { resources: listedResources };
       },
       readResource: async ({ uri }: { uri: string }) => {
         readResourceCalls.push(uri);
+        const readError = readResourceErrorsByUri[uri];
+        if (readError !== undefined) throw readError;
         return { contents: contentsByUri[uri] ?? [] };
       },
       close: async () => {
@@ -38,6 +43,7 @@ afterAll(() => {
 });
 
 import { extractFromMcp } from '../../src/services/worker/eat/connectors.js';
+import type { EatError } from '../../src/services/worker/eat/errors.js';
 
 const SERVER_URL = 'https://mcp.example.com/mcp';
 
@@ -49,6 +55,8 @@ describe('extractFromMcp', () => {
     closeCalls = 0;
     listedResources = [];
     contentsByUri = {};
+    listResourcesError = null;
+    readResourceErrorsByUri = {};
   });
 
   it('reads a single declared resource without listing', async () => {
@@ -66,7 +74,7 @@ describe('extractFromMcp', () => {
         source: { kind: 'mcp', locator: `${SERVER_URL}#doc://readme`, contentType: 'text/markdown' },
       },
     ]);
-    expect(extraction.skipped).toBe(0);
+    expect(extraction.rejects).toEqual([]);
     expect(closeCalls).toBe(1);
   });
 
@@ -84,11 +92,11 @@ describe('extractFromMcp', () => {
     expect(readResourceCalls).toEqual(['doc://one', 'doc://two']);
     expect(extraction.items.map(item => item.text)).toEqual(['first', 'second']);
     expect(extraction.items[0].source).toEqual({ kind: 'mcp', locator: `${SERVER_URL}#doc://one` });
-    expect(extraction.skipped).toBe(0);
+    expect(extraction.rejects).toEqual([]);
     expect(closeCalls).toBe(1);
   });
 
-  it('skips blob contents and counts them as skipped', async () => {
+  it('rejects blob contents with a reason and keeps going', async () => {
     listedResources = [{ uri: 'doc://mixed', name: 'mixed' }];
     contentsByUri['doc://mixed'] = [
       { uri: 'doc://mixed', mimeType: 'image/png', blob: 'aGVsbG8=' },
@@ -98,7 +106,39 @@ describe('extractFromMcp', () => {
     const extraction = await extractFromMcp(SERVER_URL);
 
     expect(extraction.items.map(item => item.text)).toEqual(['kept']);
-    expect(extraction.skipped).toBe(1);
+    expect(extraction.rejects).toEqual([
+      { source: { kind: 'mcp', locator: `${SERVER_URL}#doc://mixed` }, reason: 'Non-text resource content (image/png)' },
+    ]);
+    expect(closeCalls).toBe(1);
+  });
+
+  it('rejects a resource whose read throws and continues with the rest', async () => {
+    listedResources = [
+      { uri: 'doc://broken', name: 'broken' },
+      { uri: 'doc://good', name: 'good' },
+    ];
+    readResourceErrorsByUri['doc://broken'] = new Error('resource gone');
+    contentsByUri['doc://good'] = [{ uri: 'doc://good', text: 'still here' }];
+
+    const extraction = await extractFromMcp(SERVER_URL);
+
+    expect(extraction.items.map(item => item.text)).toEqual(['still here']);
+    expect(extraction.rejects).toEqual([
+      { source: { kind: 'mcp', locator: `${SERVER_URL}#doc://broken` }, reason: 'MCP readResource failed: resource gone' },
+    ]);
+    expect(closeCalls).toBe(1);
+  });
+
+  it('still closes the client when listResources throws, and maps to upstream_fetch_failed', async () => {
+    listResourcesError = new Error('server exploded');
+
+    expect.assertions(3);
+    try {
+      await extractFromMcp(SERVER_URL);
+    } catch (error) {
+      expect((error as EatError).name).toBe('EatError');
+      expect((error as EatError).code).toBe('upstream_fetch_failed');
+    }
     expect(closeCalls).toBe(1);
   });
 

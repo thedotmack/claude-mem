@@ -1,8 +1,10 @@
-import { readFileSync, readdirSync } from 'fs';
+import { readFileSync, readdirSync, type Dirent } from 'fs';
 import { join } from 'path';
 import { fetchWithTimeout } from '../../../shared/worker-utils.js';
+import { logger } from '../../../utils/logger.js';
 import { extractFromMcp } from './connectors.js';
-import type { EatSource } from './types.js';
+import { EatError } from './errors.js';
+import type { EatExtractReject, EatSource } from './types.js';
 
 export interface EatExtractOptions {
   fetchTimeoutMs: number;
@@ -18,7 +20,12 @@ export interface EatExtractedItem {
 
 export interface EatExtraction {
   items: EatExtractedItem[];
-  skipped: number;
+  rejects: EatExtractReject[];
+}
+
+function rejectExtractItem(source: EatSource, reason: string): EatExtractReject {
+  logger.warn('INGEST', 'EAT item rejected during extract', { locator: source.locator, reason });
+  return { source, reason };
 }
 
 const BINARY_SNIFF_BYTES = 8192;
@@ -165,48 +172,76 @@ function looksLikeFeed(contentType: string, body: string): boolean {
 }
 
 function extractFile(filePath: string, source: EatSource): EatExtraction {
-  const buffer = readFileSync(filePath);
-  if (buffer.subarray(0, BINARY_SNIFF_BYTES).includes(0)) {
-    return { items: [], skipped: 1 };
+  let buffer: Buffer;
+  try {
+    buffer = readFileSync(filePath);
+  } catch (error) {
+    // Per-item boundary: an unreadable file becomes a rejected item, not a
+    // crashed run. A totally-failed single-source run surfaces in the pipeline.
+    const message = error instanceof Error ? error.message : String(error);
+    return { items: [], rejects: [rejectExtractItem(source, `Unreadable file: ${message}`)] };
   }
-  return { items: [{ text: buffer.toString('utf-8'), source }], skipped: 0 };
+  if (buffer.subarray(0, BINARY_SNIFF_BYTES).includes(0)) {
+    return { items: [], rejects: [rejectExtractItem(source, 'Binary file (NUL byte in first 8KB)')] };
+  }
+  return { items: [{ text: buffer.toString('utf-8'), source }], rejects: [] };
 }
 
 function extractDirectory(directoryPath: string, source: EatSource, recursive: boolean): EatExtraction {
   const items: EatExtractedItem[] = [];
-  let skipped = 0;
-  for (const entry of readdirSync(directoryPath, { withFileTypes: true })) {
+  const rejects: EatExtractReject[] = [];
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(directoryPath, { withFileTypes: true });
+  } catch (error) {
+    // An unlistable directory rejects as one item; nested it degrades the run,
+    // top-level the pipeline turns nothing-extracted into an error.
+    const message = error instanceof Error ? error.message : String(error);
+    return { items: [], rejects: [rejectExtractItem({ kind: 'directory', locator: directoryPath }, `Unreadable directory: ${message}`)] };
+  }
+  for (const entry of entries) {
     const entryPath = join(directoryPath, entry.name);
     if (entry.isDirectory()) {
       if (!recursive) continue;
       const nested = extractDirectory(entryPath, source, recursive);
       items.push(...nested.items);
-      skipped += nested.skipped;
+      rejects.push(...nested.rejects);
       continue;
     }
     if (!entry.isFile()) continue;
     const fileExtraction = extractFile(entryPath, { kind: 'file', locator: entryPath });
     items.push(...fileExtraction.items);
-    skipped += fileExtraction.skipped;
+    rejects.push(...fileExtraction.rejects);
   }
-  return { items, skipped };
+  return { items, rejects };
+}
+
+async function fetchSourceBody(source: EatSource, opts: EatExtractOptions): Promise<{ contentType: string; body: string }> {
+  let response: Awaited<ReturnType<typeof fetchWithTimeout>>;
+  try {
+    response = await fetchWithTimeout(source.locator, {}, opts.fetchTimeoutMs);
+  } catch (error) {
+    // A single URL/feed IS the whole source — an unreachable one is an
+    // upstream failure, never an empty success.
+    const message = error instanceof Error ? error.message : String(error);
+    throw new EatError('upstream_fetch_failed', `Fetch failed for ${source.locator}: ${message}`);
+  }
+  if (!response.ok) {
+    throw new EatError('upstream_fetch_failed', `Fetch failed for ${source.locator}: HTTP ${response.status}`);
+  }
+  return { contentType: response.headers.get('content-type') ?? '', body: await response.text() };
 }
 
 async function extractUrl(source: EatSource, opts: EatExtractOptions): Promise<EatExtraction> {
-  const response = await fetchWithTimeout(source.locator, {}, opts.fetchTimeoutMs);
-  if (!response.ok) {
-    throw new Error(`Fetch failed for ${source.locator}: HTTP ${response.status}`);
-  }
-  const contentType = response.headers.get('content-type') ?? '';
-  const body = await response.text();
+  const { contentType, body } = await fetchSourceBody(source, opts);
   const resolvedSource: EatSource = { ...source, contentType };
   if (looksLikeFeed(contentType, body)) {
-    return { items: extractFeed(body, resolvedSource), skipped: 0 };
+    return { items: extractFeed(body, resolvedSource), rejects: [] };
   }
   if (contentType.includes('html')) {
-    return { items: [{ text: stripHtmlToText(body), source: resolvedSource }], skipped: 0 };
+    return { items: [{ text: stripHtmlToText(body), source: resolvedSource }], rejects: [] };
   }
-  return { items: [{ text: body, source: resolvedSource }], skipped: 0 };
+  return { items: [{ text: body, source: resolvedSource }], rejects: [] };
 }
 
 export async function extractItems(source: EatSource, opts: EatExtractOptions): Promise<EatExtraction> {
@@ -218,18 +253,15 @@ export async function extractItems(source: EatSource, opts: EatExtractOptions): 
     case 'url':
       return extractUrl(source, opts);
     case 'feed': {
-      const response = await fetchWithTimeout(source.locator, {}, opts.fetchTimeoutMs);
-      if (!response.ok) {
-        throw new Error(`Fetch failed for ${source.locator}: HTTP ${response.status}`);
-      }
-      return { items: extractFeed(await response.text(), source), skipped: 0 };
+      const { body } = await fetchSourceBody(source, opts);
+      return { items: extractFeed(body, source), rejects: [] };
     }
     case 'stdin': {
       const text = opts.stdinText ?? readFileSync(0, 'utf-8');
-      return { items: [{ text, source }], skipped: 0 };
+      return { items: [{ text, source }], rejects: [] };
     }
     case 'text':
-      return { items: [{ text: source.locator, source }], skipped: 0 };
+      return { items: [{ text: source.locator, source }], rejects: [] };
     case 'mcp':
       return extractFromMcp(source.locator, { resource: opts.mcp?.resource, headers: opts.mcp?.headers });
   }

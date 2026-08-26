@@ -12,10 +12,12 @@ const realPipelineSnapshot = { ...realPipeline };
 
 const pipelineCalls: Array<{ input: string | undefined; opts: Record<string, unknown> }> = [];
 let pipelineResult: EatPipelineResult;
+let pipelineError: Error | null = null;
 
 mock.module('../../src/services/worker/eat/pipeline.js', () => ({
   runEatPipeline: async (input: string | undefined, opts: Record<string, unknown> = {}) => {
     pipelineCalls.push({ input, opts });
+    if (pipelineError !== null) throw pipelineError;
     return pipelineResult;
   },
 }));
@@ -25,6 +27,7 @@ afterAll(() => {
 });
 
 import { EatRoutes } from '../../src/services/worker/http/routes/EatRoutes.js';
+import { EatError } from '../../src/services/worker/eat/errors.js';
 
 function captureRoute(routes: EatRoutes): (req: Request, res: Response) => void {
   let middleware: ((req: Request, res: Response, next: () => void) => void) | undefined;
@@ -91,6 +94,7 @@ describe('EatRoutes POST /api/eat', () => {
 
   beforeEach(() => {
     pipelineCalls.length = 0;
+    pipelineError = null;
     pipelineResult = {
       source: { kind: 'text', locator: 'Bun 1.2 shipped native S3 support' },
       chunks: 1,
@@ -207,6 +211,36 @@ describe('EatRoutes POST /api/eat', () => {
     expect(body.rejected).toBe(0);
     expect(sessionStoreCalls).toBe(0);
     expect(store.db.prepare('SELECT COUNT(*) as count FROM observations').get()).toEqual({ count: 0 });
+  });
+
+  it('maps a pipeline EatError to its memorable-style code with request_id', async () => {
+    pipelineError = new EatError('digest_failed', 'No EAT model credentials: set the CLAUDE_MEM_OPENROUTER_API_KEY credential (~/.claude-mem/.env or settings) or the AI_GATEWAY_API_KEY env var');
+    const response = makeResponse();
+    handler(makeRequest({ content: 'raw text', project: 'claude-mem' }), response.res);
+    const body = await response.waitForJson();
+    expect(response.getStatus()).toBe(502);
+    expect(body.error).toBe('digest_failed');
+    expect(body.detail).toContain('CLAUDE_MEM_OPENROUTER_API_KEY');
+    expect(body.request_id).toBeString();
+    expect(sessionStoreCalls).toBe(0);
+  });
+
+  it('maps upstream_fetch_failed to a 502 with request_id', async () => {
+    pipelineError = new EatError('upstream_fetch_failed', 'Fetch failed for https://down.example.com: HTTP 503');
+    const response = makeResponse();
+    handler(makeRequest({ input: 'https://down.example.com', project: 'claude-mem' }), response.res);
+    const body = await response.waitForJson();
+    expect(response.getStatus()).toBe(502);
+    expect(body.error).toBe('upstream_fetch_failed');
+    expect(body.request_id).toBeString();
+  });
+
+  it('passes the request_id through to the pipeline for reject-log lines', async () => {
+    const response = makeResponse();
+    handler(makeRequest({ content: 'raw text', project: 'claude-mem', dry_run: true }), response.res);
+    const body = await response.waitForJson();
+    expect(pipelineCalls.length).toBe(1);
+    expect(pipelineCalls[0].opts.requestId).toBe(body.request_id);
   });
 
   it('stores drafts as observations when dry_run is absent', async () => {

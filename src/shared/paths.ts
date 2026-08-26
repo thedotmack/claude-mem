@@ -47,6 +47,7 @@ export const MARKETPLACE_ROOT = join(CLAUDE_CONFIG_DIR, 'plugins', 'marketplaces
 export const LOGS_DIR = join(DATA_DIR, 'logs');
 export const USER_SETTINGS_PATH = join(DATA_DIR, 'settings.json');
 export const DB_PATH = join(DATA_DIR, 'claude-mem.db');
+export const EAT_REJECTED_LOG_PATH = join(DATA_DIR, 'eat-rejected.jsonl');
 
 export const OBSERVER_SESSIONS_DIR = join(DATA_DIR, 'observer-sessions');
 
