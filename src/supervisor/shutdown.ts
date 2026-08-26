@@ -148,6 +148,135 @@ export function removeOwnedPidFile(pidFilePath: string, currentPid: number | nul
   }
 }
 
+// Cmdline markers used by reapLeakedProcesses to confirm a persisted registry
+// entry still refers to the process it was recorded for. The registry file
+// survives crashes AND system reboots, so a recorded pid may have been
+// recycled by an unrelated process — signaling it blindly could kill an
+// innocent bystander. Entries whose type has no marker are signaled as-is
+// (same trust level as the shutdown cascade).
+const REAP_CMDLINE_MARKERS: Record<string, string> = {
+  chroma: 'chroma-mcp'
+};
+
+async function processCommandLine(pid: number): Promise<string | null> {
+  if (process.platform === 'win32') return null;
+  try {
+    const { stdout } = await execFileAsync('ps', ['-p', String(pid), '-o', 'args=']);
+    return stdout.trim() || null;
+  } catch {
+    // Process exited between checks, or ps is unavailable — caller treats
+    // null as "cannot verify" and falls back to signaling.
+    return null;
+  }
+}
+
+/**
+ * Reap children leaked by a previous worker run that died outside the
+ * graceful-shutdown path (SIGKILL, OOM, crash, or the runShutdownSequence
+ * hard deadline expiring before chroma teardown). ProcessRegistry persists
+ * across runs and initialize() only prunes DEAD entries, so anything still
+ * alive in the registry at boot belongs to a dead predecessor: this run's
+ * first register() under the same id would silently overwrite the entry and
+ * orphan the process forever (issue #3175 — chroma-mcp spawn chains
+ * accumulating for weeks, one tree per non-graceful worker death).
+ *
+ * Must run after startSupervisor() and BEFORE the HTTP server starts
+ * listening: with no hook traffic yet this run has registered nothing, so
+ * every live record except our own pid is a leak. Unlike runShutdownCascade
+ * this never touches the PID file — the boot path owns it.
+ */
+export async function reapLeakedProcesses(registry: ProcessRegistry): Promise<number> {
+  const leaked: ManagedProcessRecord[] = [];
+
+  for (const record of registry.getAll()) {
+    if (record.pid === process.pid) continue;
+    if (!isPidAlive(record.pid)) {
+      registry.unregister(record.id);
+      continue;
+    }
+
+    const marker = REAP_CMDLINE_MARKERS[record.type];
+    if (marker) {
+      const cmdline = await processCommandLine(record.pid);
+      if (cmdline !== null && !cmdline.includes(marker)) {
+        // The pid now belongs to an unrelated process (recycled, e.g. after
+        // a reboot) — drop the entry without signaling anyone.
+        logger.warn('SYSTEM', 'Registry entry pid recycled by an unrelated process, dropping without kill', {
+          id: record.id,
+          pid: record.pid,
+          type: record.type,
+          startedAt: record.startedAt
+        });
+        registry.unregister(record.id);
+        continue;
+      }
+    }
+
+    leaked.push(record);
+  }
+
+  if (leaked.length === 0) return 0;
+
+  for (const record of leaked) {
+    logger.warn('SYSTEM', 'Reaping process leaked by a previous worker run', {
+      id: record.id,
+      pid: record.pid,
+      pgid: record.pgid,
+      type: record.type,
+      startedAt: record.startedAt
+    });
+    try {
+      await signalProcess(record, 'SIGTERM');
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        logger.debug('SYSTEM', 'Failed to SIGTERM leaked process', {
+          pid: record.pid,
+          pgid: record.pgid,
+          type: record.type
+        }, error);
+      } else {
+        logger.warn('SYSTEM', 'Failed to SIGTERM leaked process (non-Error)', {
+          pid: record.pid,
+          pgid: record.pgid,
+          type: record.type,
+          error: String(error)
+        });
+      }
+    }
+  }
+
+  await waitForExit(leaked, 5000);
+
+  const survivors = leaked.filter(record => isPidAlive(record.pid));
+  for (const record of survivors) {
+    try {
+      await signalProcess(record, 'SIGKILL');
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        logger.debug('SYSTEM', 'Failed to SIGKILL leaked process', {
+          pid: record.pid,
+          pgid: record.pgid,
+          type: record.type
+        }, error);
+      } else {
+        logger.warn('SYSTEM', 'Failed to SIGKILL leaked process (non-Error)', {
+          pid: record.pid,
+          pgid: record.pgid,
+          type: record.type,
+          error: String(error)
+        });
+      }
+    }
+  }
+  await waitForExit(survivors, 1000);
+
+  for (const record of leaked) {
+    registry.unregister(record.id);
+  }
+
+  return leaked.length;
+}
+
 async function signalProcess(record: ManagedProcessRecord, signal: 'SIGTERM' | 'SIGKILL'): Promise<void> {
   const { pid, pgid } = record;
 

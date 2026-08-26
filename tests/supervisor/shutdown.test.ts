@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from 'bun:test';
+import { spawn } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { createProcessRegistry } from '../../src/supervisor/process-registry.js';
-import { removeOwnedPidFile, runShutdownCascade } from '../../src/supervisor/shutdown.js';
+import { reapLeakedProcesses, removeOwnedPidFile, runShutdownCascade } from '../../src/supervisor/shutdown.js';
 
 function makeTempDir(): string {
   return path.join(tmpdir(), `claude-mem-shutdown-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -216,6 +217,110 @@ describe('supervisor shutdown cascade', () => {
     });
 
     expect(registry.getAll()).toHaveLength(0);
+  });
+});
+
+// Issue #3175: children leaked by a worker that died outside the graceful-
+// shutdown path stay alive in the persisted registry; the successor's first
+// register() under the same id would silently overwrite them. Boot-time reap
+// terminates them instead.
+describe('reapLeakedProcesses (issue #3175)', () => {
+  afterEach(() => {
+    while (tempDirs.length > 0) {
+      const dir = tempDirs.pop();
+      if (dir) {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  function makeRegistry() {
+    const tempDir = makeTempDir();
+    tempDirs.push(tempDir);
+    mkdirSync(tempDir, { recursive: true });
+    return createProcessRegistry(path.join(tempDir, 'supervisor.json'));
+  }
+
+  it('prunes dead entries without signaling and reaps live leaked ones', async () => {
+    const registry = makeRegistry();
+    registry.register('dead-child', {
+      pid: 2147483641,
+      type: 'mcp',
+      startedAt: '2026-03-15T00:00:00.000Z'
+    });
+    registry.register('leaked-child', {
+      pid: 41010,
+      type: 'mcp',
+      startedAt: '2026-03-15T00:00:01.000Z'
+    });
+
+    const originalKill = process.kill;
+    const alive = new Set([41010]);
+    const calls: Array<{ pid: number; signal: NodeJS.Signals | number }> = [];
+
+    process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
+      const normalizedSignal = signal ?? 'SIGTERM';
+      if (normalizedSignal === 0) {
+        if (!alive.has(pid)) {
+          const error = new Error(`kill ESRCH ${pid}`) as NodeJS.ErrnoException;
+          error.code = 'ESRCH';
+          throw error;
+        }
+        return true;
+      }
+      calls.push({ pid, signal: normalizedSignal });
+      alive.delete(pid);
+      return true;
+    }) as typeof process.kill;
+
+    let reaped: number;
+    try {
+      reaped = await reapLeakedProcesses(registry);
+    } finally {
+      process.kill = originalKill;
+    }
+
+    expect(reaped).toBe(1);
+    expect(calls).toEqual([{ pid: 41010, signal: 'SIGTERM' }]);
+    expect(registry.getAll()).toHaveLength(0);
+  });
+
+  it('never touches the current process entry', async () => {
+    const registry = makeRegistry();
+    registry.register('worker', {
+      pid: process.pid,
+      type: 'worker',
+      startedAt: '2026-03-15T00:00:00.000Z'
+    });
+
+    const reaped = await reapLeakedProcesses(registry);
+
+    expect(reaped).toBe(0);
+    expect(registry.getAll()).toHaveLength(1);
+  });
+
+  // The registry file survives system reboots, so a recorded pid may have
+  // been recycled by an unrelated process. A marker-typed entry whose live
+  // cmdline does not match must be dropped WITHOUT being signaled.
+  it.skipIf(process.platform === 'win32')('drops a recycled pid without killing it (cmdline mismatch)', async () => {
+    const bystander = spawn('sleep', ['60'], { stdio: 'ignore' });
+    try {
+      const registry = makeRegistry();
+      registry.register('chroma-mcp', {
+        pid: bystander.pid!,
+        type: 'chroma',
+        startedAt: '2026-03-15T00:00:00.000Z'
+      });
+
+      const reaped = await reapLeakedProcesses(registry);
+
+      expect(reaped).toBe(0);
+      expect(registry.getAll()).toHaveLength(0);
+      // The bystander must still be alive: signal 0 probes without killing.
+      expect(() => process.kill(bystander.pid!, 0)).not.toThrow();
+    } finally {
+      bystander.kill('SIGKILL');
+    }
   });
 });
 
