@@ -27,6 +27,8 @@ export type ProPromoSource =
   | 'context-banner'
   | 'welcome-hint'
   | 'viewer'
+  /** One-time session-start notice after the free week ends and memory falls back on-plan. */
+  | 'fallback'
   /** Hand-written links in the cursor-hooks setup docs — no TS caller. */
   | 'docs';
 

@@ -10,6 +10,7 @@
  */
 
 import { PLAN_USAGE_GAIN_PERCENT } from '../shared/pro-promo.js';
+import { cmemProOrigin } from '../shared/cmem-gateway.js';
 
 /** Flat CMEM Pro subscription price, in USD per month. */
 export const CMEM_PRO_MONTHLY_USD = 30;
@@ -45,7 +46,7 @@ export function buildProviderLabels(): ProviderLabels {
  *
  *   CMEM_PRO_ORIGIN=http://localhost:3005 node dist/npx-cli/index.js install
  */
-const CMEM_PRO_ORIGIN = (process.env.CMEM_PRO_ORIGIN?.trim() || 'https://cmem.ai').replace(/\/+$/, '');
+const CMEM_PRO_ORIGIN = cmemProOrigin();
 
 /** Where the installer sends people to buy CMEM Pro. */
 export const CMEM_PRO_SIGNUP_URL = `${CMEM_PRO_ORIGIN}/pro?from=installer`;

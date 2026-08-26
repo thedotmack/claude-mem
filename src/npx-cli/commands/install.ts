@@ -1210,6 +1210,9 @@ async function promptProvider(options: InstallOptions, login: TrialReadyResult |
         CLAUDE_MEM_OPENROUTER_BASE_URL: login.memoryBaseUrl,
         CLAUDE_MEM_OPENROUTER_MODEL: login.memoryModel,
         CLAUDE_MEM_OPENROUTER_API_KEY: login.memoryKey,
+        // Fresh key material clears any trial-expiry fallback to the
+        // Anthropic plan — memory goes back through the gateway.
+        CLAUDE_MEM_PRO_FALLBACK_AT: '',
       });
       if (wrote) log.info('claude-mem observer configured with your signed-in memory key.');
       return 'openrouter';
@@ -1242,6 +1245,9 @@ async function promptProvider(options: InstallOptions, login: TrialReadyResult |
       CLAUDE_MEM_OPENROUTER_BASE_URL: CMEM_PRO_BASE_URL,
       CLAUDE_MEM_OPENROUTER_MODEL: CMEM_PRO_MODEL,
       CLAUDE_MEM_OPENROUTER_API_KEY: String(keyResult).trim(),
+      // Fresh key material clears any trial-expiry fallback to the
+      // Anthropic plan — memory goes back through the gateway.
+      CLAUDE_MEM_PRO_FALLBACK_AT: '',
     });
     if (wrote) log.info('Saved CMEM Pro configuration to ~/.claude-mem/settings.json');
 
