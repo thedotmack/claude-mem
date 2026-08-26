@@ -1,10 +1,10 @@
 import { describe, it, expect } from "bun:test";
+import ClaudeMemPlugin from "../../src/integrations/opencode-plugin/index";
 import {
-  ClaudeMemPlugin,
   parseSearchResponse,
   REGISTERED_OPENCODE_HOOKS,
   REAL_OPENCODE_EVENT_TYPES,
-} from "../../src/integrations/opencode-plugin/index";
+} from "../../src/integrations/opencode-plugin/constants";
 
 /**
  * Regression guard for plan-08 (OpenCode event-contract correctness).
@@ -117,6 +117,37 @@ describe("OpenCode plugin event contract", () => {
       const obsBody = obsPost!.body as Record<string, unknown>;
       expect(obsBody.tool_name).toBe("read");
       expect(obsBody.tool_response).toBe("file contents");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("forwards user chat messages as session prompt to /api/sessions/init", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const chatMessage = plugin["chat.message"];
+      await chatMessage(
+        {},
+        {
+          message: { id: "msg_1", role: "user", sessionID: "ses_user_1" },
+          parts: [{ type: "text", text: "Fix database connection pool leak" }],
+        },
+      );
+
+      const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
+      expect(initPost, "chat.message (role: user) should send session init").toBeTruthy();
+      const initBody = initPost!.body as Record<string, unknown>;
+      expect(initBody.prompt).toBe("Fix database connection pool leak");
     } finally {
       globalThis.fetch = originalFetch;
     }

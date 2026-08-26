@@ -8,7 +8,14 @@ import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
-import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
+import {
+  DEFAULT_OPENCODE_GO_BASE_URL,
+  DEFAULT_OPENCODE_GO_MODEL,
+  DEFAULT_OPENCODE_ZEN_BASE_URL,
+  DEFAULT_OPENCODE_ZEN_MODEL,
+  SettingsDefaultsManager,
+  type SettingsDefaults,
+} from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { parseJsonWithBom, writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
@@ -830,14 +837,47 @@ function mergeSettings(updates: Record<string, string>): boolean {
   }
 }
 
-type ProviderId = 'claude' | 'gemini' | 'openrouter';
+type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'opencode';
 /**
  * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
  * it configures the generic OpenAI-compatible path (base URL + model + key) and
  * persists CLAUDE_MEM_PROVIDER='openrouter'. The worker only understands
- * 'claude' | 'gemini' | 'openrouter', so 'cmem' must never reach settings.json.
+ * 'claude' | 'gemini' | 'openrouter' | 'opencode', so 'cmem' must never reach settings.json.
  */
-type ProviderChoice = ProviderId | 'cmem';
+type ProviderChoice = ProviderId | 'cmem' | 'opencode-go' | 'opencode-zen';
+
+function normalizeProviderChoice(
+  choice: Exclude<ProviderChoice, 'cmem'>,
+  options: InstallOptions,
+): ProviderId;
+function normalizeProviderChoice(
+  choice: ProviderChoice,
+  options: InstallOptions,
+): ProviderId | 'cmem' {
+  if (choice === 'opencode-zen') {
+    options.opencodeFlavor = 'zen';
+    return 'opencode';
+  }
+  if (choice === 'opencode-go') {
+    options.opencodeFlavor = 'go';
+    return 'opencode';
+  }
+  return choice;
+}
+
+function applyOpenCodeEndpointSettings(
+  settings: Record<string, string>,
+  options: InstallOptions,
+  flavor: 'go' | 'zen',
+): void {
+  if (flavor === 'zen') {
+    settings.CLAUDE_MEM_OPENCODE_BASE_URL = options.opencodeBaseUrl || DEFAULT_OPENCODE_ZEN_BASE_URL;
+    settings.CLAUDE_MEM_OPENCODE_MODEL = options.opencodeModel || options.model || DEFAULT_OPENCODE_ZEN_MODEL;
+    return;
+  }
+  settings.CLAUDE_MEM_OPENCODE_BASE_URL = options.opencodeBaseUrl || DEFAULT_OPENCODE_GO_BASE_URL;
+  settings.CLAUDE_MEM_OPENCODE_MODEL = options.opencodeModel || options.model || DEFAULT_OPENCODE_GO_MODEL;
+}
 type ClaudeAccessMode = 'subscription' | 'api-key';
 type ClaudeApiMode = 'direct' | 'gateway';
 // Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
@@ -1123,10 +1163,17 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
         persistClaudeProvider();
         return 'claude';
       }
-      const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: options.provider });
-      if (wrote) log.info(`Saved provider=${options.provider} to ~/.claude-mem/settings.json`);
-      log.warn(`Provider=${options.provider} requested non-interactively. API key prompt skipped — set CLAUDE_MEM_${options.provider.toUpperCase()}_API_KEY and CLAUDE_MEM_PROVIDER in settings.json or env manually if not already set.`);
-      return options.provider;
+      const selectedProvider = normalizeProviderChoice(options.provider, options);
+      const settingsToMerge: Record<string, string> = {
+        CLAUDE_MEM_PROVIDER: selectedProvider,
+      };
+      if (selectedProvider === 'opencode') {
+        applyOpenCodeEndpointSettings(settingsToMerge, options, options.opencodeFlavor || 'go');
+      }
+      const wrote = mergeSettings(settingsToMerge);
+      if (wrote) log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
+      log.warn(`Provider=${selectedProvider} requested non-interactively. API key prompt skipped — set CLAUDE_MEM_${selectedProvider.toUpperCase()}_API_KEY and CLAUDE_MEM_PROVIDER in settings.json or env manually if not already set.`);
+      return selectedProvider;
     }
     return initialProvider;
   }
@@ -1190,6 +1237,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
         { value: 'cmem', label: labels.cmem, hint: labels.cmemHint },
         { value: 'openrouter', label: labels.openrouter },
         { value: 'gemini', label: labels.gemini },
+        { value: 'opencode', label: 'OpenCode (Zen / Go API key)' },
         { value: 'claude', label: labels.claude },
       ],
       initialValue: 'cmem',
@@ -1241,40 +1289,77 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     return 'openrouter';
   }
 
+  selectedProvider = normalizeProviderChoice(selectedProvider, options);
+
   if (selectedProvider === 'claude') {
     await runClaudeAuthFlow();
     return 'claude';
   }
 
-  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
+  if (selectedProvider === 'opencode') {
+    let flavor = options.opencodeFlavor;
+    if (!flavor && isInteractive) {
+      const flavorResult = await p.select<'go' | 'zen'>({
+        message: 'Which OpenCode endpoint flavor do you use?',
+        options: [
+          { value: 'go', label: `OpenCode Go (Subscription — default: ${DEFAULT_OPENCODE_GO_MODEL})` },
+          { value: 'zen', label: `OpenCode Zen (Pay-as-you-go — default: ${DEFAULT_OPENCODE_ZEN_MODEL})` },
+        ],
+        initialValue: 'go',
+      });
+      if (p.isCancel(flavorResult)) {
+        log.warn(`OpenCode flavor prompt cancelled — falling back to Claude provider.`);
+        persistClaudeProvider();
+        return 'claude';
+      }
+      flavor = flavorResult;
+    }
+    options.opencodeFlavor = flavor || 'go';
+  }
+
+  const providerLabel = selectedProvider === 'gemini'
+    ? 'Gemini'
+    : selectedProvider === 'opencode'
+      ? 'OpenCode'
+      : 'OpenRouter';
   const keyEnvName = selectedProvider === 'gemini'
     ? 'CLAUDE_MEM_GEMINI_API_KEY'
-    : 'CLAUDE_MEM_OPENROUTER_API_KEY';
+    : selectedProvider === 'opencode'
+      ? 'CLAUDE_MEM_OPENCODE_API_KEY'
+      : 'CLAUDE_MEM_OPENROUTER_API_KEY';
 
-  const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
-  if (existingKey && existingKey.trim().length > 0) {
-    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: selectedProvider });
-    if (wrote) log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
-    return selectedProvider;
+  let apiKey = (getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined) || '';
+
+  if (!apiKey || apiKey.trim().length === 0) {
+    if (isInteractive) {
+      const apiKeyResult = await p.password({
+        message: `Paste your ${providerLabel} API key:`,
+        mask: '*',
+        validate: (v?: string) => (!v || v.trim().length === 0) ? 'API key required' : undefined,
+      });
+
+      if (p.isCancel(apiKeyResult)) {
+        log.warn(`API key prompt cancelled — falling back to Claude provider.`);
+        persistClaudeProvider();
+        return 'claude';
+      }
+
+      apiKey = String(apiKeyResult).trim();
+    }
   }
 
-  const apiKeyResult = await p.password({
-    message: `Paste your ${providerLabel} API key:`,
-    mask: '*',
-    validate: (v?: string) => (!v || v.trim().length === 0) ? 'API key required' : undefined,
-  });
-
-  if (p.isCancel(apiKeyResult)) {
-    log.warn(`API key prompt cancelled — falling back to Claude provider.`);
-    persistClaudeProvider();
-    return 'claude';
-  }
-
-  const apiKey = String(apiKeyResult).trim();
-  const wrote = mergeSettings({
+  const settingsToMerge: Record<string, string> = {
     CLAUDE_MEM_PROVIDER: selectedProvider,
-    [keyEnvName]: apiKey,
-  });
+  };
+  if (apiKey && apiKey.trim().length > 0) {
+    settingsToMerge[keyEnvName] = apiKey.trim();
+  }
+
+  if (selectedProvider === 'opencode') {
+    applyOpenCodeEndpointSettings(settingsToMerge, options, options.opencodeFlavor || 'go');
+  }
+
+  const wrote = mergeSettings(settingsToMerge);
   if (wrote) {
     log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
   }
@@ -1884,7 +1969,10 @@ async function promptTelemetryOptIn(): Promise<void> {
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter';
+  provider?: 'claude' | 'gemini' | 'openrouter' | 'opencode' | 'opencode-go' | 'opencode-zen';
+  opencodeFlavor?: 'go' | 'zen';
+  opencodeBaseUrl?: string;
+  opencodeModel?: string;
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;
