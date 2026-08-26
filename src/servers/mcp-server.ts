@@ -14,7 +14,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { getWorkerPort, workerHttpRequest } from '../shared/worker-utils.js';
+import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
 import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
@@ -24,32 +24,39 @@ import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
-  ServerBetaClient,
-  ServerBetaClientError,
-  isServerBetaClientError,
-  type ServerBetaAddObservationRequest,
-  type ServerBetaContextObservationsRequest,
-  type ServerBetaRecordEventRequest,
-  type ServerBetaSearchObservationsRequest,
-} from '../services/hooks/server-beta-client.js';
+  ServerClientError,
+  isServerClientError,
+  type ServerAddObservationRequest,
+  type ServerContextObservationsRequest,
+  type ServerRecordEventRequest,
+  type ServerSearchObservationsRequest,
+} from '../services/hooks/server-client.js';
 import {
   selectRuntime,
-  buildServerBetaContext,
+  buildServerContext,
   type SelectedRuntime,
-  type ServerBetaRuntimeContext,
+  type ServerRuntimeContext,
 } from '../services/hooks/runtime-selector.js';
+import { normalizePlatformSource } from '../shared/platform-source.js';
+import { getAdvertisedMcpToolsForRuntime } from './mcp-tool-visibility.js';
 
 let mcpServerDirResolutionFailed = false;
 const mcpServerDir = (() => {
   if (typeof __dirname !== 'undefined') return __dirname;
   try {
     return dirname(fileURLToPath(import.meta.url));
-  } catch {
+  } catch (error) {
     mcpServerDirResolutionFailed = true;
+    logger.warn('SYSTEM', 'mcp-server: failed to resolve module directory from import.meta.url, falling back to process.cwd()', undefined, error instanceof Error ? error : new Error(String(error)));
     return process.cwd();
   }
 })();
-const WORKER_SCRIPT_PATH = resolve(mcpServerDir, 'worker-service.cjs');
+// Prefer the canonical marketplace copy of the worker bundle (same
+// marketplace-first candidates as the hook launcher) over this server's own
+// directory: an MCP server still running out of a stale plugin cache dir
+// would otherwise auto-spawn a stale worker. The own-dir resolution stays as
+// the fallback for installs without a marketplace copy.
+const WORKER_SCRIPT_PATH = resolveWorkerScriptPath() ?? resolve(mcpServerDir, 'worker-service.cjs');
 
 function errorIfWorkerScriptMissing(): void {
   if (!mcpServerDirResolutionFailed) return;
@@ -62,89 +69,46 @@ function errorIfWorkerScriptMissing(): void {
   );
 }
 
-const TOOL_ENDPOINT_MAP: Record<string, string> = {
-  'search': '/api/search',
-  'timeline': '/api/timeline'
-};
-
-async function callWorkerAPI(
+async function callWorker(
   endpoint: string,
-  params: Record<string, any>
+  opts: { query?: Record<string, any>; body?: Record<string, any>; text?: boolean } = {}
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint, params });
-
-  const searchParams = new URLSearchParams();
-
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== null) {
-      searchParams.append(key, String(value));
-    }
-  }
-
-  const apiPath = `${endpoint}?${searchParams}`;
+  logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint });
 
   try {
-    const response = await workerHttpRequest(apiPath);
+    let response: Response;
+    if (opts.body) {
+      response = await workerHttpRequest(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts.body)
+      });
+    } else {
+      const searchParams = new URLSearchParams();
+      for (const [key, value] of Object.entries(opts.query ?? {})) {
+        if (value !== undefined && value !== null) {
+          searchParams.append(key, String(value));
+        }
+      }
+      response = await workerHttpRequest(`${endpoint}?${searchParams}`);
+    }
 
     if (!response.ok) {
       const errorText = await response.text();
       throw new Error(`Worker API error (${response.status}): ${errorText}`);
     }
 
-    const data = await response.json() as { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
-
     logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
 
-    return data;
+    if (opts.text) {
+      return { content: [{ type: 'text' as const, text: await response.text() }] };
+    }
+    if (opts.body) {
+      return { content: [{ type: 'text' as const, text: JSON.stringify(await response.json(), null, 2) }] };
+    }
+    return await response.json() as { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
   } catch (error: unknown) {
     logger.error('SYSTEM', '← Worker API error', { endpoint }, error instanceof Error ? error : new Error(String(error)));
-    return {
-      content: [{
-        type: 'text' as const,
-        text: `Error calling Worker API: ${error instanceof Error ? error.message : String(error)}`
-      }],
-      isError: true
-    };
-  }
-}
-
-async function executeWorkerPostRequest(
-  endpoint: string,
-  body: Record<string, any>
-): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
-  const response = await workerHttpRequest(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Worker API error (${response.status}): ${errorText}`);
-  }
-
-  const data = await response.json();
-
-  logger.debug('HTTP', 'Worker API success (POST)', undefined, { endpoint });
-
-  return {
-    content: [{
-      type: 'text' as const,
-      text: JSON.stringify(data, null, 2)
-    }]
-  };
-}
-
-async function callWorkerAPIPost(
-  endpoint: string,
-  body: Record<string, any>
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  logger.debug('HTTP', 'Worker API request (POST)', undefined, { endpoint });
-
-  try {
-    return await executeWorkerPostRequest(endpoint, body);
-  } catch (error: unknown) {
-    logger.error('HTTP', 'Worker API error (POST)', { endpoint }, error instanceof Error ? error : new Error(String(error)));
     return {
       content: [{
         type: 'text' as const,
@@ -166,50 +130,54 @@ async function verifyWorkerConnection(): Promise<boolean> {
 }
 
 // Phase 8 — runtime selection for MCP tools.
-// In server-beta mode, observation_* tools talk to the server-beta `/v1`
-// endpoints via the SAME ServerBetaClient hooks use. This guarantees we
+// In server mode, observation_* tools talk to the server `/v1`
+// endpoints via the SAME ServerClient hooks use. This guarantees we
 // share the REST core for writes and searches; we never duplicate the
 // event-insert + outbox + enqueue logic on the MCP side.
 //
 // We deliberately resolve the runtime per-call (cheap; reads cached
 // settings) so the user can flip CLAUDE_MEM_RUNTIME without restarting
 // the MCP server.
-type ServerBetaToolContext = ServerBetaRuntimeContext;
+type ServerToolContext = ServerRuntimeContext;
 
-interface ServerBetaUnavailable {
-  runtime: 'server-beta';
+interface ServerUnavailable {
+  // Phase 1a (cmem-sdk rename): canonical runtime literal is `'server'`.
+  runtime: 'server';
   available: false;
   reason: string;
 }
 
-interface ServerBetaAvailable extends ServerBetaToolContext {
+interface ServerAvailable extends ServerToolContext {
   available: true;
 }
 
-type ServerBetaResolution = ServerBetaAvailable | ServerBetaUnavailable;
+type ServerResolution = ServerAvailable | ServerUnavailable;
 
-function resolveServerBetaToolContext(): ServerBetaResolution | null {
+function resolveServerToolContext(): ServerResolution | null {
   const runtime: SelectedRuntime = selectRuntime();
-  if (runtime !== 'server-beta') {
+  // Phase 1a (cmem-sdk rename): canonical runtime literal is `'server'`.
+  // `selectRuntime()` accepts legacy `'server-beta'` settings and returns
+  // `'server'` for either.
+  if (runtime !== 'server') {
     return null;
   }
-  const ctx = buildServerBetaContext();
+  const ctx = buildServerContext();
   if (!ctx) {
     return {
-      runtime: 'server-beta',
+      runtime: 'server',
       available: false,
-      reason: 'server-beta is selected but configuration is incomplete (missing url, api key, or project id)',
+      reason: 'server runtime is selected but configuration is incomplete (missing url, api key, or project id)',
     };
   }
   return { ...ctx, available: true };
 }
 
 function formatToolError(error: unknown): { content: Array<{ type: 'text'; text: string }>; isError: true } {
-  if (isServerBetaClientError(error)) {
+  if (isServerClientError(error)) {
     return {
       content: [{
         type: 'text' as const,
-        text: `Server beta error (${error.kind}${error.status ? ` ${error.status}` : ''}): ${error.message}`,
+        text: `Server error (${error.kind}${error.status ? ` ${error.status}` : ''}): ${error.message}`,
       }],
       isError: true as const,
     };
@@ -232,18 +200,33 @@ function formatJsonResult(payload: unknown): { content: Array<{ type: 'text'; te
   };
 }
 
-function requireServerBetaForObservationTool(toolName: string): ServerBetaAvailable {
-  const resolution = resolveServerBetaToolContext();
+function requireServerForObservationTool(toolName: string): ServerAvailable {
+  const resolution = resolveServerToolContext();
   if (!resolution) {
-    throw new ServerBetaClientError(
+    throw new ServerClientError(
       'transport',
-      `${toolName} requires CLAUDE_MEM_RUNTIME=server-beta. Current runtime is "worker"; use the existing search/timeline/get_observations tools for worker-mode memory access.`,
+      `${toolName} requires CLAUDE_MEM_RUNTIME=server. Current runtime is "worker"; use the existing search/timeline/get_observations tools for worker-mode memory access.`,
     );
   }
   if (!resolution.available) {
-    throw new ServerBetaClientError('missing_api_key', `${toolName}: ${resolution.reason}`);
+    throw new ServerClientError('missing_api_key', `${toolName}: ${resolution.reason}`);
   }
   return resolution;
+}
+
+function wrapHandler<Args>(
+  toolName: string,
+  execute: (args: Args) => Promise<{ content: Array<{ type: 'text'; text: string }> }>,
+): (args: Args) => Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  return async (args: Args) => {
+    try {
+      return await execute(args);
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.warn('SYSTEM', `${toolName} failed`, undefined, err);
+      return formatToolError(error);
+    }
+  };
 }
 
 interface ObservationAddArgs {
@@ -254,34 +237,29 @@ interface ObservationAddArgs {
   metadata?: Record<string, unknown>;
 }
 
-async function handleObservationAdd(
-  args: ObservationAddArgs,
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  try {
-    const ctx = requireServerBetaForObservationTool('observation_add');
-    if (typeof args?.content !== 'string' || args.content.trim().length === 0) {
-      throw new Error('observation_add: "content" is required');
-    }
-    const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
-    const request: ServerBetaAddObservationRequest = {
-      projectId,
-      content: args.content,
-      ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
-      ...(args.kind !== undefined ? { kind: args.kind } : {}),
-      ...(args.metadata !== undefined ? { metadata: args.metadata } : {}),
-    };
-    const response = await ctx.client.addObservation(request);
-    return formatJsonResult(response);
-  } catch (error) {
-    return formatToolError(error);
+const handleObservationAdd = wrapHandler('observation_add', async (args: ObservationAddArgs) => {
+  const ctx = requireServerForObservationTool('observation_add');
+  if (typeof args?.content !== 'string' || args.content.trim().length === 0) {
+    throw new Error('observation_add: "content" is required');
   }
-}
+  const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
+  const request: ServerAddObservationRequest = {
+    projectId,
+    content: args.content,
+    ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
+    ...(args.kind !== undefined ? { kind: args.kind } : {}),
+    ...(args.metadata !== undefined ? { metadata: args.metadata } : {}),
+  };
+  const response = await ctx.client.addObservation(request);
+  return formatJsonResult(response);
+});
 
 interface ObservationRecordEventArgs {
   projectId?: string;
   serverSessionId?: string | null;
   contentSessionId?: string | null;
   memorySessionId?: string | null;
+  platformSource?: string | null;
   sourceType?: 'hook' | 'worker' | 'provider' | 'server' | 'api';
   eventType: string;
   payload?: unknown;
@@ -289,107 +267,143 @@ interface ObservationRecordEventArgs {
   generate?: boolean;
 }
 
-async function handleObservationRecordEvent(
-  args: ObservationRecordEventArgs,
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  try {
-    const ctx = requireServerBetaForObservationTool('observation_record_event');
-    if (typeof args?.eventType !== 'string' || args.eventType.trim().length === 0) {
-      throw new Error('observation_record_event: "eventType" is required');
-    }
-    const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
-    const request: ServerBetaRecordEventRequest = {
-      projectId,
-      sourceType: args.sourceType ?? 'api',
-      eventType: args.eventType,
-      occurredAtEpoch: typeof args.occurredAtEpoch === 'number' ? args.occurredAtEpoch : Date.now(),
-      ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
-      ...(args.contentSessionId !== undefined ? { contentSessionId: args.contentSessionId } : {}),
-      ...(args.memorySessionId !== undefined ? { memorySessionId: args.memorySessionId } : {}),
-      ...(args.payload !== undefined ? { payload: args.payload } : {}),
-      ...(args.generate !== undefined ? { generate: args.generate } : {}),
-    };
-    const response = await ctx.client.recordEvent(request);
-    return formatJsonResult(response);
-  } catch (error) {
-    return formatToolError(error);
-  }
+function normalizeMcpPlatformSource(value: string | null): string | null {
+  return typeof value === 'string' ? normalizePlatformSource(value) : null;
 }
+
+const handleObservationRecordEvent = wrapHandler('observation_record_event', async (args: ObservationRecordEventArgs) => {
+  const ctx = requireServerForObservationTool('observation_record_event');
+  if (typeof args?.eventType !== 'string' || args.eventType.trim().length === 0) {
+    throw new Error('observation_record_event: "eventType" is required');
+  }
+  const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
+  const request: ServerRecordEventRequest = {
+    projectId,
+    sourceType: args.sourceType ?? 'api',
+    eventType: args.eventType,
+    occurredAtEpoch: typeof args.occurredAtEpoch === 'number' ? args.occurredAtEpoch : Date.now(),
+    ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
+    ...(args.contentSessionId !== undefined ? { contentSessionId: args.contentSessionId } : {}),
+    ...(args.memorySessionId !== undefined ? { memorySessionId: args.memorySessionId } : {}),
+    ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
+    ...(args.payload !== undefined ? { payload: args.payload } : {}),
+    ...(args.generate !== undefined ? { generate: args.generate } : {}),
+  };
+  const response = await ctx.client.recordEvent(request);
+  return formatJsonResult(response);
+});
 
 interface ObservationSearchArgs {
   projectId?: string;
   query: string;
   limit?: number;
+  platformSource?: string | null;
 }
 
-async function handleObservationSearch(
-  args: ObservationSearchArgs,
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  try {
-    const ctx = requireServerBetaForObservationTool('observation_search');
-    if (typeof args?.query !== 'string' || args.query.trim().length === 0) {
-      throw new Error('observation_search: "query" is required');
-    }
-    const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
-    const request: ServerBetaSearchObservationsRequest = {
-      projectId,
-      query: args.query,
-      ...(args.limit !== undefined ? { limit: args.limit } : {}),
-    };
-    const response = await ctx.client.searchObservations(request);
-    return formatJsonResult(response);
-  } catch (error) {
-    return formatToolError(error);
+const handleObservationSearch = wrapHandler('observation_search', async (args: ObservationSearchArgs) => {
+  const ctx = requireServerForObservationTool('observation_search');
+  if (typeof args?.query !== 'string' || args.query.trim().length === 0) {
+    throw new Error('observation_search: "query" is required');
   }
-}
+  const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
+  const request: ServerSearchObservationsRequest = {
+    projectId,
+    query: args.query,
+    ...(args.limit !== undefined ? { limit: args.limit } : {}),
+    ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
+  };
+  const response = await ctx.client.searchObservations(request);
+  return formatJsonResult(response);
+});
 
 interface ObservationContextArgs {
   projectId?: string;
   query: string;
   limit?: number;
+  platformSource?: string | null;
 }
 
-async function handleObservationContext(
-  args: ObservationContextArgs,
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  try {
-    const ctx = requireServerBetaForObservationTool('observation_context');
-    if (typeof args?.query !== 'string' || args.query.trim().length === 0) {
-      throw new Error('observation_context: "query" is required');
-    }
-    const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
-    const request: ServerBetaContextObservationsRequest = {
-      projectId,
-      query: args.query,
-      ...(args.limit !== undefined ? { limit: args.limit } : {}),
-    };
-    const response = await ctx.client.contextObservations(request);
-    return formatJsonResult(response);
-  } catch (error) {
-    return formatToolError(error);
+const handleObservationContext = wrapHandler('observation_context', async (args: ObservationContextArgs) => {
+  const ctx = requireServerForObservationTool('observation_context');
+  if (typeof args?.query !== 'string' || args.query.trim().length === 0) {
+    throw new Error('observation_context: "query" is required');
   }
-}
+  const projectId = args.projectId && args.projectId.trim().length > 0 ? args.projectId : ctx.projectId;
+  const request: ServerContextObservationsRequest = {
+    projectId,
+    query: args.query,
+    ...(args.limit !== undefined ? { limit: args.limit } : {}),
+    ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
+  };
+  const response = await ctx.client.contextObservations(request);
+  return formatJsonResult(response);
+});
 
 interface ObservationGenerationStatusArgs {
   jobId?: string;
   job_id?: string;
 }
 
-async function handleObservationGenerationStatus(
-  args: ObservationGenerationStatusArgs,
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  try {
-    const ctx = requireServerBetaForObservationTool('observation_generation_status');
-    const jobId = (args?.jobId ?? args?.job_id ?? '').trim();
-    if (!jobId) {
-      throw new Error('observation_generation_status: "jobId" is required');
-    }
-    const response = await ctx.client.getJobStatus(jobId);
-    return formatJsonResult(response);
-  } catch (error) {
-    return formatToolError(error);
-  }
+interface SessionStartContextArgs {
+  project?: string;
+  projects?: string[] | string;
+  platformSource?: string | null;
+  full?: boolean;
+  colors?: boolean;
 }
+
+function normalizeProjectsArg(args: SessionStartContextArgs): string[] {
+  if (Array.isArray(args.projects)) {
+    return args.projects
+      .map(project => typeof project === 'string' ? project.trim() : '')
+      .filter(Boolean);
+  }
+  if (typeof args.projects === 'string') {
+    return args.projects
+      .split(',')
+      .map(project => project.trim())
+      .filter(Boolean);
+  }
+  if (typeof args.project === 'string' && args.project.trim().length > 0) {
+    return [args.project.trim()];
+  }
+  return [];
+}
+
+async function handleSessionStartContext(
+  args: SessionStartContextArgs,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  const projects = normalizeProjectsArg(args);
+  if (projects.length === 0) {
+    return {
+      content: [{
+        type: 'text' as const,
+        text: 'session_start_context: "project" or "projects" is required',
+      }],
+      isError: true,
+    };
+  }
+
+  return callWorker('/api/context/inject', {
+    query: {
+      projects: projects.join(','),
+      ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
+      ...(args.full !== undefined ? { full: args.full } : {}),
+      ...(args.colors !== undefined ? { colors: args.colors } : {}),
+    },
+    text: true,
+  });
+}
+
+const handleObservationGenerationStatus = wrapHandler('observation_generation_status', async (args: ObservationGenerationStatusArgs) => {
+  const ctx = requireServerForObservationTool('observation_generation_status');
+  const jobId = (args?.jobId ?? args?.job_id ?? '').trim();
+  if (!jobId) {
+    throw new Error('observation_generation_status: "jobId" is required');
+  }
+  const response = await ctx.client.getJobStatus(jobId);
+  return formatJsonResult(response);
+});
 
 async function ensureWorkerConnection(): Promise<boolean> {
   if (await verifyWorkerConnection()) {
@@ -423,7 +437,7 @@ async function ensureWorkerConnection(): Promise<boolean> {
 
 const tools = [
   {
-    name: '__IMPORTANT',
+    name: 'important_workflow',
     description: `3-LAYER WORKFLOW (ALWAYS FOLLOW):
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
@@ -458,15 +472,16 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'search',
-    description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, type, obs_type, dateStart, dateEnd, offset, orderBy',
+    description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, platformSource, type, obs_type, dateStart, dateEnd, offset, orderBy',
     inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Search query' },
         limit: { type: 'number', description: 'Max results (default 20)' },
         project: { type: 'string', description: 'Filter by project name' },
-        type: { type: 'string', description: 'Filter by observation type' },
-        obs_type: { type: 'string', description: 'Filter by obs_type field' },
+        platformSource: { type: 'string', description: "Filter by platform source (e.g. claude, codex, cursor) — restricts results to that agent's own memory" },
+        type: { type: 'string', description: "Document category to search: 'observations', 'sessions', or 'prompts' (default: all). Any other value is treated as an observation-type filter (alias for obs_type)." },
+        obs_type: { type: 'string', description: 'Filter observations by their type (e.g. bugfix, feature). Comma-separated for multiple.' },
         dateStart: { type: 'string', description: 'Start date filter (ISO)' },
         dateEnd: { type: 'string', description: 'End date filter (ISO)' },
         offset: { type: 'number', description: 'Pagination offset' },
@@ -475,8 +490,35 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
-      const endpoint = TOOL_ENDPOINT_MAP['search'];
-      return await callWorkerAPI(endpoint, args);
+      // In server-beta runtime the local worker /api/search reads the local SQLite via
+      // the Chroma-backed SearchOrchestrator. When the install runs server-beta (where
+      // generated observations live in Postgres, not local SQLite) and Chroma is not
+      // configured, observation text queries return empty — so `search` silently yields
+      // 0 observations even though the data is in PG.
+      //
+      // Route to the PG-backed /v1/search (same path as observation_search) ONLY when it
+      // can serve the request faithfully: server-beta is available, there is a text query,
+      // the result type is observations (or unspecified), and no filter /v1/search cannot
+      // honor is set. /v1/search is observations-only and takes only { projectId, query,
+      // limit } — so prompt/session-typed queries and platformSource/project/obs_type/date/
+      // offset/orderBy filters must keep the worker path (which applies them), otherwise we
+      // would silently drop the filter or mis-route the query.
+      const sb = resolveServerToolContext();
+      const hasText = typeof args?.query === 'string' && args.query.trim().length > 0;
+      const typeIsObservations = args?.type === undefined || args?.type === 'observations';
+      const hasUnsupportedFilter =
+        args?.platformSource !== undefined || args?.project !== undefined ||
+        args?.obs_type !== undefined || args?.dateStart !== undefined ||
+        args?.dateEnd !== undefined || args?.offset !== undefined || args?.orderBy !== undefined;
+      if (sb && sb.available && hasText && typeIsObservations && !hasUnsupportedFilter) {
+        const request: ServerSearchObservationsRequest = {
+          projectId: sb.projectId,
+          query: args.query,
+          ...(args.limit !== undefined ? { limit: args.limit } : {}),
+        };
+        return formatJsonResult(await sb.client.searchObservations(request));
+      }
+      return await callWorker('/api/search', { query: args });
     }
   },
   {
@@ -494,8 +536,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
-      const endpoint = TOOL_ENDPOINT_MAP['timeline'];
-      return await callWorkerAPI(endpoint, args);
+      return await callWorker('/api/timeline', { query: args });
     }
   },
   {
@@ -514,20 +555,39 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
-      return await callWorkerAPIPost('/api/observations/batch', args);
+      return await callWorker('/api/observations/batch', { body: args });
     }
   },
-  // Phase 8 — observation_* tools backed by server-beta REST core.
-  // These are the canonical names. memory_* tools below are kept as
-  // compatibility aliases that delegate to these handlers, so existing
-  // MCP clients keep working without rewrites. (Plan line 753.)
   {
-    name: 'observation_add',
-    description: 'Insert a manual observation directly into server-beta storage. Calls /v1/memories — does NOT enqueue generation. Server-beta runtime only. Params: content (required), projectId (optional, falls back to settings), serverSessionId, kind, metadata.',
+    name: 'session_start_context',
+    description: 'Render the exact worker-mode SessionStart context for a project. Calls /api/context/inject and returns the same text hooks inject at startup. Params: project OR projects, platformSource, full, colors.',
     inputSchema: {
       type: 'object',
       properties: {
-        projectId: { type: 'string', description: 'Project id (falls back to CLAUDE_MEM_SERVER_BETA_PROJECT_ID)' },
+        project: { type: 'string', description: 'Project name, e.g. claude-mem/night-parsnip' },
+        projects: {
+          oneOf: [
+            { type: 'array', items: { type: 'string' } },
+            { type: 'string' },
+          ],
+          description: 'Project chain for context injection. Array or comma-separated string; last project is treated as primary.',
+        },
+        platformSource: { type: 'string', description: 'Optional platform source filter, e.g. claude, codex, cursor' },
+        full: { type: 'boolean', description: 'When true, request full context instead of configured limits' },
+        colors: { type: 'boolean', description: 'When true, request human terminal-color formatting' },
+      },
+      additionalProperties: false,
+    },
+    handler: async (args: any) => handleSessionStartContext(args ?? {}),
+  },
+  // Phase 8 — observation_* tools backed by server REST core.
+  {
+    name: 'observation_add',
+    description: 'Insert a manual observation directly into server storage. Calls /v1/memories — does NOT enqueue generation. Server runtime only. Params: content (required), projectId (optional, falls back to settings), serverSessionId, kind, metadata.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'Project id (falls back to CLAUDE_MEM_SERVER_PROJECT_ID)' },
         serverSessionId: { type: 'string', description: 'Optional server_session_id to attach the observation to' },
         kind: { type: 'string', description: 'Observation kind (default: manual)' },
         content: { type: 'string', description: 'Observation content (required)' },
@@ -540,7 +600,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'observation_record_event',
-    description: 'Record an agent event into server-beta. Calls /v1/events — server inserts the event row, the outbox row, and enqueues a generation job atomically. Server-beta runtime only.',
+    description: 'Record an agent event into the server. Calls /v1/events — server inserts the event row, the outbox row, and enqueues a generation job atomically. Server runtime only.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -550,6 +610,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
         serverSessionId: { type: 'string' },
         contentSessionId: { type: 'string' },
         memorySessionId: { type: 'string' },
+        platformSource: { type: 'string', description: 'Optional platform source for session linkage and event scoping' },
         payload: { description: 'Event payload (any JSON value)' },
         occurredAtEpoch: { type: 'number', description: 'Unix epoch millis (defaults to now)' },
         generate: { type: 'boolean', description: 'If false, skip generation job (default: true)' },
@@ -561,12 +622,13 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'observation_search',
-    description: 'Full-text search across generated observations using server-beta\'s GIN tsvector index (Phase 1). Calls /v1/search. Server-beta runtime only. Params: query (required), projectId (optional), limit (default 20, max 100).',
+    description: 'Full-text search across generated observations using the server\'s GIN tsvector index (Phase 1). Calls /v1/search. Server runtime only. Params: query (required), projectId (optional), platformSource, limit (default 20, max 100).',
     inputSchema: {
       type: 'object',
       properties: {
         projectId: { type: 'string' },
         query: { type: 'string', description: 'Search query (required)' },
+        platformSource: { type: 'string', description: 'Optional platform source filter, e.g. claude, codex, cursor' },
         limit: { type: 'number', description: 'Max results (default 20, max 100)' },
       },
       required: ['query'],
@@ -576,12 +638,13 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'observation_context',
-    description: 'Get top-N relevant observations for context injection. Returns matched observations AND a pre-joined context string suitable for prompt injection. Calls /v1/context. Server-beta runtime only.',
+    description: 'Get top-N relevant observations for context injection. Returns matched observations AND a pre-joined context string suitable for prompt injection. Calls /v1/context. Server runtime only.',
     inputSchema: {
       type: 'object',
       properties: {
         projectId: { type: 'string' },
         query: { type: 'string', description: 'Search query (required)' },
+        platformSource: { type: 'string', description: 'Optional platform source filter, e.g. claude, codex, cursor' },
         limit: { type: 'number', description: 'Max observations (default 10, max 50)' },
       },
       required: ['query'],
@@ -591,7 +654,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'observation_generation_status',
-    description: 'Look up the status of an observation generation job by id. Calls /v1/jobs/:id. Server-beta runtime only. Returns the same payload as REST.',
+    description: 'Look up the status of an observation generation job by id. Calls /v1/jobs/:id. Server runtime only. Returns the same payload as REST.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -601,71 +664,6 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: false,
     },
     handler: async (args: any) => handleObservationGenerationStatus(args ?? {}),
-  },
-  // Compatibility aliases — keep `memory_*` tool names that pre-existed in
-  // src/server/mcp/tools.ts working for any client that bound to them.
-  // These intentionally delegate to the same observation_* handlers so
-  // there is one code path for MCP write/read against server-beta.
-  {
-    name: 'memory_add',
-    description: 'Compatibility alias for observation_add. Same behavior; same schema modulo the legacy field names.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        projectId: { type: 'string' },
-        kind: { type: 'string' },
-        content: { type: 'string' },
-        narrative: { type: 'string', description: 'Legacy alias for content; mapped to content if content is missing' },
-        title: { type: 'string', description: 'Legacy field; appended to metadata.title' },
-        metadata: { type: 'object', additionalProperties: true },
-      },
-      required: ['projectId'],
-      additionalProperties: true,
-    },
-    handler: async (args: any) => {
-      // Map legacy fields onto observation_add. `narrative` was the v1
-      // SQLite payload; it is normalized to `content` before forwarding.
-      const merged: ObservationAddArgs = {
-        projectId: args?.projectId,
-        content: args?.content ?? args?.narrative ?? '',
-        kind: args?.kind,
-        metadata: {
-          ...(args?.metadata ?? {}),
-          ...(args?.title ? { title: args.title } : {}),
-        },
-      };
-      return handleObservationAdd(merged);
-    },
-  },
-  {
-    name: 'memory_search',
-    description: 'Compatibility alias for observation_search. Same FTS path; same /v1/search REST endpoint.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        projectId: { type: 'string' },
-        query: { type: 'string' },
-        limit: { type: 'number' },
-      },
-      required: ['projectId', 'query'],
-      additionalProperties: true,
-    },
-    handler: async (args: any) => handleObservationSearch(args ?? {}),
-  },
-  {
-    name: 'memory_context',
-    description: 'Compatibility alias for observation_context. Same /v1/context REST endpoint.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        projectId: { type: 'string' },
-        query: { type: 'string' },
-        limit: { type: 'number' },
-      },
-      required: ['projectId', 'query'],
-      additionalProperties: true,
-    },
-    handler: async (args: any) => handleObservationContext(args ?? {}),
   },
   {
     name: 'smart_search',
@@ -799,7 +797,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
-      return await callWorkerAPIPost('/api/corpus', args);
+      return await callWorker('/api/corpus', { body: args });
     }
   },
   {
@@ -811,7 +809,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
-      return await callWorkerAPI('/api/corpus', args);
+      return await callWorker('/api/corpus', { query: args });
     }
   },
   {
@@ -828,7 +826,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/prime`, rest);
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/prime`, { body: rest });
     }
   },
   {
@@ -846,7 +844,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/query`, rest);
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/query`, { body: rest });
     }
   },
   {
@@ -863,7 +861,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/rebuild`, rest);
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/rebuild`, { body: rest });
     }
   },
   {
@@ -880,7 +878,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorkerAPIPost(`/api/corpus/${encodeURIComponent(name)}/reprime`, rest);
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/reprime`, { body: rest });
     }
   }
 ];
@@ -898,8 +896,9 @@ const server = new Server(
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
+  const advertisedTools = getAdvertisedMcpToolsForRuntime(tools, selectRuntime());
   return {
-    tools: tools.map(tool => ({
+    tools: advertisedTools.map(tool => ({
       name: tool.name,
       description: tool.description,
       inputSchema: tool.inputSchema
@@ -985,29 +984,34 @@ function cleanup(reason: string = 'shutdown') {
 process.on('SIGTERM', cleanup);
 process.on('SIGINT', cleanup);
 
+function detectMissingMarketplaceMarker(): void {
+  const home = homedir();
+  const marketplaceCandidates = [
+    resolve(home, '.claude', 'plugins', 'marketplaces', 'thedotmack'),
+    resolve(home, '.config', 'claude', 'plugins', 'marketplaces', 'thedotmack'),
+  ];
+  const present = marketplaceCandidates.some(p => p && existsSync(p));
+  const cacheCandidates = [
+    resolve(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
+    resolve(home, '.config', 'claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
+  ];
+  const cachePresent = cacheCandidates.some(p => p && existsSync(p));
+  const cacheRoot = cacheCandidates[0];
+
+  if (!present && cachePresent) {
+    logger.error(
+      'SYSTEM',
+      'claude-mem MCP started but no marketplace directory was found at ~/.claude/plugins/marketplaces/thedotmack or the XDG equivalent. The IDE plugin loader needs that directory to fire claude-mem hooks (SessionStart, PostToolUse, Stop, etc.). Without it, MCP search will work but no new memories will be captured. To self-heal, run: node ~/.claude/plugins/cache/thedotmack/claude-mem/*/scripts/smart-install.js (or reinstall the plugin from the marketplace).',
+      { marketplaceCandidates, cacheRoot }
+    );
+  }
+}
+
 function checkMarketplaceMarker(): void {
   try {
-    const home = homedir();
-    const marketplaceCandidates = [
-      resolve(home, '.claude', 'plugins', 'marketplaces', 'thedotmack'),
-      resolve(home, '.config', 'claude', 'plugins', 'marketplaces', 'thedotmack'),
-    ];
-    const present = marketplaceCandidates.some(p => p && existsSync(p));
-    const cacheCandidates = [
-      resolve(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
-      resolve(home, '.config', 'claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
-    ];
-    const cachePresent = cacheCandidates.some(p => p && existsSync(p));
-    const cacheRoot = cacheCandidates[0];
-
-    if (!present && cachePresent) {
-      logger.error(
-        'SYSTEM',
-        'claude-mem MCP started but no marketplace directory was found at ~/.claude/plugins/marketplaces/thedotmack or the XDG equivalent. The IDE plugin loader needs that directory to fire claude-mem hooks (SessionStart, PostToolUse, Stop, etc.). Without it, MCP search will work but no new memories will be captured. To self-heal, run: node ~/.claude/plugins/cache/thedotmack/claude-mem/*/scripts/smart-install.js (or reinstall the plugin from the marketplace).',
-        { marketplaceCandidates, cacheRoot }
-      );
-    }
-  } catch {
+    detectMissingMarketplaceMarker();
+  } catch (error) {
+    logger.warn('SYSTEM', 'checkMarketplaceMarker failed (non-fatal startup check)', undefined, error instanceof Error ? error : new Error(String(error)));
   }
 }
 
@@ -1022,12 +1026,14 @@ async function main() {
   startParentHeartbeat();
 
   setTimeout(async () => {
-    // Phase 8 — when CLAUDE_MEM_RUNTIME=server-beta, MCP must NOT auto-start
-    // the worker. observation_* tools talk to server-beta directly; the
-    // legacy worker-backed tools (search/timeline/get_observations) will
-    // simply error with a helpful message until the user switches runtime.
-    if (selectRuntime() === 'server-beta') {
-      logger.info('SYSTEM', 'MCP runtime=server-beta — skipping worker auto-start', undefined, {});
+    // Phase 8 — when CLAUDE_MEM_RUNTIME=server (or legacy `server-beta`,
+    // normalized to `'server'` by selectRuntime), MCP must NOT auto-start
+    // the worker. observation_* tools talk to the server runtime directly;
+    // the legacy worker-backed tools (search/timeline/get_observations)
+    // will simply error with a helpful message until the user switches
+    // runtime.
+    if (selectRuntime() === 'server') {
+      logger.info('SYSTEM', 'MCP runtime=server — skipping worker auto-start', undefined, {});
       return;
     }
     const workerAvailable = await ensureWorkerConnection();

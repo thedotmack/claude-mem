@@ -1,5 +1,5 @@
 import * as p from '@clack/prompts';
-import pc from 'picocolors';
+import { styleText } from 'node:util';
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -13,8 +13,56 @@ import {
   writeJsonFileAtomic,
 } from '../utils/paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
+import { readFlatSettings } from '../utils/settings.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
 import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
+import {
+  normalizeRuntimeFlag,
+  SERVER_RUNTIME_SETTINGS_KEYS,
+  type InstallRuntimeId,
+} from './server-runtime-setup.js';
+import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
+
+// #2568 — read the runtime the operator installed so uninstall can dispatch to
+// the matching teardown. The worker path is the default and is unchanged: only
+// when the recorded runtime is the server runtime do we run the extra teardown.
+function readSelectedRuntime(): InstallRuntimeId {
+  try {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    return normalizeRuntimeFlag(settings.CLAUDE_MEM_RUNTIME) ?? 'worker';
+  } catch (error: unknown) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    console.warn('[uninstall] Could not read selected runtime from settings, defaulting to worker:', err);
+    return 'worker';
+  }
+}
+
+function clearServerRuntimeSettings(keys: readonly string[]): void {
+  let flat: Record<string, unknown> | null;
+  try {
+    flat = readFlatSettings(USER_SETTINGS_PATH);
+  } catch (error: unknown) {
+    console.warn('[uninstall] Could not read settings for server runtime cleanup:', error instanceof Error ? error.message : String(error));
+    return;
+  }
+  if (!flat) return;
+  let changed = false;
+  for (const key of keys) {
+    if (key in flat) {
+      delete flat[key];
+      changed = true;
+    }
+  }
+  if (changed) {
+    try {
+      writeSettingsJsonAtomic(USER_SETTINGS_PATH, flat);
+    } catch (error: unknown) {
+      console.warn('[uninstall] Could not write settings during server runtime cleanup:', error instanceof Error ? error.message : String(error));
+    }
+  }
+}
 
 function removeMarketplaceDirectory(): boolean {
   const marketplaceDir = marketplaceDirectory();
@@ -81,10 +129,42 @@ function stripLegacyClaudeMemAlias(): void {
   }
 }
 
-function removeFromClaudeSettings(): void {
+export function removeFromClaudeSettings(): void {
   const settings = readJsonSafe<Record<string, any>>(claudeSettingsPath(), {});
+  let dirty = false;
+
   if (settings.enabledPlugins?.['claude-mem@thedotmack'] !== undefined) {
     delete settings.enabledPlugins['claude-mem@thedotmack'];
+    dirty = true;
+  }
+
+  // Symmetric counterpart to disableClaudeAutoMemory() in install.ts. The
+  // installer sets env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1" to suppress
+  // Claude Code's built-in auto-memory; on uninstall we restore the host
+  // CLI's default behavior by removing that key. The value-equality guard
+  // (=== '1') ensures we only strip the specific token the installer wrote
+  // — if a user had pre-set this key to something else (e.g. '0' to force
+  // auto-memory on), or to '1' themselves before installing claude-mem,
+  // their intent is preserved. The installer's own no-op-when-already-'1'
+  // path means the worst case is leaving behind a value claude-mem would
+  // have written anyway. Any other env entries the user added themselves
+  // (ANTHROPIC_AUTH_TOKEN, AWS_REGION, etc.) are preserved. If the env
+  // block becomes empty as a result, the block itself is dropped to keep
+  // settings.json tidy.
+  if (settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env)) {
+    if (
+      Object.prototype.hasOwnProperty.call(settings.env, 'CLAUDE_CODE_DISABLE_AUTO_MEMORY') &&
+      settings.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY === '1'
+    ) {
+      delete settings.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
+      dirty = true;
+      if (Object.keys(settings.env).length === 0) {
+        delete settings.env;
+      }
+    }
+  }
+
+  if (dirty) {
     writeJsonFileAtomic(claudeSettingsPath(), settings);
   }
 }
@@ -157,7 +237,7 @@ function removeStrayClaudeMemPaths(): number {
 }
 
 export async function runUninstallCommand(): Promise<void> {
-  p.intro(pc.bgRed(pc.white(' claude-mem uninstall ')));
+  p.intro(styleText(['bgRed', 'white'], ' claude-mem uninstall '));
 
   if (!isPluginInstalled()) {
     p.log.warn('claude-mem does not appear to be installed.');
@@ -198,14 +278,33 @@ export async function runUninstallCommand(): Promise<void> {
     console.warn('[uninstall] Worker shutdown attempt failed:', error instanceof Error ? error.message : String(error));
   }
 
+  // #2568 — server-runtime teardown. Gated on the installed/selected runtime so
+  // the worker uninstall path is completely unchanged. The bundled Docker
+  // compose stack lives under the marketplace dir; if it's present we treat the
+  // stack as locally managed and instruct teardown (the actual `docker compose
+  // down -v` is an operator/CI side effect, not run from this Node process).
+  const selectedRuntime = readSelectedRuntime();
+  if (selectedRuntime === 'server') {
+    if (existsSync(join(marketplaceDirectory(), 'docker-compose.yml'))) {
+      p.log.info(
+        'Server runtime detected. Tear down the bundled stack with '
+          + '`docker compose down -v --remove-orphans` (stops + removes pg + redis/valkey).',
+      );
+    } else {
+      p.log.info('Server runtime detected (externally managed stack — leaving Docker/pg/redis untouched).');
+    }
+    clearServerRuntimeSettings(SERVER_RUNTIME_SETTINGS_KEYS);
+    p.log.info('Server runtime settings cleared from ~/.claude-mem/settings.json.');
+  }
+
   await p.tasks([
     {
       title: 'Removing marketplace directory',
       task: async () => {
         const removed = removeMarketplaceDirectory();
         return removed
-          ? `Marketplace directory removed ${pc.green('OK')}`
-          : `Marketplace directory not found ${pc.dim('skipped')}`;
+          ? `Marketplace directory removed ${styleText('green', 'OK')}`
+          : `Marketplace directory not found ${styleText('dim', 'skipped')}`;
       },
     },
     {
@@ -213,36 +312,36 @@ export async function runUninstallCommand(): Promise<void> {
       task: async () => {
         const removed = removeCacheDirectory();
         return removed
-          ? `Cache directory removed ${pc.green('OK')}`
-          : `Cache directory not found ${pc.dim('skipped')}`;
+          ? `Cache directory removed ${styleText('green', 'OK')}`
+          : `Cache directory not found ${styleText('dim', 'skipped')}`;
       },
     },
     {
       title: 'Removing marketplace registration',
       task: async () => {
         removeFromKnownMarketplaces();
-        return `Marketplace registration removed ${pc.green('OK')}`;
+        return `Marketplace registration removed ${styleText('green', 'OK')}`;
       },
     },
     {
       title: 'Removing plugin registration',
       task: async () => {
         removeFromInstalledPlugins();
-        return `Plugin registration removed ${pc.green('OK')}`;
+        return `Plugin registration removed ${styleText('green', 'OK')}`;
       },
     },
     {
       title: 'Removing from Claude settings',
       task: async () => {
         removeFromClaudeSettings();
-        return `Claude settings updated ${pc.green('OK')}`;
+        return `Claude settings updated ${styleText('green', 'OK')}`;
       },
     },
     {
       title: 'Removing legacy claude-mem shell alias',
       task: async () => {
         stripLegacyClaudeMemAlias();
-        return `Legacy alias check complete ${pc.green('OK')}`;
+        return `Legacy alias check complete ${styleText('green', 'OK')}`;
       },
     },
     {
@@ -250,17 +349,13 @@ export async function runUninstallCommand(): Promise<void> {
       task: async () => {
         const removed = removeStrayClaudeMemPaths();
         return removed > 0
-          ? `Stray paths removed: ${removed} ${pc.green('OK')}`
-          : `No stray paths found ${pc.dim('skipped')}`;
+          ? `Stray paths removed: ${removed} ${styleText('green', 'OK')}`
+          : `No stray paths found ${styleText('dim', 'skipped')}`;
       },
     },
   ]);
 
   const ideCleanups: Array<{ label: string; fn: () => Promise<number> | number }> = [
-    { label: 'Gemini CLI hooks', fn: async () => {
-      const { uninstallGeminiCliHooks } = await import('../../services/integrations/GeminiCliHooksInstaller.js');
-      return uninstallGeminiCliHooks();
-    }},
     { label: 'Windsurf hooks', fn: async () => {
       const { uninstallWindsurfHooks } = await import('../../services/integrations/WindsurfHooksInstaller.js');
       return uninstallWindsurfHooks();
@@ -277,6 +372,10 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallCodexCli } = await import('../../services/integrations/CodexCliInstaller.js');
       return uninstallCodexCli();
     }},
+    { label: 'Antigravity CLI hooks + MCP', fn: async () => {
+      const { uninstallAntigravityCliHooks } = await import('../../services/integrations/AntigravityCliHooksInstaller.js');
+      return uninstallAntigravityCliHooks();
+    }},
   ];
 
   for (const { label, fn } of ideCleanups) {
@@ -292,11 +391,15 @@ export async function runUninstallCommand(): Promise<void> {
 
   p.note(
     [
-      `Your data directory at ${pc.cyan('~/.claude-mem')} was preserved.`,
+      `Your data directory at ${styleText('cyan', '~/.claude-mem')} was preserved.`,
       'To remove it manually: rm -rf ~/.claude-mem',
     ].join('\n'),
     'Note',
   );
 
-  p.outro(pc.green('claude-mem has been uninstalled.'));
+  // Capture BEFORE the data dir note becomes stale advice: consent and the
+  // install ID still live in ~/.claude-mem, which uninstall preserves.
+  await captureCliEvent('uninstall_completed', {}, { person: true });
+
+  p.outro(styleText('green', 'claude-mem has been uninstalled.'));
 }

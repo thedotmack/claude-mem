@@ -1,0 +1,172 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    name: typecheck · build · test · bundle-size
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Bun (worker runtime + test runner)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # The repo intentionally gitignores package-lock.json (.gitignore), so
+      # `cache: 'npm'` and `npm ci` (both require a committed lockfile) cannot
+      # be used here — matches windows.yml / npm-publish.yml, which install the
+      # same way.
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # `npm run build` runs scripts/build-hooks.js, which enforces the worker
+      # bundle-size guardrail (WORKER_SERVICE_MAX_BYTES, see #2584) and the MCP
+      # server budget. A bundle that grows past threshold fails here → fails CI.
+      - name: Build (includes bundle-size guardrails)
+        run: npm run build
+
+      # The in-process server-runtime smoke test (tests/server/server-runtime-smoke.test.ts,
+      # #2550) runs here with no Docker: it boots the server HTTP surface in
+      # process, loads a mode, creates a key, makes an authed request, and
+      # checks the viewer responds. This gives every PR real server-runtime
+      # coverage. The full pg+redis e2e is the docker-gated job below.
+      #
+      # Scoped to tests/ because workers/sync-hub/test is a vitest-pool-workers
+      # suite (imports cloudflare:test — unresolvable under bun test); it runs
+      # in the dedicated sync-hub job below.
+      - name: Test
+        run: bun test tests
+
+      # openclaw's suite lives outside tests/ (openclaw/src/index.test.ts), so
+      # the scoped step above no longer reaches it — run it explicitly.
+      - name: Test (openclaw)
+        run: bun test openclaw
+
+  sync-hub:
+    name: sync-hub worker (DO anti-pattern grep · vitest · WS suite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Dumb-grep guard for the Durable Object source (plan Phase 4 / Phase 0.4):
+      # complements the ESLint rules in workers/sync-hub/eslint.config.mjs and
+      # catches the `globalThis.setTimeout` evasion ESLint misses. The DO's
+      # hibernation WebSocket upgrade handler is necessarily a method named
+      # `fetch`, so exactly its definition line (`async fetch(request`) is
+      # allowlisted — any fetch(...) CALL is still a hit. Verified locally to
+      # catch seeded violations of every pattern class.
+      - name: Durable Object anti-pattern grep
+        run: |
+          set -u
+          hits=$(grep -rn "setTimeout\|setInterval\|\.accept()\|connect(\|globalThis\.\(setTimeout\|setInterval\)" workers/sync-hub/src/do/ || true)
+          fetch_hits=$(grep -rn "fetch(" workers/sync-hub/src/do/ | grep -v "async fetch(request" || true)
+          if [ -n "$hits$fetch_hits" ]; then
+            echo "Durable Object anti-pattern hits (timers pin the DO awake; outbound I/O and legacy accept defeat hibernation):"
+            echo "$hits"
+            echo "$fetch_hits"
+            exit 1
+          fi
+          echo "clean"
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install sync-hub dependencies
+        working-directory: workers/sync-hub
+        run: bun install --frozen-lockfile
+
+      - name: sync-hub tests (main suite)
+        working-directory: workers/sync-hub
+        run: bun run test
+
+      # The WS + DO tests need their own invocation with --maxWorkers=1
+      # --no-isolate (documented @cloudflare/vitest-pool-workers limitation),
+      # which is exactly what the test:ws script pins.
+      - name: sync-hub tests (WebSocket suite)
+        working-directory: workers/sync-hub
+        run: bun run test:ws
+
+  clean-room-deps:
+    name: clean-room dependency closure smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Bun (worker runtime + test runner)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # See note in the build job: no committed root lockfile, so npm install.
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      # Run the frozen-lockfile drift check against the COMMITTED tree BEFORE
+      # `npm run build` regenerates plugin/package.json + plugin/bun.lock (via
+      # gen-plugin-lockfile.cjs). If a contributor changed plugin deps (through
+      # scripts/build-hooks.js) but committed a stale plugin/bun.lock, the
+      # committed pair is out of sync and --frozen-lockfile fails here.
+      - name: Verify plugin lockfile is in sync (frozen-lockfile drift check)
+        working-directory: plugin
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Build
+        run: npm run build
+
+      # Clean-room install + import smoke test (plan-10): installs the packed
+      # tarball into a throwaway dir and verifies the dependency closure resolves
+      # and imports outside the dev tree.
+      - name: Clean-room dependency closure smoke
+        run: npm run smoke:clean-room
+
+  server-runtime-e2e-docker:
+    name: server-runtime e2e (docker · pg + valkey)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Docker is available on ubuntu-latest GitHub runners. This job runs the
+    # full server-runtime e2e (#2550): real Postgres + Valkey, queue durability,
+    # restart recovery, and revoked-key denial. It does not gate PRs from the
+    # `build` job; a failure here surfaces a server-runtime regression before a
+    # user can file one (plan-07 test matrix).
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # See note in the build job: no committed lockfile, so npm install.
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Verify Docker is available
+        run: docker compose version
+
+      - name: Server-runtime Docker e2e
+        run: npm run e2e:server:docker

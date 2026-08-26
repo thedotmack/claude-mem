@@ -6,6 +6,7 @@ export interface ContextInput {
   hook_event_name?: string;
   source?: "startup" | "resume" | "clear" | "compact";
   projects?: string[];
+  platformSource?: string;
   full?: boolean;
   [key: string]: any;
 }
@@ -79,7 +80,6 @@ export interface TokenEconomics {
 }
 
 export interface PriorMessages {
-  userMessage: string;
   assistantMessage: string;
 }
 

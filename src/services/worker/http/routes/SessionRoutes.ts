@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { ingestObservation } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
-import { stripMemoryTagsFromPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
+import { stripMemoryTags, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
@@ -17,12 +17,41 @@ import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
-import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
+import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
-import { getUptimeSeconds } from '../../../../shared/uptime.js';
+import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
+import {
+  CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
+  clearDependencyStatus,
+  getDependencyStatus,
+  isDependencyStatusInCooldown,
+  recordClaudeCliSetupRequired,
+} from '../../../../shared/dependency-health.js';
+import { findClaudeExecutable } from '../../../../shared/find-claude-executable.js';
+import { recordObserverFailure } from '../../../../shared/observer-health.js';
+import { isClassified, describeProviderError } from '../../provider-errors.js';
+import { classifyClaudeError } from '../../ClaudeProvider.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
+
+/**
+ * Collapse session.abortReason onto a closed telemetry enum. The raw value can
+ * carry free text after a colon (e.g. 'quota:<provider message>') — never emit
+ * it verbatim. Unknown or absent reasons map to 'none'.
+ */
+function normalizeAbortReason(
+  reason: string | null | undefined
+): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'none' {
+  switch ((reason ?? '').split(':')[0]) {
+    case 'idle': return 'idle';
+    case 'shutdown': return 'shutdown';
+    case 'overflow': return 'overflow';
+    case 'restart-guard': return 'restart_guard';
+    case 'quota': return 'quota';
+    default: return 'none';
+  }
+}
 
 export class SessionRoutes extends BaseRouteHandler {
   constructor(
@@ -36,26 +65,6 @@ export class SessionRoutes extends BaseRouteHandler {
     private completionHandler: SessionCompletionHandler,
   ) {
     super();
-  }
-
-  private getActiveAgent(): ClaudeProvider | GeminiProvider | OpenRouterProvider {
-    if (isOpenRouterSelected()) {
-      if (isOpenRouterAvailable()) {
-        logger.debug('SESSION', 'Using OpenRouter agent');
-        return this.openRouterAgent;
-      } else {
-        throw new Error('OpenRouter provider selected but no API key configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
-      }
-    }
-    if (isGeminiSelected()) {
-      if (isGeminiAvailable()) {
-        logger.debug('SESSION', 'Using Gemini agent');
-        return this.geminiAgent;
-      } else {
-        throw new Error('Gemini provider selected but no API key configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
-      }
-    }
-    return this.sdkAgent;
   }
 
   private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
@@ -72,6 +81,42 @@ export class SessionRoutes extends BaseRouteHandler {
     const selectedProvider = this.getSelectedProvider();
 
     if (!session.generatorPromise) {
+      if (selectedProvider === 'claude') {
+        const claudeStatus = getDependencyStatus('claude_cli');
+        if (claudeStatus?.kind === 'setup_required') {
+          if (isDependencyStatusInCooldown(claudeStatus, CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS)) {
+            logger.warn('SESSION', 'Skipping Claude generator start until setup is repaired', {
+              sessionId: sessionDbId,
+              source,
+              dependency: claudeStatus.dependency,
+              status: claudeStatus.kind,
+              message: claudeStatus.message,
+            });
+            return;
+          }
+
+          try {
+            findClaudeExecutable('SDK');
+            clearDependencyStatus('claude_cli');
+            logger.info('SESSION', 'Claude setup dependency repaired; resuming generator start', {
+              sessionId: sessionDbId,
+              source,
+            });
+          } catch (error) {
+            const err = error instanceof Error ? error : new Error(String(error));
+            const classified = classifyClaudeError(error);
+            if (classified.kind === 'setup_required') {
+              recordClaudeCliSetupRequired(classified.message);
+            }
+            logger.warn('SESSION', 'Claude setup dependency still unavailable after cooldown', {
+              sessionId: sessionDbId,
+              source,
+              error: classified.message,
+            }, err);
+            return;
+          }
+        }
+      }
       await this.applyTierRouting(session);
       await this.startGeneratorWithProvider(session, selectedProvider, source);
       return;
@@ -106,8 +151,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
     const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
 
-    const pendingStore = this.sessionManager.getPendingMessageStore();
-    const actualQueueDepth = await pendingStore.getPendingCount(session.sessionDbId);
+    const actualQueueDepth = this.sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId);
 
     logger.info('SESSION', `Generator auto-starting (${source}) using ${agentName}`, {
       sessionId: session.sessionDbId,
@@ -117,10 +161,16 @@ export class SessionRoutes extends BaseRouteHandler {
 
     session.currentProvider = provider;
     session.lastGeneratorActivity = Date.now();
+    // Providers refine this per-prompt ('init'|'ingest'|'summarize'); this is
+    // the fallback when a generator dies before dispatching its first prompt.
+    session.lastGeneratorSource = source;
 
     const myController = session.abortController;
 
-    session.generatorPromise = agent.startSession(session, this.workerService)
+    let skipGeneratorExitFinalization = false;
+    let generatorPromise: Promise<void>;
+
+    generatorPromise = agent.startSession(session, this.workerService)
       .catch(async error => {
         if (myController.signal.aborted) {
           logger.debug('HTTP', 'Generator catch: ignoring error after abort', { sessionId: session.sessionDbId });
@@ -128,9 +178,19 @@ export class SessionRoutes extends BaseRouteHandler {
         }
 
         const errorMsg = error instanceof Error ? error.message : String(error);
+        if (provider === 'claude' && isClassified(error) && error.kind === 'setup_required') {
+          skipGeneratorExitFinalization = true;
+          recordClaudeCliSetupRequired(error.message);
+          logger.warn('SESSION', 'Claude generator start requires setup; future Claude starts will be skipped until repaired', {
+            sessionId: session.sessionDbId,
+            provider,
+            error: error.message,
+          });
+          return;
+        }
 
         if (errorMsg.includes('code 143') || errorMsg.includes('signal SIGTERM')) {
-          logger.warn('SESSION', 'Generator killed by external signal — aborting session to prevent respawn', {
+          logger.warn('SESSION', 'Generator killed by external signal', {
             sessionId: session.sessionDbId,
             provider,
             error: errorMsg
@@ -139,41 +199,87 @@ export class SessionRoutes extends BaseRouteHandler {
           return;
         }
 
-        logger.error('SESSION', `Generator failed`, {
-          sessionId: session.sessionDbId,
-          provider: provider,
-          error: errorMsg
-        }, error);
-
-        try {
-          const reset = await this.sessionManager.resetProcessingToPending(session.sessionDbId);
-          if (reset > 0) {
-            logger.warn('SESSION', `Reset processing messages after generator error`, {
-              sessionId: session.sessionDbId,
-              reset
-            });
-          }
-        } catch (dbError) {
-          const normalizedDbError = dbError instanceof Error ? dbError : new Error(String(dbError));
-          logger.error('HTTP', 'Failed to reset processing messages after generator error', {
-            sessionId: session.sessionDbId
-          }, normalizedDbError);
+        // No retry: the generator failed, the in-RAM batch is dropped, and the
+        // transcript is the recovery path. The next observation ingest will
+        // start a fresh generator via ensureGeneratorRunning.
+        //
+        // The local error line (full fidelity) and the scrubbed
+        // session_compressed rollup are one logical event.
+        // No abort_reason here: every site that sets abortReason aborts the
+        // controller on its next line, so aborted generators either resolve
+        // normally (quota/overflow break) or hit the signal-aborted early
+        // return above — this catch only ever sees non-abort rejections.
+        if (isClassified(error)) {
+          // The single error-level line for a classified provider failure:
+          // code, message, action, link, and request id — same words the
+          // gateway sent. Pass the rendered string (not the Error): classified
+          // errors are user-state (quota/auth/rate-limit), not bugs, so the
+          // errorSink/captureException isn't fired for them at all.
+          logger.error('SESSION', 'Observer failed', {
+            sessionId: session.sessionDbId,
+            provider,
+            kind: error.kind,
+            ...(error.code ? { code: error.code } : {}),
+            ...(error.requestId ? { requestId: error.requestId } : {}),
+          }, describeProviderError(error));
+        } else {
+          logger.error('SESSION', 'Generator failed', {
+            sessionId: session.sessionDbId,
+            provider,
+            error: errorMsg,
+          }, error);
         }
+        // Observer-health ledger: repeated generator failures mean observations
+        // are being dropped — session-start context warns the user via this.
+        // Classified errors carry the structured detail (code/action/link/
+        // request id) so the warning shows the same words as the log line.
+        recordObserverFailure(provider, isClassified(error)
+          ? { message: error.message, code: error.code, action: error.action, url: error.url, requestId: error.requestId }
+          : errorMsg);
+        telemetryBuffer.record('session_compressed', session.sessionDbId, {
+          outcome: 'error',
+          provider,
+          // Providers seed lastModelId when they start; 'unknown' covers a
+          // generator that died before resolving its model.
+          model: session.lastModelId ?? 'unknown',
+          error_category: 'provider_error',
+          hook: session.lastGeneratorSource,
+          ide: session.platformSource,
+        });
       })
       .finally(async () => {
+        if (skipGeneratorExitFinalization) {
+          if (session.generatorPromise === generatorPromise) {
+            session.generatorPromise = null;
+          }
+          if (session.currentProvider === provider) {
+            session.currentProvider = null;
+          }
+          return;
+        }
+
         const reason = session.abortReason ?? null;
         session.abortReason = null;  // consume the reason
+        if (reason !== null) {
+          // Abort accounting lives HERE, where the reason is consumed — the
+          // ONLY point every abort flow (idle / shutdown / overflow / quota)
+          // passes through. Emit the closed enum, never the raw
+          // string ('quota:…' carries a window suffix).
+          telemetryBuffer.record('session_compressed', session.sessionDbId, {
+            outcome: 'aborted',
+            provider,
+            model: session.lastModelId ?? 'unknown',
+            abort_reason: normalizeAbortReason(reason),
+            hook: session.lastGeneratorSource,
+            ide: session.platformSource,
+          });
+        }
         await handleGeneratorExit(session, reason, {
           sessionManager: this.sessionManager,
           completionHandler: this.completionHandler,
-          restartGenerator: (s, source) => {
-            void (async () => {
-              await this.applyTierRouting(s);
-              await this.startGeneratorWithProvider(s, this.getSelectedProvider(), source);
-            })();
-          },
         });
       });
+    session.generatorPromise = generatorPromise;
   }
 
   setupRoutes(app: express.Application): void {
@@ -192,7 +298,6 @@ export class SessionRoutes extends BaseRouteHandler {
       validateBody(SessionRoutes.summarizeByClaudeIdSchema),
       this.handleSummarizeByClaudeId.bind(this)
     );
-    app.get('/api/sessions/status', this.handleStatusByClaudeId.bind(this));
   }
 
   private static readonly sessionInitByClaudeIdSchema = z.object({
@@ -230,12 +335,12 @@ export class SessionRoutes extends BaseRouteHandler {
       tool_input,
       tool_response,
       cwd,
-      platformSource,
       agentId,
       agentType,
       tool_use_id,
       toolUseId,
     } = req.body;
+    const platformSource = this.getPlatformSourceFromRequest(req);
 
     const result = await ingestObservation({
       contentSessionId,
@@ -264,7 +369,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private handleSummarizeByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { contentSessionId, last_assistant_message, agentId } = req.body;
-    const platformSource = normalizePlatformSource(req.body.platformSource);
+    const platformSource = this.getPlatformSourceFromRequest(req);
 
     if (agentId) {
       res.json({ status: 'skipped', reason: 'subagent_context' });
@@ -274,22 +379,22 @@ export class SessionRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
 
     const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
-    const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
+    const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId);
 
-    const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
+    const privacy = PrivacyCheckValidator.checkUserPromptPrivacy(
       store,
       contentSessionId,
       promptNumber,
       'summarize',
       sessionDbId
     );
-    if (!userPrompt) {
+    if (!privacy.allow) {
       res.json({ status: 'skipped', reason: 'private' });
       return;
     }
 
     const cleanedLastAssistantMessage = last_assistant_message
-      ? stripMemoryTagsFromPrompt(String(last_assistant_message))
+      ? stripMemoryTags(String(last_assistant_message))
       : last_assistant_message;
     await this.sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage);
 
@@ -300,40 +405,12 @@ export class SessionRoutes extends BaseRouteHandler {
     res.json({ status: 'queued' });
   });
 
-  private handleStatusByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const contentSessionId = req.query.contentSessionId as string;
-
-    if (!contentSessionId) {
-      return this.badRequest(res, 'Missing contentSessionId query parameter');
-    }
-
-    const store = this.dbManager.getSessionStore();
-    const sessionDbId = store.createSDKSession(contentSessionId, '', '');
-    const session = this.sessionManager.getSession(sessionDbId);
-
-    if (!session) {
-      res.json({ status: 'not_found', queueLength: 0 });
-      return;
-    }
-
-    const pendingStore = this.sessionManager.getPendingMessageStore();
-    const queueLength = await pendingStore.getPendingCount(sessionDbId);
-
-    res.json({
-      status: 'active',
-      sessionDbId,
-      queueLength,
-      summaryStored: session.lastSummaryStored ?? null,
-      uptime: getUptimeSeconds(session.startTime)
-    });
-  });
-
   private handleSessionInitByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { contentSessionId } = req.body;
 
     const project = req.body.project || 'unknown';
     const rawPrompt = typeof req.body.prompt === 'string' ? req.body.prompt : undefined;
-    const platformSource = normalizePlatformSource(req.body.platformSource);
+    const platformSource = this.getPlatformSourceFromRequest(req);
     const customTitle = req.body.customTitle || undefined;
 
     if (rawPrompt && isInternalProtocolPayload(rawPrompt)) {
@@ -377,7 +454,7 @@ export class SessionRoutes extends BaseRouteHandler {
       sessionId: sessionDbId
     });
 
-    const currentCount = store.getPromptNumberFromUserPrompts(contentSessionId);
+    const currentCount = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId);
     const promptNumber = currentCount + 1;
 
     const memorySessionId = dbSession?.memory_session_id || null;
@@ -387,7 +464,7 @@ export class SessionRoutes extends BaseRouteHandler {
       logger.debug('HTTP', `[ALIGNMENT] New Session | contentSessionId=${contentSessionId} | prompt#=${promptNumber} | memorySessionId will be captured on first SDK response`);
     }
 
-    const cleanedPrompt = stripMemoryTagsFromPrompt(prompt);
+    const cleanedPrompt = stripMemoryTags(prompt);
 
     if (!cleanedPrompt || cleanedPrompt.trim() === '') {
       logger.debug('HOOK', 'Session init - prompt entirely private', {
@@ -405,7 +482,38 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt);
+    const duplicatePrompt = store.findRecentDuplicateUserPrompt(
+      contentSessionId,
+      cleanedPrompt,
+      USER_PROMPT_DEDUPE_WINDOW_MS,
+      sessionDbId
+    );
+
+    if (duplicatePrompt) {
+      const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
+      logger.debug('SESSION', 'Duplicate user prompt skipped', {
+        sessionId: sessionDbId,
+        promptNumber: duplicatePrompt.prompt_number,
+        duplicatePromptId: duplicatePrompt.id,
+        contextInjected
+      });
+
+      res.json({
+        sessionDbId,
+        promptNumber: duplicatePrompt.prompt_number,
+        skipped: true,
+        reason: 'duplicate',
+        contextInjected
+      });
+      return;
+    }
+
+    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
+
+    // Fire-and-forget cloud sync nudge, beside the write itself so every
+    // saved prompt nudges — including cursor sessions, which skip the
+    // non-cursor branch below entirely.
+    this.dbManager.getCloudSync()?.notify();
 
     const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
 
@@ -417,9 +525,9 @@ export class SessionRoutes extends BaseRouteHandler {
 
     if (platformSource !== 'cursor') {
       const sdkPrompt = cleanedPrompt.startsWith('/') ? cleanedPrompt.substring(1) : cleanedPrompt;
-      const session = this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber);
+      const session = this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber, project);
 
-      const latestPrompt = store.getLatestUserPrompt(session.contentSessionId);
+      const latestPrompt = store.getLatestUserPrompt(session.contentSessionId, sessionDbId);
 
       if (latestPrompt) {
         this.eventBroadcaster.broadcastNewPrompt({
@@ -440,7 +548,8 @@ export class SessionRoutes extends BaseRouteHandler {
           latestPrompt.project,
           promptText,
           latestPrompt.prompt_number,
-          latestPrompt.created_at_epoch
+          latestPrompt.created_at_epoch,
+          latestPrompt.platform_source
         ).then(() => {
           const chromaDuration = Date.now() - chromaStart;
           const truncatedPrompt = promptText.length > 60
@@ -488,8 +597,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     session.modelOverride = undefined;
 
-    const pendingStore = this.sessionManager.getPendingMessageStore();
-    const pending = await pendingStore.peekPendingTypes(session.sessionDbId);
+    const pending = this.sessionManager.getMessageBuffer().peekTypes(session.sessionDbId);
 
     if (pending.length === 0) {
       session.modelOverride = undefined;

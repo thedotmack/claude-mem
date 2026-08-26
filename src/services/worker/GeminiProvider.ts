@@ -2,41 +2,19 @@
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
-import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { getCredential } from '../../shared/EnvManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { estimateTokens } from '../../shared/timeline-formatting.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
-import { ModeManager } from '../domain/ModeManager.js';
-import type { ModeConfig } from '../domain/types.js';
-import {
-  processAgentResponse,
-  isAbortError,
-  type WorkerRef
-} from './agents/index.js';
 import { ClassifiedProviderError } from './provider-errors.js';
-import { withRetry } from './retry.js';
+import { withRetry, parseRetryAfterMs } from './retry.js';
+import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1/models';
-
-/**
- * Parse Retry-After header (seconds or HTTP-date).
- * Returns ms or undefined.
- */
-function parseRetryAfterMs(value: string | null): number | undefined {
-  if (!value) return undefined;
-  const seconds = Number(value);
-  if (!Number.isNaN(seconds) && seconds >= 0) {
-    return Math.floor(seconds * 1000);
-  }
-  const dateMs = Date.parse(value);
-  if (!Number.isNaN(dateMs)) {
-    const delta = dateMs - Date.now();
-    return delta > 0 ? delta : 0;
-  }
-  return undefined;
-}
+// v1beta is required: the current Gemini 3.x models and the Google-maintained
+// `-latest` aliases are only exposed under v1beta, and the retired v1-only 2.x
+// models 404 ("no longer available to new users") for freshly created API keys.
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 /**
  * Classify a Gemini fetch failure into ClassifiedProviderError. Called at
@@ -56,19 +34,22 @@ export function classifyGeminiError(input: {
   const lower = body.toLowerCase();
   const headers = input.headers;
   const retryAfterMs = headers ? parseRetryAfterMs(headers.get('retry-after')) : undefined;
+  const cause = status === undefined
+    ? input.cause
+    : new Error(`Gemini HTTP error (status ${status}${input.requestId ? `, request ${input.requestId}` : ''})`);
 
   // Quota exceeded — by body marker — even on 500 (Gemini quirk).
   if (lower.includes('quota exceeded') || lower.includes('resource_exhausted')) {
     return new ClassifiedProviderError(
       `Gemini quota exhausted${status !== undefined ? ` (status ${status})` : ''}`,
-      { kind: 'quota_exhausted', cause: input.cause },
+      { kind: 'quota_exhausted', cause },
     );
   }
 
   if (status === 429) {
     return new ClassifiedProviderError(
       'Gemini rate limit (429)',
-      { kind: 'rate_limit', cause: input.cause, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
+      { kind: 'rate_limit', cause, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
     );
   }
 
@@ -77,26 +58,27 @@ export function classifyGeminiError(input: {
     if (lower.includes('api key not valid') || lower.includes('api_key_invalid') || lower.includes('api key expired')) {
       return new ClassifiedProviderError(
         `Gemini auth invalid (status ${status})`,
-        { kind: 'auth_invalid', cause: input.cause },
+        { kind: 'auth_invalid', cause },
       );
     }
     return new ClassifiedProviderError(
       `Gemini auth error (status ${status})`,
-      { kind: 'auth_invalid', cause: input.cause },
+      { kind: 'auth_invalid', cause },
     );
   }
 
   if (status === 400) {
+    const category = categorizeGeminiBadRequest(body);
     return new ClassifiedProviderError(
-      `Gemini bad request (status 400)`,
-      { kind: 'unrecoverable', cause: input.cause },
+      `Gemini bad request: ${category}`,
+      { kind: 'unrecoverable', cause },
     );
   }
 
   if (status !== undefined && status >= 500 && status < 600) {
     return new ClassifiedProviderError(
       `Gemini upstream error (status ${status})`,
-      { kind: 'transient', cause: input.cause },
+      { kind: 'transient', cause },
     );
   }
 
@@ -109,34 +91,88 @@ export function classifyGeminiError(input: {
   }
 
   return new ClassifiedProviderError(
-    `Gemini API error: ${status}${body ? ` - ${body.substring(0, 200)}` : ''}`,
-    { kind: 'unrecoverable', cause: input.cause },
+    `Gemini API error (status ${status})`,
+    { kind: 'unrecoverable', cause },
   );
 }
 
+// Only models currently served to new API keys. The 2.x / 2.0 IDs were removed
+// because Google 404s them for freshly created keys, and bare `gemini-3-flash`
+// (no `-preview`) is not a real ID. `*-latest` are Google-maintained aliases
+// that track the current GA release, so they never go stale on new keys.
 export type GeminiModel =
-  | 'gemini-2.5-flash-lite'
-  | 'gemini-2.5-flash'
-  | 'gemini-2.5-pro'
-  | 'gemini-2.0-flash'
-  | 'gemini-2.0-flash-lite'
-  | 'gemini-3-flash'
+  | 'gemini-flash-latest'
+  | 'gemini-flash-lite-latest'
+  | 'gemini-3.5-flash'
+  | 'gemini-3.1-flash-lite'
   | 'gemini-3-flash-preview';
 
 const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
-  'gemini-2.5-flash-lite': 10,
-  'gemini-2.5-flash': 10,
-  'gemini-2.5-pro': 5,
-  'gemini-2.0-flash': 15,
-  'gemini-2.0-flash-lite': 30,
-  'gemini-3-flash': 10,
+  'gemini-flash-latest': 10,
+  'gemini-flash-lite-latest': 15,
+  'gemini-3.5-flash': 10,
+  'gemini-3.1-flash-lite': 15,
   'gemini-3-flash-preview': 5,
 };
 
 let lastRequestTime = 0;
 
-const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  
-const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;  
+const GEMINI_EMPTY_HISTORY_FALLBACK = 'Continue the memory observation request.';
+
+export type GeminiBadRequestCategory =
+  | 'role_sequence'
+  | 'context_limit'
+  | 'model_unsupported'
+  | 'api_key'
+  | 'unknown_bad_request';
+
+export function categorizeGeminiBadRequest(bodyText: string): GeminiBadRequestCategory {
+  const lower = bodyText.toLowerCase();
+
+  if (
+    lower.includes('api key not valid') ||
+    lower.includes('api_key_invalid') ||
+    lower.includes('api key expired') ||
+    lower.includes('invalid api key')
+  ) {
+    return 'api_key';
+  }
+
+  if (
+    lower.includes('please ensure that multiturn requests alternate') ||
+    lower.includes('alternate between user and model') ||
+    lower.includes('first content should be with role') ||
+    (lower.includes('contents') && lower.includes('role') && (lower.includes('user') || lower.includes('model')))
+  ) {
+    return 'role_sequence';
+  }
+
+  if (
+    lower.includes('context limit') ||
+    lower.includes('context length') ||
+    lower.includes('too many tokens') ||
+    lower.includes('input is too long') ||
+    lower.includes('prompt is too long') ||
+    lower.includes('request payload size exceeds') ||
+    (lower.includes('token') && (lower.includes('exceed') || lower.includes('maximum') || lower.includes('limit')))
+  ) {
+    return 'context_limit';
+  }
+
+  if (
+    lower.includes('model not found') ||
+    lower.includes('model_unsupported') ||
+    lower.includes('unsupported model') ||
+    lower.includes('not supported for generatecontent') ||
+    lower.includes('not supported by this model') ||
+    (lower.includes('model') && lower.includes('not supported')) ||
+    (lower.includes('models/') && lower.includes('not found'))
+  ) {
+    return 'model_unsupported';
+  }
+
+  return 'unknown_bad_request';
+}
 
 async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled: boolean): Promise<void> {
   if (!rateLimitingEnabled) {
@@ -144,7 +180,7 @@ async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled:
   }
 
   const rpm = GEMINI_RPM_LIMITS[model] || 5;
-  const minimumDelayMs = Math.ceil(60000 / rpm) + 100; 
+  const minimumDelayMs = Math.ceil(60000 / rpm) + 100;
 
   const now = Date.now();
   const timeSinceLastRequest = now - lastRequestTime;
@@ -178,246 +214,109 @@ interface GeminiContent {
   parts: Array<{ text: string }>;
 }
 
-export class GeminiProvider {
-  private dbManager: DatabaseManager;
-  private sessionManager: SessionManager;
+interface GeminiConfig {
+  apiKey: string;
+  model: GeminiModel;
+  rateLimitingEnabled: boolean;
+}
+
+export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
+  protected readonly providerName = 'Gemini';
+  protected readonly syntheticIdPrefix = 'gemini';
+  protected readonly forwardEmptyMessageResponse = false;
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
-    this.dbManager = dbManager;
-    this.sessionManager = sessionManager;
+    super(dbManager, sessionManager);
   }
 
-  async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
-    const { apiKey, model, rateLimitingEnabled } = this.getGeminiConfig();
-
-    if (!apiKey) {
-      throw new Error('Gemini API key not configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
-    }
-
-    if (!session.memorySessionId) {
-      const syntheticMemorySessionId = `gemini-${session.contentSessionId}-${Date.now()}`;
-      session.memorySessionId = syntheticMemorySessionId;
-      this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, syntheticMemorySessionId);
-      logger.info('SESSION', `MEMORY_ID_GENERATED | sessionDbId=${session.sessionDbId} | provider=Gemini`);
-    }
-
-    const mode = ModeManager.getInstance().getActiveMode();
-    const initPrompt = session.lastPromptNumber === 1
-      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
-      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
-
-    session.conversationHistory.push({ role: 'user', content: initPrompt });
-    let initResponse: { content: string; tokensUsed?: number };
-    try {
-      initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
-    } catch (error: unknown) {
-      if (error instanceof Error) {
-        logger.error('SDK', 'Gemini init query failed', { sessionId: session.sessionDbId, model }, error);
-      } else {
-        logger.error('SDK', 'Gemini init query failed with non-Error', { sessionId: session.sessionDbId, model }, new Error(String(error)));
-      }
-      return this.handleGeminiError(error, session, worker);
-    }
-
-    if (initResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
-      const tokensUsed = initResponse.tokensUsed || 0;
-      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);  
-      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-      await processAgentResponse(initResponse.content, session, this.dbManager, this.sessionManager, worker, tokensUsed, null, 'Gemini', undefined, model);
-    } else {
-      logger.error('SDK', 'Empty Gemini init response - session may lack context', { sessionId: session.sessionDbId, model });
-    }
-
-    try {
-      await this.processMessageLoop(session, worker, apiKey, model, rateLimitingEnabled, mode);
-    } catch (error: unknown) {
-      if (error instanceof Error) {
-        logger.error('SDK', 'Gemini message loop failed', { sessionId: session.sessionDbId, model }, error);
-      } else {
-        logger.error('SDK', 'Gemini message loop failed with non-Error', { sessionId: session.sessionDbId, model }, new Error(String(error)));
-      }
-      return this.handleGeminiError(error, session, worker);
-    }
-
-    const sessionDuration = Date.now() - session.startTime;
-    logger.success('SDK', 'Gemini agent completed', {
-      sessionId: session.sessionDbId,
-      duration: `${(sessionDuration / 1000).toFixed(1)}s`,
-      historyLength: session.conversationHistory.length
-    });
+  protected getConfig(): GeminiConfig {
+    return this.getGeminiConfig();
   }
 
-  private async processMessageLoop(
-    session: ActiveSession,
-    worker: WorkerRef | undefined,
-    apiKey: string,
-    model: GeminiModel,
-    rateLimitingEnabled: boolean,
-    mode: ModeConfig
-  ): Promise<void> {
-    let lastCwd: string | undefined;
-
-    for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
-      session.pendingAgentId = message.agentId ?? null;
-      session.pendingAgentType = message.agentType ?? null;
-
-      if (message.cwd) {
-        lastCwd = message.cwd;
-      }
-      const originalTimestamp = session.earliestPendingTimestamp;
-
-      if (message.type === 'observation') {
-        await this.processObservationMessage(session, message, worker, apiKey, model, rateLimitingEnabled, originalTimestamp, lastCwd);
-      } else if (message.type === 'summarize') {
-        await this.processSummaryMessage(session, message, worker, apiKey, model, rateLimitingEnabled, mode, originalTimestamp, lastCwd);
-      }
-    }
+  protected missingApiKeyError(): Error {
+    return new Error('Gemini API key not configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
   }
 
-  private async processObservationMessage(
-    session: ActiveSession,
-    message: { type: string; prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; cwd?: string },
-    worker: WorkerRef | undefined,
-    apiKey: string,
-    model: GeminiModel,
-    rateLimitingEnabled: boolean,
-    originalTimestamp: number | null,
-    lastCwd: string | undefined
-  ): Promise<void> {
-    if (message.prompt_number !== undefined) {
-      session.lastPromptNumber = message.prompt_number;
-    }
-
-    if (!session.memorySessionId) {
-      throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
-    }
-
-    const obsPrompt = buildObservationPrompt({
-      id: 0,
-      tool_name: message.tool_name!,
-      tool_input: JSON.stringify(message.tool_input),
-      tool_output: JSON.stringify(message.tool_response),
-      created_at_epoch: originalTimestamp ?? Date.now(),
-      cwd: message.cwd
-    });
-
-    session.conversationHistory.push({ role: 'user', content: obsPrompt });
-    const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
-
-    let tokensUsed = 0;
-    if (obsResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
-      tokensUsed = obsResponse.tokensUsed || 0;
-      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-    }
-
-    if (obsResponse.content) {
-      await processAgentResponse(obsResponse.content, session, this.dbManager, this.sessionManager, worker, tokensUsed, originalTimestamp, 'Gemini', lastCwd, model);
-    } else {
-      logger.warn('SDK', 'Empty Gemini observation response, leaving queue intact', {
-        sessionId: session.sessionDbId
-      });
-    }
+  protected estimateTokens(text: string): number {
+    return estimateTokens(text);
   }
 
-  private async processSummaryMessage(
-    session: ActiveSession,
-    message: { type: string; last_assistant_message?: string },
-    worker: WorkerRef | undefined,
-    apiKey: string,
-    model: GeminiModel,
-    rateLimitingEnabled: boolean,
-    mode: ModeConfig,
-    originalTimestamp: number | null,
-    lastCwd: string | undefined
-  ): Promise<void> {
-    if (!session.memorySessionId) {
-      throw new Error('Cannot process summary: memorySessionId not yet captured. This session may need to be reinitialized.');
-    }
-
-    const summaryPrompt = buildSummaryPrompt({
-      id: session.sessionDbId,
-      memory_session_id: session.memorySessionId,
-      project: session.project,
-      user_prompt: session.userPrompt,
-      last_assistant_message: message.last_assistant_message || ''
-    }, mode);
-
-    session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-    const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
-
-    let tokensUsed = 0;
-    if (summaryResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
-      tokensUsed = summaryResponse.tokensUsed || 0;
-      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-    }
-
-    if (summaryResponse.content) {
-      await processAgentResponse(summaryResponse.content, session, this.dbManager, this.sessionManager, worker, tokensUsed, originalTimestamp, 'Gemini', lastCwd, model);
-    } else {
-      logger.warn('SDK', 'Empty Gemini summary response, leaving queue intact', {
-        sessionId: session.sessionDbId
-      });
-    }
-  }
-
-  private handleGeminiError(error: unknown, session: ActiveSession, _worker?: WorkerRef): never {
-    if (isAbortError(error)) {
-      logger.warn('SDK', 'Gemini agent aborted', { sessionId: session.sessionDbId });
-      throw error;
-    }
-
-    logger.failure('SDK', 'Gemini agent error', { sessionDbId: session.sessionDbId }, error instanceof Error ? error : new Error(String(error)));
-    throw error;
-  }
-
-  private truncateHistory(history: ConversationMessage[]): ConversationMessage[] {
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-
-    const MAX_CONTEXT_MESSAGES = parseInt(settings.CLAUDE_MEM_GEMINI_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
-    const MAX_ESTIMATED_TOKENS = parseInt(settings.CLAUDE_MEM_GEMINI_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
-
-    if (history.length <= MAX_CONTEXT_MESSAGES) {
-      const totalTokens = history.reduce((sum, m) => sum + estimateTokens(m.content), 0);
-      if (totalTokens <= MAX_ESTIMATED_TOKENS) {
-        return history;
-      }
-    }
-
-    const truncated: ConversationMessage[] = [];
-    let tokenCount = 0;
-
-    for (let i = history.length - 1; i >= 0; i--) {
-      const msg = history[i];
-      const msgTokens = estimateTokens(msg.content);
-
-      if (truncated.length > 0 && (truncated.length >= MAX_CONTEXT_MESSAGES || tokenCount + msgTokens > MAX_ESTIMATED_TOKENS)) {
-        logger.warn('SDK', 'Context window truncated to prevent runaway costs', {
-          originalMessages: history.length,
-          keptMessages: truncated.length,
-          droppedMessages: i + 1,
-          estimatedTokens: tokenCount,
-          tokenLimit: MAX_ESTIMATED_TOKENS
-        });
-        break;
-      }
-
-      truncated.unshift(msg);  
-      tokenCount += msgTokens;
-    }
-
-    return truncated;
+  protected buildLastUsage(result: ProviderQueryResult): ActiveSession['lastUsage'] {
+    // Both sides or nothing: a backend reporting only one of the two counts
+    // must not produce a half-real event (input=0 → compression_ratio 0.0).
+    return typeof result.inputTokens === 'number' && typeof result.outputTokens === 'number'
+      ? { input: result.inputTokens, output: result.outputTokens }
+      : null;
   }
 
   private conversationToGeminiContents(history: ConversationMessage[]): GeminiContent[] {
-    return history.map(msg => ({
-      role: msg.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: msg.content }]
-    }));
+    const contents: GeminiContent[] = [];
+    let newestNonEmptyContent: string | null = null;
+
+    for (const msg of history) {
+      const trimmed = msg.content.trim();
+      if (trimmed.length > 0) {
+        newestNonEmptyContent = trimmed;
+      }
+    }
+
+    for (const msg of history) {
+      if (!msg.content.trim()) {
+        continue;
+      }
+
+      const role = msg.role === 'assistant' ? 'model' : 'user';
+
+      if (contents.length === 0 && role === 'model') {
+        continue;
+      }
+
+      const previous = contents[contents.length - 1];
+      if (previous?.role === role) {
+        previous.parts[0].text = `${previous.parts[0].text}\n\n${msg.content}`;
+      } else {
+        contents.push({
+          role,
+          parts: [{ text: msg.content }]
+        });
+      }
+    }
+
+    if (contents.length === 0) {
+      return [{
+        role: 'user',
+        parts: [{ text: newestNonEmptyContent ?? GEMINI_EMPTY_HISTORY_FALLBACK }]
+      }];
+    }
+
+    return contents;
+  }
+
+  protected async query(history: ConversationMessage[], config: GeminiConfig): Promise<ProviderQueryResult> {
+    return this.queryGeminiMultiTurn(history, config.apiKey, config.model, config.rateLimitingEnabled);
+  }
+
+  private fetchGenerateContent(
+    url: string,
+    contents: GeminiContent[],
+    priorRequestId: string | null,
+    attemptSignal: AbortSignal
+  ): Promise<Response> {
+    return fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
+      },
+      body: JSON.stringify({
+        contents,
+        generationConfig: {
+          temperature: 0.3,  // Lower temperature for structured extraction
+          maxOutputTokens: 4096,
+        },
+      }),
+      signal: attemptSignal,
+    });
   }
 
   private async queryGeminiMultiTurn(
@@ -425,14 +324,12 @@ export class GeminiProvider {
     apiKey: string,
     model: GeminiModel,
     rateLimitingEnabled: boolean
-  ): Promise<{ content: string; tokensUsed?: number }> {
-    const truncatedHistory = this.truncateHistory(history);
-    const contents = this.conversationToGeminiContents(truncatedHistory);
-    const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
+  ): Promise<ProviderQueryResult> {
+    const contents = this.conversationToGeminiContents(history);
+    const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
 
     logger.debug('SDK', `Querying Gemini multi-turn (${model})`, {
-      turns: truncatedHistory.length,
-      totalTurns: history.length,
+      turns: history.length,
       totalChars
     });
 
@@ -446,25 +343,12 @@ export class GeminiProvider {
     const data = await withRetry<GeminiResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
-          },
-          body: JSON.stringify({
-            contents,
-            generationConfig: {
-              temperature: 0.3,  // Lower temperature for structured extraction
-              maxOutputTokens: 4096,
-            },
-          }),
-          signal: attemptSignal,
-        });
+        response = await this.fetchGenerateContent(url, contents, priorRequestId, attemptSignal);
       } catch (networkError: unknown) {
         // Network failures, aborts, DNS, etc.
+        const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         throw classifyGeminiError({
-          cause: networkError,
+          cause: err,
         });
       }
 
@@ -481,7 +365,7 @@ export class GeminiProvider {
           status: response.status,
           bodyText: errorBody,
           headers: response.headers,
-          cause: new Error(`Gemini API error: ${response.status} - ${errorBody}`),
+          cause: new Error(`Gemini API error (status ${response.status})`),
           ...(requestId ? { requestId } : {}),
         });
       }
@@ -497,24 +381,27 @@ export class GeminiProvider {
     const content = data.candidates[0].content.parts[0].text;
     const tokensUsed = data.usageMetadata?.totalTokenCount;
 
-    return { content, tokensUsed };
+    return {
+      content,
+      tokensUsed,
+      inputTokens: data.usageMetadata?.promptTokenCount,
+      outputTokens: data.usageMetadata?.candidatesTokenCount,
+    };
   }
 
-  private getGeminiConfig(): { apiKey: string; model: GeminiModel; rateLimitingEnabled: boolean } {
+  private getGeminiConfig(): GeminiConfig {
     const settingsPath = paths.settings();
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
     const apiKey = settings.CLAUDE_MEM_GEMINI_API_KEY || getCredential('GEMINI_API_KEY') || '';
 
-    const defaultModel: GeminiModel = 'gemini-2.5-flash';
+    const defaultModel: GeminiModel = 'gemini-flash-latest';
     const configuredModel = settings.CLAUDE_MEM_GEMINI_MODEL || defaultModel;
     const validModels: GeminiModel[] = [
-      'gemini-2.5-flash-lite',
-      'gemini-2.5-flash',
-      'gemini-2.5-pro',
-      'gemini-2.0-flash',
-      'gemini-2.0-flash-lite',
-      'gemini-3-flash',
+      'gemini-flash-latest',
+      'gemini-flash-lite-latest',
+      'gemini-3.5-flash',
+      'gemini-3.1-flash-lite',
       'gemini-3-flash-preview',
     ];
 

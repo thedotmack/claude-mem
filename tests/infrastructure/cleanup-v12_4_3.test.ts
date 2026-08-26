@@ -1,11 +1,12 @@
 
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import * as fs from 'fs';
 import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, readFileSync, readdirSync } from 'fs';
 import path from 'path';
 import { tmpdir } from 'os';
 import { Database } from 'bun:sqlite';
 import { runOneTimeV12_4_3Cleanup } from '../../src/services/infrastructure/CleanupV12_4_3.js';
-import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
+import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { OBSERVER_SESSIONS_PROJECT } from '../../src/shared/paths.js';
 import { logger } from '../../src/utils/logger.js';
 
@@ -25,38 +26,39 @@ function restoreLogger(): void {
   loggerSpies = [];
 }
 
-function seedDatabase(dbPath: string, opts: { observerSessions: number; stuckCount: number }): { observerSessionDbIds: number[]; keepSessionDbId: number } {
-  const seed = new ClaudeMemDatabase(dbPath);
-  const db = seed.db;
-  const now = new Date().toISOString();
-  const epoch = Date.now();
+function makeObservation(title: string) {
+  return {
+    type: 'discovery',
+    title,
+    subtitle: null,
+    facts: [],
+    narrative: title,
+    concepts: [],
+    files_read: [],
+    files_modified: [],
+  };
+}
 
-  const insertSession = db.prepare(
-    `INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch)
-     VALUES (?, ?, ?, ?, ?)`
-  );
-  const insertPrompt = db.prepare(
-    `INSERT INTO user_prompts (content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
-     VALUES (?, 1, ?, ?, ?)`
-  );
-  const insertObservation = db.prepare(
-    `INSERT INTO observations (memory_session_id, project, type, text, created_at, created_at_epoch)
-     VALUES (?, ?, 'discovery', ?, ?, ?)`
-  );
+function seedDatabase(dbPath: string, opts: { observerSessions: number; stuckCount: number }): { observerSessionDbIds: number[]; keepSessionDbId: number } {
+  const store = new SessionStore(dbPath);
+  const epoch = Date.now();
 
   const observerSessionDbIds: number[] = [];
   for (let i = 0; i < opts.observerSessions; i++) {
-    const result = insertSession.run(`obs-content-${i}`, `obs-memory-${i}`, OBSERVER_SESSIONS_PROJECT, now, epoch);
-    observerSessionDbIds.push(Number(result.lastInsertRowid));
-    insertPrompt.run(`obs-content-${i}`, `prompt ${i}`, now, epoch);
-    insertObservation.run(`obs-memory-${i}`, OBSERVER_SESSIONS_PROJECT, `obs ${i}`, now, epoch);
+    const sessionDbId = store.createSDKSession(`obs-content-${i}`, OBSERVER_SESSIONS_PROJECT, `prompt ${i}`);
+    // Cascade rows depend on memory_session_id being set: createSDKSession inserts NULL.
+    store.updateMemorySessionId(sessionDbId, `obs-memory-${i}`);
+    observerSessionDbIds.push(sessionDbId);
+    store.saveUserPrompt(`obs-content-${i}`, 1, `prompt ${i}`);
+    store.storeObservation(`obs-memory-${i}`, OBSERVER_SESSIONS_PROJECT, makeObservation(`obs ${i}`));
   }
 
-  const keepResult = insertSession.run('keep-content', 'keep-memory', 'real-project', now, epoch);
-  const keepSessionDbId = Number(keepResult.lastInsertRowid);
-  insertPrompt.run('keep-content', 'survives', now, epoch);
+  const keepSessionDbId = store.createSDKSession('keep-content', 'real-project', 'survives');
+  store.updateMemorySessionId(keepSessionDbId, 'keep-memory');
+  store.saveUserPrompt('keep-content', 1, 'survives');
 
-  const insertPending = db.prepare(
+  // pending_messages has no SessionStore store method — seed via the raw handle.
+  const insertPending = store.db.prepare(
     `INSERT INTO pending_messages (session_db_id, content_session_id, message_type, status, created_at_epoch)
      VALUES (?, 'keep-content', 'observation', 'processing', ?)`
   );
@@ -64,7 +66,7 @@ function seedDatabase(dbPath: string, opts: { observerSessions: number; stuckCou
     insertPending.run(keepSessionDbId, epoch);
   }
 
-  seed.close();
+  store.close();
   return { observerSessionDbIds, keepSessionDbId };
 }
 
@@ -159,6 +161,54 @@ describe('runOneTimeV12_4_3Cleanup', () => {
     runOneTimeV12_4_3Cleanup(tmpDataDir);
     const backupsAfterSecond = readdirSync(path.join(tmpDataDir, 'backups'));
     expect(backupsAfterSecond).toEqual(backupsAfterFirst);
+  });
+
+  it('proceeds with cleanup when statfsSync returns non-credible values (Bun darwin-x64 #31133)', () => {
+    // Reproduce the Bun 1.3.14 darwin-x64 statfs misalignment: bsize comes back
+    // as 0 and the other fields are shifted by one slot.
+    // Before the defensive patch, this caused the cleanup to compute
+    // free = bavail * bsize = 0 and skip with a misleading "Insufficient disk"
+    // error. After the patch, the gate should be bypassed with a WARN and the
+    // cleanup should run to completion.
+    const dbPath = path.join(tmpDataDir, 'claude-mem.db');
+    seedDatabase(dbPath, { observerSessions: 2, stuckCount: 10 });
+
+    const statfsSpy = spyOn(fs, 'statfsSync').mockImplementation(() => ({
+      type: 0,
+      bsize: 0, // ← the bug: should be 4096 on APFS
+      blocks: 4096,
+      bfree: 1048576,
+      bavail: 977028249,
+      files: 0,
+      ffree: 0,
+    }) as unknown as ReturnType<typeof fs.statfsSync>);
+
+    try {
+      runOneTimeV12_4_3Cleanup(tmpDataDir);
+    } finally {
+      statfsSpy.mockRestore();
+    }
+
+    const markerPath = path.join(tmpDataDir, '.cleanup-v12.4.3-applied');
+    expect(existsSync(markerPath)).toBe(true);
+    const payload = JSON.parse(readFileSync(markerPath, 'utf8'));
+    expect(payload.counts.observerSessions).toBe(2);
+    expect(payload.counts.stuckPendingMessages).toBe(10);
+    expect(payload.backupPath).toBeTruthy();
+    expect(existsSync(payload.backupPath)).toBe(true);
+
+    // Guard against the spy silently failing to intercept the named ESM import
+    // inside CleanupV12_4_3.ts. If the production code is still calling the
+    // real statfsSync (which returns ~1 TB free on this machine), the cleanup
+    // still completes and every assertion above passes vacuously. The WARN
+    // log line is only emitted on the defensive branch, so asserting on it
+    // disambiguates "spy worked, defensive branch fired" from "spy silently
+    // bypassed, normal branch fired".
+    expect(logger.warn).toHaveBeenCalledWith(
+      'SYSTEM',
+      expect.stringContaining('non-credible'),
+      expect.objectContaining({ bsize: 0 }),
+    );
   });
 
   it('honors CLAUDE_MEM_SKIP_CLEANUP_V12_4_3=1 by exiting without writing the marker', () => {

@@ -9,7 +9,7 @@ import { buildIsolatedEnvWithFreshOAuth, getAuthMethodDescription } from '../../
 import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
-import { processAgentResponse, type WorkerRef } from './agents/index.js';
+import { processAgentResponse, snapshotResponseContext, type WorkerRef } from './agents/index.js';
 import {
   createSdkSpawnFactory,
   getSdkProcessForSession,
@@ -25,7 +25,11 @@ import {
 
 // @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { buildHardenedSdkOptions } from '../../sdk/hardened-options.js';
 import { ClassifiedProviderError } from './provider-errors.js';
+import { resolveTierAlias } from './model-aliases.js';
+import { telemetryBuffer } from '../telemetry/buffer.js';
+import { clearDependencyStatus, recordClaudeCliSetupRequired } from '../../shared/dependency-health.js';
 
 /**
  * Module-scoped guard so the "effort parameter" hint only fires once per
@@ -54,11 +58,13 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   // Executable / spawn issues — unrecoverable, no point retrying.
   if (
     message.includes('Claude executable not found') ||
+    message.includes('Every Claude CLI found is too old') ||
     message.includes('CLAUDE_CODE_PATH') ||
+    (message.includes('desktop app') && message.includes('headless mode')) ||
     message.includes('ENOENT') ||
     message.startsWith('spawn ')
   ) {
-    return new ClassifiedProviderError(message, { kind: 'unrecoverable', cause: err });
+    return new ClassifiedProviderError(message, { kind: 'setup_required', cause: err });
   }
 
   // Anthropic auth failures.
@@ -134,6 +140,19 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
     );
   }
 
+  // Status-less Anthropic 400s — SDK wrapping can drop `.status`, leaving only
+  // the message or an `invalid_request_error` body; classify those as
+  // unrecoverable so the worker stops retrying a permanent config error (#2656).
+  // The status guard keeps statused 4xx/5xx on their own branches.
+  if (
+    typeof errAny.status !== 'number' &&
+    (errAny.error?.type === 'invalid_request_error' ||
+      /\bthe provided model identifier is invalid\b/i.test(message) ||
+      /\binvalid_request_error\b/i.test(message))
+  ) {
+    return new ClassifiedProviderError(message, { kind: 'unrecoverable', cause: err });
+  }
+
   // Server errors → transient.
   if (typeof errAny.status === 'number' && errAny.status >= 500 && errAny.status < 600) {
     return new ClassifiedProviderError(message, { kind: 'transient', cause: err });
@@ -153,38 +172,44 @@ export class ClaudeProvider {
     this.sessionManager = sessionManager;
   }
 
-  private resetSessionForFreshStart(session: ActiveSession): void {
-    this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
-    session.memorySessionId = null;
-    session.forceInit = true;
-  }
-
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     const cwdTracker = { lastCwd: undefined as string | undefined };
+    const observerExtraArgs = ['--no-session-persistence'];
 
     // Find and validate Claude executable (shared utility, closes #2222)
-    const claudePath = findClaudeExecutable('SDK');
+    let claudePath: string;
+    try {
+      claudePath = findClaudeExecutable('SDK');
+      clearDependencyStatus('claude_cli');
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      const classified = classifyClaudeError(err);
+      if (classified.kind === 'setup_required') {
+        recordClaudeCliSetupRequired(classified.message);
+        throw classified;
+      }
+      throw err;
+    }
 
     const modelId = session.modelOverride || this.getModelId();
-    const disallowedTools = [
-      'Bash',           // Prevent infinite loops
-      'Read',           // No file reading
-      'Write',          // No file writing
-      'Edit',           // No file editing
-      'Grep',           // No code searching
-      'Glob',           // No file pattern matching
-      'WebFetch',       // No web fetching
-      'WebSearch',      // No web searching
-      'Task',           // No spawning sub-agents
-      'NotebookEdit',   // No notebook editing
-      'AskUserQuestion',// No asking questions
-      'TodoWrite'       
-    ];
+    session.lastModelId = typeof modelId === 'string' ? modelId : undefined;
+    // Each query() starts a fresh SDK process, so its total_cost_usd
+    // accumulator starts from zero — reset the per-turn cost baseline with it.
+    session.lastResultTotalCostUsd = null;
 
-    const messageGenerator = this.createMessageGenerator(session, cwdTracker);
+    const activeResponseContext = { current: snapshotResponseContext(session) };
+    const messageGenerator = this.createMessageGenerator(session, cwdTracker, activeResponseContext);
 
-    const hasRealMemorySessionId = !!session.memorySessionId;
-    const shouldResume = hasRealMemorySessionId && session.lastPromptNumber > 1 && !session.forceInit;
+    if (session.memorySessionId) {
+      // Observer spawns intentionally opt out of Claude transcript persistence.
+      // A carried session_id from an earlier no-persist spawn is therefore not
+      // safe to feed back into `resume` on a later fresh process.
+      this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
+      session.memorySessionId = null;
+    }
+
+    const hasRealMemorySessionId = false;
+    const shouldResume = false;
 
     if (session.forceInit) {
       logger.info('SDK', 'forceInit flag set, starting fresh SDK session', {
@@ -196,51 +221,54 @@ export class ClaudeProvider {
 
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const maxConcurrent = parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2;
-    await waitForSlot(maxConcurrent, session.abortController.signal);
-
-    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
-    const authMethod = getAuthMethodDescription();
-
-    logger.info('SDK', 'Starting SDK query', {
-      sessionDbId: session.sessionDbId,
-      contentSessionId: session.contentSessionId,
-      memorySessionId: session.memorySessionId ?? undefined,
-      hasRealMemorySessionId,
-      shouldResume,
-      resume_parameter: shouldResume ? session.memorySessionId : '(none - fresh start)',
-      lastPromptNumber: session.lastPromptNumber,
-      authMethod
-    });
-
-    if (session.lastPromptNumber > 1) {
-      logger.debug('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | hasRealMemorySessionId=${hasRealMemorySessionId} | shouldResume=${shouldResume} | resumeWith=${shouldResume ? session.memorySessionId : 'NONE'}`);
-    } else {
-      const hasStaleMemoryId = hasRealMemorySessionId;
-      logger.debug('SDK', `[ALIGNMENT] First Prompt (INIT) | contentSessionId=${session.contentSessionId} | prompt#=${session.lastPromptNumber} | hasStaleMemoryId=${hasStaleMemoryId} | action=START_FRESH | Will capture new memorySessionId from SDK response`);
-      if (hasStaleMemoryId) {
-        logger.warn('SDK', `Skipping resume for INIT prompt despite existing memorySessionId=${session.memorySessionId} - SDK context was lost (worker restart or crash recovery)`);
-      }
-    }
-
-    ensureDir(OBSERVER_SESSIONS_DIR);
-    const queryResult = query({
-      prompt: messageGenerator,
-      options: {
-        model: modelId,
-        cwd: OBSERVER_SESSIONS_DIR,
-        ...(shouldResume && session.memorySessionId ? { resume: session.memorySessionId } : {}),
-        disallowedTools,
-        abortController: session.abortController,
-        pathToClaudeCodeExecutable: claudePath,
-        spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId),
-        env: isolatedEnv,  // Use isolated credentials from ~/.claude-mem/.env, not process.env
-        mcpServers: {},
-        settingSources: [],
-        strictMcpConfig: true,
-      }
-    });
+    // waitForSlot reserves the slot it grants (#3287). The spawn factory
+    // releases the reservation once the spawned process is a registry record;
+    // the finally below covers every path where the spawn never happens
+    // (OAuth failure, abort, query() throwing). release() is idempotent.
+    const slotReservation = await waitForSlot(maxConcurrent, session.abortController.signal);
 
     try {
+      const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
+      const authMethod = getAuthMethodDescription();
+
+      logger.info('SDK', 'Starting SDK query', {
+        sessionDbId: session.sessionDbId,
+        contentSessionId: session.contentSessionId,
+        memorySessionId: session.memorySessionId ?? undefined,
+        hasRealMemorySessionId,
+        shouldResume,
+        resume_parameter: shouldResume ? session.memorySessionId : '(none - fresh start)',
+        lastPromptNumber: session.lastPromptNumber,
+        authMethod
+      });
+
+      if (session.lastPromptNumber > 1) {
+        logger.debug('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | hasRealMemorySessionId=${hasRealMemorySessionId} | shouldResume=${shouldResume} | resumeWith=${shouldResume ? session.memorySessionId : 'NONE'}`);
+      } else {
+        const hasStaleMemoryId = hasRealMemorySessionId;
+        logger.debug('SDK', `[ALIGNMENT] First Prompt (INIT) | contentSessionId=${session.contentSessionId} | prompt#=${session.lastPromptNumber} | hasStaleMemoryId=${hasStaleMemoryId} | action=START_FRESH | Will capture new memorySessionId from SDK response`);
+        if (hasStaleMemoryId) {
+          logger.warn('SDK', `Skipping resume for INIT prompt despite existing memorySessionId=${session.memorySessionId} - SDK context was lost (worker restart or crash recovery)`);
+        }
+      }
+
+      ensureDir(OBSERVER_SESSIONS_DIR);
+      const queryResult = query({
+        prompt: messageGenerator,
+        options: buildHardenedSdkOptions({
+          source: 'Observer',
+          sessionDbId: session.sessionDbId,
+          contentSessionId: session.contentSessionId,
+          project: session.project,
+          model: modelId,
+          env: isolatedEnv,  // Use isolated credentials from ~/.claude-mem/.env, not process.env
+          pathToClaudeCodeExecutable: claudePath,
+          abortController: session.abortController,
+          ...(shouldResume && session.memorySessionId ? { resume: session.memorySessionId } : {}),
+          spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId, slotReservation, observerExtraArgs),
+        }),
+      });
+
       for await (const message of queryResult) {
         // Quota-aware wall-clock guard (#2234): the SDK pushes `system` events
         // with subtype `rate_limit` carrying live subscription quota state.
@@ -303,15 +331,6 @@ export class ClaudeProvider {
             ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
             : typeof content === 'string' ? content : '';
 
-          if (textContent.includes('prompt is too long') ||
-              textContent.includes('context window')) {
-            logger.error('SDK', 'Context overflow detected - terminating session and forcing fresh start');
-            this.resetSessionForFreshStart(session);
-            session.abortReason = 'overflow';
-            session.abortController.abort();
-            return;
-          }
-
           const responseSize = textContent.length;
 
           const tokensBeforeResponse = session.cumulativeInputTokens + session.cumulativeOutputTokens;
@@ -324,6 +343,15 @@ export class ClaudeProvider {
             if (usage.cache_creation_input_tokens) {
               session.cumulativeInputTokens += usage.cache_creation_input_tokens;
             }
+
+            // Real per-response usage for telemetry (tokens_input includes the
+            // full context the model read: fresh + cache writes + cache reads).
+            session.lastUsage = {
+              input: (usage.input_tokens || 0) +
+                (usage.cache_creation_input_tokens || 0) +
+                (usage.cache_read_input_tokens || 0),
+              output: usage.output_tokens || 0,
+            };
 
             logger.debug('SDK', 'Token usage captured', {
               sessionId: session.sessionDbId,
@@ -350,14 +378,6 @@ export class ClaudeProvider {
             }, truncatedResponse);
           }
 
-          if (typeof textContent === 'string' && textContent.includes('Prompt is too long')) {
-            this.resetSessionForFreshStart(session);
-            logger.error('SDK', 'Context overflow — cleared memorySessionId so next spawn starts fresh', {
-              sessionDbId: session.sessionDbId
-            });
-            throw new Error('Claude session context overflow: prompt is too long');
-          }
-
           if (typeof textContent === 'string' && textContent.includes('Invalid API key')) {
             throw new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env');
           }
@@ -372,15 +392,67 @@ export class ClaudeProvider {
             originalTimestamp,
             'SDK',
             cwdTracker.lastCwd,
-            modelId
+            modelId,
+            activeResponseContext.current
           );
         }
 
-        if (message.type === 'result' && message.subtype === 'success') {
-          // Usage telemetry is captured at SDK level
+        if (message.type === 'result') {
+          // The result message carries the turn's finalized usage (per-turn,
+          // not cumulative — verified empirically against the SDK) plus a
+          // CUMULATIVE total_cost_usd; per-compression cost is the delta
+          // between consecutive results. The assistant message's
+          // usage.output_tokens is an early-streaming placeholder and must
+          // never feed telemetry.
+          const resultUsage = (message as any).usage as {
+            input_tokens?: number;
+            cache_creation_input_tokens?: number;
+            cache_read_input_tokens?: number;
+            output_tokens?: number;
+          } | undefined;
+          const totalCostUsd = (message as any).total_cost_usd as number | undefined;
+          let turnCostUsd: number | undefined;
+          if (typeof totalCostUsd === 'number') {
+            const prior = session.lastResultTotalCostUsd ?? 0;
+            // A total below the prior baseline means the SDK session restarted
+            // and its accumulator reset — the new total IS the turn's cost.
+            turnCostUsd = totalCostUsd >= prior ? totalCostUsd - prior : totalCostUsd;
+            session.lastResultTotalCostUsd = totalCostUsd;
+          }
+
+          const pending = session.pendingCompressionEvent;
+          if (pending) {
+            session.pendingCompressionEvent = null;
+            const finalInput = resultUsage
+              ? (resultUsage.input_tokens || 0) +
+                (resultUsage.cache_creation_input_tokens || 0) +
+                (resultUsage.cache_read_input_tokens || 0)
+              : undefined;
+            const finalOutput = resultUsage ? resultUsage.output_tokens || 0 : undefined;
+            telemetryBuffer.record('session_compressed', session.sessionDbId, {
+              ...pending,
+              tokens_input: finalInput,
+              tokens_output: finalOutput,
+              cost_usd: turnCostUsd,
+              compression_ratio:
+                finalInput && finalOutput
+                  ? Math.round((finalInput / finalOutput) * 100) / 100
+                  : undefined,
+            });
+          }
         }
       }
     } finally {
+      // Safety net for paths where the SDK never invoked the spawn factory;
+      // a leaked reservation would occupy an agent slot until worker restart.
+      slotReservation.release();
+      // A stashed compression event whose turn never reached a result message
+      // (abort/kill) still ships — without token fields, per the no-estimates
+      // rule — instead of being silently dropped.
+      if (session.pendingCompressionEvent) {
+        telemetryBuffer.record('session_compressed', session.sessionDbId, session.pendingCompressionEvent);
+        session.pendingCompressionEvent = null;
+      }
       const tracked = getSdkProcessForSession(session.sessionDbId);
       if (tracked && tracked.process.exitCode === null) {
         await ensureSdkProcessExit(tracked, 5000);
@@ -396,7 +468,8 @@ export class ClaudeProvider {
 
   private async *createMessageGenerator(
     session: ActiveSession,
-    cwdTracker: { lastCwd: string | undefined }
+    cwdTracker: { lastCwd: string | undefined },
+    activeResponseContext: { current: ReturnType<typeof snapshotResponseContext> }
   ): AsyncIterableIterator<SDKUserMessage> {
     const mode = ModeManager.getInstance().getActiveMode();
 
@@ -412,9 +485,12 @@ export class ClaudeProvider {
     const initPrompt = isInitPrompt
       ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
+    activeResponseContext.current = snapshotResponseContext(session);
 
     session.conversationHistory.push({ role: 'user', content: initPrompt });
 
+    session.lastPromptSentAt = Date.now();
+    session.lastGeneratorSource = 'init';
     yield {
       type: 'user',
       message: {
@@ -447,9 +523,12 @@ export class ClaudeProvider {
           created_at_epoch: Date.now(),
           cwd: message.cwd
         });
+        activeResponseContext.current = snapshotResponseContext(session);
 
         session.conversationHistory.push({ role: 'user', content: obsPrompt });
 
+        session.lastPromptSentAt = Date.now();
+        session.lastGeneratorSource = 'ingest';
         yield {
           type: 'user',
           message: {
@@ -468,9 +547,12 @@ export class ClaudeProvider {
           user_prompt: session.userPrompt,
           last_assistant_message: message.last_assistant_message || ''
         }, mode);
+        activeResponseContext.current = snapshotResponseContext(session);
 
         session.conversationHistory.push({ role: 'user', content: summaryPrompt });
 
+        session.lastPromptSentAt = Date.now();
+        session.lastGeneratorSource = 'summarize';
         yield {
           type: 'user',
           message: {
@@ -488,6 +570,7 @@ export class ClaudeProvider {
   private getModelId(): string {
     const settingsPath = paths.settings();
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-    return settings.CLAUDE_MEM_MODEL;
+    // Resolve $TIER:<fast|smart|simple|summary> aliases at request time (#2289).
+    return resolveTierAlias(settings.CLAUDE_MEM_MODEL, settings);
   }
 }

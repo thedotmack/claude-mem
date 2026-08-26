@@ -63,11 +63,3 @@ export function notFoundHandler(req: Request, res: Response): void {
     `Cannot ${req.method} ${req.path}`
   ));
 }
-
-export function asyncHandler<T>(
-  fn: (req: Request, res: Response, next: NextFunction) => Promise<T>
-): (req: Request, res: Response, next: NextFunction) => void {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    Promise.resolve(fn(req, res, next)).catch(next);
-  };
-}

@@ -7,7 +7,14 @@ import {
   buildIsolatedEnv,
   buildIsolatedEnvWithFreshOAuth,
 } from '../src/shared/EnvManager.js';
+import { sanitizeEnv } from '../src/supervisor/env-sanitizer.js';
 import * as oauthToken from '../src/shared/oauth-token.js';
+// CJS interop: the check is a .cjs module exporting findViolations.
+import { createRequire } from 'module';
+const requireCjs = createRequire(import.meta.url);
+const { findViolations } = requireCjs('../scripts/check-spawn-env-discipline.cjs') as {
+  findViolations: () => Array<{ file: string; line: number }>;
+};
 
 /**
  * Tests for issue #2375: ANTHROPIC_BASE_URL must not leak from the parent
@@ -119,6 +126,25 @@ describe('Issue #2375: ANTHROPIC_BASE_URL env-var isolation', () => {
     expect(result.ANTHROPIC_AUTH_TOKEN).toBe('test-token');
   });
 
+  it('leaked process.env BASE_URL never reaches the OAuth-skip predicate', async () => {
+    // The root cause of #2375: a BASE_URL exported by the parent shell used to
+    // survive into isolatedEnv and trigger the OAuth-skip path, leaving the
+    // subprocess with no credentials at all. With BASE_URL in BLOCKED_ENV_VARS,
+    // the leak is stripped before the predicate runs, so OAuth lookup still
+    // fires (the real credential path) rather than being short-circuited.
+    process.env.ANTHROPIC_BASE_URL = 'https://leaked-from-shell.example';
+
+    const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken');
+    try {
+      const result = await buildIsolatedEnvWithFreshOAuth();
+      // The leaked BASE_URL must not be present (it was never re-injected from
+      // .env, which does not exist in this test).
+      expect(result.ANTHROPIC_BASE_URL).toBeUndefined();
+    } finally {
+      oauthSpy.mockRestore();
+    }
+  });
+
   it('bare .env BASE_URL alone does not trigger OAuth fetch', async () => {
     // A user with a tokenless gateway (e.g. mTLS at the network boundary)
     // configures BASE_URL only. The three-branch predicate must hit the
@@ -151,5 +177,64 @@ describe('Issue #2375: ANTHROPIC_BASE_URL env-var isolation', () => {
     } finally {
       oauthSpy.mockRestore();
     }
+  });
+});
+
+/**
+ * Issue #2357 (defense-in-depth): CLAUDE_CODE_EFFORT_LEVEL /
+ * CLAUDE_CODE_ALWAYS_ENABLE_EFFORT must never reach the SDK subprocess. The
+ * SDK forwards CLAUDE_CODE_EFFORT_LEVEL as the `effort` Messages API parameter;
+ * models that don't support it reject with a permanent HTTP 400. Two layers
+ * strip it: BLOCKED_ENV_VARS (buildIsolatedEnv) and the CLAUDE_CODE_* prefix
+ * filter (sanitizeEnv). These tests prove BOTH layers independently.
+ */
+describe('Issue #2357: CLAUDE_CODE_EFFORT_* env-var isolation', () => {
+  const ORIGINAL_EFFORT = process.env.CLAUDE_CODE_EFFORT_LEVEL;
+  const ORIGINAL_ALWAYS = process.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT;
+
+  afterEach(() => {
+    if (ORIGINAL_EFFORT === undefined) delete process.env.CLAUDE_CODE_EFFORT_LEVEL;
+    else process.env.CLAUDE_CODE_EFFORT_LEVEL = ORIGINAL_EFFORT;
+    if (ORIGINAL_ALWAYS === undefined) delete process.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT;
+    else process.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT = ORIGINAL_ALWAYS;
+  });
+
+  it('buildIsolatedEnv strips CLAUDE_CODE_EFFORT_LEVEL via BLOCKED_ENV_VARS (layer 1)', () => {
+    process.env.CLAUDE_CODE_EFFORT_LEVEL = 'MAX';
+    process.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT = 'true';
+
+    const result = buildIsolatedEnv();
+
+    expect(result.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
+    expect(result.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT).toBeUndefined();
+  });
+
+  it('sanitizeEnv(buildIsolatedEnv()) strips CLAUDE_CODE_EFFORT_LEVEL (both layers)', () => {
+    process.env.CLAUDE_CODE_EFFORT_LEVEL = 'MAX';
+
+    const result = sanitizeEnv(buildIsolatedEnv());
+
+    expect(result.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
+  });
+
+  it('sanitizeEnv alone strips CLAUDE_CODE_EFFORT_LEVEL via the CLAUDE_CODE_* prefix (layer 2)', () => {
+    const result = sanitizeEnv({ CLAUDE_CODE_EFFORT_LEVEL: 'MAX', PATH: '/usr/bin' });
+
+    expect(result.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
+    // Unrelated vars survive.
+    expect(result.PATH).toBe('/usr/bin');
+  });
+});
+
+/**
+ * Spawn-env discipline (plan 06 Phase 7): every env-bearing subprocess spawn in
+ * src/ must sanitize process.env before handing it to the child. This test runs
+ * the CI grep check inside the suite so a regression fails `bun test`, not just
+ * a separate lint step.
+ */
+describe('spawn-env discipline (CI guard)', () => {
+  it('no spawn site hands raw process.env to a child without sanitizeEnv', () => {
+    const violations = findViolations();
+    expect(violations).toEqual([]);
   });
 });

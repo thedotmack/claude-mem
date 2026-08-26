@@ -3,9 +3,9 @@ import { ThemeToggle } from './ThemeToggle';
 import { ThemePreference } from '../hooks/useTheme';
 import { GitHubStarsButton } from './GitHubStarsButton';
 import { useSpinningFavicon } from '../hooks/useSpinningFavicon';
+import { PRO_TRIAL_PITCH, PRO_TRIAL_SHORT, PRO_TRIAL_URL } from '../constants/promo';
 
 interface HeaderProps {
-  isConnected: boolean;
   projects: string[];
   currentFilter: string;
   onFilterChange: (filter: string) => void;
@@ -18,7 +18,6 @@ interface HeaderProps {
 }
 
 export function Header({
-  isConnected,
   projects,
   currentFilter,
   onFilterChange,
@@ -45,6 +44,23 @@ export function Header({
           </div>
           <span className="logo-text">claude-mem</span>
         </h1>
+        {/* Most people running the free plugin never learn the trial exists.
+            It sits beside the logo (not in .status) so it survives the
+            responsive rules that hide the icon links on tablet and mobile. */}
+        <a
+          className="pro-trial-cta"
+          href={PRO_TRIAL_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={PRO_TRIAL_PITCH}
+          aria-label={PRO_TRIAL_PITCH}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z" />
+          </svg>
+          <span className="pro-trial-cta-full">{PRO_TRIAL_PITCH}</span>
+          <span className="pro-trial-cta-short">{PRO_TRIAL_SHORT}</span>
+        </a>
       </div>
       <div className="status">
         <a

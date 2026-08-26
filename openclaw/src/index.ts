@@ -156,6 +156,11 @@ interface SSENewObservationEvent {
 
 type ConnectionState = "disconnected" | "connected" | "reconnecting";
 
+const DETAILED_FEED_TYPES = new Set(["security_alert", "security_note", "sensitive", "bugfix", "decision"]);
+const COMPACT_FEED_MAX_CHARS = 900;
+const DETAILED_FEED_MAX_CHARS = 2200;
+const DETAILED_FACT_LIMIT = 5;
+
 interface FeedEmojiConfig {
   primary?: string;
   claudeCode?: string;
@@ -397,11 +402,50 @@ function formatObservationMessage(
 ): string {
   const title = observation.title || "Untitled";
   const source = getSourceLabel(observation.project);
-  let message = `${source}\n**${title}**`;
+  const isDetailed = DETAILED_FEED_TYPES.has(observation.type);
+  const parts = [`${source}\n**${title}**`];
   if (observation.subtitle) {
-    message += `\n${observation.subtitle}`;
+    parts.push(truncateText(observation.subtitle, isDetailed ? 500 : 260));
   }
-  return message;
+
+  if (!isDetailed) {
+    return truncateText(parts.join("\n"), COMPACT_FEED_MAX_CHARS);
+  }
+
+  if (observation.narrative) {
+    parts.push(`Narrative\n${truncateText(observation.narrative, 900)}`);
+  }
+
+  const facts = parseStringArray(observation.facts).slice(0, DETAILED_FACT_LIMIT);
+  if (facts.length > 0) {
+    parts.push(`Facts\n${facts.map((fact) => `- ${truncateText(fact, 320)}`).join("\n")}`);
+  }
+
+  const concepts = parseStringArray(observation.concepts).slice(0, 8);
+  if (concepts.length > 0) {
+    parts.push(`Concepts: ${concepts.join(", ")}`);
+  }
+
+  return truncateText(parts.join("\n\n"), DETAILED_FEED_MAX_CHARS);
+}
+
+function truncateText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  const hardLimit = Math.max(0, maxChars - 3);
+  const truncated = value.slice(0, hardLimit);
+  const lastWhitespace = truncated.search(/\s+\S*$/);
+  const boundary = lastWhitespace > Math.floor(hardLimit * 0.65) ? lastWhitespace : hardLimit;
+  return `${truncated.slice(0, boundary).trimEnd()}...`;
+}
+
+function parseStringArray(value: string | null | undefined): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 const CHANNEL_SEND_MAP: Record<string, { namespace: string; functionName: string }> = {
@@ -700,28 +744,17 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     return null;
   }
 
-  api.on("session_start", async (_event, ctx) => {
-    const { contentSessionId } = rememberSessionContext(ctx);
-    api.logger.info(`[claude-mem] Session tracking initialized: ${contentSessionId}`);
-  });
-
-  api.on("message_received", async (event, ctx) => {
-    const { canonicalKey, contentSessionId } = rememberSessionContext(ctx);
-    api.logger.info(`[claude-mem] Message received — prompt capture deferred to before_agent_start: session=${canonicalKey} contentSessionId=${contentSessionId} hasContent=${Boolean(event.content)}`);
-  });
-
-  api.on("after_compaction", async (_event, ctx) => {
-    const { contentSessionId } = rememberSessionContext(ctx);
-    api.logger.info(`[claude-mem] Session preserved after compaction: ${contentSessionId}`);
-  });
-
-  api.on("before_agent_start", async (event, ctx) => {
+  // Centralized session-init POST. session_start, after_compaction, and
+  // before_agent_start each call this; the 2s dedup guard
+  // (shouldSkipDuplicatePromptInit) collapses the redundant inits a single
+  // user-message flow produces into one prompt record, while still ensuring a
+  // session is initialized even on flows that never reach before_agent_start.
+  async function initSessionOnce(ctx: EventContext, promptText: string, via: string): Promise<void> {
     const { contentSessionId } = rememberSessionContext(ctx);
     const projectName = getProjectName(ctx);
-    const promptText = event.prompt || "agent run";
 
     if (shouldSkipDuplicatePromptInit(contentSessionId, projectName, promptText)) {
-      api.logger.info(`[claude-mem] Skipping duplicate prompt init: contentSessionId=${contentSessionId} project=${projectName}`);
+      api.logger.info(`[claude-mem] Skipping duplicate prompt init: contentSessionId=${contentSessionId} project=${projectName} via=${via}`);
       return;
     }
 
@@ -731,7 +764,24 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       prompt: promptText,
     }, api.logger);
 
-    api.logger.info(`[claude-mem] Session initialized via before_agent_start: contentSessionId=${contentSessionId} project=${projectName}`);
+    api.logger.info(`[claude-mem] Session initialized via ${via}: contentSessionId=${contentSessionId} project=${projectName}`);
+  }
+
+  api.on("session_start", async (_event, ctx) => {
+    await initSessionOnce(ctx, "session start", "session_start");
+  });
+
+  api.on("message_received", async (event, ctx) => {
+    const { canonicalKey, contentSessionId } = rememberSessionContext(ctx);
+    api.logger.info(`[claude-mem] Message received — prompt capture deferred to before_agent_start: session=${canonicalKey} contentSessionId=${contentSessionId} hasContent=${Boolean(event.content)}`);
+  });
+
+  api.on("after_compaction", async (_event, ctx) => {
+    await initSessionOnce(ctx, "after compaction", "after_compaction");
+  });
+
+  api.on("before_agent_start", async (event, ctx) => {
+    await initSessionOnce(ctx, event.prompt || "agent run", "before_agent_start");
   });
 
   api.on("before_prompt_build", async (_event, ctx) => {
@@ -767,11 +817,11 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       toolResponseText = toolResponseText.slice(0, MAX_TOOL_RESPONSE_LENGTH);
     }
 
-    const workspaceDir = ctx.workspaceDir;
-
-    if (!workspaceDir) {
-      api.logger.warn(`[claude-mem] Skipping observation persist because workspaceDir is unavailable: session=${canonicalKey} tool=${toolName}`);
-      return;
+    // Fall back to the process cwd when the event carries no workspaceDir, so a
+    // missing ctx field never silently drops a captured observation.
+    const workspaceDir = ctx.workspaceDir || process.cwd();
+    if (!ctx.workspaceDir) {
+      api.logger.info(`[claude-mem] tool_result_persist missing workspaceDir; using process.cwd(): session=${canonicalKey} tool=${toolName}`);
     }
 
     workerPostFireAndForget(workerPort, "/api/sessions/observations", {

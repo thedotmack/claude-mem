@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import { resolveOpenRouterChatCompletionsUrl } from '../../../shared/openrouter-base-url.js';
+import { openRouterAttributionHeaders, OPENROUTER_APP_URL, OPENROUTER_APP_TITLE } from '../../../shared/openrouter-attribution.js';
 import { logger } from '../../../utils/logger.js';
 import {
   ServerClassifiedProviderError,
@@ -12,12 +14,19 @@ import type {
   ServerGenerationResult,
 } from './shared/types.js';
 
-const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const DEFAULT_MODEL = 'anthropic/claude-3.5-sonnet';
 
 export interface OpenRouterObservationProviderOptions {
   apiKey: string;
   model?: string;
+  /**
+   * Optional OpenAI-compatible base URL (#2382/#2590/#2622/#2393). When set,
+   * requests POST to `<baseUrl>/chat/completions` (or verbatim if it already
+   * ends in `/chat/completions`). When unset, the default OpenRouter endpoint
+   * is used — behavior unchanged. Examples: https://api.deepseek.com (DeepSeek),
+   * http://localhost:1234/v1 (LM Studio), a custom gateway base.
+   */
+  baseUrl?: string;
   maxOutputTokens?: number;
   siteUrl?: string;
   appName?: string;
@@ -34,6 +43,7 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
   readonly providerLabel = 'openrouter' as const;
   private readonly apiKey: string;
   private readonly model: string;
+  private readonly apiUrl: string;
   private readonly maxOutputTokens: number;
   private readonly siteUrl: string;
   private readonly appName: string;
@@ -47,10 +57,12 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
       });
     }
     this.apiKey = options.apiKey;
+    // Model is passed verbatim so arbitrary OpenAI-compatible ids work. #2393.
     this.model = options.model ?? DEFAULT_MODEL;
+    this.apiUrl = resolveOpenRouterChatCompletionsUrl(options.baseUrl);
     this.maxOutputTokens = options.maxOutputTokens ?? 4096;
-    this.siteUrl = options.siteUrl ?? 'https://github.com/thedotmack/claude-mem';
-    this.appName = options.appName ?? 'claude-mem';
+    this.siteUrl = options.siteUrl ?? OPENROUTER_APP_URL;
+    this.appName = options.appName ?? OPENROUTER_APP_TITLE;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -69,25 +81,11 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
 
     let response: Response;
     try {
-      response = await this.fetchImpl(OPENROUTER_API_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          'HTTP-Referer': this.siteUrl,
-          'X-Title': this.appName,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: this.model,
-          messages: [{ role: 'user', content: prompt }],
-          temperature: 0.3,
-          max_tokens: this.maxOutputTokens,
-        }),
-        signal,
-      });
+      response = await this.postChatCompletion(prompt, signal);
     } catch (networkError) {
+      const err = networkError instanceof Error ? networkError : new Error(String(networkError));
       throw classifyHttpProviderError({
-        cause: networkError,
+        cause: err,
         providerLabel: 'OpenRouter',
       });
     }
@@ -107,9 +105,10 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
     try {
       data = (await response.json()) as OpenRouterResponse;
     } catch (parseError) {
+      const err = parseError instanceof Error ? parseError : new Error(String(parseError));
       throw new ServerClassifiedProviderError('OpenRouter returned invalid JSON', {
         kind: 'parse_error',
-        cause: parseError,
+        cause: err,
       });
     }
 
@@ -140,12 +139,32 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
       modelId: this.model,
     };
   }
+
+  private postChatCompletion(prompt: string, signal?: AbortSignal): Promise<Response> {
+    return this.fetchImpl(this.apiUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        ...openRouterAttributionHeaders(this.siteUrl, this.appName),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: this.model,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.3,
+        max_tokens: this.maxOutputTokens,
+      }),
+      signal,
+    });
+  }
 }
 
 async function safeReadBody(response: Response): Promise<string> {
   try {
     return await response.text();
-  } catch {
+  } catch (readError) {
+    const err = readError instanceof Error ? readError : new Error(String(readError));
+    logger.warn('SDK', 'Failed to read OpenRouter error response body', { provider: 'openrouter' }, err);
     return '';
   }
 }

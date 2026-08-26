@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+import { logger } from '../../utils/logger.js';
 
 export interface PostgresConfig {
   connectionString: string;
@@ -64,7 +65,9 @@ function parseSsl(connectionString: string, env: NodeJS.ProcessEnv): boolean | {
     if (url.searchParams.get('sslmode') === 'require') {
       return { rejectUnauthorized: false };
     }
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.warn('DB', 'Failed to parse Postgres connection string for sslmode, defaulting SSL off', {}, err);
     return false;
   }
 

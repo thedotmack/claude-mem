@@ -1,6 +1,18 @@
-import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, spyOn, mock } from 'bun:test';
 import { homedir } from 'os';
 import { join } from 'path';
+
+// Capture real exports before mock.module mutates the live namespace, then
+// re-register the snapshots in afterAll so these mocks do not leak into later
+// test files (bun's mock.module is process-global; mock.restore() does NOT undo it).
+import * as realSettingsDefaultsManager from '../../../src/shared/SettingsDefaultsManager.js';
+import * as realHookSettings from '../../../src/shared/hook-settings.js';
+import * as realTranscriptParser from '../../../src/shared/transcript-parser.js';
+import * as realWorkerUtils from '../../../src/shared/worker-utils.js';
+const realSettingsSnapshot = { ...realSettingsDefaultsManager };
+const realHookSettingsSnapshot = { ...realHookSettings };
+const realTranscriptParserSnapshot = { ...realTranscriptParser };
+const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 
 mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
   SettingsDefaultsManager: {
@@ -61,6 +73,13 @@ beforeEach(() => {
 
 afterEach(() => {
   loggerSpies.forEach(spy => spy.mockRestore());
+});
+
+afterAll(() => {
+  mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
+  mock.module('../../../src/shared/hook-settings.js', () => realHookSettingsSnapshot);
+  mock.module('../../../src/shared/transcript-parser.js', () => realTranscriptParserSnapshot);
+  mock.module('../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
 });
 
 const baseInput = {
@@ -192,4 +211,24 @@ describe('summarizeHandler — privacy tag stripping', () => {
       expect(body.last_assistant_message).toContain('after');
     });
   }
+});
+
+// Migrated from the now-deleted Gemini CLI host-integration compat test file
+// (Phase A removal) — these two checks are unrelated to that integration, they
+// just happened to live in the same file. Preserved here so the platformSource
+// plumbing in summarize.ts keeps regression coverage.
+describe('Summarize handler - platformSource in request body', () => {
+  it('should include platformSource import in summarize.ts', async () => {
+    const { readFileSync } = await import('fs');
+    const src = readFileSync('src/cli/handlers/summarize.ts', 'utf-8');
+    expect(src).toContain('normalizePlatformSource');
+    expect(src).toContain('platform-source');
+  });
+
+  it('should pass platformSource in the summarize request body', async () => {
+    const { readFileSync } = await import('fs');
+    const src = readFileSync('src/cli/handlers/summarize.ts', 'utf-8');
+    expect(src).toContain('platformSource');
+    expect(src).toContain('/api/sessions/summarize');
+  });
 });

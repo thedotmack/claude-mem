@@ -3,6 +3,7 @@ import type { SQLQueryBindings } from 'bun:sqlite';
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import { OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
+import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../shared/user-prompts.js';
 import type { PaginatedResult, Observation, Summary, UserPrompt } from '../worker-types.js';
 
 export class PaginationHelper {
@@ -178,7 +179,7 @@ export class PaginationHelper {
         up.created_at,
         up.created_at_epoch
       FROM user_prompts up
-      JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+      JOIN sdk_sessions s ON up.session_db_id = s.id
     `;
     const params: any[] = [];
 
@@ -197,6 +198,24 @@ export class PaginationHelper {
       params.push(platformSource);
     }
 
+    conditions.push(`
+      NOT EXISTS (
+        SELECT 1
+        FROM user_prompts duplicate
+        WHERE duplicate.session_db_id = up.session_db_id
+          AND duplicate.prompt_text = up.prompt_text
+          AND (
+            duplicate.created_at_epoch > up.created_at_epoch
+            OR (
+              duplicate.created_at_epoch = up.created_at_epoch
+              AND duplicate.id > up.id
+            )
+          )
+          AND duplicate.created_at_epoch - up.created_at_epoch <= ?
+      )
+    `);
+    params.push(USER_PROMPT_DEDUPE_WINDOW_MS);
+
     if (conditions.length > 0) {
       query += ` WHERE ${conditions.join(' AND ')}`;
     }
@@ -206,37 +225,6 @@ export class PaginationHelper {
 
     const stmt = db.prepare(query);
     const results = stmt.all(...params) as UserPrompt[];
-
-    return {
-      items: results.slice(0, limit),
-      hasMore: results.length > limit,
-      offset,
-      limit
-    };
-  }
-
-  private paginate<T>(
-    table: string,
-    columns: string,
-    offset: number,
-    limit: number,
-    project?: string
-  ): PaginatedResult<T> {
-    const db = this.dbManager.getSessionStore().db;
-
-    let query = `SELECT ${columns} FROM ${table}`;
-    const params: any[] = [];
-
-    if (project) {
-      query += ' WHERE project = ?';
-      params.push(project);
-    }
-
-    query += ' ORDER BY created_at_epoch DESC LIMIT ? OFFSET ?';
-    params.push(limit + 1, offset); 
-
-    const stmt = db.prepare(query);
-    const results = stmt.all(...params) as T[];
 
     return {
       items: results.slice(0, limit),

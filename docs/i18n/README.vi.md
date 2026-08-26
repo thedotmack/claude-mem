@@ -1,6 +1,5 @@
 🌐 Đây là bản dịch tự động. Chúng tôi hoan nghênh các đóng góp từ cộng đồng!
 
----
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
@@ -11,52 +10,57 @@
     </picture>
   </a>
   <br>
+  <a href="https://vercel.com/open-source-program">
+    <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" />
+  </a>
 </h1>
 
 <p align="center">
-  <a href="README.zh.md">🇨🇳 中文</a> •
-  <a href="README.zh-tw.md">🇹🇼 繁體中文</a> •
-  <a href="README.ja.md">🇯🇵 日本語</a> •
-  <a href="README.pt-br.md">🇧🇷 Português</a> •
-  <a href="README.ko.md">🇰🇷 한국어</a> •
-  <a href="README.es.md">🇪🇸 Español</a> •
-  <a href="README.de.md">🇩🇪 Deutsch</a> •
-  <a href="README.fr.md">🇫🇷 Français</a>
-  <a href="README.he.md">🇮🇱 עברית</a> •
-  <a href="README.ar.md">🇸🇦 العربية</a> •
-  <a href="README.ru.md">🇷🇺 Русский</a> •
-  <a href="README.pl.md">🇵🇱 Polski</a> •
-  <a href="README.cs.md">🇨🇿 Čeština</a> •
-  <a href="README.nl.md">🇳🇱 Nederlands</a> •
-  <a href="README.tr.md">🇹🇷 Türkçe</a> •
-  <a href="README.uk.md">🇺🇦 Українська</a> •
-  <a href="README.vi.md">🇻🇳 Tiếng Việt</a> •
-  <a href="README.id.md">🇮🇩 Indonesia</a> •
-  <a href="README.th.md">🇹🇭 ไทย</a> •
-  <a href="README.hi.md">🇮🇳 हिन्दी</a> •
-  <a href="README.bn.md">🇧🇩 বাংলা</a> •
-  <a href="README.ur.md">🇵🇰 اردو</a> •
-  <a href="README.ro.md">🇷🇴 Română</a> •
-  <a href="README.sv.md">🇸🇪 Svenska</a> •
-  <a href="README.it.md">🇮🇹 Italiano</a> •
-  <a href="README.el.md">🇬🇷 Ελληνικά</a> •
-  <a href="README.hu.md">🇭🇺 Magyar</a> •
-  <a href="README.fi.md">🇫🇮 Suomi</a> •
-  <a href="README.da.md">🇩🇰 Dansk</a> •
-  <a href="README.no.md">🇳🇴 Norsk</a>
+  <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
+  <a href="docs/i18n/README.zh-tw.md">🇹🇼 繁體中文</a> •
+  <a href="docs/i18n/README.ja.md">🇯🇵 日本語</a> •
+  <a href="docs/i18n/README.pt.md">🇵🇹 Português</a> •
+  <a href="docs/i18n/README.pt-br.md">🇧🇷 Português</a> •
+  <a href="docs/i18n/README.ko.md">🇰🇷 한국어</a> •
+  <a href="docs/i18n/README.es.md">🇪🇸 Español</a> •
+  <a href="docs/i18n/README.de.md">🇩🇪 Deutsch</a> •
+  <a href="docs/i18n/README.fr.md">🇫🇷 Français</a> •
+  <a href="docs/i18n/README.he.md">🇮🇱 עברית</a> •
+  <a href="docs/i18n/README.ar.md">🇸🇦 العربية</a> •
+  <a href="docs/i18n/README.ru.md">🇷🇺 Русский</a> •
+  <a href="docs/i18n/README.pl.md">🇵🇱 Polski</a> •
+  <a href="docs/i18n/README.cs.md">🇨🇿 Čeština</a> •
+  <a href="docs/i18n/README.nl.md">🇳🇱 Nederlands</a> •
+  <a href="docs/i18n/README.tr.md">🇹🇷 Türkçe</a> •
+  <a href="docs/i18n/README.uk.md">🇺🇦 Українська</a> •
+  <a href="docs/i18n/README.vi.md">🇻🇳 Tiếng Việt</a> •
+  <a href="docs/i18n/README.tl.md">🇵🇭 Tagalog</a> •
+  <a href="docs/i18n/README.id.md">🇮🇩 Indonesia</a> •
+  <a href="docs/i18n/README.th.md">🇹🇭 ไทย</a> •
+  <a href="docs/i18n/README.hi.md">🇮🇳 हिन्दी</a> •
+  <a href="docs/i18n/README.bn.md">🇧🇩 বাংলা</a> •
+  <a href="docs/i18n/README.ur.md">🇵🇰 اردو</a> •
+  <a href="docs/i18n/README.ro.md">🇷🇴 Română</a> •
+  <a href="docs/i18n/README.sv.md">🇸🇪 Svenska</a> •
+  <a href="docs/i18n/README.it.md">🇮🇹 Italiano</a> •
+  <a href="docs/i18n/README.el.md">🇬🇷 Ελληνικά</a> •
+  <a href="docs/i18n/README.hu.md">🇭🇺 Magyar</a> •
+  <a href="docs/i18n/README.fi.md">🇫🇮 Suomi</a> •
+  <a href="docs/i18n/README.da.md">🇩🇰 Dansk</a> •
+  <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
 </p>
 
 <h4 align="center">Hệ thống nén bộ nhớ liên tục được xây dựng cho <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>
 
 <p align="center">
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-13.4.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
+    <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
   </a>
   <a href="https://github.com/thedotmack/awesome-claude-code">
     <img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Claude Code">
@@ -75,13 +79,40 @@
 
 <br>
 
-<p align="center">
-  <a href="https://github.com/thedotmack/claude-mem">
-    <picture>
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/cm-preview.gif" alt="Claude-Mem Preview" width="800">
-    </picture>
-  </a>
-</p>
+<table align="center">
+  <tr>
+    <td align="center">
+      <a href="https://github.com/thedotmack/claude-mem">
+        <picture>
+          <img
+            src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/cm-preview.gif"
+            alt="Claude-Mem Preview"
+            width="500"
+          >
+        </picture>
+      </a>
+    </td>
+    <td align="center">
+      <a href="https://www.star-history.com/#thedotmack/claude-mem&Date">
+        <picture>
+          <source
+            media="(prefers-color-scheme: dark)"
+            srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&theme=dark&legend=top-left"
+          />
+          <source
+            media="(prefers-color-scheme: light)"
+            srcset="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left"
+          />
+          <img
+            alt="Star History Chart"
+            src="https://api.star-history.com/image?repos=thedotmack/claude-mem&type=date&legend=top-left"
+            width="500"
+          />
+        </picture>
+      </a>
+    </td>
+  </tr>
+</table>
 
 <p align="center">
   <a href="#bắt-đầu-nhanh">Bắt Đầu Nhanh</a> •
@@ -101,28 +132,57 @@
 
 ## Bắt Đầu Nhanh
 
-Bắt đầu một phiên Claude Code mới trong terminal và nhập các lệnh sau:
+Cài đặt chỉ với một lệnh duy nhất:
 
+```bash
+npx claude-mem install
 ```
-> /plugin marketplace add thedotmack/claude-mem
 
-> /plugin install claude-mem
+Hoặc cài đặt cho OpenCode:
+
+```bash
+npx claude-mem install --ide opencode
+```
+
+Hoặc cài đặt cho Antigravity CLI ([hướng dẫn cài đặt](https://docs.claude-mem.ai/antigravity-cli/setup)):
+
+```bash
+npx claude-mem install --ide antigravity
+```
+
+Hoặc cài đặt từ chợ plugin ngay trong Claude Code:
+
+```bash
+/plugin marketplace add thedotmack/claude-mem
+
+/plugin install claude-mem
 ```
 
 Khởi động lại Claude Code. Ngữ cảnh từ các phiên trước sẽ tự động xuất hiện trong các phiên mới.
+
+> **Lưu ý:** Claude-Mem cũng được phát hành trên npm, nhưng `npm install -g claude-mem` chỉ cài đặt **SDK/thư viện** — nó không đăng ký các hook của plugin hay thiết lập dịch vụ worker. Hãy luôn cài đặt qua `npx claude-mem install` hoặc các lệnh `/plugin` ở trên.
+
+### 🦞 OpenClaw Gateway
+
+Cài đặt claude-mem như một plugin bộ nhớ liên tục trên các gateway [OpenClaw](https://openclaw.ai) chỉ với một lệnh duy nhất:
+
+```bash
+curl -fsSL https://install.cmem.ai/openclaw.sh | bash
+```
+
+Trình cài đặt xử lý các phần phụ thuộc, thiết lập plugin, cấu hình nhà cung cấp AI, khởi động worker, và tùy chọn gửi luồng quan sát thời gian thực đến Telegram, Discord, Slack, và nhiều hơn nữa. Xem [Hướng Dẫn Tích Hợp OpenClaw](https://docs.claude-mem.ai/openclaw-integration) để biết chi tiết.
 
 **Tính Năng Chính:**
 
 - 🧠 **Bộ Nhớ Liên Tục** - Ngữ cảnh được lưu giữ qua các phiên làm việc
 - 📊 **Tiết Lộ Tuần Tự** - Truy xuất bộ nhớ theo lớp với khả năng hiển thị chi phí token
 - 🔍 **Tìm Kiếm Theo Kỹ Năng** - Truy vấn lịch sử dự án với kỹ năng mem-search
-- 🖥️ **Giao Diện Web Viewer** - Luồng bộ nhớ thời gian thực tại http://localhost:37777
+- 🖥️ **Giao Diện Web Viewer** - Luồng bộ nhớ thời gian thực tại URL worker được in ra khi khởi động
 - 💻 **Kỹ Năng Claude Desktop** - Tìm kiếm bộ nhớ từ các cuộc trò chuyện Claude Desktop
 - 🔒 **Kiểm Soát Quyền Riêng Tư** - Sử dụng thẻ `<private>` để loại trừ nội dung nhạy cảm khỏi lưu trữ
 - ⚙️ **Cấu Hình Ngữ Cảnh** - Kiểm soát chi tiết về ngữ cảnh được chèn vào
 - 🤖 **Hoạt Động Tự Động** - Không cần can thiệp thủ công
-- 🔗 **Trích Dẫn** - Tham chiếu các quan sát trong quá khứ với ID (truy cập qua http://localhost:37777/api/observation/{id} hoặc xem tất cả trong web viewer tại http://localhost:37777)
-- 🧪 **Kênh Beta** - Dùng thử các tính năng thử nghiệm như Endless Mode thông qua chuyển đổi phiên bản
+- 🔗 **Trích Dẫn** - Tham chiếu các quan sát trong quá khứ với ID thông qua API worker hoặc xem tất cả trong web viewer
 
 ---
 
@@ -135,7 +195,6 @@ Khởi động lại Claude Code. Ngữ cảnh từ các phiên trước sẽ t�
 - **[Hướng Dẫn Cài Đặt](https://docs.claude-mem.ai/installation)** - Bắt đầu nhanh & cài đặt nâng cao
 - **[Hướng Dẫn Sử Dụng](https://docs.claude-mem.ai/usage/getting-started)** - Cách Claude-Mem hoạt động tự động
 - **[Công Cụ Tìm Kiếm](https://docs.claude-mem.ai/usage/search-tools)** - Truy vấn lịch sử dự án bằng ngôn ngữ tự nhiên
-- **[Tính Năng Beta](https://docs.claude-mem.ai/beta-features)** - Dùng thử các tính năng thử nghiệm như Endless Mode
 
 ### Thực Hành Tốt Nhất
 
@@ -156,6 +215,7 @@ Khởi động lại Claude Code. Ngữ cảnh từ các phiên trước sẽ t�
 
 - **[Cấu Hình](https://docs.claude-mem.ai/configuration)** - Biến môi trường & cài đặt
 - **[Phát Triển](https://docs.claude-mem.ai/development)** - Xây dựng, kiểm thử, đóng góp
+- **[Nhánh Phát Hành](https://docs.claude-mem.ai/branches)** - Luồng các nhánh stable, core-dev, và community-edge
 - **[Khắc Phục Sự Cố](https://docs.claude-mem.ai/troubleshooting)** - Các vấn đề thường gặp & giải pháp
 
 ---
@@ -166,7 +226,7 @@ Khởi động lại Claude Code. Ngữ cảnh từ các phiên trước sẽ t�
 
 1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook scripts)
 2. **Smart Install** - Công cụ kiểm tra phụ thuộc được cache (pre-hook script, không phải lifecycle hook)
-3. **Worker Service** - HTTP API trên cổng 37777 với giao diện web viewer và 10 điểm cuối tìm kiếm, được quản lý bởi Bun
+3. **Worker Service** - HTTP API cục bộ với giao diện web viewer và các điểm cuối tìm kiếm, được quản lý bởi Bun
 4. **SQLite Database** - Lưu trữ các phiên, quan sát, tóm tắt
 5. **mem-search Skill** - Truy vấn ngôn ngữ tự nhiên với tiết lộ tuần tự
 6. **Chroma Vector Database** - Tìm kiếm kết hợp ngữ nghĩa + từ khóa để truy xuất ngữ cảnh thông minh
@@ -175,56 +235,72 @@ Xem [Tổng Quan Kiến Trúc](https://docs.claude-mem.ai/architecture/overview)
 
 ---
 
-## mem-search Skill
+## Công Cụ Tìm Kiếm MCP
 
-Claude-Mem cung cấp tìm kiếm thông minh thông qua kỹ năng mem-search tự động kích hoạt khi bạn hỏi về công việc trước đây:
+Claude-Mem cung cấp tìm kiếm bộ nhớ thông minh thông qua **4 công cụ MCP** theo một **mô hình quy trình 3 lớp** tối ưu về token:
+
+**Quy Trình 3 Lớp:**
+
+1. **`search`** - Lấy chỉ mục gọn nhẹ kèm ID (~50-100 token/kết quả)
+2. **`timeline`** - Lấy ngữ cảnh theo trình tự thời gian xung quanh các kết quả đáng chú ý
+3. **`get_observations`** - Chỉ lấy thông tin chi tiết đầy đủ cho các ID đã lọc (~500-1.000 token/kết quả)
 
 **Cách Hoạt Động:**
-- Chỉ cần hỏi một cách tự nhiên: *"Chúng ta đã làm gì trong phiên trước?"* hoặc *"Chúng ta đã sửa lỗi này trước đây chưa?"*
-- Claude tự động gọi kỹ năng mem-search để tìm ngữ cảnh liên quan
+- Claude sử dụng các công cụ MCP để tìm kiếm bộ nhớ của bạn
+- Bắt đầu với `search` để lấy chỉ mục kết quả
+- Sử dụng `timeline` để xem những gì đã xảy ra xung quanh các quan sát cụ thể
+- Sử dụng `get_observations` để lấy thông tin chi tiết đầy đủ cho các ID liên quan
+- **Tiết kiệm ~10 lần số token** bằng cách lọc trước khi lấy chi tiết
 
-**Các Thao Tác Tìm Kiếm Có Sẵn:**
+**Các Công Cụ MCP Có Sẵn:**
 
-1. **Search Observations** - Tìm kiếm toàn văn trên các quan sát
-2. **Search Sessions** - Tìm kiếm toàn văn trên các tóm tắt phiên
-3. **Search Prompts** - Tìm kiếm các yêu cầu người dùng thô
-4. **By Concept** - Tìm theo thẻ khái niệm (discovery, problem-solution, pattern, v.v.)
-5. **By File** - Tìm các quan sát tham chiếu đến các tệp cụ thể
-6. **By Type** - Tìm theo loại (decision, bugfix, feature, refactor, discovery, change)
-7. **Recent Context** - Lấy ngữ cảnh phiên gần đây cho một dự án
-8. **Timeline** - Lấy dòng thời gian thống nhất của ngữ cảnh xung quanh một thời điểm cụ thể
-9. **Timeline by Query** - Tìm kiếm các quan sát và lấy ngữ cảnh dòng thời gian xung quanh kết quả khớp tốt nhất
-10. **API Help** - Lấy tài liệu API tìm kiếm
+1. **`search`** - Tìm kiếm chỉ mục bộ nhớ với truy vấn toàn văn, lọc theo loại/ngày/dự án
+2. **`timeline`** - Lấy ngữ cảnh theo trình tự thời gian xung quanh một quan sát hoặc truy vấn cụ thể
+3. **`get_observations`** - Lấy thông tin chi tiết quan sát đầy đủ theo ID (luôn nhóm nhiều ID lại)
 
-**Ví Dụ Truy Vấn Ngôn Ngữ Tự Nhiên:**
+**Ví Dụ Sử Dụng:**
 
-```
-"What bugs did we fix last session?"
-"How did we implement authentication?"
-"What changes were made to worker-service.ts?"
-"Show me recent work on this project"
-"What was happening when we added the viewer UI?"
+```typescript
+// Bước 1: Tìm kiếm để lấy chỉ mục
+search(query="authentication bug", type="bugfix", limit=10)
+
+// Bước 2: Xem xét chỉ mục, xác định các ID liên quan (ví dụ: #123, #456)
+
+// Bước 3: Lấy thông tin chi tiết đầy đủ
+get_observations(ids=[123, 456])
 ```
 
 Xem [Hướng Dẫn Công Cụ Tìm Kiếm](https://docs.claude-mem.ai/usage/search-tools) để biết các ví dụ chi tiết.
 
 ---
 
-## Tính Năng Beta
+## Nhánh Phát Hành
 
-Claude-Mem cung cấp **kênh beta** với các tính năng thử nghiệm như **Endless Mode** (kiến trúc bộ nhớ sinh học mô phỏng cho các phiên mở rộng). Chuyển đổi giữa các phiên bản ổn định và beta từ giao diện web viewer tại http://localhost:37777 → Settings.
-
-Xem **[Tài Liệu Tính Năng Beta](https://docs.claude-mem.ai/beta-features)** để biết chi tiết về Endless Mode và cách dùng thử.
+Các bản phát hành ổn định được xây dựng từ `main` và phát hành lên npm. `core-dev` và
+`community-edge` là các nhánh chạy trực tiếp từ mã nguồn dành cho các bản sửa lỗi độ tin cậy
+sớm và các tích hợp cộng đồng. Xem **[Nhánh Phát Hành](https://docs.claude-mem.ai/branches)**
+để biết luồng nhánh và hướng dẫn chạy phiên bản không ổn định.
 
 ---
 
 ## Yêu Cầu Hệ Thống
 
-- **Node.js**: 18.0.0 hoặc cao hơn
+- **Node.js**: 20.0.0 hoặc cao hơn
 - **Claude Code**: Phiên bản mới nhất với hỗ trợ plugin
 - **Bun**: JavaScript runtime và trình quản lý tiến trình (tự động cài đặt nếu thiếu)
 - **uv**: Trình quản lý gói Python cho tìm kiếm vector (tự động cài đặt nếu thiếu)
 - **SQLite 3**: Cho lưu trữ liên tục (đi kèm)
+
+---
+### Lưu Ý Cài Đặt Trên Windows
+
+Nếu bạn gặp lỗi như:
+
+```powershell
+npm : The term 'npm' is not recognized as the name of a cmdlet
+```
+
+Hãy đảm bảo rằng Node.js và npm đã được cài đặt và thêm vào PATH của bạn. Tải trình cài đặt Node.js mới nhất từ https://nodejs.org và khởi động lại terminal sau khi cài đặt.
 
 ---
 
@@ -234,6 +310,45 @@ Cài đặt được quản lý trong `~/.claude-mem/settings.json` (tự độn
 
 Xem **[Hướng Dẫn Cấu Hình](https://docs.claude-mem.ai/configuration)** để biết tất cả các cài đặt và ví dụ có sẵn.
 
+### Cấu Hình Chế Độ & Ngôn Ngữ
+
+Claude-Mem hỗ trợ nhiều chế độ làm việc và ngôn ngữ thông qua cài đặt `CLAUDE_MEM_MODE`.
+
+Tùy chọn này kiểm soát cả:
+- Hành vi quy trình làm việc (ví dụ: code, chill, investigation)
+- Ngôn ngữ được sử dụng trong các quan sát được tạo ra
+
+#### Cách Cấu Hình
+
+Chỉnh sửa tệp cài đặt của bạn tại `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_MODE": "code--zh"
+}
+```
+
+Các chế độ được định nghĩa trong `plugin/modes/`. Để xem tất cả các chế độ có sẵn cục bộ:
+
+```bash
+ls ~/.claude/plugins/marketplaces/thedotmack/plugin/modes/
+```
+
+#### Các Chế Độ Có Sẵn
+
+| Chế Độ | Mô Tả |
+|------------|-------------------------|
+| `code` | Chế độ tiếng Anh mặc định |
+| `code--zh` | Chế độ tiếng Trung giản thể |
+| `code--ja` | Chế độ tiếng Nhật |
+
+Các chế độ theo ngôn ngữ cụ thể tuân theo mẫu `code--[lang]` trong đó `[lang]` là mã ngôn ngữ ISO 639-1 (ví dụ: `zh` cho tiếng Trung, `ja` cho tiếng Nhật, `es` cho tiếng Tây Ban Nha).
+
+> Lưu ý: `code--zh` (tiếng Trung giản thể) đã được tích hợp sẵn — không cần cài đặt thêm hay cập nhật plugin.
+
+#### Sau Khi Thay Đổi Chế Độ
+
+Khởi động lại Claude Code để áp dụng cấu hình chế độ mới.
 ---
 
 ## Phát Triển
@@ -269,32 +384,48 @@ Chúng tôi hoan nghênh các đóng góp! Vui lòng:
 4. Cập nhật tài liệu
 5. Gửi Pull Request
 
+Claude-Mem được phát hành từ ba nhánh: `main` (ổn định), `core-dev`, và
+`community-edge`. Chỉ `main` được phát hành lên npm; các nhánh còn lại được chạy từ
+mã nguồn. Xem [Nhánh Phát Hành](https://docs.claude-mem.ai/branches) để biết
+chiến lược và hướng dẫn chạy cục bộ.
+
 Xem [Hướng Dẫn Phát Triển](https://docs.claude-mem.ai/development) để biết quy trình đóng góp.
 
 ---
 
-## License
+## Giấy Phép
 
-This project is licensed under the **Apache License 2.0** (Apache-2.0).
+Claude-Mem được cấp phép theo Apache License 2.0.
 
-Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
+Chúng tôi chọn Apache-2.0 vì bộ nhớ agentic bền vững nên dễ dàng được tích hợp vào
+các công cụ dành cho nhà phát triển, các agent cục bộ, máy chủ MCP, hệ thống doanh nghiệp,
+các nền tảng robot, và các bộ khung agent sản xuất.
 
-See the [LICENSE](LICENSE) file for full details.
+Xem tệp [LICENSE](LICENSE) để biết đầy đủ chi tiết. Xem [docs/license.md](docs/license.md)
+và [docs/ip-boundary.md](docs/ip-boundary.md) để biết phạm vi cấp phép và ranh giới
+mở/thương mại.
 
-Apache-2.0 allows broad use, modification, distribution, and commercial use, subject to its terms.
-
-**Ragtime note**: The ragtime/ directory is licensed under the **Apache License 2.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
+**Lưu ý về Ragtime**: Thư mục `ragtime/` được cấp phép theo **Apache License 2.0**. Xem [ragtime/LICENSE](ragtime/LICENSE) để biết chi tiết.
 
 ---
-
 
 ## Hỗ Trợ
 
 - **Tài Liệu**: [docs/](docs/)
 - **Vấn Đề**: [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
 - **Repository**: [github.com/thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)
+- **Tài Khoản X Chính Thức**: [@Claude_Memory](https://x.com/Claude_Memory)
+- **Discord Chính Thức**: [Tham gia Discord](https://discord.com/invite/J4wttp9vDu)
 - **Tác Giả**: Alex Newman ([@thedotmack](https://github.com/thedotmack))
 
 ---
 
-**Được Xây Dựng với Claude Agent SDK** | **Được Hỗ Trợ bởi Claude Code** | **Được Tạo với TypeScript**
+**Được Xây Dựng với Claude Agent SDK** | **Hoạt Động cùng Claude Code** | **Được Tạo với TypeScript**
+
+---
+
+### Còn CMEM Thì Sao?
+
+CMEM là một token được tạo ra bởi bên thứ ba nhưng được đón nhận chính thức bởi người sáng tạo ra Claude-Mem (Alex Newman, @thedotmack). Token này đóng vai trò là chất xúc tác cộng đồng cho sự phát triển và là phương tiện đưa CMEM đến với các nhà phát triển và người lao động tri thức cần nó nhất.
+
+Official BASE CA: 0x76b1967eec0ccaeb001bbbb2b40dc4badba31ba3

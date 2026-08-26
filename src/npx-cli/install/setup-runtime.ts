@@ -1,13 +1,61 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { execSync, spawnSync } from 'child_process';
+import { exec, execSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'child_process';
+import { createRequire } from 'module';
 import { join } from 'path';
 import { homedir } from 'os';
+import { ErrorSeverity } from './error-taxonomy.js';
+import { installerError, type InstallSummary } from './error-reporter.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
+import { IS_WINDOWS } from '../utils/paths.js';
+import { parseJsonWithBom } from '../../shared/atomic-json.js';
 
-const IS_WINDOWS = process.platform === 'win32';
+const INSTALL_TIMEOUT_MS = (() => {
+  const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
+  if (override && Number.isFinite(Number(override))) return Number(override);
+  return 5 * 60 * 1000;
+})();
+
+/**
+ * Platform-specific manual-install instructions, surfaced as the PRIMARY ABORT
+ * message when auto-install fails or the binary can't be found afterward.
+ */
+export function platformBunRemediation(): string {
+  return IS_WINDOWS
+    ? 'Install Bun manually: `winget install Oven-sh.Bun` (or `powershell -c "irm bun.sh/install.ps1 | iex"`), then re-run `npx claude-mem install`.'
+    : 'Install Bun manually: `curl -fsSL https://bun.sh/install | bash` (or `brew install oven-sh/bun/bun`), then re-run `npx claude-mem install`.';
+}
+
+export function platformUvRemediation(): string {
+  return IS_WINDOWS
+    ? 'Install uv manually: `winget install astral-sh.uv` (or `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`), then re-run `npx claude-mem install`.'
+    : 'Install uv manually: `curl -LsSf https://astral.sh/uv/install.sh | sh` (or `brew install uv`), then re-run `npx claude-mem install`.';
+}
+
+function userHasOptedOutOfVectorSearch(): boolean {
+  // Read the settings file directly (the value is not in the typed defaults).
+  // Honors both a top-level key and an `env`-nested key.
+  let raw: unknown;
+  try {
+    if (!existsSync(USER_SETTINGS_PATH)) return false;
+    raw = parseJsonWithBom(readFileSync(USER_SETTINGS_PATH, 'utf-8'));
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    console.warn(`claude-mem: could not read ${USER_SETTINGS_PATH} while checking vector-search opt-out:`, err);
+    return false;
+  }
+  if (!raw || typeof raw !== 'object') return false;
+  const record = raw as Record<string, unknown>;
+  const envBlock = (record.env && typeof record.env === 'object')
+    ? (record.env as Record<string, unknown>)
+    : {};
+  const value = record.CLAUDE_MEM_DISABLE_VECTOR_SEARCH ?? envBlock.CLAUDE_MEM_DISABLE_VECTOR_SEARCH;
+  return value === true || value === 'true' || value === '1';
+}
 
 const BUN_COMMON_PATHS = IS_WINDOWS
   ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
-  : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun', '/opt/homebrew/bin/bun'];
+  : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun', '/opt/homebrew/bin/bun', '/home/linuxbrew/.linuxbrew/bin/bun'];
 
 const UV_COMMON_PATHS = IS_WINDOWS
   ? [join(homedir(), '.local', 'bin', 'uv.exe'), join(homedir(), '.cargo', 'bin', 'uv.exe')]
@@ -27,72 +75,69 @@ function markerPath(targetDir: string): string {
   return join(targetDir, '.install-version');
 }
 
-function getBunPath(): string | null {
+function spawnVersionProbe(command: string, args: string[]) {
+  const options: SpawnSyncOptionsWithStringEncoding = {
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+  };
+  const invocation = buildSpawnSyncInvocation(command, args, options);
+  return spawnSync(invocation.command, invocation.args, invocation.options);
+}
+
+function getToolPath(command: string, commonPaths: string[]): string | null {
+  const pathCommand = IS_WINDOWS ? lookupWindowsCommand(command) : command;
   try {
-    const result = spawnSync('bun', ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
-    });
-    if (result.status === 0) return 'bun';
+    if (pathCommand) {
+      const result = spawnVersionProbe(pathCommand, ['--version']);
+      if (result.status === 0) return pathCommand;
+    }
   } catch {
     // Not in PATH
   }
 
-  return BUN_COMMON_PATHS.find(existsSync) || null;
+  return commonPaths.find(existsSync) || null;
+}
+
+export function getBunPath(): string | null {
+  return getToolPath('bun', BUN_COMMON_PATHS);
 }
 
 function isBunInstalled(): boolean {
   return getBunPath() !== null;
 }
 
-function getBunVersion(): string | null {
+export function getBunVersion(): string | null {
   const bunPath = getBunPath();
   if (!bunPath) return null;
 
   try {
-    const result = spawnSync(bunPath, ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
-    });
+    const result = spawnVersionProbe(bunPath, ['--version']);
     return result.status === 0 ? result.stdout.trim() : null;
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    console.warn('claude-mem: bun --version probe failed:', err);
     return null;
   }
 }
 
 function getUvPath(): string | null {
-  try {
-    const result = spawnSync('uv', ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
-    });
-    if (result.status === 0) return 'uv';
-  } catch {
-    // Not in PATH
-  }
-
-  return UV_COMMON_PATHS.find(existsSync) || null;
+  return getToolPath('uv', UV_COMMON_PATHS);
 }
 
 function isUvInstalled(): boolean {
   return getUvPath() !== null;
 }
 
-function getUvVersion(): string | null {
+export function getUvVersion(): string | null {
   const uvPath = getUvPath();
   if (!uvPath) return null;
 
   try {
-    const result = spawnSync(uvPath, ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS,
-    });
+    const result = spawnVersionProbe(uvPath, ['--version']);
     return result.status === 0 ? result.stdout.trim() : null;
-  } catch {
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    console.warn('claude-mem: uv --version probe failed:', err);
     return null;
   }
 }
@@ -111,109 +156,269 @@ function describeExecError(error: unknown): string {
   return String(error);
 }
 
+/** Run the platform-specific Bun installer, then confirm the binary is resolvable. */
+function runBunInstaller(): void {
+  if (IS_WINDOWS) {
+    execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
+      stdio: 'pipe',
+      timeout: INSTALL_TIMEOUT_MS,
+      shell: process.env.ComSpec ?? 'cmd.exe',
+    });
+  } else {
+    execSync('curl -fsSL https://bun.sh/install | bash', {
+      stdio: 'pipe',
+      timeout: INSTALL_TIMEOUT_MS,
+      shell: '/bin/bash',
+    });
+  }
+
+  if (!isBunInstalled()) {
+    throw new Error(
+      'Bun installation completed but binary not found. Please restart your terminal and try again.',
+    );
+  }
+}
+
 function installBun(): void {
   try {
-    if (IS_WINDOWS) {
-      execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
-        stdio: 'pipe',
-        shell: process.env.ComSpec ?? 'cmd.exe',
-      });
-    } else {
-      execSync('curl -fsSL https://bun.sh/install | bash', {
-        stdio: 'pipe',
-        shell: '/bin/bash',
-      });
-    }
-
-    if (!isBunInstalled()) {
-      throw new Error(
-        'Bun installation completed but binary not found. Please restart your terminal and try again.',
-      );
-    }
+    runBunInstaller();
   } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
     const manualInstructions = IS_WINDOWS
       ? '  - winget install Oven-sh.Bun\n  - Or: powershell -c "irm bun.sh/install.ps1 | iex"'
       : '  - curl -fsSL https://bun.sh/install | bash\n  - Or: brew install oven-sh/bun/bun';
     throw new Error(
       `Failed to install Bun. Please install manually:\n${manualInstructions}\nThen restart your terminal and try again.\n` +
-        `Underlying error: ${describeExecError(error)}`,
+        `Underlying error: ${describeExecError(err)}`,
+    );
+  }
+}
+
+/** Run the platform-specific uv installer, then confirm the binary is resolvable. */
+function runUvInstaller(): void {
+  if (IS_WINDOWS) {
+    execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
+      stdio: 'pipe',
+      timeout: INSTALL_TIMEOUT_MS,
+      shell: process.env.ComSpec ?? 'cmd.exe',
+    });
+  } else {
+    execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
+      stdio: 'pipe',
+      timeout: INSTALL_TIMEOUT_MS,
+      shell: '/bin/bash',
+    });
+  }
+
+  if (!isUvInstalled()) {
+    throw new Error(
+      'uv installation completed but binary not found. Please restart your terminal and try again.',
     );
   }
 }
 
 function installUv(): void {
   try {
-    if (IS_WINDOWS) {
-      execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
-        stdio: 'pipe',
-        shell: process.env.ComSpec ?? 'cmd.exe',
-      });
-    } else {
-      execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
-        stdio: 'pipe',
-        shell: '/bin/bash',
-      });
-    }
-
-    if (!isUvInstalled()) {
-      throw new Error(
-        'uv installation completed but binary not found. Please restart your terminal and try again.',
-      );
-    }
+    runUvInstaller();
   } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
     const manualInstructions = IS_WINDOWS
       ? '  - winget install astral-sh.uv\n  - Or: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"'
       : '  - curl -LsSf https://astral.sh/uv/install.sh | sh\n  - Or: brew install uv (macOS)';
     throw new Error(
       `Failed to install uv. Please install manually:\n${manualInstructions}\nThen restart your terminal and try again.\n` +
-        `Underlying error: ${describeExecError(error)}`,
+        `Underlying error: ${describeExecError(err)}`,
     );
   }
 }
 
-function verifyCriticalModules(targetDir: string): void {
+/**
+ * Subpath imports the bundled worker requires transitively (via
+ * @modelcontextprotocol/sdk / @anthropic-ai/claude-agent-sdk). A stale/partial
+ * install can leave the `zod` directory present while these subpath exports fail
+ * to resolve — surfacing later as a runtime `Cannot find module 'zod/v3'`. We
+ * assert them at install time so a broken closure fails LOUD here. Version-agnostic:
+ * we resolve subpaths, never a pinned version.
+ */
+const ZOD_REQUIRED_SUBPATHS = ['zod/v3', 'zod/v4', 'zod/v4-mini'] as const;
+
+export function verifyCriticalModules(targetDir: string): void {
   const pkg = JSON.parse(readFileSync(join(targetDir, 'package.json'), 'utf-8'));
   const dependencies = Object.keys(pkg.dependencies || {});
 
-  const missing: string[] = [];
+  const nodeModulesPath = join(targetDir, 'node_modules');
+  // A require anchored inside the install tree so require.resolve honors the
+  // installed package.json `exports` map for subpath resolution.
+  const requireFromTarget = createRequire(join(nodeModulesPath, 'noop.js'));
+  const resolvePaths = [nodeModulesPath];
+
+  const unresolvable: string[] = [];
+
+  // Each declared dependency must be installed, not merely a directory on disk.
   for (const dep of dependencies) {
-    const modulePath = join(targetDir, 'node_modules', ...dep.split('/'));
-    if (!existsSync(modulePath)) {
-      missing.push(dep);
+    try {
+      requireFromTarget.resolve(dep, { paths: resolvePaths });
+    } catch {
+      // [ANTI-PATTERN IGNORED]: bare-name resolve failure is the probed signal here
+      // (expected for bin-only packages); genuinely missing deps are collected in
+      // `unresolvable` and surfaced as a loud install failure after the loop.
+      // Bare-name resolution can fail for a perfectly-installed package that has
+      // no importable entry point — e.g. bin-only packages like `tree-sitter-cli`
+      // (package.json has `bin` but no `main`/`module`/`exports`/`index.js`).
+      // Fall back to resolving its package.json to distinguish "installed but
+      // bin-only" from "genuinely missing": a truly absent package fails both.
+      // This preserves the original "is it installed" guarantee while still
+      // upgrading from directory-existence to real module resolution (#2730).
+      try {
+        requireFromTarget.resolve(`${dep}/package.json`, { paths: resolvePaths });
+      } catch {
+        unresolvable.push(dep);
+      }
     }
   }
 
-  if (missing.length > 0) {
-    throw new Error(`Post-install check failed: missing modules: ${missing.join(', ')}`);
+  // zod ships its public API behind subpath exports the worker bundle requires.
+  // The package dir existing does NOT imply these subpaths resolve (#2730).
+  if (dependencies.includes('zod')) {
+    for (const subpath of ZOD_REQUIRED_SUBPATHS) {
+      try {
+        requireFromTarget.resolve(subpath, { paths: resolvePaths });
+      } catch {
+        // [ANTI-PATTERN IGNORED]: subpath resolve failure is the condition being
+        // probed; it is collected in `unresolvable` and surfaced as a loud
+        // install failure below.
+        unresolvable.push(subpath);
+      }
+    }
+  }
+
+  if (unresolvable.length > 0) {
+    throw new Error(
+      `Post-install check failed: unresolvable modules: ${unresolvable.join(', ')}`,
+    );
   }
 }
 
-export async function ensureBun(): Promise<{ bunPath: string; version: string }> {
+/** Build an ephemeral summary so callers (e.g. repair) may omit it. */
+function summaryOrEphemeral(summary?: InstallSummary): InstallSummary {
+  return summary ?? { warnings: [], failedIDEs: [] };
+}
+
+export async function ensureBun(summary?: InstallSummary): Promise<{ bunPath: string; version: string }> {
+  const sum = summaryOrEphemeral(summary);
   if (!isBunInstalled()) {
-    installBun();
+    // installBun throws a platform-specific Error on failure; route it through
+    // the central decision point so it becomes a loud ABORT (bun is mandatory
+    // for hooks — there is no opt-out).
+    try {
+      installBun();
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      // installerError(ABORT) reports the cause loudly and always throws.
+      installerError(ErrorSeverity.ABORT, {
+        component: 'bun-install',
+        phase: 'setup-runtime',
+        cause: err,
+        remediation: platformBunRemediation(),
+      }, sum);
+    }
   }
-  const bunPath = getBunPath();
+
+  let bunPath = getBunPath();
   if (!bunPath) {
-    throw new Error('Bun executable not found after install attempt.');
+    bunPath = BUN_COMMON_PATHS.find(existsSync) ?? null;
   }
-  const version = getBunVersion();
+  if (!bunPath) {
+    installerError(ErrorSeverity.ABORT, {
+      component: 'bun-install',
+      phase: 'setup-runtime',
+      cause: new Error('Bun executable not found after auto-install attempt'),
+      remediation: platformBunRemediation(),
+    }, sum);
+    throw new Error('unreachable'); // installerError(ABORT) always throws
+  }
+
+  let version = getBunVersion();
   if (!version) {
-    throw new Error('Bun installed but version probe failed.');
+    // A fresh binary sometimes needs a moment before --version responds.
+    await new Promise((r) => setTimeout(r, 1000));
+    version = getBunVersion();
+  }
+  if (!version) {
+    installerError(ErrorSeverity.WARN_CONTINUE, {
+      component: 'bun-version-probe',
+      phase: 'setup-runtime',
+      cause: new Error(`Bun at ${bunPath} did not respond to --version after retry`),
+    }, sum);
+    return { bunPath, version: 'unknown' };
   }
   return { bunPath, version };
 }
 
-export async function ensureUv(): Promise<{ uvPath: string; version: string }> {
+export async function ensureUv(
+  summary?: InstallSummary,
+  options: { allowVectorSearchOptOut?: boolean } = {},
+): Promise<{ uvPath: string; version: string }> {
+  const sum = summaryOrEphemeral(summary);
   if (!isUvInstalled()) {
-    installUv();
+    try {
+      installUv();
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      if (options.allowVectorSearchOptOut && userHasOptedOutOfVectorSearch()) {
+        installerError(ErrorSeverity.WARN_CONTINUE, {
+          component: 'uv-install',
+          phase: 'setup-runtime',
+          cause: err,
+        }, sum);
+        return { uvPath: '', version: 'unknown' };
+      }
+      // installerError(ABORT) reports the cause loudly and always throws.
+      installerError(ErrorSeverity.ABORT, {
+        component: 'uv-install',
+        phase: 'setup-runtime',
+        cause: err,
+        remediation: platformUvRemediation(),
+      }, sum);
+    }
   }
-  const uvPath = getUvPath();
+
+  let uvPath = getUvPath();
   if (!uvPath) {
-    throw new Error('uv executable not found after install attempt.');
+    // Re-probe UV_COMMON_PATHS directly — PATH may not yet include ~/.local/bin
+    // in the current shell even though the install just wrote the binary there.
+    uvPath = UV_COMMON_PATHS.find(existsSync) ?? null;
   }
-  const version = getUvVersion();
+  if (!uvPath) {
+    if (options.allowVectorSearchOptOut && userHasOptedOutOfVectorSearch()) {
+      installerError(ErrorSeverity.WARN_CONTINUE, {
+        component: 'uv-install',
+        phase: 'setup-runtime',
+        cause: new Error('uv binary not found after install; vector search disabled — continuing.'),
+      }, sum);
+      return { uvPath: '', version: 'unknown' };
+    }
+    installerError(ErrorSeverity.ABORT, {
+      component: 'uv-install',
+      phase: 'setup-runtime',
+      cause: new Error('uv binary not found after auto-install attempt'),
+      remediation: platformUvRemediation(),
+    }, sum);
+    throw new Error('unreachable'); // installerError(ABORT) always throws
+  }
+
+  let version = getUvVersion();
   if (!version) {
-    throw new Error('uv installed but version probe failed.');
+    await new Promise((r) => setTimeout(r, 1000));
+    version = getUvVersion();
+  }
+  if (!version) {
+    installerError(ErrorSeverity.WARN_CONTINUE, {
+      component: 'uv-version-probe',
+      phase: 'setup-runtime',
+      cause: new Error(`uv at ${uvPath} did not respond to --version after retry`),
+    }, sum);
+    return { uvPath, version: 'unknown' };
   }
   return { uvPath, version };
 }
@@ -225,14 +430,29 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
 
   const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
 
-  try {
-    execSync(`${bunCmd} install`, {
-      cwd: targetDir,
-      stdio: 'pipe',
-      ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
+  // Per CHANGELOG v12.6.1 -> v12.6.2: tree-sitter-swift's nested
+  // tree-sitter-cli postinstall downloads a Rust binary and can hang the
+  // install. Bun honors trustedDependencies; npm does not. We additionally
+  // pass --ignore-scripts as belt-and-suspenders and bound it with a timeout.
+  // Async exec (not execSync): a blocked event loop freezes the installer's
+  // clack spinner for the duration of the install, which reads as a stall.
+  const runBunInstall = (): Promise<void> =>
+    new Promise<void>((resolve, reject) => {
+      exec(`${bunCmd} install --frozen-lockfile --ignore-scripts`, {
+        cwd: targetDir,
+        timeout: INSTALL_TIMEOUT_MS,
+        maxBuffer: 16 * 1024 * 1024,
+        ...(IS_WINDOWS ? { shell: process.env.ComSpec ?? 'cmd.exe' } : {}),
+      }, (error, stdout, stderr) =>
+        // exec errors don't carry stdio; attach so describeExecError can report it.
+        error ? reject(Object.assign(error, { stdout, stderr })) : resolve());
     });
+
+  try {
+    await runBunInstall();
   } catch (error) {
-    throw new Error(`bun install failed in ${targetDir}\n${describeExecError(error)}`);
+    const err = error instanceof Error ? error : new Error(String(error));
+    throw new Error(`bun install failed in ${targetDir}\n${describeExecError(err)}`);
   }
 
   verifyCriticalModules(targetDir);

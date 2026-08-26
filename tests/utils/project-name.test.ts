@@ -54,6 +54,46 @@ describe('getProjectName', () => {
     });
   });
 
+  describe('#2663 — name derived from git repo root', () => {
+    let tmp: string;
+    let repoRoot: string;
+    let nestedDir: string;
+
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, realpathSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      // macOS /tmp symlinks to /private/tmp; realpath so `git --show-toplevel`
+      // (which returns the canonical path) matches our expectations.
+      tmp = realpathSync(mkdtempSync(join(tmpdir(), 'cm-reporoot-')));
+      repoRoot = join(tmp, 'my-real-repo');
+      nestedDir = join(repoRoot, 'packages', 'deeply', 'nested');
+      mkdirSync(nestedDir, { recursive: true });
+      execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('deep subdirectory inside a repo yields the repo-root name', () => {
+      expect(getProjectName(nestedDir)).toBe('my-real-repo');
+    });
+
+    it('repo root itself yields the repo-root name', () => {
+      expect(getProjectName(repoRoot)).toBe('my-real-repo');
+    });
+
+    it('non-repo path falls back to basename(cwd)', () => {
+      // A path that does not exist (and therefore cannot be in a repo) must
+      // fall back to basename(cwd) rather than throwing or returning a root.
+      expect(getProjectName('/no/such/dir/standalone-folder')).toBe('standalone-folder');
+    });
+  });
+
   describe('realistic scenarios from #1478', () => {
     it('handles ~ the same as full home path', () => {
       const home = homedir();
@@ -132,6 +172,77 @@ describe('getProjectContext', () => {
       expect(project).toBe('main-repo/my-worktree');
       expect(project).not.toBe('main-repo');
       expect(project).not.toBe('my-worktree');
+    });
+  });
+
+  // #3262 — detectWorktree must run at the git worktree root, not raw cwd.
+  // A session started in a subdirectory of a worktree must keep the same
+  // parent/worktree compound key as a session at the worktree root.
+  describe('#3262 — worktree compound key from subdirectory', () => {
+    let tmp: string;
+    let worktreeCheckout: string;
+    let worktreeSubdir: string;
+
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, realpathSync, writeFileSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      tmp = realpathSync(mkdtempSync(join(tmpdir(), 'cm-wt-subdir-')));
+      const mainRepo = join(tmp, 'main-repo');
+      worktreeCheckout = join(tmp, 'feature-x');
+      worktreeSubdir = join(worktreeCheckout, 'packages', 'nested');
+
+      mkdirSync(mainRepo, { recursive: true });
+      execFileSync('git', ['init', '-q'], { cwd: mainRepo });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: mainRepo });
+      execFileSync('git', ['config', 'user.name', 'Test'], { cwd: mainRepo });
+      writeFileSync(join(mainRepo, 'README'), 'init\n');
+      execFileSync('git', ['add', '.'], { cwd: mainRepo });
+      execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: mainRepo });
+      execFileSync('git', ['worktree', 'add', '-q', worktreeCheckout, '-b', 'feature-x'], {
+        cwd: mainRepo,
+      });
+      mkdirSync(worktreeSubdir, { recursive: true });
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+      const { execFileSync } = await import('child_process');
+      const { join } = await import('path');
+      try {
+        execFileSync('git', ['worktree', 'remove', '--force', worktreeCheckout], {
+          cwd: join(tmp, 'main-repo'),
+        });
+      } catch {
+        // Best-effort cleanup; rmSync below still removes the temp tree.
+      }
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('worktree root yields parent/worktree composite', () => {
+      const ctx = getProjectContext(worktreeCheckout);
+      expect(ctx.isWorktree).toBe(true);
+      expect(ctx.primary).toBe('main-repo/feature-x');
+      expect(ctx.parent).toBe('main-repo');
+      expect(ctx.allProjects).toEqual(['main-repo', 'main-repo/feature-x']);
+    });
+
+    it('subdirectory of a worktree yields the same composite key', () => {
+      const ctx = getProjectContext(worktreeSubdir);
+      expect(ctx.isWorktree).toBe(true);
+      expect(ctx.primary).toBe('main-repo/feature-x');
+      expect(ctx.parent).toBe('main-repo');
+      expect(ctx.allProjects).toEqual(['main-repo', 'main-repo/feature-x']);
+    });
+
+    it('subdirectory and worktree root share the same primary key', () => {
+      const atRoot = getProjectContext(worktreeCheckout).primary;
+      const inSubdir = getProjectContext(worktreeSubdir).primary;
+      expect(inSubdir).toBe(atRoot);
+      expect(inSubdir).not.toBe('feature-x');
+      expect(inSubdir).not.toBe('nested');
     });
   });
 });

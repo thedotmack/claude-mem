@@ -29,16 +29,16 @@ export function getOpenClawConfigFilePath(): string {
   return path.join(getOpenClawConfigDirectory(), 'openclaw.json');
 }
 
-export function findPreBuiltPluginDirectory(): string | null {
-  const possibleRoots = [
-    path.join(
-      process.env.CLAUDE_CONFIG_DIR || path.join(homedir(), '.claude'),
-      'plugins', 'marketplaces', 'thedotmack',
-    ),
-    process.cwd(),
-  ];
+const OPENCLAW_MARKETPLACE_ROOTS = [
+  path.join(
+    process.env.CLAUDE_CONFIG_DIR || path.join(homedir(), '.claude'),
+    'plugins', 'marketplaces', 'thedotmack',
+  ),
+  process.cwd(),
+];
 
-  for (const root of possibleRoots) {
+export function findPreBuiltPluginDirectory(): string | null {
+  for (const root of OPENCLAW_MARKETPLACE_ROOTS) {
     const openclawDistDirectory = path.join(root, 'openclaw', 'dist');
     const pluginEntryPoint = path.join(openclawDistDirectory, 'index.js');
     if (existsSync(pluginEntryPoint)) {
@@ -50,15 +50,7 @@ export function findPreBuiltPluginDirectory(): string | null {
 }
 
 export function findPluginManifestPath(): string | null {
-  const possibleRoots = [
-    path.join(
-      process.env.CLAUDE_CONFIG_DIR || path.join(homedir(), '.claude'),
-      'plugins', 'marketplaces', 'thedotmack',
-    ),
-    process.cwd(),
-  ];
-
-  for (const root of possibleRoots) {
+  for (const root of OPENCLAW_MARKETPLACE_ROOTS) {
     const manifestPath = path.join(root, 'openclaw', 'openclaw.plugin.json');
     if (existsSync(manifestPath)) {
       return manifestPath;
@@ -69,15 +61,7 @@ export function findPluginManifestPath(): string | null {
 }
 
 export function findPluginSkillsDirectory(): string | null {
-  const possibleRoots = [
-    path.join(
-      process.env.CLAUDE_CONFIG_DIR || path.join(homedir(), '.claude'),
-      'plugins', 'marketplaces', 'thedotmack',
-    ),
-    process.cwd(),
-  ];
-
-  for (const root of possibleRoots) {
+  for (const root of OPENCLAW_MARKETPLACE_ROOTS) {
     const skillsDirectory = path.join(root, 'openclaw', 'skills');
     if (existsSync(skillsDirectory)) {
       return skillsDirectory;

@@ -68,14 +68,6 @@ describe('RateLimitStore', () => {
     expect(snap.seven_day_opus?.utilization).toBe(0.3);
     expect(snap.seven_day).toBeUndefined();
   });
-
-  it('clear() drops all entries', () => {
-    const store = freshStore();
-    store.set({ rateLimitType: 'five_hour', utilization: 0.5 });
-    store.clear();
-    expect(store.size).toBe(0);
-    expect(store.get('five_hour')).toBeUndefined();
-  });
 });
 
 describe('isApiKeyAuth', () => {

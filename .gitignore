@@ -18,6 +18,8 @@ plugin/data/
 plugin/data.backup/
 package-lock.json
 bun.lock
+!plugin/bun.lock
+!workers/sync-hub/bun.lock
 private/
 Auto Run Docs/
 
@@ -39,13 +41,13 @@ plugin/.cli-installed
 plugin/scripts/claude-mem
 
 CONTRIB_NOTES.md
+CLAUDE.local.md
 
 .docker-claude-mem-data/
 
-evals/swebench/runs/
-claude-opus-4-7+claude-mem.*.json
-logs/run_evaluation/
-.venv-swebench/
 .docker-blowout-data/
 .scratch/
 docker/install-test/
+
+# Local session report artifacts (not part of distribution)
+reports/

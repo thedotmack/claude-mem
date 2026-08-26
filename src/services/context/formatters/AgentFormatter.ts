@@ -21,9 +21,16 @@ function formatHeaderDateTime(): string {
   return `${date} ${time} ${tz}`;
 }
 
+function formatActiveMode(): string {
+  const manager = ModeManager.getInstance();
+  const mode = manager.getActiveMode();
+  return `${mode.name} (${manager.getActiveModeId()})`;
+}
+
 export function renderAgentHeader(project: string): string[] {
   return [
     `# [${project}] recent context, ${formatHeaderDateTime()}`,
+    `Mode: ${formatActiveMode()}`,
     ''
   ];
 }
@@ -38,14 +45,6 @@ export function renderAgentLegend(): string[] {
     `Fetch details: get_observations([IDs]) | Search: mem-search skill`,
     ''
   ];
-}
-
-export function renderAgentColumnKey(): string[] {
-  return [];
-}
-
-export function renderAgentContextIndex(): string[] {
-  return [];
 }
 
 export function renderAgentContextEconomics(
@@ -77,10 +76,6 @@ export function renderAgentDayHeader(day: string): string[] {
   return [
     `### ${day}`,
   ];
-}
-
-export function renderAgentFileHeader(_file: string): string[] {
-  return [];
 }
 
 function compactTime(time: string): string {
@@ -168,5 +163,5 @@ export function renderAgentFooter(totalDiscoveryTokens: number, totalReadTokens:
 }
 
 export function renderAgentEmptyState(project: string): string {
-  return `# [${project}] recent context, ${formatHeaderDateTime()}\n\nNo previous sessions found.`;
+  return `# [${project}] recent context, ${formatHeaderDateTime()}\nMode: ${formatActiveMode()}\n\nNo previous sessions found.`;
 }

@@ -1,4 +1,7 @@
-
+// IO discipline (see src/shared/hook-io.ts): this handler is PURE. It returns a
+// HookResult and MUST NOT call process.stderr.write / process.stdout.write /
+// console.* / process.exit. logger.* calls are DIAGNOSTIC; thrown errors are
+// caught by hookCommand and routed through emitBlockingError.
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
@@ -135,6 +138,15 @@ function formatFileTimeline(
 
 export const fileContextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
+    if (input.agentId) {
+      logger.debug('HOOK', 'Skipping file context: subagent context detected', {
+        sessionId: input.sessionId,
+        agentId: input.agentId,
+        agentType: input.agentType
+      });
+      return { continue: true, suppressOutput: true };
+    }
+
     const toolInput = input.toolInput as Record<string, unknown> | undefined;
     const filePaths = Array.isArray(toolInput?.filePaths)
       ? (toolInput.filePaths as unknown[]).filter((p): p is string => typeof p === 'string').slice(0, MAX_FILE_CONTEXT_PATHS)
@@ -203,7 +215,21 @@ async function buildFileContextTimeline(input: NormalizedHookInput, filePath: st
   const cwd = input.cwd || process.cwd();
   const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
   const relativePath = path.relative(cwd, absolutePath).split(path.sep).join("/");
-  const queryParams = new URLSearchParams({ path: relativePath });
+
+  // #2691 — PostToolUse stores whatever path form the observer recorded
+  // (absolute tool-input path, or project-root-relative per the prompt). The
+  // PreToolUse:Read query previously sent ONLY the cwd-relative form, so it
+  // never matched absolute-path storage. Send both candidate forms (forward-
+  // slashed, de-duped) as repeated `path` params so the key matches across
+  // both events regardless of how the path was stored.
+  const candidateQueryPaths = Array.from(new Set([
+    absolutePath.split(path.sep).join("/"),
+    relativePath,
+  ].filter(Boolean)));
+  const queryParams = new URLSearchParams();
+  for (const candidate of candidateQueryPaths) {
+    queryParams.append('path', candidate);
+  }
   if (context.allProjects.length > 0) {
     queryParams.set('projects', context.allProjects.join(','));
   }

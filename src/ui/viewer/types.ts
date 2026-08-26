@@ -92,23 +92,3 @@ export interface Settings {
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY?: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE?: string;
 }
-
-export interface WorkerStats {
-  version?: string;
-  uptime?: number;
-  activeSessions?: number;
-  sseClients?: number;
-}
-
-export interface DatabaseStats {
-  size?: number;
-  observations?: number;
-  sessions?: number;
-  summaries?: number;
-  firstObservationAt?: string | null;
-}
-
-export interface Stats {
-  worker?: WorkerStats;
-  database?: DatabaseStats;
-}

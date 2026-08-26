@@ -1,0 +1,250 @@
+---
+title: "Telemetry"
+description: "Anonymous usage analytics — on by default, fully documented, one command to opt out"
+---
+
+# Telemetry
+
+Claude-mem includes anonymous usage analytics (via PostHog) to help prioritize fixes and features.
+
+**It is on by default (opt-out).** Events are anonymous, identified only by a random install UUID, and every analytics property passes a strict whitelist — see [What is collected](#what-is-collected) and [What is NEVER collected](#what-is-never-collected) below. Turning it off is one command:
+
+```bash
+npx claude-mem telemetry disable
+```
+
+The standard [`DO_NOT_TRACK`](https://consoledonottrack.com) environment variable is also honored and overrides everything. The installer asks once at the end of `npx claude-mem install` so the default is never silent for new installs — your answer (either way) is remembered and never re-asked, and the prompt is skipped entirely when `DO_NOT_TRACK` is set or in CI/non-interactive installs.
+
+## How instrumentation works
+
+Claude-mem has a single instrumentation path (`instrument()` in `src/services/telemetry/instrument.ts`). Every observable event is described once and fans out to two sinks:
+
+- **The local logger — always, at full fidelity.** Logging keeps working with telemetry off, and the local log never goes through the scrubber. This is where the complete, unredacted detail lives — on your machine.
+- **Telemetry — only when consent passes.** The telemetry copy is scrubbed (the [whitelist](#what-is-collected) for structured properties; [allow-then-redact](#error-tracking) for error text) and, for high-volume events, rolled up into per-session/per-window aggregates before anything is sent.
+
+So a single source of truth produces both the rich local log and the minimal, privacy-preserving telemetry — they never drift, and the scrubbing only ever happens on the telemetry branch.
+
+**Note on session replay:** PostHog session replay is **not applicable** to claude-mem. Replay records a browser DOM session; claude-mem is a Node background worker with no browser surface, so there is nothing to replay and it is never enabled.
+
+## What is collected
+
+When enabled, events are anonymous and identified only by a random install UUID (`crypto.randomUUID()`, generated locally on first use).
+
+Low-volume lifecycle events (`install_*`, `uninstall_completed`, `worker_started`) build an analytics profile keyed to that random UUID so aggregate retention and cohort statistics are computable — the profile contains nothing beyond the whitelisted fields below (platform, version, IDE/provider choice). It is not, and cannot be, connected to you: there is no name, email, IP, hardware ID, or any other identifier. All high-volume activity is sent with `$process_person_profile: false` and builds no profile at all.
+
+**High-volume events are rolled up, not streamed.** Rather than emit one event per compression or context injection, claude-mem aggregates them locally and sends one summary:
+
+- **`observer_turn_rollup`** — a **per-session** accumulator. Every compression in a session folds into one running rollup that is emitted **once, at session end** (instead of one `session_compressed` event per turn). It carries a `rollup_reason` explaining why it flushed (`session_end` | `worker_shutdown` | `safety_flush`) and a `window_seq` partial-flush counter (`0` for a normal one-shot session; `0,1,2,…` only when a long-lived session trips the periodic safety sweep).
+- **`context_injected_rollup`** — a **5-minute time-window** accumulator for context injections.
+
+This rollup model is what cut the high-volume event stream by roughly 99.9%. There is no longer any code path that emits raw `session_compressed` or `context_injected` events directly — the only path to PostHog for that activity is the rollup.
+
+Every event property passes through a strict whitelist scrubber — any key not in this table is silently dropped before sending:
+
+| Field | Example | Description |
+|---|---|---|
+| event name | `observer_turn_rollup` | Which of the events below occurred |
+| `distinct_id` | `7f3c…` (random UUID) | Anonymous install ID — not derived from you or your machine |
+| `version` | `13.4.2` | claude-mem version |
+| `os` | `darwin` | Operating system platform |
+| `os_version` | `10.0.22631` | OS kernel release string — distinguishes e.g. Windows 10 from 11 |
+| `is_wsl` | `false` | Whether running under Windows Subsystem for Linux |
+| `arch` | `arm64` | CPU architecture |
+| `runtime` | `bun` | `bun` or `node` |
+| `runtime_version` | `1.2.0` | Runtime version string |
+| `node_version` | `22.14.0` | Node.js version string |
+| `duration_ms` | `1843` | How long an operation took |
+| `outcome` | `ok` | Coarse result — a closed enum: ok / error / partial / invalid_output / aborted |
+| `error_category` | `provider_error` | Coarse error bucket — never an error message |
+| `locale` | `en-US` | Language tag |
+| `is_ci` | `false` | Whether running in CI |
+| `endpoint` | `by-file` | Which claude-mem search route — always one of our route names, never a query |
+| `ide` | `claude-code` | Installer IDE choice (the installer's own id list) |
+| `provider` | `claude` | LLM provider choice: claude / gemini / openrouter |
+| `runtime_mode` | `worker` | worker or server runtime |
+| `trigger` | `heartbeat` | Whether `worker_started` was a real start or the daily heartbeat |
+| `count` | `7` | Integer volume, e.g. observations stored in one compression |
+| `has_summary` | `true` | Whether a compression also produced a session summary |
+| `is_update` | `false` | Whether an install ran over an existing installation |
+| `interactive` | `true` | Whether the installer ran in an interactive terminal |
+| `install_method` | `npm` | Which package manager launched the CLI: npm / bun / pnpm / yarn |
+| `bun_version` / `uv_version` | `1.3.9` / `0.7.2` | Toolchain versions detected during install |
+| `claude_code_version` | `2.0.14` | Claude Code CLI version, if detectable |
+| `mode` | `code` | Active claude-mem mode id (our mode list) |
+| `model` | `claude-haiku-4-5` | Model id used for compression |
+| `hook` | `ingest` | What triggered a compression: init / ingest / summarize |
+| `observation_type`, `obs_type_*` | `bugfix`, `3` | Observation type buckets (bugfix / discovery / decision / refactor / other) — counts only |
+| `compression_ms` | `2140` | Latency of the compression model call |
+| `tokens_input` / `tokens_output` | `5800` / `420` | Real token usage reported by the model API for one compression |
+| `compression_ratio` | `13.8` | tokens_input ÷ tokens_output |
+| `cost_usd` | `0.0021` | Provider-reported cost of one compression call in USD (Claude SDK / openrouter.ai) — never an estimate, absent when the provider reports none |
+| `endpoint_class` | `openrouter` | Whether the OpenRouter provider targets openrouter.ai or a custom gateway |
+| `rollup_reason` | `session_end` | Why a per-session `observer_turn_rollup` was emitted — a closed enum: session_end / worker_shutdown / safety_flush |
+| `window_seq` | `0` | Partial-flush sequence number for a rollup — `0` for a normal one-shot session, incrementing only when a long-lived session trips the safety sweep |
+| `observation_count`, `session_count` | `50`, `12` | How many observations/sessions fed one context injection |
+| `timeline_depth_days` | `90` | Age in days of the oldest injected observation |
+| `has_session_summary` | `true` | Whether a session summary was part of the injection |
+| `tokens_injected` | `17914` | Estimated tokens of injected context |
+| `tokens_saved_vs_naive` | `144379` | Estimated tokens saved vs re-discovering that work |
+| `search_strategy` | `timeline` | Which retrieval strategy built the injection (our enum) |
+| `db_observation_count`, `db_session_count`, `db_summary_count`, `db_project_count` | `92501`, `5243`, `9698`, `379` | Total rows in the local memory database — counts only, never names or text |
+| `db_size_mb` | `364.4` | Memory database file size in MB |
+| `install_age_days` | `104` | Days since the install's first recorded session |
+| `obs_count_7d` / `obs_count_30d` | `1887` / `10357` | Observations stored in the last 7 / 30 days |
+| `days_since_last_obs` | `0` | Days since the most recent observation was stored |
+| `result_count` | `12` | How many results a memory search returned — count only, never the results or the query |
+| `chroma_available` | `true` | Whether the vector-search backend was reachable for a search (false = fell back to full-text search) |
+| `fallback_reason` | `none` | Why a search fell back from vector search: none / chroma_connection / chroma_error / chroma_not_initialized — a closed enum, never an error message |
+| `invalid_output_class` | `idle` | Coarse class of an unusable compression output: xml / idle / prose (`xml` = looked like the expected format but failed to parse) — never the output itself |
+| `consecutive_invalid_outputs` | `0` | Legacy unusable-output counter, retained as a scrubbed numeric field |
+| `respawn_triggered` | `false` | Legacy recovery flag for old invalid-output restarts |
+| `abort_reason` | `idle` | Why a compression session was aborted: idle / shutdown / overflow / restart_guard / quota / none — a closed enum |
+| `previous_shutdown` | `clean` | How the previous worker run ended, detected at startup: crash / clean / unknown |
+| `previous_uptime_seconds` | `86400` | How long the previous worker run was up, in whole seconds |
+| `uptime_seconds` | `3600` | How long the worker was up when it stopped, in whole seconds |
+| `shutdown_reason` | `restart` | Why the worker stopped: stop / restart / signal |
+| `process_rss_mb` | `187` | Worker process resident memory, integer megabytes |
+| `heap_used_mb` | `92` | Worker JS heap in use, integer megabytes |
+| `hook_type` | `observation` | Which hook kind failed: context / session-init / observation / summarize / file-context — our handler names |
+| `error_mode` | `worker_unavailable` | Coarse hook failure mode: worker_unavailable / blocking_error — never an error message |
+| `consecutive_failures` | `3` | How many hook failures occurred in a row (the fail-loud counter) |
+| `threshold_tripped` | `true` | Whether the consecutive-failure count reached the fail-loud threshold |
+
+One value is derived server-side rather than sent by the client: PostHog resolves the request's sender IP to a **coarse location** (country / region / city) at ingestion, before the IP itself is discarded. The client never attaches an IP to any event, and the raw IP is never stored — see [What is NEVER collected](#what-is-never-collected).
+
+### Events
+
+| Event | When | Extra properties |
+|---|---|---|
+| `install_completed` | `npx claude-mem install` finishes | `ide`, `provider`, `runtime_mode`, `is_update`, `outcome`, `duration_ms`, `interactive`, `install_method`, `bun_version`, `uv_version`, `claude_code_version` |
+| `install_failed` | The installer aborts | `error_category` (our error-taxonomy id), `interactive`, `install_method`, `claude_code_version` |
+| `uninstall_completed` | `npx claude-mem uninstall` finishes | — |
+| `worker_started` | The background worker starts, plus one heartbeat per 24h of uptime | `trigger` (start / heartbeat), `duration_ms`, `ide`, `provider`, `mode`, `runtime_mode`, process memory (`process_rss_mb`, `heap_used_mb`), the install snapshot: `db_observation_count`, `db_session_count`, `db_summary_count`, `db_project_count`, `db_size_mb`, `install_age_days`, `obs_count_7d`, `obs_count_30d`, `days_since_last_obs`; on a real start also crash detection: `previous_shutdown` (crash / clean / unknown) and, after a clean shutdown, `previous_uptime_seconds` |
+| `observer_turn_rollup` | Emitted **once per session, at session end** — a per-session rollup that aggregates every compression in that session (stored observations, invalid-output drops, failures, aborts) instead of one event per turn | `rollup_reason` (session_end / worker_shutdown / safety_flush), `window_seq`, aggregated `outcomes_*` counts, `total_tokens_input`, `total_tokens_output`, `total_cost_usd`, `avg_duration_ms`, `avg_compression_ms`, `top_model`, `observations_created` (sum of observations generated in the session — pairs with `total_cost_usd` to derive cost per observation), summed `obs_type_*` buckets, `window_start_ts`, plus the per-turn fields it summarizes (`provider`, `ide`, `hook`) |
+| `context_injected_rollup` | A 5-minute time-window rollup of context injections (stored memory injected into new sessions) | aggregated `outcomes_ok` / `outcomes_error` counts, `count`, `total_tokens`, `avg_tokens`, `total_observations_injected` (sum of observations served from cache into prompts), `total_tokens_saved_vs_naive`, `window_start_ts` |
+| `search_performed` | A memory search runs (never the query text) | `endpoint`, `outcome`, `duration_ms`, `result_count`, `search_strategy`, `chroma_available`, `fallback_reason` |
+| `worker_stopped` | The background worker shuts down gracefully | `uptime_seconds`, `shutdown_reason` (stop / restart / signal) |
+| `hook_failed` | A claude-mem hook fails hard — the worker is unreachable past the fail-loud threshold, or a blocking error occurs | `hook_type`, `error_mode`, `consecutive_failures`, `threshold_tripped` |
+| `error_occurred` | The worker returns an HTTP 5xx | `error_category` |
+| `$exception` | A real error is captured for [error tracking](#error-tracking) — consent-gated and independently kill-switchable | Redacted `error_type` / `error_message` / `error_stack`, `occurrence_count`, plus whitelisted context. See [Error tracking](#error-tracking) for exactly what is kept vs. redacted |
+
+## Error tracking
+
+Claude-mem captures real errors to PostHog Error Tracking as `$exception` events. **This is a deliberate change from the old strictly-whitelist-only posture:** error messages and stack traces are free-form text, so the property whitelist (which only passes known closed-set keys) would drop them entirely. Instead, error text takes a separate **allow-then-redact** path (`src/services/telemetry/error-scrub.ts`): we keep the diagnostic text and aggressively strip anything that could leak PII or secrets.
+
+**What is kept (redacted):**
+
+- The error **type** (constructor name, e.g. `TypeError`), capped to 100 chars.
+- The error **message**, redacted and capped to 500 chars.
+- The **stack trace** — only the top 10 frames, each redacted, capped to ~2KB total.
+- An `occurrence_count` (how many times this error fingerprint fired in the current window).
+
+**What is redacted out of that text** (replaced with `[REDACTED]`, in this order):
+
+- Home directory (`/Users/you` → `~`) — first, so a username embedded in the home path never survives.
+- Absolute filesystem paths → collapsed to basename (POSIX, Windows drive, and UNC paths) — keeps "which file" without the directory tree.
+- URL / connection-string credentials and query strings — userinfo (`user:pass@`) and `?…`/`#…` are stripped from any `scheme://…` (http, ws, postgres, redis, mongodb+srv, amqp, …), so DB connection-string creds and signed-URL tokens die.
+- Emails.
+- API tokens and keys: provider-prefixed keys (`sk-`, `phc_`, `ghp_`, `xoxb-`, …), Bearer tokens, **AWS access key IDs** (`AKIA…`), JWTs, UUIDs, long hex blobs (24+ chars), and generic high-entropy tokens.
+- **IPv4 addresses** (internal IPs/hostnames that leak in network errors).
+
+The redaction pipeline is **pure and never throws** — hostile input (null, circular, objects with throwing getters, 200KB blobs) always yields a safe, bounded result, because telemetry must never break or block the worker. Raw input is hard-capped at 8KB before any regex runs (ReDoS defense).
+
+**Rate-limiting.** At most **one `$exception` per error fingerprint per 60 seconds**. Errors are fingerprinted by type + a normalized message template + top stack frame, so a storm of the "same" error with varying ids/numbers dedupes to a single send with an occurrence count attached. This applies to both our manual captures and any SDK autocapture. (Autocapture is additionally re-scrubbed before send — raw source-context lines that posthog-node reads off disk are deleted, and filenames are redacted to basenames.)
+
+**Consent-gated, with an independent kill-switch.** Error capture is gated by the normal telemetry consent chain (opting out of telemetry disables errors too) **and** by a separate `CLAUDE_MEM_TELEMETRY_ERRORS` switch — see [How to opt out](#how-to-opt-out-four-ways). No person profile is built for `$exception` events (`$process_person_profile: false`).
+
+<Warning>
+**One-way door.** Unlike the whitelisted analytics events — every field of which is a number, boolean, or value from a closed set — `$exception` events carry real (redacted) message text. Once an error message is ingested into PostHog, it **cannot be selectively deleted** after the fact. This is a deliberate trade-off made to get actionable crash diagnostics, mitigated by aggressive redaction, rate-limiting, consent-gating, and the `CLAUDE_MEM_TELEMETRY_ERRORS=0` kill-switch. If you would rather send nothing free-form, set that variable.
+</Warning>
+
+## Historical backfill
+
+Telemetry shipped later than claude-mem itself, so installs that predate it have activity the live events never saw. On the first worker start after upgrading, claude-mem performs a **one-time** backfill of that pre-telemetry history — anonymized counts only, passed through the same whitelist scrubber as everything else:
+
+| Event | When (timestamp) | What it carries |
+|---|---|---|
+| `historical_activity` | One per day the install was active, stamped on that historical day | Daily activity counts only: observations, sessions, summaries, prompts, distinct-project **count**, observation-type buckets (`obs_type_*`), session outcomes (`session_completed_count` / `session_failed_count`), per-platform session counts (`sessions_claude_count` etc.), `subagent_obs_count`, `discovery_tokens`, plus `backfilled: true`. Profile-less (`$process_person_profile: false`), like all high-volume events |
+| `install_inferred` | Once, stamped on the install's first recorded activity day | `first_active_date` (a date string, e.g. `2025-10-19`) and `backfilled: true` |
+
+Like everything else, these are counts and closed-set values only — **never titles, prompts, file contents, or project names**. The same anonymous install UUID identifies them, and every property passes the whitelist scrubber.
+
+A few things worth knowing:
+
+- **It runs once.** A completion marker (`backfill.json` in the claude-mem data directory) is written after a successful send and prevents the backfill from ever running again. Until a run succeeds, no marker is written, so a failed attempt simply retries on the next worker start.
+- **It honors the exact same consent gates as live telemetry** — `DO_NOT_TRACK`, `CLAUDE_MEM_TELEMETRY=0`, and `enabled: false` in `telemetry.json` all block it, and [debug mode](#debug-mode) prints the would-be payload without sending.
+- **Opting out before the first worker start after upgrading prevents it entirely.** Nothing is sent and no marker is written while you are opted out — though if you opt back in later, the backfill will then run.
+- **Location is upload-time, not historical.** The coarse location PostHog derives at ingestion (see above) reflects where the events were uploaded from, not where you were on the historical dates they describe.
+
+## What is NEVER collected
+
+| Never collected | Notes |
+|---|---|
+| Prompts or conversation content | Not even truncated or hashed |
+| File paths or directory names | Redacted out of analytics entirely, and redacted out of error text (home dir → `~`, absolute paths → basename) — see [Error tracking](#error-tracking) |
+| Source code | In any form — including the source-context lines posthog-node would otherwise attach to autocaptured exceptions (deleted before send) |
+| Project or repository names | Including git remotes and branch names |
+| Search queries | Only the fact that a search happened |
+| IP addresses | Never attached to events by the client; the sender IP is used transiently at ingest to derive coarse location (country / region / city), then discarded — the analytics project is configured to never store sender IPs |
+| Hardware or machine identifiers | Not even hashed MAC addresses or hostnames |
+| Environment variable values | Ever |
+| Emails, usernames, or any PII | Ever — emails, tokens, keys, and credentials are redacted out of error text too |
+
+**One honest exception: error messages.** Since the addition of [error tracking](#error-tracking), redacted error **messages and stack traces** ARE collected (as `$exception` events) — that is a deliberate change from the previous coarse-category-only posture, and it is consent-gated with its own [kill-switch](#how-to-opt-out-four-ways). Raw paths, prompts, project names, source code, and model output are still **never** collected — they are stripped from the error text before it leaves your machine.
+
+Analytics properties are enforced in code: they go through a whitelist (only the fields in the [What is collected](#what-is-collected) table survive), not a blocklist. Every whitelisted field is either a number, a boolean, or a value from a closed set we define — there is no analytics field that could carry free-form user content. Error text is the one free-form path, and it goes through the separate allow-then-redact scrubber instead.
+
+## How to opt out (four ways)
+
+Any one of these keeps telemetry off — they are checked in this order, first match wins:
+
+1. **`DO_NOT_TRACK`** — the [universal opt-out](https://consoledonottrack.com). Set `DO_NOT_TRACK=1` and telemetry is forced off, overriding everything else.
+2. **`CLAUDE_MEM_TELEMETRY=0`** (also `false` / `off`) — environment override. (`CLAUDE_MEM_TELEMETRY=1` conversely forces it on.)
+3. **Telemetry config file** — `enabled: false` in `telemetry.json` (see below).
+4. **CLI command**:
+   ```bash
+   npx claude-mem telemetry disable
+   ```
+
+### Error tracking opt-out (independent)
+
+[Error tracking](#error-tracking) (`$exception` events with redacted message/stack) can be disabled **on its own**, without turning off anonymous analytics:
+
+```bash
+CLAUDE_MEM_TELEMETRY_ERRORS=0   # also accepts 'false' / 'off'
+```
+
+This is the one telemetry path that carries free-form (redacted) text and is a [one-way door](#error-tracking) once ingested, so it has its own kill-switch for operators who are fine with anonymous counters but not error text. It defaults on whenever telemetry consent is on; any of the four opt-outs above also disables it implicitly (no consent ⇒ no errors).
+
+Check the current state — and which of the four layers decided it — anytime:
+
+```bash
+npx claude-mem telemetry status
+```
+
+## Debug mode
+
+Want to see exactly what would be sent? Set:
+
+```bash
+CLAUDE_MEM_TELEMETRY_DEBUG=1
+```
+
+With debug mode on (and telemetry enabled), every would-be event payload is printed to stderr and **nothing is sent over the network**.
+
+## Where the config lives
+
+Consent and the anonymous install ID are stored in `telemetry.json` inside the claude-mem data directory:
+
+- Default: `~/.claude-mem/telemetry.json`
+- Or `$CLAUDE_MEM_DATA_DIR/telemetry.json` if you've overridden the data dir
+
+```json
+{
+  "enabled": false,
+  "installId": "<random UUID>",
+  "decidedAt": "2026-06-09T21:00:00.000Z"
+}
+```
+
+The `enabled` field is only present once you've made an explicit choice (installer prompt, `telemetry enable`, or `telemetry disable`). A file with just an `installId` means no decision was recorded and the default (on) applies. Delete the file to reset completely — a fresh install ID is generated on next use.

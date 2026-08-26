@@ -1,7 +1,16 @@
 
-import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import type { Request, Response } from 'express';
 import { logger } from '../../../../src/utils/logger.js';
+
+// Snapshot the real modules BEFORE mock.module mutates the live namespaces,
+// then re-register them in afterAll. bun's mock.module is process-global and
+// mock.restore() does NOT undo it, so these partial stubs would otherwise leak
+// into other test files in the same `bun test` run.
+import * as realPaths from '../../../../src/shared/paths.js';
+import * as realWorkerUtils from '../../../../src/shared/worker-utils.js';
+const realPathsSnapshot = { ...realPaths };
+const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 
 mock.module('../../../../src/shared/paths.js', () => ({
   getPackageRoot: () => '/tmp/test',
@@ -9,6 +18,11 @@ mock.module('../../../../src/shared/paths.js', () => ({
 mock.module('../../../../src/shared/worker-utils.js', () => ({
   getWorkerPort: () => 37777,
 }));
+
+afterAll(() => {
+  mock.module('../../../../src/shared/paths.js', () => realPathsSnapshot);
+  mock.module('../../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
+});
 
 import { DataRoutes } from '../../../../src/services/worker/http/routes/DataRoutes.js';
 
@@ -190,25 +204,6 @@ describe('DataRoutes Type Coercion', () => {
       handler(req as Request, res as Response);
 
       expect(mockGetSdkSessionsBySessionIds).toHaveBeenCalledWith(['abc', 'def', 'ghi']);
-      expect(jsonSpy).toHaveBeenCalled();
-    });
-
-    it('should accept legacy sdkSessionIds as a compatibility alias', () => {
-      const { req, res, jsonSpy } = createMockReqRes({ sdkSessionIds: ['abc', 'def'] });
-      handler(req as Request, res as Response);
-
-      expect(mockGetSdkSessionsBySessionIds).toHaveBeenCalledWith(['abc', 'def']);
-      expect(jsonSpy).toHaveBeenCalled();
-    });
-
-    it('should prefer canonical memorySessionIds when both fields are provided', () => {
-      const { req, res, jsonSpy } = createMockReqRes({
-        memorySessionIds: ['canonical'],
-        sdkSessionIds: ['legacy'],
-      });
-      handler(req as Request, res as Response);
-
-      expect(mockGetSdkSessionsBySessionIds).toHaveBeenCalledWith(['canonical']);
       expect(jsonSpy).toHaveBeenCalled();
     });
 

@@ -1,6 +1,13 @@
 
-import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, spyOn, mock } from 'bun:test';
 import { logger } from '../../src/utils/logger.js';
+
+// Capture the real middleware module before mock.module mutates the live
+// namespace, then re-register the snapshot in afterAll. bun's mock.module is
+// process-global and mock.restore() does NOT undo it, so without this the stub
+// createMiddleware leaks into later files (e.g. CORS + v1-routes server tests).
+import * as realMiddleware from '../../src/services/worker/http/middleware.js';
+const realMiddlewareSnapshot = { ...realMiddleware };
 
 mock.module('../../src/services/worker/http/middleware.js', () => ({
   createMiddleware: () => [],
@@ -53,6 +60,10 @@ describe('Hook Execution E2E', () => {
       }
     }
     mock.restore();
+  });
+
+  afterAll(() => {
+    mock.module('../../src/services/worker/http/middleware.js', () => realMiddlewareSnapshot);
   });
 
   describe('health and readiness endpoints', () => {
@@ -201,10 +212,10 @@ describe('Hook Execution E2E', () => {
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
 
-      const { stripMemoryTagsFromPrompt } = await import('../../src/utils/tag-stripping.js');
+      const { stripMemoryTags } = await import('../../src/utils/tag-stripping.js');
 
       const privatePrompt = '<private>secret command</private>';
-      const cleanedPrompt = stripMemoryTagsFromPrompt(privatePrompt);
+      const cleanedPrompt = stripMemoryTags(privatePrompt);
 
       const shouldSkip = !cleanedPrompt || cleanedPrompt.trim() === '';
       expect(shouldSkip).toBe(true);
@@ -214,10 +225,10 @@ describe('Hook Execution E2E', () => {
       server = new Server(mockOptions);
       await server.listen(testPort, '127.0.0.1');
 
-      const { stripMemoryTagsFromPrompt } = await import('../../src/utils/tag-stripping.js');
+      const { stripMemoryTags } = await import('../../src/utils/tag-stripping.js');
 
       const mixedPrompt = '<private>my password is secret123</private> Help me write a function';
-      const cleanedPrompt = stripMemoryTagsFromPrompt(mixedPrompt);
+      const cleanedPrompt = stripMemoryTags(mixedPrompt);
 
       const shouldSkip = !cleanedPrompt || cleanedPrompt.trim() === '';
       expect(shouldSkip).toBe(false);

@@ -1,11 +1,14 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'bun:test';
 import { execSync, ChildProcess } from 'child_process';
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, rmSync } from 'fs';
-import { homedir } from 'os';
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 import path from 'path';
 
 const TEST_PORT = 37877;
-const TEST_DATA_DIR = path.join(homedir(), '.claude-mem-test');
+// Phase 6 (worker-restart plan): a unique temp dir, NOT a fixed path in the
+// user's home directory — concurrent runs can't collide and nothing lands
+// near the real ~/.claude-mem.
+const TEST_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'claude-mem-worker-spawn-'));
 const TEST_PID_FILE = path.join(TEST_DATA_DIR, 'worker.pid');
 const WORKER_SCRIPT = path.join(__dirname, '../plugin/scripts/worker-service.cjs');
 
@@ -45,26 +48,20 @@ function runWorkerCommand(command: string, env: Record<string, string> = {}): st
 }
 
 describe('Worker Self-Spawn CLI', () => {
-  beforeAll(async () => {
-    if (existsSync(TEST_DATA_DIR)) {
-      rmSync(TEST_DATA_DIR, { recursive: true });
-    }
-  });
-
   afterAll(async () => {
-    if (existsSync(TEST_DATA_DIR)) {
-      rmSync(TEST_DATA_DIR, { recursive: true });
-    }
+    rmSync(TEST_DATA_DIR, { recursive: true, force: true });
   });
 
   describe('status command', () => {
+    // The spawned CLI must be pointed at the isolated temp dir explicitly so
+    // it never reads (or stale-cleans) the real ~/.claude-mem/worker.pid.
     it('should report worker status in expected format', async () => {
-      const output = runWorkerCommand('status');
+      const output = runWorkerCommand('status', { CLAUDE_MEM_DATA_DIR: TEST_DATA_DIR });
       expect(output.includes('running')).toBe(true);
     });
 
     it('should include PID and port when running', async () => {
-      const output = runWorkerCommand('status');
+      const output = runWorkerCommand('status', { CLAUDE_MEM_DATA_DIR: TEST_DATA_DIR });
       if (output.includes('Worker running')) {
         expect(output).toMatch(/PID: \d+/);
         expect(output).toMatch(/Port: \d+/);

@@ -1,5 +1,6 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
+import { parseEnv } from 'util';
 import { logger } from '../utils/logger.js';
 import { paths } from './paths.js';
 import {
@@ -17,9 +18,6 @@ export function envFilePath(): string {
   return process.env.CLAUDE_MEM_ENV_FILE ?? paths.envFile();
 }
 
-/** @deprecated Prefer envFilePath(); kept as a snapshot for back-compat. */
-export const ENV_FILE_PATH = envFilePath();
-
 const BLOCKED_ENV_VARS = [
   'ANTHROPIC_API_KEY',       // Issue #733: Prevent auto-discovery from project .env files
   'ANTHROPIC_AUTH_TOKEN',    // Same leak risk as ANTHROPIC_API_KEY; a token inherited from the
@@ -34,6 +32,17 @@ const BLOCKED_ENV_VARS = [
   'CLAUDE_CODE_OAUTH_TOKEN', // Issue #2215: prevent stale parent-process token from leaking into
                              // isolated env. The fresh token is read from the keychain at spawn
                              // time by buildIsolatedEnvWithFreshOAuth().
+  // Issue #2357 (defense-in-depth): host CLI effort config, not part of the
+  // plugin's contract. The SDK subprocess reads CLAUDE_CODE_EFFORT_LEVEL and
+  // forwards it as the `effort` Messages API parameter; models that don't
+  // support effort (Haiku 4.5, Sonnet 4.5, older) reject with a permanent
+  // HTTP 400, which previously retried forever. env-sanitizer's CLAUDE_CODE_*
+  // prefix filter already strips these on spawn paths that chain sanitizeEnv,
+  // but BLOCKED_ENV_VARS is the canonical leak deny-list — naming them here
+  // guarantees buildIsolatedEnv() strips them even on a path that forgets to
+  // chain sanitizeEnv.
+  'CLAUDE_CODE_EFFORT_LEVEL',
+  'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT',
 ];
 
 export interface ClaudeMemEnv {
@@ -44,31 +53,28 @@ export interface ClaudeMemEnv {
   OPENROUTER_API_KEY?: string;
 }
 
+/**
+ * The only env keys ever copied out of ~/.claude-mem/.env. This is the
+ * whitelist that load/save/buildIsolatedEnv enforce — only these five keys
+ * cross the boundary. Do NOT replace the per-key copy loops with
+ * Object.assign(result, parsed): that would let arbitrary keys (a leaked
+ * CLAUDE_CODE_* or a typo'd ANTHROPIC_* variant) through (see #2375).
+ */
+const CREDENTIAL_KEYS = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_AUTH_TOKEN',
+  'GEMINI_API_KEY',
+  'OPENROUTER_API_KEY',
+] as const;
+
+// Node's stdlib .env parser (util.parseEnv, Node ≥20.12 / stable in 24):
+// handles `#` comments, blank lines, KEY=VALUE, and quote-stripping. The
+// downstream CREDENTIAL_KEYS whitelist still filters the result — arbitrary
+// keys in the file never reach a ClaudeMemEnv. serializeEnvFile is kept custom
+// (header banner + selective quoting; no stdlib equivalent).
 function parseEnvFile(content: string): Record<string, string> {
-  const result: Record<string, string> = {};
-
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim();
-
-    if (!trimmed || trimmed.startsWith('#')) continue;
-
-    const eqIndex = trimmed.indexOf('=');
-    if (eqIndex === -1) continue;
-
-    const key = trimmed.slice(0, eqIndex).trim();
-    let value = trimmed.slice(eqIndex + 1).trim();
-
-    if ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-
-    if (key) {
-      result[key] = value;
-    }
-  }
-
-  return result;
+  return parseEnv(content) as Record<string, string>;
 }
 
 function serializeEnvFile(env: Record<string, string>): string {
@@ -89,6 +95,19 @@ function serializeEnvFile(env: Record<string, string>): string {
   return lines.join('\n') + '\n';
 }
 
+/**
+ * Single source of truth for non-OAuth Anthropic credentials (#2375).
+ *
+ * Contract: ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, and ANTHROPIC_AUTH_TOKEN
+ * are populated ONLY from ~/.claude-mem/.env — never from the parent shell.
+ * All three are in BLOCKED_ENV_VARS so process.env values cannot leak into
+ * the SDK subprocess; they are re-injected here (and in buildIsolatedEnv)
+ * exclusively from the file.
+ *
+ * The whitelist is enforced by the CREDENTIAL_KEYS copy loop below — only the
+ * five named keys are ever copied out (see CREDENTIAL_KEYS for why this must
+ * not become Object.assign(result, parsed)).
+ */
 export function loadClaudeMemEnv(): ClaudeMemEnv {
   const envFile = envFilePath();
   if (!existsSync(envFile)) {
@@ -100,11 +119,9 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
     const parsed = parseEnvFile(content);
 
     const result: ClaudeMemEnv = {};
-    if (parsed.ANTHROPIC_API_KEY) result.ANTHROPIC_API_KEY = parsed.ANTHROPIC_API_KEY;
-    if (parsed.ANTHROPIC_BASE_URL) result.ANTHROPIC_BASE_URL = parsed.ANTHROPIC_BASE_URL;
-    if (parsed.ANTHROPIC_AUTH_TOKEN) result.ANTHROPIC_AUTH_TOKEN = parsed.ANTHROPIC_AUTH_TOKEN;
-    if (parsed.GEMINI_API_KEY) result.GEMINI_API_KEY = parsed.GEMINI_API_KEY;
-    if (parsed.OPENROUTER_API_KEY) result.OPENROUTER_API_KEY = parsed.OPENROUTER_API_KEY;
+    for (const key of CREDENTIAL_KEYS) {
+      if (parsed[key]) result[key] = parsed[key];
+    }
 
     return result;
   } catch (error: unknown) {
@@ -133,39 +150,14 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
 
   const updated: Record<string, string> = { ...existing };
 
-  if (env.ANTHROPIC_API_KEY !== undefined) {
-    if (env.ANTHROPIC_API_KEY) {
-      updated.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
+  // undefined = leave the key untouched; falsy (e.g. '') = delete it.
+  for (const key of CREDENTIAL_KEYS) {
+    const value = env[key];
+    if (value === undefined) continue;
+    if (value) {
+      updated[key] = value;
     } else {
-      delete updated.ANTHROPIC_API_KEY;
-    }
-  }
-  if (env.ANTHROPIC_BASE_URL !== undefined) {
-    if (env.ANTHROPIC_BASE_URL) {
-      updated.ANTHROPIC_BASE_URL = env.ANTHROPIC_BASE_URL;
-    } else {
-      delete updated.ANTHROPIC_BASE_URL;
-    }
-  }
-  if (env.ANTHROPIC_AUTH_TOKEN !== undefined) {
-    if (env.ANTHROPIC_AUTH_TOKEN) {
-      updated.ANTHROPIC_AUTH_TOKEN = env.ANTHROPIC_AUTH_TOKEN;
-    } else {
-      delete updated.ANTHROPIC_AUTH_TOKEN;
-    }
-  }
-  if (env.GEMINI_API_KEY !== undefined) {
-    if (env.GEMINI_API_KEY) {
-      updated.GEMINI_API_KEY = env.GEMINI_API_KEY;
-    } else {
-      delete updated.GEMINI_API_KEY;
-    }
-  }
-  if (env.OPENROUTER_API_KEY !== undefined) {
-    if (env.OPENROUTER_API_KEY) {
-      updated.OPENROUTER_API_KEY = env.OPENROUTER_API_KEY;
-    } else {
-      delete updated.OPENROUTER_API_KEY;
+      delete updated[key];
     }
   }
 
@@ -193,20 +185,9 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
   if (includeCredentials) {
     const credentials = loadClaudeMemEnv();
 
-    if (credentials.ANTHROPIC_API_KEY) {
-      isolatedEnv.ANTHROPIC_API_KEY = credentials.ANTHROPIC_API_KEY;
-    }
-    if (credentials.ANTHROPIC_BASE_URL) {
-      isolatedEnv.ANTHROPIC_BASE_URL = credentials.ANTHROPIC_BASE_URL;
-    }
-    if (credentials.ANTHROPIC_AUTH_TOKEN) {
-      isolatedEnv.ANTHROPIC_AUTH_TOKEN = credentials.ANTHROPIC_AUTH_TOKEN;
-    }
-    if (credentials.GEMINI_API_KEY) {
-      isolatedEnv.GEMINI_API_KEY = credentials.GEMINI_API_KEY;
-    }
-    if (credentials.OPENROUTER_API_KEY) {
-      isolatedEnv.OPENROUTER_API_KEY = credentials.OPENROUTER_API_KEY;
+    for (const key of CREDENTIAL_KEYS) {
+      const value = credentials[key];
+      if (value) isolatedEnv[key] = value;
     }
 
     // Note: CLAUDE_CODE_OAUTH_TOKEN is intentionally NOT copied from
@@ -250,6 +231,15 @@ export async function buildIsolatedEnvWithFreshOAuth(
   // gateway-appropriate token in ~/.claude-mem/.env if their gateway requires
   // one. A bare BASE_URL with no token = tokenless gateway (e.g. mTLS at the
   // network boundary).
+  //
+  // Post-#2375: ANTHROPIC_BASE_URL is in BLOCKED_ENV_VARS, so it can ONLY be
+  // present in isolatedEnv when the user intentionally configured it in
+  // ~/.claude-mem/.env (see loadClaudeMemEnv re-injection above). A BASE_URL
+  // leaked from the parent shell no longer reaches this predicate — that was
+  // the root cause of #2375 (leaked BASE_URL → OAuth-skip → no credential at
+  // all). Keeping the BASE_URL branch here is therefore the *security*-correct
+  // behavior: it prevents the OAuth token from being sent to a user-configured
+  // third-party gateway. It is NOT the leak path it was before the deny-list.
   if (isolatedEnv.ANTHROPIC_BASE_URL) {
     clearStaleMarker();
     return isolatedEnv;

@@ -76,6 +76,46 @@ Adjacent to the source, parallel filename:
 
 If the source isn't somewhere that makes sense as an output location, default to `reports/<stem>-slides.pdf`.
 
+## Share link (WOWerpoint Server)
+
+After the PDF lands on disk, the subagent also POSTs it to the WOWerpoint Server, which converts the 16:9 deck into a 9:16 mobile twin and returns a share URL. The share URL is the primary deliverable to the user; the PDF on disk is the backup.
+
+Required env (exported in the user's shell — the subagent inherits the parent's environment, so plain `export` is enough; no dotenv loader runs):
+
+```bash
+WOWERPOINT_API_BASE=https://wowerpoint-api.<subdomain>.workers.dev
+WOWERPOINT_VIEWER_BASE=https://wowerpoint-viewer.<subdomain>.workers.dev
+WOWERPOINT_UPLOAD_TOKEN=<token>
+```
+
+If any var is missing, skip the share-link step and just hand the PDF over.
+
+Upload pattern (run AFTER the subagent confirms the PDF exists on disk). Capture the full response so empty `id` and `error` payloads are handled — `jq -r '.id'` returns the literal string `null` on a missing key, so always pipe through `.id // empty`:
+
+```bash
+if [ -n "$WOWERPOINT_API_BASE" ] && [ -n "$WOWERPOINT_UPLOAD_TOKEN" ] && [ -n "$WOWERPOINT_VIEWER_BASE" ]; then
+  UPLOAD_JSON=$(curl -sS --connect-timeout 10 --max-time 30 -X POST "$WOWERPOINT_API_BASE/api/decks" \
+    -H "Authorization: Bearer $WOWERPOINT_UPLOAD_TOKEN" \
+    -F "file=@<OUTPUT_PATH>" \
+    -F "title=<TITLE>")
+  DECK_ID=$(printf '%s' "$UPLOAD_JSON" | jq -r '.id // empty')
+  API_ERROR=$(printf '%s' "$UPLOAD_JSON" | jq -r '.error // empty')
+  if [ -n "$API_ERROR" ] || [ -z "$DECK_ID" ]; then
+    echo "WOWerpoint upload warning: ${API_ERROR:-missing id}"
+  else
+    echo "Share URL: $WOWERPOINT_VIEWER_BASE/$DECK_ID"
+  fi
+fi
+```
+
+The returned `id` is a kebab-case slug derived from the title with a random creature suffix (e.g. `tokenrouter-quest-hawk`, or `velvet-comet-tiger` if the title is empty or non-ASCII). The share URL is:
+
+```text
+$WOWERPOINT_VIEWER_BASE/<id>
+```
+
+It works immediately (shows a "still converting…" page that auto-reloads when ready). Conversion takes ~1–2 min per slide. Print the share URL in your final response.
+
 ## The prompt
 
 One sentence. Default:
@@ -100,6 +140,7 @@ Inputs:
 - Source ID: `<SOURCE_ID>`
 - Generation prompt: `<PROMPT>`
 - Output path: `<OUTPUT_PATH>`
+- Deck title: `<TITLE>` (the notebook title, used by the share-link step)
 
 Steps:
 
@@ -116,10 +157,31 @@ Steps:
 
 5. Verify: `ls -la <OUTPUT_PATH>` confirms the file exists.
 
+6. Upload to WOWerpoint Server for a mobile share link. Skip silently if any of `WOWERPOINT_API_BASE`, `WOWERPOINT_UPLOAD_TOKEN`, or `WOWERPOINT_VIEWER_BASE` is unset. Otherwise:
+
+   ```bash
+   if [ -n "$WOWERPOINT_API_BASE" ] && [ -n "$WOWERPOINT_UPLOAD_TOKEN" ] && [ -n "$WOWERPOINT_VIEWER_BASE" ]; then
+     UPLOAD_JSON=$(curl -sS --connect-timeout 10 --max-time 30 -X POST "$WOWERPOINT_API_BASE/api/decks" \
+       -H "Authorization: Bearer $WOWERPOINT_UPLOAD_TOKEN" \
+       -F "file=@<OUTPUT_PATH>" \
+       -F "title=<TITLE>")
+     DECK_ID=$(printf '%s' "$UPLOAD_JSON" | jq -r '.id // empty')
+     API_ERROR=$(printf '%s' "$UPLOAD_JSON" | jq -r '.error // empty')
+     if [ -n "$API_ERROR" ] || [ -z "$DECK_ID" ]; then
+       echo "WOWerpoint upload warning: ${API_ERROR:-missing id}"
+     else
+       echo "Share URL: $WOWERPOINT_VIEWER_BASE/$DECK_ID"
+     fi
+   fi
+   ```
+
+   On warning, the PDF on disk is still a valid deliverable — do not retry the upload.
+
 Report briefly (under 200 words):
 - Final artifact ID
 - Time per phase (source wait, generation, render wait, download)
 - Output file path + size
+- Share URL (if produced)
 - Any retries or warnings
 - Exact error message if any step failed
 

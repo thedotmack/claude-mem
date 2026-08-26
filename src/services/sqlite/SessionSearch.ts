@@ -11,9 +11,10 @@ import {
   SearchOptions,
   SearchFilters,
   DateRange,
-  ObservationRow,
-  UserPromptRow
+  ObservationRow
 } from './types.js';
+import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
+import { applySqliteConnectionPragmas } from './connection.js';
 
 export class SessionSearch {
   private db: Database;
@@ -26,8 +27,9 @@ export class SessionSearch {
     } else {
       ensureDir(DATA_DIR);
       this.db = new Database(dbPathOrDb);
-      this.db.run('PRAGMA journal_mode = WAL');
     }
+
+    applySqliteConnectionPragmas(this.db);
 
     this._fts5Available = this.isFts5Available();
 
@@ -65,7 +67,8 @@ export class SessionSearch {
       this.db.run('CREATE VIRTUAL TABLE _fts5_probe USING fts5(test_column)');
       this.db.run('DROP TABLE _fts5_probe');
       return true;
-    } catch {
+    } catch (error) {
+      logger.debug('DB', 'FTS5 probe failed — FTS5 unavailable on this platform', undefined, error instanceof Error ? error : new Error(String(error)));
       return false;
     }
   }
@@ -158,6 +161,19 @@ export class SessionSearch {
     if (filters.project) {
       conditions.push(`${tableAlias}.project = ?`);
       params.push(filters.project);
+    }
+
+    // Source-scoping (#2389): when a platformSource is supplied, restrict to
+    // rows whose owning sdk_session has that platform_source. observations and
+    // session_summaries both carry memory_session_id, which is the FK into
+    // sdk_sessions. COALESCE mirrors PaginationHelper: legacy rows with a NULL
+    // platform_source are treated as 'claude' so they never bleed into a
+    // codex/other-agent search.
+    if (filters.platformSource) {
+      conditions.push(
+        `COALESCE(NULLIF((SELECT s2.platform_source FROM sdk_sessions s2 WHERE s2.memory_session_id = ${tableAlias}.memory_session_id), ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`
+      );
+      params.push(normalizePlatformSource(filters.platformSource));
     }
 
     if (filters.type) {
@@ -441,6 +457,13 @@ export class SessionSearch {
       sessionParams.push(sessionFilters.project);
     }
 
+    if (sessionFilters.platformSource) {
+      baseConditions.push(
+        `COALESCE(NULLIF((SELECT s2.platform_source FROM sdk_sessions s2 WHERE s2.memory_session_id = s.memory_session_id), ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`
+      );
+      sessionParams.push(normalizePlatformSource(sessionFilters.platformSource));
+    }
+
     if (sessionFilters.dateRange) {
       const { start, end } = sessionFilters.dateRange;
       if (start) {
@@ -514,6 +537,11 @@ export class SessionSearch {
       params.push(filters.project);
     }
 
+    if (filters.platformSource) {
+      baseConditions.push(`COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') = ?`);
+      params.push(normalizePlatformSource(filters.platformSource));
+    }
+
     if (filters.dateRange) {
       const { start, end } = filters.dateRange;
       if (start) {
@@ -539,9 +567,13 @@ export class SessionSearch {
         : 'ORDER BY up.created_at_epoch DESC';
 
       const sql = `
-        SELECT up.*
+        SELECT
+          up.*,
+          s.project,
+          s.memory_session_id,
+          COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') as platform_source
         FROM user_prompts up
-        JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+        JOIN sdk_sessions s ON up.session_db_id = s.id
         ${whereClause}
         ${orderClause}
         LIMIT ? OFFSET ?
@@ -561,9 +593,13 @@ export class SessionSearch {
       : 'ORDER BY up.created_at_epoch DESC';
 
     const sql = `
-      SELECT up.*
+      SELECT
+        up.*,
+        s.project,
+        s.memory_session_id,
+        COALESCE(NULLIF(s.platform_source, ''), '${DEFAULT_PLATFORM_SOURCE}') as platform_source
       FROM user_prompts up
-      JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+      JOIN sdk_sessions s ON up.session_db_id = s.id
       ${whereClause}
       ${orderClause}
       LIMIT ? OFFSET ?
@@ -571,23 +607,6 @@ export class SessionSearch {
 
     params.push(limit, offset);
     return this.db.prepare(sql).all(...params) as UserPromptSearchResult[];
-  }
-
-  getUserPromptsBySession(contentSessionId: string): UserPromptRow[] {
-    const stmt = this.db.prepare(`
-      SELECT
-        id,
-        content_session_id,
-        prompt_number,
-        prompt_text,
-        created_at,
-        created_at_epoch
-      FROM user_prompts
-      WHERE content_session_id = ?
-      ORDER BY prompt_number ASC
-    `);
-
-    return stmt.all(contentSessionId) as UserPromptRow[];
   }
 
   close(): void {

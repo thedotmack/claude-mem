@@ -44,9 +44,7 @@
           "usage/private-tags",
           "usage/export-import",
           "usage/manual-recovery",
-          "usage/folder-context",
-          "beta-features",
-          "endless-mode"
+          "usage/folder-context"
         ]
       },
       {
@@ -59,10 +57,10 @@
         ]
       },
       {
-        "group": "Gemini CLI Integration",
+        "group": "Antigravity CLI Integration",
         "icon": "terminal",
         "pages": [
-          "gemini-cli/setup"
+          "antigravity-cli/setup"
         ]
       },
       {
@@ -83,10 +81,20 @@
           "configuration/litellm-gateway",
           "configuration/custom-anthropic-backends",
           "modes",
+          "telemetry",
           "development",
+          "branches",
           "troubleshooting",
           "platform-integration",
           "openclaw-integration"
+        ]
+      },
+      {
+        "group": "Hosted Server",
+        "icon": "cloud",
+        "pages": [
+          "hosted-server",
+          "cloud-sync"
         ]
       },
       {

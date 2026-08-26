@@ -1,31 +1,50 @@
-import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
-import { existsSync, readFileSync } from 'fs';
-import { homedir } from 'os';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock, spyOn } from 'bun:test';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
+import { homedir, tmpdir } from 'os';
 import path from 'path';
 import http from 'http';
-import {
+import type {
+  GracefulShutdownConfig,
+  ShutdownableService,
+  CloseableClient,
+  CloseableDatabase,
+  PidInfo
+} from '../../src/services/infrastructure/index.js';
+
+// ── Data-dir isolation (Phase 6, worker-restart plan) ──────────────────────
+// performGracefulShutdown writes/deletes the worker PID file and runs the
+// supervisor shutdown cascade against paths.supervisorRegistry() — both of
+// which must resolve into a temp dir, never the real ~/.claude-mem. paths.ts
+// freezes DATA_DIR at first evaluation (env wins), and ESM hoists static
+// imports above any env assignment, so the env var is set FIRST and the code
+// under test is loaded with dynamic imports below. (`import type` above is
+// erased at compile time and loads nothing.)
+const TEST_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'claude-mem-shutdown-test-'));
+const PREVIOUS_DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR;
+process.env.CLAUDE_MEM_DATA_DIR = TEST_DATA_DIR;
+
+const {
   performGracefulShutdown,
   writePidFile,
   readPidFile,
   removePidFile,
-  type GracefulShutdownConfig,
-  type ShutdownableService,
-  type CloseableClient,
-  type CloseableDatabase,
-  type PidInfo
-} from '../../src/services/infrastructure/index.js';
+} = await import('../../src/services/infrastructure/index.js');
+const { paths } = await import('../../src/shared/paths.js');
+const { getSupervisor } = await import('../../src/supervisor/index.js');
 
-const DATA_DIR = path.join(homedir(), '.claude-mem');
-const PID_FILE = path.join(DATA_DIR, 'worker.pid');
+// If an earlier test file already evaluated paths.ts, the module cache wins
+// and DATA_DIR stays frozen on that earlier value — the preload tripwire's
+// per-run temp dir (tests/preload.ts), never the real ~/.claude-mem. Derive
+// the asserted paths from the SAME frozen module the code under test uses.
+const DATA_DIR = paths.dataDir();
+const PID_FILE = paths.workerPid();
 
 describe('GracefulShutdown', () => {
-  let originalPidContent: string | null = null;
   const originalPlatform = process.platform;
 
   beforeEach(() => {
-    if (existsSync(PID_FILE)) {
-      originalPidContent = readFileSync(PID_FILE, 'utf-8');
-    }
+    mkdirSync(DATA_DIR, { recursive: true });
+    removePidFile();
 
     Object.defineProperty(process, 'platform', {
       value: 'darwin',
@@ -35,13 +54,7 @@ describe('GracefulShutdown', () => {
   });
 
   afterEach(() => {
-    if (originalPidContent !== null) {
-      const { writeFileSync } = require('fs');
-      writeFileSync(PID_FILE, originalPidContent);
-      originalPidContent = null;
-    } else {
-      removePidFile();
-    }
+    removePidFile();
 
     Object.defineProperty(process, 'platform', {
       value: originalPlatform,
@@ -50,17 +63,38 @@ describe('GracefulShutdown', () => {
     });
   });
 
+  afterAll(() => {
+    if (PREVIOUS_DATA_DIR === undefined) {
+      delete process.env.CLAUDE_MEM_DATA_DIR;
+    } else {
+      process.env.CLAUDE_MEM_DATA_DIR = PREVIOUS_DATA_DIR;
+    }
+    if (DATA_DIR === TEST_DATA_DIR) {
+      // paths.ts froze on our per-file dir (this file evaluated it first):
+      // empty it but keep the directory alive so later-loaded modules in this
+      // process don't point at a deleted path.
+      rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+      mkdirSync(TEST_DATA_DIR, { recursive: true });
+    } else {
+      rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves the PID file and supervisor registry into a temp dir, never the real ~/.claude-mem', () => {
+    const realDataDir = path.join(homedir(), '.claude-mem');
+    expect(DATA_DIR).not.toBe(realDataDir);
+    expect(PID_FILE.startsWith(realDataDir + path.sep)).toBe(false);
+    expect(paths.supervisorRegistry().startsWith(realDataDir + path.sep)).toBe(false);
+  });
+
   describe('performGracefulShutdown', () => {
-    // Timeout bumped to 15s. performGracefulShutdown calls
-    // getSupervisor().stop() which runs runShutdownCascade against the real
-    // ~/.claude-mem/supervisor.json registry. If the developer has a live
-    // worker + chroma-mcp registered, the cascade SIGTERMs/SIGKILLs them
-    // and waits up to ~5–6s for them to exit, which sails past the default
-    // 5000ms test timeout. The other shutdown tests below are unaffected
-    // because they don't register an mcpClient/dbManager/chromaMcpManager
-    // mock that exercises the same path. This is test-infrastructure debt
-    // — the test interacts with the production supervisor singleton — not
-    // a code regression in the shutdown flow itself.
+    // Timeout kept at 15s as headroom. performGracefulShutdown calls
+    // getSupervisor().stop() which runs runShutdownCascade against
+    // paths.supervisorRegistry() — since the Phase 6 data-dir isolation
+    // above, that registry resolves into a temp dir (empty), so the cascade
+    // no longer SIGTERMs the developer's real worker/chroma-mcp or waits on
+    // their exit. The historic 5s overrun came from the test exercising the
+    // REAL ~/.claude-mem/supervisor.json before isolation.
     it('should call shutdown steps in correct order', async () => {
       const callOrder: string[] = [];
 
@@ -127,12 +161,14 @@ describe('GracefulShutdown', () => {
       expect(callOrder.indexOf('chromaMcpManager.stop')).toBeLessThan(callOrder.indexOf('dbManager.close'));
     }, 15000);
 
-    it('should remove PID file during shutdown', async () => {
+    it('should remove its OWN PID file during shutdown (owner guard)', async () => {
       const mockSessionManager: ShutdownableService = {
         shutdownAll: mock(async () => {})
       };
 
-      writePidFile({ pid: 99999, port: 37777, startedAt: new Date().toISOString() });
+      // Phase 5 (worker-restart plan): the shutdown cascade deletes the PID
+      // file only when this process owns it (recorded pid === process.pid).
+      writePidFile({ pid: process.pid, port: 37777, startedAt: new Date().toISOString() });
       expect(existsSync(PID_FILE)).toBe(true);
 
       const config: GracefulShutdownConfig = {
@@ -143,6 +179,28 @@ describe('GracefulShutdown', () => {
       await performGracefulShutdown(config);
 
       expect(existsSync(PID_FILE)).toBe(false);
+    });
+
+    it('should spare another process\'s PID file during shutdown (restart successor)', async () => {
+      const mockSessionManager: ShutdownableService = {
+        shutdownAll: mock(async () => {})
+      };
+
+      // A restart successor has already written its own PID file by the time
+      // the dying worker's cascade runs — the dying worker must not clobber
+      // it (Phase 5, worker-restart plan).
+      writePidFile({ pid: 99999, port: 37777, startedAt: new Date().toISOString() });
+      expect(existsSync(PID_FILE)).toBe(true);
+
+      const config: GracefulShutdownConfig = {
+        server: null,
+        sessionManager: mockSessionManager
+      };
+
+      await performGracefulShutdown(config);
+
+      expect(existsSync(PID_FILE)).toBe(true);
+      expect(readPidFile()!.pid).toBe(99999);
     });
 
     it('should handle missing optional services gracefully', async () => {
@@ -227,6 +285,85 @@ describe('GracefulShutdown', () => {
       await performGracefulShutdown(config);
 
       expect(callOrder).toEqual(['sessionManager', 'mcpClient', 'chromaMcpManager', 'dbManager']);
+    });
+
+    it('resolves on ERR_SERVER_NOT_RUNNING from server.close and still runs every remaining step (#3380)', async () => {
+      // Node's http.Server.close(cb) reports ERR_SERVER_NOT_RUNNING when the
+      // handle is not listening. An already-closed server is the desired end
+      // state — teardown (session drain, MCP close, chroma stop, db close,
+      // supervisor stop) must still run.
+      const mockServer = {
+        closeAllConnections: mock(() => {}),
+        close: mock((cb: (err?: Error) => void) => {
+          cb(Object.assign(new Error('Server is not running.'), { code: 'ERR_SERVER_NOT_RUNNING' }));
+        })
+      } as unknown as http.Server;
+
+      const mockSessionManager: ShutdownableService = {
+        shutdownAll: mock(async () => {})
+      };
+      const mockMcpClient: CloseableClient = {
+        close: mock(async () => {})
+      };
+      const mockDbManager: CloseableDatabase = {
+        close: mock(async () => {})
+      };
+      const mockChromaMcpManager = {
+        stop: mock(async () => {})
+      };
+
+      // Same module instance performGracefulShutdown uses — the spy calls
+      // through to the real (no-op against the temp registry) cascade.
+      const supervisorStopSpy = spyOn(getSupervisor(), 'stop');
+
+      try {
+        const config: GracefulShutdownConfig = {
+          server: mockServer,
+          sessionManager: mockSessionManager,
+          mcpClient: mockMcpClient,
+          dbManager: mockDbManager,
+          chromaMcpManager: mockChromaMcpManager
+        };
+
+        await expect(performGracefulShutdown(config)).resolves.toBeUndefined();
+
+        expect(mockSessionManager.shutdownAll).toHaveBeenCalledTimes(1);
+        expect(mockMcpClient.close).toHaveBeenCalledTimes(1);
+        expect(mockChromaMcpManager.stop).toHaveBeenCalledTimes(1);
+        expect(mockDbManager.close).toHaveBeenCalledTimes(1);
+        expect(supervisorStopSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        supervisorStopSpy.mockRestore();
+      }
+    }, 15000);
+
+    it('still rejects when server.close reports any other error code', async () => {
+      const mockServer = {
+        closeAllConnections: mock(() => {}),
+        close: mock((cb: (err?: Error) => void) => {
+          cb(Object.assign(new Error('bad handle'), { code: 'EBADF' }));
+        })
+      } as unknown as http.Server;
+
+      const mockSessionManager: ShutdownableService = {
+        shutdownAll: mock(async () => {})
+      };
+      const mockDbManager: CloseableDatabase = {
+        close: mock(async () => {})
+      };
+
+      const config: GracefulShutdownConfig = {
+        server: mockServer,
+        sessionManager: mockSessionManager,
+        dbManager: mockDbManager
+      };
+
+      await expect(performGracefulShutdown(config)).rejects.toThrow('bad handle');
+
+      // Only ERR_SERVER_NOT_RUNNING is tolerated — anything else keeps the
+      // existing fail-fast propagation.
+      expect(mockSessionManager.shutdownAll).not.toHaveBeenCalled();
+      expect(mockDbManager.close).not.toHaveBeenCalled();
     });
 
     it('should handle shutdown when PID file does not exist', async () => {

@@ -35,7 +35,7 @@ Claude-mem integrates with Cursor through native hooks:
 1. **Session hooks** capture tool usage, file edits, and shell commands
 2. **AI extraction** compresses observations into semantic summaries
 3. **Context injection** loads relevant history into each new session
-4. **Memory viewer** at http://localhost:37777 shows your knowledge base
+4. **Memory viewer** at the worker URL shows your knowledge base
 
 ## Installation Paths
 
@@ -129,7 +129,7 @@ After setup, verify everything is working:
    ```
 
 3. **Open the memory viewer:**
-   Open http://localhost:37777 in your browser
+   Open the worker URL in your browser
 
 4. **Restart Cursor** and start a coding session - you should see context being captured
 
@@ -151,7 +151,7 @@ After setup, verify everything is working:
 
 ```bash
 # Check if port is in use
-lsof -i :37777
+lsof -i :YOUR_WORKER_PORT
 
 # Force restart
 bun run worker:stop && bun run worker:start
@@ -169,7 +169,7 @@ bun run worker:logs
 ### No context appearing
 
 1. Ensure worker is running: `bun run worker:status`
-2. Check that you have observations: visit http://localhost:37777
+2. Check that you have observations by opening the worker URL
 3. Verify your API key is configured correctly
 
 ## Next Steps

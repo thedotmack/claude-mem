@@ -2,59 +2,41 @@
 import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
-import { getWorkerPort, workerHttpRequest } from '../../shared/worker-utils.js';
-import { DATA_DIR, MARKETPLACE_ROOT, CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
+import { workerHttpRequest } from '../../shared/worker-utils.js';
+import { DATA_DIR } from '../../shared/paths.js';
 import {
   readCursorRegistry as readCursorRegistryFromFile,
-  writeCursorRegistry as writeCursorRegistryToFile,
+  registerCursorProject as registerCursorProjectInFile,
+  unregisterCursorProject as unregisterCursorProjectInFile,
+  configureCursorMcp as configureCursorMcpFile,
   writeContextFile,
   type CursorProjectRegistry
 } from '../../utils/cursor-utils.js';
-import type { CursorInstallTarget, CursorHooksJson, CursorMcpConfig, Platform } from './types.js';
-
-const execAsync = promisify(exec);
+import type { CursorInstallTarget, CursorHooksJson } from './types.js';
+import {
+  getMcpServerAbsolutePath,
+  getWorkerServiceAbsolutePath,
+  getBunAbsolutePath,
+} from './install-paths.js';
 
 const CURSOR_REGISTRY_FILE = path.join(DATA_DIR, 'cursor-projects.json');
-
-export function detectPlatform(): Platform {
-  return process.platform === 'win32' ? 'windows' : 'unix';
-}
-
-export function getScriptExtension(): string {
-  return detectPlatform() === 'windows' ? '.ps1' : '.sh';
-}
 
 export function readCursorRegistry(): CursorProjectRegistry {
   return readCursorRegistryFromFile(CURSOR_REGISTRY_FILE);
 }
 
-export function writeCursorRegistry(registry: CursorProjectRegistry): void {
-  writeCursorRegistryToFile(CURSOR_REGISTRY_FILE, registry);
-}
-
 export function registerCursorProject(projectName: string, workspacePath: string): void {
-  const registry = readCursorRegistry();
-  registry[projectName] = {
-    workspacePath,
-    installedAt: new Date().toISOString()
-  };
-  writeCursorRegistry(registry);
+  registerCursorProjectInFile(CURSOR_REGISTRY_FILE, projectName, workspacePath);
   logger.info('CURSOR', 'Registered project for auto-context updates', { projectName, workspacePath });
 }
 
 export function unregisterCursorProject(projectName: string): void {
-  const registry = readCursorRegistry();
-  if (registry[projectName]) {
-    delete registry[projectName];
-    writeCursorRegistry(registry);
-    logger.info('CURSOR', 'Unregistered project', { projectName });
-  }
+  unregisterCursorProjectInFile(CURSOR_REGISTRY_FILE, projectName);
+  logger.info('CURSOR', 'Unregistered project', { projectName });
 }
 
-export async function updateCursorContextForProject(projectName: string, _port: number): Promise<void> {
+export async function updateCursorContextForProject(projectName: string): Promise<void> {
   const registry = readCursorRegistry();
   const entry = registry[projectName];
 
@@ -81,54 +63,6 @@ export async function updateCursorContextForProject(projectName: string, _port: 
   }
 }
 
-export function findMcpServerPath(): string | null {
-  const possiblePaths = [
-    path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'mcp-server.cjs'),
-    path.join(process.cwd(), 'plugin', 'scripts', 'mcp-server.cjs'),
-  ];
-
-  for (const p of possiblePaths) {
-    if (existsSync(p)) {
-      return p;
-    }
-  }
-  return null;
-}
-
-export function findWorkerServicePath(): string | null {
-  const possiblePaths = [
-    path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs'),
-    path.join(process.cwd(), 'plugin', 'scripts', 'worker-service.cjs'),
-  ];
-
-  for (const p of possiblePaths) {
-    if (existsSync(p)) {
-      return p;
-    }
-  }
-  return null;
-}
-
-export function findBunPath(): string {
-  const possiblePaths = [
-    path.join(homedir(), '.bun', 'bin', 'bun'),
-    '/usr/local/bin/bun',
-    '/usr/bin/bun',
-    ...(process.platform === 'win32' ? [
-      path.join(homedir(), '.bun', 'bin', 'bun.exe'),
-      path.join(process.env.LOCALAPPDATA || '', 'bun', 'bun.exe'),
-    ] : []),
-  ];
-
-  for (const p of possiblePaths) {
-    if (p && existsSync(p)) {
-      return p;
-    }
-  }
-
-  return 'bun';
-}
-
 export function getTargetDir(target: CursorInstallTarget): string | null {
   switch (target) {
     case 'project':
@@ -150,7 +84,7 @@ export function getTargetDir(target: CursorInstallTarget): string | null {
 }
 
 export function configureCursorMcp(target: CursorInstallTarget): number {
-  const mcpServerPath = findMcpServerPath();
+  const mcpServerPath = getMcpServerAbsolutePath();
 
   if (!mcpServerPath) {
     console.error('Could not find MCP server script');
@@ -167,31 +101,7 @@ export function configureCursorMcp(target: CursorInstallTarget): number {
   const mcpJsonPath = path.join(targetDir, 'mcp.json');
 
   try {
-    mkdirSync(targetDir, { recursive: true });
-
-    let config: CursorMcpConfig = { mcpServers: {} };
-    if (existsSync(mcpJsonPath)) {
-      try {
-        config = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
-        if (!config.mcpServers) {
-          config.mcpServers = {};
-        }
-      } catch (error) {
-        if (error instanceof Error) {
-          logger.error('WORKER', 'Corrupt mcp.json, creating new config', { path: mcpJsonPath }, error);
-        } else {
-          logger.error('WORKER', 'Corrupt mcp.json, creating new config', { path: mcpJsonPath }, new Error(String(error)));
-        }
-        config = { mcpServers: {} };
-      }
-    }
-
-    config.mcpServers['claude-mem'] = {
-      command: 'node',
-      args: [mcpServerPath]
-    };
-
-    writeFileSync(mcpJsonPath, JSON.stringify(config, null, 2));
+    configureCursorMcpFile(mcpJsonPath, mcpServerPath);
     console.log(`  Configured MCP server in ${target === 'user' ? '~/.cursor' : '.cursor'}/mcp.json`);
     console.log(`    Server path: ${mcpServerPath}`);
 
@@ -211,7 +121,7 @@ export async function installCursorHooks(target: CursorInstallTarget): Promise<n
     return 1;
   }
 
-  const workerServicePath = findWorkerServicePath();
+  const workerServicePath = getWorkerServiceAbsolutePath();
   if (!workerServicePath) {
     console.error('Could not find worker-service.cjs');
     console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs');
@@ -222,13 +132,14 @@ export async function installCursorHooks(target: CursorInstallTarget): Promise<n
 
   const hooksJsonPath = path.join(targetDir, 'hooks.json');
 
-  const bunPath = findBunPath();
+  const bunPath = getBunAbsolutePath();
   const escapedBunPath = bunPath.replace(/\\/g, '\\\\');
 
   const escapedWorkerPath = workerServicePath.replace(/\\/g, '\\\\');
 
+  const callOperator = process.platform === 'win32' ? '& ' : '';
   const makeHookCommand = (command: string) => {
-    return `"${escapedBunPath}" "${escapedWorkerPath}" hook cursor ${command}`;
+    return `${callOperator}"${escapedBunPath}" "${escapedWorkerPath}" hook cursor ${command}`;
   };
 
   console.log(`  Using Bun runtime: ${bunPath}`);
@@ -511,28 +422,6 @@ export function checkCursorHooksStatus(): number {
   }
 
   return 0;
-}
-
-export async function detectClaudeCode(): Promise<boolean> {
-  try {
-    const { stdout } = await execAsync('which claude || where claude', { timeout: 5000 });
-    if (stdout.trim()) {
-      return true;
-    }
-  } catch (error) {
-    if (error instanceof Error) {
-      logger.debug('WORKER', 'Claude CLI not in PATH', {}, error);
-    } else {
-      logger.debug('WORKER', 'Claude CLI not in PATH', {}, new Error(String(error)));
-    }
-  }
-
-  const pluginDir = path.join(CLAUDE_CONFIG_DIR, 'plugins');
-  if (existsSync(pluginDir)) {
-    return true;
-  }
-
-  return false;
 }
 
 export async function handleCursorCommand(subcommand: string, args: string[]): Promise<number> {

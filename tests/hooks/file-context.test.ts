@@ -1,8 +1,24 @@
 
-import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, spyOn, mock } from 'bun:test';
 import { mkdirSync, mkdtempSync, writeFileSync, utimesSync, rmSync } from 'fs';
 import { tmpdir, homedir } from 'os';
 import { join } from 'path';
+
+// Capture the REAL modules BEFORE mocking so afterAll can restore them.
+// bun's `mock.module` is process-global and sticky; `mock.restore()` does NOT
+// undo it, so we must explicitly re-register the real implementations to keep
+// the suite order-independent (otherwise these mocks leak into later files).
+import * as realSettingsDefaultsManager from '../../src/shared/SettingsDefaultsManager.js';
+import * as realWorkerUtils from '../../src/shared/worker-utils.js';
+import * as realProjectName from '../../src/utils/project-name.js';
+import * as realProjectFilter from '../../src/utils/project-filter.js';
+
+// Snapshot the real exports into plain objects NOW, before mock.module mutates
+// the live ESM namespace bindings. These snapshots are re-registered in afterAll.
+const realSettingsSnapshot = { ...realSettingsDefaultsManager };
+const realWorkerUtilsSnapshot = { ...realWorkerUtils };
+const realProjectNameSnapshot = { ...realProjectName };
+const realProjectFilterSnapshot = { ...realProjectFilter };
 
 mock.module('../../src/shared/SettingsDefaultsManager.js', () => ({
   SettingsDefaultsManager: {
@@ -87,7 +103,63 @@ afterEach(() => {
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 });
 
+afterAll(() => {
+  mock.module('../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
+  mock.module('../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
+  mock.module('../../src/utils/project-name.js', () => realProjectNameSnapshot);
+  mock.module('../../src/utils/project-filter.js', () => realProjectFilterSnapshot);
+});
+
 describe('fileContextHandler — #2094 (no Read mutation)', () => {
+  it('skips file-context injection for subagent reads when agentId is present', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeObservationsResponse([{ id: 1, created_at_epoch: Date.now() + 60_000 }])
+    );
+
+    const result = await fileContextHandler.execute({
+      sessionId: 'sess',
+      agentId: 'subagent-1',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+
+    expect(result).toEqual({ continue: true, suppressOutput: true });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('still injects file context for the main session', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeObservationsResponse([{ id: 1, created_at_epoch: Date.now() + 60_000 }])
+    );
+
+    const result = await fileContextHandler.execute({
+      sessionId: 'sess',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+
+    expect(result.hookSpecificOutput?.additionalContext).toContain('prior observations');
+  });
+
+  it('does not skip when only agentType is present', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeObservationsResponse([{ id: 1, created_at_epoch: Date.now() + 60_000 }])
+    );
+
+    const result = await fileContextHandler.execute({
+      sessionId: 'sess',
+      agentType: 'worker',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+
+    expect(result.hookSpecificOutput?.additionalContext).toContain('prior observations');
+    expect(fetchSpy).toHaveBeenCalled();
+  });
+
   it('injects timeline context but never sets updatedInput on an unconstrained Read', async () => {
     const future = Date.now() + 60_000;
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
@@ -231,6 +303,31 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
     const ctx = result.hookSpecificOutput!.additionalContext as string;
     expect(ctx).toContain('Main file context');
     expect(ctx).not.toContain('worker unavailable');
+  });
+
+  it('queries with BOTH absolute and cwd-relative path candidates (#2691)', async () => {
+    const future = Date.now() + 60_000;
+    let capturedUrl = '';
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((url: string | URL | Request) => {
+      capturedUrl = String(url);
+      return Promise.resolve(makeObservationsResponse([{ id: 1, created_at_epoch: future }]));
+    });
+
+    await fileContextHandler.execute({
+      sessionId: 'sess',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+
+    const parsed = new URL(capturedUrl);
+    const pathParams = parsed.searchParams.getAll('path');
+    // Both candidate forms are sent so the worker can match however the path was
+    // stored at PostToolUse time (absolute vs cwd-relative).
+    const absoluteForm = testFile.split(/[\\/]/).join('/');
+    expect(pathParams).toContain(absoluteForm);
+    expect(pathParams).toContain('test.md'); // cwd-relative form
+    expect(pathParams.length).toBeGreaterThanOrEqual(2);
   });
 
   it('skips directories before querying file history', async () => {

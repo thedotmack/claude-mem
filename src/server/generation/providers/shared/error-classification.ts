@@ -37,10 +37,6 @@ export class ServerClassifiedProviderError extends Error {
   }
 }
 
-export function isServerClassified(err: unknown): err is ServerClassifiedProviderError {
-  return err instanceof ServerClassifiedProviderError;
-}
-
 /**
  * Parse Retry-After header (seconds or HTTP-date). Returns ms or undefined.
  * Behavior intentionally mirrors the worker providers' helper so server
@@ -79,23 +75,32 @@ export function classifyHttpProviderError(input: ClassifyHttpInput): ServerClass
   const body = input.bodyText ?? '';
   const lower = body.toLowerCase();
   const retryAfterMs = input.headers ? parseRetryAfterMs(input.headers.get('retry-after')) : undefined;
+  const cause = status === undefined
+    ? input.cause
+    : new Error(`${providerLabel} HTTP error (status ${status})`);
 
   if (
     lower.includes('quota exceeded') ||
     lower.includes('insufficient credits') ||
     lower.includes('insufficient_quota') ||
-    lower.includes('resource_exhausted')
+    lower.includes('resource_exhausted') ||
+    lower.includes('key limit exceeded') ||
+    // "Rate limit exceeded" on a 429 is a rate limit, not quota — the generic
+    // marker only applies off the 429 path (the key-limit marker always wins).
+    (lower.includes('limit exceeded') && status !== 429) ||
+    lower.includes('negative credit') ||
+    status === 402
   ) {
     return new ServerClassifiedProviderError(
       `${providerLabel} quota exhausted${status !== undefined ? ` (status ${status})` : ''}`,
-      { kind: 'quota_exhausted', cause: input.cause },
+      { kind: 'quota_exhausted', cause },
     );
   }
 
   if (status === 429) {
     return new ServerClassifiedProviderError(`${providerLabel} rate limit (429)`, {
       kind: 'rate_limit',
-      cause: input.cause,
+      cause,
       ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     });
   }
@@ -103,21 +108,21 @@ export function classifyHttpProviderError(input: ClassifyHttpInput): ServerClass
   if (status === 401 || status === 403) {
     return new ServerClassifiedProviderError(`${providerLabel} auth error (status ${status})`, {
       kind: 'auth_invalid',
-      cause: input.cause,
+      cause,
     });
   }
 
   if (status === 400 || status === 404) {
     return new ServerClassifiedProviderError(`${providerLabel} bad request (status ${status})`, {
       kind: 'unrecoverable',
-      cause: input.cause,
+      cause,
     });
   }
 
   if (status !== undefined && status >= 500 && status < 600) {
     return new ServerClassifiedProviderError(`${providerLabel} upstream error (status ${status})`, {
       kind: 'transient',
-      cause: input.cause,
+      cause,
     });
   }
 
@@ -130,7 +135,7 @@ export function classifyHttpProviderError(input: ClassifyHttpInput): ServerClass
   }
 
   return new ServerClassifiedProviderError(
-    `${providerLabel} API error: ${status}${body ? ` - ${body.substring(0, 200)}` : ''}`,
-    { kind: 'unrecoverable', cause: input.cause },
+    `${providerLabel} API error (status ${status})`,
+    { kind: 'unrecoverable', cause },
   );
 }

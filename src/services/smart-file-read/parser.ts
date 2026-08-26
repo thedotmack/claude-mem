@@ -1,6 +1,6 @@
 
 import { execFileSync } from "node:child_process";
-import { writeFileSync, readFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
+import { writeFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
@@ -55,8 +55,6 @@ const LANG_MAP: Record<string, string> = {
   ".kts": "kotlin",
   ".swift": "swift",
   ".php": "php",
-  ".ex": "elixir",
-  ".exs": "elixir",
   ".lua": "lua",
   ".scala": "scala",
   ".sc": "scala",
@@ -75,109 +73,9 @@ const LANG_MAP: Record<string, string> = {
   ".mdx": "markdown",
 };
 
-function detectLanguageWithUserGrammars(filePath: string, userConfig: UserGrammarConfig): string {
+function detectLanguage(filePath: string): string {
   const ext = filePath.slice(filePath.lastIndexOf("."));
-  if (LANG_MAP[ext]) return LANG_MAP[ext];
-  if (userConfig.extensionToLanguage[ext]) return userConfig.extensionToLanguage[ext];
-  return "unknown";
-}
-
-function getUserAwareQueryKey(language: string, userConfig: UserGrammarConfig): string {
-  if (userConfig.languageToQueryKey[language]) {
-    return userConfig.languageToQueryKey[language];
-  }
-  return getQueryKey(language);
-}
-
-export interface UserGrammarEntry {
-  package: string;
-  extensions: string[];
-  query?: string;
-}
-
-export interface UserGrammarConfig {
-  grammars: Record<string, UserGrammarEntry>;
-  extensionToLanguage: Record<string, string>;
-  languageToQueryKey: Record<string, string>;
-}
-
-const userGrammarCache = new Map<string, UserGrammarConfig>();
-
-const EMPTY_USER_GRAMMAR_CONFIG: UserGrammarConfig = {
-  grammars: {},
-  extensionToLanguage: {},
-  languageToQueryKey: {},
-};
-
-export function loadUserGrammars(projectRoot: string): UserGrammarConfig {
-  if (userGrammarCache.has(projectRoot)) return userGrammarCache.get(projectRoot)!;
-
-  const configPath = join(projectRoot, ".claude-mem.json");
-  let rawConfig: Record<string, unknown>;
-
-  try {
-    const content = readFileSync(configPath, "utf-8");
-    rawConfig = JSON.parse(content);
-  } catch {
-    userGrammarCache.set(projectRoot, EMPTY_USER_GRAMMAR_CONFIG);
-    return EMPTY_USER_GRAMMAR_CONFIG;
-  }
-
-  const grammarsRaw = rawConfig.grammars;
-  if (!grammarsRaw || typeof grammarsRaw !== "object" || Array.isArray(grammarsRaw)) {
-    userGrammarCache.set(projectRoot, EMPTY_USER_GRAMMAR_CONFIG);
-    return EMPTY_USER_GRAMMAR_CONFIG;
-  }
-
-  const config: UserGrammarConfig = {
-    grammars: {},
-    extensionToLanguage: {},
-    languageToQueryKey: {},
-  };
-
-  for (const [language, entry] of Object.entries(grammarsRaw as Record<string, unknown>)) {
-    if (GRAMMAR_PACKAGES[language]) continue;
-
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const typedEntry = entry as Record<string, unknown>;
-
-    const pkg = typedEntry.package;
-    const extensions = typedEntry.extensions;
-    const queryPath = typedEntry.query;
-
-    if (typeof pkg !== "string" || !Array.isArray(extensions)) continue;
-    if (!extensions.every((e: unknown) => typeof e === "string")) continue;
-
-    config.grammars[language] = {
-      package: pkg,
-      extensions: extensions as string[],
-      query: typeof queryPath === "string" ? queryPath : undefined,
-    };
-
-    for (const ext of extensions as string[]) {
-      if (!LANG_MAP[ext]) {
-        config.extensionToLanguage[ext] = language;
-      }
-    }
-
-    if (typeof queryPath === "string") {
-      const fullQueryPath = join(projectRoot, queryPath);
-      try {
-        const queryContent = readFileSync(fullQueryPath, "utf-8");
-        const queryKey = `user_${language}`;
-        QUERIES[queryKey] = queryContent;
-        config.languageToQueryKey[language] = queryKey;
-      } catch {
-        console.error(`[smart-file-read] Custom query file not found: ${fullQueryPath}, falling back to generic`);
-        config.languageToQueryKey[language] = "generic";
-      }
-    } else {
-      config.languageToQueryKey[language] = "generic";
-    }
-  }
-
-  userGrammarCache.set(projectRoot, config);
-  return config;
+  return LANG_MAP[ext] ?? "unknown";
 }
 
 const GRAMMAR_PACKAGES: Record<string, string> = {
@@ -194,7 +92,6 @@ const GRAMMAR_PACKAGES: Record<string, string> = {
   kotlin: "tree-sitter-kotlin",
   swift: "tree-sitter-swift",
   php: "tree-sitter-php/php",
-  elixir: "tree-sitter-elixir",
   lua: "@tree-sitter-grammars/tree-sitter-lua",
   scala: "tree-sitter-scala",
   bash: "tree-sitter-bash",
@@ -232,32 +129,9 @@ function resolveGrammarPath(language: string): string | null {
     const packageJsonPath = _require.resolve(pkg + "/package.json");
     return dirname(packageJsonPath);
   } catch {
+    // [ANTI-PATTERN IGNORED]: grammar package not installed is expected for unsupported languages; caller falls back to user grammars or a symbol-less folded view
     return null;
   }
-}
-
-export function resolveGrammarPathWithFallback(language: string, projectRoot?: string): string | null {
-  const bundled = resolveGrammarPath(language);
-  if (bundled) return bundled;
-
-  if (!projectRoot) return null;
-
-  const userConfig = loadUserGrammars(projectRoot);
-  const entry = userConfig.grammars[language];
-  if (!entry) return null;
-
-  try {
-    const packageJsonPath = join(projectRoot, "node_modules", entry.package, "package.json");
-    if (existsSync(packageJsonPath)) {
-      const grammarDir = dirname(packageJsonPath);
-      if (existsSync(join(grammarDir, "src"))) return grammarDir;
-    }
-  } catch {
-    // Grammar package not installed
-  }
-
-  console.error(`[smart-file-read] Grammar package not found for "${language}": ${entry.package} (install it in your project's node_modules)`);
-  return null;
 }
 
 const QUERIES: Record<string, string> = {
@@ -269,6 +143,19 @@ const QUERIES: Record<string, string> = {
 (interface_declaration name: (type_identifier) @name) @iface
 (type_alias_declaration name: (type_identifier) @name) @tdef
 (enum_declaration name: (identifier) @name) @enm
+(import_statement) @imp
+(export_statement) @exp
+`,
+
+  // Plain JavaScript: the tree-sitter-javascript grammar has no type_identifier,
+  // interface_declaration, type_alias_declaration or enum_declaration nodes, so it
+  // cannot share the jsts query — tree-sitter aborts query compilation on the first
+  // unknown node type. Class names are (identifier) here, not (type_identifier).
+  js: `
+(function_declaration name: (identifier) @name) @func
+(lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])) @const_func
+(class_declaration name: (identifier) @name) @cls
+(method_definition name: (property_identifier) @name) @method
 (import_statement) @imp
 (export_statement) @exp
 `,
@@ -422,6 +309,7 @@ const QUERIES: Record<string, string> = {
 function getQueryKey(language: string): string {
   switch (language) {
     case "javascript":
+      return "js";
     case "typescript":
     case "tsx":
       return "jsts";
@@ -433,7 +321,6 @@ function getQueryKey(language: string): string {
     case "kotlin": return "kotlin";
     case "swift": return "swift";
     case "php": return "php";
-    case "elixir": return "generic";
     case "lua": return "lua";
     case "scala": return "scala";
     case "bash": return "bash";
@@ -759,12 +646,11 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   return { symbols: symbols.filter(s => !nested.has(s)), imports };
 }
 
-export function parseFile(content: string, filePath: string, projectRoot?: string): FoldedFile {
-  const userConfig = projectRoot ? loadUserGrammars(projectRoot) : EMPTY_USER_GRAMMAR_CONFIG;
-  const language = detectLanguageWithUserGrammars(filePath, userConfig);
+export function parseFile(content: string, filePath: string): FoldedFile {
+  const language = detectLanguage(filePath);
   const lines = content.split("\n");
 
-  const grammarPath = resolveGrammarPathWithFallback(language, projectRoot);
+  const grammarPath = resolveGrammarPath(language);
   if (!grammarPath) {
     return {
       filePath, language, symbols: [], imports: [],
@@ -772,8 +658,7 @@ export function parseFile(content: string, filePath: string, projectRoot?: strin
     };
   }
 
-  const queryKey = getUserAwareQueryKey(language, userConfig);
-  const queryFile = getQueryFile(queryKey);
+  const queryFile = getQueryFile(getQueryKey(language));
 
   const ext = filePath.slice(filePath.lastIndexOf(".")) || ".txt";
   const tmpDir = mkdtempSync(join(tmpdir(), "smart-src-"));
@@ -802,21 +687,19 @@ export function parseFile(content: string, filePath: string, projectRoot?: strin
 }
 
 export function parseFilesBatch(
-  files: Array<{ absolutePath: string; relativePath: string; content: string }>,
-  projectRoot?: string
+  files: Array<{ absolutePath: string; relativePath: string; content: string }>
 ): Map<string, FoldedFile> {
   const results = new Map<string, FoldedFile>();
-  const userConfig = projectRoot ? loadUserGrammars(projectRoot) : EMPTY_USER_GRAMMAR_CONFIG;
 
   const languageGroups = new Map<string, typeof files>();
   for (const file of files) {
-    const language = detectLanguageWithUserGrammars(file.relativePath, userConfig);
+    const language = detectLanguage(file.relativePath);
     if (!languageGroups.has(language)) languageGroups.set(language, []);
     languageGroups.get(language)!.push(file);
   }
 
   for (const [language, groupFiles] of languageGroups) {
-    const grammarPath = resolveGrammarPathWithFallback(language, projectRoot);
+    const grammarPath = resolveGrammarPath(language);
     if (!grammarPath) {
       for (const file of groupFiles) {
         const lines = file.content.split("\n");
@@ -828,8 +711,7 @@ export function parseFilesBatch(
       continue;
     }
 
-    const queryKey = getUserAwareQueryKey(language, userConfig);
-    const queryFile = getQueryFile(queryKey);
+    const queryFile = getQueryFile(getQueryKey(language));
 
     const absolutePaths = groupFiles.map(f => f.absolutePath);
     const batchResults = runBatchQuery(queryFile, absolutePaths, grammarPath);

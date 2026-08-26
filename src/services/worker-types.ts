@@ -1,6 +1,5 @@
 
 import type { Response } from 'express';
-import type { RestartGuard } from './worker/RestartGuard.js';
 
 export interface ConversationMessage {
   role: 'user' | 'assistant';
@@ -14,7 +13,6 @@ export interface ActiveSession {
   project: string;
   platformSource: string;
   userPrompt: string;
-  pendingMessages: PendingMessage[];  
   abortController: AbortController;
   generatorPromise: Promise<void> | null;
   lastPromptNumber: number;
@@ -24,10 +22,15 @@ export interface ActiveSession {
   earliestPendingTimestamp: number | null;  
   claimedMessageIds: number[];
   conversationHistory: ConversationMessage[];  
-  currentProvider: 'claude' | 'gemini' | 'openrouter' | null;  
-  consecutiveRestarts: number;  
-  restartGuard?: RestartGuard;
-  forceInit?: boolean;  
+  currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
+  consecutiveRestarts: number;
+  /**
+   * Legacy invalid-output counter. Ordinary non-XML observer output is now
+   * confirmed as a no-op and resets this to 0 so skip acknowledgements never
+   * accumulate respawn debt.
+   */
+  consecutiveInvalidOutputs: number;
+  forceInit?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;
   modelOverride?: string;
@@ -36,6 +39,25 @@ export interface ActiveSession {
   pendingAgentType?: string | null;
   abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | string | null;
   respawnTimer?: ReturnType<typeof setTimeout>;
+  /** When the latest compression prompt was dispatched to the model — telemetry compression_ms. */
+  lastPromptSentAt?: number | null;
+  /** Real token usage and provider-reported cost from the latest model response (never estimated) — telemetry tokens_input/output/cost_usd. */
+  lastUsage?: { input: number; output: number; costUsd?: number } | null;
+  /** What triggered the running generator ('init' | 'ingest' | 'summarize') — telemetry hook. */
+  lastGeneratorSource?: string;
+  /** Model id resolved when the generator started — error-path telemetry, where no response model exists. */
+  lastModelId?: string;
+  /** Whether the OpenRouter provider targets openrouter.ai or a custom OpenAI-compatible gateway — telemetry endpoint_class. */
+  endpointClass?: 'openrouter' | 'custom';
+  /**
+   * session_compressed properties stashed by ResponseProcessor on the claude
+   * path: the streamed assistant message's output_tokens is an early-streaming
+   * placeholder, so the event waits for the SDK result message's finalized
+   * per-turn usage before ClaudeProvider fires it.
+   */
+  pendingCompressionEvent?: Record<string, unknown> | null;
+  /** Cumulative total_cost_usd from the SDK's latest result message — per-compression cost is the delta between results. */
+  lastResultTotalCostUsd?: number | null;
 }
 
 export interface PendingMessage {
@@ -80,13 +102,6 @@ export interface PaginatedResult<T> {
   hasMore: boolean;
   offset: number;
   limit: number;
-}
-
-export interface PaginationParams {
-  offset: number;
-  limit: number;
-  project?: string;
-  platformSource?: string;
 }
 
 export interface ViewerSettings {
@@ -156,34 +171,3 @@ export interface DBSession {
 }
 
 export type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-
-export interface ParsedObservation {
-  type: string;
-  title: string;
-  subtitle: string | null;
-  text: string;
-  concepts: string[];
-  files: string[];
-}
-
-export interface ParsedSummary {
-  request: string | null;
-  investigated: string | null;
-  learned: string | null;
-  completed: string | null;
-  next_steps: string | null;
-  notes: string | null;
-}
-
-export interface DatabaseStats {
-  totalObservations: number;
-  totalSessions: number;
-  totalPrompts: number;
-  totalSummaries: number;
-  projectCounts: Record<string, {
-    observations: number;
-    sessions: number;
-    prompts: number;
-    summaries: number;
-  }>;
-}
