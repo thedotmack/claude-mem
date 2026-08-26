@@ -60,7 +60,9 @@ export async function runMigrateToHelixCommand(): Promise<void> {
         await helixSessions.markCompleted(next.id, session.completedAtEpoch ?? session.updatedAtEpoch)
       }
     }
-    const events = sqliteEvents.listByProject(project.id)
+    // Explicit unbounded reads: the repos default to LIMIT 100 / 10_000,
+    // which silently truncates a migration while reporting success.
+    const events = sqliteEvents.listByProject(project.id, Number.MAX_SAFE_INTEGER)
     for (const event of events) {
       await helixEvents.create({
         projectId: created.id,
@@ -75,7 +77,7 @@ export async function runMigrateToHelixCommand(): Promise<void> {
       })
       eventsCopied++
     }
-    const memories = sqliteMemories.listByProject(project.id, 10_000)
+    const memories = sqliteMemories.listByProject(project.id, Number.MAX_SAFE_INTEGER)
     for (const memory of memories) {
       await helixMemories.create({
         projectId: created.id,
@@ -95,7 +97,7 @@ export async function runMigrateToHelixCommand(): Promise<void> {
       })
       memoriesCopied++
     }
-    const audit = sqliteAuth.listAuditLogByProject(project.id, 10_000)
+    const audit = sqliteAuth.listAuditLogByProject(project.id, Number.MAX_SAFE_INTEGER)
     for (const entry of audit) {
       await helixAuth.createAuditLog({
         teamId: entry.teamId,

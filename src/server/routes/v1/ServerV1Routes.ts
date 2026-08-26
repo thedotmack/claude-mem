@@ -168,7 +168,24 @@ export class ServerV1Routes implements RouteHandler {
         if (!this.ensureProjectAllowed(req, res, event.projectId)) return
       }
       const repo = await this.storageFactory.agentEvents()
-      const events = await Promise.all(body.map(event => repo.create(event)))
+      // Sequential on purpose: Helix rejects concurrent write transactions
+      // ("transaction conflict"), and a partially-applied Promise.all batch
+      // cannot be retried safely. On failure the response names how many
+      // events persisted so callers can resume from the failure point.
+      const events = []
+      for (const event of body) {
+        try {
+          events.push(await repo.create(event))
+        } catch (error) {
+          res.status(500).json({
+            error: 'BatchPartialFailure',
+            message: error instanceof Error ? error.message : String(error),
+            createdCount: events.length,
+            events,
+          })
+          return
+        }
+      }
       await this.audit(req, 'event.batch_write')
       res.status(201).json({ events })
     }))
