@@ -42,10 +42,8 @@ import {
   CMEM_PRO_TRIAL_DAYS,
   CMEM_PRO_TRIAL_POLL_URL,
   CMEM_PRO_TRIAL_START_URL,
-  costPer1kObservations,
-  fetchBlendedRates,
 } from '../cmem-pro-costs.js';
-import { PRO_TRIAL_PITCH, proTrialUrl } from '../../shared/pro-promo.js';
+import { PLAN_USAGE_GAIN_PERCENT, PRO_TRIAL_PITCH, proTrialUrl } from '../../shared/pro-promo.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
@@ -1180,10 +1178,8 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   if (options.provider) {
     selectedProvider = options.provider;
   } else {
-    // Rates are looked up live so the prompt never quotes a stale price. The
-    // lookup is timeout-bounded and falls back silently, so an offline install
-    // still gets a working prompt — just with last-known figures.
-    const labels = await buildProviderLabels();
+    // Static "on-plan vs off-plan" copy — no price lookup, no network.
+    const labels = buildProviderLabels();
 
     const providerResult = await p.select<ProviderChoice>({
       message: 'Which memory provider do you want to use?',
@@ -1359,16 +1355,18 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
   }
 }
 
-// --- cmem Pro 7-day trial opt-in --------------------------------------------
-// The first interaction of the install (replaces the old CMEM Online waitlist
-// opt-in — one funnel, not two). Entering an email POSTs to cmem.ai, which
-// creates the account server-side and emails a sign-in link; the response is a
-// pairing id/secret this installer polls at the provider step
-// (completeTrialPairing) to receive credentials once the human has finished
-// login + Stripe checkout (card, $0 today) in the browser. The server-side
-// contract lives in cmem-pro-mvp `plans/2026-08-08-seven-day-trial-npx-funnel.md`.
-// Every network call here is timeout-bounded and fail-soft: a cmem.ai outage
-// must never break `npx claude-mem install`.
+// --- claude-mem browser sign-in ---------------------------------------------
+// The standard login step for everyone, run AFTER the mechanical install is
+// fully on disk (it replaces the old opt-in trial upsell — one funnel, not
+// two). Entering an email POSTs to cmem.ai, which creates the account
+// server-side and emails a sign-in link; the response is a pairing id/secret
+// this installer polls (completeTrialPairing) to receive credentials once the
+// human has finished login in the browser. Every login mints a memory key —
+// it simply carries a $0 balance until the user subscribes; no card is
+// required to sign in. The server-side contract lives in cmem-pro-mvp
+// `plans/2026-08-08-seven-day-trial-npx-funnel.md` (delta in
+// `SYNC-NOTES-cmem-backend.md`). Every network call here is timeout-bounded
+// and fail-soft: a cmem.ai outage must never break `npx claude-mem install`.
 
 const SIGNUP_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -1383,8 +1381,10 @@ const TRIAL_POLL_TIMEOUT_MS = 10_000;
 const TRIAL_POLL_BUDGET_MS = 240_000;
 /** Poll cadence fallback when the start response omits poll_interval. */
 const TRIAL_DEFAULT_POLL_INTERVAL_S = 3;
-const TRIAL_UNREACHABLE_WARNING = "Couldn't reach cmem.ai — start the trial later with npx claude-mem install";
+const TRIAL_UNREACHABLE_WARNING = "Couldn't reach cmem.ai — sign in later with npx claude-mem install";
 const TRIAL_FINISH_LATER_WARNING = 'No worries — finish anytime: npx claude-mem install';
+/** Printed when the user declines/cancels the sign-in — never trap the user. */
+const LOGIN_SKIPPED_WARNING = 'Skipped sign-in — finish anytime with npx claude-mem install';
 
 interface TrialPairing {
   pairingId: string;
@@ -1467,9 +1467,78 @@ async function startTrialPairing(email: string): Promise<TrialPairing | null> {
 
 type TrialPollStage = 'awaiting_login' | 'awaiting_checkout' | 'awaiting_approval';
 
+/** Account plan reported by the poll. Absent on older servers → 'trial'. */
+type TrialPlan = 'trial' | 'pro' | 'none';
+
+/**
+ * Everything a `ready` poll delivers, both wire generations normalized:
+ *
+ * - NEW shape (SYNC-NOTES-cmem-backend.md): `memory_key` / `memory_base_url` /
+ *   `memory_model` / `plan` / optional `trial.ends_at` — a memory key for
+ *   EVERY login, checkout no longer required.
+ * - OLD shape: no memory_* / plan fields — the setup token doubles as the
+ *   memory key against the CMEM Pro gateway defaults, and the plan is 'trial'
+ *   (ready used to require checkout), exactly today's behavior.
+ */
+interface TrialReadyResult {
+  userId: string;
+  setupToken: string;
+  hubUrl: string;
+  memoryKey: string;
+  memoryBaseUrl: string;
+  memoryModel: string;
+  plan: TrialPlan;
+  trialEndsAt: string | null;
+}
+
+/**
+ * Pure parser for the poll's 200 body. Returns null unless the body is a
+ * well-formed `ready` payload (both wire generations accepted). Exported for
+ * the mock-server contract tests — never call cmem.ai from a test.
+ */
+export function parseTrialReadyBody(body: unknown): TrialReadyResult | null {
+  if (!body || typeof body !== 'object') return null;
+  const b = body as {
+    status?: unknown;
+    user_id?: unknown;
+    setup_token?: unknown;
+    hub_url?: unknown;
+    memory_key?: unknown;
+    memory_base_url?: unknown;
+    memory_model?: unknown;
+    plan?: unknown;
+    trial?: { ends_at?: unknown };
+  };
+  if (
+    b.status !== 'ready'
+    || typeof b.user_id !== 'string'
+    || typeof b.setup_token !== 'string'
+    || typeof b.hub_url !== 'string'
+  ) {
+    return null;
+  }
+  const memoryKey = typeof b.memory_key === 'string' && b.memory_key.length > 0
+    ? b.memory_key
+    : b.setup_token;
+  return {
+    userId: b.user_id,
+    setupToken: b.setup_token,
+    hubUrl: b.hub_url,
+    memoryKey,
+    memoryBaseUrl: typeof b.memory_base_url === 'string' && b.memory_base_url.length > 0
+      ? b.memory_base_url
+      : CMEM_PRO_BASE_URL,
+    memoryModel: typeof b.memory_model === 'string' && b.memory_model.length > 0
+      ? b.memory_model
+      : CMEM_PRO_MODEL,
+    plan: b.plan === 'trial' || b.plan === 'pro' || b.plan === 'none' ? b.plan : 'trial',
+    trialEndsAt: typeof b.trial?.ends_at === 'string' ? b.trial.ends_at : null,
+  };
+}
+
 type TrialPollOutcome =
   | { kind: 'pending'; stage: TrialPollStage }
-  | { kind: 'ready'; userId: string; setupToken: string; hubUrl: string; trialEndsAt: string | null }
+  | ({ kind: 'ready' } & TrialReadyResult)
   /** 410 expired/delivered or 404 unknown — this pairing will never succeed. */
   | { kind: 'gone' }
   /** Network error, timeout, 5xx/429, or malformed body — maybe transient. */
@@ -1497,27 +1566,8 @@ async function pollTrialOnce(pairing: TrialPairing): Promise<TrialPollOutcome> {
       };
     }
     if (res.ok) {
-      const body = await res.json() as {
-        status?: unknown;
-        user_id?: unknown;
-        setup_token?: unknown;
-        hub_url?: unknown;
-        trial?: { ends_at?: unknown };
-      };
-      if (
-        body.status === 'ready'
-        && typeof body.user_id === 'string'
-        && typeof body.setup_token === 'string'
-        && typeof body.hub_url === 'string'
-      ) {
-        return {
-          kind: 'ready',
-          userId: body.user_id,
-          setupToken: body.setup_token,
-          hubUrl: body.hub_url,
-          trialEndsAt: typeof body.trial?.ends_at === 'string' ? body.trial.ends_at : null,
-        };
-      }
+      const ready = parseTrialReadyBody(await res.json());
+      if (ready) return { kind: 'ready', ...ready };
       return { kind: 'unreachable' };
     }
     return { kind: 'unreachable' };
@@ -1565,14 +1615,16 @@ function noteTrialUserCode(pairing: TrialPairing): void {
 }
 
 /**
- * First message after the banner: the cmem Pro free-week pitch. Entering an
- * email starts the trial server-side (account + sign-in email) and returns
- * the pairing the provider step later polls; Enter (or any failure) returns
- * null and the install proceeds exactly as before. Deliberately non-blocking:
- * the human does email + Stripe in the browser while the install works
- * through the IDE/runtime steps.
+ * The sign-in step, run AFTER the mechanical install is fully on disk.
+ * Entering an email starts the login server-side (account + sign-in email),
+ * opens the browser, and returns the pairing that completeTrialPairing polls
+ * for credentials. Sign-in is REQUIRED in interactive mode in the sense that
+ * an empty submit is re-explained once and re-asked once — but a second
+ * refusal (or Ctrl+C, or any network failure) returns null and the install
+ * finishes normally: the account step can never trap the user or break the
+ * install.
  */
-async function promptProTrialOptIn(version: string): Promise<TrialPairing | null> {
+async function promptBrowserLogin(version: string): Promise<TrialPairing | null> {
   // Interactive-only, and easy to turn off for CI / scripted installs.
   if (!isInteractive) return null;
   if (process.env.CI) return null;
@@ -1589,13 +1641,16 @@ async function promptProTrialOptIn(version: string): Promise<TrialPairing | null
     if (prior.state !== 'link_sent') return null;
 
     const resendChoice = await p.confirm({
-      message: `You started a cmem Pro trial earlier — send a fresh sign-in link to ${prior.email}?`,
+      message: `You started signing in earlier — send a fresh sign-in link to ${prior.email}?`,
       initialValue: false,
     });
-    if (p.isCancel(resendChoice) || resendChoice !== true) return null;
+    if (p.isCancel(resendChoice) || resendChoice !== true) {
+      log.warn(LOGIN_SKIPPED_WARNING);
+      return null;
+    }
 
     const spin = p.spinner();
-    spin.start(`Resending your cmem Pro sign-in link to ${prior.email}…`);
+    spin.start(`Resending your sign-in link to ${prior.email}…`);
     const resendStartedAt = Date.now();
     const pairing = await startTrialPairing(prior.email);
     if (!pairing) {
@@ -1606,51 +1661,60 @@ async function promptProTrialOptIn(version: string): Promise<TrialPairing | null
     mergeSettings({ CLAUDE_MEM_PRO_TRIAL_AT: new Date().toISOString() });
     spin.stop('Sign-in link resent.');
     p.note(
-      'Check your email — click the sign-in link and add a card ($0 today).\nInstall continues; we pick it up automatically.',
+      'Check your email — click the sign-in link to finish.\nInstall continues; we pick it up automatically.',
       'Link sent',
     );
+    openBrowser(CMEM_PRO_SIGNUP_URL);
     noteTrialUserCode(pairing);
     await captureCliEvent('trial_link_sent', { version, duration_ms: Date.now() - resendStartedAt });
     return pairing;
   }
 
-  // The alt-path figure is live-fetched (with a bounded timeout and baked
-  // fallback) so the pitch never quotes a stale price. Framing rule: never
-  // print a $/1k figure for Pro itself — it is a flat subscription that does
-  // not bill the user's tokens.
-  const { rates } = await fetchBlendedRates();
-  const haikuPer1k = costPer1kObservations(rates.claude);
-
+  // Framing rule: no dollar figures beyond the single price-disclosure line —
+  // the pitch speaks in "% more usage from your plan".
   p.note(
     [
-      styleText(['bold', 'cyan'], 'Free week of Pro: cloud memory generation + sync across machines.'),
+      styleText(['bold', 'cyan'], 'Your account unlocks memory that runs off-plan —'),
+      styleText(['bold', 'cyan'], `get up to ${PLAN_USAGE_GAIN_PERCENT}% more usage from your plan.`),
+      'Includes a key for every provider, cloud sync, and the claude-mem observer',
+      `(free for ${CMEM_PRO_TRIAL_DAYS} days, then $${CMEM_PRO_MONTHLY_USD}/mo — cancel anytime, no card required to sign in).`,
       '',
-      'Memory generation runs on our metered models instead of your',
-      `Anthropic plan — the default Haiku path burns ~$${haikuPer1k}/1k observations`,
-      "of your plan's tokens; Pro takes $0 from it.",
-      `${CMEM_PRO_TRIAL_DAYS} days free, then $${CMEM_PRO_MONTHLY_USD}/mo — card required, cancel anytime.`,
-      '',
-      "Enter your email to start (we'll send a sign-in link) — or press",
-      'Enter to skip and use local generation.',
+      "Enter your email — we'll send a sign-in link.",
     ].join('\n'),
-    `cmem Pro — ${CMEM_PRO_TRIAL_DAYS} days free`,
+    'Sign in to claude-mem',
   );
 
-  const emailResult = await p.text({
-    message: 'Your email (press Enter to skip):',
-    placeholder: 'you@company.com',
-    defaultValue: '',
-    validate: (v?: string) => {
-      const value = (v ?? '').trim();
-      if (value.length === 0) return undefined; // empty = skip, not an error
-      if (!SIGNUP_EMAIL_RE.test(value)) return "That doesn't look like an email — fix it, or clear the field to skip.";
-      return undefined;
-    },
-  });
+  // Sign-in is expected, not optional-feeling: an empty submit gets ONE short
+  // re-explanation and ONE more ask; a second empty submit (or Ctrl+C at any
+  // point) skips with the finish-later line. Never trap the user.
+  let email = '';
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const emailResult = await p.text({
+      message: 'Your email:',
+      placeholder: 'you@company.com',
+      defaultValue: '',
+      validate: (v?: string) => {
+        const value = (v ?? '').trim();
+        if (value.length === 0) return undefined; // empty = handled by the re-ask loop, not an inline error
+        if (!SIGNUP_EMAIL_RE.test(value)) return "That doesn't look like an email — fix it, or press Ctrl+C to skip.";
+        return undefined;
+      },
+    });
 
-  if (p.isCancel(emailResult)) return null;
-  const email = String(emailResult).trim();
-  if (email.length === 0) return null;
+    if (p.isCancel(emailResult)) {
+      log.warn(LOGIN_SKIPPED_WARNING);
+      return null;
+    }
+    email = String(emailResult).trim();
+    if (email.length > 0) break;
+    if (attempt === 0) {
+      log.info('Signing in is one click and unlocks your memory key — or leave it empty again to skip for now.');
+    }
+  }
+  if (email.length === 0) {
+    log.warn(LOGIN_SKIPPED_WARNING);
+    return null;
+  }
 
   await captureCliEvent('trial_email_submitted', { version });
 
@@ -1980,10 +2044,6 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     }
   }
 
-  // An explicit --provider flag wins over the trial funnel: never pitch,
-  // email, poll, or override a provider the operator asked for by name.
-  const trialPairing = options.provider ? null : await promptProTrialOptIn(version);
-
   if (alreadyInstalled) {
     if (process.stdin.isTTY) {
       const shouldContinue = await p.confirm({
@@ -2015,21 +2075,6 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   }
 
   const selectedRuntime = await promptRuntime(options);
-  // Jump-forward: a pairing from the trial opt-in means the human is doing
-  // (or has done) login + checkout in the browser — poll for credentials
-  // instead of asking which provider to use. Any failure (expired link, poll
-  // budget, Ctrl+C, cmem.ai outage) falls through to the normal prompt.
-  let selectedProvider: ProviderId | null = null;
-  if (trialPairing && !options.provider) {
-    selectedProvider = await completeTrialPairing(trialPairing, version);
-  }
-  const trialActivated = selectedProvider === 'openrouter';
-  if (selectedProvider === null) {
-    selectedProvider = await promptProvider(options);
-  }
-  if (selectedProvider === 'claude') {
-    await promptClaudeModel(options);
-  }
 
   let workerStartResult: WorkerStartResult = 'dead';
   // Claude Code consumes the marketplace plugin system directly, so any selection
@@ -2186,6 +2231,28 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   } else if (autoMemoryChoice === 'leave-enabled') {
     autoMemoryStatus = 'left-enabled';
     log.info('Claude Code: leaving native auto-memory enabled unless you explicitly opt in to disabling it.');
+  }
+
+  // Login runs only now — AFTER the install is fully on disk — so the first
+  // account interaction can never gate or delay the mechanical install.
+  // An explicit --provider flag wins over the trial funnel: never pitch,
+  // email, poll, or override a provider the operator asked for by name.
+  const trialPairing = options.provider ? null : await promptProTrialOptIn(version);
+
+  // Jump-forward: a pairing from the trial opt-in means the human is doing
+  // (or has done) login + checkout in the browser — poll for credentials
+  // instead of asking which provider to use. Any failure (expired link, poll
+  // budget, Ctrl+C, cmem.ai outage) falls through to the normal prompt.
+  let selectedProvider: ProviderId | null = null;
+  if (trialPairing && !options.provider) {
+    selectedProvider = await completeTrialPairing(trialPairing, version);
+  }
+  const trialActivated = selectedProvider === 'openrouter';
+  if (selectedProvider === null) {
+    selectedProvider = await promptProvider(options);
+  }
+  if (selectedProvider === 'claude') {
+    await promptClaudeModel(options);
   }
 
   // The server runtime is brought up via its own stack (Docker pg+redis +

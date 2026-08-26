@@ -5,7 +5,7 @@ description: "Use Google's Gemini API as an alternative to Claude for observatio
 
 # Gemini Provider
 
-Claude-mem supports Google's Gemini API as an alternative to the Claude Agent SDK for extracting observations from your sessions. This can significantly reduce costs since Gemini offers a generous free tier.
+Claude-mem supports Google's Gemini API as an alternative to the Claude Agent SDK for extracting observations from your sessions. Memory runs off-plan on your Gemini key, so observation extraction never shares your Claude plan usage.
 
 <Warning>
 **Free Tier Rate Limits**: Without billing enabled, Gemini has strict rate limits (5-10 RPM). Enable billing on your Google Cloud project to unlock 1000-4000 RPM while still using the free quota.
@@ -13,7 +13,7 @@ Claude-mem supports Google's Gemini API as an alternative to the Claude Agent SD
 
 ## Why Use Gemini?
 
-- **Cost savings**: The free tier covers most individual usage patterns
+- **Runs off-plan**: Observation extraction happens on your Gemini key, not your Claude plan
 - **Same quality**: Gemini extracts observations using the same XML format as Claude
 - **Errors throw clearly**: 429s, 5xx, and network failures throw — leaving messages pending so they can be retried
 - **Hot-swappable**: Switch providers without restarting the worker
@@ -142,7 +142,7 @@ Google has two rate limit tiers for free usage:
 
 Claude-mem enforces these limits automatically with built-in delays between requests. Processing may be slower but stays within limits.
 
-**With billing enabled (still free tier):**
+**With billing enabled (still within the free quota):**
 
 | Model | RPM | TPM |
 |-------|-----|-----|
@@ -162,7 +162,7 @@ If you hit rate limits:
 
 If observations seem lower quality with Gemini:
 - Note that Claude typically produces slightly higher quality observations
-- Consider using Gemini for cost savings and Claude for important projects
+- Consider using Gemini to keep memory off-plan and Claude for important projects
 
 ## Next Steps
 
