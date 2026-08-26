@@ -20,6 +20,10 @@ describe('getProjectName', () => {
       const expected = home.split('/').pop() || home.split('\\').pop() || '';
       expect(getProjectName('~/')).toBe(expected);
     });
+
+    it('resolves a leading ~\\ on Windows', () => {
+      expect(getProjectName('~\\windows-project', 'win32')).toBe('windows-project');
+    });
   });
 
   describe('normal paths', () => {

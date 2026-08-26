@@ -177,6 +177,7 @@ import { readJsonSafe } from '../../utils/json-utils.js';
 import { readFlatSettings } from '../utils/settings.js';
 import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
 import { detectInstalledIDEs } from './ide-detection.js';
+import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 
 function registerMarketplace(): void {
   const knownMarketplaces = readJsonSafe<Record<string, any>>(knownMarketplacesPath(), {});
@@ -1966,6 +1967,18 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     segments.push(styleText('dim', 'reinstall'));
   }
   log.info(segments.join(` ${dot} `));
+
+  // All claude-mem hooks run via `"shell": "bash"`; on Windows, Claude Code
+  // resolves that through Git for Windows with no WSL fallback. Surfacing it
+  // here — rather than letting the first hook throw an unbranded error — is
+  // a warning, not a hard stop: the operator may install Git for Windows
+  // after this run and hooks will start working without a reinstall.
+  if (IS_WINDOWS) {
+    const gitBash = checkWindowsGitBash();
+    if (!gitBash.ok) {
+      log.warn(gitBash.detail);
+    }
+  }
 
   // An explicit --provider flag wins over the trial funnel: never pitch,
   // email, poll, or override a provider the operator asked for by name.

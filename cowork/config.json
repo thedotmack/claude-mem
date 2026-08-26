@@ -1,0 +1,14 @@
+{
+  "apiBase": "https://cmem.ai",
+  "apiKey": "",
+  "userId": "",
+  "syncHubUrl": "",
+  "inject": {
+    "sessionStart": true,
+    "agents": true,
+    "maxChars": 6000
+  },
+  "capture": {
+    "skipTools": []
+  }
+}

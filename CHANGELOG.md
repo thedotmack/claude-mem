@@ -4,6 +4,59 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.16.1] - 2026-08-26
+
+## 🪟 The Windows Megafix
+
+Windows support goes from *technically works* to *actually solid*. Rollup of five fixes (#3661), validated on real Windows 11 hardware by a community tester who could reproduce the production failure on demand.
+
+### Fixed
+
+- **Chroma process-tree cleanup** (#3644) — worker shutdown/restart now kills the entire `uvx → uv → python → chroma-mcp` chain on Windows *and* POSIX, with PID-identity checks so a recycled PID is never mistaken for ours. No more zombie Python processes, no more port 37777 wedged under a dead PID.
+- **`tree-sitter.exe` resolution** (#3647) — smart file reads no longer silently return nothing on Windows.
+- **`~\` tilde paths** (#3648) — Windows-style home paths in settings expand correctly; POSIX paths containing backslashes are now explicitly left untouched (previously they could be mangled).
+- **Git Bash preflight** (#3649) — `install`/`doctor` fail loudly with a clear message when Git Bash is unreachable, instead of every hook crashing cryptically. Checks every `git` on PATH, so non-standard installs (e.g. `D:\...`) resolve.
+- **`npm run build-and-sync` on Windows** (#3657) — no rsync or POSIX shell needed; a portable mirror reproduces `rsync -a --delete` semantics on all platforms, and `worker:logs`/`worker:tail` work in PowerShell (and fix a broken `tail -f` invocation on macOS).
+
+### Review hardening
+
+- Mirror refuses overlapping source/destination roots before touching the filesystem (Greptile P1).
+- Log tailing survives rename-and-recreate rotation via file-identity tracking (Greptile P2).
+- Doctor: a missing npx install marker with deps present is a warning, not a failure — marketplace and dev installs never have one.
+
+### Verification
+
+2,700+ tests green on macOS/Linux/Windows CI, Greptile 5/5, cross-platform regression review found no blockers, and both doctor fixes re-confirmed on the tester's Windows 11 machine.
+
+## [13.16.0] - 2026-08-25
+
+## claude-mem for Cowork 🧠
+
+Claude started remembering Cowork tasks today — this release takes it further.
+
+### New: claude-mem-cowork plugin
+A second plugin in the marketplace, built for **Cowork** (native Claude app — mobile, web, desktop cloud sessions):
+
+- Hooks capture tool use in ephemeral Cowork containers and stream fragments to cmem.ai, where Pro runs the observer server-side
+- Compiled observations are injected into every new session and every spawned agent
+- **Fail-soft by design**: no API key → silent no-op; cmem.ai unreachable → events spool locally and flush later; every hook exits 0 unconditionally
+- Credential redaction hardened: short and whitespace-bearing values, any Authorization scheme, Cookie headers, full URI userinfo
+- mem-search + mem-setup skills bundled
+
+Install in any Cowork session:
+```
+/plugin marketplace add thedotmack/claude-mem
+/plugin install claude-mem-cowork@thedotmack
+```
+Then say "set up claude-mem".
+
+Landing page: https://cmem.ai/cowork
+
+### Also in this release
+- Memory Prize scorecard and slides (hackathon 05)
+- Overflow spool re-spools the remainder instead of dropping oldest events
+- Marketplace version alignment
+
 ## [13.15.3] - 2026-08-20
 
 ## What's Changed
