@@ -104,6 +104,7 @@ import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
+import { EatRoutes } from './worker/http/routes/EatRoutes.js';
 import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
 import { ChromaRoutes } from './worker/http/routes/ChromaRoutes.js';
 import { CloudSyncRoutes } from './worker/http/routes/CloudSyncRoutes.js';
@@ -362,6 +363,7 @@ export class WorkerService implements WorkerRef {
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
     this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
+    this.server.registerRoutes(new EatRoutes(this.dbManager));
     this.server.registerRoutes(new ServerV1Routes({
       getDatabase: () => this.dbManager.getConnection(),
     }));
@@ -1397,6 +1399,16 @@ async function main() {
       // regardless of which entry point the user invokes.
       const { runTranscriptCommand } = await import('./transcripts/cli.js');
       const exitCode = await runTranscriptCommand(commandArgs[0], commandArgs.slice(1));
+      process.exit(exitCode);
+      break;
+    }
+
+    case 'eat': {
+      // Shared implementation with npx-cli (src/npx-cli/commands/eat.ts
+      // re-exports it) so `worker-service.cjs eat ...` and
+      // `npx claude-mem eat ...` behave identically.
+      const { runEatCommand } = await import('./worker/eat/cli.js');
+      const exitCode = await runEatCommand(commandArgs);
       process.exit(exitCode);
       break;
     }

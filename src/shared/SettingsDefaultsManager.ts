@@ -37,6 +37,9 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENROUTER_BASE_URL: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL: string;
   CLAUDE_MEM_OPENROUTER_APP_NAME: string;
+  CLAUDE_MEM_EAT_MODEL: string;
+  CLAUDE_MEM_EAT_MAX_CHUNK_CHARS: string;
+  CLAUDE_MEM_EAT_FETCH_TIMEOUT_MS: string;
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
   CLAUDE_MEM_PYTHON_VERSION: string;
@@ -141,6 +144,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_BASE_URL: '',  // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL (e.g. https://api.deepseek.com, http://localhost:1234/v1). Empty = default OpenRouter endpoint.
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
+    CLAUDE_MEM_EAT_MODEL: 'anthropic/claude-haiku-4.5',  // OpenRouter slug used by the EAT ingester's digest step
+    CLAUDE_MEM_EAT_MAX_CHUNK_CHARS: '12000',  // Max chars per EAT chunk (stays under the 16k prompt-field precedent)
+    CLAUDE_MEM_EAT_FETCH_TIMEOUT_MS: '30000',  // Timeout for EAT URL/feed fetches
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',
