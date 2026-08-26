@@ -107,4 +107,14 @@ export class HeadroomService {
     const headroomSettings = this.loadHeadroomSettings();
     return this.createClient(headroomSettings.baseUrl).health();
   }
+
+  /**
+   * Raw proxy stats passthrough (`client.proxyStats()` — documented API).
+   * Same contract as healthCheck(): no fallback path, so the returned promise
+   * REJECTS when the proxy is unreachable — callers own the degradation.
+   */
+  proxyStats(): ReturnType<HeadroomClient['proxyStats']> {
+    const headroomSettings = this.loadHeadroomSettings();
+    return this.createClient(headroomSettings.baseUrl).proxyStats();
+  }
 }

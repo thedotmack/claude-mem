@@ -17,6 +17,7 @@ import { getAuthMethodDescription } from '../shared/EnvManager.js';
 import { logger } from '../utils/logger.js';
 import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
+import { HeadroomProxyManager } from './headroom/HeadroomProxyManager.js';
 import { openConfiguredSqliteDatabase } from './sqlite/connection.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
@@ -222,6 +223,7 @@ export class WorkerService implements WorkerRef {
   private searchRoutes: SearchRoutes | null = null;
 
   private chromaMcpManager: ChromaMcpManager | null = null;
+  private headroomProxyManager: HeadroomProxyManager | null = null;
   private transcriptWatcher: TranscriptWatcher | null = null;
   private syncClient: SyncClient | null = null;
   private initializationComplete: Promise<void>;
@@ -662,6 +664,18 @@ export class WorkerService implements WorkerRef {
       // 30 s active / 5 min idle / suspended after 1 h without sessions.
       this.syncClient?.start();
 
+      // Headroom proxy sidecar (opt-in, default off). Started AFTER the
+      // existing services and fire-and-forget (worktree-adoption pattern):
+      // nothing on the SessionStart path ever waits on proxy readiness —
+      // HeadroomService's fallback covers every window where it is absent.
+      if (settings.CLAUDE_MEM_HEADROOM_ENABLED === 'true') {
+        this.headroomProxyManager = HeadroomProxyManager.getInstance();
+        this.headroomProxyManager.start().catch(error => {
+          logger.error('HEADROOM', 'Headroom proxy startup failed (non-blocking)', {}, error instanceof Error ? error : new Error(String(error)));
+        });
+        logger.info('SYSTEM', 'HeadroomProxyManager starting (background)');
+      }
+
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
       this.mcpReady = existsSync(mcpServerPath);
 
@@ -820,7 +834,8 @@ export class WorkerService implements WorkerRef {
         sessionManager: this.sessionManager,
         mcpClient: this.mcpClient,
         dbManager: this.dbManager,
-        chromaMcpManager: this.chromaMcpManager || undefined
+        chromaMcpManager: this.chromaMcpManager || undefined,
+        headroomProxyManager: this.headroomProxyManager || undefined
       }),
       gracefulDeadlineMs: getPlatformTimeout(10000),
       restartHandoff: {

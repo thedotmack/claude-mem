@@ -128,6 +128,20 @@ function isUvInstalled(): boolean {
   return getUvPath() !== null;
 }
 
+// `uv tool install` places entry points in ~/.local/bin (uv's tool bin dir).
+const HEADROOM_COMMON_PATHS = IS_WINDOWS
+  ? [join(homedir(), '.local', 'bin', 'headroom.exe')]
+  : [join(homedir(), '.local', 'bin', 'headroom'), '/usr/local/bin/headroom', '/opt/homebrew/bin/headroom'];
+
+/**
+ * PATH/common-paths probe for the `headroom` proxy entry point (installed by
+ * the worker via `uv tool install --python 3.13 "headroom-ai[proxy]"` when
+ * CLAUDE_MEM_HEADROOM_ENABLED is on). Same probe helper as bun/uv above.
+ */
+export function getHeadroomPath(): string | null {
+  return getToolPath('headroom', HEADROOM_COMMON_PATHS);
+}
+
 export function getUvVersion(): string | null {
   const uvPath = getUvPath();
   if (!uvPath) return null;
