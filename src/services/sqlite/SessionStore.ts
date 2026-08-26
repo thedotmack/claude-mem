@@ -1322,10 +1322,21 @@ export class SessionStore {
     logger.debug('DB', 'Successfully created user_prompts table');
   }
 
+  /**
+   * Guarded on the columns themselves, not on `schema_versions` row 11.
+   *
+   * The row records that the migration once ran; it says nothing about whether the
+   * columns are there NOW. When something rebuilds `session_summaries` to its
+   * pre-`discovery_tokens` shape -- an old-version worker spawned from a stale plugin
+   * cache does exactly that -- the row survives, so an early return here skipped the
+   * repair forever and every summary write failed with `table session_summaries has no
+   * column named discovery_tokens` until someone ran the ALTER by hand (#3738).
+   *
+   * The body below was already introspecting and already idempotent; only the
+   * short-circuit above it stopped it running. The cost of dropping it is two PRAGMA
+   * queries per boot.
+   */
   private ensureDiscoveryTokensColumn(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(11) as SchemaVersion | undefined;
-    if (applied) return;
-
     const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
     const obsHasDiscoveryTokens = observationsInfo.some(col => col.name === 'discovery_tokens');
 
