@@ -142,7 +142,7 @@ export class SettingsRoutes extends BaseRouteHandler {
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {
     if (settings.CLAUDE_MEM_PROVIDER) {
-    const validProviders = ['claude', 'gemini', 'openrouter', 'aimlapi'];
+    const validProviders = ['aimlapi', 'claude', 'gemini', 'openrouter'];
     if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
       return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openrouter"' };
       }
