@@ -11,8 +11,12 @@
  * front Worker makes is token verification, so the handler below emulates the
  * cmem.ai verify endpoint deterministically, keyed by the presented token:
  *
- *   valid-for:<id>   → 200 {userId: <id>}
+ *   valid-for:<id>   → 200 {userId: <id>} (no addons field — older server)
  *   snake-for:<id>   → 200 {user_id: <id>}
+ *   addons-for:<id>:<csv>
+ *                    → 200 {userId: <id>, addons: csv.split(",")} — empty csv
+ *                      means addons: [] (verified user WITHOUT the backup
+ *                      add-on; backup routes must 403 addon_required)
  *   once-for:<id>:<nonce>
  *                    → 200 {userId: <id>} the FIRST call, 500 afterwards
  *                      (lets tests prove the KV verdict cache: a second
@@ -65,6 +69,13 @@ function mockVerifyEndpoint(request: Request): Response {
 	if (token === "no-id") return Response.json({ ok: true });
 	if (token.startsWith("valid-for:")) {
 		return Response.json({ userId: token.slice("valid-for:".length) });
+	}
+	if (token.startsWith("addons-for:")) {
+		const rest = token.slice("addons-for:".length);
+		const separator = rest.indexOf(":");
+		const id = separator === -1 ? rest : rest.slice(0, separator);
+		const csv = separator === -1 ? "" : rest.slice(separator + 1);
+		return Response.json({ userId: id, addons: csv === "" ? [] : csv.split(",") });
 	}
 	if (token.startsWith("snake-for:")) {
 		return Response.json({ user_id: token.slice("snake-for:".length) });

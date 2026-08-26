@@ -46,3 +46,38 @@ export const PRO_TRIAL_PITCH = 'Get 2x more use out of your Max plan for free (7
 export function proTrialLine(source: ProPromoSource): string {
   return `${String.fromCodePoint(0x2728)} ${PRO_TRIAL_PITCH} ${proTrialUrl(source)}`;
 }
+
+// ---------------------------------------------------------------------------
+// Backup add-on upsell (pro-backup plan Phase 4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Which surface rendered the backup-addon upsell — passed through as
+ * `?from=backup-<source>` so cmem.ai can attribute add-on purchases per
+ * surface. `backup-addon` is what the sync hub itself embeds in its 403 body.
+ */
+export type BackupAddonSource =
+  | 'worker'
+  | 'doctor'
+  | 'status'
+  | 'viewer'
+  /** The hub's own 403 addon_required body (workers/sync-hub). */
+  | 'addon';
+
+/** Dashboard URL where the backup add-on is purchased, tagged per surface. */
+export function backupAddonUrl(source: BackupAddonSource): string {
+  return `https://cmem.ai/dashboard?from=backup-${source}`;
+}
+
+/**
+ * The upsell itself, without a URL. Deliberately price-free: the add-on SKU
+ * price lives in cmem-pro-mvp/Stripe, and no dollar value ever belongs in
+ * this file (see the promo conventions above).
+ */
+export const BACKUP_ADDON_PITCH =
+  'Cloud backups are a cmem Pro add-on. Your local snapshots are safe — add encrypted cloud copies:';
+
+/** One-line upsell + attributed link, for plain-text surfaces. */
+export function backupAddonLine(source: BackupAddonSource): string {
+  return `${BACKUP_ADDON_PITCH} ${backupAddonUrl(source)}`;
+}

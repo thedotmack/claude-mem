@@ -191,6 +191,94 @@ describe("backup routes: size cap", () => {
 	});
 });
 
+describe("backup routes: add-on entitlement (Phase 4)", () => {
+	function tokenHeaders(token: string, userId: string, deviceId = "dev-backup"): Record<string, string> {
+		return {
+			Authorization: `Bearer ${token}`,
+			"X-User-Id": userId,
+			"X-Device-Id": deviceId,
+		};
+	}
+
+	interface AddonRequiredBody {
+		error: { code: string; message: string; action: string; url: string };
+	}
+
+	it("403s addon_required on all five routes when addons exists without 'backup'", async () => {
+		const userId = "backup-user-no-addon";
+		// addons-for:<id>: (empty csv) → verify answers {userId, addons: []}.
+		const h = tokenHeaders(`addons-for:${userId}:`, userId);
+		for (const [method, path] of [
+			["POST", "/v1/backup/upload-url"],
+			["PUT", "/v1/backup/object/1756200000000-00000000"],
+			["GET", "/v1/backup/list"],
+			["GET", `/v1/backup/download-url?key=${encodeURIComponent(`backups/${userId}/dev-backup/z.db.enc`)}`],
+			["DELETE", `/v1/backup/object?key=${encodeURIComponent(`backups/${userId}/dev-backup/z.db.enc`)}`],
+		] as const) {
+			const res = await SELF.fetch(`${base}${path}`, { method, headers: h });
+			expect(res.status, `${method} ${path}`).toBe(403);
+			const body = (await res.json()) as AddonRequiredBody;
+			expect(body.error.code, `${method} ${path}`).toBe("addon_required");
+			expect(body.error.message).toBe("Cloud backups are a cmem Pro add-on");
+			expect(body.error.action).toBe("subscribe");
+			expect(body.error.url).toBe("https://cmem.ai/dashboard?from=backup-addon");
+		}
+	});
+
+	it("200s the full round trip when addons includes 'backup'", async () => {
+		const userId = "backup-user-with-addon";
+		const h = tokenHeaders(`addons-for:${userId}:backup,other`, userId);
+
+		const urlRes = await SELF.fetch(`${base}/v1/backup/upload-url`, {
+			method: "POST",
+			headers: h,
+		});
+		expect(urlRes.status).toBe(200);
+		const { key, url } = (await urlRes.json()) as UploadUrlResponse;
+
+		const putRes = await SELF.fetch(url, { method: "PUT", headers: h, body: "entitled-bytes" });
+		expect(putRes.status).toBe(200);
+
+		const listRes = await SELF.fetch(`${base}/v1/backup/list`, { headers: h });
+		expect(listRes.status).toBe(200);
+		const listed = (await listRes.json()) as ListResponse;
+		expect(listed.objects.map((o) => o.key)).toContain(key);
+
+		const downloadRes = await SELF.fetch(
+			`${base}/v1/backup/download-url?key=${encodeURIComponent(key)}`,
+			{ headers: h },
+		);
+		expect(downloadRes.status).toBe(200);
+
+		const deleteRes = await SELF.fetch(
+			`${base}/v1/backup/object?key=${encodeURIComponent(key)}`,
+			{ method: "DELETE", headers: h },
+		);
+		expect(deleteRes.status).toBe(200);
+	});
+
+	it("treats an absent addons field (older verify server) as entitled", async () => {
+		// valid-for: tokens answer {userId} with no addons at all — the exact
+		// shape today's production verify endpoint returns. Behavior unchanged.
+		const userId = "backup-user-legacy-verify";
+		const urlRes = await SELF.fetch(`${base}/v1/backup/upload-url`, {
+			method: "POST",
+			headers: headers(userId),
+		});
+		expect(urlRes.status).toBe(200);
+		const listRes = await SELF.fetch(`${base}/v1/backup/list`, { headers: headers(userId) });
+		expect(listRes.status).toBe(200);
+	});
+
+	it("does not gate sync routes on the addons list", async () => {
+		const userId = "sync-user-no-addon";
+		const res = await SELF.fetch(`${base}/v1/sync/status`, {
+			headers: tokenHeaders(`addons-for:${userId}:`, userId),
+		});
+		expect(res.status).toBe(200);
+	});
+});
+
 describe("backup routes: retention trim", () => {
 	it("keeps only the BACKUP_RETAIN_CLOUD newest objects per device", async () => {
 		const userId = "backup-user-retention";

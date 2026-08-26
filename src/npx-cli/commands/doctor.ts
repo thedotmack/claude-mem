@@ -12,6 +12,8 @@ import { IS_WINDOWS, isPluginInstalled, marketplaceDirectory, readPluginVersion 
 import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDataDir, paths, USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { isBackupAddonRequired } from '../../shared/backup-addon-marker.js';
+import { backupAddonUrl } from '../../shared/pro-promo.js';
 import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 
 type CheckStatus = 'ok' | 'warn' | 'fail';
@@ -191,14 +193,21 @@ export async function runDoctorCommand(): Promise<void> {
     const intervalHours = Number.parseFloat(backupSettings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS);
     const staleThresholdMs = 2 * (Number.isFinite(intervalHours) && intervalHours > 0 ? intervalHours : 24) * 3_600_000;
     const fresh = newestMtime !== null && Date.now() - newestMtime <= staleThresholdMs;
+    const snapshotDetail = newestMtime === null
+      ? 'enabled but no snapshots yet — first run lands ~5 min after worker start'
+      : fresh
+        ? `last snapshot ${new Date(newestMtime).toLocaleString()}`
+        : `last snapshot stale (${new Date(newestMtime).toLocaleString()}) — is the worker running?`;
+    // Phase 4: the hub 403'd addon_required within its 24h marker TTL — local
+    // snapshots still run, so the base status stands, but the cloud leg is
+    // paused behind the paid add-on.
+    const addonGated = isBackupAddonRequired();
     checks.push({
       name: 'Backups',
-      status: fresh ? 'ok' : 'warn',
-      detail: newestMtime === null
-        ? 'enabled but no snapshots yet — first run lands ~5 min after worker start'
-        : fresh
-          ? `last snapshot ${new Date(newestMtime).toLocaleString()}`
-          : `last snapshot stale (${new Date(newestMtime).toLocaleString()}) — is the worker running?`,
+      status: addonGated ? 'warn' : fresh ? 'ok' : 'warn',
+      detail: addonGated
+        ? `${snapshotDetail}; cloud: add-on required — ${backupAddonUrl('doctor')}`
+        : snapshotDetail,
       required: false,
     });
   }

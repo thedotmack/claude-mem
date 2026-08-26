@@ -8,6 +8,12 @@ import { logger } from '../../utils/logger.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from '../../shared/atomic-json.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { buildSyncAuthHeaders } from '../sync/sync-auth-headers.js';
+import {
+  activateBackupAddonRequired,
+  clearBackupAddonRequired,
+  isBackupAddonRequired,
+} from '../../shared/backup-addon-marker.js';
+import { backupAddonLine } from '../../shared/pro-promo.js';
 import { encryptFile, mintEncryptionKeyBase64 } from './backup-crypto.js';
 
 /** Settings keys BackupManager reads (subset of SettingsDefaults). */
@@ -45,6 +51,9 @@ export interface BackupManagerOptions {
   requestTimeoutMs?: number;
   /** Timeout for the streamed snapshot PUT; default 10 min (600MB+ files). */
   uploadTimeoutMs?: number;
+  /** Marker file for the hub's addon_required state (tests; defaults to
+   * {dataDir}/backup-addon-required.json via backup-addon-marker.ts). */
+  addonMarkerPath?: string;
 }
 
 export interface BackupSnapshotResult {
@@ -65,8 +74,36 @@ export interface BackupStatus {
   cloudEnabled: boolean;
   lastUploadAt: number | null;
   lastUploadKey: string | null;
-  /** Phase 4 wires the hub's addon_required signal here; always false for now. */
+  /**
+   * The hub answered 403 addon_required within the marker's 24h TTL: cloud
+   * uploads are paused (local snapshots continue) until the user buys the
+   * backup add-on or the marker expires and the daily cycle retries.
+   */
   addonRequired: boolean;
+}
+
+/**
+ * Thrown by the upload step when the hub 403s with `error.code:
+ * "addon_required"` — the verified user lacks the paid backup add-on. Mapped
+ * to the file-backed marker (backup-addon-marker.ts) rather than retried:
+ * this failure is definitive until the user subscribes.
+ */
+class BackupAddonRequiredError extends Error {
+  constructor() {
+    super('cloud backups require the cmem Pro backup add-on (addon_required)');
+    this.name = 'BackupAddonRequiredError';
+  }
+}
+
+/** Does this non-2xx response body carry the hub's addon_required taxonomy? */
+function isAddonRequiredBody(status: number, bodyText: string): boolean {
+  if (status !== 403) return false;
+  try {
+    const parsed = JSON.parse(bodyText) as { error?: { code?: unknown } } | null;
+    return parsed?.error?.code === 'addon_required';
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -109,6 +146,8 @@ export class BackupManager {
   private readonly settingsPath: string;
   private readonly requestTimeoutMs: number;
   private readonly uploadTimeoutMs: number;
+  /** undefined = the module default ({dataDir}/backup-addon-required.json). */
+  private readonly addonMarkerPath: string | undefined;
   private deviceId: string;
   private encryptionKey: string;
   /** Fail closed: minted-key persistence failed — no uploads this session. */
@@ -150,6 +189,7 @@ export class BackupManager {
     this.settingsPath = options.settingsPath ?? USER_SETTINGS_PATH;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
     this.uploadTimeoutMs = options.uploadTimeoutMs ?? 600_000;
+    this.addonMarkerPath = options.addonMarkerPath;
   }
 
   /**
@@ -193,7 +233,7 @@ export class BackupManager {
       cloudEnabled: this.cloudConfigured(),
       lastUploadAt: this.lastUploadAt,
       lastUploadKey: this.lastUploadKey,
-      addonRequired: false,
+      addonRequired: isBackupAddonRequired(this.addonMarkerPath),
     };
   }
 
@@ -335,6 +375,13 @@ export class BackupManager {
       logger.debug('BACKUP', 'Cloud upload disabled for this session (encryption key persistence failed earlier)');
       return;
     }
+    // Reactive entitlement (Phase 4): while the hub's addon_required marker is
+    // fresh (< 24h TTL) skip the doomed upload entirely — no retry storm. The
+    // TTL self-clears on read, so the daily cadence retries at most once a day.
+    if (isBackupAddonRequired(this.addonMarkerPath)) {
+      logger.debug('BACKUP', 'Cloud upload skipped: backup add-on required (marker active; retried after its 24h TTL)');
+      return;
+    }
 
     const encryptionKey = this.resolveEncryptionKey();
     if (encryptionKey === null) return; // failed closed; already logged
@@ -353,11 +400,24 @@ export class BackupManager {
       this.lastUploadAt = this.now();
       this.lastUploadKey = key;
       this.lastError = null;
+      // A successful upload proves the entitlement: drop any stale marker so
+      // status()/doctor stop showing the upsell the moment the add-on works.
+      clearBackupAddonRequired(this.addonMarkerPath);
       logger.info('BACKUP', 'Snapshot uploaded to cloud', { key, encBytes, tokenLength: this.token.length });
     } catch (error) {
-      const normalized = error instanceof Error ? error : new Error(String(error));
-      this.lastError = normalized.message;
-      logger.error('BACKUP', 'Cloud upload failed; will retry next cycle', { tokenLength: this.token.length }, normalized);
+      if (error instanceof BackupAddonRequiredError) {
+        // Definitive, not transient: park uploads behind the 24h marker and
+        // surface the upsell instead of retrying every cycle.
+        activateBackupAddonRequired('addon_required', this.addonMarkerPath);
+        this.lastError = error.message;
+        logger.warn('BACKUP', 'Cloud upload requires the cmem Pro backup add-on; local snapshots continue', {
+          upsell: backupAddonLine('worker'),
+        });
+      } else {
+        const normalized = error instanceof Error ? error : new Error(String(error));
+        this.lastError = normalized.message;
+        logger.error('BACKUP', 'Cloud upload failed; will retry next cycle', { tokenLength: this.token.length }, normalized);
+      }
     } finally {
       try {
         if (existsSync(encPath)) unlinkSync(encPath);
@@ -387,8 +447,9 @@ export class BackupManager {
       signal: AbortSignal.timeout(this.requestTimeoutMs),
     });
     if (!urlRes.ok) {
-      const body = (await urlRes.text().catch(() => '')).slice(0, 200);
-      throw new Error(`backup upload-url ${urlRes.status}: ${body}`);
+      const body = await urlRes.text().catch(() => '');
+      if (isAddonRequiredBody(urlRes.status, body)) throw new BackupAddonRequiredError();
+      throw new Error(`backup upload-url ${urlRes.status}: ${body.slice(0, 200)}`);
     }
     const parsed = (await urlRes.json().catch(() => null)) as { key?: unknown; url?: unknown } | null;
     if (!parsed || typeof parsed.key !== 'string' || typeof parsed.url !== 'string') {
@@ -410,8 +471,9 @@ export class BackupManager {
       signal: AbortSignal.timeout(this.uploadTimeoutMs),
     } as RequestInit);
     if (!putRes.ok) {
-      const putBody = (await putRes.text().catch(() => '')).slice(0, 200);
-      throw new Error(`backup upload PUT ${putRes.status}: ${putBody}`);
+      const putBody = await putRes.text().catch(() => '');
+      if (isAddonRequiredBody(putRes.status, putBody)) throw new BackupAddonRequiredError();
+      throw new Error(`backup upload PUT ${putRes.status}: ${putBody.slice(0, 200)}`);
     }
     return parsed.key;
   }

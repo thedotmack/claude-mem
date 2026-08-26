@@ -97,6 +97,9 @@ function makeManager(dir: string, settings: Record<string, string>, fetchImpl: t
     preflightDir: dir,
     fetchImpl,
     settingsPath: join(dir, 'settings.json'),
+    // Keep the Phase 4 addon marker inside the temp dir — never the real
+    // {dataDir}/backup-addon-required.json of the machine running the tests.
+    addonMarkerPath: join(dir, 'backup-addon-required.json'),
     ...options,
   });
 }
@@ -270,6 +273,93 @@ describe('BackupManager cloud upload', () => {
     // Temp .enc cleaned up even on failure.
     expect(readdirSync(join(tempRoot, 'backups', 'auto')).filter(name => name.endsWith('.enc'))).toEqual([]);
     expect(allLoggedText()).not.toContain(TOKEN);
+  });
+
+  it('403 addon_required activates the marker, skips uploads next cycle, and local snapshots continue', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-upload-'));
+    createSourceDb(tempRoot);
+    let hubCalls = 0;
+    const addonRequiredFetch = (async () => {
+      hubCalls += 1;
+      return Response.json(
+        {
+          error: {
+            code: 'addon_required',
+            message: 'Cloud backups are a cmem Pro add-on',
+            action: 'subscribe',
+            url: 'https://cmem.ai/dashboard?from=backup-addon',
+          },
+        },
+        { status: 403 },
+      );
+    }) as unknown as typeof fetch;
+    const manager = makeManager(tempRoot, cloudSettings(), addonRequiredFetch);
+
+    // Cycle 1: the upload-url request 403s addon_required → marker written,
+    // local snapshot untouched.
+    const first = await manager.runNow();
+    expect(first).not.toBeNull();
+    expect(existsSync(first!.path)).toBe(true);
+    expect(hubCalls).toBe(1);
+    expect(existsSync(join(tempRoot, 'backup-addon-required.json'))).toBe(true);
+
+    const status = manager.status();
+    expect(status.addonRequired).toBe(true);
+    expect(status.lastUploadAt).toBeNull();
+    expect(status.lastError).toContain('add-on');
+
+    // Cycle 2: the fresh marker holds uploads entirely (no retry storm — the
+    // 24h TTL means at most one probe per day), while local snapshots keep
+    // being produced.
+    const second = await manager.runNow();
+    expect(second).not.toBeNull();
+    expect(existsSync(second!.path)).toBe(true);
+    expect(hubCalls).toBe(1);
+    expect(manager.status().addonRequired).toBe(true);
+
+    expect(allLoggedText()).not.toContain(TOKEN);
+  });
+
+  it('a 200 upload after marker expiry clears the marker', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-upload-'));
+    createSourceDb(tempRoot);
+    const markerPath = join(tempRoot, 'backup-addon-required.json');
+    // An addon_required marker from >24h ago (the user has since subscribed).
+    writeFileSync(markerPath, JSON.stringify({
+      active: true,
+      reason: 'addon_required',
+      activatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+    }));
+
+    const calls: RecordedCall[] = [];
+    const putBodies: Buffer[] = [];
+    const manager = makeManager(tempRoot, cloudSettings(), makeHubFetch(calls, putBodies));
+
+    const snapshot = await manager.runNow();
+    expect(snapshot).not.toBeNull();
+    // The expired marker did not block the upload...
+    expect(calls.length).toBe(2);
+    // ...and the successful upload cleared it.
+    expect(existsSync(markerPath)).toBe(false);
+    const status = manager.status();
+    expect(status.addonRequired).toBe(false);
+    expect(status.lastUploadAt).not.toBeNull();
+    expect(status.lastError).toBeNull();
+  });
+
+  it('a plain 403 without the addon_required taxonomy does NOT activate the marker', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-upload-'));
+    createSourceDb(tempRoot);
+    const plainForbiddenFetch = (async () =>
+      Response.json({ error: 'key does not belong to the authenticated user' }, { status: 403 })
+    ) as unknown as typeof fetch;
+    const manager = makeManager(tempRoot, cloudSettings(), plainForbiddenFetch);
+
+    await manager.runNow();
+    expect(existsSync(join(tempRoot, 'backup-addon-required.json'))).toBe(false);
+    const status = manager.status();
+    expect(status.addonRequired).toBe(false);
+    expect(status.lastError).toContain('403');
   });
 
   it('skips upload (and retries next cycle) while no cloud-sync device id exists yet', async () => {

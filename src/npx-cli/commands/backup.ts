@@ -6,6 +6,7 @@
 
 import { styleText } from 'node:util';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { BACKUP_ADDON_PITCH, backupAddonUrl } from '../../shared/pro-promo.js';
 
 function printBackupUsage(): void {
   console.error(`Usage: npx claude-mem backup [run|status|list]`);
@@ -84,6 +85,11 @@ async function runBackupStatus(): Promise<void> {
   console.log(`  Next run:        ${formatTimestamp(status.nextRunAt)}`);
   if (status.lastError) {
     console.log(`  Last error:      ${styleText('red', String(status.lastError))}`);
+  }
+  if (status.addonRequired === true) {
+    console.log('');
+    console.log(styleText('yellow', BACKUP_ADDON_PITCH));
+    console.log(`  ${styleText('bold', backupAddonUrl('status'))}`);
   }
 }
 

@@ -36,6 +36,33 @@ const OBJECT_ID_PATTERN = /^[0-9]{10,16}-[0-9a-f]{8}$/;
 export interface BackupAuthContext {
 	userId: string;
 	deviceId: string | null;
+	/**
+	 * Add-on entitlements from the verify response. `null` = the verify
+	 * endpoint sent no `addons` array (older control plane) — treated as
+	 * entitled for backward compatibility. An array WITHOUT "backup" gates
+	 * every route below behind a 403 `addon_required`.
+	 */
+	addons: string[] | null;
+}
+
+/** The add-on SKU name the verify endpoint's `addons` array must contain. */
+export const BACKUP_ADDON = "backup";
+
+/**
+ * Cloud backups are paid (Phase 4): a verified user whose `addons` list
+ * exists but lacks "backup" gets this taxonomy-style body on every backup
+ * route. The client maps `code: "addon_required"` to its local marker and
+ * upsell; sync routes are NEVER gated by this.
+ */
+function addonRequiredResponse(): Response {
+	return json(403, {
+		error: {
+			code: "addon_required",
+			message: "Cloud backups are a cmem Pro add-on",
+			action: "subscribe",
+			url: "https://cmem.ai/dashboard?from=backup-addon",
+		},
+	});
 }
 
 function json(status: number, data: unknown): Response {
@@ -195,6 +222,12 @@ export async function handleBackupRequest(
 	auth: BackupAuthContext,
 ): Promise<Response> {
 	const { pathname } = url;
+
+	// Entitlement gate (Phase 4): runs after authentication, before every
+	// handler. Absent addons (null) = older verify endpoint = entitled.
+	if (auth.addons !== null && !auth.addons.includes(BACKUP_ADDON)) {
+		return addonRequiredResponse();
+	}
 
 	if (pathname === "/v1/backup/upload-url") {
 		if (request.method !== "POST") return errorResponse(405, "use POST");
