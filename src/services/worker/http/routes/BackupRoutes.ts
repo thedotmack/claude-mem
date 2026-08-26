@@ -7,6 +7,7 @@ import { logger } from '../../../../utils/logger.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { flushResponseThen } from '../../../server/flushResponseThen.js';
+import { swapDatabaseFromSnapshot } from '../../../backup/restore-swap.js';
 import { DB_PATH, paths } from '../../../../shared/paths.js';
 import { SNAPSHOT_FILE_PATTERN } from '../../../backup/BackupManager.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
@@ -138,18 +139,10 @@ export class BackupRoutes extends BaseRouteHandler {
           // checkpointed and the pre-restore copy is complete.
           await this.dbManager.close();
 
-          const ts = new Date().toISOString().replace(/[:.]/g, '-');
-          if (existsSync(dbPath)) {
-            copyFileSync(dbPath, `${dbPath}.pre-restore-${ts}`);
-          }
-          copyFileSync(snapshotPath, dbPath);
-          // Stale sidecars from the replaced DB would corrupt the restored one.
-          for (const sidecar of [`${dbPath}-wal`, `${dbPath}-shm`]) {
-            if (existsSync(sidecar)) unlinkSync(sidecar);
-          }
+          const { preRestoreCopy } = swapDatabaseFromSnapshot(dbPath, snapshotPath);
           logger.info('BACKUP', 'Restore complete; exiting for supervisor restart', {
             snapshot: snapshotPath,
-            preRestoreCopy: `${dbPath}.pre-restore-${ts}`,
+            preRestoreCopy,
           });
         } catch (error) {
           // flushResponseThen's finally exits the process either way; log so

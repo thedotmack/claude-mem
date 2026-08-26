@@ -12,7 +12,8 @@
  * DB, snapshot copied over claude-mem.db, stale -wal/-shm removed).
  */
 
-import { copyFileSync, createWriteStream, existsSync, mkdirSync, unlinkSync } from 'fs';
+import { createWriteStream, existsSync, mkdirSync, unlinkSync } from 'fs';
+import { swapDatabaseFromSnapshot } from '../../services/backup/restore-swap.js';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import path from 'path';
@@ -50,20 +51,15 @@ function resolveSnapshotOrExit(file: string): string {
 }
 
 /**
- * Direct-fs restore for when no worker is running: back up the current DB to
- * claude-mem.db.pre-restore-<ts>, copy the snapshot over it, and remove stale
- * -wal/-shm sidecars that would corrupt the restored database.
+ * Direct-fs restore for when no worker is running. The staged, sidecar-aware
+ * swap lives in services/backup/restore-swap.ts: fallback snapshots keep their
+ * committed -wal frames, VACUUM'd snapshots get stale sidecars removed, and a
+ * failed swap rolls back to the pre-restore copy.
  */
 function restoreDirectFs(snapshotPath: string): void {
-  const ts = new Date().toISOString().replace(/[:.]/g, '-');
-  if (existsSync(DB_PATH)) {
-    const preRestorePath = `${DB_PATH}.pre-restore-${ts}`;
-    copyFileSync(DB_PATH, preRestorePath);
-    console.log(`Current database backed up to: ${preRestorePath}`);
-  }
-  copyFileSync(snapshotPath, DB_PATH);
-  for (const sidecar of [`${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
-    if (existsSync(sidecar)) unlinkSync(sidecar);
+  const { preRestoreCopy } = swapDatabaseFromSnapshot(DB_PATH, snapshotPath);
+  if (preRestoreCopy) {
+    console.log(`Current database backed up to: ${preRestoreCopy}`);
   }
   console.log(styleText('green', `Database restored from ${path.basename(snapshotPath)}.`));
   console.log(`Start the worker with: ${styleText('bold', 'npx claude-mem start')}`);
