@@ -6,7 +6,9 @@
       "name": "sync-hub",
       "devDependencies": {
         "@cloudflare/vitest-pool-workers": "^0.18.6",
+        "esbuild": "^0.28.1",
         "eslint": "^10.7.0",
+        "miniflare": "^4.20260714.0",
         "typescript": "^5.9.3",
         "typescript-eslint": "^8.64.0",
         "vitest": "^4.1.10",

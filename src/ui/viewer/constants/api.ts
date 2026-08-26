@@ -3,5 +3,6 @@ export const API_ENDPOINTS = {
   SUMMARIES: '/api/summaries',
   PROMPTS: '/api/prompts',
   SETTINGS: '/api/settings',
+  BACKUP_STATUS: '/api/backup/status',
   STREAM: '/stream',
 } as const;

@@ -23,6 +23,15 @@
 			}
 		]
 	},
+	// Encrypted backup objects (pro-backup plan Phase 3, src/backup-routes.ts).
+	// Clients encrypt with a key that never leaves their machine; the bucket
+	// only ever holds ciphertext. Local dev and vitest use a local simulator.
+	"r2_buckets": [
+		{
+			"binding": "BACKUP_BUCKET",
+			"bucket_name": "cmem-backups"
+		}
+	],
 	"kv_namespaces": [
 		{
 			"binding": "AUTH_CACHE",
@@ -57,6 +66,13 @@
 		// Stateless Worker -> Pro projection endpoint. The companion bearer
 		// credential is the CMEM_INTERNAL_PROJECTOR_SECRET Worker secret.
 		"INTERNAL_PROJECTOR_URL": "https://cmem.ai/api/internal/sync/project",
+
+		// --- Encrypted backups (src/backup-routes.ts) -------------------------
+		// Cloud copies kept per device; oldest beyond this are trimmed after
+		// each successful upload.
+		"BACKUP_RETAIN_CLOUD": "10",
+		// Per-object size cap in bytes (2 GiB). Uploads above this are 413'd.
+		"BACKUP_MAX_BYTES": "2147483648",
 
 		// --- Kill switch (src/kill-switch.ts) ---------------------------------
 		// Per-isolate cache TTL (ms) for the kill-switch KV read. Empty ⇒ the

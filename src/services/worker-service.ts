@@ -107,6 +107,7 @@ import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
 import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
 import { ChromaRoutes } from './worker/http/routes/ChromaRoutes.js';
 import { CloudSyncRoutes } from './worker/http/routes/CloudSyncRoutes.js';
+import { BackupRoutes } from './worker/http/routes/BackupRoutes.js';
 
 import { CorpusStore } from './worker/knowledge/CorpusStore.js';
 import { CorpusBuilder } from './worker/knowledge/CorpusBuilder.js';
@@ -581,6 +582,12 @@ export class WorkerService implements WorkerRef {
       this.server.registerRoutes(new CloudSyncRoutes(this.dbManager));
       logger.info('WORKER', 'CloudSyncRoutes registered');
 
+      // Backup endpoints (pro-backup plan Phase 2). Same late/unconditional
+      // registration: status answers {configured: false} when backups are
+      // disabled, and list/restore work against snapshots already on disk.
+      this.server.registerRoutes(new BackupRoutes(this.dbManager));
+      logger.info('WORKER', 'BackupRoutes registered');
+
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
@@ -661,6 +668,10 @@ export class WorkerService implements WorkerRef {
       // Pull loop start (plan Phase 3 task 3): immediate catch-up pull, then
       // 30 s active / 5 min idle / suspended after 1 h without sessions.
       this.syncClient?.start();
+      // Automatic local DB snapshots (opt-in via CLAUDE_MEM_BACKUP_ENABLED;
+      // null when disabled — DatabaseManager gates construction). First run
+      // lands ~5 minutes after start, then every backup interval.
+      this.dbManager.getBackupManager()?.start();
 
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
       this.mcpReady = existsSync(mcpServerPath);
