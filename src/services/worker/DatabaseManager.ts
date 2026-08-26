@@ -5,6 +5,7 @@ import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { openConfiguredSqliteDatabase } from '../sqlite/connection.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { CloudSync } from '../sync/CloudSync.js';
+import { GbrainSync } from '../sync/GbrainSync.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, DB_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
@@ -16,6 +17,7 @@ export class DatabaseManager {
   private sessionSearch: SessionSearch | null = null;
   private chromaSync: ChromaSync | null = null;
   private cloudSync: CloudSync | null = null;
+  private gbrainSync: GbrainSync | null = null;
 
   async initialize(): Promise<void> {
     this.db = openConfiguredSqliteDatabase(DB_PATH);
@@ -35,6 +37,14 @@ export class DatabaseManager {
       logger.info('DB', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, using SQLite-only search');
     }
 
+    // gbrain outbound connector: fromSettings() returns null unless
+    // CLAUDE_MEM_GBRAIN_ENABLED='true', so disabled installs get free no-op
+    // `getGbrainSync()?.` call sites (same shape as Chroma/CloudSync).
+    this.gbrainSync = GbrainSync.fromSettings();
+    if (this.gbrainSync) {
+      logger.info('DB', 'gbrain sync enabled via CLAUDE_MEM_GBRAIN_ENABLED=true');
+    }
+
     // Cloud sync is active iff token, user id, and Hub URL are all non-empty.
     // Inactive installs get null so the write-site `getCloudSync()?.notify()`
     // nudges are free no-ops.
@@ -51,6 +61,7 @@ export class DatabaseManager {
 
   async close(): Promise<void> {
     this.chromaSync = null;
+    this.gbrainSync = null;
 
     this.cloudSync?.stop();
     this.cloudSync = null;
@@ -85,6 +96,10 @@ export class DatabaseManager {
 
   getCloudSync(): CloudSync | null {
     return this.cloudSync;
+  }
+
+  getGbrainSync(): GbrainSync | null {
+    return this.gbrainSync;
   }
 
   getConnection(): Database {

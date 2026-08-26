@@ -85,24 +85,20 @@ export class GbrainSync {
   /**
    * Settings gate copied from TelegramNotifier: load the flat settings file,
    * return null unless the connector is explicitly enabled.
-   *
-   * The GBRAIN keys land in the typed SettingsDefaults interface in Phase 2;
-   * until then they are read through a localized string-map cast so this
-   * compiles either way (values are always flat strings in settings.json).
    */
   static fromSettings(): GbrainSync | null {
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH) as unknown as Record<string, string | undefined>;
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 
     if (settings.CLAUDE_MEM_GBRAIN_ENABLED !== 'true') {
       return null;
     }
 
-    const cliPathSetting = (settings.CLAUDE_MEM_GBRAIN_CLI_PATH ?? '').trim();
+    const cliPathSetting = settings.CLAUDE_MEM_GBRAIN_CLI_PATH.trim();
     return new GbrainSync({
       cliPath: expandTilde(cliPathSetting.length > 0 ? cliPathSetting : 'gbrain'),
-      sourceId: (settings.CLAUDE_MEM_GBRAIN_SOURCE ?? '').trim(),
-      slugPrefix: (settings.CLAUDE_MEM_GBRAIN_SLUG_PREFIX ?? '').trim() || 'claude-mem',
-      projectsFilter: splitCsv(settings.CLAUDE_MEM_GBRAIN_PROJECTS ?? ''),
+      sourceId: settings.CLAUDE_MEM_GBRAIN_SOURCE.trim(),
+      slugPrefix: settings.CLAUDE_MEM_GBRAIN_SLUG_PREFIX.trim() || 'claude-mem',
+      projectsFilter: splitCsv(settings.CLAUDE_MEM_GBRAIN_PROJECTS),
     });
   }
 

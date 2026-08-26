@@ -94,6 +94,12 @@ export interface SettingsDefaults {
   CLAUDE_MEM_TELEGRAM_CHAT_ID: string;
   CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: string;
   CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS: string;
+  CLAUDE_MEM_GBRAIN_ENABLED: string;
+  CLAUDE_MEM_GBRAIN_CLI_PATH: string;
+  CLAUDE_MEM_GBRAIN_SOURCE: string;
+  CLAUDE_MEM_GBRAIN_SLUG_PREFIX: string;
+  CLAUDE_MEM_GBRAIN_PROJECTS: string;
+  CLAUDE_MEM_GBRAIN_BACKFILL_ENABLED: string;
   CLAUDE_MEM_QUEUE_ENGINE: string;
   CLAUDE_MEM_REDIS_URL: string;
   CLAUDE_MEM_REDIS_HOST: string;
@@ -186,6 +192,12 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TELEGRAM_CHAT_ID: '',
     CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert,sensitive',
     CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS: '',
+    CLAUDE_MEM_GBRAIN_ENABLED: 'false',        // Outbound gbrain connector (CLI-based) — opt-in
+    CLAUDE_MEM_GBRAIN_CLI_PATH: '',            // Empty = 'gbrain' resolved from PATH
+    CLAUDE_MEM_GBRAIN_SOURCE: '',              // Optional gbrain --source id stamped on captures
+    CLAUDE_MEM_GBRAIN_SLUG_PREFIX: 'claude-mem',  // Slug namespace: <prefix>/<project>/obs-<id>
+    CLAUDE_MEM_GBRAIN_PROJECTS: '',            // Empty = all projects; else comma-separated allowlist
+    CLAUDE_MEM_GBRAIN_BACKFILL_ENABLED: 'true',   // Boot-time watermark backfill (only runs when connector enabled)
     CLAUDE_MEM_QUEUE_ENGINE: 'sqlite',
     CLAUDE_MEM_REDIS_URL: '',
     CLAUDE_MEM_REDIS_HOST: '127.0.0.1',
