@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
+import { getProjectContext } from "../../utils/project-name.js";
 import {
   REAL_OPENCODE_EVENT_TYPES,
   RealOpenCodeEventType,
@@ -171,7 +172,10 @@ function truncate(text: string): string {
 }
 
 export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
-  const projectName = ctx.project?.name || "opencode";
+  const dir = ctx.directory || ctx.worktree || ctx.project?.path || process.cwd();
+  const projectName = (ctx.project?.name && ctx.project.name !== "opencode")
+    ? ctx.project.name
+    : (getProjectContext(dir).primary || ctx.project?.name || "opencode");
 
   console.log(`[claude-mem] OpenCode plugin loading (project: ${projectName})`);
 
