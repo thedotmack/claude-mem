@@ -127,5 +127,24 @@ describe('mcp-compression', () => {
     it('handler rejects when hash is missing (surfaces via the shared tool-error path)', async () => {
       await expect(headroomRetrieveTool.handler({})).rejects.toThrow('"hash" is required');
     });
+
+    it('handler answers with a clear disabled message when Headroom is off (defense in depth)', async () => {
+      process.env.CLAUDE_MEM_HEADROOM_ENABLED = 'false';
+
+      const result = await headroomRetrieveTool.handler({ hash: 'abc123' });
+
+      expect(result.content[0].text).toContain('Headroom is disabled');
+      expect(result.content[0].text).toContain('get_observations([IDs])');
+    });
+
+    it('handler degrades a network failure to advisory text instead of an error', async () => {
+      process.env.CLAUDE_MEM_HEADROOM_ENABLED = 'true';
+      process.env.CLAUDE_MEM_HEADROOM_URL = UNREACHABLE_HEADROOM_URL;
+
+      const result = await headroomRetrieveTool.handler({ hash: 'abc123' });
+
+      expect(result.content[0].text).toContain('abc123');
+      expect(result.content[0].text).toContain('get_observations([IDs])');
+    }, 10000);
   });
 });

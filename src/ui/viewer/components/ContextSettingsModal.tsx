@@ -336,6 +336,34 @@ export function ContextSettingsModal({
               </div>
             </CollapsibleSection>
 
+            {/* Section 3: Headroom */}
+            <CollapsibleSection
+              title="Headroom"
+              description="Compress search payloads via the Headroom proxy"
+              defaultOpen={false}
+            >
+              <div className="toggle-group">
+                <ToggleSwitch
+                  id="headroom-enabled"
+                  label="Enable Headroom"
+                  description="Route search/timeline/get_observations payloads through the compression proxy"
+                  checked={formState.CLAUDE_MEM_HEADROOM_ENABLED === 'true'}
+                  onChange={() => toggleBoolean('CLAUDE_MEM_HEADROOM_ENABLED')}
+                />
+              </div>
+              <FormField
+                label="Proxy URL"
+                tooltip="Base URL of the Headroom proxy (default http://127.0.0.1:8787)"
+              >
+                <input
+                  type="text"
+                  value={formState.CLAUDE_MEM_HEADROOM_URL || DEFAULT_SETTINGS.CLAUDE_MEM_HEADROOM_URL}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_HEADROOM_URL', e.target.value)}
+                  placeholder="http://127.0.0.1:8787"
+                />
+              </FormField>
+            </CollapsibleSection>
+
             {/* Section 4: Advanced */}
             <CollapsibleSection
               title="Advanced"

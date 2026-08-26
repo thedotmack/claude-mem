@@ -62,6 +62,7 @@ describe('HeadroomProxyManager', () => {
     HeadroomProxyManager.setSpawnForTesting(null);
     HeadroomProxyManager.setHealthProbeForTesting(null);
     HeadroomProxyManager.setCommandResolverForTesting(null);
+    HeadroomProxyManager.setKillProcessTreeForTesting(null);
     await HeadroomProxyManager.reset();
     restoreEnv('CLAUDE_MEM_HEADROOM_ENABLED', savedHeadroomEnabled);
     restoreEnv('CLAUDE_MEM_HEADROOM_URL', savedHeadroomUrl);
@@ -130,6 +131,66 @@ describe('HeadroomProxyManager', () => {
       expect(spawnCalls).toHaveLength(1);
       expect(spawnCalls[0].command).toBe('/fake/bin/headroom');
       expect(spawnCalls[0].args).toEqual(['proxy', '--port', '9123']);
+    });
+  });
+
+  describe('start with no proxy answering and the binary missing', () => {
+    it('should run `uv tool install` with exact args, re-resolve the binary, then spawn the proxy', async () => {
+      process.env.CLAUDE_MEM_HEADROOM_ENABLED = 'true';
+      process.env.CLAUDE_MEM_HEADROOM_URL = 'http://127.0.0.1:8787';
+
+      // Recorder whose uv-install child exits 0 so installHeadroomTool's
+      // close-listener resolves instead of waiting out the 5-minute timeout.
+      const spawnCalls: SpawnRecord[] = [];
+      const fakeSpawn = ((command: string, args: string[]) => {
+        spawnCalls.push({ command, args });
+        const child = new FakeChild();
+        if (args[0] === 'tool') {
+          setImmediate(() => child.emit('close', 0));
+        }
+        return child as unknown as ChildProcess;
+      }) as unknown as typeof spawn;
+      HeadroomProxyManager.setSpawnForTesting(fakeSpawn);
+
+      let healthProbeCalls = 0;
+      HeadroomProxyManager.setHealthProbeForTesting(() => {
+        healthProbeCalls++;
+        return healthProbeCalls === 1
+          ? Promise.reject(new Error('connection refused'))
+          : Promise.resolve({ status: 'ok' });
+      });
+
+      // Binary absent before the install, present after — the re-resolve is
+      // the branch under test.
+      let resolverCalls = 0;
+      HeadroomProxyManager.setCommandResolverForTesting(() => {
+        resolverCalls++;
+        return resolverCalls === 1 ? null : '/fake/bin/headroom';
+      });
+
+      await HeadroomProxyManager.getInstance().start();
+
+      expect(resolverCalls).toBe(2);
+      expect(spawnCalls).toHaveLength(2);
+      expect(spawnCalls[0].args).toEqual(['tool', 'install', '--python', '3.13', 'headroom-ai[proxy]']);
+      expect(spawnCalls[1].command).toBe('/fake/bin/headroom');
+      expect(spawnCalls[1].args).toEqual(['proxy', '--port', '8787']);
+    });
+  });
+
+  describe('stop with no spawned child', () => {
+    it('should never call killProcessTree (a user-run proxy is untouchable)', async () => {
+      process.env.CLAUDE_MEM_HEADROOM_ENABLED = 'true';
+
+      let killCalls = 0;
+      HeadroomProxyManager.setKillProcessTreeForTesting((async () => {
+        killCalls++;
+      }) as never);
+
+      // Nothing was ever spawned on this instance — stop() must be a no-op.
+      await HeadroomProxyManager.getInstance().stop();
+
+      expect(killCalls).toBe(0);
     });
   });
 

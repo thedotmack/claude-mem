@@ -76,6 +76,7 @@ export class HeadroomProxyManager {
   private static spawnImplForTesting: typeof spawn | null = null;
   private static healthProbeForTesting: (() => Promise<unknown>) | null = null;
   private static commandResolverForTesting: ((env: Record<string, string>) => string | null) | null = null;
+  private static killProcessTreeForTesting: typeof killProcessTree | null = null;
 
   private constructor() {}
 
@@ -109,6 +110,10 @@ export class HeadroomProxyManager {
     HeadroomProxyManager.commandResolverForTesting = resolver;
   }
 
+  static setKillProcessTreeForTesting(impl: typeof killProcessTree | null): void {
+    HeadroomProxyManager.killProcessTreeForTesting = impl;
+  }
+
   /**
    * Ensure the proxy sidecar is available. Serialized: concurrent calls share
    * one in-flight startup. Resolves without throwing on every degradation
@@ -126,6 +131,9 @@ export class HeadroomProxyManager {
   }
 
   private async startInternal(): Promise<void> {
+    // A stop() leaves `stopping` latched; a later start() on the same
+    // instance must not mislabel the next unexpected exit as intentional.
+    this.stopping = false;
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     if (settings.CLAUDE_MEM_HEADROOM_ENABLED !== 'true') {
       logger.debug('HEADROOM', 'Headroom disabled, proxy manager start is a no-op');
@@ -345,9 +353,10 @@ export class HeadroomProxyManager {
     logger.info('HEADROOM', 'Stopping managed headroom proxy', { pid: child.pid });
 
     if (tracked) {
+      const killImpl = HeadroomProxyManager.killProcessTreeForTesting ?? killProcessTree;
       try {
         // Spawn-time identity: this handle may already have exited.
-        await killProcessTree(tracked.pid, { expectedStartToken: tracked.startToken });
+        await killImpl(tracked.pid, { expectedStartToken: tracked.startToken });
       } catch (error) {
         logger.warn('HEADROOM', 'failed to kill headroom proxy tree (best-effort)', {
           pid: tracked.pid,

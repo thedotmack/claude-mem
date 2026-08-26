@@ -14,6 +14,11 @@ const HEADROOM_COMPRESS_RETRIES = 1;
 /** Integration slug sent as X-Headroom-Stack on every request. */
 const HEADROOM_STACK_SLUG = 'claude-mem';
 
+/** Proxy default (`headroom proxy` binds 127.0.0.1:8787). Used when
+ * CLAUDE_MEM_HEADROOM_URL is empty/whitespace — a client must never be
+ * constructed with `baseUrl: ''`. */
+const DEFAULT_HEADROOM_BASE_URL = 'http://127.0.0.1:8787';
+
 interface HeadroomSettings {
   enabled: boolean;
   baseUrl: string;
@@ -49,9 +54,10 @@ export class HeadroomService {
 
   private loadHeadroomSettings(): HeadroomSettings {
     const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+    const configuredUrl = (settings.CLAUDE_MEM_HEADROOM_URL ?? '').trim();
     return {
       enabled: settings.CLAUDE_MEM_HEADROOM_ENABLED === 'true',
-      baseUrl: settings.CLAUDE_MEM_HEADROOM_URL,
+      baseUrl: configuredUrl !== '' ? configuredUrl : DEFAULT_HEADROOM_BASE_URL,
     };
   }
 
@@ -90,9 +96,17 @@ export class HeadroomService {
   /**
    * Retrieve original content from the CCR compression store by hash
    * (reverses a `[N items compressed to M. Retrieve more: hash=...]` marker).
+   *
+   * Gated on the enabled flag as defense in depth: headroom_retrieve is not
+   * even registered while Headroom is disabled, but any other caller must get
+   * a clear 'Headroom is disabled' rejection instead of a confusing network
+   * error against a proxy that was never meant to be running.
    */
   async retrieve(hash: string, query?: string): Promise<RetrieveResult | RetrieveSearchResult> {
     const headroomSettings = this.loadHeadroomSettings();
+    if (!headroomSettings.enabled) {
+      throw new Error('Headroom is disabled (CLAUDE_MEM_HEADROOM_ENABLED is not "true") — nothing to retrieve');
+    }
     return this.createClient(headroomSettings.baseUrl).retrieve(hash, { query });
   }
 
@@ -102,6 +116,9 @@ export class HeadroomService {
    * fetch throws HeadroomConnectionError when the proxy is unreachable), so
    * this returns the raw promise: it resolves to a HealthStatus when the
    * proxy answers and rejects otherwise — callers decide how to degrade.
+   *
+   * Deliberately NOT gated on the enabled flag: doctor uses it to report the
+   * proxy's actual state regardless of whether Headroom is switched on.
    */
   healthCheck(): Promise<HealthStatus> {
     const headroomSettings = this.loadHeadroomSettings();

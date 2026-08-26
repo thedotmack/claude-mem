@@ -253,6 +253,17 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
+    // Empty string is allowed through (falsy): HeadroomService treats an
+    // empty/whitespace URL as the default http://127.0.0.1:8787.
+    if (settings.CLAUDE_MEM_HEADROOM_URL) {
+      try {
+        new URL(settings.CLAUDE_MEM_HEADROOM_URL);
+      } catch (error) {
+        logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_HEADROOM_URL, error: error instanceof Error ? error.message : String(error) });
+        return { valid: false, error: 'CLAUDE_MEM_HEADROOM_URL must be a valid URL' };
+      }
+    }
+
     return { valid: true };
   }
 

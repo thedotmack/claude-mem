@@ -18,6 +18,9 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_CLAUDE_AUTH_METHOD` | `subscription`                | Claude provider auth mode: `subscription`, `api-key`, or `gateway` |
 | `CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
+| `CLAUDE_MEM_CONTEXT_TOKEN_BUDGET` | `0`                         | Max estimated tokens for injected context (`0` = unlimited) |
+| `CLAUDE_MEM_HEADROOM_ENABLED` | `false`                         | Opt-in: compress MCP search payloads via the [Headroom](headroom) proxy |
+| `CLAUDE_MEM_HEADROOM_URL`     | `http://127.0.0.1:8787`         | Headroom proxy base URL               |
 | `CLAUDE_MEM_WORKER_PORT`      | `37700 + (uid % 100)`           | Worker service port (per-user default; override for fixed port) |
 | `CLAUDE_MEM_WORKER_HOST`      | `127.0.0.1`                     | Worker service host address           |
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data root — every other path (database, chroma, logs, settings.json, worker.pid) derives from this |
@@ -218,11 +221,13 @@ Control how many observations are injected:
 |---------|---------|-------|-------------|
 | **Observations** | 50 | 1-200 | Total number of recent observations to include |
 | **Sessions** | 10 | 1-50 | Number of recent sessions to pull observations from |
+| **Token Budget** | 0 | 0-200000 | Hard cap on estimated tokens injected at session start (`0` = unlimited) |
 
 **Considerations**:
 - **Higher values** = More context but slower SessionStart and more tokens used
 - **Lower values** = Faster SessionStart but less historical awareness
 - Default of 50 observations from 10 sessions balances context richness with performance
+- With a **Token Budget** set, observations are kept newest-first until the budget is reached and the remainder is trimmed; the `Stats:` line reports the trim. Passing `full=true` bypasses the budget.
 
 ### Filter Settings
 
@@ -278,6 +283,17 @@ Token economics help you understand the value of cached observations vs. re-read
 | **Include last summary** | false | Add previous session's summary to context |
 | **Include last message** | false | Add previous session's final message |
 
+### Headroom Compression
+
+Optional delivery-time compression of the heavy MCP search payloads (`search`, `timeline`, `get_observations`) through the [Headroom](headroom) proxy:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| **Enable Headroom** | false | Route search/timeline/get_observations payloads through the compression proxy |
+| **Proxy URL** | `http://127.0.0.1:8787` | Base URL of the Headroom proxy (an empty value falls back to this default) |
+
+Compression is opt-in and fail-safe: when the proxy is missing or unreachable, payloads pass through uncompressed. See [Headroom Compression](headroom) for setup and details.
+
 ### Manual Configuration
 
 Settings are stored in `~/.claude-mem/settings.json`:
@@ -286,6 +302,7 @@ Settings are stored in `~/.claude-mem/settings.json`:
 {
   "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "100",
   "CLAUDE_MEM_CONTEXT_SESSION_COUNT": "20",
+  "CLAUDE_MEM_CONTEXT_TOKEN_BUDGET": "4000",
   "CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES": "bugfix,decision,discovery",
   "CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS": "how-it-works,gotcha",
   "CLAUDE_MEM_CONTEXT_FULL_COUNT": "10",
@@ -294,7 +311,9 @@ Settings are stored in `~/.claude-mem/settings.json`:
   "CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS": "true",
   "CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT": "true",
   "CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY": "false",
-  "CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE": "false"
+  "CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE": "false",
+  "CLAUDE_MEM_HEADROOM_ENABLED": "false",
+  "CLAUDE_MEM_HEADROOM_URL": "http://127.0.0.1:8787"
 }
 ```
 
