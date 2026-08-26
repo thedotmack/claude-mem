@@ -46,7 +46,7 @@ export const antigravityCliAdapter: PlatformAdapter = {
     }
 
     // Default toolResponse if none provided so observation handler does not drop tool steps
-    if (toolName && !toolResponse) {
+    if (toolName && toolResponse === undefined) {
       toolResponse = { status: 'completed', stepIdx: r.stepIdx };
     }
 
@@ -65,7 +65,7 @@ export const antigravityCliAdapter: PlatformAdapter = {
     const output: Record<string, unknown> = {};
 
     output.continue = result.continue ?? true;
-    output.decision = 'allow';
+    output.decision = output.continue ? 'allow' : 'deny';
 
     if (result.suppressOutput !== undefined) {
       output.suppressOutput = result.suppressOutput;

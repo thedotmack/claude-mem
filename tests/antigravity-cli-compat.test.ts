@@ -165,6 +165,32 @@ describe('antigravityCliAdapter - normalizeInput', () => {
     expect(result.toolResponse).toEqual({ status: 'completed', stepIdx: 42 });
   });
 
+  it('preserves falsy tool responses such as empty string, 0, and false', () => {
+    const emptyStringResult = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      tool_name: 'test_tool',
+      tool_response: '',
+      stepIdx: 1,
+    });
+    expect(emptyStringResult.toolResponse).toBe('');
+
+    const zeroResult = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      tool_name: 'test_tool',
+      tool_response: 0,
+      stepIdx: 2,
+    });
+    expect(zeroResult.toolResponse).toBe(0);
+
+    const falseResult = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      tool_name: 'test_tool',
+      tool_response: false,
+      stepIdx: 3,
+    });
+    expect(falseResult.toolResponse).toBe(false);
+  });
+
   it('resolves transcriptPath from camelCase transcriptPath or snake_case transcript_path', () => {
     const camel = antigravityCliAdapter.normalizeInput({
       cwd: '/tmp',
@@ -226,6 +252,12 @@ describe('antigravityCliAdapter - formatOutput', () => {
     const result = antigravityCliAdapter.formatOutput({}) as Record<string, unknown>;
     expect(result.decision).toBe('allow');
     expect(result.continue).toBe(true);
+  });
+
+  it('sets decision to deny when continue is false', () => {
+    const result = antigravityCliAdapter.formatOutput({ continue: false }) as Record<string, unknown>;
+    expect(result.decision).toBe('deny');
+    expect(result.continue).toBe(false);
   });
 
   it('strips ANSI escape codes and sets injectSteps for ephemeral context messaging', () => {
