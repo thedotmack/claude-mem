@@ -607,9 +607,14 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       // exit(0)s without binding — so name the actual fix instead of letting
       // the generic "unreachable" counter climb forever.
       if (readOwnedWorkerPidInfo() === null && (await isPortInUse(getWorkerPort()))) {
+        // Recorded, not just logged: the log file is not where a user looks
+        // when their prompts start getting blocked. recordWorkerUnreachable
+        // reads this so the fail-loud stderr message carries the actual fix
+        // instead of only a failure count.
+        orphanedPortDiagnosis = getWorkerPort();
         logger.error('SYSTEM', 'Worker port is occupied by an unreachable process that no PID file claims (likely an orphaned OS socket); every lazy-spawn on this port will be silently refused', {
-          port: getWorkerPort(),
-          fix: 'Set CLAUDE_MEM_WORKER_PORT to a different port in claude-mem settings, or reboot to release the stuck port',
+          port: orphanedPortDiagnosis,
+          fix: ORPHANED_PORT_REMEDIATION,
         });
       }
       return false;
@@ -629,6 +634,19 @@ export async function ensureWorkerRunning(): Promise<boolean> {
   }
   return true;
 }
+
+const ORPHANED_PORT_REMEDIATION =
+  'Set CLAUDE_MEM_WORKER_PORT to a different port in claude-mem settings, or reboot to release the stuck port';
+
+/**
+ * Port number diagnosed as holding an orphaned OS socket during this hook
+ * process, or null if that condition was never observed. Set by
+ * ensureWorkerRunning and read by recordWorkerUnreachable so the fail-loud
+ * message names the fix. Process-scoped deliberately: it is only ever set
+ * from a fresh probe earlier in the same invocation, so it cannot go stale
+ * across a reboot or a port change the way a persisted flag could.
+ */
+let orphanedPortDiagnosis: number | null = null;
 
 let aliveCache: boolean | null = null;
 
@@ -765,8 +783,14 @@ export async function recordWorkerUnreachable(): Promise<number> {
     // stderr buffer (so preceding logger.warn lines also surface) and writes
     // via the bypass channel + exits 2. Previously this raw process.stderr.write
     // was swallowed by hookCommand's blanket no-op, so the user/model never saw it.
+    // When the orphaned-socket condition was diagnosed in this invocation,
+    // the bare failure count is a dead end for the user — the port will never
+    // free itself and no amount of retrying changes that. Surface the
+    // remediation on the channel they actually see.
     emitBlockingError(
-      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`
+      orphanedPortDiagnosis !== null
+        ? `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks: port ${orphanedPortDiagnosis} is held by an unreachable process that no PID file claims, so the worker cannot bind it. ${ORPHANED_PORT_REMEDIATION}.`
+        : `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`
     );
   }
   return next.consecutiveFailures;
