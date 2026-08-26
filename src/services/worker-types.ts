@@ -22,7 +22,7 @@ export interface ActiveSession {
   earliestPendingTimestamp: number | null;  
   claimedMessageIds: number[];
   conversationHistory: ConversationMessage[];  
-  currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
+  currentProvider: 'claude' | 'gemini' | 'openrouter' | 'aimlapi' | null;
   consecutiveRestarts: number;
   /**
    * Legacy invalid-output counter. Ordinary non-XML observer output is now
@@ -48,7 +48,7 @@ export interface ActiveSession {
   /** Model id resolved when the generator started — error-path telemetry, where no response model exists. */
   lastModelId?: string;
   /** Whether the OpenRouter provider targets openrouter.ai or a custom OpenAI-compatible gateway — telemetry endpoint_class. */
-  endpointClass?: 'openrouter' | 'custom';
+  endpointClass?: 'openrouter' | 'aimlapi' | 'custom';
   /**
    * session_compressed properties stashed by ResponseProcessor on the claude
    * path: the streamed assistant message's output_tokens is an early-streaming
