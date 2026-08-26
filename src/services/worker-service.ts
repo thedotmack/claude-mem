@@ -1367,6 +1367,16 @@ async function main() {
       break;
     }
 
+    case 'eat': {
+      // Shared implementation with npx-cli (src/npx-cli/commands/eat.ts
+      // re-exports it) so `worker-service.cjs eat ...` and
+      // `npx claude-mem eat ...` behave identically.
+      const { runEatCommand } = await import('./worker/eat/cli.js');
+      const exitCode = await runEatCommand(commandArgs);
+      process.exit(exitCode);
+      break;
+    }
+
     case 'adopt': {
       const dryRun = process.argv.includes('--dry-run');
       const branchIndex = process.argv.indexOf('--branch');

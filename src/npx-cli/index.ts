@@ -48,6 +48,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem server api-key create|list|revoke')}   Manage API keys
   ${styleText('cyan', 'npx claude-mem worker start|stop|restart|status')}    Worker compatibility aliases
   ${styleText('cyan', 'npx claude-mem search <query>')}       Search observations
+  ${styleText('cyan', 'npx claude-mem eat <file|url|->')}     Digest anything into memory (EAT: Extract, Analyze, Transform)
   ${styleText('cyan', 'npx claude-mem adopt [--dry-run] [--branch <name>]')}    Stamp merged worktrees into parent project
   ${styleText('cyan', 'npx claude-mem cleanup [--dry-run]')}    Run one-time v12.4.3 pollution cleanup (or preview counts)
   ${styleText('cyan', 'npx claude-mem transcript watch')}     Start transcript watcher
@@ -210,6 +211,13 @@ async function main(): Promise<void> {
     case 'cleanup': {
       const { runCleanupCommand } = await import('./commands/runtime.js');
       runCleanupCommand(args.slice(1));
+      break;
+    }
+
+    case 'eat': {
+      const { runEatCommand } = await import('./commands/eat.js');
+      const exitCode = await runEatCommand(args.slice(1));
+      process.exit(exitCode);
       break;
     }
 
