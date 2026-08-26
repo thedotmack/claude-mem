@@ -126,6 +126,7 @@ export interface ProviderLabels {
   cmem: string;
   cmemHint: string;
   openrouter: string;
+  aimlapi: string;
   gemini: string;
   claude: string;
   /** False when any rate came from the fallback table. */
@@ -152,6 +153,8 @@ export async function buildProviderLabels(): Promise<ProviderLabels> {
     cmemHint: `${CMEM_PRO_TRIAL_DAYS} days free, then $${CMEM_PRO_MONTHLY_USD}/mo`,
     openrouter:
       `OpenRouter / any OpenAI-compatible key    (~$${costPer1kObservations(rates.openrouter)}/1k observations, billed to you)`,
+    aimlapi:
+      `aimlapi.com — 900+ models, one key        (~$${costPer1kObservations(rates.openrouter)}/1k observations, billed to you)`,
     gemini:
       `Gemini API key                            (~$${costPer1kObservations(rates.gemini)}/1k observations, billed to you)`,
     claude:
