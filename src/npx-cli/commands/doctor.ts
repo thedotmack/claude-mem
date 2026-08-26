@@ -6,6 +6,7 @@
  */
 
 import { existsSync, readFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { join } from 'path';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, isPluginInstalled, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
@@ -30,6 +31,19 @@ function probeVersion(bin: 'bun' | 'uv'): string | null {
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     console.warn(`[doctor] Failed to probe \`${bin} --version\`:`, err);
+    return null;
+  }
+}
+
+function probeHelixVersion(): string | null {
+  try {
+    const out = execFileSync(IS_WINDOWS ? 'helix.exe' : 'helix', ['--version'], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      windowsHide: true,
+    });
+    return out.trim() || null;
+  } catch {
     return null;
   }
 }
@@ -69,7 +83,7 @@ export async function runDoctorCommand(): Promise<void> {
 
   const helixEnabled = SettingsDefaultsManager.get('CLAUDE_MEM_HELIX_ENABLED') === 'true'
     || SettingsDefaultsManager.get('CLAUDE_MEM_DB_BACKEND').includes('helix');
-  const helixVersion = probeVersion('helix');
+  const helixVersion = probeHelixVersion();
   checks.push({
     name: 'Helix CLI',
     status: helixEnabled ? (helixVersion ? 'ok' : 'warn') : (helixVersion ? 'ok' : 'warn'),
