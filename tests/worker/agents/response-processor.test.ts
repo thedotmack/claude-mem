@@ -154,6 +154,7 @@ describe('ResponseProcessor', () => {
         syncSummary: mockChromaSyncSummary,
       }),
       getCloudSync: () => null,
+      getGbrainSync: () => null,
     } as unknown as DatabaseManager;
 
     mockSessionManager = {

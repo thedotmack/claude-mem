@@ -14,6 +14,8 @@
  * SAME slug for the same observation.
  */
 
+import { logger } from '../../utils/logger.js';
+
 export interface GbrainObservationSource {
   id: number;
   project: string;

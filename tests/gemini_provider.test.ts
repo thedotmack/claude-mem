@@ -145,7 +145,8 @@ describe('GeminiProvider', () => {
     mockDbManager = {
       getSessionStore: () => mockSessionStore,
       getChromaSync: () => mockChromaSync,
-      getCloudSync: () => null
+      getCloudSync: () => null,
+      getGbrainSync: () => null
     } as unknown as DatabaseManager;
 
     const mockPendingMessageStore = {

@@ -7,6 +7,7 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { logger } from '../../utils/logger.js';
 
 export interface GbrainProjectWatermarks {
   observations: number;
