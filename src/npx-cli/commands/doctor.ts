@@ -5,13 +5,13 @@
  * friendly.
  */
 
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, isPluginInstalled, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
 import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { resolveDataDir } from '../../shared/paths.js';
+import { resolveDataDir, paths, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 
 type CheckStatus = 'ok' | 'warn' | 'fail';
@@ -155,6 +155,50 @@ export async function runDoctorCommand(): Promise<void> {
       name: 'Last install error',
       status: 'warn',
       detail,
+      required: false,
+    });
+  }
+
+  // 8. Backups (informational). Backup settings live in settings.json, which
+  // env-only SettingsDefaultsManager.get cannot see — load the file when it
+  // exists (doctor is read-only, so never let loadFromFile seed a missing
+  // settings.json; fall back to env/defaults instead).
+  const backupSettings = existsSync(USER_SETTINGS_PATH)
+    ? SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)
+    : {
+        CLAUDE_MEM_BACKUP_ENABLED: SettingsDefaultsManager.get('CLAUDE_MEM_BACKUP_ENABLED'),
+        CLAUDE_MEM_BACKUP_INTERVAL_HOURS: SettingsDefaultsManager.get('CLAUDE_MEM_BACKUP_INTERVAL_HOURS'),
+      };
+  if (backupSettings.CLAUDE_MEM_BACKUP_ENABLED !== 'true') {
+    checks.push({
+      name: 'Backups',
+      status: 'ok',
+      detail: 'disabled',
+      required: false,
+    });
+  } else {
+    const backupsDir = paths.backups();
+    let newestMtime: number | null = null;
+    try {
+      for (const name of readdirSync(backupsDir)) {
+        if (!/^claude-mem-.*\.db$/.test(name)) continue;
+        const mtime = statSync(join(backupsDir, name)).mtimeMs;
+        if (newestMtime === null || mtime > newestMtime) newestMtime = mtime;
+      }
+    } catch {
+      // missing dir = no snapshots yet
+    }
+    const intervalHours = Number.parseFloat(backupSettings.CLAUDE_MEM_BACKUP_INTERVAL_HOURS);
+    const staleThresholdMs = 2 * (Number.isFinite(intervalHours) && intervalHours > 0 ? intervalHours : 24) * 3_600_000;
+    const fresh = newestMtime !== null && Date.now() - newestMtime <= staleThresholdMs;
+    checks.push({
+      name: 'Backups',
+      status: fresh ? 'ok' : 'warn',
+      detail: newestMtime === null
+        ? 'enabled but no snapshots yet — first run lands ~5 min after worker start'
+        : fresh
+          ? `last snapshot ${new Date(newestMtime).toLocaleString()}`
+          : `last snapshot stale (${new Date(newestMtime).toLocaleString()}) — is the worker running?`,
       required: false,
     });
   }

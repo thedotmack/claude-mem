@@ -46,7 +46,7 @@ export interface BackupStatus {
  * anchor keeps them out of the snapshot listing (they are pruned alongside
  * their parent file).
  */
-const SNAPSHOT_FILE_PATTERN = /^claude-mem-.*\.db$/;
+export const SNAPSHOT_FILE_PATTERN = /^claude-mem-.*\.db$/;
 
 /**
  * Automatic local SQLite snapshots with retention (pro-backup plan Phase 1).
@@ -199,23 +199,38 @@ export class BackupManager {
   }
 
   /**
-   * One snapshot + retention cycle. Single-flight; failures are recorded in
-   * lastError and logged, never thrown — the cadence loop must survive a bad
-   * cycle and try again next interval.
+   * One snapshot + retention cycle on demand (POST /api/backup/run).
+   * Single-flight: returns `null` without doing anything when a cycle is
+   * already in progress (the route maps that to 409). Failures are recorded
+   * in lastError and rethrown so the caller can surface them.
    */
-  async runOnce(): Promise<void> {
-    if (this.running) return;
+  async runNow(): Promise<BackupSnapshotResult | null> {
+    if (this.running) return null;
     this.running = true;
     try {
       const result = await this.createSnapshot();
       await this.applyRetention();
       logger.info('BACKUP', 'Snapshot cycle complete', { path: result.path, bytes: result.bytes, method: result.method });
+      return result;
     } catch (error) {
       const normalized = error instanceof Error ? error : new Error(String(error));
       this.lastError = normalized.message;
-      logger.error('BACKUP', 'Snapshot cycle failed', {}, normalized);
+      throw normalized;
     } finally {
       this.running = false;
+    }
+  }
+
+  /**
+   * Cadence-loop wrapper around runNow(): failures are logged, never thrown —
+   * the loop must survive a bad cycle and try again next interval.
+   */
+  async runOnce(): Promise<void> {
+    try {
+      await this.runNow();
+    } catch (error) {
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      logger.error('BACKUP', 'Snapshot cycle failed', {}, normalized);
     }
   }
 
