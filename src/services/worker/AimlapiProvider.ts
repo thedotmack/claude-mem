@@ -1,6 +1,6 @@
 
 import { getCredential } from '../../shared/EnvManager.js';
-import { resolveAimlapiChatCompletionsUrl } from '../../shared/aimlapi-base-url.js';
+import { AIMLAPI_DEFAULT_MODEL, resolveAimlapiChatCompletionsUrl } from '../../shared/aimlapi-base-url.js';
 import { aimlapiAttributionHeaders, AIMLAPI_APP_TITLE } from '../../shared/aimlapi-attribution.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -17,18 +17,19 @@ import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAIComp
  *
  * The endpoint is resolved from CLAUDE_MEM_AIMLAPI_BASE_URL (settings or env;
  * env var AIMLAPI_BASE_URL also honored). When unset, requests go to the
- * default aimlapi.com URL — behavior unchanged. When set to an OpenAI-compatible
- * base (DeepSeek, LM Studio, a custom gateway, etc.), the provider POSTs to
+ * default aimlapi.com URL. When set to another OpenAI-compatible base (e.g.
+ * aimlapi.com's staging backend), the provider POSTs to
  * `<base>/chat/completions`. The model is taken verbatim from
  * CLAUDE_MEM_AIMLAPI_MODEL. See src/shared/aimlapi-base-url.ts for the
- * resolution rules and per-provider config examples (#2382/#2590/#2622/#2393).
+ * resolution rules.
  */
 
 /**
- * Gateway error taxonomy (cmem.ai inference gateway) → worker error kind.
- * The gateway classifies once at the source and sends
- * `{ error: { code, message, action, url, request_id } }`; the worker carries
- * that envelope verbatim and only maps `code` to a retry class.
+ * Structured gateway error taxonomy → worker error kind (same envelope shape
+ * the OpenRouter provider understands: `{ error: { code, message, action,
+ * url, request_id } }`). The worker carries that envelope verbatim and only
+ * maps `code` to a retry class; aimlapi.com's plain OpenAI-style error bodies
+ * fall through to the status-based classification below.
  */
 const GATEWAY_CODE_TO_KIND: Record<string, ProviderErrorClass> = {
   allowance_exhausted: 'quota_exhausted',
@@ -82,7 +83,7 @@ export function classifyAimlapiError(input: {
   const retryAfterMs = headers ? parseRetryAfterMs(headers.get('retry-after')) : undefined;
   const envelope = parseUpstreamErrorEnvelope(body);
 
-  // Structured taxonomy envelope from the cmem.ai gateway: carry it verbatim.
+  // Structured taxonomy envelope: carry it verbatim.
   if (envelope && typeof envelope.code === 'string' && Object.prototype.hasOwnProperty.call(GATEWAY_CODE_TO_KIND, envelope.code)) {
     const code = envelope.code;
     const kind = GATEWAY_CODE_TO_KIND[code];
@@ -370,9 +371,8 @@ export class AimlapiProvider extends OpenAICompatibleProvider<AimlapiConfig> {
     const tokensUsed = data.usage?.total_tokens;
     const realInputTokens = data.usage?.prompt_tokens;
     const realOutputTokens = data.usage?.completion_tokens;
-    // usage.cost is reported by some gateways only; aimlapi.com may omit it, in
-    // model spend is reported separately as upstream_inference_cost. Custom
-    // gateways usually omit both — costUsd stays undefined (never estimated).
+    // usage.cost is reported by some gateways only; when aimlapi.com omits it,
+    // costUsd stays undefined (never estimated).
     const orCost = typeof data.usage?.cost === 'number' ? data.usage.cost : undefined;
     const upstreamCost = typeof data.usage?.cost_details?.upstream_inference_cost === 'number'
       ? data.usage.cost_details.upstream_inference_cost
@@ -409,17 +409,17 @@ export class AimlapiProvider extends OpenAICompatibleProvider<AimlapiConfig> {
 
     const apiKey = settings.CLAUDE_MEM_AIMLAPI_API_KEY || getCredential('AIMLAPI_API_KEY') || '';
 
-    // Model is passed verbatim — any OpenAI-compatible model id is accepted
-    // (e.g. deepseek-chat, an LM Studio local model). #2393. Settings are raw
-    // JSON passthrough, so coerce non-string spellings (e.g. a JSON-array
-    // fallback list) to a string instead of leaking them downstream, where
-    // the telemetry scrubber drops non-string model values silently.
+    // Model is passed verbatim — any aimlapi.com model id is accepted.
+    // Settings are raw JSON passthrough, so coerce non-string spellings (e.g. a
+    // JSON-array fallback list) to a string instead of leaking them
+    // downstream, where the telemetry scrubber drops non-string model values
+    // silently.
     const rawModel: unknown = settings.CLAUDE_MEM_AIMLAPI_MODEL;
     const model = typeof rawModel === 'string' && rawModel.trim()
       ? rawModel
       : Array.isArray(rawModel) && rawModel.length > 0
         ? rawModel.map(String).join(',')
-        : 'xiaomi/mimo-v2-flash:free';
+        : AIMLAPI_DEFAULT_MODEL;
 
     // Base URL: settings value wins, then AIMLAPI_BASE_URL env var, else
     // the default aimlapi.com endpoint.
