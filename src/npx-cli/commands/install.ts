@@ -1968,10 +1968,6 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     }
   }
 
-  // An explicit --provider flag wins over the trial funnel: never pitch,
-  // email, poll, or override a provider the operator asked for by name.
-  const trialPairing = options.provider ? null : await promptProTrialOptIn(version);
-
   if (alreadyInstalled) {
     if (process.stdin.isTTY) {
       const shouldContinue = await p.confirm({
@@ -2003,21 +1999,6 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   }
 
   const selectedRuntime = await promptRuntime(options);
-  // Jump-forward: a pairing from the trial opt-in means the human is doing
-  // (or has done) login + checkout in the browser — poll for credentials
-  // instead of asking which provider to use. Any failure (expired link, poll
-  // budget, Ctrl+C, cmem.ai outage) falls through to the normal prompt.
-  let selectedProvider: ProviderId | null = null;
-  if (trialPairing && !options.provider) {
-    selectedProvider = await completeTrialPairing(trialPairing, version);
-  }
-  const trialActivated = selectedProvider === 'openrouter';
-  if (selectedProvider === null) {
-    selectedProvider = await promptProvider(options);
-  }
-  if (selectedProvider === 'claude') {
-    await promptClaudeModel(options);
-  }
 
   let workerStartResult: WorkerStartResult = 'dead';
   // Claude Code consumes the marketplace plugin system directly, so any selection
@@ -2174,6 +2155,28 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   } else if (autoMemoryChoice === 'leave-enabled') {
     autoMemoryStatus = 'left-enabled';
     log.info('Claude Code: leaving native auto-memory enabled unless you explicitly opt in to disabling it.');
+  }
+
+  // Login runs only now — AFTER the install is fully on disk — so the first
+  // account interaction can never gate or delay the mechanical install.
+  // An explicit --provider flag wins over the trial funnel: never pitch,
+  // email, poll, or override a provider the operator asked for by name.
+  const trialPairing = options.provider ? null : await promptProTrialOptIn(version);
+
+  // Jump-forward: a pairing from the trial opt-in means the human is doing
+  // (or has done) login + checkout in the browser — poll for credentials
+  // instead of asking which provider to use. Any failure (expired link, poll
+  // budget, Ctrl+C, cmem.ai outage) falls through to the normal prompt.
+  let selectedProvider: ProviderId | null = null;
+  if (trialPairing && !options.provider) {
+    selectedProvider = await completeTrialPairing(trialPairing, version);
+  }
+  const trialActivated = selectedProvider === 'openrouter';
+  if (selectedProvider === null) {
+    selectedProvider = await promptProvider(options);
+  }
+  if (selectedProvider === 'claude') {
+    await promptClaudeModel(options);
   }
 
   // The server runtime is brought up via its own stack (Docker pg+redis +
