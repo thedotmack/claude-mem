@@ -39,6 +39,7 @@ import {
 } from '../services/hooks/runtime-selector.js';
 import { normalizePlatformSource } from '../shared/platform-source.js';
 import { getAdvertisedMcpToolsForRuntime } from './mcp-tool-visibility.js';
+import { maybeCompressToolResponse, headroomRetrieveToolIfEnabled } from '../services/headroom/mcp-compression.js';
 
 let mcpServerDirResolutionFailed = false;
 const mcpServerDir = (() => {
@@ -197,6 +198,27 @@ function formatJsonResult(payload: unknown): { content: Array<{ type: 'text'; te
       type: 'text' as const,
       text: JSON.stringify(payload, null, 2),
     }],
+  };
+}
+
+/**
+ * Phase 3 (Headroom) — delivery-time compression for the heavy payload tools
+ * (get_observations / search / timeline). Text content is routed through
+ * maybeCompressToolResponse, which returns it unchanged when Headroom is
+ * disabled, the proxy is unreachable (fallback), or the payload is below
+ * compression thresholds. The MCP response shape is preserved exactly.
+ * The session-start context (session_start_context, /api/context/inject)
+ * is deliberately NOT compressed — the Phase 1 token budget governs it.
+ */
+async function withHeadroomCompression(
+  result: { content: Array<{ type: 'text'; text: string }>; isError?: boolean }
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  if (result.isError) return result;
+  return {
+    ...result,
+    content: await Promise.all(result.content.map(async item =>
+      item.type === 'text' ? { ...item, text: await maybeCompressToolResponse(item.text) } : item
+    )),
   };
 }
 
@@ -516,9 +538,9 @@ NEVER fetch full details without filtering first. 10x token savings.`,
           query: args.query,
           ...(args.limit !== undefined ? { limit: args.limit } : {}),
         };
-        return formatJsonResult(await sb.client.searchObservations(request));
+        return await withHeadroomCompression(formatJsonResult(await sb.client.searchObservations(request)));
       }
-      return await callWorker('/api/search', { query: args });
+      return await withHeadroomCompression(await callWorker('/api/search', { query: args }));
     }
   },
   {
@@ -536,7 +558,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
-      return await callWorker('/api/timeline', { query: args });
+      return await withHeadroomCompression(await callWorker('/api/timeline', { query: args }));
     }
   },
   {
@@ -555,7 +577,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
-      return await callWorker('/api/observations/batch', { body: args });
+      return await withHeadroomCompression(await callWorker('/api/observations/batch', { body: args }));
     }
   },
   {
@@ -896,7 +918,12 @@ const server = new Server(
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  const advertisedTools = getAdvertisedMcpToolsForRuntime(tools, selectRuntime());
+  // headroom_retrieve is registered only while Headroom is enabled — the
+  // same conditional feeds the tools/call dispatch below.
+  const advertisedTools = [
+    ...getAdvertisedMcpToolsForRuntime(tools, selectRuntime()),
+    ...headroomRetrieveToolIfEnabled(),
+  ];
   return {
     tools: advertisedTools.map(tool => ({
       name: tool.name,
@@ -907,7 +934,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 });
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const tool = tools.find(t => t.name === request.params.name);
+  const tool = [...tools, ...headroomRetrieveToolIfEnabled()].find(t => t.name === request.params.name);
 
   if (!tool) {
     throw new Error(`Unknown tool: ${request.params.name}`);

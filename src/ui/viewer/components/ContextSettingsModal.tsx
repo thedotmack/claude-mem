@@ -325,6 +325,18 @@ export function ContextSettingsModal({
                   onChange={(e) => updateSetting('CLAUDE_MEM_CONTEXT_SESSION_COUNT', e.target.value)}
                 />
               </FormField>
+              <FormField
+                label="Token Budget"
+                tooltip="Maximum estimated tokens for injected context (0 = unlimited, up to 200000)"
+              >
+                <input
+                  type="number"
+                  min="0"
+                  max="200000"
+                  value={formState.CLAUDE_MEM_CONTEXT_TOKEN_BUDGET || '0'}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_CONTEXT_TOKEN_BUDGET', e.target.value)}
+                />
+              </FormField>
             </CollapsibleSection>
 
             {/* Section 2: Display */}
@@ -461,7 +473,35 @@ export function ContextSettingsModal({
               </div>
             </CollapsibleSection>
 
-            {/* Section 4: Advanced */}
+            {/* Section 4: Headroom */}
+            <CollapsibleSection
+              title="Headroom"
+              description="Compress search payloads via the Headroom proxy"
+              defaultOpen={false}
+            >
+              <div className="toggle-group">
+                <ToggleSwitch
+                  id="headroom-enabled"
+                  label="Enable Headroom"
+                  description="Route search/timeline/get_observations payloads through the compression proxy"
+                  checked={formState.CLAUDE_MEM_HEADROOM_ENABLED === 'true'}
+                  onChange={() => toggleBoolean('CLAUDE_MEM_HEADROOM_ENABLED')}
+                />
+              </div>
+              <FormField
+                label="Proxy URL"
+                tooltip="Base URL of the Headroom proxy (default http://127.0.0.1:8787)"
+              >
+                <input
+                  type="text"
+                  value={formState.CLAUDE_MEM_HEADROOM_URL || DEFAULT_SETTINGS.CLAUDE_MEM_HEADROOM_URL}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_HEADROOM_URL', e.target.value)}
+                  placeholder="http://127.0.0.1:8787"
+                />
+              </FormField>
+            </CollapsibleSection>
+
+            {/* Section 5: Advanced */}
             <CollapsibleSection
               title="Advanced"
               description="AI provider and model selection"

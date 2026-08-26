@@ -22,6 +22,7 @@ const LEGACY_TELEGRAM_TRIGGER_TYPES = 'security_alert';
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
+  CLAUDE_MEM_CONTEXT_TOKEN_BUDGET: string;
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
   CLAUDE_MEM_EXTERNAL_WORKER: string;
@@ -83,6 +84,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_DATABASE: string;
   CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: string;
   CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: string;
+  CLAUDE_MEM_HEADROOM_ENABLED: string;
+  CLAUDE_MEM_HEADROOM_URL: string;
   // Worker-native cloud sync. Active ⇔ TOKEN, USER_ID, and HUB_URL are all
   // non-empty — there is no separate enabled flag. HUB_URL points at the
   // two-lane sync hub (workers/sync-hub); while it is empty, sync is OFF
@@ -128,6 +131,7 @@ export class SettingsDefaultsManager {
   private static readonly DEFAULTS: SettingsDefaults = {
     CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
+    CLAUDE_MEM_CONTEXT_TOKEN_BUDGET: '0',  // Max estimated tokens for injected context; '0' = unlimited
     CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
     CLAUDE_MEM_EXTERNAL_WORKER: 'false',  // 'true' = worker lifecycle is managed externally (e.g. Docker); hooks never spawn/kill/version-recycle it
@@ -190,6 +194,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CHROMA_DATABASE: 'default_database',
     CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS: '120000',
     CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: '5000', // Bound burst imports without changing normal live indexing
+    CLAUDE_MEM_HEADROOM_ENABLED: 'false',      // Opt-in: route delivery payloads through the Headroom compression proxy
+    CLAUDE_MEM_HEADROOM_URL: 'http://127.0.0.1:8787',  // Headroom proxy base URL (`headroom proxy` default port)
     // Worker-native cloud sync: credentials come from cmem.ai → Connect.
     CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
     CLAUDE_MEM_CLOUD_SYNC_USER_ID: '',

@@ -77,6 +77,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     const settingKeys = [
       'CLAUDE_MEM_MODEL',
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
+      'CLAUDE_MEM_CONTEXT_TOKEN_BUDGET',
       'CLAUDE_MEM_WORKER_PORT',
       'CLAUDE_MEM_WORKER_HOST',
       'CLAUDE_MEM_PROVIDER',
@@ -110,6 +111,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_BACKUP_INCLUDE_VECTORS',
       'CLAUDE_MEM_BACKUP_CLOUD',
       'CLAUDE_MEM_BACKUP_ENCRYPTION_KEY',
+      'CLAUDE_MEM_HEADROOM_ENABLED',
+      'CLAUDE_MEM_HEADROOM_URL',
     ];
 
     for (const key of settingKeys) {
@@ -175,6 +178,13 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
+    if (settings.CLAUDE_MEM_CONTEXT_TOKEN_BUDGET) {
+      const tokenBudget = parseInt(settings.CLAUDE_MEM_CONTEXT_TOKEN_BUDGET, 10);
+      if (isNaN(tokenBudget) || tokenBudget < 0 || tokenBudget > 200000) {
+        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_TOKEN_BUDGET must be between 0 and 200000' };
+      }
+    }
+
     if (settings.CLAUDE_MEM_WORKER_PORT) {
       const port = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
       if (isNaN(port) || port < 1024 || port > 65535) {
@@ -214,6 +224,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_BACKUP_ENABLED',
       'CLAUDE_MEM_BACKUP_INCLUDE_VECTORS',
       'CLAUDE_MEM_BACKUP_CLOUD',
+      'CLAUDE_MEM_HEADROOM_ENABLED',
     ];
 
     for (const key of booleanSettings) {
@@ -262,6 +273,17 @@ export class SettingsRoutes extends BaseRouteHandler {
       } catch (error) {
         logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENROUTER_SITE_URL, error: error instanceof Error ? error.message : String(error) });
         return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_SITE_URL must be a valid URL' };
+      }
+    }
+
+    // Empty string is allowed through (falsy): HeadroomService treats an
+    // empty/whitespace URL as the default http://127.0.0.1:8787.
+    if (settings.CLAUDE_MEM_HEADROOM_URL) {
+      try {
+        new URL(settings.CLAUDE_MEM_HEADROOM_URL);
+      } catch (error) {
+        logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_HEADROOM_URL, error: error instanceof Error ? error.message : String(error) });
+        return { valid: false, error: 'CLAUDE_MEM_HEADROOM_URL must be a valid URL' };
       }
     }
 

@@ -25,6 +25,7 @@ export interface GracefulShutdownConfig {
   mcpClient?: CloseableClient;
   dbManager?: CloseableDatabase;
   chromaMcpManager?: StoppableService;
+  headroomProxyManager?: StoppableService;
 }
 
 export async function performGracefulShutdown(config: GracefulShutdownConfig): Promise<void> {
@@ -46,6 +47,12 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
     logger.info('SHUTDOWN', 'Stopping Chroma MCP connection...');
     await config.chromaMcpManager.stop();
     logger.info('SHUTDOWN', 'Chroma MCP connection stopped');
+  }
+
+  if (config.headroomProxyManager) {
+    logger.info('SHUTDOWN', 'Stopping headroom proxy...');
+    await config.headroomProxyManager.stop();
+    logger.info('SHUTDOWN', 'Headroom proxy stopped');
   }
 
   if (config.dbManager) {

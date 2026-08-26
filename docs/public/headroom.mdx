@@ -1,0 +1,80 @@
+---
+title: "Headroom Compression"
+description: "Optional token compression for search payloads via the open-source Headroom proxy"
+---
+
+# Headroom Compression
+
+## What It Is
+
+[Headroom](https://github.com/headroomlabs-ai/headroom) is an open-source (Apache-2.0) compression engine from Headroom Labs that shrinks structured LLM payloads — JSON arrays, logs, search results — by 70-95% while keeping them readable to the agent. Claude-mem integrates it as an **opt-in sidecar**: a small local proxy that compresses memory payloads on their way to the primary agent.
+
+Full Headroom documentation: [docs.headroomlabs.ai](https://docs.headroomlabs.ai)
+
+The integration is fail-safe by design. Every Headroom call has a short timeout and a fallback path: when the proxy is missing, still installing, or unreachable, payloads pass through **uncompressed and unchanged**. Headroom is a sidecar, never a gate — session start and search never wait on it.
+
+## How Claude-Mem Uses It
+
+Two complementary layers govern the tokens delivered to the primary agent:
+
+### 1. Token Budget for Session-Start Context (deterministic, no proxy needed)
+
+`CLAUDE_MEM_CONTEXT_TOKEN_BUDGET` caps the estimated tokens injected at session start. When set above `0`, observations are kept newest-first until the budget is reached; the remainder is trimmed from the timeline and the `Stats:` line reports the trim. This works with zero external dependencies.
+
+This ships the "Adaptive Index Size" and "Cost Forecasting" ideas previously listed as future enhancements in [Progressive Disclosure](progressive-disclosure): the index size now adapts to an explicit token budget, and the injected stats report exactly what the context cost.
+
+### 2. Compression of MCP Search Payloads (Headroom's sweet spot)
+
+When `CLAUDE_MEM_HEADROOM_ENABLED` is `true`, the results of the heavy MCP tools — `get_observations`, `search`, and `timeline` — are routed through the Headroom proxy before being returned to the agent. Compressed responses carry a single trailing stats line:
+
+```
+Headroom: 12,400t → 2,100t (10,300t saved)
+```
+
+Compressed payloads may embed **CCR markers** like `[N items compressed to M. Retrieve more: hash=...]`. The `headroom_retrieve` MCP tool (registered only while Headroom is enabled) reverses these markers by hash. Hashes expire after ~30 minutes — when retrieval fails, the agent is advised to fall back to `get_observations([IDs])` to re-fetch the underlying records.
+
+### Managed Proxy Lifecycle
+
+The worker supervises the proxy for you:
+
+1. If a user-run proxy already answers at `CLAUDE_MEM_HEADROOM_URL`, claude-mem uses it and never spawns (or kills) its own.
+2. If the `headroom` binary is missing, the worker installs it via `uv tool install --python 3.13 "headroom-ai[proxy]"` (the same uv toolchain that provides Python for Chroma).
+3. Otherwise it spawns `headroom proxy` as a managed child, bound to localhost only, and tears it down with the worker.
+
+## What Deliberately Is NOT Compressed
+
+- **The session-start context index** — Headroom skips short structured prose by design; the deterministic token budget governs that surface instead.
+- **Content under ~300 tokens** and arrays under 5 items — compression overhead outweighs the savings.
+- **Source code** — Headroom never compresses code, system prompts, or images.
+- **Stored observations** — compression is delivery-time only; the database is never altered.
+
+## Setup
+
+1. Enable the setting (via the viewer's Settings modal → **Headroom** section, or manually):
+
+```json
+{
+  "CLAUDE_MEM_HEADROOM_ENABLED": "true",
+  "CLAUDE_MEM_HEADROOM_URL": "http://127.0.0.1:8787"
+}
+```
+
+2. Restart the worker (`npm run worker:restart` from a source checkout, or just start a new session). On first start with Headroom enabled, the worker auto-installs the proxy engine through uv — no manual install needed.
+
+Leave `CLAUDE_MEM_HEADROOM_URL` at the default unless you run your own proxy on a different port; an empty value falls back to `http://127.0.0.1:8787`.
+
+## Troubleshooting
+
+Run the doctor:
+
+```bash
+npx claude-mem doctor
+```
+
+It reports whether Headroom is enabled, whether the `headroom` binary is installed, whether the proxy is healthy at the configured URL, and the proxy's live stats. Remember the failure mode is always soft: if any check warns, memory search keeps working — payloads are simply delivered uncompressed.
+
+## Next Steps
+
+- [Configuration](configuration) - All settings, including the Headroom keys
+- [Progressive Disclosure](progressive-disclosure) - The context philosophy this builds on
+- [Context Engineering](context-engineering) - Curating high-signal token sets

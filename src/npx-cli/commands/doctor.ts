@@ -9,7 +9,8 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, isPluginInstalled, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
-import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
+import { getBunVersion, getHeadroomPath, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
+import { HeadroomService } from '../../services/headroom/HeadroomService.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDataDir, paths, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { isBackupAddonRequired } from '../../shared/backup-addon-marker.js';
@@ -141,7 +142,54 @@ export async function runDoctorCommand(): Promise<void> {
     });
   }
 
-  // 7. Last recorded install error (surface remediation if present).
+  // 7. Headroom compression sidecar (opt-in; all checks informational — the
+  // worker degrades to uncompressed payloads whenever the proxy is absent).
+  const headroomEnabled = SettingsDefaultsManager.get('CLAUDE_MEM_HEADROOM_ENABLED') === 'true';
+  if (headroomEnabled) {
+    const headroomUrl = SettingsDefaultsManager.get('CLAUDE_MEM_HEADROOM_URL');
+
+    const headroomPath = getHeadroomPath();
+    checks.push({
+      name: 'Headroom binary',
+      status: headroomPath ? 'ok' : 'warn',
+      detail: headroomPath
+        ?? 'not found — worker installs it on next start via `uv tool install --python 3.13 "headroom-ai[proxy]"`',
+      required: false,
+    });
+
+    // healthCheck() has NO fallback path: it REJECTS when the proxy is
+    // unreachable, so the catch below is the 'unreachable' report.
+    let headroomProxyStatus: CheckStatus = 'warn';
+    let headroomProxyDetail = `unreachable at ${headroomUrl} — payloads pass through uncompressed`;
+    try {
+      await HeadroomService.getInstance().healthCheck();
+      headroomProxyStatus = 'ok';
+      headroomProxyDetail = `healthy at ${headroomUrl}`;
+      try {
+        const stats = await HeadroomService.getInstance().proxyStats();
+        headroomProxyDetail += ` — stats: ${JSON.stringify(stats)}`;
+      } catch {
+        // stats are decoration; health already passed
+      }
+    } catch {
+      // leave as unreachable
+    }
+    checks.push({
+      name: 'Headroom proxy',
+      status: headroomProxyStatus,
+      detail: headroomProxyDetail,
+      required: false,
+    });
+  } else {
+    checks.push({
+      name: 'Headroom',
+      status: 'ok',
+      detail: 'disabled (set CLAUDE_MEM_HEADROOM_ENABLED=true to opt in)',
+      required: false,
+    });
+  }
+
+  // 8. Last recorded install error (surface remediation if present).
   const lastErrorPath = join(dataDir, 'last-install-error.json');
   if (existsSync(lastErrorPath)) {
     let detail = `present at ${lastErrorPath}`;
