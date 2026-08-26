@@ -1,10 +1,11 @@
 import { ChildProcess, spawnSync } from 'child_process';
 import { spawnHidden } from '../shared/spawn.js';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync } from 'fs';
 import path from 'path';
 import { logger } from '../utils/logger.js';
 import { sanitizeEnv } from './env-sanitizer.js';
 import { paths } from '../shared/paths.js';
+import { writeJsonFileAtomic } from '../shared/atomic-json.js';
 
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;
 const REAP_SESSION_SIGKILL_TIMEOUT_MS = 1_000;
@@ -402,8 +403,23 @@ export class ProcessRegistry {
       processes: Object.fromEntries(this.entries.entries())
     };
 
-    mkdirSync(path.dirname(this.registryPath), { recursive: true });
-    writeFileSync(this.registryPath, JSON.stringify(payload, null, 2));
+    // Degrade gracefully on a bad-permissions data dir (e.g. EPERM when
+    // ~/.claude-mem ended up root-owned) instead of crashing the worker's
+    // process supervisor. Mirrors how initialize() tolerates parse failures.
+    try {
+      writeJsonFileAtomic(this.registryPath, payload);
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        logger.warn('SYSTEM', 'Failed to persist supervisor registry, continuing without it', {
+          path: this.registryPath
+        }, error);
+      } else {
+        logger.warn('SYSTEM', 'Failed to persist supervisor registry, continuing without it', {
+          path: this.registryPath,
+          error: String(error)
+        });
+      }
+    }
   }
 }
 
