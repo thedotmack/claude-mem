@@ -9,7 +9,7 @@ import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile, readOwnedWorkerPidInfo } from "../supervisor/index.js";
 import { emitBlockingError } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
-import { checkVersionMatch } from "../services/infrastructure/index.js";
+import { checkVersionMatch, isPortInUse } from "../services/infrastructure/index.js";
 // Imported from ProcessManager.js directly (not the infrastructure barrel):
 // tests mock the barrel module wholesale, and the resolver must stay real.
 // ProcessManager imports nothing from worker-utils, so no cycle.
@@ -533,6 +533,23 @@ export async function ensureWorkerRunning(): Promise<boolean> {
     // The killed worker's PID file is left behind; the successor's boot
     // removes it (validateWorkerPidFile returns 'stale' for a dead pid).
     // Fall through to (re)spawn + readiness wait below.
+  }
+
+  // Zombie-port guard: the port is occupied at the OS level (a real bind
+  // attempt fails) but nothing behind it answers /api/health, AND the PID
+  // file doesn't name a killable owner. Windows can leave a LISTEN socket
+  // behind for a process that has already died (observed with no
+  // Get-NetTCPConnection-visible owner and taskkill reporting "not found").
+  // Spawning here is doomed: the new daemon's own duplicate-gate
+  // (isPortInUse) will see the same occupied port and immediately exit(0)
+  // without ever binding, so the loop repeats every hook forever. Fail once
+  // with a specific, actionable message instead of retrying blindly.
+  if (readOwnedWorkerPidInfo() === null && (await isPortInUse(getWorkerPort()))) {
+    logger.error('SYSTEM', 'Worker port is occupied by an unreachable, unkillable process (likely a stale OS socket); lazy-spawn would be silently refused on this port', {
+      port: getWorkerPort(),
+      fix: 'Set CLAUDE_MEM_WORKER_PORT to a different port in claude-mem settings, or reboot to release the stuck port',
+    });
+    return false;
   }
 
   const runtimePath = resolveWorkerRuntimePath();
