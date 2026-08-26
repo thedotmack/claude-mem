@@ -143,6 +143,22 @@ async function readMacOsKeychain(): Promise<OAuthTokenResult> {
 }
 
 /**
+ * Windows Credential Manager target names to try, most specific first.
+ *
+ * Returned RAW — the caller applies the single PowerShell escaping pass. Escaping a
+ * component here instead would double it: for username `O'Brien` the literal became
+ * `'Claude Code-credentials:O''''Brien'`, which PowerShell parses as
+ * `Claude Code-credentials:O''Brien` — a different target than the stored credential,
+ * so CredRead missed it and the account fell through to the re-login warning.
+ */
+export function windowsCredentialTargets(
+  username: string = userInfo().username,
+  services: string[] = keychainServiceNames(),
+): string[] {
+  return [...services, 'Claude Code:credentials', `Claude Code-credentials:${username}`];
+}
+
+/**
  * Windows: Credential Manager (DPAPI). Claude Desktop on Windows stores
  * OAuth credentials under a target like "Claude Code:credentials" via the
  * Wincred API. We read it via PowerShell's CredentialManager wrapper.
@@ -157,16 +173,9 @@ async function readWindowsCredentialManager(): Promise<OAuthTokenResult> {
   // The exact target name on Windows is "Claude Code-credentials" or
   // "Claude Code:credentials" (Claude Desktop uses `${service}:${account}` or
   // `${service}` depending on version). This script tries both.
-  // Username is escaped with PowerShell's single-quote convention (' → '') in
-  // case future Windows versions or domain-joined machines permit ' in usernames.
-  const psSafeUsername = userInfo().username.replace(/'/g, "''");
-  // Config-scoped names first, then the plain ones. Each is single-quoted with the
-  // PowerShell doubling convention, same as the username above.
-  const psCandidates = [
-    ...keychainServiceNames(),
-    'Claude Code:credentials',
-    `Claude Code-credentials:${psSafeUsername}`,
-  ]
+  const psCandidates = windowsCredentialTargets()
+    // Sole PowerShell escaping pass: ' → '' inside a single-quoted literal. Targets must
+    // reach here raw — pre-escaping any part of one would double it (see the helper).
     .map(name => `'${name.replace(/'/g, "''")}'`)
     .join(', ');
   const psScript = `
