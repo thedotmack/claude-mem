@@ -1,6 +1,15 @@
 
-import { describe, it, expect, mock } from 'bun:test';
+import { afterAll, describe, it, expect, mock } from 'bun:test';
 import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
+
+// Restore real modules in afterAll because mock.module leaks across test files.
+import * as realProcessManagerModule from '../../src/services/infrastructure/ProcessManager.js';
+import * as realHealthMonitorModule from '../../src/services/infrastructure/HealthMonitor.js';
+import * as realWorkerSpawnGateModule from '../../src/shared/worker-spawn-gate.js';
+
+const realProcessManagerSnapshot = { ...realProcessManagerModule };
+const realHealthMonitorSnapshot = { ...realHealthMonitorModule };
+const realWorkerSpawnGateSnapshot = { ...realWorkerSpawnGateModule };
 
 const processManager = {
   cleanStalePidFile: mock(() => 'dead' as 'alive' | 'dead'),
@@ -23,6 +32,12 @@ const spawnGate = {
 mock.module('../../src/services/infrastructure/ProcessManager.js', () => processManager);
 mock.module('../../src/services/infrastructure/HealthMonitor.js', () => healthMonitor);
 mock.module('../../src/shared/worker-spawn-gate.js', () => spawnGate);
+
+afterAll(() => {
+  mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManagerSnapshot);
+  mock.module('../../src/services/infrastructure/HealthMonitor.js', () => realHealthMonitorSnapshot);
+  mock.module('../../src/shared/worker-spawn-gate.js', () => realWorkerSpawnGateSnapshot);
+});
 
 const { ensureWorkerStarted } = await import('../../src/services/worker-spawner.js');
 

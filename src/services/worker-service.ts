@@ -273,6 +273,7 @@ export class WorkerService implements WorkerRef {
       getInitializationComplete: () => this.initializationCompleteFlag,
       getMcpReady: () => this.mcpReady,
       getDependencyHealth: () => snapshotDependencyHealth(),
+      getChromaCrashState: () => this.chromaMcpManager?.getCrashState(),
       onShutdown: (reason) => this.shutdown(reason ?? 'stop'),
       onRestart: () => this.shutdown('restart'),
       workerPath: __filename,
