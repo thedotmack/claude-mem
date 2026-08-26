@@ -308,7 +308,10 @@ async function workerPost(
   try {
     const response = await fetch(`${workerBaseUrl(port)}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-platform-source": "openclaw",
+      },
       body: JSON.stringify(body),
     });
     if (!response.ok) {
@@ -337,7 +340,10 @@ function workerPostFireAndForget(
   if (!circuitAllow(logger)) return;
   fetch(`${workerBaseUrl(port)}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-platform-source": "openclaw",
+    },
     body: JSON.stringify(body),
   }).then((response) => {
     if (!response.ok) {
@@ -362,7 +368,11 @@ async function workerGetText(
 ): Promise<string | null> {
   if (!circuitAllow(logger)) return null;
   try {
-    const response = await fetch(`${workerBaseUrl(port)}${path}`);
+    const response = await fetch(`${workerBaseUrl(port)}${path}`, {
+      headers: {
+        "x-platform-source": "openclaw",
+      },
+    });
     if (!response.ok) {
       circuitOnFailure(logger);
       logger.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
@@ -762,6 +772,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       contentSessionId,
       project: projectName,
       prompt: promptText,
+      platformSource: "openclaw",
     }, api.logger);
 
     api.logger.info(`[claude-mem] Session initialized via ${via}: contentSessionId=${contentSessionId} project=${projectName}`);
@@ -830,6 +841,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       tool_input: event.params || {},
       tool_response: toolResponseText,
       cwd: workspaceDir,
+      platformSource: "openclaw",
     }, api.logger);
   });
 
@@ -857,6 +869,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     await workerPost(workerPort, "/api/sessions/summarize", {
       contentSessionId,
       last_assistant_message: lastAssistantMessage,
+      platformSource: "openclaw",
     }, api.logger);
   });
 
