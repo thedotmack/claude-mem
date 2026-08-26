@@ -308,7 +308,7 @@ export class HelixSync implements VectorSync {
         COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
       FROM observations o
       LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id
-      ORDER BY o.id ASC
+      ORDER BY o.id DESC
     `).all() as Array<Record<string, unknown>>
     for (const row of observations) {
       await enqueue({
@@ -339,7 +339,7 @@ export class HelixSync implements VectorSync {
         COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
       FROM session_summaries ss
       LEFT JOIN sdk_sessions s ON s.memory_session_id = ss.memory_session_id
-      ORDER BY ss.id ASC
+      ORDER BY ss.id DESC
     `).all() as Array<Record<string, unknown>>
     for (const row of summaries) {
       await enqueue({
@@ -372,7 +372,7 @@ export class HelixSync implements VectorSync {
         COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
       FROM user_prompts up
       JOIN sdk_sessions s ON up.session_db_id = s.id
-      ORDER BY up.id ASC
+      ORDER BY up.id DESC
     `).all() as Array<Record<string, unknown>>
     for (const row of prompts) {
       await enqueue({
