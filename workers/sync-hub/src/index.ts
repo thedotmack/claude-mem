@@ -31,6 +31,7 @@
  *                                        deliberately untouched.
  */
 
+import { handleBackupRequest } from "./backup-routes";
 import { CONTROL_PLANE_PROBE_CRON, runControlPlaneProbe } from "./control-plane-probe";
 import type { PushOp } from "./do/SyncHub";
 import {
@@ -109,6 +110,13 @@ interface AuthOk {
 	userId: string;
 	deviceId: string | null;
 	deviceName: string | null;
+	/**
+	 * Add-on entitlements from the verify response (Phase 4). `null` means the
+	 * verify endpoint did not send an `addons` array (older control plane) —
+	 * callers MUST treat that as fully entitled for backward compatibility.
+	 * Sync routes ignore this field entirely; only /v1/backup/* consults it.
+	 */
+	addons: string[] | null;
 }
 
 interface AuthFail {
@@ -119,7 +127,7 @@ interface AuthFail {
 /** Narrow I/O seam for auth failure-path tests; production uses closed defaults. */
 export interface AuthDependencies {
 	readCachedVerdict(cacheKey: string): Promise<string | null>;
-	cacheVerifiedVerdict(cacheKey: string, ttlSeconds: number): Promise<void>;
+	cacheVerifiedVerdict(cacheKey: string, verdict: string, ttlSeconds: number): Promise<void>;
 	verifyToken(request: Request): Promise<Response>;
 	logCacheFailure(operation: "get" | "put", error: unknown): void;
 }
@@ -127,8 +135,8 @@ export interface AuthDependencies {
 function defaultAuthDependencies(env: Env): AuthDependencies {
 	return {
 		readCachedVerdict: (cacheKey) => env.AUTH_CACHE.get(cacheKey),
-		cacheVerifiedVerdict: (cacheKey, ttlSeconds) =>
-			env.AUTH_CACHE.put(cacheKey, "1", { expirationTtl: ttlSeconds }),
+		cacheVerifiedVerdict: (cacheKey, verdict, ttlSeconds) =>
+			env.AUTH_CACHE.put(cacheKey, verdict, { expirationTtl: ttlSeconds }),
 		verifyToken: (request) => fetch(request),
 		logCacheFailure(operation, error) {
 			// Never log the cache key: it is derived from a bearer credential.
@@ -150,23 +158,71 @@ async function verdictCacheKey(userId: string, token: string): Promise<string> {
 	return `verdict:${bytes.map((b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
+interface VerifiedIdentity {
+	/** Canonical user id, or null when absent/unparseable (auth then 403s). */
+	userId: string | null;
+	/** `addons` array when the verify response sent one; null when absent. */
+	addons: string[] | null;
+}
+
 /**
- * Extract the canonical user id from a 2xx verify response body.
- * Accepts `{userId}` or `{user_id}`; returns null when absent/unparseable.
+ * Extract the canonical user id — `{userId}` or `{user_id}` — and the
+ * OPTIONAL `addons` entitlement array from a 2xx verify response body.
+ * Today's production verify endpoint sends no `addons` field; that parses as
+ * `addons: null`, which every consumer treats as fully entitled (backward
+ * compatible per the Phase 4 contract). A malformed `addons` value (not an
+ * array of strings) is likewise treated as absent rather than as an empty
+ * entitlement — never lock a paying user out on a control-plane shape bug.
  */
-async function canonicalUserId(res: Response): Promise<string | null> {
+async function parseVerifyBody(res: Response): Promise<VerifiedIdentity> {
 	let data: unknown;
 	try {
 		data = await res.json();
 	} catch {
-		return null;
+		return { userId: null, addons: null };
 	}
-	if (typeof data !== "object" || data === null) return null;
+	if (typeof data !== "object" || data === null) return { userId: null, addons: null };
 	const record = data as Record<string, unknown>;
 	const id = record.userId ?? record.user_id;
-	if (typeof id !== "string") return null;
-	const trimmed = id.trim();
-	return trimmed.length > 0 ? trimmed : null;
+	const trimmed = typeof id === "string" ? id.trim() : "";
+	const addons = Array.isArray(record.addons) && record.addons.every((a) => typeof a === "string")
+		? (record.addons as string[])
+		: null;
+	return { userId: trimmed.length > 0 ? trimmed : null, addons };
+}
+
+/**
+ * KV verdict encoding. Legacy entries (and addons-absent verifies) are the
+ * literal "1"; when the verify response carried an `addons` array the verdict
+ * caches it alongside, so entitlement rides the SAME 60s-TTL KV entry — no
+ * second verify call, no separate entitlement cache.
+ */
+function encodeVerdict(addons: string[] | null): string {
+	return addons === null ? "1" : JSON.stringify({ addons });
+}
+
+/**
+ * Decode a cached verdict: "1" → verified with no addons info (null);
+ * `{"addons":[...]}` → verified with that entitlement list; anything else →
+ * `undefined`, treated as a cache miss (re-verify upstream — exactly what an
+ * unknown cached value already meant before Phase 4).
+ */
+function decodeVerdict(cached: string): string[] | null | undefined {
+	if (cached === "1") return null;
+	try {
+		const parsed = JSON.parse(cached) as { addons?: unknown } | null;
+		if (
+			parsed !== null
+			&& typeof parsed === "object"
+			&& Array.isArray(parsed.addons)
+			&& parsed.addons.every((a) => typeof a === "string")
+		) {
+			return parsed.addons as string[];
+		}
+	} catch {
+		// fall through — unrecognized cached value is a miss
+	}
+	return undefined;
 }
 
 function cacheTtlSeconds(env: Env): number {
@@ -248,8 +304,11 @@ export async function authenticateRequest(
 		// becomes a cache miss and still requires the upstream verifier to pass.
 		dependencies.logCacheFailure("get", error);
 	}
-	if (cached === "1") {
-		return { ok: true, userId, deviceId, deviceName };
+	if (cached !== null) {
+		const cachedAddons = decodeVerdict(cached);
+		if (cachedAddons !== undefined) {
+			return { ok: true, userId, deviceId, deviceName, addons: cachedAddons };
+		}
 	}
 
 	let verifyRes: Response;
@@ -270,14 +329,14 @@ export async function authenticateRequest(
 	if (verifyRes.ok) {
 		// Bind the token to the claimed user before trusting anything: a 2xx
 		// alone only proves the token is valid for SOMEONE.
-		const canonical = await canonicalUserId(verifyRes);
-		if (canonical === null) {
+		const identity = await parseVerifyBody(verifyRes);
+		if (identity.userId === null) {
 			return {
 				ok: false,
 				response: errorResponse(403, "verify response missing canonical user id"),
 			};
 		}
-		if (canonical !== userId) {
+		if (identity.userId !== userId) {
 			return {
 				ok: false,
 				response: errorResponse(403, "token does not belong to the presented user id"),
@@ -285,15 +344,17 @@ export async function authenticateRequest(
 		}
 		// Cache positive verdicts only, and only after the user binding above —
 		// a newly-revoked token lingers at most 60 seconds; a newly-issued
-		// token is never wrongly rejected; a forged pair is never pinned.
+		// token is never wrongly rejected; a forged pair is never pinned. The
+		// verdict carries the addons list, so entitlement staleness shares the
+		// same 60s bound.
 		try {
-			await dependencies.cacheVerifiedVerdict(cacheKey, cacheTtlSeconds(env));
+			await dependencies.cacheVerifiedVerdict(cacheKey, encodeVerdict(identity.addons), cacheTtlSeconds(env));
 		} catch (error) {
 			// A verified request must not fail because the positive-verdict cache
 			// could not be populated. The next request will verify upstream again.
 			dependencies.logCacheFailure("put", error);
 		}
-		return { ok: true, userId, deviceId, deviceName };
+		return { ok: true, userId, deviceId, deviceName, addons: identity.addons };
 	}
 	if (verifyRes.status === 401 || verifyRes.status === 403) {
 		return { ok: false, response: errorResponse(401, "invalid token") };
@@ -871,6 +932,19 @@ export default {
 		if (pathname === "/internal/v1/sync/reset") {
 			if (request.method !== "POST") return errorResponse(405, "use POST");
 			return handleHubReset(request, env);
+		}
+
+		// Encrypted backup routes (pro-backup plan Phase 3, src/backup-routes.ts).
+		// Same fail-closed authenticateRequest as /v1/sync/* — nothing in the
+		// backup surface runs before the token↔user binding is verified.
+		if (pathname.startsWith("/v1/backup/")) {
+			const backupAuth = await authenticateRequest(request, env);
+			if (!backupAuth.ok) return backupAuth.response;
+			return handleBackupRequest(request, url, env, {
+				userId: backupAuth.userId,
+				deviceId: backupAuth.deviceId,
+				addons: backupAuth.addons,
+			});
 		}
 
 		if (

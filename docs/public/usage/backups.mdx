@@ -1,0 +1,138 @@
+---
+title: "Backups"
+description: "Automatic local snapshots of your memory database, with encrypted cloud copies as a cmem.ai Pro add-on"
+---
+
+# Backups
+
+Your memory database is a single SQLite file: `~/.claude-mem/claude-mem.db`.
+Backups protect it two ways:
+
+- **Local snapshots** — free, built into the worker. On a schedule (every 24
+  hours by default) the worker takes a consistent snapshot of the live
+  database and keeps the newest 7 under `~/.claude-mem/backups/auto/`.
+- **Cloud copies** — a cmem.ai Pro **add-on**. Each snapshot is encrypted on
+  your machine and uploaded to your cmem.ai account, so a lost laptop doesn't
+  mean lost memories.
+
+Snapshots are safe while sessions run: the worker uses SQLite's `VACUUM INTO`
+on a read-only connection, which produces a compacted, consistent copy without
+pausing anything.
+
+<Note>
+Cloud sync and cloud backups solve different problems. **Cloud sync**
+replicates individual memories across your devices as you work. **Cloud
+backups** store whole encrypted database snapshots you can roll back to.
+</Note>
+
+## Enable local snapshots
+
+The easiest path is the skill — in Claude Code, run:
+
+```
+/claude-mem:backup-setup
+```
+
+Or flip it on in the viewer: **Settings → Backups → Automatic snapshots**,
+save, and restart the worker. Or edit `~/.claude-mem/settings.json` directly:
+
+```json
+{
+  "CLAUDE_MEM_BACKUP_ENABLED": "true",
+  "CLAUDE_MEM_BACKUP_INTERVAL_HOURS": "24",
+  "CLAUDE_MEM_BACKUP_RETAIN_COUNT": "7"
+}
+```
+
+After a worker restart, the first snapshot lands about five minutes later.
+Check on things any time:
+
+```bash
+npx claude-mem backup status   # last snapshot, count, cloud state, errors
+npx claude-mem backup run      # take a snapshot right now
+npx claude-mem backup list     # what's on disk
+```
+
+## Enable cloud copies (Pro add-on)
+
+Cloud copies need three things:
+
+1. **cmem Pro cloud-sync credentials** — set up with the `/cloud-sync` skill
+   (token, user id, and hub URL from **cmem.ai → Connect**).
+2. The **backup add-on** on your cmem.ai account (added from the
+   [dashboard](https://cmem.ai/dashboard?from=backup-docs)).
+3. `CLAUDE_MEM_BACKUP_CLOUD` set to `"true"` (viewer toggle **Cloud copies**,
+   or the `/claude-mem:backup-setup cloud` skill).
+
+If your account doesn't have the add-on yet, uploads pause with an
+`addonRequired` notice in `backup status` and the viewer — your **local
+snapshots keep running** regardless.
+
+## How the encryption works
+
+Before anything leaves your machine, the snapshot is encrypted with
+AES-256-GCM using a key the worker mints locally on the first cloud-enabled
+snapshot and stores in `~/.claude-mem/settings.json`
+(`CLAUDE_MEM_BACKUP_ENCRYPTION_KEY`, file mode `0600`).
+
+- The key **never leaves your machine**. cmem.ai stores only ciphertext and
+  cannot read your memories.
+- The flip side: **lose the key, lose the cloud backups**. If you wipe the
+  machine without copying `settings.json`, the uploaded snapshots cannot be
+  decrypted by anyone — including us.
+
+## Restore
+
+From a local snapshot:
+
+```bash
+npx claude-mem backup list
+npx claude-mem restore <file>
+```
+
+The current database is saved as `claude-mem.db.pre-restore-<timestamp>`
+before the swap, and the worker restarts itself on the restored database —
+so a restore is always reversible.
+
+From a cloud copy (for a new machine, configure cloud-sync credentials and
+copy `CLAUDE_MEM_BACKUP_ENCRYPTION_KEY` over first):
+
+```bash
+npx claude-mem restore --cloud
+```
+
+## Settings
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `CLAUDE_MEM_BACKUP_ENABLED` | `'false'` | Master switch for the snapshot schedule. |
+| `CLAUDE_MEM_BACKUP_INTERVAL_HOURS` | `'24'` | Hours between snapshots (1–168). |
+| `CLAUDE_MEM_BACKUP_RETAIN_COUNT` | `'7'` | Local snapshots kept before old ones are deleted (1–100). |
+| `CLAUDE_MEM_BACKUP_CLOUD` | `'false'` | Encrypt + upload each snapshot to your cmem.ai account (Pro add-on). |
+| `CLAUDE_MEM_BACKUP_ENCRYPTION_KEY` | `''` | Minted automatically on first cloud upload. Don't set it by hand; do back it up. |
+
+## FAQ
+
+**Where are my backup files?**
+Local snapshots live in `~/.claude-mem/backups/auto/` as
+`claude-mem-<timestamp>.db` — each one a complete, openable SQLite database.
+Cloud copies live in your cmem.ai account, encrypted.
+
+**What if I lose my encryption key?**
+Local snapshots are unaffected (they're not encrypted — they never leave your
+machine). Cloud copies become permanently unreadable; enable cloud backups
+again to mint a fresh key and upload new snapshots.
+
+**Does a snapshot include my vector search index?**
+No — the SQLite database is the source of truth. The vector index is rebuilt
+automatically from it after a restore.
+
+**How much disk does this use?**
+Roughly your database size × the retain count. Snapshots are compacted by
+`VACUUM INTO`, so each is usually a bit smaller than the live database. The
+worker also refuses to snapshot when free disk is low.
+
+**Do backups slow down my sessions?**
+No. Snapshots run inside the background worker on a read-only connection, and
+uploads stream in the background with a retry on the next cycle if the
+network is down.

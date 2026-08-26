@@ -151,7 +151,7 @@ describe("token-verdict cache behavior", () => {
 		};
 
 		const result = await authenticateRequest(request, authEnv, dependencies);
-		expect(result).toEqual({ ok: true, userId, deviceId: "dev-auth", deviceName: null });
+		expect(result).toEqual({ ok: true, userId, deviceId: "dev-auth", deviceName: null, addons: null });
 		expect(verifyCalls).toBe(1);
 		expect(putCalls).toBe(1);
 		expect(logged).toEqual(["get"]);
@@ -177,7 +177,7 @@ describe("token-verdict cache behavior", () => {
 		};
 
 		const result = await authenticateRequest(request, authEnv, dependencies);
-		expect(result).toEqual({ ok: true, userId, deviceId: "dev-auth", deviceName: null });
+		expect(result).toEqual({ ok: true, userId, deviceId: "dev-auth", deviceName: null, addons: null });
 		expect(verifyCalls).toBe(1);
 		expect(logged).toEqual(["put"]);
 	});
@@ -192,7 +192,7 @@ describe("token-verdict cache behavior", () => {
 			async readCachedVerdict() {
 				return nowMs < cachedUntilMs ? "1" : null;
 			},
-			async cacheVerifiedVerdict(_cacheKey, ttlSeconds) {
+			async cacheVerifiedVerdict(_cacheKey, _verdict, ttlSeconds) {
 				ttlWrites.push(ttlSeconds);
 				cachedUntilMs = nowMs + ttlSeconds * 1_000;
 			},
@@ -210,6 +210,7 @@ describe("token-verdict cache behavior", () => {
 			userId,
 			deviceId: "dev-auth",
 			deviceName: null,
+			addons: null,
 		});
 		expect(ttlWrites).toEqual([60]);
 		revoked = true;
@@ -235,7 +236,7 @@ describe("token-verdict cache behavior", () => {
 			async readCachedVerdict() {
 				return nowMs < cachedUntilMs ? "1" : null;
 			},
-			async cacheVerifiedVerdict(_cacheKey, ttlSeconds) {
+			async cacheVerifiedVerdict(_cacheKey, _verdict, ttlSeconds) {
 				expect(ttlSeconds).toBeLessThanOrEqual(60);
 				cachedUntilMs = nowMs + ttlSeconds * 1_000;
 			},

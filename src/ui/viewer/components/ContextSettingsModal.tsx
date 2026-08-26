@@ -2,7 +2,9 @@ import React, { useState, useCallback, useEffect } from 'react';
 import type { Settings } from '../types';
 import { TerminalPreview } from './TerminalPreview';
 import { useContextPreview } from '../hooks/useContextPreview';
+import { useBackupStatus } from '../hooks/useBackupStatus';
 import { DEFAULT_SETTINGS } from '../constants/settings';
+import { BACKUP_ADDON_PITCH, BACKUP_ADDON_URL } from '../constants/promo';
 
 interface ContextSettingsModalProps {
   isOpen: boolean;
@@ -114,6 +116,68 @@ function ToggleSwitch({
       >
         <span className="toggle-knob" />
       </button>
+    </div>
+  );
+}
+
+function formatEpochMs(epochMs: number | null | undefined): string {
+  if (typeof epochMs !== 'number' || !Number.isFinite(epochMs)) return 'never';
+  return new Date(epochMs).toLocaleString();
+}
+
+/** One label/value line in the backup status readout (toggle-row styling). */
+function BackupStatusRow({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="toggle-row">
+      <div className="toggle-info">
+        <span className="toggle-label">{label}</span>
+      </div>
+      <span className="toggle-description">{value}</span>
+    </div>
+  );
+}
+
+/**
+ * Live backup status readout (GET /api/backup/status). Rendered inside the
+ * Backups CollapsibleSection's content, so it mounts — and fetches — only
+ * while the section is open.
+ */
+function BackupStatusPanel() {
+  const { status, isLoading, error } = useBackupStatus();
+
+  if (isLoading) {
+    return <span className="toggle-description">Loading backup status...</span>;
+  }
+  if (error) {
+    return <span className="toggle-description">{error}</span>;
+  }
+  if (!status) return null;
+
+  if (!status.configured) {
+    return (
+      <span className="toggle-description">
+        Backups are not running. Turn on automatic snapshots, save, and restart the worker.
+      </span>
+    );
+  }
+
+  return (
+    <div className="toggle-group">
+      <BackupStatusRow label="Last snapshot" value={formatEpochMs(status.lastSnapshotAt)} />
+      <BackupStatusRow label="Snapshots on disk" value={String(status.snapshotCount ?? 0)} />
+      <BackupStatusRow label="Cloud copies" value={status.cloudEnabled ? 'on' : 'off'} />
+      {status.cloudEnabled && (
+        <BackupStatusRow label="Last upload" value={formatEpochMs(status.lastUploadAt)} />
+      )}
+      {status.lastError && <BackupStatusRow label="Last error" value={status.lastError} />}
+      {status.addonRequired && (
+        <span className="toggle-description">
+          {BACKUP_ADDON_PITCH}{' '}
+          <a href={BACKUP_ADDON_URL} target="_blank" rel="noopener noreferrer">
+            cmem.ai dashboard
+          </a>
+        </span>
+      )}
     </div>
   );
 }
@@ -321,6 +385,79 @@ export function ContextSettingsModal({
                     onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT')}
                   />
                 </div>
+              </div>
+            </CollapsibleSection>
+
+            {/* Section 3: Backups */}
+            <CollapsibleSection
+              title="Backups"
+              description="Automatic snapshots of your memory database"
+              defaultOpen={false}
+            >
+              <div className="toggle-group">
+                <ToggleSwitch
+                  id="backup-enabled"
+                  label="Automatic snapshots"
+                  description="Snapshot the database on a schedule (restart the worker to apply)"
+                  checked={formState.CLAUDE_MEM_BACKUP_ENABLED === 'true'}
+                  onChange={() => toggleBoolean('CLAUDE_MEM_BACKUP_ENABLED')}
+                />
+                <ToggleSwitch
+                  id="backup-cloud"
+                  label="Cloud copies"
+                  description="Encrypt each snapshot and upload it to your cmem.ai account (Pro add-on)"
+                  checked={formState.CLAUDE_MEM_BACKUP_CLOUD === 'true'}
+                  onChange={() => toggleBoolean('CLAUDE_MEM_BACKUP_CLOUD')}
+                />
+              </div>
+
+              <div style={{ marginTop: '12px' }}>
+                <FormField
+                  label="Interval (hours)"
+                  tooltip="Hours between automatic snapshots (1-168)"
+                >
+                  <input
+                    type="number"
+                    min="1"
+                    max="168"
+                    value={formState.CLAUDE_MEM_BACKUP_INTERVAL_HOURS || '24'}
+                    onChange={(e) => updateSetting('CLAUDE_MEM_BACKUP_INTERVAL_HOURS', e.target.value)}
+                  />
+                </FormField>
+                <FormField
+                  label="Snapshots to keep"
+                  tooltip="How many local snapshots to retain before old ones are deleted (1-100)"
+                >
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={formState.CLAUDE_MEM_BACKUP_RETAIN_COUNT || '7'}
+                    onChange={(e) => updateSetting('CLAUDE_MEM_BACKUP_RETAIN_COUNT', e.target.value)}
+                  />
+                </FormField>
+                {/* The key itself is NEVER rendered — presence only. */}
+                <FormField
+                  label="Encryption key"
+                  tooltip="Cloud copies are encrypted with a key minted on this machine. It never leaves your machine — and it is never shown here."
+                >
+                  <span className="toggle-description">
+                    {formState.CLAUDE_MEM_BACKUP_ENCRYPTION_KEY
+                      ? 'Key present (stored in settings.json; it never leaves this machine)'
+                      : 'Not yet minted — created automatically on the first cloud upload'}
+                  </span>
+                </FormField>
+              </div>
+
+              <div className="display-subsection" style={{ marginTop: '12px' }}>
+                <span className="subsection-label">Status</span>
+                <BackupStatusPanel />
+              </div>
+
+              <div style={{ marginTop: '12px' }}>
+                <span className="toggle-description">
+                  Restore from a snapshot: <code>npx claude-mem restore &lt;file&gt;</code> (or <code>--cloud</code>).
+                </span>
               </div>
             </CollapsibleSection>
 
