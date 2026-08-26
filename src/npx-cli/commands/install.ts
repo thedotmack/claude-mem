@@ -2098,7 +2098,13 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             }
             writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
           }
-          writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion);
+          // Only mark the marketplace/plugin copy as installed when the
+          // marketplace copy step actually ran; otherwise the marker would
+          // claim an install for a directory that was never populated, which
+          // `doctor` and `status` then read as a broken install.
+          if (needsMarketplace) {
+            writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion);
+          }
           return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
         },
       },

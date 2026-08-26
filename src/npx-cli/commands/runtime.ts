@@ -4,15 +4,22 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { styleText } from 'node:util';
 import { getBunPath } from '../install/setup-runtime.js';
-import { isPluginInstalled, marketplaceDirectory } from '../utils/paths.js';
+import { resolvePluginRoot } from '../utils/paths.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 
-function ensureInstalledOrExit(): void {
-  if (!isPluginInstalled()) {
+/**
+ * The plugin root the runtime loads, or exit(1) when none is found. Resolves the
+ * same way the hooks do ($CLAUDE_PLUGIN_ROOT, then cache, then marketplace), so
+ * a cache-based install the hooks run from is not reported as "not installed".
+ */
+function pluginRootOrExit(): string {
+  const root = resolvePluginRoot();
+  if (!root) {
     console.error(styleText('red', 'claude-mem is not installed.'));
     console.error(`Run: ${styleText('bold', 'npx claude-mem install')}`);
     process.exit(1);
   }
+  return root;
 }
 
 function resolveBunOrExit(): string {
@@ -26,15 +33,15 @@ function resolveBunOrExit(): string {
   return bunPath;
 }
 
-function workerServiceScriptPath(): string {
-  return join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs');
+function workerServiceScriptPath(root: string): string {
+  return join(root, 'scripts', 'worker-service.cjs');
 }
 
-function serverServiceScriptPath(): string {
+function serverServiceScriptPath(root: string): string {
   // Plan §1c line 149: prefer the renamed `server-service.cjs`, but fall
   // back to the legacy `server-beta-service.cjs` for installed plugin
   // caches that pre-date the rename (forced reinstall not required).
-  const scriptsDir = join(marketplaceDirectory(), 'plugin', 'scripts');
+  const scriptsDir = join(root, 'scripts');
   const renamed = join(scriptsDir, 'server-service.cjs');
   if (existsSync(renamed)) {
     return renamed;
@@ -48,10 +55,10 @@ function serverServiceScriptPath(): string {
  * host CLI bleed-through and Anthropic credentials before launch; credentials
  * are re-read from ~/.claude-mem/.env at SDK spawn time (#2357 / #2375).
  */
-function spawnPlugin(bunPath: string, args: string[], startFailureLabel = 'Bun'): void {
+function spawnPlugin(bunPath: string, args: string[], cwd: string, startFailureLabel = 'Bun'): void {
   const child = spawnHidden(bunPath, args, {
     stdio: 'inherit',
-    cwd: marketplaceDirectory(),
+    cwd,
     env: sanitizeEnv(process.env),
   });
 
@@ -66,9 +73,9 @@ function spawnPlugin(bunPath: string, args: string[], startFailureLabel = 'Bun')
 }
 
 function spawnBunWorkerCommand(command: string, extraArgs: string[] = []): void {
-  ensureInstalledOrExit();
+  const root = pluginRootOrExit();
   const bunPath = resolveBunOrExit();
-  const workerScript = workerServiceScriptPath();
+  const workerScript = workerServiceScriptPath(root);
 
   if (!existsSync(workerScript)) {
     console.error(styleText('red', `Worker script not found at: ${workerScript}`));
@@ -76,13 +83,13 @@ function spawnBunWorkerCommand(command: string, extraArgs: string[] = []): void 
     process.exit(1);
   }
 
-  spawnPlugin(bunPath, [workerScript, command, ...extraArgs]);
+  spawnPlugin(bunPath, [workerScript, command, ...extraArgs], root);
 }
 
 function spawnBunServerCommand(command: string, extraArgs: string[] = []): void {
-  ensureInstalledOrExit();
+  const root = pluginRootOrExit();
   const bunPath = resolveBunOrExit();
-  const serverScript = serverServiceScriptPath();
+  const serverScript = serverServiceScriptPath(root);
 
   if (!existsSync(serverScript)) {
     console.error(styleText('red', `Server script not found at: ${serverScript}`));
@@ -90,7 +97,7 @@ function spawnBunServerCommand(command: string, extraArgs: string[] = []): void 
     process.exit(1);
   }
 
-  spawnPlugin(bunPath, [serverScript, command, ...extraArgs]);
+  spawnPlugin(bunPath, [serverScript, command, ...extraArgs], root);
 }
 
 export function runServerStartCommand(): void {
@@ -137,9 +144,9 @@ export function runServerApiKeyCommand(extraArgs: string[] = []): void {
 }
 
 export function runAdoptCommand(extraArgs: string[] = []): void {
-  ensureInstalledOrExit();
+  const root = pluginRootOrExit();
   const bunPath = resolveBunOrExit();
-  const workerScript = workerServiceScriptPath();
+  const workerScript = workerServiceScriptPath(root);
 
   if (!existsSync(workerScript)) {
     console.error(styleText('red', `Worker script not found at: ${workerScript}`));
@@ -148,7 +155,7 @@ export function runAdoptCommand(extraArgs: string[] = []): void {
   }
 
   const userCwd = process.cwd();
-  spawnPlugin(bunPath, [workerScript, 'adopt', '--cwd', userCwd, ...extraArgs]);
+  spawnPlugin(bunPath, [workerScript, 'adopt', '--cwd', userCwd, ...extraArgs], root);
 }
 
 export function runCleanupCommand(extraArgs: string[] = []): void {
@@ -156,7 +163,7 @@ export function runCleanupCommand(extraArgs: string[] = []): void {
 }
 
 export async function runSearchCommand(queryParts: string[]): Promise<void> {
-  ensureInstalledOrExit();
+  pluginRootOrExit();
 
   const query = queryParts.join(' ').trim();
   if (!query) {
@@ -210,20 +217,15 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
 }
 
 export function runTranscriptWatchCommand(): void {
-  ensureInstalledOrExit();
+  const root = pluginRootOrExit();
   const bunPath = resolveBunOrExit();
 
-  const transcriptWatcherPath = join(
-    marketplaceDirectory(),
-    'plugin',
-    'scripts',
-    'transcript-watcher.cjs',
-  );
+  const transcriptWatcherPath = join(root, 'scripts', 'transcript-watcher.cjs');
 
   if (!existsSync(transcriptWatcherPath)) {
     spawnBunWorkerCommand('transcript', ['watch']);
     return;
   }
 
-  spawnPlugin(bunPath, [transcriptWatcherPath, 'watch'], 'transcript watcher');
+  spawnPlugin(bunPath, [transcriptWatcherPath, 'watch'], root, 'transcript watcher');
 }
