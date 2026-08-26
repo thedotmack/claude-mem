@@ -16,6 +16,8 @@ export interface AdoptionResult {
   parentProject: string;
   scannedWorktrees: number;
   mergedBranches: string[];
+  /** Keys adopted because their checkout is gone, merged or not (#2864). */
+  orphanedWorktrees: string[];
   adoptedObservations: number;
   adoptedSummaries: number;
   chromaUpdates: number;
@@ -86,6 +88,18 @@ function resolveMainRepoPath(cwd: string): string | null {
   ]);
   if (!commonDir) return null;
 
+  // A submodule's --git-common-dir is `<super>/.git/modules/<name>`, which
+  // neither branch below matches — discovery used to return the gitdir itself.
+  // Anchor on the same marker detectWorktree uses, so discovery and key
+  // derivation agree (#2842).
+  const modulesMarker = `${path.sep}.git${path.sep}modules${path.sep}`;
+  const normalized = commonDir.split('/').join(path.sep);
+  const modulesIndex = normalized.indexOf(modulesMarker);
+  if (modulesIndex !== -1) {
+    const superprojectRoot = normalized.slice(0, modulesIndex);
+    return existsSync(superprojectRoot) ? superprojectRoot : null;
+  }
+
   const mainRoot = commonDir.endsWith('/.git')
     ? path.dirname(commonDir)
     : commonDir.replace(/\.git$/, '');
@@ -114,6 +128,76 @@ function listWorktrees(mainRepo: string): WorktreeEntry[] {
   }
   if (current.path) entries.push({ path: current.path, branch: current.branch ?? null });
   return entries;
+}
+
+/**
+ * Composite keys with no live checkout. Their parent association can no longer
+ * be recomputed from disk, so they are unreachable by every read path and are
+ * adopted regardless of merge status — the alternative to adopting is not
+ * "kept separate", it is "lost" (#2864).
+ *
+ * Range-matched rather than `LIKE 'parent/%'`: `_` is a LIKE wildcard and
+ * common in repo names, so `my_app/%` would also match another repo's
+ * `myXapp/...`.
+ */
+function listOrphanProjectKeys(
+  db: import('bun:sqlite').Database,
+  parentProject: string,
+  liveWorktreeProjects: Set<string>,
+  /** False narrows to keys still awaiting adoption, for reporting. */
+  includeAlreadyAdopted: boolean
+): string[] {
+  const prefix = `${parentProject}/`;
+  // '0' is the byte after '/', so [prefix, upperBound) is exactly the children.
+  const upperBound = `${parentProject}0`;
+  // Mirrors selectObsForPatch: already-adopted rows stay eligible so a Chroma
+  // patch that failed after the SQL commit can retry. The update itself is a
+  // no-op for them, so re-runs neither double-count nor bump sync revs.
+  const adoptedClause = includeAlreadyAdopted
+    ? 'AND (merged_into_project IS NULL OR merged_into_project = ?)'
+    : 'AND merged_into_project IS NULL';
+  const params = includeAlreadyAdopted
+    ? [prefix, upperBound, parentProject, prefix, upperBound, parentProject]
+    : [prefix, upperBound, prefix, upperBound];
+
+  const rows = db.prepare(
+    `SELECT DISTINCT project FROM observations
+      WHERE project >= ? AND project < ? ${adoptedClause}
+     UNION
+     SELECT DISTINCT project FROM session_summaries
+      WHERE project >= ? AND project < ? ${adoptedClause}`
+  ).all(...params) as Array<{ project: string }>;
+
+  return rows
+    .map(r => r.project)
+    .filter(project => {
+      if (liveWorktreeProjects.has(project)) return false;
+      // Nested submodules key on their path under the superproject, so a
+      // composite is not always one level deep (#2842).
+      return project.length > prefix.length;
+    });
+}
+
+/**
+ * Submodule checkouts, which share the composite key with worktrees but are not
+ * reported by `git worktree list` — without them a live submodule looks exactly
+ * like a deleted worktree to the orphan sweep. Existence-filtered, so a deleted
+ * submodule is still adopted (#2842).
+ */
+function listSubmodulePaths(mainRepo: string): string[] {
+  const raw = gitCapture(mainRepo, ['submodule', 'status', '--recursive']);
+  if (!raw) return [];
+
+  const paths: string[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    // ` <sha> <path> (<describe>)`; paths may contain spaces.
+    const match = line.match(/^[\s+\-U]*[0-9a-f]{7,40}\s+(.+?)(?:\s+\([^)]*\))?$/);
+    if (!match) continue;
+    const absolute = path.resolve(mainRepo, match[1]);
+    if (existsSync(absolute)) paths.push(absolute);
+  }
+  return paths;
 }
 
 function listMergedBranches(mainRepo: string): Set<string> {
@@ -147,6 +231,7 @@ export async function adoptMergedWorktrees(opts: {
     parentProject,
     scannedWorktrees: 0,
     mergedBranches: [],
+    orphanedWorktrees: [],
     adoptedObservations: 0,
     adoptedSummaries: 0,
     chromaUpdates: 0,
@@ -170,10 +255,6 @@ export async function adoptMergedWorktrees(opts: {
   const childWorktrees = allWorktrees.filter(w => w.path !== mainRepo);
   result.scannedWorktrees = childWorktrees.length;
 
-  if (childWorktrees.length === 0) {
-    return result;
-  }
-
   let targets: WorktreeEntry[];
   if (opts.onlyBranch) {
     targets = childWorktrees.filter(w => w.branch === opts.onlyBranch);
@@ -185,10 +266,6 @@ export async function adoptMergedWorktrees(opts: {
   result.mergedBranches = targets
     .map(t => t.branch)
     .filter((b): b is string => b !== null);
-
-  if (targets.length === 0) {
-    return result;
-  }
 
   const adoptedChromaTargets: MergedIntoProjectTarget[] = [];
 
@@ -239,8 +316,7 @@ export async function adoptMergedWorktrees(opts: {
     // plain-UPDATE path.
     const syncLane = hasSyncLane(db);
 
-    const adoptWorktreeInTransaction = (wt: WorktreeEntry) => {
-      const worktreeProject = getProjectContext(wt.path).primary;
+    const adoptWorktreeInTransaction = (worktreeProject: string) => {
       const rows = selectObsForPatch.all(
         worktreeProject,
         parentProject
@@ -274,18 +350,35 @@ export async function adoptMergedWorktrees(opts: {
       result.adoptedSummaries += sumChanges;
     };
 
+    const liveWorktreeProjects = new Set([
+      ...childWorktrees.map(w => getProjectContext(w.path).primary),
+      ...listSubmodulePaths(mainRepo).map(p => getProjectContext(p).primary),
+    ]);
+
+    // `--branch` is a targeted squash-merge escape hatch; no orphan sweep.
+    const orphanProjects = opts.onlyBranch
+      ? []
+      : listOrphanProjectKeys(db, parentProject, liveWorktreeProjects, true);
+    result.orphanedWorktrees = opts.onlyBranch
+      ? []
+      : listOrphanProjectKeys(db, parentProject, liveWorktreeProjects, false);
+
+    const adoptionTargets: Array<{ project: string; label: string }> = [
+      ...targets.map(wt => ({ project: getProjectContext(wt.path).primary, label: wt.path })),
+      ...orphanProjects.map(project => ({ project, label: `${project} (worktree removed)` })),
+    ];
+
     const tx = db.transaction(() => {
-      for (const wt of targets) {
+      for (const target of adoptionTargets) {
         try {
-          adoptWorktreeInTransaction(wt);
+          adoptWorktreeInTransaction(target.project);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           logger.warn('SYSTEM', 'Worktree adoption skipped branch', {
-            worktree: wt.path,
-            branch: wt.branch,
+            worktree: target.label,
             error: message
           });
-          result.errors.push({ worktree: wt.path, error: message });
+          result.errors.push({ worktree: target.label, error: message });
         }
       }
       if (dryRun) {
@@ -345,6 +438,7 @@ export async function adoptMergedWorktrees(opts: {
       dryRun,
       scannedWorktrees: result.scannedWorktrees,
       mergedBranches: result.mergedBranches,
+      orphanedWorktrees: result.orphanedWorktrees,
       adoptedObservations: result.adoptedObservations,
       adoptedSummaries: result.adoptedSummaries,
       chromaUpdates: result.chromaUpdates,
@@ -375,19 +469,31 @@ export async function adoptMergedWorktreesForAllKnownRepos(opts: {
     const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
     db = new Database(dbPath, { readonly: true });
 
-    const hasPending = db.prepare(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='pending_messages'"
-    ).get() as { name: string } | undefined;
-    if (!hasPending) {
-      logger.debug('SYSTEM', 'Worktree adoption skipped (pending_messages table missing)');
+    // Discovery reads sdk_sessions.cwd; pending_messages stopped receiving
+    // writes in v13.10.0 and is UNIONed only for rows still on disk (#2864).
+    const sessionCols = db
+      .prepare('PRAGMA table_info(sdk_sessions)')
+      .all() as Array<{ name: string }>;
+    if (!sessionCols.some(c => c.name === 'cwd')) {
+      logger.debug(
+        'SYSTEM',
+        'Worktree adoption skipped (sdk_sessions.cwd missing; will run after migration)'
+      );
       return results;
     }
 
-    const cwdRows = db.prepare(`
-      SELECT cwd FROM pending_messages
-      WHERE cwd IS NOT NULL AND cwd != ''
-      GROUP BY cwd
-    `).all() as Array<{ cwd: string }>;
+    const hasPending = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='pending_messages'"
+    ).get() as { name: string } | undefined;
+
+    const cwdSources = ['SELECT cwd FROM sdk_sessions WHERE cwd IS NOT NULL AND cwd != \'\''];
+    if (hasPending) {
+      cwdSources.push('SELECT cwd FROM pending_messages WHERE cwd IS NOT NULL AND cwd != \'\'');
+    }
+
+    const cwdRows = db.prepare(
+      `SELECT DISTINCT cwd FROM (${cwdSources.join(' UNION ')})`
+    ).all() as Array<{ cwd: string }>;
 
     for (const { cwd } of cwdRows) {
       const mainRepo = resolveMainRepoPath(cwd);

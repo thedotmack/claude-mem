@@ -104,6 +104,7 @@ export class SessionStore {
     this.addSessionPlatformSourceColumn();
     this.addObservationModelColumns();
     this.ensureMergedIntoProjectColumns();
+    this.ensureSessionCwdColumn();
     this.addObservationSubagentColumns();
     this.addObservationsUniqueContentHashIndex();
     this.addObservationsMetadataColumn();
@@ -1724,6 +1725,23 @@ export class SessionStore {
     );
   }
 
+  // Worktree adoption discovers repos from this; sdk_sessions is local-only,
+  // so no sync-lane plumbing (#2864).
+  private ensureSessionCwdColumn(): void {
+    const cols = this.db
+      .query('PRAGMA table_info(sdk_sessions)')
+      .all() as TableColumnInfo[];
+    if (!cols.some(c => c.name === 'cwd')) {
+      this.db.run('ALTER TABLE sdk_sessions ADD COLUMN cwd TEXT');
+      logger.debug('DB', 'Added cwd column to sdk_sessions table (#2864)');
+    }
+    this.db.run(
+      'CREATE INDEX IF NOT EXISTS idx_sdk_sessions_cwd ON sdk_sessions(cwd)'
+    );
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(50, new Date().toISOString());
+  }
+
   private addObservationSubagentColumns(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(27) as SchemaVersion | undefined;
 
@@ -2436,6 +2454,15 @@ export class SessionStore {
     }
 
     return Number(result.lastInsertRowid);
+  }
+
+  // First write wins: cwd drifts when the agent `cd`s into a subdirectory, and
+  // the launch directory is the one that identifies the repo.
+  setSessionCwd(sessionDbId: number, cwd: string): void {
+    if (!cwd.trim()) return;
+    this.db.prepare(
+      'UPDATE sdk_sessions SET cwd = ? WHERE id = ? AND cwd IS NULL'
+    ).run(cwd, sessionDbId);
   }
 
   /**

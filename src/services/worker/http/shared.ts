@@ -89,6 +89,7 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   let promptNumber: number;
   try {
     sessionDbId = store.createSDKSession(payload.contentSessionId, project, '', undefined, platformSource);
+    if (cwd) store.setSessionCwd(sessionDbId, cwd);
     promptNumber = store.getPromptNumberFromUserPrompts(payload.contentSessionId, sessionDbId);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
