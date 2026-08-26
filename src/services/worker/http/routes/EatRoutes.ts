@@ -14,6 +14,11 @@ const MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
 const eatSchema = z.object({
   input: z.string().optional(),
   content: z.string().optional(),
+  mcp: z.object({
+    url: z.string(),
+    resource: z.string().optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+  }).strict().optional(),
   project: z.string().trim().min(1),
   dry_run: z.boolean().optional(),
   recursive: z.boolean().optional(),
@@ -31,10 +36,11 @@ export class EatRoutes extends BaseRouteHandler {
   }
 
   private handleEat = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { input, content, project, dry_run, recursive } = req.body as z.infer<typeof eatSchema>;
+    const { input, content, mcp, project, dry_run, recursive } = req.body as z.infer<typeof eatSchema>;
 
-    if ((input === undefined) === (content === undefined)) {
-      res.status(400).json({ error: 'invalid_request', detail: 'Provide exactly one of input or content' });
+    const providedSources = [input, content, mcp].filter(value => value !== undefined).length;
+    if (providedSources !== 1) {
+      res.status(400).json({ error: 'invalid_request', detail: 'Provide exactly one of input, content, or mcp' });
       return;
     }
 
@@ -45,7 +51,7 @@ export class EatRoutes extends BaseRouteHandler {
     }
 
     const request_id = randomUUID();
-    const result = await runEatPipeline(input, { content, recursive });
+    const result = await runEatPipeline(input, { content, recursive, mcp });
 
     if (dry_run) {
       const report: EatReport = {

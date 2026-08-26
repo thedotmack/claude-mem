@@ -1,12 +1,14 @@
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { fetchWithTimeout } from '../../../shared/worker-utils.js';
+import { extractFromMcp } from './connectors.js';
 import type { EatSource } from './types.js';
 
 export interface EatExtractOptions {
   fetchTimeoutMs: number;
   recursive?: boolean;
   stdinText?: string;
+  mcp?: { resource?: string; headers?: Record<string, string> };
 }
 
 export interface EatExtractedItem {
@@ -229,6 +231,6 @@ export async function extractItems(source: EatSource, opts: EatExtractOptions): 
     case 'text':
       return { items: [{ text: source.locator, source }], skipped: 0 };
     case 'mcp':
-      throw new Error('MCP extraction is not implemented yet');
+      return extractFromMcp(source.locator, { resource: opts.mcp?.resource, headers: opts.mcp?.headers });
   }
 }

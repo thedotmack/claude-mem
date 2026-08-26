@@ -5,20 +5,26 @@ import { detectSource } from './detect.js';
 import { extractItems } from './extract.js';
 import { chunkText } from './chunk.js';
 import { buildEatModel, digestChunk } from './digest.js';
-import type { EatChunk, EatObservationDraft, EatPipelineResult } from './types.js';
+import type { EatMcpConfig } from './connectors.js';
+import type { EatChunk, EatObservationDraft, EatPipelineResult, EatSource } from './types.js';
 
 export interface EatPipelineOptions {
   content?: string;
   recursive?: boolean;
+  mcp?: EatMcpConfig;
 }
 
 export async function runEatPipeline(input: string | undefined, opts: EatPipelineOptions = {}): Promise<EatPipelineResult> {
   const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-  const source = detectSource(input, opts.content !== undefined);
+  // Connectors are declared, not sniffed — an mcp config bypasses detection.
+  const source: EatSource = opts.mcp !== undefined
+    ? { kind: 'mcp', locator: opts.mcp.url }
+    : detectSource(input, opts.content !== undefined);
   const extraction = await extractItems(source, {
     fetchTimeoutMs: parseInt(settings.CLAUDE_MEM_EAT_FETCH_TIMEOUT_MS, 10),
     recursive: opts.recursive,
     stdinText: opts.content,
+    mcp: opts.mcp,
   });
 
   const maxChunkChars = parseInt(settings.CLAUDE_MEM_EAT_MAX_CHUNK_CHARS, 10);

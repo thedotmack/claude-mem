@@ -160,6 +160,28 @@ describe('EatRoutes POST /api/eat', () => {
     expect(pipelineCalls.length).toBe(0);
   });
 
+  it('rejects when both content and mcp are present', async () => {
+    const response = makeResponse();
+    handler(makeRequest({ content: 'raw text', mcp: { url: 'https://mcp.example.com/mcp' }, project: 'claude-mem' }), response.res);
+    const body = await response.waitForJson();
+    expect(response.getStatus()).toBe(400);
+    expect(body.error).toBe('invalid_request');
+    expect(pipelineCalls.length).toBe(0);
+  });
+
+  it('accepts mcp alone and forwards the config to the pipeline', async () => {
+    pipelineResult = { ...pipelineResult, source: { kind: 'mcp', locator: 'https://mcp.example.com/mcp' } };
+    const mcp = { url: 'https://mcp.example.com/mcp', resource: 'doc://readme', headers: { Authorization: 'Bearer token' } };
+    const response = makeResponse();
+    handler(makeRequest({ mcp, project: 'claude-mem', dry_run: true }), response.res);
+    const body = await response.waitForJson();
+    expect(response.getStatus()).toBe(200);
+    expect(body.request_id).toBeString();
+    expect(pipelineCalls.length).toBe(1);
+    expect(pipelineCalls[0].input).toBeUndefined();
+    expect(pipelineCalls[0].opts.mcp).toEqual(mcp);
+  });
+
   it('accepts input alone and accepts content alone', async () => {
     const inputResponse = makeResponse();
     handler(makeRequest({ input: 'Bun 1.2 shipped native S3 support', project: 'claude-mem', dry_run: true }), inputResponse.res);

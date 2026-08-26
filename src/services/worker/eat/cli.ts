@@ -4,8 +4,18 @@ import { styleText } from 'node:util';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import type { EatReport } from './types.js';
 
-const USAGE = 'Usage: claude-mem eat <file|url|-|text> [--project <name>] [--dry-run] [--json] [--recursive]';
+const USAGE = [
+  'Usage: claude-mem eat <file|url|-|text> [--project <name>] [--dry-run] [--json] [--recursive]',
+  "       claude-mem eat mcp <url> [--resource <uri>] [--header 'K: V']... [--project <name>] [--dry-run] [--json]",
+].join('\n');
 const MAX_LABEL_CHARS = 64;
+const VALUE_FLAGS = new Set(['--project', '--resource', '--header']);
+
+export interface EatMcpCliArgs {
+  url: string | undefined;
+  resource: string | null;
+  headers: Record<string, string>;
+}
 
 export interface EatCliArgs {
   positional: string | undefined;
@@ -13,6 +23,7 @@ export interface EatCliArgs {
   dryRun: boolean;
   json: boolean;
   recursive: boolean;
+  mcp?: EatMcpCliArgs;
 }
 
 function getArgValue(args: string[], name: string): string | null {
@@ -21,16 +32,34 @@ function getArgValue(args: string[], name: string): string | null {
   return args[index + 1] ?? null;
 }
 
+function collectHeaders(args: string[]): Record<string, string> {
+  const headers: Record<string, string> = {};
+  args.forEach((arg, index) => {
+    if (arg !== '--header') return;
+    const raw = args[index + 1];
+    if (raw === undefined) return;
+    const separator = raw.indexOf(':');
+    if (separator === -1) return;
+    headers[raw.slice(0, separator).trim()] = raw.slice(separator + 1).trim();
+  });
+  return headers;
+}
+
 export function parseEatArgs(args: string[]): EatCliArgs {
-  const positional = args.find(
-    (arg, index) => (arg === '-' || !arg.startsWith('-')) && args[index - 1] !== '--project'
+  const isMcp = args[0] === 'mcp';
+  const rest = isMcp ? args.slice(1) : args;
+  const positional = rest.find(
+    (arg, index) => (arg === '-' || !arg.startsWith('-')) && !VALUE_FLAGS.has(rest[index - 1] ?? '')
   );
   return {
     positional,
-    project: getArgValue(args, '--project'),
-    dryRun: args.includes('--dry-run'),
-    json: args.includes('--json'),
-    recursive: args.includes('--recursive'),
+    project: getArgValue(rest, '--project'),
+    dryRun: rest.includes('--dry-run'),
+    json: rest.includes('--json'),
+    recursive: rest.includes('--recursive'),
+    mcp: isMcp
+      ? { url: positional, resource: getArgValue(rest, '--resource'), headers: collectHeaders(rest) }
+      : undefined,
   };
 }
 
@@ -51,18 +80,29 @@ export async function runEatCommand(args: string[]): Promise<number> {
   const parsed = parseEatArgs(args);
   const hasStdin = !process.stdin.isTTY;
 
-  if (parsed.positional === undefined && !hasStdin) {
+  if (parsed.mcp !== undefined && parsed.mcp.url === undefined) {
     console.error(USAGE);
     return 1;
   }
 
-  const wantsStdin = parsed.positional === '-' || (parsed.positional === undefined && hasStdin);
+  if (parsed.mcp === undefined && parsed.positional === undefined && !hasStdin) {
+    console.error(USAGE);
+    return 1;
+  }
+
+  const wantsStdin = parsed.mcp === undefined
+    && (parsed.positional === '-' || (parsed.positional === undefined && hasStdin));
   const project = parsed.project ?? basename(process.cwd());
 
   const body: Record<string, unknown> = { project };
   if (parsed.dryRun) body.dry_run = true;
   if (parsed.recursive) body.recursive = true;
-  if (wantsStdin) {
+  if (parsed.mcp !== undefined) {
+    const mcp: Record<string, unknown> = { url: parsed.mcp.url };
+    if (parsed.mcp.resource !== null) mcp.resource = parsed.mcp.resource;
+    if (Object.keys(parsed.mcp.headers).length > 0) mcp.headers = parsed.mcp.headers;
+    body.mcp = mcp;
+  } else if (wantsStdin) {
     body.content = await readStdin();
   } else if (existsSync(parsed.positional as string)) {
     // Local paths resolve client-side to absolute so the worker (same
