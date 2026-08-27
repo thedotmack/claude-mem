@@ -342,6 +342,17 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       const preserving = this.preservingAbortReason(error);
       if (preserving !== null) {
         session.abortReason = preserving;
+        // Abort as well as label. Without it the controller stays live while
+        // the error unwinds, and the session route books the failure twice —
+        // an observer failure and an error outcome on the way out, then the
+        // aborted outcome at finalization — leaving observer-health marked
+        // failed for a pause that is not a failure. This is what the two
+        // observer-text paths already do for the same conditions.
+        try {
+          session.abortController.abort();
+        } catch {
+          // best-effort; AbortController.abort() should not throw in normal use.
+        }
         logger.warn('SDK', `${this.providerName} paused on ${error.kind}; preserving buffered work`, {
           sessionId: session.sessionDbId,
           kind: error.kind,

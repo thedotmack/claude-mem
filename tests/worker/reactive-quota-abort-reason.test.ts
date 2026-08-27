@@ -160,6 +160,35 @@ describe('reactive provider errors set a preserving abortReason (#3700)', () => 
     expect(session.abortReason ?? null).toBeNull();
   });
 
+  // Review on #3760: labelling without aborting leaves the controller live
+  // while the error unwinds, so the session route books an observer failure
+  // and an error outcome before finalization books the aborted one — a pause
+  // recorded as a failure, twice.
+  it('aborts the controller so the pause is not also booked as a failure', async () => {
+    const session = makeSession();
+
+    await runAndCatch(
+      new ClassifiedProviderError('Gemini quota exhausted (status 429)', {
+        kind: 'quota_exhausted',
+        cause: null,
+      }),
+      session,
+    );
+
+    expect(session.abortController.signal.aborted).toBe(true);
+  });
+
+  it('leaves the controller alone for a genuinely fatal error', async () => {
+    const session = makeSession();
+
+    await runAndCatch(
+      new ClassifiedProviderError('bad request', { kind: 'unrecoverable', cause: null }),
+      session,
+    );
+
+    expect(session.abortController.signal.aborted).toBe(false);
+  });
+
   it('still rethrows so the caller sees the failure', async () => {
     const provider = new ThrowingProvider(
       new ClassifiedProviderError('Gemini quota exhausted (status 429)', {
