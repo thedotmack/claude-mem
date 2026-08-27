@@ -88,7 +88,19 @@ function extractFromBash(toolInput: unknown, cwd: string): string[] {
   const command = normalizeCommand((toolInput as { command?: unknown } | undefined)?.command);
   if (!command) return [];
 
-  const tokens = parse(command);
+  // `parse` throws on substitutions it cannot resolve — `${}` raises
+  // "Bad substitution" on every shell-quote 1.x, including 1.10.x. This is a
+  // best-effort enrichment that only adds `filePaths` for read commands, so an
+  // unparseable command must yield no paths rather than propagate: the throw
+  // escaped to the generic hook handler, which answers BLOCKING_ERROR and
+  // discards the tool call entirely (#3688). Failing to enrich is invisible;
+  // blocking the user's command is not.
+  let tokens: ParsedToken[];
+  try {
+    tokens = parse(command);
+  } catch {
+    return [];
+  }
   const paths: string[] = [];
 
   for (const segment of splitSegments(tokens)) {
