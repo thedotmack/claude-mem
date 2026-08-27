@@ -1,5 +1,11 @@
-import { describe, it, expect } from 'bun:test';
-import { buildNoOpResult, isNonBlockingHookInputError, isWorkerUnavailableError } from '../src/cli/hook-command.js';
+import { describe, it, expect, afterEach } from 'bun:test';
+import {
+  buildNoOpResult,
+  hookCommand,
+  isNonBlockingHookInputError,
+  isWorkerUnavailableError,
+} from '../src/cli/hook-command.js';
+import { HOOK_EXIT_CODES } from '../src/shared/hook-constants.js';
 
 describe('buildNoOpResult', () => {
   it('attaches a valid SessionStart hookSpecificOutput for the context event (#2972)', () => {
@@ -16,6 +22,27 @@ describe('buildNoOpResult', () => {
     for (const event of ['session-init', 'observation', 'summarize', 'user-message', 'file-edit', 'file-context']) {
       expect(buildNoOpResult(event)).toEqual({ continue: true, suppressOutput: true });
     }
+  });
+});
+
+describe('hookCommand tool-hook disable (#3106)', () => {
+  afterEach(() => {
+    delete process.env.CLAUDE_MEM_DISABLE_TOOL_HOOKS;
+    delete process.env.CLAUDE_MEM_DISABLE_OBSERVATION;
+    delete process.env.CLAUDE_MEM_DISABLE_FILE_CONTEXT;
+  });
+
+  it('exits success without reading stdin when CLAUDE_MEM_DISABLE_TOOL_HOOKS=1', async () => {
+    process.env.CLAUDE_MEM_DISABLE_TOOL_HOOKS = '1';
+    // No stdin JSON is provided; a disabled early-return must not hang on readJsonFromStdin.
+    const code = await hookCommand('claude-code', 'observation', { skipExit: true });
+    expect(code).toBe(HOOK_EXIT_CODES.SUCCESS);
+  });
+
+  it('also no-ops file-context when CLAUDE_MEM_DISABLE_TOOL_HOOKS=1', async () => {
+    process.env.CLAUDE_MEM_DISABLE_TOOL_HOOKS = '1';
+    const code = await hookCommand('claude-code', 'file-context', { skipExit: true });
+    expect(code).toBe(HOOK_EXIT_CODES.SUCCESS);
   });
 });
 
