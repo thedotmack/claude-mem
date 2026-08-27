@@ -12,6 +12,7 @@ export function isMaxCompletionTokensCompatibilityError(status: number, bodyText
   const message = typeof error?.message === 'string' ? error.message : bodyText;
   const mentionsReplacement = /unsupported\s+parameter[\s\S]*max_tokens[\s\S]*(?:use|replace)[\s\S]*max_completion_tokens/i.test(message);
   const hasStructuredFields = error?.param === 'max_tokens'
+    && /max_completion_tokens/i.test(bodyText)
     && (error.code === 'unsupported_parameter' || error.code === 400 || error.code === '400');
 
   if (status === 400) {
@@ -38,10 +39,12 @@ export async function fetchWithOpenRouterTokenCompatibility(
   let responseForCaller = response;
   try {
     bodyText = await response.text();
-    responseForCaller = new Response(bodyText, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
+    responseForCaller = new Proxy(response, {
+      get(target, property) {
+        if (property === 'text') return async () => bodyText;
+        if (property === 'json') return async () => JSON.parse(bodyText);
+        return Reflect.get(target, property, target);
+      },
     });
   } catch {
     return response;

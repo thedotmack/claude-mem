@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'bun:test';
+import { readFileSync } from 'fs';
 import { OpenRouterProvider } from '../../src/services/worker/OpenRouterProvider.js';
 
-const compatibilityError = "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.";
+const issueReport = readFileSync(new URL('../fixtures/claude-mem-issue-3712.md', import.meta.url), 'utf8');
+const compatibilityError = issueReport.match(/Unsupported parameter:[\s\S]*?instead\./)?.[0] ?? '';
 
 describe('OpenRouterProvider token compatibility', () => {
   it('retries the exact issue response and returns the provider result', async () => {

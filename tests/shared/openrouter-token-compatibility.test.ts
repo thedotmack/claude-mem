@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'bun:test';
+import { readFileSync } from 'fs';
 import {
   fetchWithOpenRouterTokenCompatibility,
   isMaxCompletionTokensCompatibilityError,
 } from '../../src/shared/openrouter-token-compatibility.js';
 
-const compatibilityError = "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.";
+const issueReport = readFileSync(new URL('../fixtures/claude-mem-issue-3712.md', import.meta.url), 'utf8');
+const compatibilityError = issueReport.match(/Unsupported parameter:[\s\S]*?instead\./)?.[0] ?? '';
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -14,7 +16,7 @@ describe('OpenRouter token compatibility', () => {
   it('matches only the exact 400 replacement error', () => {
     expect(isMaxCompletionTokensCompatibilityError(400, compatibilityError)).toBe(true);
     expect(isMaxCompletionTokensCompatibilityError(400, "Unsupported parameter: 'max_tokens'\nUse 'max_completion_tokens' instead.")).toBe(true);
-    expect(isMaxCompletionTokensCompatibilityError(400, JSON.stringify({ error: { code: 'unsupported_parameter', param: 'max_tokens' } }))).toBe(true);
+    expect(isMaxCompletionTokensCompatibilityError(400, JSON.stringify({ error: { code: 'unsupported_parameter', param: 'max_tokens', message: "Use 'max_completion_tokens' instead." } }))).toBe(true);
     expect(isMaxCompletionTokensCompatibilityError(500, compatibilityError)).toBe(false);
     expect(isMaxCompletionTokensCompatibilityError(400, "Unsupported parameter: 'max_tokens' is not supported with this model.")).toBe(false);
     expect(isMaxCompletionTokensCompatibilityError(400, "Unsupported parameter: 'max_tokens' is not supported with this model.")).toBe(false);
@@ -68,7 +70,7 @@ describe('OpenRouter token compatibility', () => {
   it('retries a structured compatibility error returned inside a 200 response', async () => {
     const requests: RequestInit[] = [];
     const responses = [
-      jsonResponse(200, { error: { code: 'unsupported_parameter', param: 'max_tokens', message: 'max_tokens is unsupported' } }),
+      jsonResponse(200, { error: { code: 'unsupported_parameter', param: 'max_tokens', message: "Use 'max_completion_tokens' instead." } }),
       jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
     ];
     const response = await fetchWithOpenRouterTokenCompatibility(

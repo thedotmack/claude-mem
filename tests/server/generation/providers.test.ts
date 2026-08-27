@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from 'bun:test';
+import { readFileSync } from 'fs';
 import {
   ServerClassifiedProviderError,
   classifyHttpProviderError,
@@ -362,7 +363,8 @@ describe('GeminiObservationProvider', () => {
 
 describe('OpenRouterObservationProvider', () => {
   it('retries the exact token-field compatibility response', async () => {
-    const compatibilityError = "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.";
+    const issueReport = readFileSync(new URL('../../fixtures/claude-mem-issue-3712.md', import.meta.url), 'utf8');
+    const compatibilityError = issueReport.match(/Unsupported parameter:[\s\S]*?instead\./)?.[0] ?? '';
     const requests: RequestInit[] = [];
     const responses = [
       jsonResponse(400, { error: { message: compatibilityError } }),
