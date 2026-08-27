@@ -187,6 +187,11 @@ describe('Install Non-TTY Support', () => {
       expect(installRegion).not.toContain('plugin_hooks');
     });
 
+    it('tells Codex users to trust the native hooks before restarting sessions', () => {
+      expect(codexInstallerSource).toContain('Review and trust the five claude-mem hooks when Codex prompts you');
+      expect(codexInstallerSource).toContain('Restart sessions opened before trusting the hooks');
+    });
+
     it('captures Codex CLI output for install failure reporting', () => {
       // codex is spawned through the centralized codexSpawn() helper (#2695:
       // shell-resolved on Windows so codex.cmd is found). The helper region
