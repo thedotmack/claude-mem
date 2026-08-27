@@ -142,19 +142,26 @@ describe("OpenCode plugin event contract", () => {
       const plugin = await ClaudeMemPlugin(pluginCtx);
       const expectedPlatformSource = normalizePlatformSource("opencode");
 
-      await plugin["tool.execute.after"](
-        { tool: "read", sessionID: "ses_contract_tool", callID: "c1" },
-        { title: "Read", output: "tool output", metadata: {}, args: {} },
-      );
-      await plugin["chat.message"](
-        {},
-        {
-          message: { role: "assistant", sessionID: "ses_contract_chat" },
-          parts: [{ type: "text", text: "assistant output" }],
-        },
-      );
-      await plugin["experimental.session.compacting"]({ sessionID: "ses_contract_compact" });
-      await plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_contract_idle" } } });
+      const postHookInvocations: Record<string, () => Promise<void>> = {
+        "tool.execute.after": () => plugin["tool.execute.after"](
+          { tool: "read", sessionID: "ses_contract_tool", callID: "c1" },
+          { title: "Read", output: "tool output", metadata: {}, args: {} },
+        ),
+        "chat.message": () => plugin["chat.message"](
+          {},
+          {
+            message: { role: "assistant", sessionID: "ses_contract_chat" },
+            parts: [{ type: "text", text: "assistant output" }],
+          },
+        ),
+        "experimental.session.compacting": () => plugin["experimental.session.compacting"]({ sessionID: "ses_contract_compact" }),
+        event: () => plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_contract_idle" } } }),
+      };
+      for (const hook of REGISTERED_OPENCODE_HOOKS) {
+        const invoke = postHookInvocations[hook];
+        expect(invoke, `registered hook "${hook}" must have a POST contract case`).toBeDefined();
+        await invoke!();
+      }
 
       const posts = requests.filter((request) => request.method === "POST");
       expect(posts).toHaveLength(8);
