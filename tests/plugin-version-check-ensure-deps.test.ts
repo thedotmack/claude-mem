@@ -304,6 +304,42 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(existsSync(bunInvocationMarker)).toBe(false);
   });
 
+  test('reinstalls when tree-sitter installer is missing from the package tree', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin(
+      'plugin-tree-sitter-installer-missing',
+      'success',
+      { zod: '^4.4.3', 'tree-sitter-cli': '^0.26.5' },
+    );
+    const zodRoot = join(pluginRoot, 'node_modules', 'zod');
+    mkdirSync(zodRoot, { recursive: true });
+    writeFileSync(join(zodRoot, 'package.json'), JSON.stringify({
+      name: 'zod',
+      version: '4.4.3',
+      exports: {
+        '.': './index.js',
+        './v3': './v3/index.js',
+        './v4': './v4/index.js',
+        './v4-mini': './v4-mini/index.js',
+      },
+    }));
+    for (const entryFile of ['index.js', ...FAKE_ZOD_ENTRY_FILES]) {
+      const entryPath = join(zodRoot, ...entryFile.split('/'));
+      mkdirSync(join(entryPath, '..'), { recursive: true });
+      writeFileSync(entryPath, '');
+    }
+    const treeSitterRoot = join(pluginRoot, 'node_modules', 'tree-sitter-cli');
+    mkdirSync(treeSitterRoot, { recursive: true });
+    writeFileSync(join(treeSitterRoot, 'package.json'), JSON.stringify({ name: 'tree-sitter-cli', version: '0.26.5' }));
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain(INSTALL_DIAGNOSTIC);
+    expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
+    expect(existsSync(join(treeSitterRoot, 'install.js'))).toBe(true);
+    expect(existsSync(join(pluginRoot, FAKE_TREE_SITTER_BINARY))).toBe(true);
+  });
+
   test('repairs a Zod tree whose exports map omits the bare worker entry point', async () => {
     const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-zod-exports');
     mkdirSync(join(pluginRoot, 'node_modules', 'zod', 'v3'), { recursive: true });

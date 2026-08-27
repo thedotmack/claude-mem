@@ -189,12 +189,12 @@ function bunInstallInvocation(bunPath) {
 function provisionTreeSitterCliBinary(pluginRoot) {
   const cliDir = join(pluginRoot, NODE_MODULES_DIRNAME, TREE_SITTER_CLI);
   const binaryPath = join(cliDir, TREE_SITTER_BINARY);
-  if (!existsSync(cliDir) || isUsableTreeSitterBinary(binaryPath)) return;
+  if (!existsSync(cliDir) || isUsableTreeSitterBinary(binaryPath)) return 'complete';
 
   const installScript = join(cliDir, 'install.js');
   if (!existsSync(installScript)) {
     console.error(`${VERSION_CHECK_LOG_PREFIX} tree-sitter-cli install script not found; plugin dependencies remain incomplete`);
-    return;
+    return 'missing-installer';
   }
 
   let result;
@@ -210,7 +210,7 @@ function provisionTreeSitterCliBinary(pluginRoot) {
   } catch (err) {
     const reason = err && err.message ? err.message : String(err);
     console.error(`${VERSION_CHECK_LOG_PREFIX} tree-sitter-cli binary provisioning threw (${reason})`);
-    return;
+    return 'failed';
   }
 
   const killedBySignal = result.status === null && !!result.signal;
@@ -223,6 +223,7 @@ function provisionTreeSitterCliBinary(pluginRoot) {
         : `exit ${result.status}`;
     console.error(`${VERSION_CHECK_LOG_PREFIX} tree-sitter-cli binary provisioning failed (${reason})`);
   }
+  return isUsableTreeSitterBinary(binaryPath) ? 'complete' : 'failed';
 }
 
 // Setup-phase auto-install of plugin runtime dependencies.
@@ -251,10 +252,12 @@ function ensurePluginDependencies(pluginRoot) {
     // A generated CLI binary can be repaired from the installed package; do
     // that before repeating the full dependency installation.
     if (hasCompletePluginDependencies(pluginRoot, { requireTreeSitterBinary: false })) {
-      provisionTreeSitterCliBinary(pluginRoot);
+      const provisioningStatus = provisionTreeSitterCliBinary(pluginRoot);
       if (hasCompletePluginDependencies(pluginRoot)) return;
-      console.error(`${VERSION_CHECK_LOG_PREFIX} tree-sitter-cli binary remains unavailable; retrying provisioning on the next Setup`);
-      return;
+      if (provisioningStatus !== 'missing-installer') {
+        console.error(`${VERSION_CHECK_LOG_PREFIX} tree-sitter-cli binary remains unavailable; retrying provisioning on the next Setup`);
+        return;
+      }
     }
   }
 
