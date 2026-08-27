@@ -145,4 +145,24 @@ describe('OpenRouter token compatibility', () => {
     expect(response.bodyUsed).toBe(false);
     expect(await response.clone().text()).toBe('ok');
   });
+
+  it('returns the untouched response when clone inspection fails', async () => {
+    const response = new Response('preserve me', { status: 400 });
+    Object.defineProperty(response, 'clone', {
+      configurable: true,
+      value: () => { throw new Error('clone failed'); },
+    });
+
+    const inspected = await fetchWithOpenRouterTokenCompatibility(
+      async () => response,
+      'https://example.test/chat/completions',
+      { method: 'POST' },
+      {},
+      42,
+    );
+
+    expect(inspected).toBe(response);
+    expect(inspected.bodyUsed).toBe(false);
+    expect(await inspected.text()).toBe('preserve me');
+  });
 });
