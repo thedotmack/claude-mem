@@ -137,9 +137,16 @@ function stripImagePayloads(value: unknown, depth = 0): unknown {
   const record = value as Record<string, unknown>;
 
   // Anthropic content block: { type: 'image', source: { data: '<base64>' } }.
+  // A url-backed source is the same case as OpenAI's plain http URL — short,
+  // and it carries signal — so only an inlined payload is removed.
   const source = record.source;
   if (record.type === 'image' && source !== null && typeof source === 'object') {
-    return { type: 'image', source: elideImageSource(source as Record<string, unknown>) };
+    const record_source = source as Record<string, unknown>;
+    const url = record_source.url;
+    if (typeof url === 'string' && !url.startsWith('data:')) {
+      return value;
+    }
+    return { type: 'image', source: elideImageSource(record_source) };
   }
 
   // OpenAI content block: { type: 'image_url', image_url: { url: 'data:...' } }.
