@@ -104,6 +104,66 @@ const OBS_PROMPT_FIELD_MAX_CHARS = 16_000;
 const OBS_PROMPT_FIELD_HEAD_RATIO = 0.6;
 const OBS_PROMPT_FIELD_TAIL_RATIO = 0.3;
 
+// Image content blocks carry base64 payloads that are worthless to a text
+// observer and ruinously expensive to carry. Two things compound (#3730):
+// truncateObservationField keeps the head and tail of an oversized field, so
+// what survives a screenshot is thousands of characters of base64 rather than
+// the caption beside it; and the prompt is appended to
+// session.conversationHistory, which every later observation in the session
+// re-sends in full. A browser-automation session taking a few hundred
+// screenshots replays all of it, every time.
+//
+// Stripping generically, on the shape of the content block, rather than by
+// tool name: CLAUDE_MEM_SKIP_TOOLS needs every screenshot-producing tool
+// enumerated ahead of time, and it drops the observation entirely instead of
+// keeping the part that has signal.
+const MAX_SANITIZE_DEPTH = 12;
+
+function elideImageSource(source: Record<string, unknown>): Record<string, unknown> {
+  const data = source.data;
+  const elided: Record<string, unknown> = { elided: 'image data withheld from the observer' };
+  if (typeof source.media_type === 'string') elided.media_type = source.media_type;
+  if (typeof data === 'string') elided.bytes = data.length;
+  return elided;
+}
+
+function stripImagePayloads(value: unknown, depth = 0): unknown {
+  if (depth > MAX_SANITIZE_DEPTH || value === null || typeof value !== 'object') return value;
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => stripImagePayloads(entry, depth + 1));
+  }
+
+  const record = value as Record<string, unknown>;
+
+  // Anthropic content block: { type: 'image', source: { data: '<base64>' } }.
+  const source = record.source;
+  if (record.type === 'image' && source !== null && typeof source === 'object') {
+    return { type: 'image', source: elideImageSource(source as Record<string, unknown>) };
+  }
+
+  // OpenAI content block: { type: 'image_url', image_url: { url: 'data:...' } }.
+  const imageUrl = record.image_url;
+  if (record.type === 'image_url' && imageUrl !== null && typeof imageUrl === 'object') {
+    const url = (imageUrl as Record<string, unknown>).url;
+    // A plain http(s) URL is short and can carry signal; only a data: URL is
+    // the inlined payload this exists to remove.
+    if (typeof url === 'string' && url.startsWith('data:')) {
+      return {
+        type: 'image_url',
+        image_url: { elided: 'image data withheld from the observer', bytes: url.length },
+      };
+    }
+    return value;
+  }
+
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(record)) {
+    out[key] = stripImagePayloads(entry, depth + 1);
+  }
+  return out;
+}
+
 function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_FIELD_MAX_CHARS): string {
   // JSON.stringify returns undefined for undefined / functions / symbols;
   // fall back to empty string so the call sites (template literal output)
@@ -143,8 +203,8 @@ export function buildObservationPrompt(obs: Observation): string {
   return `<observed_from_primary_session>
   <what_happened>${obs.tool_name}</what_happened>
   <occurred_at>${new Date(obs.created_at_epoch).toISOString()}</occurred_at>${obs.cwd ? `\n  <working_directory>${obs.cwd}</working_directory>` : ''}
-  <parameters>${truncateObservationField(toolInput)}</parameters>
-  <outcome>${truncateObservationField(toolOutput)}</outcome>
+  <parameters>${truncateObservationField(stripImagePayloads(toolInput))}</parameters>
+  <outcome>${truncateObservationField(stripImagePayloads(toolOutput))}</outcome>
 </observed_from_primary_session>
 
 If a <parameters> or <outcome> block above contains an "<elided chars=... />" marker, that field was truncated to fit the observer's context window. Describe only what you can see in the kept portion and do not infer details about the elided range.
