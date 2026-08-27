@@ -1,5 +1,8 @@
-import { describe, it, expect } from 'bun:test';
-import { buildNoOpResult, isNonBlockingHookInputError, isWorkerUnavailableError } from '../src/cli/hook-command.js';
+import { describe, it, expect, afterEach } from 'bun:test';
+import { Readable } from 'stream';
+import { buildNoOpResult, hookCommand, isNonBlockingHookInputError, isWorkerUnavailableError } from '../src/cli/hook-command.js';
+import { HookInputUnreadable } from '../src/cli/stdin-reader.js';
+import { HOOK_EXIT_CODES } from '../src/shared/hook-constants.js';
 
 describe('buildNoOpResult', () => {
   it('attaches a valid SessionStart hookSpecificOutput for the context event (#2972)', () => {
@@ -43,6 +46,18 @@ describe('isNonBlockingHookInputError', () => {
   it('does not classify unrelated hook errors as non-blocking input errors', () => {
     expect(isNonBlockingHookInputError(new Error('Cannot read properties of undefined'))).toBe(false);
     expect(isNonBlockingHookInputError(new Error('Request failed: 400'))).toBe(false);
+  });
+
+  // #3699: stdin that never arrives as parseable JSON is an input failure,
+  // not a handler bug — the hook has nothing to work with and must fail open.
+  it('classifies unreadable stdin as a non-blocking hook input error', () => {
+    expect(isNonBlockingHookInputError(new HookInputUnreadable('Malformed JSON at stdin EOF: {...'))).toBe(true);
+    expect(isNonBlockingHookInputError(new HookInputUnreadable('Incomplete JSON after 30000ms: {...'))).toBe(true);
+  });
+
+  // A plain Error carrying the same text is NOT the signal — only the type is.
+  it('does not classify a look-alike message from an untyped throw', () => {
+    expect(isNonBlockingHookInputError(new Error('Malformed JSON at stdin EOF: {...'))).toBe(false);
   });
 });
 
@@ -195,4 +210,49 @@ describe('isWorkerUnavailableError', () => {
       expect(isWorkerUnavailableError(undefined)).toBe(false);
     });
   });
+});
+
+/**
+ * #3699 — the hook must not exit 2 when it cannot read its own stdin.
+ *
+ * In plugin/hooks/hooks.json, PostToolUse / PreToolUse / Stop all carry
+ * `"async": true`, so Claude Code backgrounds them and synthesises status 0.
+ * UserPromptSubmit (session-init) and SessionStart (context) do NOT, so their
+ * real exit code is read — and on UserPromptSubmit an exit of 2 blocks the
+ * submission and discards what the user typed.
+ *
+ * Driving hookCommand end to end (rather than the predicate alone) is what
+ * makes these regression tests: stdin is rejected before any handler runs, so
+ * no worker is contacted and the assertion is purely about the exit contract.
+ */
+describe('hookCommand exit contract on unreadable stdin (#3699)', () => {
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+
+  function installFakeStdin(payload: string): void {
+    const fake = Readable.from([payload], { objectMode: false }) as unknown as NodeJS.ReadStream;
+    Object.defineProperty(fake, 'isTTY', { value: false, configurable: true });
+    Object.defineProperty(process, 'stdin', { configurable: true, writable: true, value: fake });
+  }
+
+  afterEach(() => {
+    if (realStdinDescriptor) {
+      Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    }
+  });
+
+  // The synchronously-registered hooks — the ones where exit 2 reaches the
+  // harness and costs the user something.
+  for (const event of ['session-init', 'context']) {
+    it(`exits 0 on truncated stdin for the ${event} hook`, async () => {
+      installFakeStdin('{"session_id":"s","cwd":"/tmp"');
+      const code = await hookCommand('claude-code', event, { skipExit: true });
+      expect(code).toBe(HOOK_EXIT_CODES.SUCCESS);
+    });
+
+    it(`exits 0 on stdin that is not JSON at all for the ${event} hook`, async () => {
+      installFakeStdin('not json at all');
+      const code = await hookCommand('claude-code', event, { skipExit: true });
+      expect(code).toBe(HOOK_EXIT_CODES.SUCCESS);
+    });
+  }
 });

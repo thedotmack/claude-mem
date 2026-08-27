@@ -111,8 +111,9 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'heap_used_mb',
   // hook_failed distress signal — hook_type is one of OUR hook names
   // (context | session-init | observation | summarize | file-context),
-  // error_mode (worker_unavailable | blocking_error), plus a consecutive
-  // failure counter and threshold flag. Never an error message.
+  // error_mode (worker_unavailable | blocking_error | input_unavailable),
+  // plus a consecutive failure counter and threshold flag. Never an error
+  // message.
   'hook_type',
   'error_mode',
   'consecutive_failures',

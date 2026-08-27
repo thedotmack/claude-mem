@@ -1,4 +1,4 @@
-import { readJsonFromStdin } from './stdin-reader.js';
+import { readJsonFromStdin, HookInputUnreadable } from './stdin-reader.js';
 import { getPlatformAdapter } from './adapters/index.js';
 import { AdapterRejectedInput } from './adapters/errors.js';
 import { getEventHandler } from './handlers/index.js';
@@ -74,7 +74,20 @@ export function isWorkerUnavailableError(error: unknown): boolean {
   return false;
 }
 
+/**
+ * True when the hook could not obtain its own input — stdin never arrived as
+ * parseable JSON, or the transcript it was pointed at is gone.
+ *
+ * These must never exit non-zero. `UserPromptSubmit` and `SessionStart` are
+ * the two hooks in hooks.json registered WITHOUT `"async": true`, so Claude
+ * Code reads their real exit status instead of synthesising 0. On
+ * UserPromptSubmit an exit of 2 blocks the submission and discards the typed
+ * prompt, which is a far worse outcome than the missed observation that
+ * failing open costs us (#3699).
+ */
 export function isNonBlockingHookInputError(error: unknown): boolean {
+  if (error instanceof HookInputUnreadable) return true;
+
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
 
@@ -132,6 +145,20 @@ export async function hookCommand(platform: string, event: string, options: Hook
     }
     if (isNonBlockingHookInputError(error)) {
       logger.warn('HOOK', `Hook input unavailable, skipping hook: ${error instanceof Error ? error.message : error}`);
+      // Failing open here used to be failing SILENT: before #3699 an
+      // unreadable stdin fell through to the catch-all, which emitted
+      // hook_failed. Keep that signal so the maintainers still see these —
+      // the exit code changes, the reporting does not. Awaited for the same
+      // reason as the catch-all below: exitGraceful calls process.exit(0),
+      // which would kill a fire-and-forget POST mid-flight.
+      {
+        const hookType = getActiveHookType();
+        await captureCliEvent('hook_failed', {
+          ...(hookType !== null ? { hook_type: hookType } : {}),
+          error_mode: 'input_unavailable',
+          threshold_tripped: false,
+        });
+      }
       emitModelContext(adapter, buildNoOpResult(event));
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;

@@ -1,6 +1,22 @@
 
 import { logger } from '../utils/logger.js';
 
+/**
+ * stdin could not be read as JSON — the bytes were truncated or malformed.
+ *
+ * Typed rather than message-sniffed because the classifier that decides
+ * whether a hook may exit non-zero has to be exact: on UserPromptSubmit and
+ * SessionStart (the two hooks registered without `async`) a blocking exit
+ * costs the user their prompt, so "is this an unreadable-input failure" must
+ * not hinge on wording that a later edit could drift away from. See #3699.
+ */
+export class HookInputUnreadable extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'HookInputUnreadable';
+  }
+}
+
 function isStdinAvailable(): boolean {
   try {
     const stdin = process.stdin;
@@ -83,7 +99,7 @@ export async function readJsonFromStdin(): Promise<unknown> {
       if (!resolved) {
         if (!tryResolveWithJson()) {
           if (input.trim()) {
-            rejectWith(new Error(`Incomplete JSON after ${SAFETY_TIMEOUT_MS}ms: ${input.slice(0, 100)}...`));
+            rejectWith(new HookInputUnreadable(`Incomplete JSON after ${SAFETY_TIMEOUT_MS}ms: ${input.slice(0, 100)}...`));
           } else {
             resolveWith(undefined);
           }
@@ -103,7 +119,7 @@ export async function readJsonFromStdin(): Promise<unknown> {
       if (!resolved) {
         if (!tryResolveWithJson()) {
           if (input.trim()) {
-            rejectWith(new Error(`Malformed JSON at stdin EOF: ${input.slice(0, 100)}...`));
+            rejectWith(new HookInputUnreadable(`Malformed JSON at stdin EOF: ${input.slice(0, 100)}...`));
           } else {
             resolveWith(undefined);
           }

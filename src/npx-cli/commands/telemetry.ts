@@ -76,7 +76,7 @@ const COLLECTED_FIELDS = [
   'shutdown_reason  stop / restart / signal',
   'process_rss_mb / heap_used_mb   worker memory, integer megabytes',
   'hook_type        context / session-init / observation / summarize / file-context',
-  'error_mode       worker_unavailable / blocking_error (never a message)',
+  'error_mode       worker_unavailable / blocking_error / input_unavailable (never a message)',
   'consecutive_failures   hook failures in a row (the fail-loud counter)',
   'threshold_tripped      whether the fail-loud threshold was reached',
 ];

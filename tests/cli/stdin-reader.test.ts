@@ -2,7 +2,7 @@
 import { describe, it, expect, afterEach } from 'bun:test';
 import { Readable } from 'stream';
 
-import { readJsonFromStdin } from '../../src/cli/stdin-reader.js';
+import { readJsonFromStdin, HookInputUnreadable } from '../../src/cli/stdin-reader.js';
 
 const realStdin = process.stdin;
 const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
@@ -47,5 +47,13 @@ describe('readJsonFromStdin — onEnd contract (#2089)', () => {
   it('rejects when stdin closes with junk that is clearly not JSON', async () => {
     installFakeStdin('not json at all');
     await expect(readJsonFromStdin()).rejects.toThrow(/Malformed JSON at stdin EOF/);
+  });
+
+  // The class, not the wording, is what hook-command keys off to decide the
+  // hook may not exit 2 (#3699). Asserting the message alone would let a
+  // reworded throw silently go back to eating the user's prompt.
+  it('rejects with a typed HookInputUnreadable so the classifier cannot drift', async () => {
+    installFakeStdin('{"truncated":');
+    await expect(readJsonFromStdin()).rejects.toBeInstanceOf(HookInputUnreadable);
   });
 });
