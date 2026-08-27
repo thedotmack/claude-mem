@@ -5,6 +5,7 @@ import {
   classifyObserverOutput,
   isAuthFailureObserverOutput,
   isQuotaLimitedObserverOutput,
+  isTransportErrorObserverOutput,
   previewOutput,
 } from '../../../sdk/output-classifier.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
@@ -342,6 +343,26 @@ export async function processAgentResponse(
         remediation: '/login',
         preview: previewOutput(text),
       });
+      return;
+    }
+
+    if (isTransportErrorObserverOutput(text)) {
+      session.consecutiveInvalidOutputs = 0;
+
+      logger.warn('PARSER', `${agentName} returned transport/API error — preserving queued batch for retry`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'transport',
+        preview: previewOutput(text),
+      });
+
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = 'transport:observer_text';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort
+      }
+      worker?.broadcastProcessingStatus?.();
       return;
     }
 
