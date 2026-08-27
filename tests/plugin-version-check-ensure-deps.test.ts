@@ -197,6 +197,19 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(true);
   });
 
+  test('repairs an unreadable installed dependency manifest', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-corrupt-zod');
+    mkdirSync(join(pluginRoot, 'node_modules', 'zod'), { recursive: true });
+    writeFileSync(join(pluginRoot, 'node_modules', 'zod', 'package.json'), '{not-json');
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain(INSTALL_DIAGNOSTIC);
+    expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
+    expect(existsSync(join(pluginRoot, 'node_modules', 'zod', 'v4', 'index.js'))).toBe(true);
+  });
+
   test('skips install when every declared package has a readable manifest', async () => {
     // Setup runs on every Claude Code launch. If node_modules already exists,
     // the install MUST be skipped — otherwise we re-run a 100 MB+ install on
@@ -246,6 +259,49 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(code).toBe(0);
     expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
     expect(existsSync(join(pluginRoot, FAKE_TREE_SITTER_BINARY))).toBe(true);
+  });
+
+  test('does not repeat Bun install when tree-sitter provisioning fails', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin(
+      'plugin-tree-sitter-provision-failed',
+      'success',
+      { zod: '^4.4.3', 'tree-sitter-cli': '^0.26.5' },
+    );
+    const zodRoot = join(pluginRoot, 'node_modules', 'zod');
+    mkdirSync(zodRoot, { recursive: true });
+    writeFileSync(join(zodRoot, 'package.json'), JSON.stringify({
+      name: 'zod',
+      version: '4.4.3',
+      exports: {
+        '.': './index.js',
+        './v3': './v3/index.js',
+        './v4': './v4/index.js',
+        './v4-mini': './v4-mini/index.js',
+      },
+    }));
+    for (const entryFile of ['index.js', ...FAKE_ZOD_ENTRY_FILES]) {
+      const entryPath = join(zodRoot, ...entryFile.split('/'));
+      mkdirSync(join(entryPath, '..'), { recursive: true });
+      writeFileSync(entryPath, '');
+    }
+
+    const treeSitterRoot = join(pluginRoot, 'node_modules', 'tree-sitter-cli');
+    mkdirSync(treeSitterRoot, { recursive: true });
+    writeFileSync(join(treeSitterRoot, 'package.json'), JSON.stringify({ name: 'tree-sitter-cli', version: '0.26.5' }));
+    writeFileSync(join(treeSitterRoot, 'install.js'), 'process.exit(42);');
+
+    const bunInvocationMarker = join(pluginRoot, 'bun-invoked');
+    const fakeBunPath = join(fakeBinDir, 'bun');
+    writeFileSync(fakeBunPath, `#!/usr/bin/env bash\n: > "${bunInvocationMarker}"\nexit 0\n`);
+    chmodSync(fakeBunPath, 0o755);
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).not.toContain(INSTALL_DIAGNOSTIC);
+    expect(stderr).toContain('tree-sitter-cli binary provisioning failed (exit 42)');
+    expect(stderr).toContain('tree-sitter-cli binary remains unavailable');
+    expect(existsSync(bunInvocationMarker)).toBe(false);
   });
 
   test('repairs a Zod tree whose exports map omits the bare worker entry point', async () => {

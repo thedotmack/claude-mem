@@ -93,7 +93,7 @@ function hasFreshDependencyResolutions(pluginRoot, requiredSubpaths) {
   }
 }
 
-function hasCompletePluginDependencies(pluginRoot, { freshResolver = false } = {}) {
+function hasCompletePluginDependencies(pluginRoot, { freshResolver = false, requireTreeSitterBinary = true } = {}) {
   const packageManifest = readJsonObject(join(pluginRoot, 'package.json'));
   // Preserve the existing existence semantics when the manifest cannot be
   // trusted; Setup must remain fail-open for malformed plugin metadata.
@@ -115,8 +115,7 @@ function hasCompletePluginDependencies(pluginRoot, { freshResolver = false } = {
     if (!segments) continue;
 
     const installedManifest = readJsonObject(join(nodeModulesRoot, ...segments, 'package.json'));
-    if (installedManifest === false) return false;
-    if (!installedManifest) continue;
+    if (installedManifest === false || installedManifest === null) return false;
 
     const requiredSubpaths = REQUIRED_DEPENDENCY_SUBPATHS[dependencyName] || [];
     if (freshResolver) {
@@ -132,7 +131,8 @@ function hasCompletePluginDependencies(pluginRoot, { freshResolver = false } = {
     }
 
     if (
-      dependencyName === TREE_SITTER_CLI
+      requireTreeSitterBinary
+      && dependencyName === TREE_SITTER_CLI
       && !isUsableTreeSitterBinary(join(nodeModulesRoot, ...segments, TREE_SITTER_BINARY))
     ) {
       return false;
@@ -245,7 +245,18 @@ function ensurePluginDependencies(pluginRoot) {
 
   // Check the declared closure rather than treating the directory itself as
   // proof that an interrupted install finished.
-  if (existsSync(join(pluginRoot, NODE_MODULES_DIRNAME)) && hasCompletePluginDependencies(pluginRoot)) return;
+  if (existsSync(join(pluginRoot, NODE_MODULES_DIRNAME))) {
+    if (hasCompletePluginDependencies(pluginRoot)) return;
+
+    // A generated CLI binary can be repaired from the installed package; do
+    // that before repeating the full dependency installation.
+    if (hasCompletePluginDependencies(pluginRoot, { requireTreeSitterBinary: false })) {
+      provisionTreeSitterCliBinary(pluginRoot);
+      if (hasCompletePluginDependencies(pluginRoot)) return;
+      console.error(`${VERSION_CHECK_LOG_PREFIX} tree-sitter-cli binary remains unavailable; retrying provisioning on the next Setup`);
+      return;
+    }
+  }
 
   const bunPath = findBun();
   if (!bunPath) {
