@@ -12,6 +12,7 @@ const INSTALL_SUCCESS_DIAGNOSTIC = '[version-check] plugin dependencies installe
 const INSTALL_FAILURE_DIAGNOSTIC = '[version-check] bun install failed';
 const FAKE_INSTALLED_MARKER_REL = join('node_modules', 'zod', 'v3', 'index.js');
 const FAKE_ZOD_ENTRY_FILES = ['v3/index.js', 'v4/index.js', 'v4-mini/index.js'];
+const FAKE_TREE_SITTER_BINARY = join('node_modules', 'tree-sitter-cli', process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter');
 const SKIP_NON_UNIX = process.platform === 'win32';
 
 let tmpRoot: string;
@@ -92,10 +93,16 @@ function makeFreshPlugin(
     .filter((dependencyName) => /^@?[A-Za-z0-9][A-Za-z0-9._~-]*(?:\/[A-Za-z0-9][A-Za-z0-9._~-]*)?$/.test(dependencyName))
     .map((dependencyName) => {
       const packagePath = dependencyName.split('/').join('/');
-      return [
+      const commands = [
         `  mkdir -p "${pluginRoot}/node_modules/${packagePath}"`,
         `  printf '{"name":"${dependencyName}","version":"1.0.0"}\n' > "${pluginRoot}/node_modules/${packagePath}/package.json"`,
       ];
+      if (dependencyName === 'tree-sitter-cli') {
+        commands.push(
+          `  printf '%s\n' '#!/usr/bin/env node' 'require("fs").writeFileSync(require("path").join(__dirname, "${process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter'}"), "fake");' > "${pluginRoot}/node_modules/${packagePath}/install.js"`,
+        );
+      }
+      return commands;
     })
     .flat();
   const installBody = bunBehavior === 'success'
@@ -217,6 +224,20 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
     expect(existsSync(join(pluginRoot, 'node_modules', 'zod', 'v4', 'index.js'))).toBe(true);
     expect(existsSync(join(pluginRoot, 'node_modules', 'zod', 'v4-mini', 'index.js'))).toBe(true);
+  });
+
+  test('provisions tree-sitter-cli after script-suppressed installation', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin(
+      'plugin-tree-sitter-cli',
+      'success',
+      { zod: '^4.4.3', 'tree-sitter-cli': '^0.26.5' },
+    );
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
+    expect(existsSync(join(pluginRoot, FAKE_TREE_SITTER_BINARY))).toBe(true);
   });
 
   test('fails open for an invalid plugin manifest', async () => {

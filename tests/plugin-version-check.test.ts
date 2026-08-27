@@ -76,4 +76,10 @@ describe('plugin/scripts/version-check.js Windows bun lookup', () => {
     expect(windowsCallMatch![1]).toContain('windowsHide: true');
     expect(windowsCallMatch![1]).not.toContain('shell');
   });
+
+  it('prefers the native Bun executable over a Windows shim', () => {
+    expect(versionCheckSource).toContain("endsWith('bun.exe')");
+    expect(versionCheckSource).toContain("endsWith('bun.cmd')");
+    expect(versionCheckSource).toContain('bunInstallInvocation');
+  });
 });

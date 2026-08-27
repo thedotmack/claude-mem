@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from 'child_process';
-import { existsSync, readFileSync, rmSync } from 'fs';
+import { existsSync, readFileSync, rmSync, statSync } from 'fs';
+import { createRequire } from 'module';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -11,9 +12,11 @@ const BUN_INSTALL_ARGS = Object.freeze(['install', '--production', '--ignore-scr
 const BUN_INSTALL_TIMEOUT_MS = 120_000;
 const NODE_MODULES_DIRNAME = 'node_modules';
 const PACKAGE_NAME_SEGMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
-const REQUIRED_DEPENDENCY_ENTRY_FILES = Object.freeze({
-  zod: Object.freeze(['v3/index.js', 'v4/index.js', 'v4-mini/index.js']),
+const REQUIRED_DEPENDENCY_SUBPATHS = Object.freeze({
+  zod: Object.freeze(['zod/v3', 'zod/v4', 'zod/v4-mini']),
 });
+const TREE_SITTER_CLI = 'tree-sitter-cli';
+const TREE_SITTER_BINARY = IS_WINDOWS ? 'tree-sitter.exe' : 'tree-sitter';
 
 function dependencyPathSegments(name) {
   if (typeof name !== 'string') return null;
@@ -42,6 +45,14 @@ function readJsonObject(path) {
   }
 }
 
+function isFile(path) {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function hasCompletePluginDependencies(pluginRoot) {
   const packageManifest = readJsonObject(join(pluginRoot, 'package.json'));
   // Preserve the existing existence semantics when the manifest cannot be
@@ -50,6 +61,13 @@ function hasCompletePluginDependencies(pluginRoot) {
   if (!packageManifest.dependencies || typeof packageManifest.dependencies !== 'object' || Array.isArray(packageManifest.dependencies)) return true;
 
   const nodeModulesRoot = join(pluginRoot, NODE_MODULES_DIRNAME);
+  let requireFromPlugin;
+  try {
+    requireFromPlugin = createRequire(join(pluginRoot, 'package.json'));
+  } catch {
+    return true;
+  }
+
   for (const dependencyName of Object.keys(packageManifest.dependencies)) {
     const segments = dependencyPathSegments(dependencyName);
     if (!segments) continue;
@@ -58,8 +76,19 @@ function hasCompletePluginDependencies(pluginRoot) {
     if (installedManifest === false) return false;
     if (!installedManifest) continue;
 
-    const requiredEntryFiles = REQUIRED_DEPENDENCY_ENTRY_FILES[dependencyName] || [];
-    if (requiredEntryFiles.some((entryFile) => !existsSync(join(nodeModulesRoot, ...segments, ...entryFile.split('/'))))) {
+    const requiredSubpaths = REQUIRED_DEPENDENCY_SUBPATHS[dependencyName] || [];
+    for (const subpath of requiredSubpaths) {
+      try {
+        requireFromPlugin.resolve(subpath);
+      } catch {
+        return false;
+      }
+    }
+
+    if (
+      dependencyName === TREE_SITTER_CLI
+      && !isFile(join(nodeModulesRoot, ...segments, TREE_SITTER_BINARY))
+    ) {
       return false;
     }
   }
@@ -73,7 +102,10 @@ function findBun() {
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
     if (IS_WINDOWS) {
-      const bunCmdPath = pathCheck.stdout.split('\n').find((line) => line.trim().endsWith('bun.cmd'));
+      const bunPaths = pathCheck.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      const bunExePath = bunPaths.find((line) => line.toLowerCase().endsWith('bun.exe'));
+      if (bunExePath) return bunExePath;
+      const bunCmdPath = bunPaths.find((line) => line.toLowerCase().endsWith('bun.cmd'));
       if (bunCmdPath) return bunCmdPath.trim();
     }
     return 'bun';
@@ -93,6 +125,55 @@ function findBun() {
   }
 
   return null;
+}
+
+function bunInstallInvocation(bunPath) {
+  if (IS_WINDOWS && /\.(cmd|bat)$/i.test(bunPath)) {
+    const quote = (value) => `"${String(value).replace(/"/g, '\\"')}"`;
+    return {
+      command: process.env.ComSpec || 'cmd.exe',
+      args: ['/d', '/s', '/c', [bunPath, ...BUN_INSTALL_ARGS].map(quote).join(' ')],
+    };
+  }
+  return { command: bunPath, args: BUN_INSTALL_ARGS };
+}
+
+function provisionTreeSitterCliBinary(pluginRoot) {
+  const cliDir = join(pluginRoot, NODE_MODULES_DIRNAME, TREE_SITTER_CLI);
+  const binaryPath = join(cliDir, TREE_SITTER_BINARY);
+  if (!existsSync(cliDir) || isFile(binaryPath)) return;
+
+  const installScript = join(cliDir, 'install.js');
+  if (!existsSync(installScript)) {
+    console.error(`${VERSION_CHECK_LOG_PREFIX} tree-sitter-cli install script not found; plugin dependencies remain incomplete`);
+    return;
+  }
+
+  let result;
+  try {
+    result = spawnSync(process.execPath, [installScript], {
+      cwd: cliDir,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: BUN_INSTALL_TIMEOUT_MS,
+      windowsHide: true,
+    });
+  } catch (err) {
+    const reason = err && err.message ? err.message : String(err);
+    console.error(`${VERSION_CHECK_LOG_PREFIX} tree-sitter-cli binary provisioning threw (${reason})`);
+    return;
+  }
+
+  const killedBySignal = result.status === null && !!result.signal;
+  const nonZeroExit = result.status !== null && result.status !== 0;
+  if (result.error || nonZeroExit || killedBySignal) {
+    const reason = result.error
+      ? result.error.message
+      : killedBySignal
+        ? `killed by ${result.signal}`
+        : `exit ${result.status}`;
+    console.error(`${VERSION_CHECK_LOG_PREFIX} tree-sitter-cli binary provisioning failed (${reason})`);
+  }
 }
 
 // Setup-phase auto-install of plugin runtime dependencies.
@@ -128,7 +209,8 @@ function ensurePluginDependencies(pluginRoot) {
 
   let result;
   try {
-    result = spawnSync(bunPath, BUN_INSTALL_ARGS, {
+    const invocation = bunInstallInvocation(bunPath);
+    result = spawnSync(invocation.command, invocation.args, {
       cwd: pluginRoot,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -173,6 +255,7 @@ function ensurePluginDependencies(pluginRoot) {
       console.error(`${VERSION_CHECK_LOG_PREFIX} failed to clean up partial node_modules (${rmReason}); next Setup run may skip retry`);
     }
   } else {
+    provisionTreeSitterCliBinary(pluginRoot);
     if (!hasCompletePluginDependencies(pluginRoot)) {
       console.error(`${VERSION_CHECK_LOG_PREFIX} plugin dependencies remain incomplete after install`);
       return;
