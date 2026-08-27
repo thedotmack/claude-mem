@@ -60,4 +60,26 @@ describe('extractFilePaths', () => {
     expect(extractFilePaths('mcp__fs__read_write', { path: 'README.md' }, tmpDir)).toEqual([]);
     expect(extractFilePaths('mcp__server__readonly', { path: 'README.md' }, tmpDir)).toEqual([]);
   });
+
+  // #3688: `parse` throws "Bad substitution" on `${}`. The throw escaped this
+  // best-effort enrichment and reached the generic hook handler, which answers
+  // BLOCKING_ERROR — so an ordinary shell command was blocked and the tool call
+  // discarded, to add a convenience field.
+  it('yields no paths instead of throwing on an unparseable substitution', () => {
+    expect(() => extractFilePaths('Bash', { command: 'cat ${}' }, tmpDir)).not.toThrow();
+    expect(extractFilePaths('Bash', { command: 'cat ${}' }, tmpDir)).toEqual([]);
+  });
+
+  it('yields no paths when the unparseable part rides alongside a real read', () => {
+    // The readable file is genuinely there, so this fails only because the
+    // command as a whole cannot be tokenised — not because the path is bad.
+    expect(
+      extractFilePaths('Bash', { command: 'cat README.md && cat ${}' }, tmpDir)
+    ).toEqual([]);
+  });
+
+  it('still extracts paths from a command that parses', () => {
+    // The guard must not swallow the feature it protects.
+    expect(extractFilePaths('Bash', { command: 'cat README.md' }, tmpDir)).toEqual(['README.md']);
+  });
 });
