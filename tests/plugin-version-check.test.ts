@@ -81,5 +81,7 @@ describe('plugin/scripts/version-check.js Windows bun lookup', () => {
     expect(versionCheckSource).toContain("endsWith('bun.exe')");
     expect(versionCheckSource).toContain("endsWith('bun.cmd')");
     expect(versionCheckSource).toContain('bunInstallInvocation');
+    expect(versionCheckSource).toContain('windowsVerbatimArguments: true');
+    expect(versionCheckSource).toContain("args: ['/d', '/s', '/c', `\"${commandLine}\"`]");
   });
 });

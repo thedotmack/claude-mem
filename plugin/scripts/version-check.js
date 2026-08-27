@@ -17,6 +17,7 @@ const REQUIRED_DEPENDENCY_SUBPATHS = Object.freeze({
 });
 const TREE_SITTER_CLI = 'tree-sitter-cli';
 const TREE_SITTER_BINARY = IS_WINDOWS ? 'tree-sitter.exe' : 'tree-sitter';
+const TREE_SITTER_VERSION_TIMEOUT_MS = 10_000;
 
 function dependencyPathSegments(name) {
   if (typeof name !== 'string') return null;
@@ -48,6 +49,22 @@ function readJsonObject(path) {
 function isFile(path) {
   try {
     return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function isUsableTreeSitterBinary(path) {
+  if (!isFile(path)) return false;
+
+  try {
+    const result = spawnSync(path, ['--version'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: TREE_SITTER_VERSION_TIMEOUT_MS,
+      windowsHide: true,
+    });
+    return result.status === 0 && /^tree-sitter \d+\.\d+\.\d+(?:\s|$)/.test(result.stdout.trim());
   } catch {
     return false;
   }
@@ -87,7 +104,7 @@ function hasCompletePluginDependencies(pluginRoot) {
 
     if (
       dependencyName === TREE_SITTER_CLI
-      && !isFile(join(nodeModulesRoot, ...segments, TREE_SITTER_BINARY))
+      && !isUsableTreeSitterBinary(join(nodeModulesRoot, ...segments, TREE_SITTER_BINARY))
     ) {
       return false;
     }
@@ -130,18 +147,20 @@ function findBun() {
 function bunInstallInvocation(bunPath) {
   if (IS_WINDOWS && /\.(cmd|bat)$/i.test(bunPath)) {
     const quote = (value) => `"${String(value).replace(/"/g, '\\"')}"`;
+    const commandLine = [bunPath, ...BUN_INSTALL_ARGS].map(quote).join(' ');
     return {
       command: process.env.ComSpec || 'cmd.exe',
-      args: ['/d', '/s', '/c', [bunPath, ...BUN_INSTALL_ARGS].map(quote).join(' ')],
+      args: ['/d', '/s', '/c', `"${commandLine}"`],
+      options: { windowsVerbatimArguments: true },
     };
   }
-  return { command: bunPath, args: BUN_INSTALL_ARGS };
+  return { command: bunPath, args: BUN_INSTALL_ARGS, options: {} };
 }
 
 function provisionTreeSitterCliBinary(pluginRoot) {
   const cliDir = join(pluginRoot, NODE_MODULES_DIRNAME, TREE_SITTER_CLI);
   const binaryPath = join(cliDir, TREE_SITTER_BINARY);
-  if (!existsSync(cliDir) || isFile(binaryPath)) return;
+  if (!existsSync(cliDir) || isUsableTreeSitterBinary(binaryPath)) return;
 
   const installScript = join(cliDir, 'install.js');
   if (!existsSync(installScript)) {
@@ -157,6 +176,7 @@ function provisionTreeSitterCliBinary(pluginRoot) {
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: BUN_INSTALL_TIMEOUT_MS,
       windowsHide: true,
+      windowsVerbatimArguments: true,
     });
   } catch (err) {
     const reason = err && err.message ? err.message : String(err);
@@ -216,6 +236,7 @@ function ensurePluginDependencies(pluginRoot) {
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: BUN_INSTALL_TIMEOUT_MS,
       windowsHide: true,
+      ...invocation.options,
     });
   } catch (err) {
     const reason = err && err.message ? err.message : String(err);

@@ -93,13 +93,16 @@ function makeFreshPlugin(
     .filter((dependencyName) => /^@?[A-Za-z0-9][A-Za-z0-9._~-]*(?:\/[A-Za-z0-9][A-Za-z0-9._~-]*)?$/.test(dependencyName))
     .map((dependencyName) => {
       const packagePath = dependencyName.split('/').join('/');
+      const packageManifest = dependencyName === 'zod'
+        ? '{"name":"zod","version":"1.0.0","exports":{"./v3":"./v3/index.js","./v4":"./v4/index.js","./v4-mini":"./v4-mini/index.js"}}'
+        : `{"name":"${dependencyName}","version":"1.0.0"}`;
       const commands = [
         `  mkdir -p "${pluginRoot}/node_modules/${packagePath}"`,
-        `  printf '{"name":"${dependencyName}","version":"1.0.0"}\n' > "${pluginRoot}/node_modules/${packagePath}/package.json"`,
+        `  printf '${packageManifest}\n' > "${pluginRoot}/node_modules/${packagePath}/package.json"`,
       ];
       if (dependencyName === 'tree-sitter-cli') {
         commands.push(
-          `  printf '%s\n' '#!/usr/bin/env node' 'require("fs").writeFileSync(require("path").join(__dirname, "${process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter'}"), "fake");' > "${pluginRoot}/node_modules/${packagePath}/install.js"`,
+          `  printf '%s\n' '#!/usr/bin/env node' 'const fs = require("fs"); const path = require("path"); const target = path.join(__dirname, "${process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter'}"); fs.writeFileSync(target, "#!/usr/bin/env node\\nprocess.stdout.write(\\"tree-sitter 0.26.5\\\\n\\");\\n"); fs.chmodSync(target, 0o755);' > "${pluginRoot}/node_modules/${packagePath}/install.js"`,
         );
       }
       return commands;
@@ -239,6 +242,30 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(code).toBe(0);
     expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
     expect(existsSync(join(pluginRoot, FAKE_TREE_SITTER_BINARY))).toBe(true);
+  });
+
+  test('repairs a Zod tree whose exports map omits a worker subpath', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-zod-exports');
+    mkdirSync(join(pluginRoot, 'node_modules', 'zod', 'v3'), { recursive: true });
+    mkdirSync(join(pluginRoot, 'node_modules', 'zod', 'v4'), { recursive: true });
+    mkdirSync(join(pluginRoot, 'node_modules', 'zod', 'v4-mini'), { recursive: true });
+    writeFileSync(join(pluginRoot, 'node_modules', 'zod', 'package.json'), JSON.stringify({
+      name: 'zod',
+      version: '4.4.3',
+      exports: {
+        './v3': './v3/index.js',
+        './v4': './v4/index.js',
+      },
+    }));
+    for (const entryFile of FAKE_ZOD_ENTRY_FILES) {
+      writeFileSync(join(pluginRoot, 'node_modules', 'zod', ...entryFile.split('/')), '');
+    }
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain(INSTALL_DIAGNOSTIC);
+    expect(existsSync(join(pluginRoot, 'node_modules', 'zod', 'v4-mini', 'index.js'))).toBe(true);
   });
 
   test('fails open for an invalid plugin manifest', async () => {
