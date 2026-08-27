@@ -70,7 +70,30 @@ function isUsableTreeSitterBinary(path) {
   }
 }
 
-function hasCompletePluginDependencies(pluginRoot) {
+const FRESH_RESOLVE_SCRIPT = [
+  "const { createRequire } = require('module');",
+  "const requireFromPlugin = createRequire(require('path').join(process.cwd(), 'package.json'));",
+  "for (const specifier of process.argv.slice(1)) requireFromPlugin.resolve(specifier);",
+].join('\n');
+
+function hasFreshDependencyResolutions(pluginRoot, requiredSubpaths) {
+  if (requiredSubpaths.length === 0) return true;
+
+  try {
+    const result = spawnSync(process.execPath, ['-e', FRESH_RESOLVE_SCRIPT, ...requiredSubpaths], {
+      cwd: pluginRoot,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: TREE_SITTER_VERSION_TIMEOUT_MS,
+      windowsHide: true,
+    });
+    return result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+function hasCompletePluginDependencies(pluginRoot, { freshResolver = false } = {}) {
   const packageManifest = readJsonObject(join(pluginRoot, 'package.json'));
   // Preserve the existing existence semantics when the manifest cannot be
   // trusted; Setup must remain fail-open for malformed plugin metadata.
@@ -79,10 +102,12 @@ function hasCompletePluginDependencies(pluginRoot) {
 
   const nodeModulesRoot = join(pluginRoot, NODE_MODULES_DIRNAME);
   let requireFromPlugin;
-  try {
-    requireFromPlugin = createRequire(join(pluginRoot, 'package.json'));
-  } catch {
-    return true;
+  if (!freshResolver) {
+    try {
+      requireFromPlugin = createRequire(join(pluginRoot, 'package.json'));
+    } catch {
+      return true;
+    }
   }
 
   for (const dependencyName of Object.keys(packageManifest.dependencies)) {
@@ -94,11 +119,15 @@ function hasCompletePluginDependencies(pluginRoot) {
     if (!installedManifest) continue;
 
     const requiredSubpaths = REQUIRED_DEPENDENCY_SUBPATHS[dependencyName] || [];
-    for (const subpath of requiredSubpaths) {
-      try {
-        requireFromPlugin.resolve(subpath);
-      } catch {
-        return false;
+    if (freshResolver) {
+      if (!hasFreshDependencyResolutions(pluginRoot, requiredSubpaths)) return false;
+    } else {
+      for (const subpath of requiredSubpaths) {
+        try {
+          requireFromPlugin.resolve(subpath);
+        } catch {
+          return false;
+        }
       }
     }
 
@@ -277,7 +306,8 @@ function ensurePluginDependencies(pluginRoot) {
     }
   } else {
     provisionTreeSitterCliBinary(pluginRoot);
-    if (!hasCompletePluginDependencies(pluginRoot)) {
+    // Bun can retain package-resolution metadata across an in-process install.
+    if (!hasCompletePluginDependencies(pluginRoot, { freshResolver: true })) {
       console.error(`${VERSION_CHECK_LOG_PREFIX} plugin dependencies remain incomplete after install`);
       return;
     }
