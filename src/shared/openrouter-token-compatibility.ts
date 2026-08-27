@@ -31,7 +31,7 @@ export async function fetchWithOpenRouterTokenCompatibility(
 ): Promise<Response> {
   const initialBody = { ...body, max_tokens: maxOutputTokens };
   const response = await fetchImpl(input, { ...init, body: JSON.stringify(initialBody) });
-  if (response.status !== 400 && (response.status < 200 || response.status >= 300 || response.status === 204)) {
+  if (response.status !== 400 && (response.status < 200 || response.status >= 300 || response.status === 204 || response.status === 205)) {
     return response;
   }
 
@@ -39,12 +39,10 @@ export async function fetchWithOpenRouterTokenCompatibility(
   let responseForCaller = response;
   try {
     bodyText = await response.text();
-    responseForCaller = new Proxy(response, {
-      get(target, property) {
-        if (property === 'text') return async () => bodyText;
-        if (property === 'json') return async () => JSON.parse(bodyText);
-        return Reflect.get(target, property, target);
-      },
+    responseForCaller = new Response(bodyText, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
     });
   } catch {
     return response;

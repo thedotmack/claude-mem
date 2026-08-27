@@ -105,4 +105,27 @@ describe('OpenRouter token compatibility', () => {
     expect(response.status).toBe(400);
     expect(calls).toBe(1);
   });
+
+  it('returns native Response body semantics after inspecting a non-retry response', async () => {
+    const response = await fetchWithOpenRouterTokenCompatibility(
+      async () => new Response(
+        JSON.stringify({ error: { message: "Unsupported parameter: 'max_tokens' is not supported" } }),
+        { status: 400, statusText: 'Gateway Rejected', headers: { 'Content-Type': 'application/json' } },
+      ),
+      'https://example.test/chat/completions',
+      { method: 'POST' },
+      {},
+      42,
+    );
+
+    expect(response.status).toBe(400);
+    expect(response.statusText).toBe('Gateway Rejected');
+    expect(response.headers.get('content-type')).toBe('application/json');
+    expect(response.bodyUsed).toBe(false);
+
+    const clone = response.clone();
+    expect(await clone.text()).toContain('max_tokens');
+    expect((await response.arrayBuffer()).byteLength).toBeGreaterThan(0);
+    expect(response.bodyUsed).toBe(true);
+  });
 });
