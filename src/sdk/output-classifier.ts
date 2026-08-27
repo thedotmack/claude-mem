@@ -64,7 +64,7 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
   const sessionLimitSuffix = sessionLimitPrefix ? text.slice(sessionLimitPrefix[0].length) : null;
   const sessionLimitNotice = sessionLimitSuffix !== null
     && (/^\s*[.!?]?\s*$/.test(sessionLimitSuffix)
-      || /^\s*[·,:-]\s*(?:resets?|try again)\b/.test(sessionLimitSuffix));
+      || /^\s*[·,:-]\s*(?:resets?\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?(?:\s*\([^)]*\))?|try again\s+(?:in\s+\d+\s*(?:minutes?|hours?)|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?))(?:[.!?])?\s*$/i.test(sessionLimitSuffix));
 
   return (
     /\bclaude\b.*\busage\b.*\blimit\b.*\b(reached|exceeded|exhausted|reset|resets|try again)\b/.test(text) ||
