@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'bun:test';
 import { Readable } from 'stream';
-import { buildNoOpResult, hookCommand, isNonBlockingHookInputError, isWorkerUnavailableError } from '../src/cli/hook-command.js';
+import { buildNoOpResult, hookCommand, isNonBlockingHookInputError, isWorkerUnavailableError, NON_BLOCKING_TELEMETRY_DEADLINE_MS, raceDeadline } from '../src/cli/hook-command.js';
 import { HookInputUnreadable } from '../src/cli/stdin-reader.js';
 import { HOOK_EXIT_CODES } from '../src/shared/hook-constants.js';
 
@@ -255,4 +255,63 @@ describe('hookCommand exit contract on unreadable stdin (#3699)', () => {
       expect(code).toBe(HOOK_EXIT_CODES.SUCCESS);
     });
   }
+});
+
+/**
+ * Review on #3699 — the fail-open path must not be held by its own telemetry.
+ *
+ * The branch exists so a hook that cannot read stdin costs the user nothing.
+ * Awaiting an optional POST reintroduced that cost: with telemetry enabled and
+ * an endpoint that accepts but never answers, the no-op response was delayed by
+ * seconds on a synchronously-registered hook.
+ */
+describe('fail-open telemetry is on a deadline (#3699 review)', () => {
+  const realStdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+
+  function installFakeStdin(payload: string): void {
+    const fake = Readable.from([payload], { objectMode: false }) as unknown as NodeJS.ReadStream;
+    Object.defineProperty(fake, 'isTTY', { value: false, configurable: true });
+    Object.defineProperty(process, 'stdin', { configurable: true, writable: true, value: fake });
+  }
+
+  afterEach(() => {
+    if (realStdinDescriptor) {
+      Object.defineProperty(process, 'stdin', realStdinDescriptor);
+    }
+  });
+
+  it('keeps the deadline short enough to be invisible on a synchronous hook', () => {
+    // UserPromptSubmit and SessionStart are read for their real exit status,
+    // so this budget is time the user spends waiting.
+    expect(NON_BLOCKING_TELEMETRY_DEADLINE_MS).toBeLessThanOrEqual(500);
+  });
+
+  // Driving hookCommand would NOT prove this: telemetry consent is off under
+  // test, so captureCliEvent returns immediately and the branch is fast either
+  // way. The mechanism is what has to be pinned.
+  it('gives up on a POST that never answers', async () => {
+    const neverSettles = new Promise<void>(() => {});
+
+    const startedAt = Date.now();
+    await raceDeadline(neverSettles, 50);
+    const elapsed = Date.now() - startedAt;
+
+    expect(elapsed).toBeLessThan(1_000);
+  });
+
+  it('does not delay a POST that answers before the deadline', async () => {
+    const startedAt = Date.now();
+    await raceDeadline(Promise.resolve('sent'), 5_000);
+    const elapsed = Date.now() - startedAt;
+
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  it('still exits 0 on truncated stdin with the deadline in place', async () => {
+    installFakeStdin('{"session_id":"s","cwd":"/tmp"');
+
+    const code = await hookCommand('claude-code', 'session-init', { skipExit: true });
+
+    expect(code).toBe(HOOK_EXIT_CODES.SUCCESS);
+  });
 });

@@ -24,6 +24,39 @@ export interface HookCommandOptions {
 }
 
 /**
+ * How long the fail-open path will wait for its telemetry POST.
+ *
+ * Short on purpose. `UserPromptSubmit` and `SessionStart` are synchronous, so
+ * every millisecond here is a millisecond the user waits — and this branch
+ * exists precisely to stop a hook that cannot read its stdin from costing them
+ * anything.
+ */
+export const NON_BLOCKING_TELEMETRY_DEADLINE_MS = 250;
+
+/**
+ * Resolve when `work` settles or when `ms` elapses, whichever is first.
+ *
+ * The abandoned promise is not cancelled — `captureCliEvent` never throws and
+ * never has a caller waiting on its result, so leaving it in flight until
+ * `process.exit` is exactly as harmless as the fire-and-forget it replaces.
+ */
+export async function raceDeadline(work: Promise<unknown>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      work,
+      new Promise<void>(resolve => {
+        timer = setTimeout(resolve, ms);
+        // Do not hold the event loop open for a deadline nobody is waiting on.
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
  * No-op result for hooks that must exit before their handler ran (adapter
  * rejected input, transcript path missing). `context` is the sole handler
  * key that produces SessionStart output on every platform; a bare
@@ -145,21 +178,28 @@ export async function hookCommand(platform: string, event: string, options: Hook
     }
     if (isNonBlockingHookInputError(error)) {
       logger.warn('HOOK', `Hook input unavailable, skipping hook: ${error instanceof Error ? error.message : error}`);
+      // Answer FIRST, report second. This branch exists so a hook that cannot
+      // read its own stdin never costs the user their prompt, and holding the
+      // response for a telemetry POST would reintroduce that cost in seconds
+      // instead of in a blocked submission.
+      emitModelContext(adapter, buildNoOpResult(event));
       // Failing open here used to be failing SILENT: before #3699 an
       // unreadable stdin fell through to the catch-all, which emitted
-      // hook_failed. Keep that signal so the maintainers still see these —
-      // the exit code changes, the reporting does not. Awaited for the same
-      // reason as the catch-all below: exitGraceful calls process.exit(0),
-      // which would kill a fire-and-forget POST mid-flight.
+      // hook_failed. The signal is kept, but on a leash — captureCliEvent is
+      // capped at 2s internally, which is 2s this particular hook does not
+      // have. Past the deadline the event is abandoned: one lost data point,
+      // against a UserPromptSubmit that stalls on every malformed stdin.
       {
         const hookType = getActiveHookType();
-        await captureCliEvent('hook_failed', {
-          ...(hookType !== null ? { hook_type: hookType } : {}),
-          error_mode: 'input_unavailable',
-          threshold_tripped: false,
-        });
+        await raceDeadline(
+          captureCliEvent('hook_failed', {
+            ...(hookType !== null ? { hook_type: hookType } : {}),
+            error_mode: 'input_unavailable',
+            threshold_tripped: false,
+          }),
+          NON_BLOCKING_TELEMETRY_DEADLINE_MS,
+        );
       }
-      emitModelContext(adapter, buildNoOpResult(event));
       exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
