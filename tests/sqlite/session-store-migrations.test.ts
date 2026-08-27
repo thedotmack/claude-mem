@@ -127,6 +127,11 @@ function revisionColumnInfo(
   }>).find(info => info.name === column)!;
 }
 
+function hasColumn(db: Database, table: string, column: string): boolean {
+  const info = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return info.some(col => col.name === column);
+}
+
 function insertSchemaVersions(db: Database, throughVersion: number): void {
   const now = new Date().toISOString();
   for (let version = 4; version <= throughVersion; version++) {
@@ -1036,6 +1041,73 @@ describe('SessionStore migrations', () => {
       expect(invalid.synced_at).toBe(555);
       expect(invalid.sync_rev).toBe('4');
     } finally {
+      db.close();
+    }
+  });
+
+  // #3738 — the version row records that the migration once ran, which is not
+  // the same as the column being there now. A stale-cache worker can rebuild
+  // session_summaries in its pre-discovery_tokens shape while row 11 survives.
+  it('re-adds a dropped discovery_tokens column even though schema_versions row 11 survives', () => {
+    const db = new Database(':memory:');
+    try {
+      store = new SessionStore(db);
+      expect(hasColumn(db, 'session_summaries', 'discovery_tokens')).toBe(true);
+
+      // What the old worker leaves behind: the column gone, the history intact.
+      db.run('ALTER TABLE session_summaries DROP COLUMN discovery_tokens');
+      expect(hasColumn(db, 'session_summaries', 'discovery_tokens')).toBe(false);
+      const row = db.prepare('SELECT version FROM schema_versions WHERE version = 11').get();
+      expect(row).toBeTruthy();
+
+      // A second boot on the SAME connection: closing the store would close
+      // the in-memory database with it.
+      new SessionStore(db);
+
+      expect(hasColumn(db, 'session_summaries', 'discovery_tokens')).toBe(true);
+    } finally {
+      store?.close();
+      store = undefined;
+      db.close();
+    }
+  });
+
+  it('re-adds a dropped discovery_tokens column on observations too', () => {
+    const db = new Database(':memory:');
+    try {
+      store = new SessionStore(db);
+      db.run('ALTER TABLE observations DROP COLUMN discovery_tokens');
+      expect(hasColumn(db, 'observations', 'discovery_tokens')).toBe(false);
+
+      // A second boot on the SAME connection: closing the store would close
+      // the in-memory database with it.
+      new SessionStore(db);
+
+      expect(hasColumn(db, 'observations', 'discovery_tokens')).toBe(true);
+    } finally {
+      store?.close();
+      store = undefined;
+      db.close();
+    }
+  });
+
+  it('leaves an intact schema alone across repeated opens', () => {
+    // The guard now runs on every boot, so it has to be a no-op when there is
+    // nothing to repair.
+    const db = new Database(':memory:');
+    try {
+      store = new SessionStore(db);
+      // A second boot on the SAME connection: closing the store would close
+      // the in-memory database with it.
+      new SessionStore(db);
+
+      expect(hasColumn(db, 'session_summaries', 'discovery_tokens')).toBe(true);
+      expect(hasColumn(db, 'observations', 'discovery_tokens')).toBe(true);
+      const rows = db.prepare('SELECT COUNT(*) as count FROM schema_versions WHERE version = 11').get() as { count: number };
+      expect(rows.count).toBe(1);
+    } finally {
+      store?.close();
+      store = undefined;
       db.close();
     }
   });
