@@ -87,6 +87,7 @@ function makeFreshPlugin(name: string, bunBehavior: BunBehavior = 'success'): { 
     ? [
         `  mkdir -p "${pluginRoot}/node_modules/zod/v3"`,
         `  : > "${pluginRoot}/node_modules/zod/v3/index.js"`,
+        `  printf '{"name":"zod","version":"3.0.0"}\n' > "${pluginRoot}/node_modules/zod/package.json"`,
         '  exit 0',
       ]
     : [
@@ -153,19 +154,55 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(existsSync(join(pluginRoot, 'node_modules'))).toBe(false);
   });
 
-  test('skips install when node_modules is already present', async () => {
+  test('repairs an existing partial node_modules tree', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-partial');
+    mkdirSync(join(pluginRoot, 'node_modules'), { recursive: true });
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain(INSTALL_DIAGNOSTIC);
+    expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
+    expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(true);
+  });
+
+  test('skips install when every declared package has a readable manifest', async () => {
     // Setup runs on every Claude Code launch. If node_modules already exists,
     // the install MUST be skipped — otherwise we re-run a 100 MB+ install on
     // every cold start and burn the user's bandwidth.
     const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-already-installed');
+    mkdirSync(join(pluginRoot, 'node_modules', 'zod'), { recursive: true });
+    writeFileSync(join(pluginRoot, 'node_modules', 'zod', 'package.json'), JSON.stringify({ name: 'zod', version: '3.0.0' }));
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).not.toContain(INSTALL_DIAGNOSTIC);
+    // The fake bun would have created zod/v3/index.js if invoked.
+    expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(false);
+  });
+
+  test('fails open for an invalid plugin manifest', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-invalid-manifest');
+    writeFileSync(join(pluginRoot, 'package.json'), '{not-json');
     mkdirSync(join(pluginRoot, 'node_modules'), { recursive: true });
 
     const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
 
     expect(code).toBe(0);
     expect(stderr).not.toContain(INSTALL_DIAGNOSTIC);
-    // The fake bun would have created zod/v3/index.js if invoked — its
-    // absence proves the install path was not taken.
-    expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(false);
+  });
+
+  test('reports incomplete output once when install exits successfully without repairing it', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-still-partial');
+    const fakeBunPath = join(fakeBinDir, 'bun');
+    writeFileSync(fakeBunPath, '#!/usr/bin/env bash\nexit 0\n');
+    chmodSync(fakeBunPath, 0o755);
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain('plugin dependencies remain incomplete after install');
+    expect(stderr).not.toContain(INSTALL_SUCCESS_DIAGNOSTIC);
   });
 });

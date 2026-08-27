@@ -10,6 +10,53 @@ const VERSION_CHECK_LOG_PREFIX = '[version-check]';
 const BUN_INSTALL_ARGS = Object.freeze(['install', '--production']);
 const BUN_INSTALL_TIMEOUT_MS = 120_000;
 const NODE_MODULES_DIRNAME = 'node_modules';
+const PACKAGE_NAME_SEGMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
+
+function dependencyPathSegments(name) {
+  if (typeof name !== 'string') return null;
+
+  const segments = name.split('/');
+  if (segments.length === 1 && PACKAGE_NAME_SEGMENT_RE.test(segments[0])) {
+    return segments;
+  }
+  if (
+    segments.length === 2
+    && /^@[A-Za-z0-9][A-Za-z0-9._~-]*$/.test(segments[0])
+    && PACKAGE_NAME_SEGMENT_RE.test(segments[1])
+  ) {
+    return segments;
+  }
+  return null;
+}
+
+function readJsonObject(path) {
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf-8'));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return false;
+    return null;
+  }
+}
+
+function hasCompletePluginDependencies(pluginRoot) {
+  const packageManifest = readJsonObject(join(pluginRoot, 'package.json'));
+  // Preserve the existing existence semantics when the manifest cannot be
+  // trusted; Setup must remain fail-open for malformed plugin metadata.
+  if (!packageManifest) return true;
+  if (!packageManifest.dependencies || typeof packageManifest.dependencies !== 'object') return true;
+
+  const nodeModulesRoot = join(pluginRoot, NODE_MODULES_DIRNAME);
+  for (const dependencyName of Object.keys(packageManifest.dependencies)) {
+    const segments = dependencyPathSegments(dependencyName);
+    if (!segments) return true;
+
+    const installedManifest = readJsonObject(join(nodeModulesRoot, ...segments, 'package.json'));
+    if (installedManifest === false) return false;
+    if (!installedManifest) return true;
+  }
+  return true;
+}
 
 function findBun() {
   const pathCheck = IS_WINDOWS
@@ -58,9 +105,9 @@ function findBun() {
 function ensurePluginDependencies(pluginRoot) {
   if (!existsSync(join(pluginRoot, 'package.json'))) return;
 
-  // Guard on node_modules (package-manager marker) rather than a specific
-  // package, so the check stays correct if dependencies are later renamed.
-  if (existsSync(join(pluginRoot, NODE_MODULES_DIRNAME))) return;
+  // Check the declared closure rather than treating the directory itself as
+  // proof that an interrupted install finished.
+  if (existsSync(join(pluginRoot, NODE_MODULES_DIRNAME)) && hasCompletePluginDependencies(pluginRoot)) return;
 
   const bunPath = findBun();
   if (!bunPath) {
@@ -118,6 +165,10 @@ function ensurePluginDependencies(pluginRoot) {
       console.error(`${VERSION_CHECK_LOG_PREFIX} failed to clean up partial node_modules (${rmReason}); next Setup run may skip retry`);
     }
   } else {
+    if (!hasCompletePluginDependencies(pluginRoot)) {
+      console.error(`${VERSION_CHECK_LOG_PREFIX} plugin dependencies remain incomplete after install`);
+      return;
+    }
     // Close the diagnostic loop: a Setup hook that can block for up to
     // 120s needs an explicit completion line so users can distinguish a
     // hung install from one that finished silently (gh #2650 review).
