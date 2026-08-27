@@ -127,5 +127,22 @@ describe('OpenRouter token compatibility', () => {
     expect(await clone.text()).toContain('max_tokens');
     expect((await response.arrayBuffer()).byteLength).toBeGreaterThan(0);
     expect(response.bodyUsed).toBe(true);
+    await expect(response.text()).rejects.toThrow(/body|used/i);
+  });
+
+  it('preserves native Response body semantics for ordinary inspected 2xx responses', async () => {
+    const response = await fetchWithOpenRouterTokenCompatibility(
+      async () => new Response('ok', { status: 200, statusText: 'Success', headers: { 'x-test': 'preserved' } }),
+      'https://example.test/chat/completions',
+      { method: 'POST' },
+      {},
+      42,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.statusText).toBe('Success');
+    expect(response.headers.get('x-test')).toBe('preserved');
+    expect(response.bodyUsed).toBe(false);
+    expect(await response.clone().text()).toBe('ok');
   });
 });

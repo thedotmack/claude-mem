@@ -38,7 +38,7 @@ export async function fetchWithOpenRouterTokenCompatibility(
   let bodyText = '';
   let responseForCaller = response;
   try {
-    bodyText = await response.text();
+    bodyText = await response.clone().text();
     responseForCaller = new Response(bodyText, {
       status: response.status,
       statusText: response.statusText,
