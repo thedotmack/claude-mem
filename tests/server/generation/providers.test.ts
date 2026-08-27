@@ -361,6 +361,46 @@ describe('GeminiObservationProvider', () => {
 });
 
 describe('OpenRouterObservationProvider', () => {
+  it('retries the exact token-field compatibility response', async () => {
+    const compatibilityError = "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.";
+    const requests: RequestInit[] = [];
+    const responses = [
+      jsonResponse(400, { error: { message: compatibilityError } }),
+      jsonResponse(200, { choices: [{ message: { content: '<observation>ok</observation>' } }], usage: { total_tokens: 11 } }),
+    ];
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      requests.push(init ?? {});
+      return responses.shift()!;
+    };
+    const provider = new OpenRouterObservationProvider({ apiKey: 'fake', model: 'gpt-5', fetchImpl });
+
+    const result = await provider.generate(makeContext());
+
+    expect(result.rawText).toBe('<observation>ok</observation>');
+    expect(result.tokensUsed).toBe(11);
+    expect(requests).toHaveLength(2);
+    const first = JSON.parse(String(requests[0].body)) as Record<string, unknown>;
+    const second = JSON.parse(String(requests[1].body)) as Record<string, unknown>;
+    expect(second.max_completion_tokens).toBe(first.max_tokens);
+    expect(second.max_tokens).toBeUndefined();
+    expect(second.model).toBe(first.model);
+    expect(second.messages).toEqual(first.messages);
+  });
+
+  it('does not retry a similar incomplete compatibility response', async () => {
+    let calls = 0;
+    const provider = new OpenRouterObservationProvider({
+      apiKey: 'fake',
+      fetchImpl: async () => {
+        calls += 1;
+        return jsonResponse(400, { error: { message: "Unsupported parameter: 'max_tokens' is not supported with this model." } });
+      },
+    });
+
+    await expect(provider.generate(makeContext())).rejects.toBeInstanceOf(ServerClassifiedProviderError);
+    expect(calls).toBe(1);
+  });
+
   it('parses OpenAI-style response and reports tokensUsed', async () => {
     const fakeFetch = new FakeFetch(
       jsonResponse(200, {
