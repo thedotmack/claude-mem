@@ -52,7 +52,7 @@ describe('classifyObserverOutput (plan-11 #2485)', () => {
 });
 
 describe('isQuotaLimitedObserverOutput', () => {
-  it('detects the captured Claude Code session and 5-hour limit notices', () => {
+  it('detects Claude Code session and 5-hour limit notices', () => {
     expect(isQuotaLimitedObserverOutput("You've hit your session limit · resets 4:10am")).toBe(true);
     expect(isQuotaLimitedObserverOutput("You've hit your 5-hour usage limit · resets 4:10am (Europe/Paris)")).toBe(true);
   });
@@ -60,6 +60,10 @@ describe('isQuotaLimitedObserverOutput', () => {
   it('detects reversed-order exhausted session-limit wording', () => {
     expect(isQuotaLimitedObserverOutput('Your session limit has been reached.')).toBe(true);
     expect(isQuotaLimitedObserverOutput('Your 5-hour usage limit was exceeded.')).toBe(true);
+    expect(isQuotaLimitedObserverOutput('Session limit reached · resets 4:10am')).toBe(true);
+    expect(isQuotaLimitedObserverOutput('5-hour limit reached · resets 4:10am')).toBe(true);
+    expect(isQuotaLimitedObserverOutput('Session limit exceeded')).toBe(true);
+    expect(isQuotaLimitedObserverOutput("You've reached your usage limit")).toBe(true);
   });
 
   it('detects Claude weekly-limit prose', () => {
@@ -87,6 +91,8 @@ describe('isQuotaLimitedObserverOutput', () => {
   it('does not treat approaching or documentation prose as quota prose', () => {
     expect(isQuotaLimitedObserverOutput('Approaching your 5-hour usage limit')).toBe(false);
     expect(isQuotaLimitedObserverOutput('The session limit is configurable in the documentation.')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('Refactored so the session limit is exceeded only after retries')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('The user reached session limit handling in ResponseProcessor')).toBe(false);
   });
 });
 

@@ -60,6 +60,9 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
   }
 
   const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+  const sessionLimitWording = /\b(?:hit|reached|exceeded|exhausted)\s+(?:your\s+)?(?:5-hour(?:\s+usage)?|usage|session)\s+limit\b|\b(?:your\s+)?(?:5-hour(?:\s+usage)?|usage|session)\s+limit\s+(?:(?:has|was|is)\s+)?(?:been\s+)?(?:hit|reached|exceeded|exhausted)\b/.test(text);
+  const hasNoticeContext = /\b(?:claude|reset|resets|try again)\b/.test(text)
+    || /^(?:5-hour(?:\s+usage)?|usage|session)\s+limit\b/.test(text);
 
   return (
     /\bclaude\b.*\busage\b.*\blimit\b.*\b(reached|exceeded|exhausted|reset|resets|try again)\b/.test(text) ||
@@ -68,8 +71,7 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
     /\b(reached|exceeded|exhausted)\b.*\bweekly\b.*\b(limit|quota)\b/.test(text) ||
     /\bsubscription\b.*\b(limit|quota)\b.*\b(reached|exceeded|exhausted|reset|resets|try again)\b/.test(text) ||
     /\b(rate limit|quota)\b.*\b(subscription|weekly|claude usage)\b.*\b(reached|exceeded|exhausted|reset|resets|try again)\b/.test(text) ||
-    /\b(?:you(?:'ve| have)\s+hit|(?:hit|reached|exceeded|exhausted))\s+(?:your\s+)?(?:5-hour usage|session)\s+limit\b/.test(text) ||
-    /\b(?:your\s+)?(?:5-hour usage|session)\s+limit\s+(?:has|was|is)\s+(?:been\s+)?(?:hit|reached|exceeded|exhausted)\b/.test(text)
+    (sessionLimitWording && (hasNoticeContext || /\byour\b/.test(text)))
   );
 }
 
