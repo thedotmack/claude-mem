@@ -10,6 +10,7 @@ const SPAWN_TIMEOUT_MS = 15_000;
 const INSTALL_DIAGNOSTIC = '[version-check] installing plugin dependencies';
 const INSTALL_SUCCESS_DIAGNOSTIC = '[version-check] plugin dependencies installed successfully';
 const INSTALL_FAILURE_DIAGNOSTIC = '[version-check] bun install failed';
+const INCOMPLETE_DIAGNOSTIC = '[version-check] node_modules is incomplete';
 const FAKE_INSTALLED_MARKER_REL = join('node_modules', 'zod', 'v3', 'index.js');
 const SKIP_NON_UNIX = process.platform === 'win32';
 
@@ -87,6 +88,9 @@ function makeFreshPlugin(name: string, bunBehavior: BunBehavior = 'success'): { 
     ? [
         `  mkdir -p "${pluginRoot}/node_modules/zod/v3"`,
         `  : > "${pluginRoot}/node_modules/zod/v3/index.js"`,
+        // The completeness guard resolves each declared dependency to its own
+        // package.json, so a realistic fake install has to write one.
+        `  printf '{"name":"zod","version":"3.0.0"}' > "${pluginRoot}/node_modules/zod/package.json"`,
         '  exit 0',
       ]
     : [
@@ -105,6 +109,13 @@ function makeFreshPlugin(name: string, bunBehavior: BunBehavior = 'success'): { 
   chmodSync(fakeBunPath, 0o755);
 
   return { pluginRoot, fakeBinDir };
+}
+
+// Write the minimum that makes a dependency resolvable: its own package.json.
+function installFakeDependency(pluginRoot: string, name: string): void {
+  const dir = join(pluginRoot, 'node_modules', ...name.split('/'));
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name, version: '0.0.0' }));
 }
 
 beforeAll(() => {
@@ -153,12 +164,12 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(existsSync(join(pluginRoot, 'node_modules'))).toBe(false);
   });
 
-  test('skips install when node_modules is already present', async () => {
-    // Setup runs on every Claude Code launch. If node_modules already exists,
-    // the install MUST be skipped — otherwise we re-run a 100 MB+ install on
+  test('skips install when every declared dependency resolves', async () => {
+    // Setup runs on every Claude Code launch. If the tree is complete, the
+    // install MUST be skipped — otherwise we re-run a 100 MB+ install on
     // every cold start and burn the user's bandwidth.
     const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-already-installed');
-    mkdirSync(join(pluginRoot, 'node_modules'), { recursive: true });
+    installFakeDependency(pluginRoot, 'zod');
 
     const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
 
@@ -167,5 +178,39 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     // The fake bun would have created zod/v3/index.js if invoked — its
     // absence proves the install path was not taken.
     expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(false);
+  });
+
+  test('reinstalls when node_modules exists but a dependency is missing (gh #3755)', async () => {
+    // The reported trap: an install interrupted by something this script did
+    // not spawn leaves node_modules in place but short of packages. Guarding
+    // on the directory's existence skipped the repair on every later Setup
+    // run, so the worker died on the missing module at each boot with no
+    // recovery short of a manual rm -rf.
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-partial-tree');
+    // A directory that exists and even holds something — just not the
+    // dependency package.json declares.
+    mkdirSync(join(pluginRoot, 'node_modules', '.bin'), { recursive: true });
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain(INCOMPLETE_DIAGNOSTIC);
+    expect(stderr).toContain('zod');
+    expect(stderr).toContain(INSTALL_DIAGNOSTIC);
+    expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
+    expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(true);
+  });
+
+  test('a dependency directory without its package.json does not count as installed', async () => {
+    // The shape the reporter actually hit: the package folder is there but the
+    // extraction never finished, so nothing can resolve it.
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-hollow-package');
+    mkdirSync(join(pluginRoot, 'node_modules', 'zod'), { recursive: true });
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain(INCOMPLETE_DIAGNOSTIC);
+    expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(true);
   });
 });

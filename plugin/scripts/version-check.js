@@ -55,12 +55,48 @@ function findBun() {
 // has a 300s timeout (vs 60s for SessionStart), runs once per Claude
 // Code launch, and is the only standalone hook script — the natural
 // place to materialise plugin runtime state.
+// Names of declared dependencies that do not resolve to an installed package.
+// Reads package.json rather than naming any package, so the check stays correct
+// if dependencies are later renamed or added.
+function missingDependencies(pluginRoot) {
+  let pkg;
+  try {
+    pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf-8'));
+  } catch {
+    // An unreadable package.json is not something an install can fix, and
+    // reporting every dependency as missing would loop on it. Report none.
+    return [];
+  }
+
+  const declared = Object.keys((pkg && pkg.dependencies) || {});
+  return declared.filter(
+    (name) => !existsSync(join(pluginRoot, NODE_MODULES_DIRNAME, ...name.split('/'), 'package.json')),
+  );
+}
+
 function ensurePluginDependencies(pluginRoot) {
   if (!existsSync(join(pluginRoot, 'package.json'))) return;
 
-  // Guard on node_modules (package-manager marker) rather than a specific
-  // package, so the check stays correct if dependencies are later renamed.
-  if (existsSync(join(pluginRoot, NODE_MODULES_DIRNAME))) return;
+  // Guard on COMPLETENESS, not on the mere existence of node_modules.
+  //
+  // The directory existing only tells us a package manager started. An
+  // install interrupted by anything this script did not spawn — a killed
+  // terminal, a half-finished extraction — leaves node_modules in place but
+  // short of packages, and an existence check then skips the repair on every
+  // later Setup run. The worker dies on the missing module each boot with no
+  // recovery short of a manual rm -rf (#3755).
+  //
+  // Each declared dependency must resolve to its own package.json: one
+  // existsSync per dependency, and it re-verifies the tree rather than
+  // trusting a previous installer's exit code.
+  const missing = missingDependencies(pluginRoot);
+  if (missing.length === 0) return;
+
+  if (existsSync(join(pluginRoot, NODE_MODULES_DIRNAME))) {
+    console.error(
+      `${VERSION_CHECK_LOG_PREFIX} node_modules is incomplete (missing: ${missing.join(', ')}); reinstalling`,
+    );
+  }
 
   const bunPath = findBun();
   if (!bunPath) {
@@ -73,12 +109,21 @@ function ensurePluginDependencies(pluginRoot) {
 
   let result;
   try {
-    result = spawnSync(bunPath, BUN_INSTALL_ARGS, {
+    // Windows: findBun resolves to bun.cmd (npm/nvm shim) or, failing that,
+    // the bare name. Node refuses to spawn a .cmd/.bat directly since the
+    // CVE-2024-27980 mitigation — spawnSync throws EINVAL — and a bare name
+    // is not resolved through PATHEXT either, so both shapes need a shell.
+    // BUN_INSTALL_ARGS is a frozen constant, so the concatenation the shell
+    // option performs carries nothing user-supplied; the path itself is
+    // quoted because it routinely contains spaces.
+    const command = IS_WINDOWS ? `"${bunPath}"` : bunPath;
+    result = spawnSync(command, BUN_INSTALL_ARGS, {
       cwd: pluginRoot,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: BUN_INSTALL_TIMEOUT_MS,
       windowsHide: true,
+      shell: IS_WINDOWS,
     });
   } catch (err) {
     const reason = err && err.message ? err.message : String(err);
