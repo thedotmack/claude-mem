@@ -227,3 +227,34 @@ describe('previewOutput', () => {
     expect(previewOutput(42)).toContain('non-string');
   });
 });
+
+describe('isTransportFailureObserverOutput rejects narrative (review on #3752)', () => {
+  // The three cases the reviewer reproduced. Each contains a transport term
+  // that an unanchored search matched, and each is an ordinary completed
+  // observation — confirming it is correct, requeueing it is a retry loop.
+  const NARRATIVES = [
+    'The observer noted that fetch failed during the previous deploy and the rollback restored service.',
+    'The observer documented ECONNRESET on the idle pool and the fix that followed.',
+    'The observer recorded that the upstream returned HTTP 503 for four minutes.',
+  ];
+
+  for (const prose of NARRATIVES) {
+    it(`does not classify: ${prose.slice(0, 44)}…`, () => {
+      expect(isTransportFailureObserverOutput(prose)).toBe(false);
+    });
+  }
+
+  it('still classifies the same terms when they lead the response', () => {
+    expect(isTransportFailureObserverOutput('fetch failed')).toBe(true);
+    expect(isTransportFailureObserverOutput('ECONNRESET')).toBe(true);
+    expect(isTransportFailureObserverOutput('HTTP 503 Service Unavailable')).toBe(true);
+    expect(isTransportFailureObserverOutput('503 Service Unavailable')).toBe(true);
+    expect(isTransportFailureObserverOutput('socket hang up')).toBe(true);
+  });
+
+  it('does not classify a narrative that merely opens with the word error', () => {
+    expect(isTransportFailureObserverOutput(
+      'Error handling in the fetch layer was reviewed; no changes were needed.'
+    )).toBe(false);
+  });
+});

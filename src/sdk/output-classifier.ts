@@ -179,20 +179,32 @@ export function isTransportFailureObserverOutput(raw: unknown): boolean {
 
   const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
 
-  // The child hands back its failure as the entire response, so these lead.
-  if (/^(?:api|http|fetch|request|network|connection)\s*error\b/.test(text)) {
-    return true;
-  }
-  if (/^error:\s/.test(text) &&
-      /\b(?:connect|connection|network|socket|dns|proxy|tls|ssl|certificate)\b/.test(text)) {
-    return true;
-  }
-
+  // Every pattern below is anchored, without exception. The child hands its
+  // failure back as the WHOLE response, so an error shape at the start is what
+  // separates it from an observer narrating a past incident — and a narrative
+  // is exactly what an unanchored token search catches. "The observer noted
+  // that fetch failed during the previous deploy" is a completed no-op batch,
+  // not a dead network.
+  //
+  // Anchoring can under-detect, if a future CLI prefixes its error with a
+  // timestamp or a log level. That is the safe direction to be wrong in: a
+  // missed detection is the behaviour that already exists today, while a false
+  // positive requeues the batch AND pauses the generator, which is a retry loop.
   return (
-    /\b(?:econnrefused|econnreset|etimedout|enotfound|enetunreach|ehostunreach|epipe|econnaborted|eai_again|eproto)\b/.test(text) ||
-    /\bconnectionrefused\b/.test(text) ||
-    /\bfetch failed\b/.test(text) ||
-    /\b(?:api|http)\s*(?:error\s*)?:?\s*5\d{2}\b/.test(text) ||
-    /\b(?:5\d{2}\s+(?:internal server error|bad gateway|service unavailable|gateway timeout)|status\s*[:=]?\s*5\d{2}|request failed with\s+5\d{2})\b/.test(text)
+    // "API Error: Connection refused …", "Fetch error …"
+    /^(?:api|http|fetch|request|network|connection)\s*error\b/.test(text) ||
+    // "Error: socket hang up" — but not "Error: no such file or directory".
+    (/^error:\s/.test(text) &&
+      /\b(?:connect|connection|network|socket|dns|proxy|tls|ssl|certificate)\b/.test(text)) ||
+    // Node's own shapes: "connect ECONNREFUSED 127.0.0.1:443".
+    /^(?:connect|getaddrinfo|read|write|socket)\b.*\b(?:econnrefused|econnreset|etimedout|enotfound|enetunreach|ehostunreach|epipe|econnaborted|eai_again|eproto)\b/.test(text) ||
+    // The bare code, or the bare phrase, as the entire message.
+    /^(?:econnrefused|econnreset|etimedout|enotfound|enetunreach|ehostunreach|epipe|econnaborted|eai_again|eproto)\b/.test(text) ||
+    /^(?:fetch failed|socket hang up|connectionrefused)\b/.test(text) ||
+    // A 5xx reported as the response itself.
+    /^(?:api|http)\s*(?:error\s*)?:?\s*5\d{2}\b/.test(text) ||
+    /^request failed with\s+5\d{2}\b/.test(text) ||
+    /^status\s*[:=]?\s*5\d{2}\b/.test(text) ||
+    /^5\d{2}\s+(?:internal server error|bad gateway|service unavailable|gateway timeout)\b/.test(text)
   );
 }
