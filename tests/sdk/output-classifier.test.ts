@@ -65,6 +65,11 @@ describe('isQuotaLimitedObserverOutput', () => {
     expect(isQuotaLimitedObserverOutput('Session limit exceeded')).toBe(true);
   });
 
+  it('accepts standard timezone abbreviations in concrete reset details', () => {
+    expect(isQuotaLimitedObserverOutput("You've hit your session limit · resets 8:10pm (UTC)")).toBe(true);
+    expect(isQuotaLimitedObserverOutput("You've hit your session limit · resets 8:10pm (PST)")).toBe(true);
+  });
+
   it('detects Claude weekly-limit prose', () => {
     expect(
       isQuotaLimitedObserverOutput('Claude usage limit reached. Your weekly limit will reset soon.'),
