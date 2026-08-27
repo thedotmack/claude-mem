@@ -111,11 +111,14 @@ function makeFreshPlugin(name: string, bunBehavior: BunBehavior = 'success'): { 
   return { pluginRoot, fakeBinDir };
 }
 
-// Write the minimum that makes a dependency resolvable: its own package.json.
+// Write what a real install leaves behind: a manifest AND the code beside it.
+// The manifest on its own is deliberately NOT enough — see the manifest-only
+// test below.
 function installFakeDependency(pluginRoot: string, name: string): void {
   const dir = join(pluginRoot, 'node_modules', ...name.split('/'));
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name, version: '0.0.0' }));
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name, version: '0.0.0', main: './index.js' }));
+  writeFileSync(join(dir, 'index.js'), 'module.exports = {};');
 }
 
 beforeAll(() => {
@@ -198,6 +201,22 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(stderr).toContain('zod');
     expect(stderr).toContain(INSTALL_DIAGNOSTIC);
     expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
+    expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(true);
+  });
+
+  // Review on gh #3755: an extraction that stopped right after writing
+  // package.json leaves a directory that a manifest-only check accepts, while
+  // the worker still dies on the import.
+  test('a manifest with nothing beside it does not count as installed', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-manifest-only');
+    const dir = join(pluginRoot, 'node_modules', 'zod');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'zod', main: './index.cjs' }));
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain(INCOMPLETE_DIAGNOSTIC);
     expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(true);
   });
 

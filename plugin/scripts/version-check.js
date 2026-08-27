@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'child_process';
-import { existsSync, readFileSync, rmSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, rmSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -55,6 +55,30 @@ function findBun() {
 // has a 300s timeout (vs 60s for SessionStart), runs once per Claude
 // Code launch, and is the only standalone hook script — the natural
 // place to materialise plugin runtime state.
+
+// A package counts as installed when its manifest is present AND the directory
+// holds something besides that manifest.
+//
+// The manifest alone is not enough: an extraction that stopped right after
+// writing package.json leaves a directory that satisfies a manifest-only check
+// while the worker still dies on the import (gh #3755 review).
+//
+// The stricter thing — resolving each package's declared entrypoint — was
+// tried and rejected. Run against the 568 packages in this repo's own
+// node_modules it flags `@modelcontextprotocol/sdk`, which declares
+// `exports["."]` pointing at `dist/cjs/index.js` and does not ship it; the
+// package is consumed through its subpaths. A direct dependency shaped like
+// that would make Setup reinstall on every single launch, which is worse than
+// the partial tree this is trying to catch.
+function packageIsPopulated(packageDir) {
+  if (!existsSync(join(packageDir, 'package.json'))) return false;
+  try {
+    return readdirSync(packageDir).some((entry) => entry !== 'package.json');
+  } catch {
+    return false;
+  }
+}
+
 // Names of declared dependencies that do not resolve to an installed package.
 // Reads package.json rather than naming any package, so the check stays correct
 // if dependencies are later renamed or added.
@@ -70,7 +94,7 @@ function missingDependencies(pluginRoot) {
 
   const declared = Object.keys((pkg && pkg.dependencies) || {});
   return declared.filter(
-    (name) => !existsSync(join(pluginRoot, NODE_MODULES_DIRNAME, ...name.split('/'), 'package.json')),
+    (name) => !packageIsPopulated(join(pluginRoot, NODE_MODULES_DIRNAME, ...name.split('/'))),
   );
 }
 
@@ -86,9 +110,9 @@ function ensurePluginDependencies(pluginRoot) {
   // later Setup run. The worker dies on the missing module each boot with no
   // recovery short of a manual rm -rf (#3755).
   //
-  // Each declared dependency must resolve to its own package.json: one
-  // existsSync per dependency, and it re-verifies the tree rather than
-  // trusting a previous installer's exit code.
+  // Each declared dependency must resolve to a populated package directory,
+  // which re-verifies the tree rather than trusting a previous installer's
+  // exit code. Cost is one readdir per dependency, once per Claude Code launch.
   const missing = missingDependencies(pluginRoot);
   if (missing.length === 0) return;
 
