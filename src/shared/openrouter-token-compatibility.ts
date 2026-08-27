@@ -1,7 +1,24 @@
-const UNSUPPORTED_MAX_TOKENS_ERROR = "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.";
-
 export function isMaxCompletionTokensCompatibilityError(status: number, bodyText: string): boolean {
-  return status === 400 && bodyText.includes(UNSUPPORTED_MAX_TOKENS_ERROR);
+  let error: Record<string, unknown> | undefined;
+  try {
+    const parsed = JSON.parse(bodyText) as { error?: unknown };
+    if (parsed.error && typeof parsed.error === 'object' && !Array.isArray(parsed.error)) {
+      error = parsed.error as Record<string, unknown>;
+    }
+  } catch {
+    // Fall through to the bounded text check for non-JSON 400 responses.
+  }
+
+  const message = typeof error?.message === 'string' ? error.message : bodyText;
+  const mentionsReplacement = /unsupported\s+parameter[\s\S]*max_tokens[\s\S]*(?:use|replace)[\s\S]*max_completion_tokens/i.test(message);
+  const hasStructuredFields = error?.param === 'max_tokens'
+    && (error.code === 'unsupported_parameter' || error.code === 400 || error.code === '400');
+
+  if (status === 400) {
+    return mentionsReplacement || hasStructuredFields;
+  }
+
+  return status >= 200 && status < 300 && !!error && (mentionsReplacement || hasStructuredFields);
 }
 
 export async function fetchWithOpenRouterTokenCompatibility(
@@ -9,20 +26,33 @@ export async function fetchWithOpenRouterTokenCompatibility(
   input: string | URL | Request,
   init: RequestInit,
   body: Record<string, unknown>,
+  maxOutputTokens: number,
 ): Promise<Response> {
-  const response = await fetchImpl(input, { ...init, body: JSON.stringify(body) });
-  if (response.status !== 400) {
+  const initialBody = { ...body, max_tokens: maxOutputTokens };
+  const response = await fetchImpl(input, { ...init, body: JSON.stringify(initialBody) });
+  if (response.status !== 400 && (response.status < 200 || response.status >= 300 || response.status === 204)) {
     return response;
   }
 
-  const bodyText = await response.clone().text();
-  if (!isMaxCompletionTokensCompatibilityError(response.status, bodyText) || !Object.prototype.hasOwnProperty.call(body, 'max_tokens')) {
+  let bodyText = '';
+  let responseForCaller = response;
+  try {
+    bodyText = await response.text();
+    responseForCaller = new Response(bodyText, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  } catch {
     return response;
   }
 
-  const { max_tokens, ...preservedBody } = body;
+  if (!isMaxCompletionTokensCompatibilityError(response.status, bodyText)) {
+    return responseForCaller;
+  }
+
   return fetchImpl(input, {
     ...init,
-    body: JSON.stringify({ ...preservedBody, max_completion_tokens: max_tokens }),
+    body: JSON.stringify({ ...body, max_completion_tokens: maxOutputTokens }),
   });
 }

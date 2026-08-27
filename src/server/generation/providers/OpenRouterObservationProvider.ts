@@ -154,8 +154,7 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
       model: this.model,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.3,
-      max_tokens: this.maxOutputTokens,
-    });
+    }, this.maxOutputTokens);
   }
 }
 

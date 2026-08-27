@@ -36,4 +36,23 @@ describe('OpenRouterProvider token compatibility', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('does not retry a similar incomplete compatibility response', async () => {
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ error: { message: "Unsupported parameter: 'max_tokens' is not supported" } }), { status: 400 });
+    }) as typeof fetch;
+
+    try {
+      const provider = new OpenRouterProvider({} as never, {} as never);
+      await expect((provider as any).query([{ role: 'user', content: 'hello' }], {
+        apiKey: 'fake', model: 'gpt-5', apiUrl: 'https://gateway.test/v1/chat/completions',
+      })).rejects.toThrow();
+      expect(calls).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

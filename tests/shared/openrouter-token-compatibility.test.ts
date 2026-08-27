@@ -13,9 +13,11 @@ function jsonResponse(status: number, body: unknown): Response {
 describe('OpenRouter token compatibility', () => {
   it('matches only the exact 400 replacement error', () => {
     expect(isMaxCompletionTokensCompatibilityError(400, compatibilityError)).toBe(true);
+    expect(isMaxCompletionTokensCompatibilityError(400, "Unsupported parameter: 'max_tokens'\nUse 'max_completion_tokens' instead.")).toBe(true);
+    expect(isMaxCompletionTokensCompatibilityError(400, JSON.stringify({ error: { code: 'unsupported_parameter', param: 'max_tokens' } }))).toBe(true);
     expect(isMaxCompletionTokensCompatibilityError(500, compatibilityError)).toBe(false);
     expect(isMaxCompletionTokensCompatibilityError(400, "Unsupported parameter: 'max_tokens' is not supported with this model.")).toBe(false);
-    expect(isMaxCompletionTokensCompatibilityError(400, compatibilityError.replace(' instead.', '.'))).toBe(false);
+    expect(isMaxCompletionTokensCompatibilityError(400, "Unsupported parameter: 'max_tokens' is not supported with this model.")).toBe(false);
   });
 
   it('changes only the token field on the one-shot fallback', async () => {
@@ -33,7 +35,8 @@ describe('OpenRouter token compatibility', () => {
       fetchImpl,
       'https://example.test/chat/completions',
       { method: 'POST', headers: { Authorization: 'Bearer fake' } },
-      { model: 'gpt-5', messages: [{ role: 'user', content: 'hello' }], temperature: 0.3, max_tokens: 42 },
+      { model: 'gpt-5', messages: [{ role: 'user', content: 'hello' }], temperature: 0.3 },
+      42,
     );
 
     expect(response.status).toBe(200);
@@ -54,7 +57,47 @@ describe('OpenRouter token compatibility', () => {
       },
       'https://example.test/chat/completions',
       { method: 'POST' },
-      { max_tokens: 42 },
+      {},
+      42,
+    );
+
+    expect(response.status).toBe(400);
+    expect(calls).toBe(1);
+  });
+
+  it('retries a structured compatibility error returned inside a 200 response', async () => {
+    const requests: RequestInit[] = [];
+    const responses = [
+      jsonResponse(200, { error: { code: 'unsupported_parameter', param: 'max_tokens', message: 'max_tokens is unsupported' } }),
+      jsonResponse(200, { choices: [{ message: { content: 'ok' } }] }),
+    ];
+    const response = await fetchWithOpenRouterTokenCompatibility(
+      async (_input, init) => {
+        requests.push(init ?? {});
+        return responses.shift()!;
+      },
+      'https://example.test/chat/completions',
+      { method: 'POST' },
+      { model: 'gpt-5' },
+      42,
+    );
+
+    expect(response.status).toBe(200);
+    expect(requests).toHaveLength(2);
+    expect(JSON.parse(String(requests[1].body))).toEqual({ model: 'gpt-5', max_completion_tokens: 42 });
+  });
+
+  it('does not retry a 400 body that only mentions max_tokens', async () => {
+    let calls = 0;
+    const response = await fetchWithOpenRouterTokenCompatibility(
+      async () => {
+        calls += 1;
+        return jsonResponse(400, { error: { message: "Unsupported parameter: 'max_tokens' is not supported" } });
+      },
+      'https://example.test/chat/completions',
+      { method: 'POST' },
+      {},
+      42,
     );
 
     expect(response.status).toBe(400);

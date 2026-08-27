@@ -294,12 +294,11 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       model,
       messages,
       temperature: 0.3,  // Lower temperature for structured extraction
-      max_tokens: 4096,
       // Ask openrouter.ai for usage accounting (token counts + cost).
       // Only sent to openrouter.ai — strict custom gateways may reject
       // unknown body fields.
       ...(apiUrl.includes('openrouter.ai') ? { usage: { include: true } } : {}),
-    });
+    }, 4096);
   }
 
   private async queryOpenRouterMultiTurn(
