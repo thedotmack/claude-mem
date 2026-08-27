@@ -197,6 +197,28 @@ describe("OpenCode plugin event contract", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it("keeps the selected empty input object when output args are also present", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_empty_input", callID: "c5", args: {} },
+        { title: "Read", output: "ok", metadata: {}, args: { path: "/output" } },
+      );
+
+      const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
+      expect((obsPost!.body as Record<string, unknown>).tool_input).toEqual({});
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 describe("OpenCode search client response-shape contract", () => {
