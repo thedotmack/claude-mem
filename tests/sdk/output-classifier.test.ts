@@ -63,7 +63,6 @@ describe('isQuotaLimitedObserverOutput', () => {
     expect(isQuotaLimitedObserverOutput('Session limit reached · resets 4:10am')).toBe(true);
     expect(isQuotaLimitedObserverOutput('5-hour limit reached · resets 4:10am')).toBe(true);
     expect(isQuotaLimitedObserverOutput('Session limit exceeded')).toBe(true);
-    expect(isQuotaLimitedObserverOutput("You've reached your usage limit")).toBe(true);
   });
 
   it('detects Claude weekly-limit prose', () => {
@@ -93,6 +92,11 @@ describe('isQuotaLimitedObserverOutput', () => {
     expect(isQuotaLimitedObserverOutput('The session limit is configurable in the documentation.')).toBe(false);
     expect(isQuotaLimitedObserverOutput('Refactored so the session limit is exceeded only after retries')).toBe(false);
     expect(isQuotaLimitedObserverOutput('The user reached session limit handling in ResponseProcessor')).toBe(false);
+    expect(isQuotaLimitedObserverOutput("You're about to hit your 5-hour usage limit")).toBe(false);
+    expect(isQuotaLimitedObserverOutput("You haven't reached your session limit")).toBe(false);
+    expect(isQuotaLimitedObserverOutput('The documentation says your session limit was exceeded')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('Your monthly usage limit has been reached')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('The monthly usage limit has been reached for your account')).toBe(false);
   });
 });
 
