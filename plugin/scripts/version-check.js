@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 
 const IS_WINDOWS = process.platform === 'win32';
 const VERSION_CHECK_LOG_PREFIX = '[version-check]';
-const BUN_INSTALL_ARGS = Object.freeze(['install', '--production']);
+const BUN_INSTALL_ARGS = Object.freeze(['install', '--production', '--ignore-scripts']);
 const BUN_INSTALL_TIMEOUT_MS = 120_000;
 const NODE_MODULES_DIRNAME = 'node_modules';
 const PACKAGE_NAME_SEGMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
@@ -49,11 +49,11 @@ function hasCompletePluginDependencies(pluginRoot) {
   const nodeModulesRoot = join(pluginRoot, NODE_MODULES_DIRNAME);
   for (const dependencyName of Object.keys(packageManifest.dependencies)) {
     const segments = dependencyPathSegments(dependencyName);
-    if (!segments) return true;
+    if (!segments) continue;
 
     const installedManifest = readJsonObject(join(nodeModulesRoot, ...segments, 'package.json'));
     if (installedManifest === false) return false;
-    if (!installedManifest) return true;
+    if (!installedManifest) continue;
   }
   return true;
 }

@@ -62,13 +62,17 @@ function runVersionCheck(pluginRoot: string, fakeBinDir: string): Promise<{ stde
 
 type BunBehavior = 'success' | 'partial-then-fail';
 
-function makeFreshPlugin(name: string, bunBehavior: BunBehavior = 'success'): { pluginRoot: string; fakeBinDir: string } {
+function makeFreshPlugin(
+  name: string,
+  bunBehavior: BunBehavior = 'success',
+  dependencies: Record<string, string> = { zod: '^3.0.0' },
+): { pluginRoot: string; fakeBinDir: string } {
   const pluginRoot = join(tmpRoot, name);
   mkdirSync(pluginRoot, { recursive: true });
   writeFileSync(join(pluginRoot, 'package.json'), JSON.stringify({
     name: 'fake-plugin',
     version: '0.0.0',
-    dependencies: { zod: '^3.0.0' },
+    dependencies,
   }));
   writeFileSync(join(pluginRoot, '.install-version'), JSON.stringify({ version: '0.0.0' }));
 
@@ -83,11 +87,21 @@ function makeFreshPlugin(name: string, bunBehavior: BunBehavior = 'success'): { 
   //     surfaces. Required to cover the gh #2650 review-fix path that
   //     cleans up the partial dir so the next Setup run can retry.
   const fakeBunPath = join(fakeBinDir, 'bun');
+  const installedPackageCommands = Object.keys(dependencies)
+    .filter((dependencyName) => /^@?[A-Za-z0-9][A-Za-z0-9._~-]*(?:\/[A-Za-z0-9][A-Za-z0-9._~-]*)?$/.test(dependencyName))
+    .map((dependencyName) => {
+      const packagePath = dependencyName.split('/').join('/');
+      return [
+        `  mkdir -p "${pluginRoot}/node_modules/${packagePath}"`,
+        `  printf '{"name":"${dependencyName}","version":"1.0.0"}\n' > "${pluginRoot}/node_modules/${packagePath}/package.json"`,
+      ];
+    })
+    .flat();
   const installBody = bunBehavior === 'success'
     ? [
+        ...installedPackageCommands,
         `  mkdir -p "${pluginRoot}/node_modules/zod/v3"`,
         `  : > "${pluginRoot}/node_modules/zod/v3/index.js"`,
-        `  printf '{"name":"zod","version":"3.0.0"}\n' > "${pluginRoot}/node_modules/zod/package.json"`,
         '  exit 0',
       ]
     : [
@@ -97,6 +111,7 @@ function makeFreshPlugin(name: string, bunBehavior: BunBehavior = 'success'): { 
       ];
   const fakeBunScript = [
     '#!/usr/bin/env bash',
+    'if [ "$2" != "--production" ] || [ "$3" != "--ignore-scripts" ]; then exit 43; fi',
     'if [ "$1" = "install" ]; then',
     ...installBody,
     'fi',
@@ -204,5 +219,36 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(code).toBe(0);
     expect(stderr).toContain('plugin dependencies remain incomplete after install');
     expect(stderr).not.toContain(INSTALL_SUCCESS_DIAGNOSTIC);
+  });
+
+  test('checks scoped dependencies and continues after an unreadable manifest', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin(
+      'plugin-corrupt-scoped',
+      'success',
+      { zod: '^3.0.0', '@scope/tool': '^1.0.0' },
+    );
+    mkdirSync(join(pluginRoot, 'node_modules', 'zod'), { recursive: true });
+    writeFileSync(join(pluginRoot, 'node_modules', 'zod', 'package.json'), '{not-json');
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain(INSTALL_DIAGNOSTIC);
+    expect(existsSync(join(pluginRoot, 'node_modules', '@scope', 'tool', 'package.json'))).toBe(true);
+  });
+
+  test('does not let an unsafe dependency key bypass later missing packages', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin(
+      'plugin-unsafe-dependency',
+      'success',
+      { '../outside': '^1.0.0', zod: '^3.0.0' },
+    );
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain(INSTALL_DIAGNOSTIC);
+    expect(existsSync(join(pluginRoot, 'node_modules', 'zod', 'package.json'))).toBe(true);
+    expect(existsSync(join(pluginRoot, '..', 'outside', 'package.json'))).toBe(false);
   });
 });
