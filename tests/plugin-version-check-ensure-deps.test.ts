@@ -11,6 +11,7 @@ const INSTALL_DIAGNOSTIC = '[version-check] installing plugin dependencies';
 const INSTALL_SUCCESS_DIAGNOSTIC = '[version-check] plugin dependencies installed successfully';
 const INSTALL_FAILURE_DIAGNOSTIC = '[version-check] bun install failed';
 const FAKE_INSTALLED_MARKER_REL = join('node_modules', 'zod', 'v3', 'index.js');
+const FAKE_ZOD_ENTRY_FILES = ['v3/index.js', 'v4/index.js', 'v4-mini/index.js'];
 const SKIP_NON_UNIX = process.platform === 'win32';
 
 let tmpRoot: string;
@@ -100,8 +101,10 @@ function makeFreshPlugin(
   const installBody = bunBehavior === 'success'
     ? [
         ...installedPackageCommands,
-        `  mkdir -p "${pluginRoot}/node_modules/zod/v3"`,
-        `  : > "${pluginRoot}/node_modules/zod/v3/index.js"`,
+        ...FAKE_ZOD_ENTRY_FILES.flatMap((entryFile) => [
+          `  mkdir -p "${pluginRoot}/node_modules/zod/${entryFile.split('/')[0]}"`,
+          `  : > "${pluginRoot}/node_modules/zod/${entryFile}"`,
+        ]),
         '  exit 0',
       ]
     : [
@@ -188,6 +191,10 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-already-installed');
     mkdirSync(join(pluginRoot, 'node_modules', 'zod'), { recursive: true });
     writeFileSync(join(pluginRoot, 'node_modules', 'zod', 'package.json'), JSON.stringify({ name: 'zod', version: '3.0.0' }));
+    for (const entryFile of FAKE_ZOD_ENTRY_FILES) {
+      mkdirSync(join(pluginRoot, 'node_modules', 'zod', entryFile.split('/')[0]), { recursive: true });
+      writeFileSync(join(pluginRoot, 'node_modules', 'zod', ...entryFile.split('/')), '');
+    }
 
     const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
 
@@ -195,6 +202,21 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(stderr).not.toContain(INSTALL_DIAGNOSTIC);
     // The fake bun would have created zod/v3/index.js if invoked.
     expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(false);
+  });
+
+  test('repairs a Zod install whose root manifest lacks worker entry points', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-zod-subpath');
+    mkdirSync(join(pluginRoot, 'node_modules', 'zod', 'v3'), { recursive: true });
+    writeFileSync(join(pluginRoot, 'node_modules', 'zod', 'package.json'), JSON.stringify({ name: 'zod', version: '4.4.3' }));
+    writeFileSync(join(pluginRoot, 'node_modules', 'zod', 'v3', 'index.js'), '');
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain(INSTALL_DIAGNOSTIC);
+    expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
+    expect(existsSync(join(pluginRoot, 'node_modules', 'zod', 'v4', 'index.js'))).toBe(true);
+    expect(existsSync(join(pluginRoot, 'node_modules', 'zod', 'v4-mini', 'index.js'))).toBe(true);
   });
 
   test('fails open for an invalid plugin manifest', async () => {

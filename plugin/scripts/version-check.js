@@ -11,6 +11,9 @@ const BUN_INSTALL_ARGS = Object.freeze(['install', '--production', '--ignore-scr
 const BUN_INSTALL_TIMEOUT_MS = 120_000;
 const NODE_MODULES_DIRNAME = 'node_modules';
 const PACKAGE_NAME_SEGMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
+const REQUIRED_DEPENDENCY_ENTRY_FILES = Object.freeze({
+  zod: Object.freeze(['v3/index.js', 'v4/index.js', 'v4-mini/index.js']),
+});
 
 function dependencyPathSegments(name) {
   if (typeof name !== 'string') return null;
@@ -54,6 +57,11 @@ function hasCompletePluginDependencies(pluginRoot) {
     const installedManifest = readJsonObject(join(nodeModulesRoot, ...segments, 'package.json'));
     if (installedManifest === false) return false;
     if (!installedManifest) continue;
+
+    const requiredEntryFiles = REQUIRED_DEPENDENCY_ENTRY_FILES[dependencyName] || [];
+    if (requiredEntryFiles.some((entryFile) => !existsSync(join(nodeModulesRoot, ...segments, ...entryFile.split('/'))))) {
+      return false;
+    }
   }
   return true;
 }
