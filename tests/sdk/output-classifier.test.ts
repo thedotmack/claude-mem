@@ -52,6 +52,16 @@ describe('classifyObserverOutput (plan-11 #2485)', () => {
 });
 
 describe('isQuotaLimitedObserverOutput', () => {
+  it('detects the captured Claude Code session and 5-hour limit notices', () => {
+    expect(isQuotaLimitedObserverOutput("You've hit your session limit · resets 4:10am")).toBe(true);
+    expect(isQuotaLimitedObserverOutput("You've hit your 5-hour usage limit · resets 4:10am (Europe/Paris)")).toBe(true);
+  });
+
+  it('detects reversed-order exhausted session-limit wording', () => {
+    expect(isQuotaLimitedObserverOutput('Your session limit has been reached.')).toBe(true);
+    expect(isQuotaLimitedObserverOutput('Your 5-hour usage limit was exceeded.')).toBe(true);
+  });
+
   it('detects Claude weekly-limit prose', () => {
     expect(
       isQuotaLimitedObserverOutput('Claude usage limit reached. Your weekly limit will reset soon.'),
@@ -72,6 +82,11 @@ describe('isQuotaLimitedObserverOutput', () => {
 
   it('does not treat ordinary observer prose as quota prose', () => {
     expect(isQuotaLimitedObserverOutput('No observations to record.')).toBe(false);
+  });
+
+  it('does not treat approaching or documentation prose as quota prose', () => {
+    expect(isQuotaLimitedObserverOutput('Approaching your 5-hour usage limit')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('The session limit is configurable in the documentation.')).toBe(false);
   });
 });
 
