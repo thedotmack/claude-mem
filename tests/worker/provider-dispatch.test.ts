@@ -3,7 +3,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, readFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { getSelectedProvider, recordCmemFallbackIfEligible } from '../../src/services/worker/provider-dispatch.js';
+import {
+  CMEM_FALLBACK_RETRY_MS,
+  getSelectedProvider,
+  recordCmemFallbackIfEligible,
+  shouldUseCmemFallback,
+} from '../../src/services/worker/provider-dispatch.js';
 import { classifyOpenRouterError } from '../../src/services/worker/OpenRouterProvider.js';
 
 const CMEM_GATEWAY_BASE = 'https://cmem.ai/api/inference/v1';
@@ -59,8 +64,15 @@ describe('provider-dispatch', () => {
     });
 
     it('returns claude when the fallback marker is set on a cmem-gateway config', () => {
-      pinOpenRouterEnv({ CLAUDE_MEM_PRO_FALLBACK_AT: '2026-08-26T12:00:00.000Z' });
+      pinOpenRouterEnv({ CLAUDE_MEM_PRO_FALLBACK_AT: new Date().toISOString() });
       expect(getSelectedProvider()).toBe('claude');
+    });
+
+    it('allows a gateway recovery probe after the fallback cooldown', () => {
+      pinOpenRouterEnv({
+        CLAUDE_MEM_PRO_FALLBACK_AT: new Date(Date.now() - CMEM_FALLBACK_RETRY_MS - 1).toISOString(),
+      });
+      expect(getSelectedProvider()).toBe('openrouter');
     });
 
     it('ignores the fallback marker entirely for a user-owned openrouter.ai key', () => {
@@ -77,6 +89,14 @@ describe('provider-dispatch', () => {
       expect(getSelectedProvider()).toBe('openrouter');
     });
 
+    it('ignores the fallback marker for deceptive cmem.ai hostname prefixes', () => {
+      pinOpenRouterEnv({
+        CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://cmem.ai.evil.example/api/inference/v1',
+        CLAUDE_MEM_PRO_FALLBACK_AT: '2026-08-26T12:00:00.000Z',
+      });
+      expect(getSelectedProvider()).toBe('openrouter');
+    });
+
     it('falls through to claude when openrouter is selected but has no key', () => {
       pinOpenRouterEnv({ CLAUDE_MEM_OPENROUTER_API_KEY: '' });
       expect(getSelectedProvider()).toBe('claude');
@@ -87,6 +107,23 @@ describe('provider-dispatch', () => {
       process.env.CLAUDE_MEM_GEMINI_API_KEY = '';
       process.env.CLAUDE_MEM_OPENROUTER_API_KEY = '';
       expect(getSelectedProvider()).toBe('claude');
+    });
+  });
+
+  describe('shouldUseCmemFallback', () => {
+    const now = Date.parse('2026-08-26T12:30:00.000Z');
+
+    it('uses Claude during the cooldown and probes once it expires', () => {
+      expect(shouldUseCmemFallback('2026-08-26T12:29:00.000Z', now)).toBe(true);
+      expect(shouldUseCmemFallback(
+        new Date(now - CMEM_FALLBACK_RETRY_MS).toISOString(),
+        now,
+      )).toBe(false);
+    });
+
+    it('keeps malformed non-empty markers safely fallen back', () => {
+      expect(shouldUseCmemFallback('not-an-iso-date', now)).toBe(true);
+      expect(shouldUseCmemFallback('', now)).toBe(false);
     });
   });
 
@@ -151,6 +188,15 @@ describe('provider-dispatch', () => {
 
       pinOpenRouterEnv({ CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1' });
       expect(recordCmemFallbackIfEligible(gatewayError(402, 'allowance_exhausted'), settingsPath)).toBe(false);
+    });
+
+    it('never triggers for deceptive cmem.ai hostname prefixes', () => {
+      pinOpenRouterEnv({
+        CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://cmem.ai.evil.example/api/inference/v1',
+      });
+      expect(recordCmemFallbackIfEligible(gatewayError(402, 'allowance_exhausted'), settingsPath)).toBe(false);
+      const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      expect(persisted.CLAUDE_MEM_PRO_FALLBACK_AT).toBe('');
     });
 
     it('ignores non-terminal gateway errors (rate limits, transient, inactive subscription)', () => {

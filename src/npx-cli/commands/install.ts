@@ -44,6 +44,13 @@ import {
   CMEM_PRO_TRIAL_START_URL,
 } from '../cmem-pro-costs.js';
 import { PLAN_USAGE_GAIN_PERCENT, PRO_TRIAL_PITCH, proTrialUrl } from '../../shared/pro-promo.js';
+import { clearProFallback, isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
+import {
+  buildCmemActivationSettings,
+  buildNonInteractiveOpenRouterSettings,
+  buildPersonalOpenRouterSettings,
+  resolveCmemMemoryCredentials,
+} from '../cmem-memory-credentials.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
@@ -847,6 +854,17 @@ type ClaudeApiMode = 'direct' | 'gateway';
 // API_KEY,PROJECT_ID}).
 type RuntimeId = 'worker' | 'server';
 
+/** Read only persisted values: environment secrets must never be copied to disk. */
+function readPersistedInstallerSettings(): Record<string, unknown> {
+  try {
+    return readFlatSettings(USER_SETTINGS_PATH) ?? {};
+  } catch {
+    // settings.json is optional and may be hand-edited; provider prompts retain
+    // their normal recovery paths when it cannot be read.
+    return {};
+  }
+}
+
 function readRawStoredAuthMethod(): 'subscription' | 'api-key' | 'gateway' | undefined {
   try {
     const value = readFlatSettings(USER_SETTINGS_PATH)?.CLAUDE_MEM_CLAUDE_AUTH_METHOD;
@@ -1003,6 +1021,8 @@ function openBrowser(url: string): void {
 
 async function promptProvider(options: InstallOptions, login: TrialReadyResult | null = null): Promise<ProviderId> {
   const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
+  const persistedSettings = readPersistedInstallerSettings();
+  const cmemCredentials = resolveCmemMemoryCredentials(login, persistedSettings);
 
   const persistClaudeProvider = (authMethod?: 'subscription' | 'api-key' | 'gateway') => {
     const resolvedAuthMethod = authMethod ?? resolveClaudeAuthMethod();
@@ -1122,7 +1142,13 @@ async function promptProvider(options: InstallOptions, login: TrialReadyResult |
         persistClaudeProvider();
         return 'claude';
       }
-      const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: options.provider });
+      const updates = options.provider === 'openrouter'
+        ? buildNonInteractiveOpenRouterSettings(
+          persistedSettings,
+          SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL,
+        )
+        : { CLAUDE_MEM_PROVIDER: options.provider };
+      const wrote = mergeSettings(updates);
       if (wrote) log.info(`Saved provider=${options.provider} to ~/.claude-mem/settings.json`);
       log.warn(`Provider=${options.provider} requested non-interactively. API key prompt skipped — set CLAUDE_MEM_${options.provider.toUpperCase()}_API_KEY and CLAUDE_MEM_PROVIDER in settings.json or env manually if not already set.`);
       return options.provider;
@@ -1202,18 +1228,16 @@ async function promptProvider(options: InstallOptions, login: TrialReadyResult |
   // OpenAI-compatible client whose endpoint and model both come from settings,
   // so "use the CMEM observer model" is four settings writes and nothing else.
   if (selectedProvider === 'cmem') {
-    // Signed-in path: the browser login already delivered the key material —
-    // configure the observer directly, no paste prompt, no second browser trip.
-    if (login) {
-      const wrote = mergeSettings({
-        CLAUDE_MEM_PROVIDER: 'openrouter',
-        CLAUDE_MEM_OPENROUTER_BASE_URL: login.memoryBaseUrl,
-        CLAUDE_MEM_OPENROUTER_MODEL: login.memoryModel,
-        CLAUDE_MEM_OPENROUTER_API_KEY: login.memoryKey,
-        // Fresh key material clears any trial-expiry fallback to the
-        // Anthropic plan — memory goes back through the gateway.
-        CLAUDE_MEM_PRO_FALLBACK_AT: '',
-      });
+    // Browser login, staged one-shot delivery, or an already-configured cmem
+    // gateway key all avoid a paste prompt. Staged material is atomically MOVED
+    // into the generic OpenRouter slot so the secret has one stable copy.
+    if (cmemCredentials) {
+      const wrote = mergeSettings(buildCmemActivationSettings(cmemCredentials));
+      if (wrote && cmemCredentials.clearFallback) {
+        // mergeSettings clears the timestamp atomically with the key; this call
+        // also resets the one-time notice marker for a future fallback.
+        clearProFallback();
+      }
       if (wrote) log.info('claude-mem observer configured with your signed-in memory key.');
       return 'openrouter';
     }
@@ -1245,10 +1269,14 @@ async function promptProvider(options: InstallOptions, login: TrialReadyResult |
       CLAUDE_MEM_OPENROUTER_BASE_URL: CMEM_PRO_BASE_URL,
       CLAUDE_MEM_OPENROUTER_MODEL: CMEM_PRO_MODEL,
       CLAUDE_MEM_OPENROUTER_API_KEY: String(keyResult).trim(),
+      CLAUDE_MEM_PRO_MEMORY_KEY: '',
+      CLAUDE_MEM_PRO_MEMORY_BASE_URL: '',
+      CLAUDE_MEM_PRO_MEMORY_MODEL: '',
       // Fresh key material clears any trial-expiry fallback to the
       // Anthropic plan — memory goes back through the gateway.
       CLAUDE_MEM_PRO_FALLBACK_AT: '',
     });
+    if (wrote) clearProFallback();
     if (wrote) log.info('Saved CMEM Pro configuration to ~/.claude-mem/settings.json');
 
     p.note(
@@ -1269,7 +1297,12 @@ async function promptProvider(options: InstallOptions, login: TrialReadyResult |
     : 'CLAUDE_MEM_OPENROUTER_API_KEY';
 
   const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
-  if (existingKey && existingKey.trim().length > 0) {
+  const existingOpenRouterBaseUrl = selectedProvider === 'openrouter'
+    ? String(getSetting('CLAUDE_MEM_OPENROUTER_BASE_URL') ?? '')
+    : '';
+  const existingKeyIsCmem = selectedProvider === 'openrouter'
+    && isCmemGatewayUrl(existingOpenRouterBaseUrl);
+  if (existingKey && existingKey.trim().length > 0 && !existingKeyIsCmem) {
     const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: selectedProvider });
     if (wrote) log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
     return selectedProvider;
@@ -1288,10 +1321,17 @@ async function promptProvider(options: InstallOptions, login: TrialReadyResult |
   }
 
   const apiKey = String(apiKeyResult).trim();
-  const wrote = mergeSettings({
-    CLAUDE_MEM_PROVIDER: selectedProvider,
-    [keyEnvName]: apiKey,
-  });
+  const updates = selectedProvider === 'openrouter'
+    ? buildPersonalOpenRouterSettings(
+      apiKey,
+      readPersistedInstallerSettings(),
+      SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL,
+    )
+    : {
+      CLAUDE_MEM_PROVIDER: selectedProvider,
+      [keyEnvName]: apiKey,
+    };
+  const wrote = mergeSettings(updates);
   if (wrote) {
     log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
   }
@@ -1390,6 +1430,10 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
 
 const SIGNUP_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+function nonEmptyTrimmedString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
 const TRIAL_START_TIMEOUT_MS = 10_000;
 const TRIAL_POLL_TIMEOUT_MS = 10_000;
 /**
@@ -1463,7 +1507,9 @@ async function startTrialPairing(email: string): Promise<TrialPairing | null> {
     });
     if (!res.ok) return null;
     const body = await res.json() as { pairing_id?: unknown; secret?: unknown; poll_interval?: unknown; user_code?: unknown };
-    if (typeof body.pairing_id !== 'string' || typeof body.secret !== 'string') return null;
+    const pairingId = nonEmptyTrimmedString(body.pairing_id);
+    const secret = nonEmptyTrimmedString(body.secret);
+    if (!pairingId || !secret) return null;
     // Clamp the server-controlled cadence to [1s, 30s]: the 240s poll budget
     // is only checked at the top of the loop, so an unclamped interval could
     // defeat it (and a sub-second one would hammer the endpoint).
@@ -1473,10 +1519,8 @@ async function startTrialPairing(email: string): Promise<TrialPairing | null> {
     // user_code arrived with the device-approval contract; an older server
     // omits it and the flow degrades gracefully (no code note, no approval
     // stage copy) — see TrialPairing.userCode.
-    const userCode = typeof body.user_code === 'string' && body.user_code.trim().length > 0
-      ? body.user_code.trim()
-      : null;
-    return { pairingId: body.pairing_id, secret: body.secret, pollIntervalMs: pollIntervalS * 1000, userCode };
+    const userCode = nonEmptyTrimmedString(body.user_code);
+    return { pairingId, secret, pollIntervalMs: pollIntervalS * 1000, userCode };
   } catch {
     // [ANTI-PATTERN IGNORED]: network/timeout failures here are NOT silent — every caller pairs the null return with a log.warn telling the user how to start the trial later; the install itself must proceed regardless.
     return null;
@@ -1500,7 +1544,7 @@ type TrialPlan = 'trial' | 'pro' | 'none';
  *   memory key against the CMEM Pro gateway defaults, and the plan is 'trial'
  *   (ready used to require checkout), exactly today's behavior.
  */
-interface TrialReadyResult {
+export interface TrialReadyResult {
   userId: string;
   setupToken: string;
   hubUrl: string;
@@ -1509,6 +1553,33 @@ interface TrialReadyResult {
   memoryModel: string;
   plan: TrialPlan;
   trialEndsAt: string | null;
+}
+
+/**
+ * The one atomic account-state write performed when pairing delivers its
+ * one-shot credentials. Provider selection remains separate, but the memory
+ * key/base/model are staged here so choosing Claude, Gemini, or a personal
+ * OpenRouter key cannot make the delivered cmem key unrecoverable.
+ */
+export function buildTrialReadySettings(
+  result: TrialReadyResult,
+  deviceName: string = hostname(),
+): Record<string, string> {
+  return {
+    CLAUDE_MEM_CLOUD_SYNC_TOKEN: result.setupToken,
+    CLAUDE_MEM_CLOUD_SYNC_USER_ID: result.userId,
+    CLAUDE_MEM_CLOUD_SYNC_HUB_URL: result.hubUrl,
+    CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: deviceName,
+    CLAUDE_MEM_PRO_TRIAL_STATE: 'active',
+    CLAUDE_MEM_PRO_TRIAL_ENDS_AT: result.trialEndsAt ?? '',
+    CLAUDE_MEM_PRO_PLAN: result.plan,
+    CLAUDE_MEM_PRO_MEMORY_KEY: result.memoryKey,
+    CLAUDE_MEM_PRO_MEMORY_BASE_URL: result.memoryBaseUrl,
+    CLAUDE_MEM_PRO_MEMORY_MODEL: result.memoryModel,
+    // This is fresh, one-shot key material: retry the gateway and reset the
+    // notice lifecycle even if an older key had already fallen back.
+    CLAUDE_MEM_PRO_FALLBACK_AT: '',
+  };
 }
 
 /**
@@ -1529,30 +1600,21 @@ export function parseTrialReadyBody(body: unknown): TrialReadyResult | null {
     plan?: unknown;
     trial?: { ends_at?: unknown };
   };
-  if (
-    b.status !== 'ready'
-    || typeof b.user_id !== 'string'
-    || typeof b.setup_token !== 'string'
-    || typeof b.hub_url !== 'string'
-  ) {
-    return null;
-  }
-  const memoryKey = typeof b.memory_key === 'string' && b.memory_key.length > 0
-    ? b.memory_key
-    : b.setup_token;
+  const userId = nonEmptyTrimmedString(b.user_id);
+  const setupToken = nonEmptyTrimmedString(b.setup_token);
+  const hubUrl = nonEmptyTrimmedString(b.hub_url);
+  if (b.status !== 'ready' || !userId || !setupToken || !hubUrl) return null;
+
+  const memoryKey = nonEmptyTrimmedString(b.memory_key) ?? setupToken;
   return {
-    userId: b.user_id,
-    setupToken: b.setup_token,
-    hubUrl: b.hub_url,
+    userId,
+    setupToken,
+    hubUrl,
     memoryKey,
-    memoryBaseUrl: typeof b.memory_base_url === 'string' && b.memory_base_url.length > 0
-      ? b.memory_base_url
-      : CMEM_PRO_BASE_URL,
-    memoryModel: typeof b.memory_model === 'string' && b.memory_model.length > 0
-      ? b.memory_model
-      : CMEM_PRO_MODEL,
+    memoryBaseUrl: nonEmptyTrimmedString(b.memory_base_url) ?? CMEM_PRO_BASE_URL,
+    memoryModel: nonEmptyTrimmedString(b.memory_model) ?? CMEM_PRO_MODEL,
     plan: b.plan === 'trial' || b.plan === 'pro' || b.plan === 'none' ? b.plan : 'trial',
-    trialEndsAt: typeof b.trial?.ends_at === 'string' ? b.trial.ends_at : null,
+    trialEndsAt: nonEmptyTrimmedString(b.trial?.ends_at),
   };
 }
 
@@ -1600,8 +1662,7 @@ async function pollTrialOnce(pairing: TrialPairing): Promise<TrialPollOutcome> {
 }
 
 /**
- * Sleep in 250ms slices so a Ctrl+C — which clack's active spinner converts
- * into `isCancelled` without killing the process — interrupts the wait
+ * Sleep in 250ms slices so our local Ctrl+C handler interrupts the wait
  * promptly instead of after a full poll interval.
  */
 function sleepUnlessCancelled(ms: number, isCancelled: () => boolean): Promise<void> {
@@ -1774,11 +1835,11 @@ async function promptBrowserLogin(version: string): Promise<TrialPairing | null>
 /**
  * Runs immediately after promptBrowserLogin produced a pairing. Polls cmem.ai
  * until the human finishes login in the browser, then persists the account
- * state (cloud-sync trio + device name + trial/plan keys) in ONE mergeSettings
- * call and returns the delivered key material — the caller hands it to the
- * provider prompt, which decides what provider settings to write with it (the
- * user always chooses their provider). CLAUDE_MEM_PROVIDER and the
- * OpenRouter key settings are deliberately NOT written here.
+ * state (cloud-sync trio + device name + trial/plan keys + staged one-shot
+ * memory credentials) in ONE mergeSettings call and returns the delivered key
+ * material. The provider prompt decides what ACTIVE provider settings to
+ * write; CLAUDE_MEM_PROVIDER and the generic OpenRouter fields are deliberately
+ * NOT written here.
  *
  * Every failure mode — pairing expiry, poll budget exhaustion, Ctrl+C,
  * cmem.ai outage — returns null with a warning, and the caller falls through
@@ -1801,36 +1862,35 @@ export async function completeTrialPairing(pairing: TrialPairing, version: strin
   };
   let stage: TrialPollStage = 'awaiting_login';
 
-  // Honest copy: on the common path clack's raw-mode keypress handler turns
-  // Ctrl+C during a spinner into a clean exit of the WHOLE installer (the
-  // ETX fallback below only catches the rare press clack misses), so tell
-  // the user exactly that before the wait begins.
-  log.info(styleText('dim', 'Ctrl+C exits — finish anytime with npx claude-mem install'));
+  // Do not use @clack/prompts' spinner here: its raw-mode Ctrl+C handler calls
+  // process.exit(0), which would abandon provider selection and worker startup.
+  // Static clack log rows preserve the visual flow while this local raw/SIGINT
+  // handler makes Ctrl+C skip only the browser wait and continue installation.
+  log.info(styleText('dim', 'Ctrl+C skips sign-in and continues installation.'));
+  log.info(stageMessages[stage]);
 
-  const spin = p.spinner({ cancelMessage: 'Stopped waiting for the browser steps.' });
-  spin.start(stageMessages[stage]);
-
-  // Ctrl+C handling. The preceding prompt's readline close() leaves stdin
-  // explicitly PAUSED, so during a bare spinner the Ctrl+C byte would sit
-  // unread in the tty buffer and the "cancel key exits" behavior clack gives
-  // every other spinner in this file would not fire until much later
-  // (observed empirically). Resume stdin for the duration of the poll so the
-  // first Ctrl+C is delivered immediately — normally clack's raw-mode
-  // keypress handler then exits cleanly (its standard spinner behavior); the
-  // data listener below is the fallback that turns any press clack misses
-  // into a graceful escape to the provider prompt. Restored in the finally.
   let ctrlCPressed = false;
   const onStdinData = (chunk: Buffer | string): void => {
     if (typeof chunk === 'string' ? chunk.includes('\x03') : chunk.includes(0x03)) {
       ctrlCPressed = true;
     }
   };
+  const onSigint = (): void => {
+    ctrlCPressed = true;
+  };
+  const stdinWasRaw = process.stdin.isRaw === true;
+  let changedRawMode = false;
   process.stdin.on('data', onStdinData);
+  process.on('SIGINT', onSigint);
+  if (process.stdin.isTTY && !stdinWasRaw) {
+    process.stdin.setRawMode(true);
+    changedRawMode = true;
+  }
   process.stdin.resume();
-  const wasCancelled = (): boolean => spin.isCancelled || ctrlCPressed;
+  const wasCancelled = (): boolean => ctrlCPressed;
 
   const bailCancelled = async (): Promise<null> => {
-    if (!spin.isCancelled) spin.cancel('Stopped waiting for the browser steps.');
+    log.warn('Stopped waiting for the browser steps.');
     log.warn(TRIAL_FINISH_LATER_WARNING);
     await captureCliEvent('trial_poll_timeout', {
       version,
@@ -1851,29 +1911,21 @@ export async function completeTrialPairing(pairing: TrialPairing, version: strin
       if (wasCancelled()) return bailCancelled();
 
       if (result.kind === 'ready') {
-        // ONE mergeSettings call: the account keys (sync trio + device name +
-        // trial/plan state) land atomically so an interruption can never leave
-        // sync half-configured. Provider settings are the caller's decision —
-        // the delivered key material is returned, not persisted here. Device
-        // id stays absent — the worker mints it on first CloudSync start.
-        const wrote = mergeSettings({
-          CLAUDE_MEM_CLOUD_SYNC_TOKEN: result.setupToken,
-          CLAUDE_MEM_CLOUD_SYNC_USER_ID: result.userId,
-          CLAUDE_MEM_CLOUD_SYNC_HUB_URL: result.hubUrl,
-          CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: hostname(),
-          CLAUDE_MEM_PRO_TRIAL_STATE: 'active',
-          CLAUDE_MEM_PRO_TRIAL_ENDS_AT: result.trialEndsAt ?? '',
-          CLAUDE_MEM_PRO_PLAN: result.plan,
-        });
+        // ONE mergeSettings call: account state and one-shot key material land
+        // atomically. Provider selection happens next; the staging fields keep
+        // the key recoverable across every provider choice and interruption.
+        // Device id stays absent — CloudSync mints it on first start.
+        const wrote = mergeSettings(buildTrialReadySettings(result));
         if (!wrote) {
           // mergeSettings already logged the write error. The credentials were
           // delivered exactly once and are now lost — fall back to the normal
           // provider prompt rather than pretending the account is configured.
-          spin.stop(styleText('yellow', 'Could not save your account settings.'));
+          log.warn('Could not save your account settings.');
           log.warn(TRIAL_FINISH_LATER_WARNING);
           return null;
         }
-        spin.stop('Signed in.');
+        clearProFallback();
+        log.success('Signed in.');
         // The ONLY places plan states are explained — and the ONLY dollar
         // figure allowed here is the $0-balance line for plan 'none'.
         const noteLines = ['✓ Signed in — your memory key is ready.'];
@@ -1897,7 +1949,7 @@ export async function completeTrialPairing(pairing: TrialPairing, version: strin
       }
 
       if (result.kind === 'gone') {
-        spin.stop(styleText('yellow', 'That sign-in link has expired.'));
+        log.warn('That sign-in link has expired.');
         log.warn(TRIAL_FINISH_LATER_WARNING);
         await captureCliEvent('trial_poll_timeout', {
           version,
@@ -1911,7 +1963,7 @@ export async function completeTrialPairing(pairing: TrialPairing, version: strin
       if (result.kind === 'unreachable') {
         consecutiveFailures += 1;
         if (consecutiveFailures >= 3) {
-          spin.stop(styleText('yellow', 'cmem.ai is not responding.'));
+          log.warn('cmem.ai is not responding.');
           log.warn(TRIAL_UNREACHABLE_WARNING);
           await captureCliEvent('trial_poll_timeout', {
             version,
@@ -1925,7 +1977,7 @@ export async function completeTrialPairing(pairing: TrialPairing, version: strin
         consecutiveFailures = 0;
         if (result.stage !== stage) {
           stage = result.stage;
-          spin.message(stageMessages[stage]);
+          log.info(stageMessages[stage]);
         }
       }
 
@@ -1933,7 +1985,7 @@ export async function completeTrialPairing(pairing: TrialPairing, version: strin
     }
 
     if (wasCancelled()) return bailCancelled();
-    spin.stop(styleText('yellow', 'Still waiting on the browser steps — moving on.'));
+    log.warn('Still waiting on the browser steps — moving on.');
     log.warn(TRIAL_FINISH_LATER_WARNING);
     await captureCliEvent('trial_poll_timeout', {
       version,
@@ -1944,6 +1996,8 @@ export async function completeTrialPairing(pairing: TrialPairing, version: strin
     return null;
   } finally {
     process.stdin.off('data', onStdinData);
+    process.off('SIGINT', onSigint);
+    if (changedRawMode) process.stdin.setRawMode(false);
     // Re-pause so stdin is in the same state the next clack prompt expects
     // (each prompt resumes it itself).
     process.stdin.pause();
@@ -2287,7 +2341,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     : null;
   // A successful pairing wrote the cloud-sync settings (inside
   // completeTrialPairing) regardless of which provider is chosen next.
-  const signedIn = login !== null;
+  const signedIn = login !== null || readStoredTrialState()?.state === 'active';
   const selectedProvider = await promptProvider(options, login);
   if (selectedProvider === 'claude') {
     await promptClaudeModel(options);

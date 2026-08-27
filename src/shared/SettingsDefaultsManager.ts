@@ -98,6 +98,13 @@ export interface SettingsDefaults {
   CLAUDE_MEM_PRO_TRIAL_ENDS_AT: string;
   CLAUDE_MEM_PRO_PLAN: string;
   CLAUDE_MEM_PRO_FALLBACK_AT: string;
+  // One-shot memory credentials delivered by browser pairing. These staging
+  // fields keep the key recoverable until the user chooses a provider; when
+  // claude-mem is selected the installer atomically moves them into the
+  // generic OpenRouter fields and clears the staging copy.
+  CLAUDE_MEM_PRO_MEMORY_KEY: string;
+  CLAUDE_MEM_PRO_MEMORY_BASE_URL: string;
+  CLAUDE_MEM_PRO_MEMORY_MODEL: string;
   CLAUDE_MEM_TELEGRAM_ENABLED: string;
   CLAUDE_MEM_TELEGRAM_BOT_TOKEN: string;
   CLAUDE_MEM_TELEGRAM_CHAT_ID: string;
@@ -202,6 +209,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_PRO_TRIAL_ENDS_AT: '',   // ISO date the free week ends (from poll trial.ends_at); '' when absent
     CLAUDE_MEM_PRO_PLAN: '',            // 'trial' | 'pro' | 'none' — plan reported by the poll on ready
     CLAUDE_MEM_PRO_FALLBACK_AT: '',     // ISO timestamp when the cmem gateway terminally rejected the delivered key and memory fell back to the Anthropic plan; '' = no fallback. Event-driven only (never set from trial dates); cleared by a successful gateway response or fresh installer key material.
+    CLAUDE_MEM_PRO_MEMORY_KEY: '',       // One-shot browser-pairing memory key, staged until provider selection (settings.json is chmod 0600 by the installer)
+    CLAUDE_MEM_PRO_MEMORY_BASE_URL: '',  // Backend-supplied endpoint paired with CLAUDE_MEM_PRO_MEMORY_KEY
+    CLAUDE_MEM_PRO_MEMORY_MODEL: '',     // Backend-supplied model paired with CLAUDE_MEM_PRO_MEMORY_KEY
     CLAUDE_MEM_TELEGRAM_ENABLED: 'true',
     CLAUDE_MEM_TELEGRAM_BOT_TOKEN: '',
     CLAUDE_MEM_TELEGRAM_CHAT_ID: '',
@@ -269,16 +279,23 @@ export class SettingsDefaultsManager {
       const settings = parseJsonWithBom<Record<string, any>>(settingsData);
 
       let flatSettings = settings;
-      if (settings.env && typeof settings.env === 'object') {
+      const hasNestedEnv = settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env);
+      const hasPeerRootKeys = hasNestedEnv && Object.keys(settings).some((key) => key !== 'env');
+      if (hasNestedEnv) {
         flatSettings = settings.env;
 
-        try {
-          writeJsonFileAtomic(settingsPath, flatSettings);
-          // stderr, never stdout — same JSON-on-stdout contract as above.
-          console.warn('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
-        } catch (error: unknown) {
-          console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error instanceof Error ? error.message : String(error));
-          // Continue with in-memory migration even if write fails
+        // A legacy file containing only `{ env: {...} }` can be flattened
+        // safely. If it also contains peer root keys (hooks, permissions,
+        // theme, etc.), retain the wrapper: flattening would destroy user data.
+        if (!hasPeerRootKeys) {
+          try {
+            writeJsonFileAtomic(settingsPath, flatSettings);
+            // stderr, never stdout — same JSON-on-stdout contract as above.
+            console.warn('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
+          } catch (error: unknown) {
+            console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error instanceof Error ? error.message : String(error));
+            // Continue with in-memory migration even if write fails
+          }
         }
       }
 
@@ -289,7 +306,10 @@ export class SettingsDefaultsManager {
         };
 
         try {
-          writeJsonFileAtomic(settingsPath, flatSettings);
+          writeJsonFileAtomic(
+            settingsPath,
+            hasPeerRootKeys ? { ...settings, env: flatSettings } : flatSettings,
+          );
           // stderr, never stdout — same JSON-on-stdout contract as above.
           console.warn('[SETTINGS] Migrated Telegram trigger types off the legacy default:', settingsPath);
         } catch (error: unknown) {

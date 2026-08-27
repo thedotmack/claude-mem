@@ -1,14 +1,14 @@
 ---
 title: "Cursor + Gemini Setup"
-description: "Use Claude-Mem in Cursor with Google's free Gemini API"
+description: "Use Claude-Mem in Cursor with Google's Gemini API"
 ---
 
 # Cursor + Gemini Setup
 
-This guide walks you through setting up Claude-Mem in Cursor using Google's Gemini API. Memory runs off-plan on your Gemini key, with a generous daily quota that handles typical individual usage.
+This guide walks you through setting up Claude-Mem in Cursor using Google's Gemini API. Memory runs off-plan on your Gemini key; rate limits depend on the selected model and your Google Cloud project's billing status.
 
 <Info>
-**Free Tier:** generous daily quota with `gemini-flash-latest`. No credit card required.
+**No billing required:** You can create a Gemini API key without enabling billing. Projects without billing use Google's model-specific rate limits.
 </Info>
 
 ## Step 1: Get a Gemini API Key
@@ -21,7 +21,7 @@ This guide walks you through setting up Claude-Mem in Cursor using Google's Gemi
 6. Copy your API key - you'll need it in Step 3
 
 <Tip>
-**Higher rate limits:** Enable billing on your Google Cloud project to unlock 4,000 RPM (vs 10 RPM without billing). You won't be charged unless you exceed the free quota.
+**Higher rate limits:** Enabling billing on your Google Cloud project can increase the available RPM. Review Google's current quota and billing terms before doing so.
 </Tip>
 
 ## Step 2: Clone and Build Claude-Mem
@@ -99,8 +99,8 @@ Open the worker URL printed on startup to see the memory viewer.
 
 ## Available Gemini Models
 
-| Model | Free Tier RPM | Notes |
-|-------|---------------|-------|
+| Model | RPM without billing | Notes |
+|-------|---------------------|-------|
 | `gemini-flash-latest` | 10 (1,000 with billing) | **Default.** Google alias tracking the current GA Flash model |
 | `gemini-flash-lite-latest` | 15 (4,000 with billing) | Google alias tracking the current GA Flash-Lite model |
 | `gemini-3.5-flash` | 10 (1,000 with billing) | Pinned GA Flash model |
@@ -123,9 +123,9 @@ Claude-mem automatically handles rate limiting for keys without billing enabled:
 
 - Requests are spaced to stay within limits
 - Processing may be slightly slower but stays within quota
-- No errors or lost observations
+- Provider errors leave observations pending for retry
 
-**To remove rate limiting:** Enable billing on your Google Cloud project, then add to settings:
+**To use billing-enabled limits:** Enable billing on your Google Cloud project, then add to settings:
 
 ```json
 {
@@ -133,7 +133,7 @@ Claude-mem automatically handles rate limiting for keys without billing enabled:
 }
 ```
 
-You'll still use the free quota but with much higher rate limits.
+This disables claude-mem's conservative no-billing throttle; Google's provider-side quota still applies.
 
 ## Troubleshooting
 

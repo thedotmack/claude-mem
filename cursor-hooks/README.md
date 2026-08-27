@@ -1,6 +1,6 @@
 # Claude-Mem Cursor Hooks Integration
 
-> **Persistent AI Memory for Cursor - Free Options Available**
+> **Persistent AI Memory for Cursor - Runs Off-Plan**
 
 Give your Cursor AI persistent memory across sessions. Your agent remembers what it worked on, the decisions it made, and the patterns in your codebase - automatically.
 
@@ -8,7 +8,7 @@ Give your Cursor AI persistent memory across sessions. Your agent remembers what
 
 - **Remember context across sessions**: No more re-explaining your codebase every time
 - **Automatic capture**: MCP tools, shell commands, and file edits are logged without effort
-- **Free tier options**: Works with Gemini (1500 free req/day) or OpenRouter (free models available)
+- **Off-plan provider options**: Works with your Gemini key or OpenRouter, including models available at no charge
 - **Works with or without Claude Code**: Full functionality either way
 
 ### Quick Install (5 minutes)
@@ -28,7 +28,7 @@ bun run cursor:setup
 
 **Using Claude Code?** Skip to [Installation](#installation) - everything works automatically.
 
-**Cursor-only (no Claude Code)?** See [STANDALONE-SETUP.md](STANDALONE-SETUP.md) for free-tier options using Gemini or OpenRouter.
+**Cursor-only (no Claude Code)?** See [STANDALONE-SETUP.md](STANDALONE-SETUP.md) for off-plan setup using Gemini or OpenRouter.
 
 ---
 

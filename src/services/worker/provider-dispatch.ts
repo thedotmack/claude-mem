@@ -8,9 +8,10 @@
  * Trial-expiry fallback (plan 2026-08-26 Phase 6): when the selected
  * openrouter config points at the cmem.ai gateway AND a terminal quota/key
  * failure has been recorded (CLAUDE_MEM_PRO_FALLBACK_AT non-empty), dispatch
- * returns 'claude' instead of attempting the dead key — memory runs on the
- * user's Anthropic plan, as the installer promised. User-owned openrouter.ai
- * (or any non-gateway) base URLs ignore the fallback marker entirely.
+ * returns 'claude' during a cooldown — memory runs on the user's Anthropic
+ * plan, as the installer promised. It then permits a periodic gateway probe
+ * so subscribing can recover automatically. User-owned openrouter.ai (or any
+ * non-gateway) base URLs ignore the fallback marker entirely.
  */
 
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -21,12 +22,32 @@ import { isGeminiAvailable, isGeminiSelected } from './GeminiProvider.js';
 import { isOpenRouterAvailable, isOpenRouterSelected } from './OpenRouterProvider.js';
 import type { ClassifiedProviderError } from './provider-errors.js';
 
+/** Retry a fallen-back gateway occasionally so a later subscription recovers. */
+export const CMEM_FALLBACK_RETRY_MS = 15 * 60_000;
+
+export function shouldUseCmemFallback(
+  fallbackAt: string | undefined | null,
+  nowMs: number = Date.now(),
+): boolean {
+  const timestamp = Date.parse((fallbackAt ?? '').trim());
+  if (Number.isNaN(timestamp)) return Boolean((fallbackAt ?? '').trim());
+  const age = nowMs - timestamp;
+  return age >= 0 && age < CMEM_FALLBACK_RETRY_MS;
+}
+
 export function getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
   if (isOpenRouterSelected() && isOpenRouterAvailable()) {
     const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
-    if (settings.CLAUDE_MEM_PRO_FALLBACK_AT && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)) {
+    if (
+      settings.CLAUDE_MEM_PRO_FALLBACK_AT
+      && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)
+      && shouldUseCmemFallback(settings.CLAUDE_MEM_PRO_FALLBACK_AT)
+    ) {
       return 'claude';
     }
+    // Once the cooldown elapses, allow one normal gateway request as a probe.
+    // Success clears the marker in OpenRouterProvider; another terminal
+    // rejection refreshes the timestamp below and resumes Claude fallback.
     return 'openrouter';
   }
   return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
@@ -57,7 +78,20 @@ export function recordCmemFallbackIfEligible(
     return false;
   }
   const fallbackAt = new Date().toISOString();
-  writeProFallbackAt(fallbackAt, settingsPath);
+  try {
+    writeProFallbackAt(fallbackAt, settingsPath);
+  } catch (writeError: unknown) {
+    // If the marker cannot be persisted, do not claim the provider failure was
+    // handled. The caller keeps the original failure on the observer-health
+    // path, while this diagnostic explains why automatic fallback did not arm.
+    logger.warn(
+      'SESSION',
+      'Could not persist cmem trial-expiry fallback; retaining normal provider failure handling',
+      { kind: error.kind, ...(error.code ? { code: error.code } : {}) },
+      writeError instanceof Error ? writeError : new Error(String(writeError)),
+    );
+    return false;
+  }
   logger.info('SESSION', 'Recorded cmem trial-expiry fallback; dispatch switches to the Claude provider', {
     kind: error.kind,
     ...(error.code ? { code: error.code } : {}),

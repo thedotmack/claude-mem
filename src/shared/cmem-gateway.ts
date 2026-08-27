@@ -23,6 +23,7 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from '
 import { join } from 'path';
 import { paths, USER_SETTINGS_PATH } from './paths.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
+import { emitDiagnostic } from './hook-io.js';
 
 /**
  * Origin for the cmem.ai funnel and gateway. Overridable so the whole flow can
@@ -42,25 +43,62 @@ export function cmemProOrigin(): string {
  */
 export function isCmemGatewayUrl(url: string | undefined | null): boolean {
   const trimmed = (url ?? '').trim();
-  return trimmed !== '' && trimmed.startsWith(cmemProOrigin());
+  if (!trimmed) return false;
+
+  try {
+    const gateway = new URL(cmemProOrigin());
+    const candidate = new URL(trimmed);
+    if (
+      (gateway.protocol !== 'http:' && gateway.protocol !== 'https:')
+      || candidate.origin !== gateway.origin
+    ) {
+      return false;
+    }
+
+    // CMEM_PRO_ORIGIN may include a development-server base path. Match that
+    // path on a segment boundary so `/mock` accepts `/mock/api/...` but not
+    // `/mockery`. URL.origin equality above rejects deceptive host/port
+    // prefixes such as `cmem.ai.evil` and `localhost:30050`.
+    const gatewayPath = gateway.pathname.replace(/\/+$/, '');
+    return gatewayPath === ''
+      || candidate.pathname === gatewayPath
+      || candidate.pathname.startsWith(`${gatewayPath}/`);
+  } catch {
+    return false;
+  }
 }
 
 /**
- * Read settings.json as raw flat JSON (tolerating the legacy `{env:{}}` shape)
- * so fallback writes preserve keys this build does not declare.
+ * Read settings.json while retaining both the complete document and the
+ * subtree where claude-mem settings live. The legacy `{ env: {...} }` shape
+ * may also contain peer root keys such as hooks and permissions; flattening
+ * that subtree and writing it back as the whole document destroys those keys.
  */
-function readFlatRawSettings(settingsPath: string): Record<string, unknown> {
-  if (!existsSync(settingsPath)) return {};
-  const parsed = parseJsonWithBom<Record<string, unknown>>(readFileSync(settingsPath, 'utf-8'));
-  const env = parsed.env;
-  return env && typeof env === 'object' ? (env as Record<string, unknown>) : parsed;
+function readRawSettingsDocument(settingsPath: string): {
+  document: Record<string, unknown>;
+  target: Record<string, unknown>;
+} {
+  if (!existsSync(settingsPath)) {
+    const document: Record<string, unknown> = {};
+    return { document, target: document };
+  }
+
+  const parsed = parseJsonWithBom<unknown>(readFileSync(settingsPath, 'utf-8'));
+  const document = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : {};
+  const env = document.env;
+  const target = env && typeof env === 'object' && !Array.isArray(env)
+    ? env as Record<string, unknown>
+    : document;
+  return { document, target };
 }
 
 /** Persist the fallback timestamp — the OpenRouter dispatch reads it back. */
 export function writeProFallbackAt(isoNow: string, settingsPath: string = USER_SETTINGS_PATH): void {
-  const raw = readFlatRawSettings(settingsPath);
-  raw.CLAUDE_MEM_PRO_FALLBACK_AT = isoNow;
-  writeJsonFileAtomic(settingsPath, raw);
+  const { document, target } = readRawSettingsDocument(settingsPath);
+  target.CLAUDE_MEM_PRO_FALLBACK_AT = isoNow;
+  writeJsonFileAtomic(settingsPath, document);
 }
 
 /**
@@ -72,13 +110,27 @@ export function clearProFallback(
   settingsPath: string = USER_SETTINGS_PATH,
   dataDir: string = paths.dataDir(),
 ): void {
-  const raw = readFlatRawSettings(settingsPath);
-  if (raw.CLAUDE_MEM_PRO_FALLBACK_AT) {
-    raw.CLAUDE_MEM_PRO_FALLBACK_AT = '';
-    writeJsonFileAtomic(settingsPath, raw);
+  try {
+    const { document, target } = readRawSettingsDocument(settingsPath);
+    if (target.CLAUDE_MEM_PRO_FALLBACK_AT) {
+      target.CLAUDE_MEM_PRO_FALLBACK_AT = '';
+      writeJsonFileAtomic(settingsPath, document);
+    }
+  } catch (error: unknown) {
+    // Cleanup follows a successful login/request and must never turn that
+    // success into an installer or provider failure. Leave a diagnostic so
+    // the stale timestamp is still actionable.
+    emitDiagnostic(`[cmem-gateway] Could not clear fallback setting at ${settingsPath}: ${error instanceof Error ? error.message : String(error)}\n`);
   }
-  const marker = join(dataDir, PRO_FALLBACK_NOTICE_MARKER);
-  if (existsSync(marker)) unlinkSync(marker);
+
+  try {
+    const marker = join(dataDir, PRO_FALLBACK_NOTICE_MARKER);
+    if (existsSync(marker)) unlinkSync(marker);
+  } catch (error: unknown) {
+    // The marker only controls whether a future notice is shown. Failure to
+    // remove it must not invalidate freshly delivered credentials.
+    emitDiagnostic(`[cmem-gateway] Could not clear fallback notice marker in ${dataDir}: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
 }
 
 /**
