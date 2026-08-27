@@ -3,6 +3,7 @@ import {
   classifyObserverOutput,
   isAuthFailureObserverOutput,
   isContextOverflowObserverOutput,
+  isTransportFailureObserverOutput,
   isQuotaLimitedObserverOutput,
   previewOutput,
 } from '../../src/sdk/output-classifier.js';
@@ -167,6 +168,46 @@ describe('isContextOverflowObserverOutput (#3800)', () => {
     expect(isContextOverflowObserverOutput(overflow)).toBe(true);
     expect(isQuotaLimitedObserverOutput(overflow)).toBe(false);
     expect(isAuthFailureObserverOutput(overflow)).toBe(false);
+describe('isTransportFailureObserverOutput (#3752)', () => {
+  it('classifies the CLI error the child returns instead of crashing', () => {
+    // Verbatim from the issue report.
+    expect(isTransportFailureObserverOutput(
+      'API Error: Connection refused - a firewall or proxy may be blocking it (ConnectionRefused)'
+    )).toBe(true);
+  });
+
+  it('classifies the common transport surfaces', () => {
+    expect(isTransportFailureObserverOutput('connect ECONNREFUSED 127.0.0.1:443')).toBe(true);
+    expect(isTransportFailureObserverOutput('getaddrinfo ENOTFOUND api.anthropic.com')).toBe(true);
+    expect(isTransportFailureObserverOutput('fetch failed')).toBe(true);
+    expect(isTransportFailureObserverOutput('Error: socket hang up ECONNRESET')).toBe(true);
+    expect(isTransportFailureObserverOutput('API Error: 503 Service Unavailable')).toBe(true);
+    expect(isTransportFailureObserverOutput('Request failed with 502')).toBe(true);
+  });
+
+  // A false positive requeues the batch AND pauses the generator, so the
+  // detector has to stay off observer narrative that merely discusses network
+  // failure — exactly the kind of thing this project's own observations say.
+  it('does not classify observer prose that merely talks about connectivity', () => {
+    expect(isTransportFailureObserverOutput(
+      'Traced the flake to a proxy that drops idle sockets; the retry now handles the connection reset.'
+    )).toBe(false);
+    expect(isTransportFailureObserverOutput('No observations to record.')).toBe(false);
+    expect(isTransportFailureObserverOutput('')).toBe(false);
+    expect(isTransportFailureObserverOutput(null)).toBe(false);
+  });
+
+  it('does not steal XML output', () => {
+    expect(isTransportFailureObserverOutput(
+      '<observation><title>fetch failed on cold start</title></observation>'
+    )).toBe(false);
+  });
+
+  // 401/403 must keep reaching the auth branch, which gives the user a /login
+  // remediation instead of retrying against a provider that will keep refusing.
+  it('leaves authentication failures to the auth detector', () => {
+    expect(isTransportFailureObserverOutput('API Error: 401 Unauthorized')).toBe(false);
+    expect(isTransportFailureObserverOutput('Authentication failed. Please run /login to authenticate.')).toBe(false);
   });
 });
 

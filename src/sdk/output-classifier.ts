@@ -145,3 +145,54 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
     /\/login\b.{0,40}\b(?:to\s+authenticate|again|to\s+continue|and\s+retry|reauthenticate|credentials|provider|claude)\b/.test(text)
   );
 }
+
+/**
+ * Detect the spawned CLI's own transport/API failure returned as the response
+ * body.
+ *
+ * When the child cannot reach the provider it does not crash — it prints its
+ * error and exits 0, so the text arrives here looking like any other non-XML
+ * output. Without a class of its own it falls to the generic prose branch,
+ * which confirms (drops) the claimed batch: a transient network fault becomes
+ * permanent data loss (#3752).
+ *
+ * Kept deliberately tight. A false positive requeues work and pauses the
+ * generator, so the patterns anchor on the shapes the CLI actually emits —
+ * the error as the whole response — rather than on any mention of a network
+ * word, which an observer narrating a connectivity bug would trip.
+ */
+export function isTransportFailureObserverOutput(raw: unknown): boolean {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return false;
+  }
+
+  if (/<(observation|summary)\b/i.test(raw) || /<skip_summary\b/i.test(raw)) {
+    return false;
+  }
+
+  // 401/403 is a credential problem, not a transport one. Leave it to the auth
+  // detector so the user still gets the /login remediation instead of a silent
+  // retry against a provider that will keep refusing.
+  if (isAuthFailureObserverOutput(raw)) {
+    return false;
+  }
+
+  const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  // The child hands back its failure as the entire response, so these lead.
+  if (/^(?:api|http|fetch|request|network|connection)\s*error\b/.test(text)) {
+    return true;
+  }
+  if (/^error:\s/.test(text) &&
+      /\b(?:connect|connection|network|socket|dns|proxy|tls|ssl|certificate)\b/.test(text)) {
+    return true;
+  }
+
+  return (
+    /\b(?:econnrefused|econnreset|etimedout|enotfound|enetunreach|ehostunreach|epipe|econnaborted|eai_again|eproto)\b/.test(text) ||
+    /\bconnectionrefused\b/.test(text) ||
+    /\bfetch failed\b/.test(text) ||
+    /\b(?:api|http)\s*(?:error\s*)?:?\s*5\d{2}\b/.test(text) ||
+    /\b(?:5\d{2}\s+(?:internal server error|bad gateway|service unavailable|gateway timeout)|status\s*[:=]?\s*5\d{2}|request failed with\s+5\d{2})\b/.test(text)
+  );
+}
