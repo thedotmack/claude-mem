@@ -244,7 +244,7 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(existsSync(join(pluginRoot, FAKE_TREE_SITTER_BINARY))).toBe(true);
   });
 
-  test('repairs a Zod tree whose exports map omits a worker subpath', async () => {
+  test('repairs a Zod tree whose exports map omits the bare worker entry point', async () => {
     const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-zod-exports');
     mkdirSync(join(pluginRoot, 'node_modules', 'zod', 'v3'), { recursive: true });
     mkdirSync(join(pluginRoot, 'node_modules', 'zod', 'v4'), { recursive: true });
@@ -255,6 +255,7 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
       exports: {
         './v3': './v3/index.js',
         './v4': './v4/index.js',
+        './v4-mini': './v4-mini/index.js',
       },
     }));
     for (const entryFile of FAKE_ZOD_ENTRY_FILES) {

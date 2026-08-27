@@ -13,7 +13,7 @@ const BUN_INSTALL_TIMEOUT_MS = 120_000;
 const NODE_MODULES_DIRNAME = 'node_modules';
 const PACKAGE_NAME_SEGMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
 const REQUIRED_DEPENDENCY_SUBPATHS = Object.freeze({
-  zod: Object.freeze(['zod/v3', 'zod/v4', 'zod/v4-mini']),
+  zod: Object.freeze(['zod', 'zod/v3', 'zod/v4', 'zod/v4-mini']),
 });
 const TREE_SITTER_CLI = 'tree-sitter-cli';
 const TREE_SITTER_BINARY = IS_WINDOWS ? 'tree-sitter.exe' : 'tree-sitter';
