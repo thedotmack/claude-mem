@@ -97,6 +97,8 @@ describe('isQuotaLimitedObserverOutput', () => {
     expect(isQuotaLimitedObserverOutput('The documentation says your session limit was exceeded')).toBe(false);
     expect(isQuotaLimitedObserverOutput('Your session limit is exceeded only after retries')).toBe(false);
     expect(isQuotaLimitedObserverOutput('Session limit exceeded is documented behavior')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('Session limit exceeded is documented; reset handling is tested')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('Your session limit has been reached in the implementation; reset the fixture')).toBe(false);
     expect(isQuotaLimitedObserverOutput('Your monthly usage limit has been reached')).toBe(false);
     expect(isQuotaLimitedObserverOutput('The monthly usage limit has been reached for your account')).toBe(false);
   });
