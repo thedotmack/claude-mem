@@ -39,6 +39,49 @@ import {
 } from '../services/hooks/runtime-selector.js';
 import { normalizePlatformSource } from '../shared/platform-source.js';
 import { getAdvertisedMcpToolsForRuntime } from './mcp-tool-visibility.js';
+import { getProjectContext } from '../utils/project-name.js';
+
+function scopeMemoryArgs(args: any, toolName: string): any {
+  const projectContext = getProjectContext(process.cwd());
+  const currentProject = projectContext.primary;
+  const requestedProject = typeof args?.project === 'string' ? args.project.trim() : '';
+  const allowCrossProject = process.env.CLAUDE_MEM_ALLOW_CROSS_PROJECT_SEARCH === '1';
+  const serverPath = (process.argv[1] ?? '').replace(/\\/g, '/').toLowerCase();
+  const currentPlatformSource = serverPath.includes('/.codex/plugins/')
+    ? 'codex'
+    : serverPath.includes('/.claude/plugins/') ? 'claude' : '';
+  const requestedPlatformSource = typeof args?.platformSource === 'string'
+    ? args.platformSource.trim().toLowerCase()
+    : '';
+  const allowCrossPlatform = process.env.CLAUDE_MEM_ALLOW_CROSS_PLATFORM_SEARCH === '1';
+  const scopedArgs = { ...args };
+
+  if (requestedProject === '*') {
+    if (!allowCrossProject) {
+      throw new Error(`${toolName}: cross-project memory access is disabled`);
+    }
+    delete scopedArgs.project;
+  } else {
+    if (requestedProject && !projectContext.allProjects.includes(requestedProject) && !allowCrossProject) {
+      throw new Error(
+        `${toolName}: project "${requestedProject}" is outside current repository "${currentProject}"`
+      );
+    }
+    scopedArgs.project = requestedProject || currentProject;
+  }
+
+  if (requestedPlatformSource && currentPlatformSource &&
+      requestedPlatformSource !== currentPlatformSource && !allowCrossPlatform) {
+    throw new Error(
+      `${toolName}: platform "${requestedPlatformSource}" is outside current platform "${currentPlatformSource}"`
+    );
+  }
+  if (currentPlatformSource) {
+    scopedArgs.platformSource = requestedPlatformSource || currentPlatformSource;
+  }
+
+  return scopedArgs;
+}
 
 let mcpServerDirResolutionFailed = false;
 const mcpServerDir = (() => {
@@ -490,6 +533,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
+      args = scopeMemoryArgs(args, 'search');
       // In server-beta runtime the local worker /api/search reads the local SQLite via
       // the Chroma-backed SearchOrchestrator. When the install runs server-beta (where
       // generated observations live in Postgres, not local SQLite) and Chroma is not
@@ -536,6 +580,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
+      args = scopeMemoryArgs(args, 'timeline');
       return await callWorker('/api/timeline', { query: args });
     }
   },
@@ -555,6 +600,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
+      args = scopeMemoryArgs(args, 'get_observations');
       return await callWorker('/api/observations/batch', { body: args });
     }
   },
