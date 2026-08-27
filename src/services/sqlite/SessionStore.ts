@@ -4,6 +4,7 @@ import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT } from '../../s
 import { logger } from '../../utils/logger.js';
 import {
   TableColumnInfo,
+  ForeignKeyInfo,
   IndexInfo,
   TableNameRow,
   SchemaVersion,
@@ -118,6 +119,7 @@ export class SessionStore {
     this.ensureSyncOutbox();
     this.ensureSyncEntityLedger();
     this.ensureSyncRevisionTextAffinity();
+    this.ensureOnUpdateCascadeToSessions();
     this.initializeSyncHubLaunchBaseline();
     this.normalizeConceptTags();
   }
@@ -669,6 +671,122 @@ export class SessionStore {
         .run(46, new Date().toISOString());
     });
     tx();
+  }
+
+  /**
+   * v21 (addOnUpdateCascadeToForeignKeys) stamps a single schema_versions row
+   * for the two tables it rebuilds, so a database that recorded 21 under a
+   * build where the session_summaries half of that migration did not yet run
+   * keeps a session_summaries FK with no ON UPDATE CASCADE for good: the
+   * version gate reports the work as done and the rebuild never runs again.
+   * Databases in exactly that state exist in the wild - observations carrying
+   * the cascade and its sibling not, both under one "applied" row. The stamp
+   * suppresses the re-check for both tables, so either one or both can be
+   * left behind; the sibling is never safe to assume from the one that was
+   * reported.
+   *
+   * The asymmetry is not cosmetic. ensureMemorySessionIdRegistered re-points
+   * sdk_sessions.memory_session_id whenever the worker captures a fresh SDK
+   * id, which is every worker restart since #817 began discarding the stale
+   * one. observations follow the parent key; session_summaries rows do not,
+   * so SQLite aborts that UPDATE with 'FOREIGN KEY constraint failed'. Every
+   * session that already owns a summary row then fails before it can store
+   * anything, is torn down, is re-initialised by the next observation and
+   * fails again - an observer crash loop no retry can clear, because what is
+   * wrong is the schema.
+   *
+   * So gate on the constraint itself rather than on the ledger, and check
+   * both halves of the pair rather than the half that got reported.
+   */
+  private ensureOnUpdateCascadeToSessions(): void {
+    for (const table of ['observations', 'session_summaries'] as const) {
+      if (this.hasOnUpdateCascadeToSessions(table)) continue;
+      this.rebuildWithOnUpdateCascadeToSessions(table);
+    }
+  }
+
+  private hasOnUpdateCascadeToSessions(table: string): boolean {
+    const parent = this.sessionParentForeignKey(table);
+    // A table with no FK to sdk_sessions(memory_session_id) has nothing to
+    // repair. Never invent a constraint that was not declared.
+    return !parent || parent.on_update.toUpperCase() === 'CASCADE';
+  }
+
+  private sessionParentForeignKey(table: string): ForeignKeyInfo | undefined {
+    return (this.db.query(`PRAGMA foreign_key_list(${table})`).all() as ForeignKeyInfo[])
+      .find(fk => fk.table === 'sdk_sessions' && fk.to === 'memory_session_id');
+  }
+
+  private rebuildWithOnUpdateCascadeToSessions(table: string): void {
+    const createSQL = (this.db.prepare(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`
+    ).get(table) as { sql: string | null } | undefined)?.sql;
+    const parent = this.sessionParentForeignKey(table);
+    if (!createSQL || !parent) return;
+
+    // Rewrite the one clause and keep every column exactly as declared. The
+    // column list of these two tables has grown a dozen times across
+    // migrations, and a repair that runs on constraint state rather than on a
+    // version number can run at any point in that sequence, so a column list
+    // written out here would silently drop whatever a later migration adds.
+    const fkClause = /FOREIGN\s+KEY\s*\(\s*memory_session_id\s*\)\s*REFERENCES\s+sdk_sessions\s*\(\s*memory_session_id\s*\)(?:\s+ON\s+(?:DELETE|UPDATE)\s+(?:CASCADE|RESTRICT|SET\s+NULL|SET\s+DEFAULT|NO\s+ACTION))*/gi;
+    const declarations = createSQL.match(fkClause);
+    if (declarations?.length !== 1) {
+      // An unrecognised declaration is not something to guess at, and #3378 is
+      // the standing reminder that a constructor migration which throws takes
+      // the whole worker down with it. Leaving the table exactly as it was
+      // costs the repair, not the process.
+      logger.error('DB', 'Skipping ON UPDATE CASCADE repair: unrecognised FK declaration', {
+        table,
+        declarations: declarations?.length ?? 0
+      });
+      return;
+    }
+
+    const body = createSQL.slice(createSQL.indexOf('(') + 1, createSQL.lastIndexOf(')'));
+    const repairedBody = body.replace(
+      fkClause,
+      `FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) `
+        + `ON DELETE ${parent.on_delete} ON UPDATE CASCADE`
+    );
+
+    // Indexes and triggers go down with the table, so carry their own DDL
+    // across rather than a copy of it that has to be kept in step.
+    const attached = this.db.prepare(`
+      SELECT sql FROM sqlite_master
+      WHERE tbl_name = ? AND sql IS NOT NULL AND type IN ('index', 'trigger')
+    `).all(table) as Array<{ sql: string }>;
+
+    const temporary = `${table}_on_update_cascade`;
+
+    logger.debug('DB', 'Repairing FK missing ON UPDATE CASCADE', { table, onDelete: parent.on_delete });
+
+    // PRAGMA foreign_keys is a no-op inside a transaction, so it is set before
+    // BEGIN and restored once the outcome is decided.
+    this.db.run('PRAGMA foreign_keys = OFF');
+    this.db.run('BEGIN TRANSACTION');
+    try {
+      this.db.run(`DROP TABLE IF EXISTS ${temporary}`);
+      this.db.run(`CREATE TABLE ${temporary} (${repairedBody})`);
+      this.db.run(`INSERT INTO ${temporary} SELECT * FROM ${table}`);
+      this.db.run(`DROP TABLE ${table}`);
+      this.db.run(`ALTER TABLE ${temporary} RENAME TO ${table}`);
+      for (const object of attached) {
+        this.db.run(object.sql);
+      }
+      this.db.run('COMMIT');
+      logger.debug('DB', 'Repaired FK missing ON UPDATE CASCADE', { table });
+    } catch (error) {
+      this.db.run('ROLLBACK');
+      logger.error(
+        'DB',
+        'ON UPDATE CASCADE repair failed; leaving table as it was',
+        { table },
+        error instanceof Error ? error : new Error(String(error))
+      );
+    } finally {
+      this.db.run('PRAGMA foreign_keys = ON');
+    }
   }
 
   /**
