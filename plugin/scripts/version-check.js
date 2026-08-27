@@ -44,7 +44,7 @@ function hasCompletePluginDependencies(pluginRoot) {
   // Preserve the existing existence semantics when the manifest cannot be
   // trusted; Setup must remain fail-open for malformed plugin metadata.
   if (!packageManifest) return true;
-  if (!packageManifest.dependencies || typeof packageManifest.dependencies !== 'object') return true;
+  if (!packageManifest.dependencies || typeof packageManifest.dependencies !== 'object' || Array.isArray(packageManifest.dependencies)) return true;
 
   const nodeModulesRoot = join(pluginRoot, NODE_MODULES_DIRNAME);
   for (const dependencyName of Object.keys(packageManifest.dependencies)) {

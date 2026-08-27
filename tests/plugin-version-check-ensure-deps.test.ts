@@ -208,6 +208,22 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(stderr).not.toContain(INSTALL_DIAGNOSTIC);
   });
 
+  test('fails open for an array-valued dependency field', async () => {
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-array-dependencies');
+    writeFileSync(join(pluginRoot, 'package.json'), JSON.stringify({
+      name: 'fake-plugin',
+      version: '0.0.0',
+      dependencies: [],
+    }));
+    mkdirSync(join(pluginRoot, 'node_modules'), { recursive: true });
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).not.toContain(INSTALL_DIAGNOSTIC);
+    expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(false);
+  });
+
   test('reports incomplete output once when install exits successfully without repairing it', async () => {
     const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-still-partial');
     const fakeBunPath = join(fakeBinDir, 'bun');
