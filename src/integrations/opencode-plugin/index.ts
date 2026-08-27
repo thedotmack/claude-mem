@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
+import { normalizePlatformSource } from "../../shared/platform-source.js";
 
 /**
  * OpenCode plugin event contract.
@@ -112,7 +113,10 @@ function workerPostFireAndForget(
   fetch(`${WORKER_BASE_URL}${path}`, {
     method: "POST",
     headers: JSON_HEADERS,
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      ...body,
+      platformSource: normalizePlatformSource("opencode"),
+    }),
   }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     if (!message.includes("ECONNREFUSED")) {

@@ -5,6 +5,7 @@ import {
   REGISTERED_OPENCODE_HOOKS,
   REAL_OPENCODE_EVENT_TYPES,
 } from "../../src/integrations/opencode-plugin/index";
+import { normalizePlatformSource } from "../../src/shared/platform-source";
 
 /**
  * Regression guard for plan-08 (OpenCode event-contract correctness).
@@ -117,6 +118,67 @@ describe("OpenCode plugin event contract", () => {
       const obsBody = obsPost!.body as Record<string, unknown>;
       expect(obsBody.tool_name).toBe("read");
       expect(obsBody.tool_response).toBe("file contents");
+      expect(obsBody.platformSource).toBe(normalizePlatformSource("opencode"));
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("stamps every session-write POST and leaves GET and deletion unchanged", async () => {
+    const requests: Array<{ method: string; url: string; body: Record<string, unknown> | null }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      requests.push({
+        method: init?.method || "GET",
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return new Response(JSON.stringify({ content: [{ type: "text", text: "No observations found" }] }), {
+        status: 200,
+      });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      const expectedPlatformSource = normalizePlatformSource("opencode");
+
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_contract_tool", callID: "c1" },
+        { title: "Read", output: "tool output", metadata: {}, args: {} },
+      );
+      await plugin["chat.message"](
+        {},
+        {
+          message: { role: "assistant", sessionID: "ses_contract_chat" },
+          parts: [{ type: "text", text: "assistant output" }],
+        },
+      );
+      await plugin["experimental.session.compacting"]({ sessionID: "ses_contract_compact" });
+      await plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_contract_idle" } } });
+
+      const posts = requests.filter((request) => request.method === "POST");
+      expect(posts).toHaveLength(8);
+      expect(posts.map((request) => request.url)).toEqual([
+        expect.stringContaining("/api/sessions/init"),
+        expect.stringContaining("/api/sessions/observations"),
+        expect.stringContaining("/api/sessions/init"),
+        expect.stringContaining("/api/sessions/observations"),
+        expect.stringContaining("/api/sessions/init"),
+        expect.stringContaining("/api/sessions/summarize"),
+        expect.stringContaining("/api/sessions/init"),
+        expect.stringContaining("/api/sessions/summarize"),
+      ]);
+      for (const post of posts) {
+        expect(post.body?.platformSource).toBe(expectedPlatformSource);
+      }
+
+      const postCountBeforeSearchAndDeletion = posts.length;
+      await plugin.tool.claude_mem_search.execute({ query: "auth" });
+      await plugin.event({ event: { type: "session.deleted", properties: { sessionID: "ses_contract_idle" } } });
+      expect(requests.filter((request) => request.method === "POST")).toHaveLength(
+        postCountBeforeSearchAndDeletion,
+      );
+      expect(requests.at(-1)?.method).toBe("GET");
     } finally {
       globalThis.fetch = originalFetch;
     }
