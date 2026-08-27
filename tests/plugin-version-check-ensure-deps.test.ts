@@ -94,12 +94,15 @@ function makeFreshPlugin(
     .map((dependencyName) => {
       const packagePath = dependencyName.split('/').join('/');
       const packageManifest = dependencyName === 'zod'
-        ? '{"name":"zod","version":"1.0.0","exports":{"./v3":"./v3/index.js","./v4":"./v4/index.js","./v4-mini":"./v4-mini/index.js"}}'
+        ? '{"name":"zod","version":"1.0.0","exports":{".":"./index.js","./v3":"./v3/index.js","./v4":"./v4/index.js","./v4-mini":"./v4-mini/index.js"}}'
         : `{"name":"${dependencyName}","version":"1.0.0"}`;
       const commands = [
         `  mkdir -p "${pluginRoot}/node_modules/${packagePath}"`,
         `  printf '${packageManifest}\n' > "${pluginRoot}/node_modules/${packagePath}/package.json"`,
       ];
+      if (dependencyName === 'zod') {
+        commands.push(`  : > "${pluginRoot}/node_modules/${packagePath}/index.js"`);
+      }
       if (dependencyName === 'tree-sitter-cli') {
         commands.push(
           `  printf '%s\n' '#!/usr/bin/env node' 'const fs = require("fs"); const path = require("path"); const target = path.join(__dirname, "${process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter'}"); fs.writeFileSync(target, "#!/usr/bin/env node\\nprocess.stdout.write(\\"tree-sitter 0.26.5\\\\n\\");\\n"); fs.chmodSync(target, 0o755);' > "${pluginRoot}/node_modules/${packagePath}/install.js"`,
@@ -201,6 +204,7 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-already-installed');
     mkdirSync(join(pluginRoot, 'node_modules', 'zod'), { recursive: true });
     writeFileSync(join(pluginRoot, 'node_modules', 'zod', 'package.json'), JSON.stringify({ name: 'zod', version: '3.0.0' }));
+    writeFileSync(join(pluginRoot, 'node_modules', 'zod', 'index.js'), '');
     for (const entryFile of FAKE_ZOD_ENTRY_FILES) {
       mkdirSync(join(pluginRoot, 'node_modules', 'zod', entryFile.split('/')[0]), { recursive: true });
       writeFileSync(join(pluginRoot, 'node_modules', 'zod', ...entryFile.split('/')), '');
