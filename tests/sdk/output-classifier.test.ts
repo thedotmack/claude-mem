@@ -102,6 +102,7 @@ describe('isQuotaLimitedObserverOutput', () => {
     expect(isQuotaLimitedObserverOutput('You\'ve hit your session limit: resets are performed only after the next window.')).toBe(false);
     expect(isQuotaLimitedObserverOutput('You\'ve hit your session limit · try again if the window has reset.')).toBe(false);
     expect(isQuotaLimitedObserverOutput('You\'ve hit your session limit · resets is documented behavior.')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('You\'ve hit your session limit · resets 4 (documentation only)')).toBe(false);
     expect(isQuotaLimitedObserverOutput('Your monthly usage limit has been reached')).toBe(false);
     expect(isQuotaLimitedObserverOutput('The monthly usage limit has been reached for your account')).toBe(false);
   });
