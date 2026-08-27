@@ -161,4 +161,16 @@ describe('inline bootstrap resolvers stay in lockstep', () => {
     expect(command).toContain('.orphaned_at');
     expect(command).toContain('W(p.basename(a),p.basename(b))');
   });
+
+  test('POSIX hook candidate enumeration suppresses stderr for the whole producer group', () => {
+    const command = buildShellCommand({
+      host: 'claude-code',
+      requireFile: 'bun-runner.js',
+      requireFileSecondary: 'worker-service.cjs',
+      trailingCommand: ['node', '"$_P/scripts/bun-runner.js"'],
+      notFoundMessage: 'claude-mem: plugin scripts not found',
+    });
+
+    expect(command).toContain('} 2>/dev/null | while IFS= read -r _R');
+  });
 });

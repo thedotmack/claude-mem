@@ -150,7 +150,7 @@ function candidateBlock(options: ShellTemplateOptions): string {
   const fileClause = fileExistsClause(options);
 
   return (
-    `_F=; _P=$({ ${lines.join(' ')} } | while IFS= read -r _R; do` +
+    `_F=; _P=$({ ${lines.join(' ')} } 2>/dev/null | while IFS= read -r _R; do` +
     `${trimAssignment} [ -d "$_R/plugin/scripts" ] && _Q="$_R/plugin" || _Q="$_R"; ` +
     `${fileClause} && [ -z "$_F" ] && { _F=1; printf '%s\\n' "$_Q"; }; done);`
   );
