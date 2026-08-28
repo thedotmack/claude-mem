@@ -161,6 +161,15 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
  * the error as the whole response — rather than on any mention of a network
  * word, which an observer narrating a connectivity bug would trip.
  */
+/**
+ * Conditions that make a failure a *transport* failure — the request never got
+ * an answer — as opposed to one the server understood and refused. Only the
+ * former is worth requeuing: a refusal fails identically on every retry, so
+ * treating it as transport turns one bad batch into an endless one.
+ */
+const NETWORK_CONDITION =
+  /\b(?:connect|connection|network|socket|dns|proxy|tls|ssl|certificate|unreachable|econnrefused|econnreset|etimedout|enotfound|enetunreach|ehostunreach|epipe|econnaborted|eai_again|eproto)\b|\bfetch failed\b|\bsocket hang up\b/;
+
 export function isTransportFailureObserverOutput(raw: unknown): boolean {
   if (typeof raw !== 'string' || raw.trim() === '') {
     return false;
@@ -191,18 +200,25 @@ export function isTransportFailureObserverOutput(raw: unknown): boolean {
   // missed detection is the behaviour that already exists today, while a false
   // positive requeues the batch AND pauses the generator, which is a retry loop.
   return (
-    // "API Error: Connection refused …", "Fetch error …"
-    /^(?:api|http|fetch|request|network|connection)\s*error\b/.test(text) ||
+    // "Fetch error …", "Network error …", "Connection error …" — the noun is
+    // itself the condition, so the envelope alone is enough.
+    /^(?:fetch|network|connection)\s*error\b/.test(text) ||
+    // "API Error", "HTTP error" and "Request error" are envelopes, not
+    // diagnoses: they front a dead socket and a refused request identically,
+    // and the two want opposite handling. Requeuing a 400 or an unknown model
+    // is a loop — it will fail the same way on every retry — so the envelope
+    // only counts once the message also names a network condition. A genuine
+    // 5xx still arrives, through the status patterns below.
+    (/^(?:api|http|request)\s*error\b/.test(text) && NETWORK_CONDITION.test(text)) ||
     // "Error: socket hang up" — but not "Error: no such file or directory".
-    (/^error:\s/.test(text) &&
-      /\b(?:connect|connection|network|socket|dns|proxy|tls|ssl|certificate)\b/.test(text)) ||
+    (/^error:\s/.test(text) && NETWORK_CONDITION.test(text)) ||
     // Node's own shapes: "connect ECONNREFUSED 127.0.0.1:443".
     /^(?:connect|getaddrinfo|read|write|socket)\b.*\b(?:econnrefused|econnreset|etimedout|enotfound|enetunreach|ehostunreach|epipe|econnaborted|eai_again|eproto)\b/.test(text) ||
     // The bare code, or the bare phrase, as the entire message.
     /^(?:econnrefused|econnreset|etimedout|enotfound|enetunreach|ehostunreach|epipe|econnaborted|eai_again|eproto)\b/.test(text) ||
     /^(?:fetch failed|socket hang up|connectionrefused)\b/.test(text) ||
     // A 5xx reported as the response itself.
-    /^(?:api|http)\s*(?:error\s*)?:?\s*5\d{2}\b/.test(text) ||
+    /^(?:api|http|request)\s*(?:error\s*)?:?\s*5\d{2}\b/.test(text) ||
     /^request failed with\s+5\d{2}\b/.test(text) ||
     /^status\s*[:=]?\s*5\d{2}\b/.test(text) ||
     /^5\d{2}\s+(?:internal server error|bad gateway|service unavailable|gateway timeout)\b/.test(text)

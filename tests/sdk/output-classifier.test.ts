@@ -258,3 +258,58 @@ describe('isTransportFailureObserverOutput rejects narrative (review on #3752)',
     )).toBe(false);
   });
 });
+
+describe('isTransportFailureObserverOutput separates envelope from diagnosis (review on #3752)', () => {
+  // `API Error:` is what the CLI prefixes to everything it failed at. It fronts
+  // a dead socket and a rejected request the same way, and the two want
+  // opposite handling: the transport branch resets the claimed batch to pending
+  // and aborts the session for a later retry, which for a request the server
+  // understood and refused is a loop that never terminates.
+  const PERSISTENT = [
+    'API Error: 400 Bad Request',
+    'API Error: invalid model',
+    'API Error: model not found: claude-nonexistent',
+    'HTTP error: 404 Not Found',
+    'Request error: unsupported parameter "max_tokens"',
+    'API Error: 422 Unprocessable Entity',
+  ];
+
+  for (const output of PERSISTENT) {
+    it(`does not requeue a persistent failure: ${output}`, () => {
+      expect(isTransportFailureObserverOutput(output)).toBe(false);
+    });
+  }
+
+  // The same envelope, now naming a condition that means the request never got
+  // an answer. These must still requeue.
+  const TRANSPORT = [
+    'API Error: Connection refused - a firewall or proxy may be blocking it (ConnectionRefused)',
+    'API Error: fetch failed',
+    'API Error: socket hang up',
+    'HTTP error: ETIMEDOUT',
+    'Request error: getaddrinfo ENOTFOUND api.anthropic.com',
+    'API Error: TLS handshake failed',
+    'API Error: 503 Service Unavailable',
+    'Request error: 502',
+  ];
+
+  for (const output of TRANSPORT) {
+    it(`still requeues: ${output}`, () => {
+      expect(isTransportFailureObserverOutput(output)).toBe(true);
+    });
+  }
+
+  // The nouns that ARE the condition keep working without one, since there is
+  // nothing ambiguous left to qualify.
+  it('keeps the self-describing envelopes unconditional', () => {
+    expect(isTransportFailureObserverOutput('Fetch error: upstream closed')).toBe(true);
+    expect(isTransportFailureObserverOutput('Network error')).toBe(true);
+    expect(isTransportFailureObserverOutput('Connection error while streaming')).toBe(true);
+  });
+
+  // A 4xx must not slip through on the strength of an unrelated number.
+  it('does not treat a 4xx as retryable because a 5xx-shaped number appears later', () => {
+    expect(isTransportFailureObserverOutput('API Error: 400 Bad Request')).toBe(false);
+    expect(isTransportFailureObserverOutput('API Error: 429 Too Many Requests')).toBe(false);
+  });
+});
