@@ -126,6 +126,9 @@ describe('isAuthFailureObserverOutput recognises the CLI signed-out wording (#36
     'Not logged in',
     'Invalid API key · Please run /login',
     'Please run /login',
+    // The status line may stand alone, or introduce its remediation.
+    'Not logged in.',
+    'Not logged in: run /login',
   ];
 
   for (const output of SIGNED_OUT) {
@@ -142,6 +145,12 @@ describe('isAuthFailureObserverOutput recognises the CLI signed-out wording (#36
     'Please run /login in the observed project instructions.',
     'The project authentication guide says to run /login before testing.',
     'Documented that "Not logged in" is the wording the CLI uses when signed out.',
+    // Reported on review: anchoring alone does not separate the CLI's status
+    // line from an observation that OPENS with the same words. Preserving one
+    // of these resets a batch that already succeeded and pauses the generator.
+    'Not logged in during the reboot window; the observer recorded no new findings.',
+    'Not logged in. The observer recorded no new findings for this batch.',
+    'Not logged in sessions were reviewed and the retry path documented.',
   ];
 
   for (const prose of NARRATIVE) {

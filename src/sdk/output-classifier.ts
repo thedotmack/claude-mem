@@ -88,11 +88,16 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
 
   return (
     // The CLI's own signed-out wording, which says nothing about
-    // "authentication" and so matched none of the patterns below. Anchored,
-    // because the same words appear in an observer narrating a past outage
-    // ("the session was not logged in during the reboot") and that is a
-    // completed batch, not a dead login.
-    /^not logged in\b/.test(text) ||
+    // "authentication" and so matched none of the patterns below.
+    //
+    // Anchoring alone is NOT enough here: a completed observation can open with
+    // the same words ("Not logged in during the reboot window; the observer
+    // recorded no new findings"), and treating that as an auth failure resets a
+    // batch that already succeeded and pauses the generator. So the state has
+    // to BE the response — it ends there, or it introduces the rest with a
+    // separator, which is what the CLI's own "· Please run /login" does. Prose
+    // runs straight on into a sentence and is left alone.
+    /^not logged in\b\s*(?:[·|:\-–—]|[.!]?\s*$)/.test(text) ||
     // The remediation half of the same line: "<state> · Please run /login".
     // Required to END the response, so it is the CLI telling the user what to
     // do rather than an observation quoting the instruction — the existing
