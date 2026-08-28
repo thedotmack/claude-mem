@@ -87,6 +87,18 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
   const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
 
   return (
+    // The CLI's own signed-out wording, which says nothing about
+    // "authentication" and so matched none of the patterns below. Anchored,
+    // because the same words appear in an observer narrating a past outage
+    // ("the session was not logged in during the reboot") and that is a
+    // completed batch, not a dead login.
+    /^not logged in\b/.test(text) ||
+    // The remediation half of the same line: "<state> · Please run /login".
+    // Required to END the response, so it is the CLI telling the user what to
+    // do rather than an observation quoting the instruction — the existing
+    // false cases ("Please run /login in the observed project instructions")
+    // run on into a sentence and stay unmatched.
+    /(?:^|[·|]\s*)please run \/login\b\s*[.!]?\s*$/.test(text) ||
     /\bfailed to authenticate\b/.test(text) ||
     /\bauthentication (?:failed|failure|error)\b/.test(text) ||
     /\b(?:authentication|auth)\b.{0,20}\b(?:required|expired|invalid|again)\b.{0,20}\/login\b/.test(text) ||
