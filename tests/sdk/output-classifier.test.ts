@@ -299,13 +299,31 @@ describe('isTransportFailureObserverOutput separates envelope from diagnosis (re
     });
   }
 
-  // The nouns that ARE the condition keep working without one, since there is
-  // nothing ambiguous left to qualify.
-  it('keeps the self-describing envelopes unconditional', () => {
+  // The nouns that ARE the condition need no separate diagnosis — but they do
+  // have to be reporting an error rather than naming one.
+  it('keeps the self-describing envelopes free of a condition requirement', () => {
     expect(isTransportFailureObserverOutput('Fetch error: upstream closed')).toBe(true);
     expect(isTransportFailureObserverOutput('Network error')).toBe(true);
-    expect(isTransportFailureObserverOutput('Connection error while streaming')).toBe(true);
+    expect(isTransportFailureObserverOutput('Connection error - ECONNRESET')).toBe(true);
+    expect(isTransportFailureObserverOutput('Connection error: peer reset the stream')).toBe(true);
   });
+
+  // Anchoring does not save the self-describing envelopes: this prose STARTS
+  // with the token. Reported on the first round of this branch, and the whole
+  // reason the report test exists.
+  const ENVELOPE_PROSE = [
+    'Connection error handling was reviewed; no changes were needed.',
+    'Network error recovery is already covered by the retry wrapper.',
+    'Fetch error paths were consolidated into one helper.',
+    'API error handling for connection resets was reviewed.',
+    'Request error messages now include the socket address.',
+  ];
+
+  for (const prose of ENVELOPE_PROSE) {
+    it(`does not requeue completed prose: ${prose.slice(0, 40)}…`, () => {
+      expect(isTransportFailureObserverOutput(prose)).toBe(false);
+    });
+  }
 
   // A 4xx must not slip through on the strength of an unrelated number.
   it('does not treat a 4xx as retryable because a 5xx-shaped number appears later', () => {

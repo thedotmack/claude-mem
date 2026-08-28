@@ -170,6 +170,22 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
 const NETWORK_CONDITION =
   /\b(?:connect|connection|network|socket|dns|proxy|tls|ssl|certificate|unreachable|econnrefused|econnreset|etimedout|enotfound|enetunreach|ehostunreach|epipe|econnaborted|eai_again|eproto)\b|\bfetch failed\b|\bsocket hang up\b/;
 
+/**
+ * An `<envelope> error` prefix only counts when the response is *reporting* the
+ * error rather than talking about one. A report either stops at the envelope or
+ * introduces its detail with punctuation; prose runs straight on into a
+ * sentence ("Connection error handling was reviewed").
+ *
+ * A trailing full stop is deliberately NOT a delimiter here. "Network error."
+ * therefore goes undetected, which is the safe direction: a miss leaves today's
+ * behaviour in place, while a false positive requeues the batch and pauses the
+ * generator — a retry loop over work that already completed.
+ */
+const ENVELOPE_IS_A_REPORT = {
+  fetchNetworkConnection: /^(?:fetch|network|connection)\s*error\b\s*(?::|-|–|—|$)/,
+  apiHttpRequest: /^(?:api|http|request)\s*error\b\s*(?::|-|–|—|$)/,
+};
+
 export function isTransportFailureObserverOutput(raw: unknown): boolean {
   if (typeof raw !== 'string' || raw.trim() === '') {
     return false;
@@ -201,15 +217,23 @@ export function isTransportFailureObserverOutput(raw: unknown): boolean {
   // positive requeues the batch AND pauses the generator, which is a retry loop.
   return (
     // "Fetch error …", "Network error …", "Connection error …" — the noun is
-    // itself the condition, so the envelope alone is enough.
-    /^(?:fetch|network|connection)\s*error\b/.test(text) ||
+    // itself the condition, so no separate diagnosis is needed. The envelope
+    // must still be REPORTING an error rather than naming one: an error report
+    // ends there or introduces its detail with punctuation, while prose
+    // continues into a sentence. "Connection error handling was reviewed" is a
+    // completed observation, and anchoring alone does not catch it — the
+    // narrative starts with the token.
+    ENVELOPE_IS_A_REPORT.fetchNetworkConnection.test(text) ||
     // "API Error", "HTTP error" and "Request error" are envelopes, not
     // diagnoses: they front a dead socket and a refused request identically,
     // and the two want opposite handling. Requeuing a 400 or an unknown model
     // is a loop — it will fail the same way on every retry — so the envelope
     // only counts once the message also names a network condition. A genuine
     // 5xx still arrives, through the status patterns below.
-    (/^(?:api|http|request)\s*error\b/.test(text) && NETWORK_CONDITION.test(text)) ||
+    // The report test applies here too. Without it, "API error handling for
+    // connection resets was reviewed" satisfies both halves — it opens with the
+    // envelope and mentions a condition — while being ordinary prose.
+    (ENVELOPE_IS_A_REPORT.apiHttpRequest.test(text) && NETWORK_CONDITION.test(text)) ||
     // "Error: socket hang up" — but not "Error: no such file or directory".
     (/^error:\s/.test(text) && NETWORK_CONDITION.test(text)) ||
     // Node's own shapes: "connect ECONNREFUSED 127.0.0.1:443".
