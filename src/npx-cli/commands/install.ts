@@ -34,18 +34,20 @@ import {
 import { extractEresolveBlock, isEresolve, runNpmStrict } from '../install/npm-install-helper.js';
 import {
   buildProviderLabels,
+  cmemProSignupUrl,
+  cmemProTrialPitch,
   CMEM_PRO_BASE_URL,
   CMEM_PRO_KEY_PATTERN,
   CMEM_PRO_MODEL,
   CMEM_PRO_MONTHLY_USD,
-  CMEM_PRO_SIGNUP_URL,
-  CMEM_PRO_TRIAL_DAYS,
   CMEM_PRO_TRIAL_POLL_URL,
   CMEM_PRO_TRIAL_START_URL,
   costPer1kObservations,
   fetchBlendedRates,
+  parseCmemProTrialDays,
+  pickCmemProTrialDays,
+  type CmemProTrialDays,
 } from '../cmem-pro-costs.js';
-import { PRO_TRIAL_PITCH, proTrialUrl } from '../../shared/pro-promo.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
@@ -1003,7 +1005,10 @@ function openBrowser(url: string): void {
   }
 }
 
-async function promptProvider(options: InstallOptions): Promise<ProviderId> {
+async function promptProvider(
+  options: InstallOptions,
+  trialDays: CmemProTrialDays,
+): Promise<ProviderId> {
   const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
 
   const persistClaudeProvider = (authMethod?: 'subscription' | 'api-key' | 'gateway') => {
@@ -1183,7 +1188,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     // Rates are looked up live so the prompt never quotes a stale price. The
     // lookup is timeout-bounded and falls back silently, so an offline install
     // still gets a working prompt — just with last-known figures.
-    const labels = await buildProviderLabels();
+    const labels = await buildProviderLabels(trialDays);
 
     const providerResult = await p.select<ProviderChoice>({
       message: 'Which memory provider do you want to use?',
@@ -1206,13 +1211,14 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   // OpenAI-compatible client whose endpoint and model both come from settings,
   // so "use the CMEM observer model" is four settings writes and nothing else.
   if (selectedProvider === 'cmem') {
+    const signupUrl = cmemProSignupUrl(trialDays);
     p.note(
-      `${CMEM_PRO_TRIAL_DAYS} days free, then $${CMEM_PRO_MONTHLY_USD}/mo — card required, cancel anytime.\n`
-        + `Opening ${CMEM_PRO_SIGNUP_URL}\n`
-        + "Sign in, start your free week, and copy the key you're shown.",
-      `cmem Pro — ${CMEM_PRO_TRIAL_DAYS} days free`,
+      `${trialDays} days free, then $${CMEM_PRO_MONTHLY_USD}/mo — card required, cancel anytime.\n`
+        + `Opening ${signupUrl}\n`
+        + `Sign in, start your ${trialDays}-day trial, and copy the key you're shown.`,
+      `cmem Pro — ${trialDays} days free`,
     );
-    openBrowser(CMEM_PRO_SIGNUP_URL);
+    openBrowser(signupUrl);
 
     const keyResult = await p.text({
       message: 'Paste your CMEM Pro key (starts with cm_pro_):',
@@ -1236,8 +1242,8 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     if (wrote) log.info('Saved CMEM Pro configuration to ~/.claude-mem/settings.json');
 
     p.note(
-      'Next: finish cloud sync in the browser — press NEXT on the page.',
-      'CMEM Pro ready',
+      `Next: finish cloud sync for your ${trialDays}-day trial in the browser — press NEXT on the page.`,
+      `${trialDays}-day CMEM Pro trial ready`,
     );
     return 'openrouter';
   }
@@ -1359,7 +1365,7 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
   }
 }
 
-// --- cmem Pro 7-day trial opt-in --------------------------------------------
+// --- cmem Pro trial opt-in --------------------------------------------------
 // The first interaction of the install (replaces the old CMEM Online waitlist
 // opt-in — one funnel, not two). Entering an email POSTs to cmem.ai, which
 // creates the account server-side and emails a sign-in link; the response is a
@@ -1383,13 +1389,17 @@ const TRIAL_POLL_TIMEOUT_MS = 10_000;
 const TRIAL_POLL_BUDGET_MS = 240_000;
 /** Poll cadence fallback when the start response omits poll_interval. */
 const TRIAL_DEFAULT_POLL_INTERVAL_S = 3;
-const TRIAL_UNREACHABLE_WARNING = "Couldn't reach cmem.ai — start the trial later with npx claude-mem install";
-const TRIAL_FINISH_LATER_WARNING = 'No worries — finish anytime: npx claude-mem install';
+const trialUnreachableWarning = (trialDays: CmemProTrialDays) =>
+  `Couldn't reach cmem.ai — retry your ${trialDays}-day trial with npx claude-mem install`;
+const trialFinishLaterWarning = (trialDays: CmemProTrialDays) =>
+  `No worries — finish your ${trialDays}-day trial anytime: npx claude-mem install`;
 
 interface TrialPairing {
   pairingId: string;
   secret: string;
   pollIntervalMs: number;
+  /** The arm sent to cmem.ai when this pairing was created. */
+  trialDays: CmemProTrialDays;
   /**
    * Device-authorization user code (e.g. "WXYZ-4823") the human must type into
    * the browser to approve THIS device before poll delivers credentials. Null
@@ -1400,21 +1410,33 @@ interface TrialPairing {
   userCode: string | null;
 }
 
-interface StoredTrialState {
+export interface StoredTrialState {
   email: string;
   /** 'link_sent' (started, credentials never picked up) | 'active' (done). */
   state: string;
+  /** Persisted arm from the original start; null for legacy/invalid settings. */
+  trialDays: CmemProTrialDays | null;
 }
 
-function parseStoredTrialState(): StoredTrialState | null {
-  const flat = readFlatSettings(USER_SETTINGS_PATH);
+export function parseStoredTrialState(
+  flat: Record<string, unknown> | null = readFlatSettings(USER_SETTINGS_PATH),
+): StoredTrialState | null {
   if (!flat) return null;
   const email = typeof flat.CLAUDE_MEM_PRO_TRIAL_EMAIL === 'string' ? flat.CLAUDE_MEM_PRO_TRIAL_EMAIL : '';
   if (!email) return null;
   return {
     email,
     state: typeof flat.CLAUDE_MEM_PRO_TRIAL_STATE === 'string' ? flat.CLAUDE_MEM_PRO_TRIAL_STATE : '',
+    trialDays: parseCmemProTrialDays(flat.CLAUDE_MEM_PRO_TRIAL_DAYS),
   };
+}
+
+/** Reuse a persisted arm across installer runs; only a fresh flow randomizes. */
+export function resolveInstallerTrialDays(
+  prior: StoredTrialState | null,
+  random: () => number = Math.random,
+): CmemProTrialDays {
+  return prior?.trialDays ?? pickCmemProTrialDays(random);
 }
 
 function readStoredTrialState(): StoredTrialState | null {
@@ -1431,14 +1453,22 @@ function readStoredTrialState(): StoredTrialState | null {
  * (bad status, malformed body, network error, 10s timeout) — callers surface
  * the failure with a log.warn and the install continues as if skipped.
  */
-async function startTrialPairing(email: string): Promise<TrialPairing | null> {
+export async function startTrialPairing(
+  email: string,
+  trialDays: CmemProTrialDays,
+): Promise<TrialPairing | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TRIAL_START_TIMEOUT_MS);
   try {
     const res = await fetch(CMEM_PRO_TRIAL_START_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, source: 'npx-installer', device_name: hostname() }),
+      body: JSON.stringify({
+        email,
+        source: 'npx-installer',
+        device_name: hostname(),
+        trial: trialDays,
+      }),
       signal: controller.signal,
     });
     if (!res.ok) return null;
@@ -1456,7 +1486,13 @@ async function startTrialPairing(email: string): Promise<TrialPairing | null> {
     const userCode = typeof body.user_code === 'string' && body.user_code.trim().length > 0
       ? body.user_code.trim()
       : null;
-    return { pairingId: body.pairing_id, secret: body.secret, pollIntervalMs: pollIntervalS * 1000, userCode };
+    return {
+      pairingId: body.pairing_id,
+      secret: body.secret,
+      pollIntervalMs: pollIntervalS * 1000,
+      trialDays,
+      userCode,
+    };
   } catch {
     // [ANTI-PATTERN IGNORED]: network/timeout failures here are NOT silent — every caller pairs the null return with a log.warn telling the user how to start the trial later; the install itself must proceed regardless.
     return null;
@@ -1565,20 +1601,23 @@ function noteTrialUserCode(pairing: TrialPairing): void {
 }
 
 /**
- * First message after the banner: the cmem Pro free-week pitch. Entering an
+ * First message after the banner: the selected cmem Pro trial pitch. Entering an
  * email starts the trial server-side (account + sign-in email) and returns
  * the pairing the provider step later polls; Enter (or any failure) returns
  * null and the install proceeds exactly as before. Deliberately non-blocking:
  * the human does email + Stripe in the browser while the install works
  * through the IDE/runtime steps.
  */
-async function promptProTrialOptIn(version: string): Promise<TrialPairing | null> {
+async function promptProTrialOptIn(
+  version: string,
+  trialDays: CmemProTrialDays,
+  prior: StoredTrialState | null,
+): Promise<TrialPairing | null> {
   // Interactive-only, and easy to turn off for CI / scripted installs.
   if (!isInteractive) return null;
   if (process.env.CI) return null;
   if (String(process.env.CLAUDE_MEM_ONLINE_OPTIN ?? '').trim().toLowerCase() === 'false') return null;
 
-  const prior = readStoredTrialState();
   if (prior) {
     // We already captured this email — never re-pitch. If a previous install
     // sent a link that was never picked up (state 'link_sent'; the pairing TTL
@@ -1589,25 +1628,29 @@ async function promptProTrialOptIn(version: string): Promise<TrialPairing | null
     if (prior.state !== 'link_sent') return null;
 
     const resendChoice = await p.confirm({
-      message: `You started a cmem Pro trial earlier — send a fresh sign-in link to ${prior.email}?`,
+      message: `Send a fresh sign-in link for your ${trialDays}-day cmem Pro trial to ${prior.email}?`,
       initialValue: false,
     });
     if (p.isCancel(resendChoice) || resendChoice !== true) return null;
 
     const spin = p.spinner();
-    spin.start(`Resending your cmem Pro sign-in link to ${prior.email}…`);
+    spin.start(`Resending your ${trialDays}-day cmem Pro trial sign-in link to ${prior.email}…`);
     const resendStartedAt = Date.now();
-    const pairing = await startTrialPairing(prior.email);
+    const pairing = await startTrialPairing(prior.email, trialDays);
     if (!pairing) {
-      spin.stop(styleText('yellow', 'Could not resend the sign-in link.'));
-      log.warn(TRIAL_UNREACHABLE_WARNING);
+      spin.stop(styleText('yellow', `Could not resend the ${trialDays}-day trial sign-in link.`));
+      log.warn(trialUnreachableWarning(trialDays));
       return null;
     }
-    mergeSettings({ CLAUDE_MEM_PRO_TRIAL_AT: new Date().toISOString() });
-    spin.stop('Sign-in link resent.');
+    mergeSettings({
+      CLAUDE_MEM_PRO_TRIAL_AT: new Date().toISOString(),
+      // Repairs legacy/invalid state with the arm used for this successful resend.
+      CLAUDE_MEM_PRO_TRIAL_DAYS: String(trialDays),
+    });
+    spin.stop(`${trialDays}-day trial sign-in link resent.`);
     p.note(
-      'Check your email — click the sign-in link and add a card ($0 today).\nInstall continues; we pick it up automatically.',
-      'Link sent',
+      `Check your email — click the sign-in link and add a card ($0 today).\nYour ${trialDays}-day trial will continue automatically.`,
+      `${trialDays}-day trial link sent`,
     );
     noteTrialUserCode(pairing);
     await captureCliEvent('trial_link_sent', { version, duration_ms: Date.now() - resendStartedAt });
@@ -1623,17 +1666,17 @@ async function promptProTrialOptIn(version: string): Promise<TrialPairing | null
 
   p.note(
     [
-      styleText(['bold', 'cyan'], 'Free week of Pro: cloud memory generation + sync across machines.'),
+      styleText(['bold', 'cyan'], `${trialDays} days of Pro: cloud memory generation + sync across machines.`),
       '',
       'Memory generation runs on our metered models instead of your',
       `Anthropic plan — the default Haiku path burns ~$${haikuPer1k}/1k observations`,
       "of your plan's tokens; Pro takes $0 from it.",
-      `${CMEM_PRO_TRIAL_DAYS} days free, then $${CMEM_PRO_MONTHLY_USD}/mo — card required, cancel anytime.`,
+      `${trialDays} days free, then $${CMEM_PRO_MONTHLY_USD}/mo — card required, cancel anytime.`,
       '',
       "Enter your email to start (we'll send a sign-in link) — or press",
       'Enter to skip and use local generation.',
     ].join('\n'),
-    `cmem Pro — ${CMEM_PRO_TRIAL_DAYS} days free`,
+    `cmem Pro — ${trialDays} days free`,
   );
 
   const emailResult = await p.text({
@@ -1655,15 +1698,15 @@ async function promptProTrialOptIn(version: string): Promise<TrialPairing | null
   await captureCliEvent('trial_email_submitted', { version });
 
   const spin = p.spinner();
-  spin.start('Starting your free week — sending the sign-in link…');
+  spin.start(`Starting your ${trialDays}-day trial — sending the sign-in link…`);
   const startRequestAt = Date.now();
-  const pairing = await startTrialPairing(email);
+  const pairing = await startTrialPairing(email, trialDays);
   if (!pairing) {
-    spin.stop(styleText('yellow', 'Could not start the trial.'));
+    spin.stop(styleText('yellow', `Could not start the ${trialDays}-day trial.`));
     // NOT fail-silent (unlike the old waitlist opt-in): the user typed an
     // email expecting something to happen, so say what went wrong and how to
     // retry. Nothing is persisted, so the next install re-offers the trial.
-    log.warn(TRIAL_UNREACHABLE_WARNING);
+    log.warn(trialUnreachableWarning(trialDays));
     return null;
   }
 
@@ -1675,11 +1718,12 @@ async function promptProTrialOptIn(version: string): Promise<TrialPairing | null
     CLAUDE_MEM_PRO_TRIAL_EMAIL: email,
     CLAUDE_MEM_PRO_TRIAL_AT: new Date().toISOString(),
     CLAUDE_MEM_PRO_TRIAL_STATE: 'link_sent',
+    CLAUDE_MEM_PRO_TRIAL_DAYS: String(trialDays),
   });
-  spin.stop('Sign-in link sent.');
+  spin.stop(`${trialDays}-day trial sign-in link sent.`);
   p.note(
-    'Check your email — click the sign-in link and add a card ($0 today).\nInstall continues; we pick it up automatically.',
-    'Link sent',
+    `Check your email — click the sign-in link and add a card ($0 today).\nYour ${trialDays}-day trial will continue automatically.`,
+    `${trialDays}-day trial link sent`,
   );
   noteTrialUserCode(pairing);
   await captureCliEvent('trial_link_sent', { version, duration_ms: Date.now() - startRequestAt });
@@ -1699,14 +1743,14 @@ async function promptProTrialOptIn(version: string): Promise<TrialPairing | null
 async function completeTrialPairing(pairing: TrialPairing, version: string): Promise<'openrouter' | null> {
   const startedAt = Date.now();
   const stageMessages: Record<TrialPollStage, string> = {
-    awaiting_login: 'Waiting for you to click the sign-in link…',
-    awaiting_checkout: 'Waiting for checkout ($0 today)…',
+    awaiting_login: `Waiting for you to click the ${pairing.trialDays}-day trial sign-in link…`,
+    awaiting_checkout: `Waiting for ${pairing.trialDays}-day trial checkout ($0 today)…`,
     // Device-approval stage: the human types the user code shown at opt-in
     // into the browser. Generic copy when an older-contract server never sent
     // a code but still (unexpectedly) reports this stage — never crash on it.
     awaiting_approval: pairing.userCode
-      ? `Enter code ${pairing.userCode} in the browser to approve this device…`
-      : 'Waiting for approval in the browser…',
+      ? `Enter code ${pairing.userCode} in the browser to approve this device for your ${pairing.trialDays}-day trial…`
+      : `Waiting for ${pairing.trialDays}-day trial approval in the browser…`,
   };
   let stage: TrialPollStage = 'awaiting_login';
 
@@ -1714,9 +1758,9 @@ async function completeTrialPairing(pairing: TrialPairing, version: string): Pro
   // Ctrl+C during a spinner into a clean exit of the WHOLE installer (the
   // ETX fallback below only catches the rare press clack misses), so tell
   // the user exactly that before the wait begins.
-  log.info(styleText('dim', 'Ctrl+C exits — finish anytime with npx claude-mem install'));
+  log.info(styleText('dim', `Ctrl+C exits — finish your ${pairing.trialDays}-day trial anytime with npx claude-mem install`));
 
-  const spin = p.spinner({ cancelMessage: 'Stopped waiting for the browser steps.' });
+  const spin = p.spinner({ cancelMessage: `Stopped waiting for the ${pairing.trialDays}-day trial browser steps.` });
   spin.start(stageMessages[stage]);
 
   // Ctrl+C handling. The preceding prompt's readline close() leaves stdin
@@ -1739,8 +1783,8 @@ async function completeTrialPairing(pairing: TrialPairing, version: string): Pro
   const wasCancelled = (): boolean => spin.isCancelled || ctrlCPressed;
 
   const bailCancelled = async (): Promise<null> => {
-    if (!spin.isCancelled) spin.cancel('Stopped waiting for the browser steps.');
-    log.warn(TRIAL_FINISH_LATER_WARNING);
+    if (!spin.isCancelled) spin.cancel(`Stopped waiting for the ${pairing.trialDays}-day trial browser steps.`);
+    log.warn(trialFinishLaterWarning(pairing.trialDays));
     await captureCliEvent('trial_poll_timeout', {
       version,
       stage,
@@ -1778,26 +1822,26 @@ async function completeTrialPairing(pairing: TrialPairing, version: string): Pro
           // mergeSettings already logged the write error. The setup token was
           // delivered exactly once and is now lost — fall back to the normal
           // provider prompt rather than pretending Pro is configured.
-          spin.stop(styleText('yellow', 'Could not save cmem Pro settings.'));
-          log.warn(TRIAL_FINISH_LATER_WARNING);
+          spin.stop(styleText('yellow', `Could not save ${pairing.trialDays}-day cmem Pro trial settings.`));
+          log.warn(trialFinishLaterWarning(pairing.trialDays));
           return null;
         }
         const endsAt = result.trialEndsAt ? new Date(result.trialEndsAt) : null;
         const endsAtLabel = endsAt && !Number.isNaN(endsAt.getTime())
           ? endsAt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-          : `in ${CMEM_PRO_TRIAL_DAYS} days`;
-        spin.stop('cmem Pro credentials received.');
+          : `in ${pairing.trialDays} days`;
+        spin.stop(`${pairing.trialDays}-day cmem Pro trial credentials received.`);
         p.note(
-          `✓ Free week active — cloud generation + sync ON.\n$${CMEM_PRO_MONTHLY_USD}/mo starts ${endsAtLabel}; cancel anytime at cmem.ai.`,
-          'cmem Pro ready',
+          `✓ ${pairing.trialDays}-day trial active — cloud generation + sync ON.\n$${CMEM_PRO_MONTHLY_USD}/mo starts ${endsAtLabel}; cancel anytime at cmem.ai.`,
+          `${pairing.trialDays}-day cmem Pro trial ready`,
         );
         await captureCliEvent('trial_activated', { version, duration_ms: Date.now() - startedAt });
         return 'openrouter';
       }
 
       if (result.kind === 'gone') {
-        spin.stop(styleText('yellow', 'That sign-in link has expired.'));
-        log.warn(TRIAL_FINISH_LATER_WARNING);
+        spin.stop(styleText('yellow', `That ${pairing.trialDays}-day trial sign-in link has expired.`));
+        log.warn(trialFinishLaterWarning(pairing.trialDays));
         await captureCliEvent('trial_poll_timeout', {
           version,
           stage,
@@ -1810,8 +1854,8 @@ async function completeTrialPairing(pairing: TrialPairing, version: string): Pro
       if (result.kind === 'unreachable') {
         consecutiveFailures += 1;
         if (consecutiveFailures >= 3) {
-          spin.stop(styleText('yellow', 'cmem.ai is not responding.'));
-          log.warn(TRIAL_UNREACHABLE_WARNING);
+          spin.stop(styleText('yellow', `cmem.ai is not responding for your ${pairing.trialDays}-day trial.`));
+          log.warn(trialUnreachableWarning(pairing.trialDays));
           await captureCliEvent('trial_poll_timeout', {
             version,
             stage,
@@ -1832,8 +1876,8 @@ async function completeTrialPairing(pairing: TrialPairing, version: string): Pro
     }
 
     if (wasCancelled()) return bailCancelled();
-    spin.stop(styleText('yellow', 'Still waiting on the browser steps — moving on.'));
-    log.warn(TRIAL_FINISH_LATER_WARNING);
+    spin.stop(styleText('yellow', `Still waiting on the ${pairing.trialDays}-day trial browser steps — moving on.`));
+    log.warn(trialFinishLaterWarning(pairing.trialDays));
     await captureCliEvent('trial_poll_timeout', {
       version,
       stage,
@@ -1982,7 +2026,11 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
 
   // An explicit --provider flag wins over the trial funnel: never pitch,
   // email, poll, or override a provider the operator asked for by name.
-  const trialPairing = options.provider ? null : await promptProTrialOptIn(version);
+  const storedTrialState = readStoredTrialState();
+  const trialDays = resolveInstallerTrialDays(storedTrialState);
+  const trialPairing = options.provider
+    ? null
+    : await promptProTrialOptIn(version, trialDays, storedTrialState);
 
   if (alreadyInstalled) {
     if (process.stdin.isTTY) {
@@ -2025,7 +2073,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   }
   const trialActivated = selectedProvider === 'openrouter';
   if (selectedProvider === null) {
-    selectedProvider = await promptProvider(options);
+    selectedProvider = await promptProvider(options, trialDays);
   }
   if (selectedProvider === 'claude') {
     await promptClaudeModel(options);
@@ -2238,7 +2286,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `IDEs:        ${styleText('cyan', selectedIDEs.join(', '))}`,
   ];
   if (trialActivated) {
-    summaryLines.push(`Cloud sync:  ${styleText('cyan', 'ON (cmem Pro free week)')}`);
+    summaryLines.push(`Cloud sync:  ${styleText('cyan', `ON (cmem Pro ${trialDays}-day trial)`)}`);
   }
   if (autoMemoryStatus === 'disabled') {
     summaryLines.push(`Auto-memory: ${styleText('cyan', 'disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
@@ -2360,8 +2408,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     ...(trialActivated
       ? []
       : [
-          `${styleText(['bold', 'cyan'], PRO_TRIAL_PITCH)}`,
-          `  ${styleText('underline', proTrialUrl('installer'))}`,
+          `${styleText(['bold', 'cyan'], cmemProTrialPitch(trialDays))}`,
+          `  ${styleText('underline', cmemProSignupUrl(trialDays))}`,
           ``,
         ]),
     `${styleText('dim', 'How it works: /how-it-works   ·   Disable first-session hint: CLAUDE_MEM_WELCOME_HINT_ENABLED=false')}`,
