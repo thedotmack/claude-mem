@@ -54,7 +54,7 @@ describe('contextHandler SessionStart path', () => {
       '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=codex',
       'GET',
       undefined,
-      { workerStartupTimeoutMs: 8_000, timeoutMs: 2_000 },
+      { workerStartupTimeoutMs: 15_000, timeoutMs: 2_000 },
     ]]);
   });
 

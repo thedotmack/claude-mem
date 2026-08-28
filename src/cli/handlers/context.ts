@@ -11,7 +11,7 @@ import {
   getWorkerPort,
 } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
-import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { HOOK_EXIT_CODES, HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
@@ -63,7 +63,7 @@ export const contextHandler: EventHandler = {
     // ponytail: Codex's MCP normally starts the worker; this one bounded
     // fallback covers cold sessions without the old startup process chain.
     const workerOptions = input.platform === 'codex'
-      ? { workerStartupTimeoutMs: 8_000, timeoutMs: 2_000 }
+      ? { workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT, timeoutMs: 2_000 }
       : undefined;
     const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
     if (isWorkerFallback(contextResult)) {
