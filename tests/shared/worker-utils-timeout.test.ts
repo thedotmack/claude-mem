@@ -87,7 +87,7 @@ describe('worker-utils API timeout resolution', () => {
     );
   });
 
-  it('makes one bounded request when worker lifecycle management is disabled', async () => {
+  it('checks readiness once before a bounded worker request', async () => {
     writeSettings('45000');
     const requests: string[] = [];
     global.fetch = mock((url: string | URL | Request) => {
@@ -101,10 +101,13 @@ describe('worker-utils API timeout resolution', () => {
       '/api/test',
       'GET',
       undefined,
-      { manageWorker: false, timeoutMs: 2_000 },
+      { workerStartupTimeoutMs: 2_000, timeoutMs: 2_000 },
     );
 
     expect(result).toEqual({ ok: true });
-    expect(requests).toEqual([expect.stringContaining('/api/test')]);
+    expect(requests).toEqual([
+      expect.stringContaining('/api/readiness'),
+      expect.stringContaining('/api/test'),
+    ]);
   });
 });

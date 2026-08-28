@@ -39,7 +39,7 @@ afterAll(() => {
 });
 
 describe('contextHandler SessionStart path', () => {
-  it('injects Codex context with one bounded worker call and no startup work', async () => {
+  it('injects Codex context with one bounded worker startup and request', async () => {
     calls.length = 0;
     const { contextHandler } = await import('../../../src/cli/handlers/context.js');
 
@@ -54,7 +54,7 @@ describe('contextHandler SessionStart path', () => {
       '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=codex',
       'GET',
       undefined,
-      { manageWorker: false, timeoutMs: 2_000 },
+      { workerStartupTimeoutMs: 8_000, timeoutMs: 2_000 },
     ]]);
   });
 

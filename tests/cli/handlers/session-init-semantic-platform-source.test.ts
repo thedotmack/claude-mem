@@ -122,7 +122,7 @@ describe('sessionInitHandler semantic injection platform source', () => {
       if (body.q !== ${JSON.stringify(prompt)} || body.limit !== '7' || body.platformSource !== 'codex') {
         throw new Error('semantic body mismatch: ' + JSON.stringify(body));
       }
-      const expectedOptions = JSON.stringify({ manageWorker: false, timeoutMs: 2000 });
+      const expectedOptions = JSON.stringify({ workerStartupTimeoutMs: 8000, timeoutMs: 2000 });
       if (JSON.stringify(initCall.options) !== expectedOptions || JSON.stringify(semanticCall.options) !== expectedOptions) {
         throw new Error('Codex hook options mismatch: ' + JSON.stringify(workerCallLog));
       }

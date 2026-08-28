@@ -60,10 +60,10 @@ export const contextHandler: EventHandler = {
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
 
-    // ponytail: Codex's persistent MCP process owns worker startup. Its
-    // synchronous hook only fetches context; it never starts another process.
+    // ponytail: Codex's MCP normally starts the worker; this one bounded
+    // fallback covers cold sessions without the old startup process chain.
     const workerOptions = input.platform === 'codex'
-      ? { manageWorker: false, timeoutMs: 2_000 }
+      ? { workerStartupTimeoutMs: 8_000, timeoutMs: 2_000 }
       : undefined;
     const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
     if (isWorkerFallback(contextResult)) {
