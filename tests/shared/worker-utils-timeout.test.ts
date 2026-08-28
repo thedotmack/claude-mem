@@ -17,6 +17,7 @@ import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManage
 import '../../src/shared/paths.js';
 
 describe('worker-utils API timeout resolution', () => {
+  const originalFetch = global.fetch;
   let tempDir: string;
   let settingsPath: string;
   const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
@@ -33,6 +34,7 @@ describe('worker-utils API timeout resolution', () => {
 
   afterEach(() => {
     mock.restore();
+    global.fetch = originalFetch;
     if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
     else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
     if (originalTimeout === undefined) delete process.env.CLAUDE_MEM_API_TIMEOUT_MS;
@@ -83,5 +85,26 @@ describe('worker-utils API timeout resolution', () => {
       'Invalid CLAUDE_MEM_API_TIMEOUT_MS, using default',
       expect.objectContaining({ value: '999999', min: 500, max: 300000 })
     );
+  });
+
+  it('makes one bounded request when worker lifecycle management is disabled', async () => {
+    writeSettings('45000');
+    const requests: string[] = [];
+    global.fetch = mock((url: string | URL | Request) => {
+      requests.push(String(url));
+      return Promise.resolve(new Response(JSON.stringify({ ok: true })));
+    }) as unknown as typeof fetch;
+
+    const workerUtils = await import('../../src/shared/worker-utils.js');
+    workerUtils.clearPortCache();
+    const result = await workerUtils.executeWithWorkerFallback(
+      '/api/test',
+      'GET',
+      undefined,
+      { manageWorker: false, timeoutMs: 2_000 },
+    );
+
+    expect(result).toEqual({ ok: true });
+    expect(requests).toEqual([expect.stringContaining('/api/test')]);
   });
 });

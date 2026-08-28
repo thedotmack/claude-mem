@@ -98,8 +98,8 @@ describe('sessionInitHandler semantic injection platform source', () => {
         }),
         resolveRuntimeContext: () => ({ runtime: 'worker' }),
         shouldTrackProject: () => true,
-        executeWithWorkerFallback: async (apiPath, method, body) => {
-          workerCallLog.push({ path: apiPath, method, body });
+        executeWithWorkerFallback: async (apiPath, method, body, options) => {
+          workerCallLog.push({ path: apiPath, method, body, options });
           if (apiPath === '/api/sessions/init') return { sessionDbId: 42, promptNumber: 1 };
           if (apiPath === '/api/context/semantic') return { context: 'semantic context', count: 1 };
           throw new Error('Unexpected worker call: ' + apiPath);
@@ -113,12 +113,18 @@ describe('sessionInitHandler semantic injection platform source', () => {
         prompt: ${JSON.stringify(prompt)},
       });
       const semanticCall = workerCallLog.find(call => call.path === '/api/context/semantic');
+      const initCall = workerCallLog.find(call => call.path === '/api/sessions/init');
       if (!result.continue || !result.suppressOutput) throw new Error('unexpected result ' + JSON.stringify(result));
       if (!semanticCall) throw new Error('semantic call missing: ' + JSON.stringify(workerCallLog));
+      if (!initCall) throw new Error('init call missing: ' + JSON.stringify(workerCallLog));
       if (semanticCall.method !== 'POST') throw new Error('semantic method mismatch: ' + semanticCall.method);
       const body = semanticCall.body;
       if (body.q !== ${JSON.stringify(prompt)} || body.limit !== '7' || body.platformSource !== 'codex') {
         throw new Error('semantic body mismatch: ' + JSON.stringify(body));
+      }
+      const expectedOptions = JSON.stringify({ manageWorker: false, timeoutMs: 2000 });
+      if (JSON.stringify(initCall.options) !== expectedOptions || JSON.stringify(semanticCall.options) !== expectedOptions) {
+        throw new Error('Codex hook options mismatch: ' + JSON.stringify(workerCallLog));
       }
     `;
 

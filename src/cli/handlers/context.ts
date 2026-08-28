@@ -17,42 +17,7 @@ import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { callMcpToolOnce } from '../../shared/mcp-client.js';
 import { proTrialLine } from '../../shared/pro-promo.js';
-
-async function requestSessionStartContext(args: {
-  projects: string[];
-  platformSource?: string;
-  colors?: boolean;
-}): Promise<string | null> {
-  const result = await callMcpToolOnce('session_start_context', {
-    projects: args.projects,
-    ...(args.platformSource ? { platformSource: args.platformSource } : {}),
-    ...(args.colors !== undefined ? { colors: args.colors } : {}),
-  });
-  if (result.isError) {
-    logger.warn('HOOK', 'MCP session_start_context returned an error; falling back to worker HTTP', {
-      preview: result.text.slice(0, 200),
-    });
-    return null;
-  }
-  return result.text.trim();
-}
-
-async function fetchSessionStartContextViaMcp(args: {
-  projects: string[];
-  platformSource?: string;
-  colors?: boolean;
-}): Promise<string | null> {
-  try {
-    return await requestSessionStartContext(args);
-  } catch (error: unknown) {
-    logger.warn('HOOK', 'MCP session_start_context failed; falling back to worker HTTP', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
-}
 
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -95,30 +60,24 @@ export const contextHandler: EventHandler = {
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
 
+    // ponytail: Codex's persistent MCP process owns worker startup. Its
+    // synchronous hook only fetches context; it never starts another process.
+    const workerOptions = input.platform === 'codex'
+      ? { manageWorker: false, timeoutMs: 2_000 }
+      : undefined;
+    const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
+    if (isWorkerFallback(contextResult)) {
+      return emptyResult;
+    }
+
     let additionalContext: string;
-    const mcpContextResult = input.platform === 'codex'
-      ? await fetchSessionStartContextViaMcp({
-          projects: context.allProjects,
-          ...(normalizedPlatformSource ? { platformSource: normalizedPlatformSource } : {}),
-        })
-      : null;
-
-    if (mcpContextResult !== null) {
-      additionalContext = mcpContextResult;
+    if (typeof contextResult === 'string') {
+      additionalContext = contextResult.trim();
+    } else if (contextResult === undefined) {
+      additionalContext = '';
     } else {
-      const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET');
-      if (isWorkerFallback(contextResult)) {
-        return emptyResult;
-      }
-
-      if (typeof contextResult === 'string') {
-        additionalContext = contextResult.trim();
-      } else if (contextResult === undefined) {
-        additionalContext = '';
-      } else {
-        logger.warn('HOOK', 'Context response was not a string', { type: typeof contextResult });
-        return emptyResult;
-      }
+      logger.warn('HOOK', 'Context response was not a string', { type: typeof contextResult });
+      return emptyResult;
     }
 
     // Issue #2215: surface stale OAuth token marker as a session-start hint.
@@ -134,20 +93,9 @@ export const contextHandler: EventHandler = {
 
     let coloredTimeline = '';
     if (showTerminalOutput) {
-      const mcpColorResult = input.platform === 'codex'
-        ? await fetchSessionStartContextViaMcp({
-            projects: context.allProjects,
-            ...(normalizedPlatformSource ? { platformSource: normalizedPlatformSource } : {}),
-            colors: true,
-          })
-        : null;
-      if (mcpColorResult !== null) {
-        coloredTimeline = mcpColorResult;
-      } else {
-        const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET');
-        if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
-          coloredTimeline = colorResult.trim();
-        }
+      const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, workerOptions);
+      if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
+        coloredTimeline = colorResult.trim();
       }
     }
 
