@@ -55,12 +55,22 @@ function findBun() {
 // has a 300s timeout (vs 60s for SessionStart), runs once per Claude
 // Code launch, and is the only standalone hook script — the natural
 // place to materialise plugin runtime state.
+function missingDeps(pluginRoot) {
+  const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf-8'));
+  return Object.keys(pkg.dependencies || {}).filter(
+    (d) => !existsSync(join(pluginRoot, NODE_MODULES_DIRNAME, ...d.split('/'), 'package.json'))
+  );
+}
+
 function ensurePluginDependencies(pluginRoot) {
   if (!existsSync(join(pluginRoot, 'package.json'))) return;
 
-  // Guard on node_modules (package-manager marker) rather than a specific
-  // package, so the check stays correct if dependencies are later renamed.
-  if (existsSync(join(pluginRoot, NODE_MODULES_DIRNAME))) return;
+  // Guard on completeness rather than existence: verify every declared
+  // dependency has its own package.json inside node_modules, so a
+  // partially-populated directory (interrupted install, killed process,
+  // partial extraction) is caught and retried instead of being
+  // permanently skipped (gh #3755).
+  if (missingDeps(pluginRoot).length === 0) return;
 
   const bunPath = findBun();
   if (!bunPath) {

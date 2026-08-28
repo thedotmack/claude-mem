@@ -153,12 +153,16 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(existsSync(join(pluginRoot, 'node_modules'))).toBe(false);
   });
 
-  test('skips install when node_modules is already present', async () => {
-    // Setup runs on every Claude Code launch. If node_modules already exists,
-    // the install MUST be skipped — otherwise we re-run a 100 MB+ install on
-    // every cold start and burn the user's bandwidth.
+  test('skips install when all dependencies are present', async () => {
+    // Setup runs on every Claude Code launch. If all declared dependencies
+    // already have their package.json inside node_modules, the install MUST
+    // be skipped, otherwise we re-run a 100 MB+ install on every cold start
+    // and burn the user's bandwidth. The completeness guard (gh #3755) checks
+    // each dependency individually rather than trusting the node_modules
+    // directory marker.
     const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-already-installed');
-    mkdirSync(join(pluginRoot, 'node_modules'), { recursive: true });
+    mkdirSync(join(pluginRoot, 'node_modules', 'zod'), { recursive: true });
+    writeFileSync(join(pluginRoot, 'node_modules', 'zod', 'package.json'), JSON.stringify({ name: 'zod' }));
 
     const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
 
@@ -167,5 +171,20 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     // The fake bun would have created zod/v3/index.js if invoked — its
     // absence proves the install path was not taken.
     expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(false);
+  });
+
+  test('triggers install when node_modules exists but is incomplete (gh #3755)', async () => {
+    // When a prior install was interrupted, killed, or partially extracted,
+    // node_modules/ exists but is missing some dependencies. The completeness
+    // guard must detect this and retry the install.
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-partial-deps');
+    mkdirSync(join(pluginRoot, 'node_modules'), { recursive: true });
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain(INSTALL_DIAGNOSTIC);
+    expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
+    expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(true);
   });
 });
