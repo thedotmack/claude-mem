@@ -129,6 +129,7 @@ describe('isAuthFailureObserverOutput recognises the CLI signed-out wording (#36
     // The status line may stand alone, or introduce its remediation.
     'Not logged in.',
     'Not logged in: run /login',
+    'Not logged in — Please run /login',
   ];
 
   for (const output of SIGNED_OUT) {
@@ -151,6 +152,11 @@ describe('isAuthFailureObserverOutput recognises the CLI signed-out wording (#36
     'Not logged in during the reboot window; the observer recorded no new findings.',
     'Not logged in. The observer recorded no new findings for this batch.',
     'Not logged in sessions were reviewed and the retry path documented.',
+    // Reported on the second review round: a separator after the status is
+    // not enough either, so the status must be the WHOLE response.
+    'Not logged in — the observer recorded nothing new.',
+    'Not logged in: sessions were reviewed and the retry path documented.',
+    'Not logged in · the reboot window is documented in the runbook.',
   ];
 
   for (const prose of NARRATIVE) {
