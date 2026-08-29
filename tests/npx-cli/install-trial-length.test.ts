@@ -13,6 +13,12 @@ import {
   parseCmemProTrialDays,
   pickCmemProTrialDays,
 } from '../../src/npx-cli/cmem-pro-costs.js';
+import { PRO_TRIAL_DAYS, PRO_TRIAL_PITCH, proTrialUrl } from '../../src/shared/pro-promo.js';
+import {
+  PRO_TRIAL_DAYS as VIEWER_TRIAL_DAYS,
+  PRO_TRIAL_PITCH as VIEWER_PITCH,
+  PRO_TRIAL_URL as VIEWER_URL,
+} from '../../src/ui/viewer/constants/promo.js';
 import {
   captureInstallerProOfferViewed,
   parseStoredTrialState,
@@ -48,11 +54,21 @@ afterEach(() => {
 });
 
 describe('installer trial length', () => {
-  it('selects each of the three accepted trial arms', () => {
+  it('offers 30 days on every run while 7 and 14 stay accepted values', () => {
     expect(CMEM_PRO_TRIAL_LENGTHS).toEqual([7, 14, 30]);
-    expect(pickCmemProTrialDays(() => 0)).toBe(7);
-    expect(pickCmemProTrialDays(() => 0.34)).toBe(14);
-    expect(pickCmemProTrialDays(() => 0.99)).toBe(30);
+    expect(pickCmemProTrialDays()).toBe(30);
+  });
+
+  it('states the same length and an explicit trial= on every promo surface', () => {
+    // Without `trial=`, cmem.ai buckets the visitor into 7/14/30 itself.
+    expect(PRO_TRIAL_DAYS).toBe(30);
+    expect(PRO_TRIAL_PITCH).toContain('30-day trial');
+    for (const source of ['session-start', 'context-banner', 'welcome-hint', 'viewer', 'docs'] as const) {
+      expect(proTrialUrl(source)).toBe(`https://cmem.ai/pro?from=${source}&trial=30`);
+    }
+    // The viewer cannot import the shared module (rootDir); keep them in step.
+    expect([VIEWER_TRIAL_DAYS, VIEWER_PITCH, VIEWER_URL])
+      .toEqual([PRO_TRIAL_DAYS, PRO_TRIAL_PITCH, proTrialUrl('viewer')]);
   });
 
   it('accepts only exact persisted 7/14/30 values', () => {
@@ -162,35 +178,24 @@ describe('installer trial length', () => {
       CLAUDE_MEM_PRO_TRIAL_STATE: 'link_sent',
       CLAUDE_MEM_PRO_TRIAL_DAYS: '14',
     });
-    let randomCalls = 0;
-
     expect(prior?.trialDays).toBe(14);
-    expect(resolveInstallerTrialDays(prior, () => {
-      randomCalls += 1;
-      return 0.99;
-    })).toBe(14);
-    expect(randomCalls).toBe(0);
+    expect(resolveInstallerTrialDays(prior)).toBe(14);
   });
 
-  it('picks exactly once for a fresh or invalid legacy state', () => {
+  it('falls back to the default arm for a fresh or invalid legacy state', () => {
     const invalidPrior = parseStoredTrialState({
       CLAUDE_MEM_PRO_TRIAL_EMAIL: 'person@example.com',
       CLAUDE_MEM_PRO_TRIAL_STATE: 'link_sent',
       CLAUDE_MEM_PRO_TRIAL_DAYS: 'forever',
     });
-    let randomCalls = 0;
 
     expect(invalidPrior?.trialDays).toBeNull();
-    expect(resolveInstallerTrialDays(invalidPrior, () => {
-      randomCalls += 1;
-      return 0.99;
-    })).toBe(30);
-    expect(randomCalls).toBe(1);
+    expect(resolveInstallerTrialDays(invalidPrior)).toBe(30);
   });
 
   it('chooses once at funnel entry and carries that value through every installer path', () => {
     expect(installSource.match(/resolveInstallerTrialDays\(storedTrialState\)/g)).toHaveLength(1);
-    expect(installSource.match(/pickCmemProTrialDays\(random\)/g)).toHaveLength(1);
+    expect(installSource.match(/pickCmemProTrialDays\(\)/g)).toHaveLength(1);
     expect(installSource).toContain('promptProTrialOptIn(version, trialDays, storedTrialState)');
     expect(installSource).toContain('promptProvider(options, trialDays)');
     expect(installSource).toContain('cmemProSignupUrl(trialDays)');
