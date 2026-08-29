@@ -13,6 +13,12 @@ import {
   parseCmemProTrialDays,
   pickCmemProTrialDays,
 } from '../../src/npx-cli/cmem-pro-costs.js';
+import { PRO_TRIAL_DAYS, PRO_TRIAL_PITCH, proTrialUrl } from '../../src/shared/pro-promo.js';
+import {
+  PRO_TRIAL_DAYS as VIEWER_TRIAL_DAYS,
+  PRO_TRIAL_PITCH as VIEWER_PITCH,
+  PRO_TRIAL_URL as VIEWER_URL,
+} from '../../src/ui/viewer/constants/promo.js';
 import {
   captureInstallerProOfferViewed,
   parseStoredTrialState,
@@ -51,6 +57,18 @@ describe('installer trial length', () => {
   it('offers 30 days on every run while 7 and 14 stay accepted values', () => {
     expect(CMEM_PRO_TRIAL_LENGTHS).toEqual([7, 14, 30]);
     expect(pickCmemProTrialDays()).toBe(30);
+  });
+
+  it('states the same length and an explicit trial= on every promo surface', () => {
+    // Without `trial=`, cmem.ai buckets the visitor into 7/14/30 itself.
+    expect(PRO_TRIAL_DAYS).toBe(30);
+    expect(PRO_TRIAL_PITCH).toContain('30-day trial');
+    for (const source of ['session-start', 'context-banner', 'welcome-hint', 'viewer', 'docs'] as const) {
+      expect(proTrialUrl(source)).toBe(`https://cmem.ai/pro?from=${source}&trial=30`);
+    }
+    // The viewer cannot import the shared module (rootDir); keep them in step.
+    expect([VIEWER_TRIAL_DAYS, VIEWER_PITCH, VIEWER_URL])
+      .toEqual([PRO_TRIAL_DAYS, PRO_TRIAL_PITCH, proTrialUrl('viewer')]);
   });
 
   it('accepts only exact persisted 7/14/30 values', () => {

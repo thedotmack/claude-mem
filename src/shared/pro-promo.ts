@@ -1,5 +1,5 @@
 /**
- * cmem Pro 7-day-trial promo copy — the single source of truth for every place
+ * cmem Pro trial promo copy — the single source of truth for every place
  * claude-mem tells an existing user the trial exists.
  *
  * Almost nobody running the free plugin knows the trial is there, so the pitch
@@ -12,6 +12,13 @@
  * tsconfig pins rootDir to the viewer directory, so it cannot import this file.
  * Change both together.
  */
+
+/**
+ * Trial length offered, in days. Mirrored in the viewer's copy of this module.
+ * cmem.ai buckets a visitor into 7/14/30 when no `trial=` is passed, so every
+ * link below states it explicitly rather than letting the page choose.
+ */
+export const PRO_TRIAL_DAYS = 30;
 
 /** Landing page for the trial (cmem-pro `src/app/(landing)/pro/page.tsx`). */
 export const PRO_TRIAL_URL = 'https://cmem.ai/pro';
@@ -32,11 +39,11 @@ export type ProPromoSource =
 
 /** Trial landing URL tagged with the surface the user clicked from. */
 export function proTrialUrl(source: ProPromoSource): string {
-  return `${PRO_TRIAL_URL}?from=${source}`;
+  return `${PRO_TRIAL_URL}?from=${source}&trial=${PRO_TRIAL_DAYS}`;
 }
 
 /** The offer itself, without a URL — for surfaces that link separately. */
-export const PRO_TRIAL_PITCH = 'Get 2x more use out of your Max plan for free (7-day trial, $30/mo)';
+export const PRO_TRIAL_PITCH = `Get 2x more use out of your Max plan for free (${PRO_TRIAL_DAYS}-day trial, $30/mo)`;
 
 /**
  * One-line pitch + link, for plain-text surfaces (hook banners, welcome hint).
