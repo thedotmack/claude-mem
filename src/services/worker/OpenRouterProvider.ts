@@ -9,7 +9,7 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { ClassifiedProviderError, type ProviderErrorClass } from './provider-errors.js';
-import { withRetry, parseRetryAfterMs } from './retry.js';
+import { withRetry, parseRetryAfterMs, getProviderAttemptTimeoutMs, DEFAULT_PROVIDER_ATTEMPT_TIMEOUT_MS } from './retry.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 
 /**
@@ -213,6 +213,7 @@ interface OpenRouterConfig {
   apiUrl: string;
   siteUrl?: string;
   appName?: string;
+  attemptTimeoutMs: number;
 }
 
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
@@ -266,7 +267,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   }
 
   protected async query(history: ConversationMessage[], config: OpenRouterConfig): Promise<ProviderQueryResult> {
-    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName);
+    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName, config.attemptTimeoutMs);
   }
 
   /** POST the chat-completions request. Extracted so the retry try block stays narrow. */
@@ -308,7 +309,8 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     model: string,
     apiUrl: string,
     siteUrl?: string,
-    appName?: string
+    appName?: string,
+    attemptTimeoutMs: number = DEFAULT_PROVIDER_ATTEMPT_TIMEOUT_MS
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
@@ -363,7 +365,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       }
 
       return responseData;
-    }, { label: `OpenRouter ${model}` });
+    }, { label: `OpenRouter ${model}`, perAttemptTimeoutMs: attemptTimeoutMs });
 
     if (!data.choices?.[0]?.message?.content) {
       logger.error('SDK', 'Empty response from OpenRouter');
@@ -433,7 +435,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
     const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || OPENROUTER_APP_TITLE;
 
-    return { apiKey, model, apiUrl, siteUrl, appName };
+    return { apiKey, model, apiUrl, siteUrl, appName, attemptTimeoutMs: getProviderAttemptTimeoutMs(settings.CLAUDE_MEM_LLM_TIMEOUT_MS) };
   }
 }
 

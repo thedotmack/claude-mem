@@ -12,6 +12,33 @@
 import { ClassifiedProviderError, isClassified } from './provider-errors.js';
 import { logger } from '../../utils/logger.js';
 
+export const DEFAULT_PROVIDER_ATTEMPT_TIMEOUT_MS = 30_000;
+export const PROVIDER_ATTEMPT_TIMEOUT_BOUNDS = { min: 500, max: 300_000 } as const;
+
+export class ProviderAttemptTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Provider request timed out after ${timeoutMs}ms`);
+    this.name = 'ProviderAttemptTimeoutError';
+  }
+}
+
+export function getProviderAttemptTimeoutMs(value: unknown): number {
+  const parsed = typeof value === 'string' ? Number(value) : NaN;
+  if (Number.isInteger(parsed)
+    && parsed >= PROVIDER_ATTEMPT_TIMEOUT_BOUNDS.min
+    && parsed <= PROVIDER_ATTEMPT_TIMEOUT_BOUNDS.max) {
+    return parsed;
+  }
+  if (value !== undefined && value !== '') {
+    logger.warn('SDK', 'Invalid CLAUDE_MEM_LLM_TIMEOUT_MS, using default', {
+      value,
+      min: PROVIDER_ATTEMPT_TIMEOUT_BOUNDS.min,
+      max: PROVIDER_ATTEMPT_TIMEOUT_BOUNDS.max,
+    });
+  }
+  return DEFAULT_PROVIDER_ATTEMPT_TIMEOUT_MS;
+}
+
 /**
  * Parse Retry-After header (seconds or HTTP-date).
  * Returns ms or undefined.
@@ -47,7 +74,7 @@ export interface RetryOptions {
 
 const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'label' | 'abortSignal'>> = {
   maxRetries: 2,
-  perAttemptTimeoutMs: 30_000,
+  perAttemptTimeoutMs: DEFAULT_PROVIDER_ATTEMPT_TIMEOUT_MS,
   baseDelayMs: 100,
   maxDelayMs: 30_000,
 };
@@ -87,7 +114,11 @@ export async function withRetry<T>(
 
     // Per-attempt timeout via AbortController. Forward external aborts too.
     const attemptController = new AbortController();
-    const timeoutHandle = setTimeout(() => attemptController.abort(), opts.perAttemptTimeoutMs);
+    let deadlineExceeded = false;
+    const timeoutHandle = setTimeout(() => {
+      deadlineExceeded = true;
+      attemptController.abort();
+    }, opts.perAttemptTimeoutMs);
     const onExternalAbort = () => attemptController.abort();
     options.abortSignal?.addEventListener('abort', onExternalAbort, { once: true });
 
@@ -95,6 +126,14 @@ export async function withRetry<T>(
       return await fn(attemptController.signal);
     } catch (err: unknown) {
       lastError = err;
+
+      if (deadlineExceeded) {
+        throw new ProviderAttemptTimeoutError(opts.perAttemptTimeoutMs);
+      }
+
+      if (options.abortSignal?.aborted) {
+        throw err;
+      }
 
       if (!isRetryableKind(err)) {
         throw err;
