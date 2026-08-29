@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.17.0] - 2026-08-28
+
+Installer trial-length offers
+- Assigns one stable 7-, 14-, or 30-day CMEM Pro trial offer per installer flow.
+- Shows the exact assigned length consistently in prompts, retry/resend flows, activation summaries, and cmem.ai links.
+- Sends the same trial length to the web start API and preserves it across reruns.
+- Adds focused coverage for all three arms and legacy-state recovery.
+
 ## [13.16.1] - 2026-08-26
 
 ## 🪟 The Windows Megafix
