@@ -5,6 +5,20 @@ import * as realOauthToken from '../../../src/shared/oauth-token.js';
 import * as realProjectName from '../../../src/utils/project-name.js';
 import * as realWorkerUtils from '../../../src/shared/worker-utils.js';
 
+// Snapshot the real modules BEFORE mock.module mutates the live namespaces.
+// bun's mock.module rewrites the existing namespace object in place, so
+// spreading `realProjectName` from inside afterAll re-registers the STUB, not
+// the real module — the restore silently becomes a no-op. That left
+// getProjectContext pinned to 'repo-project' for every later file in the run,
+// which is what made adoptMergedWorktrees adopt nothing in
+// tests/worker/sync/mutation-sites.test.ts and
+// tests/services/infrastructure/worktree-adoption-chroma.test.ts. Same idiom
+// and same reason as tests/transcripts/processor-codex-context.test.ts.
+const realHookSettingsSnapshot = { ...realHookSettings };
+const realOauthTokenSnapshot = { ...realOauthToken };
+const realProjectNameSnapshot = { ...realProjectName };
+const realWorkerUtilsSnapshot = { ...realWorkerUtils };
+
 const calls: unknown[][] = [];
 
 mock.module('../../../src/shared/hook-settings.js', () => ({
@@ -32,10 +46,10 @@ mock.module('../../../src/shared/worker-utils.js', () => ({
 }));
 
 afterAll(() => {
-  mock.module('../../../src/shared/hook-settings.js', () => ({ ...realHookSettings }));
-  mock.module('../../../src/shared/oauth-token.js', () => ({ ...realOauthToken }));
-  mock.module('../../../src/utils/project-name.js', () => ({ ...realProjectName }));
-  mock.module('../../../src/shared/worker-utils.js', () => ({ ...realWorkerUtils }));
+  mock.module('../../../src/shared/hook-settings.js', () => realHookSettingsSnapshot);
+  mock.module('../../../src/shared/oauth-token.js', () => realOauthTokenSnapshot);
+  mock.module('../../../src/utils/project-name.js', () => realProjectNameSnapshot);
+  mock.module('../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
 });
 
 describe('contextHandler SessionStart path', () => {
