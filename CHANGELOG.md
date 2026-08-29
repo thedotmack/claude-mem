@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.18.0] - 2026-08-29
+
+Every CMEM Pro trial offer is now 30 days.
+
+The 7/14/30 installer split has been called — 30 won on signups. The installer offers 30 days on every run, and the session-start banner, context banner, welcome hint, viewer header, and cursor-hooks docs now say 30 days and pass trial=30 explicitly, so a click can't land on a shorter arm. 7 and 14 remain valid values on [cmem.ai](http://cmem.ai).
+
 ## [13.17.2] - 2026-08-29
 
 ## What changed
