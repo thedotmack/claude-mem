@@ -8,7 +8,7 @@ import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { estimateTokens } from '../../shared/timeline-formatting.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ClassifiedProviderError } from './provider-errors.js';
-import { withRetry, parseRetryAfterMs } from './retry.js';
+import { withRetry, parseRetryAfterMs, getProviderAttemptTimeoutMs, DEFAULT_PROVIDER_ATTEMPT_TIMEOUT_MS } from './retry.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 
 // v1beta is required: the current Gemini 3.x models and the Google-maintained
@@ -218,6 +218,7 @@ interface GeminiConfig {
   apiKey: string;
   model: GeminiModel;
   rateLimitingEnabled: boolean;
+  attemptTimeoutMs: number;
 }
 
 export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
@@ -293,7 +294,8 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
   }
 
   protected async query(history: ConversationMessage[], config: GeminiConfig, signal?: AbortSignal): Promise<ProviderQueryResult> {
-    return this.queryGeminiMultiTurn(history, config.apiKey, config.model, config.rateLimitingEnabled, signal);
+    return this.queryGeminiMultiTurn(history, config.apiKey, config.model, config.rateLimitingEnabled, config.attemptTimeoutMs, signal);
+  }
   }
 
   private fetchGenerateContent(
@@ -324,6 +326,7 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     apiKey: string,
     model: GeminiModel,
     rateLimitingEnabled: boolean,
+    attemptTimeoutMs: number = DEFAULT_PROVIDER_ATTEMPT_TIMEOUT_MS,
     signal?: AbortSignal
   ): Promise<ProviderQueryResult> {
     const contents = this.conversationToGeminiContents(history);
@@ -372,7 +375,7 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
       }
 
       return await response.json() as GeminiResponse;
-    }, { label: `Gemini ${model}`, abortSignal: signal, ...(signal ? { maxRetries: 0 } : {}) });
+    }, { label: `Gemini ${model}`, perAttemptTimeoutMs: attemptTimeoutMs, abortSignal: signal, ...(signal ? { maxRetries: 0 } : {}) });
 
     if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
       logger.error('SDK', 'Empty response from Gemini');
@@ -419,7 +422,7 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
 
     const rateLimitingEnabled = settings.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED !== 'false';
 
-    return { apiKey, model, rateLimitingEnabled };
+    return { apiKey, model, rateLimitingEnabled, attemptTimeoutMs: getProviderAttemptTimeoutMs(settings.CLAUDE_MEM_LLM_TIMEOUT_MS) };
   }
 }
 

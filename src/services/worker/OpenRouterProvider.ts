@@ -10,7 +10,7 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { ClassifiedProviderError, type ProviderErrorClass } from './provider-errors.js';
-import { withRetry, parseRetryAfterMs } from './retry.js';
+import { withRetry, parseRetryAfterMs, getProviderAttemptTimeoutMs, DEFAULT_PROVIDER_ATTEMPT_TIMEOUT_MS } from './retry.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 
 /**
@@ -221,6 +221,7 @@ export interface OpenRouterConfig {
   apiUrl: string;
   siteUrl?: string;
   appName?: string;
+  attemptTimeoutMs: number;
 }
 
 function hasProcessEnvOverride(key: string): boolean {
@@ -379,7 +380,7 @@ export function resolveOpenRouterConfig(
   const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
   const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || OPENROUTER_APP_TITLE;
 
-  return { apiKey, model, fallbackModels, apiUrl, siteUrl, appName };
+  return { apiKey, model, fallbackModels, apiUrl, siteUrl, appName, attemptTimeoutMs: getProviderAttemptTimeoutMs(settings.CLAUDE_MEM_LLM_TIMEOUT_MS) };
 }
 
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
@@ -433,7 +434,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   }
 
   protected async query(history: ConversationMessage[], config: OpenRouterConfig, signal?: AbortSignal): Promise<ProviderQueryResult> {
-    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName, signal);
+    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName, config.attemptTimeoutMs, signal);
   }
 
   /** POST the chat-completions request. Extracted so the retry try block stays narrow. */
@@ -469,6 +470,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     apiUrl: string,
     siteUrl?: string,
     appName?: string,
+    attemptTimeoutMs: number = DEFAULT_PROVIDER_ATTEMPT_TIMEOUT_MS,
     signal?: AbortSignal
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
@@ -524,11 +526,8 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       }
 
       return responseData;
-    }, { label: `OpenRouter ${model}`, abortSignal: signal, ...(signal ? { maxRetries: 0 } : {}) });
+    }, { label: `OpenRouter ${model}`, perAttemptTimeoutMs: attemptTimeoutMs, abortSignal: signal, ...(signal ? { maxRetries: 0 } : {}) });
 
-    // A successful cmem-gateway response proves the delivered key is funded
-    // again (resubscribed) — clear the trial-expiry fallback marker so
-    // dispatch returns to the gateway. No-op for every other endpoint.
     clearProFallbackOnGatewaySuccess(apiUrl);
 
     if (!data.choices?.[0]?.message?.content) {
@@ -572,7 +571,6 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
 
     return { content, tokensUsed, inputTokens: realInputTokens, outputTokens: realOutputTokens, costUsd, servedModel };
   }
-
 }
 
 export function isOpenRouterAvailable(settingsPath: string = USER_SETTINGS_PATH): boolean {
