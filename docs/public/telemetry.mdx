@@ -70,6 +70,10 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `install_method` | `npm` | Which package manager launched the CLI: npm / bun / pnpm / yarn |
 | `bun_version` / `uv_version` | `1.3.9` / `0.7.2` | Toolchain versions detected during install |
 | `claude_code_version` | `2.0.14` | Claude Code CLI version, if detectable |
+| `trial_days` | `14` | Assigned CMEM Pro installer offer length: 7, 14, or 30 days |
+| `trial_variant` | `test_14` | Canonical trial experiment arm: control_7 / test_14 / test_30 |
+| `offer_surface` / `funnel_source` | `installer` / `installer` | Closed source labels on the installer offer exposure event |
+| `stage` | `awaiting_checkout` | Installer trial polling stage: awaiting_login / awaiting_checkout / awaiting_approval |
 | `mode` | `code` | Active claude-mem mode id (our mode list) |
 | `model` | `claude-haiku-4-5` | Model id used for compression |
 | `hook` | `ingest` | What triggered a compression: init / ingest / summarize |
@@ -118,6 +122,11 @@ One value is derived server-side rather than sent by the client: PostHog resolve
 |---|---|---|
 | `install_completed` | `npx claude-mem install` finishes | `ide`, `provider`, `runtime_mode`, `is_update`, `outcome`, `duration_ms`, `interactive`, `install_method`, `bun_version`, `uv_version`, `claude_code_version` |
 | `install_failed` | The installer aborts | `error_category` (our error-taxonomy id), `interactive`, `install_method`, `claude_code_version` |
+| `pro_offer_viewed` | A CMEM Pro offer is displayed in the installer | `trial_days`, `trial_variant`, `offer_surface` (`installer`), `funnel_source` (`installer`) |
+| `trial_email_submitted` | The user submits an email to start the installer trial flow | `version` only — never the email |
+| `trial_link_sent` | The trial start API accepts the request and sends a sign-in link | `version`, `duration_ms` — never the email, link, pairing secret, or device code |
+| `trial_activated` | Trial credentials are received and saved after browser approval | `version`, `duration_ms` |
+| `trial_poll_timeout` | Browser completion polling is cancelled, expires, times out, or becomes unreachable | `version`, `stage`, `outcome`, `duration_ms` |
 | `uninstall_completed` | `npx claude-mem uninstall` finishes | — |
 | `worker_started` | The background worker starts, plus one heartbeat per 24h of uptime | `trigger` (start / heartbeat), `duration_ms`, `ide`, `provider`, `mode`, `runtime_mode`, process memory (`process_rss_mb`, `heap_used_mb`), the install snapshot: `db_observation_count`, `db_session_count`, `db_summary_count`, `db_project_count`, `db_size_mb`, `install_age_days`, `obs_count_7d`, `obs_count_30d`, `days_since_last_obs`; on a real start also crash detection: `previous_shutdown` (crash / clean / unknown) and, after a clean shutdown, `previous_uptime_seconds` |
 | `observer_turn_rollup` | Emitted **once per session, at session end** — a per-session rollup that aggregates every compression in that session (stored observations, invalid-output drops, failures, aborts) instead of one event per turn | `rollup_reason` (session_end / worker_shutdown / safety_flush), `window_seq`, aggregated `outcomes_*` counts, `total_tokens_input`, `total_tokens_output`, `total_cost_usd`, `avg_duration_ms`, `avg_compression_ms`, `top_model`, `observations_created` (sum of observations generated in the session — pairs with `total_cost_usd` to derive cost per observation), summed `obs_type_*` buckets, `window_start_ts`, plus the per-turn fields it summarizes (`provider`, `ide`, `hook`) |

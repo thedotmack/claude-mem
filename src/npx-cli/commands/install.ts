@@ -36,6 +36,7 @@ import {
   buildProviderLabels,
   cmemProSignupUrl,
   cmemProTrialPitch,
+  cmemProTrialVariant,
   CMEM_PRO_BASE_URL,
   CMEM_PRO_KEY_PATTERN,
   CMEM_PRO_MODEL,
@@ -66,6 +67,18 @@ function detectInstallMethod(): string {
   if (name === 'npm' || name === 'bun' || name === 'pnpm' || name === 'yarn') return name;
   if (process.versions.bun) return 'bun';
   return 'unknown';
+}
+
+/** Record one exposure after an installer CMEM Pro offer is actually shown. */
+export async function captureInstallerProOfferViewed(
+  trialDays: CmemProTrialDays,
+): Promise<void> {
+  await captureCliEvent('pro_offer_viewed', {
+    trial_days: trialDays,
+    trial_variant: cmemProTrialVariant(trialDays),
+    offer_surface: 'installer',
+    funnel_source: 'installer',
+  });
 }
 
 /**
@@ -1190,7 +1203,7 @@ async function promptProvider(
     // still gets a working prompt — just with last-known figures.
     const labels = await buildProviderLabels(trialDays);
 
-    const providerResult = await p.select<ProviderChoice>({
+    const providerResultPromise = p.select<ProviderChoice>({
       message: 'Which memory provider do you want to use?',
       options: [
         { value: 'cmem', label: labels.cmem, hint: labels.cmemHint },
@@ -1200,6 +1213,8 @@ async function promptProvider(
       ],
       initialValue: 'cmem',
     });
+    void captureInstallerProOfferViewed(trialDays);
+    const providerResult = await providerResultPromise;
     if (p.isCancel(providerResult)) {
       p.cancel('Installation cancelled.');
       process.exit(0);
@@ -1218,6 +1233,7 @@ async function promptProvider(
         + `Sign in, start your ${trialDays}-day trial, and copy the key you're shown.`,
       `cmem Pro — ${trialDays} days free`,
     );
+    void captureInstallerProOfferViewed(trialDays);
     openBrowser(signupUrl);
 
     const keyResult = await p.text({
@@ -1678,6 +1694,7 @@ async function promptProTrialOptIn(
     ].join('\n'),
     `cmem Pro — ${trialDays} days free`,
   );
+  void captureInstallerProOfferViewed(trialDays);
 
   const emailResult = await p.text({
     message: 'Your email (press Enter to skip):',
@@ -2391,6 +2408,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     : workerAlive
       ? 'keep that URL open in a browser'
       : `keep ${styleText('underline', configuredWorkerBaseUrl)} open in a browser`;
+  const proOfferDisplayed = !trialActivated;
   const nextSteps = [
     nextStepsHeadline,
     ``,
@@ -2405,13 +2423,13 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     ``,
     // Suppressed when the trial was just activated in this same run — pitching
     // an offer the user already accepted 30 seconds ago reads as broken.
-    ...(trialActivated
-      ? []
-      : [
+    ...(proOfferDisplayed
+      ? [
           `${styleText(['bold', 'cyan'], cmemProTrialPitch(trialDays))}`,
           `  ${styleText('underline', cmemProSignupUrl(trialDays))}`,
           ``,
-        ]),
+        ]
+      : []),
     `${styleText('dim', 'How it works: /how-it-works   ·   Disable first-session hint: CLAUDE_MEM_WELCOME_HINT_ENABLED=false')}`,
     `${styleText('dim', 'Note: close all Claude Code sessions before uninstalling, or ~/.claude-mem will be recreated by active hooks.')}`,
   ];
@@ -2435,6 +2453,10 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     } else {
       console.log('\nclaude-mem installed successfully!');
     }
+  }
+
+  if (proOfferDisplayed) {
+    await captureInstallerProOfferViewed(trialDays);
   }
 
   // After promptTelemetryOptIn so a just-made consent choice is honored.

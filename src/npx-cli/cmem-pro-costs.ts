@@ -46,6 +46,17 @@ export const CMEM_PRO_MONTHLY_USD = 30;
 /** The three trial lengths accepted by cmem.ai's installer funnel. */
 export const CMEM_PRO_TRIAL_LENGTHS = [7, 14, 30] as const;
 export type CmemProTrialDays = (typeof CMEM_PRO_TRIAL_LENGTHS)[number];
+export type CmemProTrialVariant = 'control_7' | 'test_14' | 'test_30';
+
+/** Canonical experiment arm shared with cmem.ai's Stripe metadata. */
+export function cmemProTrialVariant(trialDays: CmemProTrialDays): CmemProTrialVariant {
+  switch (trialDays) {
+    case 7: return 'control_7';
+    case 14: return 'test_14';
+    case 30: return 'test_30';
+    default: throw new Error('trial days must be 7, 14, or 30');
+  }
+}
 
 /** Validate a persisted/API-shaped trial length without coercing other values. */
 export function parseCmemProTrialDays(value: unknown): CmemProTrialDays | null {
