@@ -3,6 +3,7 @@ import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js
 import {
   codexSpawn,
   isExecutableFile,
+  isUsableCodexBundle,
   lookupCodexOnMacOS,
   resolveCodexCommand,
   resolveCodexSpawnInvocation,
@@ -172,6 +173,15 @@ describe('macOS Codex Desktop bundle resolution', () => {
       },
     )).toBe(legacyBundledCodex);
     expect(probed).toEqual([chatGptBundledCodex, legacyBundledCodex]);
+  });
+
+  it('bounds the bundled CLI probe so a hung candidate cannot block fallback', () => {
+    const probe = ((_command: string, _args: string[], options: { timeout?: number }) => {
+      expect(options.timeout).toBe(5_000);
+      return { error: new Error('ETIMEDOUT'), status: null };
+    }) as typeof import('child_process').spawnSync;
+
+    expect(isUsableCodexBundle(chatGptBundledCodex, probe)).toBe(false);
   });
 
   it('passes the bundled CLI path through the shared spawn resolver', () => {

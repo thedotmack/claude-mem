@@ -51,10 +51,14 @@ export function isExecutableFile(
   }
 }
 
-function isUsableCodexBundle(candidate: string): boolean {
-  const result = spawnSync(candidate, ['--version'], {
+export function isUsableCodexBundle(
+  candidate: string,
+  probe: typeof spawnSync = spawnSync,
+): boolean {
+  const result = probe(candidate, ['--version'], {
     stdio: 'ignore',
     windowsHide: true,
+    timeout: 5_000,
   });
   return !result.error && result.status === 0;
 }
