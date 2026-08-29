@@ -78,6 +78,22 @@ describe('scrubProperties', () => {
     });
   });
 
+  it('keeps bounded installer offer experiment properties', () => {
+    const result = scrubProperties({
+      trial_days: 14,
+      trial_variant: 'test_14',
+      offer_surface: 'installer',
+      funnel_source: 'installer',
+    });
+
+    expect(result).toEqual({
+      trial_days: 14,
+      trial_variant: 'test_14',
+      offer_surface: 'installer',
+      funnel_source: 'installer',
+    });
+  });
+
   it('keeps the depth/economics keys with primitive values', () => {
     const result = scrubProperties({
       observation_count: 50,
