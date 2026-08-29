@@ -162,6 +162,18 @@ describe('macOS Codex Desktop bundle resolution', () => {
     )).toBe(legacyBundledCodex);
   });
 
+  it('falls back to the legacy bundle when the ChatGPT bundled CLI probe fails', () => {
+    const probed: string[] = [];
+    expect(lookupCodexOnMacOS(
+      () => false,
+      (candidate) => {
+        probed.push(candidate);
+        return candidate === legacyBundledCodex;
+      },
+    )).toBe(legacyBundledCodex);
+    expect(probed).toEqual([chatGptBundledCodex, legacyBundledCodex]);
+  });
+
   it('passes the bundled CLI path through the shared spawn resolver', () => {
     const invocation = resolveCodexSpawnInvocation(
       ['--version'],

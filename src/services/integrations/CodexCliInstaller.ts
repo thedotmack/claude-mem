@@ -51,6 +51,14 @@ export function isExecutableFile(
   }
 }
 
+function isUsableCodexBundle(candidate: string): boolean {
+  const result = spawnSync(candidate, ['--version'], {
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  return !result.error && result.status === 0;
+}
+
 function commandExists(command: string): boolean {
   if (path.isAbsolute(command)) return isExecutableFile(command);
 
@@ -137,7 +145,7 @@ function lookupCodexOnWindows(): string | null {
 
 export function lookupCodexOnMacOS(
   commandInPath: (command: string) => boolean = commandExists,
-  candidateAvailable: (candidate: string) => boolean = isExecutableFile,
+  candidateAvailable: (candidate: string) => boolean = isUsableCodexBundle,
 ): string | null {
   if (commandInPath('codex')) return 'codex';
   return MACOS_CODEX_BUNDLE_PATHS.find((candidate) => candidateAvailable(candidate)) ?? null;
