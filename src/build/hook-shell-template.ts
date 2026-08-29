@@ -73,12 +73,25 @@ export interface ShellTemplateOptions {
 //
 // `command -v` is a POSIX shell builtin, so the common path now forks nothing;
 // the same idiom already appears further down these commands (`command -v
-// cygpath`). Where the prelude was load-bearing - node genuinely absent from an
-// inherited PATH, e.g. a GUI-launched host on macOS with nvm unsourced - the
-// original prepend still runs, byte for byte. The `mcp` host has relied on the
-// inherited PATH with no prelude at all since day one.
+// cygpath`). The guard covers BOTH binaries the chain needs: bun-runner.js
+// resolves bun on its own (`which`/`where`, then ~/.bun/bin, /usr/local/bin,
+// /opt/homebrew/bin, linuxbrew), so a host with a system node but a
+// version-manager-only bun would pass a node-only guard and then fail
+// findBun() - observed on macOS + mise during review of #3519.
+//
+// Where either binary is missing, the original prepend runs unchanged. Be
+// clear about what that buys: on macOS + zsh it is known to be dead. `$SHELL
+// -lc` is a login but NON-interactive shell, and zsh sources `.zshrc` only for
+// interactive ones - which is exactly where nvm, mise, asdf and fnm install
+// their activation - so the probe returns a PATH with no version-manager
+// entries at all. That was already true before this change; the prelude only
+// ever appeared to work when the inherited PATH carried the binaries, i.e. the
+// case now short-circuited. Making the fallback itself resolve (`-ilc`, or a
+// cached PATH) is #3605 fix-sequence item 1 and is out of scope here. The
+// `mcp` host has relied on the inherited PATH with no prelude at all since
+// day one.
 const CLAUDE_CODE_PATH_PRELUDE =
-  `command -v node >/dev/null 2>&1 || export PATH="$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH";`;
+  `command -v node >/dev/null 2>&1 && command -v bun >/dev/null 2>&1 || export PATH="$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH";`;
 
 const CLAUDE_CODE_SETUP_PATH_PRELUDE =
   'export PATH="$HOME/.nvm/versions/node/v$(ls \\"$HOME/.nvm/versions/node\\" 2>/dev/null | ' +
