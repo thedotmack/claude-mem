@@ -1447,12 +1447,11 @@ export function parseStoredTrialState(
   };
 }
 
-/** Reuse a persisted arm across installer runs; only a fresh flow randomizes. */
+/** Reuse a persisted arm across installer runs; a fresh flow takes the default. */
 export function resolveInstallerTrialDays(
   prior: StoredTrialState | null,
-  random: () => number = Math.random,
 ): CmemProTrialDays {
-  return prior?.trialDays ?? pickCmemProTrialDays(random);
+  return prior?.trialDays ?? pickCmemProTrialDays();
 }
 
 function readStoredTrialState(): StoredTrialState | null {
