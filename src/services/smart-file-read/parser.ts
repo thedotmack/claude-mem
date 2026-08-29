@@ -352,23 +352,32 @@ function getQueryFile(queryKey: string): string {
   return filePath;
 }
 
-let cachedBinPath: string | null = null;
-
-function getTreeSitterBin(): string {
-  if (cachedBinPath) return cachedBinPath;
+// tree-sitter-cli installs `tree-sitter.exe` on Windows, not a bare `tree-sitter`
+// (see ChromaMcpManager.resolveUvxCommand for the same platform-suffix idiom).
+// Without the `.exe` suffix the existsSync check below always misses on Windows,
+// silently falling through to a bare `tree-sitter` that may not be on PATH —
+// smart file parsing then returns empty results with no error.
+export function resolveTreeSitterBinPath(platform: NodeJS.Platform = process.platform): string {
+  const binName = platform === "win32" ? "tree-sitter.exe" : "tree-sitter";
 
   try {
     const pkgPath = _require.resolve("tree-sitter-cli/package.json");
-    const binPath = join(dirname(pkgPath), "tree-sitter");
+    const binPath = join(dirname(pkgPath), binName);
     if (existsSync(binPath)) {
-      cachedBinPath = binPath;
       return binPath;
     }
   } catch {
     // [ANTI-PATTERN IGNORED]: tree-sitter-cli not in node_modules is expected; falls back to PATH
   }
 
-  cachedBinPath = "tree-sitter";
+  return binName;
+}
+
+let cachedBinPath: string | null = null;
+
+function getTreeSitterBin(): string {
+  if (cachedBinPath) return cachedBinPath;
+  cachedBinPath = resolveTreeSitterBinPath();
   return cachedBinPath;
 }
 
