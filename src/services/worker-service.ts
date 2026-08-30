@@ -796,6 +796,8 @@ export class WorkerService implements WorkerRef {
       isShuttingDown: () => this.isShuttingDown,
       markShuttingDown: () => { this.isShuttingDown = true; },
       beforeGracefulShutdown: async () => {
+        await this.codexAgent.close();
+
         if (this.transcriptWatcher) {
           this.transcriptWatcher.stop();
           this.transcriptWatcher = null;

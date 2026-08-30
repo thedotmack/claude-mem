@@ -64,6 +64,7 @@ const FORBIDDEN_ITEM_TYPES = new Set([
   'imageView',
   'imageGeneration',
 ]);
+const TERMINAL_TURN_STATUSES = new Set(['completed', 'interrupted', 'failed']);
 
 const EMPTY_HOOKS = {
   PreToolUse: [],
@@ -271,21 +272,38 @@ export class CodexAppServerClient {
   }
 
   async runTurn(options: CodexAppServerTurnOptions): Promise<CodexAppServerTurnResult> {
-    return this.withExclusive(async () => this.runTurnExclusive(options));
+    return this.withExclusive(options.signal, async () => this.runTurnExclusive(options));
   }
 
   async close(): Promise<void> {
-    this.invalidate(new Error('Codex app-server client closed'));
+    await this.invalidate(new Error('Codex app-server client closed'));
   }
 
-  private async withExclusive<T>(operation: () => Promise<T>): Promise<T> {
+  private async withExclusive<T>(signal: AbortSignal | undefined, operation: () => Promise<T>): Promise<T> {
     const previous = this.queueTail;
     let release!: () => void;
-    this.queueTail = new Promise<void>(resolve => { release = resolve; });
-    await previous;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    this.queueTail = previous.then(() => hold);
+
+    let removeAbort: (() => void) | undefined;
     try {
+      if (signal?.aborted) throw new Error('Codex app-server turn aborted while queued');
+      if (signal) {
+        await Promise.race([
+          previous,
+          new Promise<never>((_, reject) => {
+            const onAbort = () => reject(new Error('Codex app-server turn aborted while queued'));
+            signal.addEventListener('abort', onAbort, { once: true });
+            removeAbort = () => signal.removeEventListener('abort', onAbort);
+          }),
+        ]);
+      } else {
+        await previous;
+      }
+      if (signal?.aborted) throw new Error('Codex app-server turn aborted while queued');
       return await operation();
     } finally {
+      removeAbort?.();
       release();
     }
   }
@@ -365,8 +383,11 @@ export class CodexAppServerClient {
         throw new Error('Codex app-server returned invalid turn/start response');
       }
       active.turnId = asString(turnResponse.turn.id, 'turn id');
+      this.acceptTerminalTurn(active, turnResponse.turn);
 
-      await this.waitForTurn(active, options.timeoutMs, options.signal);
+      if (!active.terminalTurn) {
+        await this.waitForTurn(active, options.timeoutMs, options.signal);
+      }
       if (active.protocolError) throw active.protocolError;
       if (!active.terminalTurn) throw new Error('Codex app-server turn ended without terminal state');
       if (active.terminalTurn.status !== 'completed') {
@@ -516,13 +537,14 @@ export class CodexAppServerClient {
 
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', chunk => this.onStdout(String(chunk)));
+    child.stdout.on('data', chunk => this.onStdout(child, String(chunk)));
     child.stderr.on('data', chunk => {
+      if (this.child !== child) return;
       this.stderrTail = `${this.stderrTail}${String(chunk)}`.slice(-MAX_STDERR_TAIL_BYTES);
     });
-    child.on('error', error => this.onChildExit(error));
+    child.on('error', error => this.onChildExit(child, error));
     child.on('close', (code, childSignal) => {
-      this.onChildExit(new Error(`Codex app-server exited with code ${String(code)} signal ${String(childSignal)}: ${this.stderrTail.trim()}`));
+      this.onChildExit(child, new Error(`Codex app-server exited with code ${String(code)} signal ${String(childSignal)}: ${this.stderrTail.trim()}`));
     });
 
     await this.request('initialize', {
@@ -534,10 +556,13 @@ export class CodexAppServerClient {
       },
     }, timeoutMs, signal);
     this.writeMessage({ method: 'initialized', params: {} });
-    logger.debug('CODEX_PROVIDER', 'Started persistent Codex app-server', { pid: child.pid });
+    logger.debug('SDK', 'Started persistent Codex app-server', { pid: child.pid });
   }
 
   private request(method: string, params: unknown, timeoutMs: number, signal?: AbortSignal): Promise<unknown> {
+    if (signal?.aborted) {
+      return Promise.reject(new Error(`Codex app-server ${method} aborted`));
+    }
     const child = this.child;
     if (!child || child.killed || !child.stdin.writable) {
       return Promise.reject(new Error('Codex app-server is not running'));
@@ -585,7 +610,8 @@ export class CodexAppServerClient {
     child.stdin.write(`${JSON.stringify(message)}\n`);
   }
 
-  private onStdout(chunk: string): void {
+  private onStdout(child: ChildProcessWithoutNullStreams, chunk: string): void {
+    if (this.child !== child) return;
     this.protocolBuffer += chunk;
     if (Buffer.byteLength(this.protocolBuffer) > MAX_PROTOCOL_LINE_BYTES) {
       this.invalidate(new Error('Codex app-server protocol line exceeded safety limit'));
@@ -670,15 +696,7 @@ export class CodexAppServerClient {
     }
 
     if (method === 'turn/completed' && isObject(params.turn)) {
-      active.terminalTurn = params.turn;
-      if (Array.isArray(params.turn.items)) {
-        for (const raw of params.turn.items) {
-          if (isObject(raw) && raw.type === 'agentMessage' && typeof raw.text === 'string') {
-            if (raw.phase === 'final_answer' || active.finalText === null) active.finalText = raw.text;
-          }
-        }
-      }
-      active.complete();
+      this.acceptTerminalTurn(active, params.turn);
       return;
     }
 
@@ -690,19 +708,34 @@ export class CodexAppServerClient {
     }
   }
 
-  private onChildExit(error: Error): void {
-    if (!this.child) return;
-    this.invalidate(error);
+  private acceptTerminalTurn(active: ActiveTurn, turn: JsonObject): void {
+    if (typeof turn.status !== 'string' || !TERMINAL_TURN_STATUSES.has(turn.status)) return;
+    active.terminalTurn = turn;
+    if (Array.isArray(turn.items)) {
+      for (const raw of turn.items) {
+        if (isObject(raw) && raw.type === 'agentMessage' && typeof raw.text === 'string') {
+          if (raw.phase === 'final_answer' || active.finalText === null) active.finalText = raw.text;
+        }
+      }
+    }
+    active.complete();
   }
 
-  private invalidate(error: Error): void {
+  private onChildExit(child: ChildProcessWithoutNullStreams, error: Error): void {
+    if (this.child !== child) return;
+    void this.invalidate(error, child);
+  }
+
+  private invalidate(error: Error, expectedChild?: ChildProcessWithoutNullStreams): Promise<void> {
+    if (expectedChild && this.child !== expectedChild) return Promise.resolve();
     const child = this.child;
-    if (child) logger.debug('CODEX_PROVIDER', 'Stopping persistent Codex app-server', { pid: child.pid }, error);
+    if (child) logger.debug('SDK', 'Stopping persistent Codex app-server', { pid: child.pid }, error);
     this.child = null;
     this.startPromise = null;
+    let termination = Promise.resolve();
     if (child) {
       if (child.pid) {
-        void killProcessTree(child.pid).catch(() => {
+        termination = killProcessTree(child.pid).catch(() => {
           try { child.kill('SIGKILL'); } catch { /* already closed */ }
         });
       } else {
@@ -725,6 +758,7 @@ export class CodexAppServerClient {
       this.privateRoot = null;
       this.workspace = null;
     }
+    return termination;
   }
 }
 

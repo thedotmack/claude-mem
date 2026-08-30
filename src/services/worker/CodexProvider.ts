@@ -205,6 +205,10 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
     super(dbManager, sessionManager);
   }
 
+  async close(): Promise<void> {
+    await this.appServer.close();
+  }
+
   protected getConfig(): CodexConfig {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const model = (settings.CLAUDE_MEM_CODEX_MODEL || DEFAULT_CODEX_MODEL).trim() || DEFAULT_CODEX_MODEL;

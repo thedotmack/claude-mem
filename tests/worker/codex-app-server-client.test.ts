@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -16,7 +16,14 @@ interface FakeCodex {
   trace: string;
 }
 
-function createFakeCodex(instructionSources: string[] = []): FakeCodex {
+interface FakeCodexOptions {
+  instructionSources?: string[];
+  mode?: 'normal' | 'terminal-response' | 'slow-first-turn';
+}
+
+function createFakeCodex(options: FakeCodexOptions = {}): FakeCodex {
+  const instructionSources = options.instructionSources ?? [];
+  const mode = options.mode ?? 'normal';
   const root = mkdtempSync(join(tmpdir(), 'claude-mem-fake-codex-'));
   const executable = join(root, 'codex');
   const trace = join(root, 'trace.jsonl');
@@ -28,8 +35,9 @@ function createFakeCodex(instructionSources: string[] = []): FakeCodex {
     "import { appendFileSync, statSync } from 'node:fs';",
     `const trace = ${JSON.stringify(trace)};`,
     `const instructionSources = ${JSON.stringify(instructionSources)};`,
+    `const mode = ${JSON.stringify(mode)};`,
     "const record = value => appendFileSync(trace, JSON.stringify(value) + '\\n');",
-    "record({ method: 'process/start', args: process.argv.slice(2), codexHome: process.env.CODEX_HOME });",
+    "record({ method: 'process/start', args: process.argv.slice(2), codexHome: process.env.CODEX_HOME, pid: process.pid });",
     "const send = value => process.stdout.write(JSON.stringify(value) + '\\n');",
     'let buffer = "";',
     'let turn = 0;',
@@ -53,11 +61,18 @@ function createFakeCodex(instructionSources: string[] = []): FakeCodex {
     "    else if (message.method === 'turn/start') {",
     '      turn += 1;',
     "      const turnId = 'turn-' + turn;",
-    '      send({ id: message.id, result: { turn: { id: turnId, status: \'inProgress\' } } });',
-    "      send({ method: 'thread/tokenUsage/updated', params: { threadId: message.params.threadId, tokenUsage: { total: { inputTokens: 10, cachedInputTokens: 2, outputTokens: 3, reasoningOutputTokens: 1 } } } });",
     "      const content = JSON.stringify({ content: '<observation><type>discovery</type><title>Turn ' + turn + '</title><narrative>Captured.</narrative></observation>' });",
-    "      send({ method: 'item/completed', params: { threadId: message.params.threadId, turnId, item: { type: 'agentMessage', phase: 'final_answer', text: content } } });",
-    "      send({ method: 'turn/completed', params: { threadId: message.params.threadId, turn: { id: turnId, status: 'completed', items: [] } } });",
+    "      const finish = () => {",
+    "        send({ method: 'thread/tokenUsage/updated', params: { threadId: message.params.threadId, tokenUsage: { total: { inputTokens: 10, cachedInputTokens: 2, outputTokens: 3, reasoningOutputTokens: 1 } } } });",
+    "        send({ method: 'item/completed', params: { threadId: message.params.threadId, turnId, item: { type: 'agentMessage', phase: 'final_answer', text: content } } });",
+    "        send({ method: 'turn/completed', params: { threadId: message.params.threadId, turn: { id: turnId, status: 'completed', items: [] } } });",
+    '      };',
+    "      if (mode === 'terminal-response') {",
+    "        send({ id: message.id, result: { turn: { id: turnId, status: 'completed', items: [{ type: 'agentMessage', phase: 'final_answer', text: content }] } } });",
+    '      } else {',
+    '        send({ id: message.id, result: { turn: { id: turnId, status: \'inProgress\' } } });',
+    "        if (mode === 'slow-first-turn' && turn === 1) setTimeout(finish, 250); else finish();",
+    '      }',
     '    }',
     "    else if (message.method === 'thread/unsubscribe') send({ id: message.id, result: {} });",
     "    else if (message.method === 'turn/interrupt') send({ id: message.id, result: {} });",
@@ -71,7 +86,16 @@ function createFakeCodex(instructionSources: string[] = []): FakeCodex {
 }
 
 function readTrace(path: string): Array<Record<string, any>> {
+  if (!existsSync(path)) return [];
   return readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+}
+
+async function waitForTrace(path: string, predicate: (trace: Array<Record<string, any>>) => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate(readTrace(path))) return;
+    await Bun.sleep(10);
+  }
+  throw new Error('Timed out waiting for fake Codex trace');
 }
 
 describe('CodexAppServerClient configuration', () => {
@@ -149,7 +173,7 @@ describe('CodexAppServerClient transport', () => {
   });
 
   itPosix('rejects any instruction source loaded by Codex', async () => {
-    const fake = createFakeCodex(['/unexpected/AGENTS.md']);
+    const fake = createFakeCodex({ instructionSources: ['/unexpected/AGENTS.md'] });
     const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
     try {
       await expect(client.runTurn({
@@ -159,6 +183,94 @@ describe('CodexAppServerClient transport', () => {
         prompt: 'Return one durable observation.',
         timeoutMs: 5_000,
       })).rejects.toThrow(/unexpected instruction sources/);
+    } finally {
+      await client.close();
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('accepts a terminal turn returned directly by turn/start', async () => {
+    const fake = createFakeCodex({ mode: 'terminal-response' });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    try {
+      const result = await client.runTurn({
+        codexPath: fake.executable,
+        model: 'gpt-5.6-luna',
+        reasoningEffort: 'low',
+        prompt: 'Return one durable observation.',
+        timeoutMs: 5_000,
+      });
+      expect(result.content).toContain('<title>Turn 1</title>');
+    } finally {
+      await client.close();
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('drops an aborted queued turn without restarting the shared process', async () => {
+    const fake = createFakeCodex({ mode: 'slow-first-turn' });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    const options = {
+      codexPath: fake.executable,
+      model: 'gpt-5.6-luna',
+      reasoningEffort: 'low',
+      prompt: 'Return one durable observation.',
+      timeoutMs: 5_000,
+    } as const;
+    try {
+      const first = client.runTurn(options);
+      await waitForTrace(fake.trace, trace => trace.some(entry => entry.method === 'turn/start'));
+      const controller = new AbortController();
+      const queued = client.runTurn({ ...options, signal: controller.signal });
+      controller.abort();
+      await expect(queued).rejects.toThrow(/aborted while queued/);
+      await first;
+      await client.runTurn(options);
+      expect(readTrace(fake.trace).filter(entry => entry.method === 'process/start')).toHaveLength(1);
+    } finally {
+      await client.close();
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('ignores stale close events after a binary replacement', async () => {
+    const fake = createFakeCodex();
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    const options = {
+      codexPath: fake.executable,
+      model: 'gpt-5.6-luna',
+      reasoningEffort: 'low',
+      prompt: 'Return one durable observation.',
+      timeoutMs: 5_000,
+    } as const;
+    try {
+      await client.runTurn(options);
+      writeFileSync(fake.executable, `${readFileSync(fake.executable, 'utf8')}\n`);
+      await client.runTurn(options);
+      await Bun.sleep(100);
+      await client.runTurn(options);
+      expect(readTrace(fake.trace).filter(entry => entry.method === 'process/start')).toHaveLength(2);
+    } finally {
+      await client.close();
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('waits for the persistent child to stop on close', async () => {
+    const fake = createFakeCodex();
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    try {
+      await client.runTurn({
+        codexPath: fake.executable,
+        model: 'gpt-5.6-luna',
+        reasoningEffort: 'low',
+        prompt: 'Return one durable observation.',
+        timeoutMs: 5_000,
+      });
+      const pid = Number(readTrace(fake.trace).find(entry => entry.method === 'process/start')?.pid);
+      expect(pid).toBeGreaterThan(0);
+      await client.close();
+      expect(() => process.kill(pid, 0)).toThrow();
     } finally {
       await client.close();
       rmSync(fake.root, { recursive: true, force: true });
