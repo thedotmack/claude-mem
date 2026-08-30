@@ -11,6 +11,7 @@
 
 import { ClassifiedProviderError, isClassified } from './provider-errors.js';
 import { logger } from '../../utils/logger.js';
+import { clearTimeout as clearDeadline, setTimeout as scheduleDeadline } from 'node:timers';
 
 export const DEFAULT_PROVIDER_ATTEMPT_TIMEOUT_MS = 30_000;
 export const PROVIDER_ATTEMPT_TIMEOUT_BOUNDS = { min: 500, max: 300_000 } as const;
@@ -115,19 +116,19 @@ export async function withRetry<T>(
     // Per-attempt timeout via AbortController. Forward external aborts too.
     const attemptController = new AbortController();
     let deadlineExceeded = false;
-    const timeoutHandle = setTimeout(() => {
-      deadlineExceeded = true;
-      attemptController.abort();
-    }, opts.perAttemptTimeoutMs);
+    let timeoutHandle: ReturnType<typeof setTimeout>;
     const onExternalAbort = () => attemptController.abort();
     options.abortSignal?.addEventListener('abort', onExternalAbort, { once: true });
 
     try {
-      const result = await fn(attemptController.signal);
-      if (deadlineExceeded) {
-        throw new ProviderAttemptTimeoutError(opts.perAttemptTimeoutMs);
-      }
-      return result;
+      const deadline = new Promise<never>((_, reject) => {
+        timeoutHandle = scheduleDeadline(() => {
+          deadlineExceeded = true;
+          attemptController.abort();
+          reject(new ProviderAttemptTimeoutError(opts.perAttemptTimeoutMs));
+        }, opts.perAttemptTimeoutMs);
+      });
+      return await Promise.race([fn(attemptController.signal), deadline]);
     } catch (err: unknown) {
       lastError = err;
 
@@ -179,7 +180,7 @@ export async function withRetry<T>(
         signal?.addEventListener('abort', onAbort, { once: true });
       });
     } finally {
-      clearTimeout(timeoutHandle);
+      clearDeadline(timeoutHandle);
       options.abortSignal?.removeEventListener('abort', onExternalAbort);
     }
   }
