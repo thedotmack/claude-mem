@@ -153,12 +153,13 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(existsSync(join(pluginRoot, 'node_modules'))).toBe(false);
   });
 
-  test('skips install when node_modules is already present', async () => {
-    // Setup runs on every Claude Code launch. If node_modules already exists,
+  test('skips install when a completed install marker is already present', async () => {
+    // Setup runs on every Claude Code launch. If a previous install finished,
     // the install MUST be skipped — otherwise we re-run a 100 MB+ install on
     // every cold start and burn the user's bandwidth.
     const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-already-installed');
     mkdirSync(join(pluginRoot, 'node_modules'), { recursive: true });
+    writeFileSync(join(pluginRoot, 'node_modules', '.claude-mem-install-complete'), '');
 
     const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
 
@@ -167,5 +168,24 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     // The fake bun would have created zod/v3/index.js if invoked — its
     // absence proves the install path was not taken.
     expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(false);
+  });
+
+  test('removes an interrupted node_modules and reinstalls when the completion marker is missing (gh #3793)', async () => {
+    // Reproduces gh #3793: a worker version-mismatch tree-kill SIGKILLs this
+    // script's own process mid-install, so node_modules exists but is
+    // partial and no cleanup code ever ran. Without a completion marker, the
+    // existsSync(node_modules) guard would skip install forever. A node_modules
+    // present without the marker must be treated as incomplete: removed, then
+    // reinstalled.
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-interrupted-install');
+    mkdirSync(join(pluginRoot, 'node_modules', 'zod'), { recursive: true });
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain(INSTALL_DIAGNOSTIC);
+    expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
+    expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(true);
+    expect(existsSync(join(pluginRoot, 'node_modules', '.claude-mem-install-complete'))).toBe(true);
   });
 });

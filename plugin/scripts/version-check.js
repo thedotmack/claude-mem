@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'child_process';
-import { existsSync, readFileSync, rmSync } from 'fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -10,6 +10,7 @@ const VERSION_CHECK_LOG_PREFIX = '[version-check]';
 const BUN_INSTALL_ARGS = Object.freeze(['install', '--production']);
 const BUN_INSTALL_TIMEOUT_MS = 120_000;
 const NODE_MODULES_DIRNAME = 'node_modules';
+const INSTALL_COMPLETE_MARKER = '.claude-mem-install-complete';
 
 function findBun() {
   const pathCheck = IS_WINDOWS
@@ -58,9 +59,30 @@ function findBun() {
 function ensurePluginDependencies(pluginRoot) {
   if (!existsSync(join(pluginRoot, 'package.json'))) return;
 
-  // Guard on node_modules (package-manager marker) rather than a specific
-  // package, so the check stays correct if dependencies are later renamed.
-  if (existsSync(join(pluginRoot, NODE_MODULES_DIRNAME))) return;
+  const nodeModulesPath = join(pluginRoot, NODE_MODULES_DIRNAME);
+  const markerPath = join(nodeModulesPath, INSTALL_COMPLETE_MARKER);
+
+  // Guard on a completion marker written only after `bun install` exits 0,
+  // not on node_modules existing. A worker version-mismatch tree-kill
+  // (worker-utils.ts) SIGKILLs this script's whole process tree, including
+  // this process itself, when this install runs as an observer descendant
+  // (gh #3793). That leaves a partial node_modules with no chance for any
+  // in-process cleanup to run. Trusting mere directory existence then skips
+  // install forever, permanently short-circuiting on a broken plugin.
+  if (existsSync(markerPath)) return;
+
+  if (existsSync(nodeModulesPath)) {
+    // node_modules present without the completion marker means a previous
+    // install was interrupted before finishing. Its mere presence also
+    // disables Bun's own auto-install, so it must be removed before retrying.
+    try {
+      rmSync(nodeModulesPath, { recursive: true, force: true });
+    } catch (rmErr) {
+      const rmReason = rmErr && rmErr.message ? rmErr.message : String(rmErr);
+      console.error(`${VERSION_CHECK_LOG_PREFIX} failed to remove incomplete node_modules (${rmReason}); worker may crash with missing module errors`);
+      return;
+    }
+  }
 
   const bunPath = findBun();
   if (!bunPath) {
@@ -112,7 +134,7 @@ function ensurePluginDependencies(pluginRoot) {
     // partial dir so the next Setup invocation can retry automatically
     // (gh #2650 review).
     try {
-      rmSync(join(pluginRoot, NODE_MODULES_DIRNAME), { recursive: true, force: true });
+      rmSync(nodeModulesPath, { recursive: true, force: true });
     } catch (rmErr) {
       const rmReason = rmErr && rmErr.message ? rmErr.message : String(rmErr);
       console.error(`${VERSION_CHECK_LOG_PREFIX} failed to clean up partial node_modules (${rmReason}); next Setup run may skip retry`);
@@ -122,6 +144,12 @@ function ensurePluginDependencies(pluginRoot) {
     // 120s needs an explicit completion line so users can distinguish a
     // hung install from one that finished silently (gh #2650 review).
     console.error(`${VERSION_CHECK_LOG_PREFIX} plugin dependencies installed successfully`);
+    try {
+      writeFileSync(markerPath, '');
+    } catch (markerErr) {
+      const markerReason = markerErr && markerErr.message ? markerErr.message : String(markerErr);
+      console.error(`${VERSION_CHECK_LOG_PREFIX} failed to write install-complete marker (${markerReason}); next Setup run will reinstall`);
+    }
   }
 }
 
