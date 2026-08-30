@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -47,8 +47,28 @@ function acquireInstallLock(pluginRoot) {
     return null;
   }
 
+  // Reclaim atomically: rename the stale lock aside first, THEN mkdir a
+  // fresh one. renameSync is a single winner-take-all filesystem op — if two
+  // processes race to reclaim the same stale lock, only one rename succeeds;
+  // the loser's rename throws ENOENT (source already moved) and backs off.
+  // A naive rmSync-then-mkdirSync here (no shared atomic step between the
+  // two racers) lets both believe they reclaimed it: the second rmSync
+  // deletes the first's freshly-created lock, and both mkdirSync calls then
+  // succeed in sequence (gh #3799 review).
+  const staleAsidePath = `${lockPath}.stale-${process.pid}-${Math.random().toString(36).slice(2)}`;
   try {
-    rmSync(lockPath, { recursive: true, force: true });
+    renameSync(lockPath, staleAsidePath);
+  } catch {
+    return null;
+  }
+  try {
+    rmSync(staleAsidePath, { recursive: true, force: true });
+  } catch {
+    // Non-fatal: orphaned under a unique name, won't be picked up by future
+    // stale-lock checks (different path) — a cosmetic leak, not a hazard.
+  }
+
+  try {
     mkdirSync(lockPath);
     return lockPath;
   } catch {
