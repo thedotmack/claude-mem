@@ -116,7 +116,7 @@ export async function withRetry<T>(
     // Per-attempt timeout via AbortController. Forward external aborts too.
     const attemptController = new AbortController();
     let deadlineExceeded = false;
-    let timeoutHandle: ReturnType<typeof setTimeout>;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const onExternalAbort = () => attemptController.abort();
     options.abortSignal?.addEventListener('abort', onExternalAbort, { once: true });
 
@@ -180,7 +180,9 @@ export async function withRetry<T>(
         signal?.addEventListener('abort', onAbort, { once: true });
       });
     } finally {
-      clearDeadline(timeoutHandle);
+      if (timeoutHandle !== undefined) {
+        clearDeadline(timeoutHandle);
+      }
       options.abortSignal?.removeEventListener('abort', onExternalAbort);
     }
   }
