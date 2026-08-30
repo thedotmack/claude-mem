@@ -35,6 +35,8 @@ function makeSession(overrides: Partial<ActiveSession> = {}): ActiveSession {
     currentProvider: null,
     consecutiveRestarts: 0,
     consecutiveInvalidOutputs: 0,
+    consecutiveContextOverflows: 0,
+    overflowRetryPending: false,
     lastGeneratorActivity: Date.now(),
     ...overrides,
   };

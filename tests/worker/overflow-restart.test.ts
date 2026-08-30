@@ -23,6 +23,7 @@ function makeSession(): ActiveSession {
     consecutiveRestarts: 0,
     consecutiveInvalidOutputs: 0,
     consecutiveContextOverflows: 1,
+    overflowRetryPending: true,
     lastGeneratorActivity: Date.now(),
   };
 }
@@ -114,6 +115,10 @@ describe('overflow generator restart', () => {
     expect(ensureSpy).not.toHaveBeenCalled();
 
     pendingCount = 1;
+    session.overflowRetryPending = false;
+    await (routes as any).restartAfterOverflow(42);
+    expect(ensureSpy).not.toHaveBeenCalled();
+
     activeSession = undefined;
     await (routes as any).restartAfterOverflow(42);
     expect(ensureSpy).not.toHaveBeenCalled();

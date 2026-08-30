@@ -286,7 +286,8 @@ export class SessionRoutes extends BaseRouteHandler {
   }
 
   private async restartAfterOverflow(sessionDbId: number): Promise<void> {
-    if (!this.sessionManager.getSession(sessionDbId)) {
+    const session = this.sessionManager.getSession(sessionDbId);
+    if (!session || !session.overflowRetryPending) {
       return;
     }
 

@@ -309,6 +309,8 @@ export async function processAgentResponse(
   if (!parsed.valid) {
     if (isQuotaLimitedObserverOutput(text)) {
       session.consecutiveInvalidOutputs = 0;
+      session.consecutiveContextOverflows = 0;
+      session.overflowRetryPending = false;
 
       logger.warn('PARSER', `${agentName} returned quota-limit prose — pausing generator and preserving queued batch`, {
         sessionId: session.sessionDbId,
@@ -329,6 +331,8 @@ export async function processAgentResponse(
 
     if (isAuthFailureObserverOutput(text)) {
       session.consecutiveInvalidOutputs = 0;
+      session.consecutiveContextOverflows = 0;
+      session.overflowRetryPending = false;
 
       await sessionManager.resetProcessingToPending(session.sessionDbId);
       session.abortReason = 'auth:observer_text';
@@ -348,18 +352,28 @@ export async function processAgentResponse(
     }
 
     if (agentName === 'SDK' && isContextOverflowObserverOutput(text)) {
+      const claimedMessages = sessionManager.getClaimedMessages(session.sessionDbId);
+      const hasClaimedMessages = claimedMessages.length > 0;
       session.consecutiveContextOverflows += 1;
 
       if (session.consecutiveContextOverflows >= MAX_CONSECUTIVE_CONTEXT_OVERFLOWS) {
-        const droppedMessages = await sessionManager.confirmClaimedMessages(session.sessionDbId);
+        const droppedMessages = hasClaimedMessages
+          ? await sessionManager.confirmClaimedMessages(session.sessionDbId)
+          : 0;
         logger.error('PARSER', `${agentName} returned context-overflow prose; dropping claimed batch after bounded retry`, {
           sessionId: session.sessionDbId,
           droppedMessages,
           preview: previewOutput(text),
         });
         session.consecutiveContextOverflows = 0;
+        session.overflowRetryPending = false;
       } else {
-        await sessionManager.resetProcessingToPending(session.sessionDbId);
+        if (hasClaimedMessages) {
+          await sessionManager.resetProcessingToPending(session.sessionDbId);
+          session.overflowRetryPending = true;
+        } else {
+          session.overflowRetryPending = false;
+        }
         logger.warn('PARSER', `${agentName} returned context-overflow prose; preserving queued batch for fresh context`, {
           sessionId: session.sessionDbId,
           consecutiveContextOverflows: session.consecutiveContextOverflows,
@@ -383,6 +397,8 @@ export async function processAgentResponse(
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
     session.consecutiveInvalidOutputs = 0;
+    session.consecutiveContextOverflows = 0;
+    session.overflowRetryPending = false;
 
     logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
       sessionId: session.sessionDbId,
@@ -402,6 +418,7 @@ export async function processAgentResponse(
   // accumulate toward a respawn across a healthy session.
   session.consecutiveInvalidOutputs = 0;
   session.consecutiveContextOverflows = 0;
+  session.overflowRetryPending = false;
 
   if (!session.memorySessionId) {
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {

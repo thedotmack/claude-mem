@@ -28,9 +28,11 @@ export interface ActiveSession {
    * Legacy invalid-output counter. Ordinary non-XML observer output is now
    * confirmed as a no-op and resets this to 0 so skip acknowledgements never
    * accumulate respawn debt.
-   */
+  */
   consecutiveInvalidOutputs: number;
   consecutiveContextOverflows: number;
+  /** Whether the latest overflow preserved claimed work for one restart. */
+  overflowRetryPending: boolean;
   forceInit?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;

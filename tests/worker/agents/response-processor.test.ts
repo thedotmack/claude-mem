@@ -207,6 +207,7 @@ describe('ResponseProcessor', () => {
       conversationHistory: [],
       currentProvider: 'claude',
       consecutiveContextOverflows: 0,
+      overflowRetryPending: false,
       ...overrides,
     } as ActiveSession;
   }

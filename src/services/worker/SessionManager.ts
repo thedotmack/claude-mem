@@ -129,6 +129,7 @@ export class SessionManager {
       consecutiveRestarts: 0,
       consecutiveInvalidOutputs: 0,
       consecutiveContextOverflows: 0,
+      overflowRetryPending: false,
       lastGeneratorActivity: Date.now(),  // Initialize for stale detection (Issue #1099)
       pendingAgentId: null,   // Subagent identity carried from the most recent claimed message
       pendingAgentType: null

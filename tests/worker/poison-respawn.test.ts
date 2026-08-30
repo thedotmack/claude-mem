@@ -142,6 +142,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(resetSpy).toHaveBeenCalledWith(12);
     expect(sm.getMessageBuffer().getPendingCount(12)).toBe(1);
     expect(session.consecutiveContextOverflows).toBe(1);
+    expect(session.overflowRetryPending).toBe(true);
     expect(session.consecutiveInvalidOutputs).toBe(0);
     expect(session.earliestPendingTimestamp).not.toBeNull();
     expect(session.abortReason).toBe('overflow:observer_text');
@@ -172,6 +173,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(session.claimedMessageIds).toEqual([]);
     expect(session.earliestPendingTimestamp).toBeNull();
     expect(session.consecutiveContextOverflows).toBe(0);
+    expect(session.overflowRetryPending).toBe(false);
     expect(session.abortReason).toBe('overflow:observer_text');
     expect(session.abortController.signal.aborted).toBe(true);
     expect(logger.error).toHaveBeenCalledWith(
@@ -205,6 +207,60 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(resetSpy).not.toHaveBeenCalled();
     expect(session.abortController.signal.aborted).toBe(false);
     expect(session.abortReason ?? null).toBeNull();
+  });
+
+  it('does not schedule an immediate restart when overflow arrives before a batch is claimed', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(16, 'do the thing', 1);
+    session.memorySessionId = 'mem-16';
+    await sm.queueObservation(16, {
+      tool_name: 'tool',
+      tool_input: {},
+      tool_response: {},
+      prompt_number: 1,
+      toolUseId: 'tu-16',
+    });
+
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+    const { payload } = readReproductionPayload();
+
+    await processAgentResponse(payload, session, makeDbManager(), sm, makeWorker(), 0, null, 'SDK');
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(resetSpy).not.toHaveBeenCalled();
+    expect(sm.getMessageBuffer().getPendingCount(16)).toBe(1);
+    expect(session.consecutiveContextOverflows).toBe(1);
+    expect(session.overflowRetryPending).toBe(false);
+    expect(session.abortReason).toBe('overflow:observer_text');
+    expect(session.abortController.signal.aborted).toBe(true);
+  });
+
+  it('resets the overflow budget after a non-overflow response', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(17, 'do the thing', 1);
+    session.memorySessionId = 'mem-17';
+    await queueAndClaimOne(sm, 17);
+    const { payload } = readReproductionPayload();
+
+    await processAgentResponse(payload, session, makeDbManager(), sm, makeWorker(), 0, null, 'SDK');
+    expect(session.consecutiveContextOverflows).toBe(1);
+
+    session.abortController = new AbortController();
+    await queueAndClaimOne(sm, 17);
+    await processAgentResponse(
+      'No observations to record.',
+      session,
+      makeDbManager(),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'SDK',
+    );
+
+    expect(session.consecutiveContextOverflows).toBe(0);
+    expect(session.overflowRetryPending).toBe(false);
   });
 
   it('repeated "No observations to record" acknowledgements confirm and never build respawn debt', async () => {
