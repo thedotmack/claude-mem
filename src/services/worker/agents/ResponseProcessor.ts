@@ -5,6 +5,7 @@ import {
   classifyObserverOutput,
   isAuthFailureObserverOutput,
   isQuotaLimitedObserverOutput,
+  isTransportErrorObserverOutput,
   previewOutput,
 } from '../../../sdk/output-classifier.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
@@ -342,6 +343,24 @@ export async function processAgentResponse(
         remediation: '/login',
         preview: previewOutput(text),
       });
+      return;
+    }
+
+    // A truncated/dropped connection surfaced as assistant text is unfinished
+    // work, not a no-op: the batch was never considered. Preserve it for the
+    // next round instead of confirming it away. Unlike the quota and auth
+    // cases the condition is transient, so the generator is left running.
+    if (isTransportErrorObserverOutput(text)) {
+      session.consecutiveInvalidOutputs = 0;
+
+      logger.warn('PARSER', `${agentName} returned transport-failure text — preserving queued batch for retry`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'prose',
+        preview: previewOutput(text),
+      });
+
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.earliestPendingTimestamp = null;
       return;
     }
 
