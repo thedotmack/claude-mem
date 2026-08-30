@@ -166,6 +166,7 @@ export class SessionRoutes extends BaseRouteHandler {
     session.lastGeneratorSource = source;
 
     const myController = session.abortController;
+    const conversationHistoryCheckpoint = session.conversationHistory.length;
 
     let skipGeneratorExitFinalization = false;
     let generatorPromise: Promise<void>;
@@ -277,6 +278,7 @@ export class SessionRoutes extends BaseRouteHandler {
         await handleGeneratorExit(session, reason, {
           sessionManager: this.sessionManager,
           completionHandler: this.completionHandler,
+          conversationHistoryCheckpoint,
         });
       });
     session.generatorPromise = generatorPromise;

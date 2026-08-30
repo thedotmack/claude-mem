@@ -280,6 +280,8 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     session.memorySessionId = 'mem-8';
     session.currentProvider = 'claude';
     session.generatorPromise = Promise.resolve();
+    session.conversationHistory.push({ role: 'assistant', content: 'previous successful response' });
+    const conversationHistoryCheckpoint = session.conversationHistory.length;
     await queueAndClaimOne(sm, 8);
 
     await processAgentResponse(
@@ -299,12 +301,55 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     await handleGeneratorExit(session, session.abortReason, {
       sessionManager: sm,
       completionHandler: { finalizeSession } as any,
+      conversationHistoryCheckpoint,
     });
 
     expect(finalizeSession).not.toHaveBeenCalled();
     expect(removeSpy).not.toHaveBeenCalled();
     expect(sm.getSession(8)).toBe(session);
     expect(sm.getMessageBuffer().getPendingCount(8)).toBe(1);
+    expect(session.conversationHistory).toEqual([
+      { role: 'assistant', content: 'previous successful response' },
+    ]);
+  });
+
+  it('auth retries do not accumulate replayed Claude history', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(12, 'do the thing', 1);
+    session.memorySessionId = 'mem-12';
+    session.conversationHistory.push({ role: 'assistant', content: 'previous successful response' });
+    await sm.queueObservation(12, {
+      tool_name: 'Read',
+      tool_input: {},
+      tool_response: {},
+      prompt_number: 1,
+      toolUseId: 'tu-12',
+    });
+
+    const finalizeSession = mock(() => Promise.resolve());
+    const conversationHistoryCheckpoint = session.conversationHistory.length;
+
+    for (let attempt = 0; attempt < 1_000; attempt++) {
+      session.currentProvider = 'claude';
+      session.generatorPromise = Promise.resolve();
+      session.conversationHistory.push(
+        { role: 'user', content: 'replayed init prompt' },
+        { role: 'user', content: 'replayed observation prompt' },
+        { role: 'assistant', content: '401 Unauthorized' },
+      );
+
+      await handleGeneratorExit(session, 'auth:observer_text', {
+        sessionManager: sm,
+        completionHandler: { finalizeSession } as any,
+        conversationHistoryCheckpoint,
+      });
+    }
+
+    expect(finalizeSession).not.toHaveBeenCalled();
+    expect(sm.getMessageBuffer().getPendingCount(12)).toBe(1);
+    expect(session.conversationHistory).toEqual([
+      { role: 'assistant', content: 'previous successful response' },
+    ]);
   });
 
   it('quota generator exit keeps the active session and in-memory buffer', async () => {
@@ -313,6 +358,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     session.memorySessionId = 'mem-6';
     session.currentProvider = 'claude';
     session.generatorPromise = Promise.resolve();
+    const conversationHistoryCheckpoint = session.conversationHistory.length;
     await queueAndClaimOne(sm, 6);
 
     await processAgentResponse(
@@ -332,6 +378,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     await handleGeneratorExit(session, session.abortReason, {
       sessionManager: sm,
       completionHandler: { finalizeSession } as any,
+      conversationHistoryCheckpoint,
     });
 
     expect(finalizeSession).not.toHaveBeenCalled();
