@@ -118,6 +118,34 @@ function makeFreshPlugin(name: string, bunBehavior: BunBehavior = 'success'): { 
   return { pluginRoot, fakeBinDir };
 }
 
+/**
+ * Write a zod package whose './v3', './v4', './v4-mini' subpaths genuinely
+ * resolve, so the validity check's require.resolve calls succeed — a bare
+ * package.json with no exports map is what an actually-broken/truncated
+ * install looks like (review on PR #3799).
+ */
+function writeValidZodPackage(pluginRoot: string): void {
+  const zodDir = join(pluginRoot, 'node_modules', 'zod');
+  const exportsMap = {
+    '.': './index.js',
+    './v3': './v3/index.js',
+    './v4': './v4/index.js',
+    './v4-mini': './v4-mini/index.js',
+  };
+  mkdirSync(zodDir, { recursive: true });
+  writeFileSync(join(zodDir, 'package.json'), JSON.stringify({
+    name: 'zod',
+    version: '3.0.0',
+    type: 'module',
+    exports: exportsMap,
+  }));
+  for (const target of Object.values(exportsMap)) {
+    const relPath = target.replace(/^\.\//, '');
+    mkdirSync(join(zodDir, relPath, '..'), { recursive: true });
+    writeFileSync(join(zodDir, relPath), 'export default {};\n');
+  }
+}
+
 beforeAll(() => {
   tmpRoot = mkdtempSync(join(tmpdir(), 'version-check-deps-'));
 });
@@ -199,6 +227,32 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(existsSync(join(pluginRoot, 'node_modules', '.claude-mem-install-complete'))).toBe(true);
   });
 
+  test('does not mark a truncated zod install valid just because its package.json exists (gh #3799 review)', async () => {
+    // A package.json present with the compiled v3/v4 output missing is what
+    // an actually-broken/truncated install looks like — checking only that
+    // node_modules/zod/package.json exists (without resolving its required
+    // subpaths) would mark this "valid" and permanently skip repair, quietly
+    // reproducing the exact `Cannot find module 'zod/v3'` crash this marker
+    // exists to prevent, with no future re-check once marked complete.
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-truncated-zod');
+    mkdirSync(join(pluginRoot, 'node_modules', 'zod'), { recursive: true });
+    writeFileSync(join(pluginRoot, 'node_modules', 'zod', 'package.json'), JSON.stringify({
+      name: 'zod',
+      version: '3.0.0',
+      exports: { '.': './index.js', './v3': './v3/index.js' },
+    }));
+    writeFileSync(join(pluginRoot, 'node_modules', 'zod', 'index.js'), 'export default {};\n');
+    // './v3/index.js' deliberately absent — the truncation.
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain(INSTALL_DIAGNOSTIC);
+    expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
+    expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(true);
+    expect(existsSync(join(pluginRoot, 'node_modules', '.claude-mem-install-complete'))).toBe(true);
+  });
+
   test('migrates a valid legacy install in place instead of deleting and reinstalling it (gh #3799 review)', async () => {
     // A node_modules that predates this marker requirement (e.g. an
     // installer/repair path that skipped installPluginDependencies because
@@ -210,17 +264,15 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     // whose declared dependency actually resolves must be marked complete
     // in place, not discarded.
     const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-legacy-valid-install');
-    mkdirSync(join(pluginRoot, 'node_modules', 'zod'), { recursive: true });
-    writeFileSync(join(pluginRoot, 'node_modules', 'zod', 'package.json'), JSON.stringify({ name: 'zod', version: '3.0.0' }));
+    writeValidZodPackage(pluginRoot);
 
     const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
 
     expect(code).toBe(0);
+    // Proves no reinstall was attempted — only a marker write for the tree
+    // that was already there.
     expect(stderr).not.toContain(INSTALL_DIAGNOSTIC);
     expect(existsSync(join(pluginRoot, 'node_modules', '.claude-mem-install-complete'))).toBe(true);
-    // The fake bun would have created zod/v3/index.js if invoked — its
-    // absence proves no reinstall happened, only a marker write.
-    expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(false);
   });
 
   test('a second Setup run racing the first skips instead of deleting the in-flight install (gh #3793 review)', async () => {

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
+import { createRequire } from 'module';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -10,6 +11,13 @@ const VERSION_CHECK_LOG_PREFIX = '[version-check]';
 const BUN_INSTALL_ARGS = Object.freeze(['install', '--production']);
 const BUN_INSTALL_TIMEOUT_MS = 120_000;
 const NODE_MODULES_DIRNAME = 'node_modules';
+// zod ships its public API behind subpath exports the worker bundle requires
+// (mirrors setup-runtime.ts's ZOD_REQUIRED_SUBPATHS). The package directory
+// existing does NOT imply these subpaths resolve — a truncated/corrupt copy
+// can have a package.json but be missing the compiled v3/v4 output, which is
+// exactly the `Cannot find module 'zod/v3'` failure this marker exists to
+// prevent (gh #2640, #2637, review on PR #3799).
+const ZOD_REQUIRED_SUBPATHS = Object.freeze(['zod/v3', 'zod/v4', 'zod/v4-mini']);
 const INSTALL_COMPLETE_MARKER = '.claude-mem-install-complete';
 const INSTALL_LOCK_DIRNAME = '.claude-mem-install.lock';
 // A held lock older than this is assumed to belong to a process that was
@@ -157,7 +165,29 @@ function isNodeModulesValid(pluginRoot, nodeModulesPath) {
     return false;
   }
   const deps = Object.keys(pkg.dependencies || {});
-  return deps.every((dep) => existsSync(join(nodeModulesPath, ...dep.split('/'), 'package.json')));
+  const allPackagesPresent = deps.every((dep) => existsSync(join(nodeModulesPath, ...dep.split('/'), 'package.json')));
+  if (!allPackagesPresent) return false;
+
+  // A dependency's own package.json existing does not mean its subpath
+  // exports resolve — a truncated copy can look present but still crash the
+  // worker with `Cannot find module 'zod/v3'` (review on PR #3799).
+  if (deps.includes('zod')) {
+    let requireFromPlugin;
+    try {
+      requireFromPlugin = createRequire(join(pluginRoot, 'package.json'));
+    } catch {
+      return false;
+    }
+    for (const subpath of ZOD_REQUIRED_SUBPATHS) {
+      try {
+        requireFromPlugin.resolve(subpath);
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  return true;
 }
 
 function findBun() {
