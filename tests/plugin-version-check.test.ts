@@ -27,10 +27,12 @@ describe('plugin/scripts/version-check.js install marker compatibility', () => {
     );
     mkdirSync(tempDir, { recursive: true });
     writeFileSync(join(tempDir, 'package.json'), JSON.stringify({ version: '12.4.4' }));
-    // Pre-create node_modules so version-check's Setup-phase dependency
-    // auto-install (gh #2649) short-circuits — these tests are about
-    // .install-version marker compatibility, not dependency materialisation.
+    // Pre-create a completed node_modules (with the completion marker) so
+    // version-check's Setup-phase dependency auto-install (gh #2649, #3793)
+    // short-circuits — these tests are about .install-version marker
+    // compatibility, not dependency materialisation.
     mkdirSync(join(tempDir, 'node_modules'), { recursive: true });
+    writeFileSync(join(tempDir, 'node_modules', '.claude-mem-install-complete'), '');
   });
 
   afterEach(() => {
