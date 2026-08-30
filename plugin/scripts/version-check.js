@@ -93,26 +93,71 @@ function acquireInstallLock(pluginRoot) {
 function releaseInstallLock(lock) {
   if (!lock) return;
   const { lockPath, token } = lock;
+
+  // Claim whatever currently occupies lockPath in one atomic step before
+  // inspecting it. A separate read-then-delete (checking the owner token,
+  // then rmSync-ing the shared path) still leaves a gap: a reclaimer can
+  // replace the lock between the read and the delete, and the delete would
+  // then destroy the replacement (gh #3799 review) — the read only proves
+  // ownership at read time, not at deletion time. renameSync has no such
+  // gap: once it returns, whatever it moved is no longer reachable at
+  // lockPath by anyone else, so it's now safe to inspect at leisure.
+  const claimedPath = `${lockPath}.release-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  try {
+    renameSync(lockPath, claimedPath);
+  } catch {
+    // Nothing at lockPath to claim — already released or fully replaced.
+    return;
+  }
+
   let currentToken;
   try {
-    currentToken = readFileSync(join(lockPath, INSTALL_LOCK_OWNER_FILE), 'utf-8');
+    currentToken = readFileSync(join(claimedPath, INSTALL_LOCK_OWNER_FILE), 'utf-8');
   } catch {
-    // Owner file missing/unreadable: the lock is already gone, or mid-
-    // replacement by a reclaimer. Nothing that's provably ours to remove.
+    currentToken = null;
+  }
+
+  if (currentToken === token) {
+    // Genuinely ours — safe to discard.
+    try {
+      rmSync(claimedPath, { recursive: true, force: true });
+    } catch (err) {
+      const reason = err && err.message ? err.message : String(err);
+      console.error(`${VERSION_CHECK_LOG_PREFIX} failed to release install lock (${reason})`);
+    }
     return;
   }
-  if (currentToken !== token) {
-    // Another process reclaimed this path as stale while we were still
-    // alive. What's there now is its active lock, not ours — removing it
-    // would repeat the exact bug this check exists to prevent.
-    return;
-  }
+
+  // The rename grabbed a reclaimer's fresh lock, not ours — our own lock was
+  // already renamed aside as stale before we got here. Put it back so its
+  // actual owner's release still finds its own token and can clean up
+  // normally, instead of us destroying it.
   try {
-    rmSync(lockPath, { recursive: true, force: true });
+    renameSync(claimedPath, lockPath);
   } catch (err) {
     const reason = err && err.message ? err.message : String(err);
-    console.error(`${VERSION_CHECK_LOG_PREFIX} failed to release install lock (${reason})`);
+    console.error(`${VERSION_CHECK_LOG_PREFIX} could not restore a reclaimer's lock after grabbing it in error (${reason})`);
   }
+}
+
+/**
+ * Cheap, dependency-free check that a node_modules tree actually has what
+ * pluginRoot's package.json declares, so an existing tree without the
+ * completion marker can be told apart from a genuinely interrupted one.
+ * Deliberately shallow (a package.json exists per dependency) rather than
+ * full require.resolve/exports-map resolution: this script cannot import
+ * the richer check used at install time (setup-runtime.ts's
+ * verifyCriticalModules) without depending on the very tree it's verifying.
+ */
+function isNodeModulesValid(pluginRoot, nodeModulesPath) {
+  let pkg;
+  try {
+    pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf-8'));
+  } catch {
+    return false;
+  }
+  const deps = Object.keys(pkg.dependencies || {});
+  return deps.every((dep) => existsSync(join(nodeModulesPath, ...dep.split('/'), 'package.json')));
 }
 
 function findBun() {
@@ -191,9 +236,27 @@ function ensurePluginDependencies(pluginRoot) {
     if (existsSync(markerPath)) return;
 
     if (existsSync(nodeModulesPath)) {
-      // node_modules present without the completion marker means a previous
-      // install was interrupted before finishing. Its mere presence also
-      // disables Bun's own auto-install, so it must be removed before retrying.
+      // node_modules present without the completion marker is ambiguous: it
+      // could be a previous install interrupted before finishing, OR a
+      // perfectly good tree that predates this marker requirement — e.g. an
+      // installer/repair path that skipped installPluginDependencies (an
+      // already-current install, gh #3799 review), or a marketplace root
+      // this repo's installer never touches at all and that only this
+      // script's own bootstrap has ever populated (gh #2640/#2637 origin).
+      // Validate before condemning it: a tree whose declared dependencies
+      // actually resolve is migrated in place, not discarded and reinstalled
+      // — an unnecessary reinstall that can itself fail and leave the
+      // plugin worse off than before it ever looked "interrupted."
+      if (isNodeModulesValid(pluginRoot, nodeModulesPath)) {
+        try {
+          writeFileSync(markerPath, '');
+        } catch (markerErr) {
+          const markerReason = markerErr && markerErr.message ? markerErr.message : String(markerErr);
+          console.error(`${VERSION_CHECK_LOG_PREFIX} failed to write install-complete marker for a valid legacy install (${markerReason}); next Setup run will re-validate`);
+        }
+        return;
+      }
+
       try {
         rmSync(nodeModulesPath, { recursive: true, force: true });
       } catch (rmErr) {

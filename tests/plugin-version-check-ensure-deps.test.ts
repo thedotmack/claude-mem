@@ -181,13 +181,12 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(false);
   });
 
-  test('removes an interrupted node_modules and reinstalls when the completion marker is missing (gh #3793)', async () => {
+  test('removes an interrupted node_modules and reinstalls when it fails validation (gh #3793)', async () => {
     // Reproduces gh #3793: a worker version-mismatch tree-kill SIGKILLs this
     // script's own process mid-install, so node_modules exists but is
-    // partial and no cleanup code ever ran. Without a completion marker, the
-    // existsSync(node_modules) guard would skip install forever. A node_modules
-    // present without the marker must be treated as incomplete: removed, then
-    // reinstalled.
+    // partial (the declared zod dependency has no package.json) and no
+    // cleanup code ever ran. A node_modules that fails validation and lacks
+    // the marker must be treated as incomplete: removed, then reinstalled.
     const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-interrupted-install');
     mkdirSync(join(pluginRoot, 'node_modules', 'zod'), { recursive: true });
 
@@ -198,6 +197,30 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
     expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(true);
     expect(existsSync(join(pluginRoot, 'node_modules', '.claude-mem-install-complete'))).toBe(true);
+  });
+
+  test('migrates a valid legacy install in place instead of deleting and reinstalling it (gh #3799 review)', async () => {
+    // A node_modules that predates this marker requirement (e.g. an
+    // installer/repair path that skipped installPluginDependencies because
+    // the install was already current, or a marketplace root this repo's
+    // installer never touches at all — this script's own bootstrap is the
+    // only thing that has ever populated it) is otherwise perfectly good.
+    // Deleting and forcing a reinstall is an unnecessary risk: if that
+    // reinstall then fails, the plugin goes from working to broken. A tree
+    // whose declared dependency actually resolves must be marked complete
+    // in place, not discarded.
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-legacy-valid-install');
+    mkdirSync(join(pluginRoot, 'node_modules', 'zod'), { recursive: true });
+    writeFileSync(join(pluginRoot, 'node_modules', 'zod', 'package.json'), JSON.stringify({ name: 'zod', version: '3.0.0' }));
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).not.toContain(INSTALL_DIAGNOSTIC);
+    expect(existsSync(join(pluginRoot, 'node_modules', '.claude-mem-install-complete'))).toBe(true);
+    // The fake bun would have created zod/v3/index.js if invoked — its
+    // absence proves no reinstall happened, only a marker write.
+    expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(false);
   });
 
   test('a second Setup run racing the first skips instead of deleting the in-flight install (gh #3793 review)', async () => {
