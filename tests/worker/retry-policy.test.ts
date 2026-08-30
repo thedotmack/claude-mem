@@ -80,4 +80,14 @@ describe('provider attempt timeout', () => {
     }, { abortSignal: controller.signal, maxRetries: 2 })).rejects.toThrow('cancelled');
     expect(attempts).toBe(1);
   });
+
+  it('rejects a late result when the callback ignores the deadline abort', async () => {
+    let attempts = 0;
+    await expect(withRetry(async () => {
+      attempts += 1;
+      await new Promise(resolve => setTimeout(resolve, 20));
+      return 'late-result';
+    }, { perAttemptTimeoutMs: 1, maxRetries: 2 })).rejects.toBeInstanceOf(ProviderAttemptTimeoutError);
+    expect(attempts).toBe(1);
+  });
 });

@@ -123,7 +123,11 @@ export async function withRetry<T>(
     options.abortSignal?.addEventListener('abort', onExternalAbort, { once: true });
 
     try {
-      return await fn(attemptController.signal);
+      const result = await fn(attemptController.signal);
+      if (deadlineExceeded) {
+        throw new ProviderAttemptTimeoutError(opts.perAttemptTimeoutMs);
+      }
+      return result;
     } catch (err: unknown) {
       lastError = err;
 
