@@ -42,13 +42,14 @@ const MAX_USER_PROMPT_BYTES = 256 * 1024;
  */
 function normalizeAbortReason(
   reason: string | null | undefined
-): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'none' {
+): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'auth' | 'none' {
   switch ((reason ?? '').split(':')[0]) {
     case 'idle': return 'idle';
     case 'shutdown': return 'shutdown';
     case 'overflow': return 'overflow';
     case 'restart-guard': return 'restart_guard';
     case 'quota': return 'quota';
+    case 'auth': return 'auth';
     default: return 'none';
   }
 }
@@ -205,10 +206,9 @@ export class SessionRoutes extends BaseRouteHandler {
         //
         // The local error line (full fidelity) and the scrubbed
         // session_compressed rollup are one logical event.
-        // No abort_reason here: every site that sets abortReason aborts the
-        // controller on its next line, so aborted generators either resolve
-        // normally (quota/overflow break) or hit the signal-aborted early
-        // return above — this catch only ever sees non-abort rejections.
+        // Reactive provider pause errors deliberately keep this controller
+        // active long enough for this catch to record observer health; the
+        // finally block consumes their abortReason and preserves the buffer.
         if (isClassified(error)) {
           // The single error-level line for a classified provider failure:
           // code, message, action, link, and request id — same words the
@@ -236,16 +236,20 @@ export class SessionRoutes extends BaseRouteHandler {
         recordObserverFailure(provider, isClassified(error)
           ? { message: error.message, code: error.code, action: error.action, url: error.url, requestId: error.requestId }
           : errorMsg);
-        telemetryBuffer.record('session_compressed', session.sessionDbId, {
-          outcome: 'error',
-          provider,
-          // Providers seed lastModelId when they start; 'unknown' covers a
-          // generator that died before resolving its model.
-          model: session.lastModelId ?? 'unknown',
-          error_category: 'provider_error',
-          hook: session.lastGeneratorSource,
-          ide: session.platformSource,
-        });
+        // The pause reason gets the single session_compressed record in
+        // finally; fatal errors keep the existing error record here.
+        if (session.abortReason === null) {
+          telemetryBuffer.record('session_compressed', session.sessionDbId, {
+            outcome: 'error',
+            provider,
+            // Providers seed lastModelId when they start; 'unknown' covers a
+            // generator that died before resolving its model.
+            model: session.lastModelId ?? 'unknown',
+            error_category: 'provider_error',
+            hook: session.lastGeneratorSource,
+            ide: session.platformSource,
+          });
+        }
       })
       .finally(async () => {
         if (skipGeneratorExitFinalization) {
@@ -261,10 +265,8 @@ export class SessionRoutes extends BaseRouteHandler {
         const reason = session.abortReason ?? null;
         session.abortReason = null;  // consume the reason
         if (reason !== null) {
-          // Abort accounting lives HERE, where the reason is consumed — the
-          // ONLY point every abort flow (idle / shutdown / overflow / quota)
-          // passes through. Emit the closed enum, never the raw
-          // string ('quota:…' carries a window suffix).
+          // Pause accounting lives here, where the reason is consumed. Emit
+          // the closed enum, never the raw string ('quota:…' carries a suffix).
           telemetryBuffer.record('session_compressed', session.sessionDbId, {
             outcome: 'aborted',
             provider,

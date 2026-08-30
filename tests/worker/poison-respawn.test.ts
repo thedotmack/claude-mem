@@ -1,10 +1,15 @@
-import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, mock, beforeAll, beforeEach, afterAll, afterEach, spyOn } from 'bun:test';
 import { logger } from '../../src/utils/logger.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import { processAgentResponse } from '../../src/services/worker/agents/ResponseProcessor.js';
 import { handleGeneratorExit } from '../../src/services/worker/session/GeneratorExitHandler.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { WorkerRef } from '../../src/services/worker/agents/types.js';
+import { OpenAICompatibleProvider, type ProviderQueryResult } from '../../src/services/worker/OpenAICompatibleProvider.js';
+import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
+import type { ActiveSession, ConversationMessage } from '../../src/services/worker-types.js';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
+import type { ModeConfig } from '../../src/services/domain/types.js';
 
 function makeDbManager(storeObservations = mock(() => ({ observationIds: [], summaryId: null, createdAtEpoch: 0 }))): DatabaseManager {
   return {
@@ -28,6 +33,65 @@ const makeWorker = (): WorkerRef => ({
   broadcastProcessingStatus: mock(() => {}),
 }) as unknown as WorkerRef;
 
+class ReactiveQuotaTestProvider extends OpenAICompatibleProvider<{ apiKey: string; model: string }> {
+  protected readonly providerName = 'Gemini';
+  protected readonly syntheticIdPrefix = 'gemini';
+  protected readonly forwardEmptyMessageResponse = false;
+  private queryCount = 0;
+  constructor(
+    dbManager: DatabaseManager,
+    sessionManager: SessionManager,
+    private readonly failure: unknown,
+    private readonly failOnMessageLoop = false,
+  ) {
+    super(dbManager, sessionManager);
+  }
+  protected getConfig() { return { apiKey: 'test-key', model: 'gemini-test' }; }
+  protected missingApiKeyError(): Error { return new Error('missing key'); }
+  protected async query(_history: ConversationMessage[], _config: { apiKey: string; model: string }): Promise<ProviderQueryResult> {
+    if (this.failOnMessageLoop && this.queryCount++ === 0) {
+      return { content: '' };
+    }
+    throw this.failure;
+  }
+  protected estimateTokens(): number { return 0; }
+  protected buildLastUsage(): ActiveSession['lastUsage'] { return null; }
+}
+
+async function runReactiveProviderExit(
+  kind: 'quota_exhausted' | 'rate_limit' | 'auth_invalid' | 'unrecoverable' | 'transient',
+  sessionDbId: number,
+  project = 'origin-project',
+): Promise<{ session: ActiveSession; sessionManager: SessionManager; finalizeSession: ReturnType<typeof mock>; removeSession: ReturnType<typeof spyOn>; error: unknown; expectedError: unknown }> {
+  const sessionManager = new SessionManager(makeDbManager());
+  const session = sessionManager.initializeSession(sessionDbId, 'do the thing', 1);
+  session.memorySessionId = `mem-${sessionDbId}`;
+  session.project = project;
+  session.generatorPromise = Promise.resolve();
+  await queueAndClaimOne(sessionManager, sessionDbId);
+  const error = kind === 'unrecoverable' || kind === 'transient'
+    ? new ClassifiedProviderError(`${kind} failure`, { kind, cause: new Error('provider') })
+    : new ClassifiedProviderError(
+      kind === 'auth_invalid' ? 'Gemini auth invalid (status 401)' : 'Gemini quota exhausted (status 429)',
+      { kind, cause: new Error('provider') },
+    );
+  const provider = new ReactiveQuotaTestProvider(makeDbManager(), sessionManager, error, true);
+  let thrown: unknown;
+  try {
+    await provider.startSession(session, makeWorker());
+  } catch (caught) {
+    thrown = caught;
+  }
+  const finalizeSession = mock(() => Promise.resolve());
+  const removeSession = spyOn(sessionManager, 'removeSessionImmediate');
+  spies.push(removeSession);
+  await handleGeneratorExit(session, session.abortReason, {
+    sessionManager,
+    completionHandler: { finalizeSession } as any,
+  });
+  return { session, sessionManager, finalizeSession, removeSession, error: thrown, expectedError: error };
+}
+
 async function queueAndClaimOne(sm: SessionManager, sessionDbId: number): Promise<void> {
   await sm.queueObservation(sessionDbId, {
     tool_name: 'Read',
@@ -45,10 +109,29 @@ async function queueAndClaimOne(sm: SessionManager, sessionDbId: number): Promis
 }
 
 let spies: ReturnType<typeof spyOn>[] = [];
+let testMode: ModeConfig;
+let previousModeId: string | null = null;
+
+beforeAll(() => {
+  const manager = ModeManager.getInstance();
+  try {
+    previousModeId = manager.getActiveModeId();
+  } catch {
+    previousModeId = null;
+  }
+  testMode = manager.loadMode('code');
+});
+
+afterAll(() => {
+  if (previousModeId && previousModeId !== 'code') {
+    ModeManager.getInstance().loadMode(previousModeId);
+  }
+});
 
 describe('observer invalid-output handling (Phase 3 recovery)', () => {
   beforeEach(() => {
     spies = [
+      spyOn(ModeManager.getInstance(), 'getActiveMode').mockReturnValue(testMode),
       spyOn(logger, 'info').mockImplementation(() => {}),
       spyOn(logger, 'debug').mockImplementation(() => {}),
       spyOn(logger, 'warn').mockImplementation(() => {}),
@@ -377,5 +460,81 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
 
     expect(skipSm.getMessageBuffer().getPendingCount(4)).toBe(0);
     expect(quotaSm.getMessageBuffer().getPendingCount(5)).toBe(1);
+  });
+
+  it.each(['quota_exhausted', 'rate_limit', 'auth_invalid'] as const)(
+    'reactive %s errors preserve claimed work through provider exit',
+    async (kind) => {
+      const result = await runReactiveProviderExit(kind, kind === 'quota_exhausted' ? 12 : 13);
+
+      expect(result.error).toBeInstanceOf(ClassifiedProviderError);
+      expect(result.error).toBe(result.expectedError);
+      expect(result.session.abortReason).toBe(kind === 'auth_invalid' ? `auth:${kind}` : `quota:${kind}`);
+      expect(result.session.abortController.signal.aborted).toBe(false);
+      expect(result.finalizeSession).not.toHaveBeenCalled();
+      expect(result.removeSession).not.toHaveBeenCalled();
+      expect(result.sessionManager.getSession(result.session.sessionDbId)).toBe(result.session);
+      expect(result.session.claimedMessageIds).toEqual([]);
+      expect(result.sessionManager.getClaimedMessages(result.session.sessionDbId)).toEqual([]);
+      expect(result.sessionManager.getMessageBuffer().getPendingCount(result.session.sessionDbId)).toBe(1);
+    },
+  );
+
+  it('rolls back the failed observation prompt before a paused session restarts', async () => {
+    const result = await runReactiveProviderExit('quota_exhausted', 18);
+
+    expect(result.session.conversationHistory).toHaveLength(1);
+    expect(result.session.conversationHistory[0]?.role).toBe('user');
+  });
+
+  it('preserves a worktree-adopted session without changing its parent project', async () => {
+    const result = await runReactiveProviderExit('rate_limit', 14, 'parent-project');
+
+    expect(result.session.project).toBe('parent-project');
+    expect(result.session.abortReason).toBe('quota:rate_limit');
+    expect(result.sessionManager.getMessageBuffer().getPendingCount(14)).toBe(1);
+    expect(result.finalizeSession).not.toHaveBeenCalled();
+  });
+
+  it.each(['unrecoverable', 'transient'] as const)(
+    'reactive %s errors retain fatal cleanup',
+    async (kind) => {
+      const result = await runReactiveProviderExit(kind, kind === 'unrecoverable' ? 15 : 16);
+
+      expect(result.error).toBeInstanceOf(ClassifiedProviderError);
+      expect(result.error).toBe(result.expectedError);
+      expect(result.session.abortReason ?? null).toBeNull();
+      expect(result.finalizeSession).toHaveBeenCalledWith(result.session.sessionDbId);
+      expect(result.removeSession).toHaveBeenCalledWith(result.session.sessionDbId);
+      expect(result.sessionManager.getSession(result.session.sessionDbId)).toBeUndefined();
+      expect(result.sessionManager.getMessageBuffer().getPendingCount(result.session.sessionDbId)).toBe(0);
+    },
+  );
+
+  it('keeps an unclassified reactive error on the existing fatal path', async () => {
+    const sessionManager = new SessionManager(makeDbManager());
+    const session = sessionManager.initializeSession(17, 'do the thing', 1);
+    session.memorySessionId = 'mem-17';
+    await queueAndClaimOne(sessionManager, 17);
+    const error = new TypeError('provider transport failed');
+    const provider = new ReactiveQuotaTestProvider(makeDbManager(), sessionManager, error);
+    let thrown: unknown;
+    try {
+      await provider.startSession(session, makeWorker());
+    } catch (caught) {
+      thrown = caught;
+    }
+    const finalizeSession = mock(() => Promise.resolve());
+    const removeSession = spyOn(sessionManager, 'removeSessionImmediate');
+    spies.push(removeSession);
+    await handleGeneratorExit(session, session.abortReason, {
+      sessionManager,
+      completionHandler: { finalizeSession } as any,
+    });
+
+    expect(thrown).toBe(error);
+    expect(session.abortReason ?? null).toBeNull();
+    expect(finalizeSession).toHaveBeenCalledWith(17);
+    expect(removeSession).toHaveBeenCalledWith(17);
   });
 });
