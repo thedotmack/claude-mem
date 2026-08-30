@@ -26,7 +26,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORKER_HOST: string;
   CLAUDE_MEM_API_TIMEOUT_MS: string;
   CLAUDE_MEM_SKIP_TOOLS: string;
-  CLAUDE_MEM_PROVIDER: string;  
+  CLAUDE_MEM_SKIP_BASH_PATTERNS: string;
+  CLAUDE_MEM_PROVIDER: string;
   CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  
   CLAUDE_MEM_GEMINI_API_KEY: string;
   CLAUDE_MEM_GEMINI_MODEL: string;  
@@ -121,6 +122,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
     CLAUDE_MEM_API_TIMEOUT_MS: String(getTimeout(HOOK_TIMEOUTS.API_REQUEST)),
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
+    CLAUDE_MEM_SKIP_BASH_PATTERNS: '',  // Regex matched against a Bash command; when it matches, the observation is skipped. Empty = capture every Bash command. Use alternation for several patterns, e.g. ^(ls|cat|pwd)\b
     CLAUDE_MEM_PROVIDER: 'claude',  // Default to Claude
     CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',  // Default to logged-in Claude SDK auth (not API key)
     CLAUDE_MEM_GEMINI_API_KEY: '',  // Empty by default, can be set via UI or env

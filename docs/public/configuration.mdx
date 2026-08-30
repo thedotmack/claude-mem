@@ -22,6 +22,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_WORKER_HOST`      | `127.0.0.1`                     | Worker service host address           |
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data root — every other path (database, chroma, logs, settings.json, worker.pid) derives from this |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
+| `CLAUDE_MEM_SKIP_BASH_PATTERNS` | —                             | Regular expression matched against each `Bash` command; on a match the observation is skipped. Empty captures every command. Use alternation for several patterns, e.g. `^(ls\|cat\|pwd\|git status)\b`. An invalid regex is ignored, so capture is never dropped |
 
 ### Gemini Provider Settings
 
