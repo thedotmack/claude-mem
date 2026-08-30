@@ -32,19 +32,27 @@ async function httpRequestToWorker(
 
 export async function isPortInUse(port: number): Promise<boolean> {
   if (process.platform === 'win32') {
-    // Fast path: HTTP health check. A live claude-mem worker responds to
-    // /api/health, so this is the cheapest non-disruptive probe for the
-    // common case (worker is running and healthy).
+    // First check: try the health endpoint (happy path - worker is alive and well)
     try {
-      const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`);
-      if (response.ok) return true;
-      // Non-ok response: port is reachable but the worker is unhealthy.
-      // Fall through to the net.createServer check below so we still report
-      // the port as in-use rather than falsely claiming it is free.
-      logger.debug('SYSTEM', 'Windows health check returned non-ok; falling through to socket probe', {
-        port,
-        status: response.status,
-      });
+      // #2996: bound the health probe with a 3s timeout so a wedged process
+      // that accepts but never responds does not block the recovery path.
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      try {
+        const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`, { signal: controller.signal });
+        // #2996: if fetch() succeeds (no exception), the port is in use regardless
+        // of HTTP status. A 404/500 from a wedged worker or unrelated local server
+        // still means the port is bound.
+        if (!response.ok) {
+          logger.debug('SYSTEM', 'Windows health check returned non-ok; port still considered in use', {
+            port,
+            status: response.status,
+          });
+        }
+        return true;
+      } finally {
+        clearTimeout(timeoutId);
+      }
     } catch (error) {
       // fetch threw (ECONNREFUSED, timeout, etc.): the port may still be in
       // use by a non-HTTP process (zombie worker, foreign service, etc.).
@@ -62,10 +70,32 @@ export async function isPortInUse(port: number): Promise<boolean> {
         });
       }
     }
-    // Fall through: the HTTP probe was inconclusive. Use the POSIX
-    // net.createServer() approach to definitively check port occupancy.
-  }
 
+    // Second check (#2996): health endpoint didn't respond, but the port may
+    // still be bound by a zombie/stale worker process. On Windows with multiple
+    // concurrent Claude Code sessions, this is the common failure mode: the
+    // worker process holds the port but no longer serves health checks. Without
+    // this TCP probe, isPortInUse returns false, the spawner proceeds, bind
+    // fails, and the 2-minute cooldown kicks in - paralyzing all sessions.
+    return new Promise<boolean>((resolve) => {
+      const socket = new net.Socket();
+      socket.setTimeout(2000);
+      socket.once('connect', () => {
+        socket.destroy();
+        logger.warn('SYSTEM', 'Port is TCP-bound but health endpoint unresponsive - likely a zombie worker', { port });
+        resolve(true);
+      });
+      socket.once('timeout', () => {
+        socket.destroy();
+        resolve(false);
+      });
+      socket.once('error', () => {
+        socket.destroy();
+        resolve(false);
+      });
+      socket.connect(port, '127.0.0.1');
+    });
+  }
   return new Promise((resolve) => {
     const server = net.createServer();
     const workerHost = getWorkerHost();
