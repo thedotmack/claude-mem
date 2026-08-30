@@ -42,7 +42,12 @@ export type ProcessGeneratedResponseOutcome =
       observations: PostgresObservation[];
       privateContentDetected: boolean;
     }
-  | { kind: 'parse_error'; jobId: string; reason: string };
+  | { kind: 'parse_error'; jobId: string; reason: string }
+  // Distinct from parse_error: the provider returned no content at all
+  // (safety block, MAX_TOKENS truncation, gateway hiccup). Detected before
+  // parsing so the failure is attributed to the provider, not the parser,
+  // and the caller can fail fast instead of burning queue retries.
+  | { kind: 'empty_response'; jobId: string; reason: string };
 
 export interface ProcessGeneratedResponseInput {
   pool: PostgresPool;
@@ -66,6 +71,10 @@ export async function processGeneratedResponse(
   input: ProcessGeneratedResponseInput,
 ): Promise<ProcessGeneratedResponseOutcome> {
   const { job, rawText } = input;
+
+  if (!rawText.trim()) {
+    return { kind: 'empty_response', jobId: job.id, reason: 'provider returned empty content' };
+  }
 
   const parsed = parseAgentXml(rawText, job.id);
   if (!parsed.valid) {
@@ -187,6 +196,10 @@ export async function processSessionSummaryResponse(
 
   if (job.sourceType !== 'session_summary') {
     return { kind: 'parse_error', jobId: job.id, reason: 'session summary processor invoked on non-summary job' };
+  }
+
+  if (!rawText.trim()) {
+    return { kind: 'empty_response', jobId: job.id, reason: 'provider returned empty content' };
   }
 
   const parsed = parseAgentXml(rawText, job.id);
