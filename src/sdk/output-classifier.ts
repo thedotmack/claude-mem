@@ -72,6 +72,37 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
 }
 
 /**
+ * Detect transport / API-infrastructure failures rendered as assistant prose
+ * (the observer child forwards the CLI's own error string verbatim). These
+ * must preserve the claimed batch like quota/auth cases — never confirm it.
+ * See https://github.com/thedotmack/claude-mem/issues/3752.
+ */
+export function isTransportErrorObserverOutput(raw: unknown): boolean {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return false;
+  }
+
+  if (/<(observation|summary)\b/i.test(raw) || /<skip_summary\b/i.test(raw)) {
+    return false;
+  }
+
+  const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  return (
+    /\bapi error\b/.test(text) ||
+    /connection refused/.test(text) ||
+    /connectionrefused/.test(text) ||
+    /\beconnrefused\b/.test(text) ||
+    /\beconnreset\b/.test(text) ||
+    /\betimedout\b/.test(text) ||
+    /\benotfound\b/.test(text) ||
+    /fetch failed/.test(text) ||
+    /\b5\d{2}\b.*\b(error|failed|failure|unavailable)\b/.test(text) ||
+    /\b(error|failed|failure|unavailable).*\b5\d{2}\b/.test(text)
+  );
+}
+
+/**
  * Detect provider authentication-failure prose so claimed work can be retried
  * after the user restores provider authentication.
  */
