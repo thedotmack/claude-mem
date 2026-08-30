@@ -71,6 +71,14 @@ interface MarkerSchema {
 const LEGACY_VERSION_MARKER_RE =
   /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
+// Duplicated literal, not shared: this must match plugin/scripts/version-check.js's
+// NODE_MODULES_INSTALL_COMPLETE_MARKER exactly. version-check.js is a dependency-free
+// bootstrap script that cannot import from this compiled module (it runs before/while
+// node_modules is being materialised), so the two files intentionally duplicate this
+// filename rather than share it — matching this file's existing LEGACY_VERSION_MARKER_RE
+// duplication with the same script.
+const NODE_MODULES_INSTALL_COMPLETE_MARKER = '.claude-mem-install-complete';
+
 function markerPath(targetDir: string): string {
   return join(targetDir, '.install-version');
 }
@@ -456,6 +464,13 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
   }
 
   verifyCriticalModules(targetDir);
+
+  // version-check.js's Setup-phase auto-install (gh #3793) treats node_modules
+  // without this marker as an interrupted install and deletes it. Without
+  // writing it here, the very next Setup run after a normal `npx claude-mem
+  // install`/repair would delete the tree it just verified and reinstall from
+  // scratch, breaking the plugin if that reinstall fails.
+  writeFileSync(join(targetDir, 'node_modules', NODE_MODULES_INSTALL_COMPLETE_MARKER), '');
 }
 
 export function readInstallMarker(targetDir: string): MarkerSchema | null {
