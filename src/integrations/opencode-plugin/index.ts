@@ -180,7 +180,6 @@ function resolveProjectName(ctx: OpenCodePluginContext): string {
 }
 
 const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
-const initializedSessionIds = new Set<string>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
 
@@ -190,7 +189,6 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
       const oldestKey = contentSessionIdsByOpenCodeSessionId.keys().next().value;
       if (oldestKey !== undefined) {
         contentSessionIdsByOpenCodeSessionId.delete(oldestKey);
-        initializedSessionIds.delete(oldestKey);
       } else {
         break;
       }
@@ -204,38 +202,33 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
 }
 
 /**
- * The worker has no "session.created" event in OpenCode, so we lazily initialize
- * the session the first time we see any activity for it (tool run or chat
- * message). This guarantees a session row exists before observations arrive.
- * The first user prompt travels with the init so the worker records what the
- * session was actually asked instead of its "[media prompt]" placeholder.
- *
- * A NON-EMPTY prompt always re-posts the init, even for an already-initialized
- * session (#3803): the tool.execute.after hook initializes lazily with the
- * default empty prompt, and without the re-post the real prompt arriving later
- * via chat.message would be dropped — search, summaries and prompt-based
- * privacy handling would all run against the empty placeholder. This is safe
- * against the worker: the /api/sessions/init route returns the existing session
- * row for a known contentSessionId and de-duplicates identical prompts inside a
- * time window, so the extra POST records the prompt without creating a
- * duplicate session (and matches the Claude Code path, where every user prompt
- * triggers its own session-init).
+ * Resolves the stable local ID for all OpenCode activity without contacting the
+ * worker. Session init means "a user prompt happened", not "ensure a session
+ * row exists": observations and summarize create their own rows. Posting init
+ * without a prompt manufactures a "[media prompt]" at prompt #1 and attributes
+ * a preceding tool observation to it (#3803).
  */
-function ensureSessionInitialized(
+function resolveContentSessionId(openCodeSessionId: string): string {
+  return getOrCreateContentSessionId(openCodeSessionId);
+}
+
+/**
+ * Records a real user prompt with the worker. Every user prompt posts init,
+ * matching the Claude Code path; the worker de-duplicates identical prompts
+ * within its time window (#3803).
+ */
+function initializeSessionForUserPrompt(
   openCodeSessionId: string,
   projectName: string,
-  prompt = "",
+  prompt: string,
 ): string {
-  const contentSessionId = getOrCreateContentSessionId(openCodeSessionId);
-  if (!initializedSessionIds.has(openCodeSessionId) || prompt !== "") {
-    initializedSessionIds.add(openCodeSessionId);
-    workerPostFireAndForget("/api/sessions/init", {
-      contentSessionId,
-      project: projectName,
-      prompt,
-      platform_source: PLATFORM_SOURCE,
-    });
-  }
+  const contentSessionId = resolveContentSessionId(openCodeSessionId);
+  workerPostFireAndForget("/api/sessions/init", {
+    contentSessionId,
+    project: projectName,
+    prompt,
+    platform_source: PLATFORM_SOURCE,
+  });
   return contentSessionId;
 }
 
@@ -257,7 +250,7 @@ const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       input: ToolExecuteAfterInput,
       output: ToolExecuteAfterOutput,
     ): Promise<void> => {
-      const contentSessionId = ensureSessionInitialized(input.sessionID, projectName);
+      const contentSessionId = resolveContentSessionId(input.sessionID);
       workerPostFireAndForget("/api/sessions/observations", {
         contentSessionId,
         tool_name: input.tool,
@@ -273,8 +266,8 @@ const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       });
     },
 
-    // Capture the user's prompt with the lazy session init, and assistant
-    // messages as observations.
+    // Capture each real user prompt with session init, and assistant messages
+    // as observations.
     "chat.message": async (
       _input: Record<string, unknown>,
       output: ChatMessageOutput,
@@ -288,12 +281,16 @@ const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
           .map((part) => part.text as string)
           .join("\n")
           .trim();
-        ensureSessionInitialized(sessionID, projectName, promptText);
+        if (promptText) {
+          initializeSessionForUserPrompt(sessionID, projectName, promptText);
+        } else {
+          resolveContentSessionId(sessionID);
+        }
         return;
       }
       if (output.message?.role !== "assistant") return;
 
-      const contentSessionId = ensureSessionInitialized(sessionID, projectName);
+      const contentSessionId = resolveContentSessionId(sessionID);
       const messageText = (output.parts || [])
         .filter((part) => part.type === "text" && typeof part.text === "string")
         .map((part) => part.text as string)
@@ -315,7 +312,7 @@ const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
     "experimental.session.compacting": async (
       input: SessionCompactingInput,
     ): Promise<void> => {
-      const contentSessionId = ensureSessionInitialized(input.sessionID, projectName);
+      const contentSessionId = resolveContentSessionId(input.sessionID);
       workerPostFireAndForget("/api/sessions/summarize", {
         contentSessionId,
         last_assistant_message: "",
@@ -336,7 +333,7 @@ const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
           // source must match the one session-init used, or the worker's
           // source-scoped session lookup misses and summarizes into a fresh,
           // mis-attributed session row (#3678).
-          const contentSessionId = ensureSessionInitialized(sessionID, projectName);
+          const contentSessionId = resolveContentSessionId(sessionID);
           workerPostFireAndForget("/api/sessions/summarize", {
             contentSessionId,
             last_assistant_message: "",
@@ -346,7 +343,6 @@ const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
         }
         case "session.deleted": {
           contentSessionIdsByOpenCodeSessionId.delete(sessionID);
-          initializedSessionIds.delete(sessionID);
           break;
         }
         default:

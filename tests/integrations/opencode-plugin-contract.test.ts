@@ -116,7 +116,7 @@ describe("OpenCode plugin event contract", () => {
 
       const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
       const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
-      expect(initPost, "tool.execute.after should lazily init the session").toBeTruthy();
+      expect(initPost, "tool.execute.after must not manufacture a user prompt").toBeUndefined();
       expect(obsPost, "tool.execute.after should POST an observation").toBeTruthy();
       const obsBody = obsPost!.body as Record<string, unknown>;
       expect(obsBody.tool_name).toBe("read");
@@ -216,12 +216,12 @@ describe("OpenCode plugin attribution contract", () => {
       await plugin["experimental.session.compacting"]({ sessionID: "ses_src" });
       await plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_src" } } });
 
-      // init(tool) + observation(tool) + init(user prompt) + observation(assistant)
-      // + summarize(compacting) + summarize(idle). The second init is the
-      // re-post carrying the real user prompt after the tool-first lazy init
-      // (#3803) — before that fix the prompt was dropped and this was 5.
+      // observation(tool) + init(user prompt) + observation(assistant) +
+      // summarize(compacting) + summarize(idle). Only a real user prompt may
+      // post init; all other endpoints create their session row themselves
+      // (#3803).
       const workerPosts = posts.filter((p) => p.url.includes("/api/sessions/"));
-      expect(workerPosts.length).toBe(6);
+      expect(workerPosts.length).toBe(5);
       for (const post of workerPosts) {
         expect(post.body.platform_source, `${post.url} must carry the platform source`).toBe(
           "opencode",
@@ -241,12 +241,15 @@ describe("OpenCode plugin attribution contract", () => {
         directory: "/tmp/my-repo/sub/dir",
         worktree: "/tmp/my-repo",
       });
-      await plugin["tool.execute.after"](
-        { tool: "read", sessionID: "ses_proj", callID: "c1" },
-        { title: "Read", output: "x", metadata: {}, args: {} },
+      await plugin["chat.message"](
+        {},
+        {
+          message: { role: "user", sessionID: "ses_proj" },
+          parts: [{ type: "text", text: "remember this project" }],
+        },
       );
       const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
-      expect(initPost, "session init should fire").toBeTruthy();
+      expect(initPost, "a real user prompt should initialize the session").toBeTruthy();
       expect(initPost!.body.project).toBe("my-repo");
     } finally {
       restoreFetch();
@@ -334,9 +337,6 @@ describe("OpenCode plugin prompt and worktree contract (#3803)", () => {
   };
 
   it("records the real user prompt even when a tool ran before it", async () => {
-    // Activity-first lazy init marks the session initialized with an empty
-    // prompt; the real prompt arriving afterwards via chat.message(user) must
-    // still reach the worker instead of being suppressed.
     captureFetch();
     try {
       const plugin = await ClaudeMemPlugin(pluginCtx);
@@ -352,16 +352,15 @@ describe("OpenCode plugin prompt and worktree contract (#3803)", () => {
         },
       );
       const initPosts = posts.filter((p) => p.url.includes("/api/sessions/init"));
-      expect(
-        initPosts.some((p) => p.body.prompt === "the real prompt"),
-        "the real user prompt must reach the worker even after a tool-only lazy init",
-      ).toBe(true);
+      expect(initPosts.length, "only the real user prompt may post init").toBe(1);
+      expect(initPosts[0]!.body.prompt).toBe("the real prompt");
+      expect(posts.some((p) => p.body.prompt === "")).toBe(false);
     } finally {
       restoreFetch();
     }
   });
 
-  it("initializes lazily exactly once for consecutive activity-only calls", async () => {
+  it("does not initialize consecutive activity-only calls", async () => {
     captureFetch();
     try {
       const plugin = await ClaudeMemPlugin(pluginCtx);
@@ -374,7 +373,70 @@ describe("OpenCode plugin prompt and worktree contract (#3803)", () => {
         { title: "Read", output: "y", metadata: {}, args: {} },
       );
       const initPosts = posts.filter((p) => p.url.includes("/api/sessions/init"));
-      expect(initPosts.length, "activity-only paths must init exactly once").toBe(1);
+      const observationPosts = posts.filter((p) => p.url.includes("/api/sessions/observations"));
+      expect(initPosts.length, "activity-only paths must not post init").toBe(0);
+      expect(observationPosts.length, "activity-only paths must still post observations").toBe(2);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("does not initialize an empty user message", async () => {
+    captureFetch();
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["chat.message"](
+        {},
+        {
+          message: { role: "user", sessionID: "ses_empty_prompt" },
+          parts: [{ type: "image" }, { type: "text", text: "" }],
+        },
+      );
+      const initPosts = posts.filter((p) => p.url.includes("/api/sessions/init"));
+      expect(initPosts.length, "empty user messages must not post init").toBe(0);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("summarizes compaction and idle events without initializing a prompt", async () => {
+    captureFetch();
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["experimental.session.compacting"]({ sessionID: "ses_summarize_only" });
+      await plugin.event({
+        event: { type: "session.idle", properties: { sessionID: "ses_summarize_only" } },
+      });
+      const initPosts = posts.filter((p) => p.url.includes("/api/sessions/init"));
+      const summarizePosts = posts.filter((p) => p.url.includes("/api/sessions/summarize"));
+      expect(initPosts.length, "summarize-only paths must not post init").toBe(0);
+      expect(summarizePosts.length, "both events must post summarize").toBe(2);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("initializes each separate user prompt", async () => {
+    captureFetch();
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["chat.message"](
+        {},
+        {
+          message: { role: "user", sessionID: "ses_two_prompts" },
+          parts: [{ type: "text", text: "first prompt" }],
+        },
+      );
+      await plugin["chat.message"](
+        {},
+        {
+          message: { role: "user", sessionID: "ses_two_prompts" },
+          parts: [{ type: "text", text: "second prompt" }],
+        },
+      );
+      const initPosts = posts.filter((p) => p.url.includes("/api/sessions/init"));
+      expect(initPosts.length).toBe(2);
+      expect(initPosts.map((p) => p.body.prompt)).toEqual(["first prompt", "second prompt"]);
     } finally {
       restoreFetch();
     }
@@ -399,12 +461,15 @@ describe("OpenCode plugin prompt and worktree contract (#3803)", () => {
       captureFetch();
       try {
         const plugin = await ClaudeMemPlugin({ ...pluginCtx, worktree: worktreeDir });
-        await plugin["tool.execute.after"](
-          { tool: "read", sessionID: "ses_wt", callID: "c1" },
-          { title: "Read", output: "x", metadata: {}, args: {} },
+        await plugin["chat.message"](
+          {},
+          {
+            message: { role: "user", sessionID: "ses_wt" },
+            parts: [{ type: "text", text: "worktree prompt" }],
+          },
         );
         const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
-        expect(initPost, "session init should fire").toBeTruthy();
+        expect(initPost, "a real user prompt should initialize the session").toBeTruthy();
         expect(initPost!.body.project).toBe("parent-repo/leaf-worktree");
       } finally {
         restoreFetch();
@@ -424,12 +489,15 @@ describe("OpenCode plugin prompt and worktree contract (#3803)", () => {
       captureFetch();
       try {
         const plugin = await ClaudeMemPlugin({ ...pluginCtx, worktree: base });
-        await plugin["tool.execute.after"](
-          { tool: "read", sessionID: "ses_plain", callID: "c1" },
-          { title: "Read", output: "x", metadata: {}, args: {} },
+        await plugin["chat.message"](
+          {},
+          {
+            message: { role: "user", sessionID: "ses_plain" },
+            parts: [{ type: "text", text: "plain directory prompt" }],
+          },
         );
         const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
-        expect(initPost, "session init should fire").toBeTruthy();
+        expect(initPost, "a real user prompt should initialize the session").toBeTruthy();
         expect(initPost!.body.project).toBe(basename(base));
       } finally {
         restoreFetch();
