@@ -16,7 +16,7 @@ import type { ObservationSearchResult, SessionSummarySearchResult } from './type
 import { computeObservationContentHash } from './observations/store.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
-import { normalizeStoredPromptText } from './prompt-storage.js';
+import { normalizeStoredPromptText, MEDIA_PROMPT_PLACEHOLDER } from './prompt-storage.js';
 import { applySqliteConnectionPragmas } from './connection.js';
 import {
   assertCanonicalDecimal,
@@ -2404,6 +2404,14 @@ export class SessionStore {
           UPDATE sdk_sessions SET project = ?
           WHERE id = ? AND (project IS NULL OR project = '')
         `).run(project, existing.id);
+      }
+      // A tool-first init persists the placeholder; the first real prompt repairs it.
+      // Real prompts are never overwritten by later real prompts.
+      if (storedUserPrompt && storedUserPrompt !== MEDIA_PROMPT_PLACEHOLDER) {
+        this.db.prepare(`
+          UPDATE sdk_sessions SET user_prompt = ?
+          WHERE id = ? AND (user_prompt IS NULL OR user_prompt = '' OR user_prompt = ?)
+        `).run(storedUserPrompt, existing.id, MEDIA_PROMPT_PLACEHOLDER);
       }
       if (customTitle) {
         // SELECT-then-UPDATE, never a decision on `.run().changes`
