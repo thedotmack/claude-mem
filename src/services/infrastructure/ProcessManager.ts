@@ -366,7 +366,10 @@ export function buildWindowsDaemonStartCommand(runtimePath: string, scriptPath: 
   // double quotes inside the single-quoted PS string keeps the path a single
   // argument. -FilePath is safe as-is: it is a single-string parameter and
   // never goes through that join.
-  return `Start-Process -FilePath '${psSingleQuote(runtimePath)}' -ArgumentList @('"${psSingleQuote(scriptPath)}"','--daemon') -WindowStyle Hidden`;
+  // -WorkingDirectory pins the daemon to the home dir: Start-Process
+  // otherwise inherits the spawner's cwd, which keeps the session's project
+  // folder locked for the daemon's lifetime on Windows (#3706).
+  return `Start-Process -FilePath '${psSingleQuote(runtimePath)}' -WorkingDirectory '${psSingleQuote(homedir())}' -ArgumentList @('"${psSingleQuote(scriptPath)}"','--daemon') -WindowStyle Hidden`;
 }
 
 export function spawnDaemon(
@@ -422,10 +425,18 @@ export function spawnDaemon(
     ? [runtimePath, scriptPath, '--daemon']
     : [scriptPath, '--daemon'];
 
+  // Pin the daemon's cwd to the home directory. The daemon outlives the
+  // session that spawned it, but an inherited cwd can vanish underneath it:
+  // spawn one from inside a git worktree and remove the worktree, and every
+  // later child spawn in the daemon fails with ENOENT even though the binary
+  // is fine (the second trigger of the #3290 wedge). A pinned cwd also keeps
+  // the self-heal restart effective: without it the successor inherits the
+  // same dead directory and re-wedges against its restart budget.
   const child = spawnHidden(execPath, args, {
     detached: true,
     stdio: 'ignore',
-    env
+    env,
+    cwd: homedir()
   });
 
   if (child.pid === undefined) {

@@ -689,7 +689,7 @@ describe('ProcessManager', () => {
       const command = buildWindowsDaemonStartCommand(runtimePath, scriptPath);
 
       expect(command).toBe(
-        `Start-Process -FilePath '${runtimePath}' -ArgumentList @('"${scriptPath}"','--daemon') -WindowStyle Hidden`
+        `Start-Process -FilePath '${runtimePath}' -WorkingDirectory '${homedir()}' -ArgumentList @('"${scriptPath}"','--daemon') -WindowStyle Hidden`
       );
     });
 
@@ -709,8 +709,17 @@ describe('ProcessManager', () => {
       );
 
       expect(command).toBe(
-        `Start-Process -FilePath 'C:\\Users\\O''Brien\\.bun\\bin\\bun.exe' -ArgumentList @('"C:\\Users\\O''Brien\\plugin\\scripts\\worker-service.cjs"','--daemon') -WindowStyle Hidden`
+        `Start-Process -FilePath 'C:\\Users\\O''Brien\\.bun\\bin\\bun.exe' -WorkingDirectory '${homedir()}' -ArgumentList @('"C:\\Users\\O''Brien\\plugin\\scripts\\worker-service.cjs"','--daemon') -WindowStyle Hidden`
       );
+    });
+
+    it('pins the daemon working directory to the home directory (#3706, #3290)', () => {
+      const command = buildWindowsDaemonStartCommand(
+        String.raw`C:\bun\bun.exe`,
+        String.raw`C:\plugin\worker-service.cjs`
+      );
+
+      expect(command).toContain(`-WorkingDirectory '${homedir()}'`);
     });
   });
 
