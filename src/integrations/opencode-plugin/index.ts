@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { basename } from "node:path";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
 import {
   parseSearchResponse,
@@ -46,7 +47,6 @@ interface ToolExecuteAfterOutput {
   title: string;
   output: string;
   metadata: Record<string, unknown>;
-  args?: Record<string, unknown>;
 }
 
 interface ChatMessageOutput {
@@ -124,31 +124,16 @@ async function workerGetText(path: string): Promise<string | null> {
 }
 
 /**
- * The last path segment of a Windows- or POSIX-style path, without any
- * platform-specific path module (the plugin bundle must stay dependency-free
- * beyond what the bundler inlines).
- */
-function basenameOf(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  const parts = value.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1];
-}
-
-/**
  * The project name claude-mem attributes the session to.
  *
  * `ctx.project?.name` is NOT the repository name in OpenCode — it resolves to
  * the constant "opencode", which lumps every project into one bucket. The
- * worktree root (falling back to the session directory) is the same repo-root
- * identity the rest of claude-mem keys projects by.
+ * worktree root is the same repo-root identity the rest of claude-mem keys
+ * projects by (for non-git projects OpenCode resolves the worktree to the
+ * project directory, so this covers every launch).
  */
 function resolveProjectName(ctx: OpenCodePluginContext): string {
-  return (
-    basenameOf(ctx.worktree) ||
-    basenameOf(ctx.directory) ||
-    ctx.project?.name ||
-    "opencode"
-  );
+  return basename(ctx.worktree) || ctx.project?.name || "opencode";
 }
 
 const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
@@ -222,13 +207,12 @@ const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       workerPostFireAndForget("/api/sessions/observations", {
         contentSessionId,
         tool_name: input.tool,
-        // Arguments live on the hook input (see ToolExecuteAfterInput). The
-        // output.args fallback covers older OpenCode versions the support
-        // matrix still claims (1.16/1.17) whose output shape is unverified.
-        // Reading output.args alone shipped empty tool_input for every
-        // observation, and the compressor dismissed them all — the
-        // "plugin loads but captures nothing" symptom of #3678.
-        tool_input: input.args || output.args || {},
+        // OpenCode passes the tool arguments on the hook input; the output
+        // object only carries { title, output, metadata }. Reading output.args
+        // instead shipped an empty tool_input for every observation, and the
+        // compressor dismissed them all — the "loads but captures nothing"
+        // symptom of #3678.
+        tool_input: input.args || {},
         tool_response: truncate(output.output || ""),
         cwd: ctx.directory,
         platform_source: PLATFORM_SOURCE,
