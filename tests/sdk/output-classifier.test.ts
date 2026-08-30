@@ -108,7 +108,6 @@ describe('isContextOverflowObserverOutput', () => {
       'context_length_exceeded',
       'Too many tokens in the request.',
       'The request exceeds the context window.',
-      'The context limit exceeds the request size.',
     ];
 
     for (const output of positives) {
@@ -124,6 +123,7 @@ describe('isContextOverflowObserverOutput', () => {
     expect(isContextOverflowObserverOutput('<skip_summary reason="context_length_exceeded"/>')).toBe(false);
     expect(isContextOverflowObserverOutput('I hit the context window and cannot continue.')).toBe(false);
     expect(isContextOverflowObserverOutput('The context window is discussed in the project guide.')).toBe(false);
+    expect(isContextOverflowObserverOutput('The context limit exceeds the request size.')).toBe(false);
   });
 
   it('does not classify quota or auth prose as context overflow', () => {

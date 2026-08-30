@@ -119,6 +119,11 @@ describe('overflow generator restart', () => {
     await (routes as any).restartAfterOverflow(42);
     expect(ensureSpy).not.toHaveBeenCalled();
 
+    session.overflowRetryPending = true;
+    session.abortReason = 'shutdown';
+    await (routes as any).restartAfterOverflow(42);
+    expect(ensureSpy).not.toHaveBeenCalled();
+
     activeSession = undefined;
     await (routes as any).restartAfterOverflow(42);
     expect(ensureSpy).not.toHaveBeenCalled();

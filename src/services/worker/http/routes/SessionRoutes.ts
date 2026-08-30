@@ -299,7 +299,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private async restartAfterOverflow(sessionDbId: number): Promise<void> {
     const session = this.sessionManager.getSession(sessionDbId);
-    if (!session || !session.overflowRetryPending) {
+    if (!session || session.abortReason === 'shutdown' || !session.overflowRetryPending) {
       return;
     }
 

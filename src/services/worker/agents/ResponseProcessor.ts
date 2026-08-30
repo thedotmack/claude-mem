@@ -554,8 +554,10 @@ export async function processAgentResponse(
     });
   }
 
-  await sessionManager.confirmClaimedMessages(session.sessionDbId);
-  session.earliestPendingTimestamp = null;
+  if (!preserveOverflowRetry) {
+    await sessionManager.confirmClaimedMessages(session.sessionDbId);
+    session.earliestPendingTimestamp = null;
+  }
   worker?.broadcastProcessingStatus?.();
 
   void notifyTelegram({

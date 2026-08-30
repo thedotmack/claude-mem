@@ -253,11 +253,12 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
 
     await processAgentResponse(payload, session, makeDbManager(), sm, makeWorker(), 0, null, 'SDK');
     session.abortController = new AbortController();
-    await processAgentResponse('No observations to record.', session, makeDbManager(), sm, makeWorker(), 0, null, 'SDK');
+    await processAgentResponse('<skip_summary/>', session, makeDbManager(), sm, makeWorker(), 0, null, 'SDK');
 
     expect(session.consecutiveContextOverflows).toBe(1);
     expect(session.overflowRetryPending).toBe(true);
     expect(session.earliestPendingTimestamp).not.toBeNull();
+    expect(confirmSpy).not.toHaveBeenCalled();
 
     await claimExistingOne(sm, 18);
     session.abortController = new AbortController();

@@ -118,7 +118,6 @@ export function isContextOverflowObserverOutput(raw: unknown): boolean {
     /\bmaximum\s+context\s+length\b/.test(text) ||
     /\bcontext_length_exceeded\b/.test(text) ||
     /\btoo\s+many\s+tokens\b/.test(text) ||
-    /\bexceeds\b.{0,40}\bcontext\s+(?:window|length|limit)\b/.test(text) ||
-    /\bcontext\s+(?:window|length|limit)\b.{0,40}\bexceeds\b/.test(text)
+    /\b(?:prompt|input|request)\b.{0,40}\bexceeds\b.{0,40}\bcontext\s+(?:window|length|limit)\b/.test(text)
   );
 }
