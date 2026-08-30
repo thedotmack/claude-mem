@@ -145,6 +145,7 @@ function computeSessionCompressedRollup(
   let obsTypeDecision = 0;
   let obsTypeRefactor = 0;
   let obsTypeOther = 0;
+  let maxConsecutiveInvalidOutputs = 0;
   const modelFrequency: Map<string, number> = new Map();
 
   for (const r of records) {
@@ -194,6 +195,9 @@ function computeSessionCompressedRollup(
     if (typeof r.obs_type_other === 'number' && Number.isFinite(r.obs_type_other)) {
       obsTypeOther += r.obs_type_other;
     }
+    if (typeof r.consecutive_invalid_outputs === 'number' && Number.isFinite(r.consecutive_invalid_outputs)) {
+      maxConsecutiveInvalidOutputs = Math.max(maxConsecutiveInvalidOutputs, r.consecutive_invalid_outputs);
+    }
   }
 
   const rollup: Record<string, unknown> = {
@@ -217,6 +221,7 @@ function computeSessionCompressedRollup(
     obs_type_decision: obsTypeDecision,
     obs_type_refactor: obsTypeRefactor,
     obs_type_other: obsTypeOther,
+    consecutive_invalid_outputs: maxConsecutiveInvalidOutputs,
     window_start_ts: windowStartTs,
     // Phase 2: why this rollup was emitted (session_end | worker_shutdown |
     // safety_flush) and the partial-flush sequence number for long-lived
