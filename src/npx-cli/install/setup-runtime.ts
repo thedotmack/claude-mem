@@ -463,14 +463,26 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
     throw new Error(`bun install failed in ${targetDir}\n${describeExecError(err)}`);
   }
 
-  verifyCriticalModules(targetDir);
+  ensureInstallCompleteMarker(targetDir);
+}
 
-  // version-check.js's Setup-phase auto-install (gh #3793) treats node_modules
-  // without this marker as an interrupted install and deletes it. Without
-  // writing it here, the very next Setup run after a normal `npx claude-mem
-  // install`/repair would delete the tree it just verified and reinstall from
-  // scratch, breaking the plugin if that reinstall fails.
-  writeFileSync(join(targetDir, 'node_modules', NODE_MODULES_INSTALL_COMPLETE_MARKER), '');
+/**
+ * Write node_modules/.claude-mem-install-complete if it isn't already there,
+ * after confirming targetDir's dependencies actually resolve. version-check.js's
+ * Setup-phase auto-install (gh #3793) treats node_modules without this marker
+ * as an interrupted install and deletes it. A caller that determines an
+ * install is already current (isInstallCurrent) can skip calling
+ * installPluginDependencies entirely and so never reach the write above -
+ * that legacy-valid tree would then look interrupted to Setup and get
+ * deleted, breaking the plugin if the forced reinstall then fails (PR #3799
+ * review). Callers that know an install is current, not just freshly
+ * installed, must still call this to keep the marker's invariant true.
+ */
+export function ensureInstallCompleteMarker(targetDir: string): void {
+  const markerPath = join(targetDir, 'node_modules', NODE_MODULES_INSTALL_COMPLETE_MARKER);
+  if (existsSync(markerPath)) return;
+  verifyCriticalModules(targetDir);
+  writeFileSync(markerPath, '');
 }
 
 export function readInstallMarker(targetDir: string): MarkerSchema | null {
