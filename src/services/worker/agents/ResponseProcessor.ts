@@ -298,6 +298,11 @@ export async function processAgentResponse(
   }
 
   const parsed = parseAgentXml(text, session.contentSessionId);
+  const hasClaimedMessages = session.claimedMessageIds.length > 0;
+  // The replacement generator emits its init response before reclaiming the
+  // preserved batch. Keep the retry budget through that unclaimed response.
+  const preserveOverflowRetry =
+    session.overflowRetryPending && session.consecutiveContextOverflows > 0 && !hasClaimedMessages;
 
   // Provider enum for telemetry, derived once so the invalid-output and
   // success paths stamp the same value.
@@ -309,8 +314,10 @@ export async function processAgentResponse(
   if (!parsed.valid) {
     if (isQuotaLimitedObserverOutput(text)) {
       session.consecutiveInvalidOutputs = 0;
-      session.consecutiveContextOverflows = 0;
-      session.overflowRetryPending = false;
+      if (!preserveOverflowRetry) {
+        session.consecutiveContextOverflows = 0;
+        session.overflowRetryPending = false;
+      }
 
       logger.warn('PARSER', `${agentName} returned quota-limit prose — pausing generator and preserving queued batch`, {
         sessionId: session.sessionDbId,
@@ -331,8 +338,10 @@ export async function processAgentResponse(
 
     if (isAuthFailureObserverOutput(text)) {
       session.consecutiveInvalidOutputs = 0;
-      session.consecutiveContextOverflows = 0;
-      session.overflowRetryPending = false;
+      if (!preserveOverflowRetry) {
+        session.consecutiveContextOverflows = 0;
+        session.overflowRetryPending = false;
+      }
 
       await sessionManager.resetProcessingToPending(session.sessionDbId);
       session.abortReason = 'auth:observer_text';
@@ -352,8 +361,6 @@ export async function processAgentResponse(
     }
 
     if (agentName === 'SDK' && isContextOverflowObserverOutput(text)) {
-      const claimedMessages = sessionManager.getClaimedMessages(session.sessionDbId);
-      const hasClaimedMessages = claimedMessages.length > 0;
       session.consecutiveContextOverflows += 1;
 
       if (session.consecutiveContextOverflows >= MAX_CONSECUTIVE_CONTEXT_OVERFLOWS) {
@@ -397,8 +404,10 @@ export async function processAgentResponse(
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
     session.consecutiveInvalidOutputs = 0;
-    session.consecutiveContextOverflows = 0;
-    session.overflowRetryPending = false;
+    if (!preserveOverflowRetry) {
+      session.consecutiveContextOverflows = 0;
+      session.overflowRetryPending = false;
+    }
 
     logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
       sessionId: session.sessionDbId,
@@ -409,16 +418,20 @@ export async function processAgentResponse(
 
     // Plain-text skip responses are intentionally ignored. Re-queueing them
     // creates an observer loop where the same low-signal batch is retried.
-    await sessionManager.confirmClaimedMessages(session.sessionDbId);
-    session.earliestPendingTimestamp = null;
+    if (!preserveOverflowRetry) {
+      await sessionManager.confirmClaimedMessages(session.sessionDbId);
+      session.earliestPendingTimestamp = null;
+    }
     return;
   }
 
   // Valid parse — clear the invalid-output counter so transient misses don't
   // accumulate toward a respawn across a healthy session.
   session.consecutiveInvalidOutputs = 0;
-  session.consecutiveContextOverflows = 0;
-  session.overflowRetryPending = false;
+  if (!preserveOverflowRetry) {
+    session.consecutiveContextOverflows = 0;
+    session.overflowRetryPending = false;
+  }
 
   if (!session.memorySessionId) {
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {

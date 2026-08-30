@@ -45,6 +45,13 @@ async function queueAndClaimOne(sm: SessionManager, sessionDbId: number): Promis
   await iterator.return?.();
 }
 
+async function claimExistingOne(sm: SessionManager, sessionDbId: number): Promise<void> {
+  const iterator = sm.getMessageIterator(sessionDbId);
+  const claimed = await iterator.next();
+  expect(claimed.done).toBe(false);
+  await iterator.return?.();
+}
+
 function readReproductionPayload(): { declaredLength: number; payload: string } {
   const fixture = readFileSync(new URL('../fixtures/claude-mem-PR-TARGET-3800-REPRO.txt', import.meta.url), 'utf8');
   const responseLine = fixture.split(/\r?\n/).find(line => line.includes('Response received'));
@@ -234,6 +241,32 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(session.overflowRetryPending).toBe(false);
     expect(session.abortReason).toBe('overflow:observer_text');
     expect(session.abortController.signal.aborted).toBe(true);
+  });
+
+  it('keeps the overflow budget through an unclaimed replacement init response', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(18, 'do the thing', 1);
+    session.memorySessionId = 'mem-18';
+    await queueAndClaimOne(sm, 18);
+    const { payload } = readReproductionPayload();
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+
+    await processAgentResponse(payload, session, makeDbManager(), sm, makeWorker(), 0, null, 'SDK');
+    session.abortController = new AbortController();
+    await processAgentResponse('No observations to record.', session, makeDbManager(), sm, makeWorker(), 0, null, 'SDK');
+
+    expect(session.consecutiveContextOverflows).toBe(1);
+    expect(session.overflowRetryPending).toBe(true);
+    expect(session.earliestPendingTimestamp).not.toBeNull();
+
+    await claimExistingOne(sm, 18);
+    session.abortController = new AbortController();
+    await processAgentResponse(payload, session, makeDbManager(), sm, makeWorker(), 0, null, 'SDK');
+
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(sm.getMessageBuffer().getPendingCount(18)).toBe(0);
+    expect(session.consecutiveContextOverflows).toBe(0);
+    expect(session.overflowRetryPending).toBe(false);
   });
 
   it('resets the overflow budget after a non-overflow response', async () => {

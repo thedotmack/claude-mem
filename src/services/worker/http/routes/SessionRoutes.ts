@@ -117,8 +117,20 @@ export class SessionRoutes extends BaseRouteHandler {
           }
         }
       }
-      await this.applyTierRouting(session);
-      await this.startGeneratorWithProvider(session, selectedProvider, source);
+      let startingPromise: Promise<void> = Promise.resolve();
+      startingPromise = (async () => {
+        try {
+          await this.applyTierRouting(session);
+          await this.startGeneratorWithProvider(session, selectedProvider, source);
+        } catch (error) {
+          if (session.generatorPromise === startingPromise) {
+            session.generatorPromise = null;
+          }
+          throw error;
+        }
+      })();
+      session.generatorPromise = startingPromise;
+      await startingPromise;
       return;
     }
 

@@ -161,4 +161,45 @@ describe('overflow generator restart', () => {
       expect(restartSpy).not.toHaveBeenCalled();
     }
   });
+
+  it('reserves a generator start while tier routing is still awaiting', async () => {
+    const session = makeSession();
+    let tierResolve: (() => void) | null = null;
+    const tierRouting = new Promise<void>(resolve => {
+      tierResolve = resolve;
+    });
+    let runResolve: (() => void) | null = null;
+    const run = new Promise<void>(resolve => {
+      runResolve = resolve;
+    });
+    let starts = 0;
+    const openRouterAgent = {
+      startSession: async () => {
+        starts++;
+        await run;
+      },
+    };
+    const sessionManager = {
+      getSession: () => session,
+      getMessageBuffer: () => ({ getPendingCount: () => 1 }),
+      removeSessionImmediate: () => {},
+    };
+    const routes = makeRoutes(sessionManager, openRouterAgent);
+    (routes as any).applyTierRouting = () => tierRouting;
+
+    const firstStart = routes.ensureGeneratorRunning(42, 'init');
+    await Promise.resolve();
+    const secondStart = routes.ensureGeneratorRunning(42, 'observation');
+
+    expect(starts).toBe(0);
+    expect(session.generatorPromise).not.toBeNull();
+
+    tierResolve?.();
+    await Promise.all([firstStart, secondStart]);
+    expect(starts).toBe(1);
+
+    const generatorPromise = session.generatorPromise;
+    runResolve?.();
+    await generatorPromise;
+  });
 });
