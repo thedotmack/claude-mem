@@ -1,10 +1,11 @@
 import { describe, it, expect } from "bun:test";
+import * as pluginEntry from "../../src/integrations/opencode-plugin/index";
+import ClaudeMemPlugin from "../../src/integrations/opencode-plugin/index";
 import {
-  ClaudeMemPlugin,
   parseSearchResponse,
   REGISTERED_OPENCODE_HOOKS,
   REAL_OPENCODE_EVENT_TYPES,
-} from "../../src/integrations/opencode-plugin/index";
+} from "../../src/integrations/opencode-plugin/contract";
 
 /**
  * Regression guard for plan-08 (OpenCode event-contract correctness).
@@ -119,6 +120,118 @@ describe("OpenCode plugin event contract", () => {
       expect(obsBody.tool_response).toBe("file contents");
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("OpenCode plugin entry-module export contract", () => {
+  // OpenCode's loader treats EVERY export of the plugin entry module as a
+  // plugin factory: each must be a function, and each gets invoked. A
+  // non-function export (the v13.x data constants) fails the whole plugin
+  // load with "Plugin export is not a function"; an extra function export
+  // would run as a second plugin instance. The data constants therefore live
+  // in contract.ts, and this test pins the entry module to factory-only
+  // exports (#3330).
+  it("exports only the plugin factory (every export must be a function)", () => {
+    const exports = Object.entries(pluginEntry);
+    expect(exports.length, "the entry module must have exports").toBeGreaterThan(0);
+    for (const [name, value] of exports) {
+      expect(typeof value, `export "${name}" must be a function`).toBe("function");
+    }
+  });
+});
+
+describe("OpenCode plugin attribution contract", () => {
+  const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const originalFetch = globalThis.fetch;
+
+  const captureFetch = () => {
+    posts.length = 0;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {},
+      });
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+  };
+
+  const restoreFetch = () => {
+    globalThis.fetch = originalFetch;
+  };
+
+  it("sends platform_source=opencode on every worker POST", async () => {
+    captureFetch();
+    try {
+      const plugin = await ClaudeMemPlugin({
+        ...pluginCtx,
+        directory: "/tmp/repo",
+        worktree: "/tmp/repo",
+      });
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_src", callID: "c1" },
+        { title: "Read", output: "x", metadata: {}, args: {} },
+      );
+      await plugin["chat.message"](
+        {},
+        { message: { role: "user", sessionID: "ses_src" }, parts: [{ type: "text", text: "hi" }] },
+      );
+      await plugin["chat.message"](
+        {},
+        { message: { role: "assistant", sessionID: "ses_src" }, parts: [{ type: "text", text: "hello" }] },
+      );
+      await plugin["experimental.session.compacting"]({ sessionID: "ses_src" });
+      await plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_src" } } });
+
+      const workerPosts = posts.filter((p) => p.url.includes("/api/sessions/"));
+      expect(workerPosts.length).toBe(5);
+      for (const post of workerPosts) {
+        expect(post.body.platform_source, `${post.url} must carry the platform source`).toBe(
+          "opencode",
+        );
+      }
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("derives the project from the worktree basename, not project.name", async () => {
+    captureFetch();
+    try {
+      const plugin = await ClaudeMemPlugin({
+        ...pluginCtx,
+        project: { name: "opencode", path: "/tmp/x" },
+        directory: "/tmp/my-repo/sub/dir",
+        worktree: "/tmp/my-repo",
+      });
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_proj", callID: "c1" },
+        { title: "Read", output: "x", metadata: {}, args: {} },
+      );
+      const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
+      expect(initPost, "session init should fire").toBeTruthy();
+      expect(initPost!.body.project).toBe("my-repo");
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("records the real user prompt at session init instead of [media prompt]", async () => {
+    captureFetch();
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["chat.message"](
+        {},
+        {
+          message: { role: "user", sessionID: "ses_prompt" },
+          parts: [{ type: "text", text: "investigate the flaky test" }],
+        },
+      );
+      const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
+      expect(initPost, "chat.message(user) should lazily init the session").toBeTruthy();
+      expect(initPost!.body.prompt).toBe("investigate the flaky test");
+    } finally {
+      restoreFetch();
     }
   });
 });
