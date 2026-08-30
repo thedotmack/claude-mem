@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { basename } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { readFileSync, statSync } from "node:fs";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
 import {
   parseSearchResponse,
@@ -124,15 +125,57 @@ async function workerGetText(path: string): Promise<string | null> {
 }
 
 /**
+ * Mirrors the shared identity logic (detectWorktree, #2663/#3262) locally:
+ * a linked git worktree carries a `.git` FILE pointing at
+ * `<parentRepo>/.git/worktrees/<leaf>`, and the rest of claude-mem keys such
+ * worktrees by the compound `<parentRepoName>/<worktreeLeafName>`. Reproducing
+ * this here instead of importing src/utils/project-name.ts is deliberate
+ * (#3803): the esbuild bundle inlines everything but node builtins, so the
+ * import would drag the file-writing logger and a synchronous
+ * execFileSync("git", ...) into OpenCode's editor process. Any filesystem
+ * throw (ENOENT, EACCES, anything) falls back to null — this runs inside
+ * plugin load and must never throw.
+ */
+function resolveWorktreeParentLeaf(worktree: string): string | null {
+  try {
+    const gitPath = join(worktree, ".git");
+    const stat = statSync(gitPath);
+    // A `.git` DIRECTORY is a normal repo, not a linked worktree.
+    if (!stat.isFile()) {
+      return null;
+    }
+    const content = readFileSync(gitPath, "utf-8").trim();
+    const gitdirMatch = content.match(/^gitdir:\s*(.+)$/);
+    if (!gitdirMatch) {
+      return null;
+    }
+    const gitdir = resolve(dirname(gitPath), gitdirMatch[1]);
+    const worktreesMatch = gitdir.match(/^(.+)[/\\]\.git[/\\]worktrees[/\\]([^/\\]+)$/);
+    if (!worktreesMatch) {
+      return null;
+    }
+    return `${basename(worktreesMatch[1])}/${basename(worktree)}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The project name claude-mem attributes the session to.
  *
  * `ctx.project?.name` is NOT the repository name in OpenCode — it resolves to
  * the constant "opencode", which lumps every project into one bucket. The
  * worktree root is the same repo-root identity the rest of claude-mem keys
  * projects by (for non-git projects OpenCode resolves the worktree to the
- * project directory, so this covers every launch).
+ * project directory, so this covers every launch). Linked worktrees get the
+ * same compound parent/leaf key every other capture path uses (#3803), so
+ * project-filtered context sees OpenCode captures too.
  */
 function resolveProjectName(ctx: OpenCodePluginContext): string {
+  const worktreeKey = resolveWorktreeParentLeaf(ctx.worktree);
+  if (worktreeKey) {
+    return worktreeKey;
+  }
   return basename(ctx.worktree) || ctx.project?.name || "opencode";
 }
 
@@ -166,6 +209,17 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
  * message). This guarantees a session row exists before observations arrive.
  * The first user prompt travels with the init so the worker records what the
  * session was actually asked instead of its "[media prompt]" placeholder.
+ *
+ * A NON-EMPTY prompt always re-posts the init, even for an already-initialized
+ * session (#3803): the tool.execute.after hook initializes lazily with the
+ * default empty prompt, and without the re-post the real prompt arriving later
+ * via chat.message would be dropped — search, summaries and prompt-based
+ * privacy handling would all run against the empty placeholder. This is safe
+ * against the worker: the /api/sessions/init route returns the existing session
+ * row for a known contentSessionId and de-duplicates identical prompts inside a
+ * time window, so the extra POST records the prompt without creating a
+ * duplicate session (and matches the Claude Code path, where every user prompt
+ * triggers its own session-init).
  */
 function ensureSessionInitialized(
   openCodeSessionId: string,
@@ -173,7 +227,7 @@ function ensureSessionInitialized(
   prompt = "",
 ): string {
   const contentSessionId = getOrCreateContentSessionId(openCodeSessionId);
-  if (!initializedSessionIds.has(openCodeSessionId)) {
+  if (!initializedSessionIds.has(openCodeSessionId) || prompt !== "") {
     initializedSessionIds.add(openCodeSessionId);
     workerPostFireAndForget("/api/sessions/init", {
       contentSessionId,
