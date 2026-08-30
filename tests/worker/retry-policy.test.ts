@@ -90,4 +90,13 @@ describe('provider attempt timeout', () => {
     }, { perAttemptTimeoutMs: 1, maxRetries: 2 })).rejects.toBeInstanceOf(ProviderAttemptTimeoutError);
     expect(attempts).toBe(1);
   });
+
+  it('rejects a callback that never settles after the deadline', async () => {
+    const startedAt = Date.now();
+    await expect(withRetry(async () => new Promise<never>(() => {}), {
+      perAttemptTimeoutMs: 10,
+      maxRetries: 2,
+    })).rejects.toBeInstanceOf(ProviderAttemptTimeoutError);
+    expect(Date.now() - startedAt).toBeLessThan(500);
+  });
 });
