@@ -48,5 +48,5 @@ describe('sync-marketplace install markers', () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 });

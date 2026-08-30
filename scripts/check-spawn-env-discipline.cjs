@@ -79,9 +79,9 @@ function findViolations() {
       const referencesProcessEnv = /process\s*\.\s*env/.test(window);
       if (!passesEnvOption || !referencesProcessEnv) return;
 
-      // The env block must be sanitized. buildCodexExecEnv is stricter than
-      // sanitizeEnv: it passes an allowlist of OS/Codex path variables only.
-      if (!/(sanitizeEnv|buildCodexExecEnv)\s*\(/.test(window)) {
+      // The Codex helpers are stricter than sanitizeEnv: they pass an
+      // allowlist of OS/Codex path variables only.
+      if (!/(sanitizeEnv|buildCodexExecEnv|buildCodexAppServerEnv)\s*\(/.test(window)) {
         violations.push({
           file: path.relative(REPO_ROOT, file),
           line: i + 1,

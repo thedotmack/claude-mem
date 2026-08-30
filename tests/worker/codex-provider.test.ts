@@ -1,16 +1,11 @@
 import { describe, expect, it, mock } from 'bun:test';
-import { existsSync, rmSync, statSync } from 'fs';
 import {
   buildCodexExecEnv,
-  buildCodexExecArgs,
-  buildCodexSpawnCommand,
   buildCodexObservationPrompt,
   CodexProvider,
   classifyCodexExecError,
-  createCodexExecWorkDir,
   normalizeCodexExecutablePath,
   parseCodexReasoningEffort,
-  parseCodexExecJsonl,
   sanitizeCodexObservationResponse,
 } from '../../src/services/worker/CodexProvider.js';
 import type { ActiveSession, PendingMessage } from '../../src/services/worker-types.js';
@@ -126,47 +121,6 @@ function createProviderFlowHarness(
   };
 }
 
-describe('parseCodexExecJsonl', () => {
-  it('extracts the final assistant message and Codex usage from exec JSONL', () => {
-    const result = parseCodexExecJsonl([
-      JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }),
-      JSON.stringify({
-        type: 'item.completed',
-        item: {
-          id: 'item-1',
-          type: 'agent_message',
-          text: '<observation><type>discovery</type><title>Codex</title><narrative>Captured.</narrative></observation>',
-        },
-      }),
-      JSON.stringify({
-        type: 'turn.completed',
-        usage: {
-          input_tokens: 10,
-          cached_input_tokens: 2,
-          output_tokens: 3,
-          reasoning_output_tokens: 1,
-        },
-      }),
-    ].join('\n'));
-
-    expect(result.content).toContain('<observation>');
-    expect(result.inputTokens).toBe(12);
-    expect(result.outputTokens).toBe(4);
-    expect(result.tokensUsed).toBe(16);
-  });
-
-  it('ignores non-JSON progress lines and uses the latest agent message', () => {
-    const result = parseCodexExecJsonl([
-      'Codex CLI starting...',
-      JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'first' } }),
-      JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'second' } }),
-    ].join('\n'));
-
-    expect(result.content).toBe('second');
-    expect(result.tokensUsed).toBeUndefined();
-  });
-});
-
 describe('classifyCodexExecError', () => {
   it('classifies a missing Codex executable as unrecoverable', () => {
     const cause = Object.assign(new Error('spawn codex ENOENT'), { code: 'ENOENT' });
@@ -211,62 +165,6 @@ describe('parseCodexReasoningEffort', () => {
   });
 });
 
-describe('buildCodexExecArgs', () => {
-  it('runs Codex exec as an isolated read-only non-interactive turn', () => {
-    const workDir = '/tmp/claude-mem-codex-test';
-    const args = buildCodexExecArgs({
-      model: 'gpt-5.4-mini',
-      reasoningEffort: null,
-    }, workDir);
-
-    expect(args).toContain('--json');
-    expect(args).toContain('--ephemeral');
-    expect(args).toContain('--ignore-user-config');
-    expect(args).toContain('--ignore-rules');
-    expect(args).toContain('--sandbox');
-    expect(args).toContain('read-only');
-    expect(args).toContain('--cd');
-    expect(args[args.indexOf('--cd') + 1]).toBe(workDir);
-    expect(args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
-    expect(args).not.toContain('--dangerously-bypass-hook-trust');
-  });
-
-  it('passes reasoning effort through a Codex config override', () => {
-    const args = buildCodexExecArgs({
-      model: 'gpt-5.4-mini',
-      reasoningEffort: 'low',
-    }, '/tmp/claude-mem-codex-test');
-
-    expect(args).toContain('--ignore-user-config');
-    expect(args).toContain('-c');
-    expect(args).toContain('model_reasoning_effort="low"');
-  });
-
-  it('omits the reasoning override when unset', () => {
-    const args = buildCodexExecArgs({
-      model: 'gpt-5.4-mini',
-      reasoningEffort: null,
-    }, '/tmp/claude-mem-codex-test');
-
-    expect(args).not.toContain('-c');
-    expect(args.some(arg => arg.startsWith('model_reasoning_effort='))).toBe(false);
-  });
-});
-
-describe('createCodexExecWorkDir', () => {
-  it('creates a private temporary workdir for each codex exec attempt', () => {
-    const workDir = createCodexExecWorkDir();
-    try {
-      expect(existsSync(workDir)).toBe(true);
-      if (process.platform !== 'win32') {
-        expect(statSync(workDir).mode & 0o777).toBe(0o700);
-      }
-    } finally {
-      rmSync(workDir, { recursive: true, force: true });
-    }
-  });
-});
-
 describe('normalizeCodexExecutablePath', () => {
   it('defaults blank values to codex', () => {
     expect(normalizeCodexExecutablePath(undefined)).toBe('codex');
@@ -282,18 +180,6 @@ describe('normalizeCodexExecutablePath', () => {
   it('allows ordinary Windows executable paths', () => {
     expect(normalizeCodexExecutablePath('C:\\Program Files\\Codex\\codex.cmd', 'win32'))
       .toBe('C:\\Program Files\\Codex\\codex.cmd');
-  });
-});
-
-describe('buildCodexSpawnCommand', () => {
-  it('quotes Windows executable paths with spaces for shell execution', () => {
-    expect(buildCodexSpawnCommand('C:\\Program Files\\Codex\\codex.cmd', 'win32'))
-      .toBe('"C:\\Program Files\\Codex\\codex.cmd"');
-  });
-
-  it('leaves non-Windows executable paths unquoted for direct spawn', () => {
-    expect(buildCodexSpawnCommand('/Applications/Codex CLI/codex', 'darwin'))
-      .toBe('/Applications/Codex CLI/codex');
   });
 });
 
@@ -322,13 +208,13 @@ describe('CodexProvider session cancellation', () => {
   it('forwards the owning session abort signal to the active Codex retry attempt', async () => {
     const provider = new CodexProvider(null as never, null as never) as unknown as {
       query(history: ConversationMessage[], config: unknown, abortSignal?: AbortSignal): Promise<ProviderQueryResult>;
-      queryCodexExec(history: ConversationMessage[], config: unknown, attemptSignal: AbortSignal): Promise<ProviderQueryResult>;
+      queryCodexAppServer(history: ConversationMessage[], config: unknown, attemptSignal: AbortSignal): Promise<ProviderQueryResult>;
     };
     const sessionController = new AbortController();
     let attemptSignal: AbortSignal | undefined;
     let resolveQuery: ((result: ProviderQueryResult) => void) | undefined;
 
-    provider.queryCodexExec = async (_history, _config, signal) => {
+    provider.queryCodexAppServer = async (_history, _config, signal) => {
       attemptSignal = signal;
       return new Promise<ProviderQueryResult>(resolve => {
         resolveQuery = resolve;
