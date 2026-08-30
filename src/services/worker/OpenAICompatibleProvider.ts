@@ -40,6 +40,12 @@ export interface ProviderQueryResult {
  * truncation — is identical between them. Per-provider differences (config
  * resolution, request shape, token estimation, usage/cost reporting) are
  * supplied by abstract members.
+ *
+ * History ownership: this class pushes the *user* half of every turn;
+ * `processAgentResponse` is the single writer of the *assistant* half, for all
+ * providers including Claude. Appending the reply here too left two identical
+ * assistant messages in front of each user turn and doubled the assistant side
+ * of every later request.
  */
 export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string; model: string }> {
   protected dbManager: DatabaseManager;
@@ -177,7 +183,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     responseContext: ReturnType<typeof snapshotResponseContext>
   ): Promise<void> {
     if (initResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
       const tokensUsed = initResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
@@ -226,7 +231,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     let tokensUsed = 0;
     if (obsResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
       tokensUsed = obsResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
@@ -284,7 +288,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     let tokensUsed = 0;
     if (summaryResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
       tokensUsed = summaryResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
