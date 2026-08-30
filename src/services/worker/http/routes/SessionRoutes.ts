@@ -278,8 +278,24 @@ export class SessionRoutes extends BaseRouteHandler {
           sessionManager: this.sessionManager,
           completionHandler: this.completionHandler,
         });
+        if ((reason ?? '').split(':')[0] === 'overflow') {
+          await this.restartAfterOverflow(session.sessionDbId);
+        }
       });
     session.generatorPromise = generatorPromise;
+  }
+
+  private async restartAfterOverflow(sessionDbId: number): Promise<void> {
+    if (!this.sessionManager.getSession(sessionDbId)) {
+      return;
+    }
+
+    const pendingCount = this.sessionManager.getMessageBuffer().getPendingCount(sessionDbId);
+    if (pendingCount === 0) {
+      return;
+    }
+
+    await this.ensureGeneratorRunning(sessionDbId, 'observation');
   }
 
   setupRoutes(app: express.Application): void {

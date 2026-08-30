@@ -1,0 +1,3 @@
+[SDK   ] [session-1406] ← Response received (18 chars) {promptNumber=29} Prompt is too long
+[PARSER] [session-1406] SDK returned non-XML prose response — ignoring queued batch
+         {outputClass=prose, preview=Prompt is too long, consecutiveInvalidOutputs=0}

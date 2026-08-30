@@ -206,6 +206,7 @@ describe('ResponseProcessor', () => {
       claimedMessageIds: [],
       conversationHistory: [],
       currentProvider: 'claude',
+      consecutiveContextOverflows: 0,
       ...overrides,
     } as ActiveSession;
   }
@@ -634,6 +635,36 @@ describe('ResponseProcessor', () => {
 
       const [, , , summary] = mockStoreObservations.mock.calls[0];
       expect(summary).toBeNull();
+    });
+  });
+
+  describe('context-overflow budget', () => {
+    it('resets the separate overflow budget after a valid response', async () => {
+      const session = createMockSession({ consecutiveContextOverflows: 1 });
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Recovered response</title>
+          <facts></facts>
+          <concepts></concepts>
+          <files_read></files_read>
+          <files_modified></files_modified>
+        </observation>
+      `;
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'SDK'
+      );
+
+      expect(session.consecutiveContextOverflows).toBe(0);
+      expect(mockStoreObservations).toHaveBeenCalledTimes(1);
     });
   });
 

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   classifyObserverOutput,
   isAuthFailureObserverOutput,
+  isContextOverflowObserverOutput,
   isQuotaLimitedObserverOutput,
   previewOutput,
 } from '../../src/sdk/output-classifier.js';
@@ -94,6 +95,40 @@ describe('isAuthFailureObserverOutput', () => {
     expect(isAuthFailureObserverOutput('No observations to record.')).toBe(false);
     expect(isAuthFailureObserverOutput('Please run /login in the observed project instructions.')).toBe(false);
     expect(isAuthFailureObserverOutput('The project authentication guide says to run /login before testing.')).toBe(false);
+  });
+});
+
+describe('isContextOverflowObserverOutput', () => {
+  it('detects direct context rejection phrases', () => {
+    const positives = [
+      'Prompt is too long',
+      'Input is too long for this request.',
+      'Request payload size exceeds the limit.',
+      'Maximum context length reached.',
+      'context_length_exceeded',
+      'Too many tokens in the request.',
+      'The request exceeds the context window.',
+      'The context limit exceeds the request size.',
+    ];
+
+    for (const output of positives) {
+      expect(isContextOverflowObserverOutput(output)).toBe(true);
+    }
+  });
+
+  it('rejects non-strings, empty output, XML, and context-window discussion', () => {
+    expect(isContextOverflowObserverOutput(undefined)).toBe(false);
+    expect(isContextOverflowObserverOutput('   ')).toBe(false);
+    expect(isContextOverflowObserverOutput('<observation><title>Prompt is too long</title></observation>')).toBe(false);
+    expect(isContextOverflowObserverOutput('<summary>maximum context length</summary>')).toBe(false);
+    expect(isContextOverflowObserverOutput('<skip_summary reason="context_length_exceeded"/>')).toBe(false);
+    expect(isContextOverflowObserverOutput('I hit the context window and cannot continue.')).toBe(false);
+    expect(isContextOverflowObserverOutput('The context window is discussed in the project guide.')).toBe(false);
+  });
+
+  it('does not classify quota or auth prose as context overflow', () => {
+    expect(isContextOverflowObserverOutput('Claude usage limit reached.')).toBe(false);
+    expect(isContextOverflowObserverOutput('Failed to authenticate. API Error: 401')).toBe(false);
   });
 });
 

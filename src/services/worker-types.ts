@@ -30,6 +30,7 @@ export interface ActiveSession {
    * accumulate respawn debt.
    */
   consecutiveInvalidOutputs: number;
+  consecutiveContextOverflows: number;
   forceInit?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;

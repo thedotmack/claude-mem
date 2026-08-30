@@ -95,3 +95,30 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
     /\/login\b.{0,40}\b(?:to\s+authenticate|again|to\s+continue|and\s+retry|reauthenticate|credentials|provider|claude)\b/.test(text)
   );
 }
+
+/**
+ * Detect direct context-overflow rejection prose returned as an assistant
+ * message. This is an inference over untyped text, not a provider error type.
+ */
+export function isContextOverflowObserverOutput(raw: unknown): boolean {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return false;
+  }
+
+  if (/<(observation|summary)\b/i.test(raw) || /<skip_summary\b/i.test(raw)) {
+    return false;
+  }
+
+  const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  return (
+    /\bprompt\s+is\s+too\s+long\b/.test(text) ||
+    /\binput\s+is\s+too\s+long\b/.test(text) ||
+    /\brequest\s+payload\s+size\s+exceeds\b/.test(text) ||
+    /\bmaximum\s+context\s+length\b/.test(text) ||
+    /\bcontext_length_exceeded\b/.test(text) ||
+    /\btoo\s+many\s+tokens\b/.test(text) ||
+    /\bexceeds\b.{0,40}\bcontext\s+(?:window|length|limit)\b/.test(text) ||
+    /\bcontext\s+(?:window|length|limit)\b.{0,40}\bexceeds\b/.test(text)
+  );
+}

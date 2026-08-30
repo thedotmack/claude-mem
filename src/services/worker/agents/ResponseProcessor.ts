@@ -4,6 +4,7 @@ import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../..
 import {
   classifyObserverOutput,
   isAuthFailureObserverOutput,
+  isContextOverflowObserverOutput,
   isQuotaLimitedObserverOutput,
   previewOutput,
 } from '../../../sdk/output-classifier.js';
@@ -31,6 +32,7 @@ export interface ObservationFileEvidence {
 const READ_TOOL_NAMES = new Set(['Read']);
 const WRITE_TOOL_NAMES = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'write_file']);
 const PATCH_TOOL_NAMES = new Set(['apply_patch']);
+const MAX_CONSECUTIVE_CONTEXT_OVERFLOWS = 2;
 
 export function extractObservationFileEvidence(messages: ReadonlyArray<ObservationFileEvidenceMessage>): ObservationFileEvidence {
   const filesRead: string[] = [];
@@ -345,6 +347,36 @@ export async function processAgentResponse(
       return;
     }
 
+    if (agentName === 'SDK' && isContextOverflowObserverOutput(text)) {
+      session.consecutiveContextOverflows += 1;
+
+      if (session.consecutiveContextOverflows >= MAX_CONSECUTIVE_CONTEXT_OVERFLOWS) {
+        const droppedMessages = await sessionManager.confirmClaimedMessages(session.sessionDbId);
+        logger.error('PARSER', `${agentName} returned context-overflow prose; dropping claimed batch after bounded retry`, {
+          sessionId: session.sessionDbId,
+          droppedMessages,
+          preview: previewOutput(text),
+        });
+        session.consecutiveContextOverflows = 0;
+      } else {
+        await sessionManager.resetProcessingToPending(session.sessionDbId);
+        logger.warn('PARSER', `${agentName} returned context-overflow prose; preserving queued batch for fresh context`, {
+          sessionId: session.sessionDbId,
+          consecutiveContextOverflows: session.consecutiveContextOverflows,
+          preview: previewOutput(text),
+        });
+      }
+
+      session.abortReason = 'overflow:observer_text';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      return;
+    }
+
     // Classify the non-XML output so a dropped batch is visible, not silent.
     // Ordinary idle/prose is a claimed no-op batch: confirm it and do not build
     // any respawn debt from repeated skip acknowledgements.
@@ -369,6 +401,7 @@ export async function processAgentResponse(
   // Valid parse — clear the invalid-output counter so transient misses don't
   // accumulate toward a respawn across a healthy session.
   session.consecutiveInvalidOutputs = 0;
+  session.consecutiveContextOverflows = 0;
 
   if (!session.memorySessionId) {
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {

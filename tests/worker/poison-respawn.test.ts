@@ -1,4 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { readFileSync } from 'fs';
 import { logger } from '../../src/utils/logger.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import { processAgentResponse } from '../../src/services/worker/agents/ResponseProcessor.js';
@@ -42,6 +43,25 @@ async function queueAndClaimOne(sm: SessionManager, sessionDbId: number): Promis
   expect(claimed.done).toBe(false);
   expect(sm.getMessageBuffer().getPendingCount(sessionDbId)).toBe(1);
   await iterator.return?.();
+}
+
+function readReproductionPayload(): { declaredLength: number; payload: string } {
+  const fixture = readFileSync(new URL('../fixtures/claude-mem-PR-TARGET-3800-REPRO.txt', import.meta.url), 'utf8');
+  const responseLine = fixture.split(/\r?\n/).find(line => line.includes('Response received'));
+  if (!responseLine) {
+    throw new Error('Reproduction fixture has no response line');
+  }
+
+  const lengthMatch = responseLine.match(/Response received \((\d+) chars\)/);
+  const closingContext = responseLine.indexOf('}');
+  if (!lengthMatch || closingContext === -1) {
+    throw new Error('Reproduction fixture response line is malformed');
+  }
+
+  return {
+    declaredLength: Number(lengthMatch[1]),
+    payload: responseLine.slice(closingContext + 1).trim(),
+  };
 }
 
 let spies: ReturnType<typeof spyOn>[] = [];
@@ -89,6 +109,100 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(session.claimedMessageIds).toEqual([]);
     expect(session.earliestPendingTimestamp).toBeNull();
     expect(session.consecutiveInvalidOutputs).toBe(0);
+    expect(session.abortController.signal.aborted).toBe(false);
+    expect(session.abortReason ?? null).toBeNull();
+  });
+
+  it('recovers the exact issue fixture on the first SDK overflow', async () => {
+    const { declaredLength, payload } = readReproductionPayload();
+    expect(declaredLength).toBe(18);
+    expect(payload.length).toBe(declaredLength);
+
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(12, 'do the thing', 1);
+    session.memorySessionId = 'mem-12';
+    await queueAndClaimOne(sm, 12);
+
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+    const worker = makeWorker();
+
+    await processAgentResponse(
+      payload,
+      session,
+      makeDbManager(),
+      sm,
+      worker,
+      0,
+      null,
+      'SDK',
+    );
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(resetSpy).toHaveBeenCalledWith(12);
+    expect(sm.getMessageBuffer().getPendingCount(12)).toBe(1);
+    expect(session.consecutiveContextOverflows).toBe(1);
+    expect(session.consecutiveInvalidOutputs).toBe(0);
+    expect(session.earliestPendingTimestamp).not.toBeNull();
+    expect(session.abortReason).toBe('overflow:observer_text');
+    expect(session.abortController.signal.aborted).toBe(true);
+    expect(worker.broadcastProcessingStatus).toHaveBeenCalled();
+  });
+
+  it('drops the preserved batch on the second SDK overflow and resets the budget', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(13, 'do the thing', 1);
+    session.memorySessionId = 'mem-13';
+    await queueAndClaimOne(sm, 13);
+
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+    const { payload } = readReproductionPayload();
+
+    await processAgentResponse(payload, session, makeDbManager(), sm, makeWorker(), 0, null, 'SDK');
+    session.abortController = new AbortController();
+    await queueAndClaimOne(sm, 13);
+    resetSpy.mockClear();
+    await processAgentResponse(payload, session, makeDbManager(), sm, makeWorker(), 0, null, 'SDK');
+
+    expect(resetSpy).not.toHaveBeenCalled();
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(confirmSpy).toHaveBeenCalledWith(13);
+    expect(sm.getMessageBuffer().getPendingCount(13)).toBe(0);
+    expect(session.claimedMessageIds).toEqual([]);
+    expect(session.earliestPendingTimestamp).toBeNull();
+    expect(session.consecutiveContextOverflows).toBe(0);
+    expect(session.abortReason).toBe('overflow:observer_text');
+    expect(session.abortController.signal.aborted).toBe(true);
+    expect(logger.error).toHaveBeenCalledWith(
+      'PARSER',
+      expect.stringContaining('dropping claimed batch'),
+      expect.objectContaining({ sessionId: 13, droppedMessages: 1, preview: payload }),
+    );
+  });
+
+  it('keeps the existing generic policy for non-SDK overflow-shaped prose', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(14, 'do the thing', 1);
+    session.memorySessionId = 'mem-14';
+    await queueAndClaimOne(sm, 14);
+
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+
+    await processAgentResponse(
+      'Prompt is too long',
+      session,
+      makeDbManager(),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'Gemini',
+    );
+
+    expect(confirmSpy).toHaveBeenCalledWith(14);
+    expect(resetSpy).not.toHaveBeenCalled();
     expect(session.abortController.signal.aborted).toBe(false);
     expect(session.abortReason ?? null).toBeNull();
   });
@@ -338,6 +452,30 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(removeSpy).not.toHaveBeenCalled();
     expect(sm.getSession(6)).toBe(session);
     expect(sm.getMessageBuffer().getPendingCount(6)).toBe(1);
+    expect(session.generatorPromise).toBeNull();
+    expect(session.currentProvider).toBeNull();
+  });
+
+  it('overflow generator exit keeps the active session and in-memory buffer', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(15, 'do the thing', 1);
+    session.memorySessionId = 'mem-15';
+    session.currentProvider = 'claude';
+    session.generatorPromise = Promise.resolve();
+    await queueAndClaimOne(sm, 15);
+
+    const finalizeSession = mock(() => Promise.resolve());
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+
+    await handleGeneratorExit(session, 'overflow:observer_text', {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+    });
+
+    expect(finalizeSession).not.toHaveBeenCalled();
+    expect(removeSpy).not.toHaveBeenCalled();
+    expect(sm.getSession(15)).toBe(session);
+    expect(sm.getMessageBuffer().getPendingCount(15)).toBe(1);
     expect(session.generatorPromise).toBeNull();
     expect(session.currentProvider).toBeNull();
   });
