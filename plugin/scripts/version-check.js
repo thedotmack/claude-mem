@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'child_process';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -11,6 +11,59 @@ const BUN_INSTALL_ARGS = Object.freeze(['install', '--production']);
 const BUN_INSTALL_TIMEOUT_MS = 120_000;
 const NODE_MODULES_DIRNAME = 'node_modules';
 const INSTALL_COMPLETE_MARKER = '.claude-mem-install-complete';
+const INSTALL_LOCK_DIRNAME = '.claude-mem-install.lock';
+// A held lock older than this is assumed to belong to a process that was
+// killed mid-install (e.g. the gh #3793 tree-kill) rather than one still
+// running; BUN_INSTALL_TIMEOUT_MS is the longest a live install should ever
+// hold it.
+const INSTALL_LOCK_STALE_MS = BUN_INSTALL_TIMEOUT_MS + 30_000;
+
+/**
+ * Acquire an exclusive, self-cleaning install lock so two Setup hooks racing
+ * on the same pluginRoot (e.g. several Claude Code sessions launched at once,
+ * gh #3793) cannot interleave: mkdir is atomic, so exactly one process wins.
+ * A stale lock (holder was killed mid-install) is reclaimed after
+ * INSTALL_LOCK_STALE_MS rather than blocking every future Setup run forever.
+ * Returns the lock path on success, or null if another process currently
+ * owns it.
+ */
+function acquireInstallLock(pluginRoot) {
+  const lockPath = join(pluginRoot, INSTALL_LOCK_DIRNAME);
+  try {
+    mkdirSync(lockPath);
+    return lockPath;
+  } catch (err) {
+    if (!err || err.code !== 'EEXIST') throw err;
+  }
+
+  let ageMs = Infinity;
+  try {
+    ageMs = Date.now() - statSync(lockPath).mtimeMs;
+  } catch {
+    // Lock disappeared between the failed mkdir and this stat (the other
+    // process finished) — fall through and retry acquisition below.
+  }
+  if (ageMs <= INSTALL_LOCK_STALE_MS) {
+    return null;
+  }
+
+  try {
+    rmSync(lockPath, { recursive: true, force: true });
+    mkdirSync(lockPath);
+    return lockPath;
+  } catch {
+    return null;
+  }
+}
+
+function releaseInstallLock(lockPath) {
+  try {
+    rmSync(lockPath, { recursive: true, force: true });
+  } catch (err) {
+    const reason = err && err.message ? err.message : String(err);
+    console.error(`${VERSION_CHECK_LOG_PREFIX} failed to release install lock (${reason})`);
+  }
+}
 
 function findBun() {
   const pathCheck = IS_WINDOWS
@@ -71,85 +124,104 @@ function ensurePluginDependencies(pluginRoot) {
   // install forever, permanently short-circuiting on a broken plugin.
   if (existsSync(markerPath)) return;
 
-  if (existsSync(nodeModulesPath)) {
-    // node_modules present without the completion marker means a previous
-    // install was interrupted before finishing. Its mere presence also
-    // disables Bun's own auto-install, so it must be removed before retrying.
-    try {
-      rmSync(nodeModulesPath, { recursive: true, force: true });
-    } catch (rmErr) {
-      const rmReason = rmErr && rmErr.message ? rmErr.message : String(rmErr);
-      console.error(`${VERSION_CHECK_LOG_PREFIX} failed to remove incomplete node_modules (${rmReason}); worker may crash with missing module errors`);
+  // Hold an exclusive lock for the rest of this function: a second Setup
+  // hook racing on the same pluginRoot must never delete node_modules while
+  // a peer is still installing into it (gh #3793 review). A process that
+  // loses the race skips this Setup run entirely rather than touching
+  // anything; the next Setup run (or the lock holder itself) retries.
+  const lockPath = acquireInstallLock(pluginRoot);
+  if (!lockPath) {
+    console.error(`${VERSION_CHECK_LOG_PREFIX} another process is installing plugin dependencies; skipping this Setup run`);
+    return;
+  }
+
+  try {
+    // Re-check after acquiring the lock: the previous holder may have just
+    // finished successfully while we were waiting.
+    if (existsSync(markerPath)) return;
+
+    if (existsSync(nodeModulesPath)) {
+      // node_modules present without the completion marker means a previous
+      // install was interrupted before finishing. Its mere presence also
+      // disables Bun's own auto-install, so it must be removed before retrying.
+      try {
+        rmSync(nodeModulesPath, { recursive: true, force: true });
+      } catch (rmErr) {
+        const rmReason = rmErr && rmErr.message ? rmErr.message : String(rmErr);
+        console.error(`${VERSION_CHECK_LOG_PREFIX} failed to remove incomplete node_modules (${rmReason}); worker may crash with missing module errors`);
+        return;
+      }
+    }
+
+    const bunPath = findBun();
+    if (!bunPath) {
+      console.error(`${VERSION_CHECK_LOG_PREFIX} bun not found on PATH; cannot auto-install plugin dependencies`);
       return;
     }
-  }
 
-  const bunPath = findBun();
-  if (!bunPath) {
-    console.error(`${VERSION_CHECK_LOG_PREFIX} bun not found on PATH; cannot auto-install plugin dependencies`);
-    return;
-  }
+    // Progress diagnostic so users understand the (one-time) Setup hang.
+    console.error(`${VERSION_CHECK_LOG_PREFIX} installing plugin dependencies (first run, one-time)...`);
 
-  // Progress diagnostic so users understand the (one-time) Setup hang.
-  console.error(`${VERSION_CHECK_LOG_PREFIX} installing plugin dependencies (first run, one-time)...`);
+    let result;
+    try {
+      result = spawnSync(bunPath, BUN_INSTALL_ARGS, {
+        cwd: pluginRoot,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: BUN_INSTALL_TIMEOUT_MS,
+        windowsHide: true,
+      });
+    } catch (err) {
+      const reason = err && err.message ? err.message : String(err);
+      console.error(`${VERSION_CHECK_LOG_PREFIX} bun install threw (${reason}); worker may crash with missing module errors`);
+      return;
+    }
 
-  let result;
-  try {
-    result = spawnSync(bunPath, BUN_INSTALL_ARGS, {
-      cwd: pluginRoot,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: BUN_INSTALL_TIMEOUT_MS,
-      windowsHide: true,
-    });
-  } catch (err) {
-    const reason = err && err.message ? err.message : String(err);
-    console.error(`${VERSION_CHECK_LOG_PREFIX} bun install threw (${reason}); worker may crash with missing module errors`);
-    return;
-  }
-
-  // spawnSync does NOT throw on a failed child. Three distinct failure
-  // modes must be surfaced explicitly:
-  //   1. result.error set (ENOENT / ETIMEDOUT / ...)
-  //   2. non-zero exit code
-  //   3. signal-killed (OOM SIGKILL, SIGTERM, ...) where result.status is
-  //      null AND result.error is undefined — only result.signal is set.
-  const killedBySignal = result.status === null && !!result.signal;
-  const nonZeroExit = result.status !== null && result.status !== 0;
-  if (result.error || nonZeroExit || killedBySignal) {
-    let reason;
-    if (result.error) {
-      reason = result.error.message;
-    } else if (killedBySignal) {
-      reason = `killed by ${result.signal}`;
+    // spawnSync does NOT throw on a failed child. Three distinct failure
+    // modes must be surfaced explicitly:
+    //   1. result.error set (ENOENT / ETIMEDOUT / ...)
+    //   2. non-zero exit code
+    //   3. signal-killed (OOM SIGKILL, SIGTERM, ...) where result.status is
+    //      null AND result.error is undefined — only result.signal is set.
+    const killedBySignal = result.status === null && !!result.signal;
+    const nonZeroExit = result.status !== null && result.status !== 0;
+    if (result.error || nonZeroExit || killedBySignal) {
+      let reason;
+      if (result.error) {
+        reason = result.error.message;
+      } else if (killedBySignal) {
+        reason = `killed by ${result.signal}`;
+      } else {
+        reason = `exit ${result.status}`;
+      }
+      console.error(`${VERSION_CHECK_LOG_PREFIX} bun install failed (${reason}); worker may crash with missing module errors`);
+      // `bun install` often creates `node_modules/` BEFORE the failure point
+      // (network timeout mid-fetch, OOM kill, registry 5xx after partial
+      // resolution). The existence guard above would then permanently skip
+      // retry on every subsequent Setup run, leaving the plugin broken with
+      // no recovery path short of manual `rm -rf node_modules`. Remove the
+      // partial dir so the next Setup invocation can retry automatically
+      // (gh #2650 review).
+      try {
+        rmSync(nodeModulesPath, { recursive: true, force: true });
+      } catch (rmErr) {
+        const rmReason = rmErr && rmErr.message ? rmErr.message : String(rmErr);
+        console.error(`${VERSION_CHECK_LOG_PREFIX} failed to clean up partial node_modules (${rmReason}); next Setup run may skip retry`);
+      }
     } else {
-      reason = `exit ${result.status}`;
+      // Close the diagnostic loop: a Setup hook that can block for up to
+      // 120s needs an explicit completion line so users can distinguish a
+      // hung install from one that finished silently (gh #2650 review).
+      console.error(`${VERSION_CHECK_LOG_PREFIX} plugin dependencies installed successfully`);
+      try {
+        writeFileSync(markerPath, '');
+      } catch (markerErr) {
+        const markerReason = markerErr && markerErr.message ? markerErr.message : String(markerErr);
+        console.error(`${VERSION_CHECK_LOG_PREFIX} failed to write install-complete marker (${markerReason}); next Setup run will reinstall`);
+      }
     }
-    console.error(`${VERSION_CHECK_LOG_PREFIX} bun install failed (${reason}); worker may crash with missing module errors`);
-    // `bun install` often creates `node_modules/` BEFORE the failure point
-    // (network timeout mid-fetch, OOM kill, registry 5xx after partial
-    // resolution). The existence guard above would then permanently skip
-    // retry on every subsequent Setup run, leaving the plugin broken with
-    // no recovery path short of manual `rm -rf node_modules`. Remove the
-    // partial dir so the next Setup invocation can retry automatically
-    // (gh #2650 review).
-    try {
-      rmSync(nodeModulesPath, { recursive: true, force: true });
-    } catch (rmErr) {
-      const rmReason = rmErr && rmErr.message ? rmErr.message : String(rmErr);
-      console.error(`${VERSION_CHECK_LOG_PREFIX} failed to clean up partial node_modules (${rmReason}); next Setup run may skip retry`);
-    }
-  } else {
-    // Close the diagnostic loop: a Setup hook that can block for up to
-    // 120s needs an explicit completion line so users can distinguish a
-    // hung install from one that finished silently (gh #2650 review).
-    console.error(`${VERSION_CHECK_LOG_PREFIX} plugin dependencies installed successfully`);
-    try {
-      writeFileSync(markerPath, '');
-    } catch (markerErr) {
-      const markerReason = markerErr && markerErr.message ? markerErr.message : String(markerErr);
-      console.error(`${VERSION_CHECK_LOG_PREFIX} failed to write install-complete marker (${markerReason}); next Setup run will reinstall`);
-    }
+  } finally {
+    releaseInstallLock(lockPath);
   }
 }
 

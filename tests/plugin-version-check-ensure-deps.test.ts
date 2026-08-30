@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { spawn } from 'child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 
@@ -60,7 +60,7 @@ function runVersionCheck(pluginRoot: string, fakeBinDir: string): Promise<{ stde
   });
 }
 
-type BunBehavior = 'success' | 'partial-then-fail';
+type BunBehavior = 'success' | 'partial-then-fail' | 'slow-success';
 
 function makeFreshPlugin(name: string, bunBehavior: BunBehavior = 'success'): { pluginRoot: string; fakeBinDir: string } {
   const pluginRoot = join(tmpRoot, name);
@@ -86,6 +86,17 @@ function makeFreshPlugin(name: string, bunBehavior: BunBehavior = 'success'): { 
   const installBody = bunBehavior === 'success'
     ? [
         `  mkdir -p "${pluginRoot}/node_modules/zod/v3"`,
+        `  : > "${pluginRoot}/node_modules/zod/v3/index.js"`,
+        '  exit 0',
+      ]
+    : bunBehavior === 'slow-success'
+    ? [
+        // Widens the window between "node_modules exists" and "marker
+        // written" so a concurrent second Setup run reliably lands inside
+        // it — reproducing the gh #3793 review race deterministically
+        // instead of relying on timing luck.
+        `  mkdir -p "${pluginRoot}/node_modules/zod/v3"`,
+        '  sleep 1',
         `  : > "${pluginRoot}/node_modules/zod/v3/index.js"`,
         '  exit 0',
       ]
@@ -187,5 +198,58 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
     expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(true);
     expect(existsSync(join(pluginRoot, 'node_modules', '.claude-mem-install-complete'))).toBe(true);
+  });
+
+  test('a second Setup run racing the first skips instead of deleting the in-flight install (gh #3793 review)', async () => {
+    // Reproduces the Greptile review finding: two Setup hooks can fire near-
+    // simultaneously (several Claude Code sessions launched at once, the
+    // exact scenario in the original report). Without a lock, the second
+    // process sees node_modules exists without the completion marker yet
+    // (the first is still mid-install) and deletes it out from under the
+    // first, corrupting the install.
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-concurrent-install', 'slow-success');
+
+    const first = runVersionCheck(pluginRoot, fakeBinDir);
+    // Give the first process time to win the lock and start its (1s) bun
+    // install before the second process starts, so the second reliably
+    // lands inside the vulnerable window instead of winning the race itself.
+    await new Promise((r) => setTimeout(r, 200));
+    const second = runVersionCheck(pluginRoot, fakeBinDir);
+
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    const results = [firstResult, secondResult];
+
+    const installed = results.filter((r) => r.stderr.includes(INSTALL_DIAGNOSTIC));
+    const skipped = results.filter((r) => r.stderr.includes('another process is installing'));
+    expect(installed.length).toBe(1);
+    expect(skipped.length).toBe(1);
+
+    // The install that did run must have completed cleanly — proof the
+    // skipped process never touched the in-flight node_modules.
+    expect(installed[0].stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
+    expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(true);
+    expect(existsSync(join(pluginRoot, 'node_modules', '.claude-mem-install-complete'))).toBe(true);
+  });
+
+  test('reclaims a stale install lock left by a killed process instead of blocking forever (gh #3793 review)', async () => {
+    // A worker version-mismatch tree-kill (the original gh #3793 bug) can
+    // SIGKILL this script mid-install, leaving the lock directory itself
+    // held forever with no process left to release it. Without staleness
+    // recovery, that would trade the old "node_modules exists forever"
+    // deadlock for an equivalent "lock exists forever" deadlock.
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('plugin-stale-lock');
+    const lockPath = join(pluginRoot, '.claude-mem-install.lock');
+    mkdirSync(lockPath, { recursive: true });
+    const staleTime = new Date(Date.now() - 10 * 60 * 1000); // 10 minutes old
+    utimesSync(lockPath, staleTime, staleTime);
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    expect(stderr).toContain(INSTALL_DIAGNOSTIC);
+    expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
+    expect(existsSync(join(pluginRoot, FAKE_INSTALLED_MARKER_REL))).toBe(true);
+    // The lock is released after use, not left behind for the next run.
+    expect(existsSync(lockPath)).toBe(false);
   });
 });
