@@ -35,6 +35,11 @@ interface ToolExecuteAfterInput {
   tool: string;
   sessionID: string;
   callID: string;
+  // OpenCode passes the tool arguments here, on the hook's FIRST argument —
+  // the output object never carries them (#3678 diagnosis by kevinchiha;
+  // cross-checked against OpenCode 1.18's Hooks type, where the output is
+  // only { title, output, metadata }).
+  args?: Record<string, unknown>;
 }
 
 interface ToolExecuteAfterOutput {
@@ -217,7 +222,13 @@ const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       workerPostFireAndForget("/api/sessions/observations", {
         contentSessionId,
         tool_name: input.tool,
-        tool_input: output.args || {},
+        // Arguments live on the hook input (see ToolExecuteAfterInput). The
+        // output.args fallback covers older OpenCode versions the support
+        // matrix still claims (1.16/1.17) whose output shape is unverified.
+        // Reading output.args alone shipped empty tool_input for every
+        // observation, and the compressor dismissed them all — the
+        // "plugin loads but captures nothing" symptom of #3678.
+        tool_input: input.args || output.args || {},
         tool_response: truncate(output.output || ""),
         cwd: ctx.directory,
         platform_source: PLATFORM_SOURCE,

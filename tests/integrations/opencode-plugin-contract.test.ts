@@ -107,8 +107,8 @@ describe("OpenCode plugin event contract", () => {
       const plugin = await ClaudeMemPlugin(pluginCtx);
       const toolAfter = plugin["tool.execute.after"];
       await toolAfter(
-        { tool: "read", sessionID: "ses_1", callID: "c1" },
-        { title: "Read", output: "file contents", metadata: {}, args: { path: "/a" } },
+        { tool: "read", sessionID: "ses_1", callID: "c1", args: { path: "/a" } },
+        { title: "Read", output: "file contents", metadata: {} },
       );
 
       const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
@@ -118,6 +118,36 @@ describe("OpenCode plugin event contract", () => {
       const obsBody = obsPost!.body as Record<string, unknown>;
       expect(obsBody.tool_name).toBe("read");
       expect(obsBody.tool_response).toBe("file contents");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("reads tool arguments from the hook INPUT, not the output (#3678)", async () => {
+    // OpenCode passes tool arguments on the first hook argument; the output
+    // never carries them. The old `output.args || {}` read shipped an empty
+    // tool_input for every observation, and the compressor dismissed them
+    // all — the "loads but captures nothing" symptom of #3678.
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["tool.execute.after"](
+        { tool: "edit", sessionID: "ses_args", callID: "c2", args: { filePath: "/a/b.ts" } },
+        { title: "Edit", output: "applied", metadata: {} },
+      );
+      const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
+      expect(obsPost, "observation should POST").toBeTruthy();
+      const obsBody = obsPost!.body as Record<string, unknown>;
+      expect(obsBody.tool_input).toEqual({ filePath: "/a/b.ts" });
     } finally {
       globalThis.fetch = originalFetch;
     }
