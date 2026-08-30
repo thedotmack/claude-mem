@@ -25,6 +25,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
   CLAUDE_MEM_API_TIMEOUT_MS: string;
+  CLAUDE_MEM_LLM_TIMEOUT_MS: string;
   CLAUDE_MEM_SKIP_TOOLS: string;
   CLAUDE_MEM_PROVIDER: string;  
   CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  
@@ -120,6 +121,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
     CLAUDE_MEM_API_TIMEOUT_MS: String(getTimeout(HOOK_TIMEOUTS.API_REQUEST)),
+    CLAUDE_MEM_LLM_TIMEOUT_MS: '30000',
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
     CLAUDE_MEM_PROVIDER: 'claude',  // Default to Claude
     CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',  // Default to logged-in Claude SDK auth (not API key)

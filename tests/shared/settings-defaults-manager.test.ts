@@ -417,6 +417,7 @@ describe('SettingsDefaultsManager', () => {
       expect(defaults.CLAUDE_MEM_MODEL).toBeDefined();
       expect(defaults.CLAUDE_MEM_WORKER_PORT).toBeDefined();
       expect(defaults.CLAUDE_MEM_WORKER_HOST).toBeDefined();
+      expect(defaults.CLAUDE_MEM_LLM_TIMEOUT_MS).toBe('30000');
 
       expect(defaults.CLAUDE_MEM_PROVIDER).toBeDefined();
       expect(defaults.CLAUDE_MEM_GEMINI_API_KEY).toBeDefined();

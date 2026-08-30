@@ -46,6 +46,7 @@ function mockGeminiConfig() {
     CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
     CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'false',
+    CLAUDE_MEM_LLM_TIMEOUT_MS: '90000',
     CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test',
   }));
 }
@@ -207,6 +208,15 @@ describe('GeminiProvider', () => {
     const url = (global.fetch as any).mock.calls[0][0];
     expect(url).toContain('https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent');
     expect(url).toContain('key=test-api-key');
+  });
+
+  it('reads the provider attempt timeout from settings', () => {
+    const config = (agent as any).getGeminiConfig();
+    expect(config.attemptTimeoutMs).toBe(30000);
+
+    mockGeminiConfig();
+    const configured = (agent as any).getGeminiConfig();
+    expect(configured.attemptTimeoutMs).toBe(90000);
   });
 
   it('should handle multi-turn conversation', async () => {
