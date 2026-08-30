@@ -18,20 +18,35 @@ const INSTALL_LOCK_DIRNAME = '.claude-mem-install.lock';
 // hold it.
 const INSTALL_LOCK_STALE_MS = BUN_INSTALL_TIMEOUT_MS + 30_000;
 
+const INSTALL_LOCK_OWNER_FILE = 'owner';
+
 /**
  * Acquire an exclusive, self-cleaning install lock so two Setup hooks racing
  * on the same pluginRoot (e.g. several Claude Code sessions launched at once,
  * gh #3793) cannot interleave: mkdir is atomic, so exactly one process wins.
  * A stale lock (holder was killed mid-install) is reclaimed after
  * INSTALL_LOCK_STALE_MS rather than blocking every future Setup run forever.
- * Returns the lock path on success, or null if another process currently
- * owns it.
+ *
+ * Returns { lockPath, token } on success, or null if another process
+ * currently owns it. `token` is a per-acquisition identity written into the
+ * lock directory; releaseInstallLock only removes the lock if that token is
+ * still the one on disk. Without this, a live-but-slow holder whose lock got
+ * reclaimed as stale would, on reaching its own release, delete whatever
+ * replacement lock now occupies the same path instead of nothing — handing
+ * a third process the same false "it's free" signal (gh #3799 review).
  */
 function acquireInstallLock(pluginRoot) {
   const lockPath = join(pluginRoot, INSTALL_LOCK_DIRNAME);
-  try {
+  const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  const claim = () => {
     mkdirSync(lockPath);
-    return lockPath;
+    writeFileSync(join(lockPath, INSTALL_LOCK_OWNER_FILE), token);
+    return { lockPath, token };
+  };
+
+  try {
+    return claim();
   } catch (err) {
     if (!err || err.code !== 'EEXIST') throw err;
   }
@@ -69,14 +84,29 @@ function acquireInstallLock(pluginRoot) {
   }
 
   try {
-    mkdirSync(lockPath);
-    return lockPath;
+    return claim();
   } catch {
     return null;
   }
 }
 
-function releaseInstallLock(lockPath) {
+function releaseInstallLock(lock) {
+  if (!lock) return;
+  const { lockPath, token } = lock;
+  let currentToken;
+  try {
+    currentToken = readFileSync(join(lockPath, INSTALL_LOCK_OWNER_FILE), 'utf-8');
+  } catch {
+    // Owner file missing/unreadable: the lock is already gone, or mid-
+    // replacement by a reclaimer. Nothing that's provably ours to remove.
+    return;
+  }
+  if (currentToken !== token) {
+    // Another process reclaimed this path as stale while we were still
+    // alive. What's there now is its active lock, not ours — removing it
+    // would repeat the exact bug this check exists to prevent.
+    return;
+  }
   try {
     rmSync(lockPath, { recursive: true, force: true });
   } catch (err) {
@@ -149,8 +179,8 @@ function ensurePluginDependencies(pluginRoot) {
   // a peer is still installing into it (gh #3793 review). A process that
   // loses the race skips this Setup run entirely rather than touching
   // anything; the next Setup run (or the lock holder itself) retries.
-  const lockPath = acquireInstallLock(pluginRoot);
-  if (!lockPath) {
+  const lock = acquireInstallLock(pluginRoot);
+  if (!lock) {
     console.error(`${VERSION_CHECK_LOG_PREFIX} another process is installing plugin dependencies; skipping this Setup run`);
     return;
   }
@@ -241,7 +271,7 @@ function ensurePluginDependencies(pluginRoot) {
       }
     }
   } finally {
-    releaseInstallLock(lockPath);
+    releaseInstallLock(lock);
   }
 }
 
