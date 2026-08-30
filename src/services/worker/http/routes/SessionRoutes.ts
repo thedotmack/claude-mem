@@ -30,6 +30,12 @@ import {
 } from '../../../../shared/dependency-health.js';
 import { findClaudeExecutable } from '../../../../shared/find-claude-executable.js';
 import { recordObserverFailure } from '../../../../shared/observer-health.js';
+import {
+  isQuotaCooldownActive,
+  recordQuotaExhausted,
+  getQuotaCooldown,
+  QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+} from '../../../../shared/quota-cooldown.js';
 import { isClassified, describeProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
 
@@ -81,6 +87,25 @@ export class SessionRoutes extends BaseRouteHandler {
     const selectedProvider = this.getSelectedProvider();
 
     if (!session.generatorPromise) {
+      // Quota breaker (#3634). Without this, an exhausted allowance produced one
+      // doomed request per captured tool call for the rest of the billing cycle:
+      // the generator exits on the refusal, and the next observation starts a
+      // fresh one that earns the same refusal. Withhold requests for a cooldown,
+      // then let exactly one through to re-probe.
+      if (isQuotaCooldownActive(selectedProvider)) {
+        const cooldown = getQuotaCooldown(selectedProvider);
+        logger.warn('SESSION', 'Skipping generator start while the provider quota cooldown is active', {
+          sessionId: sessionDbId,
+          source,
+          provider: selectedProvider,
+          ...(cooldown?.window ? { window: cooldown.window } : {}),
+          retryInMs: cooldown
+            ? Math.max(0, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - (Date.now() - cooldown.armedAtMs))
+            : 0,
+        });
+        return;
+      }
+
       if (selectedProvider === 'claude') {
         const claudeStatus = getDependencyStatus('claude_cli');
         if (claudeStatus?.kind === 'setup_required') {
@@ -233,6 +258,11 @@ export class SessionRoutes extends BaseRouteHandler {
         // are being dropped — session-start context warns the user via this.
         // Classified errors carry the structured detail (code/action/link/
         // request id) so the warning shows the same words as the log line.
+        // A structured quota refusal arms the breaker, so the next observation
+        // does not immediately buy the same refusal again (#3634).
+        if (isClassified(error) && error.kind === 'quota_exhausted') {
+          recordQuotaExhausted(provider, error.message);
+        }
         recordObserverFailure(provider, isClassified(error)
           ? { message: error.message, code: error.code, action: error.action, url: error.url, requestId: error.requestId }
           : errorMsg);
@@ -260,6 +290,12 @@ export class SessionRoutes extends BaseRouteHandler {
 
         const reason = session.abortReason ?? null;
         session.abortReason = null;  // consume the reason
+        // Quota surfaced as assistant prose aborts here rather than throwing, so
+        // it must arm the breaker too — otherwise the prose path keeps the
+        // per-observation request storm the classified path no longer has.
+        if (normalizeAbortReason(reason) === 'quota') {
+          recordQuotaExhausted(provider, 'Provider reported the inference allowance exhausted', reason?.split(':')[1]);
+        }
         if (reason !== null) {
           // Abort accounting lives HERE, where the reason is consumed — the
           // ONLY point every abort flow (idle / shutdown / overflow / quota)

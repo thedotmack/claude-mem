@@ -206,6 +206,8 @@ describe('ResponseProcessor', () => {
       claimedMessageIds: [],
       conversationHistory: [],
       currentProvider: 'claude',
+      consecutiveInvalidOutputs: 0,
+      consecutiveContextOverflows: 0,
       ...overrides,
     } as ActiveSession;
   }
@@ -562,6 +564,121 @@ describe('ResponseProcessor', () => {
       expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
       expect(session.earliestPendingTimestamp).toBeNull();
       expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('context-window overflow recovery (#3800)', () => {
+    function overflowSessionManager() {
+      const resetProcessingToPending = mock(() => Promise.resolve(1));
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+      return { resetProcessingToPending, confirmClaimedMessages };
+    }
+
+    it('recycles the conversation and preserves the batch instead of dropping it', async () => {
+      const { resetProcessingToPending, confirmClaimedMessages } = overflowSessionManager();
+      const session = createMockSession({
+        conversationHistory: [
+          { role: 'user', content: 'framing' },
+          { role: 'assistant', content: 'ok' },
+          { role: 'user', content: 'observation 1' },
+        ],
+        consecutiveContextOverflows: 0,
+      });
+
+      await processAgentResponse(
+        'Prompt is too long', session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent'
+      );
+
+      // The batch is preserved for a fresh generator, never confirmed away.
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      // The outgrown conversation is dropped and a fresh one forced.
+      expect(session.conversationHistory).toEqual([]);
+      expect(session.forceInit).toBe(true);
+      expect(session.abortReason).toBe('overflow:recycle');
+      expect(session.abortController.signal.aborted).toBe(true);
+      expect(session.consecutiveContextOverflows).toBe(1);
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+
+    it('does not append the rejection to history — a failure must not enlarge the next request', async () => {
+      overflowSessionManager();
+      const session = createMockSession({
+        conversationHistory: [{ role: 'user', content: 'framing' }],
+      });
+
+      await processAgentResponse(
+        'Prompt is too long', session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent'
+      );
+
+      expect(session.conversationHistory.some(m => m.content.includes('too long'))).toBe(false);
+    });
+
+    it('pauses the session once recycling has failed repeatedly, rather than retrying forever', async () => {
+      const { resetProcessingToPending, confirmClaimedMessages } = overflowSessionManager();
+      // Already recycled once; this rejection reaches the ceiling.
+      const session = createMockSession({ consecutiveContextOverflows: 1 });
+
+      await processAgentResponse(
+        'Prompt is too long', session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent'
+      );
+
+      expect(session.abortReason).toBe('overflow:exhausted');
+      expect(session.abortController.signal.aborted).toBe(true);
+      // Work is still preserved, and still not silently confirmed away.
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringContaining('context ceiling'),
+        expect.objectContaining({ consecutiveContextOverflows: 2 })
+      );
+    });
+
+    it('clears the overflow counter after a healthy observation so only consecutive failures trip it', async () => {
+      const session = createMockSession({ consecutiveContextOverflows: 1 });
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Recovered</title>
+          <narrative>The recycled conversation produced valid XML.</narrative>
+          <facts></facts>
+          <concepts></concepts>
+          <files_read></files_read>
+          <files_modified></files_modified>
+        </observation>
+      `;
+
+      await processAgentResponse(
+        responseText, session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent'
+      );
+
+      expect(session.consecutiveContextOverflows).toBe(0);
+    });
+
+    it('still treats ordinary prose as a benign skip, not an overflow', async () => {
+      const { resetProcessingToPending, confirmClaimedMessages } = overflowSessionManager();
+      const session = createMockSession();
+
+      await processAgentResponse(
+        'Skipping — nothing worth recording here.', session, mockDbManager,
+        mockSessionManager, mockWorker, 100, null, 'TestAgent'
+      );
+
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(resetProcessingToPending).not.toHaveBeenCalled();
+      expect(session.consecutiveContextOverflows).toBe(0);
+      expect(session.forceInit).toBeUndefined();
     });
   });
 

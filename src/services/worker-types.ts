@@ -25,11 +25,25 @@ export interface ActiveSession {
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
   consecutiveRestarts: number;
   /**
-   * Legacy invalid-output counter. Ordinary non-XML observer output is now
-   * confirmed as a no-op and resets this to 0 so skip acknowledgements never
-   * accumulate respawn debt.
+   * Legacy invalid-output counter, intentionally always 0: ordinary non-XML
+   * observer output is confirmed as a no-op and resets this so benign skip
+   * acknowledgements never accumulate respawn debt.
+   *
+   * It is deliberately NOT the breaker for repeated hard rejections — counting
+   * skips and rejections on one counter is what produced the respawn storm this
+   * reset was added to stop. Hard rejections are counted by
+   * `consecutiveContextOverflows` instead.
    */
   consecutiveInvalidOutputs: number;
+  /**
+   * Consecutive "prompt too long" rejections on this session's conversation.
+   *
+   * Unlike a skip, an overflow rejection is not a no-op: the conversation has
+   * outgrown the model's context window and every later request re-sends it at
+   * full cost and fails identically. Counting these drives conversation recycle
+   * and, if recycling does not help, a hard pause (#3800).
+   */
+  consecutiveContextOverflows: number;
   forceInit?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;

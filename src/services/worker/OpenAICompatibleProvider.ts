@@ -9,6 +9,7 @@ import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
 import { isClassified } from './provider-errors.js';
+import { compactConversationHistory } from '../../shared/conversation-window.js';
 import {
   processAgentResponse,
   snapshotResponseContext,
@@ -108,7 +109,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     try {
       session.lastPromptSentAt = Date.now();
       session.lastGeneratorSource = 'init';
-      const initResponse = await this.query(session.conversationHistory, config);
+      const initResponse = await this.queryBounded(session, config);
       await this.handleInitResponse(initResponse, session, worker, model, initContext);
     } catch (error: unknown) {
       // Classified errors are logged once, at SessionRoutes' `Observer failed`
@@ -177,7 +178,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     responseContext: ReturnType<typeof snapshotResponseContext>
   ): Promise<void> {
     if (initResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
+      // Appended once, by processAgentResponse below — see processObservationMessage.
       const tokensUsed = initResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
@@ -222,11 +223,13 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'ingest';
-    const obsResponse = await this.query(session.conversationHistory, config);
+    const obsResponse = await this.queryBounded(session, config);
 
     let tokensUsed = 0;
     if (obsResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
+      // The assistant turn is appended once, by processAgentResponse below.
+      // Appending it here too stored every reply twice (#3619), inflating the
+      // window — and therefore every subsequent request — by ~50%.
       tokensUsed = obsResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
@@ -280,11 +283,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         sessionId: session.sessionDbId, model: summaryModel
       });
     }
-    const summaryResponse = await this.query(session.conversationHistory, summaryConfig);
+    const summaryResponse = await this.queryBounded(session, summaryConfig);
 
     let tokensUsed = 0;
     if (summaryResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
+      // Appended once, by processAgentResponse below — see processObservationMessage.
       tokensUsed = summaryResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
@@ -301,6 +304,29 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         sessionId: session.sessionDbId
       });
     }
+  }
+
+  /**
+   * Send the session's conversation, compacted to the window budget first.
+   *
+   * Every call here re-sends the whole transcript, so without compaction the
+   * per-observation cost grows with session length and the session eventually
+   * wedges against the model's context ceiling (#3800). Compaction is applied
+   * to the stored history, not just the outgoing copy, so the saving compounds
+   * instead of being recomputed from an ever-growing array.
+   */
+  private async queryBounded(session: ActiveSession, config: TConfig): Promise<ProviderQueryResult> {
+    const { history, dropped, droppedChars } = compactConversationHistory(session.conversationHistory);
+    if (dropped > 0) {
+      session.conversationHistory = history;
+      logger.info('SDK', `Compacted ${this.providerName} observer window to stay within the context budget`, {
+        sessionId: session.sessionDbId,
+        droppedMessages: dropped,
+        droppedChars,
+        historyLength: history.length,
+      });
+    }
+    return this.query(session.conversationHistory, config);
   }
 
   protected handleSessionError(error: unknown, session: ActiveSession, _worker?: WorkerRef): never {
