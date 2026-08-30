@@ -123,7 +123,7 @@ To specify a model, add to your settings:
 The OpenRouter provider is a generic OpenAI-compatible client. Set `CLAUDE_MEM_OPENROUTER_BASE_URL` to point it at any endpoint that speaks the OpenAI `/chat/completions` API — DeepSeek, a local LM Studio server, or any custom gateway. The model id you set in `CLAUDE_MEM_OPENROUTER_MODEL` is sent verbatim.
 
 <Info>
-**Base URL resolution:** When `CLAUDE_MEM_OPENROUTER_BASE_URL` is empty (default), requests go to OpenRouter unchanged. When set, claude-mem POSTs to `<base_url>/chat/completions` — you can supply either a base like `https://api.deepseek.com/v1` (the `/chat/completions` path is appended automatically) or a full `.../chat/completions` URL (used verbatim). Trailing slashes are normalized. The environment variable `OPENROUTER_BASE_URL` is honored as a fallback.
+**Base URL resolution:** When `CLAUDE_MEM_OPENROUTER_BASE_URL` is empty (default), requests go to OpenRouter unchanged. When set, claude-mem POSTs to `<base_url>/chat/completions` — you can supply either a base like `https://api.deepseek.com/v1` (the `/chat/completions` path is appended automatically) or a full `.../chat/completions` URL (kept as-is). Trailing slashes are normalized, and only `http`/`https` URLs are accepted. A query string or fragment on the base URL is preserved while the `/chat/completions` suffix stays in the request path, so `https://my-gateway.example.com/v1?key=abc` resolves to `https://my-gateway.example.com/v1/chat/completions?key=abc`. The environment variable `OPENROUTER_BASE_URL` is honored as a fallback.
 </Info>
 
 ### DeepSeek

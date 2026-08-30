@@ -35,15 +35,33 @@
 export const DEFAULT_OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 const CHAT_COMPLETIONS_PATH = '/chat/completions';
+const HTTP_URL_PROTOCOLS = new Set(['http:', 'https:']);
+const TRAILING_SLASHES = /\/+$/;
+
+export function isHttpUrl(value: string): boolean {
+  try {
+    return HTTP_URL_PROTOCOLS.has(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Resolve the chat-completions endpoint from an optional configured base URL.
  *
  * Rules:
  *   - unset/blank  -> default OpenRouter chat-completions URL (behavior unchanged)
- *   - a full URL already ending in `/chat/completions` -> used verbatim
+ *   - a full URL already ending in `/chat/completions` -> kept as-is
  *   - a base URL (e.g. `https://api.deepseek.com/v1`) -> `/chat/completions` appended
  *   - trailing slashes are normalized before matching/appending
+ *   - a query string or fragment on the base URL is preserved, and the suffix
+ *     stays in the request path (`https://gw.example.com/v1?key=abc` ->
+ *     `https://gw.example.com/v1/chat/completions?key=abc`)
+ *
+ * The result is a parsed URL, so the origin is returned in canonical form: the
+ * host is lower-cased and a default port is dropped (`https://API.EXAMPLE.com:443/v1`
+ * -> `https://api.example.com/v1/chat/completions`). Both are semantics-preserving
+ * for the request; the path keeps its original case.
  */
 export function resolveOpenRouterChatCompletionsUrl(baseUrl: string | undefined | null): string {
   const trimmed = (baseUrl ?? '').trim();
@@ -51,12 +69,20 @@ export function resolveOpenRouterChatCompletionsUrl(baseUrl: string | undefined 
     return DEFAULT_OPENROUTER_API_URL;
   }
 
-  // Normalize trailing slashes so `.../v1/` and `.../v1` behave identically.
-  const normalized = trimmed.replace(/\/+$/, '');
-
-  if (normalized.toLowerCase().endsWith(CHAT_COMPLETIONS_PATH)) {
-    return normalized;
+  if (!isHttpUrl(trimmed)) {
+    throw new Error('OpenRouter base URL must use http or https');
   }
 
-  return `${normalized}${CHAT_COMPLETIONS_PATH}`;
+  // Extend the pathname rather than the raw string: concatenating onto a base
+  // URL that carries a query string or fragment would push the suffix into the
+  // query/hash and leave the request pointing at the bare base path.
+  const url = new URL(trimmed);
+  // Normalize trailing slashes so `.../v1/` and `.../v1` behave identically.
+  const path = url.pathname.replace(TRAILING_SLASHES, '');
+
+  url.pathname = path.toLowerCase().endsWith(CHAT_COMPLETIONS_PATH)
+    ? path
+    : `${path}${CHAT_COMPLETIONS_PATH}`;
+
+  return url.href;
 }
