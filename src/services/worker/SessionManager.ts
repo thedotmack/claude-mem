@@ -178,6 +178,9 @@ export class SessionManager {
 
     const messageId = this.buffer.enqueue(sessionDbId, message);
     const queueDepth = this.buffer.getPendingCount(sessionDbId);
+    if (session.generatorPromise && session.abortReason?.startsWith('empty-output')) {
+      session.restartGeneratorAfterExit = true;
+    }
     const toolSummary = logger.formatTool(data.tool_name, data.tool_input);
     if (messageId === 0) {
       logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=observation | tool=${toolSummary} | toolUseId=${data.toolUseId ?? 'null'} | depth=${queueDepth}`, {
@@ -203,6 +206,9 @@ export class SessionManager {
 
     const messageId = this.buffer.enqueue(sessionDbId, message);
     const queueDepth = this.buffer.getPendingCount(sessionDbId);
+    if (session.generatorPromise && session.abortReason?.startsWith('empty-output')) {
+      session.restartGeneratorAfterExit = true;
+    }
     if (messageId === 0) {
       logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=summarize | depth=${queueDepth}`, {
         sessionId: sessionDbId

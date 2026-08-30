@@ -28,6 +28,92 @@ export function previewOutput(raw: unknown, maxLength: number = PREVIEW_LENGTH):
   return `${collapsed.slice(0, maxLength)}…(+${collapsed.length - maxLength} chars)`;
 }
 
+const KNOWN_BLOCK_KINDS = new Set([
+  'text', 'thinking', 'redacted_thinking', 'tool_use', 'tool_result',
+  'image', 'document', 'server_tool_use', 'web_search_tool_result',
+]);
+
+export type ObserverOutputShape =
+  | 'text'
+  | 'blank-text'
+  | 'non-text-blocks-only'
+  | 'no-content-blocks'
+  | 'unrecognized-content';
+
+export interface ObserverOutputShapeReport {
+  shape: ObserverOutputShape;
+  /** Whitelisted block kinds, deduped and sorted. Never carries block content. */
+  blockKinds: string[];
+}
+
+export function describeObserverOutputShape(content: unknown): ObserverOutputShapeReport {
+  if (content == null) {
+    return { shape: 'no-content-blocks', blockKinds: [] };
+  }
+
+  if (typeof content === 'string') {
+    return {
+      shape: content.trim() !== '' ? 'text' : 'blank-text',
+      blockKinds: [],
+    };
+  }
+
+  if (Array.isArray(content)) {
+    if (content.length === 0) {
+      return { shape: 'no-content-blocks', blockKinds: [] };
+    }
+
+    const kindsSet = new Set<string>();
+    let hasTextBlock = false;
+    let joined = '';
+
+    for (const element of content) {
+      let kind = 'other';
+      try {
+        const t = element != null ? (element as any).type : undefined;
+        if (typeof t === 'string' && KNOWN_BLOCK_KINDS.has(t)) {
+          kind = t;
+        }
+      } catch {
+        kind = 'other';
+      }
+      kindsSet.add(kind);
+      if (kind === 'text') {
+        hasTextBlock = true;
+        try {
+          const txt = (element as any).text;
+          if (typeof txt === 'string') {
+            joined += (joined ? '\n' : '') + txt;
+          }
+        } catch { /* skip elements with throwing text getter */ }
+      }
+    }
+
+    const blockKinds = [...kindsSet].sort();
+
+    if (!hasTextBlock) {
+      return { shape: 'non-text-blocks-only', blockKinds };
+    }
+
+    return {
+      shape: joined.trim() !== '' ? 'text' : 'blank-text',
+      blockKinds,
+    };
+  }
+
+  return { shape: 'unrecognized-content', blockKinds: [] };
+}
+
+export function formatEmptyOutputReason(report: ObserverOutputShapeReport): string | undefined {
+  if (report.shape === 'text') {
+    return undefined;
+  }
+  if (report.shape === 'non-text-blocks-only') {
+    return `non-text-blocks-only(${report.blockKinds.join(',')})`;
+  }
+  return report.shape;
+}
+
 /**
  * Classify an observer/summarizer SDK output.
  *

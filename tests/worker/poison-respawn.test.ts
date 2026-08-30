@@ -3,8 +3,28 @@ import { logger } from '../../src/utils/logger.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import { processAgentResponse } from '../../src/services/worker/agents/ResponseProcessor.js';
 import { handleGeneratorExit } from '../../src/services/worker/session/GeneratorExitHandler.js';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
+import type { ModeConfig } from '../../src/services/domain/types.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { WorkerRef } from '../../src/services/worker/agents/types.js';
+
+beforeEach(() => {
+  spyOn(ModeManager, 'getInstance').mockImplementation(() => ({
+    getActiveMode: () => ({
+      name: 'code',
+      description: 'mock mode',
+      version: '1.0.0',
+      prompts: {
+        init: 'init prompt',
+        observation: 'obs prompt',
+        summary: 'summary prompt',
+      },
+      observation_types: [{ id: 'discovery' }, { id: 'bugfix' }, { id: 'refactor' }],
+      observation_concepts: [],
+    }),
+    loadMode: () => {},
+  }) as unknown as ModeManager);
+});
 
 function makeDbManager(storeObservations = mock(() => ({ observationIds: [], summaryId: null, createdAtEpoch: 0 }))): DatabaseManager {
   return {
@@ -21,6 +41,7 @@ function makeDbManager(storeObservations = mock(() => ({ observationIds: [], sum
       storeObservations,
     }),
     getChromaSync: () => undefined,
+    getCloudSync: () => null,
   } as unknown as DatabaseManager;
 }
 
@@ -377,5 +398,207 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
 
     expect(skipSm.getMessageBuffer().getPendingCount(4)).toBe(0);
     expect(quotaSm.getMessageBuffer().getPendingCount(5)).toBe(1);
+  });
+
+  it('requeues an idle claimed batch and stores it on the next pass with content', async () => {
+    const storeObservations = mock(() => ({ observationIds: [1], summaryId: null, createdAtEpoch: 0 }));
+    const sm = new SessionManager(makeDbManager(storeObservations));
+    const session = sm.initializeSession(12, 'do the thing', 1);
+    session.memorySessionId = 'mem-12';
+    await queueAndClaimOne(sm, 12);
+
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+
+    await processAgentResponse(
+      '',
+      session,
+      makeDbManager(storeObservations),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'TestAgent',
+    );
+
+    expect(resetSpy).toHaveBeenCalledWith(12);
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(storeObservations).not.toHaveBeenCalled();
+    expect(session.consecutiveInvalidOutputs).toBe(1);
+    expect(session.claimedMessageIds).toEqual([]);
+    expect(sm.getMessageBuffer().getPendingCount(12)).toBe(1);
+    expect(session.earliestPendingTimestamp).not.toBeNull();
+    expect(session.abortController.signal.aborted).toBe(false);
+
+    const iterator = sm.getMessageIterator(12);
+    await iterator.next();
+    await iterator.return?.();
+
+    await processAgentResponse(
+      '<observation><type>discovery</type><title>Recovered</title><facts>retried</facts><concepts></concepts><files_read></files_read><files_modified></files_modified></observation>',
+      session,
+      makeDbManager(storeObservations),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'TestAgent',
+    );
+
+    expect(storeObservations).toHaveBeenCalled();
+    expect(session.consecutiveInvalidOutputs).toBe(0);
+    expect(confirmSpy).toHaveBeenCalledWith(12);
+  });
+
+  it('preserves a genuinely empty batch through repeated idle responses', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(13, 'do the thing', 1);
+    session.memorySessionId = 'mem-13';
+    await queueAndClaimOne(sm, 13);
+
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+    const resetSpy = spyOn(sm, 'resetProcessingToPending');
+    const worker = makeWorker();
+
+    for (let i = 1; i <= 3; i++) {
+      await processAgentResponse(
+        '',
+        session,
+        makeDbManager(),
+        sm,
+        worker,
+        0,
+        null,
+        'TestAgent',
+      );
+      expect(session.consecutiveInvalidOutputs).toBe(i);
+      expect(session.claimedMessageIds).toEqual([]);
+      const warnCall = (logger.warn as any).mock.calls.find(
+        (c: any[]) => typeof c[1] === 'string' && c[1].includes('retrying claimed batch')
+      );
+      expect(warnCall).toBeDefined();
+
+      const iterator = sm.getMessageIterator(13);
+      await iterator.next();
+      await iterator.return?.();
+    }
+
+    await processAgentResponse(
+      '',
+      session,
+      makeDbManager(),
+      sm,
+      worker,
+      0,
+      null,
+      'TestAgent',
+    );
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      'PARSER',
+      expect.stringMatching(/idle retry bound exceeded/),
+      expect.any(Object)
+    );
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(resetSpy).toHaveBeenCalled();
+    expect(sm.getMessageBuffer().getPendingCount(13)).toBe(1);
+    expect(session.claimedMessageIds).toEqual([]);
+    expect(session.consecutiveInvalidOutputs).toBe(4);
+    expect(session.earliestPendingTimestamp).not.toBeNull();
+    expect(session.abortReason).toBe('empty-output:observer_text');
+    expect(session.abortController.signal.aborted).toBe(true);
+    expect(worker.broadcastProcessingStatus).toHaveBeenCalled();
+  });
+
+  it('releases the generator at the idle bound while retaining the pending batch', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(14, 'do the thing', 1);
+    session.memorySessionId = 'mem-14';
+    session.currentProvider = 'claude';
+    session.generatorPromise = Promise.resolve();
+    await queueAndClaimOne(sm, 14);
+
+    for (let i = 0; i < 4; i++) {
+      await processAgentResponse('', session, makeDbManager(), sm, makeWorker(), 0, null, 'TestAgent');
+      if (i < 3) {
+        const iterator = sm.getMessageIterator(14);
+        await iterator.next();
+        await iterator.return?.();
+      }
+    }
+
+    const finalizeSession = mock(() => Promise.resolve());
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+    await handleGeneratorExit(session, session.abortReason, {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+    });
+
+    expect(finalizeSession).not.toHaveBeenCalled();
+    expect(removeSpy).not.toHaveBeenCalled();
+    expect(sm.getSession(14)).toBe(session);
+    expect(sm.getMessageBuffer().getPendingCount(14)).toBe(1);
+    expect(session.generatorPromise).toBeNull();
+    expect(session.currentProvider).toBeNull();
+    expect(session.consecutiveInvalidOutputs).toBe(0);
+  });
+
+  it('finalizes an ordinary idle generator exit', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(15, 'do the thing', 1);
+    session.generatorPromise = Promise.resolve();
+    const finalizeSession = mock(() => Promise.resolve());
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+
+    await handleGeneratorExit(session, 'idle', {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+    });
+
+    expect(finalizeSession).toHaveBeenCalledWith(15);
+    expect(removeSpy).toHaveBeenCalledWith(15);
+    expect(sm.getSession(15)).toBeUndefined();
+  });
+
+  it('marks work queued during empty-output teardown for a deferred restart', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(16, 'do the thing', 1);
+    session.generatorPromise = Promise.resolve();
+    session.abortReason = 'empty-output:observer_text';
+
+    await sm.queueObservation(16, {
+      tool_name: 'Read',
+      tool_input: '{}',
+      tool_response: '{}',
+      prompt_number: 1,
+      cwd: 'C:\\work',
+    });
+
+    expect(session.restartGeneratorAfterExit).toBe(true);
+  });
+
+  it('resets the idle counter to 0 on valid XML after requeues', async () => {
+    const storeObservations = mock(() => ({ observationIds: [1], summaryId: null, createdAtEpoch: 0 }));
+    const sm = new SessionManager(makeDbManager(storeObservations));
+    const session = sm.initializeSession(12, 'do the thing', 1);
+    session.memorySessionId = 'mem-2';
+    session.consecutiveInvalidOutputs = 2;
+    await queueAndClaimOne(sm, 12);
+
+    const confirmSpy = spyOn(sm, 'confirmClaimedMessages');
+
+    await processAgentResponse(
+      '<observation><type>discovery</type><title>Healthy</title><facts></facts><concepts></concepts><files_read></files_read><files_modified></files_modified></observation>',
+      session,
+      makeDbManager(storeObservations),
+      sm,
+      makeWorker(),
+      0,
+      null,
+      'TestAgent',
+    );
+
+    expect(session.consecutiveInvalidOutputs).toBe(0);
+    expect(confirmSpy).toHaveBeenCalledWith(12);
   });
 });

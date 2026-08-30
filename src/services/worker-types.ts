@@ -25,11 +25,12 @@ export interface ActiveSession {
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
   consecutiveRestarts: number;
   /**
-   * Legacy invalid-output counter. Ordinary non-XML observer output is now
-   * confirmed as a no-op and resets this to 0 so skip acknowledgements never
-   * accumulate respawn debt.
+   * Bounds consecutive post-dispatch idle responses for one generator and
+   * resets after healthy output or a preserving generator release.
    */
   consecutiveInvalidOutputs: number;
+  /** Requests queued while the bounded idle generator is leaving. */
+  restartGeneratorAfterExit?: boolean;
   forceInit?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;

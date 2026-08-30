@@ -42,13 +42,14 @@ const MAX_USER_PROMPT_BYTES = 256 * 1024;
  */
 function normalizeAbortReason(
   reason: string | null | undefined
-): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'none' {
+): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'empty_output' | 'none' {
   switch ((reason ?? '').split(':')[0]) {
     case 'idle': return 'idle';
     case 'shutdown': return 'shutdown';
     case 'overflow': return 'overflow';
     case 'restart-guard': return 'restart_guard';
     case 'quota': return 'quota';
+    case 'empty-output': return 'empty_output';
     default: return 'none';
   }
 }
@@ -152,6 +153,25 @@ export class SessionRoutes extends BaseRouteHandler {
     const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
 
     const actualQueueDepth = this.sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId);
+
+    if (actualQueueDepth === 0) {
+      logger.debug('SESSION', 'Skipping generator start with an empty queue', {
+        sessionId: session.sessionDbId,
+        source,
+        provider: agentName,
+        outputClass: 'empty_request',
+      });
+      return;
+    }
+
+    if (session.generatorPromise) {
+      logger.debug('SESSION', 'Skipping duplicate generator start', {
+        sessionId: session.sessionDbId,
+        source,
+        provider: agentName,
+      });
+      return;
+    }
 
     logger.info('SESSION', `Generator auto-starting (${source}) using ${agentName}`, {
       sessionId: session.sessionDbId,
@@ -274,10 +294,15 @@ export class SessionRoutes extends BaseRouteHandler {
             ide: session.platformSource,
           });
         }
+        const restartAfterExit = session.restartGeneratorAfterExit === true;
+        session.restartGeneratorAfterExit = false;
         await handleGeneratorExit(session, reason, {
           sessionManager: this.sessionManager,
           completionHandler: this.completionHandler,
         });
+        if (restartAfterExit && this.sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId) > 0) {
+          await this.ensureGeneratorRunning(session.sessionDbId, 'deferred-after-empty-output');
+        }
       });
     session.generatorPromise = generatorPromise;
   }

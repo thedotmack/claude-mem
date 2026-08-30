@@ -88,6 +88,71 @@ describe('Claude setup-required generator gate', () => {
     Date.now = realDateNow;
   });
 
+  it('does not start a provider when the authoritative queue is empty', async () => {
+    const session = makeSession();
+    let starts = 0;
+    const routes = new SessionRoutes(
+      { getSession: () => session, getMessageBuffer: () => ({ getPendingCount: () => 0, peekTypes: () => [] }), removeSessionImmediate: () => {} } as any,
+      {} as any,
+      { startSession: async () => { starts += 1; } } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+
+    expect(starts).toBe(0);
+    expect(session.currentProvider).toBeNull();
+    expect(session.generatorPromise).toBeNull();
+  });
+
+  it('starts the selected provider when the authoritative queue has work', async () => {
+    const session = makeSession();
+    let starts = 0;
+    const routes = new SessionRoutes(
+      { getSession: () => session, getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => [] }), removeSessionImmediate: () => {} } as any,
+      {} as any,
+      { startSession: async () => { starts += 1; } } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      { finalizeSession: async () => {} } as any,
+    );
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    await session.generatorPromise;
+
+    expect(starts).toBe(1);
+  });
+
+  it('does not start duplicate providers when queue starts race', async () => {
+    const session = makeSession();
+    let starts = 0;
+    const routes = new SessionRoutes(
+      { getSession: () => session, getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => [] }), removeSessionImmediate: () => {} } as any,
+      {} as any,
+      { startSession: async () => { starts += 1; await Promise.resolve(); } } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      { finalizeSession: async () => {} } as any,
+    );
+
+    await Promise.all([
+      routes.ensureGeneratorRunning(session.sessionDbId, 'observation'),
+      routes.ensureGeneratorRunning(session.sessionDbId, 'observation'),
+    ]);
+    const generator = session.generatorPromise;
+    if (generator) await generator;
+
+    expect(starts).toBe(1);
+  });
+
   it('skips immediate repeat starts, then rechecks and clears status after cooldown repair', async () => {
     const session = makeSession();
     let activeSession: ActiveSession | undefined = session;
