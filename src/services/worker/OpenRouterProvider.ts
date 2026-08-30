@@ -175,6 +175,12 @@ export function classifyOpenRouterError(input: {
 
 const CHARS_PER_TOKEN_ESTIMATE = 4;
 
+/**
+ * Output cap sent on every chat-completions request. Named so the truncation
+ * warning can point at the number that cut the reply off.
+ */
+const OPENROUTER_MAX_OUTPUT_TOKENS = 4096;
+
 interface OpenAIMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
@@ -292,7 +298,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         model,
         messages,
         temperature: 0.3,  // Lower temperature for structured extraction
-        max_tokens: 4096,
+        max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
         // Ask openrouter.ai for usage accounting (token counts + cost).
         // Only sent to openrouter.ai — strict custom gateways may reject
         // unknown body fields.
@@ -365,8 +371,19 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       return responseData;
     }, { label: `OpenRouter ${model}` });
 
+    // `length` means the model was cut off at max_tokens rather than finishing.
+    // The reply is then a partial observation block, the parser rejects it as
+    // prose, and the batch is confirmed and dropped — so without this the only
+    // trace is a "non-XML response" warning that blames the model instead of
+    // the cap that truncated it.
+    const finishReason = data.choices?.[0]?.finish_reason;
+    const truncatedByCap = finishReason === 'length';
+
     if (!data.choices?.[0]?.message?.content) {
-      logger.error('SDK', 'Empty response from OpenRouter');
+      logger.error('SDK', 'Empty response from OpenRouter', {
+        ...(finishReason ? { finishReason } : {}),
+        ...(truncatedByCap ? { maxTokens: OPENROUTER_MAX_OUTPUT_TOKENS } : {}),
+      });
       return { content: '' };
     }
 
@@ -385,6 +402,16 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       ? (orCost ?? 0) + (upstreamCost ?? 0)
       : undefined;
     const servedModel = typeof data.model === 'string' && data.model ? data.model : undefined;
+
+    if (truncatedByCap) {
+      logger.warn('SDK', 'OpenRouter reply hit the max_tokens cap — the structured response is cut off and may not parse', {
+        model: servedModel ?? model,
+        maxTokens: OPENROUTER_MAX_OUTPUT_TOKENS,
+        outputTokens: realOutputTokens,
+        contentChars: content.length,
+        messagesInContext: history.length,
+      });
+    }
 
     if (tokensUsed) {
       logger.info('SDK', 'OpenRouter API usage', {
