@@ -239,6 +239,36 @@ describe('GeminiProvider', () => {
     expect(body.contents[2].role).toBe('user');
   });
 
+  it('sends an init prompt (not a continuation) when the session has no prompt anchor (#3653)', async () => {
+    // A transcript-ingested session with no user_prompts row resolves to
+    // prompt 0. Before the fix that was built as a continuation with an empty
+    // user prompt, which the model rejects as prose and the batch is dropped.
+    const markerMode = {
+      ...mockMode,
+      prompts: {
+        ...mockMode.prompts,
+        system_identity: '__INIT_MARKER__',
+        continuation_greeting: '__CONTINUATION_MARKER__',
+      },
+    };
+    modeManagerSpy.mockImplementation(() => ({
+      getActiveMode: () => markerMode,
+      loadMode: () => {},
+    } as any));
+
+    mockSuccessfulGeminiFetch();
+
+    await agent.startSession(makeSession({
+      userPrompt: '',
+      lastPromptNumber: 0,
+      conversationHistory: [],
+    }));
+
+    const firstPrompt = sentGeminiContents()[0].parts[0].text as string;
+    expect(firstPrompt).toContain('__INIT_MARKER__');
+    expect(firstPrompt).not.toContain('__CONTINUATION_MARKER__');
+  });
+
   it('keeps Gemini roles alternating for full conversation history', async () => {
     const history = [
       { role: 'user', content: 'u0' },

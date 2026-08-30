@@ -473,7 +473,13 @@ export class ClaudeProvider {
   ): AsyncIterableIterator<SDKUserMessage> {
     const mode = ModeManager.getInstance().getActiveMode();
 
-    const isInitPrompt = session.lastPromptNumber === 1;
+    // Prompt 0 means no user_prompts row was ever written for this session
+    // (a transcript-ingested turn with no anchor). Treat it, like the genuine
+    // first prompt, as an init: a self-contained prompt the observer can act
+    // on — never a continuation that expects a resumed conversation it never
+    // had, which the model rejects as prose and the batch is then dropped
+    // (#3653).
+    const isInitPrompt = session.lastPromptNumber <= 1;
     logger.info('SDK', 'Creating message generator', {
       sessionDbId: session.sessionDbId,
       contentSessionId: session.contentSessionId,
