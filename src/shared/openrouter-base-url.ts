@@ -45,6 +45,21 @@ const CHAT_COMPLETIONS_PATH = '/chat/completions';
  *   - a base URL (e.g. `https://api.deepseek.com/v1`) -> `/chat/completions` appended
  *   - trailing slashes are normalized before matching/appending
  */
+/**
+ * True only when the URL points at the official openrouter.ai service. A custom
+ * OpenAI-compatible gateway must not be mistaken for OpenRouter just because its
+ * path or query happens to contain the substring `openrouter.ai`, so match the
+ * host, not the raw string.
+ */
+export function isOfficialOpenRouterUrl(apiUrl: string): boolean {
+  try {
+    const host = new URL(apiUrl).hostname.toLowerCase();
+    return host === 'openrouter.ai' || host.endsWith('.openrouter.ai');
+  } catch {
+    return false;
+  }
+}
+
 export function resolveOpenRouterChatCompletionsUrl(baseUrl: string | undefined | null): string {
   const trimmed = (baseUrl ?? '').trim();
   if (!trimmed) {
