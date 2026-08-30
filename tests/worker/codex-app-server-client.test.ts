@@ -276,4 +276,36 @@ describe('CodexAppServerClient transport', () => {
       rmSync(fake.root, { recursive: true, force: true });
     }
   });
+
+  itPosix('rejects queued and future turns without restarting after close', async () => {
+    const fake = createFakeCodex({ mode: 'slow-first-turn' });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    const options = {
+      codexPath: fake.executable,
+      model: 'gpt-5.6-luna',
+      reasoningEffort: 'none',
+      prompt: 'Return one durable observation.',
+      timeoutMs: 5_000,
+    } as const;
+    try {
+      const active = client.runTurn(options);
+      await waitForTrace(fake.trace, trace => trace.some(entry => entry.method === 'turn/start'));
+      const queued = client.runTurn(options);
+      const settled = Promise.allSettled([active, queued]);
+
+      await client.close();
+      const [activeResult, queuedResult] = await settled;
+
+      expect(activeResult.status).toBe('rejected');
+      expect(queuedResult.status).toBe('rejected');
+      if (queuedResult.status === 'rejected') {
+        expect(String(queuedResult.reason)).toMatch(/client closed/);
+      }
+      await expect(client.runTurn(options)).rejects.toThrow(/client closed/);
+      expect(readTrace(fake.trace).filter(entry => entry.method === 'process/start')).toHaveLength(1);
+    } finally {
+      await client.close();
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
 });

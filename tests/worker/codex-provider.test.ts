@@ -154,9 +154,11 @@ describe('classifyCodexExecError', () => {
 
 describe('parseCodexReasoningEffort', () => {
   it('accepts supported Codex reasoning effort values', () => {
+    expect(parseCodexReasoningEffort('none')).toBe('none');
     expect(parseCodexReasoningEffort('low')).toBe('low');
     expect(parseCodexReasoningEffort(' HIGH ')).toBe('high');
     expect(parseCodexReasoningEffort('minimal')).toBe('minimal');
+    expect(parseCodexReasoningEffort('max')).toBe('max');
   });
 
   it('ignores empty or unsupported values', () => {

@@ -266,6 +266,8 @@ export class CodexAppServerClient {
   private binaryFingerprint = '';
   private activeTurn: ActiveTurn | null = null;
   private queueTail: Promise<void> = Promise.resolve();
+  private closed = false;
+  private closePromise: Promise<void> | null = null;
 
   constructor(options: CodexAppServerClientOptions = {}) {
     this.nativeCodexHome = resolveNativeCodexHome(options.nativeCodexHome);
@@ -276,10 +278,20 @@ export class CodexAppServerClient {
   }
 
   async close(): Promise<void> {
-    await this.invalidate(new Error('Codex app-server client closed'));
+    if (this.closePromise) return this.closePromise;
+
+    this.closed = true;
+    const queueDrained = this.queueTail;
+    this.closePromise = (async () => {
+      await this.invalidate(new Error('Codex app-server client closed'));
+      await queueDrained;
+    })();
+    return this.closePromise;
   }
 
   private async withExclusive<T>(signal: AbortSignal | undefined, operation: () => Promise<T>): Promise<T> {
+    if (this.closed) throw new Error('Codex app-server client closed');
+
     const previous = this.queueTail;
     let release!: () => void;
     const hold = new Promise<void>(resolve => { release = resolve; });
@@ -300,6 +312,7 @@ export class CodexAppServerClient {
       } else {
         await previous;
       }
+      if (this.closed) throw new Error('Codex app-server client closed');
       if (signal?.aborted) throw new Error('Codex app-server turn aborted while queued');
       return await operation();
     } finally {
@@ -506,6 +519,8 @@ export class CodexAppServerClient {
   }
 
   private async ensureStarted(codexPath: string, timeoutMs: number, signal?: AbortSignal): Promise<void> {
+    if (this.closed) throw new Error('Codex app-server client closed');
+
     const fingerprint = executableFingerprint(codexPath);
     if (this.child && (this.codexPath !== codexPath || this.binaryFingerprint !== fingerprint)) {
       this.invalidate(new Error('Codex executable changed; restarting app-server'));

@@ -24,7 +24,7 @@ const DEFAULT_MAX_OBSERVATIONS_PER_PROMPT = 6;
 const MAX_OBSERVATIONS_PER_PROMPT_LIMIT = 50;
 const CHARS_PER_TOKEN_ESTIMATE = 4;
 const WINDOWS_SHELL_META_RE = /[\0\r\n&|<>()^%!"]/;
-const CODEX_REASONING_EFFORT_VALUES = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+const CODEX_REASONING_EFFORT_VALUES = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 const CODEX_REASONING_EFFORTS = new Set<string>(CODEX_REASONING_EFFORT_VALUES);
 const CODEX_OBSERVATION_PROMPT_OPTIONS: ObservationPromptOptions = {
   maxObservations: 1,
