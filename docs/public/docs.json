@@ -37,6 +37,7 @@
           "installation",
           "usage/getting-started",
           "usage/openrouter-provider",
+          "usage/orcarouter-provider",
           "usage/gemini-provider",
           "usage/search-tools",
           "usage/knowledge-agents",

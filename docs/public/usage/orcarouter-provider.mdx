@@ -1,0 +1,115 @@
+---
+title: "OrcaRouter Provider"
+description: "Use OrcaRouter's unified gateway to access Anthropic, OpenAI, and many other models through one API key"
+---
+
+# OrcaRouter Provider
+
+Claude-mem supports [OrcaRouter](https://www.orcarouter.ai) as an alternative provider for observation extraction. OrcaRouter is a unified AI gateway that exposes ~185 provider-scoped models (e.g. `anthropic/claude-haiku-4.5`, `openai/gpt-4o-mini`) through a single API key, over both the Anthropic Messages protocol and an OpenAI-compatible chat-completions endpoint.
+
+<Tip>
+**Gateway-level security**: OrcaRouter runs gateway-level, zero-trust security for AI agents on the same endpoint — screening every prompt/response and governing every tool call on a default-deny basis, with no application code changes.
+</Tip>
+
+## Why Use OrcaRouter?
+
+- **One key, many providers**: Access Anthropic, OpenAI, and other model families through a single API key
+- **Provider-scoped model ids**: Pick any model with a namespaced id like `anthropic/claude-haiku-4.5` or `openai/gpt-4o-mini`
+- **Errors throw clearly**: 429s, 5xx, and network failures throw — leaving messages pending so they can be retried
+- **Hot-swappable**: Switch providers without restarting the worker
+- **Multi-turn conversations**: Full conversation history maintained across API calls
+
+## Getting an API Key
+
+1. Go to [OrcaRouter](https://www.orcarouter.ai)
+2. Sign in and navigate to API keys
+3. Create a key (starts with `sk-orca-`)
+4. Copy and securely store your API key
+
+## Configuration
+
+### Settings
+
+| Setting | Values | Default | Description |
+|---------|--------|---------|-------------|
+| `CLAUDE_MEM_PROVIDER` | `claude`, `gemini`, `openrouter`, `orcarouter` | `claude` | AI provider for observation extraction |
+| `CLAUDE_MEM_ORCAROUTER_API_KEY` | string | — | Your OrcaRouter API key |
+| `CLAUDE_MEM_ORCAROUTER_MODEL` | string | `openai/gpt-4o-mini` | Model identifier (namespaced, e.g. `anthropic/claude-haiku-4.5`) |
+| `CLAUDE_MEM_ORCAROUTER_BASE_URL` | string | `https://api.orcarouter.ai/v1` | Optional: OpenAI-compatible base URL |
+
+### Using the Settings UI
+
+1. Open the worker URL printed on startup
+2. Click the **gear icon** to open Settings
+3. Under **AI Provider**, select **OrcaRouter**
+4. Enter your OrcaRouter API key
+5. Optionally select a different model
+
+Settings are applied immediately—no restart required.
+
+### Manual Configuration
+
+Edit `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "orcarouter",
+  "CLAUDE_MEM_ORCAROUTER_API_KEY": "sk-orca-your-key-here",
+  "CLAUDE_MEM_ORCAROUTER_MODEL": "openai/gpt-4o-mini"
+}
+```
+
+Alternatively, set the API key via environment variable:
+
+```bash
+export ORCAROUTER_API_KEY="sk-orca-your-key-here"
+```
+
+The settings file takes precedence over the environment variable.
+
+## Model Selection Guide
+
+OrcaRouter's model catalog is provider-scoped. Query it live with no auth:
+
+```bash
+curl https://api.orcarouter.ai/v1/models
+```
+
+Common picks:
+
+| Model | Best For |
+|-------|----------|
+| `openai/gpt-4o-mini` | Fast, cost-effective default |
+| `anthropic/claude-haiku-4.5` | High-quality, low-latency observations |
+| `deepseek/deepseek-v4-flash` | Budget reasoning |
+
+## Provider Switching
+
+You can switch between providers at any time:
+
+- **No restart required**: Changes take effect on the next observation
+- **Conversation history preserved**: When switching mid-session, the new provider sees the full conversation context
+- **Seamless transition**: All providers use the same observation format
+
+### Switching via Settings File
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "orcarouter"
+}
+```
+
+## Error Behavior
+
+If OrcaRouter errors, claude-mem logs the failure and re-throws so the message stays pending for later retry. There is no Claude SDK fallback. To switch providers, change `CLAUDE_MEM_PROVIDER` in settings.
+
+**Throwing conditions:**
+- Rate limiting (HTTP 429)
+- Server errors (HTTP 500, 502, 503)
+- Network issues (connection refused, timeout)
+- 4xx errors other than 429
+- Missing API key
+
+## Multi-Turn Conversation Support
+
+The OrcaRouter agent maintains full conversation history across API calls, using the same observation format and XML parsing as every other provider.

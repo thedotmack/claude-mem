@@ -28,6 +28,6 @@ export interface ServerGenerationResult {
 }
 
 export interface ServerGenerationProvider {
-  readonly providerLabel: 'claude' | 'gemini' | 'openrouter';
+  readonly providerLabel: 'claude' | 'gemini' | 'openrouter' | 'orcarouter';
   generate(context: ServerGenerationContext, signal?: AbortSignal): Promise<ServerGenerationResult>;
 }
