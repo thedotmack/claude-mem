@@ -140,7 +140,9 @@ describe('Claude setup-required generator gate', () => {
     );
 
     await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
-    await session.generatorPromise;
+    const firstRun = session.generatorPromise;
+    expect(firstRun).not.toBeNull();
+    await firstRun;
 
     expect(starts).toBe(1);
     expect(getDependencyStatus('claude_cli')).toMatchObject({
@@ -191,5 +193,203 @@ describe('Claude setup-required generator gate', () => {
       kind: 'setup_required',
       remediation: expect.stringContaining('Claude Code CLI'),
     });
+  });
+
+  it('finalizes summarize when the rescue launch is skipped by setup gating', async () => {
+    const session = makeSession();
+    let activeSession: ActiveSession | undefined = session;
+    let starts = 0;
+    let finalizerCalls = 0;
+    let removeSessionImmediateCalls = 0;
+    let firstRunResolve: (() => void) | null = null;
+
+    const sessionManager = {
+      getSession: () => activeSession,
+      getMessageBuffer: () => ({
+        getPendingCount: () => 1,
+        peekTypes: () => [{ message_type: 'summarize', tool_name: null }],
+      }),
+      hasPendingSummarize: () => true,
+      claimSummarizeRescue: () => true,
+      resetProcessingToPending: async () => 1,
+      removeSessionImmediate: () => {
+        removeSessionImmediateCalls += 1;
+        activeSession = undefined;
+      },
+    };
+
+    const claudeProvider = {
+      startSession: async () => {
+        starts += 1;
+        if (starts === 1) {
+          await new Promise<void>(resolve => {
+            firstRunResolve = resolve;
+          });
+        } else {
+          throw new ClassifiedProviderError('Claude executable not found', {
+            kind: 'setup_required',
+            cause: new Error('Claude executable not found'),
+          });
+        }
+      },
+    };
+
+    const routes = new SessionRoutes(
+      sessionManager as any,
+      {} as any,
+      claudeProvider as any,
+      { startSession: async () => {} } as any,
+      { startSession: async () => {} } as any,
+      {} as any,
+      {} as any,
+      {
+        finalizeSession: async () => {
+          finalizerCalls += 1;
+        },
+      } as any,
+    );
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    const firstRun = session.generatorPromise;
+    expect(firstRun).not.toBeNull();
+    firstRunResolve?.();
+    await firstRun;
+
+    expect(starts).toBe(2);
+    expect(finalizerCalls).toBe(1);
+    expect(removeSessionImmediateCalls).toBe(1);
+    expect(activeSession).toBeUndefined();
+    expect(session.generatorPromise).toBeNull();
+  });
+
+  it('preserves summarize when the rescue pass pauses for auth or quota', async () => {
+    for (const pauseReason of ['auth:rescue', 'quota:rescue'] as const) {
+      resetDependencyStatusesForTesting();
+      const session = makeSession();
+      let activeSession: ActiveSession | undefined = session;
+      let starts = 0;
+      let finalizerCalls = 0;
+      let removeSessionImmediateCalls = 0;
+      let firstRunResolve: (() => void) | null = null;
+
+      const sessionManager = {
+        getSession: () => activeSession,
+        getMessageBuffer: () => ({
+          getPendingCount: () => 1,
+          peekTypes: () => [{ message_type: 'summarize', tool_name: null }],
+        }),
+        hasPendingSummarize: () => true,
+        claimSummarizeRescue: () => true,
+        resetProcessingToPending: async () => 1,
+        removeSessionImmediate: () => {
+          removeSessionImmediateCalls += 1;
+          activeSession = undefined;
+        },
+      };
+
+      const claudeProvider = {
+        startSession: async () => {
+          starts += 1;
+          if (starts === 1) {
+            await new Promise<void>(resolve => {
+              firstRunResolve = resolve;
+            });
+            return;
+          }
+          session.abortReason = pauseReason;
+        },
+      };
+
+      const routes = new SessionRoutes(
+        sessionManager as any,
+        {} as any,
+        claudeProvider as any,
+        { startSession: async () => {} } as any,
+        { startSession: async () => {} } as any,
+        {} as any,
+        {} as any,
+        {
+          finalizeSession: async () => {
+            finalizerCalls += 1;
+          },
+        } as any,
+      );
+
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      const firstRun = session.generatorPromise;
+      expect(firstRun).not.toBeNull();
+      firstRunResolve?.();
+      await firstRun;
+
+      expect(starts).toBe(2);
+      expect(finalizerCalls).toBe(0);
+      expect(removeSessionImmediateCalls).toBe(0);
+      expect(activeSession).toBe(session);
+      expect(sessionManager.hasPendingSummarize()).toBe(true);
+    }
+  });
+
+  it('finalizes once through the inner exit after a successful rescue', async () => {
+    const session = makeSession();
+    let activeSession: ActiveSession | undefined = session;
+    let summarizePending = true;
+    let starts = 0;
+    let finalizerCalls = 0;
+    let removeSessionImmediateCalls = 0;
+    let firstRunResolve: (() => void) | null = null;
+
+    const sessionManager = {
+      getSession: () => activeSession,
+      getMessageBuffer: () => ({
+        getPendingCount: () => summarizePending ? 1 : 0,
+        peekTypes: () => summarizePending ? [{ message_type: 'summarize', tool_name: null }] : [],
+      }),
+      hasPendingSummarize: () => summarizePending,
+      claimSummarizeRescue: () => true,
+      resetProcessingToPending: async () => 1,
+      removeSessionImmediate: () => {
+        removeSessionImmediateCalls += 1;
+        activeSession = undefined;
+      },
+    };
+
+    const claudeProvider = {
+      startSession: async () => {
+        starts += 1;
+        if (starts === 1) {
+          await new Promise<void>(resolve => {
+            firstRunResolve = resolve;
+          });
+        } else {
+          summarizePending = false;
+        }
+      },
+    };
+
+    const routes = new SessionRoutes(
+      sessionManager as any,
+      {} as any,
+      claudeProvider as any,
+      { startSession: async () => {} } as any,
+      { startSession: async () => {} } as any,
+      {} as any,
+      {} as any,
+      {
+        finalizeSession: async () => {
+          finalizerCalls += 1;
+        },
+      } as any,
+    );
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    const firstRun = session.generatorPromise;
+    expect(firstRun).not.toBeNull();
+    firstRunResolve?.();
+    await firstRun;
+
+    expect(starts).toBe(2);
+    expect(finalizerCalls).toBe(1);
+    expect(removeSessionImmediateCalls).toBe(1);
+    expect(activeSession).toBeUndefined();
   });
 });
