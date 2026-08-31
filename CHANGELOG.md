@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.20.0] - 2026-08-31
+
+Consolidates the observer, quota, and installer work onto one release.
+
+## Observer no longer burns your allowance on doomed requests
+
+An exhausted allowance used to buy one refused request per captured tool call, for the rest of the billing cycle: the generator exits on the refusal, and the next observation starts a fresh one that earns the same refusal.
+
+- A quota breaker now withholds requests for a cooldown and then admits exactly **one** probe to re-check, instead of letting every live session through the moment the window elapses.
+- The breaker persists, so restarting the worker no longer resets it.
+- Quota returned as assistant prose (which aborts rather than throwing) now arms the breaker and the health ledger too. That path was previously invisible: the allowance was spent, nothing would ever store, and you were told nothing.
+- Probe claims are scoped to the generator that took them, so an earlier generator's exit can't clear a later session's probe and wedge the provider shut.
+
+## Capped users are no longer told to restart
+
+Hitting your allowance is not an outage. The session-start warning stopped presenting it as one, and stopped recommending a restart that cannot help.
+
+## Observer conversations are bounded
+
+The observer now runs in bounded generations seeded from memory, and a recycled generation is briefed from the real session-start context rather than starting cold. A recycle resumes on its own, so the last observation of a session is no longer stranded waiting for a tool call that never comes. Two unbounded request loops were closed.
+
+## Automatic fallback when the claude-mem key is exhausted
+
+When the cmem gateway terminally rejects the delivered key, memory falls back to your Anthropic plan and says so once at session start. This is treated as the promised switch, not an outage, so it stays out of the health ledger and never triggers the outage warning.
+
+## Installer: the login step is only about logging in
+
+Every install is account-first, and the provider choice (CMEM Pro vs. your own Anthropic plan) now happens strictly after login. The login step carries no plan or pricing language:
+
+- A server-reported checkout stage during login no longer renders "Waiting for CMEM Pro setup in the browser…". That wording is scoped to enrollment.
+- The pre-login note explaining provider mechanics is gone. Both browser hand-offs now print the URL, then wait: `Continue setup in browser... (hit return to open automatically)`. The URL prints first, so headless and SSH sessions are never blocked — open it by hand and the wait clears on Return.
+- Signup links were replaced with OAuth pairing, and signed-in provider transitions were hardened.
+
+**Known limitation:** a non-interactive install that cannot reach cmem.ai now fails rather than silently configuring a local-only install, including runs that pass `--provider claude`. A bypass for explicit local providers is coming in the next release.
+
 ## [13.19.0] - 2026-08-31
 
 ## Restart the memory worker in one click
