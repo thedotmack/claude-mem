@@ -1516,9 +1516,16 @@ async function waitForInstallerPairing(
   version: string,
 ): Promise<InstallerPollOutcome | null> {
   const startedAt = Date.now();
+  // The login phase must never name CMEM Pro. Logging in is required of every
+  // user and happens BEFORE the provider choice, so naming a paid plan here
+  // reads as an upsell attached to a mandatory step and muddies the funnel.
+  // The poll loop prints whatever stage the server reports, so a server-side
+  // 'awaiting_checkout' during login would otherwise leak the Pro wording.
   const stageMessages: Record<InstallerPollStage, string> = {
     awaiting_login: 'Waiting for OAuth login in the browser…',
-    awaiting_checkout: 'Waiting for CMEM Pro setup in the browser…',
+    awaiting_checkout: phase === 'login'
+      ? 'Waiting for the browser to finish signing you in…'
+      : 'Waiting for CMEM Pro setup in the browser…',
     awaiting_approval: `Enter code ${pairing.userCode} in the browser to approve this device…`,
   };
   let stage: InstallerPollStage = phase === 'login' ? 'awaiting_login' : 'awaiting_checkout';
@@ -1609,18 +1616,41 @@ export async function completeInstallerOAuthLogin(
   return result.kind === 'authenticated' || result.kind === 'ready';
 }
 
+/**
+ * Holds until the user presses Return, then the caller opens the browser. The
+ * URL is printed BEFORE this, so a user who cannot use an opener (headless box,
+ * SSH) is never blocked — they can open it by hand and the wait still clears on
+ * Return. Ctrl-C falls through to the normal SIGINT handling.
+ *
+ * Raw mode mirrors waitForInstallerPairing: only toggled when this call turned
+ * it on, and always restored.
+ */
+async function waitForReturnToOpenBrowser(message: string): Promise<void> {
+  if (!isInteractive || process.stdin.isTTY !== true) return;
+  log.info(message);
+  await new Promise<void>((resolve) => {
+    const wasRaw = process.stdin.isRaw === true;
+    let changedRawMode = false;
+    const finish = (): void => {
+      process.stdin.off('data', onData);
+      if (changedRawMode) process.stdin.setRawMode(false);
+      process.stdin.pause();
+      resolve();
+    };
+    const onData = (chunk: Buffer | string): void => {
+      const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      if (text.includes('\r') || text.includes('\n') || text.includes('\x03')) finish();
+    };
+    if (!wasRaw) {
+      process.stdin.setRawMode(true);
+      changedRawMode = true;
+    }
+    process.stdin.resume();
+    process.stdin.on('data', onData);
+  });
+}
+
 async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAuthPairing | null> {
-  const loginCopy = [
-    'A browser will open so you can log in with GitHub or Google.',
-    'Return to this terminal after OAuth completes.',
-  ].join('\n');
-
-  if (isInteractive) {
-    p.note(loginCopy, 'Log in to Claude-Mem');
-  } else {
-    console.log(`\n  Log in to Claude-Mem\n  ${loginCopy.replace(/\n/g, '\n  ')}`);
-  }
-
   const spinner = isInteractive ? p.spinner() : null;
   spinner?.start('Starting secure OAuth login…');
   const pairing = await startInstallerOAuthPairing();
@@ -1631,7 +1661,11 @@ async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAu
   }
   spinner?.stop('OAuth login ready.');
 
+  // No provider, plan, or pricing language on this step: logging in is required
+  // of every user and runs BEFORE the provider choice, so anything about a paid
+  // plan here is an upsell bolted onto a mandatory step.
   log.info(`Open this URL: ${pairing.authorizationUrl}`);
+  await waitForReturnToOpenBrowser('Continue setup in browser... (hit return to open automatically)');
   openBrowser(pairing.authorizationUrl);
   await captureCliEvent('installer_oauth_started', { version });
 
