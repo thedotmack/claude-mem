@@ -220,7 +220,6 @@ interface GeminiConfig {
 export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
   protected readonly providerName = 'Gemini';
   protected readonly syntheticIdPrefix = 'gemini';
-  protected readonly forwardEmptyMessageResponse = false;
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     super(dbManager, sessionManager);

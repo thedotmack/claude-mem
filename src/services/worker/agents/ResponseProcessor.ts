@@ -19,6 +19,15 @@ import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
 
+/**
+ * How many consecutive empty responses a session may retry before the batch is
+ * dropped. resetProcessingToPending un-claims immediately and
+ * SessionMessageBuffer.drain re-yields on its very next loop turn, so this
+ * ceiling — not the reset itself — is what stops a provider stuck on empty from
+ * spinning against the API.
+ */
+const EMPTY_RESPONSE_RETRY_LIMIT = 3;
+
 export async function processAgentResponse(
   text: string,
   session: ActiveSession,
@@ -69,10 +78,49 @@ export async function processAgentResponse(
     }
 
     // Classify the non-XML output so a dropped batch is visible, not silent.
-    // Ordinary idle/prose is a claimed no-op batch: confirm it and do not build
-    // any respawn debt from repeated skip acknowledgements.
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
+
+    // An empty response is not a skip acknowledgement. The provider returned no
+    // content at all, so the batch was never observed and dropping it loses work
+    // the model never looked at. Preserve it and let the next pass re-ask,
+    // bounded by EMPTY_RESPONSE_RETRY_LIMIT so a provider stuck on empty cannot
+    // spin. Prose skips are handled below and still dropped.
+    if (outputClass === 'idle') {
+      session.consecutiveInvalidOutputs++;
+
+      if (session.consecutiveInvalidOutputs <= EMPTY_RESPONSE_RETRY_LIMIT) {
+        logger.warn('PARSER', `${agentName} returned an empty response — preserving queued batch for retry`, {
+          sessionId: session.sessionDbId,
+          outputClass,
+          preview,
+          consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+          retryLimit: EMPTY_RESPONSE_RETRY_LIMIT,
+        });
+
+        await sessionManager.resetProcessingToPending(session.sessionDbId);
+        worker?.broadcastProcessingStatus?.();
+        return;
+      }
+
+      logger.warn('PARSER', `${agentName} returned ${session.consecutiveInvalidOutputs} consecutive empty responses — dropping queued batch to break the retry loop`, {
+        sessionId: session.sessionDbId,
+        outputClass,
+        preview,
+        consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+        retryLimit: EMPTY_RESPONSE_RETRY_LIMIT,
+      });
+
+      session.consecutiveInvalidOutputs = 0;
+      await sessionManager.confirmClaimedMessages(session.sessionDbId);
+      session.earliestPendingTimestamp = null;
+      return;
+    }
+
+    // Plain-text skip responses are intentionally ignored. Re-queueing them
+    // creates an observer loop where the same low-signal batch is retried, and
+    // unlike an empty response the model did look at the batch and chose to say
+    // nothing. Confirm it and build no respawn debt from repeated skips.
     session.consecutiveInvalidOutputs = 0;
 
     logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
@@ -82,8 +130,6 @@ export async function processAgentResponse(
       consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
     });
 
-    // Plain-text skip responses are intentionally ignored. Re-queueing them
-    // creates an observer loop where the same low-signal batch is retried.
     await sessionManager.confirmClaimedMessages(session.sessionDbId);
     session.earliestPendingTimestamp = null;
     return;

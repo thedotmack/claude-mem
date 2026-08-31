@@ -139,7 +139,6 @@ interface OpenRouterConfig {
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
   protected readonly providerName = 'OpenRouter';
   protected readonly syntheticIdPrefix = 'openrouter';
-  protected readonly forwardEmptyMessageResponse = true;
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     super(dbManager, sessionManager);

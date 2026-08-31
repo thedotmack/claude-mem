@@ -122,6 +122,7 @@ describe('ResponseProcessor', () => {
       claimedMessageIds: [],
       conversationHistory: [],
       currentProvider: 'claude',
+      consecutiveInvalidOutputs: 0,
       ...overrides,
     } as ActiveSession;
   }
@@ -456,25 +457,102 @@ describe('ResponseProcessor', () => {
   });
 
   describe('handling empty / non-XML response', () => {
-    it('clears pending work and does NOT call storeObservations on empty response', async () => {
+    function emptyResponseSessionManager() {
       const confirmClaimedMessages = mock(() => Promise.resolve(0));
-      mockSessionManager = {
+      const resetProcessingToPending = mock(() => Promise.resolve(1));
+      const sessionManager = {
         getMessageIterator: async function* () { yield* []; },
         getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
         confirmClaimedMessages,
+        resetProcessingToPending,
       } as unknown as SessionManager;
+      return { sessionManager, confirmClaimedMessages, resetProcessingToPending };
+    }
 
+    it('preserves the queued batch and does NOT call storeObservations on empty response', async () => {
+      const { sessionManager, confirmClaimedMessages, resetProcessingToPending } = emptyResponseSessionManager();
       const session = createMockSession();
-      const responseText = '';
+      const earliest = session.earliestPendingTimestamp;
 
       await processAgentResponse(
-        responseText, session, mockDbManager, mockSessionManager, mockWorker,
+        '', session, mockDbManager, sessionManager, mockWorker,
         100, null, 'TestAgent'
       );
 
       expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      // The batch is still queued, so its age must not be forgotten.
+      expect(session.earliestPendingTimestamp).toBe(earliest);
+      expect(session.consecutiveInvalidOutputs).toBe(1);
+    });
+
+    it('treats whitespace-only output as empty and preserves the batch', async () => {
+      const { sessionManager, confirmClaimedMessages, resetProcessingToPending } = emptyResponseSessionManager();
+      const session = createMockSession();
+
+      await processAgentResponse(
+        '   \n\t  ', session, mockDbManager, sessionManager, mockWorker,
+        100, null, 'TestAgent'
+      );
+
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(session.consecutiveInvalidOutputs).toBe(1);
+    });
+
+    it('drops the batch once consecutive empty responses exceed the retry limit', async () => {
+      const { sessionManager, confirmClaimedMessages, resetProcessingToPending } = emptyResponseSessionManager();
+      const session = createMockSession();
+
+      // Three retries are allowed; the fourth consecutive empty breaks the loop.
+      for (let attempt = 0; attempt < 4; attempt++) {
+        await processAgentResponse(
+          '', session, mockDbManager, sessionManager, mockWorker,
+          100, null, 'TestAgent'
+        );
+      }
+
+      expect(resetProcessingToPending).toHaveBeenCalledTimes(3);
       expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(confirmClaimedMessages).toHaveBeenCalledTimes(1);
       expect(session.earliestPendingTimestamp).toBeNull();
+      // Counter clears so the next batch gets a full retry budget.
+      expect(session.consecutiveInvalidOutputs).toBe(0);
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+
+    it('resets the empty-response counter once a valid XML response arrives', async () => {
+      const { sessionManager, resetProcessingToPending } = emptyResponseSessionManager();
+      const session = createMockSession();
+
+      await processAgentResponse('', session, mockDbManager, sessionManager, mockWorker, 100, null, 'TestAgent');
+      await processAgentResponse('', session, mockDbManager, sessionManager, mockWorker, 100, null, 'TestAgent');
+      expect(session.consecutiveInvalidOutputs).toBe(2);
+
+      await processAgentResponse(
+        `<observation><type>discovery</type><title>Back on track</title><narrative>Recovered.</narrative></observation>`,
+        session, mockDbManager, sessionManager, mockWorker, 100, null, 'TestAgent'
+      );
+
+      expect(session.consecutiveInvalidOutputs).toBe(0);
+      expect(resetProcessingToPending).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not let a prose skip build toward the empty-response limit', async () => {
+      const { sessionManager, confirmClaimedMessages, resetProcessingToPending } = emptyResponseSessionManager();
+      const session = createMockSession();
+
+      await processAgentResponse('', session, mockDbManager, sessionManager, mockWorker, 100, null, 'TestAgent');
+      await processAgentResponse(
+        'Skipping — repeated log scan with no new findings.',
+        session, mockDbManager, sessionManager, mockWorker, 100, null, 'TestAgent'
+      );
+
+      // The prose skip is still dropped, and it clears the empty-response streak.
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.consecutiveInvalidOutputs).toBe(0);
+      expect(resetProcessingToPending).toHaveBeenCalledTimes(1);
     });
 
     it('clears pending work and does NOT call storeObservations on plain-text response', async () => {

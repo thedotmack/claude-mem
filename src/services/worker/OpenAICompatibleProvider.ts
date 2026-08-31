@@ -44,13 +44,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   protected abstract readonly providerName: string;
   /** Prefix for the synthetic memorySessionId (e.g. 'gemini', 'openrouter'). */
   protected abstract readonly syntheticIdPrefix: string;
-  /**
-   * When a query returns empty content for an observation/summary message:
-   * OpenRouter still calls processAgentResponse('') (forwards the empty batch
-   * to the parser/recovery path); Gemini skips it and logs a warning. This flag
-   * preserves that per-provider divergence.
-   */
-  protected abstract readonly forwardEmptyMessageResponse: boolean;
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     this.dbManager = dbManager;
@@ -221,16 +214,14 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       session.lastUsage = this.buildLastUsage(obsResponse);
     }
 
-    if (obsResponse.content || this.forwardEmptyMessageResponse) {
-      await processAgentResponse(
-        obsResponse.content || '', session, this.dbManager, this.sessionManager,
-        worker, tokensUsed, originalTimestamp, this.providerName, lastCwd, obsResponse.servedModel ?? config.model
-      );
-    } else {
-      logger.warn('SDK', `Empty ${this.providerName} observation response, leaving queue intact`, {
-        sessionId: session.sessionDbId
-      });
-    }
+    // Empty content is forwarded, not swallowed: the old skip-and-warn branch
+    // claimed to leave the queue intact but never un-claimed the batch, so the
+    // next successful turn's confirmClaimedMessages swept it away unobserved.
+    // processAgentResponse now owns that decision for every provider.
+    await processAgentResponse(
+      obsResponse.content || '', session, this.dbManager, this.sessionManager,
+      worker, tokensUsed, originalTimestamp, this.providerName, lastCwd, obsResponse.servedModel ?? config.model
+    );
   }
 
   private async processSummaryMessage(
@@ -268,16 +259,12 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       session.lastUsage = this.buildLastUsage(summaryResponse);
     }
 
-    if (summaryResponse.content || this.forwardEmptyMessageResponse) {
-      await processAgentResponse(
-        summaryResponse.content || '', session, this.dbManager, this.sessionManager,
-        worker, tokensUsed, originalTimestamp, this.providerName, lastCwd, summaryResponse.servedModel ?? config.model
-      );
-    } else {
-      logger.warn('SDK', `Empty ${this.providerName} summary response, leaving queue intact`, {
-        sessionId: session.sessionDbId
-      });
-    }
+    // See processObservationMessage: empty content goes through the same
+    // preserve-and-retry path instead of a per-provider skip branch.
+    await processAgentResponse(
+      summaryResponse.content || '', session, this.dbManager, this.sessionManager,
+      worker, tokensUsed, originalTimestamp, this.providerName, lastCwd, summaryResponse.servedModel ?? config.model
+    );
   }
 
   protected handleSessionError(error: unknown, session: ActiveSession, _worker?: WorkerRef): never {

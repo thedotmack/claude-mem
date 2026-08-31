@@ -25,9 +25,11 @@ export interface ActiveSession {
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
   consecutiveRestarts: number;
   /**
-   * Legacy invalid-output counter. Ordinary non-XML observer output is now
-   * confirmed as a no-op and resets this to 0 so skip acknowledgements never
-   * accumulate respawn debt.
+   * Consecutive empty observer responses. Each one preserves the queued batch
+   * and retries; past EMPTY_RESPONSE_RETRY_LIMIT the batch is dropped so a
+   * provider stuck on empty cannot loop. Any parseable output — and any prose
+   * skip acknowledgement, which is a deliberate no-op rather than a miss —
+   * resets this to 0.
    */
   consecutiveInvalidOutputs: number;
   forceInit?: boolean;
