@@ -4,15 +4,26 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   buildTrialReadySettings,
+  parseInstallerOAuthStartBody,
   parseTrialReadyBody,
 } from '../../src/npx-cli/commands/install';
 import {
+  ANTHROPIC_MAX_BENEFITS,
+  buildProviderBenefitsNote,
+  buildProviderLabels,
+  CMEM_PRO_BENEFITS,
   CMEM_PRO_BASE_URL,
   CMEM_PRO_MODEL,
+  CMEM_TRIAL_ACKNOWLEDGEMENT,
+  PROVIDER_PROMPT_MESSAGE,
 } from '../../src/npx-cli/cmem-pro-costs';
 
 const repoRoot = process.cwd();
 const decoder = new TextDecoder();
+const pairingId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const loginClaim = `/api/pro/trial/claim?pairing=${pairingId}&login_only=1`;
+const authorizationUrl = `https://cmem.ai/login?next=${encodeURIComponent(loginClaim)}`;
+const checkoutUrl = `https://cmem.ai/api/pro/trial/claim?pairing=${pairingId}&trial=7`;
 
 function runCompletedPairingChild(body: Record<string, unknown>): {
   output: string;
@@ -26,14 +37,17 @@ function runCompletedPairingChild(body: Record<string, unknown>): {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
-      const { completeTrialPairing } = await import('./src/npx-cli/commands/install.ts');
-      const result = await completeTrialPairing({
+      const { completeInstallerOAuthLogin } = await import('./src/npx-cli/commands/install.ts');
+      const pairing = {
         pairingId: 'PAIRING_ID_MUST_NOT_LEAK',
         secret: 'PAIRING_SECRET_MUST_NOT_LEAK',
         pollIntervalMs: 1,
-        userCode: null,
-      }, 'test-version');
-      console.log('__PAIRING_RESULT__=' + JSON.stringify({ plan: result?.plan, ready: result !== null }));
+        userCode: 'ABCD-2345',
+        authorizationUrl: 'https://cmem.ai/login',
+        checkoutUrl: 'https://cmem.ai/api/pro/trial/claim?pairing=test&trial=7',
+      };
+      const result = await completeInstallerOAuthLogin(pairing, 'test-version');
+      console.log('__PAIRING_RESULT__=' + JSON.stringify({ plan: pairing.delivered?.plan, ready: result }));
     `;
     const result = Bun.spawnSync([process.execPath, '--eval', script], {
       cwd: repoRoot,
@@ -58,6 +72,108 @@ function runCompletedPairingChild(body: Record<string, unknown>): {
 }
 
 describe('installer trial-ready contract', () => {
+  it('parses an OAuth-only pairing without accepting an email or identity', () => {
+    expect(parseInstallerOAuthStartBody({
+      pairing_id: pairingId,
+      secret: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      user_code: 'ABCD-2345',
+      authorization_url: authorizationUrl,
+      checkout_url: checkoutUrl,
+      poll_interval: 3,
+      email: 'must-not-be-read@example.com',
+    })).toEqual({
+      pairingId,
+      secret: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      userCode: 'ABCD-2345',
+      authorizationUrl,
+      checkoutUrl,
+      pollIntervalMs: 3000,
+    });
+  });
+
+  it('rejects OAuth starts without both browser destinations', () => {
+    expect(parseInstallerOAuthStartBody({
+      pairing_id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      secret: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      user_code: 'ABCD-2345',
+      authorization_url: 'https://cmem.ai/login',
+    })).toBeNull();
+  });
+
+  it('rejects browser destinations outside the configured CMEM origin', () => {
+    expect(parseInstallerOAuthStartBody({
+      pairing_id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      secret: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      user_code: 'ABCD-2345',
+      authorization_url: 'https://attacker.example/login',
+      checkout_url: checkoutUrl,
+    })).toBeNull();
+  });
+
+  it('rejects pairings whose login, offer, or device code does not match the response', () => {
+    const valid = {
+      pairing_id: pairingId,
+      secret: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      user_code: 'ABCD-2345',
+      authorization_url: authorizationUrl,
+      checkout_url: checkoutUrl,
+    };
+
+    expect(parseInstallerOAuthStartBody({
+      ...valid,
+      authorization_url: `https://cmem.ai/login?next=${encodeURIComponent(`/api/pro/trial/claim?pairing=${pairingId}&trial=7`)}`,
+    })).toBeNull();
+    expect(parseInstallerOAuthStartBody({
+      ...valid,
+      checkout_url: `https://cmem.ai/api/pro/trial/claim?pairing=${'c'.repeat(32)}&trial=7`,
+    })).toBeNull();
+    expect(parseInstallerOAuthStartBody({ ...valid, checkout_url: `${checkoutUrl}&extra=1` })).toBeNull();
+    expect(parseInstallerOAuthStartBody({ ...valid, user_code: 'INVALID1' })).toBeNull();
+  });
+
+  it('uses the exact two-option provider copy and required trial disclosure', () => {
+    expect(buildProviderLabels()).toEqual({
+      cmem: 'CMEM Pro',
+      cmemHint: 'Shared cloud memory across agents, apps, and devices',
+      claude: 'Use your Anthropic Max Plan',
+      claudeHint: 'Local memory using the plan you already have',
+    });
+    expect(PROVIDER_PROMPT_MESSAGE).toBe(
+      'Select Provider:\nClaude-Mem uses tokens to take notes of what your agent is working on in real-time.',
+    );
+    expect(CMEM_TRIAL_ACKNOWLEDGEMENT).toBe(
+      "Free Trial includes a week's worth of allowance and auto-charges if you reach the limit.",
+    );
+    const benefits = buildProviderBenefitsNote();
+    for (const benefit of [...CMEM_PRO_BENEFITS, ...ANTHROPIC_MAX_BENEFITS]) {
+      expect(benefits).toContain(benefit);
+    }
+  });
+
+  it('requires OAuth before provider selection and contains no retired email path', () => {
+    const source = readFileSync(join(repoRoot, 'src/npx-cli/commands/install.ts'), 'utf-8');
+    const oauthIndex = source.indexOf('await requireInstallerOAuthLogin(version)');
+    const providerIndex = source.indexOf('await promptProvider(options, oauthPairing, version)');
+    expect(oauthIndex).toBeGreaterThan(-1);
+    expect(providerIndex).toBeGreaterThan(oauthIndex);
+    expect(source).toContain('p.multiselect<ProviderChoice>');
+    expect(source).toContain("p.multiselect<'accepted'>");
+    expect(source).not.toContain('promptBrowserLogin');
+    expect(source).not.toContain('CMEM_PRO_TRIAL_START_URL');
+    expect(source).not.toContain('CLAUDE_MEM_ONLINE_OPTIN');
+    expect(source).not.toContain('Your email:');
+  });
+
+  it('stops any respawned worker after provider settings are persisted', () => {
+    const source = readFileSync(join(repoRoot, 'src/npx-cli/commands/install.ts'), 'utf-8');
+    const providerIndex = source.indexOf('await promptProvider(options, oauthPairing, version)');
+    const cutoverIndex = source.indexOf("'provider-cutover'", providerIndex);
+    const workerStartIndex = source.indexOf('workerStartResult = await ensureWorkerStarted', cutoverIndex);
+    expect(providerIndex).toBeGreaterThan(-1);
+    expect(cutoverIndex).toBeGreaterThan(providerIndex);
+    expect(workerStartIndex).toBeGreaterThan(cutoverIndex);
+  });
+
   it('normalizes the current poll response without changing delivered credentials', () => {
     const ready = parseTrialReadyBody({
       status: 'ready',
@@ -162,6 +278,7 @@ describe('installer trial-ready contract', () => {
       CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'setup_secret',
       CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'user_123',
       CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://sync.cmem.ai',
+      CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',
       CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: 'test-device',
       CLAUDE_MEM_PRO_TRIAL_STATE: 'active',
       CLAUDE_MEM_PRO_TRIAL_ENDS_AT: '',
@@ -215,19 +332,21 @@ describe('installer trial-ready contract', () => {
     expect(settings.CLAUDE_MEM_PRO_MEMORY_MODEL).toBe(CMEM_PRO_MODEL);
   });
 
-  it('treats Ctrl+C during polling as skip-sign-in and exits the wait cleanly', () => {
+  it('treats Ctrl+C during required OAuth polling as an incomplete login', () => {
     const script = `
       globalThis.fetch = async () => new Response(JSON.stringify({ stage: 'awaiting_login' }), {
         status: 202,
         headers: { 'content-type': 'application/json' },
       });
-      const { completeTrialPairing } = await import('./src/npx-cli/commands/install.ts');
+      const { completeInstallerOAuthLogin } = await import('./src/npx-cli/commands/install.ts');
       setTimeout(() => process.emit('SIGINT'), 20);
-      const result = await completeTrialPairing({
+      const result = await completeInstallerOAuthLogin({
         pairingId: 'PAIRING_ID_MUST_NOT_LEAK',
         secret: 'PAIRING_SECRET_MUST_NOT_LEAK',
         pollIntervalMs: 1000,
-        userCode: null,
+        userCode: 'ABCD-2345',
+        authorizationUrl: 'https://cmem.ai/login',
+        checkoutUrl: 'https://cmem.ai/api/pro/trial/claim?pairing=test&trial=7',
       }, 'test-version');
       console.log('__CANCEL_RESULT__=' + String(result));
     `;
@@ -240,8 +359,8 @@ describe('installer trial-ready contract', () => {
     const output = decoder.decode(result.stdout) + decoder.decode(result.stderr);
 
     expect(result.exitCode, output).toBe(0);
-    expect(output).toContain('Ctrl+C skips sign-in and continues installation.');
-    expect(output).toContain('__CANCEL_RESULT__=null');
+    expect(output).toContain('__CANCEL_RESULT__=false');
+    expect(output).not.toContain('continues installation');
     expect(output).not.toContain('PAIRING_ID_MUST_NOT_LEAK');
     expect(output).not.toContain('PAIRING_SECRET_MUST_NOT_LEAK');
   });

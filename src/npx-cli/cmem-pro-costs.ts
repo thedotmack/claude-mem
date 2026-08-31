@@ -1,88 +1,70 @@
 /**
- * Provider-prompt copy and CMEM Pro constants for the installer.
- *
- * This file used to compute live per-observation dollar figures from
- * OpenRouter's pricing catalogue. That engine is gone: every option is now framed by where
- * memory runs — on your plan or off it ("get % more usage from your plan") —
- * which cannot drift the way dollar figures did. The only dollar amount that
- * survives is CMEM_PRO_MONTHLY_USD, kept for the single price-disclosure line
- * shown at the sign-in moment.
+ * OAuth, provider-choice, and CMEM Pro copy shared by the installer and its
+ * contract tests. Keep this file static: the provider screen must render even
+ * before the worker is running and must not depend on a pricing API.
  */
 
-import { PLAN_USAGE_GAIN_PERCENT } from '../shared/pro-promo.js';
 import { cmemProOrigin } from '../shared/cmem-gateway.js';
 
-/** Flat CMEM Pro subscription price, in USD per month. */
-export const CMEM_PRO_MONTHLY_USD = 30;
+export const PROVIDER_PROMPT_MESSAGE =
+  'Select Provider:\nClaude-Mem uses tokens to take notes of what your agent is working on in real-time.';
+
+export const CMEM_TRIAL_ACKNOWLEDGEMENT =
+  "Free Trial includes a week's worth of allowance and auto-charges if you reach the limit.";
+
+export const CMEM_PRO_BENEFITS = [
+  'Access what every agent is working on from everywhere — ChatGPT, Claude, Gemini, and more.',
+  'Up to 100% more use out of your existing Anthropic plan.',
+  "Writes memories so you don't use expensive AI for something that our more specialized AI handles better, faster, less expensive.",
+  'Cloud sync keeps every device and agent on the same memory.',
+  'One private, searchable memory you can reach through MCP.',
+] as const;
+
+export const ANTHROPIC_MAX_BENEFITS = [
+  'Uses your existing Anthropic Max Plan for note-taking.',
+  'Keeps memories and the observations database in ~/.claude-mem on this machine.',
+  'Includes local semantic search and automatic memory recall.',
+  'Open-source local storage with no separate CMEM Pro subscription.',
+] as const;
 
 export interface ProviderLabels {
   cmem: string;
   cmemHint: string;
-  openrouter: string;
-  gemini: string;
   claude: string;
+  claudeHint: string;
 }
 
-/**
- * The four option labels — static copy, no network, no dollar figures.
- *
- * Each label says where memory generation runs (on- or off-plan) instead of
- * quoting a price; the one price disclosure lives in the sign-in note, not
- * here.
- */
 export function buildProviderLabels(): ProviderLabels {
   return {
-    cmem: `claude-mem (recommended) — memory runs off-plan: up to ${PLAN_USAGE_GAIN_PERCENT}% more usage from your plan`,
-    cmemHint: `Free for ${CMEM_PRO_TRIAL_DAYS} days, then falls back to your Anthropic plan unless you subscribe`,
-    openrouter: 'Your OpenRouter key — memory runs off-plan on your OpenRouter credit',
-    gemini: 'Gemini API key — memory runs off-plan on your Gemini key',
-    claude: 'Anthropic plan — memory shares your Claude plan usage',
+    cmem: 'CMEM Pro',
+    cmemHint: 'Shared cloud memory across agents, apps, and devices',
+    claude: 'Use your Anthropic Max Plan',
+    claudeHint: 'Local memory using the plan you already have',
   };
 }
 
-/**
- * Origin for the CMEM Pro funnel. Overridable so the whole flow can be walked
- * against a dev server before it ships.
- *
- *   CMEM_PRO_ORIGIN=http://localhost:3005 node dist/npx-cli/index.js install
- */
+export function buildProviderBenefitsNote(): string {
+  const section = (title: string, benefits: readonly string[]) => [
+    title,
+    ...benefits.map((benefit) => `  ✓ ${benefit}`),
+  ].join('\n');
+
+  return [
+    section('CMEM Pro', CMEM_PRO_BENEFITS),
+    '',
+    section('Use your Anthropic Max Plan', ANTHROPIC_MAX_BENEFITS),
+  ].join('\n');
+}
+
+/** Overridable so the OAuth pairing flow can be tested against a dev server. */
 const CMEM_PRO_ORIGIN = cmemProOrigin();
 
-/** Where the installer sends people to buy CMEM Pro. */
-export const CMEM_PRO_SIGNUP_URL = `${CMEM_PRO_ORIGIN}/pro?from=installer`;
+/** Starts a terminal/browser pairing without accepting an email address. */
+export const CMEM_INSTALLER_OAUTH_START_URL = `${CMEM_PRO_ORIGIN}/api/installer/oauth/start`;
 
-/**
- * The browser sign-in funnel (plan 2026-08-08-seven-day-trial-npx-funnel;
- * delta in SYNC-NOTES-cmem-backend.md — no card required to sign in).
- *
- * `start` creates the cmem.ai account + emails a sign-in link and answers with
- * a pairing id/secret plus a device-authorization `user_code` the human types
- * into the browser to approve this device; `poll` is the credential handoff
- * the installer loops on while the human clicks the link and approves the
- * device. Both are unauthenticated cmem.ai
- * endpoints — the CLI never holds a session-granting link, only the pairing
- * pair, and the credential delivered on `ready` is the existing setup_token
- * (delivered exactly once, and only after device approval).
- */
-export const CMEM_PRO_TRIAL_START_URL = `${CMEM_PRO_ORIGIN}/api/pro/trial/start`;
-export const CMEM_PRO_TRIAL_POLL_URL = `${CMEM_PRO_ORIGIN}/api/pro/trial/poll`;
-export const CMEM_PRO_TRIAL_DAYS = 7;
+/** Reads authentication and, after Pro selection, enrollment progress. */
+export const CMEM_INSTALLER_OAUTH_POLL_URL = `${CMEM_PRO_ORIGIN}/api/pro/trial/poll`;
 
-/**
- * CMEM Pro settings, written as a plain `openrouter` provider config: the
- * worker's OpenRouter client is a generic OpenAI-compatible client whose base
- * URL and model are both settings-driven, so CMEM Pro needs no provider code.
- * The worker only understands 'claude' | 'gemini' | 'openrouter' — 'cmem' is an
- * installer-prompt-only value and must never reach settings.json.
- */
+/** Generic OpenAI-compatible settings used by the CMEM observer. */
 export const CMEM_PRO_BASE_URL = `${CMEM_PRO_ORIGIN}/api/inference/v1`;
 export const CMEM_PRO_MODEL = 'cmem-observer';
-
-/**
- * Typo guard for the pasted key. Mirrors the server-side validator at
- * `cmem-pro-mvp/src/lib/pro/mcp-token-format.ts:9`
- * (`/^cm_pro_(?:[0-9a-f]{24}|[0-9a-f]{32})$/`). This range form is deliberately
- * one notch looser so a future key length does not strand the installer; the
- * server stays the real gate.
- */
-export const CMEM_PRO_KEY_PATTERN = /^cm_pro_[0-9a-f]{24,32}$/;
