@@ -10,7 +10,7 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
 import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
-import { getSelectedProvider, recordCmemFallbackIfEligible } from '../../provider-dispatch.js';
+import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -79,7 +79,10 @@ export class SessionRoutes extends BaseRouteHandler {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
 
-    const selectedProvider = getSelectedProvider();
+    // The claiming variant: this path is about to SEND, so it must take the
+    // single gateway re-probe rather than merely reading the clock.
+    const selection = selectProviderForGenerator();
+    const selectedProvider = selection.provider;
 
     if (!session.generatorPromise) {
       // Overflow breaker (#3800). Recycling twice without producing a
@@ -92,6 +95,7 @@ export class SessionRoutes extends BaseRouteHandler {
           source,
           retryInMs: session.overflowPausedUntilMs - Date.now(),
         });
+        releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
         return;
       }
       if (session.overflowPausedUntilMs) {
@@ -113,6 +117,7 @@ export class SessionRoutes extends BaseRouteHandler {
               status: claudeStatus.kind,
               message: claudeStatus.message,
             });
+            releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
             return;
           }
 
@@ -134,6 +139,7 @@ export class SessionRoutes extends BaseRouteHandler {
               source,
               error: classified.message,
             }, err);
+            releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
             return;
           }
         }
@@ -148,6 +154,8 @@ export class SessionRoutes extends BaseRouteHandler {
       // them all through together.
       const admission = tryAdmitQuotaProbe(selectedProvider);
       if (!admission.admitted) {
+        // This run is not starting, so it must not hold the gateway re-probe.
+        releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
         const cooldown = getQuotaCooldown(selectedProvider);
         logger.warn('SESSION', 'Skipping generator start while the provider quota cooldown is active', {
           sessionId: sessionDbId,
@@ -165,9 +173,15 @@ export class SessionRoutes extends BaseRouteHandler {
       await this.applyTierRouting(session);
       // The claim travels with the run that took it: only that run may release
       // it, or an earlier generator's exit would clear a later session's probe.
-      await this.startGeneratorWithProvider(session, selectedProvider, source, admission.claimId);
+      await this.startGeneratorWithProvider(
+        session, selectedProvider, source, admission.claimId, selection.gatewayProbeClaimId,
+      );
       return;
     }
+
+    // A generator is already running, so this call never sends and must not
+    // keep the gateway re-probe it claimed on the way in.
+    releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
 
     if (session.currentProvider && session.currentProvider !== selectedProvider) {
       logger.info('SESSION', `Provider changed, will switch after current generator finishes`, {
@@ -187,6 +201,8 @@ export class SessionRoutes extends BaseRouteHandler {
     source: string,
     /** The quota probe this run claimed, or null when it was admitted without one. */
     quotaProbeClaimId: number | null,
+    /** The cmem-gateway re-probe this run claimed, or null when it took none. */
+    gatewayProbeClaimId: number | null = null,
   ): Promise<void> {
     if (!session) return;
 
@@ -331,6 +347,7 @@ export class SessionRoutes extends BaseRouteHandler {
           // This run is over even though it skips finalization, so it must not
           // keep holding the probe.
           releaseQuotaProbe(provider, quotaProbeClaimId);
+          releaseCmemGatewayProbe(gatewayProbeClaimId);
           return;
         }
 
@@ -368,6 +385,7 @@ export class SessionRoutes extends BaseRouteHandler {
         // this covers aborts and crashes, so a claim can never outlive its
         // request and wedge the provider shut.
         releaseQuotaProbe(provider, quotaProbeClaimId);
+        releaseCmemGatewayProbe(gatewayProbeClaimId);
 
         await handleGeneratorExit(session, reason, {
           sessionManager: this.sessionManager,

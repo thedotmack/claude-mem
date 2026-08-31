@@ -21,6 +21,7 @@ import { isCmemGatewayUrl, writeProFallbackAt } from '../../shared/cmem-gateway.
 import { isGeminiAvailable, isGeminiSelected } from './GeminiProvider.js';
 import { isOpenRouterAvailable, isOpenRouterSelected } from './OpenRouterProvider.js';
 import type { ClassifiedProviderError } from './provider-errors.js';
+import { releaseQuotaProbe, tryAdmitQuotaProbe } from '../../shared/quota-cooldown.js';
 
 /** Retry a fallen-back gateway occasionally so a later subscription recovers. */
 export const CMEM_FALLBACK_RETRY_MS = 15 * 60_000;
@@ -35,6 +36,23 @@ export function shouldUseCmemFallback(
   return age >= 0 && age < CMEM_FALLBACK_RETRY_MS;
 }
 
+/**
+ * A dispatch decision, plus any gateway re-probe claim it took.
+ *
+ * `gatewayProbeClaimId` is non-null only for the single caller admitted to
+ * re-probe the cmem gateway after its fallback window elapsed. It must be
+ * handed back to `releaseCmemGatewayProbe` when that run ends.
+ */
+export interface ProviderSelection {
+  provider: 'claude' | 'gemini' | 'openrouter';
+  gatewayProbeClaimId: number | null;
+}
+
+/**
+ * Read-only dispatch, for diagnostics and status. Never claims a probe, so it
+ * is safe to call from anywhere — but a caller about to actually SEND must use
+ * `selectProviderForGenerator` instead, or it becomes part of the herd.
+ */
 export function getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
   if (isOpenRouterSelected() && isOpenRouterAvailable()) {
     const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
@@ -45,12 +63,56 @@ export function getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
     ) {
       return 'claude';
     }
-    // Once the cooldown elapses, allow one normal gateway request as a probe.
-    // Success clears the marker in OpenRouterProvider; another terminal
-    // rejection refreshes the timestamp below and resumes Claude fallback.
     return 'openrouter';
   }
   return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
+}
+
+/**
+ * Dispatch for a caller that is about to start a generator, claiming the single
+ * post-cooldown gateway re-probe.
+ *
+ * The expiry check alone is a bare clock read, and the marker it reads is on
+ * DISK — so every process parses the same ISO string and computes the same
+ * expiry instant. On a busy machine (#3800 saw 28-69 live sessions) they all
+ * observe the window elapse together and hit the gateway at once, which is the
+ * same burst the quota breaker exists to prevent, relocated. Worse, each of
+ * those failures does a read-modify-write of the user's whole settings.json to
+ * re-arm the marker, so a concurrent settings edit can be clobbered.
+ *
+ * Claiming makes it what the comment always said it was: exactly one probe.
+ * It reuses the quota breaker's claim machinery under a DISTINCT key, because
+ * `tryAdmitQuotaProbe` takes the cooldown per call and this path's period
+ * (15 min) differs from the provider breaker's (30 min) — pointing both at one
+ * key would let two callers reach contradictory answers about whether the same
+ * breaker is armed.
+ */
+export function selectProviderForGenerator(): ProviderSelection {
+  if (isOpenRouterSelected() && isOpenRouterAvailable()) {
+    const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+    if (settings.CLAUDE_MEM_PRO_FALLBACK_AT && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL)) {
+      if (shouldUseCmemFallback(settings.CLAUDE_MEM_PRO_FALLBACK_AT)) {
+        return { provider: 'claude', gatewayProbeClaimId: null };
+      }
+      // Window elapsed: exactly one caller re-probes the gateway, the rest stay
+      // on the Anthropic plan until that probe resolves.
+      const admission = tryAdmitQuotaProbe('cmem-gateway', Date.now(), CMEM_FALLBACK_RETRY_MS);
+      if (!admission.admitted) {
+        return { provider: 'claude', gatewayProbeClaimId: null };
+      }
+      return { provider: 'openrouter', gatewayProbeClaimId: admission.claimId };
+    }
+    return { provider: 'openrouter', gatewayProbeClaimId: null };
+  }
+  return {
+    provider: (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude',
+    gatewayProbeClaimId: null,
+  };
+}
+
+/** Release a gateway re-probe claim taken by `selectProviderForGenerator`. */
+export function releaseCmemGatewayProbe(claimId: number | null): void {
+  releaseQuotaProbe('cmem-gateway', claimId);
 }
 
 /**
