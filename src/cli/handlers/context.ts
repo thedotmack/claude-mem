@@ -106,7 +106,7 @@ export const contextHandler: EventHandler = {
       && settings.CLAUDE_MEM_PROVIDER === 'openrouter'
       && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
     if (fallbackActive && !hasShownProFallbackNotice()) {
-      const fallbackNotice = 'Your claude-mem free week ended — memory now runs on your Anthropic plan.\n'
+      const fallbackNotice = 'Your claude-mem free trial ended — memory now runs on your Anthropic plan.\n'
         + `Keep it off-plan (up to ${PLAN_USAGE_GAIN_PERCENT}% more usage): ${proTrialUrl('fallback')}`;
       additionalContext = additionalContext
         ? `${fallbackNotice}\n\n${additionalContext}`
@@ -130,14 +130,14 @@ export const contextHandler: EventHandler = {
     // back to the plain additionalContext for terminal display.
     const displayContent = coloredTimeline || (platform === 'antigravity-cli' ? additionalContext : '');
 
-    // Days-remaining nicety: while the free week is active (plan 'trial', an
+    // Days-remaining nicety: while the free trial is active (plan 'trial', an
     // end date stored, no fallback), append the countdown. Computed locally —
     // no network — and display-only: nothing is enabled or disabled by it.
     const daysLeft = !fallbackActive && settings.CLAUDE_MEM_PRO_PLAN === 'trial'
       ? trialDaysRemaining(settings.CLAUDE_MEM_PRO_TRIAL_ENDS_AT)
       : null;
     const trialDaysLine = daysLeft !== null && daysLeft >= 0
-      ? `claude-mem free week: ${daysLeft} day${daysLeft === 1 ? '' : 's'} left`
+      ? `claude-mem free trial: ${daysLeft} day${daysLeft === 1 ? '' : 's'} left`
       : null;
 
     const systemMessage = showTerminalOutput && displayContent

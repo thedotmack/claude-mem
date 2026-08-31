@@ -208,7 +208,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_PRO_TRIAL_EMAIL: '',     // Email the sign-in link was sent to (don't-re-nag marker)
     CLAUDE_MEM_PRO_TRIAL_AT: '',        // ISO timestamp of the last sign-in link send
     CLAUDE_MEM_PRO_TRIAL_STATE: '',     // 'link_sent' (started, credentials never picked up) | 'active' (done)
-    CLAUDE_MEM_PRO_TRIAL_ENDS_AT: '',   // ISO date the free week ends (from poll trial.ends_at); '' when absent
+    CLAUDE_MEM_PRO_TRIAL_ENDS_AT: '',   // ISO date the free trial ends (from poll trial.ends_at); '' when absent
     CLAUDE_MEM_PRO_PLAN: '',            // 'trial' | 'pro' | 'none' — plan reported by the poll on ready
     CLAUDE_MEM_PRO_FALLBACK_AT: '',     // ISO timestamp when the cmem gateway terminally rejected the delivered key and memory fell back to the Anthropic plan; '' = no fallback. Event-driven only (never set from trial dates); cleared by a successful gateway response or fresh installer key material.
     CLAUDE_MEM_PRO_MEMORY_KEY: '',       // One-shot browser-pairing memory key, staged until provider selection (settings.json is chmod 0600 by the installer)
