@@ -4,6 +4,7 @@ import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../..
 import {
   classifyObserverOutput,
   isAuthFailureObserverOutput,
+  isPromptTooLongObserverOutput,
   isQuotaLimitedObserverOutput,
   previewOutput,
 } from '../../../sdk/output-classifier.js';
@@ -322,6 +323,33 @@ export async function processAgentResponse(
         // best-effort; AbortController.abort() should not throw in normal use.
       }
       worker?.broadcastProcessingStatus?.();
+      return;
+    }
+
+    if (isPromptTooLongObserverOutput(text)) {
+      // Recycle the conversation rather than the batch. The rejection is per
+      // conversation — it arrives on the Nth prompt of one long-lived SDK
+      // session — so the old path dropped the batch, reloaded it identically,
+      // and sent it back into a conversation that can only keep growing. There
+      // was no state the loop could exit from.
+      //
+      // The abort category is deliberately neither quota nor auth: those two
+      // are the ones handleGeneratorExit keeps the session alive for. Any other
+      // category finalizes and removes it, so the next ingest builds a fresh
+      // conversation with memorySessionId cleared — which is the recycle.
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = 'prompt_too_long:observer_text';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      logger.warn('PARSER', `${agentName} rejected the prompt as too long — recycling the conversation and preserving the batch`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'prose',
+        preview: previewOutput(text),
+      });
       return;
     }
 

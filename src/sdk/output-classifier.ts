@@ -72,6 +72,29 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
 }
 
 /**
+ * Detect the provider refusing the request because the conversation itself is
+ * too large.
+ *
+ * This one is not about the batch. The rejection arrives against a long-lived
+ * SDK conversation, so re-sending the same batch into it can only fail again —
+ * the conversation is what has to be recycled. Reported as 2,264 identical
+ * rejections in one day while 48 pending rows totalling 53KB sat undelivered.
+ */
+export function isPromptTooLongObserverOutput(raw: unknown): boolean {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return false;
+  }
+
+  const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  return (
+    /\bprompt is too long\b/.test(text)
+    || /\b(prompt|input|conversation|context)\b[^.]{0,40}\b(is |too )?\b(too long|exceeds?)\b[^.]{0,40}\b(context (window|length)|maximum|token limit)\b/.test(text)
+    || /\bexceeds?\b[^.]{0,40}\b(context window|maximum context length|token limit)\b/.test(text)
+  );
+}
+
+/**
  * Detect provider authentication-failure prose so claimed work can be retried
  * after the user restores provider authentication.
  */

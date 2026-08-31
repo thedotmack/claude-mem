@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   classifyObserverOutput,
   isAuthFailureObserverOutput,
+  isPromptTooLongObserverOutput,
   isQuotaLimitedObserverOutput,
   previewOutput,
 } from '../../src/sdk/output-classifier.js';
@@ -111,5 +112,38 @@ describe('previewOutput', () => {
 
   it('describes non-string input', () => {
     expect(previewOutput(42)).toContain('non-string');
+  });
+});
+
+// #3800: the observer stopped producing anything for 94 minutes while every
+// batch came back "Prompt is too long". The rejection is per conversation, not
+// per batch — it arrived on the 29th prompt of one long-lived SDK session — so
+// the batch was dropped, reloaded identically, and sent back into a
+// conversation that could only keep growing.
+describe('isPromptTooLongObserverOutput', () => {
+  it('detects the rejection the SDK actually returned', () => {
+    expect(isPromptTooLongObserverOutput('Prompt is too long')).toBe(true);
+    expect(isPromptTooLongObserverOutput('  prompt is too long  ')).toBe(true);
+  });
+
+  it('detects the same refusal from other providers', () => {
+    expect(
+      isPromptTooLongObserverOutput(
+        "This model's maximum context length is 200000 tokens, however your messages exceed the context window.",
+      ),
+    ).toBe(true);
+    expect(
+      isPromptTooLongObserverOutput('The input exceeds the maximum context length for this model.'),
+    ).toBe(true);
+  });
+
+  it('does not fire on ordinary observer prose', () => {
+    // These reach the same branch and must keep being confirmed as no-op
+    // batches rather than recycling a healthy conversation.
+    expect(isPromptTooLongObserverOutput('')).toBe(false);
+    expect(isPromptTooLongObserverOutput('Nothing worth recording in this batch.')).toBe(false);
+    expect(isPromptTooLongObserverOutput('The user asked about a long prompt file.')).toBe(false);
+    expect(isPromptTooLongObserverOutput('<observation>ok</observation>')).toBe(false);
+    expect(isPromptTooLongObserverOutput(null)).toBe(false);
   });
 });
