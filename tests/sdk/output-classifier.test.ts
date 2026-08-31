@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   classifyObserverOutput,
   isAuthFailureObserverOutput,
+  isContextOverflowObserverOutput,
   isQuotaLimitedObserverOutput,
   previewOutput,
 } from '../../src/sdk/output-classifier.js';
@@ -94,6 +95,54 @@ describe('isAuthFailureObserverOutput', () => {
     expect(isAuthFailureObserverOutput('No observations to record.')).toBe(false);
     expect(isAuthFailureObserverOutput('Please run /login in the observed project instructions.')).toBe(false);
     expect(isAuthFailureObserverOutput('The project authentication guide says to run /login before testing.')).toBe(false);
+  });
+});
+
+describe('isContextOverflowObserverOutput (#3800)', () => {
+  it('recognises the exact wording reported in the field', () => {
+    // The reporter logged this verbatim, 2,264 times in one day.
+    expect(isContextOverflowObserverOutput('Prompt is too long')).toBe(true);
+  });
+
+  it('recognises other provider phrasings of a context-window overflow', () => {
+    expect(isContextOverflowObserverOutput('Input is too long')).toBe(true);
+    expect(isContextOverflowObserverOutput('The conversation is too long.')).toBe(true);
+    expect(isContextOverflowObserverOutput(
+      "This model's maximum context length is 200000 tokens."
+    )).toBe(true);
+    expect(isContextOverflowObserverOutput('context window exceeded')).toBe(true);
+    expect(isContextOverflowObserverOutput(
+      'Your messages exceed the context window for this model.'
+    )).toBe(true);
+    expect(isContextOverflowObserverOutput(
+      'Please reduce the length of the messages and try again.'
+    )).toBe(true);
+  });
+
+  it('does not classify XML output as overflow, even when it discusses long prompts', () => {
+    expect(isContextOverflowObserverOutput(
+      '<observation><title>Prompt is too long</title></observation>'
+    )).toBe(false);
+    expect(isContextOverflowObserverOutput('<skip_summary/>')).toBe(false);
+  });
+
+  it('does not classify empty, unrelated, quota, or auth prose as overflow', () => {
+    expect(isContextOverflowObserverOutput('')).toBe(false);
+    expect(isContextOverflowObserverOutput('   ')).toBe(false);
+    expect(isContextOverflowObserverOutput(42)).toBe(false);
+    expect(isContextOverflowObserverOutput('No observations to record.')).toBe(false);
+    expect(isContextOverflowObserverOutput('The file is too long to read in one go.')).toBe(false);
+    expect(isContextOverflowObserverOutput(
+      'You have reached your Claude usage limit. Try again later.'
+    )).toBe(false);
+    expect(isContextOverflowObserverOutput('Authentication failed; run /login.')).toBe(false);
+  });
+
+  it('is disjoint from the quota and auth classifiers on real overflow text', () => {
+    const overflow = 'Prompt is too long';
+    expect(isContextOverflowObserverOutput(overflow)).toBe(true);
+    expect(isQuotaLimitedObserverOutput(overflow)).toBe(false);
+    expect(isAuthFailureObserverOutput(overflow)).toBe(false);
   });
 });
 

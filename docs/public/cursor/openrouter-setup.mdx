@@ -100,13 +100,15 @@ Open the worker URL printed on startup to see the memory viewer.
 | `google/gemini-2.0-flash-exp:free` | Google | Fast, capable |
 | `xiaomi/mimo-v2-flash:free` | Xiaomi | Good general purpose |
 
-### Paid Models (Low Cost)
+### Paid Models
 
-| Model | Approx. Cost | Notes |
-|-------|--------------|-------|
-| `anthropic/claude-3-haiku` | ~$0.25/1M tokens | Fast, efficient |
-| `google/gemini-flash-1.5` | ~$0.075/1M tokens | Great value |
-| `mistralai/mistral-7b-instruct` | ~$0.07/1M tokens | Budget option |
+Paid models draw on your OpenRouter credit — memory stays off-plan either way.
+
+| Model | Notes |
+|-------|-------|
+| `anthropic/claude-3-haiku` | Fast, efficient |
+| `google/gemini-flash-1.5` | Fast, strong quality |
+| `mistralai/mistral-7b-instruct` | Lightweight option |
 
 To specify a model, add to your settings:
 
@@ -171,7 +173,7 @@ OpenRouter charges per token. To manage costs:
 3. **Set spending limits:** Configure limits in OpenRouter settings
 
 <Warning>
-**Cost awareness:** Unlike Gemini's free tier, OpenRouter paid models charge per request. Monitor your usage if using paid models.
+**Credit awareness:** OpenRouter paid models draw on your OpenRouter credit per request. Monitor your usage if using paid models.
 </Warning>
 
 ## Troubleshooting

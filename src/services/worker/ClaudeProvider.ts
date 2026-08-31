@@ -28,6 +28,13 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { buildHardenedSdkOptions } from '../../sdk/hardened-options.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { resolveTierAlias } from './model-aliases.js';
+import {
+  shouldRecycleConversation,
+  conversationChars,
+  resolveConversationMaxChars,
+} from '../../shared/observer-recycle.js';
+import { recycleObserverConversation, loadSessionStartContext } from './session/recycle-conversation.js';
+import { optimizeObservationFields, buildFieldCompressionPrompt, type FieldCompressor } from './field-optimizer.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
 import { clearDependencyStatus, recordClaudeCliSetupRequired } from '../../shared/dependency-health.js';
 
@@ -167,6 +174,13 @@ export class ClaudeProvider {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
 
+  /** Character budget for one observer generation, operator-overridable (#3800). */
+  private conversationMaxChars(): number {
+    return resolveConversationMaxChars(
+      SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS
+    );
+  }
+
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     this.dbManager = dbManager;
     this.sessionManager = sessionManager;
@@ -198,7 +212,9 @@ export class ClaudeProvider {
     session.lastResultTotalCostUsd = null;
 
     const activeResponseContext = { current: snapshotResponseContext(session) };
-    const messageGenerator = this.createMessageGenerator(session, cwdTracker, activeResponseContext);
+    const compressField: FieldCompressor = (text, budgetChars) =>
+      this.compressField(text, budgetChars, session, modelId, claudePath);
+    const messageGenerator = this.createMessageGenerator(session, cwdTracker, activeResponseContext, worker, compressField);
 
     if (session.memorySessionId) {
       // Observer spawns intentionally opt out of Claude transcript persistence.
@@ -466,10 +482,56 @@ export class ClaudeProvider {
     });
   }
 
+  /**
+   * One bounded, standalone SDK call that condenses an oversized tool payload.
+   *
+   * Runs as its own short-lived query with `maxTurns: 1` rather than as a turn
+   * in the observer conversation: adding it there would grow the very
+   * conversation the recycle logic exists to bound.
+   */
+  private async compressField(
+    text: string,
+    budgetChars: number,
+    session: ActiveSession,
+    modelId: string,
+    claudePath: string,
+  ): Promise<string | null> {
+    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
+    const result = query({
+      prompt: buildFieldCompressionPrompt(text, budgetChars),
+      options: {
+        ...buildHardenedSdkOptions({
+          source: 'Observer',
+          sessionDbId: session.sessionDbId,
+          contentSessionId: session.contentSessionId,
+          project: session.project,
+          model: modelId,
+          env: isolatedEnv,
+          pathToClaudeCodeExecutable: claudePath,
+          abortController: session.abortController,
+        }),
+        maxTurns: 1,
+      },
+    });
+
+    let out = '';
+    for await (const message of result) {
+      if (message.type === 'assistant') {
+        const content = (message as any).message.content;
+        out += Array.isArray(content)
+          ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
+          : typeof content === 'string' ? content : '';
+      }
+    }
+    return out || null;
+  }
+
   private async *createMessageGenerator(
     session: ActiveSession,
     cwdTracker: { lastCwd: string | undefined },
-    activeResponseContext: { current: ReturnType<typeof snapshotResponseContext> }
+    activeResponseContext: { current: ReturnType<typeof snapshotResponseContext> },
+    worker?: WorkerRef,
+    compressField?: FieldCompressor,
   ): AsyncIterableIterator<SDKUserMessage> {
     const mode = ModeManager.getInstance().getActiveMode();
 
@@ -482,9 +544,13 @@ export class ClaudeProvider {
       promptType: isInitPrompt ? 'INIT' : 'CONTINUATION'
     });
 
+    // Brief the generation with the same session-start context a new Claude Code
+    // session gets, so a conversation that starts partway through continues from
+    // the memory rather than from nothing (#3800).
+    const priorContext = await loadSessionStartContext(session, cwdTracker.lastCwd);
     const initPrompt = isInitPrompt
-      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
-      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
+      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode, priorContext)
+      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode, priorContext);
     activeResponseContext.current = snapshotResponseContext(session);
 
     session.conversationHistory.push({ role: 'user', content: initPrompt });
@@ -515,11 +581,37 @@ export class ClaudeProvider {
           session.lastPromptNumber = message.prompt_number;
         }
 
+        // Retire a full generation BEFORE yielding. The SDK holds the real
+        // conversation server-side, but conversationHistory tracks every prompt
+        // fed into it, so its size is the proxy for how close that conversation
+        // is to the ceiling (#3800).
+        if (shouldRecycleConversation(session.conversationHistory, this.conversationMaxChars())) {
+          await recycleObserverConversation(
+            session,
+            this.sessionManager,
+            worker,
+            'budget',
+            `conversation reached ${conversationChars(session.conversationHistory)} chars`,
+          );
+          return;
+        }
+
+        // An oversized payload is condensed by a bounded model pass before the
+        // prompt is built, so the observation carries a summary of the whole
+        // field rather than a head/tail slice with the middle cut out (#3800).
+        const optimized = compressField
+          ? await optimizeObservationFields(
+              { toolInput: message.tool_input, toolOutput: message.tool_response },
+              compressField,
+              { sessionDbId: session.sessionDbId, toolName: message.tool_name },
+            )
+          : { toolInput: message.tool_input, toolOutput: message.tool_response };
+
         const obsPrompt = buildObservationPrompt({
           id: 0, // Not used in prompt
           tool_name: message.tool_name!,
-          tool_input: JSON.stringify(message.tool_input),
-          tool_output: JSON.stringify(message.tool_response),
+          tool_input: JSON.stringify(optimized.toolInput),
+          tool_output: JSON.stringify(optimized.toolOutput),
           created_at_epoch: Date.now(),
           cwd: message.cwd
         });

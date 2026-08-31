@@ -1,10 +1,10 @@
 # Claude-Mem for Cursor (No Claude Code Required)
 
-> **Persistent AI Memory for Cursor - Zero Cost to Start**
+> **Persistent AI Memory for Cursor - Runs Off-Plan**
 
 ## Overview
 
-Use claude-mem's persistent memory in Cursor without a Claude Code subscription. Choose between free-tier providers (Gemini, OpenRouter) or paid options.
+Use claude-mem's persistent memory in Cursor without a Claude Code subscription. Choose Gemini or OpenRouter to keep memory work off your Claude plan.
 
 **What You Get**:
 - **Persistent memory** that survives across sessions - your AI remembers what it worked on
@@ -12,7 +12,7 @@ Use claude-mem's persistent memory in Cursor without a Claude Code subscription.
 - **Context injection** via `.cursor/rules/` - relevant history included in every chat
 - **Web viewer** at http://localhost:37777 - browse and search your project history
 
-✨ **Get 2x more use out of your Max plan for free (30-day trial, $30/mo)** → https://cmem.ai/pro?from=docs&trial=30
+✨ **Get up to 100% more usage from your plan — memory runs off-plan, free for 7 days** → https://cmem.ai/pro?from=docs
 
 **Why This Matters**: Every Cursor session starts fresh. Claude-mem bridges that gap - your AI agent builds cumulative knowledge about your codebase, decisions, and patterns over time.
 
@@ -50,9 +50,9 @@ bun run build
 
 Since you don't have Claude Code, you need to configure an AI provider for claude-mem's summarization engine.
 
-### Option A: Gemini (Recommended - Free Tier)
+### Option A: Gemini (Recommended - No Billing Required)
 
-Gemini offers 1500 free requests per day, plenty for typical usage.
+Gemini lets you create an API key without enabling billing. Request limits vary by model and Google Cloud project.
 
 ```bash
 # Create settings directory
@@ -69,7 +69,7 @@ cat > ~/.claude-mem/settings.json << 'EOF'
 EOF
 ```
 
-**Get your free API key**: https://aistudio.google.com/apikey
+**Create your API key**: https://aistudio.google.com/apikey
 
 ### Option B: OpenRouter (100+ Models)
 
@@ -149,7 +149,7 @@ The worker runs in the background and handles:
 
 4. **Open the web viewer**: http://localhost:37777
 
-✨ **Get 2x more use out of your Max plan for free (30-day trial, $30/mo)** → https://cmem.ai/pro?from=docs&trial=30
+✨ **Get up to 100% more usage from your plan — memory runs off-plan, free for 7 days** → https://cmem.ai/pro?from=docs
 
 ## How It Works
 
@@ -183,12 +183,12 @@ tail -f ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
    ```
 3. Check the Hooks output channel in Cursor
 
-### Rate limiting (Gemini free tier)
+### Rate limiting (Gemini without billing)
 
-If you hit the 1500 requests/day limit:
+If you hit Gemini's no-billing rate limit:
 - Wait until the next day
-- Upgrade to a paid plan
-- Switch to OpenRouter with a paid model
+- Enable billing for higher rate limits
+- Switch to OpenRouter
 
 ## Next Steps
 

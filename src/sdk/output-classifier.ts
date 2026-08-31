@@ -72,6 +72,43 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
 }
 
 /**
+ * Detect context-window-overflow prose returned as an assistant message.
+ *
+ * The observer holds one long-lived conversation per session and appends every
+ * observation to it, so a busy session eventually pushes that conversation past
+ * the model's context ceiling. The provider then answers "Prompt is too long"
+ * as ordinary assistant text rather than as a structured error. Without this
+ * check that text classifies as `prose`, the batch is confirmed and dropped,
+ * the next observation appends yet more, and the session re-sends an
+ * over-ceiling prompt on every tool call for the rest of its life — the
+ * unbounded-cost path behind #3800 (2,264 rejections in one day).
+ *
+ * Overflow is recoverable, unlike quota or auth: recycling the conversation
+ * fixes it, because a single observation prompt is field-truncated well under
+ * any ceiling.
+ */
+export function isContextOverflowObserverOutput(raw: unknown): boolean {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return false;
+  }
+
+  if (/<(observation|summary)\b/i.test(raw) || /<skip_summary\b/i.test(raw)) {
+    return false;
+  }
+
+  const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  return (
+    /\b(?:prompt|input|conversation|request) is too long\b/.test(text) ||
+    /\bmaximum context length\b/.test(text) ||
+    /\bcontext (?:window|length|limit)\b.{0,30}\b(?:exceeded|too (?:long|large)|overflow)\b/.test(text) ||
+    /\bexceeds?\b.{0,30}\bcontext (?:window|length|limit)\b/.test(text) ||
+    /\b(?:too many|exceeds the maximum number of) (?:input )?tokens\b/.test(text) ||
+    /\breduce the length of the messages\b/.test(text)
+  );
+}
+
+/**
  * Detect provider authentication-failure prose so claimed work can be retried
  * after the user restores provider authentication.
  */

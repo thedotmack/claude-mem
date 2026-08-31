@@ -81,8 +81,9 @@ import { SessionManager } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { ClaudeProvider, classifyClaudeError } from './worker/ClaudeProvider.js';
 import type { WorkerRef } from './worker/agents/types.js';
-import { GeminiProvider, classifyGeminiError, isGeminiSelected, isGeminiAvailable } from './worker/GeminiProvider.js';
-import { OpenRouterProvider, classifyOpenRouterError, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterProvider.js';
+import { GeminiProvider, classifyGeminiError } from './worker/GeminiProvider.js';
+import { OpenRouterProvider, classifyOpenRouterError } from './worker/OpenRouterProvider.js';
+import { getSelectedProvider } from './worker/provider-dispatch.js';
 import { ClassifiedProviderError, isClassified, type ProviderErrorClass } from './worker/provider-errors.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
@@ -277,9 +278,7 @@ export class WorkerService implements WorkerRef {
       onRestart: () => this.shutdown('restart'),
       workerPath: __filename,
       getAiStatus: () => {
-        let provider = 'claude';
-        if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
-        else if (isGeminiSelected() && isGeminiAvailable()) provider = 'gemini';
+        const provider = getSelectedProvider();
         return {
           provider,
           authMethod: getAuthMethodDescription(),
