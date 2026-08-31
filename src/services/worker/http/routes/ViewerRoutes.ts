@@ -39,11 +39,14 @@ if (resolvedViewerHtmlPath) {
  * Self-contained (no external resources — the worker serves this on localhost
  * and a blocked CDN would leave a blank page).
  *
- * The page bakes in the pid of the worker that served it and, after the POST,
- * waits for /health to answer from a DIFFERENT pid. Polling for a merely
- * healthy response reports success against the dying worker: it keeps serving
- * through the whole graceful-shutdown window, which is far longer than the
- * first poll.
+ * Success requires two things of the successor, because each without the other
+ * reports a restart that has not happened:
+ *
+ * - A DIFFERENT pid on /health than the worker that served this page. The dying
+ *   worker keeps answering through the whole graceful-shutdown window, far
+ *   longer than the first poll, so "healthy" alone confirms the corpse.
+ * - /api/readiness ok. A bound port is not a ready worker; the successor opens
+ *   the database, bootstraps chroma and connects MCP after it starts listening.
  */
 const RESTART_PAGE_HTML = `<!doctype html>
 <html lang="en">
@@ -80,16 +83,27 @@ const RESTART_PAGE_HTML = `<!doctype html>
 
   const outgoingPid = ${process.pid};
 
+  async function successorIsReady() {
+    const health = await fetch('/health', { cache: 'no-store' });
+    if (!health.ok) return false;
+    const body = await health.json();
+    // No pid means a worker too old to report one — fall back to "healthy"
+    // rather than hanging until the deadline.
+    if (typeof body.pid === 'number' && body.pid === outgoingPid) return false;
+
+    // Binding the port is not being ready to observe: the successor opens the
+    // database, bootstraps chroma and connects MCP after it starts listening,
+    // and readiness stays 503 through all of it. This is the same signal the
+    // CLI restart path verifies. 404 means a worker too old to expose it.
+    const readiness = await fetch('/api/readiness', { cache: 'no-store' });
+    return readiness.ok || readiness.status === 404;
+  }
+
   async function waitForSuccessor(deadlineMs) {
     while (Date.now() < deadlineMs) {
       await new Promise((resolve) => setTimeout(resolve, 500));
       try {
-        const health = await fetch('/health', { cache: 'no-store' });
-        if (!health.ok) continue;
-        const body = await health.json();
-        // No pid means a worker too old to report one — fall back to "healthy"
-        // rather than hanging until the deadline.
-        if (typeof body.pid !== 'number' || body.pid !== outgoingPid) return true;
+        if (await successorIsReady()) return true;
       } catch {
         // Expected while the old worker is down and the successor is booting.
       }
@@ -106,7 +120,7 @@ const RESTART_PAGE_HTML = `<!doctype html>
       // The worker often dies before the response lands — that is the restart
       // working, so fall through to the health poll either way.
     }
-    if (await waitForSuccessor(Date.now() + 30000)) {
+    if (await waitForSuccessor(Date.now() + 60000)) {
       status.textContent = 'Memory worker restarted. You can close this tab.';
     } else {
       status.textContent = 'Still not answering. Run: npx claude-mem doctor';

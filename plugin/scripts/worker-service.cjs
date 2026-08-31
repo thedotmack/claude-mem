@@ -2567,16 +2567,27 @@ Tips:
 
   const outgoingPid = ${process.pid};
 
+  async function successorIsReady() {
+    const health = await fetch('/health', { cache: 'no-store' });
+    if (!health.ok) return false;
+    const body = await health.json();
+    // No pid means a worker too old to report one \u2014 fall back to "healthy"
+    // rather than hanging until the deadline.
+    if (typeof body.pid === 'number' && body.pid === outgoingPid) return false;
+
+    // Binding the port is not being ready to observe: the successor opens the
+    // database, bootstraps chroma and connects MCP after it starts listening,
+    // and readiness stays 503 through all of it. This is the same signal the
+    // CLI restart path verifies. 404 means a worker too old to expose it.
+    const readiness = await fetch('/api/readiness', { cache: 'no-store' });
+    return readiness.ok || readiness.status === 404;
+  }
+
   async function waitForSuccessor(deadlineMs) {
     while (Date.now() < deadlineMs) {
       await new Promise((resolve) => setTimeout(resolve, 500));
       try {
-        const health = await fetch('/health', { cache: 'no-store' });
-        if (!health.ok) continue;
-        const body = await health.json();
-        // No pid means a worker too old to report one \u2014 fall back to "healthy"
-        // rather than hanging until the deadline.
-        if (typeof body.pid !== 'number' || body.pid !== outgoingPid) return true;
+        if (await successorIsReady()) return true;
       } catch {
         // Expected while the old worker is down and the successor is booting.
       }
@@ -2593,7 +2604,7 @@ Tips:
       // The worker often dies before the response lands \u2014 that is the restart
       // working, so fall through to the health poll either way.
     }
-    if (await waitForSuccessor(Date.now() + 30000)) {
+    if (await waitForSuccessor(Date.now() + 60000)) {
       status.textContent = 'Memory worker restarted. You can close this tab.';
     } else {
       status.textContent = 'Still not answering. Run: npx claude-mem doctor';
