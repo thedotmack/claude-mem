@@ -645,10 +645,17 @@ async function promptForIDESelection(): Promise<string[]> {
     };
   });
 
+  // Pre-check Claude Code (plus anything else detected). It is the IDE almost
+  // everyone installing claude-mem is running, and an empty multiselect makes
+  // the common case a required chore before the install can continue.
+  const preselected = detectedIDEs
+    .filter((ide) => ide.detected || ide.id === 'claude-code')
+    .map((ide) => ide.id);
+
   const result = await p.multiselect({
     message: 'Which IDEs do you use?',
     options,
-    initialValues: [],
+    initialValues: preselected,
     required: true,
   });
 
@@ -1070,7 +1077,10 @@ async function promptProvider(
           { value: 'cmem', label: labels.cmem, hint: labels.cmemHint },
           { value: 'claude', label: labels.claude, hint: labels.claudeHint },
         ],
-        initialValues: [],
+        // CMEM Pro pre-selected: it is the recommended path and the one the
+        // funnel is built around. Selecting it no longer means "pay now" —
+        // it opens the offer page to read first.
+        initialValues: ['cmem'],
         required: true,
       });
       if (p.isCancel(providerResult)) {
