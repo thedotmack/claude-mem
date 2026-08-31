@@ -9,7 +9,13 @@ import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
 import { isClassified } from './provider-errors.js';
-import { compactConversationHistory } from '../../shared/conversation-window.js';
+import {
+  shouldRecycleConversation,
+  conversationChars,
+  resolveConversationMaxChars,
+} from '../../shared/observer-recycle.js';
+import { recycleObserverConversation, loadSessionSoFar } from './session/recycle-conversation.js';
+
 import {
   processAgentResponse,
   snapshotResponseContext,
@@ -81,6 +87,13 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   /** Hook for per-session setup that runs once config is resolved (e.g. endpointClass). */
   protected prepareSessionExtras(_session: ActiveSession, _config: TConfig): void {}
 
+  /** Character budget for one observer generation, operator-overridable (#3800). */
+  protected conversationMaxChars(): number {
+    return resolveConversationMaxChars(
+      SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS
+    );
+  }
+
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     const config = this.getConfig();
     const { apiKey, model } = config;
@@ -99,9 +112,13 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
 
     const mode = ModeManager.getInstance().getActiveMode();
+    // Seed the generation with what this session already observed, so a
+    // conversation that starts partway through (a recycle, or a resume after a
+    // quota pause) continues from the memory rather than from nothing (#3800).
+    const sessionSoFar = loadSessionSoFar(session, this.dbManager);
     const initPrompt = session.lastPromptNumber === 1
-      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
-      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
+      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode, sessionSoFar)
+      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode, sessionSoFar);
     const initContext = snapshotResponseContext(session);
 
     session.conversationHistory.push({ role: 'user', content: initPrompt });
@@ -109,7 +126,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     try {
       session.lastPromptSentAt = Date.now();
       session.lastGeneratorSource = 'init';
-      const initResponse = await this.queryBounded(session, config);
+      const initResponse = await this.query(session.conversationHistory, config);
       await this.handleInitResponse(initResponse, session, worker, model, initContext);
     } catch (error: unknown) {
       // Classified errors are logged once, at SessionRoutes' `Observer failed`
@@ -210,6 +227,20 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
 
+    // Retire a full generation BEFORE sending, so the request that would cross
+    // the ceiling is never paid for. The batch is preserved and drained by the
+    // fresh generation the next ingest starts (#3800).
+    if (shouldRecycleConversation(session.conversationHistory, this.conversationMaxChars())) {
+      await recycleObserverConversation(
+        session,
+        this.sessionManager,
+        worker,
+        'budget',
+        `conversation reached ${conversationChars(session.conversationHistory)} chars`,
+      );
+      return;
+    }
+
     const obsPrompt = buildObservationPrompt({
       id: 0,
       tool_name: message.tool_name!,
@@ -223,7 +254,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'ingest';
-    const obsResponse = await this.queryBounded(session, config);
+    const obsResponse = await this.query(session.conversationHistory, config);
 
     let tokensUsed = 0;
     if (obsResponse.content) {
@@ -283,7 +314,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         sessionId: session.sessionDbId, model: summaryModel
       });
     }
-    const summaryResponse = await this.queryBounded(session, summaryConfig);
+    const summaryResponse = await this.query(session.conversationHistory, summaryConfig);
 
     let tokensUsed = 0;
     if (summaryResponse.content) {
@@ -304,29 +335,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         sessionId: session.sessionDbId
       });
     }
-  }
-
-  /**
-   * Send the session's conversation, compacted to the window budget first.
-   *
-   * Every call here re-sends the whole transcript, so without compaction the
-   * per-observation cost grows with session length and the session eventually
-   * wedges against the model's context ceiling (#3800). Compaction is applied
-   * to the stored history, not just the outgoing copy, so the saving compounds
-   * instead of being recomputed from an ever-growing array.
-   */
-  private async queryBounded(session: ActiveSession, config: TConfig): Promise<ProviderQueryResult> {
-    const { history, dropped, droppedChars } = compactConversationHistory(session.conversationHistory);
-    if (dropped > 0) {
-      session.conversationHistory = history;
-      logger.info('SDK', `Compacted ${this.providerName} observer window to stay within the context budget`, {
-        sessionId: session.sessionDbId,
-        droppedMessages: dropped,
-        droppedChars,
-        historyLength: history.length,
-      });
-    }
-    return this.query(session.conversationHistory, config);
   }
 
   protected handleSessionError(error: unknown, session: ActiveSession, _worker?: WorkerRef): never {

@@ -14,6 +14,7 @@ import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
 import { recordObserverSuccess } from '../../../shared/observer-health.js';
 import { clearQuotaCooldown } from '../../../shared/quota-cooldown.js';
+import { recycleObserverConversation } from '../session/recycle-conversation.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import type { ActiveSession, PendingMessage } from '../../worker-types.js';
@@ -29,16 +30,6 @@ export interface ObservationFileEvidence {
   files_read: string[];
   files_modified: string[];
 }
-
-/**
- * How many times a session may recycle its conversation after a context-overflow
- * rejection before the observer gives up on it entirely.
- *
- * A recycle should fix overflow outright, so needing several in a row means
- * something other than accumulated history is oversized. Retrying past that just
- * re-sends an over-ceiling prompt on every future tool call at full cost (#3800).
- */
-const MAX_CONTEXT_OVERFLOW_RECYCLES = 2;
 
 const READ_TOOL_NAMES = new Set(['Read']);
 const WRITE_TOOL_NAMES = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'write_file']);
@@ -327,56 +318,17 @@ export async function processAgentResponse(
     'claude';
 
   if (!parsed.valid) {
-    // Context overflow: the conversation has outgrown the model's window. Every
-    // later request would re-send it in full and fail identically, so recycle
-    // the conversation instead of re-queueing into the one that cannot fit.
+    // The conversation filled up. Retire it and start a fresh generation
+    // seeded with this session's own observations, rather than re-queueing into
+    // a conversation that can only keep growing.
     if (isContextOverflowObserverOutput(text)) {
-      // Coalesce rather than `+= 1`: an ActiveSession built without this field
-      // would make the counter NaN, and `NaN >= MAX` is false — silently
-      // restoring the never-tripping breaker this fix exists to remove.
-      const overflows = (session.consecutiveContextOverflows ?? 0) + 1;
-      session.consecutiveContextOverflows = overflows;
-
-      // The observations are fine; the conversation carrying them is what broke.
-      await sessionManager.resetProcessingToPending(session.sessionDbId);
-
-      if (overflows >= MAX_CONTEXT_OVERFLOW_RECYCLES) {
-        session.abortReason = 'overflow:exhausted';
-        try {
-          session.abortController.abort();
-        } catch {
-          // best-effort; AbortController.abort() should not throw in normal use.
-        }
-        worker?.broadcastProcessingStatus?.();
-        logger.error('PARSER', `${agentName} hit the context ceiling ${overflows}x despite recycling — pausing this session's observer instead of retrying`, {
-          sessionId: session.sessionDbId,
-          outputClass: 'prose',
-          consecutiveContextOverflows: overflows,
-          preview: previewOutput(text),
-        });
-        return;
-      }
-
-      // Drop the outgrown conversation and make the next generator open a fresh
-      // one. A single observation prompt is field-truncated far below any
-      // ceiling, so a fresh conversation is guaranteed to fit.
-      const discardedMessages = session.conversationHistory.length;
-      session.conversationHistory = [];
-      session.forceInit = true;
-      session.abortReason = 'overflow:recycle';
-      try {
-        session.abortController.abort();
-      } catch {
-        // best-effort; AbortController.abort() should not throw in normal use.
-      }
-      worker?.broadcastProcessingStatus?.();
-      logger.warn('PARSER', `${agentName} rejected the prompt as too long — recycling the observer conversation and preserving the batch`, {
-        sessionId: session.sessionDbId,
-        outputClass: 'prose',
-        consecutiveContextOverflows: overflows,
-        discardedMessages,
-        preview: previewOutput(text),
-      });
+      await recycleObserverConversation(
+        session,
+        sessionManager,
+        worker,
+        'refused',
+        `${agentName} refused the prompt as too long: ${previewOutput(text)}`,
+      );
       return;
     }
 

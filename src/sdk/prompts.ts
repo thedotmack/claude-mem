@@ -61,8 +61,15 @@ ${mode.prompts.format_examples}
 ${mode.prompts.footer}`;
 }
 
-export function buildInitPrompt(project: string, sessionId: string, userPrompt: string, mode: ModeConfig): string {
+export function buildInitPrompt(
+  project: string,
+  sessionId: string,
+  userPrompt: string,
+  mode: ModeConfig,
+  priorObservations: ReadonlyArray<PriorObservation> = [],
+): string {
   return `${mode.prompts.system_identity}
+${buildSessionSoFar(priorObservations)}
 
 <observed_from_primary_session>
   <user_request>${userPrompt}</user_request>
@@ -80,6 +87,67 @@ ${mode.prompts.skip_guidance}
 ${observationSkeleton(mode)}
 
 ${mode.prompts.header_memory_start}`;
+}
+
+/**
+ * One already-recorded observation, as carried into a fresh observer
+ * generation. Mirrors SessionStore.getObservationsForSession's row shape.
+ */
+export interface PriorObservation {
+  title: string;
+  subtitle: string;
+  type: string;
+  prompt_number: number | null;
+}
+
+/**
+ * How many prior observations a recycled generation carries. Recency-ordered,
+ * matching how session-start context injection selects what to show; anything
+ * older is already durable memory and searchable, so it does not need to ride
+ * in the observer's prompt.
+ */
+const SESSION_SO_FAR_MAX_OBSERVATIONS = 80;
+
+/**
+ * Render what this session has already observed, for a conversation that is
+ * starting fresh partway through a session (#3800).
+ *
+ * When an observer generation fills up it is retired rather than trimmed, and
+ * the replacement is seeded with this block. That keeps continuity in the
+ * product's own compressed form — the observations themselves — instead of
+ * replaying raw turns, and it is what stops a recycled observer from
+ * re-recording work it already captured.
+ *
+ * Returns '' when there is nothing yet, so a first generation is unchanged.
+ */
+export function buildSessionSoFar(observations: ReadonlyArray<PriorObservation>): string {
+  if (observations.length === 0) {
+    return '';
+  }
+
+  const recent = observations.slice(-SESSION_SO_FAR_MAX_OBSERVATIONS);
+  const earlierCount = observations.length - recent.length;
+
+  const entries = recent
+    .map(obs => {
+      const prompt = obs.prompt_number === null ? '' : ` prompt="${obs.prompt_number}"`;
+      const subtitle = obs.subtitle ? ` — ${obs.subtitle}` : '';
+      return `  <recorded type="${obs.type}"${prompt}>${obs.title}${subtitle}</recorded>`;
+    })
+    .join('\n');
+
+  const earlier = earlierCount > 0
+    ? `\n  <earlier count="${earlierCount}" note="already stored in memory; search rather than re-record" />`
+    : '';
+
+  return `
+<session_so_far count="${observations.length}">
+${entries}${earlier}
+</session_so_far>
+
+You have already recorded the observations above in this session. Continue from
+there: do not re-record them, and do not treat their absence from the
+conversation above as meaning the work did not happen.`;
 }
 
 // Per-field character budget for the <parameters> / <outcome> blocks in an
@@ -188,8 +256,15 @@ REMINDER: Your response MUST use <summary> as the root tag, NOT <observation>.
 ${mode.prompts.summary_footer}`;
 }
 
-export function buildContinuationPrompt(userPrompt: string, promptNumber: number, contentSessionId: string, mode: ModeConfig): string {
+export function buildContinuationPrompt(
+  userPrompt: string,
+  promptNumber: number,
+  contentSessionId: string,
+  mode: ModeConfig,
+  priorObservations: ReadonlyArray<PriorObservation> = [],
+): string {
   return `${mode.prompts.continuation_greeting}
+${buildSessionSoFar(priorObservations)}
 
 <observed_from_primary_session>
   <user_request>${userPrompt}</user_request>

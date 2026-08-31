@@ -624,8 +624,10 @@ describe('ResponseProcessor', () => {
 
     it('pauses the session once recycling has failed repeatedly, rather than retrying forever', async () => {
       const { resetProcessingToPending, confirmClaimedMessages } = overflowSessionManager();
-      // Already recycled once; this rejection reaches the ceiling.
-      const session = createMockSession({ consecutiveContextOverflows: 1 });
+      // Two recycles already spent; a fresh generation carries only the framing
+      // prompt, the session-so-far block and one field-truncated observation, so
+      // still not fitting means something else is oversized.
+      const session = createMockSession({ consecutiveContextOverflows: 2 });
 
       await processAgentResponse(
         'Prompt is too long', session, mockDbManager, mockSessionManager, mockWorker,
@@ -638,9 +640,9 @@ describe('ResponseProcessor', () => {
       expect(resetProcessingToPending).toHaveBeenCalledWith(1);
       expect(confirmClaimedMessages).not.toHaveBeenCalled();
       expect(logger.error).toHaveBeenCalledWith(
-        'PARSER',
-        expect.stringContaining('context ceiling'),
-        expect.objectContaining({ consecutiveContextOverflows: 2 })
+        'SESSION',
+        expect.stringContaining('still does not fit'),
+        expect.objectContaining({ consecutiveRecycles: 3 })
       );
     });
 

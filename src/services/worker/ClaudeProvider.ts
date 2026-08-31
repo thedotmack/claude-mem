@@ -28,6 +28,12 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { buildHardenedSdkOptions } from '../../sdk/hardened-options.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { resolveTierAlias } from './model-aliases.js';
+import {
+  shouldRecycleConversation,
+  conversationChars,
+  resolveConversationMaxChars,
+} from '../../shared/observer-recycle.js';
+import { recycleObserverConversation, loadSessionSoFar } from './session/recycle-conversation.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
 import { clearDependencyStatus, recordClaudeCliSetupRequired } from '../../shared/dependency-health.js';
 
@@ -167,6 +173,13 @@ export class ClaudeProvider {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
 
+  /** Character budget for one observer generation, operator-overridable (#3800). */
+  private conversationMaxChars(): number {
+    return resolveConversationMaxChars(
+      SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS
+    );
+  }
+
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     this.dbManager = dbManager;
     this.sessionManager = sessionManager;
@@ -198,7 +211,7 @@ export class ClaudeProvider {
     session.lastResultTotalCostUsd = null;
 
     const activeResponseContext = { current: snapshotResponseContext(session) };
-    const messageGenerator = this.createMessageGenerator(session, cwdTracker, activeResponseContext);
+    const messageGenerator = this.createMessageGenerator(session, cwdTracker, activeResponseContext, worker);
 
     if (session.memorySessionId) {
       // Observer spawns intentionally opt out of Claude transcript persistence.
@@ -469,7 +482,8 @@ export class ClaudeProvider {
   private async *createMessageGenerator(
     session: ActiveSession,
     cwdTracker: { lastCwd: string | undefined },
-    activeResponseContext: { current: ReturnType<typeof snapshotResponseContext> }
+    activeResponseContext: { current: ReturnType<typeof snapshotResponseContext> },
+    worker?: WorkerRef
   ): AsyncIterableIterator<SDKUserMessage> {
     const mode = ModeManager.getInstance().getActiveMode();
 
@@ -482,9 +496,13 @@ export class ClaudeProvider {
       promptType: isInitPrompt ? 'INIT' : 'CONTINUATION'
     });
 
+    // Seed the generation with what this session already observed, so a
+    // conversation that starts partway through continues from the memory rather
+    // than from nothing (#3800).
+    const sessionSoFar = loadSessionSoFar(session, this.dbManager);
     const initPrompt = isInitPrompt
-      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
-      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
+      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode, sessionSoFar)
+      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode, sessionSoFar);
     activeResponseContext.current = snapshotResponseContext(session);
 
     session.conversationHistory.push({ role: 'user', content: initPrompt });
@@ -513,6 +531,21 @@ export class ClaudeProvider {
       if (message.type === 'observation') {
         if (message.prompt_number !== undefined) {
           session.lastPromptNumber = message.prompt_number;
+        }
+
+        // Retire a full generation BEFORE yielding. The SDK holds the real
+        // conversation server-side, but conversationHistory tracks every prompt
+        // fed into it, so its size is the proxy for how close that conversation
+        // is to the ceiling (#3800).
+        if (shouldRecycleConversation(session.conversationHistory, this.conversationMaxChars())) {
+          await recycleObserverConversation(
+            session,
+            this.sessionManager,
+            worker,
+            'budget',
+            `conversation reached ${conversationChars(session.conversationHistory)} chars`,
+          );
+          return;
         }
 
         const obsPrompt = buildObservationPrompt({
