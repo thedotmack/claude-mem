@@ -4,6 +4,48 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.21.0] - 2026-08-31
+
+Installer release. Fixes the outage that made 13.20.0 uninstallable, and reworks the account/provider flow.
+
+## Installs no longer hard-fail when cmem.ai is unreachable
+
+13.20.0 required browser OAuth before the provider choice, unconditionally. When the server endpoint it depended on turned out not to be deployed, every install died on "Could not start OAuth login."
+
+`--provider claude` now skips login entirely. It configures memory against your own Anthropic plan and never contacts cmem.ai, so there is no account question for login to answer.
+
+Keyed on the explicit flag, not on reachability: falling back to a local install whenever cmem.ai happened to be down would silently change what you get. `gemini` and `openrouter` stay gated, because openrouter is the transport for the cmem gateway.
+
+## The trial length is no longer pinned to 7 days
+
+The installer used to require the checkout URL to say exactly `trial=7`, so the server could not change its own offer without breaking every published installer — and the rejection surfaced as "Could not start OAuth login", naming nothing. The URL shape is still validated strictly; the number is now the server's to choose.
+
+## The provider screen is two lines
+
+    Select Provider:
+    ================
+    [ ] CMEM Pro (30 Day Free Trial: Tokens for Observations + Real-Time Cloud
+        Sync for Claude.ai, ChatGPT.com, anything that accepts an MCP Connector)
+    [ ] Use your Anthropic Max Plan (no cloud sync, uses tokens for observations)
+
+The nine-bullet benefits note that printed above it is gone.
+
+## The billing acknowledgement moved to checkout
+
+It was a terminal prompt asking you to confirm charge terms before you could see what you were agreeing to. It is a term of the charge, so it now appears on the screen that takes the card, above the pay button.
+
+## Login is only about logging in
+
+- A server-reported checkout stage during login no longer renders "Waiting for CMEM Pro setup in the browser...".
+- The login hand-off prints the URL, then waits: `Continue setup in browser... (hit return to open automatically)`. The URL comes first, so headless and SSH sessions are never blocked.
+- The post-login browser page now says "Close this window and go back to your terminal" instead of linking to the dashboard, which abandoned an install still waiting on that round-trip.
+
+Fixed: the checkout hand-off briefly also waited for Return, which stalled the install outright. It opens directly again.
+
+## Next Steps is shorter
+
+Dropped the `CLAUDE_MEM_WELCOME_HINT_ENABLED` opt-out, the uninstall warning, and the A/B framing that presented "just start working" as a decision.
+
 ## [13.20.0] - 2026-08-31
 
 Consolidates the observer, quota, and installer work onto one release.
