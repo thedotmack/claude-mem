@@ -293,6 +293,10 @@ export async function processAgentResponse(
   session.lastGeneratorActivity = Date.now();
   const context = responseContext ?? snapshotResponseContext(session);
 
+  if (session.shutdownRequested) {
+    return;
+  }
+
   if (text) {
     session.conversationHistory.push({ role: 'assistant', content: text });
   }
@@ -377,6 +381,9 @@ export async function processAgentResponse(
       } else {
         if (hasClaimedMessages) {
           await sessionManager.resetProcessingToPending(session.sessionDbId);
+          if (session.shutdownRequested) {
+            return;
+          }
           session.overflowRetryPending = true;
         } else {
           session.overflowRetryPending = false;
@@ -388,6 +395,9 @@ export async function processAgentResponse(
         });
       }
 
+      if (session.shutdownRequested) {
+        return;
+      }
       session.abortReason = 'overflow:observer_text';
       try {
         session.abortController.abort();

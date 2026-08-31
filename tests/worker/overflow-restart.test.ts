@@ -11,6 +11,7 @@ function makeSession(): ActiveSession {
     platformSource: 'claude',
     userPrompt: 'prompt',
     abortController: new AbortController(),
+    shutdownRequested: false,
     generatorPromise: null,
     lastPromptNumber: 1,
     startTime: Date.now(),
@@ -206,5 +207,36 @@ describe('overflow generator restart', () => {
     const generatorPromise = session.generatorPromise;
     runResolve?.();
     await generatorPromise;
+  });
+
+  it('does not start a generator after shutdown begins during tier routing', async () => {
+    const session = makeSession();
+    let tierResolve: (() => void) | null = null;
+    const tierRouting = new Promise<void>(resolve => {
+      tierResolve = resolve;
+    });
+    let starts = 0;
+    const openRouterAgent = {
+      startSession: async () => {
+        starts++;
+      },
+    };
+    const sessionManager = {
+      getSession: () => session,
+      getMessageBuffer: () => ({ getPendingCount: () => 1 }),
+      removeSessionImmediate: () => {},
+    };
+    const routes = makeRoutes(sessionManager, openRouterAgent);
+    (routes as any).applyTierRouting = () => tierRouting;
+
+    const start = routes.ensureGeneratorRunning(42, 'init');
+    await Promise.resolve();
+    session.shutdownRequested = true;
+    session.abortReason = 'shutdown';
+    tierResolve?.();
+
+    await start;
+    expect(starts).toBe(0);
+    expect(session.generatorPromise).toBeNull();
   });
 });

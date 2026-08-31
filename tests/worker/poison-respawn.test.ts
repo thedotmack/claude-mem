@@ -270,6 +270,24 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(session.overflowRetryPending).toBe(false);
   });
 
+  it('does not overwrite shutdown while an overflow reset is awaiting', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(19, 'do the thing', 1);
+    session.memorySessionId = 'mem-19';
+    await queueAndClaimOne(sm, 19);
+    const { payload } = readReproductionPayload();
+    spyOn(sm, 'resetProcessingToPending').mockImplementation(async () => {
+      session.shutdownRequested = true;
+      session.abortReason = 'shutdown';
+      return 1;
+    });
+
+    await processAgentResponse(payload, session, makeDbManager(), sm, makeWorker(), 0, null, 'SDK');
+
+    expect(session.abortReason).toBe('shutdown');
+    expect(session.abortController.signal.aborted).toBe(false);
+  });
+
   it('resets the overflow budget after a non-overflow response', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(17, 'do the thing', 1);

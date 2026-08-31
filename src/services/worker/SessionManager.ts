@@ -117,6 +117,7 @@ export class SessionManager {
       platformSource: dbSession.platform_source,
       userPrompt,
       abortController: new AbortController(),
+      shutdownRequested: false,
       generatorPromise: null,
       lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id, sessionDbId),
       startTime: Date.now(),
@@ -254,6 +255,8 @@ export class SessionManager {
       return;
     }
 
+    session.shutdownRequested = true;
+
     // Phase 2: emit this session's single observer_turn_rollup at session end,
     // while the session still exists. flushSession removes the bucket, so the
     // matching call in removeSessionImmediate (or a re-entry here) is a safe
@@ -318,6 +321,8 @@ export class SessionManager {
   removeSessionImmediate(sessionDbId: number): void {
     const session = this.sessions.get(sessionDbId);
     if (!session) return;
+
+    session.shutdownRequested = true;
 
     // Phase 2: same session-end rollup as deleteSession. Whichever teardown
     // path runs first flushes; flushSession removes the bucket so the second is

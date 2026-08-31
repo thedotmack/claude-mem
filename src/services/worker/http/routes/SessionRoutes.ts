@@ -76,7 +76,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
   public async ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
     const session = this.sessionManager.getSession(sessionDbId);
-    if (!session) return;
+    if (!session || session.shutdownRequested) return;
 
     const selectedProvider = this.getSelectedProvider();
 
@@ -121,12 +121,19 @@ export class SessionRoutes extends BaseRouteHandler {
       startingPromise = (async () => {
         try {
           await this.applyTierRouting(session);
+          if (session.shutdownRequested) {
+            return;
+          }
           await this.startGeneratorWithProvider(session, selectedProvider, source);
         } catch (error) {
           if (session.generatorPromise === startingPromise) {
             session.generatorPromise = null;
           }
           throw error;
+        } finally {
+          if (session.generatorPromise === startingPromise) {
+            session.generatorPromise = null;
+          }
         }
       })();
       session.generatorPromise = startingPromise;
@@ -299,7 +306,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private async restartAfterOverflow(sessionDbId: number): Promise<void> {
     const session = this.sessionManager.getSession(sessionDbId);
-    if (!session || session.abortReason === 'shutdown' || !session.overflowRetryPending) {
+    if (!session || session.shutdownRequested || session.abortReason === 'shutdown' || !session.overflowRetryPending) {
       return;
     }
 
