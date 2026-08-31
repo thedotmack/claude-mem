@@ -323,6 +323,30 @@ describe('Install Non-TTY Support', () => {
     });
   });
 
+  describe('cmem provider persistence failures', () => {
+    it('keeps the existing provider when either cmem settings write fails', () => {
+      const cmemRegion = installSource.slice(
+        installSource.indexOf("if (selectedProvider === 'cmem')"),
+        installSource.indexOf("if (selectedProvider === 'claude')"),
+      );
+
+      expect(cmemRegion.match(/if \(!wrote\)/g)?.length).toBe(2);
+      expect(cmemRegion.match(/if \(!wrote\) \{[\s\S]*?return initialProvider;[\s\S]*?\}/g)?.length).toBe(2);
+      expect(cmemRegion.indexOf('Could not save the CMEM Pro configuration'))
+        .toBeLessThan(cmemRegion.indexOf("'CMEM Pro ready'"));
+    });
+
+    it('resets the fallback timestamp and one-time notice after either fresh key write', () => {
+      const cmemRegion = installSource.slice(
+        installSource.indexOf("if (selectedProvider === 'cmem')"),
+        installSource.indexOf("if (selectedProvider === 'claude')"),
+      );
+
+      expect(cmemRegion.match(/CLAUDE_MEM_PRO_FALLBACK_AT: ''/g)?.length).toBe(2);
+      expect(cmemRegion.match(/clearProFallback\(\);/g)?.length).toBe(2);
+    });
+  });
+
   describe('runtime selection', () => {
     it('offers Server (beta) while keeping worker as the default runtime', () => {
       // Phase 1d: installer writes the new canonical `'server'` runtime value.

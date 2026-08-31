@@ -91,6 +91,7 @@ describe('EatRoutes POST /api/eat', () => {
   let store: SessionStore;
   let handler: (req: Request, res: Response) => void;
   let sessionStoreCalls: number;
+  let gbrainCalls: Array<{ id: number; project: string; observation: Record<string, unknown>; memorySessionId: string }>;
 
   beforeEach(() => {
     pipelineCalls.length = 0;
@@ -104,12 +105,24 @@ describe('EatRoutes POST /api/eat', () => {
     };
     store = new SessionStore(':memory:');
     sessionStoreCalls = 0;
+    gbrainCalls = [];
     const dbManager = {
       getSessionStore: () => {
         sessionStoreCalls++;
         return store;
       },
       getChromaSync: () => null,
+      getGbrainSync: () => ({
+        syncObservation: async (
+          id: number,
+          project: string,
+          observation: Record<string, unknown>,
+          _createdAtEpoch: number,
+          memorySessionId: string
+        ) => {
+          gbrainCalls.push({ id, project, observation, memorySessionId });
+        },
+      }),
       getCloudSync: () => null,
     } as any;
     handler = captureRoute(new EatRoutes(dbManager));
@@ -198,6 +211,35 @@ describe('EatRoutes POST /api/eat', () => {
     expect(pipelineCalls[1].opts.content).toBe('Bun 1.2 shipped native S3 support');
   });
 
+  it('accepts uploaded file content with a client-side source locator', async () => {
+    pipelineResult = { ...pipelineResult, source: { kind: 'file', locator: '/host/project/README.md' } };
+    const response = makeResponse();
+    handler(makeRequest({
+      content: '# Readme',
+      content_source: { kind: 'file', locator: '/host/project/README.md' },
+      project: 'claude-mem',
+      dry_run: true,
+    }), response.res);
+
+    await response.waitForJson();
+    expect(pipelineCalls[0].opts.content).toBe('# Readme');
+    expect(pipelineCalls[0].opts.contentSource).toEqual({ kind: 'file', locator: '/host/project/README.md' });
+  });
+
+  it('rejects content_source unless content is also present', async () => {
+    const response = makeResponse();
+    handler(makeRequest({
+      input: 'README.md',
+      content_source: { kind: 'file', locator: '/host/project/README.md' },
+      project: 'claude-mem',
+    }), response.res);
+
+    const body = await response.waitForJson();
+    expect(response.getStatus()).toBe(400);
+    expect(body.error).toBe('invalid_request');
+    expect(pipelineCalls.length).toBe(0);
+  });
+
   it('dry_run returns drafts and empty observation_ids without touching storage', async () => {
     const response = makeResponse();
     handler(makeRequest({ content: 'Bun 1.2 shipped native S3 support', project: 'claude-mem', dry_run: true }), response.res);
@@ -258,5 +300,36 @@ describe('EatRoutes POST /api/eat', () => {
     expect(JSON.parse(row.files_read)).toEqual(['/tmp/readme.md']);
     expect(JSON.parse(row.metadata)).toEqual({ eat: true, source: { kind: 'file', locator: '/tmp/readme.md' } });
     expect(row.generated_by_model).toBe('anthropic/claude-haiku-4.5');
+    expect(gbrainCalls.length).toBe(1);
+    expect(gbrainCalls[0].id).toBe(body.observation_ids[0]);
+    expect(gbrainCalls[0].project).toBe('claude-mem');
+    expect(gbrainCalls[0].observation.files_read).toEqual(['/tmp/readme.md']);
+  });
+
+  it('stores and syncs each deduplicated observation id only once', async () => {
+    pipelineResult = { ...pipelineResult, drafts: [draft, { ...draft }] };
+    const response = makeResponse();
+    handler(makeRequest({ content: 'duplicate draft source', project: 'claude-mem' }), response.res);
+
+    const body = await response.waitForJson();
+    expect(body.observation_ids.length).toBe(2);
+    expect(new Set(body.observation_ids).size).toBe(1);
+    expect(gbrainCalls.length).toBe(1);
+  });
+
+  it('uses each draft source for file provenance and gbrain sync', async () => {
+    pipelineResult = {
+      ...pipelineResult,
+      source: { kind: 'directory', locator: '/host/project/docs' },
+      drafts: [{ ...draft, source: { kind: 'file', locator: '/host/project/docs/one.md' } }],
+    };
+    const response = makeResponse();
+    handler(makeRequest({ input: '/host/project/docs', project: 'claude-mem' }), response.res);
+
+    const body = await response.waitForJson();
+    const row = store.db.prepare('SELECT files_read, metadata FROM observations WHERE id = ?').get(body.observation_ids[0]) as any;
+    expect(JSON.parse(row.files_read)).toEqual(['/host/project/docs/one.md']);
+    expect(JSON.parse(row.metadata).source).toEqual({ kind: 'file', locator: '/host/project/docs/one.md' });
+    expect(gbrainCalls[0].observation.files_read).toEqual(['/host/project/docs/one.md']);
   });
 });

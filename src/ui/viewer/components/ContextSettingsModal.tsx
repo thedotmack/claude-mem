@@ -325,18 +325,6 @@ export function ContextSettingsModal({
                   onChange={(e) => updateSetting('CLAUDE_MEM_CONTEXT_SESSION_COUNT', e.target.value)}
                 />
               </FormField>
-              <FormField
-                label="Token Budget"
-                tooltip="Maximum estimated tokens for injected context (0 = unlimited, up to 200000)"
-              >
-                <input
-                  type="number"
-                  min="0"
-                  max="200000"
-                  value={formState.CLAUDE_MEM_CONTEXT_TOKEN_BUDGET || '0'}
-                  onChange={(e) => updateSetting('CLAUDE_MEM_CONTEXT_TOKEN_BUDGET', e.target.value)}
-                />
-              </FormField>
             </CollapsibleSection>
 
             {/* Section 2: Display */}
@@ -454,7 +442,7 @@ export function ContextSettingsModal({
                   tooltip="Cloud copies are encrypted with a key minted on this machine. It never leaves your machine — and it is never shown here."
                 >
                   <span className="toggle-description">
-                    {formState.CLAUDE_MEM_BACKUP_ENCRYPTION_KEY
+                    {formState.CLAUDE_MEM_BACKUP_ENCRYPTION_KEY_PRESENT
                       ? 'Key present (stored in settings.json; it never leaves this machine)'
                       : 'Not yet minted — created automatically on the first cloud upload'}
                   </span>
@@ -509,7 +497,7 @@ export function ContextSettingsModal({
             >
               <FormField
                 label="AI Provider"
-                tooltip="Choose between Claude (via Agent SDK) or Gemini (via REST API)"
+                tooltip="Choose the provider that generates observations: Claude (via Agent SDK), Gemini (via REST API), or OpenRouter — also used by the claude-mem observer"
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
@@ -517,7 +505,7 @@ export function ContextSettingsModal({
                 >
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
-                  <option value="openrouter">OpenRouter (multi-model)</option>
+                  <option value="openrouter">OpenRouter / claude-mem observer</option>
                 </select>
               </FormField>
 

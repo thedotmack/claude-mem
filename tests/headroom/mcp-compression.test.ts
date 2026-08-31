@@ -93,6 +93,60 @@ describe('mcp-compression', () => {
     }, 10000);
   });
 
+  describe('maybeCompressToolResponse with a healthy proxy', () => {
+    let proxyServer: Server;
+    let proxyResponse: Record<string, unknown>;
+
+    beforeEach(async () => {
+      proxyResponse = {};
+      proxyServer = createServer((_req, res) => {
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(proxyResponse));
+      });
+      await new Promise<void>(resolve => proxyServer.listen(0, '127.0.0.1', resolve));
+      const port = (proxyServer.address() as AddressInfo).port;
+      process.env.CLAUDE_MEM_HEADROOM_ENABLED = 'true';
+      process.env.CLAUDE_MEM_HEADROOM_URL = `http://127.0.0.1:${port}`;
+    });
+
+    afterEach(async () => {
+      await new Promise<void>(resolve => proxyServer.close(() => resolve()));
+    });
+
+    it('should preserve a successful no-op response byte-identically', async () => {
+      proxyResponse = {
+        messages: [{ role: 'user', content: SAMPLE_PAYLOAD }],
+        tokens_before: 100,
+        tokens_after: 100,
+        tokens_saved: 0,
+        compression_ratio: 1,
+        transforms_applied: [],
+        ccr_hashes: [],
+      };
+
+      const result = await maybeCompressToolResponse(SAMPLE_PAYLOAD);
+
+      expect(result).toBe(SAMPLE_PAYLOAD);
+      expect(result).not.toContain('Headroom:');
+    });
+
+    it('should return compressed text and stats when the proxy reports real savings', async () => {
+      proxyResponse = {
+        messages: [{ role: 'user', content: 'compressed payload' }],
+        tokens_before: 1000,
+        tokens_after: 100,
+        tokens_saved: 900,
+        compression_ratio: 0.1,
+        transforms_applied: ['smart_crusher'],
+        ccr_hashes: [],
+      };
+
+      const result = await maybeCompressToolResponse(SAMPLE_PAYLOAD);
+
+      expect(result).toBe('compressed payload\n\nHeadroom: 1,000t → 100t (900t saved)');
+    });
+  });
+
   describe('headroom_retrieve conditional registration', () => {
     it('should be absent when CLAUDE_MEM_HEADROOM_ENABLED=false', () => {
       process.env.CLAUDE_MEM_HEADROOM_ENABLED = 'false';
@@ -126,6 +180,10 @@ describe('mcp-compression', () => {
 
     it('handler rejects when hash is missing (surfaces via the shared tool-error path)', async () => {
       await expect(headroomRetrieveTool.handler({})).rejects.toThrow('"hash" is required');
+    });
+
+    it('handler rejects a non-string retrieval query', async () => {
+      await expect(headroomRetrieveTool.handler({ hash: 'abc123', query: 42 })).rejects.toThrow('"query" must be a string');
     });
 
     it('handler answers with a clear disabled message when Headroom is off (defense in depth)', async () => {

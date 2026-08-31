@@ -2,7 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-import { HeadroomService } from '../../src/services/headroom/HeadroomService.js';
+import {
+  HeadroomService,
+  normalizeHeadroomBaseUrl,
+} from '../../src/services/headroom/HeadroomService.js';
 
 /**
  * Settings injection: HeadroomService reads settings via
@@ -64,6 +67,23 @@ describe('HeadroomService', () => {
     });
   });
 
+  describe('normalizeHeadroomBaseUrl', () => {
+    it('should keep every local managed-proxy surface on the 8787 default', () => {
+      expect(normalizeHeadroomBaseUrl('')).toBe('http://127.0.0.1:8787');
+      expect(normalizeHeadroomBaseUrl('   ')).toBe('http://127.0.0.1:8787');
+      expect(normalizeHeadroomBaseUrl(8787)).toBe('http://127.0.0.1:8787');
+      expect(normalizeHeadroomBaseUrl('http://127.0.0.1')).toBe('http://127.0.0.1:8787');
+      expect(normalizeHeadroomBaseUrl('http://localhost')).toBe('http://localhost:8787');
+      expect(normalizeHeadroomBaseUrl('http://127.0.0.1:9123')).toBe('http://127.0.0.1:9123');
+      expect(normalizeHeadroomBaseUrl('http://127.0.0.1:80')).toBe('http://127.0.0.1:80');
+    });
+
+    it('should not rewrite remote or invalid user-managed URLs', () => {
+      expect(normalizeHeadroomBaseUrl('https://headroom.example.test')).toBe('https://headroom.example.test');
+      expect(normalizeHeadroomBaseUrl('not a url')).toBe('not a url');
+    });
+  });
+
   describe('compressPayload with CLAUDE_MEM_HEADROOM_ENABLED=true and an unreachable proxy', () => {
     it('should resolve to the fallback result (original messages, compressed: false) within ~3s', async () => {
       process.env.CLAUDE_MEM_HEADROOM_ENABLED = 'true';
@@ -82,6 +102,29 @@ describe('HeadroomService', () => {
       expect(result!.ccrHashes).toEqual([]);
       expect(elapsedMs).toBeLessThan(3000);
     }, 10000);
+  });
+
+  describe('HeadroomClient metadata', () => {
+    it('should send the claude-mem stack header on client-based requests', async () => {
+      let stackHeader: string | undefined;
+      const server = createServer((req, res) => {
+        stackHeader = req.headers['x-headroom-stack'] as string | undefined;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ status: 'healthy' }));
+      });
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+
+      try {
+        const port = (server.address() as AddressInfo).port;
+        process.env.CLAUDE_MEM_HEADROOM_URL = `http://127.0.0.1:${port}`;
+
+        await HeadroomService.getInstance().healthCheck();
+
+        expect(stackHeader).toBe('claude-mem');
+      } finally {
+        await new Promise<void>(resolve => server.close(() => resolve()));
+      }
+    });
   });
 
   describe('getInstance', () => {

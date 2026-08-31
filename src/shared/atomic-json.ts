@@ -47,7 +47,16 @@ export function ensureDirectoryExists(directoryPath: string): void {
  * crash mid-write leaves either the old contents or the new contents, never a
  * truncated file.
  */
-export function writeJsonFileAtomic(filepath: string, data: any): void {
+export interface AtomicJsonWriteOptions {
+  /** Explicit permissions for the replacement file (for secret-bearing JSON). */
+  mode?: number;
+}
+
+export function writeJsonFileAtomic(
+  filepath: string,
+  data: any,
+  options: AtomicJsonWriteOptions = {},
+): void {
   let resolved = filepath;
   try {
     if (lstatSync(filepath).isSymbolicLink()) {
@@ -74,11 +83,13 @@ export function writeJsonFileAtomic(filepath: string, data: any): void {
   const tmpPath = join(dir, `.${base}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
   const payload = Buffer.from(JSON.stringify(data, null, 2) + '\n', 'utf-8');
 
-  let mode: number | undefined;
-  try {
-    mode = statSync(resolved).mode & 0o777;
-  } catch {
-    // File does not exist yet; let openSync apply the process umask.
+  let mode = options.mode;
+  if (mode === undefined) {
+    try {
+      mode = statSync(resolved).mode & 0o777;
+    } catch {
+      // File does not exist yet; let openSync apply the process umask.
+    }
   }
 
   let fd: number | undefined;

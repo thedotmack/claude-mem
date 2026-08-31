@@ -12,7 +12,12 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { captureProcessStartToken } from '../../supervisor/process-registry.js';
 import { killProcessTree } from '../../shared/kill-process-tree.js';
-import { HeadroomService } from './HeadroomService.js';
+import {
+  getExplicitHeadroomPort,
+  HeadroomService,
+  isManageableLocalHeadroomUrl,
+  normalizeHeadroomBaseUrl,
+} from './HeadroomService.js';
 
 const HEADROOM_SUPERVISOR_ID = 'headroom-proxy';
 const DEFAULT_HEADROOM_PROXY_PORT = 8787;
@@ -68,6 +73,9 @@ export class HeadroomProxyManager {
   private child: ChildProcess | null = null;
   /** Identity of `child`, captured at spawn while it was alive. */
   private tracked: TrackedChild | null = null;
+  /** In-flight `uv tool install`, tracked so shutdown cannot orphan it. */
+  private installChild: ChildProcess | null = null;
+  private installTracked: TrackedChild | null = null;
   private starting: Promise<void> | null = null;
   private stopping = false;
 
@@ -135,6 +143,7 @@ export class HeadroomProxyManager {
     // instance must not mislabel the next unexpected exit as intentional.
     this.stopping = false;
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const baseUrl = normalizeHeadroomBaseUrl(settings.CLAUDE_MEM_HEADROOM_URL);
     if (settings.CLAUDE_MEM_HEADROOM_ENABLED !== 'true') {
       logger.debug('HEADROOM', 'Headroom disabled, proxy manager start is a no-op');
       return;
@@ -146,11 +155,29 @@ export class HeadroomProxyManager {
     }
 
     // A user-run proxy takes precedence: healthCheck() has NO fallback path
-    // and REJECTS when nothing answers, so a resolution here means the port
-    // is already served and spawning a second proxy would just fail the bind.
+    // and REJECTS when nothing answers, so a resolution here means the URL is
+    // already served. Even an `unhealthy` response owns the listening port;
+    // spawning a second proxy would only fail the bind.
     if (await HeadroomProxyManager.probeHealth()) {
-      logger.info('HEADROOM', 'Headroom proxy already healthy (user-run), not spawning a managed one', {
-        baseUrl: settings.CLAUDE_MEM_HEADROOM_URL,
+      logger.info('HEADROOM', 'Headroom proxy already responding (user-run), not spawning a managed one', {
+        baseUrl,
+      });
+      return;
+    }
+
+    if (this.stopping) {
+      logger.debug('HEADROOM', 'Headroom proxy startup cancelled during health probe');
+      return;
+    }
+
+    // A configured remote proxy remains user-managed. If it is temporarily
+    // unreachable, installing and spawning a localhost proxy would be pure
+    // waste because HeadroomService would continue sending requests to the
+    // configured remote URL. The bundled proxy also serves plain HTTP at the
+    // root path, so local HTTPS/custom-path URLs cannot be managed by us.
+    if (!HeadroomProxyManager.canManageLocally(baseUrl)) {
+      logger.warn('HEADROOM', 'Configured Headroom URL is not a manageable local proxy — skipping install/spawn', {
+        baseUrl,
       });
       return;
     }
@@ -159,7 +186,7 @@ export class HeadroomProxyManager {
     let headroomCommand = HeadroomProxyManager.resolveHeadroomCommand(spawnEnv);
     if (!headroomCommand) {
       const installed = await this.installHeadroomTool(spawnEnv);
-      if (!installed) {
+      if (!installed || this.stopping) {
         return;
       }
       headroomCommand = HeadroomProxyManager.resolveHeadroomCommand(spawnEnv);
@@ -171,18 +198,27 @@ export class HeadroomProxyManager {
       }
     }
 
-    await this.spawnProxy(headroomCommand, spawnEnv, settings.CLAUDE_MEM_HEADROOM_URL);
+    if (this.stopping) {
+      logger.debug('HEADROOM', 'Headroom proxy startup cancelled before spawn');
+      return;
+    }
+    await this.spawnProxy(headroomCommand, spawnEnv, baseUrl);
   }
 
   /**
    * Health probe mapped to a boolean. healthCheck() returns a RAW promise
    * that rejects on network failure (Phase 2 finding) — the two-arg then()
-   * owns that degradation: resolve → proxy answering, reject → nothing there.
+   * owns that degradation. Startup ownership checks accept any response (the
+   * port is occupied); readiness polling requires `status: "healthy"`.
    */
-  private static probeHealth(): Promise<boolean> {
+  private static probeHealth(requireHealthyStatus = false): Promise<boolean> {
     const probe = HeadroomProxyManager.healthProbeForTesting
       ?? (() => HeadroomService.getInstance().healthCheck());
-    return probe().then(() => true, () => false);
+    return probe().then(
+      result => !requireHealthyStatus
+        || (typeof result === 'object' && result !== null && (result as { status?: unknown }).status === 'healthy'),
+      () => false,
+    );
   }
 
   /**
@@ -202,13 +238,25 @@ export class HeadroomProxyManager {
     });
 
     const spawnImpl = HeadroomProxyManager.spawnImplForTesting ?? spawn;
-    const child = spawnImpl(uvCommand, args, {
-      cwd: os.homedir(),
-      env: spawnEnvironment,
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: process.platform === 'win32',
-    });
+    let child: ChildProcess;
+    try {
+      child = spawnImpl(uvCommand, args, {
+        cwd: os.homedir(),
+        env: spawnEnvironment,
+        shell: false,
+        // stdout is intentionally ignored: leaving an unread pipe lets a
+        // chatty installer fill the OS buffer and deadlock before `close`.
+        stdio: ['ignore', 'ignore', 'pipe'],
+        windowsHide: process.platform === 'win32',
+      });
+    } catch (error) {
+      logger.warn('HEADROOM', 'uv tool install for headroom failed to spawn — proxy unavailable, compression falls back', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+    this.installChild = child;
+    this.installTracked = trackChild(child);
     const stderrTail = HeadroomProxyManager.captureOutputTail(child.stderr);
 
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -239,11 +287,19 @@ export class HeadroomProxyManager {
         error: error instanceof Error ? error.message : String(error),
         stderrTail: stderrTail(),
       });
-      try { child.kill('SIGKILL'); } catch { /* already dead */ }
+      // If stop() already detached this child from the manager, stop() owns
+      // its teardown. Otherwise reap the whole uv -> Python subprocess tree.
+      if (this.installChild === child) {
+        await this.killTrackedChild(child, this.installTracked, 'headroom installer');
+      }
       return false;
     } finally {
       if (timeoutId) {
         clearTimeout(timeoutId);
+      }
+      if (this.installChild === child) {
+        this.installChild = null;
+        this.installTracked = null;
       }
     }
   }
@@ -259,13 +315,24 @@ export class HeadroomProxyManager {
     logger.info('HEADROOM', 'Spawning managed headroom proxy', { command, args: args.join(' ') });
 
     const spawnImpl = HeadroomProxyManager.spawnImplForTesting ?? spawn;
-    const child = spawnImpl(command, args, {
-      cwd: os.homedir(),
-      env: spawnEnvironment,
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: process.platform === 'win32',
-    });
+    let child: ChildProcess;
+    try {
+      child = spawnImpl(command, args, {
+        cwd: os.homedir(),
+        env: spawnEnvironment,
+        shell: false,
+        // Keep only the bounded stderr tail. An unread stdout pipe can fill
+        // and stall a long-lived proxy indefinitely.
+        stdio: ['ignore', 'ignore', 'pipe'],
+        windowsHide: process.platform === 'win32',
+      });
+    } catch (error) {
+      logger.warn('HEADROOM', 'headroom proxy failed to spawn — compression falls back', {
+        command,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
     this.child = child;
     this.tracked = trackChild(child);
     const stderrTail = HeadroomProxyManager.captureOutputTail(child.stderr);
@@ -276,16 +343,20 @@ export class HeadroomProxyManager {
         error: error instanceof Error ? error.message : String(error),
       });
       if (this.child === child) {
+        // The supervisor ID is shared across generations. Only the current
+        // child may remove it; otherwise a delayed event from an older child
+        // can erase a freshly registered replacement.
+        getSupervisor().unregisterProcess(HEADROOM_SUPERVISOR_ID);
         this.child = null;
         this.tracked = null;
       }
     });
 
     child.once('exit', (code: number | null, signal: NodeJS.Signals | null) => {
-      getSupervisor().unregisterProcess(HEADROOM_SUPERVISOR_ID);
       if (this.child !== child) {
         return;
       }
+      getSupervisor().unregisterProcess(HEADROOM_SUPERVISOR_ID);
       this.child = null;
       this.tracked = null;
       if (!this.stopping) {
@@ -321,7 +392,7 @@ export class HeadroomProxyManager {
       if (!this.child) {
         return; // spawn error / early exit already logged by the listeners
       }
-      if (await HeadroomProxyManager.probeHealth()) {
+      if (await HeadroomProxyManager.probeHealth(true)) {
         logger.info('HEADROOM', 'Managed headroom proxy is healthy', { baseUrl, pid: this.child?.pid });
         return;
       }
@@ -340,25 +411,55 @@ export class HeadroomProxyManager {
    */
   async stop(): Promise<void> {
     this.stopping = true;
+    const startup = this.starting;
+    const installChild = this.installChild;
+    const installTracked = this.installTracked;
     const child = this.child;
     const tracked = this.tracked;
+    this.installChild = null;
+    this.installTracked = null;
     this.child = null;
     this.tracked = null;
 
-    if (!child) {
-      logger.debug('HEADROOM', 'No managed headroom proxy to stop');
-      return;
+    if (installChild) {
+      logger.info('HEADROOM', 'Stopping in-flight headroom proxy installation', { pid: installChild.pid });
+      await this.killTrackedChild(installChild, installTracked, 'headroom installer');
     }
 
-    logger.info('HEADROOM', 'Stopping managed headroom proxy', { pid: child.pid });
+    if (!child) {
+      logger.debug('HEADROOM', 'No managed headroom proxy to stop');
+    } else {
+      logger.info('HEADROOM', 'Stopping managed headroom proxy', { pid: child.pid });
+      await this.killTrackedChild(child, tracked, 'headroom proxy');
+      getSupervisor().unregisterProcess(HEADROOM_SUPERVISOR_ID);
+      logger.info('HEADROOM', 'Managed headroom proxy stopped');
+    }
 
+    // start() is fire-and-forget in WorkerService. Waiting here closes the
+    // health-probe/install race and guarantees it cannot resume after stop().
+    if (startup) {
+      try {
+        await startup;
+      } catch (error) {
+        logger.debug('HEADROOM', 'Headroom startup settled with an error during shutdown', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  private async killTrackedChild(
+    child: ChildProcess,
+    tracked: TrackedChild | null,
+    label: string,
+  ): Promise<void> {
     if (tracked) {
       const killImpl = HeadroomProxyManager.killProcessTreeForTesting ?? killProcessTree;
       try {
         // Spawn-time identity: this handle may already have exited.
         await killImpl(tracked.pid, { expectedStartToken: tracked.startToken });
       } catch (error) {
-        logger.warn('HEADROOM', 'failed to kill headroom proxy tree (best-effort)', {
+        logger.warn('HEADROOM', `failed to kill ${label} tree (best-effort)`, {
           pid: tracked.pid,
           error: error instanceof Error ? error.message : String(error),
         });
@@ -370,13 +471,19 @@ export class HeadroomProxyManager {
     } catch {
       // Already dead.
     }
+  }
 
-    getSupervisor().unregisterProcess(HEADROOM_SUPERVISOR_ID);
-    logger.info('HEADROOM', 'Managed headroom proxy stopped');
+  /** Whether an absent configured proxy can be replaced by our local child. */
+  static canManageLocally(baseUrl: string): boolean {
+    return isManageableLocalHeadroomUrl(baseUrl);
   }
 
   /** Port from CLAUDE_MEM_HEADROOM_URL, defaulting to the proxy's own 8787. */
   static resolveProxyPort(baseUrl: string): number {
+    const explicitPort = getExplicitHeadroomPort(baseUrl);
+    if (explicitPort !== null && explicitPort > 0) {
+      return explicitPort;
+    }
     if (URL.canParse(baseUrl)) {
       const port = Number.parseInt(new URL(baseUrl).port, 10);
       if (Number.isInteger(port) && port > 0) {

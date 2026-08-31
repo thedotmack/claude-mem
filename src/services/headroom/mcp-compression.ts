@@ -73,7 +73,18 @@ export async function maybeCompressToolResponse(payloadText: string): Promise<st
     warnCompressionRejection(error);
     return payloadText;
   }
-  if (!result || !result.compressed) {
+  // headroom-ai 0.36.5 reports `compressed: true` for every successful HTTP
+  // response, including a below-threshold no-op. Preserve the documented
+  // byte-identical pass-through unless the proxy reports actual savings.
+  if (
+    !result
+    || !result.compressed
+    || !Number.isFinite(result.tokensSaved)
+    || !Number.isFinite(result.tokensBefore)
+    || !Number.isFinite(result.tokensAfter)
+    || result.tokensSaved <= 0
+    || result.tokensAfter >= result.tokensBefore
+  ) {
     return payloadText;
   }
 
@@ -108,6 +119,10 @@ export const headroomRetrieveTool = {
   },
   handler: async (args: any) => {
     if (typeof args?.hash !== 'string' || args.hash.trim() === '') throw new Error('headroom_retrieve: "hash" is required');
+    if (args.query !== undefined && typeof args.query !== 'string') {
+      throw new Error('headroom_retrieve: "query" must be a string when provided');
+    }
+    const hash = args.hash.trim();
     const headroom = HeadroomService.getInstance();
     if (!headroom.isEnabled()) {
       // Defense in depth: the tool is not registered while disabled, but a
@@ -120,7 +135,7 @@ export const headroomRetrieveTool = {
       };
     }
     try {
-      const result = await headroom.retrieve(args.hash, args.query);
+      const result = await headroom.retrieve(hash, args.query);
       return {
         content: [{
           type: 'text' as const,
@@ -132,13 +147,13 @@ export const headroomRetrieveTool = {
       // with the documented fallback instead of a raw error.
       const message = error instanceof Error ? error.message : String(error);
       logger.warn('HEADROOM', 'headroom_retrieve failed — advising get_observations fallback', {
-        hash: args.hash,
+        hash,
         error: message,
       });
       return {
         content: [{
           type: 'text' as const,
-          text: `headroom_retrieve could not fetch hash "${args.hash}" (${message}). CCR hashes expire after ~30 minutes and require the Headroom proxy to be running — fall back to get_observations([IDs]) to re-fetch the underlying records.`,
+          text: `headroom_retrieve could not fetch hash "${hash}" (${message}). CCR hashes expire after ~30 minutes and require the Headroom proxy to be running — fall back to get_observations([IDs]) to re-fetch the underlying records.`,
         }],
       };
     }

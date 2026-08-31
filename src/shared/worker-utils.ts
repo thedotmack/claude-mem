@@ -204,9 +204,13 @@ export function workerHttpRequest(
   return fetch(url, init);
 }
 
-async function isWorkerHealthy(): Promise<boolean> {
+async function isWorkerHealthy(acceptDegraded = false): Promise<boolean> {
   const response = await workerHttpRequest('/api/health', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
-  return response.ok;
+  // /api/health uses 503 for a degraded BullMQ dependency while the worker is
+  // still booted and its write routes may remain available. External mode has
+  // no lifecycle authority to replace that worker, so reachability + readiness
+  // is the correct gate there (matching worker-service `start`/status).
+  return response.ok || (acceptDegraded && response.status === 503);
 }
 
 async function isWorkerReady(): Promise<boolean> {
@@ -462,7 +466,7 @@ export async function ensureWorkerRunning(): Promise<boolean> {
   // recycling — so a plugin/worker version skew during dev cannot take the
   // worker (or memory capture) down.
   if (isExternalWorkerMode()) {
-    if (!(await isWorkerHealthy())) {
+    if (!(await isWorkerHealthy(true))) {
       logger.warn('SYSTEM', 'External worker mode: worker is not reachable; skipping hook API call', {
         host: getWorkerHost(),
         port: getWorkerPort(),

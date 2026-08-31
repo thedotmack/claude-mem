@@ -72,6 +72,8 @@ export class GbrainSync {
 
   /** Guard flag to prevent overlapping backfill runs from fire-and-forget callers. */
   private static backfillInProgress = false;
+  /** One in-process CLI lane: gbrain's default PGLite brain is single-writer. */
+  private static cliQueue: Promise<void> = Promise.resolve();
 
   private readonly config: GbrainSyncConfig;
   private consecutiveFailures = 0;
@@ -155,9 +157,7 @@ export class GbrainSync {
         timeoutMs: GbrainSync.CAPTURE_TIMEOUT_MS,
       });
 
-      if (result.ok) {
-        GbrainSyncState.bump(project, observationId);
-      } else {
+      if (!result.ok) {
         this.warnOnce('capture', 'gbrain capture failed — watermark not advanced', {
           observationId,
           project,
@@ -167,6 +167,12 @@ export class GbrainSync {
           stderr: result.stderr.slice(0, 500),
         });
       }
+      // Live captures deliberately do NOT advance the backfill watermark.
+      // Observation ids are global (not contiguous per project), captures can
+      // complete out of order, and other write lanes may not call this method.
+      // Advancing to a later live id would make `id > watermark` permanently
+      // skip any earlier hole. The next idempotent bulk backfill is the only
+      // authority that advances the contiguous exported prefix.
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       logger.warn('GBRAIN_SYNC', 'syncObservation failed', {
@@ -233,43 +239,54 @@ export class GbrainSync {
   }
 
   private async runBackfill(project: string, store: SessionStore): Promise<void> {
-    const watermark = GbrainSyncState.get(project).observations;
-    const rows = store.db.prepare(`
-      SELECT *
+    const startingWatermark = GbrainSyncState.get(project).observations;
+    const countRow = store.db.prepare(`
+      SELECT COUNT(*) AS count
       FROM observations
       WHERE project = ? AND id > ?
-      ORDER BY id ASC
-    `).all(project, watermark) as ObservationRow[];
+    `).get(project, startingWatermark) as { count: number } | null;
+    const unsynced = Number(countRow?.count ?? 0);
 
-    if (rows.length === 0) {
+    if (unsynced === 0) {
       return;
     }
 
-    if (rows.length > GbrainSync.LARGE_BACKFILL_THRESHOLD) {
+    if (unsynced > GbrainSync.LARGE_BACKFILL_THRESHOLD) {
       logger.info('GBRAIN_SYNC', 'Large backfill — processing in chunks', {
         project,
-        unsynced: rows.length,
+        unsynced,
         chunkSize: GbrainSync.BACKFILL_CHUNK_SIZE,
       });
     }
 
     logger.info('GBRAIN_SYNC', 'Backfilling observations', {
       project,
-      unsynced: rows.length,
-      watermark,
+      unsynced,
+      watermark: startingWatermark,
     });
 
     let importedRows = 0;
-    for (let i = 0; i < rows.length; i += GbrainSync.BACKFILL_CHUNK_SIZE) {
+    while (!this.disabledForSession) {
+      const watermark = GbrainSyncState.get(project).observations;
+      const chunk = store.db.prepare(`
+        SELECT *
+        FROM observations
+        WHERE project = ? AND id > ?
+        ORDER BY id ASC
+        LIMIT ?
+      `).all(project, watermark, GbrainSync.BACKFILL_CHUNK_SIZE) as ObservationRow[];
+      if (chunk.length === 0) {
+        break;
+      }
+
       if (this.disabledForSession) {
         break;
       }
-      const chunk = rows.slice(i, i + GbrainSync.BACKFILL_CHUNK_SIZE);
       const chunkImported = await this.importChunk(project, chunk);
       if (!chunkImported) {
         logger.warn('GBRAIN_SYNC', 'Chunk import failed — watermark not advanced, stopping backfill for project', {
           project,
-          chunkStart: i,
+          chunkStartId: chunk[0].id,
           chunkSize: chunk.length,
         });
         break;
@@ -280,7 +297,7 @@ export class GbrainSync {
       importedRows += chunk.length;
       logger.info('GBRAIN_SYNC', 'Backfill progress', {
         project,
-        progress: `${importedRows}/${rows.length}`,
+        progress: `${Math.min(importedRows, unsynced)}/${unsynced}`,
         watermark: GbrainSyncState.get(project).observations,
       });
     }
@@ -347,6 +364,13 @@ export class GbrainSync {
       // Exit 0 can still carry per-file errors in the --json summary; any
       // errored file means the chunk is not fully synced — do not bump.
       const summaryErrors = this.parseImportErrorCount(result.stdout);
+      if (summaryErrors === null) {
+        this.warnOnce('import-json', 'gbrain import returned invalid --json output — watermark not advanced for chunk', {
+          project,
+          stdout: result.stdout.slice(0, 500),
+        });
+        return false;
+      }
       if (summaryErrors > 0) {
         this.warnOnce('import-partial', 'gbrain import reported per-file errors — watermark not advanced for chunk', {
           project,
@@ -361,13 +385,15 @@ export class GbrainSync {
     }
   }
 
-  private parseImportErrorCount(stdout: string): number {
+  private parseImportErrorCount(stdout: string): number | null {
     try {
-      const parsed = JSON.parse(stdout) as { errors?: unknown };
-      return typeof parsed.errors === 'number' ? parsed.errors : 0;
+      const parsed = JSON.parse(stdout) as { status?: unknown; errors?: unknown };
+      if (parsed.status !== undefined && parsed.status !== 'success') return null;
+      return Number.isInteger(parsed.errors) && (parsed.errors as number) >= 0
+        ? parsed.errors as number
+        : null;
     } catch {
-      // Non-JSON stdout (older CLI, extra logging) — trust the exit code.
-      return 0;
+      return null;
     }
   }
 
@@ -413,50 +439,74 @@ export class GbrainSync {
       return { ok: false, code: null, stdout: '', stderr: '', failure: 'disabled-for-session' };
     }
 
-    const result = await new Promise<GbrainRunResult>(resolve => {
-      let settled = false;
-      const settle = (value: GbrainRunResult) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(value);
-      };
-
-      let stdout = '';
-      let stderr = '';
-
-      const child = spawn(this.config.cliPath, args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        windowsHide: true,
-      });
-
-      const timer = setTimeout(() => {
-        child.kill('SIGKILL');
-        settle({ ok: false, code: null, stdout, stderr, failure: 'timeout' });
-      }, opts.timeoutMs);
-
-      child.on('error', error => {
-        // e.g. ENOENT — the CLI is not installed or the configured path is wrong.
-        settle({ ok: false, code: null, stdout, stderr, failure: `spawn-error: ${error.message}` });
-      });
-
-      child.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
-      child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
-
-      child.on('close', code => {
-        settle(code === 0
-          ? { ok: true, code, stdout, stderr }
-          : { ok: false, code, stdout, stderr, failure: 'nonzero-exit' });
-      });
-
-      if (opts.stdinContent !== undefined) {
-        child.stdin.on('error', () => { /* EPIPE when the child dies early — 'close' reports the failure */ });
-        child.stdin.write(opts.stdinContent);
+    const execute = async (): Promise<GbrainRunResult> => {
+      // Calls from one observation batch are launched concurrently. Re-check
+      // after waiting in the queue so the three-failure circuit breaker stops
+      // already-enqueued work instead of allowing the whole batch to spawn.
+      if (this.disabledForSession) {
+        return { ok: false, code: null, stdout: '', stderr: '', failure: 'disabled-for-session' };
       }
-      child.stdin.end();
-    });
 
-    this.trackFailureStreak(result, args[0]);
+      return new Promise<GbrainRunResult>(resolve => {
+        let settled = false;
+        const settle = (value: GbrainRunResult) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(value);
+        };
+
+        let stdout = '';
+        let stderr = '';
+
+        const child = spawn(this.config.cliPath, args, {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          windowsHide: true,
+        });
+
+        const timer = setTimeout(() => {
+          child.kill('SIGKILL');
+          settle({ ok: false, code: null, stdout, stderr, failure: 'timeout' });
+        }, opts.timeoutMs);
+
+        child.on('error', error => {
+          // e.g. ENOENT — the CLI is not installed or the configured path is wrong.
+          settle({ ok: false, code: null, stdout, stderr, failure: `spawn-error: ${error.message}` });
+        });
+
+        child.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
+        child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+
+        child.on('close', code => {
+          settle(code === 0
+            ? { ok: true, code, stdout, stderr }
+            : { ok: false, code, stdout, stderr, failure: 'nonzero-exit' });
+        });
+
+        if (opts.stdinContent !== undefined) {
+          child.stdin.on('error', () => { /* EPIPE when the child dies early — 'close' reports the failure */ });
+          child.stdin.write(opts.stdinContent);
+        }
+        child.stdin.end();
+      });
+    };
+
+    const queued = GbrainSync.cliQueue.then(execute, execute);
+    GbrainSync.cliQueue = queued.then(() => undefined, () => undefined);
+    let result: GbrainRunResult;
+    try {
+      result = await queued;
+    } catch (error) {
+      // child_process.spawn normally reports ENOENT through `error`, but some
+      // malformed executable values throw synchronously. Preserve this
+      // method's never-reject contract and count those toward the breaker too.
+      const message = error instanceof Error ? error.message : String(error);
+      result = { ok: false, code: null, stdout: '', stderr: '', failure: `spawn-error: ${message}` };
+    }
+
+    if (result.failure !== 'disabled-for-session') {
+      this.trackFailureStreak(result, args[0]);
+    }
     return result;
   }
 

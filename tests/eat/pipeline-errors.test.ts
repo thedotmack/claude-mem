@@ -76,7 +76,7 @@ describe('runEatPipeline error boundaries', () => {
     const result = await runEatPipeline(undefined, { content: TWO_CHUNK_CONTENT, requestId });
 
     expect(result.chunks).toBe(2);
-    expect(result.drafts).toEqual([draft]);
+    expect(result.drafts).toEqual([{ ...draft, source: { kind: 'stdin', locator: 'stdin' } }]);
     expect(result.rejected).toBe(1);
 
     const lines = rejectLinesFor(requestId);
@@ -113,7 +113,10 @@ describe('runEatPipeline error boundaries', () => {
     const result = await runEatPipeline(dir, { requestId });
 
     expect(result.chunks).toBe(1);
-    expect(result.drafts).toEqual([draft]);
+    expect(result.drafts).toEqual([{
+      ...draft,
+      source: { kind: 'file', locator: join(dir, 'good.txt') },
+    }]);
     expect(result.rejected).toBe(1);
 
     const lines = rejectLinesFor(requestId);
@@ -134,6 +137,36 @@ describe('runEatPipeline error boundaries', () => {
     } catch (error) {
       expect(error).toBeInstanceOf(EatError);
       expect((error as EatError).code).toBe('invalid_request');
+    }
+  });
+
+  it('rejects empty extracted content instead of returning an empty success', async () => {
+    expect.assertions(2);
+    try {
+      await runEatPipeline(undefined, { content: '' });
+    } catch (error) {
+      expect(error).toBeInstanceOf(EatError);
+      expect((error as EatError).code).toBe('invalid_request');
+    }
+  });
+
+  it('does not copy inline text into the public source locator', async () => {
+    const secret = 'private inline payload that should not become metadata';
+    const result = await runEatPipeline(secret);
+
+    expect(result.source).toEqual({ kind: 'text', locator: 'inline text' });
+    expect(result.drafts[0].source).toEqual({ kind: 'text', locator: 'inline text' });
+  });
+
+  it('falls back safely when max chunk size is misconfigured as zero', async () => {
+    const original = process.env.CLAUDE_MEM_EAT_MAX_CHUNK_CHARS;
+    process.env.CLAUDE_MEM_EAT_MAX_CHUNK_CHARS = '0';
+    try {
+      const result = await runEatPipeline(undefined, { content: 'still digested' });
+      expect(result.chunks).toBe(1);
+    } finally {
+      if (original === undefined) delete process.env.CLAUDE_MEM_EAT_MAX_CHUNK_CHARS;
+      else process.env.CLAUDE_MEM_EAT_MAX_CHUNK_CHARS = original;
     }
   });
 });

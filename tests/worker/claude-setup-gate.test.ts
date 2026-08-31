@@ -192,4 +192,30 @@ describe('Claude setup-required generator gate', () => {
       remediation: expect.stringContaining('Claude Code CLI'),
     });
   });
+
+  it('does not claim a fallback recovery probe while a generator is already running', async () => {
+    const session = makeSession();
+    session.generatorPromise = Promise.resolve();
+    session.currentProvider = 'claude';
+    const selectionCalls: Array<{ claimFallbackProbe?: boolean } | undefined> = [];
+
+    const routes = new SessionRoutes(
+      { getSession: () => session } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      (options?: { claimFallbackProbe?: boolean }) => {
+        selectionCalls.push(options);
+        return 'claude';
+      },
+    );
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+
+    expect(selectionCalls).toEqual([undefined]);
+  });
 });

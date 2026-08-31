@@ -7,7 +7,9 @@ import { logger } from '../../../utils/logger.js';
 export function createMiddleware(): RequestHandler[] {
   const middlewares: RequestHandler[] = [];
 
-  middlewares.push(express.json({ limit: '5mb' }));
+  // EAT accepts up to 8 MiB of source text. Leave room for JSON framing so
+  // its route can return the documented payload_too_large response itself.
+  middlewares.push(express.json({ limit: '9mb' }));
 
   middlewares.push((req: Request, res: Response, next: NextFunction) => {
     const staticExtensions = ['.html', '.js', '.css', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.woff', '.woff2', '.ttf', '.eot'];

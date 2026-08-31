@@ -15,6 +15,10 @@ const MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
 const eatSchema = z.object({
   input: z.string().optional(),
   content: z.string().optional(),
+  content_source: z.object({
+    kind: z.literal('file'),
+    locator: z.string().min(1),
+  }).strict().optional(),
   mcp: z.object({
     url: z.string(),
     resource: z.string().optional(),
@@ -37,12 +41,17 @@ export class EatRoutes extends BaseRouteHandler {
   }
 
   private handleEat = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { input, content, mcp, project, dry_run, recursive } = req.body as z.infer<typeof eatSchema>;
+    const { input, content, content_source, mcp, project, dry_run, recursive } = req.body as z.infer<typeof eatSchema>;
     const request_id = randomUUID();
 
     const providedSources = [input, content, mcp].filter(value => value !== undefined).length;
     if (providedSources !== 1) {
       res.status(400).json({ error: 'invalid_request', detail: 'Provide exactly one of input, content, or mcp', request_id });
+      return;
+    }
+
+    if (content_source !== undefined && content === undefined) {
+      res.status(400).json({ error: 'invalid_request', detail: 'content_source requires content', request_id });
       return;
     }
 
@@ -54,7 +63,13 @@ export class EatRoutes extends BaseRouteHandler {
 
     let result: EatPipelineResult;
     try {
-      result = await runEatPipeline(input, { content, recursive, mcp, requestId: request_id });
+      result = await runEatPipeline(input, {
+        content,
+        contentSource: content_source,
+        recursive,
+        mcp,
+        requestId: request_id,
+      });
     } catch (error) {
       if (error instanceof EatError) {
         // Memorable-style structured failure: { error: <code>, detail, request_id }.
@@ -80,20 +95,24 @@ export class EatRoutes extends BaseRouteHandler {
 
     const sessionStore = this.dbManager.getSessionStore();
     const chromaSync = this.dbManager.getChromaSync();
+    const gbrainSync = this.dbManager.getGbrainSync();
 
     const memorySessionId = sessionStore.getOrCreateManualSession(project);
 
-    const observations = result.drafts.map(draft => ({
-      type: draft.type,
-      title: draft.title,
-      subtitle: draft.subtitle,
-      facts: draft.facts,
-      narrative: draft.narrative,
-      concepts: draft.concepts,
-      files_read: result.source.kind === 'file' ? [result.source.locator] : [],
-      files_modified: [] as string[],
-      metadata: JSON.stringify({ eat: true, source: result.source }),
-    }));
+    const observations = result.drafts.map(draft => {
+      const draftSource = draft.source ?? result.source;
+      return {
+        type: draft.type,
+        title: draft.title,
+        subtitle: draft.subtitle,
+        facts: draft.facts,
+        narrative: draft.narrative,
+        concepts: draft.concepts,
+        files_read: draftSource.kind === 'file' ? [draftSource.locator] : [],
+        files_modified: [] as string[],
+        metadata: JSON.stringify({ eat: true, source: draftSource }),
+      };
+    });
 
     const stored = sessionStore.storeObservations(
       memorySessionId,
@@ -117,6 +136,30 @@ export class EatRoutes extends BaseRouteHandler {
     // cannot skip it).
     this.dbManager.getCloudSync()?.notify();
 
+    // storeObservations may return the same id more than once when the model
+    // emits duplicate title+narrative content. Sync each durable row once;
+    // repeated Chroma writes otherwise hit "IDs already exist", and repeated
+    // gbrain captures race on the same deterministic slug.
+    const uniqueStoredObservations = new Map<number, typeof observations[number]>();
+    stored.observationIds.forEach((observationId, index) => {
+      const observation = observations[index];
+      if (observation && !uniqueStoredObservations.has(observationId)) {
+        uniqueStoredObservations.set(observationId, observation);
+      }
+    });
+
+    for (const [observationId, observation] of uniqueStoredObservations) {
+      void gbrainSync?.syncObservation(
+        observationId,
+        project,
+        observation,
+        stored.createdAtEpoch,
+        memorySessionId
+      ).catch(err => {
+        logger.warn('GBRAIN_SYNC', 'EAT gbrain sync failed', { id: observationId }, err as Error);
+      });
+    }
+
     const report: EatReport = {
       request_id,
       source: result.source,
@@ -130,18 +173,18 @@ export class EatRoutes extends BaseRouteHandler {
       res.json(report);
       return;
     }
-    stored.observationIds.forEach((observationId, index) => {
+    for (const [observationId, observation] of uniqueStoredObservations) {
       chromaSync.syncObservation(
         observationId,
         memorySessionId,
         project,
-        observations[index],
+        observation,
         0,
         stored.createdAtEpoch
       ).catch(err => {
         logger.error('CHROMA', 'ChromaDB sync failed', { id: observationId }, err as Error);
       });
-    });
+    }
 
     res.json(report);
   });

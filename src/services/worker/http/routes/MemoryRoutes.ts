@@ -37,6 +37,7 @@ export class MemoryRoutes extends BaseRouteHandler {
 
     const sessionStore = this.dbManager.getSessionStore();
     const chromaSync = this.dbManager.getChromaSync();
+    const gbrainSync = this.dbManager.getGbrainSync();
 
     const memorySessionId = sessionStore.getOrCreateManualSession(targetProject);
 
@@ -70,6 +71,16 @@ export class MemoryRoutes extends BaseRouteHandler {
     // (placed before the chroma branch so the chroma-disabled early return
     // cannot skip it).
     this.dbManager.getCloudSync()?.notify();
+
+    void gbrainSync?.syncObservation(
+      result.id,
+      targetProject,
+      observation,
+      result.createdAtEpoch,
+      memorySessionId
+    ).catch(err => {
+      logger.warn('GBRAIN_SYNC', 'Manual memory gbrain sync failed', { id: result.id }, err as Error);
+    });
 
     if (!chromaSync) {
       logger.debug('CHROMA', 'ChromaDB sync skipped (chromaSync not available)', { id: result.id });

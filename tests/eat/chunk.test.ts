@@ -10,6 +10,12 @@ describe('chunkText', () => {
     expect(chunkText('  \n\n   \n\n ', 100)).toEqual([]);
   });
 
+  it('rejects a non-positive or non-integer chunk size instead of looping forever', () => {
+    expect(() => chunkText('content', 0)).toThrow(RangeError);
+    expect(() => chunkText('content', -1)).toThrow(RangeError);
+    expect(() => chunkText('content', 1.5)).toThrow(RangeError);
+  });
+
   it('returns one chunk for a single small paragraph', () => {
     expect(chunkText('hello world', 100)).toEqual(['hello world']);
   });

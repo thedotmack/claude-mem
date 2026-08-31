@@ -10,7 +10,11 @@ import { join } from 'path';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, isPluginInstalled, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
 import { getBunVersion, getHeadroomPath, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
-import { HeadroomService } from '../../services/headroom/HeadroomService.js';
+import {
+  HeadroomService,
+  isManageableLocalHeadroomUrl,
+  normalizeHeadroomBaseUrl,
+} from '../../services/headroom/HeadroomService.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDataDir, paths, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { isBackupAddonRequired } from '../../shared/backup-addon-marker.js';
@@ -144,16 +148,30 @@ export async function runDoctorCommand(): Promise<void> {
 
   // 7. Headroom compression sidecar (opt-in; all checks informational — the
   // worker degrades to uncompressed payloads whenever the proxy is absent).
-  const headroomEnabled = SettingsDefaultsManager.get('CLAUDE_MEM_HEADROOM_ENABLED') === 'true';
+  // Unlike get(), loadFromFile sees viewer-written settings.json (while still
+  // applying environment overrides). Keep doctor read-only by loading only
+  // when the file already exists.
+  const headroomSettings = existsSync(USER_SETTINGS_PATH)
+    ? SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)
+    : null;
+  const headroomEnabled = (
+    headroomSettings?.CLAUDE_MEM_HEADROOM_ENABLED
+      ?? SettingsDefaultsManager.get('CLAUDE_MEM_HEADROOM_ENABLED')
+  ) === 'true';
   if (headroomEnabled) {
-    const headroomUrl = SettingsDefaultsManager.get('CLAUDE_MEM_HEADROOM_URL');
+    const configuredHeadroomUrl = headroomSettings?.CLAUDE_MEM_HEADROOM_URL
+      ?? SettingsDefaultsManager.get('CLAUDE_MEM_HEADROOM_URL');
+    const headroomUrl = normalizeHeadroomBaseUrl(configuredHeadroomUrl);
 
-    const headroomPath = getHeadroomPath();
+    const managedLocally = isManageableLocalHeadroomUrl(headroomUrl);
+    const headroomPath = managedLocally ? getHeadroomPath() : null;
     checks.push({
       name: 'Headroom binary',
-      status: headroomPath ? 'ok' : 'warn',
-      detail: headroomPath
-        ?? 'not found — worker installs it on next start via `uv tool install --python 3.13 "headroom-ai[proxy]"`',
+      status: !managedLocally || headroomPath ? 'ok' : 'warn',
+      detail: !managedLocally
+        ? `not required — ${headroomUrl} is user-managed`
+        : headroomPath
+          ?? 'not found — worker installs it on next start via `uv tool install --python 3.13 "headroom-ai[proxy]"`',
       required: false,
     });
 
@@ -162,14 +180,18 @@ export async function runDoctorCommand(): Promise<void> {
     let headroomProxyStatus: CheckStatus = 'warn';
     let headroomProxyDetail = `unreachable at ${headroomUrl} — payloads pass through uncompressed`;
     try {
-      await HeadroomService.getInstance().healthCheck();
-      headroomProxyStatus = 'ok';
-      headroomProxyDetail = `healthy at ${headroomUrl}`;
-      try {
-        const stats = await HeadroomService.getInstance().proxyStats();
-        headroomProxyDetail += ` — stats: ${JSON.stringify(stats)}`;
-      } catch {
-        // stats are decoration; health already passed
+      const health = await HeadroomService.getInstance().healthCheck();
+      if (health.status === 'healthy') {
+        headroomProxyStatus = 'ok';
+        headroomProxyDetail = `healthy at ${headroomUrl}`;
+        try {
+          const stats = await HeadroomService.getInstance().proxyStats();
+          headroomProxyDetail += ` — stats: ${JSON.stringify(stats)}`;
+        } catch {
+          // stats are decoration; health already passed
+        }
+      } else {
+        headroomProxyDetail = `unhealthy at ${headroomUrl} — payloads pass through uncompressed`;
       }
     } catch {
       // leave as unreachable

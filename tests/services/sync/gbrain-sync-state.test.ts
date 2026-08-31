@@ -1,15 +1,11 @@
 import { afterAll, beforeEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { GbrainSyncState } from '../../../src/services/sync/GbrainSyncState.js';
 
-// GbrainSyncState resolves its file from CLAUDE_MEM_DATA_DIR dynamically
-// (SettingsDefaultsManager.get reads process.env on every call), so isolation
-// follows the chroma-sync-watermarks.test.ts pattern: a fresh temp
-// CLAUDE_MEM_DATA_DIR per test + unique project names. The module-level cache
-// survives across tests, so assertions never assume the file holds ONLY this
-// test's projects.
+// GbrainSyncState resolves its file from CLAUDE_MEM_DATA_DIR dynamically and
+// keys its module cache by that resolved path, so each temp dir is isolated.
 
 const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
 let dataDir: string;
@@ -84,7 +80,8 @@ describe('GbrainSyncState bump monotonicity', () => {
     GbrainSyncState.bump(project, 20);
     GbrainSyncState.bump(project, 4);
     const onDisk = JSON.parse(readFileSync(statePath(), 'utf8'));
-    expect(onDisk[project]).toEqual({ observations: 20 });
+    expect(onDisk.version).toBe(2);
+    expect(onDisk.projects[project]).toEqual({ observations: 20 });
   });
 });
 
@@ -95,7 +92,8 @@ describe('GbrainSyncState atomic persist', () => {
 
     expect(existsSync(statePath())).toBe(true);
     const onDisk = JSON.parse(readFileSync(statePath(), 'utf8'));
-    expect(onDisk[project]).toEqual({ observations: 7 });
+    expect(onDisk.version).toBe(2);
+    expect(onDisk.projects[project]).toEqual({ observations: 7 });
     // tmp+rename discipline: no stray tmp file left behind.
     expect(existsSync(`${statePath()}.tmp`)).toBe(false);
   });
@@ -120,8 +118,8 @@ describe('GbrainSyncState per-project isolation', () => {
     expect(GbrainSyncState.get(projectB).observations).toBe(3);
 
     const onDisk = JSON.parse(readFileSync(statePath(), 'utf8'));
-    expect(onDisk[projectA]).toEqual({ observations: 7 });
-    expect(onDisk[projectB]).toEqual({ observations: 3 });
+    expect(onDisk.projects[projectA]).toEqual({ observations: 7 });
+    expect(onDisk.projects[projectB]).toEqual({ observations: 3 });
   });
 
   it('replace rewrites only the addressed project', () => {
@@ -132,5 +130,37 @@ describe('GbrainSyncState per-project isolation', () => {
 
     expect(GbrainSyncState.get(projectA).observations).toBe(9);
     expect(GbrainSyncState.get(projectB).observations).toBe(100);
+  });
+});
+
+describe('GbrainSyncState safe recovery', () => {
+  it('discards unsafe v1 live-capture watermarks so a full backfill repairs holes', () => {
+    writeFileSync(statePath(), JSON.stringify({ project: { observations: 500 } }), 'utf8');
+
+    expect(GbrainSyncState.get('project')).toEqual({ observations: 0 });
+    GbrainSyncState.bump('project', 2);
+
+    const onDisk = JSON.parse(readFileSync(statePath(), 'utf8'));
+    expect(onDisk).toEqual({ version: 2, projects: { project: { observations: 2 } } });
+  });
+
+  it('treats corrupt state as zero rather than skipping observations', () => {
+    writeFileSync(statePath(), '{not-json', 'utf8');
+
+    expect(GbrainSyncState.get('project')).toEqual({ observations: 0 });
+  });
+
+  it('does not leak cached projects across data directories', () => {
+    const firstDir = dataDir;
+    GbrainSyncState.bump('first-project', 7);
+
+    dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-gbrain-state-other-'));
+    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    expect(GbrainSyncState.get('first-project')).toEqual({ observations: 0 });
+    GbrainSyncState.bump('second-project', 3);
+
+    const secondState = JSON.parse(readFileSync(statePath(), 'utf8'));
+    expect(secondState.projects).toEqual({ 'second-project': { observations: 3 } });
+    expect(existsSync(join(firstDir, 'gbrain-sync-state.json'))).toBe(true);
   });
 });

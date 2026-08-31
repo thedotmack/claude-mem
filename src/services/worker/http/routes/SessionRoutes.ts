@@ -8,8 +8,9 @@ import { stripMemoryTags, isInternalProtocolPayload } from '../../../../utils/ta
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
-import { GeminiProvider, isGeminiSelected, isGeminiAvailable } from '../../GeminiProvider.js';
-import { OpenRouterProvider, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterProvider.js';
+import { GeminiProvider } from '../../GeminiProvider.js';
+import { OpenRouterProvider } from '../../OpenRouterProvider.js';
+import { getSelectedProvider, recordCmemFallbackIfEligible } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -63,24 +64,20 @@ export class SessionRoutes extends BaseRouteHandler {
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService,
     private completionHandler: SessionCompletionHandler,
+    private providerSelector: typeof getSelectedProvider = getSelectedProvider,
   ) {
     super();
-  }
-
-  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
-    if (isOpenRouterSelected() && isOpenRouterAvailable()) {
-      return 'openrouter';
-    }
-    return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
   }
 
   public async ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
 
-    const selectedProvider = this.getSelectedProvider();
-
     if (!session.generatorPromise) {
+      // A recovery probe is claimed only when this call will actually start a
+      // generator. Status checks while another provider is still running must
+      // not refresh the probe timestamp without issuing a gateway request.
+      const selectedProvider = this.providerSelector({ claimFallbackProbe: true });
       if (selectedProvider === 'claude') {
         const claudeStatus = getDependencyStatus('claude_cli');
         if (claudeStatus?.kind === 'setup_required') {
@@ -122,6 +119,7 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
+    const selectedProvider = this.providerSelector();
     if (session.currentProvider && session.currentProvider !== selectedProvider) {
       logger.info('SESSION', `Provider changed, will switch after current generator finishes`, {
         sessionId: sessionDbId,
@@ -229,13 +227,26 @@ export class SessionRoutes extends BaseRouteHandler {
             error: errorMsg,
           }, error);
         }
-        // Observer-health ledger: repeated generator failures mean observations
-        // are being dropped — session-start context warns the user via this.
-        // Classified errors carry the structured detail (code/action/link/
-        // request id) so the warning shows the same words as the log line.
-        recordObserverFailure(provider, isClassified(error)
-          ? { message: error.message, code: error.code, action: error.action, url: error.url, requestId: error.requestId }
-          : errorMsg);
+        // Trial-expiry fallback (plan 2026-08-26 Phase 6): a terminal quota/key
+        // rejection from the cmem gateway is the promised automatic switch to
+        // the Anthropic plan, not an outage — record the fallback marker (the
+        // next dispatch returns 'claude') and keep it OUT of the observer-health
+        // ledger so the scary session-start outage warning never fires for it.
+        if (provider === 'openrouter' && isClassified(error) && recordCmemFallbackIfEligible(error)) {
+          logger.warn('SESSION', 'cmem gateway key is no longer funded; memory falls back to the Anthropic plan provider', {
+            sessionId: session.sessionDbId,
+            kind: error.kind,
+            ...(error.code ? { code: error.code } : {}),
+          });
+        } else {
+          // Observer-health ledger: repeated generator failures mean observations
+          // are being dropped — session-start context warns the user via this.
+          // Classified errors carry the structured detail (code/action/link/
+          // request id) so the warning shows the same words as the log line.
+          recordObserverFailure(provider, isClassified(error)
+            ? { message: error.message, code: error.code, action: error.action, url: error.url, requestId: error.requestId }
+            : errorMsg);
+        }
         telemetryBuffer.record('session_compressed', session.sessionDbId, {
           outcome: 'error',
           provider,

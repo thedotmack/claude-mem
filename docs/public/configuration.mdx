@@ -18,7 +18,6 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_CLAUDE_AUTH_METHOD` | `subscription`                | Claude provider auth mode: `subscription`, `api-key`, or `gateway` |
 | `CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
-| `CLAUDE_MEM_CONTEXT_TOKEN_BUDGET` | `0`                         | Max estimated tokens for injected context (`0` = unlimited) |
 | `CLAUDE_MEM_HEADROOM_ENABLED` | `false`                         | Opt-in: compress MCP search payloads via the [Headroom](headroom) proxy |
 | `CLAUDE_MEM_HEADROOM_URL`     | `http://127.0.0.1:8787`         | Headroom proxy base URL               |
 | `CLAUDE_MEM_WORKER_PORT`      | `37700 + (uid % 100)`           | Worker service port (per-user default; override for fixed port) |
@@ -221,13 +220,11 @@ Control how many observations are injected:
 |---------|---------|-------|-------------|
 | **Observations** | 50 | 1-200 | Total number of recent observations to include |
 | **Sessions** | 10 | 1-50 | Number of recent sessions to pull observations from |
-| **Token Budget** | 0 | 0-200000 | Hard cap on estimated tokens injected at session start (`0` = unlimited) |
 
 **Considerations**:
 - **Higher values** = More context but slower SessionStart and more tokens used
 - **Lower values** = Faster SessionStart but less historical awareness
 - Default of 50 observations from 10 sessions balances context richness with performance
-- With a **Token Budget** set, observations are kept newest-first until the budget is reached and the remainder is trimmed; the `Stats:` line reports the trim. Passing `full=true` bypasses the budget.
 
 ### Filter Settings
 
@@ -302,7 +299,6 @@ Settings are stored in `~/.claude-mem/settings.json`:
 {
   "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "100",
   "CLAUDE_MEM_CONTEXT_SESSION_COUNT": "20",
-  "CLAUDE_MEM_CONTEXT_TOKEN_BUDGET": "4000",
   "CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES": "bugfix,decision,discovery",
   "CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS": "how-it-works,gotcha",
   "CLAUDE_MEM_CONTEXT_FULL_COUNT": "10",

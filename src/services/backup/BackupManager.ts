@@ -383,6 +383,19 @@ export class BackupManager {
       return;
     }
 
+    // A fallback copy is not necessarily a standalone database: committed
+    // frames may live in the sibling -wal file. The cloud wire format carries
+    // one encrypted .db object, so uploading only snapshot.path could produce
+    // a silently incomplete restore. Keep the local sidecar-aware snapshot and
+    // let the next cadence retry VACUUM INTO instead.
+    if (snapshot.method === 'copy') {
+      this.lastError = 'cloud upload skipped: fallback-copy snapshot is not a standalone database';
+      logger.warn('BACKUP', 'Cloud upload skipped because fallback-copy snapshots may require WAL/SHM sidecars; will retry next cycle', {
+        snapshot: snapshot.path,
+      });
+      return;
+    }
+
     const encryptionKey = this.resolveEncryptionKey();
     if (encryptionKey === null) return; // failed closed; already logged
 
@@ -544,7 +557,10 @@ export class BackupManager {
       ? settings.env as Record<string, unknown>
       : settings;
     target[key] = value;
-    writeJsonFileAtomic(this.settingsPath, settings);
+    // The encryption key lives in this file. Force owner-only permissions on
+    // the atomic replacement even when settings.json did not exist yet or an
+    // older install left it broader than 0600.
+    writeJsonFileAtomic(this.settingsPath, settings, { mode: 0o600 });
   }
 
   // -------------------------------------------------------------------------

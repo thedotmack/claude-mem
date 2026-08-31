@@ -88,7 +88,6 @@ export interface Settings {
   CLAUDE_MEM_CONTEXT_FULL_COUNT?: string;
   CLAUDE_MEM_CONTEXT_FULL_FIELD?: string;
   CLAUDE_MEM_CONTEXT_SESSION_COUNT?: string;
-  CLAUDE_MEM_CONTEXT_TOKEN_BUDGET?: string;
 
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY?: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE?: string;
@@ -98,7 +97,8 @@ export interface Settings {
   CLAUDE_MEM_BACKUP_RETAIN_COUNT?: string;
   CLAUDE_MEM_BACKUP_INCLUDE_VECTORS?: string;
   CLAUDE_MEM_BACKUP_CLOUD?: string;
-  CLAUDE_MEM_BACKUP_ENCRYPTION_KEY?: string;
+  /** Derived by GET /api/settings; the key itself never enters browser state. */
+  CLAUDE_MEM_BACKUP_ENCRYPTION_KEY_PRESENT?: boolean;
 
   CLAUDE_MEM_HEADROOM_ENABLED?: string;
   CLAUDE_MEM_HEADROOM_URL?: string;

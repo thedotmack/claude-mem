@@ -9,7 +9,7 @@
 
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import type { Request, Response } from 'express';
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { logger } from '../../../../src/utils/logger.js';
@@ -273,6 +273,43 @@ describe('BackupRoutes', () => {
       await invokeChain(chains['POST /api/backup/restore'], req, res, jsonSpy);
 
       expect(statusSpy).toHaveBeenCalledWith(404);
+      expect(close).not.toHaveBeenCalled();
+    });
+
+    it('rejects files that are not listed backup snapshots', async () => {
+      const close = mock(async () => {});
+      const mockDbManager = { getBackupManager: () => null, close };
+      tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-backup-routes-'));
+      writeFileSync(join(tempRoot, 'notes.txt'), 'not a sqlite snapshot');
+      const chains = buildChains(new BackupRoutes(mockDbManager as any, { backupsDir: tempRoot }));
+
+      const { req, res, jsonSpy, statusSpy } = createMockReqRes('/api/backup/restore', {
+        file: 'notes.txt',
+        confirm: true,
+      });
+      await invokeChain(chains['POST /api/backup/restore'], req, res, jsonSpy);
+
+      expect(statusSpy).toHaveBeenCalledWith(400);
+      expect(close).not.toHaveBeenCalled();
+    });
+
+    it('rejects a snapshot-named symlink instead of following it', async () => {
+      if (process.platform === 'win32') return;
+      const close = mock(async () => {});
+      const mockDbManager = { getBackupManager: () => null, close };
+      tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-backup-routes-'));
+      const target = join(tempRoot, 'notes.txt');
+      writeFileSync(target, 'not a snapshot');
+      symlinkSync(target, join(tempRoot, 'claude-mem-2026-01-01T00-00-00-000Z.db'));
+      const chains = buildChains(new BackupRoutes(mockDbManager as any, { backupsDir: tempRoot }));
+
+      const { req, res, jsonSpy, statusSpy } = createMockReqRes('/api/backup/restore', {
+        file: 'claude-mem-2026-01-01T00-00-00-000Z.db',
+        confirm: true,
+      });
+      await invokeChain(chains['POST /api/backup/restore'], req, res, jsonSpy);
+
+      expect(statusSpy).toHaveBeenCalledWith(400);
       expect(close).not.toHaveBeenCalled();
     });
   });

@@ -1,10 +1,26 @@
-import { copyFileSync, existsSync, renameSync, unlinkSync } from 'fs';
+import { closeSync, copyFileSync, existsSync, openSync, readSync, renameSync, unlinkSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 
 const SIDECAR_EXTS = ['-wal', '-shm'] as const;
+const SQLITE_HEADER = Buffer.from('SQLite format 3\0', 'ascii');
 
 export interface SwapResult {
   preRestoreCopy: string | null;
+}
+
+/** Reject obvious non-database/corrupt inputs before touching the live DB. */
+export function assertSqliteSnapshot(snapshotPath: string): void {
+  const header = Buffer.alloc(SQLITE_HEADER.length);
+  const fd = openSync(snapshotPath, 'r');
+  let bytesRead: number;
+  try {
+    bytesRead = readSync(fd, header, 0, header.length, 0);
+  } finally {
+    closeSync(fd);
+  }
+  if (bytesRead !== SQLITE_HEADER.length || !header.equals(SQLITE_HEADER)) {
+    throw new Error(`Snapshot is not a SQLite database: ${snapshotPath}`);
+  }
 }
 
 /**
@@ -21,6 +37,7 @@ export interface SwapResult {
  *   back, so the next boot never sees a half-written database.
  */
 export function swapDatabaseFromSnapshot(dbPath: string, snapshotPath: string): SwapResult {
+  assertSqliteSnapshot(snapshotPath);
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
 
   // Pre-restore safety copy of the current DB and any live sidecars.

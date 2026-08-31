@@ -1,4 +1,8 @@
 export function chunkText(text: string, maxChars: number): string[] {
+  if (!Number.isInteger(maxChars) || maxChars <= 0) {
+    throw new RangeError(`maxChars must be a positive integer, got ${maxChars}`);
+  }
+
   const paragraphs = text.split('\n\n').map(paragraph => paragraph.trim()).filter(paragraph => paragraph.length > 0);
   const chunks: string[] = [];
   let current = '';

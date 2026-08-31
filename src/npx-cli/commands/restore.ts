@@ -12,7 +12,7 @@
  * DB, snapshot copied over claude-mem.db, stale -wal/-shm removed).
  */
 
-import { createWriteStream, existsSync, mkdirSync, unlinkSync } from 'fs';
+import { createWriteStream, existsSync, lstatSync, mkdirSync, unlinkSync } from 'fs';
 import { swapDatabaseFromSnapshot } from '../../services/backup/restore-swap.js';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
@@ -36,6 +36,10 @@ function printRestoreUsage(): void {
  */
 function resolveSnapshotOrExit(file: string): string {
   const backupsDir = path.resolve(paths.backups());
+  if (path.basename(file) !== file || !/^claude-mem-.*\.db$/.test(file)) {
+    console.error(styleText('red', 'Invalid file: choose a snapshot shown by `npx claude-mem backup list`.'));
+    process.exit(1);
+  }
   const snapshotPath = path.resolve(backupsDir, file);
   if (!snapshotPath.startsWith(backupsDir + path.sep)) {
     console.error(styleText('red', 'Invalid file: must be a snapshot inside the backups directory.'));
@@ -45,6 +49,10 @@ function resolveSnapshotOrExit(file: string): string {
   if (!existsSync(snapshotPath)) {
     console.error(styleText('red', `Snapshot not found: ${snapshotPath}`));
     console.error(`List snapshots with: ${styleText('bold', 'npx claude-mem backup list')}`);
+    process.exit(1);
+  }
+  if (!lstatSync(snapshotPath).isFile()) {
+    console.error(styleText('red', `Invalid snapshot: ${snapshotPath} is not a regular file.`));
     process.exit(1);
   }
   return snapshotPath;

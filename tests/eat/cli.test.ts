@@ -1,5 +1,17 @@
-import { describe, expect, it } from 'bun:test';
-import { parseEatArgs } from '../../src/services/worker/eat/cli.js';
+import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join, resolve } from 'path';
+import { parseEatArgs, runEatCommand } from '../../src/services/worker/eat/cli.js';
+
+const originalFetch = global.fetch;
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  global.fetch = originalFetch;
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  mock.restore();
+});
 
 describe('parseEatArgs', () => {
   it('parses a bare positional with defaults', () => {
@@ -80,5 +92,38 @@ describe('parseEatArgs', () => {
 
   it('leaves mcp undefined for non-mcp invocations', () => {
     expect(parseEatArgs(['README.md']).mcp).toBeUndefined();
+  });
+});
+
+describe('runEatCommand local file transport', () => {
+  it('uploads file bytes and provenance instead of sending a worker-local path', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'claude-mem-eat-cli-'));
+    tempDirs.push(dir);
+    const filePath = join(dir, 'README.md');
+    writeFileSync(filePath, '# Local file', 'utf8');
+    let requestBody: Record<string, unknown> | null = null;
+    global.fetch = mock(async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          request_id: 'request-1',
+          source: { kind: 'file', locator: resolve(filePath) },
+          chunks: 1,
+          observation_ids: [1],
+          rejected: 0,
+        }),
+      } as Response;
+    }) as unknown as typeof fetch;
+    const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+
+    expect(await runEatCommand([filePath, '--project', 'demo'])).toBe(0);
+    expect(requestBody).toEqual({
+      project: 'demo',
+      content: '# Local file',
+      content_source: { kind: 'file', locator: resolve(filePath) },
+    });
+    expect(logSpy).toHaveBeenCalledTimes(1);
   });
 });

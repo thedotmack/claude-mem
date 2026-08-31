@@ -10,7 +10,7 @@
 
 import { describe, it, expect, afterEach, beforeEach, mock, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { BackupManager } from '../../src/services/backup/BackupManager.js';
@@ -182,6 +182,35 @@ describe('BackupManager cloud upload', () => {
     expect(manager.status().cloudEnabled).toBe(false);
   });
 
+  it('does not upload a fallback-copy snapshot that may require local WAL/SHM sidecars', async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-upload-'));
+    createSourceDb(tempRoot);
+    const now = Date.parse('2026-08-26T12:34:56.789Z');
+    const backupsDir = join(tempRoot, 'backups', 'auto');
+    mkdirSync(backupsDir, { recursive: true });
+
+    // Force VACUUM INTO to fail deterministically: SQLite refuses to write to
+    // an existing output file, after which createSnapshot uses its copy path.
+    const snapshotPath = join(backupsDir, 'claude-mem-2026-08-26T12-34-56-789Z.db');
+    writeFileSync(snapshotPath, 'existing');
+
+    const calls: RecordedCall[] = [];
+    const manager = makeManager(
+      tempRoot,
+      cloudSettings(),
+      makeHubFetch(calls, []),
+      { now: () => now },
+    );
+
+    const snapshot = await manager.runNow();
+
+    expect(snapshot?.method).toBe('copy');
+    expect(existsSync(snapshotPath)).toBe(true); // local backup remains usable
+    expect(calls).toHaveLength(0);
+    expect(manager.status().lastUploadAt).toBeNull();
+    expect(manager.status().lastError).toContain('not a standalone database');
+  });
+
   it('mints and persists a 32-byte base64 key on the first cloud-enabled snapshot', async () => {
     tempRoot = mkdtempSync(join(tmpdir(), 'claude-mem-upload-'));
     createSourceDb(tempRoot);
@@ -202,6 +231,9 @@ describe('BackupManager cloud upload', () => {
     const minted = persisted.CLAUDE_MEM_BACKUP_ENCRYPTION_KEY;
     expect(typeof minted).toBe('string');
     expect(Buffer.from(minted, 'base64').length).toBe(32);
+    if (process.platform !== 'win32') {
+      expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
+    }
     // Existing keys survive the read-mutate-write.
     expect(persisted.CLAUDE_MEM_WORKER_PORT).toBe('37700');
 

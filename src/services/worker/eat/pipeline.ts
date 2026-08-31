@@ -14,9 +14,20 @@ import type { EatChunk, EatObservationDraft, EatPipelineResult, EatSource } from
 
 export interface EatPipelineOptions {
   content?: string;
+  contentSource?: EatSource;
   recursive?: boolean;
   mcp?: EatMcpConfig;
   requestId?: string;
+}
+
+const DEFAULT_MAX_CHUNK_CHARS = 12_000;
+const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
+
+function positiveIntegerSetting(raw: string, fallback: number, name: string): number {
+  const parsed = Number(raw);
+  if (Number.isInteger(parsed) && parsed > 0) return parsed;
+  logger.warn('INGEST', `Invalid ${name}; using default`, { value: raw, fallback });
+  return fallback;
 }
 
 export async function runEatPipeline(input: string | undefined, opts: EatPipelineOptions = {}): Promise<EatPipelineResult> {
@@ -25,15 +36,29 @@ export async function runEatPipeline(input: string | undefined, opts: EatPipelin
   // Fail fast on missing credentials — before any fetch work happens.
   const model = buildEatModel(settings);
   // Connectors are declared, not sniffed — an mcp config bypasses detection.
-  const source: EatSource = opts.mcp !== undefined
+  const detectedSource: EatSource = opts.mcp !== undefined
     ? { kind: 'mcp', locator: opts.mcp.url }
-    : detectSource(input, opts.content !== undefined);
-  const extraction = await extractItems(source, {
-    fetchTimeoutMs: parseInt(settings.CLAUDE_MEM_EAT_FETCH_TIMEOUT_MS, 10),
-    recursive: opts.recursive,
-    stdinText: opts.content,
-    mcp: opts.mcp,
-  });
+    : opts.contentSource ?? detectSource(input, opts.content !== undefined);
+  // Inline text has no meaningful locator. Keeping the payload in `locator`
+  // duplicates sensitive input into metadata/reject logs and repeats it in the
+  // model prompt, once per chunk.
+  const source: EatSource = detectedSource.kind === 'text'
+    ? { ...detectedSource, locator: 'inline text' }
+    : detectedSource;
+  const fetchTimeoutMs = positiveIntegerSetting(
+    settings.CLAUDE_MEM_EAT_FETCH_TIMEOUT_MS,
+    DEFAULT_FETCH_TIMEOUT_MS,
+    'CLAUDE_MEM_EAT_FETCH_TIMEOUT_MS'
+  );
+  const extraction = opts.content !== undefined
+    ? { items: [{ text: opts.content, source }], rejects: [] }
+    : detectedSource.kind === 'text'
+      ? { items: [{ text: input ?? '', source }], rejects: [] }
+      : await extractItems(source, {
+          fetchTimeoutMs,
+          recursive: opts.recursive,
+          mcp: opts.mcp,
+        });
 
   for (const reject of extraction.rejects) {
     appendEatReject({ ts: new Date().toISOString(), request_id: requestId, source: reject.source, reason: reject.reason });
@@ -48,12 +73,20 @@ export async function runEatPipeline(input: string | undefined, opts: EatPipelin
     throw new EatError(code, `Nothing extracted from ${source.locator}: ${extraction.rejects[0].reason}`);
   }
 
-  const maxChunkChars = parseInt(settings.CLAUDE_MEM_EAT_MAX_CHUNK_CHARS, 10);
+  const maxChunkChars = positiveIntegerSetting(
+    settings.CLAUDE_MEM_EAT_MAX_CHUNK_CHARS,
+    DEFAULT_MAX_CHUNK_CHARS,
+    'CLAUDE_MEM_EAT_MAX_CHUNK_CHARS'
+  );
   const chunks: EatChunk[] = [];
   for (const item of extraction.items) {
     for (const text of chunkText(item.text, maxChunkChars)) {
       chunks.push({ index: chunks.length, text, source: item.source });
     }
+  }
+
+  if (chunks.length === 0) {
+    throw new EatError('invalid_request', `No text content extracted from ${source.locator}`);
   }
 
   const modeTypes = ModeManager.getInstance().getActiveMode().observation_types.map(observationType => observationType.id);
@@ -66,7 +99,7 @@ export async function runEatPipeline(input: string | undefined, opts: EatPipelin
   for (const chunk of chunks) {
     try {
       const digest = await digestChunk(chunk, modeTypes, model);
-      drafts.push(...digest.observations);
+      drafts.push(...digest.observations.map(draft => ({ ...draft, source: chunk.source })));
       servedModel = digest.model;
     } catch (error) {
       // Per-chunk boundary (memorable's graceful degradation): a model/schema

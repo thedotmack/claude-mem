@@ -1,4 +1,4 @@
-import { existsSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
 import { basename, resolve } from 'path';
 import { styleText } from 'node:util';
 import { buildWorkerUrl } from '../../../shared/worker-utils.js';
@@ -105,9 +105,20 @@ export async function runEatCommand(args: string[]): Promise<number> {
   } else if (wantsStdin) {
     body.content = await readStdin();
   } else if (existsSync(parsed.positional as string)) {
-    // Local paths resolve client-side to absolute so the worker (same
-    // machine, different cwd) reads them server-side via `input`.
-    body.input = resolve(parsed.positional as string);
+    const localPath = resolve(parsed.positional as string);
+    if (statSync(localPath).isFile()) {
+      // Upload local files from the CLI process. An external worker (for
+      // example the Docker deployment) does not share the caller's cwd.
+      const buffer = readFileSync(localPath);
+      if (buffer.subarray(0, 8192).includes(0)) {
+        console.error(styleText('red', `EAT failed: binary file ${localPath}`));
+        return 1;
+      }
+      body.content = buffer.toString('utf-8');
+      body.content_source = { kind: 'file', locator: localPath };
+    } else {
+      body.input = localPath;
+    }
   } else {
     body.input = parsed.positional;
   }

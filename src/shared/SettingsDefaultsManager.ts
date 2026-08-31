@@ -22,7 +22,6 @@ const LEGACY_TELEGRAM_TRIGGER_TYPES = 'security_alert';
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
-  CLAUDE_MEM_CONTEXT_TOKEN_BUDGET: string;
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
   CLAUDE_MEM_EXTERNAL_WORKER: string;
@@ -103,6 +102,17 @@ export interface SettingsDefaults {
   CLAUDE_MEM_BACKUP_INCLUDE_VECTORS: string;  // archive the Chroma dir too (can be 2GB+; vectors are rebuildable via backfill)
   CLAUDE_MEM_BACKUP_CLOUD: string;            // encrypted snapshot upload to the sync hub (requires cloud-sync credentials)
   CLAUDE_MEM_BACKUP_ENCRYPTION_KEY: string;   // AES-256 key (base64), minted locally on first cloud upload; NEVER leaves the machine
+  // claude-mem sign-in funnel state, written by the installer's browser-login
+  // step (install.ts promptBrowserLogin/completeTrialPairing). Declared here so
+  // loadFromFile round-trips them instead of dropping unknown keys.
+  CLAUDE_MEM_PRO_TRIAL_EMAIL: string;
+  CLAUDE_MEM_PRO_TRIAL_AT: string;
+  CLAUDE_MEM_PRO_TRIAL_STATE: string;
+  CLAUDE_MEM_PRO_TRIAL_ENDS_AT: string;
+  CLAUDE_MEM_PRO_PLAN: string;
+  CLAUDE_MEM_PRO_FALLBACK_AT: string;
+  CLAUDE_MEM_PRO_GATEWAY_BASE_URL: string;
+  CLAUDE_MEM_PRO_GATEWAY_KEY_HASH: string;
   CLAUDE_MEM_TELEGRAM_ENABLED: string;
   CLAUDE_MEM_TELEGRAM_BOT_TOKEN: string;
   CLAUDE_MEM_TELEGRAM_CHAT_ID: string;
@@ -137,14 +147,17 @@ export class SettingsDefaultsManager {
   private static readonly DEFAULTS: SettingsDefaults = {
     CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
-    CLAUDE_MEM_CONTEXT_TOKEN_BUDGET: '0',  // Max estimated tokens for injected context; '0' = unlimited
     CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
     CLAUDE_MEM_EXTERNAL_WORKER: 'false',  // 'true' = worker lifecycle is managed externally (e.g. Docker); hooks never spawn/kill/version-recycle it
 
     CLAUDE_MEM_API_TIMEOUT_MS: String(getTimeout(HOOK_TIMEOUTS.API_REQUEST)),
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
-    CLAUDE_MEM_PROVIDER: 'claude',  // Default to Claude
+    // Deliberate divergence from the installer prompt: the interactive
+    // provider prompt defaults to 'cmem' (the hosted observer), but headless
+    // installs land here — no delivered key exists headlessly, so the settings
+    // default stays 'claude'.
+    CLAUDE_MEM_PROVIDER: 'claude',
     CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',  // Default to logged-in Claude SDK auth (not API key)
     CLAUDE_MEM_GEMINI_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',  // Google-maintained alias → current GA Flash model (stays valid for new API keys)
@@ -216,6 +229,16 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_BACKUP_INCLUDE_VECTORS: 'false',  // Chroma dir can be 2GB+ and vectors are rebuildable via backfill — SQLite is the source of truth
     CLAUDE_MEM_BACKUP_CLOUD: 'false',            // Encrypted snapshot upload to the sync hub; also requires cloud-sync credentials
     CLAUDE_MEM_BACKUP_ENCRYPTION_KEY: '',        // Minted (32 random bytes, base64) on first cloud-enabled snapshot; lose the key, lose the backups
+    // claude-mem sign-in funnel state: all empty until the installer's
+    // browser-login step writes them.
+    CLAUDE_MEM_PRO_TRIAL_EMAIL: '',     // Email the sign-in link was sent to (don't-re-nag marker)
+    CLAUDE_MEM_PRO_TRIAL_AT: '',        // ISO timestamp of the last sign-in link send
+    CLAUDE_MEM_PRO_TRIAL_STATE: '',     // 'link_sent' (started, credentials never picked up) | 'active' (done)
+    CLAUDE_MEM_PRO_TRIAL_ENDS_AT: '',   // ISO date the free week ends (from poll trial.ends_at); '' when absent
+    CLAUDE_MEM_PRO_PLAN: '',            // 'trial' | 'pro' | 'none' — plan reported by the poll on ready
+    CLAUDE_MEM_PRO_FALLBACK_AT: '',     // ISO timestamp when the cmem gateway terminally rejected the delivered key and memory fell back to the Anthropic plan; '' = no fallback. Event-driven only (never set from trial dates); cleared by a successful gateway response or fresh installer key material.
+    CLAUDE_MEM_PRO_GATEWAY_BASE_URL: '', // Exact browser-delivered inference base URL; custom origins require this provenance before fallback is eligible.
+    CLAUDE_MEM_PRO_GATEWAY_KEY_HASH: '', // SHA-256 of the delivered key, binding custom-origin provenance without storing another secret.
     CLAUDE_MEM_TELEGRAM_ENABLED: 'true',
     CLAUDE_MEM_TELEGRAM_BOT_TOKEN: '',
     CLAUDE_MEM_TELEGRAM_CHAT_ID: '',
@@ -290,7 +313,15 @@ export class SettingsDefaultsManager {
 
       let flatSettings = settings;
       if (settings.env && typeof settings.env === 'object') {
-        flatSettings = settings.env;
+        // Move env settings to the root without discarding peer keys (hooks,
+        // permissions, apiKeyHelper, and future metadata). The env values win
+        // on a collision because they were the effective settings before the
+        // migration.
+        const { env, ...peerSettings } = settings;
+        flatSettings = {
+          ...peerSettings,
+          ...(env as Record<string, unknown>),
+        };
 
         try {
           writeJsonFileAtomic(settingsPath, flatSettings);

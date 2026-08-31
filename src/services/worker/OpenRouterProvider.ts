@@ -4,6 +4,10 @@ import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-bas
 import { openRouterAttributionHeaders, OPENROUTER_APP_TITLE } from '../../shared/openrouter-attribution.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import {
+  clearProFallbackOnGatewaySuccess,
+  type CmemGatewayIdentity,
+} from '../../shared/cmem-gateway.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
@@ -211,6 +215,7 @@ interface OpenRouterConfig {
   apiKey: string;
   model: string;
   apiUrl: string;
+  gatewayIdentity: CmemGatewayIdentity;
   siteUrl?: string;
   appName?: string;
 }
@@ -266,7 +271,15 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   }
 
   protected async query(history: ConversationMessage[], config: OpenRouterConfig): Promise<ProviderQueryResult> {
-    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName);
+    return this.queryOpenRouterMultiTurn(
+      history,
+      config.apiKey,
+      config.model,
+      config.apiUrl,
+      config.gatewayIdentity,
+      config.siteUrl,
+      config.appName,
+    );
   }
 
   /** POST the chat-completions request. Extracted so the retry try block stays narrow. */
@@ -307,6 +320,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     apiKey: string,
     model: string,
     apiUrl: string,
+    gatewayIdentity: CmemGatewayIdentity,
     siteUrl?: string,
     appName?: string
   ): Promise<ProviderQueryResult> {
@@ -364,6 +378,11 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
 
       return responseData;
     }, { label: `OpenRouter ${model}` });
+
+    // A successful cmem-gateway response proves the delivered key is funded
+    // again (resubscribed) — clear the trial-expiry fallback marker so
+    // dispatch returns to the gateway. No-op for every other endpoint.
+    clearProFallbackOnGatewaySuccess(apiUrl, { identity: gatewayIdentity });
 
     if (!data.choices?.[0]?.message?.content) {
       logger.error('SDK', 'Empty response from OpenRouter');
@@ -433,7 +452,18 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
     const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || OPENROUTER_APP_TITLE;
 
-    return { apiKey, model, apiUrl, siteUrl, appName };
+    return {
+      apiKey,
+      model,
+      apiUrl,
+      gatewayIdentity: {
+        apiKey,
+        deliveredBaseUrl: settings.CLAUDE_MEM_PRO_GATEWAY_BASE_URL,
+        deliveredKeyHash: settings.CLAUDE_MEM_PRO_GATEWAY_KEY_HASH,
+      },
+      siteUrl,
+      appName,
+    };
   }
 }
 

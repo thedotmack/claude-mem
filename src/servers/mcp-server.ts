@@ -208,7 +208,7 @@ function formatJsonResult(payload: unknown): { content: Array<{ type: 'text'; te
  * disabled, the proxy is unreachable (fallback), or the payload is below
  * compression thresholds. The MCP response shape is preserved exactly.
  * The session-start context (session_start_context, /api/context/inject)
- * is deliberately NOT compressed — the Phase 1 token budget governs it.
+ * is deliberately NOT compressed.
  */
 async function withHeadroomCompression(
   result: { content: Array<{ type: 'text'; text: string }>; isError?: boolean }

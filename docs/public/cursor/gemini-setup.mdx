@@ -5,7 +5,7 @@ description: "Use Claude-Mem in Cursor with Google's free Gemini API"
 
 # Cursor + Gemini Setup
 
-This guide walks you through setting up Claude-Mem in Cursor using Google's Gemini API. Gemini offers a generous free tier that handles typical individual usage.
+This guide walks you through setting up Claude-Mem in Cursor using Google's Gemini API. Memory runs off-plan on your Gemini key, with a generous daily quota that handles typical individual usage.
 
 <Info>
 **Free Tier:** generous daily quota with `gemini-flash-latest`. No credit card required.
@@ -119,7 +119,7 @@ To change the model, update your settings:
 
 ## Rate Limiting
 
-Claude-mem automatically handles rate limiting for free tier usage:
+Claude-mem automatically handles rate limiting for keys without billing enabled:
 
 - Requests are spaced to stay within limits
 - Processing may be slightly slower but stays within quota
@@ -155,7 +155,7 @@ Should output something like:
 
 ### Rate limit errors (HTTP 429)
 
-You're exceeding the free tier limits. Options:
+You're exceeding the no-billing rate limits. Options:
 1. Wait a few minutes for the rate limit to reset
 2. Enable billing on Google Cloud to unlock higher limits
 3. Switch to OpenRouter for higher volume needs

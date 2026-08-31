@@ -4,6 +4,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { GbrainSync } from '../../../src/services/sync/GbrainSync.js';
 import { GbrainSyncState } from '../../../src/services/sync/GbrainSyncState.js';
+import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import type { ParsedObservation } from '../../../src/sdk/parser.js';
 
 // GbrainSync spawns the configured CLI path directly (no shell), so the fake
@@ -55,8 +56,9 @@ interface FakeInvocation {
   stdin: string;
 }
 
-function writeFakeGbrain(exitCode: number): string {
-  const scriptPath = join(testDir, exitCode === 0 ? 'fake-gbrain' : `fake-gbrain-exit${exitCode}`);
+function writeFakeGbrain(exitCode: number, importOutput: 'valid' | 'invalid' = 'valid'): string {
+  const suffix = importOutput === 'valid' ? '' : '-invalid-json';
+  const scriptPath = join(testDir, (exitCode === 0 ? 'fake-gbrain' : `fake-gbrain-exit${exitCode}`) + suffix);
   const script = [
     '#!/bin/sh',
     '{',
@@ -68,6 +70,14 @@ function writeFakeGbrain(exitCode: number): string {
     '  cat',
     '  echo "STDIN-END"',
     `} >> "${logPath}"`,
+    'if [ "$1" = "import" ]; then',
+    ...(importOutput === 'valid'
+      ? [
+          '  count=$(find "$2" -type f -name "*.md" | wc -l | tr -d " ")',
+          '  printf \'{"status":"success","errors":0,"total_files":%s}\\n\' "$count"',
+        ]
+      : ['  echo "not-json"']),
+    'fi',
     `exit ${exitCode}`,
     '',
   ].join('\n');
@@ -149,7 +159,7 @@ describe('GbrainSync.fromSettings gating', () => {
 });
 
 describe('GbrainSync.syncObservation live lane', () => {
-  it('spawns capture with the expected argv, pipes markdown on stdin, and bumps the watermark', async () => {
+  it('spawns capture with the expected argv and leaves the contiguous backfill watermark unchanged', async () => {
     const project = uniqueProject('capture');
     const sync = makeSync(writeFakeGbrain(0));
 
@@ -171,7 +181,7 @@ describe('GbrainSync.syncObservation live lane', () => {
     expect(invocations[0].stdin).toContain('observation_id: 42');
     expect(invocations[0].stdin).toContain('## [DISCOVERY] Found the bug');
 
-    expect(GbrainSyncState.get(project).observations).toBe(42);
+    expect(GbrainSyncState.get(project).observations).toBe(0);
   });
 
   it('appends --source when a source id is configured', async () => {
@@ -207,6 +217,19 @@ describe('GbrainSync.syncObservation live lane', () => {
     expect(GbrainSyncState.get(project).observations).toBe(0);
   });
 
+  it('serializes a concurrent batch so the failure circuit breaker caps it at three spawns', async () => {
+    const project = uniqueProject('concurrent-failing');
+    const sync = makeSync(writeFakeGbrain(1));
+
+    await Promise.all(Array.from({ length: 8 }, (_, index) =>
+      sync.syncObservation(index + 1, project, makeObservation(), 1_700_000_000_000, `mem-${index + 1}`)
+    ));
+
+    expect(sync.isDisabledForSession()).toBe(true);
+    expect(readInvocations().length).toBe(3);
+    expect(GbrainSyncState.get(project).observations).toBe(0);
+  });
+
   it('a success resets the failure streak', async () => {
     const project = uniqueProject('streak-reset');
     const failing = writeFakeGbrain(1);
@@ -217,7 +240,7 @@ describe('GbrainSync.syncObservation live lane', () => {
     await sync.syncObservation(2, project, makeObservation(), 1_700_000_000_000, 'mem-2');
     sync.config.cliPath = succeeding;
     await sync.syncObservation(3, project, makeObservation(), 1_700_000_000_000, 'mem-3');
-    expect(GbrainSyncState.get(project).observations).toBe(3);
+    expect(GbrainSyncState.get(project).observations).toBe(0);
     sync.config.cliPath = failing;
     await sync.syncObservation(4, project, makeObservation(), 1_700_000_000_000, 'mem-4');
     // One failure after a success is a streak of 1 — still enabled.
@@ -244,5 +267,55 @@ describe('GbrainSync.syncObservation live lane', () => {
 
     expect(GbrainSyncState.get(project).observations).toBe(0);
     expect(readInvocations().length).toBe(0);
+  });
+});
+
+describe('GbrainSync backfill lane', () => {
+  function storeObservations(store: SessionStore, project: string, count: number): number[] {
+    const memorySessionId = store.getOrCreateManualSession(project);
+    const observations = Array.from({ length: count }, (_, index) => ({
+      type: 'discovery',
+      title: `Observation ${index + 1}`,
+      subtitle: null,
+      narrative: `Narrative ${index + 1}`,
+      facts: [`Fact ${index + 1}`],
+      concepts: ['testing'],
+      files_read: [],
+      files_modified: [],
+    }));
+    return store.storeObservations(memorySessionId, project, observations, null).observationIds;
+  }
+
+  it('advances the watermark only after a confirmed bulk import', async () => {
+    const project = uniqueProject('backfill');
+    const store = new SessionStore(':memory:');
+    try {
+      const ids = storeObservations(store, project, 2);
+      const sync = makeSync(writeFakeGbrain(0));
+
+      await sync.ensureBackfilled(project, store);
+
+      expect(GbrainSyncState.get(project).observations).toBe(ids[1]);
+      const invocations = readInvocations();
+      expect(invocations.map(invocation => invocation.args[0])).toEqual(['import', 'embed']);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('does not trust exit zero when --json output cannot confirm per-file success', async () => {
+    const project = uniqueProject('backfill-invalid-json');
+    const store = new SessionStore(':memory:');
+    try {
+      storeObservations(store, project, 1);
+      const sync = makeSync(writeFakeGbrain(0, 'invalid'));
+
+      await sync.ensureBackfilled(project, store);
+
+      expect(GbrainSyncState.get(project).observations).toBe(0);
+      expect(readInvocations().map(invocation => invocation.args[0])).toEqual(['import']);
+    } finally {
+      store.close();
+    }
   });
 });

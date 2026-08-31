@@ -257,7 +257,10 @@ export async function extractItems(source: EatSource, opts: EatExtractOptions): 
       return { items: extractFeed(body, source), rejects: [] };
     }
     case 'stdin': {
-      const text = opts.stdinText ?? readFileSync(0, 'utf-8');
+      if (opts.stdinText === undefined) {
+        throw new EatError('invalid_request', 'Stdin content was not provided');
+      }
+      const text = opts.stdinText;
       return { items: [{ text, source }], rejects: [] };
     }
     case 'text':

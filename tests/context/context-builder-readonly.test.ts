@@ -7,7 +7,7 @@ const repoRoot = process.cwd();
 const childScript = `
   import { Database } from 'bun:sqlite';
   import { SessionStore } from './src/services/sqlite/SessionStore.ts';
-  import { generateContext } from './src/services/context/ContextBuilder.ts';
+  import { generateContext, generateContextWithStats } from './src/services/context/ContextBuilder.ts';
   import { ModeManager } from './src/services/domain/ModeManager.ts';
   ModeManager.getInstance().loadMode('code');
   const dbPath = process.env.CLAUDE_MEM_DATA_DIR + '/claude-mem.db';
@@ -37,6 +37,12 @@ const childScript = `
     store.db.run('PRAGMA journal_mode = DELETE');
   }
   store.close();
+
+  if (process.env.READONLY_CASE === 'stats') {
+    const result = await generateContextWithStats({ projects: ['readonly-parent'] });
+    console.log(JSON.stringify(result));
+    process.exit(0);
+  }
 
   if (process.env.READONLY_CASE === 'exclusive-lock') {
     const lockReadyPath = process.env.LOCK_READY ?? dbPath + '.lock-ready';
@@ -157,6 +163,17 @@ describe('context database ownership', () => {
       expect(result.visible).toEqual({ ...result.before, pendingRows: 0 });
       expect(result.after).toEqual(result.before);
       expect(result.integrity).toBe('ok');
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports tokens_injected from the complete rendered payload', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-context-'));
+    try {
+      const result = runChild(dataDir, { READONLY_CASE: 'stats' });
+      expect(result.stats.tokens_injected).toBe(Math.ceil(result.text.length / 4));
+      expect(result.stats.tokens_injected).toBeGreaterThan(0);
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

@@ -15,15 +15,7 @@ The integration is fail-safe by design. Every Headroom call has a short timeout 
 
 ## How Claude-Mem Uses It
 
-Two complementary layers govern the tokens delivered to the primary agent:
-
-### 1. Token Budget for Session-Start Context (deterministic, no proxy needed)
-
-`CLAUDE_MEM_CONTEXT_TOKEN_BUDGET` caps the estimated tokens injected at session start. When set above `0`, observations are kept newest-first until the budget is reached; the remainder is trimmed from the timeline and the `Stats:` line reports the trim. This works with zero external dependencies.
-
-This ships the "Adaptive Index Size" and "Cost Forecasting" ideas previously listed as future enhancements in [Progressive Disclosure](progressive-disclosure): the index size now adapts to an explicit token budget, and the injected stats report exactly what the context cost.
-
-### 2. Compression of MCP Search Payloads (Headroom's sweet spot)
+### Compression of MCP Search Payloads (Headroom's sweet spot)
 
 When `CLAUDE_MEM_HEADROOM_ENABLED` is `true`, the results of the heavy MCP tools — `get_observations`, `search`, and `timeline` — are routed through the Headroom proxy before being returned to the agent. Compressed responses carry a single trailing stats line:
 
@@ -43,7 +35,7 @@ The worker supervises the proxy for you:
 
 ## What Deliberately Is NOT Compressed
 
-- **The session-start context index** — Headroom skips short structured prose by design; the deterministic token budget governs that surface instead.
+- **The session-start context index** — Headroom skips short structured prose by design.
 - **Content under ~300 tokens** and arrays under 5 items — compression overhead outweighs the savings.
 - **Source code** — Headroom never compresses code, system prompts, or images.
 - **Stored observations** — compression is delivery-time only; the database is never altered.

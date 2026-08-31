@@ -78,6 +78,10 @@ wait_port_state() { # $1=port $2=alive|dead $3=timeout_s
 }
 
 PORT="$(worker_port)"
+# Keep Compose's published port aligned with the port host hooks already use.
+# The compose file's 37777 default only applies when it is invoked directly;
+# this controller is the supported lifecycle surface.
+export CLAUDE_MEM_LOCAL_HOST_PORT="$PORT"
 
 case "${1:-}" in
   on)
@@ -87,17 +91,25 @@ case "${1:-}" in
       echo "==> Shutting down host worker on port $PORT..."
       curl -s -X POST --max-time 10 "http://127.0.0.1:$PORT/api/admin/shutdown" >/dev/null || true
       if ! wait_port_state "$PORT" dead 20; then
-        echo "ERROR: host worker did not release port $PORT; leaving external mode ON but not starting the container." >&2
+        set_external_flag false
+        echo "ERROR: host worker did not release port $PORT; external mode was rolled back." >&2
         exit 1
       fi
       rm -f "$HOME/.claude-mem/worker.pid"
     fi
     echo "==> Starting container..."
-    "${COMPOSE[@]}" up -d
+    if ! "${COMPOSE[@]}" up -d; then
+      set_external_flag false
+      echo "ERROR: container failed to start; external mode was rolled back." >&2
+      exit 1
+    fi
     if wait_port_state "$PORT" alive 90; then
       echo "==> claude-mem-local is up on 127.0.0.1:$PORT — memory now runs in Docker."
     else
-      echo "WARNING: container started but the worker is not answering yet; check '$0 logs'." >&2
+      "${COMPOSE[@]}" stop >/dev/null 2>&1 || true
+      set_external_flag false
+      echo "ERROR: container started but the worker never answered; it was stopped and external mode was rolled back." >&2
+      exit 1
     fi
     ;;
 

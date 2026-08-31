@@ -14,7 +14,6 @@ export function loadContextConfig(): ContextConfig {
 
   return {
     totalObservationCount: parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10),
-    tokenBudget: parseInt(settings.CLAUDE_MEM_CONTEXT_TOKEN_BUDGET, 10),
     fullObservationCount: parseInt(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT, 10),
     sessionCount: parseInt(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT, 10),
     showReadTokens: settings.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS === 'true',

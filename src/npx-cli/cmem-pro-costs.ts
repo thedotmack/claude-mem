@@ -1,8 +1,8 @@
 /**
  * Provider-prompt copy and CMEM Pro constants for the installer.
  *
- * This file used to compute live $/1k-observation figures from OpenRouter's
- * pricing catalogue. That engine is gone: every option is now framed by where
+ * This file used to compute live per-observation dollar figures from
+ * OpenRouter's pricing catalogue. That engine is gone: every option is now framed by where
  * memory runs — on your plan or off it ("get % more usage from your plan") —
  * which cannot drift the way dollar figures did. The only dollar amount that
  * survives is CMEM_PRO_MONTHLY_USD, kept for the single price-disclosure line
@@ -10,6 +10,7 @@
  */
 
 import { PLAN_USAGE_GAIN_PERCENT } from '../shared/pro-promo.js';
+import { cmemProOrigin } from '../shared/cmem-gateway.js';
 
 /** Flat CMEM Pro subscription price, in USD per month. */
 export const CMEM_PRO_MONTHLY_USD = 30;
@@ -45,19 +46,20 @@ export function buildProviderLabels(): ProviderLabels {
  *
  *   CMEM_PRO_ORIGIN=http://localhost:3005 node dist/npx-cli/index.js install
  */
-const CMEM_PRO_ORIGIN = (process.env.CMEM_PRO_ORIGIN?.trim() || 'https://cmem.ai').replace(/\/+$/, '');
+const CMEM_PRO_ORIGIN = cmemProOrigin();
 
 /** Where the installer sends people to buy CMEM Pro. */
 export const CMEM_PRO_SIGNUP_URL = `${CMEM_PRO_ORIGIN}/pro?from=installer`;
 
 /**
- * The 7-day card-upfront trial funnel (plan 2026-08-08-seven-day-trial-npx-funnel).
+ * The browser sign-in funnel (plan 2026-08-08-seven-day-trial-npx-funnel;
+ * delta in SYNC-NOTES-cmem-backend.md — no card required to sign in).
  *
  * `start` creates the cmem.ai account + emails a sign-in link and answers with
  * a pairing id/secret plus a device-authorization `user_code` the human types
  * into the browser to approve this device; `poll` is the credential handoff
- * the installer loops on while the human clicks the link, enters a card
- * ($0 today), and approves the device. Both are unauthenticated cmem.ai
+ * the installer loops on while the human clicks the link and approves the
+ * device. Both are unauthenticated cmem.ai
  * endpoints — the CLI never holds a session-granting link, only the pairing
  * pair, and the credential delivered on `ready` is the existing setup_token
  * (delivered exactly once, and only after device approval).

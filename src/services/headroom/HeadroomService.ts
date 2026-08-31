@@ -17,7 +17,76 @@ const HEADROOM_STACK_SLUG = 'claude-mem';
 /** Proxy default (`headroom proxy` binds 127.0.0.1:8787). Used when
  * CLAUDE_MEM_HEADROOM_URL is empty/whitespace — a client must never be
  * constructed with `baseUrl: ''`. */
-const DEFAULT_HEADROOM_BASE_URL = 'http://127.0.0.1:8787';
+export const DEFAULT_HEADROOM_BASE_URL = 'http://127.0.0.1:8787';
+
+/** Preserve explicitly configured default-scheme ports (`:80` / `:443`). */
+export function getExplicitHeadroomPort(configuredUrl: string): number | null {
+  try {
+    const trimmed = configuredUrl.trim();
+    new URL(trimmed); // Reject malformed authorities before parsing.
+    const schemeEnd = trimmed.indexOf('://');
+    if (schemeEnd < 0) return null;
+    const authority = trimmed.slice(schemeEnd + 3).split(/[/?#]/, 1)[0];
+    const hostPort = authority.slice(authority.lastIndexOf('@') + 1);
+    const portText = hostPort.startsWith('[')
+      ? hostPort.slice(hostPort.indexOf(']') + 1).replace(/^:/, '')
+      : hostPort.includes(':')
+        ? hostPort.slice(hostPort.lastIndexOf(':') + 1)
+        : '';
+    if (!/^\d+$/.test(portText)) return null;
+    const port = Number(portText);
+    return Number.isInteger(port) && port >= 0 && port <= 65_535 ? port : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the effective SDK URL. The managed-proxy contract treats a local
+ * HTTP URL with no explicit port as Headroom's 8787 default; without this
+ * normalization URL/fetch would silently use port 80 while the manager starts
+ * the child on 8787.
+ */
+export function normalizeHeadroomBaseUrl(configuredUrl: unknown): string {
+  const trimmed = typeof configuredUrl === 'string' ? configuredUrl.trim() : '';
+  if (trimmed === '') return DEFAULT_HEADROOM_BASE_URL;
+
+  try {
+    const url = new URL(trimmed);
+    if (
+      url.protocol === 'http:'
+      && (url.hostname === '127.0.0.1' || url.hostname === 'localhost')
+      && url.port === ''
+      && getExplicitHeadroomPort(trimmed) === null
+    ) {
+      url.port = '8787';
+      return url.toString().replace(/\/$/, '');
+    }
+  } catch {
+    // Preserve the configured value so the SDK's normal connection error is
+    // handled by the existing fallback path. SettingsRoutes rejects new bad
+    // values, but hand-edited legacy files must still degrade safely.
+  }
+  return trimmed;
+}
+
+/** Whether claude-mem can replace an absent URL with its bundled local child. */
+export function isManageableLocalHeadroomUrl(baseUrl: string): boolean {
+  if (baseUrl.trim() === '') return true;
+  try {
+    const url = new URL(baseUrl);
+    return url.protocol === 'http:'
+      && (url.hostname === '127.0.0.1' || url.hostname === 'localhost')
+      && url.username === ''
+      && url.password === ''
+      && url.port !== '0'
+      && (url.pathname === '' || url.pathname === '/')
+      && url.search === ''
+      && url.hash === '';
+  } catch {
+    return false;
+  }
+}
 
 interface HeadroomSettings {
   enabled: boolean;
@@ -54,10 +123,9 @@ export class HeadroomService {
 
   private loadHeadroomSettings(): HeadroomSettings {
     const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
-    const configuredUrl = (settings.CLAUDE_MEM_HEADROOM_URL ?? '').trim();
     return {
       enabled: settings.CLAUDE_MEM_HEADROOM_ENABLED === 'true',
-      baseUrl: configuredUrl !== '' ? configuredUrl : DEFAULT_HEADROOM_BASE_URL,
+      baseUrl: normalizeHeadroomBaseUrl(settings.CLAUDE_MEM_HEADROOM_URL),
     };
   }
 
@@ -66,6 +134,7 @@ export class HeadroomService {
       baseUrl,
       fallback: true,
       timeout: HEADROOM_REQUEST_TIMEOUT_MS,
+      stack: HEADROOM_STACK_SLUG,
     });
   }
 

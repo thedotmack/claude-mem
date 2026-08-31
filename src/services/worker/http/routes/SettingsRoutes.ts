@@ -18,6 +18,101 @@ const toggleMcpSchema = z.object({
   enabled: z.boolean(),
 }).passthrough();
 
+/**
+ * Settings the viewer is allowed to persist. The backup encryption key is
+ * intentionally absent: it is minted by BackupManager and must never make a
+ * browser round trip (or be replaceable through the unauthenticated local
+ * settings surface).
+ */
+const VIEWER_WRITABLE_SETTING_KEYS = [
+  'CLAUDE_MEM_MODEL',
+  'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
+  'CLAUDE_MEM_WORKER_PORT',
+  'CLAUDE_MEM_WORKER_HOST',
+  'CLAUDE_MEM_PROVIDER',
+  'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
+  'CLAUDE_MEM_GEMINI_API_KEY',
+  'CLAUDE_MEM_GEMINI_MODEL',
+  'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
+  'CLAUDE_MEM_OPENROUTER_API_KEY',
+  'CLAUDE_MEM_OPENROUTER_MODEL',
+  'CLAUDE_MEM_OPENROUTER_SITE_URL',
+  'CLAUDE_MEM_OPENROUTER_APP_NAME',
+  'CLAUDE_MEM_DATA_DIR',
+  'CLAUDE_MEM_LOG_LEVEL',
+  'CLAUDE_MEM_PYTHON_VERSION',
+  'CLAUDE_CODE_PATH',
+  'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
+  'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
+  'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
+  'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
+  'CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES',
+  'CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS',
+  'CLAUDE_MEM_CONTEXT_FULL_COUNT',
+  'CLAUDE_MEM_CONTEXT_FULL_FIELD',
+  'CLAUDE_MEM_CONTEXT_SESSION_COUNT',
+  'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
+  'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+  'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
+  'CLAUDE_MEM_BACKUP_ENABLED',
+  'CLAUDE_MEM_BACKUP_INTERVAL_HOURS',
+  'CLAUDE_MEM_BACKUP_RETAIN_COUNT',
+  'CLAUDE_MEM_BACKUP_INCLUDE_VECTORS',
+  'CLAUDE_MEM_BACKUP_CLOUD',
+  'CLAUDE_MEM_HEADROOM_ENABLED',
+  'CLAUDE_MEM_HEADROOM_URL',
+] as const;
+
+/** Strip the backup key and expose only the bit of UI state that is needed. */
+export function settingsForViewer(settings: object): Record<string, unknown> {
+  const {
+    CLAUDE_MEM_BACKUP_ENCRYPTION_KEY: backupEncryptionKey,
+    ...safeSettings
+  } = settings as Record<string, unknown>;
+  return {
+    ...safeSettings,
+    CLAUDE_MEM_BACKUP_ENCRYPTION_KEY_PRESENT:
+      typeof backupEncryptionKey === 'string' && backupEncryptionKey.length > 0,
+  };
+}
+
+/** Apply only viewer-editable keys, preserving server-owned secrets. */
+export function applyViewerSettings(
+  settings: Record<string, unknown>,
+  updates: Record<string, unknown>,
+): void {
+  for (const key of VIEWER_WRITABLE_SETTING_KEYS) {
+    if (updates[key] !== undefined) settings[key] = updates[key];
+  }
+}
+
+/** Validate the Headroom SDK's HTTP(S) base-URL contract. */
+export function validateHeadroomUrlSetting(value: unknown): string | null {
+  if (value === undefined) return null;
+  if (typeof value !== 'string') return 'CLAUDE_MEM_HEADROOM_URL must be a string URL';
+  const trimmed = value.trim();
+  if (trimmed === '') return null; // HeadroomService applies the local default.
+
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return 'CLAUDE_MEM_HEADROOM_URL must use http:// or https://';
+    }
+    if (url.username !== '' || url.password !== '') {
+      return 'CLAUDE_MEM_HEADROOM_URL must not include credentials';
+    }
+    if (url.search !== '' || url.hash !== '') {
+      return 'CLAUDE_MEM_HEADROOM_URL must not include a query string or fragment';
+    }
+    if (url.port === '0') {
+      return 'CLAUDE_MEM_HEADROOM_URL port must be between 1 and 65535';
+    }
+    return null;
+  } catch {
+    return 'CLAUDE_MEM_HEADROOM_URL must be a valid URL';
+  }
+}
+
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(
     private settingsManager: SettingsManager
@@ -38,7 +133,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     const settingsPath = paths.settings();
     this.ensureSettingsFile(settingsPath);
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-    res.json(settings);
+    res.json(settingsForViewer(settings));
   });
 
   private handleGetDependencyHealth = this.wrapHandler((_req: Request, res: Response): void => {
@@ -74,52 +169,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    const settingKeys = [
-      'CLAUDE_MEM_MODEL',
-      'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
-      'CLAUDE_MEM_CONTEXT_TOKEN_BUDGET',
-      'CLAUDE_MEM_WORKER_PORT',
-      'CLAUDE_MEM_WORKER_HOST',
-      'CLAUDE_MEM_PROVIDER',
-      'CLAUDE_MEM_CLAUDE_AUTH_METHOD',
-      'CLAUDE_MEM_GEMINI_API_KEY',
-      'CLAUDE_MEM_GEMINI_MODEL',
-      'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
-      'CLAUDE_MEM_OPENROUTER_API_KEY',
-      'CLAUDE_MEM_OPENROUTER_MODEL',
-      'CLAUDE_MEM_OPENROUTER_SITE_URL',
-      'CLAUDE_MEM_OPENROUTER_APP_NAME',
-      'CLAUDE_MEM_DATA_DIR',
-      'CLAUDE_MEM_LOG_LEVEL',
-      'CLAUDE_MEM_PYTHON_VERSION',
-      'CLAUDE_CODE_PATH',
-      'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
-      'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
-      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
-      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
-      'CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES',
-      'CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS',
-      'CLAUDE_MEM_CONTEXT_FULL_COUNT',
-      'CLAUDE_MEM_CONTEXT_FULL_FIELD',
-      'CLAUDE_MEM_CONTEXT_SESSION_COUNT',
-      'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
-      'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
-      'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
-      'CLAUDE_MEM_BACKUP_ENABLED',
-      'CLAUDE_MEM_BACKUP_INTERVAL_HOURS',
-      'CLAUDE_MEM_BACKUP_RETAIN_COUNT',
-      'CLAUDE_MEM_BACKUP_INCLUDE_VECTORS',
-      'CLAUDE_MEM_BACKUP_CLOUD',
-      'CLAUDE_MEM_BACKUP_ENCRYPTION_KEY',
-      'CLAUDE_MEM_HEADROOM_ENABLED',
-      'CLAUDE_MEM_HEADROOM_URL',
-    ];
-
-    for (const key of settingKeys) {
-      if (req.body[key] !== undefined) {
-        settings[key] = req.body[key];
-      }
-    }
+    applyViewerSettings(settings, req.body);
 
     // Persist CLAUDE_CODE_PATH with any leading `~` expanded: it's fed straight
     // to existsSync/posix_spawn (no shell), where a literal `~` fails with
@@ -175,13 +225,6 @@ export class SettingsRoutes extends BaseRouteHandler {
       const obsCount = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
       if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
-      }
-    }
-
-    if (settings.CLAUDE_MEM_CONTEXT_TOKEN_BUDGET) {
-      const tokenBudget = parseInt(settings.CLAUDE_MEM_CONTEXT_TOKEN_BUDGET, 10);
-      if (isNaN(tokenBudget) || tokenBudget < 0 || tokenBudget > 200000) {
-        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_TOKEN_BUDGET must be between 0 and 200000' };
       }
     }
 
@@ -276,15 +319,9 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    // Empty string is allowed through (falsy): HeadroomService treats an
-    // empty/whitespace URL as the default http://127.0.0.1:8787.
-    if (settings.CLAUDE_MEM_HEADROOM_URL) {
-      try {
-        new URL(settings.CLAUDE_MEM_HEADROOM_URL);
-      } catch (error) {
-        logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_HEADROOM_URL, error: error instanceof Error ? error.message : String(error) });
-        return { valid: false, error: 'CLAUDE_MEM_HEADROOM_URL must be a valid URL' };
-      }
+    const headroomUrlError = validateHeadroomUrlSetting(settings.CLAUDE_MEM_HEADROOM_URL);
+    if (headroomUrlError) {
+      return { valid: false, error: headroomUrlError };
     }
 
     return { valid: true };

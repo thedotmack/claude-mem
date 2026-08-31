@@ -68,6 +68,7 @@ describe('MemoryRoutes — POST /api/memory/save (#2116)', () => {
   let routes: MemoryRoutes;
   let mockStoreObservation: ReturnType<typeof mock>;
   let mockGetOrCreateManualSession: ReturnType<typeof mock>;
+  let mockGbrainSyncObservation: ReturnType<typeof mock>;
   let storeObservationCalls: any[][] = [];
 
   beforeEach(() => {
@@ -85,6 +86,7 @@ describe('MemoryRoutes — POST /api/memory/save (#2116)', () => {
       return { id: 42, createdAtEpoch: 1234567890 };
     });
     mockGetOrCreateManualSession = mock((project: string) => `manual-${project}`);
+    mockGbrainSyncObservation = mock(async () => {});
 
     const mockDbManager = {
       getSessionStore: () => ({
@@ -92,6 +94,7 @@ describe('MemoryRoutes — POST /api/memory/save (#2116)', () => {
         getOrCreateManualSession: mockGetOrCreateManualSession,
       }),
       getChromaSync: () => null,
+      getGbrainSync: () => ({ syncObservation: mockGbrainSyncObservation }),
       getCloudSync: () => null,
     };
 
@@ -136,6 +139,21 @@ describe('MemoryRoutes — POST /api/memory/save (#2116)', () => {
 
     const observationArg = storeObservationCalls[0][2];
     expect(observationArg.metadata).toBeNull();
+  });
+
+  it('mirrors a saved manual memory to gbrain even when Chroma is disabled', () => {
+    const handler = buildHandler();
+    const { req, res } = createMockReqRes({ text: 'hello', project: 'manual-project' });
+    handler(req as Request, res as Response);
+
+    expect(mockGbrainSyncObservation).toHaveBeenCalledTimes(1);
+    expect(mockGbrainSyncObservation).toHaveBeenCalledWith(
+      42,
+      'manual-project',
+      expect.objectContaining({ narrative: 'hello' }),
+      1234567890,
+      'manual-manual-project'
+    );
   });
 
   it('uses top-level project when present', () => {

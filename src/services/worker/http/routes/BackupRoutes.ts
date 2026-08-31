@@ -2,7 +2,7 @@
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import path from 'path';
-import { copyFileSync, existsSync, readdirSync, statSync, unlinkSync } from 'fs';
+import { copyFileSync, existsSync, lstatSync, readdirSync, statSync, unlinkSync } from 'fs';
 import { logger } from '../../../../utils/logger.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
@@ -110,17 +110,28 @@ export class BackupRoutes extends BaseRouteHandler {
   private handleRestore = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { file } = req.body as z.infer<typeof restoreSchema>;
 
-    // Path-traversal guard: the requested file must resolve to a path INSIDE
-    // the backups dir (resolve + prefix check), so `../../etc/passwd` or an
-    // absolute path outside the dir is rejected before any fs action.
+    // Resolve + prefix-check first so absolute/traversal requests are rejected
+    // before any fs action.
     const backupsDir = this.backupsDir();
     const snapshotPath = path.resolve(backupsDir, file);
     if (!snapshotPath.startsWith(backupsDir + path.sep)) {
       res.status(400).json({ error: 'Invalid file: must be a snapshot inside the backups directory' });
       return;
     }
+    // Only files produced/listed by BackupManager are restorable. Requiring a
+    // root-level snapshot basename keeps this contract identical to list.
+    if (path.basename(file) !== file || !SNAPSHOT_FILE_PATTERN.test(file)) {
+      res.status(400).json({ error: 'Invalid file: must be a listed backup snapshot' });
+      return;
+    }
     if (!existsSync(snapshotPath)) {
       this.notFound(res, `Snapshot not found: ${path.basename(snapshotPath)}`);
+      return;
+    }
+    // Do not follow a symlink planted in the backups directory. The route can
+    // otherwise be tricked into copying an arbitrary local file over the DB.
+    if (!lstatSync(snapshotPath).isFile()) {
+      res.status(400).json({ error: 'Invalid file: snapshot must be a regular file' });
       return;
     }
 
