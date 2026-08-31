@@ -16,6 +16,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { paths } from './paths.js';
+import { loadFromFileOnce } from './hook-settings.js';
 import { logger } from '../utils/logger.js';
 
 export interface ObserverHealthState {
@@ -263,10 +264,28 @@ export function describeDuration(ms: number): string {
 }
 
 /**
+ * Where the one-click restart lives. Read through hook-settings rather than
+ * worker-utils' getWorkerPort: this module is imported by hooks as well as the
+ * worker, and must not drag in the supervisor, telemetry and process-management
+ * tree just to format a URL.
+ */
+export function workerRestartUrl(): string {
+  return `http://localhost:${loadFromFileOnce().CLAUDE_MEM_WORKER_PORT}/restart`;
+}
+
+/**
  * The block prepended to session-start context when unhealthy. Read by both
  * the user and the agent, so it stays calm and plain-spoken — but the agent
  * must still relay the outage (and the remedy embedded in the provider's
  * error message) to the user immediately.
+ *
+ * A restart clears nearly every observer outage (a wedged or SIGKILL'd provider
+ * subprocess), so the remedy leads with one — as a link the user clicks, not as
+ * something claude-mem fires on its own. Restarting the worker from inside the
+ * worker means guarding the automation against itself (once per outage? per
+ * flap? what about two failures racing?), and every one of those guards is a
+ * bound on a loop that only exists because the restart was automatic. A human
+ * pressing the button is the bound.
  */
 export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: number = Date.now()): string {
   const since = state.failingSinceAt ?? state.lastErrorAt;
@@ -287,15 +306,22 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
     ...(state.lastErrorRequestId ? [`Request id: ${state.lastErrorRequestId}`] : []),
     '',
     "Until it's fixed, nothing from this session — or any other — will be remembered.",
+    '',
+    'Restarting the memory worker clears almost every outage. Do one of these:',
+    `  Click to restart:  ${workerRestartUrl()}`,
+    '  Or in a terminal:  npx claude-mem restart',
+    '',
+    'Still failing after the restart? Run: npx claude-mem doctor',
     // A classified error already says what to do; the generic settings.json
     // remedy is wrong for e.g. Pro users whose allowance ran out.
     ...(action ? [] : [
-      "To fix it, check the observer provider's API key, spend limit, and base URL in",
-      '~/.claude-mem/settings.json. The error above may include a management link with the remedy.',
+      "If doctor comes back clean, check the observer provider's API key, spend limit, and base",
+      'URL in ~/.claude-mem/settings.json. The error above may include a management link.',
     ]),
     '',
-    '(Assistant: please tell the user about this outage at the very start of your first reply,',
-    'quoting the error above.)',
+    '(Assistant: tell the user about this outage at the very start of your first reply,',
+    'quoting the error above, and give them the restart link — let them press it rather',
+    'than restarting the worker yourself.)',
   ];
   return lines.join('\n');
 }
