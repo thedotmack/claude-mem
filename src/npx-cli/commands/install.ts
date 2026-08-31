@@ -33,13 +33,11 @@ import {
 } from '../install/error-reporter.js';
 import { extractEresolveBlock, isEresolve, runNpmStrict } from '../install/npm-install-helper.js';
 import {
-  buildProviderBenefitsNote,
   buildProviderLabels,
   CMEM_INSTALLER_OAUTH_POLL_URL,
   CMEM_INSTALLER_OAUTH_START_URL,
   CMEM_PRO_BASE_URL,
   CMEM_PRO_MODEL,
-  CMEM_TRIAL_ACKNOWLEDGEMENT,
   PROVIDER_PROMPT_MESSAGE,
 } from '../cmem-pro-costs.js';
 import { clearProFallback, isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
@@ -1061,7 +1059,6 @@ async function promptProvider(
       throw new Error('Non-interactive provider validation did not run.');
     }
     const labels = buildProviderLabels();
-    p.note(buildProviderBenefitsNote(), 'Provider benefits');
 
     // Multiselect gives both choices square controls. Exactly one provider is
     // still required; selecting both re-opens the prompt instead of guessing.
@@ -1091,25 +1088,16 @@ async function promptProvider(
   // OpenAI-compatible client whose endpoint and model both come from settings,
   // so "use the CMEM observer model" is four settings writes and nothing else.
   if (selectedProvider === 'cmem') {
-    if (!isInteractive) {
-      throw new Error('CMEM Pro trial acknowledgement requires an interactive terminal.');
-    }
     if (!pairing) {
       // Unreachable via the flag that skips login (it forces 'claude'), but a
       // future caller passing null here would otherwise enroll against nothing.
       throw new Error('CMEM Pro requires a signed-in claude-mem account.');
     }
-    const trialAcknowledgement = await p.multiselect<'accepted'>({
-      message: 'Confirm CMEM Pro Free Trial:',
-      options: [{ value: 'accepted', label: CMEM_TRIAL_ACKNOWLEDGEMENT }],
-      initialValues: [],
-      required: true,
-    });
-    if (p.isCancel(trialAcknowledgement)) {
-      p.cancel('CMEM Pro setup cancelled.');
-      process.exit(1);
-    }
-
+    // The billing disclosure lives on the checkout page, not here. It is a term
+    // of the charge, so it belongs on the screen that takes the payment method,
+    // where it can be shown next to the price and the card field. Re-asking for
+    // it in the terminal made the user consent twice to the same thing, before
+    // ever seeing what they were agreeing to.
     const enrollment = await completeCmemTrialPairing(pairing, version);
     if (!enrollment) {
       p.cancel('CMEM Pro setup was not completed. Run npx claude-mem install to try again.');
@@ -1318,6 +1306,27 @@ function hasExactSearchParams(url: URL, expected: Record<string, string>): boole
     && expectedEntries.every(([key, value]) => url.searchParams.get(key) === value);
 }
 
+/**
+ * The checkout URL must carry exactly `pairing` and `trial`, and nothing else —
+ * but the trial LENGTH is not the installer's business to pin.
+ *
+ * This previously required `trial: '7'` exactly. That made the server unable to
+ * change the offer without breaking every installer already published: a
+ * `trial=30` URL was rejected outright, surfacing as "Could not start OAuth
+ * login" with no hint that the length was the reason. The shape stays strict
+ * (both params present, pairing must match, no extras); only the number is now
+ * the server's to choose.
+ */
+function hasPairingAndTrialParams(url: URL, pairingId: string): boolean {
+  const entries = [...url.searchParams.entries()];
+  if (entries.length !== 2) return false;
+  if (url.searchParams.get('pairing') !== pairingId) return false;
+  const trial = url.searchParams.get('trial');
+  if (trial === null || !/^[0-9]{1,3}$/.test(trial)) return false;
+  const days = Number(trial);
+  return days >= 1 && days <= 365;
+}
+
 /** Pure parser used by the mock-server contract tests. */
 export function parseInstallerOAuthStartBody(body: unknown): InstallerOAuthPairing | null {
   if (!body || typeof body !== 'object') return null;
@@ -1358,7 +1367,7 @@ export function parseInstallerOAuthStartBody(body: unknown): InstallerOAuthPairi
   if (
     !loginClaim
     || !hasExactSearchParams(loginClaim, { pairing: pairingId, login_only: '1' })
-    || !hasExactSearchParams(checkoutUrl, { pairing: pairingId, trial: '7' })
+    || !hasPairingAndTrialParams(checkoutUrl, pairingId)
   ) return null;
 
   const pollIntervalS =
@@ -1704,12 +1713,15 @@ export async function completeCmemTrialPairing(
   if (pairing.delivered) return pairing.delivered;
 
   noteDeviceCode(pairing);
-  // Same hand-off as the login step: print the URL, wait for Return, then open.
-  // Both browser hand-offs behaving identically matters more here than saving a
-  // keystroke — the device code above needs to be read before the browser
-  // steals focus.
+  // Deliberately NO return-wait here, unlike the login hand-off.
+  //
+  // A second wait at this point stalled the install: stdin has already been
+  // through the login wait and a clack prompt by now, and the listener did not
+  // reliably receive the keypress, so the flow stopped before it could even
+  // print "Waiting for CMEM Pro setup in the browser…". Opening directly is
+  // also the better behaviour here — the user has already chosen CMEM Pro, so
+  // there is nothing left to confirm before the browser takes over.
   log.info(`Continue CMEM Pro setup: ${pairing.checkoutUrl}`);
-  await waitForReturnToOpenBrowser('Continue setup in browser... (hit return to open automatically)');
   openBrowser(pairing.checkoutUrl);
 
   const result = await waitForInstallerPairing(pairing, 'enrollment', version);
@@ -2313,22 +2325,25 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     : workerAlive
       ? 'keep that URL open in a browser'
       : `keep ${styleText('underline', configuredWorkerBaseUrl)} open in a browser`;
+  // Last screen of the funnel: it should read as an invitation to start, not a
+  // manual. Everything here has to earn its line.
+  //
+  // Cut deliberately: the WELCOME_HINT_ENABLED env var (opting out of a hint
+  // they have not seen yet), the uninstall warning (uninstall trivia on the
+  // install screen), and the A/B "two paths" framing that dressed up "just
+  // start working" as a decision the user has to make.
   const nextSteps = [
     nextStepsHeadline,
     ``,
-    `${styleText('bold', 'First success:')} ${firstSuccessOpener}, then open Claude Code in any project. Observations stream in as Claude reads, edits, and runs commands.`,
-    ``,
-    `${styleText('bold', 'Two paths from here:')}`,
-    `  ${styleText('cyan', 'A.')} Just start working. Memory builds passively from your first prompt. (Recommended.)`,
-    `  ${styleText('cyan', 'B.')} Front-load it: open Claude Code and run ${styleText('bold', '/learn-codebase')} to ingest the whole repo (~5 min, optional).`,
+    `${styleText('bold', 'Start working.')} Memory builds passively from your first prompt — observations stream in as Claude reads, edits, and runs commands.`,
+    `To watch them live, ${firstSuccessOpener}.`,
     ``,
     `Memory injection starts on your second session in a project.`,
     cloudSyncConfigured
       ? 'Memory syncs across your signed-in CMEM Pro agents and devices.'
       : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine.`,
     ``,
-    `${styleText('dim', 'How it works: /how-it-works   ·   Disable first-session hint: CLAUDE_MEM_WELCOME_HINT_ENABLED=false')}`,
-    `${styleText('dim', 'Note: close all Claude Code sessions before uninstalling, or ~/.claude-mem will be recreated by active hooks.')}`,
+    `${styleText('dim', `Optional: ${'/learn-codebase'} ingests a whole repo up front (~5 min)   ·   How it works: /how-it-works`)}`,
   ];
 
   if (isInteractive) {

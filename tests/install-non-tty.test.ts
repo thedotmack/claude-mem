@@ -352,8 +352,11 @@ describe('Install Non-TTY Support', () => {
   });
 
   describe('post-install Next Steps copy', () => {
-    it('frames the choice as two paths', () => {
-      expect(installSource).toContain('Two paths from here:');
+    it('opens with a plain instruction, not a menu of paths', () => {
+      // The A/B framing dressed up "just start working" as a decision the user
+      // had to make on the last screen of the funnel.
+      expect(installSource).toContain("styleText('bold', 'Start working.')");
+      expect(installSource).not.toContain('Two paths from here:');
     });
 
     it('sets timing honesty about second-session memory injection', () => {
@@ -369,8 +372,16 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain('/learn-codebase');
     });
 
-    it('demotes the uninstall caveat into a dim footer', () => {
-      expect(installSource).toContain('close all Claude Code sessions before uninstalling');
+    it('keeps uninstall trivia and env-var opt-outs off the install screen', () => {
+      // Uninstall instructions do not belong on the screen that just finished
+      // installing, and opting out of the first-session hint is meaningless to
+      // someone who has not seen it yet.
+      const nextStepsRegion = installSource.slice(
+        installSource.indexOf('const nextSteps = '),
+        installSource.indexOf("p.note(nextSteps.join"),
+      );
+      expect(nextStepsRegion).not.toContain('before uninstalling');
+      expect(nextStepsRegion).not.toContain('CLAUDE_MEM_WELCOME_HINT_ENABLED');
     });
 
     it('does not advertise /mem-search in the post-install Next Steps', () => {
