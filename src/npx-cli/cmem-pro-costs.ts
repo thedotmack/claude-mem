@@ -9,9 +9,6 @@ import { cmemProOrigin } from '../shared/cmem-gateway.js';
 export const PROVIDER_PROMPT_MESSAGE =
   'Select Provider:\n================';
 
-export const CMEM_TRIAL_ACKNOWLEDGEMENT =
-  "Free Trial includes a week's worth of allowance and auto-charges if you reach the limit.";
-
 export interface ProviderLabels {
   cmem: string;
   cmemHint: string;
