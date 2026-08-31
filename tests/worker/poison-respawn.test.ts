@@ -570,6 +570,7 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     session.memorySessionId = 'mem-15';
     session.currentProvider = 'claude';
     session.generatorPromise = Promise.resolve();
+    session.overflowRetryPending = true;
     await queueAndClaimOne(sm, 15);
 
     const finalizeSession = mock(() => Promise.resolve());
@@ -586,6 +587,27 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(sm.getMessageBuffer().getPendingCount(15)).toBe(1);
     expect(session.generatorPromise).toBeNull();
     expect(session.currentProvider).toBeNull();
+  });
+
+  it('finalizes and removes the session after overflow retries are exhausted', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const session = sm.initializeSession(16, 'do the thing', 1);
+    session.memorySessionId = 'mem-16';
+    session.currentProvider = 'claude';
+    session.generatorPromise = Promise.resolve();
+    session.overflowRetryPending = false;
+
+    const finalizeSession = mock(() => Promise.resolve());
+    const removeSpy = spyOn(sm, 'removeSessionImmediate');
+
+    await handleGeneratorExit(session, 'overflow:observer_text', {
+      sessionManager: sm,
+      completionHandler: { finalizeSession } as any,
+    });
+
+    expect(finalizeSession).toHaveBeenCalledWith(16);
+    expect(removeSpy).toHaveBeenCalledWith(16);
+    expect(sm.getSession(16)).toBeUndefined();
   });
 
   it('confirms skip/no-op prose but preserves the same queue shape for quota pause', async () => {

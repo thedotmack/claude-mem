@@ -14,10 +14,11 @@ export interface GeneratorExitDependencies {
  *
  * The generator's message iterator only ends on abort (idle / shutdown) or when
  * the SDK stream throws, so most exits mean this session is done. Quota and
- * overflow exits are different: claimed work has already been reset to
- * pending, so leave the session and in-RAM buffer alive for another start.
+ * active overflow-retry exits are different: claimed work has already been
+ * reset to pending, so leave the session and in-RAM buffer alive for another
+ * start. An exhausted overflow is terminal and follows normal cleanup.
  *
- * For non-quota/non-overflow exits we do NOT respawn on remaining buffered work: the old
+ * For all other exits we do NOT respawn on remaining buffered work: the old
  * respawn-on-pending loop, driven by the durable pending_messages queue, was the
  * retry storm. Buffered work lives only in RAM now; anything still buffered is
  * dropped here and recovered, if needed, by replaying the Claude Code
@@ -42,7 +43,8 @@ export async function handleGeneratorExit(
   session.currentProvider = null;
 
   const abortCategory = (reason ?? '').split(':')[0];
-  if (abortCategory === 'quota' || abortCategory === 'auth' || abortCategory === 'overflow') {
+  const activeOverflowRetry = abortCategory === 'overflow' && session.overflowRetryPending;
+  if (abortCategory === 'quota' || abortCategory === 'auth' || activeOverflowRetry) {
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
