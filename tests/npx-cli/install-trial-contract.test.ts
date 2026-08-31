@@ -8,13 +8,9 @@ import {
   parseTrialReadyBody,
 } from '../../src/npx-cli/commands/install';
 import {
-  ANTHROPIC_MAX_BENEFITS,
-  buildProviderBenefitsNote,
   buildProviderLabels,
-  CMEM_PRO_BENEFITS,
   CMEM_PRO_BASE_URL,
   CMEM_PRO_MODEL,
-  CMEM_TRIAL_ACKNOWLEDGEMENT,
   PROVIDER_PROMPT_MESSAGE,
 } from '../../src/npx-cli/cmem-pro-costs';
 
@@ -131,23 +127,35 @@ describe('installer trial-ready contract', () => {
     expect(parseInstallerOAuthStartBody({ ...valid, user_code: 'INVALID1' })).toBeNull();
   });
 
-  it('uses the exact two-option provider copy and required trial disclosure', () => {
+  it('uses the exact two-option provider copy', () => {
     expect(buildProviderLabels()).toEqual({
-      cmem: 'CMEM Pro',
-      cmemHint: 'Shared cloud memory across agents, apps, and devices',
-      claude: 'Use your Anthropic Max Plan',
-      claudeHint: 'Local memory using the plan you already have',
+      cmem: 'CMEM Pro (30 Day Free Trial: Tokens for Observations + Real-Time Cloud Sync '
+        + 'for Claude.ai, ChatGPT.com, anything that accepts an MCP Connector)',
+      cmemHint: '',
+      claude: 'Use your Anthropic Max Plan (no cloud sync, uses tokens for observations)',
+      claudeHint: '',
     });
-    expect(PROVIDER_PROMPT_MESSAGE).toBe(
-      'Select Provider:\nClaude-Mem uses tokens to take notes of what your agent is working on in real-time.',
-    );
-    expect(CMEM_TRIAL_ACKNOWLEDGEMENT).toBe(
-      "Free Trial includes a week's worth of allowance and auto-charges if you reach the limit.",
-    );
-    const benefits = buildProviderBenefitsNote();
-    for (const benefit of [...CMEM_PRO_BENEFITS, ...ANTHROPIC_MAX_BENEFITS]) {
-      expect(benefits).toContain(benefit);
-    }
+    expect(PROVIDER_PROMPT_MESSAGE).toBe('Select Provider:\n================');
+  });
+
+  it('keeps each provider description in the label so both rows always render it', () => {
+    // clack's multiselect renders `hint` only for the focused/selected row, so a
+    // description placed there would appear one row at a time. Both rows must
+    // carry their own description at all times.
+    const labels = buildProviderLabels();
+    expect(labels.cmemHint).toBe('');
+    expect(labels.claudeHint).toBe('');
+    expect(labels.cmem).toContain('30 Day Free Trial');
+    expect(labels.claude).toContain('no cloud sync');
+  });
+
+  it('does not ask for the billing acknowledgement in the terminal', () => {
+    // It is a term of the charge and belongs on the checkout page, beside the
+    // price and the card field — not asked twice, once before the user can see
+    // what they are agreeing to.
+    const source = readFileSync(join(repoRoot, 'src/npx-cli/commands/install.ts'), 'utf-8');
+    expect(source).not.toContain('Confirm CMEM Pro Free Trial');
+    expect(source).not.toContain('CMEM_TRIAL_ACKNOWLEDGEMENT');
   });
 
   it('requires OAuth before provider selection and contains no retired email path', () => {
@@ -157,7 +165,6 @@ describe('installer trial-ready contract', () => {
     expect(oauthIndex).toBeGreaterThan(-1);
     expect(providerIndex).toBeGreaterThan(oauthIndex);
     expect(source).toContain('p.multiselect<ProviderChoice>');
-    expect(source).toContain("p.multiselect<'accepted'>");
     expect(source).not.toContain('promptBrowserLogin');
     expect(source).not.toContain('CMEM_PRO_TRIAL_START_URL');
     expect(source).not.toContain('CLAUDE_MEM_ONLINE_OPTIN');
