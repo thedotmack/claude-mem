@@ -45,9 +45,45 @@ export interface RetryOptions {
   abortSignal?: AbortSignal;
 }
 
+/** Bounds shared with the other CLAUDE_MEM_*_TIMEOUT_MS settings. */
+const LLM_TIMEOUT_BOUNDS = { min: 500, max: 300_000 } as const;
+const FALLBACK_PER_ATTEMPT_TIMEOUT_MS = 30_000;
+
+/**
+ * Per-attempt deadline for a provider request.
+ *
+ * 30s suits a hosted provider and is far too short for a local model: a
+ * report on an Ollama backend measured successful requests with a median of
+ * 21s and a p99 of 29.8s, so the deadline was truncating work that had
+ * already been computed. The value was unreachable from configuration, and
+ * the workaround was editing the installed bundle after every update.
+ *
+ * Read here rather than through worker-utils' readTimeoutEnv: this module is
+ * a leaf that imports only the logger and the error classifier, and that one
+ * pulls in the supervisor and telemetry.
+ */
+export function resolveLlmTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.CLAUDE_MEM_LLM_TIMEOUT_MS;
+  if (!raw) return FALLBACK_PER_ATTEMPT_TIMEOUT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (
+    Number.isFinite(parsed)
+    && parsed >= LLM_TIMEOUT_BOUNDS.min
+    && parsed <= LLM_TIMEOUT_BOUNDS.max
+  ) {
+    return parsed;
+  }
+  logger.warn('SDK', 'Invalid CLAUDE_MEM_LLM_TIMEOUT_MS, using default', {
+    value: raw,
+    min: LLM_TIMEOUT_BOUNDS.min,
+    max: LLM_TIMEOUT_BOUNDS.max,
+  });
+  return FALLBACK_PER_ATTEMPT_TIMEOUT_MS;
+}
+
 const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'label' | 'abortSignal'>> = {
   maxRetries: 2,
-  perAttemptTimeoutMs: 30_000,
+  perAttemptTimeoutMs: resolveLlmTimeoutMs(),
   baseDelayMs: 100,
   maxDelayMs: 30_000,
 };
@@ -87,7 +123,11 @@ export async function withRetry<T>(
 
     // Per-attempt timeout via AbortController. Forward external aborts too.
     const attemptController = new AbortController();
-    const timeoutHandle = setTimeout(() => attemptController.abort(), opts.perAttemptTimeoutMs);
+    let deadlineExpired = false;
+    const timeoutHandle = setTimeout(() => {
+      deadlineExpired = true;
+      attemptController.abort();
+    }, opts.perAttemptTimeoutMs);
     const onExternalAbort = () => attemptController.abort();
     options.abortSignal?.addEventListener('abort', onExternalAbort, { once: true });
 
@@ -96,9 +136,21 @@ export async function withRetry<T>(
     } catch (err: unknown) {
       lastError = err;
 
+      // Our own deadline, not a network blip. The abort surfaces with no HTTP  // status, so it classifies as transient and was retried twice — against a
+      // backend that is already saturated, those attempts are what turn a
+      // latency problem into a congestion collapse. Raise the deadline instead.
+      if (deadlineExpired) {
+        throw new Error(
+          `${opts.label ?? 'Request'} exceeded the ${opts.perAttemptTimeoutMs}ms per-attempt deadline. `
+          + 'Raise CLAUDE_MEM_LLM_TIMEOUT_MS if the backend is simply slow.',
+          { cause: err },
+        );
+      }
+
       if (!isRetryableKind(err)) {
         throw err;
       }
+    
 
       if (attempt === opts.maxRetries) {
         throw err;
