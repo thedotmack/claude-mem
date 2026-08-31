@@ -28,6 +28,14 @@ export type QuotaProvider = 'claude' | 'gemini' | 'openrouter';
  */
 export const QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS = 30 * 60_000;
 
+/**
+ * How long a claimed probe may stay unresolved before another caller may take
+ * it. A generator that dies without reaching any completion path would
+ * otherwise hold the claim forever and wedge the provider permanently — the
+ * opposite failure to the one this breaker exists to prevent.
+ */
+export const QUOTA_PROBE_STALE_MS = 5 * 60_000;
+
 export interface QuotaCooldownState {
   provider: QuotaProvider;
   /** Provider-reported reason, already free of any user prompt text. */
@@ -35,6 +43,14 @@ export interface QuotaCooldownState {
   /** Window the provider named, when it named one (e.g. 'weekly'). */
   window?: string;
   armedAtMs: number;
+  /**
+   * When the single post-expiry probe was claimed, or null when none is in
+   * flight. Without this the expiry check is a bare read: every concurrent
+   * session passes it at once and they all hit the provider together, which on
+   * a busy machine (#3800 saw 28-69 live sessions) turns "one probe per window"
+   * back into a burst.
+   */
+  probeInFlightSinceMs: number | null;
 }
 
 const cooldowns = new Map<QuotaProvider, QuotaCooldownState>();
@@ -50,6 +66,8 @@ export function recordQuotaExhausted(
     message,
     ...(window ? { window } : {}),
     armedAtMs: Date.now(),
+    // Re-arming ends whatever probe was in flight: this IS that probe failing.
+    probeInFlightSinceMs: null,
   };
   cooldowns.set(provider, state);
   return state;
@@ -65,11 +83,12 @@ export function getQuotaCooldown(provider: QuotaProvider): QuotaCooldownState | 
 }
 
 /**
- * True while requests to `provider` should be withheld.
+ * True while requests to `provider` should be withheld. Read-only — it never
+ * claims the probe, so it is safe for logging and diagnostics.
  *
- * Once the window elapses this returns false without clearing the state, so
- * exactly one probe request goes out; it re-arms on failure (restamping the
- * cooldown) or is cleared by the success path.
+ * Callers deciding whether to actually send must use `tryAdmitQuotaProbe`
+ * instead: this returning false only means the window elapsed, and on a machine
+ * with many live sessions every one of them observes that at the same instant.
  */
 export function isQuotaCooldownActive(
   provider: QuotaProvider,
@@ -79,6 +98,52 @@ export function isQuotaCooldownActive(
   const state = cooldowns.get(provider);
   if (!state) return false;
   return nowMs - state.armedAtMs < cooldownMs;
+}
+
+/**
+ * Decide whether this caller may send to `provider`, claiming the single
+ * post-expiry probe if so.
+ *
+ * Admits when there is no breaker at all, or when the window has elapsed and no
+ * probe is currently in flight. The claim is taken synchronously, so among
+ * concurrent callers on this single-threaded worker exactly one wins and the
+ * rest are withheld until that probe resolves — success clears the breaker,
+ * failure re-arms it, and `releaseQuotaProbe` covers every other exit.
+ */
+export function tryAdmitQuotaProbe(
+  provider: QuotaProvider,
+  nowMs: number = Date.now(),
+  cooldownMs: number = QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+): boolean {
+  const state = cooldowns.get(provider);
+  if (!state) return true;
+
+  if (nowMs - state.armedAtMs < cooldownMs) {
+    return false;
+  }
+
+  const inFlight = state.probeInFlightSinceMs;
+  if (inFlight !== null && nowMs - inFlight < QUOTA_PROBE_STALE_MS) {
+    return false;
+  }
+
+  state.probeInFlightSinceMs = nowMs;
+  return true;
+}
+
+/**
+ * Release a claimed probe without deciding the breaker's fate.
+ *
+ * Called on every generator exit: if the probe succeeded the breaker is already
+ * gone, and if it earned another refusal `recordQuotaExhausted` already re-armed
+ * and cleared the claim. This covers the remaining exits (abort, crash, an
+ * unrelated error) so a claim can never outlive the request that took it.
+ */
+export function releaseQuotaProbe(provider: QuotaProvider): void {
+  const state = cooldowns.get(provider);
+  if (state) {
+    state.probeInFlightSinceMs = null;
+  }
 }
 
 export function resetQuotaCooldownsForTesting(): void {

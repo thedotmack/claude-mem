@@ -1,11 +1,14 @@
 import { describe, it, expect, beforeEach, afterAll } from 'bun:test';
 import {
   isQuotaCooldownActive,
+  tryAdmitQuotaProbe,
+  releaseQuotaProbe,
   recordQuotaExhausted,
   clearQuotaCooldown,
   getQuotaCooldown,
   resetQuotaCooldownsForTesting,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  QUOTA_PROBE_STALE_MS,
 } from '../../src/shared/quota-cooldown.js';
 
 describe('quota cooldown breaker (#3634)', () => {
@@ -72,6 +75,89 @@ describe('quota cooldown breaker (#3634)', () => {
 
     expect(isQuotaCooldownActive('claude')).toBe(false);
     expect(getQuotaCooldown('claude')).toBeNull();
+  });
+
+  it('admits every caller when no breaker is armed', () => {
+    expect(tryAdmitQuotaProbe('claude')).toBe(true);
+    expect(tryAdmitQuotaProbe('claude')).toBe(true);
+  });
+
+  it('withholds every caller while the window is still cooling', () => {
+    recordQuotaExhausted('claude', 'Weekly limit reached');
+
+    expect(tryAdmitQuotaProbe('claude')).toBe(false);
+    expect(tryAdmitQuotaProbe('claude')).toBe(false);
+  });
+
+  it('admits exactly ONE concurrent caller after expiry, not all of them', () => {
+    // The reported machine ran 28-69 live sessions; they all observe the window
+    // elapse at the same instant, so a bare time check would let them all send.
+    const armedAt = Date.now();
+    recordQuotaExhausted('claude', 'Weekly limit reached');
+    const afterExpiry = armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
+
+    const admitted = Array.from({ length: 28 }, () =>
+      tryAdmitQuotaProbe('claude', afterExpiry)
+    ).filter(Boolean);
+
+    expect(admitted).toHaveLength(1);
+  });
+
+  it('keeps withholding while the claimed probe is still in flight', () => {
+    const armedAt = Date.now();
+    recordQuotaExhausted('claude', 'Weekly limit reached');
+    const afterExpiry = armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
+
+    expect(tryAdmitQuotaProbe('claude', afterExpiry)).toBe(true);
+    // Much later, but still unresolved and not yet stale.
+    expect(tryAdmitQuotaProbe('claude', afterExpiry + QUOTA_PROBE_STALE_MS - 1)).toBe(false);
+  });
+
+  it('re-admits once a claimed probe goes stale, so a dead generator cannot wedge the provider shut', () => {
+    const armedAt = Date.now();
+    recordQuotaExhausted('claude', 'Weekly limit reached');
+    const afterExpiry = armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
+
+    expect(tryAdmitQuotaProbe('claude', afterExpiry)).toBe(true);
+    expect(tryAdmitQuotaProbe('claude', afterExpiry + QUOTA_PROBE_STALE_MS + 1)).toBe(true);
+  });
+
+  it('releases the claim on a generator exit that neither succeeded nor re-armed', () => {
+    const armedAt = Date.now();
+    recordQuotaExhausted('claude', 'Weekly limit reached');
+    const afterExpiry = armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
+
+    expect(tryAdmitQuotaProbe('claude', afterExpiry)).toBe(true);
+    expect(tryAdmitQuotaProbe('claude', afterExpiry)).toBe(false);
+
+    releaseQuotaProbe('claude');
+
+    expect(tryAdmitQuotaProbe('claude', afterExpiry)).toBe(true);
+  });
+
+  it('clears the in-flight claim when the probe fails and re-arms', () => {
+    const armedAt = Date.now();
+    recordQuotaExhausted('claude', 'Weekly limit reached');
+    const afterExpiry = armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
+    expect(tryAdmitQuotaProbe('claude', afterExpiry)).toBe(true);
+
+    // The probe earned another refusal.
+    const reArmed = recordQuotaExhausted('claude', 'Weekly limit reached');
+
+    expect(reArmed.probeInFlightSinceMs).toBeNull();
+    // And the fresh window withholds again.
+    expect(tryAdmitQuotaProbe('claude', reArmed.armedAtMs + 1)).toBe(false);
+  });
+
+  it('scopes the probe claim per provider', () => {
+    const armedAt = Date.now();
+    recordQuotaExhausted('claude', 'Weekly limit reached');
+    recordQuotaExhausted('openrouter', 'Spend cap reached');
+    const afterExpiry = armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
+
+    expect(tryAdmitQuotaProbe('claude', afterExpiry)).toBe(true);
+    // Claiming claude's probe must not consume openrouter's.
+    expect(tryAdmitQuotaProbe('openrouter', afterExpiry)).toBe(true);
   });
 
   it('bounds capped traffic to one probe per window instead of one per observation', () => {

@@ -31,7 +31,8 @@ import {
 import { findClaudeExecutable } from '../../../../shared/find-claude-executable.js';
 import { recordObserverFailure } from '../../../../shared/observer-health.js';
 import {
-  isQuotaCooldownActive,
+  tryAdmitQuotaProbe,
+  releaseQuotaProbe,
   recordQuotaExhausted,
   getQuotaCooldown,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
@@ -87,25 +88,6 @@ export class SessionRoutes extends BaseRouteHandler {
     const selectedProvider = this.getSelectedProvider();
 
     if (!session.generatorPromise) {
-      // Quota breaker (#3634). Without this, an exhausted allowance produced one
-      // doomed request per captured tool call for the rest of the billing cycle:
-      // the generator exits on the refusal, and the next observation starts a
-      // fresh one that earns the same refusal. Withhold requests for a cooldown,
-      // then let exactly one through to re-probe.
-      if (isQuotaCooldownActive(selectedProvider)) {
-        const cooldown = getQuotaCooldown(selectedProvider);
-        logger.warn('SESSION', 'Skipping generator start while the provider quota cooldown is active', {
-          sessionId: sessionDbId,
-          source,
-          provider: selectedProvider,
-          ...(cooldown?.window ? { window: cooldown.window } : {}),
-          retryInMs: cooldown
-            ? Math.max(0, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - (Date.now() - cooldown.armedAtMs))
-            : 0,
-        });
-        return;
-      }
-
       if (selectedProvider === 'claude') {
         const claudeStatus = getDependencyStatus('claude_cli');
         if (claudeStatus?.kind === 'setup_required') {
@@ -142,6 +124,29 @@ export class SessionRoutes extends BaseRouteHandler {
           }
         }
       }
+      // Quota breaker (#3634). Without this, an exhausted allowance produced one
+      // doomed request per captured tool call for the rest of the billing cycle:
+      // the generator exits on the refusal, and the next observation starts a
+      // fresh one that earns the same refusal. Withhold requests for a cooldown,
+      // then let exactly one through to re-probe.
+      // Claim the probe rather than merely reading the clock: every live session
+      // sees the window elapse at the same instant, so a bare check would let
+      // them all through together.
+      if (!tryAdmitQuotaProbe(selectedProvider)) {
+        const cooldown = getQuotaCooldown(selectedProvider);
+        logger.warn('SESSION', 'Skipping generator start while the provider quota cooldown is active', {
+          sessionId: sessionDbId,
+          source,
+          provider: selectedProvider,
+          ...(cooldown?.window ? { window: cooldown.window } : {}),
+          probeInFlight: cooldown?.probeInFlightSinceMs !== null,
+          retryInMs: cooldown
+            ? Math.max(0, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - (Date.now() - cooldown.armedAtMs))
+            : 0,
+        });
+        return;
+      }
+
       await this.applyTierRouting(session);
       await this.startGeneratorWithProvider(session, selectedProvider, source);
       return;
@@ -285,6 +290,9 @@ export class SessionRoutes extends BaseRouteHandler {
           if (session.currentProvider === provider) {
             session.currentProvider = null;
           }
+          // This run is over even though it skips finalization, so it must not
+          // keep holding the probe.
+          releaseQuotaProbe(provider);
           return;
         }
 
@@ -310,10 +318,36 @@ export class SessionRoutes extends BaseRouteHandler {
             ide: session.platformSource,
           });
         }
+        // Every generator exit releases any probe this run claimed. Success
+        // already deleted the breaker and a fresh refusal already re-armed it;
+        // this covers aborts and crashes, so a claim can never outlive its
+        // request and wedge the provider shut.
+        releaseQuotaProbe(provider);
+
         await handleGeneratorExit(session, reason, {
           sessionManager: this.sessionManager,
           completionHandler: this.completionHandler,
         });
+
+        // A recycle is the one abort that should resume on its own. The batch
+        // was reset to pending and the conversation dropped; without this the
+        // work waits for the next captured tool call, so the final observation
+        // of a session is stranded when none arrives. Quota and auth pauses
+        // deliberately do NOT resume — those wait on the user.
+        if (reason === 'overflow:recycle') {
+          // Deferred a tick: `session.generatorPromise` is assigned after this
+          // chain is built, so resuming inline could be overwritten by that
+          // assignment and leave a settled promise blocking every later start.
+          const resume = setTimeout(() => {
+            void this.ensureGeneratorRunning(session.sessionDbId, 'overflow-recycle')
+              .catch(error => {
+                logger.error('SESSION', 'Failed to resume the observer after recycling its conversation', {
+                  sessionId: session.sessionDbId,
+                }, error instanceof Error ? error : new Error(String(error)));
+              });
+          }, 0);
+          resume.unref?.();
+        }
       });
     session.generatorPromise = generatorPromise;
   }
