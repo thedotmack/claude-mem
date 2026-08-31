@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.18.1] - 2026-08-31
+
+## Observer sessions stay silent and never contact other agents
+
+The memory observer is a passive recorder by design, but nothing in its prompt actually said so. This release makes both rules explicit in `observer_role`, which is injected into the observer's prompt on every turn.
+
+**SILENT BY DESIGN** — the observer session runs invisibly in the background. The session it watches does not know it is being observed, and it must stay that way: an agent that knows it is being watched changes its behavior in unpredictable ways, which corrupts the very record the observer exists to create.
+
+**NO CONTACT** — never contact, message, ping, or notify any other agent or session, including the observed one. No spawning subagents, no asking for input, no attempting to influence work in progress. One-way recorder: observations in, XML out.
+
+### Scope
+
+Applied to all four base modes — `code`, `email-investigation`, `law-study`, and `meme-tokens`. The 32 localized and `--chill` variants override only placeholders and footers, so they inherit the new text automatically.
+
+The mode-creator authoring reference also gained the rule (worked example plus a prompt-quality checklist item), so modes authored later carry it forward.
+
+**Full changelog**: https://github.com/thedotmack/claude-mem/compare/v13.18.0...v13.18.1
+
 ## [13.18.0] - 2026-08-29
 
 Every CMEM Pro trial offer is now 30 days.
