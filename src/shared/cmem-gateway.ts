@@ -6,7 +6,7 @@
  * When the installer's browser login delivers a memory key, the worker talks
  * to the cmem.ai gateway through the generic OpenRouter provider
  * (CLAUDE_MEM_OPENROUTER_BASE_URL points at `${CMEM_PRO_ORIGIN}/api/inference/v1`).
- * Once the free week ends without a subscription, the gateway answers with a
+ * Once the free trial ends without a subscription, the gateway answers with a
  * terminal quota/key error — and instead of surfacing an outage, memory falls
  * back to the user's Anthropic plan. The fallback state lives in settings.json
  * as CLAUDE_MEM_PRO_FALLBACK_AT (ISO timestamp; '' = no fallback) and is

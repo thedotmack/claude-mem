@@ -41,6 +41,7 @@ import {
   PROVIDER_PROMPT_MESSAGE,
 } from '../cmem-pro-costs.js';
 import { clearProFallback, isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
+import { PRO_TRIAL_PITCH, proTrialUrl } from '../../shared/pro-promo.js';
 import {
   buildAnthropicMaxLocalSettings,
   buildCmemActivationSettings,
@@ -2342,6 +2343,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     cloudSyncConfigured
       ? 'Memory syncs across your signed-in CMEM Pro agents and devices.'
       : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine.`,
+    ...(cloudSyncConfigured ? [] : [`${PRO_TRIAL_PITCH}: ${styleText('underline', proTrialUrl('installer'))}`]),
     ``,
     `${styleText('dim', `Optional: ${'/learn-codebase'} ingests a whole repo up front (~5 min)   ·   How it works: /how-it-works`)}`,
   ];
