@@ -12,6 +12,7 @@ import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
 import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
 import { colors } from './types.js';
 import { loadContextConfig } from './ContextConfigLoader.js';
+import { fitContextToBudget, CONTEXT_OUTPUT_LIMIT } from './ContextBudget.js';
 import { calculateTokenEconomics } from './TokenCalculator.js';
 import {
   queryObservationsMulti,
@@ -243,18 +244,28 @@ export async function generateContextWithStats(
       return { text: withObserverHealthWarning(renderEmptyState(project, forHuman), forHuman), stats: null };
     }
 
-    const output = buildContextOutput(
-      project,
+    // `--full` is an explicit human request for everything; only the block that
+    // has to survive a hook's 10,000-character delivery limit is fitted (#3802).
+    const budget = fitContextToBudget(
       observations,
-      summaries,
       config,
-      cwd,
-      input?.session_id,
-      forHuman
+      (items, cfg) =>
+        buildContextOutput(project, items, summaries, cfg, cwd, input?.session_id, forHuman),
+      input?.full ? Number.POSITIVE_INFINITY : CONTEXT_OUTPUT_LIMIT
     );
 
+    if (budget.reductions > 0) {
+      logger.debug('HOOK', 'Trimmed context to fit the hook output limit', {
+        reductions: budget.reductions,
+        observations: budget.observationCount,
+        sessions: budget.config.sessionCount,
+        chars: budget.text.length,
+        overBudget: budget.overBudget,
+      });
+    }
+
     return {
-      text: withObserverHealthWarning(output, forHuman),
+      text: withObserverHealthWarning(budget.text, forHuman),
       stats: buildInjectStats(observations, summaries, Boolean(input?.full)),
     };
   } finally {
