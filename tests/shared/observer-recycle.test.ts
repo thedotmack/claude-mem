@@ -5,7 +5,7 @@ import {
   resolveConversationMaxChars,
   OBSERVER_CONVERSATION_MAX_CHARS,
 } from '../../src/shared/observer-recycle.js';
-import { buildSessionSoFar, type PriorObservation } from '../../src/sdk/prompts.js';
+import { wrapPriorContext } from '../../src/sdk/prompts.js';
 import type { ConversationMessage } from '../../src/services/worker-types.js';
 
 function windowOf(count: number, charsEach: number): ConversationMessage[] {
@@ -13,10 +13,6 @@ function windowOf(count: number, charsEach: number): ConversationMessage[] {
     role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
     content: 'x'.repeat(charsEach),
   }));
-}
-
-function observation(title: string, over: Partial<PriorObservation> = {}): PriorObservation {
-  return { title, subtitle: '', type: 'discovery', prompt_number: 1, ...over };
 }
 
 describe('observer generation budget (#3800)', () => {
@@ -65,44 +61,32 @@ describe('observer generation budget (#3800)', () => {
   });
 });
 
-describe('buildSessionSoFar — continuity across generations (#3800)', () => {
+describe('wrapPriorContext — continuity across generations (#3800)', () => {
   it('is empty for a first generation, leaving the prompt unchanged', () => {
-    expect(buildSessionSoFar([])).toBe('');
+    expect(wrapPriorContext('')).toBe('');
+    expect(wrapPriorContext('   \n  ')).toBe('');
   });
 
-  it('carries what the session already recorded, so a fresh generation is not blind', () => {
-    const block = buildSessionSoFar([
-      observation('Fixed the auth redirect', { type: 'bugfix', prompt_number: 3 }),
-      observation('Chose SQLite over Postgres', { type: 'decision', subtitle: 'for local installs' }),
-    ]);
+  it('carries the session-start context so a fresh generation is not blind', () => {
+    const block = wrapPriorContext('111 2:18p bugfix Fixed the auth redirect');
 
     expect(block).toContain('Fixed the auth redirect');
-    expect(block).toContain('Chose SQLite over Postgres');
-    expect(block).toContain('for local installs');
-    expect(block).toContain('type="bugfix"');
-    expect(block).toContain('prompt="3"');
-    expect(block).toContain('count="2"');
+    expect(block).toContain('<session_start_context>');
+    expect(block).toContain('</session_start_context>');
   });
 
   it('tells the observer not to re-record what it already captured', () => {
-    const block = buildSessionSoFar([observation('Already recorded')]);
-    expect(block).toContain('do not re-record');
+    expect(wrapPriorContext('something')).toContain('do not re-record');
   });
 
-  it('does not let the observer read the elision as "the work did not happen"', () => {
-    const block = buildSessionSoFar([observation('Something')]);
-    expect(block).toContain('do not treat their absence');
+  it('does not let the observer read the gap as "the work did not happen"', () => {
+    expect(wrapPriorContext('something')).toContain('do not treat its absence');
   });
 
-  it('bounds the seed by recency and says how many earlier ones exist', () => {
-    const many = Array.from({ length: 200 }, (_, i) => observation(`obs-${i}`));
-    const block = buildSessionSoFar(many);
-
-    // Newest kept, oldest summarized as a count rather than dropped silently.
-    expect(block).toContain('obs-199');
-    expect(block).not.toContain('obs-0<');
-    expect(block).toContain('count="200"');
-    expect(block).toContain('<earlier count="120"');
-    expect(block).toContain('search rather than re-record');
+  it('passes the context builder output through verbatim rather than re-rendering it', () => {
+    // The whole point of the change: one renderer, the one the SessionStart
+    // hook already uses. This block must not reformat what it is given.
+    const generated = '### Aug 19\n111056 2:18p discovery Tool search returns same results';
+    expect(wrapPriorContext(generated)).toContain(generated);
   });
 });

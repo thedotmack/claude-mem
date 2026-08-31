@@ -44,6 +44,12 @@ export interface ActiveSession {
    * and, if recycling does not help, a hard pause (#3800).
    */
   consecutiveContextOverflows: number;
+  /**
+   * Epoch ms until which observer restarts are withheld after recycling failed
+   * to produce a conversation that fits. Without this gate the next captured
+   * tool call spawns a generator that can only abort on the same budget check.
+   */
+  overflowPausedUntilMs?: number;
   forceInit?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;

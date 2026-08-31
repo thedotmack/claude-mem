@@ -14,7 +14,8 @@ import {
   conversationChars,
   resolveConversationMaxChars,
 } from '../../shared/observer-recycle.js';
-import { recycleObserverConversation, loadSessionSoFar } from './session/recycle-conversation.js';
+import { recycleObserverConversation, loadSessionStartContext } from './session/recycle-conversation.js';
+import { optimizeObservationFields, buildFieldCompressionPrompt } from './field-optimizer.js';
 
 import {
   processAgentResponse,
@@ -78,6 +79,21 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   /** Issue the actual HTTP request and normalize its response. */
   protected abstract query(history: ConversationMessage[], config: TConfig): Promise<ProviderQueryResult>;
 
+  /**
+   * One bounded, standalone call that condenses an oversized tool payload.
+   *
+   * Issued off to the side with its own single-message history: adding it to
+   * `session.conversationHistory` would grow the very conversation the recycle
+   * logic exists to bound.
+   */
+  private async compressField(text: string, budgetChars: number, config: TConfig): Promise<string | null> {
+    const result = await this.query(
+      [{ role: 'user', content: buildFieldCompressionPrompt(text, budgetChars) }],
+      config,
+    );
+    return result.content || null;
+  }
+
   /** Estimate token count for a single message body. */
   protected abstract estimateTokens(text: string): number;
 
@@ -115,10 +131,10 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     // Seed the generation with what this session already observed, so a
     // conversation that starts partway through (a recycle, or a resume after a
     // quota pause) continues from the memory rather than from nothing (#3800).
-    const sessionSoFar = loadSessionSoFar(session, this.dbManager);
+    const priorContext = await loadSessionStartContext(session);
     const initPrompt = session.lastPromptNumber === 1
-      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode, sessionSoFar)
-      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode, sessionSoFar);
+      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode, priorContext)
+      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode, priorContext);
     const initContext = snapshotResponseContext(session);
 
     session.conversationHistory.push({ role: 'user', content: initPrompt });
@@ -241,11 +257,20 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       return;
     }
 
+    // An oversized payload is condensed by a bounded model pass before the
+    // prompt is built, so the observation carries a summary of the whole field
+    // rather than a head/tail slice with the middle cut out (#3800).
+    const optimized = await optimizeObservationFields(
+      { toolInput: message.tool_input, toolOutput: message.tool_response },
+      (text, budgetChars) => this.compressField(text, budgetChars, config),
+      { sessionDbId: session.sessionDbId, toolName: message.tool_name },
+    );
+
     const obsPrompt = buildObservationPrompt({
       id: 0,
       tool_name: message.tool_name!,
-      tool_input: JSON.stringify(message.tool_input),
-      tool_output: JSON.stringify(message.tool_response),
+      tool_input: JSON.stringify(optimized.toolInput),
+      tool_output: JSON.stringify(optimized.toolOutput),
       created_at_epoch: originalTimestamp ?? Date.now(),
       cwd: message.cwd
     });

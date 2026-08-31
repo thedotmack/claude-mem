@@ -378,6 +378,12 @@ export async function processAgentResponse(
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
     session.consecutiveInvalidOutputs = 0;
+    // The overflow/quota/auth rejections returned above, so reaching here means
+    // the provider accepted this prompt and answered it. That is proof the
+    // conversation fits, whether or not the answer parsed — so the recycle
+    // counter resets here too. Resetting only on a valid parse let a generation
+    // that answered "idle" twice in a row trip the exhausted branch and wedge.
+    session.consecutiveContextOverflows = 0;
 
     // consecutiveInvalidOutputs is deliberately always 0 here (see worker-types),
     // so logging it read as "the breaker is fine" on every rejection and hid

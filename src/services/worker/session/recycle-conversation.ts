@@ -16,37 +16,51 @@
 
 import type { ActiveSession } from '../../worker-types.js';
 import type { SessionManager } from '../SessionManager.js';
-import type { DatabaseManager } from '../DatabaseManager.js';
 import type { WorkerRef } from '../agents/types.js';
-import type { PriorObservation } from '../../../sdk/prompts.js';
+import { generateContext } from '../../context-generator.js';
 import { logger } from '../../../utils/logger.js';
 
 /**
- * The observations this session has already recorded, for seeding a generation
- * that starts partway through a session.
+ * The session-start context for a generation that begins partway through a
+ * session.
+ *
+ * This is the SAME builder the SessionStart hook uses to brief a brand-new
+ * Claude Code session on what came before it. A recycled observer generation is
+ * in exactly that position, so it is briefed exactly that way — rather than by
+ * a second, parallel rendering of the same rows.
+ *
+ * Keying on project + cwd (not on the SDK session id) is deliberate: the id is
+ * reset on every generator start, so anything keyed to it reads empty by the
+ * time a generation is actually built.
  *
  * Used on every generator start, not just after a recycle: a generator also
  * starts fresh after a quota or auth pause, and in each case the observer
  * should know what it already captured rather than re-recording it.
  */
-export function loadSessionSoFar(
+export async function loadSessionStartContext(
   session: ActiveSession,
-  dbManager: DatabaseManager,
-): PriorObservation[] {
-  if (!session.memorySessionId) {
-    return [];
-  }
+  cwd?: string,
+): Promise<string> {
   try {
-    return dbManager
-      .getSessionStore()
-      .getObservationsForSession(session.memorySessionId, session.platformSource);
+    const context = await generateContext({
+      cwd: cwd ?? process.cwd(),
+      projects: [session.project],
+      platformSource: session.platformSource,
+      source: 'compact',
+    });
+    logger.info('SESSION', 'Briefed the observer generation with session-start context', {
+      sessionId: session.sessionDbId,
+      project: session.project,
+      contextChars: context.length,
+    });
+    return context;
   } catch (error) {
-    // Seeding is an optimization; a fresh generation is still correct without
+    // Briefing is an optimization; a fresh generation is still correct without
     // it. Never let this stop the observer from starting.
-    logger.warn('SESSION', 'Could not load prior observations to seed the observer generation', {
+    logger.warn('SESSION', 'Could not build session-start context for the observer generation', {
       sessionId: session.sessionDbId,
     }, error instanceof Error ? error : new Error(String(error)));
-    return [];
+    return '';
   }
 }
 
@@ -59,6 +73,14 @@ export function loadSessionSoFar(
  * re-send an over-ceiling prompt on every future tool call.
  */
 export const MAX_CONSECUTIVE_RECYCLES = 2;
+
+/**
+ * How long to withhold observer restarts after recycling failed to produce a
+ * conversation that fits. Mirrors the quota breaker: without a gate the next
+ * captured tool call simply spawns another generator that aborts on the same
+ * budget check.
+ */
+export const OVERFLOW_EXHAUSTED_COOLDOWN_MS = 10 * 60_000;
 
 export interface RecycleOutcome {
   /** False when the recycle budget is spent and the observer paused instead. */
@@ -81,6 +103,14 @@ export async function recycleObserverConversation(
   await sessionManager.resetProcessingToPending(session.sessionDbId);
 
   if (attempts > MAX_CONSECUTIVE_RECYCLES) {
+    // Drop the conversation here too. Leaving it in place meant the next start
+    // re-sent an over-ceiling prompt and grew it further — one spawn, one
+    // refusal and one abort per captured tool call, unbounded.
+    session.conversationHistory = [];
+    session.forceInit = true;
+    // Withhold restarts for a cooldown instead of letting the next ingest spawn
+    // a generator that can only abort again.
+    session.overflowPausedUntilMs = Date.now() + OVERFLOW_EXHAUSTED_COOLDOWN_MS;
     session.abortReason = 'overflow:exhausted';
     abort(session);
     worker?.broadcastProcessingStatus?.();

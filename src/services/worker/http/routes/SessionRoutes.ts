@@ -88,6 +88,26 @@ export class SessionRoutes extends BaseRouteHandler {
     const selectedProvider = this.getSelectedProvider();
 
     if (!session.generatorPromise) {
+      // Overflow breaker (#3800). Recycling twice without producing a
+      // conversation that fits means a restart can only abort on the same
+      // budget check — one spawn and one abort per captured tool call. Withhold
+      // restarts for a cooldown, then let one through to re-probe.
+      if (session.overflowPausedUntilMs && Date.now() < session.overflowPausedUntilMs) {
+        logger.warn('SESSION', 'Skipping generator start while the observer overflow cooldown is active', {
+          sessionId: sessionDbId,
+          source,
+          retryInMs: session.overflowPausedUntilMs - Date.now(),
+        });
+        return;
+      }
+      if (session.overflowPausedUntilMs) {
+        // Cooldown elapsed: clear the gate and the recycle debt so the probe
+        // starts from a clean slate rather than tripping the exhausted branch
+        // on its first budget check.
+        session.overflowPausedUntilMs = undefined;
+        session.consecutiveContextOverflows = 0;
+      }
+
       if (selectedProvider === 'claude') {
         const claudeStatus = getDependencyStatus('claude_cli');
         if (claudeStatus?.kind === 'setup_required') {

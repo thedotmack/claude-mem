@@ -66,10 +66,10 @@ export function buildInitPrompt(
   sessionId: string,
   userPrompt: string,
   mode: ModeConfig,
-  priorObservations: ReadonlyArray<PriorObservation> = [],
+  priorContext: string = '',
 ): string {
   return `${mode.prompts.system_identity}
-${buildSessionSoFar(priorObservations)}
+${wrapPriorContext(priorContext)}
 
 <observed_from_primary_session>
   <user_request>${userPrompt}</user_request>
@@ -90,64 +90,31 @@ ${mode.prompts.header_memory_start}`;
 }
 
 /**
- * One already-recorded observation, as carried into a fresh observer
- * generation. Mirrors SessionStore.getObservationsForSession's row shape.
- */
-export interface PriorObservation {
-  title: string;
-  subtitle: string;
-  type: string;
-  prompt_number: number | null;
-}
-
-/**
- * How many prior observations a recycled generation carries. Recency-ordered,
- * matching how session-start context injection selects what to show; anything
- * older is already durable memory and searchable, so it does not need to ride
- * in the observer's prompt.
- */
-const SESSION_SO_FAR_MAX_OBSERVATIONS = 80;
-
-/**
- * Render what this session has already observed, for a conversation that is
- * starting fresh partway through a session (#3800).
+ * Wrap the session-start context block for a generation that begins partway
+ * through a session (#3800).
  *
- * When an observer generation fills up it is retired rather than trimmed, and
- * the replacement is seeded with this block. That keeps continuity in the
- * product's own compressed form — the observations themselves — instead of
- * replaying raw turns, and it is what stops a recycled observer from
- * re-recording work it already captured.
+ * The text comes from `generateContext` — the same builder the SessionStart
+ * hook uses to tell a brand-new Claude Code session what happened before it.
+ * An observer generation that starts after a recycle is in exactly that
+ * position, so it gets exactly that context rather than a second, parallel
+ * rendering of the same rows.
  *
  * Returns '' when there is nothing yet, so a first generation is unchanged.
  */
-export function buildSessionSoFar(observations: ReadonlyArray<PriorObservation>): string {
-  if (observations.length === 0) {
+export function wrapPriorContext(priorContext: string): string {
+  const trimmed = priorContext.trim();
+  if (!trimmed) {
     return '';
   }
 
-  const recent = observations.slice(-SESSION_SO_FAR_MAX_OBSERVATIONS);
-  const earlierCount = observations.length - recent.length;
-
-  const entries = recent
-    .map(obs => {
-      const prompt = obs.prompt_number === null ? '' : ` prompt="${obs.prompt_number}"`;
-      const subtitle = obs.subtitle ? ` — ${obs.subtitle}` : '';
-      return `  <recorded type="${obs.type}"${prompt}>${obs.title}${subtitle}</recorded>`;
-    })
-    .join('\n');
-
-  const earlier = earlierCount > 0
-    ? `\n  <earlier count="${earlierCount}" note="already stored in memory; search rather than re-record" />`
-    : '';
-
   return `
-<session_so_far count="${observations.length}">
-${entries}${earlier}
-</session_so_far>
+<session_start_context>
+${trimmed}
+</session_start_context>
 
-You have already recorded the observations above in this session. Continue from
-there: do not re-record them, and do not treat their absence from the
-conversation above as meaning the work did not happen.`;
+The context above is what you have already recorded for this work. Continue from
+there: do not re-record it, and do not treat its absence from the conversation
+above as meaning the work did not happen.`;
 }
 
 // Per-field character budget for the <parameters> / <outcome> blocks in an
@@ -168,7 +135,7 @@ conversation above as meaning the work did not happen.`;
 // tools put their canonical signal — file path, error message, command
 // header) and the tail (where errors / final-line context typically sit)
 // while dropping the middle. The 10% remainder is the elision marker.
-const OBS_PROMPT_FIELD_MAX_CHARS = 16_000;
+export const OBS_PROMPT_FIELD_MAX_CHARS = 16_000;
 const OBS_PROMPT_FIELD_HEAD_RATIO = 0.6;
 const OBS_PROMPT_FIELD_TAIL_RATIO = 0.3;
 
@@ -261,10 +228,10 @@ export function buildContinuationPrompt(
   promptNumber: number,
   contentSessionId: string,
   mode: ModeConfig,
-  priorObservations: ReadonlyArray<PriorObservation> = [],
+  priorContext: string = '',
 ): string {
   return `${mode.prompts.continuation_greeting}
-${buildSessionSoFar(priorObservations)}
+${wrapPriorContext(priorContext)}
 
 <observed_from_primary_session>
   <user_request>${userPrompt}</user_request>
