@@ -94,6 +94,22 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain("selectedIDEs = ['claude-code']");
     });
 
+    it('fails before installation when a non-interactive run omits its provider', () => {
+      const validationIndex = installSource.indexOf('validateNonInteractiveProvider(options, summary)');
+      const oauthIndex = installSource.indexOf('await requireInstallerOAuthLogin(version)');
+      expect(validationIndex).toBeGreaterThan(-1);
+      expect(validationIndex).toBeLessThan(oauthIndex);
+      expect(installSource).toContain('A provider must be explicit when stdin is not interactive.');
+    });
+
+    it('never opens an API-key prompt on non-interactive stdin', () => {
+      const passwordIndex = installSource.indexOf('const apiKeyResult = await p.password');
+      const guardIndex = installSource.lastIndexOf('if (!isInteractive)', passwordIndex);
+      expect(guardIndex).toBeGreaterThan(-1);
+      expect(guardIndex).toBeLessThan(passwordIndex);
+      expect(installSource.slice(guardIndex, passwordIndex)).toContain('missing a personal API key');
+    });
+
     it('parses the explicit --disable-auto-memory flag for non-interactive installs', () => {
       expect(readFileSync(join(__dirname, '..', 'src', 'npx-cli', 'index.ts'), 'utf-8'))
         .toContain("disableAutoMemory: values['disable-auto-memory'] === true");

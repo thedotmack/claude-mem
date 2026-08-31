@@ -1,6 +1,6 @@
 ---
 title: "Cursor Integration"
-description: "Persistent AI memory for Cursor IDE - free tier options available"
+description: "Persistent AI memory for Cursor IDE - memory runs off-plan on the provider of your choice"
 ---
 
 # Cursor Integration
@@ -10,8 +10,8 @@ description: "Persistent AI memory for Cursor IDE - free tier options available"
 Every Cursor session starts fresh - your AI doesn't remember what it worked on yesterday. Claude-mem changes that. Your agent builds cumulative knowledge about your codebase, decisions, and patterns over time.
 
 <CardGroup cols={2}>
-  <Card title="Free to Start" icon="dollar-sign">
-    Works with Gemini's free tier (1500 req/day) - no subscription required
+  <Card title="Runs Off-Plan" icon="dollar-sign">
+    Memory work runs on Gemini or OpenRouter - no Claude subscription required
   </Card>
   <Card title="Automatic Capture" icon="bolt">
     MCP tools, shell commands, and file edits logged without effort
@@ -25,7 +25,7 @@ Every Cursor session starts fresh - your AI doesn't remember what it worked on y
 </CardGroup>
 
 <Info>
-**No Claude Code subscription required.** Use Gemini (free tier) or OpenRouter as your AI provider.
+**No Claude Code subscription required.** Use Gemini or OpenRouter as your AI provider — memory runs off-plan on your own key.
 </Info>
 
 ## How It Works
@@ -135,14 +135,14 @@ After setup, verify everything is working:
 
 ## Provider Comparison
 
-| Provider | Cost | Rate Limit | Best For |
-|----------|------|------------|----------|
-| Gemini | Free tier | 1500 req/day | Individual use, getting started |
-| OpenRouter | Pay-per-use + free models | Varies by model | Model variety, high volume |
-| Claude SDK | Included with Claude Code | Unlimited | Claude Code subscribers |
+| Provider | Plan Usage | Rate Limit | Best For |
+|----------|------------|------------|----------|
+| Gemini | Off-plan (your Gemini key) | 1500 req/day | Individual use, getting started |
+| OpenRouter | Off-plan (your OpenRouter credit; free models available) | Varies by model | Model variety, high volume |
+| Claude SDK | Shares your Claude plan | Unlimited | Claude Code subscribers |
 
 <Tip>
-**Recommendation:** Start with Gemini's free tier. It handles typical individual usage well. Switch to OpenRouter or Claude SDK if you need higher limits.
+**Recommendation:** Start with Gemini — it keeps memory off-plan and handles typical individual usage well. Switch to OpenRouter or Claude SDK if you need higher limits.
 </Tip>
 
 ## Troubleshooting
@@ -174,7 +174,7 @@ bun run worker:logs
 
 ## Next Steps
 
-- [Gemini Setup Guide](/cursor/gemini-setup) - Detailed free tier setup
+- [Gemini Setup Guide](/cursor/gemini-setup) - Detailed off-plan setup with Gemini
 - [OpenRouter Setup Guide](/cursor/openrouter-setup) - Configure OpenRouter
 - [Configuration Reference](../configuration) - All settings options
 - [Troubleshooting](../troubleshooting) - Common issues and solutions

@@ -15,14 +15,28 @@ Install and configure Claude-Mem with a single command:
 npx claude-mem install
 ```
 
-The interactive installer will:
-- Run a runtime check (auto-installs Bun and uv if missing)
-- Detect your installed IDEs (Claude Code, Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI) and let you multi-select which ones to wire up
-- Offer to install Claude Code if it isn't found
-- Prompt for an LLM provider (Claude Code auth, Gemini API key, or OpenRouter API key)
-- Prompt for the Claude model used to compress observations (Haiku / Sonnet / Opus) when the Claude provider is selected
-- Copy plugin files into the marketplace directory and register the plugin
-- Auto-start the worker service
+The interactive installer runs in three stages — install first, sign in second, then pick your memory provider:
+
+1. **Install everything.** Runs a runtime check (auto-installs Bun and uv if missing), detects your installed IDEs (Claude Code, Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI) and lets you multi-select which ones to wire up, offers to install Claude Code if it isn't found, then copies plugin files into the marketplace directory, registers the plugin, and installs dependencies.
+2. **Sign in to claude-mem.** The installer asks for your email and sends a sign-in link; your browser opens to complete it. Every sign-in provisions a memory key for your account — no card required.
+3. **Choose your memory provider.** After sign-in you pick where observation extraction runs (see below), then the worker service auto-starts with your choice.
+
+### Memory Provider Options
+
+- **claude-mem observer (recommended)** — memory runs off-plan: get up to 100% more usage from your plan. Free for 7 days; when the free week ends, memory automatically falls back to your Anthropic plan unless you subscribe.
+- **Your OpenRouter key** — memory runs off-plan on your OpenRouter credit.
+- **Gemini API key** — memory runs off-plan on your Gemini key.
+- **Anthropic plan** — memory shares your Claude plan usage. Prompts for the Claude model used to compress observations (Haiku / Sonnet / Opus).
+
+### Skipping the Sign-In
+
+The sign-in step is skipped automatically when any of these apply:
+
+- You pass an explicit `--provider` flag (e.g. `npx claude-mem install --provider claude`)
+- `CLAUDE_MEM_ONLINE_OPTIN=false` is set in your environment
+- The install runs in CI or a non-interactive (non-TTY) shell
+
+You can finish signing in anytime by re-running `npx claude-mem install`.
 
 ### Option 2: Plugin Marketplace
 
