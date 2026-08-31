@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.21.1] - 2026-08-31
+
+**The trial is 30 days everywhere now.**
+
+The installer's provider screen already advertised a 30 Day Free Trial and the server already issued 30-day checkout URLs — but every other surface still said 7, and the promo links carried no trial length at all.
+
+That last part mattered more than copy. `cmem.ai/pro` is deliberately length-neutral without an explicit `?trial=`, so a click from the session-start banner, the viewer, or the context banner landed on a page that never named a trial length and sent no trial into Stripe Checkout. Those links now carry it.
+
+- Every promo link emits `?from=<surface>&trial=30` — session-start banner, context banner, welcome hint, viewer header, installer, fallback notice.
+- `PRO_TRIAL_DAYS` in `src/shared/pro-promo.ts` is the single knob, mirrored in the viewer's own copy (its tsconfig pins `rootDir` and cannot import the shared module).
+- The installer's Next Steps screen shows the trial link again. `'installer'` was a declared promo source with no caller after the Next Steps trim in v13.21.0, so the last screen of the funnel never mentioned the offer. It shows for non-Pro installs only.
+- Copy: "free week" → "free trial" in the fallback notice and the countdown line. README and install docs now say 30 days.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.21.0...v13.21.1
+
 ## [13.21.0] - 2026-08-31
 
 Installer release. Fixes the outage that made 13.20.0 uninstallable, and reworks the account/provider flow.
