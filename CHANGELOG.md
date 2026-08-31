@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.18.0] - 2026-08-29
+
+Every CMEM Pro trial offer is now 30 days.
+
+The 7/14/30 installer split has been called — 30 won on signups. The installer offers 30 days on every run, and the session-start banner, context banner, welcome hint, viewer header, and cursor-hooks docs now say 30 days and pass trial=30 explicitly, so a click can't land on a shorter arm. 7 and 14 remain valid values on [cmem.ai](http://cmem.ai).
+
+## [13.17.2] - 2026-08-29
+
+## What changed
+
+- **Fast, bounded Codex startup context.** Removes the synchronous version/dependency check and duplicate one-shot MCP startup from Codex `SessionStart`, uses the persistent local worker path, caps API requests at 2 seconds, and keeps the supported cold-start path bounded. Warm startup verification returned injected context in under one second. ([#3789](https://github.com/thedotmack/claude-mem/pull/3789))
+- **7/14/30 installer-offer measurement.** Records every user-visible CMEM Pro offer surface as `pro_offer_viewed`, with `trial_days`, canonical `trial_variant`, and installer source/surface labels. Total displays and unique anonymous installs can now be compared with trial starts per arm. ([#3792](https://github.com/thedotmack/claude-mem/pull/3792))
+
+## Privacy and behavior
+
+Offer measurement uses the existing consent-gated anonymous install UUID and strict property whitelist. It never sends email addresses, sign-in links, pairing secrets, device codes, prompts, paths, or source content. This release does not change trial assignment, offer copy, pricing, or checkout behavior.
+
+## [13.17.0] - 2026-08-28
+
+Installer trial-length offers
+- Assigns one stable 7-, 14-, or 30-day CMEM Pro trial offer per installer flow.
+- Shows the exact assigned length consistently in prompts, retry/resend flows, activation summaries, and cmem.ai links.
+- Sends the same trial length to the web start API and preserves it across reruns.
+- Adds focused coverage for all three arms and legacy-state recovery.
+
 ## [13.16.1] - 2026-08-26
 
 ## 🪟 The Windows Megafix

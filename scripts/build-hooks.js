@@ -75,19 +75,9 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
     trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
     extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
   });
-  const codexStartupHook = () => buildShellCommand({
-    host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
-    trailingCommand: [
-      '_V=$(CLAUDE_MEM_CODEX_HOOK=1 node "$_P/scripts/version-check.js" || true);',
-      'if [ -n "$_V" ]; then printf \'%s\\n\' "$_V"; else',
-      'CLAUDE_MEM_CODEX_HOOK=1', ...ccTrailing('hook', 'codex', 'context'),
-      '; fi',
-    ],
-    notFoundMessage: 'claude-mem: plugin scripts not found',
-  });
-  const codexHookPair = (tail, options = {}) => ({
-    command: options.startupVersionCheck ? codexStartupHook() : codexHook(tail),
-    commandWindows: buildCodexWindowsCommand(tail, options),
+  const codexHookPair = (tail) => ({
+    command: codexHook(tail),
+    commandWindows: buildCodexWindowsCommand(tail),
   });
 
   return {
@@ -116,7 +106,7 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
     'plugin/hooks/codex-hooks.json': {
       kind: 'hooks',
       commands: {
-        'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context'], { startupVersionCheck: true }),
+        'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context']),
         'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
         'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
         'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
