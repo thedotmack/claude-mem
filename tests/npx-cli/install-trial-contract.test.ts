@@ -129,8 +129,7 @@ describe('installer trial-ready contract', () => {
 
   it('uses the exact two-option provider copy', () => {
     expect(buildProviderLabels()).toEqual({
-      cmem: 'CMEM Pro (30 Day Free Trial: Tokens for Observations + Real-Time Cloud Sync '
-        + 'for Claude.ai, ChatGPT.com, anything that accepts an MCP Connector)',
+      cmem: 'CMEM Pro (30 Day Free Trial: cloud sync, tokens included)',
       cmemHint: '',
       claude: 'Use your Anthropic Max Plan (no cloud sync, uses tokens for observations)',
       claudeHint: '',
@@ -147,6 +146,12 @@ describe('installer trial-ready contract', () => {
     expect(labels.claudeHint).toBe('');
     expect(labels.cmem).toContain('30 Day Free Trial');
     expect(labels.claude).toContain('no cloud sync');
+    // Each row must stay on one line in an 80-column terminal, clack's row
+    // prefix included, so neither description wraps into the other.
+    for (const label of [labels.cmem, labels.claude]) {
+      expect(label).not.toContain('\n');
+      expect(label.length).toBeLessThan(74);
+    }
   });
 
   it('does not ask for the billing acknowledgement in the terminal', () => {
@@ -158,12 +163,25 @@ describe('installer trial-ready contract', () => {
     expect(source).not.toContain('CMEM_TRIAL_ACKNOWLEDGEMENT');
   });
 
-  it('requires OAuth before provider selection and contains no retired email path', () => {
+  it('resolves the provider choice before OAuth and contains no retired email path', () => {
+    // Login is LAZY. The provider screen is free — no network, no account — so
+    // it runs first, and OAuth is reached only once the resolved choice needs a
+    // claude-mem account. Picking the Anthropic Max path opens no browser.
     const source = readFileSync(join(repoRoot, 'src/npx-cli/commands/install.ts'), 'utf-8');
+    const choiceIndex = source.indexOf('await promptProviderChoice(options)');
+    const gateIndex = source.indexOf('if (choiceNeedsAccount) {');
     const oauthIndex = source.indexOf('await requireInstallerOAuthLogin(version)');
-    const providerIndex = source.indexOf('await promptProvider(options, oauthPairing, version)');
-    expect(oauthIndex).toBeGreaterThan(-1);
-    expect(providerIndex).toBeGreaterThan(oauthIndex);
+    const applyIndex = source.indexOf('await promptProvider(providerChoice, oauthPairing, version)');
+    expect(choiceIndex).toBeGreaterThan(-1);
+    expect(gateIndex).toBeGreaterThan(choiceIndex);
+    expect(oauthIndex).toBeGreaterThan(gateIndex);
+    expect(applyIndex).toBeGreaterThan(oauthIndex);
+    // The gate that makes login conditional on the CMEM branch.
+    expect(source).toMatch(
+      /const choiceNeedsAccount = options\.provider\s*\n\s*\? providerNeedsAccount\(options\.provider\)\s*\n\s*: providerChoice === 'cmem';/,
+    );
+    // promptProviderChoice takes no pairing and returns before any login.
+    expect(source).toContain('async function promptProviderChoice(options: InstallOptions): Promise<ProviderChoice>');
     expect(source).toContain('p.multiselect<ProviderChoice>');
     expect(source).not.toContain('promptBrowserLogin');
     expect(source).not.toContain('CMEM_PRO_TRIAL_START_URL');
@@ -173,7 +191,7 @@ describe('installer trial-ready contract', () => {
 
   it('stops any respawned worker after provider settings are persisted', () => {
     const source = readFileSync(join(repoRoot, 'src/npx-cli/commands/install.ts'), 'utf-8');
-    const providerIndex = source.indexOf('await promptProvider(options, oauthPairing, version)');
+    const providerIndex = source.indexOf('await promptProvider(providerChoice, oauthPairing, version)');
     const cutoverIndex = source.indexOf("'provider-cutover'", providerIndex);
     const workerStartIndex = source.indexOf('workerStartResult = await ensureWorkerStarted', cutoverIndex);
     expect(providerIndex).toBeGreaterThan(-1);

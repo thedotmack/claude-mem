@@ -11,7 +11,10 @@ describe('provider account gate', () => {
   });
 
   it('still requires an account when no provider was named', () => {
-    // The provider screen can still offer CMEM Pro, so login has to come first.
+    // `undefined` means the choice is still open and can still land on CMEM Pro,
+    // so this flag alone cannot exempt the install. It does NOT mean login runs
+    // first: the interactive path resolves the choice before any login, and only
+    // the CMEM branch reaches OAuth.
     expect(providerNeedsAccount(undefined)).toBe(true);
   });
 
@@ -32,13 +35,22 @@ describe('install flow wiring', () => {
     'utf-8',
   );
 
-  it('gates the OAuth login call behind providerNeedsAccount', () => {
-    // Pins the regression this fixes: the login call was previously
-    // unconditional, so any cmem.ai outage hard-blocked every install.
-    expect(source).toContain('if (providerNeedsAccount(options.provider)) {');
+  it('gates the OAuth login call behind the resolved provider choice', () => {
+    // Pins two regressions. The login call was once unconditional, so any
+    // cmem.ai outage hard-blocked every install. It was then made conditional
+    // but ran BEFORE the provider prompt, so every interactive user paid for a
+    // browser round trip regardless of what they went on to pick. The gate now
+    // reads the already-resolved choice: the flag path still defers to
+    // providerNeedsAccount, and the prompt path narrows to the CMEM branch.
+    expect(source).toContain('const providerChoice = await promptProviderChoice(options);');
     expect(source).toMatch(
-      /if \(providerNeedsAccount\(options\.provider\)\) \{\s*\n\s*oauthPairing = await requireInstallerOAuthLogin\(version\);/,
+      /const choiceNeedsAccount = options\.provider\s*\n\s*\? providerNeedsAccount\(options\.provider\)\s*\n\s*: providerChoice === 'cmem';/,
     );
+    expect(source).toMatch(
+      /if \(choiceNeedsAccount\) \{\s*\n\s*oauthPairing = await requireInstallerOAuthLogin\(version\);/,
+    );
+    // The choice step itself must stay free of the pairing entirely.
+    expect(source).toContain('async function promptProviderChoice(options: InstallOptions): Promise<ProviderChoice>');
   });
 
   it('refuses CMEM Pro enrollment without a pairing', () => {
