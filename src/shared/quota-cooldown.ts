@@ -51,9 +51,36 @@ export interface QuotaCooldownState {
    * back into a burst.
    */
   probeInFlightSinceMs: number | null;
+  /**
+   * Identifies the claim currently in flight, so only the caller that took it
+   * can release it. A generator admitted while no breaker existed holds no
+   * claim at all; without this id its exit would clear whatever probe a later
+   * session had since started, readmitting a third session while the real
+   * probe is still running.
+   */
+  probeClaimId: number | null;
+}
+
+/**
+ * The result of an admission attempt. `claimId` is null on an admission that
+ * took no claim — there was no breaker to claim against — and releasing must be
+ * keyed on it rather than on "I was admitted", because such a generator can
+ * outlive a later session's real probe.
+ */
+export interface QuotaProbeAdmission {
+  admitted: boolean;
+  claimId: number | null;
 }
 
 const cooldowns = new Map<QuotaProvider, QuotaCooldownState>();
+
+/**
+ * Monotonic id for probe claims, only ever compared for equality. A claim's
+ * timestamp cannot double as its identity: the testing seams admit repeat
+ * claims inside a single millisecond, and two claims sharing an id would
+ * reintroduce exactly the cross-session release this exists to prevent.
+ */
+let nextProbeClaimId = 1;
 
 /** Arm the breaker for `provider`. Re-arming restamps the cooldown. */
 export function recordQuotaExhausted(
@@ -68,6 +95,7 @@ export function recordQuotaExhausted(
     armedAtMs: Date.now(),
     // Re-arming ends whatever probe was in flight: this IS that probe failing.
     probeInFlightSinceMs: null,
+    probeClaimId: null,
   };
   cooldowns.set(provider, state);
   return state;
@@ -109,40 +137,58 @@ export function isQuotaCooldownActive(
  * concurrent callers on this single-threaded worker exactly one wins and the
  * rest are withheld until that probe resolves — success clears the breaker,
  * failure re-arms it, and `releaseQuotaProbe` covers every other exit.
+ *
+ * An admission with no breaker in place carries a null `claimId`: it owns no
+ * probe, and passing that null back to `releaseQuotaProbe` is what stops such a
+ * generator from clearing a probe some later session claimed while it ran.
  */
 export function tryAdmitQuotaProbe(
   provider: QuotaProvider,
   nowMs: number = Date.now(),
   cooldownMs: number = QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
-): boolean {
+): QuotaProbeAdmission {
   const state = cooldowns.get(provider);
-  if (!state) return true;
+  if (!state) return { admitted: true, claimId: null };
 
   if (nowMs - state.armedAtMs < cooldownMs) {
-    return false;
+    return { admitted: false, claimId: null };
   }
 
   const inFlight = state.probeInFlightSinceMs;
   if (inFlight !== null && nowMs - inFlight < QUOTA_PROBE_STALE_MS) {
-    return false;
+    return { admitted: false, claimId: null };
   }
 
+  // A stale takeover mints a fresh id, so the abandoned owner's late release
+  // finds a claim it does not own and leaves this one alone.
+  const claimId = nextProbeClaimId++;
   state.probeInFlightSinceMs = nowMs;
-  return true;
+  state.probeClaimId = claimId;
+  return { admitted: true, claimId };
 }
 
 /**
- * Release a claimed probe without deciding the breaker's fate.
+ * Release the probe this run claimed, without deciding the breaker's fate.
  *
  * Called on every generator exit: if the probe succeeded the breaker is already
  * gone, and if it earned another refusal `recordQuotaExhausted` already re-armed
  * and cleared the claim. This covers the remaining exits (abort, crash, an
  * unrelated error) so a claim can never outlive the request that took it.
+ *
+ * `claimId` scopes that to the caller's own claim. Generators overlap freely —
+ * one admitted before any breaker existed can exit long after a later session
+ * claimed the sole post-cooldown probe — so an unscoped release would clear a
+ * probe still in flight and admit a third session behind it.
  */
-export function releaseQuotaProbe(provider: QuotaProvider): void {
+export function releaseQuotaProbe(provider: QuotaProvider, claimId: number | null): void {
+  // Admitted with no breaker armed: this run never owned a probe, and any probe
+  // in flight now belongs to a different session.
+  if (claimId === null) return;
+
   const state = cooldowns.get(provider);
-  if (state) {
+  if (state && state.probeClaimId === claimId) {
     state.probeInFlightSinceMs = null;
+    state.probeClaimId = null;
   }
 }
 

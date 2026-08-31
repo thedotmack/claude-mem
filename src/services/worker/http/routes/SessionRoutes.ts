@@ -132,7 +132,8 @@ export class SessionRoutes extends BaseRouteHandler {
       // Claim the probe rather than merely reading the clock: every live session
       // sees the window elapse at the same instant, so a bare check would let
       // them all through together.
-      if (!tryAdmitQuotaProbe(selectedProvider)) {
+      const admission = tryAdmitQuotaProbe(selectedProvider);
+      if (!admission.admitted) {
         const cooldown = getQuotaCooldown(selectedProvider);
         logger.warn('SESSION', 'Skipping generator start while the provider quota cooldown is active', {
           sessionId: sessionDbId,
@@ -148,7 +149,9 @@ export class SessionRoutes extends BaseRouteHandler {
       }
 
       await this.applyTierRouting(session);
-      await this.startGeneratorWithProvider(session, selectedProvider, source);
+      // The claim travels with the run that took it: only that run may release
+      // it, or an earlier generator's exit would clear a later session's probe.
+      await this.startGeneratorWithProvider(session, selectedProvider, source, admission.claimId);
       return;
     }
 
@@ -167,7 +170,9 @@ export class SessionRoutes extends BaseRouteHandler {
   private async startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
     provider: 'claude' | 'gemini' | 'openrouter',
-    source: string
+    source: string,
+    /** The quota probe this run claimed, or null when it was admitted without one. */
+    quotaProbeClaimId: number | null,
   ): Promise<void> {
     if (!session) return;
 
@@ -292,7 +297,7 @@ export class SessionRoutes extends BaseRouteHandler {
           }
           // This run is over even though it skips finalization, so it must not
           // keep holding the probe.
-          releaseQuotaProbe(provider);
+          releaseQuotaProbe(provider, quotaProbeClaimId);
           return;
         }
 
@@ -322,7 +327,7 @@ export class SessionRoutes extends BaseRouteHandler {
         // already deleted the breaker and a fresh refusal already re-armed it;
         // this covers aborts and crashes, so a claim can never outlive its
         // request and wedge the provider shut.
-        releaseQuotaProbe(provider);
+        releaseQuotaProbe(provider, quotaProbeClaimId);
 
         await handleGeneratorExit(session, reason, {
           sessionManager: this.sessionManager,
