@@ -78,12 +78,26 @@ describe('GET /restart', () => {
   it('waits for a different pid rather than any healthy response', () => {
     const { html } = renderRestartPage();
     expect(html).toContain(`const outgoingPid = ${process.pid};`);
-    expect(html).toContain('body.pid !== outgoingPid');
+    expect(html).toContain('body.pid === outgoingPid) return false');
   });
 
   it('still finishes against a worker too old to report a pid', () => {
     const { html } = renderRestartPage();
-    expect(html).toContain("typeof body.pid !== 'number'");
+    expect(html).toContain("typeof body.pid === 'number'");
+  });
+
+  // A bound port is not a ready worker: the successor opens the DB, bootstraps
+  // chroma and connects MCP after it starts listening.
+  it('requires the successor to report readiness, not just a bound port', () => {
+    const { html } = renderRestartPage();
+    expect(html).toContain('/api/readiness');
+    expect(html).toContain('readiness.ok');
+    expect(html.indexOf('body.pid')).toBeLessThan(html.indexOf('/api/readiness'));
+  });
+
+  it('does not block on readiness against a worker too old to expose it', () => {
+    const { html } = renderRestartPage();
+    expect(html).toContain('readiness.status === 404');
   });
 });
 

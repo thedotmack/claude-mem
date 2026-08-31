@@ -4,6 +4,49 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.19.0] - 2026-08-31
+
+## Restart the memory worker in one click
+
+When the observer stops saving, the outage warning used to point at
+`~/.claude-mem/settings.json`. A restart clears nearly every one of these
+outages (a wedged or SIGKILL'd provider subprocess), so the warning now leads
+with the restart, offered two ways:
+
+```
+Restarting the memory worker clears almost every outage. Do one of these:
+  Click to restart:  http://localhost:37777/restart
+  Or in a terminal:  npx claude-mem restart
+
+Still failing after the restart? Run: npx claude-mem doctor
+```
+
+`GET /restart` serves a page whose button restarts the worker and waits until
+the replacement is actually up before telling you so.
+
+### The warning is also easier to see
+
+- **Moved below the injected context.** The timeline runs long enough that a
+  warning at the top had already scrolled off by the time context finished
+  printing.
+- **Shown in red** in the terminal. The agent's copy stays clean — ANSI escapes
+  there are just noise in the model's context.
+
+### Safety notes
+
+The restart page is deliberately conservative:
+
+- The `GET` is inert. Restarting is a `POST` behind a real click, so a page that
+  merely names the URL in an `<img>` cannot bounce your worker.
+- The route refuses to be framed (`frame-ancestors 'none'`, `X-Frame-Options:
+  DENY`), so an attacker cannot frame it and harvest the click through an
+  overlay.
+- Success requires the successor, not the corpse: a *different* pid on `/health`
+  (the dying worker answers for the whole graceful-shutdown window) **and**
+  `/api/readiness` ok (a bound port is not a ready worker).
+
+`/health` now reports `pid` to make that check possible.
+
 ## [13.18.1] - 2026-08-31
 
 ## Observer sessions stay silent and never contact other agents
