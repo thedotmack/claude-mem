@@ -37,9 +37,13 @@ if (resolvedViewerHtmlPath) {
 
 /**
  * Self-contained (no external resources — the worker serves this on localhost
- * and a blocked CDN would leave a blank page). Polls /health after the POST
- * because the restart kills this worker and its successor needs a moment to
- * bind the port.
+ * and a blocked CDN would leave a blank page).
+ *
+ * The page bakes in the pid of the worker that served it and, after the POST,
+ * waits for /health to answer from a DIFFERENT pid. Polling for a merely
+ * healthy response reports success against the dying worker: it keeps serving
+ * through the whole graceful-shutdown window, which is far longer than the
+ * first poll.
  */
 const RESTART_PAGE_HTML = `<!doctype html>
 <html lang="en">
@@ -74,12 +78,18 @@ const RESTART_PAGE_HTML = `<!doctype html>
   const button = document.getElementById('go');
   const status = document.getElementById('status');
 
-  async function waitForWorker(deadlineMs) {
+  const outgoingPid = ${process.pid};
+
+  async function waitForSuccessor(deadlineMs) {
     while (Date.now() < deadlineMs) {
       await new Promise((resolve) => setTimeout(resolve, 500));
       try {
         const health = await fetch('/health', { cache: 'no-store' });
-        if (health.ok) return true;
+        if (!health.ok) continue;
+        const body = await health.json();
+        // No pid means a worker too old to report one — fall back to "healthy"
+        // rather than hanging until the deadline.
+        if (typeof body.pid !== 'number' || body.pid !== outgoingPid) return true;
       } catch {
         // Expected while the old worker is down and the successor is booting.
       }
@@ -96,7 +106,7 @@ const RESTART_PAGE_HTML = `<!doctype html>
       // The worker often dies before the response lands — that is the restart
       // working, so fall through to the health poll either way.
     }
-    if (await waitForWorker(Date.now() + 30000)) {
+    if (await waitForSuccessor(Date.now() + 30000)) {
       status.textContent = 'Memory worker restarted. You can close this tab.';
     } else {
       status.textContent = 'Still not answering. Run: npx claude-mem doctor';
@@ -132,7 +142,11 @@ export class ViewerRoutes extends BaseRouteHandler {
     res.json({
       status: 'ok',
       timestamp: Date.now(),
-      activeSessions
+      activeSessions,
+      // Per-process identity, so a caller waiting out a restart can tell the
+      // successor from the worker it just asked to die. The dying worker keeps
+      // answering here for the whole graceful-shutdown window.
+      pid: process.pid,
     });
   });
 
@@ -152,12 +166,18 @@ export class ViewerRoutes extends BaseRouteHandler {
    * A GET that restarted the worker would fire from any page that could name
    * the URL — `<img src="http://localhost:PORT/restart">` on a site the user
    * happens to open is enough. Same reason the page does not POST on load: an
-   * <iframe> would run that script. It takes a real click, on a page served
-   * from the worker's own origin.
+   * <iframe> would run that script.
+   *
+   * Requiring a click is NOT on its own enough, though: an attacker who frames
+   * this page can still collect a real click through an overlay. So the route
+   * also refuses to be framed at all — frame-ancestors 'none' for modern
+   * browsers, X-Frame-Options for the rest.
    */
   private handleRestartPage = this.wrapHandler((req: Request, res: Response): void => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+    res.setHeader('X-Frame-Options', 'DENY');
     res.send(RESTART_PAGE_HTML);
   });
 
