@@ -1694,7 +1694,12 @@ export async function completeCmemTrialPairing(
   if (pairing.delivered) return pairing.delivered;
 
   noteDeviceCode(pairing);
+  // Same hand-off as the login step: print the URL, wait for Return, then open.
+  // Both browser hand-offs behaving identically matters more here than saving a
+  // keystroke — the device code above needs to be read before the browser
+  // steals focus.
   log.info(`Continue CMEM Pro setup: ${pairing.checkoutUrl}`);
+  await waitForReturnToOpenBrowser('Continue setup in browser... (hit return to open automatically)');
   openBrowser(pairing.checkoutUrl);
 
   const result = await waitForInstallerPairing(pairing, 'enrollment', version);
