@@ -1018,7 +1018,12 @@ function openBrowser(url: string): void {
 
 async function promptProvider(
   options: InstallOptions,
-  pairing: InstallerOAuthPairing,
+  /**
+   * Null only when login was skipped, which happens solely for an explicit
+   * `--provider claude`. That path cannot reach the CMEM branch below, which
+   * re-checks rather than assuming.
+   */
+  pairing: InstallerOAuthPairing | null,
   version: string,
 ): Promise<ProviderId> {
   const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
@@ -1088,6 +1093,11 @@ async function promptProvider(
   if (selectedProvider === 'cmem') {
     if (!isInteractive) {
       throw new Error('CMEM Pro trial acknowledgement requires an interactive terminal.');
+    }
+    if (!pairing) {
+      // Unreachable via the flag that skips login (it forces 'claude'), but a
+      // future caller passing null here would otherwise enroll against nothing.
+      throw new Error('CMEM Pro requires a signed-in claude-mem account.');
     }
     const trialAcknowledgement = await p.multiselect<'accepted'>({
       message: 'Confirm CMEM Pro Free Trial:',
@@ -1751,6 +1761,20 @@ async function promptTelemetryOptIn(): Promise<void> {
   log.success(consent ? 'Thanks! Anonymized usage sharing is on.' : 'No problem — telemetry is off.');
 }
 
+/**
+ * Whether an install still has an account question to answer.
+ *
+ * Only `--provider claude` is exempt: it configures memory against the user's
+ * own Anthropic plan and needs no claude-mem credentials. `gemini` and
+ * `openrouter` are NOT exempt — openrouter is the transport for the cmem
+ * gateway, so an explicit `openrouter` install may still be reaching cmem.ai.
+ * With no flag at all the provider screen can still offer CMEM Pro, so login
+ * must happen first.
+ */
+export function providerNeedsAccount(provider: InstallOptions['provider']): boolean {
+  return provider !== 'claude';
+}
+
 export interface InstallOptions {
   ide?: string;
   provider?: 'claude' | 'gemini' | 'openrouter';
@@ -2095,13 +2119,26 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     log.info('Claude Code: leaving native auto-memory enabled unless you explicitly opt in to disabling it.');
   }
 
-  // OAuth is required for every install, including runs with an explicit
-  // --provider. Authentication never selects a provider or starts a trial.
-  const oauthPairing = await requireInstallerOAuthLogin(version);
-  if (!oauthPairing) {
-    if (isInteractive) p.cancel('OAuth login is required to finish installation.');
-    else console.error('OAuth login is required to finish installation.');
-    process.exit(1);
+  // Login is account-first for every install EXCEPT one that has already named
+  // a provider needing no claude-mem account. `--provider claude` runs memory
+  // on the user's own Anthropic plan and never touches cmem.ai, so gating it on
+  // browser OAuth made an unrelated cmem.ai outage fail an install that could
+  // have completed offline — and there is no account question left to ask,
+  // because the flag already answered it.
+  //
+  // Deliberately keyed on the explicit flag, not on reachability: a silent
+  // fallback to a local install whenever cmem.ai is down would quietly change
+  // what the user gets. This only skips a step the user's own flag made moot.
+  let oauthPairing: InstallerOAuthPairing | null = null;
+  if (providerNeedsAccount(options.provider)) {
+    oauthPairing = await requireInstallerOAuthLogin(version);
+    if (!oauthPairing) {
+      if (isInteractive) p.cancel('OAuth login is required to finish installation.');
+      else console.error('OAuth login is required to finish installation.');
+      process.exit(1);
+    }
+  } else {
+    log.info('Skipping claude-mem login: --provider claude runs memory on your own Anthropic plan.');
   }
   const selectedProvider = await promptProvider(options, oauthPairing, version);
   const cloudSyncConfigured = [
