@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.21.2] - 2026-08-31
+
+**Payment is deferred until after you've read the offer.**
+
+Picking CMEM Pro in the installer opened a browser on a bare Stripe card form. `/api/pro/trial/claim` redirected a non-entitled user straight into Checkout, so `/pro` — the page that actually explains the plan — was only ever reached on an error or a cancellation.
+
+The claim route now sends those users to `/pro?from=installer&pairing=…&trial=30` and starts Checkout only when the offer page's CTA asks for it. Nothing about the Checkout session changed — same trial length, same pairing metadata, same success and cancel URLs. It just happens after the offer instead of before.
+
+That half is server-side and **already live for 13.21.0 and 13.21.1 too** — it changes where the route sends people, not the URL the installer opens.
+
+**In this release:**
+
+- **CMEM Pro is pre-selected** on the provider prompt. It is the recommended path, and selecting it no longer means "pay now".
+- **Claude Code is pre-selected** on the IDE prompt, along with anything else detected.
+
+Both prompts opened with nothing checked, which made the recommended path a required chore before the install could continue. They are still multiselects — uncheck and pick something else if you want.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.21.1...v13.21.2
+
 ## [13.21.1] - 2026-08-31
 
 **The trial is 30 days everywhere now.**
