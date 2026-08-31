@@ -17,9 +17,98 @@
  * The breaker arms on a quota-exhausted generator exit, expires after a
  * cooldown so a single request can re-probe, and clears immediately on success
  * — so recovery costs at most one cooldown window, not a manual restart.
+ *
+ * PERSISTENCE, and the deliberate split within it.
+ *
+ * The armed window is written to disk beside `observer-health.json`, for the
+ * reason that file's own docblock already gives: the state must survive worker
+ * restarts. An in-memory-only breaker is cleared by every restart — the
+ * `/api/admin/restart` endpoint (the process serving it IS the process holding
+ * the Map), `npx claude-mem restart`, a reboot, a plugin-version SIGKILL, a
+ * crash-and-respawn, and this repo's own documented `npm run build-and-sync`.
+ * A crash-restart loop is the worst shape: crash, respawn, empty breaker,
+ * doomed request, repeat — the storm again with extra steps.
+ *
+ * The probe claim (`probeInFlightSinceMs` / `probeClaimId`) is deliberately NOT
+ * persisted, and must load as null. It is single-process concurrency state: a
+ * restart kills every generator that could be holding one, so a claim restored
+ * from disk would be owned by a dead process and would wedge the provider shut
+ * until it went stale — the opposite of the failure this breaker prevents.
  */
 
-export type QuotaProvider = 'claude' | 'gemini' | 'openrouter';
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs';
+import { dirname, join } from 'path';
+import { paths } from './paths.js';
+import { logger } from '../utils/logger.js';
+
+export type QuotaProvider = 'claude' | 'gemini' | 'openrouter' | 'cmem-gateway';
+
+export const QUOTA_COOLDOWN_FILENAME = 'quota-cooldown.json';
+
+/**
+ * The persisted half of a breaker: the armed window only. Never the claim.
+ */
+interface PersistedQuotaCooldown {
+  provider: QuotaProvider;
+  message: string;
+  window?: string;
+  armedAtMs: number;
+}
+
+function defaultCooldownFilePath(): string {
+  return join(paths.dataDir(), QUOTA_COOLDOWN_FILENAME);
+}
+
+let hydrated = false;
+
+/** Read the armed windows written by a previous process, once per process. */
+function hydrateFromDisk(filePath: string = defaultCooldownFilePath()): void {
+  if (hydrated) return;
+  hydrated = true;
+  try {
+    if (!existsSync(filePath)) return;
+    const parsed: unknown = JSON.parse(readFileSync(filePath, 'utf-8'));
+    if (!Array.isArray(parsed)) return;
+    for (const entry of parsed as PersistedQuotaCooldown[]) {
+      if (!entry || typeof entry.provider !== 'string' || typeof entry.armedAtMs !== 'number') continue;
+      cooldowns.set(entry.provider, {
+        provider: entry.provider,
+        message: entry.message ?? 'Provider reported the inference allowance exhausted',
+        ...(entry.window ? { window: entry.window } : {}),
+        armedAtMs: entry.armedAtMs,
+        // Never restored: the process that could have held this is gone.
+        probeInFlightSinceMs: null,
+        probeClaimId: null,
+      });
+    }
+  } catch (err) {
+    // A corrupt ledger must not stop the worker; it only costs one extra
+    // request to re-arm the breaker.
+    logger.warn('SESSION', 'Failed to read quota-cooldown file', { filePath }, err as Error);
+  }
+}
+
+function persistToDisk(filePath: string = defaultCooldownFilePath()): void {
+  try {
+    mkdirSync(dirname(filePath), { recursive: true });
+    if (cooldowns.size === 0) {
+      if (existsSync(filePath)) unlinkSync(filePath);
+      return;
+    }
+    const rows: PersistedQuotaCooldown[] = [...cooldowns.values()].map((state) => ({
+      provider: state.provider,
+      message: state.message,
+      ...(state.window ? { window: state.window } : {}),
+      armedAtMs: state.armedAtMs,
+    }));
+    const tmp = `${filePath}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(rows, null, 2), 'utf-8');
+    // Atomic swap, so a reader never sees a half-written ledger.
+    renameSync(tmp, filePath);
+  } catch (err) {
+    logger.warn('SESSION', 'Failed to write quota-cooldown file', { filePath }, err as Error);
+  }
+}
 
 /**
  * How long to withhold requests after a provider reports the allowance spent.
@@ -87,26 +176,38 @@ export function recordQuotaExhausted(
   provider: QuotaProvider,
   message: string,
   window?: string,
+  /**
+   * When the window was armed. Defaults to now for a real refusal; passed
+   * explicitly only when reviving a window that was armed before a restart,
+   * so a reload cannot restamp it and hold the provider shut for a fresh full
+   * cooldown on every restart.
+   */
+  armedAtMs: number = Date.now(),
 ): QuotaCooldownState {
+  hydrateFromDisk();
   const state: QuotaCooldownState = {
     provider,
     message,
     ...(window ? { window } : {}),
-    armedAtMs: Date.now(),
+    armedAtMs,
     // Re-arming ends whatever probe was in flight: this IS that probe failing.
     probeInFlightSinceMs: null,
     probeClaimId: null,
   };
   cooldowns.set(provider, state);
+  persistToDisk();
   return state;
 }
 
 /** Clear the breaker — call on any successful generation for that provider. */
 export function clearQuotaCooldown(provider: QuotaProvider): void {
+  hydrateFromDisk();
   cooldowns.delete(provider);
+  persistToDisk();
 }
 
 export function getQuotaCooldown(provider: QuotaProvider): QuotaCooldownState | null {
+  hydrateFromDisk();
   return cooldowns.get(provider) ?? null;
 }
 
@@ -123,6 +224,7 @@ export function isQuotaCooldownActive(
   nowMs: number = Date.now(),
   cooldownMs: number = QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
 ): boolean {
+  hydrateFromDisk();
   const state = cooldowns.get(provider);
   if (!state) return false;
   return nowMs - state.armedAtMs < cooldownMs;
@@ -147,6 +249,10 @@ export function tryAdmitQuotaProbe(
   nowMs: number = Date.now(),
   cooldownMs: number = QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
 ): QuotaProbeAdmission {
+  // A breaker armed before a restart is still armed. Without this the first
+  // call in a fresh process finds an empty Map, admits, and takes no claim —
+  // the herd returns at exactly the moment the breaker should be strongest.
+  hydrateFromDisk();
   const state = cooldowns.get(provider);
   if (!state) return { admitted: true, claimId: null };
 
@@ -184,6 +290,7 @@ export function releaseQuotaProbe(provider: QuotaProvider, claimId: number | nul
   // Admitted with no breaker armed: this run never owned a probe, and any probe
   // in flight now belongs to a different session.
   if (claimId === null) return;
+  hydrateFromDisk();
 
   const state = cooldowns.get(provider);
   if (state && state.probeClaimId === claimId) {
@@ -194,4 +301,13 @@ export function releaseQuotaProbe(provider: QuotaProvider, claimId: number | nul
 
 export function resetQuotaCooldownsForTesting(): void {
   cooldowns.clear();
+  // The latch must drop too, or a test that wrote a ledger would leak its
+  // armed windows into the next test through a stale "already hydrated".
+  hydrated = false;
+  try {
+    const filePath = defaultCooldownFilePath();
+    if (existsSync(filePath)) unlinkSync(filePath);
+  } catch {
+    // Nothing to clean up.
+  }
 }

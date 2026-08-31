@@ -294,7 +294,7 @@ export class SessionRoutes extends BaseRouteHandler {
           recordQuotaExhausted(provider, error.message);
         }
         recordObserverFailure(provider, isClassified(error)
-          ? { message: error.message, code: error.code, action: error.action, url: error.url, requestId: error.requestId }
+          ? { message: error.message, kind: error.kind, code: error.code, action: error.action, url: error.url, requestId: error.requestId }
           : errorMsg);
         telemetryBuffer.record('session_compressed', session.sessionDbId, {
           outcome: 'error',
@@ -327,7 +327,14 @@ export class SessionRoutes extends BaseRouteHandler {
         // it must arm the breaker too — otherwise the prose path keeps the
         // per-observation request storm the classified path no longer has.
         if (normalizeAbortReason(reason) === 'quota') {
-          recordQuotaExhausted(provider, 'Provider reported the inference allowance exhausted', reason?.split(':')[1]);
+          const quotaMessage = 'Provider reported the inference allowance exhausted';
+          recordQuotaExhausted(provider, quotaMessage, reason?.split(':')[1]);
+          // Quota returned as assistant prose never throws, so it never reaches
+          // the .catch above and never armed the health ledger. Without this the
+          // session-start warning is structurally blind to an entire outage
+          // class: the allowance is spent, no observation will ever store, and
+          // the user is told nothing.
+          recordObserverFailure(provider, { message: quotaMessage, kind: 'quota_exhausted' });
         }
         if (reason !== null) {
           // Abort accounting lives HERE, where the reason is consumed — the
