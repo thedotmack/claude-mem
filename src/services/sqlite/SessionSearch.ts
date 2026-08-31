@@ -231,6 +231,26 @@ export class SessionSearch {
     return conditions.length > 0 ? conditions.join(' AND ') : '';
   }
 
+  /**
+   * Scripts written without word delimiters: Hiragana, Katakana, and the CJK ideograph
+   * blocks. FTS5's unicode61 tokenizer has no delimiter to split them on, so an entire run
+   * folds into a single token and no substring of that run can match it (#3801) — and every
+   * query in these scripts is a substring of some longer run.
+   */
+  private static readonly UNSEGMENTED_SCRIPT = /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/;
+
+  /**
+   * Build the substring predicate used when the index cannot represent the query. The
+   * escaping matches {@link searchUserPrompts}, which has always searched by substring.
+   */
+  private static buildSubstringClause(query: string, columns: string[]): { clause: string; params: string[] } {
+    const pattern = `%${query.replace(/[\\%_]/g, '\\$&')}%`;
+    return {
+      clause: `(${columns.map(column => `${column} LIKE ? ESCAPE '\\'`).join(' OR ')})`,
+      params: columns.map(() => pattern),
+    };
+  }
+
   private buildOrderClause(orderBy: SearchOptions['orderBy'] = 'relevance', hasFTS: boolean = true, ftsTable: string = 'observations_fts'): string {
     switch (orderBy) {
       case 'relevance':
@@ -264,6 +284,27 @@ export class SessionSearch {
         LIMIT ? OFFSET ?
       `;
 
+      params.push(limit, offset);
+      return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
+    }
+
+    if (SessionSearch.UNSEGMENTED_SCRIPT.test(query)) {
+      const filterClause = this.buildFilterClause(filters, params, 'o');
+      const orderClause = this.buildOrderClause(orderBy, false);
+      const match = SessionSearch.buildSubstringClause(query, [
+        'o.title', 'o.subtitle', 'o.narrative', 'o.text', 'o.facts', 'o.concepts',
+      ]);
+
+      const sql = `
+        SELECT o.*, o.discovery_tokens
+        FROM observations o
+        WHERE ${match.clause}
+        ${filterClause ? 'AND ' + filterClause : ''}
+        ${orderClause}
+        LIMIT ? OFFSET ?
+      `;
+
+      params.unshift(...match.params);
       params.push(limit, offset);
       return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
     }
@@ -322,6 +363,31 @@ export class SessionSearch {
         LIMIT ? OFFSET ?
       `;
 
+      params.push(limit, offset);
+      return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
+    }
+
+    if (SessionSearch.UNSEGMENTED_SCRIPT.test(query)) {
+      const filterOptions = { ...filters };
+      delete filterOptions.type;
+      const filterClause = this.buildFilterClause(filterOptions, params, 's');
+      const orderClause = orderBy === 'date_asc'
+        ? 'ORDER BY s.created_at_epoch ASC'
+        : 'ORDER BY s.created_at_epoch DESC';
+      const match = SessionSearch.buildSubstringClause(query, [
+        's.request', 's.investigated', 's.learned', 's.completed', 's.next_steps', 's.notes',
+      ]);
+
+      const sql = `
+        SELECT s.*, s.discovery_tokens
+        FROM session_summaries s
+        WHERE ${match.clause}
+        ${filterClause ? 'AND ' + filterClause : ''}
+        ${orderClause}
+        LIMIT ? OFFSET ?
+      `;
+
+      params.unshift(...match.params);
       params.push(limit, offset);
       return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
     }
