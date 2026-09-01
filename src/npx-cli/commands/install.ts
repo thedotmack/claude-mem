@@ -1830,11 +1830,19 @@ async function requireCmemProTrialPairing(version: string): Promise<InstallerOAu
   if (!pairing) return null;
 
   noteDeviceCode(pairing);
-  // The URL is printed before the browser is opened, so a headless or SSH user
-  // who has no opener is never blocked — they can open it by hand and the wait
-  // still clears on Return.
+  // No "press Return to continue" gate here, deliberately.
+  //
+  // The user picked CMEM Pro one prompt ago, so there is nothing left to
+  // confirm — a keypress gate would be a step that only adds ways to get
+  // stuck. waitForReturnToOpenBrowser has no timeout, so a keypress that the
+  // raw-mode listener misses hangs the install forever; that is the worst
+  // outcome available here and it buys nothing. (completeCmemTrialPairing
+  // reached this same conclusion for the same reason.)
+  //
+  // The URL is still printed before the browser opens, so a headless or SSH
+  // user with no opener is never blocked — they open it by hand and the poll
+  // below is already running.
   log.info(`Open this URL: ${pairing.checkoutUrl}`);
-  await waitForReturnToOpenBrowser('Continue setup in browser... (hit return to open automatically)');
   openBrowser(pairing.checkoutUrl);
   await captureCliEvent('installer_oauth_started', { version });
 
