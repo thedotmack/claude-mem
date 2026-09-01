@@ -29,7 +29,15 @@
  *                  filesystem escape hatches.
  *
  * The redundancy IS the security property: removing any one layer must not
- * re-open the gap. Verified against @anthropic-ai/claude-agent-sdk v0.2.141
+ * re-open the gap.
+ *
+ * NOTE: the layered guarantee above holds for the SDK path only. Every layer
+ * except `disallowedTools` is an SDK `Options` field with no command-line
+ * equivalent, so on the CLI spawn path (`claude --disallowedTools ...`) the
+ * deny-list is the sole enforcement — see the docblock below
+ * OBSERVER_DISALLOWED_TOOLS.
+ *
+ * Verified against @anthropic-ai/claude-agent-sdk v0.2.141
  * (sdk.d.ts): `tools`, `allowedTools`, `disallowedTools`, `permissionMode`
  * ('dontAsk' = "Don't prompt for permissions, deny if not pre-approved"),
  * `canUseTool` (returns PermissionResult { behavior: 'deny', message }),
@@ -43,9 +51,12 @@ import { recordObserverToolAttempt } from '../utils/observer-audit.js';
 import { logger } from '../utils/logger.js';
 
 /**
- * Tools explicitly named in the deny-list. `tools: []` already disables all
- * built-ins; this list is the redundant "suspenders" layer and documents
- * intent for human reviewers.
+ * Tools explicitly named in the deny-list.
+ *
+ * NOTE: "redundant" is true on the SDK path only, where `tools: []` already
+ * disables all built-ins. On the CLI spawn path this list is the only
+ * enforcement, so treat every entry as load-bearing and review the list
+ * whenever the harness gains a tool.
  */
 export const OBSERVER_DISALLOWED_TOOLS = [
   'Bash',           // Prevent infinite loops
