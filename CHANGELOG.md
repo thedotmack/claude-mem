@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.23.0] - 2026-09-01
+
+## Telemetry: know when users run out of Claude Code usage
+
+### New `usage_limit_hit` event (#3837)
+
+claude-mem now reports to PostHog when the Claude subscription behind a session runs out of usage. Nothing tracked this before: the only quota signal was `abort_reason: quota` on the observer rollup, which fires when claude-mem's own guard stops early, not when the user's session is blocked. The Stop hook never fires on a limit-hit turn, so the transcript path could not carry it either.
+
+The observer runs on the same account as the observed session, so the SDK's `rate_limit` stream reporting a window as `rejected` is the moment the user's own Claude Code session ran out. The worker captures the event there with:
+
+- `limit_window` — five_hour / seven_day / seven_day_opus / seven_day_sonnet / overage / unknown
+- `overage_status` — allowed / allowed_warning / rejected / unknown
+- `is_using_overage` — boolean
+- `resets_in_minutes` — whole minutes until the window resets, floored at 0
+- plus the existing `ide`, `provider`, `observed_model`, `observed_billing`
+
+Closed enums, a boolean, and one integer. The provider's limit message text never leaves the machine. All four keys are on the scrub whitelist and documented in `telemetry.mdx`.
+
+**Deduped.** `RateLimitStore.set` now reports only a fresh rejection, so a window that stays rejected across many observer requests emits once. It emits again after a reset or an allowed snapshot in between. A worker restart while still capped re-emits once.
+
+**Limits.** Fires only when the observer runs on Claude with a subscription login. API-key, Gemini, and OpenRouter observers never see the SDK rate_limit stream.
+
+### Fix: quota refusals in Claude Code's real wording no longer drop work
+
+`isQuotaLimitedObserverOutput` only matched "claude usage limit", "weekly", and "subscription" wordings. Claude Code actually writes "You've hit your session limit · resets …", "You've reached your Fable 5 limit…", and "You're out of usage credits…". Those turns were classified as ordinary prose and the queued batch was dropped. They now pause the generator and preserve the batch like every other quota refusal. The detector also skips XML like its two siblings.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.22.0...v13.23.0
+
 ## [13.22.0] - 2026-09-01
 
 ## What's new
