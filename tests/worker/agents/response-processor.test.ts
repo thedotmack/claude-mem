@@ -659,6 +659,37 @@ describe('ResponseProcessor', () => {
       expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
       expect(resetProcessingToPending).not.toHaveBeenCalled();
     });
+
+    // The same guarantee one punctuation mark over: a completed observation
+    // that opens with an envelope AND a colon must still be confirmed, or the
+    // session pauses and retries work that already finished.
+    it('still confirms a punctuated envelope narrative', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+
+      const session = createMockSession();
+
+      await processAgentResponse(
+        'Network error: recovery is already covered by the retry wrapper',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(resetProcessingToPending).not.toHaveBeenCalled();
+      expect(session.abortController.signal.aborted).toBe(false);
+    });
   });
 
   describe('context-window overflow recovery (#3800)', () => {

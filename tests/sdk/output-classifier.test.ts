@@ -328,6 +328,37 @@ describe('isTransportFailureObserverOutput separates envelope from diagnosis (re
     });
   }
 
+  // Punctuation does not make an envelope a report — the narrative can be
+  // punctuated too. Reported on this branch after the rebase; the unpunctuated
+  // list above was the whole test, so a colon walked straight through it.
+  const PUNCTUATED_ENVELOPE_PROSE = [
+    'Network error: recovery is already covered by the retry wrapper',
+    'Connection error: handling was reviewed, and no changes were needed',
+    'Fetch error: paths were consolidated into one helper',
+    'Network error: connection handling is being refactored this sprint',
+  ];
+
+  for (const prose of PUNCTUATED_ENVELOPE_PROSE) {
+    it(`does not requeue punctuated prose: ${prose.slice(0, 40)}…`, () => {
+      expect(isTransportFailureObserverOutput(prose)).toBe(false);
+    });
+  }
+
+  // …and the clause test must not swallow a real failure that happens to be
+  // written as one. A concrete failure word re-admits it; a generic network
+  // noun deliberately does not, since that is what the prose above is made of.
+  it('still reports a clause that names a concrete failure', () => {
+    expect(
+      isTransportFailureObserverOutput('Connection error: the connection was reset by peer')
+    ).toBe(true);
+    expect(
+      isTransportFailureObserverOutput('Network error: the provider is unreachable')
+    ).toBe(true);
+    expect(
+      isTransportFailureObserverOutput('Fetch error: the request has timed out')
+    ).toBe(true);
+  });
+
   // A 4xx must not slip through on the strength of an unrelated number.
   it('does not treat a 4xx as retryable because a 5xx-shaped number appears later', () => {
     expect(isTransportFailureObserverOutput('API Error: 400 Bad Request')).toBe(false);

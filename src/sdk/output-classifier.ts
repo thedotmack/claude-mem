@@ -174,7 +174,9 @@ const NETWORK_CONDITION =
  * An `<envelope> error` prefix only counts when the response is *reporting* the
  * error rather than talking about one. A report either stops at the envelope or
  * introduces its detail with punctuation; prose runs straight on into a
- * sentence ("Connection error handling was reviewed").
+ * sentence ("Connection error handling was reviewed"). Punctuation is a
+ * necessary condition, not a sufficient one — see
+ * selfDescribingEnvelopeReportsAFailure for the half it does not carry.
  *
  * A trailing full stop is deliberately NOT a delimiter here. "Network error."
  * therefore goes undetected, which is the safe direction: a miss leaves today's
@@ -182,9 +184,60 @@ const NETWORK_CONDITION =
  * generator — a retry loop over work that already completed.
  */
 const ENVELOPE_IS_A_REPORT = {
-  fetchNetworkConnection: /^(?:fetch|network|connection)\s*error\b\s*(?::|-|–|—|$)/,
+  fetchNetworkConnection: /^(?:fetch|network|connection)\s*error\b\s*(?::|-|–|—|$)\s*/,
   apiHttpRequest: /^(?:api|http|request)\s*error\b\s*(?::|-|–|—|$)/,
 };
+
+/**
+ * A verb of being is what separates a sentence *about* an error from the error
+ * itself. What a CLI puts after its envelope is a fragment naming a condition —
+ * "upstream closed", "peer reset the stream", "ECONNRESET". What an observer
+ * puts there predicates about one — "recovery is already covered by the retry
+ * wrapper".
+ */
+const DETAIL_IS_A_CLAUSE = /\b(?:is|are|was|were|be|been|being|has|have|had)\b/;
+
+/**
+ * The words that only a failure uses. Deliberately narrower than
+ * NETWORK_CONDITION, whose generic nouns — connect, connection, network,
+ * socket, proxy — are exactly what prose about networking code is full of, so
+ * they cannot re-admit a clause this detector has already judged to be prose.
+ */
+const CONCRETE_FAILURE =
+  /\b(?:econnrefused|econnreset|etimedout|enotfound|enetunreach|ehostunreach|epipe|econnaborted|eai_again|eproto|unreachable|refused|timed out|timeout)\b|\bfetch failed\b|\bsocket hang up\b|\breset by peer\b/;
+
+/**
+ * `Fetch|Network|Connection error` is the one envelope family that needs no
+ * separate diagnosis — the noun is itself the condition — which is also why it
+ * cannot lean on NETWORK_CONDITION to reject prose the way the API family does.
+ * Punctuation alone does not carry it: a narrative can be punctuated too, and
+ * "Network error: recovery is already covered by the retry wrapper" is a
+ * completed no-op batch, not a dead socket.
+ *
+ * So the envelope reports a failure when it is the whole response, when what
+ * follows is a fragment rather than a clause, or when a clause names a concrete
+ * failure ("the connection was reset by peer").
+ *
+ * This errs towards missing: "Network error: the endpoint is behind a firewall"
+ * is a real failure it now rejects, having a verb of being and no concrete
+ * token. That is the direction the rest of this detector is already wrong in,
+ * and the cheap one — a miss leaves today's behaviour in place, while a false
+ * positive requeues completed work and pauses the generator.
+ */
+function selfDescribingEnvelopeReportsAFailure(text: string): boolean {
+  const envelope = ENVELOPE_IS_A_REPORT.fetchNetworkConnection.exec(text);
+  if (envelope === null) {
+    return false;
+  }
+
+  const detail = text.slice(envelope[0].length).trim();
+
+  if (detail === '' || !DETAIL_IS_A_CLAUSE.test(detail)) {
+    return true;
+  }
+
+  return CONCRETE_FAILURE.test(detail);
+}
 
 export function isTransportFailureObserverOutput(raw: unknown): boolean {
   if (typeof raw !== 'string' || raw.trim() === '') {
@@ -223,7 +276,7 @@ export function isTransportFailureObserverOutput(raw: unknown): boolean {
     // continues into a sentence. "Connection error handling was reviewed" is a
     // completed observation, and anchoring alone does not catch it — the
     // narrative starts with the token.
-    ENVELOPE_IS_A_REPORT.fetchNetworkConnection.test(text) ||
+    selfDescribingEnvelopeReportsAFailure(text) ||
     // "API Error", "HTTP error" and "Request error" are envelopes, not
     // diagnoses: they front a dead socket and a refused request identically,
     // and the two want opposite handling. Requeuing a 400 or an unknown model
