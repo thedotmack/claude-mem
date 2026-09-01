@@ -2398,7 +2398,16 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `Plugin dir:  ${styleText('cyan', marketplaceDir)}`,
     `IDEs:        ${styleText('cyan', selectedIDEs.join(', '))}`,
   ];
-  summaryLines.push(`Account:     ${styleText('cyan', 'OAuth login complete')}`);
+  // Report what actually happened. This line used to be hardcoded, which was
+  // true only while login was mandatory for every install — now that it runs
+  // solely for the paths that need an account, an offline Anthropic Max install
+  // would otherwise be told it completed a login it never performed.
+  const accountStatus = !oauthPairing
+    ? 'local only (no claude-mem account needed)'
+    : cloudSyncConfigured
+      ? 'signed in — CMEM Pro active'
+      : 'signed in';
+  summaryLines.push(`Account:     ${styleText('cyan', accountStatus)}`);
   summaryLines.push(`Cloud sync:  ${styleText('cyan', cloudSyncConfigured ? 'ON (CMEM Pro)' : 'OFF (local)')}`);
   if (autoMemoryStatus === 'disabled') {
     summaryLines.push(`Auto-memory: ${styleText('cyan', 'disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
