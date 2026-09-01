@@ -60,10 +60,12 @@ export class RateLimitStore {
    * Accepts both the literal `rate_limit_info` payload and a wrapping object;
    * callers should pass the inner info.
    */
-  set(info: RateLimitInfo | undefined | null): void {
-    if (!info || typeof info !== 'object') return;
+  set(info: RateLimitInfo | undefined | null): boolean {
+    if (!info || typeof info !== 'object') return false;
     const key: RateLimitBucketKey = info.rateLimitType ?? 'default';
+    const previous = this.entries.get(key);
     this.entries.set(key, { ...info, observedAt: Date.now() });
+    return isNewRejection(previous, info);
   }
 
   /** Snapshot a single bucket, or undefined if not yet seen. */
@@ -96,6 +98,50 @@ export class RateLimitStore {
 
 /** Process-wide singleton. */
 export const globalRateLimitStore = new RateLimitStore();
+
+/**
+ * A snapshot is a NEW rejection when it says `rejected` and the previous
+ * snapshot for the same window did not — or pointed at a different reset
+ * time, which means the window was exhausted again after a reset without an
+ * `allowed` snapshot in between. The SDK re-sends `rejected` on every request
+ * while the wall is up, so this is what keeps `usage_limit_hit` at one event
+ * per exhaustion instead of one per observer request.
+ */
+export function isNewRejection(
+  previous: RateLimitInfo | undefined,
+  next: RateLimitInfo,
+): boolean {
+  if (next.status !== 'rejected') return false;
+  if (!previous || previous.status !== 'rejected') return true;
+  return previous.resetsAt !== next.resetsAt;
+}
+
+/**
+ * Whole minutes until the window resets, floored at 0. Claude Code has been
+ * seen writing `resetsAt` as epoch seconds in transcripts while the SDK
+ * documents epoch ms, so anything too small to be ms is treated as seconds.
+ */
+export function minutesUntilReset(resetsAt: number | undefined, now: number = Date.now()): number | undefined {
+  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return undefined;
+  const resetsAtMs = resetsAt < 1e12 ? resetsAt * 1000 : resetsAt;
+  return Math.max(0, Math.round((resetsAtMs - now) / 60_000));
+}
+
+/**
+ * PostHog properties for one `usage_limit_hit` event. Closed enums, a
+ * boolean, and one integer — never the provider's message text.
+ */
+export function buildUsageLimitHitProps(
+  info: RateLimitInfo,
+  now: number = Date.now(),
+): Record<string, unknown> {
+  return {
+    limit_window: info.rateLimitType ?? 'unknown',
+    overage_status: info.overageStatus ?? 'unknown',
+    is_using_overage: info.isUsingOverage === true,
+    resets_in_minutes: minutesUntilReset(info.resetsAt, now),
+  };
+}
 
 /**
  * Per-window utilization thresholds for subscription users (cli/oauth).

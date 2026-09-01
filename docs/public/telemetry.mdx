@@ -114,6 +114,10 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `process_rss_mb` | `187` | Worker process resident memory, integer megabytes |
 | `heap_used_mb` | `92` | Worker JS heap in use, integer megabytes |
 | `hook_type` | `observation` | Which hook kind failed: context / session-init / observation / summarize / file-context — our handler names |
+| `limit_window` | `five_hour` | Which subscription window was exhausted on `usage_limit_hit`: five_hour / seven_day / seven_day_opus / seven_day_sonnet / overage / unknown — a closed enum |
+| `overage_status` | `rejected` | Whether extra-usage credits could cover the request: allowed / allowed_warning / rejected / unknown — a closed enum |
+| `is_using_overage` | `false` | Whether the request was already being billed to extra usage |
+| `resets_in_minutes` | `112` | Whole minutes until the exhausted window resets, floored at 0 — never the provider's message text |
 | `error_mode` | `worker_unavailable` | Coarse hook failure mode: worker_unavailable / blocking_error — never an error message |
 | `consecutive_failures` | `3` | How many hook failures occurred in a row (the fail-loud counter) |
 | `threshold_tripped` | `true` | Whether the consecutive-failure count reached the fail-loud threshold |
@@ -137,6 +141,7 @@ One value is derived server-side rather than sent by the client: PostHog resolve
 | `context_injected_rollup` | A 5-minute time-window rollup of context injections (stored memory injected into new sessions) | aggregated `outcomes_ok` / `outcomes_error` counts, `count`, `total_tokens`, `avg_tokens`, `total_observations_injected` (sum of observations served from cache into prompts), `total_tokens_saved_vs_naive`, `window_start_ts` |
 | `search_performed` | A memory search runs (never the query text) | `endpoint`, `outcome`, `duration_ms`, `result_count`, `search_strategy`, `chroma_available`, `fallback_reason` |
 | `worker_stopped` | The background worker shuts down gracefully | `uptime_seconds`, `shutdown_reason` (stop / restart / signal) |
+| `usage_limit_hit` | The Claude subscription behind the observer reports a window as `rejected` — since the observer shares the observed session's account, this is when the user's own Claude Code session ran out of usage. Emitted once per exhausted window (deduped on the window's reset time; a worker restart while still capped re-emits once). Only fires when the observer runs on Claude with a subscription login — API-key, Gemini, and OpenRouter observers never see it | `limit_window` (five_hour / seven_day / seven_day_opus / seven_day_sonnet / overage / unknown), `overage_status` (allowed / allowed_warning / rejected / unknown), `is_using_overage`, `resets_in_minutes`, `ide`, `provider`, `observed_model`, `observed_billing` |
 | `hook_failed` | A claude-mem hook fails hard — the worker is unreachable past the fail-loud threshold, or a blocking error occurs | `hook_type`, `error_mode`, `consecutive_failures`, `threshold_tripped` |
 | `error_occurred` | The worker returns an HTTP 5xx | `error_category` |
 | `$exception` | A real error is captured for [error tracking](#error-tracking) — consent-gated and independently kill-switchable | Redacted `error_type` / `error_message` / `error_stack`, `occurrence_count`, plus whitelisted context. See [Error tracking](#error-tracking) for exactly what is kept vs. redacted |

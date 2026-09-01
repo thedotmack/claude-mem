@@ -59,9 +59,22 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
     return false;
   }
 
+  if (/<(observation|summary)\b/i.test(raw) || /<skip_summary\b/i.test(raw)) {
+    return false;
+  }
+
   const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
 
   return (
+    // Wordings Claude Code actually writes when a subscription window or the
+    // credit balance is exhausted:
+    //   "You've hit your session limit · resets 5:50pm (America/Los_Angeles)"
+    //   "You've reached your Fable 5 limit. Run /usage-credits to continue…"
+    //   "You're out of usage credits. Run /usage-credits to keep using…"
+    /\byou'?ve (?:hit|reached) your\b.{0,40}\blimit\b/.test(text) ||
+    /\bsession limit\b/.test(text) ||
+    /\bout of (?:usage )?credits\b/.test(text) ||
+    /\/usage-credits\b/.test(text) ||
     /\bclaude\b.*\busage\b.*\blimit\b.*\b(reached|exceeded|exhausted|reset|resets|try again)\b/.test(text) ||
     /\b(reached|exceeded|exhausted)\b.*\bclaude\b.*\busage\b.*\blimit\b/.test(text) ||
     /\bweekly\b.*\b(limit|quota)\b.*\b(reached|exceeded|exhausted|reset|resets|try again)\b/.test(text) ||

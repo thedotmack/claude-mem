@@ -123,6 +123,15 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'error_mode',
   'consecutive_failures',
   'threshold_tripped',
+  // usage_limit_hit — the SDK's rate_limit_info projected to closed enums:
+  // limit_window (five_hour | seven_day | seven_day_opus | seven_day_sonnet |
+  // overage | unknown), overage_status (allowed | allowed_warning | rejected |
+  // unknown), a boolean, and whole minutes until the window resets. Never the
+  // provider's limit message text.
+  'limit_window',
+  'overage_status',
+  'is_using_overage',
+  'resets_in_minutes',
   // Historical backfill (backfill.ts) — anonymous per-day rollup counters,
   // the backfilled:true flag, and the single inferred-install date string
   // (YYYY-MM-DD). Counts/sums and closed-enum buckets only — never project
