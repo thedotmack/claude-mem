@@ -3,6 +3,8 @@ import {
   fitContextToBudget,
   CONTEXT_OUTPUT_LIMIT,
 } from '../../src/services/context/ContextBudget.js';
+import { fitContextForDelivery } from '../../src/services/context/ContextBuilder.js';
+import type { Observation, SessionSummary } from '../../src/services/context/types.js';
 import type { ContextConfig } from '../../src/services/context/types.js';
 
 // #3802 — the SessionStart block was sized by item counts, so on an active
@@ -107,5 +109,149 @@ describe('context output budget (#3802)', () => {
     const result = fitContextToBudget(items(50), config, render);
 
     expect(result.text.length).toBeLessThanOrEqual(first.length);
+  });
+});
+
+// ── what happens around the fitter ────────────────────────────────
+//
+// Both of these are about the block that is actually DELIVERED. The fitter
+// itself was already correct; the delivered block was not, because a warning
+// was appended after fitting and the stats were computed before it.
+
+function obs(i: number): Observation {
+  return {
+    id: i,
+    memory_session_id: `session-${i}`,
+    type: 'discovery',
+    title: 'T'.repeat(200),
+    narrative: 'N'.repeat(1200),
+    created_at_epoch: 1_700_000_000 + i,
+  } as unknown as Observation;
+}
+
+function summary(i: number): SessionSummary {
+  return { id: i, memory_session_id: `session-${i}` } as unknown as SessionSummary;
+}
+
+/** Cost profile of the real renderer, ignoring the summaries it is handed. */
+function renderBlock(items: Observation[], config: ContextConfig): string {
+  const titles = items.length * 200;
+  const fulls = Math.min(config.fullObservationCount, items.length) * 1200;
+  const sessions = config.sessionCount * 400;
+  const lastSummary = config.showLastSummary ? 3000 : 0;
+  return 'x'.repeat(300 + titles + fulls + sessions + lastSummary + 200);
+}
+
+describe('what the fitted block delivers (#3811 review)', () => {
+  const WARNING = 'W'.repeat(600);
+
+  // 47 observations render to 9,900 characters under this config, so the block
+  // fits on its own and needs no reduction -- and 9,900 + a 600-character
+  // warning does not. That is the whole discriminator: with the warning inside
+  // the measured block the fitter gives something up, and without it the block
+  // is delivered 500 characters over the limit and replaced by the stub.
+  const NEAR_LIMIT = makeConfig({
+    fullObservationCount: 0,
+    sessionCount: 0,
+    showLastSummary: false,
+  });
+
+  it('counts the observer-health warning against the budget', () => {
+    // Without the warning this input fits at just under the limit, so a warning
+    // appended afterwards is the whole difference between delivered and stubbed.
+    const delivered = fitContextForDelivery(
+      Array.from({ length: 47 }, (_, i) => obs(i)),
+      [],
+      NEAR_LIMIT,
+      WARNING,
+      renderBlock,
+      CONTEXT_OUTPUT_LIMIT,
+      false,
+    );
+
+    expect(delivered.text).toContain(WARNING);
+    expect(delivered.text.length).toBeLessThanOrEqual(CONTEXT_OUTPUT_LIMIT);
+  });
+
+  it('leaves the block alone when the observer is healthy', () => {
+    const withWarning = fitContextForDelivery(
+      Array.from({ length: 47 }, (_, i) => obs(i)),
+      [],
+      NEAR_LIMIT,
+      WARNING,
+      renderBlock,
+      CONTEXT_OUTPUT_LIMIT,
+      false,
+    );
+    const healthy = fitContextForDelivery(
+      Array.from({ length: 47 }, (_, i) => obs(i)),
+      [],
+      NEAR_LIMIT,
+      '',
+      renderBlock,
+      CONTEXT_OUTPUT_LIMIT,
+      false,
+    );
+
+    expect(healthy.text).not.toContain('W');
+    // The warning costs budget, so the healthy block is allowed to carry more.
+    expect(healthy.stats.observation_count).toBeGreaterThanOrEqual(
+      withWarning.stats.observation_count,
+    );
+  });
+
+  it('reports the observations it delivered, not the ones it queried', () => {
+    const queried = Array.from({ length: 50 }, (_, i) => obs(i));
+    const delivered = fitContextForDelivery(
+      queried,
+      [],
+      makeConfig(),
+      '',
+      renderBlock,
+      CONTEXT_OUTPUT_LIMIT,
+      false,
+    );
+
+    expect(delivered.stats.observation_count).toBeLessThan(queried.length);
+    expect(delivered.stats.session_count).toBe(delivered.stats.observation_count);
+    expect(
+      delivered.stats.obs_type_bugfix +
+        delivered.stats.obs_type_discovery +
+        delivered.stats.obs_type_decision +
+        delivered.stats.obs_type_refactor +
+        delivered.stats.obs_type_other,
+    ).toBe(delivered.stats.observation_count);
+  });
+
+  it('reports a session summary only when one survived the reduction', () => {
+    // The fitter drops `sessionCount` to 0 long before it starts dropping
+    // observations, so a run trimmed this hard delivers no summary at all.
+    const delivered = fitContextForDelivery(
+      Array.from({ length: 50 }, (_, i) => obs(i)),
+      Array.from({ length: 10 }, (_, i) => summary(i)),
+      makeConfig(),
+      '',
+      renderBlock,
+      CONTEXT_OUTPUT_LIMIT,
+      false,
+    );
+
+    expect(delivered.stats.has_session_summary).toBe(false);
+  });
+
+  it('reports everything when nothing had to be given up', () => {
+    const queried = Array.from({ length: 3 }, (_, i) => obs(i));
+    const delivered = fitContextForDelivery(
+      queried,
+      [summary(0)],
+      makeConfig({ fullObservationCount: 0, sessionCount: 1, showLastSummary: false }),
+      '',
+      renderBlock,
+      CONTEXT_OUTPUT_LIMIT,
+      false,
+    );
+
+    expect(delivered.stats.observation_count).toBe(3);
+    expect(delivered.stats.has_session_summary).toBe(true);
   });
 });
