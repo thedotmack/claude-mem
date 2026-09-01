@@ -181,6 +181,20 @@ describe('flushSession() — observer_turn_rollup', () => {
     expect(p.top_model).toBeUndefined();
   });
 
+  it('carries the platform dimension into the rollup, and omits it when absent', () => {
+    const CODEX = 11;
+    telemetryBuffer.record('session_compressed', CODEX, { outcome: 'ok', platform: 'codex' });
+    telemetryBuffer.record('session_compressed', CODEX, { outcome: 'ok', platform: 'codex' });
+    telemetryBuffer.flushSession(CODEX, 'session_end');
+    expect((postHogCaptureCalls[0] as { properties: Record<string, unknown> }).properties.platform).toBe('codex');
+
+    postHogCaptureCalls.length = 0;
+    const UNKNOWN = 12;
+    telemetryBuffer.record('session_compressed', UNKNOWN, { outcome: 'ok' });
+    telemetryBuffer.flushSession(UNKNOWN, 'session_end');
+    expect((postHogCaptureCalls[0] as { properties: Record<string, unknown> }).properties.platform).toBeUndefined();
+  });
+
   it('two sessions accumulate independently and each emits its own rollup', () => {
     const A = 100;
     const B = 200;

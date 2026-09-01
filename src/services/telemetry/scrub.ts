@@ -64,6 +64,9 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'tokens_saved_vs_naive',
   'mode',
   'search_strategy',
+  // platform: the capture platform enum (claude | codex | cursor | …) carried
+  // on session_compressed and its observer_turn_rollup — never user content.
+  'platform',
   // session_compressed depth — model id, our trigger names, real token usage.
   'observation_type',
   'hook',

@@ -62,6 +62,19 @@ export interface WatchTarget {
   project?: string;
   context?: WatchContextConfig;
   startAtEnd?: boolean;
+  /**
+   * Set when native platform hooks already capture this watch's top-level
+   * sessions. The watcher then ingests ONLY sessions it can positively identify
+   * as subagent rollouts (see subagentSource), so top-level sessions stay owned
+   * by the hooks and nothing is captured twice.
+   */
+  subagentOnly?: boolean;
+  /**
+   * How to recognise a subagent session from a transcript entry: read the value
+   * at `path` and treat the session as a subagent when it equals `value`. Codex
+   * marks subagent rollouts with session_meta.payload.source === 'thread_spawn'.
+   */
+  subagentSource?: { path: string; value: string };
 }
 
 export interface TranscriptWatchConfig {
