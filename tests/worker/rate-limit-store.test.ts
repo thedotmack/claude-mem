@@ -4,6 +4,7 @@ import {
   shouldAbortForQuota,
   isApiKeyAuth,
   isNewRejection,
+  extractRateLimitInfo,
   minutesUntilReset,
   buildUsageLimitHitProps,
   type RateLimitInfo,
@@ -302,5 +303,35 @@ describe('buildUsageLimitHitProps', () => {
       is_using_overage: false,
       resets_in_minutes: undefined,
     });
+  });
+});
+
+// The SDK emits `{ type: 'rate_limit_event', rate_limit_info }` (SDKRateLimitEvent
+// in sdk.d.ts). The original guard matched a `system` message with subtype
+// `rate_limit`, which the SDK never sends, so the whole quota path was dead.
+describe('extractRateLimitInfo', () => {
+  const info: RateLimitInfo = { status: 'rejected', rateLimitType: 'five_hour', resetsAt: FIXED_NOW + 60_000 };
+
+  it('accepts the SDK rate_limit_event message', () => {
+    expect(
+      extractRateLimitInfo({ type: 'rate_limit_event', rate_limit_info: info, uuid: 'u', session_id: 's' }),
+    ).toEqual(info);
+  });
+
+  it('still accepts the legacy system/rate_limit shape', () => {
+    expect(extractRateLimitInfo({ type: 'system', subtype: 'rate_limit', rate_limit_info: info })).toEqual(info);
+  });
+
+  it('ignores every other stream message', () => {
+    expect(extractRateLimitInfo({ type: 'system', subtype: 'init' })).toBeUndefined();
+    expect(extractRateLimitInfo({ type: 'assistant', message: {} })).toBeUndefined();
+    expect(extractRateLimitInfo({ type: 'result', subtype: 'success' })).toBeUndefined();
+    expect(extractRateLimitInfo(undefined)).toBeUndefined();
+    expect(extractRateLimitInfo('rate_limit_event')).toBeUndefined();
+  });
+
+  it('ignores a rate_limit_event with no payload', () => {
+    expect(extractRateLimitInfo({ type: 'rate_limit_event' })).toBeUndefined();
+    expect(extractRateLimitInfo({ type: 'rate_limit_event', rate_limit_info: null })).toBeUndefined();
   });
 });

@@ -2,9 +2,10 @@
  * Rate limit store — captures `rate_limit` system events emitted by
  * `@anthropic-ai/claude-agent-sdk`'s `query()` stream.
  *
- * The SDK reports the live Claude subscription quota state as `system` events
- * with subtype `rate_limit`. The payload includes the (currently undocumented)
- * `rate_limit_info` shape:
+ * The SDK reports the live Claude subscription quota state as a top-level
+ * `rate_limit_event` message (`SDKRateLimitEvent` in sdk.d.ts). Older builds
+ * surfaced it as a `system` message with subtype `rate_limit`; both shapes
+ * are accepted by extractRateLimitInfo. The `rate_limit_info` payload:
  *
  *   {
  *     status: "allowed" | "allowed_warning" | "rejected",
@@ -98,6 +99,28 @@ export class RateLimitStore {
 
 /** Process-wide singleton. */
 export const globalRateLimitStore = new RateLimitStore();
+
+/**
+ * Pull the `rate_limit_info` payload out of an SDK stream message, or
+ * undefined when the message is not a quota snapshot.
+ *
+ * The SDK emits `{ type: 'rate_limit_event', rate_limit_info }` — a top-level
+ * message type in the SDKMessage union, NOT a `system` subtype. The original
+ * guard (#2234) matched `type === 'system' && subtype === 'rate_limit'`, which
+ * the SDK never sends, so the quota guard and every consumer of the store were
+ * dead until this extractor replaced it. The legacy shape is still accepted in
+ * case an older SDK build is on the path.
+ */
+export function extractRateLimitInfo(message: unknown): RateLimitInfo | undefined {
+  if (!message || typeof message !== 'object') return undefined;
+  const m = message as { type?: unknown; subtype?: unknown; rate_limit_info?: unknown };
+  const isRateLimitMessage =
+    m.type === 'rate_limit_event' || (m.type === 'system' && m.subtype === 'rate_limit');
+  if (!isRateLimitMessage) return undefined;
+  const info = m.rate_limit_info;
+  if (!info || typeof info !== 'object') return undefined;
+  return info as RateLimitInfo;
+}
 
 /**
  * A snapshot is a NEW rejection when it says `rejected` and the previous
