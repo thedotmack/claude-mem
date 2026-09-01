@@ -20,8 +20,8 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import {
   globalRateLimitStore,
   buildUsageLimitHitProps,
+  extractRateLimitInfo,
   shouldAbortForQuota,
-  type RateLimitInfo,
 } from './RateLimitStore.js';
 
 // @ts-ignore - Agent SDK types may not be available
@@ -288,35 +288,31 @@ export class ClaudeProvider {
       });
 
       for await (const message of queryResult) {
-        // Quota-aware wall-clock guard (#2234): the SDK pushes `system` events
-        // with subtype `rate_limit` carrying live subscription quota state.
-        // Capture the snapshot, then bail out of the loop before issuing
-        // another request if we've crossed a per-window threshold. API-key
-        // users are exempt — they authorized per-call spend.
-        if (
-          (message as any)?.type === 'system' &&
-          (message as any)?.subtype === 'rate_limit'
-        ) {
-          const info = (message as any).rate_limit_info as RateLimitInfo | undefined;
-          if (info) {
-            // The observer runs on the same account as the observed session,
-            // so a `rejected` snapshot here means the user's own Claude Code
-            // session is out of usage too. set() dedupes: one event per
-            // exhausted window, not one per observer request against the wall.
-            if (globalRateLimitStore.set(info)) {
-              logger.warn('SDK', 'Subscription usage limit hit', {
-                sessionDbId: session.sessionDbId,
-                window: info.rateLimitType,
-                overageStatus: info.overageStatus,
-              });
-              captureEvent('usage_limit_hit', {
-                ...buildUsageLimitHitProps(info),
-                ide: session.platformSource,
-                provider: 'claude',
-                observed_model: session.observedModel,
-                observed_billing: session.observedBilling,
-              });
-            }
+        // Quota-aware wall-clock guard (#2234): the SDK pushes
+        // `rate_limit_event` messages carrying live subscription quota state
+        // (see extractRateLimitInfo for the shape). Capture the snapshot, then
+        // bail out of the loop before issuing another request if we've
+        // crossed a per-window threshold. API-key users are exempt — they
+        // authorized per-call spend.
+        const info = extractRateLimitInfo(message);
+        if (info) {
+          // The observer runs on the same account as the observed session,
+          // so a `rejected` snapshot here means the user's own Claude Code
+          // session is out of usage too. set() dedupes: one event per
+          // exhausted window, not one per observer request against the wall.
+          if (globalRateLimitStore.set(info)) {
+            logger.warn('SDK', 'Subscription usage limit hit', {
+              sessionDbId: session.sessionDbId,
+              window: info.rateLimitType,
+              overageStatus: info.overageStatus,
+            });
+            captureEvent('usage_limit_hit', {
+              ...buildUsageLimitHitProps(info),
+              ide: session.platformSource,
+              provider: 'claude',
+              observed_model: session.observedModel,
+              observed_billing: session.observedBilling,
+            });
           }
           const decision = shouldAbortForQuota(authMethod, globalRateLimitStore);
           if (decision.abort) {
