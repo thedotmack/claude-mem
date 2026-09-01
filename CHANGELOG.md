@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.23.1] - 2026-09-01
+
+## Fix: the quota guard and `usage_limit_hit` never fired
+
+### The SDK's rate-limit message was matched by the wrong shape (#3838)
+
+The quota guard (#2234) and the `usage_limit_hit` telemetry event added in 13.23.0 (#3837) both read the observer's SDK stream for a `system` message with subtype `rate_limit`. The SDK has never sent that. `SDKRateLimitEvent` in the pinned SDK (0.3.172) is a top-level `{ type: 'rate_limit_event', rate_limit_info }` message in the `SDKMessage` union, and no `system` subtype named `rate_limit` exists in its declarations.
+
+So the guard never matched, `RateLimitStore` stayed empty, the subscription quota abort never fired, and `usage_limit_hit` stayed at zero across more than a thousand Claude-provider installs already running 13.23.0.
+
+`extractRateLimitInfo` in `RateLimitStore.ts` now accepts the real shape and still tolerates the legacy `system`/`rate_limit` form. `ClaudeProvider` routes the stream through it. The guard logic and the event emission are unchanged.
+
+Verified against the SDK's own type declarations and, independently, by Greptile's mocked-stream harness: subscription and OAuth sessions abort after a rejected event, API-key sessions stay exempt, and unrelated or malformed messages leave the store untouched.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.23.0...v13.23.1
+
 ## [13.23.0] - 2026-09-01
 
 ## Telemetry: know when users run out of Claude Code usage
