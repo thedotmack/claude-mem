@@ -232,12 +232,25 @@ export class SessionSearch {
   }
 
   /**
-   * Scripts written without word delimiters: Hiragana, Katakana, and the CJK ideograph
-   * blocks. FTS5's unicode61 tokenizer has no delimiter to split them on, so an entire run
-   * folds into a single token and no substring of that run can match it (#3801) — and every
-   * query in these scripts is a substring of some longer run.
+   * Scripts whose runs FTS5's unicode61 tokenizer cannot split: Hiragana, Katakana, the CJK
+   * ideograph blocks, Bopomofo, and Hangul. unicode61 breaks on Unicode whitespace and
+   * punctuation, and these scripts put neither between the characters of a run — so a run
+   * folds into a single token and no substring of it can ever match (#3801), which is every
+   * query a user types in them.
+   *
+   * Korean does space its words, so only the sub-word case is affected there — but that is
+   * still every partial-word query. Measured directly against `tokenize='unicode61'`:
+   *
+   *   설정   inside 설정을            -> 0 rows
+   *   설정을 as a whole token         -> 1 row
+   *   ㄓㄨ   inside ㄓㄨㄛ            -> 0 rows
+   *   项目   inside 修改了项目配置    -> 0 rows
+   *
+   * Bopomofo and Hangul were raised in review on #3810. The blocks are adjacent, so
+   * \u3100-\u318F covers Bopomofo together with the Hangul compatibility jamo beside it.
    */
-  private static readonly UNSEGMENTED_SCRIPT = /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/;
+  private static readonly UNSEGMENTED_SCRIPT =
+    /[\u3040-\u30FF\u3100-\u318F\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]/;
 
   /**
    * Build the substring predicate used when the index cannot represent the query. The
