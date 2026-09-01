@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.22.0] - 2026-09-01
+
+## What's new
+
+### Telemetry: observed model, source, and billing tier (#3836)
+
+PostHog previously only knew the *observer* model (the model claude-mem uses to write observations). The `observer_turn_rollup` event now also reports the session being observed:
+
+- **`observed_model`** — the model the user's IDE session is running (e.g. `claude-fable-5-1`), read from the transcript's last assistant entry on each Stop hook.
+- **`observed_billing`** — a closed, low-cardinality enum: `max | pro | team | enterprise | subscription | api_key | bedrock | vertex | foundry | unknown`, detected in the hook process from Claude Code's environment and `~/.claude.json`'s `oauthAccount.organizationType`.
+- **`ide`** and **`provider`** now actually reach PostHog on the rollup. The docs already claimed this; the rollup computation was dropping them.
+
+### Storage
+
+- `sdk_sessions` gains two nullable columns, `observed_model` and `observed_billing` (schema version 50). The migration is idempotent and runs on worker start.
+
+### Privacy
+
+- Only `oauthAccount.organizationType`, `oauthAccount` presence, and `customApiKeyResponses.approved` are read from `.claude.json`, and the parsed object is projected to those fields immediately. Parse failures log only the error class name, never the message.
+- Both new properties are whitelisted in the telemetry scrubber and documented in `docs/public/telemetry.mdx`.
+
+### Performance
+
+- The Stop hook now reads the transcript once for both the last assistant message and the observed model (previously one read; the new field did not add a second).
+
 ## [13.21.2] - 2026-08-31
 
 **Payment is deferred until after you've read the offer.**
