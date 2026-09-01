@@ -1,0 +1,676 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>claude-mem — persistent memory for your coding agent</title>
+<meta name="description" content="claude-mem is the open-source memory engine that takes notes while your agent works, then briefs future sessions automatically. CMEM Cloud carries that memory to every agent and device through one private MCP link.">
+<link rel="icon" href="assets/claude-mem-logomark.webp" type="image/webp">
+
+<meta property="og:type" content="website">
+<meta property="og:title" content="claude-mem — persistent memory for your coding agent">
+<meta property="og:description" content="One command. Total recall. The open-source memory engine for Claude Code, Cursor, and any MCP client.">
+<meta property="og:image" content="https://raw.githubusercontent.com/thedotmack/claude-mem/main/site/assets/claude-mem-logo-for-dark-mode.webp">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --deep-neural: #0d0a08;
+    --midnight-warm: #1a1512;
+    --void-warm: #121010;
+    --brand-orange: #fd6500;
+    --brand-orange-bright: #ff7b1a;
+    --brand-orange-deep: #e55800;
+    --brand-glow: #fd650080;
+    --neural-amber: #ffb366;
+    --neural-teal: #4db8d4;
+    --memory-blue: #5ba3c7;
+    --text-primary: #fef6ed;
+    --text-secondary: #c4b5a0;
+    --text-tertiary: #8a7d6f;
+    --success-green: #7eb663;
+    --border-soft: rgba(254, 246, 237, 0.10);
+    --border-brand: rgba(253, 101, 0, 0.28);
+    --radius-soft: 16px;
+    --radius-card: 20px;
+    --radius-hero: 24px;
+    --maxw: 1120px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+
+  body {
+    background: var(--deep-neural);
+    color: var(--text-primary);
+    font-family: "Bricolage Grotesque", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 17px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  a { color: inherit; text-decoration: none; }
+
+  h1, h2, h3 {
+    font-family: "Space Grotesk", "Bricolage Grotesque", sans-serif;
+    font-weight: 600;
+    line-height: 1.08;
+    letter-spacing: -0.02em;
+  }
+
+  code, .mono {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+  .accent {
+    background: linear-gradient(120deg, var(--brand-orange) 0%, var(--neural-amber) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .glow-bg {
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(560px 420px at 78% 12%, rgba(253, 101, 0, 0.20), transparent 70%),
+      radial-gradient(680px 520px at 8% 90%, rgba(77, 184, 212, 0.10), transparent 70%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ---------- nav ---------- */
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    backdrop-filter: blur(14px);
+    background: rgba(13, 10, 8, 0.72);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 66px;
+  }
+  .nav-logo { display: flex; align-items: center; gap: 10px; font-family: "Space Grotesk", sans-serif; font-weight: 600; font-size: 18px; }
+  .nav-logo img { width: 26px; height: 26px; }
+  .nav-links { display: flex; align-items: center; gap: 26px; font-size: 15px; color: var(--text-secondary); }
+  .nav-links a:hover { color: var(--text-primary); }
+  .nav-cta {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 18px;
+    border-radius: 999px;
+    background: linear-gradient(135deg, var(--brand-orange) 0%, var(--brand-orange-deep) 100%);
+    color: #fff;
+    font-weight: 600;
+    font-size: 14px;
+    box-shadow: 0 8px 26px -8px var(--brand-glow);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .nav-cta:hover { transform: translateY(-1px); box-shadow: 0 12px 32px -8px var(--brand-glow); }
+  .stars {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 8px 13px; border-radius: 999px;
+    border: 1px solid var(--border-soft);
+    font-size: 13px; color: var(--text-secondary);
+  }
+  .stars svg { width: 15px; height: 15px; fill: currentColor; }
+
+  /* ---------- hero ---------- */
+  .hero { position: relative; padding: 96px 0 84px; overflow: hidden; }
+  .hero .wrap { position: relative; z-index: 1; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 9px;
+    padding: 7px 15px; border-radius: 999px;
+    border: 1px solid var(--border-brand);
+    background: rgba(253, 101, 0, 0.08);
+    color: var(--neural-amber);
+    font-size: 13px; font-weight: 500;
+    margin-bottom: 26px;
+  }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--brand-orange); box-shadow: 0 0 10px var(--brand-orange); }
+  .hero h1 { font-size: clamp(2.9rem, 7vw, 4.6rem); font-weight: 700; max-width: 12ch; }
+  .hero p.lead {
+    margin-top: 24px;
+    font-size: clamp(1.05rem, 2.2vw, 1.28rem);
+    color: var(--text-secondary);
+    max-width: 46ch;
+  }
+  .hero p.lead code { color: var(--neural-amber); font-size: 0.92em; }
+
+  .cta-row { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 36px; align-items: center; }
+  .btn-primary {
+    display: inline-flex; align-items: center; gap: 9px;
+    padding: 15px 26px; border-radius: 999px;
+    background: linear-gradient(135deg, var(--brand-orange) 0%, var(--brand-orange-deep) 100%);
+    color: #fff; font-weight: 600; font-size: 16px;
+    box-shadow: 0 14px 40px -12px var(--brand-glow);
+    transition: transform 0.15s ease;
+  }
+  .btn-primary:hover { transform: translateY(-2px); }
+  .btn-ghost {
+    display: inline-flex; align-items: center; gap: 9px;
+    padding: 15px 24px; border-radius: 999px;
+    border: 1px solid var(--border-soft);
+    color: var(--text-primary); font-weight: 500; font-size: 16px;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .btn-ghost:hover { border-color: var(--border-brand); background: rgba(253, 101, 0, 0.05); }
+
+  .install {
+    margin-top: 30px;
+    display: inline-flex; align-items: center; gap: 14px;
+    padding: 14px 18px;
+    border-radius: var(--radius-soft);
+    border: 1px solid var(--border-soft);
+    background: var(--void-warm);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 14.5px;
+  }
+  .install .prompt { color: var(--brand-orange); }
+  .install .cmd { color: var(--text-primary); }
+  .install button {
+    border: 0; cursor: pointer;
+    background: rgba(254, 246, 237, 0.06);
+    color: var(--text-secondary);
+    border-radius: 8px; padding: 6px 10px;
+    font-size: 12px; font-family: inherit;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+  .install button:hover { background: rgba(253, 101, 0, 0.15); color: var(--text-primary); }
+
+  /* ---------- sections ---------- */
+  section { position: relative; padding: 86px 0; }
+  section + section { border-top: 1px solid var(--border-soft); }
+  .eyebrow {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12.5px; letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--brand-orange);
+    margin-bottom: 16px;
+  }
+  .section-head { max-width: 40ch; margin-bottom: 52px; }
+  .section-head h2 { font-size: clamp(1.9rem, 4vw, 2.8rem); }
+  .section-head p { margin-top: 16px; color: var(--text-secondary); font-size: 1.08rem; }
+
+  /* logo strip */
+  .logos { text-align: center; }
+  .logos .label { color: var(--text-tertiary); font-size: 14px; letter-spacing: 0.04em; margin-bottom: 26px; }
+  .logos .row {
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 14px 12px;
+  }
+  .logos .chip {
+    padding: 10px 18px; border-radius: 999px;
+    border: 1px solid var(--border-soft);
+    color: var(--text-secondary); font-size: 14.5px;
+    font-family: "Space Grotesk", sans-serif;
+  }
+
+  /* steps */
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .step {
+    padding: 28px;
+    border-radius: var(--radius-card);
+    border: 1px solid var(--border-soft);
+    background: linear-gradient(180deg, rgba(26, 21, 18, 0.6) 0%, rgba(18, 16, 16, 0.3) 100%);
+  }
+  .step .num {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 13px; color: var(--brand-orange);
+    border: 1px solid var(--border-brand);
+    border-radius: 8px; padding: 3px 8px;
+    display: inline-block; margin-bottom: 16px;
+  }
+  .step h3 { font-size: 1.2rem; margin-bottom: 8px; }
+  .step p { color: var(--text-secondary); font-size: 0.98rem; }
+
+  /* terminal card */
+  .terminal {
+    margin-top: 44px;
+    border-radius: var(--radius-card);
+    border: 1px solid var(--border-soft);
+    background: var(--void-warm);
+    overflow: hidden;
+  }
+  .terminal .bar {
+    display: flex; align-items: center; gap: 7px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-soft);
+    color: var(--text-tertiary); font-size: 12.5px;
+    font-family: "JetBrains Mono", monospace;
+  }
+  .terminal .bar i { width: 10px; height: 10px; border-radius: 50%; background: rgba(254,246,237,0.15); display: inline-block; }
+  .terminal pre {
+    padding: 20px 18px; overflow-x: auto;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 13.5px; line-height: 1.85;
+    color: var(--text-secondary);
+  }
+  .terminal .ok { color: var(--success-green); }
+  .terminal .id { color: var(--brand-orange); }
+  .terminal .k { color: var(--neural-teal); }
+
+  /* comparison */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .compare .col {
+    border-radius: var(--radius-card);
+    border: 1px solid var(--border-soft);
+    padding: 28px;
+  }
+  .compare .col.roll { background: rgba(232, 93, 93, 0.04); }
+  .compare .col.cmem { background: rgba(253, 101, 0, 0.06); border-color: var(--border-brand); }
+  .compare .col h3 {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12.5px; letter-spacing: 0.15em; text-transform: uppercase;
+    margin-bottom: 18px;
+  }
+  .compare .roll h3 { color: #e88; }
+  .compare .cmem h3 { color: var(--brand-orange); }
+  .compare ul { list-style: none; display: flex; flex-direction: column; gap: 11px; }
+  .compare li { display: flex; gap: 11px; font-size: 15px; color: var(--text-secondary); }
+  .compare li .marker { flex: none; width: 18px; text-align: center; }
+  .compare .roll li .marker { color: #e88; }
+  .compare .cmem li .marker { color: var(--success-green); }
+  .compare .col .foot { margin-top: 18px; font-size: 13px; color: var(--text-tertiary); font-family: "JetBrains Mono", monospace; }
+
+  /* stats */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; text-align: center; }
+  .stat { padding: 26px 14px; border-radius: var(--radius-card); border: 1px solid var(--border-soft); }
+  .stat .big { font-family: "Space Grotesk", sans-serif; font-weight: 700; font-size: clamp(1.7rem, 3.4vw, 2.4rem); color: var(--text-primary); }
+  .stat .cap { margin-top: 8px; font-size: 13px; color: var(--text-tertiary); }
+
+  /* pricing */
+  .plans { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; align-items: start; }
+  .plan {
+    border-radius: var(--radius-card);
+    border: 1px solid var(--border-soft);
+    padding: 30px 26px;
+    display: flex; flex-direction: column; gap: 6px;
+    background: linear-gradient(180deg, rgba(26, 21, 18, 0.5), rgba(18, 16, 16, 0.2));
+  }
+  .plan.featured { border-color: var(--border-brand); background: rgba(253, 101, 0, 0.07); }
+  .plan .name { font-family: "JetBrains Mono", monospace; font-size: 12.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-tertiary); }
+  .plan .price { font-family: "Space Grotesk", sans-serif; font-weight: 700; font-size: 2.4rem; margin-top: 10px; }
+  .plan .price small { font-size: 0.9rem; font-weight: 400; color: var(--text-tertiary); }
+  .plan .desc { color: var(--text-secondary); font-size: 14.5px; margin: 12px 0 6px; }
+  .plan ul { list-style: none; display: flex; flex-direction: column; gap: 10px; margin: 16px 0 22px; }
+  .plan li { display: flex; gap: 10px; font-size: 14.5px; color: var(--text-secondary); }
+  .plan li .marker { color: var(--brand-orange); flex: none; }
+  .plan .btn-primary, .plan .btn-ghost { width: 100%; justify-content: center; margin-top: auto; }
+
+  /* quotes */
+  .quotes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .quote { padding: 26px; border-radius: var(--radius-card); border: 1px solid var(--border-soft); }
+  .quote p { font-size: 15.5px; color: var(--text-primary); }
+  .quote .who { margin-top: 18px; display: flex; align-items: center; gap: 11px; }
+  .quote .av { width: 34px; height: 34px; border-radius: 50%; background: linear-gradient(135deg, var(--brand-orange), var(--neural-amber)); display: grid; place-items: center; font-weight: 700; font-size: 14px; color: #1a1512; font-family: "Space Grotesk", sans-serif; }
+  .quote .who span { font-size: 13px; color: var(--text-tertiary); }
+  .quote .who strong { display: block; font-size: 14px; color: var(--text-secondary); font-weight: 600; }
+
+  /* final cta */
+  .final { text-align: center; }
+  .final h2 { font-size: clamp(2rem, 4.5vw, 3rem); max-width: 18ch; margin: 0 auto; }
+  .final p { color: var(--text-secondary); margin: 18px auto 34px; max-width: 44ch; }
+
+  /* footer */
+  footer { border-top: 1px solid var(--border-soft); padding: 60px 0 40px; color: var(--text-tertiary); font-size: 14px; }
+  .foot-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr; gap: 28px; }
+  .foot-grid h4 { font-family: "JetBrains Mono", monospace; font-size: 11.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 14px; }
+  .foot-grid a { display: block; padding: 5px 0; color: var(--text-tertiary); }
+  .foot-grid a:hover { color: var(--text-primary); }
+  .foot-bottom { margin-top: 44px; padding-top: 22px; border-top: 1px solid var(--border-soft); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+  .foot-note { max-width: 34ch; margin-top: 12px; line-height: 1.6; }
+  .disclaimer { margin-top: 20px; font-size: 12.5px; color: var(--text-tertiary); opacity: 0.75; max-width: 70ch; }
+
+  @media (max-width: 900px) {
+    .nav-links { display: none; }
+    .steps, .compare, .stats, .plans, .quotes, .foot-grid { grid-template-columns: 1fr; }
+    .stats { grid-template-columns: 1fr 1fr; }
+    section { padding: 64px 0; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap nav">
+    <a class="nav-logo" href="/">
+      <img src="assets/claude-mem-logomark.webp" alt="">
+      claude-mem
+    </a>
+    <nav class="nav-links">
+      <a href="#how">How it works</a>
+      <a href="#recall">Recall</a>
+      <a href="#why">Why cmem</a>
+      <a href="#pricing">Pricing</a>
+      <a href="https://docs.claude-mem.ai/">Docs</a>
+    </nav>
+    <div style="display:flex;align-items:center;gap:12px">
+      <a class="stars" href="https://github.com/thedotmack/claude-mem">
+        <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        Star
+      </a>
+      <a class="nav-cta" href="https://cmem.ai/">Get CMEM Cloud →</a>
+    </div>
+  </div>
+</header>
+
+<div class="hero">
+  <div class="glow-bg"></div>
+  <div class="wrap">
+    <span class="pill"><span class="dot"></span> Open-source memory engine · Apache-2.0</span>
+    <h1>Stop repeating <span class="accent">yourself.</span></h1>
+    <p class="lead">
+      <code>claude-mem</code> takes notes while your agent works — every decision, dead end,
+      and fix — then briefs future sessions automatically. So nothing gets explained or built twice.
+    </p>
+    <div class="install">
+      <span><span class="prompt">$</span> <span class="cmd" id="cmd">npx claude-mem install</span></span>
+      <button id="copy" type="button">Copy</button>
+    </div>
+    <div class="cta-row">
+      <a class="btn-primary" href="https://docs.claude-mem.ai/installation">Get started →</a>
+      <a class="btn-ghost" href="https://github.com/thedotmack/claude-mem">View on GitHub</a>
+    </div>
+  </div>
+</div>
+
+<section class="logos">
+  <div class="wrap">
+    <div class="label">One memory across every agent &amp; editor you already use</div>
+    <div class="row">
+      <span class="chip">Claude Code</span>
+      <span class="chip">Cursor</span>
+      <span class="chip">Windsurf</span>
+      <span class="chip">OpenCode</span>
+      <span class="chip">OpenClaw</span>
+      <span class="chip">Codex CLI</span>
+      <span class="chip">Gemini CLI</span>
+      <span class="chip">VS Code</span>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">How it works</div>
+      <h2>One command. Total recall.</h2>
+      <p>claude-mem is the open-source engine that takes notes while your agent works. CMEM Cloud carries that memory everywhere. Here's the whole story.</p>
+    </div>
+    <div class="steps">
+      <div class="step">
+        <span class="num">01</span>
+        <h3>Install the engine</h3>
+        <p>One command wires lifecycle hooks into your agent and creates a local observations database. No account required.</p>
+      </div>
+      <div class="step">
+        <span class="num">02</span>
+        <h3>It takes notes</h3>
+        <p>Every session, claude-mem captures tool usage and decisions, compresses them into semantic summaries, and indexes them for search.</p>
+      </div>
+      <div class="step">
+        <span class="num">03</span>
+        <h3>One link, everywhere</h3>
+        <p>Connect CMEM Cloud and every machine and agent reads and writes the same memory through one private MCP link.</p>
+      </div>
+    </div>
+
+    <div class="terminal">
+      <div class="bar"><i></i><i></i><i></i> &nbsp;~/dev/checkout-flow</div>
+<pre><span class="prompt" style="color:var(--brand-orange)">$</span> npx claude-mem install
+<span class="ok">✓</span> hooks wired into Claude Code
+<span class="ok">✓</span> 11 skills loaded
+<span class="ok">✓</span> observations db created — .claude-mem/mem.db
+<span class="k">●</span> memory engine ready
+
+<span class="prompt" style="color:var(--brand-orange)">$</span> cmem status
+<span class="k">●</span> observer running · <span class="id">4,182</span> observations
+<span class="k">●</span> cloud sync ok · 218ms
+<span class="k">●</span> mcp link live — https://mcp.cmem.ai/u/9f3a2c7e-d41b</pre>
+    </div>
+  </div>
+</section>
+
+<section id="recall">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Recall</div>
+      <h2>Months later. One query.</h2>
+      <p>Semantic search over a temporal memory. Your agent recalls the <em>why</em> behind every decision — even from a project it hasn't touched since February.</p>
+    </div>
+    <div class="steps">
+      <div class="step">
+        <span class="num">By meaning</span>
+        <h3>Not keywords</h3>
+        <p>Hybrid vector + full-text search returns the right memory, ranked — not a grep dump.</p>
+      </div>
+      <div class="step">
+        <span class="num">In time</span>
+        <h3>Temporal context</h3>
+        <p>What changed, when, and what it replaced. The timeline around any observation is one call away.</p>
+      </div>
+      <div class="step">
+        <span class="num">Anywhere</span>
+        <h3>One shared recall</h3>
+        <p>Every project, machine, and agent shares one memory through the same private endpoint.</p>
+      </div>
+    </div>
+    <div class="terminal">
+      <div class="bar"><i></i><i></i><i></i> &nbsp;mem-search · "why did we drop KV for vector recall?"</div>
+<pre><span class="id">0.95</span>  KV too slow for vector recall — moved to sqlite-vec        <span class="k">May 12 · obs #2,214</span>
+<span class="id">0.91</span>  retry(5) + jitter fixed eu-west ECONNRESET                 <span class="k">Apr 3 · obs #1,876</span>
+<span class="id">0.88</span>  edge runtime chosen for cold-start budget                  <span class="k">Feb 19 · obs #1,102</span>
+
+3 matches · recalled in &lt;1s</pre>
+    </div>
+  </div>
+</section>
+
+<section id="why">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Why cmem</div>
+      <h2>What teams build for months. Yours in one command.</h2>
+      <p>A real memory layer is a database, a vector index, a sync service, and an MCP server. cmem is all of it — an open-source engine with an optional managed cloud.</p>
+    </div>
+    <div class="compare">
+      <div class="col roll">
+        <h3>Roll it yourself</h3>
+        <ul>
+          <li><span class="marker">·</span> Postgres + pgvector <span style="margin-left:auto;color:var(--text-tertiary)">week 1</span></li>
+          <li><span class="marker">·</span> Embedding worker <span style="margin-left:auto;color:var(--text-tertiary)">week 2</span></li>
+          <li><span class="marker">·</span> Sync daemon <span style="margin-left:auto;color:var(--text-tertiary)">week 3</span></li>
+          <li><span class="marker">·</span> MCP server <span style="margin-left:auto;color:var(--text-tertiary)">week 4</span></li>
+          <li><span class="marker">·</span> Auth, keys &amp; scopes <span style="margin-left:auto;color:var(--text-tertiary)">week 5</span></li>
+          <li><span class="marker">·</span> Backups &amp; migrations <span style="margin-left:auto;color:var(--text-tertiary)">week 6</span></li>
+        </ul>
+        <div class="foot">…then you maintain it forever</div>
+      </div>
+      <div class="col cmem">
+        <h3>cmem</h3>
+        <ul>
+          <li><span class="marker">✓</span> Temporal observations DB</li>
+          <li><span class="marker">✓</span> Vector index built in</li>
+          <li><span class="marker">✓</span> Offline-first sync</li>
+          <li><span class="marker">✓</span> Private MCP endpoint</li>
+          <li><span class="marker">✓</span> Your keys, your scopes</li>
+          <li><span class="marker">✓</span> Zero upkeep</li>
+        </ul>
+        <div class="foot">$ npx claude-mem install — ready in 30 seconds</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="stats">
+      <div class="stat"><div class="big">8+</div><div class="cap">agents &amp; IDEs, one memory</div></div>
+      <div class="stat"><div class="big">11</div><div class="cap">bundled skills, zero config</div></div>
+      <div class="stat"><div class="big">&lt;1s</div><div class="cap">to sync &amp; recall</div></div>
+      <div class="stat"><div class="big">3–12×</div><div class="cap">cheaper codebase exploration</div></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">From the community</div>
+      <h2>Built in the open, shipped with every day</h2>
+      <p>The engine is Apache-2.0, and developers build on it daily — then stop starting from zero.</p>
+    </div>
+    <div class="quotes">
+      <div class="quote">
+        <p>"I switched machines mid-project and the agent just knew the whole history. Felt illegal."</p>
+        <div class="who"><span class="av">M</span><span><strong>Mara Voss</strong>staff eng</span></div>
+      </div>
+      <div class="quote">
+        <p>"The killer feature is the single MCP link. Cursor, Claude Code and my CLI agent all share one brain now."</p>
+        <div class="who"><span class="av">D</span><span><strong>Devin Park</strong>indie dev</span></div>
+      </div>
+      <div class="quote">
+        <p>"Stopped re-explaining my architecture every session. cmem captures the why, not just the diff."</p>
+        <div class="who"><span class="av">A</span><span><strong>Aria Nguyen</strong>founder</span></div>
+      </div>
+    </div>
+    <p class="disclaimer">Community quotes are illustrative composites of feedback themes, shown for layout — swap for real, attributed testimonials before publishing.</p>
+  </div>
+</section>
+
+<section id="pricing">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Pricing</div>
+      <h2>Start free, in the open</h2>
+      <p>claude-mem — the engine — is free and open source. CMEM Cloud adds a synced mirror and one private MCP link across every machine.</p>
+    </div>
+    <div class="plans">
+      <div class="plan">
+        <span class="name">claude-mem · open source</span>
+        <div class="price">Free</div>
+        <div class="desc">Apache-2.0 · runs on your machine. The full memory engine, local and yours. No account required.</div>
+        <ul>
+          <li><span class="marker">✓</span> Observations DB from every session — automatic</li>
+          <li><span class="marker">✓</span> Semantic vector recall, fully local</li>
+          <li><span class="marker">✓</span> 11 bundled skills · temporal context</li>
+          <li><span class="marker">✓</span> Works with Claude Code, Cursor &amp; any MCP client</li>
+        </ul>
+        <a class="btn-ghost" href="https://github.com/thedotmack/claude-mem">View on GitHub</a>
+      </div>
+      <div class="plan featured">
+        <span class="name">CMEM Cloud</span>
+        <div class="price">$20<small> / month · cancel anytime</small></div>
+        <div class="desc">Your observations DB, mirrored to the cloud and reachable anywhere through one private MCP link.</div>
+        <ul>
+          <li><span class="marker">✓</span> Offline-first cloud mirror, synced automatically</li>
+          <li><span class="marker">✓</span> One private MCP link for every machine</li>
+          <li><span class="marker">✓</span> Live memory feed on your phone</li>
+          <li><span class="marker">✓</span> End-to-end private — your link, your keys</li>
+        </ul>
+        <a class="btn-primary" href="https://cmem.ai/">Get CMEM Cloud →</a>
+      </div>
+      <div class="plan">
+        <span class="name">Team</span>
+        <div class="price">$333<small> / seat / mo · 3–50 seats</small></div>
+        <div class="desc">Shared memory and governance for whole teams — every plan includes a Forward Deployed Engineer.</div>
+        <ul>
+          <li><span class="marker">✓</span> One brain across the whole team</li>
+          <li><span class="marker">✓</span> Per-project scopes &amp; isolation</li>
+          <li><span class="marker">✓</span> Roles, access control &amp; audit</li>
+          <li><span class="marker">✓</span> FDE-led onboarding, remote or on-site</li>
+        </ul>
+        <a class="btn-ghost" href="https://cmem.ai/">Reserve team seats</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="final">
+  <div class="wrap">
+    <div class="eyebrow" style="text-align:center">Get started</div>
+    <h2>Memory is your agent's superpower.</h2>
+    <p>Install the engine, capture your first observations, and never let your agent forget again.</p>
+    <div class="install" style="margin-bottom:22px">
+      <span><span class="prompt">$</span> <span class="cmd">npx claude-mem install</span></span>
+      <button type="button" onclick="navigator.clipboard&amp;&amp;navigator.clipboard.writeText('npx claude-mem install')">Copy</button>
+    </div>
+    <div class="cta-row" style="justify-content:center">
+      <a class="btn-primary" href="https://docs.claude-mem.ai/installation">Read the docs →</a>
+      <a class="btn-ghost" href="https://discord.com/invite/J4wttp9vDu">Join the Discord</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div>
+        <a class="nav-logo" href="/"><img src="assets/claude-mem-logomark.webp" alt="" style="width:24px;height:24px"> claude-mem</a>
+        <p class="foot-note">Persistent memory compression for coding agents. Open-source engine, optional managed cloud.</p>
+      </div>
+      <div>
+        <h4>Product</h4>
+        <a href="https://docs.claude-mem.ai/cloud-sync">Cloud sync</a>
+        <a href="https://docs.claude-mem.ai/usage/search-tools">Vector search</a>
+        <a href="https://docs.claude-mem.ai/architecture/database">Observations DB</a>
+        <a href="https://docs.claude-mem.ai/platform-integration">Integrations</a>
+      </div>
+      <div>
+        <h4>Developers</h4>
+        <a href="https://docs.claude-mem.ai/">Documentation</a>
+        <a href="https://docs.claude-mem.ai/architecture/overview">Architecture</a>
+        <a href="https://github.com/thedotmack/claude-mem/blob/main/CHANGELOG.md">Changelog</a>
+        <a href="https://docs.claude-mem.ai/development">Contribute</a>
+      </div>
+      <div>
+        <h4>Community</h4>
+        <a href="https://github.com/thedotmack/claude-mem">GitHub</a>
+        <a href="https://discord.com/invite/J4wttp9vDu">Discord</a>
+        <a href="https://x.com/Claude_Memory">X / @Claude_Memory</a>
+        <a href="https://cmem.ai/">cmem.ai</a>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <span>© 2026 Alex Newman (@thedotmack) · Apache-2.0</span>
+      <span>Built with the Claude Agent SDK</span>
+    </div>
+    <p class="disclaimer">
+      This page is the project landing page for the open-source <code>claude-mem</code> engine.
+      CMEM Cloud is a paid managed service operated separately at cmem.ai.
+      "CMEM" also refers to a third-party community token that is not part of, and confers no rights in, this software — see the repository README for details.
+    </p>
+  </div>
+</footer>
+
+<script>
+  (function () {
+    var btn = document.getElementById('copy');
+    var cmd = document.getElementById('cmd');
+    if (btn && cmd && navigator.clipboard) {
+      btn.addEventListener('click', function () {
+        navigator.clipboard.writeText(cmd.textContent.trim()).then(function () {
+          var t = btn.textContent;
+          btn.textContent = 'Copied ✓';
+          setTimeout(function () { btn.textContent = t; }, 1600);
+        });
+      });
+    }
+  })();
+</script>
+
+</body>
+</html>

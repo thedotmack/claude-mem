@@ -48,7 +48,9 @@
   <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
 </p>
 
-<h4 align="center">Persistent memory compression system built for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>
+<h1 align="center">Stop repeating yourself.</h1>
+
+<h4 align="center">The open-source memory engine that takes notes while your agent works &mdash; then briefs future sessions automatically. Built for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>, works with any MCP client.</h4>
 
 <p align="center">
   <a href="LICENSE">
@@ -115,6 +117,7 @@
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
   <a href="#how-it-works">How It Works</a> •
+  <a href="#why-claude-mem">Why Claude-Mem</a> •
   <a href="#mcp-search-tools">Search Tools</a> •
   <a href="#documentation">Documentation</a> •
   <a href="#configuration">Configuration</a> •
@@ -123,7 +126,11 @@
 </p>
 
 <p align="center">
-  Claude-Mem seamlessly preserves context across sessions by automatically capturing tool usage observations, generating semantic summaries, and making them available to future sessions. This enables Claude to maintain continuity of knowledge about projects even after sessions end or reconnect.
+  Claude-Mem seamlessly preserves context across sessions by automatically capturing tool usage observations, generating semantic summaries, and making them available to future sessions. Every decision, dead end, and fix your agent works through gets captured, compressed, and handed back the next time it's relevant &mdash; so nothing gets explained or built twice.
+</p>
+
+<p align="center">
+  <strong><a href="https://thedotmack.github.io/claude-mem/">Visit the project site &rarr;</a></strong>
 </p>
 
 ---
@@ -235,6 +242,27 @@ The installer handles dependencies, plugin setup, AI provider configuration, wor
 6. **Chroma Vector Database** - Hybrid semantic + keyword search for intelligent context retrieval
 
 See [Architecture Overview](https://docs.claude-mem.ai/architecture/overview) for details.
+
+**The whole story, in three steps:**
+
+| | | |
+|---|---|---|
+| **01 · Install the engine** | One command wires lifecycle hooks into your agent and creates a local observations database. No account required. | `npx claude-mem install` |
+| **02 · It takes notes** | Every session, Claude-Mem captures tool usage and decisions, compresses them into semantic summaries, and indexes them for hybrid vector + full-text search. | automatic |
+| **03 · One link, everywhere** | Connect [CMEM Cloud](https://cmem.ai/) and every machine and agent reads and writes the same memory through one private MCP link. | optional |
+
+---
+
+## Why Claude-Mem
+
+A real memory layer is a database, a vector index, a sync service, and an MCP server. Claude-Mem is all of it &mdash; an open-source engine with an optional managed cloud.
+
+| Roll it yourself | Claude-Mem |
+|---|---|
+| Postgres + pgvector, embedding worker, sync daemon, MCP server, auth/keys/scopes, backups & migrations | Temporal observations DB, vector index built in, offline-first sync, private MCP endpoint, your keys & scopes |
+| Weeks of setup &mdash; then you maintain it forever | `npx claude-mem install` &mdash; ready in ~30 seconds, zero upkeep |
+
+**Recall, months later, in one query.** Semantic search over a temporal memory means your agent recalls the *why* behind every decision &mdash; by meaning, not keywords; with what changed, when, and what it replaced; from every project, machine, and agent sharing one recall.
 
 ---
 
@@ -414,6 +442,7 @@ open/commercial boundary.
 
 ## Support
 
+- **Project site**: [thedotmack.github.io/claude-mem](https://thedotmack.github.io/claude-mem/) (source in [`site/`](site/))
 - **Documentation**: [docs/](docs/)
 - **Issues**: [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
 - **Repository**: [github.com/thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)

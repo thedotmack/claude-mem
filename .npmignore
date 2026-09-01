@@ -2,6 +2,7 @@ src/
 scripts/
 tests/
 docs/
+site/
 datasets/
 private/
 antipattern-czar/
