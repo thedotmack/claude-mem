@@ -452,6 +452,7 @@ export class SessionRoutes extends BaseRouteHandler {
     platformSource: z.string().optional(),
     tool_use_id: z.string().optional(),
     toolUseId: z.string().optional(),
+    idempotencyKey: z.string().optional(),
   }).passthrough();
 
   private static readonly summarizeByClaudeIdSchema = z.object({
@@ -459,7 +460,17 @@ export class SessionRoutes extends BaseRouteHandler {
     last_assistant_message: z.string().optional(),
     agentId: z.string().optional(),
     platformSource: z.string().optional(),
+    tool_use_id: z.string().optional(),
+    toolUseId: z.string().optional(),
+    idempotencyKey: z.string().optional(),
   }).passthrough();
+
+  private static firstNonEmptyString(...values: unknown[]): string | undefined {
+    for (const value of values) {
+      if (typeof value === 'string' && value.length > 0) return value;
+    }
+    return undefined;
+  }
 
   private handleObservationsByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const {
@@ -472,6 +483,7 @@ export class SessionRoutes extends BaseRouteHandler {
       agentType,
       tool_use_id,
       toolUseId,
+      idempotencyKey,
     } = req.body;
     const platformSource = this.getPlatformSourceFromRequest(req);
 
@@ -484,7 +496,7 @@ export class SessionRoutes extends BaseRouteHandler {
       platformSource,
       agentId,
       agentType,
-      toolUseId: typeof tool_use_id === 'string' ? tool_use_id : (typeof toolUseId === 'string' ? toolUseId : undefined),
+      toolUseId: SessionRoutes.firstNonEmptyString(tool_use_id, toolUseId, idempotencyKey),
     });
 
     if (!result.ok) {
@@ -501,7 +513,7 @@ export class SessionRoutes extends BaseRouteHandler {
   });
 
   private handleSummarizeByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { contentSessionId, last_assistant_message, agentId } = req.body;
+    const { contentSessionId, last_assistant_message, agentId, tool_use_id, toolUseId, idempotencyKey } = req.body;
     const platformSource = this.getPlatformSourceFromRequest(req);
 
     if (agentId) {
@@ -529,7 +541,11 @@ export class SessionRoutes extends BaseRouteHandler {
     const cleanedLastAssistantMessage = last_assistant_message
       ? stripMemoryTags(String(last_assistant_message))
       : last_assistant_message;
-    await this.sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage);
+    await this.sessionManager.queueSummarize(
+      sessionDbId,
+      cleanedLastAssistantMessage,
+      SessionRoutes.firstNonEmptyString(idempotencyKey, toolUseId, tool_use_id),
+    );
 
     await this.ensureGeneratorRunning(sessionDbId, 'summarize');
 

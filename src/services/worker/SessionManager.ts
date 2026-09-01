@@ -191,7 +191,7 @@ export class SessionManager {
     }
   }
 
-  async queueSummarize(sessionDbId: number, lastAssistantMessage?: string): Promise<void> {
+  async queueSummarize(sessionDbId: number, lastAssistantMessage?: string, toolUseId?: string): Promise<void> {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       session = this.initializeSession(sessionDbId);
@@ -199,13 +199,14 @@ export class SessionManager {
 
     const message: PendingMessage = {
       type: 'summarize',
-      last_assistant_message: lastAssistantMessage
+      last_assistant_message: lastAssistantMessage,
+      toolUseId,
     };
 
     const messageId = this.buffer.enqueue(sessionDbId, message);
     const queueDepth = this.buffer.getPendingCount(sessionDbId);
     if (messageId === 0) {
-      logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=summarize | depth=${queueDepth}`, {
+      logger.debug('QUEUE', `DUP_SUPPRESSED | sessionDbId=${sessionDbId} | type=summarize | toolUseId=${toolUseId ?? 'null'} | depth=${queueDepth}`, {
         sessionId: sessionDbId
       });
     } else {

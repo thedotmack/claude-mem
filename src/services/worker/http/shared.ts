@@ -52,6 +52,7 @@ export interface ObservationPayload {
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
+  idempotencyKey?: string;
 }
 
 export async function ingestObservation(payload: ObservationPayload): Promise<IngestResult> {
@@ -132,7 +133,9 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     })(),
     agentId: typeof payload.agentId === 'string' ? payload.agentId : undefined,
     agentType: typeof payload.agentType === 'string' ? payload.agentType : undefined,
-    toolUseId: typeof payload.toolUseId === 'string' ? payload.toolUseId : undefined,
+    toolUseId: typeof payload.toolUseId === 'string'
+      ? payload.toolUseId
+      : (typeof payload.idempotencyKey === 'string' ? payload.idempotencyKey : undefined),
   });
 
   await ensureGeneratorRunning?.(sessionDbId, 'observation');

@@ -39,6 +39,16 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
     expect(buffer.enqueue(1, obs('Read'))).toBeGreaterThan(0);  // no id → not deduped
     // same toolUseId in a different session is independent
     expect(buffer.enqueue(2, obs('Read', 'tool-abc'))).toBeGreaterThan(0);
+    // summarize without an idempotency key is not deduped
+    expect(buffer.enqueue(1, { type: 'summarize', last_assistant_message: 'a' })).toBeGreaterThan(0);
+    expect(buffer.enqueue(1, { type: 'summarize', last_assistant_message: 'a' })).toBeGreaterThan(0);
+  });
+
+  test('dedups summarize messages that carry a toolUseId/idempotency key', () => {
+    const buffer = new SessionMessageBuffer();
+    expect(buffer.enqueue(1, { type: 'summarize', last_assistant_message: 'done', toolUseId: 'sum-1' })).toBeGreaterThan(0);
+    expect(buffer.enqueue(1, { type: 'summarize', last_assistant_message: 'done', toolUseId: 'sum-1' })).toBe(0);
+    expect(buffer.enqueue(1, { type: 'summarize', last_assistant_message: 'done', toolUseId: 'sum-2' })).toBeGreaterThan(0);
   });
 
   test('drain yields buffered messages in FIFO order with id + timestamp', async () => {
