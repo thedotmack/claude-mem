@@ -67,6 +67,10 @@ export interface ActiveSession {
   lastGeneratorSource?: string;
   /** Model id resolved when the generator started — error-path telemetry, where no response model exists. */
   lastModelId?: string;
+  /** Model the OBSERVED IDE session is running (from its transcript) — telemetry observed_model. Not the observer model. */
+  observedModel?: string;
+  /** Billing posture of the observed Claude Code session (closed enum, see observed-billing.ts) — telemetry observed_billing. */
+  observedBilling?: string;
   /** Whether the OpenRouter provider targets openrouter.ai or a custom OpenAI-compatible gateway — telemetry endpoint_class. */
   endpointClass?: 'openrouter' | 'custom';
   /**

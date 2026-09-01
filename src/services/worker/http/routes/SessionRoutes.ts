@@ -334,6 +334,8 @@ export class SessionRoutes extends BaseRouteHandler {
           error_category: 'provider_error',
           hook: session.lastGeneratorSource,
           ide: session.platformSource,
+          observed_model: session.observedModel,
+          observed_billing: session.observedBilling,
         });
       })
       .finally(async () => {
@@ -378,6 +380,8 @@ export class SessionRoutes extends BaseRouteHandler {
             abort_reason: normalizeAbortReason(reason),
             hook: session.lastGeneratorSource,
             ide: session.platformSource,
+            observed_model: session.observedModel,
+            observed_billing: session.observedBilling,
           });
         }
         // Every generator exit releases any probe this run claimed. Success
@@ -459,6 +463,8 @@ export class SessionRoutes extends BaseRouteHandler {
     last_assistant_message: z.string().optional(),
     agentId: z.string().optional(),
     platformSource: z.string().optional(),
+    observedModel: z.string().min(1).max(200).optional(),
+    observedBilling: z.string().min(1).max(40).optional(),
   }).passthrough();
 
   private handleObservationsByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
@@ -501,7 +507,7 @@ export class SessionRoutes extends BaseRouteHandler {
   });
 
   private handleSummarizeByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { contentSessionId, last_assistant_message, agentId } = req.body;
+    const { contentSessionId, last_assistant_message, agentId, observedModel, observedBilling } = req.body;
     const platformSource = this.getPlatformSourceFromRequest(req);
 
     if (agentId) {
@@ -512,6 +518,16 @@ export class SessionRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
 
     const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
+
+    if (observedModel || observedBilling) {
+      store.setSessionObservedMetadata(sessionDbId, observedModel, observedBilling);
+      const active = this.sessionManager.getSession(sessionDbId);
+      if (active) {
+        if (observedModel) active.observedModel = observedModel;
+        if (observedBilling) active.observedBilling = observedBilling;
+      }
+    }
+
     const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId);
 
     const privacy = PrivacyCheckValidator.checkUserPromptPrivacy(

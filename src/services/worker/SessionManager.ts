@@ -57,6 +57,12 @@ export class SessionManager {
       if (dbSession.platform_source && dbSession.platform_source !== session.platformSource) {
         session.platformSource = dbSession.platform_source;
       }
+      if (dbSession.observed_model && dbSession.observed_model !== session.observedModel) {
+        session.observedModel = dbSession.observed_model;
+      }
+      if (dbSession.observed_billing && dbSession.observed_billing !== session.observedBilling) {
+        session.observedBilling = dbSession.observed_billing;
+      }
 
       if (currentUserPrompt) {
         logger.debug('SESSION', 'Updating userPrompt for continuation', {
@@ -115,6 +121,8 @@ export class SessionManager {
       memorySessionId: null,  // Always start fresh - SDK will capture new ID
       project: suppliedProject || dbSession.project,
       platformSource: dbSession.platform_source,
+      observedModel: dbSession.observed_model ?? undefined,
+      observedBilling: dbSession.observed_billing ?? undefined,
       userPrompt,
       abortController: new AbortController(),
       generatorPromise: null,
