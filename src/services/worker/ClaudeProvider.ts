@@ -19,6 +19,7 @@ import {
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import {
   globalRateLimitStore,
+  buildUsageLimitHitProps,
   shouldAbortForQuota,
   type RateLimitInfo,
 } from './RateLimitStore.js';
@@ -36,6 +37,7 @@ import {
 import { recycleObserverConversation, loadSessionStartContext } from './session/recycle-conversation.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt, type FieldCompressor } from './field-optimizer.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
+import { captureEvent } from '../telemetry/telemetry.js';
 import { clearDependencyStatus, recordClaudeCliSetupRequired } from '../../shared/dependency-health.js';
 
 /**
@@ -297,7 +299,24 @@ export class ClaudeProvider {
         ) {
           const info = (message as any).rate_limit_info as RateLimitInfo | undefined;
           if (info) {
-            globalRateLimitStore.set(info);
+            // The observer runs on the same account as the observed session,
+            // so a `rejected` snapshot here means the user's own Claude Code
+            // session is out of usage too. set() dedupes: one event per
+            // exhausted window, not one per observer request against the wall.
+            if (globalRateLimitStore.set(info)) {
+              logger.warn('SDK', 'Subscription usage limit hit', {
+                sessionDbId: session.sessionDbId,
+                window: info.rateLimitType,
+                overageStatus: info.overageStatus,
+              });
+              captureEvent('usage_limit_hit', {
+                ...buildUsageLimitHitProps(info),
+                ide: session.platformSource,
+                provider: 'claude',
+                observed_model: session.observedModel,
+                observed_billing: session.observedBilling,
+              });
+            }
           }
           const decision = shouldAbortForQuota(authMethod, globalRateLimitStore);
           if (decision.abort) {

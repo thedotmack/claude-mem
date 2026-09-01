@@ -65,6 +65,30 @@ describe('isQuotaLimitedObserverOutput', () => {
     ).toBe(true);
   });
 
+  it('detects the wordings Claude Code actually writes on a limit hit', () => {
+    expect(
+      isQuotaLimitedObserverOutput("You've hit your session limit · resets 5:50pm (America/Los_Angeles)"),
+    ).toBe(true);
+    expect(
+      isQuotaLimitedObserverOutput(
+        "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.",
+      ),
+    ).toBe(true);
+    expect(
+      isQuotaLimitedObserverOutput(
+        "You're out of usage credits. Run /usage-credits to keep using Fable 5 or /model to switch models.",
+      ),
+    ).toBe(true);
+  });
+
+  it('does not treat XML that mentions a limit as quota prose', () => {
+    expect(
+      isQuotaLimitedObserverOutput(
+        '<observation><title>Hit the session limit while testing</title></observation>',
+      ),
+    ).toBe(false);
+  });
+
   it('does not treat context-window prose as quota prose', () => {
     expect(
       isQuotaLimitedObserverOutput('I hit the context window and cannot produce valid XML.'),
