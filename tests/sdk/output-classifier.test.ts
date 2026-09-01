@@ -168,6 +168,9 @@ describe('isContextOverflowObserverOutput (#3800)', () => {
     expect(isContextOverflowObserverOutput(overflow)).toBe(true);
     expect(isQuotaLimitedObserverOutput(overflow)).toBe(false);
     expect(isAuthFailureObserverOutput(overflow)).toBe(false);
+  });
+});
+
 describe('isTransportFailureObserverOutput (#3752)', () => {
   it('classifies the CLI error the child returns instead of crashing', () => {
     // Verbatim from the issue report.
