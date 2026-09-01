@@ -498,6 +498,11 @@ export async function processAgentResponse(
     // as "no model" in PostHog — stamp 'unknown' instead.
     model: typeof modelId === 'string' && modelId ? modelId : 'unknown',
     ide: session.platformSource,
+    // Observed-session identity (NOT the observer): the model the user's IDE
+    // session ran and its billing posture, stamped by the Stop hook. Omitted
+    // when unknown — the rollup fills 'unknown' at flush time.
+    observed_model: session.observedModel,
+    observed_billing: session.observedBilling,
     hook: session.lastGeneratorSource,
     endpoint_class: session.endpointClass,
     compression_ms: compressionMs,

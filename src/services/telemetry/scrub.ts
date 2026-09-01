@@ -160,6 +160,11 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'outcomes_aborted',
   'outcomes_invalid_output',
   'top_model',
+  // Observed-session identity (NOT the observer): the model id the user's IDE
+  // session ran (from its transcript) and a closed-enum billing posture
+  // (max | pro | team | enterprise | subscription | api_key | bedrock | vertex | foundry | unknown).
+  'observed_model',
+  'observed_billing',
   'window_start_ts',
   // Phase 2 per-session rollup: rollup_reason is a closed enum
   // (session_end | worker_shutdown | safety_flush) explaining why the session's

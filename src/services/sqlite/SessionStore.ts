@@ -69,6 +69,8 @@ interface SdkSessionDetailRow {
   user_prompt: string;
   custom_title: string | null;
   status: string;
+  observed_model: string | null;
+  observed_billing: string | null;
 }
 
 export class SessionStore {
@@ -120,6 +122,7 @@ export class SessionStore {
     this.ensureSyncRevisionTextAffinity();
     this.initializeSyncHubLaunchBaseline();
     this.normalizeConceptTags();
+    this.ensureSDKSessionsObservedColumns();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -1702,6 +1705,26 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(26, new Date().toISOString());
   }
 
+  // Identity of the OBSERVED IDE session (the model the user ran and its
+  // billing posture), reported by the Stop hook. Distinct from
+  // observations.generated_by_model, which is the observer model.
+  private ensureSDKSessionsObservedColumns(): void {
+    const columns = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
+    const hasObservedModel = columns.some(col => col.name === 'observed_model');
+    const hasObservedBilling = columns.some(col => col.name === 'observed_billing');
+
+    if (hasObservedModel && hasObservedBilling) return;
+
+    if (!hasObservedModel) {
+      this.db.run('ALTER TABLE sdk_sessions ADD COLUMN observed_model TEXT');
+    }
+    if (!hasObservedBilling) {
+      this.db.run('ALTER TABLE sdk_sessions ADD COLUMN observed_billing TEXT');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(50, new Date().toISOString());
+  }
+
   private ensureMergedIntoProjectColumns(): void {
     const obsCols = this.db
       .query('PRAGMA table_info(observations)')
@@ -2322,13 +2345,28 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       SELECT id, content_session_id, memory_session_id, project,
              COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
-             user_prompt, custom_title, status
+             user_prompt, custom_title, status,
+             observed_model, observed_billing
       FROM sdk_sessions
       WHERE id = ?
       LIMIT 1
     `);
 
     return (stmt.get(id) as SdkSessionDetailRow | null) || null;
+  }
+
+  /**
+   * Record the observed IDE session's model id and billing posture (from the
+   * Stop hook). Each field only overwrites when supplied, so a turn that could
+   * not determine one of them keeps the previously stored value.
+   */
+  setSessionObservedMetadata(sessionDbId: number, observedModel?: string, observedBilling?: string): void {
+    this.db.prepare(`
+      UPDATE sdk_sessions
+      SET observed_model = COALESCE(?, observed_model),
+          observed_billing = COALESCE(?, observed_billing)
+      WHERE id = ?
+    `).run(observedModel || null, observedBilling || null, sessionDbId);
   }
 
   getSdkSessionsBySessionIds(memorySessionIds: string[]): {
