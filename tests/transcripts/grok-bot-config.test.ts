@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { buildGrokBotWatch, GROK_BOT_SCHEMA, installGrokBotIntegration, resolveGrokBotProject } from '../../src/services/integrations/GrokBotInstaller.js';
@@ -115,5 +115,57 @@ describe('Grok Bot transcript integration', () => {
     expect(lines[0].message.content[0].type).toBe('tool_use');
     expect(lines[1].role).toBe('tool');
     expect(lines[1].message.content[0].toolUseId).toBe('toolu_123');
+  });
+
+  it('no-arg install watches a well-known agent-data directory instead of cwd', () => {
+    const tempRoot = mkdtempSync(path.join(tmpdir(), 'grok-bot-discover-'));
+    const fakeHome = path.join(tempRoot, 'home');
+    const agentData = path.join(fakeHome, '.grok-bot');
+    const installCwd = path.join(tempRoot, 'workspace-a');
+    const agentId = 'aaaaaaaa-bbbb-cccc-dddd-333333333333';
+    const configPath = path.join(tempRoot, 'transcript-watch.json');
+    const previousHome = process.env.HOME;
+    const previousAgentData = process.env.GROK_BOT_AGENT_DATA;
+    const previousCwd = process.cwd();
+    try {
+      mkdirSync(installCwd, { recursive: true });
+      writeAgent(agentData, agentId, 'Alpha');
+      process.env.HOME = fakeHome;
+      delete process.env.GROK_BOT_AGENT_DATA;
+      process.chdir(installCwd);
+
+      expect(installGrokBotIntegration(configPath)).toBe(0);
+
+      const parsed = JSON.parse(readFileSync(configPath, 'utf-8'));
+      const grokWatches = parsed.watches.filter((watch: { name: string }) => watch.name === 'grok-bot');
+      expect(grokWatches).toHaveLength(1);
+      expect(grokWatches[0].path).toBe(path.join(agentData, 'agent-transcripts', agentId, '*.jsonl'));
+      expect(grokWatches[0].project).toBe('cmem_work_alpha');
+      expect(grokWatches[0].path.includes(installCwd)).toBe(false);
+    } finally {
+      process.chdir(previousCwd);
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousAgentData === undefined) delete process.env.GROK_BOT_AGENT_DATA;
+      else process.env.GROK_BOT_AGENT_DATA = previousAgentData;
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('creates missing agent transcript directories so glob watches do not abort', () => {
+    const tempRoot = mkdtempSync(path.join(tmpdir(), 'grok-bot-mkdir-'));
+    const configPath = path.join(tempRoot, 'transcript-watch.json');
+    const workspaceRoot = path.join(tempRoot, 'agent-host');
+    const agentId = 'aaaaaaaa-bbbb-cccc-dddd-444444444444';
+    try {
+      mkdirSync(path.join(workspaceRoot, 'agents', agentId), { recursive: true });
+      writeFileSync(path.join(workspaceRoot, 'agents', agentId, 'profile.json'), JSON.stringify({ name: 'Delta' }));
+      mkdirSync(path.join(workspaceRoot, 'agent-transcripts'), { recursive: true });
+
+      expect(installGrokBotIntegration(configPath, workspaceRoot)).toBe(0);
+      expect(existsSync(path.join(workspaceRoot, 'agent-transcripts', agentId))).toBe(true);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 });
