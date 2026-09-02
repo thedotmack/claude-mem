@@ -57,13 +57,6 @@
         ]
       },
       {
-        "group": "Grok Bot Integration",
-        "icon": "robot",
-        "pages": [
-          "grok-bot/index"
-        ]
-      },
-      {
         "group": "Antigravity CLI Integration",
         "icon": "terminal",
         "pages": [
