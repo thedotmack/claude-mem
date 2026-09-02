@@ -34,6 +34,7 @@ export type Component =
   | 'IMPORT'
   | 'INGEST'
   | 'OAUTH'
+  | 'OMP'
   | 'OPENCLAW'
   | 'OPENCODE'
   | 'PARSER'

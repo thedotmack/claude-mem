@@ -152,6 +152,12 @@ Or install for Antigravity CLI ([setup guide](https://docs.claude-mem.ai/antigra
 npx claude-mem install --ide antigravity
 ```
 
+Or install for OMP (Oh My Pi):
+
+```bash
+npx claude-mem install --ide omp
+```
+
 Or install from the plugin marketplace inside Claude Code:
 
 ```bash

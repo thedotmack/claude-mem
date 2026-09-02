@@ -378,6 +378,10 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallAntigravityCliHooks } = await import('../../services/integrations/AntigravityCliHooksInstaller.js');
       return uninstallAntigravityCliHooks();
     }},
+    { label: 'OMP hooks', fn: async () => {
+      const { uninstallOmpHooks } = await import('../../services/integrations/OmpHooksInstaller.js');
+      return uninstallOmpHooks();
+    }},
   ];
 
   for (const { label, fn } of ideCleanups) {
