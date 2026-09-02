@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { resolveInstallerProviderChoice } from '../../src/npx-cli/commands/install';
+import { resolveInstallerProviderChoice } from '../../src/npx-cli/installer-provider-choice';
 
 const repoRoot = join(__dirname, '..', '..');
 
