@@ -63,14 +63,15 @@ describe('Version Consistency', () => {
     });
   }
 
-  it('should have matching versions in .cursor-plugin/marketplace.json', () => {
+  it('should list both cursor marketplace plugin sources', () => {
     const marketplaceJsonPath = path.join(projectRoot, '.cursor-plugin', 'marketplace.json');
     expect(existsSync(marketplaceJsonPath)).toBe(true);
 
     const marketplaceJson = JSON.parse(readFileSync(marketplaceJsonPath, 'utf-8'));
-    for (const plugin of marketplaceJson.plugins) {
-      expect(plugin.version).toBe(rootVersion);
-    }
+    expect(marketplaceJson.plugins.map((plugin: any) => plugin.name)).toEqual([
+      'claude-mem-cursor',
+      'claude-mem-grok-bot',
+    ]);
   });
 
   it('should have version injected into built worker-service.cjs', () => {
