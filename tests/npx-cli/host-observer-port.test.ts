@@ -34,52 +34,52 @@ describe('host observer port resolution', () => {
     expect(hostObserverCandidatePorts('37777', { CLAUDE_MEM_HOST_OBSERVER_PORT: '39999' } as NodeJS.ProcessEnv)).toEqual([39999]);
   });
 
-  it('persists a live OpenAI-compatible observer instead of a dead URL', async () => {
-    const probe = async (port: number) => (port === 37778 ? 'observer' : 'free' as const);
-    expect(await resolveHostObserverPort('37777', {} as NodeJS.ProcessEnv, probe)).toBe('37778');
-    expect(await resolveHostObserverPort(37777, {} as NodeJS.ProcessEnv, probe)).toBe('37778');
+  it('persists a live OpenAI-compatible observer instead of a dead URL', () => {
+    const probe = (port: number) => (port === 37778 ? 'observer' : 'free' as const);
+    expect(resolveHostObserverPort('37777', {} as NodeJS.ProcessEnv, probe)).toBe('37778');
+    expect(resolveHostObserverPort(37777, {} as NodeJS.ProcessEnv, probe)).toBe('37778');
   });
 
-  it('fails install resolution when nothing OpenAI-compatible is listening', async () => {
-    await expect(resolveHostObserverPort('37777', {} as NodeJS.ProcessEnv, async () => 'free')).rejects.toThrow(
+  it('fails install resolution when nothing OpenAI-compatible is listening', () => {
+    expect(() => resolveHostObserverPort('37777', {} as NodeJS.ProcessEnv, () => 'free')).toThrow(
       /No OpenAI-compatible host observer is listening/,
     );
   });
 
-  it('never persists an occupied non-observer port', async () => {
-    await expect(resolveHostObserverPort('37777', {} as NodeJS.ProcessEnv, async () => 'occupied')).rejects.toThrow(
+  it('never persists an occupied non-observer port', () => {
+    expect(() => resolveHostObserverPort('37777', {} as NodeJS.ProcessEnv, () => 'occupied')).toThrow(
       /No OpenAI-compatible host observer is listening/,
     );
   });
 
-  it('fails when CLAUDE_MEM_HOST_OBSERVER_PORT is occupied by a non-observer', async () => {
-    await expect(
-      resolveHostObserverPort('37777', { CLAUDE_MEM_HOST_OBSERVER_PORT: '39999' } as NodeJS.ProcessEnv, async () => 'occupied'),
-    ).rejects.toThrow(/CLAUDE_MEM_HOST_OBSERVER_PORT=39999 is occupied/);
+  it('fails when CLAUDE_MEM_HOST_OBSERVER_PORT is occupied by a non-observer', () => {
+    expect(() =>
+      resolveHostObserverPort('37777', { CLAUDE_MEM_HOST_OBSERVER_PORT: '39999' } as NodeJS.ProcessEnv, () => 'occupied'),
+    ).toThrow(/CLAUDE_MEM_HOST_OBSERVER_PORT=39999 is occupied/);
   });
 
-  it('fails when CLAUDE_MEM_HOST_OBSERVER_PORT has no listener', async () => {
-    await expect(
-      resolveHostObserverPort('37777', { CLAUDE_MEM_HOST_OBSERVER_PORT: '39999' } as NodeJS.ProcessEnv, async () => 'free'),
-    ).rejects.toThrow(/CLAUDE_MEM_HOST_OBSERVER_PORT=39999 has nothing listening/);
+  it('fails when CLAUDE_MEM_HOST_OBSERVER_PORT has no listener', () => {
+    expect(() =>
+      resolveHostObserverPort('37777', { CLAUDE_MEM_HOST_OBSERVER_PORT: '39999' } as NodeJS.ProcessEnv, () => 'free'),
+    ).toThrow(/CLAUDE_MEM_HOST_OBSERVER_PORT=39999 has nothing listening/);
   });
 
-  it('uses an explicit override after confirming an observer is listening', async () => {
+  it('uses an explicit override after confirming an observer is listening', () => {
     expect(
-      await resolveHostObserverPort(
+      resolveHostObserverPort(
         '37777',
         { CLAUDE_MEM_HOST_OBSERVER_PORT: '39999' } as NodeJS.ProcessEnv,
-        async () => 'observer',
+        () => 'observer',
       ),
     ).toBe('39999');
   });
 
-  it('builds host settings only after a probe succeeds', async () => {
-    const updates = await buildHostObserverSettings(
+  it('builds host settings only after a probe succeeds', () => {
+    const updates = buildHostObserverSettings(
       'grok-bot',
       { CLAUDE_MEM_WORKER_PORT: '37777' },
       {} as NodeJS.ProcessEnv,
-      async (port) => (port === 37778 ? 'observer' : 'free'),
+      (port) => (port === 37778 ? 'observer' : 'free'),
     );
     expect(updates).toEqual({
       CLAUDE_MEM_PROVIDER: 'openrouter',

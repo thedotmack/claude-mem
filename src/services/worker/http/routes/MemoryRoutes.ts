@@ -1,10 +1,10 @@
-
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
+import { getOrCreateManualSession } from '../../../sqlite/manual-session.js';
 
 const saveMemorySchema = z.object({
   text: z.string().trim().min(1),
@@ -41,7 +41,7 @@ export class MemoryRoutes extends BaseRouteHandler {
     const sessionStore = this.dbManager.getSessionStore();
     const chromaSync = this.dbManager.getChromaSync();
 
-    const memorySessionId = sessionStore.getOrCreateManualSession(targetProject, metadataPlatformSource);
+    const memorySessionId = getOrCreateManualSession(sessionStore.db, targetProject, metadataPlatformSource);
 
     const observation = {
       type: 'discovery',  // Use existing valid type

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import '../../src/services/sqlite/manual-session.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 
 function manualNote(title: string) {
