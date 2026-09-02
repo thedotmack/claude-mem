@@ -3,6 +3,10 @@ import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/p
 import { logger } from '../../utils/logger.js';
 import { SessionStore } from './SessionStore.js';
 
+// SessionStore.getOrCreateManualSession is the shipped implementation
+// (plugin/sqlite/SessionStore.js). This helper stays in sync and still
+// patches the source prototype for tests that import it first.
+
 export function getOrCreateManualSession(
   db: Database,
   project: string,

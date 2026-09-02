@@ -3,6 +3,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
   buildHostObserverSettings,
+  HostObserverUnavailableError,
   hostObserverCandidatePorts,
   probeHostObserverPort,
   resolveHostObserverPort,
@@ -106,6 +107,36 @@ describe('host observer port resolution', () => {
     } finally {
       await close(observer);
       await close(occupied);
+    }
+  });
+
+  it('treats HTTP 503 error-shaped payloads as occupied and never persists them', async () => {
+    const unavailable = http.createServer((_req, res) => {
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'unavailable' } }));
+    });
+    try {
+      const port = await listen(unavailable);
+      expect(await probeHostObserverPort(port)).toBe('occupied');
+
+      const env = { CLAUDE_MEM_HOST_OBSERVER_PORT: String(port) } as NodeJS.ProcessEnv;
+      expect(() => resolveHostObserverPort('1', env)).toThrow(HostObserverUnavailableError);
+      expect(() => resolveHostObserverPort('1', env)).toThrow(/is occupied/);
+
+      let updates: Record<string, string> | undefined;
+      try {
+        updates = buildHostObserverSettings(
+          'grok-bot',
+          { CLAUDE_MEM_WORKER_PORT: '1' },
+          env,
+        );
+      } catch (error) {
+        expect(error).toBeInstanceOf(HostObserverUnavailableError);
+      }
+      expect(updates).toBeUndefined();
+      expect(updates?.CLAUDE_MEM_OPENROUTER_BASE_URL).toBeUndefined();
+    } finally {
+      await close(unavailable);
     }
   });
 });

@@ -197,32 +197,27 @@ function listGrokBotAgents(agentDataRoot: string): GrokBotAgent[] {
   return agents;
 }
 
-/** Fallback catch-all watch used when no agent profiles are present. */
-export function buildGrokBotWatch(workspaceRoot = process.cwd()): WatchTarget {
-  const agentDataRoot = resolveGrokBotAgentDataRoot(workspaceRoot);
+function buildGrokBotCatchAllWatch(agentDataRoot: string, ensureWorkspace = false): WatchTarget {
   const project = resolveGrokBotProject('');
-  return buildGrokBotAgentWatch(
-    agentDataRoot,
-    '*',
-    project,
-    grokBotProjectWorkspace(agentDataRoot, project),
-  );
+  const workspace = ensureWorkspace
+    ? ensureGrokBotProjectWorkspace(agentDataRoot, project)
+    : grokBotProjectWorkspace(agentDataRoot, project);
+  return buildGrokBotAgentWatch(agentDataRoot, '*', project, workspace);
+}
+
+/** Catch-all watch covering every agent-transcripts jsonl file, including agents created after install. */
+export function buildGrokBotWatch(workspaceRoot = process.cwd()): WatchTarget {
+  return buildGrokBotCatchAllWatch(resolveGrokBotAgentDataRoot(workspaceRoot));
 }
 
 function buildGrokBotWatches(workspaceRoot: string): WatchTarget[] {
   const agentDataRoot = resolveGrokBotAgentDataRoot(workspaceRoot);
-  const agents = listGrokBotAgents(agentDataRoot);
-  if (agents.length === 0) {
-    const project = resolveGrokBotProject('');
-    const workspace = ensureGrokBotProjectWorkspace(agentDataRoot, project);
-    return [buildGrokBotAgentWatch(agentDataRoot, '*', project, workspace)];
-  }
-
-  return agents.map((agent) => {
+  const perAgent = listGrokBotAgents(agentDataRoot).map((agent) => {
     const project = resolveGrokBotProject(agent.name);
     const workspace = ensureGrokBotProjectWorkspace(agentDataRoot, project);
     return buildGrokBotAgentWatch(agentDataRoot, agent.id, project, workspace);
   });
+  return [...perAgent, buildGrokBotCatchAllWatch(agentDataRoot, true)];
 }
 
 function loadOrCreateConfig(configPath: string): TranscriptWatchConfig {
