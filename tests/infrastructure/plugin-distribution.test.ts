@@ -137,7 +137,8 @@ describe('Plugin Distribution - Codex Marketplace', () => {
   it('ships a single Codex SessionStart command', () => {
     const codexHooks = readJson('plugin/hooks/codex-hooks.json');
     expect(codexHooks.hooks.SessionStart[0].hooks).toHaveLength(1);
-    expect(codexHooks.hooks.SessionStart[0].hooks[0].commandWindows).toContain('version-check.js');
+    expect(codexHooks.hooks.SessionStart[0].hooks[0].command).not.toContain('version-check.js');
+    expect(codexHooks.hooks.SessionStart[0].hooks[0].commandWindows).not.toContain('version-check.js');
   });
 
   it('MCP launcher can recover without plugin root environment variables', () => {
@@ -337,19 +338,9 @@ const codexHook = (tail: string[]) => buildShellCommand({
   trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
   extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
 });
-const codexStartupHook = () => buildShellCommand({
-  host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
-  trailingCommand: [
-    '_V=$(CLAUDE_MEM_CODEX_HOOK=1 node "$_P/scripts/version-check.js" || true);',
-    'if [ -n "$_V" ]; then printf \'%s\\n\' "$_V"; else',
-    'CLAUDE_MEM_CODEX_HOOK=1', ...ccTrailing('hook', 'codex', 'context'),
-    '; fi',
-  ],
-  notFoundMessage: 'claude-mem: plugin scripts not found',
-});
-const codexHookPair = (tail: string[], options: { startupVersionCheck?: boolean } = {}) => ({
-  command: options.startupVersionCheck ? codexStartupHook() : codexHook(tail),
-  commandWindows: buildCodexWindowsCommand(tail, options),
+const codexHookPair = (tail: string[]) => ({
+  command: codexHook(tail),
+  commandWindows: buildCodexWindowsCommand(tail),
 });
 
 const SESSION_INIT_HOOK_TIMEOUT_SECONDS = 15;
@@ -381,7 +372,7 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
     'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
   },
   'plugin/hooks/codex-hooks.json': {
-    'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context'], { startupVersionCheck: true }),
+    'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context']),
     'UserPromptSubmit.0.0': {
       ...codexHookPair(['hook', 'codex', 'session-init']),
       timeout: SESSION_INIT_HOOK_TIMEOUT_SECONDS,

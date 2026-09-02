@@ -7,10 +7,11 @@ import {
   executeWithWorkerFallback as defaultExecuteWithWorkerFallback,
   getSessionInitRequestTimeoutMs as defaultGetSessionInitRequestTimeoutMs,
   isWorkerFallback as defaultIsWorkerFallback,
+  type WorkerFallbackOptions,
 } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
-import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { HOOK_EXIT_CODES, HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 import { shouldTrackProject as defaultShouldTrackProject } from '../../shared/should-track-project.js';
 import { loadFromFileOnce as defaultLoadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
@@ -49,6 +50,7 @@ let dependencies = defaultDependencies;
 
 const SESSION_INIT_SERVER_TIMEOUT_DIVISOR = 2;
 const SESSION_INIT_MIN_REMAINING_TIMEOUT_MS = 500;
+const CODEX_SESSION_INIT_REQUEST_TIMEOUT_MS = 2_000;
 
 export function setSessionInitDependenciesForTesting(
   overrides: Partial<typeof defaultDependencies> = {},
@@ -143,7 +145,7 @@ export const sessionInitHandler: EventHandler = {
         prompt,
         platformSource,
       },
-      { timeoutMs: initTimeoutMs },
+      getWorkerSessionInitOptions(platformSource, initTimeoutMs),
     );
 
     if (dependencies.isWorkerFallback(initResult)) {
@@ -185,7 +187,7 @@ export const sessionInitHandler: EventHandler = {
           '/api/context/semantic',
           'POST',
           { q: prompt, project, limit, platformSource },
-          { timeoutMs: semanticTimeoutMs },
+          getWorkerSessionInitOptions(platformSource, semanticTimeoutMs),
         );
         if (!dependencies.isWorkerFallback(semanticResult) && semanticResult?.context) {
           logger.debug('HOOK', `Semantic injection: ${semanticResult.count} observations for prompt`, { sessionId: sessionDbId, count: semanticResult.count });
@@ -254,4 +256,15 @@ function getServerSessionInitTimeoutMs(timeoutMs: number): number {
 
 function getRemainingSessionInitTimeoutMs(startedAt: number, timeoutMs: number): number {
   return Math.max(0, timeoutMs - (Date.now() - startedAt));
+}
+
+function getWorkerSessionInitOptions(platformSource: string, timeoutMs: number): WorkerFallbackOptions {
+  if (platformSource !== 'codex') {
+    return { timeoutMs };
+  }
+
+  return {
+    workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT,
+    timeoutMs: Math.min(CODEX_SESSION_INIT_REQUEST_TIMEOUT_MS, timeoutMs),
+  };
 }
