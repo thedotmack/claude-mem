@@ -91,7 +91,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: string;
   CLAUDE_MEM_CLOUD_SYNC_WS: string;    // advisory WebSocket speed layer (Phase 4) — 'false' = HTTP polling only
   // claude-mem sign-in funnel state, written by the installer's browser-login
-  // step (install.ts promptBrowserLogin/completeTrialPairing). Declared here so
+  // step (install.ts requireInstallerOAuthLogin/completeCmemTrialPairing). Declared here so
   // loadFromFile round-trips them instead of dropping unknown keys.
   CLAUDE_MEM_PRO_TRIAL_EMAIL: string;
   CLAUDE_MEM_PRO_TRIAL_AT: string;

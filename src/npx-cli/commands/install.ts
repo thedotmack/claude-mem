@@ -1022,12 +1022,59 @@ function openBrowser(url: string): void {
   }
 }
 
+/**
+ * The provider CHOICE, split out from applying it.
+ *
+ * This step is deliberately free: no network call, no pairing, no login. It is
+ * what the user sees first, so the offer is read before anything is spent on
+ * it, and a user who picks the local path never pays for a browser round trip
+ * they did not need. Applying the choice is `promptProvider`, below.
+ */
+async function promptProviderChoice(options: InstallOptions): Promise<ProviderChoice> {
+  if (options.provider) return options.provider;
+
+  if (!isInteractive) {
+    throw new Error('Non-interactive provider validation did not run.');
+  }
+  const labels = buildProviderLabels();
+
+  // Multiselect gives both choices square controls. Exactly one provider is
+  // still required; selecting both re-opens the prompt instead of guessing.
+  while (true) {
+    const providerResult = await p.multiselect<ProviderChoice>({
+      message: PROVIDER_PROMPT_MESSAGE,
+      options: [
+        { value: 'cmem', label: labels.cmem, hint: labels.cmemHint },
+        { value: 'claude', label: labels.claude, hint: labels.claudeHint },
+      ],
+      // CMEM Pro pre-selected: it is the recommended path and the one the
+      // funnel is built around. Selecting it no longer means "pay now" —
+      // it opens the offer page to read first.
+      initialValues: ['cmem'],
+      required: true,
+    });
+    if (p.isCancel(providerResult)) {
+      p.cancel('Installation cancelled.');
+      process.exit(1);
+    }
+    if (providerResult.length === 1) {
+      return providerResult[0];
+    }
+    log.warn('Select exactly one provider.');
+  }
+}
+
 async function promptProvider(
-  options: InstallOptions,
   /**
-   * Null only when login was skipped, which happens solely for an explicit
-   * `--provider claude`. That path cannot reach the CMEM branch below, which
-   * re-checks rather than assuming.
+   * Already resolved by `promptProviderChoice` — and, for the CMEM branch,
+   * resolved BEFORE `pairing` was obtained. Choosing is what triggers login,
+   * not the other way round.
+   */
+  selectedProvider: ProviderChoice,
+  /**
+   * Null whenever login was skipped, which happens for any resolved choice that
+   * needs no claude-mem account. That path cannot reach the CMEM branch below,
+   * which re-checks rather than assuming.
    */
   pairing: InstallerOAuthPairing | null,
   version: string,
@@ -1058,42 +1105,6 @@ async function promptProvider(
     log.info('Disabled cloud sync and saved local Anthropic Max configuration.');
     log.info('Configured claude-mem to use your logged-in Claude SDK account.');
   };
-
-  let selectedProvider: ProviderChoice;
-  if (options.provider) {
-    selectedProvider = options.provider;
-  } else {
-    if (!isInteractive) {
-      throw new Error('Non-interactive provider validation did not run.');
-    }
-    const labels = buildProviderLabels();
-
-    // Multiselect gives both choices square controls. Exactly one provider is
-    // still required; selecting both re-opens the prompt instead of guessing.
-    while (true) {
-      const providerResult = await p.multiselect<ProviderChoice>({
-        message: PROVIDER_PROMPT_MESSAGE,
-        options: [
-          { value: 'cmem', label: labels.cmem, hint: labels.cmemHint },
-          { value: 'claude', label: labels.claude, hint: labels.claudeHint },
-        ],
-        // CMEM Pro pre-selected: it is the recommended path and the one the
-        // funnel is built around. Selecting it no longer means "pay now" —
-        // it opens the offer page to read first.
-        initialValues: ['cmem'],
-        required: true,
-      });
-      if (p.isCancel(providerResult)) {
-        p.cancel('Installation cancelled.');
-        process.exit(1);
-      }
-      if (providerResult.length === 1) {
-        selectedProvider = providerResult[0];
-        break;
-      }
-      log.warn('Select exactly one provider.');
-    }
-  }
 
   // CMEM Pro: no new provider code. The worker's OpenRouter client is a generic
   // OpenAI-compatible client whose endpoint and model both come from settings,
@@ -1274,7 +1285,23 @@ function nonEmptyTrimmedString(value: unknown): string | null {
 
 const OAUTH_START_TIMEOUT_MS = 10_000;
 const OAUTH_POLL_TIMEOUT_MS = 10_000;
-const OAUTH_POLL_BUDGET_MS = 240_000;
+/**
+ * How long the terminal waits on the browser, per phase.
+ *
+ * The 'login' phase is one hop: sign in, come back. Four minutes is plenty.
+ *
+ * The 'enrollment' phase is the whole funnel in a single browser visit — OAuth,
+ * read the offer, enter a card at Stripe, then fetch the device code and type
+ * it. This used to be two separate 240s budgets (one per browser trip); folding
+ * it into one trip must not also fold it into one 240s window, or a user doing
+ * an unhurried card entry gets the installer exited out from under them.
+ *
+ * Bounded by the server's own pairing TTL (PAIRING_TTL_SECONDS = 30 min in
+ * /api/installer/oauth/start): waiting past that only reports an expiry the
+ * server has already decided, so stop just short of it.
+ */
+const OAUTH_POLL_BUDGET_LOGIN_MS = 240_000;
+const OAUTH_POLL_BUDGET_ENROLLMENT_MS = 25 * 60_000;
 const OAUTH_DEFAULT_POLL_INTERVAL_S = 3;
 
 type InstallerPollStage = 'awaiting_login' | 'awaiting_checkout' | 'awaiting_approval';
@@ -1542,23 +1569,35 @@ function sleepUnlessCancelled(ms: number, isCancelled: () => boolean): Promise<v
 
 async function waitForInstallerPairing(
   pairing: InstallerOAuthPairing,
+  /**
+   * `'login'` stops as soon as the account exists — it is the account-only
+   * flow behind an explicit `--provider openrouter|gemini`, which never
+   * enrolls in CMEM Pro. `'enrollment'` runs the whole CMEM Pro trip through
+   * to delivered credentials.
+   */
   phase: 'login' | 'enrollment',
   version: string,
 ): Promise<InstallerPollOutcome | null> {
   const startedAt = Date.now();
-  // The login phase must never name CMEM Pro. Logging in is required of every
-  // user and happens BEFORE the provider choice, so naming a paid plan here
-  // reads as an upsell attached to a mandatory step and muddies the funnel.
-  // The poll loop prints whatever stage the server reports, so a server-side
-  // 'awaiting_checkout' during login would otherwise leak the Pro wording.
+  // The login phase must never name CMEM Pro: it is reached only by a flag
+  // that already picked a different provider, so a Pro line there is an upsell
+  // bolted onto someone else's install. The poll loop prints whatever stage the
+  // server reports, so a server-side 'awaiting_checkout' during a login-only
+  // wait would otherwise leak the Pro wording.
+  //
+  // Both phases now open on a signed-out browser — the enrollment trip starts
+  // at the claim URL and lets the claim route bounce through login inline — so
+  // both start at 'awaiting_login' and follow the server from there.
   const stageMessages: Record<InstallerPollStage, string> = {
-    awaiting_login: 'Waiting for OAuth login in the browser…',
+    awaiting_login: phase === 'login'
+      ? 'Waiting for OAuth login in the browser…'
+      : 'Waiting for sign-in in the browser…',
     awaiting_checkout: phase === 'login'
       ? 'Waiting for the browser to finish signing you in…'
       : 'Waiting for CMEM Pro setup in the browser…',
     awaiting_approval: `Enter code ${pairing.userCode} in the browser to approve this device…`,
   };
-  let stage: InstallerPollStage = phase === 'login' ? 'awaiting_login' : 'awaiting_checkout';
+  let stage: InstallerPollStage = 'awaiting_login';
   log.info(stageMessages[stage]);
 
   let cancelled = false;
@@ -1583,7 +1622,10 @@ async function waitForInstallerPairing(
 
   try {
     let consecutiveFailures = 0;
-    while (Date.now() - startedAt < OAUTH_POLL_BUDGET_MS) {
+    const budgetMs = phase === 'login'
+      ? OAUTH_POLL_BUDGET_LOGIN_MS
+      : OAUTH_POLL_BUDGET_ENROLLMENT_MS;
+    while (Date.now() - startedAt < budgetMs) {
       if (cancelled) return null;
       const result = await pollInstallerPairingOnce(pairing);
       if (cancelled) return null;
@@ -1628,8 +1670,10 @@ async function waitForInstallerPairing(
 }
 
 /**
- * Required account step. OAuth completes before provider choice and never
- * chooses or enrolls a paid provider on its own.
+ * Account-only login. Reached from `requireInstallerOAuthLogin`, i.e. from an
+ * explicit `--provider openrouter|gemini` that still needs a claude-mem
+ * account. It never chooses or enrolls a paid provider on its own — the CMEM
+ * Pro path does not come through here.
  */
 export async function completeInstallerOAuthLogin(
   pairing: InstallerOAuthPairing,
@@ -1680,20 +1724,52 @@ async function waitForReturnToOpenBrowser(message: string): Promise<void> {
   });
 }
 
-async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAuthPairing | null> {
+/**
+ * Opens a pairing, or explains why it could not. Shared by both browser paths
+ * so the "cmem.ai is unreachable" failure reads the same either way.
+ */
+async function startPairingOrExplain(
+  startMessage: string,
+  readyMessage: string,
+  failMessage: string,
+): Promise<InstallerOAuthPairing | null> {
   const spinner = isInteractive ? p.spinner() : null;
-  spinner?.start('Starting secure OAuth login…');
+  spinner?.start(startMessage);
   const pairing = await startInstallerOAuthPairing();
   if (!pairing) {
-    spinner?.stop(styleText('red', 'Could not start OAuth login.'));
+    spinner?.stop(styleText('red', failMessage));
     log.error('OAuth login is required. Run npx claude-mem install again when cmem.ai is reachable.');
     return null;
   }
-  spinner?.stop('OAuth login ready.');
+  spinner?.stop(readyMessage);
+  return pairing;
+}
 
-  // No provider, plan, or pricing language on this step: logging in is required
-  // of every user and runs BEFORE the provider choice, so anything about a paid
-  // plan here is an upsell bolted onto a mandatory step.
+/**
+ * Account-only login: ONE browser trip that ends the moment the account
+ * exists.
+ *
+ * This is the `login_only=1` claim embedded in `authorizationUrl`, and it is
+ * now reached only from an explicit `--provider openrouter|gemini` — flags that
+ * need a claude-mem account but do NOT enroll in CMEM Pro. The CMEM Pro path
+ * deliberately does not come through here: it opens `checkoutUrl` instead (see
+ * `requireCmemProTrialPairing`) so login, offer, checkout and device approval
+ * happen in a single uninterrupted visit rather than bouncing the user back to
+ * the terminal in between.
+ */
+async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAuthPairing | null> {
+  const pairing = await startPairingOrExplain(
+    'Starting secure OAuth login…',
+    'OAuth login ready.',
+    'Could not start OAuth login.',
+  );
+  if (!pairing) return null;
+
+  // Login is lazy: this only runs once the resolved provider choice actually
+  // needs a claude-mem account, so the user has already opted into it and there
+  // is nothing left to pitch. No provider, plan, or pricing language here — the
+  // offer was made and accepted on the provider screen, and repeating it would
+  // sell the same thing twice.
   log.info(`Open this URL: ${pairing.authorizationUrl}`);
   await waitForReturnToOpenBrowser('Continue setup in browser... (hit return to open automatically)');
   openBrowser(pairing.authorizationUrl);
@@ -1714,8 +1790,81 @@ function noteDeviceCode(pairing: InstallerOAuthPairing): void {
 }
 
 /**
- * Continues the already-authenticated pairing only after the CMEM Pro choice
- * and required trial acknowledgement.
+ * Stages the one-shot credentials a ready poll delivered. Marks the pairing
+ * delivered so nothing can spend the same one-time delivery twice.
+ */
+function persistTrialDelivery(
+  pairing: InstallerOAuthPairing,
+  result: TrialReadyResult,
+): boolean {
+  if (!mergeSettings(buildTrialReadySettings(result))) {
+    log.error('Could not save the one-time CMEM Pro credentials.');
+    return false;
+  }
+  pairing.delivered = result;
+  clearProFallback();
+  log.success('CMEM Pro Free Trial active.');
+  return true;
+}
+
+/**
+ * The CMEM Pro path: ONE browser trip, start to finish.
+ *
+ * Opens `checkoutUrl` (the plain claim URL) rather than `authorizationUrl`
+ * (the `login_only=1` claim). The claim route bounces a sessionless visitor
+ * through `/login?next=<the same claim URL>` and resumes there afterwards, so
+ * sign-in, the offer, Stripe and device approval all happen in one unbroken
+ * visit. The old shape made two trips and parked the user on a "close this
+ * window and go back to your terminal" page in the middle of the funnel.
+ *
+ * The device code is printed BEFORE the browser opens: the approval screen is
+ * inside this same trip now, so the user needs the code in hand before they
+ * leave the terminal, not after they come back.
+ */
+async function requireCmemProTrialPairing(version: string): Promise<InstallerOAuthPairing | null> {
+  const pairing = await startPairingOrExplain(
+    'Starting secure CMEM Pro setup…',
+    'CMEM Pro setup ready.',
+    'Could not start CMEM Pro setup.',
+  );
+  if (!pairing) return null;
+
+  noteDeviceCode(pairing);
+  // No "press Return to continue" gate here, deliberately.
+  //
+  // The user picked CMEM Pro one prompt ago, so there is nothing left to
+  // confirm — a keypress gate would be a step that only adds ways to get
+  // stuck. waitForReturnToOpenBrowser has no timeout, so a keypress that the
+  // raw-mode listener misses hangs the install forever; that is the worst
+  // outcome available here and it buys nothing. (completeCmemTrialPairing
+  // reached this same conclusion for the same reason.)
+  //
+  // The URL is still printed before the browser opens, so a headless or SSH
+  // user with no opener is never blocked — they open it by hand and the poll
+  // below is already running.
+  log.info(`Open this URL: ${pairing.checkoutUrl}`);
+  openBrowser(pairing.checkoutUrl);
+  await captureCliEvent('installer_oauth_started', { version });
+
+  // Straight through to 'ready': login, checkout and approval are all stages of
+  // this single wait now, so there is no intermediate 'authenticated' stop.
+  const result = await waitForInstallerPairing(pairing, 'enrollment', version);
+  if (!result || result.kind !== 'ready') return null;
+  await captureCliEvent('installer_oauth_completed', { version });
+
+  if (!persistTrialDelivery(pairing, result)) return null;
+  await captureCliEvent('trial_activated', { version });
+  return pairing;
+}
+
+/**
+ * Applies an already-delivered CMEM Pro enrollment.
+ *
+ * On the current flow the pairing always arrives delivered — the single trip in
+ * `requireCmemProTrialPairing` polled it to 'ready' before the provider was
+ * applied — so this short-circuits on `pairing.delivered` and opens no second
+ * browser window. The fallback below is the legacy two-trip continuation, kept
+ * for a caller that hands over a merely-authenticated pairing.
  */
 export async function completeCmemTrialPairing(
   pairing: InstallerOAuthPairing,
@@ -1724,10 +1873,10 @@ export async function completeCmemTrialPairing(
   if (pairing.delivered) return pairing.delivered;
 
   noteDeviceCode(pairing);
-  // Deliberately NO return-wait here, unlike the login hand-off.
+  // Deliberately NO return-wait here, unlike the browser hand-off.
   //
   // A second wait at this point stalled the install: stdin has already been
-  // through the login wait and a clack prompt by now, and the listener did not
+  // through a browser wait and a clack prompt by now, and the listener did not
   // reliably receive the keypress, so the flow stopped before it could even
   // print "Waiting for CMEM Pro setup in the browser…". Opening directly is
   // also the better behaviour here — the user has already chosen CMEM Pro, so
@@ -1738,14 +1887,7 @@ export async function completeCmemTrialPairing(
   const result = await waitForInstallerPairing(pairing, 'enrollment', version);
   if (!result || result.kind !== 'ready') return null;
 
-  const wrote = mergeSettings(buildTrialReadySettings(result));
-  if (!wrote) {
-    log.error('Could not save the one-time CMEM Pro credentials.');
-    return null;
-  }
-  pairing.delivered = result;
-  clearProFallback();
-  log.success('CMEM Pro Free Trial active.');
+  if (!persistTrialDelivery(pairing, result)) return null;
   await captureCliEvent('trial_activated', { version });
   return result;
 }
@@ -1785,14 +1927,21 @@ async function promptTelemetryOptIn(): Promise<void> {
 }
 
 /**
- * Whether an install still has an account question to answer.
+ * Whether an explicit `--provider` flag still leaves a claude-mem account
+ * question open.
+ *
+ * This answers "does this flag need an account?", NOT "must login run first?".
+ * Login is lazy — it runs only after the provider choice is resolved — so this
+ * is consulted on the flag path, where the choice was made before the installer
+ * even started.
  *
  * Only `--provider claude` is exempt: it configures memory against the user's
  * own Anthropic plan and needs no claude-mem credentials. `gemini` and
  * `openrouter` are NOT exempt — openrouter is the transport for the cmem
  * gateway, so an explicit `openrouter` install may still be reaching cmem.ai.
- * With no flag at all the provider screen can still offer CMEM Pro, so login
- * must happen first.
+ * `undefined` (no flag) is likewise not exempt: it means the choice is still
+ * open, and it can still land on CMEM Pro — the interactive path narrows that
+ * to the actual selection before any login happens.
  */
 export function providerNeedsAccount(provider: InstallOptions['provider']): boolean {
   return provider !== 'claude';
@@ -2142,28 +2291,46 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     log.info('Claude Code: leaving native auto-memory enabled unless you explicitly opt in to disabling it.');
   }
 
-  // Login is account-first for every install EXCEPT one that has already named
-  // a provider needing no claude-mem account. `--provider claude` runs memory
-  // on the user's own Anthropic plan and never touches cmem.ai, so gating it on
-  // browser OAuth made an unrelated cmem.ai outage fail an install that could
-  // have completed offline — and there is no account question left to ask,
-  // because the flag already answered it.
+  // Choice first, login second. The provider screen costs nothing to show — no
+  // network, no account — so the offer is read before anything is spent on it.
+  // Only then, and only for a choice that actually needs a claude-mem account,
+  // do we open a browser. A user who picks their own Anthropic plan (by flag or
+  // at the prompt) runs memory on that plan, never touches cmem.ai, and now
+  // never sees an OAuth screen — so an unrelated cmem.ai outage can no longer
+  // fail an install that could have completed offline.
   //
-  // Deliberately keyed on the explicit flag, not on reachability: a silent
+  // Deliberately keyed on the resolved choice, not on reachability: a silent
   // fallback to a local install whenever cmem.ai is down would quietly change
-  // what the user gets. This only skips a step the user's own flag made moot.
+  // what the user gets. This only skips a step the user's own choice made moot.
+  const providerChoice = await promptProviderChoice(options);
+  const choiceNeedsAccount = options.provider
+    ? providerNeedsAccount(options.provider)
+    : providerChoice === 'cmem';
+  // The two account paths differ in how many browser trips they cost. CMEM Pro
+  // is one trip that carries sign-in, the offer, checkout and device approval
+  // in a single visit. An explicit `--provider openrouter|gemini` needs only an
+  // account — it never enrolls in Pro — so it keeps the login-only trip and
+  // stops as soon as the account exists.
   let oauthPairing: InstallerOAuthPairing | null = null;
-  if (providerNeedsAccount(options.provider)) {
+  if (providerChoice === 'cmem') {
+    oauthPairing = await requireCmemProTrialPairing(version);
+  } else if (choiceNeedsAccount) {
     oauthPairing = await requireInstallerOAuthLogin(version);
-    if (!oauthPairing) {
-      if (isInteractive) p.cancel('OAuth login is required to finish installation.');
-      else console.error('OAuth login is required to finish installation.');
-      process.exit(1);
-    }
   } else {
-    log.info('Skipping claude-mem login: --provider claude runs memory on your own Anthropic plan.');
+    log.info('Skipping claude-mem login: this provider runs memory on your own Anthropic plan.');
   }
-  const selectedProvider = await promptProvider(options, oauthPairing, version);
+  if (choiceNeedsAccount && !oauthPairing) {
+    // Name the step that actually failed. The CMEM Pro path can fail anywhere in
+    // one browser visit — sign-in, checkout, or device approval — so blaming
+    // "OAuth login" there sends the user (and support) after the wrong thing.
+    const failure = providerChoice === 'cmem'
+      ? 'CMEM Pro setup was not completed. Run npx claude-mem install to try again.'
+      : 'OAuth login is required to finish installation.';
+    if (isInteractive) p.cancel(failure);
+    else console.error(failure);
+    process.exit(1);
+  }
+  const selectedProvider = await promptProvider(providerChoice, oauthPairing, version);
   const cloudSyncConfigured = [
     getSetting('CLAUDE_MEM_CLOUD_SYNC_TOKEN'),
     getSetting('CLAUDE_MEM_CLOUD_SYNC_USER_ID'),
@@ -2231,7 +2398,16 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     `Plugin dir:  ${styleText('cyan', marketplaceDir)}`,
     `IDEs:        ${styleText('cyan', selectedIDEs.join(', '))}`,
   ];
-  summaryLines.push(`Account:     ${styleText('cyan', 'OAuth login complete')}`);
+  // Report what actually happened. This line used to be hardcoded, which was
+  // true only while login was mandatory for every install — now that it runs
+  // solely for the paths that need an account, an offline Anthropic Max install
+  // would otherwise be told it completed a login it never performed.
+  const accountStatus = !oauthPairing
+    ? 'local only (no claude-mem account needed)'
+    : cloudSyncConfigured
+      ? 'signed in — CMEM Pro active'
+      : 'signed in';
+  summaryLines.push(`Account:     ${styleText('cyan', accountStatus)}`);
   summaryLines.push(`Cloud sync:  ${styleText('cyan', cloudSyncConfigured ? 'ON (CMEM Pro)' : 'OFF (local)')}`);
   if (autoMemoryStatus === 'disabled') {
     summaryLines.push(`Auto-memory: ${styleText('cyan', 'disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);

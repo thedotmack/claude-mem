@@ -9,9 +9,6 @@ import { cmemProOrigin } from '../shared/cmem-gateway.js';
 export const PROVIDER_PROMPT_MESSAGE =
   'Select Provider:\n================';
 
-export const CMEM_TRIAL_ACKNOWLEDGEMENT =
-  "Free Trial includes a week's worth of allowance and auto-charges if you reach the limit.";
-
 export interface ProviderLabels {
   cmem: string;
   cmemHint: string;
@@ -28,11 +25,14 @@ export interface ProviderLabels {
  * the user arrows around, instead of showing both choices side by side. The
  * parentheses are ours for the same reason: clack adds its own `(...)` around a
  * hint, but never around a label.
+ *
+ * Each label stays on one line inside 80 columns. The terminal only has to be
+ * enough to choose by — the full offer is on the /pro page the user lands on
+ * next, and repeating it here is the third time we pitch the same thing.
  */
 export function buildProviderLabels(): ProviderLabels {
   return {
-    cmem: 'CMEM Pro (30 Day Free Trial: Tokens for Observations + Real-Time Cloud Sync '
-      + 'for Claude.ai, ChatGPT.com, anything that accepts an MCP Connector)',
+    cmem: 'CMEM Pro (30 Day Free Trial: cloud sync, tokens included)',
     cmemHint: '',
     claude: 'Use your Anthropic Max Plan (no cloud sync, uses tokens for observations)',
     claudeHint: '',
