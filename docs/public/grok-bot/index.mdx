@@ -23,7 +23,7 @@ description: "Persistent memory for Grok Bot — no host hooks, no Claude CLI, n
 </CardGroup>
 
 <Info>
-This install path ships in **claude-mem 13.24** ([PR #3842](https://github.com/thedotmack/claude-mem/pull/3842)). npm 13.23.x does not yet accept `--ide grok-bot` or `--provider host`. Grok Bot is **not** Grok Build CLI.
+This install path ships in **claude-mem 13.24** ([PR #3842](https://github.com/thedotmack/claude-mem/pull/3842)). npm 13.23.x does not yet accept `--ide grok-bot` or `--provider host`. Grok Bot is **not** Grok Build CLI. Plugin id: **`claude-mem-grok-bot`**.
 </Info>
 
 ## How it works
@@ -47,12 +47,15 @@ npx claude-mem install --ide grok-bot --provider host
 
 That starts a **local worker** and a **local host-login observer** (loopback shim, no API key).
 
-Optional:
+`--ide` takes a **single** host. To also wire Cursor, run a second install (do not pass `--ide` twice on one command — only the last value is kept):
 
 ```bash
-# Grok Bot + Cursor on the same machine (not required)
-npx claude-mem install --ide grok-bot --ide cursor --provider host
+npx claude-mem install --ide cursor
+```
 
+Other options:
+
+```bash
 # Remote worker
 npx claude-mem install --ide grok-bot --runtime server --server-url https://YOUR_HOST
 
@@ -135,10 +138,11 @@ You are on npm **13.23.x or earlier**. This host lands in **13.24** with [PR #38
 
 ### I also use Cursor
 
-Install both IDEs if you want both; it is optional:
+`--ide` is a single string. Run a second install for Cursor; do not stack `--ide` flags on one command:
 
 ```bash
-npx claude-mem install --ide grok-bot --ide cursor
+npx claude-mem install --ide grok-bot --provider host
+npx claude-mem install --ide cursor
 ```
 
 Cursor uses hooks (`npx claude-mem hook cursor …`) and `platformSource=cursor`. Grok Bot still has no hooks. See [Cursor Integration](/cursor).
