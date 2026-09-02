@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { spawn } from 'node:child_process';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
@@ -111,12 +112,37 @@ describe('host observer port resolution', () => {
   });
 
   it('treats HTTP 503 error-shaped payloads as occupied and never persists them', async () => {
-    const unavailable = http.createServer((_req, res) => {
-      res.writeHead(503, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: { message: 'unavailable' } }));
-    });
+    // spawnSync(curl) blocks this process, so the occupied listener must live
+    // in a child. Otherwise the install-time probe never sees HTTP status.
+    const child = spawn(process.execPath, ['-e', `
+      const http = require('http');
+      const server = http.createServer((_req, res) => {
+        res.writeHead(503, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'unavailable' } }));
+      });
+      server.listen(0, '127.0.0.1', () => {
+        process.stdout.write(String(server.address().port));
+      });
+    `], { stdio: ['ignore', 'pipe', 'pipe'] });
+
     try {
-      const port = await listen(unavailable);
+      const port = await new Promise<number>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('occupied child did not start')), 2000);
+        child.once('error', (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+        child.stdout.once('data', (chunk) => {
+          clearTimeout(timer);
+          const parsed = Number(String(chunk).trim());
+          if (!Number.isInteger(parsed) || parsed <= 0) {
+            reject(new Error(`invalid child port: ${String(chunk)}`));
+            return;
+          }
+          resolve(parsed);
+        });
+      });
+
       expect(await probeHostObserverPort(port)).toBe('occupied');
 
       const env = { CLAUDE_MEM_HOST_OBSERVER_PORT: String(port) } as NodeJS.ProcessEnv;
@@ -136,7 +162,7 @@ describe('host observer port resolution', () => {
       expect(updates).toBeUndefined();
       expect(updates?.CLAUDE_MEM_OPENROUTER_BASE_URL).toBeUndefined();
     } finally {
-      await close(unavailable);
+      child.kill('SIGTERM');
     }
   });
 });
