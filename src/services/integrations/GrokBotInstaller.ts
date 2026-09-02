@@ -1,8 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, SAMPLE_CONFIG } from '../transcripts/config.js';
 import type { TranscriptSchema, TranscriptWatchConfig, WatchTarget } from '../transcripts/types.js';
-import { getProjectContext } from '../../utils/project-name.js';
 
 export const GROK_BOT_SCHEMA: TranscriptSchema = {
   name: 'grok-bot',
@@ -49,16 +48,127 @@ export const GROK_BOT_SCHEMA: TranscriptSchema = {
   ],
 };
 
-export function buildGrokBotWatch(workspaceRoot = process.cwd()): WatchTarget {
-  const project = getProjectContext(workspaceRoot).primary;
+/** Cowork-style project prefix, plus `box` (Grok Bot host home is /home/box). */
+const GENERIC_DIRS = new Set([
+  '',
+  '/',
+  'root',
+  'claude',
+  'user',
+  'home',
+  'work',
+  'workspace',
+  'tmp',
+  'uploads',
+  'outputs',
+  'box',
+]);
+
+export function resolveGrokBotProject(name: string): string {
+  const base = String(name ?? '').replace(/\/+$/, '').split('/').pop() || '';
+  const slug = base
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+  return 'cmem_work_' + (GENERIC_DIRS.has(slug) ? 'root' : slug);
+}
+
+function hasAgentsAndTranscripts(dir: string): boolean {
+  return existsSync(path.join(dir, 'agents')) && existsSync(path.join(dir, 'agent-transcripts'));
+}
+
+function resolveGrokBotAgentDataRoot(workspaceRoot: string): string {
+  if (hasAgentsAndTranscripts(workspaceRoot)) {
+    return workspaceRoot;
+  }
+  const nested = path.join(workspaceRoot, 'agent-data');
+  if (hasAgentsAndTranscripts(nested)) {
+    return nested;
+  }
+  return workspaceRoot;
+}
+
+function grokBotProjectWorkspace(agentDataRoot: string, project: string): string {
+  return path.join(agentDataRoot, '.cmem-projects', project);
+}
+
+function ensureGrokBotProjectWorkspace(agentDataRoot: string, project: string): string {
+  const workspace = grokBotProjectWorkspace(agentDataRoot, project);
+  mkdirSync(workspace, { recursive: true });
+  return workspace;
+}
+
+function buildGrokBotAgentWatch(
+  agentDataRoot: string,
+  agentId: string,
+  project: string,
+  workspace: string,
+): WatchTarget {
   return {
     name: 'grok-bot',
-    path: path.join(workspaceRoot, 'agent-transcripts', '*', '*.jsonl'),
     schema: 'grok-bot',
-    workspace: workspaceRoot,
+    path: path.join(agentDataRoot, 'agent-transcripts', agentId, '*.jsonl'),
+    workspace,
     project,
     startAtEnd: true,
   };
+}
+
+interface GrokBotAgent {
+  id: string;
+  name: string;
+}
+
+function listGrokBotAgents(agentDataRoot: string): GrokBotAgent[] {
+  const agentsDir = path.join(agentDataRoot, 'agents');
+  if (!existsSync(agentsDir)) {
+    return [];
+  }
+
+  const agents: GrokBotAgent[] = [];
+  for (const entry of readdirSync(agentsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name.startsWith('sand-subagent-')) continue;
+    const profilePath = path.join(agentsDir, entry.name, 'profile.json');
+    if (!existsSync(profilePath)) continue;
+    try {
+      const profile = JSON.parse(readFileSync(profilePath, 'utf-8')) as { name?: unknown };
+      const name = typeof profile.name === 'string' ? profile.name : '';
+      agents.push({ id: entry.name, name });
+    } catch {
+      continue;
+    }
+  }
+  return agents;
+}
+
+/** Fallback catch-all watch used when no agent profiles are present. */
+export function buildGrokBotWatch(workspaceRoot = process.cwd()): WatchTarget {
+  const agentDataRoot = resolveGrokBotAgentDataRoot(workspaceRoot);
+  const project = resolveGrokBotProject('');
+  return buildGrokBotAgentWatch(
+    agentDataRoot,
+    '*',
+    project,
+    grokBotProjectWorkspace(agentDataRoot, project),
+  );
+}
+
+function buildGrokBotWatches(workspaceRoot: string): WatchTarget[] {
+  const agentDataRoot = resolveGrokBotAgentDataRoot(workspaceRoot);
+  const agents = listGrokBotAgents(agentDataRoot);
+  if (agents.length === 0) {
+    const project = resolveGrokBotProject('');
+    const workspace = ensureGrokBotProjectWorkspace(agentDataRoot, project);
+    return [buildGrokBotAgentWatch(agentDataRoot, '*', project, workspace)];
+  }
+
+  return agents.map((agent) => {
+    const project = resolveGrokBotProject(agent.name);
+    const workspace = ensureGrokBotProjectWorkspace(agentDataRoot, project);
+    return buildGrokBotAgentWatch(agentDataRoot, agent.id, project, workspace);
+  });
 }
 
 function loadOrCreateConfig(configPath: string): TranscriptWatchConfig {
@@ -94,18 +204,16 @@ export function installGrokBotIntegration(configPath = DEFAULT_CONFIG_PATH, work
     'grok-bot': GROK_BOT_SCHEMA,
   };
 
-  const watch = buildGrokBotWatch(workspaceRoot);
-  const existingIndex = config.watches.findIndex((candidate) =>
-    candidate.name === watch.name && candidate.path === watch.path,
-  );
-  if (existingIndex >= 0) {
-    config.watches[existingIndex] = { ...config.watches[existingIndex], ...watch };
-  } else {
-    config.watches.push(watch);
-  }
+  const grokWatches = buildGrokBotWatches(workspaceRoot);
+  config.watches = [
+    ...config.watches.filter((watch) => watch.name !== 'grok-bot'),
+    ...grokWatches,
+  ];
 
   writeFileSync(resolvedConfigPath, JSON.stringify(config, null, 2) + '\n');
   console.log(`  Configured Grok Bot transcript watcher: ${resolvedConfigPath}`);
-  console.log(`  Watching: ${watch.path}`);
+  for (const watch of grokWatches) {
+    console.log(`  Watching: ${watch.path}`);
+  }
   return 0;
 }
