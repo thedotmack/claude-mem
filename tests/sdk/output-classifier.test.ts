@@ -344,6 +344,32 @@ describe('isTransportFailureObserverOutput separates envelope from diagnosis (re
     });
   }
 
+  // The API and bare-`Error:` families had the same hole, and a network
+  // condition did not close it: the generic noun the prose is *about* is the
+  // same noun the condition list is made of.
+  const PUNCTUATED_ENVELOPE_PROSE_WITH_CONDITION = [
+    'API Error: connection handling was reviewed',
+    'HTTP error: the socket timeout has been raised to 30s',
+    'Request error: proxy support was added to the client',
+    'Error: connection pooling is now handled by the driver',
+  ];
+
+  for (const prose of PUNCTUATED_ENVELOPE_PROSE_WITH_CONDITION) {
+    it(`does not requeue an explained condition: ${prose.slice(0, 40)}…`, () => {
+      expect(isTransportFailureObserverOutput(prose)).toBe(false);
+    });
+  }
+
+  // The 5xx path is independent of all of this, which is what makes the clause
+  // test affordable on the API family: a real server failure is still caught
+  // however its prose reads.
+  it('still reports a 5xx behind an API envelope, clause or not', () => {
+    expect(
+      isTransportFailureObserverOutput('API Error: 503 Service Unavailable, the gateway is down')
+    ).toBe(true);
+    expect(isTransportFailureObserverOutput('Request error: 502')).toBe(true);
+  });
+
   // …and the clause test must not swallow a real failure that happens to be
   // written as one. A concrete failure word re-admits it; a generic network
   // noun deliberately does not, since that is what the prose above is made of.
