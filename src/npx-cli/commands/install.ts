@@ -2234,6 +2234,10 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
         // selectedRuntime is narrowed to 'worker' here: the server case
         // returned above and never reaches the worker-service spawner.
         message(`Spawning worker on port ${port}...`);
+        // Stop any worker that came up during install with the previous
+        // provider so the RAM queue cannot mix old/new settings. Runtime
+        // POST /api/settings still must not recycle a healthy worker.
+        await requireWorkerStopped(port, 'provider-cutover', summary);
         workerStartResult = await ensureWorkerStarted(port, scriptPath);
         switch (workerStartResult) {
           case 'ready':
