@@ -37,6 +37,20 @@ describe('npx CLI server namespace', () => {
     expect(serverSource).not.toContain("'migrate'");
   });
 
+
+
+  it('advertises grok-bot and host observer installs in help text', () => {
+    expect(indexSource).toContain('claude|gemini|openrouter|host');
+    expect(indexSource).toContain('grok-bot');
+  });
+
+  it('routes direct mcp and hook commands through the runtime command module', () => {
+    expect(indexSource).toContain("case 'mcp'");
+    expect(indexSource).toContain('runMcpCommand()');
+    expect(indexSource).toContain("case 'hook'");
+    expect(indexSource).toContain('runHookCommand(args.slice(1))');
+  });
+
   it('normalizes direct worker-service server invocations', () => {
     expect(workerServiceSource).toContain("rawCommand === 'server'");
     expect(workerServiceSource).toContain('lifecycleCommands.has(maybeSubCommand)');

@@ -13,7 +13,7 @@ describe('buildObservationPrompt', () => {
       cwd: '/repo',
     });
 
-    expect(prompt).toContain('Return either one or more <observation>...</observation> blocks, or an empty response');
+    expect(prompt).toContain('Return either one or more <observation>...</observation> blocks, or <skip_summary reason="noise" />');
     expect(prompt).toContain('Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection');
     expect(prompt).toContain('Never reply with prose such as "Skipping", "No substantive tool executions"');
   });

@@ -45,6 +45,7 @@ import { PRO_TRIAL_PITCH, proTrialUrl } from '../../shared/pro-promo.js';
 import {
   buildAnthropicMaxLocalSettings,
   buildCmemActivationSettings,
+  buildHostObserverSettings,
   buildNonInteractiveOpenRouterSettings,
   buildPersonalOpenRouterSettings,
   resolveCmemMemoryCredentials,
@@ -337,7 +338,23 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
           if (mcpResult === 0) {
             return `Cursor: hooks + MCP installed ${styleText('green', 'OK')}`;
           }
-          return `Cursor: hooks installed; MCP setup failed — run \`npx claude-mem cursor mcp\` ${styleText('yellow', '!')}`;
+          return `Cursor: hooks installed; MCP setup failed — run \`npx claude-mem mcp\` ${styleText('yellow', '!')}`;
+        },
+      };
+    }
+
+    case 'grok-bot': {
+      return {
+        title: 'Grok Bot: installing transcript watch',
+        task: async (message) => {
+          message('Configuring Grok Bot transcript watch…');
+          const { installGrokBotIntegration } = await import('../../services/integrations/GrokBotInstaller.js');
+          const { result, output } = await bufferConsole(async () => installGrokBotIntegration());
+          if (result !== 0) {
+            recordFailure('Grok Bot: transcript watch installation failed', output);
+            return `Grok Bot: transcript watch installation failed ${styleText('red', 'FAIL')}`;
+          }
+          return `Grok Bot: transcript watch installed ${styleText('green', 'OK')}`;
         },
       };
     }
@@ -676,6 +693,9 @@ function copyPluginToMarketplace(): void {
   const allowedTopLevelEntries = [
     '.agents',
     '.codex-plugin',
+    '.cursor-plugin',
+    'claude-mem-cursor',
+    'claude-mem-grok-bot',
     'plugin',
     'package.json',
     'package-lock.json',
@@ -841,7 +861,7 @@ function mergeSettings(updates: Record<string, string>): boolean {
   }
 }
 
-type ProviderId = 'claude' | 'gemini' | 'openrouter';
+type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'host';
 /**
  * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
  * it configures the generic OpenAI-compatible path (base URL + model + key) and
@@ -1133,6 +1153,17 @@ async function promptProvider(
   if (selectedProvider === 'claude') {
     useSubscriptionAuth();
     return 'claude';
+  }
+
+  if (selectedProvider === 'host') {
+    const observerModel = options.ide === 'grok-bot' ? 'grok-bot' : 'cursor';
+    const wrote = mergeSettings(buildHostObserverSettings(observerModel, persistedSettings));
+    if (!wrote) {
+      p.cancel('Could not save the host observer configuration.');
+      process.exit(1);
+    }
+    log.info(`Configured host observer for ${observerModel}.`);
+    return 'openrouter';
   }
 
   const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
@@ -1787,20 +1818,21 @@ async function promptTelemetryOptIn(): Promise<void> {
 /**
  * Whether an install still has an account question to answer.
  *
- * Only `--provider claude` is exempt: it configures memory against the user's
- * own Anthropic plan and needs no claude-mem credentials. `gemini` and
+ * `--provider claude` and `--provider host` are exempt: they either run on the
+ * user's own Anthropic plan or the logged-in host agent and need no claude-mem
+ * credentials. `gemini` and
  * `openrouter` are NOT exempt — openrouter is the transport for the cmem
  * gateway, so an explicit `openrouter` install may still be reaching cmem.ai.
  * With no flag at all the provider screen can still offer CMEM Pro, so login
  * must happen first.
  */
 export function providerNeedsAccount(provider: InstallOptions['provider']): boolean {
-  return provider !== 'claude';
+  return provider !== 'claude' && provider !== 'host';
 }
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter';
+  provider?: 'claude' | 'gemini' | 'openrouter' | 'host';
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;
@@ -1868,6 +1900,7 @@ function validateNonInteractiveProvider(
     }, summary);
   }
 
+  if (options.provider === 'host') return;
   if (options.provider !== 'gemini' && options.provider !== 'openrouter') return;
   const keyName = options.provider === 'gemini'
     ? 'CLAUDE_MEM_GEMINI_API_KEY'
@@ -2161,7 +2194,10 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       process.exit(1);
     }
   } else {
-    log.info('Skipping claude-mem login: --provider claude runs memory on your own Anthropic plan.');
+    const skipReason = options.provider === 'host'
+      ? 'host observer uses the logged-in host agent over a local OpenAI-compatible shim.'
+      : '--provider claude runs memory on your own Anthropic plan.';
+    log.info(`Skipping claude-mem login: ${skipReason}`);
   }
   const selectedProvider = await promptProvider(options, oauthPairing, version);
   const cloudSyncConfigured = [
@@ -2172,15 +2208,6 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   if (selectedProvider === 'claude') {
     await promptClaudeModel(options);
   }
-
-  // Hooks and MCP clients can lazily restart the worker while the browser is
-  // open for OAuth. Stop it again after provider settings are persisted so a
-  // local choice can never reuse an in-memory process holding old sync state.
-  await requireWorkerStopped(
-    getSetting('CLAUDE_MEM_WORKER_PORT'),
-    'provider-cutover',
-    summary,
-  );
 
   // The server runtime is brought up via its own stack (Docker pg+redis +
   // `claude-mem server start`), NOT the worker-service spawner. Skip the
@@ -2207,6 +2234,10 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
         // selectedRuntime is narrowed to 'worker' here: the server case
         // returned above and never reaches the worker-service spawner.
         message(`Spawning worker on port ${port}...`);
+        // Stop any worker that came up during install with the previous
+        // provider so the RAM queue cannot mix old/new settings. Runtime
+        // POST /api/settings still must not recycle a healthy worker.
+        await requireWorkerStopped(port, 'provider-cutover', summary);
         workerStartResult = await ensureWorkerStarted(port, scriptPath);
         switch (workerStartResult) {
           case 'ready':
@@ -2226,12 +2257,15 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // stale local count.
   const hasFailures = summary.failedIDEs.length > 0;
   const installStatus = hasFailures ? 'Installation Partial' : 'Installation Complete';
+  const accountStatus = providerNeedsAccount(options.provider)
+    ? 'OAuth login complete'
+    : (options.provider === 'host' ? 'Not required (host observer)' : 'Not required (local provider)');
   const summaryLines = [
     `Version:     ${styleText('cyan', version)}`,
     `Plugin dir:  ${styleText('cyan', marketplaceDir)}`,
     `IDEs:        ${styleText('cyan', selectedIDEs.join(', '))}`,
   ];
-  summaryLines.push(`Account:     ${styleText('cyan', 'OAuth login complete')}`);
+  summaryLines.push(`Account:     ${styleText('cyan', accountStatus)}`);
   summaryLines.push(`Cloud sync:  ${styleText('cyan', cloudSyncConfigured ? 'ON (CMEM Pro)' : 'OFF (local)')}`);
   if (autoMemoryStatus === 'disabled') {
     summaryLines.push(`Auto-memory: ${styleText('cyan', 'disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
