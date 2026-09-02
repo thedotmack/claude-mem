@@ -26,7 +26,7 @@ describe('grok-bot install default provider', () => {
     const defaultSection = skill.split('## Optional')[0];
 
     expect(defaultSection).toContain('npx claude-mem install --ide grok-bot');
-    expect(defaultSection).not.toContain('--provider host');
+    expect(defaultSection).not.toContain('npx claude-mem install --ide grok-bot --provider host');
     expect(defaultSection).toContain('https://cmem.ai/api/inference/v1');
     expect(defaultSection).toContain('cmem-observer');
     expect(defaultSection.toLowerCase()).not.toContain('host-login observer (default)');
