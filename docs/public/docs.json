@@ -57,6 +57,13 @@
         ]
       },
       {
+        "group": "Grok Bot Integration",
+        "icon": "robot",
+        "pages": [
+          "grok-bot/index"
+        ]
+      },
+      {
         "group": "Antigravity CLI Integration",
         "icon": "terminal",
         "pages": [
@@ -94,7 +101,8 @@
         "icon": "cloud",
         "pages": [
           "hosted-server",
-          "cloud-sync"
+          "cloud-sync",
+          "cmem-pro-headless"
         ]
       },
       {
