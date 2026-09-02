@@ -167,16 +167,19 @@ describe('cmem memory credential retention', () => {
 
 
   describe('host observer helpers', () => {
-    it('moves the host observer off the default worker port when needed', () => {
-      expect(resolveHostObserverPort('37777', {} as NodeJS.ProcessEnv)).toBe('37778');
-      expect(resolveHostObserverPort('37742', {} as NodeJS.ProcessEnv)).toBe('37777');
-      expect(resolveHostObserverPort('37777', { CLAUDE_MEM_HOST_OBSERVER_PORT: '39999' } as NodeJS.ProcessEnv)).toBe('39999');
+    const observerOn = (...ports: number[]) =>
+      async (port: number) => (ports.includes(port) ? 'observer' : 'free' as const);
+
+    it('moves the host observer off the default worker port when needed', async () => {
+      expect(await resolveHostObserverPort('37777', {} as NodeJS.ProcessEnv, observerOn(37778))).toBe('37778');
+      expect(await resolveHostObserverPort('37742', {} as NodeJS.ProcessEnv, observerOn(37777, 37778))).toBe('37777');
+      expect(await resolveHostObserverPort('37777', { CLAUDE_MEM_HOST_OBSERVER_PORT: '39999' } as NodeJS.ProcessEnv, observerOn(39999))).toBe('39999');
     });
 
-    it('builds an openrouter-compatible host observer configuration', () => {
-      expect(buildHostObserverSettings('grok-bot', {
+    it('builds an openrouter-compatible host observer configuration', async () => {
+      expect(await buildHostObserverSettings('grok-bot', {
         CLAUDE_MEM_WORKER_PORT: '37777',
-      })).toEqual({
+      }, {} as NodeJS.ProcessEnv, observerOn(37778))).toEqual({
         CLAUDE_MEM_PROVIDER: 'openrouter',
         CLAUDE_MEM_OPENROUTER_BASE_URL: 'http://127.0.0.1:37778/v1',
         CLAUDE_MEM_OPENROUTER_MODEL: 'grok-bot',
