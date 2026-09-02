@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { homedir } from 'os';
 import path from 'path';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, SAMPLE_CONFIG } from '../transcripts/config.js';
 import type { TranscriptSchema, TranscriptWatchConfig, WatchTarget } from '../transcripts/types.js';
@@ -78,6 +79,50 @@ function hasAgentsAndTranscripts(dir: string): boolean {
   return existsSync(path.join(dir, 'agents')) && existsSync(path.join(dir, 'agent-transcripts'));
 }
 
+export function wellKnownGrokBotAgentDataDirs(env: NodeJS.ProcessEnv = process.env): string[] {
+  const home = env.HOME?.trim() || env.USERPROFILE?.trim() || homedir();
+  const xdgDataHome = env.XDG_DATA_HOME?.trim() || path.join(home, '.local', 'share');
+  const candidates = [
+    path.join(home, '.grok-bot'),
+    path.join(xdgDataHome, 'grok-bot'),
+    path.join(home, 'Library', 'Application Support', 'Grok Bot'),
+    path.join(home, 'Library', 'Application Support', 'GrokBot'),
+    path.join(home, 'Library', 'Application Support', 'xAI', 'Grok Bot'),
+    '/home/box',
+  ];
+  return [...new Set(candidates.filter((dir) => dir && dir !== '/'))];
+}
+
+/**
+ * Discover the Grok Bot agent-data root used by the no-argument installer.
+ * GROK_BOT_AGENT_DATA wins, then well-known dirs that already contain both
+ * `agents/` and `agent-transcripts/`, then cwd/agent-data, then cwd.
+ */
+export function discoverGrokBotAgentDataRoot(
+  env: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd(),
+): string {
+  const override = env.GROK_BOT_AGENT_DATA?.trim();
+  if (override) {
+    return path.resolve(cwd, override);
+  }
+
+  for (const dir of wellKnownGrokBotAgentDataDirs(env)) {
+    if (hasAgentsAndTranscripts(dir)) {
+      return dir;
+    }
+  }
+
+  const nested = path.join(cwd, 'agent-data');
+  if (hasAgentsAndTranscripts(nested)) {
+    return nested;
+  }
+  if (hasAgentsAndTranscripts(cwd)) {
+    return cwd;
+  }
+  return cwd;
+}
+
 function resolveGrokBotAgentDataRoot(workspaceRoot: string): string {
   if (hasAgentsAndTranscripts(workspaceRoot)) {
     return workspaceRoot;
@@ -99,12 +144,21 @@ function ensureGrokBotProjectWorkspace(agentDataRoot: string, project: string): 
   return workspace;
 }
 
+function ensureGrokBotTranscriptDir(agentDataRoot: string, agentId: string): string {
+  const transcriptDir = agentId === '*'
+    ? path.join(agentDataRoot, 'agent-transcripts')
+    : path.join(agentDataRoot, 'agent-transcripts', agentId);
+  mkdirSync(transcriptDir, { recursive: true });
+  return transcriptDir;
+}
+
 function buildGrokBotAgentWatch(
   agentDataRoot: string,
   agentId: string,
   project: string,
   workspace: string,
 ): WatchTarget {
+  ensureGrokBotTranscriptDir(agentDataRoot, agentId);
   return {
     name: 'grok-bot',
     schema: 'grok-bot',
@@ -192,10 +246,9 @@ function loadOrCreateConfig(configPath: string): TranscriptWatchConfig {
 }
 
 export function installGrokBotIntegration(configPath = DEFAULT_CONFIG_PATH, workspaceRoot?: string): number {
-  const resolvedWorkspaceRoot =
-    workspaceRoot?.trim() ||
-    process.env.GROK_BOT_AGENT_DATA?.trim() ||
-    process.cwd();
+  const resolvedWorkspaceRoot = workspaceRoot?.trim()
+    ? workspaceRoot.trim()
+    : discoverGrokBotAgentDataRoot();
   const resolvedConfigPath = expandHomePath(configPath);
   const configDir = path.dirname(resolvedConfigPath);
   if (!existsSync(configDir)) {
