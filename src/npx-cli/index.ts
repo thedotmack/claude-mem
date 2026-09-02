@@ -1,6 +1,7 @@
 import { parseArgs, styleText } from 'node:util';
 import { readPluginVersion } from './utils/paths.js';
 import type { InstallOptions } from './commands/install.js';
+import { resolveInstallerProviderChoice } from './installer-provider-choice.js';
 
 const args = process.argv.slice(2);
 const firstArg = args[0]?.toLowerCase() ?? '';
@@ -89,9 +90,21 @@ function parseInstallOptions(argv: string[]): InstallOptions {
     console.error(`Unknown --runtime: ${runtime}. Allowed: worker, server`);
     process.exit(1);
   }
+  const ide = flag('ide');
+  let resolvedProvider = provider as InstallOptions['provider'];
+  // Non-TTY grok-bot: CMEM Pro is the user default. The 'cmem' sentinel is
+  // prompt-only (install.ts maps it to openrouter + cmem-observer + OAuth).
+  // Interactive installs still get the CMEM/Claude prompt. `--provider host`
+  // stays an explicit loopback-shim opt-in.
+  if (!resolvedProvider && process.stdin.isTTY !== true) {
+    const implicit = resolveInstallerProviderChoice({ ide });
+    if (implicit) {
+      resolvedProvider = implicit as InstallOptions['provider'];
+    }
+  }
   return {
-    ide: flag('ide'),
-    provider: provider as InstallOptions['provider'],
+    ide,
+    provider: resolvedProvider,
     model: flag('model'),
     noAutoStart: values['no-auto-start'] === true,
     disableAutoMemory: values['disable-auto-memory'] === true,

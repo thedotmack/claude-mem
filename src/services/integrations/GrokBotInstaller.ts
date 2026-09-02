@@ -191,7 +191,11 @@ function loadOrCreateConfig(configPath: string): TranscriptWatchConfig {
   };
 }
 
-export function installGrokBotIntegration(configPath = DEFAULT_CONFIG_PATH, workspaceRoot = process.cwd()): number {
+export function installGrokBotIntegration(configPath = DEFAULT_CONFIG_PATH, workspaceRoot?: string): number {
+  const resolvedWorkspaceRoot =
+    workspaceRoot?.trim() ||
+    process.env.GROK_BOT_AGENT_DATA?.trim() ||
+    process.cwd();
   const resolvedConfigPath = expandHomePath(configPath);
   const configDir = path.dirname(resolvedConfigPath);
   if (!existsSync(configDir)) {
@@ -204,7 +208,7 @@ export function installGrokBotIntegration(configPath = DEFAULT_CONFIG_PATH, work
     'grok-bot': GROK_BOT_SCHEMA,
   };
 
-  const grokWatches = buildGrokBotWatches(workspaceRoot);
+  const grokWatches = buildGrokBotWatches(resolvedWorkspaceRoot);
   config.watches = [
     ...config.watches.filter((watch) => watch.name !== 'grok-bot'),
     ...grokWatches,
