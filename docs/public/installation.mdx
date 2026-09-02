@@ -17,9 +17,9 @@ npx claude-mem install
 
 The interactive installer runs in three stages — runtime first, sign in second, then pick your memory provider:
 
-1. **Install runtime.** Runs a runtime check (auto-installs Bun and uv if missing), detects your installed IDEs (Claude Code, Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI) and lets you multi-select which ones to wire up, offers to install Claude Code if it isn't found, then copies plugin files into the marketplace directory, registers the plugin, and installs dependencies.
+1. **Install runtime.** Runs a runtime check (auto-installs Bun and uv if missing), detects your installed IDEs (Claude Code, Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI, Grok Bot) and lets you multi-select which ones to wire up, offers to install Claude Code if it isn't found, then copies plugin files into the marketplace directory, registers the plugin, and installs dependencies.
 2. **Sign in.** Skipped only for `--provider claude` (that path never talks to cmem.ai). The CLI does **not** ask for an email. It starts an OAuth pairing (`POST https://cmem.ai/api/installer/oauth/start`), prints a device code `XXXX-XXXX`, opens `authorization_url` in your browser, and polls until you are authenticated. No card required.
-3. **Choose your memory provider.** **CMEM Pro is pre-selected.** Picking it opens a checkout/trial URL, polls until the account is `ready`, writes `~/.claude-mem/settings.json`, and restarts the worker. Other choices: personal OpenRouter, Gemini, or your Anthropic plan.
+3. **Choose your memory provider.** **CMEM Pro is pre-selected.** Picking it opens a checkout/trial URL, polls until the account is `ready`, writes `~/.claude-mem/settings.json`, and restarts the worker. Other choices: personal OpenRouter, Gemini, Anthropic plan, or `--provider host` (local loopback observer).
 
 Headless or already signed in? See [CMEM Pro (manual / headless)](/cmem-pro-headless) for the exact settings the installer writes.
 
@@ -29,6 +29,7 @@ Headless or already signed in? See [CMEM Pro (manual / headless)](/cmem-pro-head
 - **Your OpenRouter key** — memory runs off-plan on your OpenRouter credit. Empty base URL (or `https://openrouter.ai/api/v1`). **Never** send a personal `sk-or-` key to the cmem.ai inference gateway.
 - **Gemini API key** — memory runs off-plan on your Gemini key.
 - **Anthropic plan** (`--provider claude`) — memory shares your Claude plan usage. Skips cmem.ai entirely. Prompts for the Claude model used to compress observations (Haiku / Sonnet / Opus).
+- **Host observer (opt-in)** — `--provider host` uses the already-logged-in agent over a local loopback. No API key. See [Grok Bot Integration](/grok-bot).
 
 ### Skipping the Sign-In
 
@@ -49,12 +50,22 @@ Both methods will automatically configure hooks and start the worker service. St
 > **SDK/library only**. It does **not** register plugin hooks or start the worker service.
 > Always install via `npx claude-mem install` or the `/plugin` commands above.
 
+### Grok Bot
+
+Grok Bot has no host hooks. Install it independently of Cursor or Claude Code. Default observer is CMEM Pro:
+
+```bash
+npx claude-mem install --ide grok-bot
+```
+
+Local host-login observer is opt-in: `--provider host`. `--ide` is a single string — a second host is a second install command. See [Grok Bot Integration](/grok-bot). This host ships in claude-mem **13.24** ([PR #3842](https://github.com/thedotmack/claude-mem/pull/3842)).
+
 ## System Requirements
 
 - **Node.js**: 20.0.0 or higher
 - **Bun** ≥ 1.0 (auto-installed by `npx claude-mem install` if missing)
 - **uv** (auto-installed if missing — provides Python for Chroma's embedding service)
-- **Claude Code** or another supported IDE (Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI, OpenClaw)
+- **Claude Code** or another supported host (Cursor, Grok Bot, Windsurf, OpenCode, Codex CLI, Antigravity CLI, OpenClaw)
 - **SQLite 3**: bundled via `bun:sqlite`
 
 ## Advanced Installation
@@ -140,5 +151,6 @@ See [CHANGELOG](https://github.com/thedotmack/claude-mem/blob/main/CHANGELOG.md)
 
 - [Getting Started Guide](usage/getting-started) - Learn how Claude-Mem works automatically
 - [CMEM Pro (manual / headless)](/cmem-pro-headless) - Exact settings.json keys and headless setup
+- [Grok Bot Integration](/grok-bot) - Persistent memory for Grok Bot (no hooks)
 - [MCP Search Tools](usage/search-tools) - Query your project history
 - [Configuration](configuration) - Customize Claude-Mem behavior
