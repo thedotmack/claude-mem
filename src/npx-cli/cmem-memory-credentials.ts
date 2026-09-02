@@ -1,3 +1,4 @@
+import net from 'node:net';
 import type { SettingsDefaults } from '../shared/SettingsDefaultsManager.js';
 import { isCmemGatewayUrl } from '../shared/cmem-gateway.js';
 import { CMEM_PRO_BASE_URL, CMEM_PRO_MODEL } from './cmem-pro-costs.js';
@@ -5,6 +6,16 @@ import { CMEM_PRO_BASE_URL, CMEM_PRO_MODEL } from './cmem-pro-costs.js';
 export const HOST_OBSERVER_DEFAULT_PORT = '37777';
 export const HOST_OBSERVER_DUMMY_API_KEY = 'host-observer-local';
 
+export type HostObserverPortStatus = 'observer' | 'occupied' | 'free';
+
+export type HostObserverPortProbe = (port: number) => Promise<HostObserverPortStatus> | HostObserverPortStatus;
+
+export class HostObserverUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'HostObserverUnavailableError';
+  }
+}
 
 export interface DeliveredCmemMemoryCredentials {
   memoryKey: string;
@@ -22,6 +33,111 @@ type SettingsLike = Partial<Record<keyof SettingsDefaults, unknown>>;
 
 function nonEmptyString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function parsePort(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0 && value <= 65535) {
+    return value;
+  }
+  const asString = nonEmptyString(value);
+  if (!asString) return null;
+  if (!/^\d+$/.test(asString)) return null;
+  const parsed = Number(asString);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) return null;
+  return parsed;
+}
+
+function looksLikeOpenAICompatible(body: string): boolean {
+  try {
+    const parsed = JSON.parse(body) as {
+      object?: unknown;
+      data?: unknown;
+      choices?: unknown;
+      error?: { message?: unknown; type?: unknown };
+    };
+    if (!parsed || typeof parsed !== 'object') return false;
+    if (Array.isArray(parsed.choices)) return true;
+    if (Array.isArray(parsed.data) && (parsed.object === 'list' || parsed.data.some((item) => item && typeof item === 'object'))) {
+      return true;
+    }
+    if (parsed.error && typeof parsed.error === 'object') {
+      return typeof parsed.error.message === 'string' || typeof parsed.error.type === 'string';
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+async function canBindLoopback(port: number): Promise<boolean> {
+  return await new Promise((resolve) => {
+    const server = net.createServer();
+    const finish = (available: boolean) => {
+      server.removeAllListeners();
+      try {
+        server.close();
+      } catch {
+        // already closed
+      }
+      resolve(available);
+    };
+    server.once('error', () => finish(false));
+    server.listen(port, '127.0.0.1', () => finish(true));
+  });
+}
+
+async function fetchLoopback(path: string, port: number, init?: RequestInit): Promise<{ ok: boolean; status: number; body: string } | null> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+      ...init,
+      signal: init?.signal ?? AbortSignal.timeout(400),
+    });
+    const body = await response.text();
+    return { ok: response.ok, status: response.status, body };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Probe a loopback port for an already-running OpenAI-compatible observer.
+ * Does not start a shim. Occupied non-observer listeners are never treated as available.
+ */
+export async function probeHostObserverPort(port: number): Promise<HostObserverPortStatus> {
+  const headers = {
+    Authorization: `Bearer ${HOST_OBSERVER_DUMMY_API_KEY}`,
+    'Content-Type': 'application/json',
+  };
+
+  const models = await fetchLoopback('/v1/models', port, { headers });
+  if (models && looksLikeOpenAICompatible(models.body)) return 'observer';
+
+  const completions = await fetchLoopback('/v1/chat/completions', port, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model: 'host-observer-probe',
+      messages: [{ role: 'user', content: 'ping' }],
+      max_tokens: 1,
+    }),
+  });
+  if (completions && looksLikeOpenAICompatible(completions.body)) return 'observer';
+
+  if (models || completions) return 'occupied';
+  return (await canBindLoopback(port)) ? 'free' : 'occupied';
+}
+
+export function hostObserverCandidatePorts(
+  workerPort: string | number | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): number[] {
+  const worker = parsePort(typeof workerPort === 'number' ? workerPort : nonEmptyString(workerPort));
+  const configured = parsePort(env.CLAUDE_MEM_HOST_OBSERVER_PORT);
+  if (configured != null) return [configured];
+
+  const preferred = parsePort(HOST_OBSERVER_DEFAULT_PORT) ?? 37777;
+  const fallback = preferred + 1;
+  return [preferred, fallback].filter((port) => worker == null || port !== worker);
 }
 
 /**
@@ -76,26 +192,61 @@ export function resolveCmemMemoryCredentials(
 
 /** Atomically move staged/current credentials into the active provider slot. */
 
-export function resolveHostObserverPort(workerPort: string | number | undefined, env: NodeJS.ProcessEnv = process.env): string {
-  const configured = nonEmptyString(env.CLAUDE_MEM_HOST_OBSERVER_PORT);
-  if (configured) return configured;
-
-  const normalizedWorkerPort = nonEmptyString(workerPort);
-  if (normalizedWorkerPort === HOST_OBSERVER_DEFAULT_PORT) {
-    return String(Number(HOST_OBSERVER_DEFAULT_PORT) + 1);
+export async function resolveHostObserverPort(
+  workerPort: string | number | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  probe: HostObserverPortProbe = probeHostObserverPort,
+): Promise<string> {
+  const worker = parsePort(typeof workerPort === 'number' ? workerPort : nonEmptyString(workerPort));
+  const configuredRaw = nonEmptyString(env.CLAUDE_MEM_HOST_OBSERVER_PORT);
+  if (configuredRaw) {
+    const configured = parsePort(configuredRaw);
+    if (configured == null) {
+      throw new HostObserverUnavailableError(
+        `CLAUDE_MEM_HOST_OBSERVER_PORT=${configuredRaw} is not a valid port. Set it to the port your OpenAI-compatible observer already listens on.`,
+      );
+    }
+    if (worker != null && configured === worker) {
+      throw new HostObserverUnavailableError(
+        `CLAUDE_MEM_HOST_OBSERVER_PORT=${configured} is the claude-mem worker port. Point it at your OpenAI-compatible observer instead.`,
+      );
+    }
+    const status = await probe(configured);
+    if (status === 'observer') return String(configured);
+    if (status === 'occupied') {
+      throw new HostObserverUnavailableError(
+        `CLAUDE_MEM_HOST_OBSERVER_PORT=${configured} is occupied by a process that is not an OpenAI-compatible observer. Stop that process or point CLAUDE_MEM_HOST_OBSERVER_PORT at your observer.`,
+      );
+    }
+    throw new HostObserverUnavailableError(
+      `CLAUDE_MEM_HOST_OBSERVER_PORT=${configured} has nothing listening. Start your OpenAI-compatible observer on that port, then rerun with --provider host.`,
+    );
   }
-  return HOST_OBSERVER_DEFAULT_PORT;
+
+  const candidates = hostObserverCandidatePorts(workerPort, env);
+  for (const port of candidates) {
+    const status = await probe(port);
+    if (status === 'observer') return String(port);
+  }
+
+  throw new HostObserverUnavailableError(
+    `No OpenAI-compatible host observer is listening on 127.0.0.1:${candidates.join(' or ') || HOST_OBSERVER_DEFAULT_PORT}. Host mode uses an observer you already run; claude-mem does not start one. Start your observer, then rerun with --provider host. If it uses another port, set CLAUDE_MEM_HOST_OBSERVER_PORT.`,
+  );
 }
 
-export function buildHostObserverSettings(
+export async function buildHostObserverSettings(
   observerModel: 'cursor' | 'grok-bot',
   settings: SettingsLike,
   env: NodeJS.ProcessEnv = process.env,
-): Record<string, string> {
-  const workerPort = nonEmptyString(settings.CLAUDE_MEM_WORKER_PORT) ?? undefined;
+  probe?: HostObserverPortProbe,
+): Promise<Record<string, string>> {
+  const workerPort = parsePort(settings.CLAUDE_MEM_WORKER_PORT)
+    ?? nonEmptyString(settings.CLAUDE_MEM_WORKER_PORT)
+    ?? undefined;
+  const port = await resolveHostObserverPort(workerPort, env, probe ?? probeHostObserverPort);
   return {
     CLAUDE_MEM_PROVIDER: 'openrouter',
-    CLAUDE_MEM_OPENROUTER_BASE_URL: `http://127.0.0.1:${resolveHostObserverPort(workerPort, env)}/v1`,
+    CLAUDE_MEM_OPENROUTER_BASE_URL: `http://127.0.0.1:${port}/v1`,
     CLAUDE_MEM_OPENROUTER_MODEL: observerModel,
     CLAUDE_MEM_OPENROUTER_API_KEY: HOST_OBSERVER_DUMMY_API_KEY,
   };
