@@ -1,0 +1,155 @@
+---
+title: "Grok Bot Integration"
+description: "Persistent memory for Grok Bot — no host hooks, no Claude CLI, no xAI API key"
+---
+
+# Grok Bot Integration
+
+> **Your Grok Bot remembers.** Claude-mem captures what the agent does, compresses it, and injects it into later sessions.
+
+<CardGroup cols={2}>
+  <Card title="No host hooks" icon="ban">
+    Ingest is a transcript watcher on agent JSONL, not Cursor-style hooks.
+  </Card>
+  <Card title="Host observer" icon="user">
+    The logged-in Grok Bot is the observer. No API key and no Claude CLI.
+  </Card>
+  <Card title="Independent of Cursor" icon="puzzle-piece">
+    Install Grok Bot only, Cursor only, or both. Neither host requires the other.
+  </Card>
+  <Card title="MCP search" icon="magnifying-glass">
+    Search past sessions with the 3-layer memory tools.
+  </Card>
+</CardGroup>
+
+<Info>
+This install path ships in **claude-mem 13.24** ([PR #3842](https://github.com/thedotmack/claude-mem/pull/3842)). npm 13.23.x does not yet accept `--ide grok-bot` or `--provider host`. Grok Bot is **not** Grok Build CLI.
+</Info>
+
+## How it works
+
+Grok Bot has no session-start, file-read, or tool-use hooks. Claude-mem wires up four pieces instead:
+
+1. **Transcript watcher** tails `agent-transcripts/*/*.jsonl` and stamps `platformSource=grok-bot`.
+2. **Local worker** stores sessions and serves search (default port `37700 + uid % 100` on `127.0.0.1`).
+3. **Host observer** — this Grok login fulfills compression jobs over a local OpenAI-compatible loopback. Idle replies are `skip_summary` XML; a finished unit of work is one `observation`.
+4. **MCP** exposes search to the bot (`search` → `timeline` → `get_observations`).
+
+Do not install Claude CLI for this host. Do not pass an xAI API key. There is no `--provider grok` flag.
+
+## Install
+
+### CLI (Grok Bot only)
+
+```bash
+npx claude-mem install --ide grok-bot --provider host
+```
+
+That starts a **local worker** and a **local host-login observer** (loopback shim, no API key).
+
+Optional:
+
+```bash
+# Grok Bot + Cursor on the same machine (not required)
+npx claude-mem install --ide grok-bot --ide cursor --provider host
+
+# Remote worker
+npx claude-mem install --ide grok-bot --runtime server --server-url https://YOUR_HOST
+
+# Remote observer (cmem.ai or any OpenAI-compatible URL)
+npx claude-mem install --ide grok-bot --provider openrouter
+```
+
+`--provider` also still accepts `claude` and `gemini`. Passing an explicit `--provider` skips the sign-in step.
+
+<Warning>
+`npm install -g claude-mem` installs the SDK only. It does not start the worker, watcher, or observer. Always use `npx claude-mem install`.
+</Warning>
+
+### Plugin store
+
+Grok Bot's plugin store **is** the Cursor catalog. Install **`claude-mem-grok-bot`** from there when the listing is live (submitted at [cursor.com/marketplace/publish](https://cursor.com/marketplace/publish) after 13.24 lands). The listing does not install Cursor.
+
+After the plugin is installed, still run the CLI above for a local worker, or set `CLAUDE_MEM_MCP_TOKEN` for remote MCP.
+
+## Observer and worker
+
+| Piece | Local (default) | Remote |
+| --- | --- | --- |
+| Worker | `npx claude-mem install --ide grok-bot` | `--runtime server --server-url` |
+| Observer | `--provider host` (loopback, logged-in Grok Bot, no API key) | `--provider openrouter` (cmem.ai or any OpenAI-compat URL) |
+| MCP | `npx -y claude-mem mcp` | `https://cmem.ai/api/mcp` with `Authorization: Bearer ${CLAUDE_MEM_MCP_TOKEN}` |
+
+`--provider host` is an OpenRouter-shaped loopback: `CLAUDE_MEM_OPENROUTER_BASE_URL=http://127.0.0.1:<shim>/v1` plus a dummy non-empty API key. You do not configure that by hand.
+
+**Port rule:** the observer shim must **not** bind the worker port. The worker is often `37700 + (uid % 100)`. On macOS it is often **37777** — if that port is taken, the shim uses **37778** (or `CLAUDE_MEM_HOST_OBSERVER_PORT`).
+
+Never restart a healthy worker. The observation queue is in RAM and a restart drops it.
+
+## XML contract (the gotcha)
+
+The worker parser only accepts three roots. Anything else is classified as prose and **the queued batch is dropped** ([issue #2485](https://github.com/thedotmack/claude-mem/issues/2485)).
+
+**Idle / init / no tool results yet:**
+
+```xml
+<skip_summary reason="noise" />
+```
+
+Reasons like `noise`, `session-init`, or `awaiting-tools` are fine. Timeouts must also return `skip_summary` XML, not an HTTP 504.
+
+**Finished searchable unit** (a decision, implementation, or setup a future session would search): one `<observation>` covering the whole pile — real title, 4–10 facts with paths, a short narrative. Types include `bugfix`, `feature`, `discovery`, `decision`, `change`. Never title an observation with a tool name.
+
+Do not mix `skip_summary` and `<observation>` in one reply. Do not POST `/api/memory/save` except as a last-resort manual note.
+
+## Using memory
+
+At the start of a real task, call MCP `session_start_context` for the project with `platformSource` `grok-bot`.
+
+Then the 3-layer search:
+
+1. `search` — compact index with IDs
+2. `timeline` — context around a hit
+3. `get_observations` — full details **only** for the IDs you will use
+
+Writes from this host stamp `platformSource=grok-bot`. When reading, do not drop Cursor (or other host) memories unless you asked for grok-only. See [Search Tools](/usage/search-tools).
+
+## Verify it worked
+
+1. Worker health: open `http://127.0.0.1:<worker-port>/api/health` (port is in `~/.claude-mem/.worker.port` or settings).
+2. Memory viewer: open the worker URL printed at install.
+3. Do a small unit of work in Grok Bot, then search. New observations should show `platformSource=grok-bot`.
+4. If the queue sits idle with no observations, the observer is probably returning prose instead of `skip_summary`.
+
+## Troubleshooting
+
+### Nothing is being stored
+
+- Confirm the worker is up and you did **not** restart a healthy one.
+- Confirm the observer reply is XML (`skip_summary` or `observation`), not English continue-text like "still observing".
+- Confirm the shim is not on the worker port (macOS: worker 37777 → shim 37778).
+
+### `npx claude-mem install --ide grok-bot` is rejected
+
+You are on npm **13.23.x or earlier**. This host lands in **13.24** with [PR #3842](https://github.com/thedotmack/claude-mem/pull/3842).
+
+### I also use Cursor
+
+Install both IDEs if you want both; it is optional:
+
+```bash
+npx claude-mem install --ide grok-bot --ide cursor
+```
+
+Cursor uses hooks (`npx claude-mem hook cursor …`) and `platformSource=cursor`. Grok Bot still has no hooks. See [Cursor Integration](/cursor).
+
+### This is not Grok Build
+
+The Grok **Build** CLI marketplace (`xai-org/plugin-marketplace`) is a different catalog. This page is Grok Bot only.
+
+## Next steps
+
+- [Search Tools](/usage/search-tools) — query project history
+- [Configuration](/configuration) — settings and environment variables
+- [Troubleshooting](/troubleshooting) — common issues
+- [Cursor Integration](/cursor) — if you also run Cursor
