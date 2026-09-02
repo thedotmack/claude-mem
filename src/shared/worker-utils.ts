@@ -396,15 +396,7 @@ async function waitForWorkerPort(options: { attempts: number; backoffMs: number;
 }
 
 async function waitForWorkerReadiness(timeoutMs: number = HOOK_READINESS_TIMEOUT_MS): Promise<boolean> {
-  if (timeoutMs <= 0) {
-    try {
-      return await isWorkerReady();
-    } catch (error: unknown) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      logger.debug('SYSTEM', 'Worker readiness check threw', {}, err);
-      return false;
-    }
-  }
+  if (timeoutMs <= 0) return false;
 
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
