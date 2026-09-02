@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import net from 'node:net';
 import type { SettingsDefaults } from '../shared/SettingsDefaultsManager.js';
 import { isCmemGatewayUrl } from '../shared/cmem-gateway.js';
@@ -8,7 +9,7 @@ export const HOST_OBSERVER_DUMMY_API_KEY = 'host-observer-local';
 
 export type HostObserverPortStatus = 'observer' | 'occupied' | 'free';
 
-export type HostObserverPortProbe = (port: number) => Promise<HostObserverPortStatus> | HostObserverPortStatus;
+export type HostObserverPortProbe = (port: number) => HostObserverPortStatus;
 
 export class HostObserverUnavailableError extends Error {
   constructor(message: string) {
@@ -127,6 +128,37 @@ export async function probeHostObserverPort(port: number): Promise<HostObserverP
   return (await canBindLoopback(port)) ? 'free' : 'occupied';
 }
 
+/** Synchronous install-time probe. Does not start a shim. */
+export function probeHostObserverPortSync(port: number): HostObserverPortStatus {
+  const auth = `Authorization: Bearer ${HOST_OBSERVER_DUMMY_API_KEY}`;
+  const models = spawnSync('curl', ['-sS', '-m', '1', '-H', auth, `http://127.0.0.1:${port}/v1/models`], {
+    encoding: 'utf8',
+    timeout: 2000,
+  });
+  const modelsOut = (models.stdout ?? '').toString();
+  if (models.status === 0 && looksLikeOpenAICompatible(modelsOut)) return 'observer';
+
+  const completions = spawnSync('curl', [
+    '-sS', '-m', '1', '-H', auth, '-H', 'Content-Type: application/json',
+    '-d', '{"model":"host-observer-probe","messages":[{"role":"user","content":"ping"}],"max_tokens":1}',
+    `http://127.0.0.1:${port}/v1/chat/completions`,
+  ], { encoding: 'utf8', timeout: 2000 });
+  const completionsOut = (completions.stdout ?? '').toString();
+  if (completions.status === 0 && looksLikeOpenAICompatible(completionsOut)) return 'observer';
+
+  if ((models.status === 0 && modelsOut) || (completions.status === 0 && completionsOut)) {
+    return 'occupied';
+  }
+
+  const bind = spawnSync(process.execPath, ['-e', `
+    const net = require('net');
+    const server = net.createServer();
+    server.once('error', () => process.exit(1));
+    server.listen(${port}, '127.0.0.1', () => server.close(() => process.exit(0)));
+  `], { timeout: 1500 });
+  return bind.status === 0 ? 'free' : 'occupied';
+}
+
 export function hostObserverCandidatePorts(
   workerPort: string | number | undefined,
   env: NodeJS.ProcessEnv = process.env,
@@ -192,11 +224,11 @@ export function resolveCmemMemoryCredentials(
 
 /** Atomically move staged/current credentials into the active provider slot. */
 
-export async function resolveHostObserverPort(
+export function resolveHostObserverPort(
   workerPort: string | number | undefined,
   env: NodeJS.ProcessEnv = process.env,
-  probe: HostObserverPortProbe = probeHostObserverPort,
-): Promise<string> {
+  probe: HostObserverPortProbe = probeHostObserverPortSync,
+): string {
   const worker = parsePort(typeof workerPort === 'number' ? workerPort : nonEmptyString(workerPort));
   const configuredRaw = nonEmptyString(env.CLAUDE_MEM_HOST_OBSERVER_PORT);
   if (configuredRaw) {
@@ -211,7 +243,7 @@ export async function resolveHostObserverPort(
         `CLAUDE_MEM_HOST_OBSERVER_PORT=${configured} is the claude-mem worker port. Point it at your OpenAI-compatible observer instead.`,
       );
     }
-    const status = await probe(configured);
+    const status = probe(configured);
     if (status === 'observer') return String(configured);
     if (status === 'occupied') {
       throw new HostObserverUnavailableError(
@@ -225,7 +257,7 @@ export async function resolveHostObserverPort(
 
   const candidates = hostObserverCandidatePorts(workerPort, env);
   for (const port of candidates) {
-    const status = await probe(port);
+    const status = probe(port);
     if (status === 'observer') return String(port);
   }
 
@@ -234,16 +266,16 @@ export async function resolveHostObserverPort(
   );
 }
 
-export async function buildHostObserverSettings(
+export function buildHostObserverSettings(
   observerModel: 'cursor' | 'grok-bot',
   settings: SettingsLike,
   env: NodeJS.ProcessEnv = process.env,
   probe?: HostObserverPortProbe,
-): Promise<Record<string, string>> {
+): Record<string, string> {
   const workerPort = parsePort(settings.CLAUDE_MEM_WORKER_PORT)
     ?? nonEmptyString(settings.CLAUDE_MEM_WORKER_PORT)
     ?? undefined;
-  const port = await resolveHostObserverPort(workerPort, env, probe ?? probeHostObserverPort);
+  const port = resolveHostObserverPort(workerPort, env, probe ?? probeHostObserverPortSync);
   return {
     CLAUDE_MEM_PROVIDER: 'openrouter',
     CLAUDE_MEM_OPENROUTER_BASE_URL: `http://127.0.0.1:${port}/v1`,
