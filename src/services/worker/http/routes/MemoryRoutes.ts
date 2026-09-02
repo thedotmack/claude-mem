@@ -33,12 +33,15 @@ export class MemoryRoutes extends BaseRouteHandler {
     const metadataProject = typeof metadata?.project === 'string' && metadata.project.trim()
       ? metadata.project.trim()
       : undefined;
+    const metadataPlatformSource = typeof metadata?.platformSource === 'string' && metadata.platformSource.trim()
+      ? metadata.platformSource.trim()
+      : undefined;
     const targetProject = explicitProject || metadataProject || this.defaultProject;
 
     const sessionStore = this.dbManager.getSessionStore();
     const chromaSync = this.dbManager.getChromaSync();
 
-    const memorySessionId = sessionStore.getOrCreateManualSession(targetProject);
+    const memorySessionId = sessionStore.getOrCreateManualSession(targetProject, metadataPlatformSource);
 
     const observation = {
       type: 'discovery',  // Use existing valid type

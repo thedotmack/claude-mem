@@ -17,14 +17,23 @@ npx claude-mem install
 
 The interactive installer runs in three stages — install first, sign in second, then pick your memory provider:
 
-1. **Install everything.** Runs a runtime check (auto-installs Bun and uv if missing), detects your installed IDEs (Claude Code, Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI) and lets you multi-select which ones to wire up, offers to install Claude Code if it isn't found, then copies plugin files into the marketplace directory, registers the plugin, and installs dependencies.
+1. **Install everything.** Runs a runtime check (auto-installs Bun and uv if missing), detects your installed IDEs (Claude Code, Cursor, Grok Bot, Windsurf, OpenCode, Codex CLI, Antigravity CLI) and lets you multi-select which ones to wire up, offers to install Claude Code if it isn't found, then copies plugin files into the marketplace directory, registers the plugin, and installs dependencies.
 2. **Sign in to claude-mem.** The installer asks for your email and sends a sign-in link; your browser opens to complete it. Every sign-in provisions a memory key for your account — no card required.
 3. **Choose your memory provider.** After sign-in you pick where observation extraction runs (see below), then the worker service auto-starts with your choice.
+
+### Cursor and Grok Bot installs
+
+- **Cursor only** — `npx claude-mem install --ide cursor`
+- **Grok Bot only** — `npx claude-mem install --ide grok-bot`
+- **Both** — select both in the interactive installer, or run the installer twice with each `--ide` flag
+- **Local worker** — default; runs on your machine
+- **Remote worker** — `npx claude-mem install --runtime server --server-url <url>`
 
 ### Memory Provider Options
 
 - **claude-mem observer (recommended)** — memory runs off-plan: get up to 100% more usage from your plan. Free for 30 days; when the free trial ends, memory automatically falls back to your Anthropic plan unless you subscribe.
-- **Your OpenRouter key** — memory runs off-plan on your OpenRouter credit.
+- **Host observer (`--provider host`)** — uses a local OpenAI-compatible loopback shim backed by the already logged-in host agent, so no Claude CLI or xAI key is required. Cursor and Grok Bot can each point at their own host observer model.
+- **Your OpenRouter key** — memory runs off-plan on your OpenRouter credit or another OpenAI-compatible endpoint such as `https://cmem.ai/api/inference/v1`.
 - **Gemini API key** — memory runs off-plan on your Gemini key.
 - **Anthropic plan** — memory shares your Claude plan usage. Prompts for the Claude model used to compress observations (Haiku / Sonnet / Opus).
 
@@ -58,7 +67,7 @@ Both methods will automatically configure hooks and start the worker service. St
 - **Node.js**: 20.0.0 or higher
 - **Bun** ≥ 1.0 (auto-installed by `npx claude-mem install` if missing)
 - **uv** (auto-installed if missing — provides Python for Chroma's embedding service)
-- **Claude Code** or another supported IDE (Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI, OpenClaw)
+- **Claude Code** or another supported IDE (Cursor, Grok Bot, Windsurf, OpenCode, Codex CLI, Antigravity CLI, OpenClaw)
 - **SQLite 3**: bundled via `bun:sqlite`
 
 ## Advanced Installation
@@ -130,6 +139,10 @@ npm run test:context
 Upgrades are automatic when updating via the plugin marketplace. After an external upgrade (for example `claude plugin update`), the Setup hook detects a version-marker mismatch and asks you to run `npx claude-mem repair`, which installs any missing runtime dependencies and refreshes the marker.
 
 See [CHANGELOG](https://github.com/thedotmack/claude-mem/blob/main/CHANGELOG.md) for complete version history.
+
+## Marketplace publishing
+
+After this PR lands, submit the repository to the Cursor marketplace at https://cursor.com/marketplace/publish. Grok Bot uses the same catalog, so the separate `claude-mem-cursor` and `claude-mem-grok-bot` listings can be published independently from the same repo.
 
 ## Next Steps
 

@@ -49,6 +49,30 @@ describe('Version Consistency', () => {
     expect(claudeMemPlugin.version).toBe(rootVersion);
   });
 
+
+  for (const pluginPath of [
+    'claude-mem-cursor/.cursor-plugin/plugin.json',
+    'claude-mem-grok-bot/.cursor-plugin/plugin.json',
+  ]) {
+    it(`should have matching version in ${pluginPath}`, () => {
+      const manifestPath = path.join(projectRoot, pluginPath);
+      expect(existsSync(manifestPath)).toBe(true);
+
+      const pluginJson = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+      expect(pluginJson.version).toBe(rootVersion);
+    });
+  }
+
+  it('should have matching versions in .cursor-plugin/marketplace.json', () => {
+    const marketplaceJsonPath = path.join(projectRoot, '.cursor-plugin', 'marketplace.json');
+    expect(existsSync(marketplaceJsonPath)).toBe(true);
+
+    const marketplaceJson = JSON.parse(readFileSync(marketplaceJsonPath, 'utf-8'));
+    for (const plugin of marketplaceJson.plugins) {
+      expect(plugin.version).toBe(rootVersion);
+    }
+  });
+
   it('should have version injected into built worker-service.cjs', () => {
     const workerServicePath = path.join(projectRoot, 'plugin/scripts/worker-service.cjs');
     

@@ -3021,7 +3021,7 @@ export class SessionStore {
     };
   }
 
-  getOrCreateManualSession(project: string): string {
+  getOrCreateManualSession(project: string, platformSource = DEFAULT_PLATFORM_SOURCE): string {
     const memorySessionId = `manual-${project}`;
     const contentSessionId = `manual-content-${project}`;
 
@@ -3030,6 +3030,11 @@ export class SessionStore {
     ).get(memorySessionId) as { memory_session_id: string } | undefined;
 
     if (existing) {
+      if (platformSource && platformSource !== DEFAULT_PLATFORM_SOURCE) {
+        this.db.prepare(
+          'UPDATE sdk_sessions SET platform_source = ? WHERE memory_session_id = ?'
+        ).run(platformSource, memorySessionId);
+      }
       return memorySessionId;
     }
 

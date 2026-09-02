@@ -2,6 +2,10 @@ import type { SettingsDefaults } from '../shared/SettingsDefaultsManager.js';
 import { isCmemGatewayUrl } from '../shared/cmem-gateway.js';
 import { CMEM_PRO_BASE_URL, CMEM_PRO_MODEL } from './cmem-pro-costs.js';
 
+export const HOST_OBSERVER_DEFAULT_PORT = '37777';
+export const HOST_OBSERVER_DUMMY_API_KEY = 'host-observer-local';
+
+
 export interface DeliveredCmemMemoryCredentials {
   memoryKey: string;
   memoryBaseUrl: string;
@@ -71,6 +75,32 @@ export function resolveCmemMemoryCredentials(
 }
 
 /** Atomically move staged/current credentials into the active provider slot. */
+
+export function resolveHostObserverPort(workerPort: string | number | undefined, env: NodeJS.ProcessEnv = process.env): string {
+  const configured = nonEmptyString(env.CLAUDE_MEM_HOST_OBSERVER_PORT);
+  if (configured) return configured;
+
+  const normalizedWorkerPort = nonEmptyString(workerPort);
+  if (normalizedWorkerPort === HOST_OBSERVER_DEFAULT_PORT) {
+    return String(Number(HOST_OBSERVER_DEFAULT_PORT) + 1);
+  }
+  return HOST_OBSERVER_DEFAULT_PORT;
+}
+
+export function buildHostObserverSettings(
+  observerModel: 'cursor' | 'grok-bot',
+  settings: SettingsLike,
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const workerPort = nonEmptyString(settings.CLAUDE_MEM_WORKER_PORT) ?? undefined;
+  return {
+    CLAUDE_MEM_PROVIDER: 'openrouter',
+    CLAUDE_MEM_OPENROUTER_BASE_URL: `http://127.0.0.1:${resolveHostObserverPort(workerPort, env)}/v1`,
+    CLAUDE_MEM_OPENROUTER_MODEL: observerModel,
+    CLAUDE_MEM_OPENROUTER_API_KEY: HOST_OBSERVER_DUMMY_API_KEY,
+  };
+}
+
 export function buildCmemActivationSettings(
   credentials: ResolvedCmemMemoryCredentials,
 ): Record<string, string> {
