@@ -5,9 +5,21 @@ description: "Install Claude-Mem plugin for persistent memory across sessions"
 
 # Installation Guide
 
+**[Grok mem](https://grok-mem.ai)** — Grok Mem is how Grok Bots remember. Sits next to Grok's own memory. Does not replace it.
+
 ## Quick Start
 
-### Option 1: npx (Recommended)
+### Option 1: Grok Bot
+
+Grok Bot has no host hooks. Install it independently of Cursor or Claude Code. Default is CMEM Pro, the hosted memory:
+
+```bash
+npx claude-mem install --ide grok-bot
+```
+
+Local host-login observer is opt-in: `--provider host`. `--ide` is a single string — a second host is a second install command. Installing this plugin does not install Cursor. See [Grok Bot Integration](/grok-bot).
+
+### Option 2: npx
 
 Install and configure Claude-Mem with a single command:
 
@@ -35,7 +47,7 @@ Headless or already signed in? See [CMEM Pro (manual / headless)](/cmem-pro-head
 
 `--provider claude` never touches cmem.ai and skips OAuth. You can finish a CMEM Pro pairing anytime by re-running `npx claude-mem install`, or by writing settings by hand ([manual / headless](/cmem-pro-headless)).
 
-### Option 2: Plugin Marketplace
+### Option 3: Plugin Marketplace
 
 Install Claude-Mem directly from the plugin marketplace inside Claude Code:
 
@@ -49,16 +61,6 @@ Both methods will automatically configure hooks and start the worker service. St
 > **Important:** Claude-Mem is published on npm, but running `npm install -g claude-mem` installs the
 > **SDK/library only**. It does **not** register plugin hooks or start the worker service.
 > Always install via `npx claude-mem install` or the `/plugin` commands above.
-
-### Grok Bot
-
-Grok Bot has no host hooks. Install it independently of Cursor or Claude Code. Default observer is CMEM Pro:
-
-```bash
-npx claude-mem install --ide grok-bot
-```
-
-Local host-login observer is opt-in: `--provider host`. `--ide` is a single string — a second host is a second install command. See [Grok Bot Integration](/grok-bot). This host ships in claude-mem **13.24** ([PR #3842](https://github.com/thedotmack/claude-mem/pull/3842)).
 
 ## System Requirements
 
