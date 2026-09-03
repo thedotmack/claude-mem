@@ -5,6 +5,7 @@ import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
 import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
+import { writeJsonFileAtomic } from "./atomic-json.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile, readOwnedWorkerPidInfo } from "../supervisor/index.js";
 import { emitBlockingError } from "./hook-io.js";
@@ -406,9 +407,16 @@ async function fetchWorkerHealthSnapshot(): Promise<WorkerHealthSnapshot> {
   }
 }
 
+function normalizeWorkerPathForCompare(workerPath: string): string {
+  const trimmed = workerPath.trim();
+  // path.resolve('') / path.resolve('   ') is cwd. Blank health omit
+  // fallbacks must not collapse to cwd and collide with an unrelated pair.
+  return trimmed === '' ? '' : path.resolve(trimmed);
+}
+
 function workerPathIsCurrentScript(workerPath: string | null, scriptPath: string | null): boolean {
-  if (!workerPath || !scriptPath) return false;
-  return path.resolve(workerPath) === path.resolve(scriptPath);
+  if (!workerPath?.trim() || !scriptPath?.trim()) return false;
+  return normalizeWorkerPathForCompare(workerPath) === normalizeWorkerPathForCompare(scriptPath);
 }
 
 interface VersionMismatchWarnState {
@@ -445,12 +453,10 @@ function readVersionMismatchWarnState(): VersionMismatchWarnState | null {
 }
 
 function writeVersionMismatchWarnState(state: VersionMismatchWarnState): void {
-  const dest = getVersionMismatchWarnPath();
-  const tmp = `${dest}.tmp`;
   try {
-    mkdirSync(path.dirname(dest), { recursive: true });
-    writeFileSync(tmp, JSON.stringify(state), 'utf-8');
-    renameSync(tmp, dest);
+    // writeJsonFileAtomic uses a pid+random temp name in the same directory
+    // so concurrent hook processes cannot clobber a shared `${dest}.tmp`.
+    writeJsonFileAtomic(getVersionMismatchWarnPath(), state);
   } catch (error: unknown) {
     logger.debug('SYSTEM', 'Failed to persist version-mismatch warn state', {
       error: error instanceof Error ? error.message : String(error),
@@ -459,7 +465,7 @@ function writeVersionMismatchWarnState(state: VersionMismatchWarnState): void {
 }
 
 function sameVersionMismatchWarnPair(a: VersionMismatchWarnState, b: VersionMismatchWarnState): boolean {
-  return path.resolve(a.workerPath) === path.resolve(b.workerPath)
+  return normalizeWorkerPathForCompare(a.workerPath) === normalizeWorkerPathForCompare(b.workerPath)
     && a.workerVersion === b.workerVersion
     && a.pluginVersion === b.pluginVersion;
 }
@@ -500,7 +506,7 @@ async function warnIfVersionStillMismatched(
   if (observedVersion === null || observedVersion === expectedPluginVersion) {
     return;
   }
-  const resolvedPath = workerPath ?? snapshot.workerPath ?? '';
+  const resolvedPath = normalizeWorkerPathForCompare(workerPath ?? snapshot.workerPath ?? '');
   const next: VersionMismatchWarnState = {
     workerPath: resolvedPath,
     workerVersion: observedVersion,
