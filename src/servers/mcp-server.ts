@@ -18,9 +18,9 @@ import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../sh
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
 import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
@@ -212,6 +212,41 @@ function requireServerForObservationTool(toolName: string): ServerAvailable {
     throw new ServerClientError('missing_api_key', `${toolName}: ${resolution.reason}`);
   }
   return resolution;
+}
+
+// SECURITY (patched locally, see thedotmack/claude-mem#1251 finding C-1):
+// smart_unfold/smart_outline used to resolve() the caller-supplied file_path
+// with no check that it stayed inside the workspace, so an MCP call could
+// read arbitrary files off disk (e.g. ~/.ssh/id_rsa, ~/.aws/credentials).
+// These tools only have a legitimate reason to touch files under the
+// directory the MCP server was spawned in, so hard-deny anything outside it.
+//
+// path.resolve() only normalizes lexically — it does not follow symlinks —
+// so a lexical-only containment check can be bypassed by an in-workspace
+// symlink pointing outside the workspace (readFile follows the link and
+// discloses the external target). realpath() both sides before comparing.
+async function resolveWithinWorkspace(filePath: string): Promise<string> {
+  if (typeof filePath !== 'string' || filePath.trim().length === 0) {
+    throw new Error('file_path is required');
+  }
+  const root = await realpath(resolve(process.cwd()));
+  const lexicallyResolved = resolve(root, filePath);
+  let resolved: string;
+  try {
+    resolved = await realpath(lexicallyResolved);
+  } catch (error) {
+    // File doesn't exist (or a broken symlink) — let the caller's readFile
+    // raise the natural ENOENT instead of a misleading access-denied error,
+    // but only once we know the lexical path itself wasn't already escaping.
+    resolved = lexicallyResolved;
+  }
+  if (resolved !== root && !resolved.startsWith(root + sep)) {
+    throw new Error(
+      `Access denied: "${filePath}" resolves outside the workspace (${root}). ` +
+      'smart_unfold/smart_outline can only read files within the current project.'
+    );
+  }
+  return resolved;
 }
 
 function wrapHandler<Args>(
@@ -720,7 +755,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['file_path', 'symbol_name']
     },
     handler: async (args: any) => {
-      const filePath = resolve(args.file_path);
+      const filePath = await resolveWithinWorkspace(args.file_path);
       const content = await readFile(filePath, 'utf-8');
       const unfolded = unfoldSymbol(content, filePath, args.symbol_name);
       if (unfolded) {
@@ -760,7 +795,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['file_path']
     },
     handler: async (args: any) => {
-      const filePath = resolve(args.file_path);
+      const filePath = await resolveWithinWorkspace(args.file_path);
       const content = await readFile(filePath, 'utf-8');
       const parsed = parseFile(content, filePath);
       if (parsed.symbols.length > 0) {
