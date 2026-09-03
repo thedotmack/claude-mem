@@ -86,7 +86,7 @@ export function detectInstalledIDEs(): IDEInfo[] {
       id: 'copilot-cli',
       label: 'Copilot CLI',
       detected: isCommandInPath('copilot'),
-      hint: 'MCP-based integration',
+      hint: 'hooks + MCP integration',
     },
     {
       id: 'antigravity',
