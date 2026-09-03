@@ -85,10 +85,10 @@ describe('Grok Bot transcript integration', () => {
       const grokWatches = parsed.watches.filter((watch: { name: string }) => watch.name === 'grok-bot');
       const otherWatches = parsed.watches.filter((watch: { name: string }) => watch.name !== 'grok-bot');
       expect(otherWatches).toHaveLength(1);
-      expect(grokWatches).toHaveLength(2);
+      expect(grokWatches).toHaveLength(3);
 
       const byProject = Object.fromEntries(
-        grokWatches.map((watch: { project: string }) => [watch.project, watch]),
+        grokWatches.map((watch: { project: string; path: string }) => [watch.project, watch]),
       );
       expect(byProject.cmem_work_biff.path).toBe(
         path.join(workspaceRoot, 'agent-transcripts', biffId, '*.jsonl'),
@@ -102,8 +102,12 @@ describe('Grok Bot transcript integration', () => {
       expect(byProject['cmem_work_new-bot'].workspace).toBe(
         path.join(workspaceRoot, '.cmem-projects', 'cmem_work_new-bot'),
       );
+      expect(byProject.cmem_work_root.path).toBe(
+        path.join(workspaceRoot, 'agent-transcripts', '*', '*.jsonl'),
+      );
 
-      expect(grokWatches.some((watch: { path: string }) => watch.path.includes(`${path.sep}*${path.sep}`))).toBe(false);
+      expect(grokWatches.some((watch: { path: string }) => watch.path.includes(`${path.sep}*${path.sep}`))).toBe(true);
+      expect(grokWatches.some((watch: { path: string }) => watch.path.includes('sand-subagent-'))).toBe(false);
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -138,16 +142,56 @@ describe('Grok Bot transcript integration', () => {
 
       const parsed = JSON.parse(readFileSync(configPath, 'utf-8'));
       const grokWatches = parsed.watches.filter((watch: { name: string }) => watch.name === 'grok-bot');
-      expect(grokWatches).toHaveLength(1);
-      expect(grokWatches[0].path).toBe(path.join(agentData, 'agent-transcripts', agentId, '*.jsonl'));
+      expect(grokWatches).toHaveLength(2);
+      expect(grokWatches.map((watch: { path: string }) => watch.path)).toEqual([
+        path.join(agentData, 'agent-transcripts', agentId, '*.jsonl'),
+        path.join(agentData, 'agent-transcripts', '*', '*.jsonl'),
+      ]);
       expect(grokWatches[0].project).toBe('cmem_work_alpha');
-      expect(grokWatches[0].path.includes(installCwd)).toBe(false);
+      expect(grokWatches[1].project).toBe('cmem_work_root');
+      expect(grokWatches.every((watch: { path: string }) => watch.path.startsWith(agentData))).toBe(true);
+      expect(grokWatches.every((watch: { path: string }) => watch.path.includes(installCwd))).toBe(false);
     } finally {
       process.chdir(previousCwd);
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
       if (previousAgentData === undefined) delete process.env.GROK_BOT_AGENT_DATA;
       else process.env.GROK_BOT_AGENT_DATA = previousAgentData;
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('covers agents created after install with the catch-all glob', () => {
+    const tempRoot = mkdtempSync(path.join(tmpdir(), 'grok-bot-catchall-'));
+    const configPath = path.join(tempRoot, 'transcript-watch.json');
+    const workspaceRoot = path.join(tempRoot, 'agent-host');
+    const alphaId = 'aaaaaaaa-bbbb-cccc-dddd-555555555555';
+    const betaId = 'aaaaaaaa-bbbb-cccc-dddd-666666666666';
+    try {
+      writeAgent(workspaceRoot, alphaId, 'Alpha');
+      expect(installGrokBotIntegration(configPath, workspaceRoot)).toBe(0);
+
+      writeAgent(workspaceRoot, betaId, 'Beta');
+      const betaTranscript = path.join(workspaceRoot, 'agent-transcripts', betaId, 'new.jsonl');
+      writeFileSync(betaTranscript, '{"role":"user"}\n');
+
+      const parsed = JSON.parse(readFileSync(configPath, 'utf-8'));
+      const grokWatches = parsed.watches.filter((watch: { name: string }) => watch.name === 'grok-bot');
+      const catchAll = grokWatches.find((watch: { path: string }) =>
+        watch.path.includes(`${path.sep}*${path.sep}`) && watch.path.endsWith('*.jsonl'),
+      ) as { path: string } | undefined;
+      expect(catchAll).toBeDefined();
+      if (!catchAll) {
+        throw new Error('expected a grok-bot catch-all watch covering agent-transcripts/*/*.jsonl');
+      }
+      expect(catchAll.path).toBe(path.join(workspaceRoot, 'agent-transcripts', '*', '*.jsonl'));
+
+      const matches = Array.from(new Bun.Glob(catchAll.path.replace(/\\/g, '/')).scanSync({
+        absolute: true,
+        onlyFiles: true,
+      }));
+      expect(matches.some((file) => file.replace(/\\/g, '/').endsWith(`agent-transcripts/${betaId}/new.jsonl`))).toBe(true);
+    } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }
   });
