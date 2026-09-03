@@ -180,9 +180,13 @@ describe('Grok Bot transcript integration', () => {
       const catchAll = grokWatches.find((watch: { path: string }) =>
         watch.path.includes(`${path.sep}*${path.sep}`) && watch.path.endsWith('*.jsonl'),
       ) as { path: string } | undefined;
-      expect(catchAll?.path).toBe(path.join(workspaceRoot, 'agent-transcripts', '*', '*.jsonl'));
+      expect(catchAll).toBeDefined();
+      if (!catchAll) {
+        throw new Error('expected a grok-bot catch-all watch covering agent-transcripts/*/*.jsonl');
+      }
+      expect(catchAll.path).toBe(path.join(workspaceRoot, 'agent-transcripts', '*', '*.jsonl'));
 
-      const matches = Array.from(new Bun.Glob(catchAll!.path.replace(/\\/g, '/')).scanSync({
+      const matches = Array.from(new Bun.Glob(catchAll.path.replace(/\\/g, '/')).scanSync({
         absolute: true,
         onlyFiles: true,
       }));
