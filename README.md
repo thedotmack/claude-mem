@@ -136,7 +136,7 @@
 
 ## Quick Start
 
-Install [Grok Mem](https://grok-mem.ai) for Grok Bot:
+Install [Grok Mem](https://grok-mem.ai) for Grok Bot. The package name is still [`claude-mem`](https://www.npmjs.com/package/claude-mem).
 
 ```bash
 npx claude-mem install --ide grok-bot
