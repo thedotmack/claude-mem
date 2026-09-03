@@ -9,7 +9,7 @@
   </a>
 </h1>
 
-<p align="center">Claude-Mem is now Grok Mem. The package is still claude-mem.</p>
+<p align="center">Claude-Mem is now Grok Mem. The package is still <code>claude-mem</code>.</p>
 
 <p align="center">
   <a href="https://vercel.com/open-source-program">
