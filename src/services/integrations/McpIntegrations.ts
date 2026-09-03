@@ -113,14 +113,6 @@ function writeMcpConfigAndContext(
   console.log(summaryLines.join('\n'));
 }
 
-const COPILOT_CLI_CONFIG: McpInstallerConfig = {
-  ideId: 'copilot-cli',
-  ideLabel: 'Copilot CLI',
-  configPath: path.join(homedir(), '.github', 'copilot', 'mcp.json'),
-  configKey: 'servers',
-  contextPath: path.join(process.cwd(), '.github', 'copilot-instructions.md'),
-};
-
 const ROO_CODE_CONFIG: McpInstallerConfig = {
   ideId: 'roo-code',
   ideLabel: 'Roo Code',
@@ -232,14 +224,13 @@ Next steps:
 `);
 }
 
-// NOTE: 'antigravity' is intentionally absent here. It graduated from an
-// MCP-only integration to a full hooks+MCP installer — see
-// AntigravityCliHooksInstaller.ts, which owns Antigravity's install/uninstall
-// end-to-end (reusing writeMcpJsonConfig/buildMcpServerEntry from this file
-// for its MCP half). Leaving an entry here too would create two competing
-// install paths for the same IDE.
+// NOTE: 'antigravity' and 'copilot-cli' are intentionally absent here. Both
+// graduated from MCP-only integrations to full hooks+MCP installers —
+// AntigravityCliHooksInstaller.ts and CopilotCliHooksInstaller.ts own
+// install/uninstall end-to-end (reusing writeMcpJsonConfig/buildMcpServerEntry
+// from this file for the MCP half). Leaving an entry here too would create
+// two competing install paths for the same IDE.
 export const MCP_IDE_INSTALLERS: Record<string, () => Promise<number>> = {
-  'copilot-cli': installMcpIntegration(COPILOT_CLI_CONFIG),
   'goose': installGooseMcpIntegration,
   'roo-code': installMcpIntegration(ROO_CODE_CONFIG),
   'warp': installMcpIntegration(WARP_CONFIG),

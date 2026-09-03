@@ -17,7 +17,7 @@ npx claude-mem install
 
 The interactive installer runs in three stages — runtime first, sign in second, then pick your memory provider:
 
-1. **Install runtime.** Runs a runtime check (auto-installs Bun and uv if missing), detects your installed IDEs (Claude Code, Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI, Grok Bot) and lets you multi-select which ones to wire up, offers to install Claude Code if it isn't found, then copies plugin files into the marketplace directory, registers the plugin, and installs dependencies.
+1. **Install runtime.** Runs a runtime check (auto-installs Bun and uv if missing), detects your installed IDEs (Claude Code, Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI, Copilot CLI, Grok Bot) and lets you multi-select which ones to wire up, offers to install Claude Code if it isn't found, then copies plugin files into the marketplace directory, registers the plugin, and installs dependencies.
 2. **Sign in.** Skipped only for `--provider claude` (that path never talks to cmem.ai). The CLI does **not** ask for an email. It starts an OAuth pairing (`POST https://cmem.ai/api/installer/oauth/start`), prints a device code `XXXX-XXXX`, opens `authorization_url` in your browser, and polls until you are authenticated. No card required.
 3. **Choose your memory provider.** **CMEM Pro is pre-selected.** Picking it opens a checkout/trial URL, polls until the account is `ready`, writes `~/.claude-mem/settings.json`, and restarts the worker. Other choices: personal OpenRouter, Gemini, Anthropic plan, or `--provider host` (local loopback observer).
 
@@ -50,6 +50,16 @@ Both methods will automatically configure hooks and start the worker service. St
 > **SDK/library only**. It does **not** register plugin hooks or start the worker service.
 > Always install via `npx claude-mem install` or the `/plugin` commands above.
 
+### Copilot CLI
+
+GitHub Copilot CLI has user-level hooks plus MCP. Install it independently of Claude Code:
+
+```bash
+npx claude-mem install --ide copilot-cli
+```
+
+See [Copilot CLI Integration](/copilot-cli/setup). `--ide` is a single string — a second host is a second install command.
+
 ### Grok Bot
 
 Grok Bot has no host hooks. Install it independently of Cursor or Claude Code. Default observer is CMEM Pro:
@@ -65,7 +75,7 @@ Local host-login observer is opt-in: `--provider host`. `--ide` is a single stri
 - **Node.js**: 20.0.0 or higher
 - **Bun** ≥ 1.0 (auto-installed by `npx claude-mem install` if missing)
 - **uv** (auto-installed if missing — provides Python for Chroma's embedding service)
-- **Claude Code** or another supported host (Cursor, Grok Bot, Windsurf, OpenCode, Codex CLI, Antigravity CLI, OpenClaw)
+- **Claude Code** or another supported host (Cursor, Grok Bot, Windsurf, OpenCode, Codex CLI, Antigravity CLI, Copilot CLI, OpenClaw)
 - **SQLite 3**: bundled via `bun:sqlite`
 
 ## Advanced Installation
