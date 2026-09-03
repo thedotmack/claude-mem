@@ -36,6 +36,10 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENROUTER_BASE_URL: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL: string;
   CLAUDE_MEM_OPENROUTER_APP_NAME: string;
+  CLAUDE_MEM_OPENROUTER_MAX_TOKENS: string;
+  CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: string;
+  CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_CHARS: string;
+  CLAUDE_MEM_OPENROUTER_ATTEMPT_TIMEOUT_MS: string;
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
   CLAUDE_MEM_PYTHON_VERSION: string;
@@ -152,6 +156,10 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_BASE_URL: '',  // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL (e.g. https://api.deepseek.com, http://localhost:1234/v1). Empty = default OpenRouter endpoint.
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
+    CLAUDE_MEM_OPENROUTER_MAX_TOKENS: '4096',  // #3606/#3490 — max_tokens in the request body (was hard-coded)
+    CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '40',  // #3606 — max history turns sent after the system anchor; 0 = unbounded
+    CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_CHARS: '200000',  // #3606 — max total chars of that windowed history; 0 = unbounded
+    CLAUDE_MEM_OPENROUTER_ATTEMPT_TIMEOUT_MS: '30000',  // #3606 — withRetry per-attempt timeout for this provider (was the hard-coded 30s default)
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',

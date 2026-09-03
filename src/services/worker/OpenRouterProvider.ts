@@ -12,6 +12,7 @@ import { SessionManager } from './SessionManager.js';
 import { ClassifiedProviderError, type ProviderErrorClass } from './provider-errors.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
+import { buildBoundedMessages, type BoundedMessage } from './context-window.js';
 
 /**
  * OpenAI-compatible client configuration.
@@ -176,11 +177,6 @@ export function classifyOpenRouterError(input: {
 
 const CHARS_PER_TOKEN_ESTIMATE = 4;
 
-interface OpenAIMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-}
-
 interface OpenRouterResponse {
   /** The model that actually served the request — not the configured string. */
   model?: string;
@@ -214,10 +210,30 @@ export interface OpenRouterConfig {
   apiUrl: string;
   siteUrl?: string;
   appName?: string;
+  /** max_tokens in the request body (#3606/#3490). */
+  maxTokens: number;
+  /** Max history turns sent after the system anchor; 0 = unbounded (#3606). */
+  maxContextMessages: number;
+  /** Max total chars of that windowed history; 0 = unbounded (#3606). */
+  maxContextChars: number;
+  /** withRetry per-attempt timeout for this provider (#3606). */
+  attemptTimeoutMs: number;
 }
 
 function hasProcessEnvOverride(key: string): boolean {
   return Object.prototype.hasOwnProperty.call(process.env, key);
+}
+
+/**
+ * NaN or below `min` (corrupt settings.json / bad env override) falls back to
+ * `fallback` rather than producing an unbounded-by-accident or invalid
+ * request value. `min` is 1 for keys where 0 would be a broken request value
+ * (maxTokens, attemptTimeoutMs) and 0 for keys where 0 is the documented
+ * "unbounded" sentinel (maxContextMessages, maxContextChars).
+ */
+function parseOpenRouterInt(raw: unknown, fallback: number, min: number): number {
+  const parsed = parseInt(String(raw), 10);
+  return Number.isNaN(parsed) || parsed < min ? fallback : parsed;
 }
 
 function normalizeOpenRouterModel(rawModel: unknown): string {
@@ -295,7 +311,22 @@ export function resolveOpenRouterConfig(
   const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
   const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || OPENROUTER_APP_TITLE;
 
-  return { apiKey, model, apiUrl, siteUrl, appName };
+  // #3606 — a corrupt/non-numeric settings value falls back to the shipped
+  // default rather than propagating NaN/negative limits. Fallbacks are the
+  // literal SettingsDefaultsManager DEFAULTS values (parseInt(defaults.X) was
+  // redundant — SettingsDefaultsManager already backfills missing keys before
+  // this code ever runs). maxTokens and attemptTimeoutMs are request-shape/
+  // timing values a 0 would break (an OpenAI-compatible max_tokens: 0 or a
+  // zero-length retry timeout is not a meaningful "unbounded"), so they
+  // require >= 1; maxContextMessages and maxContextChars keep 0 as the
+  // documented "unbounded" sentinel — only a negative value (never a
+  // legitimate setting) falls back there.
+  const maxTokens = parseOpenRouterInt(settings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS, 4096, 1);
+  const maxContextMessages = parseOpenRouterInt(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES, 40, 0);
+  const maxContextChars = parseOpenRouterInt(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_CHARS, 200000, 0);
+  const attemptTimeoutMs = parseOpenRouterInt(settings.CLAUDE_MEM_OPENROUTER_ATTEMPT_TIMEOUT_MS, 30000, 1);
+
+  return { apiKey, model, apiUrl, siteUrl, appName, maxTokens, maxContextMessages, maxContextChars, attemptTimeoutMs };
 }
 
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
@@ -341,15 +372,8 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     };
   }
 
-  private conversationToOpenAIMessages(history: ConversationMessage[]): OpenAIMessage[] {
-    return history.map(msg => ({
-      role: msg.role === 'assistant' ? 'assistant' : 'user',
-      content: msg.content
-    }));
-  }
-
   protected async query(history: ConversationMessage[], config: OpenRouterConfig): Promise<ProviderQueryResult> {
-    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName);
+    return this.queryOpenRouterMultiTurn(history, config);
   }
 
   /** POST the chat-completions request. Extracted so the retry try block stays narrow. */
@@ -357,13 +381,18 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     apiUrl: string,
     apiKey: string,
     model: string,
-    messages: OpenAIMessage[],
+    messages: BoundedMessage[],
+    maxTokens: number,
     siteUrl: string | undefined,
     appName: string | undefined,
     priorRequestId: string | null,
     attemptSignal: AbortSignal
   ): Promise<Response> {
-    return fetch(apiUrl, {
+    // `timeout` isn't in the DOM fetch/RequestInit types — Bun's fetch has a
+    // built-in ~300s cap that overrides any AbortSignal-based per-attempt
+    // timeout, so it must be disabled explicitly for withRetry's
+    // perAttemptTimeoutMs to be authoritative (#3606).
+    const requestInit = {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -375,31 +404,33 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         model,
         messages,
         temperature: 0.3,  // Lower temperature for structured extraction
-        max_tokens: 4096,
+        max_tokens: maxTokens,
         // Ask openrouter.ai for usage accounting (token counts + cost).
         // Only sent to openrouter.ai — strict custom gateways may reject
         // unknown body fields.
         ...(apiUrl.includes('openrouter.ai') ? { usage: { include: true } } : {}),
       }),
       signal: attemptSignal,
-    });
+      timeout: false,
+    } as unknown as Record<string, unknown>;
+
+    return fetch(apiUrl, requestInit as RequestInit);
   }
 
   private async queryOpenRouterMultiTurn(
     history: ConversationMessage[],
-    apiKey: string,
-    model: string,
-    apiUrl: string,
-    siteUrl?: string,
-    appName?: string
+    config: OpenRouterConfig
   ): Promise<ProviderQueryResult> {
-    const messages = this.conversationToOpenAIMessages(history);
-    const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
-    const estimatedTokens = this.estimateTokens(history.map(m => m.content).join(''));
+    const { apiKey, model, apiUrl, siteUrl, appName, maxTokens, maxContextMessages, maxContextChars, attemptTimeoutMs } = config;
+
+    const messages = buildBoundedMessages(history, { maxMessages: maxContextMessages, maxChars: maxContextChars });
+    const promptChars = messages.reduce((sum, m) => sum + m.content.length, 0);
+    const estimatedTokens = this.estimateTokens(messages.map(m => m.content).join(''));
 
     logger.debug('SDK', `Querying OpenRouter multi-turn (${model})`, {
       turns: history.length,
-      totalChars,
+      messagesSent: messages.length,
+      promptChars,
       estimatedTokens
     });
 
@@ -408,7 +439,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await this.fetchChatCompletion(apiUrl, apiKey, model, messages, siteUrl, appName, priorRequestId, attemptSignal);
+        response = await this.fetchChatCompletion(apiUrl, apiKey, model, messages, maxTokens, siteUrl, appName, priorRequestId, attemptSignal);
       } catch (networkError: unknown) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         throw classifyOpenRouterError({ cause: err });
@@ -446,22 +477,63 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       }
 
       return responseData;
-    }, { label: `OpenRouter ${model}` });
+    }, { label: `OpenRouter ${model}`, perAttemptTimeoutMs: attemptTimeoutMs });
 
     // A successful cmem-gateway response proves the delivered key is funded
     // again (resubscribed) — clear the trial-expiry fallback marker so
     // dispatch returns to the gateway. No-op for every other endpoint.
     clearProFallbackOnGatewaySuccess(apiUrl);
 
-    if (!data.choices?.[0]?.message?.content) {
-      logger.error('SDK', 'Empty response from OpenRouter');
-      return { content: '' };
-    }
-
-    const content = data.choices[0].message.content;
-    const tokensUsed = data.usage?.total_tokens;
+    const firstChoice = data.choices?.[0];
+    const finishReason = firstChoice?.finish_reason;
     const realInputTokens = data.usage?.prompt_tokens;
     const realOutputTokens = data.usage?.completion_tokens;
+
+    if (!firstChoice?.message?.content) {
+      // Malformed (no choices at all, or a choice with no message) is a
+      // different failure than a designed empty completion (message.content
+      // === '' or undefined with choices present) — the latter is the
+      // prompt's documented way to say "nothing to report"; the former means
+      // the response body doesn't even have the shape the parser expects
+      // (#3606).
+      const malformed = !data.choices || data.choices.length === 0 || !firstChoice?.message;
+      if (malformed) {
+        logger.error('SDK', 'Malformed response from OpenRouter — no choices/message in body', {
+          keys: Object.keys(data),
+          finishReason,
+        });
+        return { content: '', finishReason: 'malformed' };
+      }
+
+      const logFields = {
+        finishReason,
+        promptTokens: realInputTokens,
+        completionTokens: realOutputTokens,
+        messagesSent: messages.length,
+        promptChars,
+      };
+      // A DESIGNED empty completion is exactly: message present, content
+      // empty, finish_reason === 'stop' — the prompt's documented way to say
+      // "nothing to report". 'length' is a real truncation (context/output
+      // budget exhausted) and stays an error. Any OTHER finish_reason
+      // (content_filter, tool_calls, function_call, or absent) is neither —
+      // the model did not reach the designed no-op path, so it must not be
+      // logged (or, downstream in ResponseProcessor, counted) as a benign
+      // skip: warn and hand the real reason to the parser layer (#3606).
+      if (finishReason === 'length') {
+        logger.error('SDK', 'Empty response from OpenRouter — context or output budget exhausted', logFields);
+        return { content: '', finishReason };
+      }
+      if (finishReason === 'stop') {
+        logger.info('SDK', `Empty response from OpenRouter (finish_reason=${finishReason}) — observer skipped the batch`, logFields);
+        return { content: '', finishReason };
+      }
+      logger.warn('SDK', `Empty response from OpenRouter with finish_reason=${finishReason ?? 'missing'} — not a designed skip`, logFields);
+      return { content: '', finishReason: finishReason ?? 'missing' };
+    }
+
+    const content = firstChoice.message.content;
+    const tokensUsed = data.usage?.total_tokens;
     // usage.cost is what openrouter.ai charged in credits (~USD); with BYOK the
     // model spend is reported separately as upstream_inference_cost. Custom
     // gateways usually omit both — costUsd stays undefined (never estimated).
@@ -481,6 +553,9 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         outputTokens: realOutputTokens || 0,
         totalTokens: tokensUsed,
         ...(costUsd !== undefined ? { costUSD: costUsd.toFixed(6) } : {}),
+        finishReason,
+        messagesSent: messages.length,
+        promptChars,
         messagesInContext: history.length
       });
 
@@ -492,7 +567,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       }
     }
 
-    return { content, tokensUsed, inputTokens: realInputTokens, outputTokens: realOutputTokens, costUsd, servedModel };
+    return { content, tokensUsed, inputTokens: realInputTokens, outputTokens: realOutputTokens, costUsd, servedModel, finishReason };
   }
 
 }

@@ -542,7 +542,9 @@ describe('ResponseProcessor', () => {
         confirmClaimedMessages,
       } as unknown as SessionManager;
 
-      const session = createMockSession();
+      // #3606: the real counter now increments on any dropped batch that
+      // isn't a designed empty skip — prose is not idle, so it counts.
+      const session = createMockSession({ consecutiveInvalidOutputs: 0 });
       const responseText = 'Skipping — repeated log scan with no new findings.';
 
       await processAgentResponse(
@@ -559,11 +561,229 @@ describe('ResponseProcessor', () => {
       expect(logger.warn).toHaveBeenCalledWith(
         'PARSER',
         expect.stringMatching(/^TestAgent returned non-XML prose response/),
-        expect.objectContaining({ sessionId: 1, outputClass: 'prose' })
+        expect.objectContaining({ sessionId: 1, outputClass: 'prose', finishReason: null, truncated: false })
       );
       expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
       expect(session.earliestPendingTimestamp).toBeNull();
       expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(session.consecutiveInvalidOutputs).toBe(1);
+    });
+
+    it('logs an error (not a warning) for malformed XML output', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({ consecutiveInvalidOutputs: 0 });
+      // Has an <observation> root tag (classifies as 'xml') but never closes,
+      // so parseAgentXml still rejects it as invalid.
+      const responseText = 'I hit the context window and cannot continue <observation>';
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(logger.error).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned non-XML xml response/),
+        expect.objectContaining({ outputClass: 'xml', truncated: false, consecutiveInvalidOutputs: 1 })
+      );
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.consecutiveInvalidOutputs).toBe(1);
+    });
+
+    it('increments consecutiveInvalidOutputs across repeated dropped batches (1 then 2)', async () => {
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages: mock(() => Promise.resolve(0)),
+      } as unknown as SessionManager;
+
+      const session = createMockSession({ consecutiveInvalidOutputs: 0 });
+
+      await processAgentResponse('Skipping, nothing new here.', session, mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
+      expect(session.consecutiveInvalidOutputs).toBe(1);
+
+      await processAgentResponse('Still nothing new to report here.', session, mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
+      expect(session.consecutiveInvalidOutputs).toBe(2);
+    });
+
+    it('a valid parse resets consecutiveInvalidOutputs to 0', async () => {
+      // Uses the default mockSessionManager from beforeEach — it needs
+      // getClaimedMessages() (the valid-parse path calls it), unlike the
+      // invalid-branch tests above, which return before reaching it.
+      const session = createMockSession({ consecutiveInvalidOutputs: 3 });
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Test</title>
+          <facts></facts>
+          <concepts></concepts>
+          <files_read></files_read>
+          <files_modified></files_modified>
+        </observation>
+      `;
+
+      await processAgentResponse(responseText, session, mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
+
+      expect(session.consecutiveInvalidOutputs).toBe(0);
+    });
+  });
+
+  describe('finishReason-aware truncation handling (#3606)', () => {
+    it('idle output with finishReason null/undefined is a designed empty skip: logger.info, counter resets to 0', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({ consecutiveInvalidOutputs: 2, lastFinishReason: null });
+
+      await processAgentResponse('', session, mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
+
+      expect(logger.info).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned an empty response — observer skipped the batch$/),
+        expect.objectContaining({ sessionId: 1, outputClass: 'idle', finishReason: null })
+      );
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.consecutiveInvalidOutputs).toBe(0);
+    });
+
+    it("idle output with finishReason 'stop' is also a designed empty skip: logger.info, counter resets to 0", async () => {
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages: mock(() => Promise.resolve(0)),
+      } as unknown as SessionManager;
+
+      const session = createMockSession({ consecutiveInvalidOutputs: 2, lastFinishReason: 'stop' });
+
+      await processAgentResponse('', session, mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
+
+      expect(logger.info).toHaveBeenCalledWith(
+        'PARSER',
+        expect.any(String),
+        expect.objectContaining({ outputClass: 'idle', finishReason: 'stop' })
+      );
+      expect(session.consecutiveInvalidOutputs).toBe(0);
+    });
+
+    it("idle output with finishReason 'missing' is NOT a designed skip: logger.warn, counter increments to 1, batch still confirmed (dropped, not requeued)", async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({ consecutiveInvalidOutputs: 0, lastFinishReason: 'missing' });
+
+      await processAgentResponse('', session, mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned non-XML idle response — ignoring queued batch$/),
+        expect.objectContaining({ outputClass: 'idle', finishReason: 'missing', truncated: false, consecutiveInvalidOutputs: 1 })
+      );
+      expect(logger.info).not.toHaveBeenCalled();
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.consecutiveInvalidOutputs).toBe(1);
+    });
+
+    it("idle output with finishReason 'malformed' is NOT a designed skip: logger.warn, counter increments to 1", async () => {
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages: mock(() => Promise.resolve(0)),
+      } as unknown as SessionManager;
+
+      const session = createMockSession({ consecutiveInvalidOutputs: 0, lastFinishReason: 'malformed' });
+
+      await processAgentResponse('', session, mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned non-XML idle response — ignoring queued batch$/),
+        expect.objectContaining({ outputClass: 'idle', finishReason: 'malformed', truncated: false, consecutiveInvalidOutputs: 1 })
+      );
+      expect(logger.info).not.toHaveBeenCalled();
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(session.consecutiveInvalidOutputs).toBe(1);
+    });
+
+    it("idle output with finishReason 'content_filter' is NOT a designed skip: logger.warn, counter increments to 1", async () => {
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages: mock(() => Promise.resolve(0)),
+      } as unknown as SessionManager;
+
+      const session = createMockSession({ consecutiveInvalidOutputs: 0, lastFinishReason: 'content_filter' });
+
+      await processAgentResponse('', session, mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned non-XML idle response — ignoring queued batch$/),
+        expect.objectContaining({ outputClass: 'idle', finishReason: 'content_filter', truncated: false, consecutiveInvalidOutputs: 1 })
+      );
+      expect(logger.info).not.toHaveBeenCalled();
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(session.consecutiveInvalidOutputs).toBe(1);
+    });
+
+    it("empty output with finishReason 'length' is a real truncation: logger.error with truncated:true, counter increments", async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({ consecutiveInvalidOutputs: 0, lastFinishReason: 'length' });
+
+      await processAgentResponse('', session, mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
+
+      expect(logger.error).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned non-XML idle response — ignoring queued batch$/),
+        expect.objectContaining({ outputClass: 'idle', finishReason: 'length', truncated: true, consecutiveInvalidOutputs: 1 })
+      );
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(session.consecutiveInvalidOutputs).toBe(1);
+    });
+
+    it("prose output with finishReason 'length' logs an error (truncated overrides the normal prose→warn level)", async () => {
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages: mock(() => Promise.resolve(0)),
+      } as unknown as SessionManager;
+
+      const session = createMockSession({ consecutiveInvalidOutputs: 0, lastFinishReason: 'length' });
+
+      await processAgentResponse('mid-sentence prose that got cut off befo', session, mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
+
+      expect(logger.error).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned non-XML prose response — ignoring queued batch$/),
+        expect.objectContaining({ outputClass: 'prose', truncated: true })
+      );
+      expect(session.consecutiveInvalidOutputs).toBe(1);
     });
   });
 
@@ -911,7 +1131,9 @@ describe('ResponseProcessor', () => {
         confirmClaimedMessages,
       } as unknown as SessionManager;
 
-      const session = createMockSession();
+      // #3606: an empty reply with no finish-reason truncation is the
+      // designed empty skip — logger.info, counter resets to 0 (not warn).
+      const session = createMockSession({ consecutiveInvalidOutputs: 2 });
       const responseText = '';
 
       await processAgentResponse(
@@ -922,6 +1144,12 @@ describe('ResponseProcessor', () => {
       expect(mockStoreObservations).not.toHaveBeenCalled();
       expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
       expect(session.earliestPendingTimestamp).toBeNull();
+      expect(logger.info).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned an empty response — observer skipped the batch$/),
+        expect.objectContaining({ outputClass: 'idle' })
+      );
+      expect(session.consecutiveInvalidOutputs).toBe(0);
     });
 
     it('clears pending work and does NOT call storeObservations on plain-text response', async () => {
@@ -932,7 +1160,10 @@ describe('ResponseProcessor', () => {
         confirmClaimedMessages,
       } as unknown as SessionManager;
 
-      const session = createMockSession();
+      // #3606: prose is not a designed skip — it's a real dropped batch,
+      // logged at warn (not error, since it's not truncated/xml) and counted
+      // toward consecutiveInvalidOutputs.
+      const session = createMockSession({ consecutiveInvalidOutputs: 0 });
       const responseText = 'This is just plain text without any XML tags.';
 
       await processAgentResponse(
@@ -943,6 +1174,12 @@ describe('ResponseProcessor', () => {
       expect(mockStoreObservations).not.toHaveBeenCalled();
       expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
       expect(session.earliestPendingTimestamp).toBeNull();
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned non-XML prose response — ignoring queued batch$/),
+        expect.objectContaining({ outputClass: 'prose' })
+      );
+      expect(session.consecutiveInvalidOutputs).toBe(1);
     });
   });
 
