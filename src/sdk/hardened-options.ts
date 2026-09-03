@@ -29,7 +29,15 @@
  *                  filesystem escape hatches.
  *
  * The redundancy IS the security property: removing any one layer must not
- * re-open the gap. Verified against @anthropic-ai/claude-agent-sdk v0.2.141
+ * re-open the gap.
+ *
+ * NOTE: the layered guarantee above holds for the SDK path only. Every layer
+ * except `disallowedTools` is an SDK `Options` field with no command-line
+ * equivalent, so on the CLI spawn path (`claude --disallowedTools ...`) the
+ * deny-list is the sole enforcement — see the docblock below
+ * OBSERVER_DISALLOWED_TOOLS.
+ *
+ * Verified against @anthropic-ai/claude-agent-sdk v0.2.141
  * (sdk.d.ts): `tools`, `allowedTools`, `disallowedTools`, `permissionMode`
  * ('dontAsk' = "Don't prompt for permissions, deny if not pre-approved"),
  * `canUseTool` (returns PermissionResult { behavior: 'deny', message }),
@@ -43,9 +51,12 @@ import { recordObserverToolAttempt } from '../utils/observer-audit.js';
 import { logger } from '../utils/logger.js';
 
 /**
- * Tools explicitly named in the deny-list. `tools: []` already disables all
- * built-ins; this list is the redundant "suspenders" layer and documents
- * intent for human reviewers.
+ * Tools explicitly named in the deny-list.
+ *
+ * NOTE: "redundant" is true on the SDK path only, where `tools: []` already
+ * disables all built-ins. On the CLI spawn path this list is the only
+ * enforcement, so treat every entry as load-bearing and review the list
+ * whenever the harness gains a tool.
  */
 export const OBSERVER_DISALLOWED_TOOLS = [
   'Bash',           // Prevent infinite loops
@@ -60,7 +71,32 @@ export const OBSERVER_DISALLOWED_TOOLS = [
   'NotebookEdit',   // No notebook editing
   'AskUserQuestion',// No asking questions
   'TodoWrite',
+  'SendMessage',    // No instructing other sessions
+  'ListAgents',     // No discovering other sessions to instruct
 ] as const;
+
+/**
+ * WHY SendMessage AND ListAgents ARE ON THAT LIST
+ *
+ * Every other entry above stops the Observer from acting on the user's machine.
+ * These two stop it from asking a session that still can.
+ *
+ * An Observer with no tools, messaging a working session that has all of them,
+ * borrows that session's authority for as far as it can persuade. The system
+ * prompt's "You do not have access to tools" stays true the whole time, which
+ * is why the property is worth naming separately: what is bounded is the
+ * Observer's own reach, not the reach of what it can talk into acting.
+ *
+ * This is the case the threat model above predicts, arriving through a tool the
+ * deny-list had never heard of. It is also why the CLI spawn path deserves a
+ * second look: `tools: []`, `allowedTools: []` and `canUseTool` are Options
+ * fields with no command-line equivalent, so an Observer spawned as a `claude`
+ * subprocess is protected by this list alone. The "no single option is
+ * load-bearing" property holds for the SDK path and not for that one.
+ *
+ * ListAgents rides along because it is how a session finds peers to address.
+ * Denying the send while leaving discovery open is half a boundary.
+ */
 
 export interface HardenedSdkOptionsInput {
   /** Which call site is constructing options — flows into audit entries. */
