@@ -6,6 +6,7 @@ import {
   isAuthFailureObserverOutput,
   isContextOverflowObserverOutput,
   isQuotaLimitedObserverOutput,
+  isTransportFailureObserverOutput,
   previewOutput,
 } from '../../../sdk/output-classifier.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
@@ -367,6 +368,30 @@ export async function processAgentResponse(
         sessionId: session.sessionDbId,
         outputClass: 'prose',
         remediation: '/login',
+        preview: previewOutput(text),
+      });
+      return;
+    }
+
+    // A response that is the child's OWN transport/API failure is not the
+    // observer declining to say anything — it is the observer never having
+    // run. Preserve the batch like the quota and auth cases above; confirming
+    // it here would turn a transient network fault into permanent data loss
+    // (#3752).
+    if (isTransportFailureObserverOutput(text)) {
+      session.consecutiveInvalidOutputs = 0;
+
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = 'transport:observer_text';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      logger.error('PARSER', `${agentName} could not reach the provider; queued batch preserved for retry`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'transport',
         preview: previewOutput(text),
       });
       return;

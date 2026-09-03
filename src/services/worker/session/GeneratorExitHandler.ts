@@ -13,11 +13,12 @@ export interface GeneratorExitDependencies {
  * Post-generator-exit handler.
  *
  * The generator's message iterator only ends on abort (idle / shutdown) or when
- * the SDK stream throws, so most exits mean this session is done. Quota exits
- * are different: claimed work has already been reset to pending, so leave the
- * session and in-RAM buffer alive for a later generator start.
+ * the SDK stream throws, so most exits mean this session is done. Quota, auth
+ * and transport exits are different: claimed work has already been reset to
+ * pending, so leave the session and in-RAM buffer alive for a later generator
+ * start.
  *
- * For non-quota exits we do NOT respawn on remaining buffered work: the old
+ * For every other exit we do NOT respawn on remaining buffered work: the old
  * respawn-on-pending loop, driven by the durable pending_messages queue, was the
  * retry storm. Buffered work lives only in RAM now; anything still buffered is
  * dropped here and recovered, if needed, by replaying the Claude Code
@@ -46,7 +47,12 @@ export async function handleGeneratorExit(
   // the conversation, so the session must survive for the next ingest to open a
   // fresh generator and drain it. Finalizing here would drop that work (#3800).
   const abortCategory = (reason ?? '').split(':')[0];
-  if (abortCategory === 'quota' || abortCategory === 'auth' || abortCategory === 'overflow') {
+  // Every category listed here has ALREADY called resetProcessingToPending.
+  // Falling through to finalizeSession would remove the session and undo that
+  // preservation, so a new preserving abortReason must be added here too — this
+  // is the half of #3752 that the requeue alone does not buy.
+  const PRESERVES_CLAIMED_WORK = ['quota', 'auth', 'overflow', 'transport'];
+  if (PRESERVES_CLAIMED_WORK.includes(abortCategory)) {
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
