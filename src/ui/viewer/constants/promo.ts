@@ -7,9 +7,17 @@
  */
 
 /** Trial landing URL, tagged so cmem.ai can attribute viewer-sourced signups. */
-export const PRO_TRIAL_URL = 'https://cmem.ai/pro?from=viewer';
+export const PRO_TRIAL_DAYS = 30;
 
-export const PRO_TRIAL_PITCH = 'Get 2x more use out of your Max plan for free (7-day trial, $30/mo)';
+export const PRO_TRIAL_URL = `https://cmem.ai/pro?from=viewer&trial=${PRO_TRIAL_DAYS}`;
+
+/**
+ * How much more plan usage running memory off-plan buys, as a "% more" figure.
+ * Shared so every surface quotes the same number.
+ */
+export const PLAN_USAGE_GAIN_PERCENT = 100;
+
+export const PRO_TRIAL_PITCH = `Get up to ${PLAN_USAGE_GAIN_PERCENT}% more usage from your plan — memory runs off-plan, free for ${PRO_TRIAL_DAYS} days`;
 
 /** Header CTA label. The full pitch rides in the title/aria attributes. */
-export const PRO_TRIAL_SHORT = 'Get 2x more from your Max plan';
+export const PRO_TRIAL_SHORT = 'Get up to 100% more usage from your plan';

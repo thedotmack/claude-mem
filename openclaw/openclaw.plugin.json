@@ -3,11 +3,14 @@
   "name": "Claude-Mem (Persistent Memory)",
   "description": "OpenClaw plugin for Claude-Mem. Records observations from embedded runner sessions and streams them to messaging channels.",
   "kind": "memory",
-  "version": "13.15.3",
+  "version": "13.24.0",
   "license": "Apache-2.0",
   "author": "thedotmack",
   "homepage": "https://claude-mem.ai",
-  "skills": ["skills/make-plan", "skills/do"],
+  "skills": [
+    "skills/make-plan",
+    "skills/do"
+  ],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -19,7 +22,9 @@
       },
       "syncMemoryFileExclude": {
         "type": "array",
-        "items": { "type": "string" },
+        "items": {
+          "type": "string"
+        },
         "default": [],
         "description": "Agent IDs excluded from automatic context injection (observations are still recorded, only prompt injection is skipped)"
       },
@@ -40,7 +45,7 @@
       },
       "observationFeed": {
         "type": "object",
-        "description": "Live observation feed — streams observations to any OpenClaw channel in real-time",
+        "description": "Live observation feed \u2014 streams observations to any OpenClaw channel in real-time",
         "properties": {
           "enabled": {
             "type": "boolean",
@@ -61,16 +66,16 @@
           },
           "emojis": {
             "type": "object",
-            "description": "Emoji personalization for the observation feed. Each agent gets a unique emoji automatically — customize here to override.",
+            "description": "Emoji personalization for the observation feed. Each agent gets a unique emoji automatically \u2014 customize here to override.",
             "properties": {
               "primary": {
                 "type": "string",
-                "default": "🦞",
+                "default": "\ud83e\udd9e",
                 "description": "Emoji for the main OpenClaw gateway (project='openclaw')"
               },
               "claudeCode": {
                 "type": "string",
-                "default": "⌨️",
+                "default": "\u2328\ufe0f",
                 "description": "Emoji for Claude Code sessions (non-OpenClaw)"
               },
               "claudeCodeLabel": {
@@ -80,14 +85,16 @@
               },
               "default": {
                 "type": "string",
-                "default": "🦀",
+                "default": "\ud83e\udd80",
                 "description": "Fallback emoji when no match is found"
               },
               "agents": {
                 "type": "object",
                 "default": {},
-                "description": "Pin specific emojis to agent IDs (e.g. {\"devops\": \"🔧\"}). Agents not listed here get auto-assigned emojis.",
-                "additionalProperties": { "type": "string" }
+                "description": "Pin specific emojis to agent IDs (e.g. {\"devops\": \"\ud83d\udd27\"}). Agents not listed here get auto-assigned emojis.",
+                "additionalProperties": {
+                  "type": "string"
+                }
               }
             }
           }

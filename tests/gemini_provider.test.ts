@@ -354,7 +354,12 @@ describe('GeminiProvider', () => {
     }));
 
     const pending = agent.startSession(session);
-    await Promise.resolve();
+    // Wait for the request to actually be in flight rather than assuming it
+    // happens within a fixed number of microtasks — the provider awaits the
+    // session-start context before its first send.
+    while (!resolveFetch) {
+      await new Promise(r => setTimeout(r, 0));
+    }
 
     session.project = 'repo-b/worktree';
     session.userPrompt = 'prompt 2';

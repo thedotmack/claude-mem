@@ -1,180 +1,79 @@
 ---
 title: "Cursor Integration"
-description: "Persistent AI memory for Cursor IDE - free tier options available"
+description: "Persistent memory for Cursor — install with npx, no git clone"
 ---
 
 # Cursor Integration
 
-> **Your AI stops forgetting. Give Cursor persistent memory.**
-
-Every Cursor session starts fresh - your AI doesn't remember what it worked on yesterday. Claude-mem changes that. Your agent builds cumulative knowledge about your codebase, decisions, and patterns over time.
+Give Cursor a memory that lasts across chats. The installer wires Cursor hooks (small scripts Cursor runs when a session starts, a file is read, or a tool runs), starts the local worker (the program that stores notes), and uses **CMEM Pro** (the hosted memory service) unless you pick another provider.
 
 <CardGroup cols={2}>
-  <Card title="Free to Start" icon="dollar-sign">
-    Works with Gemini's free tier (1500 req/day) - no subscription required
+  <Card title="One command" icon="terminal">
+    `npx claude-mem install` — do not clone the repo to install.
   </Card>
-  <Card title="Automatic Capture" icon="bolt">
-    MCP tools, shell commands, and file edits logged without effort
+  <Card title="CMEM Pro default" icon="cloud">
+    Memory notes are written off-plan through the hosted service unless you pick Gemini, OpenRouter, or your Anthropic plan.
   </Card>
-  <Card title="Smart Context" icon="brain">
-    Relevant history injected into every chat session
+  <Card title="Cursor hooks" icon="bolt">
+    Cursor has hooks. Grok Bot does not — that host is a [different guide](/grok-bot).
   </Card>
-  <Card title="Works Everywhere" icon="check">
-    With or without Claude Code subscription
+  <Card title="Memory viewer" icon="eye">
+    Open the worker URL printed at install to browse saved notes.
   </Card>
 </CardGroup>
 
-<Info>
-**No Claude Code subscription required.** Use Gemini (free tier) or OpenRouter as your AI provider.
-</Info>
-
-## How It Works
-
-Claude-mem integrates with Cursor through native hooks:
-
-1. **Session hooks** capture tool usage, file edits, and shell commands
-2. **AI extraction** compresses observations into semantic summaries
-3. **Context injection** loads relevant history into each new session
-4. **Memory viewer** at the worker URL shows your knowledge base
-
-## Installation Paths
-
-Choose the installation method that fits your setup:
-
-### Path A: Cursor-Only Users (No Claude Code)
-
-If you're using Cursor without a Claude Code subscription:
+## Install
 
 ```bash
-# Clone and build
-git clone https://github.com/thedotmack/claude-mem.git
-cd claude-mem && bun install && bun run build
-
-# Run interactive setup wizard
-bun run cursor:setup
+npx claude-mem install
 ```
 
-The setup wizard will:
-- Detect you don't have Claude Code
-- Help you choose and configure a free AI provider (Gemini recommended)
-- Install hooks automatically
-- Start the worker service
+When the installer lists your apps, pick **Cursor**. The three stages are: install runtime, sign in (device code, no email in the CLI), then pick a memory provider. **CMEM Pro is pre-selected.**
 
-**Detailed guides:**
-- [Gemini Setup](/cursor/gemini-setup) - Recommended free option (1500 req/day)
-- [OpenRouter Setup](/cursor/openrouter-setup) - 100+ models including free options
+Other provider choices: your Gemini key, your OpenRouter key, or your Anthropic plan (`--provider claude`, which skips cmem.ai). Details: [Installation](/installation).
 
-### Path B: Claude Code Users
+<Warning>
+`npm install -g claude-mem` installs the library only. It does **not** register Cursor hooks or start the worker. Always use `npx claude-mem install`.
+</Warning>
 
-If you have Claude Code installed:
+Do not clone this repository to install. Clone is for people changing the code.
 
-```bash
-# Install the plugin (if not already)
-/plugin marketplace add thedotmack/claude-mem
-/plugin install claude-mem
+## How it works
 
-# Install Cursor hooks
-claude-mem cursor install
-```
+1. **Hooks** record what the agent does in Cursor.
+2. **Worker** stores those notes on your machine (default `127.0.0.1`, port in `~/.claude-mem/.worker.port`).
+3. **Next chat** gets relevant past notes.
+4. **Viewer** at the worker URL shows the knowledge base.
 
-The plugin uses Claude's SDK by default but you can switch to Gemini or OpenRouter anytime.
+Never restart a healthy worker. The note queue sits in memory; a restart drops it.
 
-## Prerequisites
+## Gemini or OpenRouter instead of CMEM Pro
 
-<AccordionGroup>
-  <Accordion title="macOS">
-    - [Bun](https://bun.sh): `curl -fsSL https://bun.sh/install | bash`
-    - Cursor IDE
-    - jq and curl: `brew install jq curl`
-  </Accordion>
-  <Accordion title="Linux">
-    - [Bun](https://bun.sh): `curl -fsSL https://bun.sh/install | bash`
-    - Cursor IDE
-    - jq and curl: `apt install jq curl` or `dnf install jq curl`
-  </Accordion>
-  <Accordion title="Windows">
-    - [Bun](https://bun.sh): `powershell -c "irm bun.sh/install.ps1 | iex"`
-    - Cursor IDE
-    - PowerShell 5.1+ (included in Windows 10/11)
-    - Git for Windows
-  </Accordion>
-</AccordionGroup>
+- [Gemini](/cursor/gemini-setup) — your Google key, memory off-plan
+- [OpenRouter](/cursor/openrouter-setup) — your OpenRouter key. **Never** send a personal `sk-or-` key to `https://cmem.ai/api/inference`
 
-## Quick Commands Reference
+## Verify it worked
 
-After installation, these commands are available from the claude-mem directory:
-
-| Command | Description |
-|---------|-------------|
-| `bun run cursor:setup` | Interactive setup wizard |
-| `bun run cursor:install` | Install Cursor hooks |
-| `bun run cursor:uninstall` | Remove Cursor hooks |
-| `bun run cursor:status` | Check hook installation status |
-| `bun run worker:start` | Start the worker service |
-| `bun run worker:stop` | Stop the worker service |
-| `bun run worker:status` | Check worker status |
-
-## Verifying Installation
-
-After setup, verify everything is working:
-
-1. **Check worker status:**
-   ```bash
-   bun run worker:status
-   ```
-
-2. **Check hook installation:**
-   ```bash
-   bun run cursor:status
-   ```
-
-3. **Open the memory viewer:**
-   Open the worker URL in your browser
-
-4. **Restart Cursor** and start a coding session - you should see context being captured
-
-## Provider Comparison
-
-| Provider | Cost | Rate Limit | Best For |
-|----------|------|------------|----------|
-| Gemini | Free tier | 1500 req/day | Individual use, getting started |
-| OpenRouter | Pay-per-use + free models | Varies by model | Model variety, high volume |
-| Claude SDK | Included with Claude Code | Unlimited | Claude Code subscribers |
-
-<Tip>
-**Recommendation:** Start with Gemini's free tier. It handles typical individual usage well. Switch to OpenRouter or Claude SDK if you need higher limits.
-</Tip>
+1. Restart Cursor after install so hooks load.
+2. Health: `curl -s "http://127.0.0.1:${CLAUDE_MEM_WORKER_PORT}/api/health"` (or the port in `~/.claude-mem/.worker.port`).
+3. Do a small unit of work, then open the worker URL. New notes should appear.
 
 ## Troubleshooting
 
-### Worker not starting
+### Nothing is being stored
 
-```bash
-# Check if port is in use
-lsof -i :YOUR_WORKER_PORT
-
-# Force restart
-bun run worker:stop && bun run worker:start
-
-# Check logs
-bun run worker:logs
-```
+- Confirm the worker is up. Do **not** restart it if it is already healthy.
+- Confirm you used `npx claude-mem install`, not a global `npm install`.
+- Restart Cursor once after install.
+- Logs: `~/.claude-mem/logs/worker-YYYY-MM-DD.log`
 
 ### Hooks not firing
 
-1. Restart Cursor IDE after installation
-2. Check hooks are installed: `bun run cursor:status`
-3. Verify hooks.json exists in `.cursor/` directory
+Restart Cursor. Hooks live under `.cursor/` in the project or your user Cursor config after install.
 
-### No context appearing
+## Next steps
 
-1. Ensure worker is running: `bun run worker:status`
-2. Check that you have observations by opening the worker URL
-3. Verify your API key is configured correctly
-
-## Next Steps
-
-- [Gemini Setup Guide](/cursor/gemini-setup) - Detailed free tier setup
-- [OpenRouter Setup Guide](/cursor/openrouter-setup) - Configure OpenRouter
-- [Configuration Reference](../configuration) - All settings options
-- [Troubleshooting](../troubleshooting) - Common issues and solutions
+- [Installation](/installation) — installer stages and CMEM Pro
+- [CMEM Pro (manual / headless)](/cmem-pro-headless) — settings the installer writes
+- [Gemini](/cursor/gemini-setup) / [OpenRouter](/cursor/openrouter-setup)
+- [Search Tools](/usage/search-tools) — query project history

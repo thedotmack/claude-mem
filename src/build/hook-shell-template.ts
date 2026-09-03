@@ -244,10 +244,6 @@ function jsArray(values: string[]): string {
   return `[${values.map(jsSingleQuoted).join(',')}]`;
 }
 
-export interface CodexWindowsCommandOptions {
-  startupVersionCheck?: boolean;
-}
-
 /**
  * Codex hook contract supports `commandWindows` as the Windows-only command
  * override. Keep this Node-based so Codex App on Windows can execute hooks from
@@ -255,7 +251,6 @@ export interface CodexWindowsCommandOptions {
  */
 export function buildCodexWindowsCommand(
   workerArgs: string[],
-  options: CodexWindowsCommandOptions = {},
 ): string {
   const parts = [
     "const fs=require('fs'),p=require('path'),o=require('os'),c=require('child_process');",
@@ -277,13 +272,6 @@ export function buildCodexWindowsCommand(
     "if(!R){process.stderr.write('claude-mem: plugin scripts not found\\n');process.exit(1)}",
     "const env={...process.env,CLAUDE_MEM_CODEX_HOOK:'1'};",
   ];
-
-  if (options.startupVersionCheck) {
-    parts.push(
-      "const v=c.spawnSync(process.execPath,[p.join(R,'scripts','version-check.js')],{encoding:'utf8',env});",
-      "if(v.stdout&&v.stdout.trim()){process.stdout.write(v.stdout);if(!v.stdout.endsWith('\\n'))process.stdout.write('\\n');process.exit(0)}",
-    );
-  }
 
   parts.push(
     `const workerArgs=${jsArray(workerArgs)};`,

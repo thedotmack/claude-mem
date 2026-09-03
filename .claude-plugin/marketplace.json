@@ -9,9 +9,15 @@
   "plugins": [
     {
       "name": "claude-mem",
-      "version": "13.15.3",
+      "version": "13.24.0",
       "source": "./plugin",
       "description": "Persistent memory system for Claude Code - context compression across sessions"
+    },
+    {
+      "name": "claude-mem-cowork",
+      "version": "0.1.3",
+      "source": "./cowork",
+      "description": "Claude-Mem for Cowork (Claude app cloud sessions) - hooks stream tool use to cmem.ai and inject observations into new sessions and agents"
     }
   ]
 }

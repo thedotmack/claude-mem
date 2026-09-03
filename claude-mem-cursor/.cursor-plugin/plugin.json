@@ -1,0 +1,38 @@
+{
+  "name": "claude-mem-cursor",
+  "version": "13.24.0",
+  "description": "Memory compression system for Claude Code - persist context across sessions",
+  "author": {
+    "name": "Alex Newman"
+  },
+  "homepage": "https://github.com/thedotmack/claude-mem#readme",
+  "repository": "https://github.com/thedotmack/claude-mem",
+  "license": "Apache-2.0",
+  "keywords": [
+    "claude-mem",
+    "memory",
+    "cursor",
+    "mcp",
+    "cmem"
+  ],
+  "category": "MCP",
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./mcp.json",
+  "variables": {
+    "type": "object",
+    "properties": {
+      "CLAUDE_MEM_MCP_URL": {
+        "type": "string",
+        "title": "Remote MCP URL",
+        "description": "Leave empty for a local worker (stdio). Set to https://cmem.ai/api/mcp (or your server) for remote."
+      },
+      "CLAUDE_MEM_MCP_TOKEN": {
+        "type": "string",
+        "title": "Remote MCP token",
+        "description": "Bearer token for remote MCP. Unused for local worker."
+      }
+    },
+    "required": []
+  }
+}

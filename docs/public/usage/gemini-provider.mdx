@@ -5,20 +5,20 @@ description: "Use Google's Gemini API as an alternative to Claude for observatio
 
 # Gemini Provider
 
-Claude-mem supports Google's Gemini API as an alternative to the Claude Agent SDK for extracting observations from your sessions. This can significantly reduce costs since Gemini offers a generous free tier.
+Claude-mem supports Google's Gemini API as an alternative to the Claude Agent SDK for extracting observations from your sessions. Memory runs off-plan on your Gemini key, so observation extraction never shares your Claude plan usage.
 
 <Warning>
-**Free Tier Rate Limits**: Without billing enabled, Gemini has strict rate limits (5-10 RPM). Enable billing on your Google Cloud project to unlock 1000-4000 RPM while still using the free quota.
+**Rate limits without billing**: Gemini applies model-specific limits to projects without billing. Enable billing on your Google Cloud project for higher limits, and review Google's current quota and billing terms before doing so.
 </Warning>
 
 ## Why Use Gemini?
 
-- **Cost savings**: The free tier covers most individual usage patterns
+- **Runs off-plan**: Observation extraction happens on your Gemini key, not your Claude plan
 - **Same quality**: Gemini extracts observations using the same XML format as Claude
 - **Errors throw clearly**: 429s, 5xx, and network failures throw — leaving messages pending so they can be retried
 - **Hot-swappable**: Switch providers without restarting the worker
 
-## Getting a Free API Key
+## Getting an API Key
 
 1. Go to the [Google AI Studio API Key page](https://aistudio.google.com/app/apikey)
 2. Sign in with your Google account
@@ -28,7 +28,7 @@ Claude-mem supports Google's Gemini API as an alternative to the Claude Agent SD
 6. Copy and securely store the generated API key
 
 <Tip>
-**No billing required** to get started, but we recommend enabling billing to unlock higher rate limits (1000-4000 RPM vs 5-10 RPM) while still using the free quota.
+**No billing required** to get started. Enabling billing can unlock higher rate limits; review Google's current quota and billing terms first.
 </Tip>
 
 ## Configuration
@@ -75,8 +75,8 @@ The settings file takes precedence over the environment variable.
 
 ## Available Models
 
-| Model | Free Tier RPM | Notes |
-|-------|--------------|-------|
+| Model | RPM without billing | Notes |
+|-------|---------------------|-------|
 | `gemini-flash-latest` | 10 | **Default.** Google alias that always tracks the current GA Flash model |
 | `gemini-flash-lite-latest` | 15 | Google alias that always tracks the current GA Flash-Lite model |
 | `gemini-3.5-flash` | 10 | Pinned GA Flash model |
@@ -130,7 +130,7 @@ Either:
 
 ### Rate Limiting
 
-Google has two rate limit tiers for free usage:
+Google applies different rate limits depending on whether billing is enabled:
 
 **Without billing (API key only):**
 
@@ -142,7 +142,7 @@ Google has two rate limit tiers for free usage:
 
 Claude-mem enforces these limits automatically with built-in delays between requests. Processing may be slower but stays within limits.
 
-**With billing enabled (still free tier):**
+**With billing enabled:**
 
 | Model | RPM | TPM |
 |-------|-----|-----|
@@ -151,18 +151,18 @@ Claude-mem enforces these limits automatically with built-in delays between requ
 | gemini-3-flash-preview | 1,000 | 1M |
 
 <Tip>
-**Recommended**: Enable billing on your Google Cloud project to unlock much higher rate limits. You won't be charged unless you exceed the generous free quota. This allows claude-mem to process observations instantly instead of waiting between requests.
+**Higher throughput**: Enabling billing can unlock much higher rate limits. Review your Google Cloud quota and billing settings first. Claude-mem can then use the higher configured limits instead of its conservative no-billing throttle.
 </Tip>
 
 If you hit rate limits:
-- Claude-mem automatically falls back to Claude SDK
+- The failed message remains pending and can be retried after the rate limit resets
 - Or switch back to Claude as your primary provider
 
 ### Observation Quality
 
 If observations seem lower quality with Gemini:
 - Note that Claude typically produces slightly higher quality observations
-- Consider using Gemini for cost savings and Claude for important projects
+- Consider using Gemini to keep memory off-plan and Claude for important projects
 
 ## Next Steps
 

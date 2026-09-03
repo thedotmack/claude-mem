@@ -15,6 +15,7 @@ import { checkVersionMatch } from "../services/infrastructure/index.js";
 // ProcessManager imports nothing from worker-utils, so no cycle.
 import { resolveWorkerRuntimePath } from "../services/infrastructure/ProcessManager.js";
 import { acquireSpawnLock, releaseSpawnLock } from "./worker-spawn-gate.js";
+import { killProcessTree } from "./kill-process-tree.js";
 
 function readTimeoutEnv(
   envName: string,
@@ -204,8 +205,8 @@ async function isWorkerHealthy(): Promise<boolean> {
   return response.ok;
 }
 
-async function isWorkerReady(): Promise<boolean> {
-  const response = await workerHttpRequest('/api/readiness', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
+async function isWorkerReady(timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<boolean> {
+  const response = await workerHttpRequest('/api/readiness', { timeoutMs });
   return response.ok;
 }
 
@@ -510,18 +511,28 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       });
       return false;
     }
+    // #3482 — a single-PID kill here orphans the stale worker's whole spawn
+    // chain (uvx -> uv -> python -> chroma-mcp). Those descendants inherited
+    // the worker's listening socket, so they keep the port bound after the
+    // root dies: waitForWorkerPortClosed() below never succeeds, every hook
+    // hard-blocks, and the recycle repeats forever (834 health-check failures
+    // observed). This is NOT Windows-specific — on POSIX the same descendants
+    // simply re-parent to init and survive identically.
+    //
+    // 'immediate' is required, not incidental: it sends SIGKILL with no
+    // SIGTERM and no grace window, so the #3378 invariant above still holds
+    // exactly as written — SIGKILL is uncatchable, so zero stale-version
+    // shutdown code runs anywhere in the tree. A graceful tree-kill would let
+    // the stale worker execute the dying install's handoff logic, which is the
+    // restart storm that invariant exists to prevent.
     try {
-      process.kill(stalePidInfo.pid, 'SIGKILL');
+      await killProcessTree(stalePidInfo.pid, { signalMode: 'immediate' });
     } catch (error: unknown) {
-      // ESRCH: it exited between the health probe and the kill — the port is
-      // free (or about to be) either way.
-      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
-        logger.error('SYSTEM', 'Could not kill stale worker', {
-          pid: stalePidInfo.pid,
-          port: stalePidInfo.port,
-        }, error instanceof Error ? error : new Error(String(error)));
-        return false;
-      }
+      logger.error('SYSTEM', 'Could not kill stale worker', {
+        pid: stalePidInfo.pid,
+        port: stalePidInfo.port,
+      }, error instanceof Error ? error : new Error(String(error)));
+      return false;
     }
     if (!(await waitForWorkerPortClosed())) {
       logger.error('SYSTEM', 'Stale worker port still open after SIGKILL; skipping spawn this hook event', {
@@ -618,6 +629,52 @@ export async function ensureWorkerAliveOnce(): Promise<boolean> {
   if (aliveCache !== null) return aliveCache;
   aliveCache = await ensureWorkerRunning();
   return aliveCache;
+}
+
+async function ensureWorkerReadyWithin(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  const probe = async (): Promise<boolean> => {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return false;
+    try {
+      return await isWorkerReady(Math.min(500, remainingMs));
+    } catch {
+      return false;
+    }
+  };
+
+  if (await probe()) return true;
+
+  const runtimePath = resolveWorkerRuntimePath();
+  const scriptPath = resolveWorkerScriptPath();
+  if (!runtimePath || !scriptPath) return false;
+
+  const spawnLockHeld = acquireSpawnLock();
+  try {
+    if (spawnLockHeld) {
+      const proc = spawnHidden(runtimePath, [scriptPath, '--daemon'], {
+        detached: true,
+        stdio: ['ignore', 'ignore', 'ignore'],
+      });
+      proc.unref();
+    }
+
+    while (Date.now() < deadline) {
+      if (await probe()) return true;
+      const remainingMs = deadline - Date.now();
+      if (remainingMs > 0) {
+        await new Promise<void>(resolve => setTimeout(resolve, Math.min(100, remainingMs)));
+      }
+    }
+    return false;
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Bounded worker startup failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  } finally {
+    if (spawnLockHeld) releaseSpawnLock();
+  }
 }
 
 interface HookFailureState {
@@ -776,6 +833,7 @@ export function isWorkerFallback<T>(result: WorkerCallResult<T>): result is Work
 
 export interface WorkerFallbackOptions {
   timeoutMs?: number;
+  workerStartupTimeoutMs?: number;
 }
 
 export async function executeWithWorkerFallback<T = unknown>(
@@ -784,9 +842,14 @@ export async function executeWithWorkerFallback<T = unknown>(
   body?: unknown,
   options: WorkerFallbackOptions = {},
 ): Promise<WorkerCallResult<T>> {
-  const alive = await ensureWorkerAliveOnce();
+  const boundedStartup = options.workerStartupTimeoutMs !== undefined;
+  const alive = boundedStartup
+    ? await ensureWorkerReadyWithin(options.workerStartupTimeoutMs!)
+    : await ensureWorkerAliveOnce();
   if (!alive) {
-    await recordWorkerUnreachable();
+    if (!boundedStartup) {
+      await recordWorkerUnreachable();
+    }
     return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
   }
 
@@ -799,7 +862,16 @@ export async function executeWithWorkerFallback<T = unknown>(
     init.timeoutMs = options.timeoutMs;
   }
 
-  const response = await workerHttpRequest(url, init);
+  let response: Response;
+  try {
+    response = await workerHttpRequest(url, init);
+  } catch (error) {
+    if (!boundedStartup) throw error;
+    logger.debug('SYSTEM', 'Worker unavailable for best-effort hook call', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
+  }
   if (!response.ok) {
     const text = await response.text().catch(() => '');
     resetWorkerFailureCounter();

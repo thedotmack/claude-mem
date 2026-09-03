@@ -5,9 +5,21 @@ description: "Install Claude-Mem plugin for persistent memory across sessions"
 
 # Installation Guide
 
+**[Grok mem](https://grok-mem.ai)** — Grok Mem is how Grok Bots remember. Sits next to Grok's own memory. Does not replace it. The package name is still [`claude-mem`](https://www.npmjs.com/package/claude-mem).
+
 ## Quick Start
 
-### Option 1: npx (Recommended)
+### Option 1: Grok Bot
+
+Grok Bot has no host hooks. Install it independently of Cursor or Claude Code. Default is CMEM Pro, the hosted memory:
+
+```bash
+npx claude-mem install --ide grok-bot
+```
+
+Local host-login observer is opt-in: `--provider host`. `--ide` is a single string — a second host is a second install command. Installing this plugin does not install Cursor. See [Grok Bot Integration](/grok-bot).
+
+### Option 2: npx
 
 Install and configure Claude-Mem with a single command:
 
@@ -15,16 +27,27 @@ Install and configure Claude-Mem with a single command:
 npx claude-mem install
 ```
 
-The interactive installer will:
-- Run a runtime check (auto-installs Bun and uv if missing)
-- Detect your installed IDEs (Claude Code, Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI) and let you multi-select which ones to wire up
-- Offer to install Claude Code if it isn't found
-- Prompt for an LLM provider (Claude Code auth, Gemini API key, or OpenRouter API key)
-- Prompt for the Claude model used to compress observations (Haiku / Sonnet / Opus) when the Claude provider is selected
-- Copy plugin files into the marketplace directory and register the plugin
-- Auto-start the worker service
+The interactive installer runs in three stages — runtime first, sign in second, then pick your memory provider:
 
-### Option 2: Plugin Marketplace
+1. **Install runtime.** Runs a runtime check (auto-installs Bun and uv if missing), detects your installed IDEs (Claude Code, Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI, Grok Bot) and lets you multi-select which ones to wire up, offers to install Claude Code if it isn't found, then copies plugin files into the marketplace directory, registers the plugin, and installs dependencies.
+2. **Sign in.** Skipped only for `--provider claude` (that path never talks to cmem.ai). The CLI does **not** ask for an email. It starts an OAuth pairing (`POST https://cmem.ai/api/installer/oauth/start`), prints a device code `XXXX-XXXX`, opens `authorization_url` in your browser, and polls until you are authenticated. No card required.
+3. **Choose your memory provider.** **CMEM Pro is pre-selected.** Picking it opens a checkout/trial URL, polls until the account is `ready`, writes `~/.claude-mem/settings.json`, and restarts the worker. Other choices: personal OpenRouter, Gemini, Anthropic plan, or `--provider host` (local loopback observer).
+
+Headless or already signed in? See [CMEM Pro (manual / headless)](/cmem-pro-headless) for the exact settings the installer writes.
+
+### Memory Provider Options
+
+- **CMEM Pro / claude-mem observer (pre-selected)** — memory runs off-plan through `https://cmem.ai/api/inference/v1` with model `cmem-observer`. Free trial, then subscribe or fall back. Fallback is **event-driven** (`CLAUDE_MEM_PRO_FALLBACK_AT` after a terminal gateway quota/key error), not the trial end date. See [CMEM Pro (manual / headless)](/cmem-pro-headless).
+- **Your OpenRouter key** — memory runs off-plan on your OpenRouter credit. Empty base URL (or `https://openrouter.ai/api/v1`). **Never** send a personal `sk-or-` key to the cmem.ai inference gateway.
+- **Gemini API key** — memory runs off-plan on your Gemini key.
+- **Anthropic plan** (`--provider claude`) — memory shares your Claude plan usage. Skips cmem.ai entirely. Prompts for the Claude model used to compress observations (Haiku / Sonnet / Opus).
+- **Host observer (opt-in)** — `--provider host` uses the already-logged-in agent over a local loopback. No API key. See [Grok Bot Integration](/grok-bot).
+
+### Skipping the Sign-In
+
+`--provider claude` never touches cmem.ai and skips OAuth. You can finish a CMEM Pro pairing anytime by re-running `npx claude-mem install`, or by writing settings by hand ([manual / headless](/cmem-pro-headless)).
+
+### Option 3: Plugin Marketplace
 
 Install Claude-Mem directly from the plugin marketplace inside Claude Code:
 
@@ -44,7 +67,7 @@ Both methods will automatically configure hooks and start the worker service. St
 - **Node.js**: 20.0.0 or higher
 - **Bun** ≥ 1.0 (auto-installed by `npx claude-mem install` if missing)
 - **uv** (auto-installed if missing — provides Python for Chroma's embedding service)
-- **Claude Code** or another supported IDE (Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI, OpenClaw)
+- **Claude Code** or another supported host (Cursor, Grok Bot, Windsurf, OpenCode, Codex CLI, Antigravity CLI, OpenClaw)
 - **SQLite 3**: bundled via `bun:sqlite`
 
 ## Advanced Installation
@@ -111,6 +134,15 @@ npm run worker:logs
 npm run test:context
 ```
 
+#### 6. CMEM Pro / sync
+
+```bash
+curl -s "http://127.0.0.1:${CLAUDE_MEM_WORKER_PORT}/api/health"
+curl -s "http://127.0.0.1:${CLAUDE_MEM_WORKER_PORT}/api/sync/status"
+```
+
+See [CMEM Pro (manual / headless)](/cmem-pro-headless).
+
 ## Upgrading
 
 Upgrades are automatic when updating via the plugin marketplace. After an external upgrade (for example `claude plugin update`), the Setup hook detects a version-marker mismatch and asks you to run `npx claude-mem repair`, which installs any missing runtime dependencies and refreshes the marker.
@@ -120,5 +152,7 @@ See [CHANGELOG](https://github.com/thedotmack/claude-mem/blob/main/CHANGELOG.md)
 ## Next Steps
 
 - [Getting Started Guide](usage/getting-started) - Learn how Claude-Mem works automatically
+- [CMEM Pro (manual / headless)](/cmem-pro-headless) - Exact settings.json keys and headless setup
+- [Grok Bot Integration](/grok-bot) - Persistent memory for Grok Bot (no hooks)
 - [MCP Search Tools](usage/search-tools) - Query your project history
 - [Configuration](configuration) - Customize Claude-Mem behavior

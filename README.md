@@ -48,7 +48,13 @@
   <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
 </p>
 
-<h4 align="center">Persistent memory compression system built for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>
+<h4 align="center"><a href="https://grok-mem.ai">Grok Mem</a> is how Grok Bots remember. Sits next to Grok's own memory. Does not replace it.</h4>
+
+<p align="center">
+  <a href="https://grok-mem.ai">
+    <img src="https://img.shields.io/badge/Grok%20mem-1A1A1A?style=for-the-badge" alt="Grok mem">
+  </a>
+</p>
 
 <p align="center">
   <a href="LICENSE">
@@ -123,18 +129,30 @@
 </p>
 
 <p align="center">
-  Claude-Mem seamlessly preserves context across sessions by automatically capturing tool usage observations, generating semantic summaries, and making them available to future sessions. This enables Claude to maintain continuity of knowledge about projects even after sessions end or reconnect.
+  <a href="https://grok-mem.ai">Grok Mem</a> is how Grok Bots remember the work. Grok already remembers you. Grok Mem remembers what the bot did, what we decided, what to do next. Those notes come back in the next chat.
 </p>
 
 ---
 
 ## Quick Start
 
+Install [Grok Mem](https://grok-mem.ai) for Grok Bot. The package name is still [`claude-mem`](https://www.npmjs.com/package/claude-mem).
+
+```bash
+npx claude-mem install --ide grok-bot
+```
+
+Grok Bot has no host hooks, so we watch the chat log files. Default is CMEM Pro, the hosted memory. Local observer is opt-in: `--provider host`. Installing this plugin does not install Cursor.
+
 Install with a single command:
 
 ```bash
 npx claude-mem install
 ```
+
+The installer sets everything up first, then asks you to sign in to claude-mem in your browser (email magic link — no card required). Signing in provisions a memory key for your account and unlocks the **claude-mem observer**: memory that runs off-plan, free for your first 30 days, so you get up to 100% more usage from your plan. When the free trial ends, memory automatically falls back to your Anthropic plan unless you subscribe. After sign-in you pick your memory provider — the claude-mem observer, your own OpenRouter or Gemini key, or your Anthropic plan.
+
+Prefer to skip the sign-in? Pass an explicit `--provider` flag, set `CLAUDE_MEM_ONLINE_OPTIN=false`, or run in CI/non-interactive shells — the installer completes without any account interaction.
 
 Or install for OpenCode:
 
