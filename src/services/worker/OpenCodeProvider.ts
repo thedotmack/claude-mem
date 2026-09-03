@@ -159,8 +159,11 @@ export class OpenCodeProvider extends OpenAICompatibleProvider<OpenCodeConfig> {
     return new Error('OpenCode API key not configured. Set CLAUDE_MEM_OPENCODE_API_KEY in settings or OPENCODE_API_KEY environment variable.');
   }
 
+  private currentSessionId: string | undefined;
+
   protected prepareSessionExtras(session: ActiveSession, _config: OpenCodeConfig): void {
     session.endpointClass = 'custom';
+    this.currentSessionId = session.contentSessionId || session.memorySessionId || undefined;
   }
 
   protected estimateTokens(text: string): number {
@@ -196,12 +199,17 @@ export class OpenCodeProvider extends OpenAICompatibleProvider<OpenCodeConfig> {
     messages: OpenAIMessage[],
     attemptSignal: AbortSignal
   ): Promise<Response> {
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    };
+    if (this.currentSessionId) {
+      headers['x-opencode-session'] = this.currentSessionId;
+    }
+
     return fetch(apiUrl, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify({
         model,
         messages,
