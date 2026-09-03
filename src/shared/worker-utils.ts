@@ -4,7 +4,8 @@ import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
-import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
+import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
+import { writeJsonFileAtomic } from "./atomic-json.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile, readOwnedWorkerPidInfo } from "../supervisor/index.js";
 import { emitBlockingError } from "./hook-io.js";
@@ -379,22 +380,94 @@ async function waitForWorkerReadiness(timeoutMs: number = HOOK_READINESS_TIMEOUT
   return false;
 }
 
+interface WorkerHealthSnapshot {
+  version: string | null;
+  workerPath: string | null;
+}
+
 /**
- * Read the version the worker self-reports on GET /api/health. The payload
- * carries pid/version even on a 503 (degraded queue) response, so the body is
- * parsed regardless of status — same contract as restart-verify.ts. Returns
- * null when the worker is unreachable or the payload is malformed.
+ * Read the version and workerPath the worker self-reports on GET /api/health.
+ * The payload carries pid/version/workerPath even on a 503 (degraded queue)
+ * response, so the body is parsed regardless of status — same contract as
+ * restart-verify.ts. Fields are null when the worker is unreachable or the
+ * payload is malformed.
  */
-async function fetchWorkerHealthVersion(): Promise<string | null> {
+async function fetchWorkerHealthSnapshot(): Promise<WorkerHealthSnapshot> {
   try {
     const response = await workerHttpRequest('/api/health', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
-    const body = await response.json() as { version?: unknown };
-    return typeof body.version === 'string' ? body.version : null;
+    const body = await response.json() as { version?: unknown; workerPath?: unknown };
+    return {
+      version: typeof body.version === 'string' ? body.version : null,
+      workerPath: typeof body.workerPath === 'string' ? body.workerPath : null,
+    };
   } catch (error: unknown) {
     const err = error instanceof Error ? error : new Error(String(error));
     logger.debug('SYSTEM', 'Worker health-version fetch failed', {}, err);
+    return { version: null, workerPath: null };
+  }
+}
+
+function normalizeWorkerPathForCompare(workerPath: string): string {
+  const trimmed = workerPath.trim();
+  // path.resolve('') / path.resolve('   ') is cwd. Blank health omit
+  // fallbacks must not collapse to cwd and collide with an unrelated pair.
+  return trimmed === '' ? '' : path.resolve(trimmed);
+}
+
+function workerPathIsCurrentScript(workerPath: string | null, scriptPath: string | null): boolean {
+  if (!workerPath?.trim() || !scriptPath?.trim()) return false;
+  return normalizeWorkerPathForCompare(workerPath) === normalizeWorkerPathForCompare(scriptPath);
+}
+
+interface VersionMismatchWarnState {
+  workerPath: string;
+  workerVersion: string;
+  pluginVersion: string;
+}
+
+function getVersionMismatchWarnPath(): string {
+  // Call-time resolveDataDir (same as worker-spawn-gate) so hook processes
+  // and the test suite, which points CLAUDE_MEM_DATA_DIR at a temp dir,
+  // agree on the persist file. Import-time DATA_DIR would miss the override.
+  return path.join(resolveDataDir(), 'state', 'version-mismatch-warn.json');
+}
+
+function readVersionMismatchWarnState(): VersionMismatchWarnState | null {
+  try {
+    const parsed = JSON.parse(readFileSync(getVersionMismatchWarnPath(), 'utf-8')) as Partial<VersionMismatchWarnState>;
+    if (
+      typeof parsed.workerPath === 'string'
+      && typeof parsed.workerVersion === 'string'
+      && typeof parsed.pluginVersion === 'string'
+    ) {
+      return {
+        workerPath: parsed.workerPath,
+        workerVersion: parsed.workerVersion,
+        pluginVersion: parsed.pluginVersion,
+      };
+    }
+    return null;
+  } catch {
     return null;
   }
+}
+
+function writeVersionMismatchWarnState(state: VersionMismatchWarnState): void {
+  try {
+    // writeJsonFileAtomic uses a pid+random temp name in the same directory
+    // so concurrent hook processes cannot clobber a shared `${dest}.tmp`.
+    writeJsonFileAtomic(getVersionMismatchWarnPath(), state);
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Failed to persist version-mismatch warn state', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function sameVersionMismatchWarnPair(a: VersionMismatchWarnState, b: VersionMismatchWarnState): boolean {
+  return normalizeWorkerPathForCompare(a.workerPath) === normalizeWorkerPathForCompare(b.workerPath)
+    && a.workerVersion === b.workerVersion
+    && a.pluginVersion === b.pluginVersion;
 }
 
 /**
@@ -418,19 +491,37 @@ async function waitForWorkerPortClosed(timeoutMs = 5000): Promise<boolean> {
 }
 
 /**
- * Amplifier guard: a hook recycles a stale worker AT MOST once per
- * invocation. If the worker that became ready still reports a mismatched
- * version, warn and return — the NEXT hook event retries. Recycling again in
- * the same invocation re-creates the restart storm.
+ * Amplifier guard (#3857): if the worker that became ready still reports a
+ * mismatched version, warn at most once for that path+version pair and leave
+ * it up. The pair is persisted under DATA_DIR so the NEXT hook event — a
+ * new process — does not SIGKILL the same current-path bake again. Recycling
+ * again for the same pair is the 13.24.0/13.23.1 loop (38 kills in ~10 min).
  */
-async function warnIfVersionStillMismatched(expectedPluginVersion: string): Promise<void> {
-  const observedVersion = await fetchWorkerHealthVersion();
-  if (observedVersion !== null && observedVersion !== expectedPluginVersion) {
-    logger.warn('SYSTEM', 'Worker is ready but still reports a stale version; not recycling again in this hook invocation (one recycle per hook event)', {
-      pluginVersion: expectedPluginVersion,
-      workerVersion: observedVersion,
-    });
+async function warnIfVersionStillMismatched(
+  expectedPluginVersion: string,
+  workerPath?: string | null,
+): Promise<void> {
+  const snapshot = await fetchWorkerHealthSnapshot();
+  const observedVersion = snapshot.version;
+  if (observedVersion === null || observedVersion === expectedPluginVersion) {
+    return;
   }
+  const resolvedPath = normalizeWorkerPathForCompare(workerPath ?? snapshot.workerPath ?? '');
+  const next: VersionMismatchWarnState = {
+    workerPath: resolvedPath,
+    workerVersion: observedVersion,
+    pluginVersion: expectedPluginVersion,
+  };
+  const prev = readVersionMismatchWarnState();
+  if (prev !== null && sameVersionMismatchWarnPair(prev, next)) {
+    return;
+  }
+  writeVersionMismatchWarnState(next);
+  logger.warn('SYSTEM', 'Worker is ready but still reports a stale version; not recycling again for this path+version pair', {
+    pluginVersion: expectedPluginVersion,
+    workerVersion: observedVersion,
+    ...(resolvedPath ? { workerPath: resolvedPath } : {}),
+  });
 }
 
 async function isWorkerPortAlive(): Promise<boolean> {
@@ -484,7 +575,27 @@ export async function ensureWorkerRunning(): Promise<boolean> {
         return false;
       }
       if (expectedPluginVersion !== null) {
-        await warnIfVersionStillMismatched(expectedPluginVersion);
+        await warnIfVersionStillMismatched(expectedPluginVersion, resolvedScript?.scriptPath ?? null);
+      }
+      return true;
+    }
+
+    // #3857 — a plugin-cache folder named 13.24.0 can still bake 13.23.1.
+    // If /api/health.workerPath is already the current plugin/scripts/
+    // worker-service.cjs, SIGKILL cannot produce a newer bake: we would
+    // respawn the same file and kill in-flight observations on every hook.
+    // Log once for this path+version pair and leave the worker up. An old
+    // path (issue #3378) still falls through to SIGKILL below.
+    const currentScriptPath = resolvedScript?.scriptPath ?? null;
+    const health = await fetchWorkerHealthSnapshot();
+    if (workerPathIsCurrentScript(health.workerPath, currentScriptPath)) {
+      const ready = await waitForWorkerReadiness();
+      if (!ready) {
+        logger.warn('SYSTEM', 'Worker is healthy but not ready; skipping hook API call');
+        return false;
+      }
+      if (expectedPluginVersion !== null) {
+        await warnIfVersionStillMismatched(expectedPluginVersion, currentScriptPath);
       }
       return true;
     }
@@ -616,9 +727,9 @@ export async function ensureWorkerRunning(): Promise<boolean> {
     return false;
   }
   // Amplifier guard: even if the worker that won the port is still stale,
-  // never recycle a second time in the same hook invocation.
+  // never recycle a second time for this path+version pair (#3857).
   if (expectedPluginVersion !== null) {
-    await warnIfVersionStillMismatched(expectedPluginVersion);
+    await warnIfVersionStillMismatched(expectedPluginVersion, scriptPath);
   }
   return true;
 }

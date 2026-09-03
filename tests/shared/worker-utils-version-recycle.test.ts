@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock, spyOn } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as realInfrastructure from '../../src/services/infrastructure/index.js';
 import * as realSupervisor from '../../src/supervisor/index.js';
 import * as realSpawn from '../../src/shared/spawn.js';
+import { logger } from '../../src/utils/logger.js';
 
 const realInfrastructureSnapshot = { ...realInfrastructure };
 const realSupervisorSnapshot = { ...realSupervisor };
@@ -38,6 +39,13 @@ let ownedPidInfo: { pid: number; port: number; startedAt: string } | null = null
 // the port until it is killed; the successor serves it after spawnHidden.
 let staleWorkerAlive = true;
 let successorUp = false;
+
+// /api/health.workerPath. Null = older workers that omit the field (still
+// SIGKILL on mismatch — #3378). Set to the resolved current script to
+// reproduce #3857 (newest file already running, stale baked version).
+let healthWorkerPath: string | null = null;
+
+const OLD_WORKER_PATH = '/old/cache/13.23.1/scripts/worker-service.cjs';
 
 // Records every spawn attempt (the lazy-spawn seam, spawnHidden in spawn.ts).
 const spawnCalls: Array<{ command: string; args: string[] }> = [];
@@ -85,7 +93,8 @@ function installFetchMock(): void {
     }
     if (u.includes('/api/health')) {
       return okResponse({
-        version: staleWorkerAlive ? versionMatchResult.workerVersion : versionMatchResult.pluginVersion,
+        version: versionMatchResult.workerVersion,
+        ...(healthWorkerPath ? { workerPath: healthWorkerPath } : {}),
       });
     }
     return okResponse({});
@@ -110,6 +119,7 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
     spawnCalls.length = 0;
     staleWorkerAlive = true;
     successorUp = false;
+    healthWorkerPath = null;
     ownedPidInfo = null;
     killCalls = [];
     killError = null;
@@ -178,6 +188,135 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
     expect(result).toBe(false);
     expect(killCalls.length).toBe(0);
     expect(spawnCalls.length).toBe(0);
+  });
+
+  it('does not SIGKILL across hook events when the current plugin path is already running with a stale baked version', async () => {
+    // #3857 — cache folder named 13.24.0, /api/health still reports 13.23.1.
+    // Killing respawns the same file. Leave it up; log once for the pair.
+    versionMatchResult = { matches: false, pluginVersion: PLUGIN_VERSION, workerVersion: STALE_VERSION };
+
+    const workerUtils = await importWorkerUtilsFresh();
+    const currentPath = workerUtils.resolveWorkerScriptPath();
+    expect(currentPath).toBeTruthy();
+    healthWorkerPath = currentPath;
+    ownedPidInfo = { pid: STALE_PID, port: workerUtils.getWorkerPort(), startedAt: new Date().toISOString() };
+
+    const warnSpy = spyOn(logger, 'warn');
+    try {
+      const first = await workerUtils.ensureWorkerRunning();
+      expect(first).toBe(true);
+      expect(killCalls.length).toBe(0);
+      expect(spawnCalls.length).toBe(0);
+
+      const workerUtils2 = await importWorkerUtilsFresh();
+      const second = await workerUtils2.ensureWorkerRunning();
+      expect(second).toBe(true);
+      expect(killCalls.length).toBe(0);
+      expect(spawnCalls.length).toBe(0);
+
+      const staleWarns = warnSpy.mock.calls.filter((call) =>
+        String(call[1]).includes('stale version')
+      );
+      expect(staleWarns.length).toBe(1);
+
+      const restartCalls = fetchLog.filter(c => c.url.includes('/api/admin/restart'));
+      expect(restartCalls.length).toBe(0);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('still SIGKILLs an old-path stale worker once, then does not kill the current-path successor', async () => {
+    versionMatchResult = { matches: false, pluginVersion: PLUGIN_VERSION, workerVersion: STALE_VERSION };
+    healthWorkerPath = OLD_WORKER_PATH;
+
+    const workerUtils = await importWorkerUtilsFresh();
+    const currentPath = workerUtils.resolveWorkerScriptPath();
+    expect(currentPath).toBeTruthy();
+    ownedPidInfo = { pid: STALE_PID, port: workerUtils.getWorkerPort(), startedAt: new Date().toISOString() };
+
+    const first = await workerUtils.ensureWorkerRunning();
+    expect(first).toBe(true);
+    expect(killCalls).toEqual([{ pid: STALE_PID, signal: 'SIGKILL' }]);
+    expect(spawnCalls.length).toBe(1);
+    expect(spawnCalls[0].args).toContain(currentPath!);
+    expect(spawnCalls[0].args).toContain('--daemon');
+    expect(fetchLog.filter(c => c.url.includes('/api/admin/restart')).length).toBe(0);
+
+    // Successor is the current file and still reports the stale bake.
+    healthWorkerPath = currentPath;
+    versionMatchResult = { matches: false, pluginVersion: PLUGIN_VERSION, workerVersion: STALE_VERSION };
+    staleWorkerAlive = false;
+    successorUp = true;
+
+    const workerUtils2 = await importWorkerUtilsFresh();
+    ownedPidInfo = { pid: 5151, port: workerUtils2.getWorkerPort(), startedAt: new Date().toISOString() };
+    const second = await workerUtils2.ensureWorkerRunning();
+    expect(second).toBe(true);
+    expect(killCalls.length).toBe(1);
+    expect(spawnCalls.length).toBe(1);
+    expect(fetchLog.filter(c => c.url.includes('/api/admin/restart')).length).toBe(0);
+  });
+
+  it('does not treat a blank persisted workerPath as the current script path', async () => {
+    versionMatchResult = { matches: false, pluginVersion: PLUGIN_VERSION, workerVersion: STALE_VERSION };
+
+    const workerUtils = await importWorkerUtilsFresh();
+    const currentPath = workerUtils.resolveWorkerScriptPath();
+    expect(currentPath).toBeTruthy();
+    healthWorkerPath = currentPath;
+    ownedPidInfo = { pid: STALE_PID, port: workerUtils.getWorkerPort(), startedAt: new Date().toISOString() };
+
+    mkdirSync(join(tempDataDir, 'state'), { recursive: true });
+    writeFileSync(
+      join(tempDataDir, 'state', 'version-mismatch-warn.json'),
+      JSON.stringify({
+        workerPath: '   ',
+        workerVersion: STALE_VERSION,
+        pluginVersion: PLUGIN_VERSION,
+      }),
+      'utf-8'
+    );
+
+    const warnSpy = spyOn(logger, 'warn');
+    try {
+      const result = await workerUtils.ensureWorkerRunning();
+      expect(result).toBe(true);
+      expect(killCalls.length).toBe(0);
+      const staleWarns = warnSpy.mock.calls.filter((call) =>
+        String(call[1]).includes('stale version')
+      );
+      expect(staleWarns.length).toBe(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('keeps version-mismatch warn state valid JSON when two hook processes persist concurrently', async () => {
+    versionMatchResult = { matches: false, pluginVersion: PLUGIN_VERSION, workerVersion: STALE_VERSION };
+
+    const workerUtils = await importWorkerUtilsFresh();
+    const currentPath = workerUtils.resolveWorkerScriptPath();
+    expect(currentPath).toBeTruthy();
+    healthWorkerPath = currentPath;
+    ownedPidInfo = { pid: STALE_PID, port: workerUtils.getWorkerPort(), startedAt: new Date().toISOString() };
+
+    const workerUtils2 = await importWorkerUtilsFresh();
+    await Promise.all([
+      workerUtils.ensureWorkerRunning(),
+      workerUtils2.ensureWorkerRunning(),
+    ]);
+
+    const persistPath = join(tempDataDir, 'state', 'version-mismatch-warn.json');
+    const parsed = JSON.parse(readFileSync(persistPath, 'utf-8')) as {
+      workerPath: string;
+      workerVersion: string;
+      pluginVersion: string;
+    };
+    expect(parsed.workerVersion).toBe(STALE_VERSION);
+    expect(parsed.pluginVersion).toBe(PLUGIN_VERSION);
+    expect(parsed.workerPath.trim()).not.toBe('');
+    expect(killCalls.length).toBe(0);
   });
 
   it('proceeds to lazy-spawn when the stale worker already exited (ESRCH on kill)', async () => {

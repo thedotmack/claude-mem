@@ -74,34 +74,21 @@ describe('Version Consistency', () => {
     ]);
   });
 
-  it('should have version injected into built worker-service.cjs', () => {
-    const workerServicePath = path.join(projectRoot, 'plugin/scripts/worker-service.cjs');
-    
-    if (!existsSync(workerServicePath)) {
-      console.log('⚠️  worker-service.cjs not found - run npm run build first');
-      return;
-    }
-    
-    const workerServiceContent = readFileSync(workerServicePath, 'utf-8');
+  for (const relativePath of [
+    'plugin/scripts/worker-service.cjs',
+    'plugin/scripts/mcp-server.cjs',
+    'plugin/scripts/server-service.cjs',
+    'plugin/scripts/transcript-watcher.cjs',
+  ]) {
+    it(`should have the manifest version baked into ${relativePath}`, () => {
+      const bundlePath = path.join(projectRoot, relativePath);
+      expect(existsSync(bundlePath)).toBe(true);
 
-    const versionPattern = new RegExp(`"${rootVersion.replace(/\./g, '\\.')}"`, 'g');
-    const matches = workerServiceContent.match(versionPattern);
-    
-    expect(matches).toBeTruthy();
-    expect(matches!.length).toBeGreaterThan(0);
-  });
-
-  it('should have built mcp-server.cjs', () => {
-    const mcpServerPath = path.join(projectRoot, 'plugin/scripts/mcp-server.cjs');
-
-    if (!existsSync(mcpServerPath)) {
-      console.log('⚠️  mcp-server.cjs not found - run npm run build first');
-      return;
-    }
-
-    const mcpServerContent = readFileSync(mcpServerPath, 'utf-8');
-    expect(mcpServerContent.length).toBeGreaterThan(0);
-  });
+      const bundleContent = readFileSync(bundlePath, 'utf-8');
+      const versionPattern = new RegExp(`"${rootVersion.replace(/\./g, '\\.')}"`);
+      expect(bundleContent).toMatch(versionPattern);
+    });
+  }
 
   it('should validate version format is semver compliant', () => {
     expect(rootVersion).toMatch(/^\d+\.\d+\.\d+$/);
