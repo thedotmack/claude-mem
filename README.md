@@ -1,17 +1,21 @@
 <h1 align="center">
   <br>
-  <a href="https://github.com/thedotmack/claude-mem">
+  <a href="https://grok-mem.ai">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-dark-mode.webp">
       <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp">
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
+      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp" alt="Grok Mem" width="400">
     </picture>
   </a>
-  <br>
+</h1>
+
+<p align="center">Claude-Mem is now Grok Mem. The package is still claude-mem.</p>
+
+<p align="center">
   <a href="https://vercel.com/open-source-program">
     <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" />
   </a>
-</h1>
+</p>
 
 <p align="center">
   <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
