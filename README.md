@@ -2,20 +2,24 @@
   <br>
   <a href="https://grok-mem.ai">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-dark-mode.webp">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp">
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp" alt="Grok Mem" width="400">
+      <source media="(prefers-color-scheme: dark)" srcset="docs/public/claude-mem-logo-for-dark-mode.webp">
+      <source media="(prefers-color-scheme: light)" srcset="docs/public/claude-mem-logo-for-light-mode.webp">
+      <img src="docs/public/claude-mem-logo-for-light-mode.webp" alt="Grok Mem" width="400">
     </picture>
+  </a>
+  <br>
+  <a href="https://vercel.com/open-source-program">
+    <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" />
+  </a>
+  <a href="https://www.greptile.com">
+    <img alt="Greptile, code review partner" src="docs/public/greptile-wordmark-green.svg" height="40" />
+  </a>
+  <a href="https://serpapi.com">
+    <img alt="SerpApi" src="docs/public/serpapi-logo-with-wordmark-gradient.svg" height="40" />
   </a>
 </h1>
 
 <p align="center">Claude-Mem is now Grok Mem. The package is still <code>claude-mem</code>.</p>
-
-<p align="center">
-  <a href="https://vercel.com/open-source-program">
-    <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" />
-  </a>
-</p>
 
 <p align="center">
   <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
