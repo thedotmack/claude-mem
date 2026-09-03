@@ -71,6 +71,13 @@
         ]
       },
       {
+        "group": "Copilot CLI Integration",
+        "icon": "terminal",
+        "pages": [
+          "copilot-cli/setup"
+        ]
+      },
+      {
         "group": "Best Practices",
         "icon": "lightbulb",
         "pages": [

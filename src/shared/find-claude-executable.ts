@@ -131,6 +131,10 @@ function runProbe(candidate: string, args: readonly string[]): { stdout: string 
       timeout: VERSION_CHECK_TIMEOUT_MS,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
+      // Worker daemons can outlive a deleted install cwd (`(deleted)` in
+      // /proc/pid/cwd). mise shims and bash wrappers then fail getcwd and
+      // look like "Claude executable not found". Probe from $HOME.
+      cwd: _internals.homedir(),
     }).trim();
     return { stdout };
   } catch (error) {
