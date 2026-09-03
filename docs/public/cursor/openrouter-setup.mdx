@@ -1,63 +1,35 @@
 ---
 title: "Cursor + OpenRouter Setup"
-description: "Use Claude-Mem in Cursor with OpenRouter's 100+ AI models"
+description: "Use Claude-Mem in Cursor with your OpenRouter key"
 ---
 
 # Cursor + OpenRouter Setup
 
-This guide walks you through setting up Claude-Mem in Cursor using OpenRouter. OpenRouter provides access to 100+ AI models from various providers, including several free options.
+Use your OpenRouter key so memory notes run off-plan on your OpenRouter credit. You do **not** clone the repo.
 
-<Info>
-**Model variety:** Access Claude, GPT-4, Gemini, Llama, Mistral, and many more through a single API key.
-</Info>
+<Warning>
+**Never** send a personal `sk-or-` key to `https://cmem.ai/api/inference`. For your own OpenRouter account, leave the base URL empty (or `https://openrouter.ai/api/v1`). CMEM Pro uses the cmem.ai inference URL with a **CMEM Pro** key, not your OpenRouter key.
+</Warning>
 
-## Step 1: Get an OpenRouter API Key
+## Install
 
-1. Go to [OpenRouter](https://openrouter.ai)
-2. Sign up or sign in
-3. Navigate to [API Keys](https://openrouter.ai/keys)
-4. Click **Create Key**
-5. Copy your API key - you'll need it in Step 3
-
-<Tip>
-**Free models available:** OpenRouter offers free versions of several models including Gemini Flash and others. Check the [model list](https://openrouter.ai/models?show_free=true) for current free options.
-</Tip>
-
-## Step 2: Clone and Build Claude-Mem
+1. Create a key at [OpenRouter API Keys](https://openrouter.ai/keys).
+2. Run:
 
 ```bash
-# Clone the repository
-git clone https://github.com/thedotmack/claude-mem.git
-cd claude-mem
-
-# Install dependencies
-bun install
-
-# Build the project
-bun run build
+npx claude-mem install
 ```
 
-## Step 3: Configure OpenRouter Provider
+Pick **Cursor**, then pick **your OpenRouter key** as the memory provider.
 
-### Option A: Interactive Setup (Recommended)
+<Warning>
+`npm install -g claude-mem` is the library only. Always install with `npx claude-mem install`.
+</Warning>
 
-Run the setup wizard which guides you through everything:
-
-```bash
-bun run cursor:setup
-```
-
-When prompted for provider, select **OpenRouter**.
-
-### Option B: Manual Configuration
-
-Create the settings file manually:
+### Settings by hand (optional)
 
 ```bash
-# Create settings directory
 mkdir -p ~/.claude-mem
-
-# Create settings file with OpenRouter configuration
 cat > ~/.claude-mem/settings.json << 'EOF'
 {
   "CLAUDE_MEM_PROVIDER": "openrouter",
@@ -66,51 +38,19 @@ cat > ~/.claude-mem/settings.json << 'EOF'
 EOF
 ```
 
-Replace `YOUR_OPENROUTER_API_KEY` with your actual API key.
+Leave `CLAUDE_MEM_OPENROUTER_BASE_URL` unset for OpenRouter itself. Then re-run `npx claude-mem install` so Cursor hooks and the worker are in place. Do not restart a healthy worker.
 
-Then install hooks and start the worker:
+## Restart Cursor
 
-```bash
-bun run cursor:install
-bun run worker:start
-```
+Close and reopen Cursor so hooks load.
 
-## Step 4: Restart Cursor
+## Verify
 
-Close and reopen Cursor IDE for the hooks to take effect.
+Health: `curl -s "http://127.0.0.1:${CLAUDE_MEM_WORKER_PORT}/api/health"`. Open the worker URL from install to see notes.
 
-## Step 5: Verify Installation
+## Models
 
-```bash
-# Check worker is running
-bun run worker:status
-
-# Check hooks are installed
-bun run cursor:status
-```
-
-Open the worker URL printed on startup to see the memory viewer.
-
-## Recommended Models
-
-### Free Models
-
-| Model | Provider | Notes |
-|-------|----------|-------|
-| `google/gemini-2.0-flash-exp:free` | Google | Fast, capable |
-| `xiaomi/mimo-v2-flash:free` | Xiaomi | Good general purpose |
-
-### Paid Models
-
-Paid models draw on your OpenRouter credit — memory stays off-plan either way.
-
-| Model | Notes |
-|-------|-------|
-| `anthropic/claude-3-haiku` | Fast, efficient |
-| `google/gemini-flash-1.5` | Fast, strong quality |
-| `mistralai/mistral-7b-instruct` | Lightweight option |
-
-To specify a model, add to your settings:
+Set `CLAUDE_MEM_OPENROUTER_MODEL` if you do not want the default. Free model ids on OpenRouter often end in `:free` — check the [model list](https://openrouter.ai/models?show_free=true).
 
 ```json
 {
@@ -120,13 +60,9 @@ To specify a model, add to your settings:
 }
 ```
 
-## Custom OpenAI-Compatible Endpoints
+## Other OpenAI-shaped servers
 
-The OpenRouter provider is a generic OpenAI-compatible client. Set `CLAUDE_MEM_OPENROUTER_BASE_URL` to point it at any endpoint that speaks the OpenAI `/chat/completions` API — DeepSeek, a local LM Studio server, or any custom gateway. The model id you set in `CLAUDE_MEM_OPENROUTER_MODEL` is sent verbatim.
-
-<Info>
-**Base URL resolution:** When `CLAUDE_MEM_OPENROUTER_BASE_URL` is empty (default), requests go to OpenRouter unchanged. When set, claude-mem POSTs to `<base_url>/chat/completions` — you can supply either a base like `https://api.deepseek.com/v1` (the `/chat/completions` path is appended automatically) or a full `.../chat/completions` URL (used verbatim). Trailing slashes are normalized. The environment variable `OPENROUTER_BASE_URL` is honored as a fallback.
-</Info>
+The OpenRouter provider is a generic OpenAI-compatible client. Set `CLAUDE_MEM_OPENROUTER_BASE_URL` to DeepSeek, LM Studio, or any gateway that speaks `/chat/completions`. The model id is sent as-is.
 
 ### DeepSeek
 
@@ -139,9 +75,7 @@ The OpenRouter provider is a generic OpenAI-compatible client. Set `CLAUDE_MEM_O
 }
 ```
 
-### LM Studio (local model)
-
-LM Studio exposes an OpenAI-compatible server. No API key is required for local use, and you can use any model id you have loaded.
+### LM Studio (local)
 
 ```json
 {
@@ -151,87 +85,16 @@ LM Studio exposes an OpenAI-compatible server. No API key is required for local 
 }
 ```
 
-### Generic custom endpoint
-
-Any OpenAI-compatible gateway works the same way:
-
-```json
-{
-  "CLAUDE_MEM_PROVIDER": "openrouter",
-  "CLAUDE_MEM_OPENROUTER_BASE_URL": "https://my-gateway.example.com/v1",
-  "CLAUDE_MEM_OPENROUTER_MODEL": "model-id",
-  "CLAUDE_MEM_OPENROUTER_API_KEY": "YOUR_KEY"
-}
-```
-
-## Cost Management
-
-OpenRouter charges per token. To manage costs:
-
-1. **Use free models:** Several high-quality free models are available
-2. **Monitor usage:** Check your [OpenRouter dashboard](https://openrouter.ai/activity)
-3. **Set spending limits:** Configure limits in OpenRouter settings
-
-<Warning>
-**Credit awareness:** OpenRouter paid models draw on your OpenRouter credit per request. Monitor your usage if using paid models.
-</Warning>
-
 ## Troubleshooting
 
-### "OpenRouter API key not configured"
+**Key not configured** — `cat ~/.claude-mem/settings.json` should show provider `openrouter` and your key.
 
-Ensure your settings file exists with the correct format:
+**Model not found** — check the id at [OpenRouter Models](https://openrouter.ai/models).
 
-```bash
-cat ~/.claude-mem/settings.json
-```
+**Worker idle** — read `~/.claude-mem/logs/worker-YYYY-MM-DD.log`. Do not restart a healthy worker.
 
-Should output something like:
-```json
-{
-  "CLAUDE_MEM_PROVIDER": "openrouter",
-  "CLAUDE_MEM_OPENROUTER_API_KEY": "sk-or-..."
-}
-```
+## Next steps
 
-### Model not found
-
-1. Check the model ID is correct at [OpenRouter Models](https://openrouter.ai/models)
-2. Some models may require payment - check if you have credits
-3. Free models have `:free` suffix in their ID
-
-### Rate limits
-
-OpenRouter rate limits vary by model and your account tier. If you hit limits:
-1. Wait briefly and retry
-2. Consider upgrading your OpenRouter account tier
-3. Switch to a less popular model
-
-### API errors
-
-Check the worker logs for details:
-
-```bash
-bun run worker:logs
-```
-
-Common issues:
-- Invalid API key (regenerate at OpenRouter)
-- Insufficient credits for paid models
-- Model temporarily unavailable
-
-## Switching Providers Later
-
-You can switch between OpenRouter, Gemini, and Claude SDK at any time by updating your settings. No restart required - changes take effect on the next observation.
-
-```json
-{
-  "CLAUDE_MEM_PROVIDER": "gemini"
-}
-```
-
-## Next Steps
-
-- [Cursor Integration Overview](/cursor/index) - All Cursor features
-- [Gemini Setup](/cursor/gemini-setup) - Alternative free provider
-- [Configuration Reference](../configuration) - All settings options
+- [Cursor Integration](/cursor) — default CMEM Pro install
+- [Gemini](/cursor/gemini-setup)
+- [Configuration](/configuration)
