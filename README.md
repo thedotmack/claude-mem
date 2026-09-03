@@ -48,7 +48,7 @@
   <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
 </p>
 
-<h4 align="center">Persistent memory compression system built for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>
+<h4 align="center"><a href="https://www.npmjs.com/package/claude-mem">Grok Mem</a> — persistent memory for Grok Bot. Sits next to Grok's own memory. Does not replace it.</h4>
 
 <p align="center">
   <a href="LICENSE">
@@ -62,6 +62,9 @@
   </a>
   <a href="https://github.com/thedotmack/awesome-claude-code">
     <img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Claude Code">
+  </a>
+  <a href="https://www.npmjs.com/package/claude-mem">
+    <img src="https://img.shields.io/badge/Grok-mem-111111?style=for-the-badge" alt="Grok mem">
   </a>
 </p>
 
@@ -123,14 +126,22 @@
 </p>
 
 <p align="center">
-  Claude-Mem seamlessly preserves context across sessions by automatically capturing tool usage observations, generating semantic summaries, and making them available to future sessions. This enables Claude to maintain continuity of knowledge about projects even after sessions end or reconnect.
+  Grok Mem is how Grok Bots remember the work. Grok already remembers you. Grok Mem remembers what the bot did, what we decided, what to do next. Those notes come back in the next chat. It sits next to Grok's own memory. It does not replace it. The package is still <a href="https://www.npmjs.com/package/claude-mem">claude-mem</a>. Site: <a href="https://grok-mem.vercel.app">grok-mem.vercel.app</a>.
 </p>
 
 ---
 
 ## Quick Start
 
-Install with a single command:
+**Grok Mem** for Grok Bot. The package name is still `claude-mem`. Handout: [npmjs.com/package/claude-mem](https://www.npmjs.com/package/claude-mem). Site: [grok-mem.vercel.app](https://grok-mem.vercel.app).
+
+```bash
+npx claude-mem install --ide grok-bot
+```
+
+Grok Bot has no host hooks, so we watch the chat log files. Default is CMEM Pro, the hosted memory. Local observer is opt-in: `--provider host`. Installing this plugin does not install Cursor.
+
+Or install with a single command:
 
 ```bash
 npx claude-mem install

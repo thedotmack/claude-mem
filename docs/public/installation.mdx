@@ -1,11 +1,23 @@
 ---
 title: "Installation"
-description: "Install Claude-Mem plugin for persistent memory across sessions"
+description: "Grok Mem install. Package name is still claude-mem."
 ---
 
 # Installation Guide
 
+**Grok Mem.** Persistent memory for Grok Bot. Sits next to Grok's own memory. It does not replace it. The package name is still `claude-mem`. Handout: [npmjs.com/package/claude-mem](https://www.npmjs.com/package/claude-mem). Site: [grok-mem.vercel.app](https://grok-mem.vercel.app).
+
 ## Quick Start
+
+### Grok Bot
+
+Grok Bot has no host hooks. We watch the chat log files. Install it independently of Cursor or Claude Code. Default memory is CMEM Pro, the hosted memory.
+
+```bash
+npx claude-mem install --ide grok-bot
+```
+
+Local host-login observer is opt-in: `--provider host`. `--ide` is a single string — a second host is a second install command. Installing this plugin does not install Cursor. See [Grok Bot Integration](/grok-bot).
 
 ### Option 1: npx (Recommended)
 
@@ -49,16 +61,6 @@ Both methods will automatically configure hooks and start the worker service. St
 > **Important:** Claude-Mem is published on npm, but running `npm install -g claude-mem` installs the
 > **SDK/library only**. It does **not** register plugin hooks or start the worker service.
 > Always install via `npx claude-mem install` or the `/plugin` commands above.
-
-### Grok Bot
-
-Grok Bot has no host hooks. Install it independently of Cursor or Claude Code. Default observer is CMEM Pro:
-
-```bash
-npx claude-mem install --ide grok-bot
-```
-
-Local host-login observer is opt-in: `--provider host`. `--ide` is a single string — a second host is a second install command. See [Grok Bot Integration](/grok-bot). This host ships in claude-mem **13.24** ([PR #3842](https://github.com/thedotmack/claude-mem/pull/3842)).
 
 ## System Requirements
 
