@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { spawnSync } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, realpathSync } from 'fs';
 import { createRequire } from 'module';
 import { homedir } from 'os';
-import { join, dirname } from 'path';
+import { join, dirname, relative, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -51,15 +51,44 @@ function findBun() {
   return null;
 }
 
+// realpathSync throws on a path that does not exist (ENOENT) or that cannot be
+// walked (EACCES). Falling back to the input keeps the containment check below
+// total: an unresolvable path simply compares as itself and fails containment,
+// which is the conservative answer.
+function realpathOrSelf(candidatePath) {
+  try {
+    return realpathSync(candidatePath);
+  } catch {
+    return candidatePath;
+  }
+}
+
+// True when `candidatePath` sits strictly inside `dirPath`. Uses path.relative
+// rather than string prefixing so that a sibling directory sharing a name
+// prefix (…/node_modules/zod-extra next to …/node_modules/zod) is not counted
+// as inside, and so Windows path separators and casing are handled by the
+// platform's own path logic.
+function isInsideDir(candidatePath, dirPath) {
+  const rel = relative(dirPath, candidatePath);
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
 // Completeness probe for the plugin's declared dependency closure.
 //
-// `verifyCriticalModules` in src/npx-cli/install/setup-runtime.ts:245 is the
-// source of truth for this logic, but it is TypeScript ESM compiled into the
-// npx bundle while this script is standalone and dependency-free (run by
-// whatever Node the host provides), so the probe is inlined here rather than
-// imported. Keep the two in sync.
+// `verifyCriticalModules` in src/npx-cli/install/setup-runtime.ts:245 applies
+// the same contract on the npx install path, but it is TypeScript ESM compiled
+// into the npx bundle while this script is standalone and dependency-free (run
+// by whatever Node the host provides), so the probe is inlined here rather than
+// imported.
 //
-// Returns the list of specifiers that fail to resolve; an empty array means the
+// It deliberately does NOT copy that function's resolution strategy. Presence
+// is checked by statting inside this tree; see the comment on the loop below
+// for why require.resolve cannot be trusted to stay tree-local. The same
+// escape exists in verifyCriticalModules, where it is far less dangerous - it
+// runs as a post-install assertion that fails loud, not as the gate deciding
+// whether repair happens at all - but it is worth tightening there too.
+//
+// Returns the list of specifiers that are missing; an empty array means the
 // install tree is complete.
 function findMissingDependencies(pluginRoot) {
   try {
@@ -83,43 +112,57 @@ function findMissingDependencies(pluginRoot) {
     if (declared.length === 0) return [];
 
     const nodeModulesPath = join(pluginRoot, NODE_MODULES_DIRNAME);
-    // A require anchored inside the install tree, so require.resolve honors the
-    // installed package.json `exports` map when resolving subpaths rather than
-    // resolving from this script's own location (setup-runtime.ts:250-252).
-    const requireFromPlugin = createRequire(join(nodeModulesPath, 'noop.js'));
-    const resolvePaths = [nodeModulesPath];
-
     const missing = [];
 
-    // Each declared dependency must be installed, not merely a directory on disk.
+    // Presence is checked against THIS tree only, by direct stat rather than
+    // require.resolve. `require.resolve(dep, { paths: [nodeModulesPath] })`
+    // looks tree-scoped but is not: `paths` seeds Node's lookup, which then
+    // walks every ancestor directory and always consults the global folders
+    // ($HOME/.node_modules, $PREFIX/lib/node). Plugin roots live at
+    // ~/.claude/plugins/cache/thedotmack/claude-mem/<version>/, so a copy of a
+    // dependency anywhere above them - or installed globally - would satisfy
+    // the probe and let this guard report a gutted tree as complete, silently
+    // reintroducing the very bug it exists to catch (gh #3872 review).
+    //
+    // Statting `<node_modules>/<dep>/package.json` cannot escape the tree, and
+    // it is the same signal the repo already uses in
+    // scripts/check-postinstall-allowlist.js:75-78. It also handles the two
+    // awkward cases for free: scoped names split into their path segments, and
+    // bin-only packages like `tree-sitter-cli` - whose package.json has `bin`
+    // but no `main`/`module`/`exports`/`index.js`, so bare-name resolution
+    // fails even when they are perfectly installed (gh #2730).
     for (const dep of declared) {
-      try {
-        requireFromPlugin.resolve(dep, { paths: resolvePaths });
-      } catch {
-        // Bare-name resolution can fail for a perfectly-installed package that
-        // has no importable entry point - e.g. bin-only packages like
-        // `tree-sitter-cli`, whose package.json has `bin` but no
-        // `main`/`module`/`exports`/`index.js`. Falling back to its
-        // package.json distinguishes "installed but bin-only" from "genuinely
-        // missing": a truly absent package fails both probes (gh #2730).
-        try {
-          requireFromPlugin.resolve(dep + '/package.json', { paths: resolvePaths });
-        } catch {
-          missing.push(dep);
-        }
+      if (!existsSync(join(nodeModulesPath, ...dep.split('/'), 'package.json'))) {
+        missing.push(dep);
       }
     }
 
-    // Only probe the zod subpaths when zod is actually declared - the check
-    // must not hardcode a package the manifest may later drop
-    // (setup-runtime.ts:282).
-    if (declared.indexOf('zod') !== -1) {
+    // zod is the one package whose subpaths must be probed by real resolution:
+    // they are `exports`-map entries, so a present-and-correct directory does
+    // not imply `zod/v3` resolves (setup-runtime.ts:282, gh #2730). Skip it
+    // when zod is absent or undeclared - the manifest may drop it later, and a
+    // missing zod is already reported above.
+    if (declared.indexOf('zod') !== -1 && missing.indexOf('zod') === -1) {
+      // Anchored inside the install tree so the installed package's `exports`
+      // map is what gets consulted (setup-runtime.ts:250-252).
+      const requireFromPlugin = createRequire(join(nodeModulesPath, 'noop.js'));
+      // Both sides are realpath'd before comparison: bun can materialise
+      // node_modules entries as links into a shared store, and Node returns
+      // the real path of what it resolved. Comparing the two literally would
+      // then report a healthy linked install as missing and loop the install
+      // forever.
+      const zodDir = realpathOrSelf(join(nodeModulesPath, 'zod'));
       for (const subpath of ZOD_REQUIRED_SUBPATHS) {
+        let resolved;
         try {
-          requireFromPlugin.resolve(subpath, { paths: resolvePaths });
+          resolved = requireFromPlugin.resolve(subpath, { paths: [nodeModulesPath] });
         } catch {
           missing.push(subpath);
+          continue;
         }
+        // Same ancestor/global escape as above: a host-level zod could answer
+        // for the plugin's. Only a path inside this plugin's own zod counts.
+        if (!isInsideDir(realpathOrSelf(resolved), zodDir)) missing.push(subpath);
       }
     }
 
