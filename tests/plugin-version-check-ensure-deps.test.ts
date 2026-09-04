@@ -468,4 +468,34 @@ describe.skipIf(SKIP_NON_UNIX)('version-check Setup-phase ensurePluginDependenci
     expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
     expect(resolvesFromPluginTree(pluginRoot, 'late-added-dep')).toBe(true);
   });
+
+  test('does not accept a dependency resolved from OUTSIDE the plugin tree (gh #3872 review)', async () => {
+    // The completeness probe must answer "is it installed HERE", not "can this
+    // machine resolve it from somewhere".
+    //
+    // `require.resolve(dep, { paths: [nodeModules] })` reads as tree-scoped but
+    // is not: `paths` only seeds Node's lookup, which then walks every ancestor
+    // directory and always consults the global folders. Real plugin roots sit
+    // at ~/.claude/plugins/cache/thedotmack/claude-mem/<version>/, so a zod
+    // anywhere above them — or installed globally — answered for the plugin's
+    // own. The guard reported a gutted tree as complete and skipped repair,
+    // silently reinstating the gh #3755 bug it exists to catch.
+    //
+    // Fixture: an EMPTY plugin node_modules with a complete zod one directory
+    // up, which is exactly the shape that fooled the probe.
+    const { pluginRoot, fakeBinDir } = makeFreshPlugin('leak-host/plugin');
+    mkdirSync(join(pluginRoot, 'node_modules'), { recursive: true });
+    // `leak-host` is the plugin root's parent, so its node_modules is the first
+    // ancestor Node's lookup reaches after the plugin's own.
+    writeFakePackage(join(tmpRoot, 'leak-host'), 'zod', ZOD_COMPLETE_EXPORTS);
+
+    const { stderr, code } = await runVersionCheck(pluginRoot, fakeBinDir);
+
+    expect(code).toBe(0);
+    // The ancestor copy must not satisfy the closure: repair has to run.
+    expect(stderr).toContain(`${INSTALL_DIAGNOSTIC} (missing: zod)`);
+    expect(stderr).toContain(INSTALL_SUCCESS_DIAGNOSTIC);
+    // And the repair must have populated the plugin's OWN tree.
+    expect(existsSync(join(pluginRoot, 'node_modules', 'zod', 'package.json'))).toBe(true);
+  });
 });
