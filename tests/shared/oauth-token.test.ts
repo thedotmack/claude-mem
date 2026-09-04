@@ -246,6 +246,20 @@ describe('readClaudeOAuthToken — Linux branch', () => {
 });
 
 describe('readClaudeOAuthToken — Windows branch', () => {
+  it('uses the non-colliding CredApi wrapper in source and the shipped worker bundle', () => {
+    const files = [
+      join(import.meta.dir, '../../src/shared/oauth-token.ts'),
+      join(import.meta.dir, '../../plugin/scripts/worker-service.cjs'),
+    ];
+
+    for (const file of files) {
+      const contents = fs.readFileSync(file, 'utf-8');
+      expect(contents).toContain('Add-Type -Namespace ClaudeMem -Name CredApi');
+      expect(contents).toContain('[ClaudeMem.CredApi]::CredRead');
+      expect(contents).not.toContain('Add-Type -Namespace ClaudeMem -Name CredRead');
+    }
+  });
+
   it('on win32 without keychain entry, returns absent or env-fallback', async () => {
     if (process.platform !== 'win32') return; // skip on non-windows
     setPlatform('win32');
