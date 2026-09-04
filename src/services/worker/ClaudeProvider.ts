@@ -480,23 +480,34 @@ export class ClaudeProvider {
             });
           }
 
-          // The turn is over and the model never emitted text: this is the
-          // intentional-skip response, forwarded once so the claimed batch is
-          // acknowledged instead of being retried forever.
+          // The turn is over and the model never emitted text. Only a
+          // successful turn means "the model read the batch and chose to skip
+          // it" — forward the empty response once so the claim is acknowledged
+          // instead of being retried forever. An error result never reached
+          // that judgement, so its batch stays claimed and the next generator
+          // pass re-yields it (SessionManager.getMessageIterator).
           if (!sawTextResponse) {
-            await processAgentResponse(
-              '',
-              session,
-              this.dbManager,
-              this.sessionManager,
-              worker,
-              0,
-              session.earliestPendingTimestamp,
-              'SDK',
-              cwdTracker.lastCwd,
-              modelId,
-              activeResponseContext.current
-            );
+            const resultSubtype = (message as any).subtype as string | undefined;
+            if ((message as any).is_error === true || resultSubtype !== 'success') {
+              logger.warn('SDK', 'SDK turn failed before emitting text, leaving queue intact', {
+                sessionId: session.sessionDbId,
+                subtype: resultSubtype,
+              });
+            } else {
+              await processAgentResponse(
+                '',
+                session,
+                this.dbManager,
+                this.sessionManager,
+                worker,
+                0,
+                session.earliestPendingTimestamp,
+                'SDK',
+                cwdTracker.lastCwd,
+                modelId,
+                activeResponseContext.current
+              );
+            }
           }
           sawTextResponse = false;
         }
