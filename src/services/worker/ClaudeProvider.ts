@@ -291,6 +291,8 @@ export class ClaudeProvider {
       // and tool_use-only chunks carry no text block. Tracked per turn so an
       // empty batch is forwarded once, after the turn ends.
       let sawTextResponse = false;
+      // One re-queue per generator pass for a batch a failed turn never read.
+      let retriedAfterErrorResult = false;
 
       for await (const message of queryResult) {
         // Quota-aware wall-clock guard (#2234): the SDK pushes
@@ -480,19 +482,25 @@ export class ClaudeProvider {
             });
           }
 
+          const resultSubtype = (message as any).subtype as string | undefined;
+          const resultIsError = (message as any).is_error === true || resultSubtype !== 'success';
+
           // The turn is over and the model never emitted text. Only a
           // successful turn means "the model read the batch and chose to skip
           // it" — forward the empty response once so the claim is acknowledged
-          // instead of being retried forever. An error result never reached
-          // that judgement, so its batch stays claimed and the next generator
-          // pass re-yields it (SessionManager.getMessageIterator).
+          // instead of being retried forever. A failed turn never reached that
+          // judgement, so its batch goes back to the buffer for the drain to
+          // re-yield. Exactly one such retry per generator pass: a message is
+          // always pending while a batch is re-queued, so the buffer never
+          // idles out, and an endlessly failing turn would spin on it.
           if (!sawTextResponse) {
-            const resultSubtype = (message as any).subtype as string | undefined;
-            if ((message as any).is_error === true || resultSubtype !== 'success') {
-              logger.warn('SDK', 'SDK turn failed before emitting text, leaving queue intact', {
+            if (resultIsError && !retriedAfterErrorResult) {
+              retriedAfterErrorResult = true;
+              logger.warn('SDK', 'SDK turn failed before emitting text, re-queueing the claimed batch', {
                 sessionId: session.sessionDbId,
                 subtype: resultSubtype,
               });
+              await this.sessionManager.resetProcessingToPending(session.sessionDbId);
             } else {
               await processAgentResponse(
                 '',
@@ -508,6 +516,9 @@ export class ClaudeProvider {
                 activeResponseContext.current
               );
             }
+          }
+          if (!resultIsError) {
+            retriedAfterErrorResult = false;
           }
           sawTextResponse = false;
         }
