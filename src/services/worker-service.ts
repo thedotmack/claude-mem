@@ -36,6 +36,19 @@ import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
 
+// Exit code for "started but could not serve": the worker booted but never
+// bound the port (#3557). Kept distinct from the deliberate exit 0 used for
+// duplicate suppression and Windows Terminal tab management, so a genuine dead
+// boot is never laundered as success.
+export const WORKER_BOOT_FAILED_EXIT_CODE = 78;
+
+// The bind must happen within this window. server.listen() is the first ref'd
+// handle in the boot path, so a stall before it lets the event loop empty and
+// the process exit 0 with no trace. A ref'd watchdog holds the loop open and
+// exits loudly if the bind never lands. 60s clears the slowest healthy Windows
+// cold boot with margin (the spawner's own readiness wait is 30s).
+const BOOT_BIND_DEADLINE_MS = 60_000;
+
 import {
   writePidFile,
   readPidFile,
@@ -207,6 +220,7 @@ export class WorkerService implements WorkerRef {
   private mcpReady: boolean = false;
   private initializationCompleteFlag: boolean = false;
   private isShuttingDown: boolean = false;
+  private bootWatchdog: ReturnType<typeof setTimeout> | null = null;
 
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -411,13 +425,34 @@ export class WorkerService implements WorkerRef {
     enableExceptionAutocaptureForWorker();
     logger.setErrorSink((err) => captureException(err));
 
+    // Boot watchdog (#3557): nothing in the boot path below holds a ref'd
+    // handle until server.listen(), so a stall before the bind lets the event
+    // loop empty and the process exit 0 — a silent capture-dead install. This
+    // ref'd timer keeps the loop open through boot; if the bind never lands it
+    // exits non-zero with a log instead of vanishing mid-boot.
+    this.bootWatchdog = setTimeout(() => {
+      logger.failure('SYSTEM', 'Worker boot timed out before binding port — exiting', {
+        host,
+        port,
+        deadlineMs: BOOT_BIND_DEADLINE_MS,
+      });
+      process.exit(WORKER_BOOT_FAILED_EXIT_CODE);
+    }, BOOT_BIND_DEADLINE_MS);
+
     // Must run before startSupervisor(): its validateWorkerPidFile() removes
     // the dead previous run's stale PID file, which crash detection needs.
     this.detectPreviousShutdown();
 
     await startSupervisor();
 
+    // Log the decision to bind before the call, so the log names the last boot
+    // step reached instead of stopping mid-sentence when a bind stalls (#3557).
+    logger.info('SYSTEM', 'Binding worker HTTP server', { host, port });
     await this.server.listen(port, host);
+
+    // Bound successfully — the watchdog has done its job.
+    clearTimeout(this.bootWatchdog);
+    this.bootWatchdog = null;
 
     writePidFile({
       pid: process.pid,
@@ -1466,10 +1501,10 @@ async function main() {
         // competitor's — e.g. a port-conflict loser whose error didn't match
         // the EADDRINUSE detection above must not clobber the winner's file.
         removePidFileIfOwner(process.pid);
-        // Genuine start failure (not duplicate suppression): exit non-zero so
-        // the restart verifier and any supervising caller see a dead boot
-        // instead of a silent "success".
-        process.exit(1);
+        // Genuine start failure (not duplicate suppression): exit with the
+        // distinct "could not serve" code so the restart verifier and any
+        // supervising caller see a dead boot instead of a silent "success".
+        process.exit(WORKER_BOOT_FAILED_EXIT_CODE);
       });
     }
   }
@@ -1564,6 +1599,11 @@ const isMainModule = typeof require !== 'undefined' && typeof module !== 'undefi
 if (isMainModule) {
   main().catch((error) => {
     logger.error('SYSTEM', 'Fatal error in main', {}, error instanceof Error ? error : undefined);
-    process.exit(0);  
+    // A fatal error on the daemon boot path is a dead boot, not a success:
+    // exit non-zero so it is not laundered (#3557). Every other command keeps
+    // the deliberate exit 0 (Windows Terminal tab management per CLAUDE.md).
+    const { command } = parseWorkerServiceCommand(process.argv.slice(2));
+    const isDaemonBoot = command === undefined || command === '--daemon';
+    process.exit(isDaemonBoot ? WORKER_BOOT_FAILED_EXIT_CODE : 0);
   });
 }
