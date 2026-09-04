@@ -514,27 +514,35 @@ export class ClaudeProvider {
             });
           }
 
+          // The turn is over and the model never emitted text. Only a
+          // successful turn means "the model read the batch and chose to skip
+          // it" — forward the empty response once so the claim is acknowledged
+          // instead of being retried forever. An error result never reached
+          // that judgement, so its batch stays claimed and the next generator
+          // pass re-yields it (SessionManager.getMessageIterator).
           if (!turnDispatchedText) {
-            // The whole turn carried no text, so no frame handed the claimed
-            // batch to the parser. Do it once here with the empty response the
-            // turn actually produced: the batch is classified idle and
-            // confirmed, exactly as before #3492's frame-level skip. Skipping
-            // this would leave the batch claimed until session teardown
-            // disposes the in-RAM buffer, which drops it with no hand-off.
-            await processAgentResponse(
-              '',
-              session,
-              this.dbManager,
-              this.sessionManager,
-              worker,
-              (session.cumulativeInputTokens + session.cumulativeOutputTokens) - discoveryTokenBaseline,
-              session.earliestPendingTimestamp,
-              'SDK',
-              cwdTracker.lastCwd,
-              modelId,
-              activeResponseContext.current
-            );
-            discoveryTokenBaseline = session.cumulativeInputTokens + session.cumulativeOutputTokens;
+            const resultSubtype = (message as any).subtype as string | undefined;
+            if ((message as any).is_error === true || resultSubtype !== 'success') {
+              logger.warn('SDK', 'SDK turn failed before emitting text, leaving queue intact', {
+                sessionId: session.sessionDbId,
+                subtype: resultSubtype,
+              });
+            } else {
+              await processAgentResponse(
+                '',
+                session,
+                this.dbManager,
+                this.sessionManager,
+                worker,
+                (session.cumulativeInputTokens + session.cumulativeOutputTokens) - discoveryTokenBaseline,
+                session.earliestPendingTimestamp,
+                'SDK',
+                cwdTracker.lastCwd,
+                modelId,
+                activeResponseContext.current
+              );
+              discoveryTokenBaseline = session.cumulativeInputTokens + session.cumulativeOutputTokens;
+            }
           }
           turnDispatchedText = false;
         }
