@@ -95,32 +95,59 @@ export function extractLastMessageFromJsonl(
   let lastEmptyText: string | null = null;
 
   for (const line of parseJsonlLinesBackward(content)) {
-    const lineRole = line.type ?? line.role;
-    if (lineRole !== role) continue;
-    foundMatchingRole = true;
-
-    if (!line.message?.content) continue;
-
+    let isMatchingRole = false;
     let text = '';
-    const msgContent = line.message.content;
-    if (typeof msgContent === 'string') {
-      text = msgContent;
-    } else if (Array.isArray(msgContent)) {
-      text = msgContent
-        .filter(
-          (c: any): c is { type: 'text'; text: string } =>
-            !!c && typeof c === 'object' && c.type === 'text' && typeof c.text === 'string'
-        )
-        .map((c) => c.text)
-        .join('\n');
-    } else {
-      // Unknown content shape (null, number, plain object, etc.) — skip rather
-      // than throw. A single weird line should not crash the entire summary
-      // pipeline; we already tolerate malformed JSONL in parseJsonlLinesBackward,
-      // and this is the same class of defensive forward compat
-      // (CodeRabbit / Greptile review on PR #2282).
-      continue;
+
+    if (role === 'assistant') {
+      if (line.type === 'assistant' || line.role === 'assistant') {
+        isMatchingRole = true;
+        const msgContent = line.message?.content;
+        if (typeof msgContent === 'string') {
+          text = msgContent;
+        } else if (Array.isArray(msgContent)) {
+          text = msgContent
+            .filter(
+              (c: any): c is { type: 'text'; text: string } =>
+                !!c && typeof c === 'object' && c.type === 'text' && typeof c.text === 'string'
+            )
+            .map((c) => c.text)
+            .join('\n');
+        } else {
+          continue;
+        }
+      } else if (line.type === 'PLANNER_RESPONSE') {
+        isMatchingRole = true;
+        if (typeof line.content === 'string') {
+          text = line.content;
+        }
+      }
+    } else if (role === 'user') {
+      if (line.type === 'user' || line.role === 'user') {
+        isMatchingRole = true;
+        const msgContent = line.message?.content;
+        if (typeof msgContent === 'string') {
+          text = msgContent;
+        } else if (Array.isArray(msgContent)) {
+          text = msgContent
+            .filter(
+              (c: any): c is { type: 'text'; text: string } =>
+                !!c && typeof c === 'object' && c.type === 'text' && typeof c.text === 'string'
+            )
+            .map((c) => c.text)
+            .join('\n');
+        } else {
+          continue;
+        }
+      } else if (line.source === 'USER_EXPLICIT' || line.type === 'USER_INPUT') {
+        isMatchingRole = true;
+        if (typeof line.content === 'string') {
+          text = line.content;
+        }
+      }
     }
+
+    if (!isMatchingRole) continue;
+    foundMatchingRole = true;
 
     if (stripSystemReminders) {
       text = text.replace(SYSTEM_REMINDER_REGEX, '');

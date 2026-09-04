@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'fs';
 import { antigravityCliAdapter } from '../src/cli/adapters/antigravity-cli.js';
+import { extractLastMessageFromJsonl } from '../src/shared/transcript-parser.js';
 
 const INSTALLER_PATH = 'src/services/integrations/AntigravityCliHooksInstaller.ts';
 
@@ -73,13 +74,136 @@ describe('antigravityCliAdapter - normalizeInput', () => {
     }
   });
 
-  it('prefers an explicit cwd over any env var fallback', () => {
-    const result = antigravityCliAdapter.normalizeInput({ cwd: '/tmp/explicit-cwd' });
+  it('prefers an explicit cwd over workspacePaths and any env var fallback', () => {
+    const result = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp/explicit-cwd',
+      workspacePaths: ['/tmp/workspace-dir'],
+    });
     expect(result.cwd).toBe('/tmp/explicit-cwd');
+  });
+
+  it('resolves cwd from workspacePaths array when cwd is omitted', () => {
+    const result = antigravityCliAdapter.normalizeInput({
+      workspacePaths: ['/tmp/from-workspace-paths', '/tmp/secondary-path'],
+    });
+    expect(result.cwd).toBe('/tmp/from-workspace-paths');
   });
 
   it('rejects an invalid (empty) cwd', () => {
     expect(() => antigravityCliAdapter.normalizeInput({ cwd: '' })).toThrow('adapter rejected input: invalid_cwd');
+  });
+
+  it('prefers explicit session_id over conversationId', () => {
+    const result = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      session_id: 'explicit-session-123',
+      conversationId: 'conversation-456',
+    });
+    expect(result.sessionId).toBe('explicit-session-123');
+  });
+
+  it('resolves sessionId from conversationId when session_id is omitted', () => {
+    const result = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      conversationId: 'conversation-456',
+    });
+    expect(result.sessionId).toBe('conversation-456');
+  });
+
+  it('prefers explicit tool_name and tool_input over toolCall object', () => {
+    const result = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      tool_name: 'ExplicitTool',
+      tool_input: { explicit: true },
+      toolCall: { name: 'NestedTool', args: { nested: true } },
+    });
+    expect(result.toolName).toBe('ExplicitTool');
+    expect(result.toolInput).toEqual({ explicit: true });
+  });
+
+  it('maps nested toolCall.name and toolCall.args when tool_name/tool_input are omitted', () => {
+    const result = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      toolCall: { name: 'view_file', args: { path: '/tmp/test.ts' } },
+    });
+    expect(result.toolName).toBe('view_file');
+    expect(result.toolInput).toEqual({ path: '/tmp/test.ts' });
+  });
+
+  it('prefers tool_response over error and output', () => {
+    const result = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      tool_name: 'test_tool',
+      tool_response: 'explicit response',
+      error: 'error message',
+      output: 'output message',
+    });
+    expect(result.toolResponse).toBe('explicit response');
+  });
+
+  it('falls back tool_response to error or output', () => {
+    const errorResult = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      tool_name: 'test_tool',
+      error: 'permission denied',
+    });
+    expect(errorResult.toolResponse).toBe('permission denied');
+
+    const outputResult = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      tool_name: 'test_tool',
+      output: 'success output',
+    });
+    expect(outputResult.toolResponse).toBe('success output');
+  });
+
+  it('supplies default toolResponse when toolName is present but no response/output is provided', () => {
+    const result = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      tool_name: 'run_command',
+      stepIdx: 42,
+    });
+    expect(result.toolResponse).toEqual({ status: 'completed', stepIdx: 42 });
+  });
+
+  it('preserves falsy tool responses such as empty string, 0, and false', () => {
+    const emptyStringResult = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      tool_name: 'test_tool',
+      tool_response: '',
+      stepIdx: 1,
+    });
+    expect(emptyStringResult.toolResponse).toBe('');
+
+    const zeroResult = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      tool_name: 'test_tool',
+      tool_response: 0,
+      stepIdx: 2,
+    });
+    expect(zeroResult.toolResponse).toBe(0);
+
+    const falseResult = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      tool_name: 'test_tool',
+      tool_response: false,
+      stepIdx: 3,
+    });
+    expect(falseResult.toolResponse).toBe(false);
+  });
+
+  it('resolves transcriptPath from camelCase transcriptPath or snake_case transcript_path', () => {
+    const camel = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      transcriptPath: '/tmp/transcript.jsonl',
+    });
+    expect(camel.transcriptPath).toBe('/tmp/transcript.jsonl');
+
+    const snake = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      transcript_path: '/tmp/snake_transcript.jsonl',
+    });
+    expect(snake.transcriptPath).toBe('/tmp/snake_transcript.jsonl');
   });
 
   it('maps AfterAgent prompt_response into toolName/toolInput/toolResponse', () => {
@@ -94,13 +218,34 @@ describe('antigravityCliAdapter - normalizeInput', () => {
     expect(result.toolResponse).toEqual({ response: 'hello there' });
   });
 
-  it('marks a BeforeTool call as pre-execution when no response is present', () => {
-    const result = antigravityCliAdapter.normalizeInput({
+  it('marks a BeforeTool or PreToolUse call as pre-execution when no response is present', () => {
+    const beforeTool = antigravityCliAdapter.normalizeInput({
       cwd: '/tmp',
       hook_event_name: 'BeforeTool',
       tool_name: 'Read',
     });
-    expect(result.toolResponse).toEqual({ _preExecution: true });
+    expect(beforeTool.toolResponse).toEqual({ _preExecution: true });
+
+    const preToolUse = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Read',
+    });
+    expect(preToolUse.toolResponse).toEqual({ _preExecution: true });
+  });
+
+  it('preserves explicit falsy tool responses under BeforeTool and PreToolUse', () => {
+    for (const hook of ['BeforeTool', 'PreToolUse']) {
+      for (const val of ['', 0, false]) {
+        const res = antigravityCliAdapter.normalizeInput({
+          cwd: '/tmp',
+          hook_event_name: hook,
+          tool_name: 'Read',
+          tool_response: val,
+        });
+        expect(res.toolResponse).toBe(val);
+      }
+    }
   });
 
   it('maps Notification fields into toolName/toolInput/toolResponse', () => {
@@ -118,23 +263,123 @@ describe('antigravityCliAdapter - normalizeInput', () => {
 });
 
 describe('antigravityCliAdapter - formatOutput', () => {
-  it('strips ANSI escape codes from systemMessage (real bug fix carried over from Gemini CLI adapter)', () => {
-    const raw = '[31mRed text[0m';
-    const result = antigravityCliAdapter.formatOutput({ systemMessage: raw }) as Record<string, unknown>;
-    expect(result.systemMessage).toBe('Red text');
+  it('sets decision to allow and defaults continue to true', () => {
+    const result = antigravityCliAdapter.formatOutput({}) as Record<string, unknown>;
+    expect(result.decision).toBe('allow');
+    expect(result.continue).toBe(true);
   });
 
-  it('defaults continue to true and passes through hookSpecificOutput.additionalContext', () => {
+  it('sets decision to deny when continue is false', () => {
+    const result = antigravityCliAdapter.formatOutput({ continue: false }) as Record<string, unknown>;
+    expect(result.decision).toBe('deny');
+    expect(result.continue).toBe(false);
+  });
+
+  it('strips ANSI escape codes and sets injectSteps for ephemeral context messaging', () => {
+    const raw = '\u001b[31mRed context text\u001b[0m';
+    const result = antigravityCliAdapter.formatOutput({ systemMessage: raw }) as Record<string, unknown>;
+    expect(result.systemMessage).toBe('Red context text');
+    expect(result.injectSteps).toEqual([{ ephemeralMessage: 'Red context text' }]);
+  });
+
+  it('extracts systemMessage from hookSpecificOutput.additionalContext when systemMessage is omitted', () => {
     const result = antigravityCliAdapter.formatOutput({
-      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'ctx' },
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'Context from hook' },
     }) as Record<string, unknown>;
-    expect(result.continue).toBe(true);
-    expect(result.hookSpecificOutput).toEqual({ additionalContext: 'ctx' });
+    expect(result.systemMessage).toBe('Context from hook');
+    expect(result.injectSteps).toEqual([{ ephemeralMessage: 'Context from hook' }]);
+    expect(result.hookSpecificOutput).toEqual({ additionalContext: 'Context from hook' });
   });
 
   it('passes through suppressOutput when explicitly set', () => {
     const result = antigravityCliAdapter.formatOutput({ suppressOutput: true }) as Record<string, unknown>;
     expect(result.suppressOutput).toBe(true);
+  });
+});
+
+describe('Antigravity transcript parsing compatibility', () => {
+  it('extracts user message from Antigravity JSONL transcript', () => {
+    const transcript = [
+      JSON.stringify({
+        step_index: 0,
+        source: 'USER_EXPLICIT',
+        type: 'USER_INPUT',
+        status: 'DONE',
+        content: 'Why my antigravity sessions aren\'t showing up in claude-mem?',
+      }),
+      JSON.stringify({
+        step_index: 1,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        content: 'Checking your hooks configuration...',
+      }),
+    ].join('\n');
+
+    expect(extractLastMessageFromJsonl(transcript, 'user', false)).toBe(
+      'Why my antigravity sessions aren\'t showing up in claude-mem?'
+    );
+  });
+
+  it('extracts assistant message from Antigravity JSONL transcript', () => {
+    const transcript = [
+      JSON.stringify({
+        step_index: 0,
+        source: 'USER_EXPLICIT',
+        type: 'USER_INPUT',
+        status: 'DONE',
+        content: 'Please summarize project roadmap',
+      }),
+      JSON.stringify({
+        step_index: 1,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        content: 'Here is the project roadmap summary.',
+      }),
+    ].join('\n');
+
+    expect(extractLastMessageFromJsonl(transcript, 'assistant', false)).toBe(
+      'Here is the project roadmap summary.'
+    );
+  });
+
+  it('skips tool-only turns and extracts the most recent text-bearing assistant turn', () => {
+    const transcript = [
+      JSON.stringify({
+        step_index: 0,
+        source: 'USER_EXPLICIT',
+        type: 'USER_INPUT',
+        status: 'DONE',
+        content: 'List files and summarize',
+      }),
+      JSON.stringify({
+        step_index: 1,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        content: 'I have found 5 files in the directory.',
+      }),
+      JSON.stringify({
+        step_index: 2,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        tool_calls: [{ name: 'view_file', args: {} }],
+        content: '',
+      }),
+      JSON.stringify({
+        step_index: 3,
+        source: 'MODEL',
+        type: 'GENERIC',
+        status: 'DONE',
+        content: 'File contents...',
+      }),
+    ].join('\n');
+
+    expect(extractLastMessageFromJsonl(transcript, 'assistant', false)).toBe(
+      'I have found 5 files in the directory.'
+    );
   });
 });
 
