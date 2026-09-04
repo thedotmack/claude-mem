@@ -6,6 +6,22 @@ import type { ActiveSession } from '../../src/services/worker-types.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { StorageResult, WorkerRef } from '../../src/services/worker/agents/types.js';
 
+// Same snapshot-and-restore dance as the ModeManager stub below, for the same
+// reason: both stubs replace the whole module namespace with a single export.
+// Without this, getWorkerPort stays pinned at 37777 for every file that runs
+// after this one, so any later test that boots a real server on a real port
+// and expects a client to reach it fails with a connection error instead.
+import * as realWorkerServiceModule from '../../src/services/worker-service.js';
+import * as realWorkerUtilsModule from '../../src/shared/worker-utils.js';
+
+const realWorkerServiceSnapshot = { ...realWorkerServiceModule };
+const realWorkerUtilsSnapshot = { ...realWorkerUtilsModule };
+
+afterAll(() => {
+  mock.module('../../src/services/worker-service.js', () => realWorkerServiceSnapshot);
+  mock.module('../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
+});
+
 mock.module('../../src/services/worker-service.js', () => ({
   updateCursorContextForProject: () => Promise.resolve(),
 }));
