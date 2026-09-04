@@ -294,6 +294,22 @@ export async function processAgentResponse(
   session.lastGeneratorActivity = Date.now();
   const context = responseContext ?? snapshotResponseContext(session);
 
+  // Consume-and-clear immediately, unconditionally, on every call: this field
+  // is scoped to the single response that produced `text` (each OpenAI-
+  // compatible call site sets it right before invoking this function — see
+  // OpenAICompatibleProvider's handleInitResponse/processObservationMessage/
+  // processSummaryMessage). Reading and clearing it here, before branching on
+  // parse validity below, guarantees the NEXT call — from any provider,
+  // whether or not this response happened to parse as valid XML — starts
+  // from null instead of inheriting a finish reason an OpenAI-compatible
+  // turn set several responses ago. Without the clear, a session that fails
+  // over from OpenRouter to Claude (e.g. the cmem-gateway trial-expiry
+  // fallback in provider-dispatch.ts) would have a later empty Claude reply
+  // misread the OpenRouter turn's leftover 'length', mistaking a designed
+  // skip for a truncation.
+  const finishReason = session.lastFinishReason ?? null;
+  session.lastFinishReason = null;
+
   // Classify rejections BEFORE growing the window. "Prompt is too long", quota
   // prose and auth prose are refusals, not conversational turns; appending them
   // makes the next request strictly larger than the one that just failed, which
@@ -388,13 +404,15 @@ export async function processAgentResponse(
     // reading consecutiveInvalidOutputs. `truncated` is always false on the
     // other two paths: ClaudeProvider never assigns session.lastFinishReason
     // at all, and GeminiProvider's query() result never populates a
-    // finishReason, so the `?? null` fallback it inherits from
-    // OpenAICompatibleProvider always lands on null. This branch therefore
-    // degrades for Claude/Gemini to exactly its prior behavior, just with a
-    // real (no longer write-only) counter.
+    // finishReason, so the OpenAICompatibleProvider call sites that set it
+    // write `null` for Gemini on every response — and `finishReason` above
+    // was already consumed-and-cleared for THIS response at the top of this
+    // function, so neither path can observe a value an earlier OpenRouter
+    // turn left behind. This branch therefore degrades for Claude/Gemini to
+    // exactly its prior behavior, just with a real (no longer write-only)
+    // counter.
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
-    const finishReason = session.lastFinishReason ?? null;
     const truncated = finishReason === 'length';
     // A designed skip is exactly: idle output AND a finish reason that is
     // either null (Claude/Gemini never report one — their behavior is

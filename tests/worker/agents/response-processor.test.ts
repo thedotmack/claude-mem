@@ -785,6 +785,47 @@ describe('ResponseProcessor', () => {
       );
       expect(session.consecutiveInvalidOutputs).toBe(1);
     });
+
+    it("does not leak an OpenRouter turn's finishReason into a later Claude-path empty reply on the same session (#3868)", async () => {
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages: mock(() => Promise.resolve(0)),
+      } as unknown as SessionManager;
+
+      // Turn 1: an OpenRouter reply. OpenAICompatibleProvider sets
+      // session.lastFinishReason = 'length' immediately before this call, so
+      // an empty reply here is a real truncation, not a designed skip.
+      const session = createMockSession({ consecutiveInvalidOutputs: 0, lastFinishReason: 'length' });
+
+      await processAgentResponse('', session, mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
+
+      expect(logger.error).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned non-XML idle response — ignoring queued batch$/),
+        expect.objectContaining({ outputClass: 'idle', finishReason: 'length', truncated: true, consecutiveInvalidOutputs: 1 })
+      );
+
+      // The finish reason must be consumed by that read, not merely observed:
+      // it has to be cleared so the NEXT caller — regardless of provider —
+      // starts from null instead of inheriting this turn's 'length'.
+      expect(session.lastFinishReason).toBeNull();
+
+      // Turn 2: a later Claude-path reply on the SAME session object (e.g.
+      // the cmem-gateway trial-expiry fallback dropped this session back to
+      // Claude). ClaudeProvider never assigns session.lastFinishReason at
+      // all, so without the fix above this idle reply would still read
+      // Turn 1's leftover 'length' and be misclassified as a truncation
+      // instead of the designed empty-reply skip.
+      await processAgentResponse('', session, mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
+
+      expect(logger.info).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/^TestAgent returned an empty response — observer skipped the batch$/),
+        expect.objectContaining({ outputClass: 'idle', finishReason: null })
+      );
+      expect(session.consecutiveInvalidOutputs).toBe(0);
+    });
   });
 
   describe('context-window overflow recovery (#3800)', () => {

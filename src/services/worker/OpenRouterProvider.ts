@@ -225,15 +225,53 @@ function hasProcessEnvOverride(key: string): boolean {
 }
 
 /**
- * NaN or below `min` (corrupt settings.json / bad env override) falls back to
- * `fallback` rather than producing an unbounded-by-accident or invalid
- * request value. `min` is 1 for keys where 0 would be a broken request value
+ * Only a complete decimal integer is accepted: a finite, integral `number`,
+ * or a `string` that — after trimming surrounding whitespace — matches an
+ * optional leading sign followed by one or more digits and nothing else.
+ * `parseInt` was rejected here because it parses a numeric *prefix*, so a
+ * settings/env value like `"1e3"` silently became `1` (parseInt stops at
+ * `e`) instead of the intended 1000, turning a 1000ms timeout into 1ms.
+ * Anything that isn't a fully-numeric value this way — `"42.5"`, `"0x10"`,
+ * `""`, `"abc"`, `NaN`, `Infinity`, objects — falls back to `fallback`, and
+ * so does a value outside `[min, max]` (corrupt settings.json / bad env
+ * override). `min` is 1 for keys where 0 would be a broken request value
  * (maxTokens, attemptTimeoutMs) and 0 for keys where 0 is the documented
  * "unbounded" sentinel (maxContextMessages, maxContextChars).
+ *
+ * `max` closes the same "silently becomes ~1ms" failure at the other end of
+ * the range: an all-digit `string` long enough to overflow `Number()`
+ * (~309+ digits) becomes `Infinity` rather than throwing, and an ordinary
+ * fat-fingered value (e.g. an extra zero on `attemptTimeoutMs`) can still be
+ * a perfectly valid, finite integer that is nonetheless too large for
+ * `setTimeout`, which silently clamps any delay over 2^31-1 ms (~24.8 days)
+ * to fire after ~1ms instead of the intended delay. Both cases must fall
+ * back rather than pass through, so `max` defaults to
+ * `Number.MAX_SAFE_INTEGER` and the caller whose value reaches `setTimeout`
+ * (attemptTimeoutMs) passes the 32-bit signed-int ceiling explicitly.
  */
-function parseOpenRouterInt(raw: unknown, fallback: number, min: number): number {
-  const parsed = parseInt(String(raw), 10);
-  return Number.isNaN(parsed) || parsed < min ? fallback : parsed;
+const DECIMAL_INTEGER_PATTERN = /^[+-]?\d+$/;
+
+/** Node's `setTimeout` treats any delay above this (2^31 - 1) as invalid and
+ *  fires almost immediately instead (with a TimeoutOverflowWarning) — see the
+ *  `max` note on {@link parseOpenRouterInt}. */
+const SETTIMEOUT_MAX_MS = 2_147_483_647;
+
+export function parseOpenRouterInt(
+  raw: unknown,
+  fallback: number,
+  min: number,
+  max: number = Number.MAX_SAFE_INTEGER,
+): number {
+  let parsed: number;
+  if (typeof raw === 'number') {
+    if (!Number.isFinite(raw) || !Number.isInteger(raw)) return fallback;
+    parsed = raw;
+  } else if (typeof raw === 'string' && DECIMAL_INTEGER_PATTERN.test(raw.trim())) {
+    parsed = Number(raw.trim());
+  } else {
+    return fallback;
+  }
+  return !Number.isFinite(parsed) || parsed < min || parsed > max ? fallback : parsed;
 }
 
 function normalizeOpenRouterModel(rawModel: unknown): string {
@@ -320,11 +358,19 @@ export function resolveOpenRouterConfig(
   // zero-length retry timeout is not a meaningful "unbounded"), so they
   // require >= 1; maxContextMessages and maxContextChars keep 0 as the
   // documented "unbounded" sentinel — only a negative value (never a
-  // legitimate setting) falls back there.
+  // legitimate setting) falls back there. attemptTimeoutMs additionally caps
+  // at SETTIMEOUT_MAX_MS because it is handed to `setTimeout` (see retry.ts)
+  // — anything larger silently fires after ~1ms instead of the intended
+  // delay, the same failure mode this whole guard exists to prevent.
   const maxTokens = parseOpenRouterInt(settings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS, 4096, 1);
   const maxContextMessages = parseOpenRouterInt(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES, 40, 0);
   const maxContextChars = parseOpenRouterInt(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_CHARS, 200000, 0);
-  const attemptTimeoutMs = parseOpenRouterInt(settings.CLAUDE_MEM_OPENROUTER_ATTEMPT_TIMEOUT_MS, 30000, 1);
+  const attemptTimeoutMs = parseOpenRouterInt(
+    settings.CLAUDE_MEM_OPENROUTER_ATTEMPT_TIMEOUT_MS,
+    30000,
+    1,
+    SETTIMEOUT_MAX_MS,
+  );
 
   return { apiKey, model, apiUrl, siteUrl, appName, maxTokens, maxContextMessages, maxContextChars, attemptTimeoutMs };
 }
