@@ -287,6 +287,11 @@ export class ClaudeProvider {
         }),
       });
 
+      // A single SDK turn streams several assistant messages; thinking-only
+      // and tool_use-only chunks carry no text block. Tracked per turn so an
+      // empty batch is forwarded once, after the turn ends.
+      let sawTextResponse = false;
+
       for await (const message of queryResult) {
         // Quota-aware wall-clock guard (#2234): the SDK pushes
         // `rate_limit_event` messages carrying live subscription quota state
@@ -413,19 +418,22 @@ export class ClaudeProvider {
             throw new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env');
           }
 
-          await processAgentResponse(
-            textContent,
-            session,
-            this.dbManager,
-            this.sessionManager,
-            worker,
-            discoveryTokens,
-            originalTimestamp,
-            'SDK',
-            cwdTracker.lastCwd,
-            modelId,
-            activeResponseContext.current
-          );
+          if (responseSize > 0) {
+            sawTextResponse = true;
+            await processAgentResponse(
+              textContent,
+              session,
+              this.dbManager,
+              this.sessionManager,
+              worker,
+              discoveryTokens,
+              originalTimestamp,
+              'SDK',
+              cwdTracker.lastCwd,
+              modelId,
+              activeResponseContext.current
+            );
+          }
         }
 
         if (message.type === 'result') {
@@ -471,6 +479,26 @@ export class ClaudeProvider {
                   : undefined,
             });
           }
+
+          // The turn is over and the model never emitted text: this is the
+          // intentional-skip response, forwarded once so the claimed batch is
+          // acknowledged instead of being retried forever.
+          if (!sawTextResponse) {
+            await processAgentResponse(
+              '',
+              session,
+              this.dbManager,
+              this.sessionManager,
+              worker,
+              0,
+              session.earliestPendingTimestamp,
+              'SDK',
+              cwdTracker.lastCwd,
+              modelId,
+              activeResponseContext.current
+            );
+          }
+          sawTextResponse = false;
         }
       }
     } finally {
