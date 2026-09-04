@@ -2,11 +2,11 @@ import { readFileSync, existsSync } from 'fs';
 import { logger } from '../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../utils/tag-stripping.js';
 
-export function extractLastMessage(
-  transcriptPath: string,
-  role: 'user' | 'assistant',
-  stripSystemReminders: boolean = false
-): string {
+/**
+ * Read a transcript file once, trimmed. Returns '' (after a warn) when the
+ * path is missing, the file does not exist, or the file is empty.
+ */
+function readTranscriptOrWarn(transcriptPath: string): string {
   if (!transcriptPath || !existsSync(transcriptPath)) {
     logger.warn('PARSER', `Transcript path missing or file does not exist: ${transcriptPath}`);
     return '';
@@ -18,7 +18,59 @@ export function extractLastMessage(
     return '';
   }
 
+  return content;
+}
+
+/**
+ * Yield parsed JSONL entries from the last line to the first. Blank lines and
+ * lines that fail to parse are skipped so callers only ever see objects.
+ */
+function* parseJsonlLinesBackward(content: string): Generator<any> {
+  const lines = content.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const rawLine = lines[i];
+    if (!rawLine) continue;
+    // Tolerate truncated/malformed JSONL lines (crash mid-write, partial flush).
+    // A bad line shouldn't crash the summarization pipeline — skip and move on.
+    let line: any;
+    try {
+      line = JSON.parse(rawLine);
+    } catch {
+      // [ANTI-PATTERN IGNORED]: malformed/truncated JSONL lines are expected (crash mid-write,
+      // partial flush) and this fires per bad line while scanning backwards over the whole
+      // transcript; recovery is to skip the line and keep scanning, so logging each one would
+      // flood the log with noise for a documented, tolerated condition.
+      continue;
+    }
+    yield line;
+  }
+}
+
+export function extractLastMessage(
+  transcriptPath: string,
+  role: 'user' | 'assistant',
+  stripSystemReminders: boolean = false
+): string {
+  const content = readTranscriptOrWarn(transcriptPath);
+  if (!content) return '';
   return extractLastMessageFromJsonl(content, role, stripSystemReminders);
+}
+
+/**
+ * Read the transcript ONCE and extract both the last assistant text and the
+ * model that assistant turn was running. The Stop hook needs both, and a
+ * long transcript should not be read from disk twice for it.
+ */
+export function extractLastAssistantTurn(
+  transcriptPath: string,
+  stripSystemReminders: boolean = false
+): { text: string; model?: string } {
+  const content = readTranscriptOrWarn(transcriptPath);
+  if (!content) return { text: '' };
+  return {
+    text: extractLastMessageFromJsonl(content, 'assistant', stripSystemReminders),
+    model: extractLastAssistantModelFromJsonl(content),
+  };
 }
 
 /**
@@ -39,25 +91,10 @@ export function extractLastMessageFromJsonl(
   role: 'user' | 'assistant',
   stripSystemReminders: boolean
 ): string {
-  const lines = content.split('\n');
   let foundMatchingRole = false;
   let lastEmptyText: string | null = null;
 
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const rawLine = lines[i];
-    if (!rawLine) continue;
-    // Tolerate truncated/malformed JSONL lines (crash mid-write, partial flush).
-    // A bad line shouldn't crash the summarization pipeline — skip and move on.
-    let line: any;
-    try {
-      line = JSON.parse(rawLine);
-    } catch {
-      // [ANTI-PATTERN IGNORED]: malformed/truncated JSONL lines are expected (crash mid-write,
-      // partial flush) and this fires per bad line while scanning backwards over the whole
-      // transcript; recovery is to skip the line and keep scanning, so logging each one would
-      // flood the log with noise for a documented, tolerated condition.
-      continue;
-    }
+  for (const line of parseJsonlLinesBackward(content)) {
     const lineRole = line.type ?? line.role;
     if (lineRole !== role) continue;
     foundMatchingRole = true;
@@ -79,8 +116,8 @@ export function extractLastMessageFromJsonl(
     } else {
       // Unknown content shape (null, number, plain object, etc.) — skip rather
       // than throw. A single weird line should not crash the entire summary
-      // pipeline; we already tolerate malformed JSONL via the parse-catch
-      // above, and this is the same class of defensive forward compat
+      // pipeline; we already tolerate malformed JSONL in parseJsonlLinesBackward,
+      // and this is the same class of defensive forward compat
       // (CodeRabbit / Greptile review on PR #2282).
       continue;
     }
@@ -105,4 +142,30 @@ export function extractLastMessageFromJsonl(
     return '';
   }
   return lastEmptyText ?? '';
+}
+
+/**
+ * Extract the model id the OBSERVED session is running from its transcript.
+ *
+ * Every assistant entry in a Claude Code / Cursor transcript carries
+ * `message.model` (e.g. `"claude-fable-5-1"`). We scan backwards so the value
+ * reflects the most recent turn — this covers mid-session `/model` switches.
+ *
+ * This is the observed-session model (what the user's IDE is running), NOT the
+ * observer model claude-mem uses to write observations.
+ */
+export function extractLastAssistantModel(transcriptPath: string): string | undefined {
+  if (!transcriptPath || !existsSync(transcriptPath)) return undefined;
+  const content = readFileSync(transcriptPath, 'utf-8').trim();
+  if (!content) return undefined;
+  return extractLastAssistantModelFromJsonl(content);
+}
+
+export function extractLastAssistantModelFromJsonl(content: string): string | undefined {
+  for (const line of parseJsonlLinesBackward(content)) {
+    if ((line.type ?? line.role) !== 'assistant') continue;
+    const model = line.message?.model;
+    if (typeof model === 'string' && model) return model;
+  }
+  return undefined;
 }

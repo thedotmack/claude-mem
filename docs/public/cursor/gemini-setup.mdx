@@ -1,69 +1,31 @@
 ---
 title: "Cursor + Gemini Setup"
-description: "Use Claude-Mem in Cursor with Google's free Gemini API"
+description: "Use Claude-Mem in Cursor with your Gemini API key"
 ---
 
 # Cursor + Gemini Setup
 
-This guide walks you through setting up Claude-Mem in Cursor using Google's Gemini API. Gemini offers a generous free tier that handles typical individual usage.
+Use your Google Gemini key so memory notes run off-plan (they do not spend your Claude subscription). You do **not** clone the repo.
 
-<Info>
-**Free Tier:** generous daily quota with `gemini-flash-latest`. No credit card required.
-</Info>
+## Install
 
-## Step 1: Get a Gemini API Key
-
-1. Go to [Google AI Studio](https://aistudio.google.com/apikey)
-2. Sign in with your Google account
-3. Accept the Terms of Service
-4. Click **Create API key**
-5. Choose or create a Google Cloud project
-6. Copy your API key - you'll need it in Step 3
-
-<Tip>
-**Higher rate limits:** Enable billing on your Google Cloud project to unlock 4,000 RPM (vs 10 RPM without billing). You won't be charged unless you exceed the free quota.
-</Tip>
-
-## Step 2: Clone and Build Claude-Mem
+1. Get a key at [Google AI Studio](https://aistudio.google.com/apikey).
+2. Run:
 
 ```bash
-# Clone the repository
-git clone https://github.com/thedotmack/claude-mem.git
-cd claude-mem
-
-# Install dependencies
-bun install
-
-# Build the project
-bun run build
+npx claude-mem install
 ```
 
-## Step 3: Configure Gemini Provider
+Pick **Cursor**, then pick **Gemini** as the memory provider and paste the key.
 
-### Option A: Interactive Setup (Recommended)
+<Warning>
+`npm install -g claude-mem` is the library only. Always install with `npx claude-mem install`.
+</Warning>
 
-Run the setup wizard which guides you through everything:
-
-```bash
-bun run cursor:setup
-```
-
-The wizard will:
-1. Detect you don't have Claude Code
-2. Ask you to choose Gemini as your provider
-3. Prompt for your API key
-4. Install hooks automatically
-5. Start the worker
-
-### Option B: Manual Configuration
-
-Create the settings file manually:
+### Settings by hand (optional)
 
 ```bash
-# Create settings directory
 mkdir -p ~/.claude-mem
-
-# Create settings file with Gemini configuration
 cat > ~/.claude-mem/settings.json << 'EOF'
 {
   "CLAUDE_MEM_PROVIDER": "gemini",
@@ -72,42 +34,26 @@ cat > ~/.claude-mem/settings.json << 'EOF'
 EOF
 ```
 
-Replace `YOUR_GEMINI_API_KEY` with your actual API key.
+Then re-run `npx claude-mem install` so Cursor hooks and the worker are in place. Do not restart a healthy worker.
 
-Then install hooks and start the worker:
+## Restart Cursor
 
-```bash
-bun run cursor:install
-bun run worker:start
-```
+Close and reopen Cursor so hooks load.
 
-## Step 4: Restart Cursor
+## Verify
 
-Close and reopen Cursor IDE for the hooks to take effect.
+Health: `curl -s "http://127.0.0.1:${CLAUDE_MEM_WORKER_PORT}/api/health"` (port also in `~/.claude-mem/.worker.port`). Open the worker URL from install to see notes.
 
-## Step 5: Verify Installation
+## Models
 
-```bash
-# Check worker is running
-bun run worker:status
+| Model | Notes |
+|-------|-------|
+| `gemini-flash-latest` | **Default.** Current GA Flash |
+| `gemini-flash-lite-latest` | Current GA Flash-Lite |
+| `gemini-3.5-flash` | Pinned GA Flash |
+| `gemini-3.1-flash-lite` | Pinned GA Flash-Lite |
 
-# Check hooks are installed
-bun run cursor:status
-```
-
-Open the worker URL printed on startup to see the memory viewer.
-
-## Available Gemini Models
-
-| Model | Free Tier RPM | Notes |
-|-------|---------------|-------|
-| `gemini-flash-latest` | 10 (1,000 with billing) | **Default.** Google alias tracking the current GA Flash model |
-| `gemini-flash-lite-latest` | 15 (4,000 with billing) | Google alias tracking the current GA Flash-Lite model |
-| `gemini-3.5-flash` | 10 (1,000 with billing) | Pinned GA Flash model |
-| `gemini-3.1-flash-lite` | 15 (4,000 with billing) | Pinned GA Flash-Lite model |
-| `gemini-3-flash-preview` | 5 (1,000 with billing) | Preview model |
-
-To change the model, update your settings:
+To pin a model:
 
 ```json
 {
@@ -117,15 +63,7 @@ To change the model, update your settings:
 }
 ```
 
-## Rate Limiting
-
-Claude-mem automatically handles rate limiting for free tier usage:
-
-- Requests are spaced to stay within limits
-- Processing may be slightly slower but stays within quota
-- No errors or lost observations
-
-**To remove rate limiting:** Enable billing on your Google Cloud project, then add to settings:
+Rate limits depend on the model and whether billing is on in Google Cloud. Claude-mem spaces requests when billing is off. To turn off that extra throttle after you enable Google billing:
 
 ```json
 {
@@ -133,61 +71,16 @@ Claude-mem automatically handles rate limiting for free tier usage:
 }
 ```
 
-You'll still use the free quota but with much higher rate limits.
-
 ## Troubleshooting
 
-### "Gemini API key not configured"
+**Key not configured** — `cat ~/.claude-mem/settings.json` should show `CLAUDE_MEM_PROVIDER` `gemini` and your key.
 
-Ensure your settings file exists and has the correct format:
+**HTTP 429** — wait, enable Google billing, or use [OpenRouter](/cursor/openrouter-setup).
 
-```bash
-cat ~/.claude-mem/settings.json
-```
+**Worker idle** — read `~/.claude-mem/logs/worker-YYYY-MM-DD.log`. Do not restart a healthy worker (the note queue is in memory).
 
-Should output something like:
-```json
-{
-  "CLAUDE_MEM_PROVIDER": "gemini",
-  "CLAUDE_MEM_GEMINI_API_KEY": "AIza..."
-}
-```
+## Next steps
 
-### Rate limit errors (HTTP 429)
-
-You're exceeding the free tier limits. Options:
-1. Wait a few minutes for the rate limit to reset
-2. Enable billing on Google Cloud to unlock higher limits
-3. Switch to OpenRouter for higher volume needs
-
-### API key invalid
-
-1. Verify your key at [Google AI Studio](https://aistudio.google.com/apikey)
-2. Ensure there are no extra spaces or newlines in your settings.json
-3. Try generating a new API key
-
-### Worker not processing observations
-
-Check the worker logs:
-
-```bash
-bun run worker:logs
-```
-
-Look for error messages related to Gemini API calls.
-
-## Switching Providers Later
-
-You can switch between Gemini, OpenRouter, and Claude SDK at any time by updating your settings. No restart required - changes take effect on the next observation.
-
-```json
-{
-  "CLAUDE_MEM_PROVIDER": "openrouter"
-}
-```
-
-## Next Steps
-
-- [Cursor Integration Overview](/cursor/index) - All Cursor features
-- [OpenRouter Setup](/cursor/openrouter-setup) - Alternative provider with 100+ models
-- [Configuration Reference](../configuration) - All settings options
+- [Cursor Integration](/cursor) — default CMEM Pro install
+- [OpenRouter](/cursor/openrouter-setup)
+- [Configuration](/configuration)

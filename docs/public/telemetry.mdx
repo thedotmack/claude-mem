@@ -32,6 +32,8 @@ When enabled, events are anonymous and identified only by a random install UUID 
 
 Low-volume lifecycle events (`install_*`, `uninstall_completed`, `worker_started`) build an analytics profile keyed to that random UUID so aggregate retention and cohort statistics are computable — the profile contains nothing beyond the whitelisted fields below (platform, version, IDE/provider choice). It is not, and cannot be, connected to you: there is no name, email, IP, hardware ID, or any other identifier. All high-volume activity is sent with `$process_person_profile: false` and builds no profile at all.
 
+About the observed IDE session's identity, claude-mem collects only its model id (`observed_model`) and a billing tier (`observed_billing`) — never account ids, emails, or tokens.
+
 **High-volume events are rolled up, not streamed.** Rather than emit one event per compression or context injection, claude-mem aggregates them locally and sends one summary:
 
 - **`observer_turn_rollup`** — a **per-session** accumulator. Every compression in a session folds into one running rollup that is emitted **once, at session end** (instead of one `session_compressed` event per turn). It carries a `rollup_reason` explaining why it flushed (`session_end` | `worker_shutdown` | `safety_flush`) and a `window_seq` partial-flush counter (`0` for a normal one-shot session; `0,1,2,…` only when a long-lived session trips the periodic safety sweep).
@@ -59,7 +61,7 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `locale` | `en-US` | Language tag |
 | `is_ci` | `false` | Whether running in CI |
 | `endpoint` | `by-file` | Which claude-mem search route — always one of our route names, never a query |
-| `ide` | `claude-code` | Installer IDE choice (the installer's own id list) |
+| `ide` | `claude-code` | Installer IDE choice (the installer's own id list) or, on `observer_turn_rollup`, the observed session's platform source (`claude` / `codex` / `cursor` / …) |
 | `provider` | `claude` | LLM provider choice: claude / gemini / openrouter |
 | `runtime_mode` | `worker` | worker or server runtime |
 | `trigger` | `heartbeat` | Whether `worker_started` was a real start or the daily heartbeat |
@@ -70,8 +72,14 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `install_method` | `npm` | Which package manager launched the CLI: npm / bun / pnpm / yarn |
 | `bun_version` / `uv_version` | `1.3.9` / `0.7.2` | Toolchain versions detected during install |
 | `claude_code_version` | `2.0.14` | Claude Code CLI version, if detectable |
+| `trial_days` | `14` | Assigned CMEM Pro installer offer length: 7, 14, or 30 days |
+| `trial_variant` | `test_14` | Canonical trial experiment arm: control_7 / test_14 / test_30 |
+| `offer_surface` / `funnel_source` | `installer` / `installer` | Closed source labels on the installer offer exposure event |
+| `stage` | `awaiting_checkout` | Installer trial polling stage: awaiting_login / awaiting_checkout / awaiting_approval |
 | `mode` | `code` | Active claude-mem mode id (our mode list) |
 | `model` | `claude-haiku-4-5` | Model id used for compression |
+| `observed_model` | `claude-fable-5-1` | Model id the observed IDE session itself was running (read from its transcript) — distinct from `model`, which is the compression model. `unknown` when not determinable |
+| `observed_billing` | `max` | Billing posture of the observed session — a closed enum: max / pro / team / enterprise / subscription / api_key / bedrock / vertex / foundry / unknown. Never an account id, email, or token |
 | `hook` | `ingest` | What triggered a compression: init / ingest / summarize |
 | `observation_type`, `obs_type_*` | `bugfix`, `3` | Observation type buckets (bugfix / discovery / decision / refactor / other) — counts only |
 | `compression_ms` | `2140` | Latency of the compression model call |
@@ -106,6 +114,10 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `process_rss_mb` | `187` | Worker process resident memory, integer megabytes |
 | `heap_used_mb` | `92` | Worker JS heap in use, integer megabytes |
 | `hook_type` | `observation` | Which hook kind failed: context / session-init / observation / summarize / file-context — our handler names |
+| `limit_window` | `five_hour` | Which subscription window was exhausted on `usage_limit_hit`: five_hour / seven_day / seven_day_opus / seven_day_sonnet / overage / unknown — a closed enum |
+| `overage_status` | `rejected` | Whether extra-usage credits could cover the request: allowed / allowed_warning / rejected / unknown — a closed enum |
+| `is_using_overage` | `false` | Whether the request was already being billed to extra usage |
+| `resets_in_minutes` | `112` | Whole minutes until the exhausted window resets, floored at 0 — never the provider's message text |
 | `error_mode` | `worker_unavailable` | Coarse hook failure mode: worker_unavailable / blocking_error — never an error message |
 | `consecutive_failures` | `3` | How many hook failures occurred in a row (the fail-loud counter) |
 | `threshold_tripped` | `true` | Whether the consecutive-failure count reached the fail-loud threshold |
@@ -118,12 +130,18 @@ One value is derived server-side rather than sent by the client: PostHog resolve
 |---|---|---|
 | `install_completed` | `npx claude-mem install` finishes | `ide`, `provider`, `runtime_mode`, `is_update`, `outcome`, `duration_ms`, `interactive`, `install_method`, `bun_version`, `uv_version`, `claude_code_version` |
 | `install_failed` | The installer aborts | `error_category` (our error-taxonomy id), `interactive`, `install_method`, `claude_code_version` |
+| `pro_offer_viewed` | A CMEM Pro offer is displayed in the installer | `trial_days`, `trial_variant`, `offer_surface` (`installer`), `funnel_source` (`installer`) |
+| `trial_email_submitted` | The user submits an email to start the installer trial flow | `version` only — never the email |
+| `trial_link_sent` | The trial start API accepts the request and sends a sign-in link | `version`, `duration_ms` — never the email, link, pairing secret, or device code |
+| `trial_activated` | Trial credentials are received and saved after browser approval | `version`, `duration_ms` |
+| `trial_poll_timeout` | Browser completion polling is cancelled, expires, times out, or becomes unreachable | `version`, `stage`, `outcome`, `duration_ms` |
 | `uninstall_completed` | `npx claude-mem uninstall` finishes | — |
 | `worker_started` | The background worker starts, plus one heartbeat per 24h of uptime | `trigger` (start / heartbeat), `duration_ms`, `ide`, `provider`, `mode`, `runtime_mode`, process memory (`process_rss_mb`, `heap_used_mb`), the install snapshot: `db_observation_count`, `db_session_count`, `db_summary_count`, `db_project_count`, `db_size_mb`, `install_age_days`, `obs_count_7d`, `obs_count_30d`, `days_since_last_obs`; on a real start also crash detection: `previous_shutdown` (crash / clean / unknown) and, after a clean shutdown, `previous_uptime_seconds` |
-| `observer_turn_rollup` | Emitted **once per session, at session end** — a per-session rollup that aggregates every compression in that session (stored observations, invalid-output drops, failures, aborts) instead of one event per turn | `rollup_reason` (session_end / worker_shutdown / safety_flush), `window_seq`, aggregated `outcomes_*` counts, `total_tokens_input`, `total_tokens_output`, `total_cost_usd`, `avg_duration_ms`, `avg_compression_ms`, `top_model`, `observations_created` (sum of observations generated in the session — pairs with `total_cost_usd` to derive cost per observation), summed `obs_type_*` buckets, `window_start_ts`, plus the per-turn fields it summarizes (`provider`, `ide`, `hook`) |
+| `observer_turn_rollup` | Emitted **once per session, at session end** — a per-session rollup that aggregates every compression in that session (stored observations, invalid-output drops, failures, aborts) instead of one event per turn | `rollup_reason` (session_end / worker_shutdown / safety_flush), `window_seq`, aggregated `outcomes_*` counts, `total_tokens_input`, `total_tokens_output`, `total_cost_usd`, `avg_duration_ms`, `avg_compression_ms`, `top_model`, `observed_model`, `observed_billing`, `observations_created` (sum of observations generated in the session — pairs with `total_cost_usd` to derive cost per observation), summed `obs_type_*` buckets, `window_start_ts`, plus the per-turn fields it summarizes (`provider`, `ide`) |
 | `context_injected_rollup` | A 5-minute time-window rollup of context injections (stored memory injected into new sessions) | aggregated `outcomes_ok` / `outcomes_error` counts, `count`, `total_tokens`, `avg_tokens`, `total_observations_injected` (sum of observations served from cache into prompts), `total_tokens_saved_vs_naive`, `window_start_ts` |
 | `search_performed` | A memory search runs (never the query text) | `endpoint`, `outcome`, `duration_ms`, `result_count`, `search_strategy`, `chroma_available`, `fallback_reason` |
 | `worker_stopped` | The background worker shuts down gracefully | `uptime_seconds`, `shutdown_reason` (stop / restart / signal) |
+| `usage_limit_hit` | The Claude subscription behind the observer reports a window as `rejected` — since the observer shares the observed session's account, this is when the user's own Claude Code session ran out of usage. Emitted once per exhausted window (deduped on the window's reset time; a worker restart while still capped re-emits once). Only fires when the observer runs on Claude with a subscription login — API-key, Gemini, and OpenRouter observers never see it | `limit_window` (five_hour / seven_day / seven_day_opus / seven_day_sonnet / overage / unknown), `overage_status` (allowed / allowed_warning / rejected / unknown), `is_using_overage`, `resets_in_minutes`, `ide`, `provider`, `observed_model`, `observed_billing` |
 | `hook_failed` | A claude-mem hook fails hard — the worker is unreachable past the fail-loud threshold, or a blocking error occurs | `hook_type`, `error_mode`, `consecutive_failures`, `threshold_tripped` |
 | `error_occurred` | The worker returns an HTTP 5xx | `error_category` |
 | `$exception` | A real error is captured for [error tracking](#error-tracking) — consent-gated and independently kill-switchable | Redacted `error_type` / `error_message` / `error_stack`, `occurrence_count`, plus whitelisted context. See [Error tracking](#error-tracking) for exactly what is kept vs. redacted |

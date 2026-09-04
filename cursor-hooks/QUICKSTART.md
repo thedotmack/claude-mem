@@ -13,7 +13,7 @@ Your AI stops forgetting. It remembers the patterns, decisions, and context from
 
 ## Don't Have Claude Code?
 
-If you're using Cursor without Claude Code, see [STANDALONE-SETUP.md](STANDALONE-SETUP.md) for setup with free-tier providers like Gemini or OpenRouter.
+If you're using Cursor without Claude Code, see [STANDALONE-SETUP.md](STANDALONE-SETUP.md) for off-plan setup with Gemini or OpenRouter.
 
 ---
 
@@ -35,7 +35,7 @@ claude-mem cursor status
 If you don't have Claude Code, configure a provider for AI summarization:
 
 ```bash
-# Option A: Gemini (free tier available - recommended)
+# Option A: Gemini (no billing required - recommended)
 claude-mem settings set CLAUDE_MEM_PROVIDER gemini
 claude-mem settings set CLAUDE_MEM_GEMINI_API_KEY your-api-key
 
@@ -44,7 +44,7 @@ claude-mem settings set CLAUDE_MEM_PROVIDER openrouter
 claude-mem settings set CLAUDE_MEM_OPENROUTER_API_KEY your-api-key
 ```
 
-**Get free API keys**:
+**Create API keys**:
 - Gemini: https://aistudio.google.com/apikey
 - OpenRouter: https://openrouter.ai/keys
 
@@ -83,7 +83,7 @@ Restart Cursor to load the hooks.
 - Browse sessions, observations, and summaries
 - Search your project history
 
-✨ **Get 2x more use out of your Max plan for free (7-day trial, $30/mo)** → https://cmem.ai/pro?from=docs
+✨ **Get up to 100% more usage from your plan — memory runs off-plan, free for 7 days** → https://cmem.ai/pro?from=docs
 
 ### Via MCP Tools (if enabled)
 - claude-mem provides search tools via MCP
@@ -111,4 +111,3 @@ Restart Cursor to load the hooks.
 - Read [README.md](README.md) for detailed documentation
 - Read [INTEGRATION.md](INTEGRATION.md) for architecture details
 - Visit [claude-mem docs](https://docs.claude-mem.ai) for full feature set
-

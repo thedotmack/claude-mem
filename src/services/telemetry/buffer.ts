@@ -41,6 +41,12 @@ interface SessionCompressedRecord {
   compression_ms?: number;
   outcome?: string;
   model?: string;
+  // Source + observed-session identity, carried per turn and surfaced on the
+  // rollup with last-seen semantics (see computeSessionCompressedRollup).
+  ide?: string;
+  provider?: string;
+  observed_model?: string;
+  observed_billing?: string;
   // Per-turn observation accounting (ResponseProcessor compressionProps):
   // `count` is the number of observations created in this compression turn,
   // and obs_type_* is that turn's type breakdown. Summing these across the
@@ -146,6 +152,18 @@ function computeSessionCompressedRollup(
   let obsTypeRefactor = 0;
   let obsTypeOther = 0;
   const modelFrequency: Map<string, number> = new Map();
+  // Last-seen non-empty string per session for the source/observed fields.
+  // `ide` is constant within a session. `provider` is NOT: it can change
+  // mid-session on provider fallback or a quota cooldown, so last-seen reports
+  // the provider that finished the session. The observed model/billing only
+  // change on a /model switch, in which case the latest value is the one we
+  // want. `hook` is deliberately NOT carried: it varies per turn
+  // (init / ingest / summarize) so a single value would misrepresent the
+  // session. Records omit observed_* when unknown; the rollup fills 'unknown'.
+  let lastIde: string | undefined;
+  let lastProvider: string | undefined;
+  let lastObservedModel: string | undefined;
+  let lastObservedBilling: string | undefined;
 
   for (const r of records) {
     if (typeof r.tokens_input === 'number' && Number.isFinite(r.tokens_input)) {
@@ -173,6 +191,10 @@ function computeSessionCompressedRollup(
     if (typeof r.model === 'string' && r.model) {
       modelFrequency.set(r.model, (modelFrequency.get(r.model) ?? 0) + 1);
     }
+    if (typeof r.ide === 'string' && r.ide) lastIde = r.ide;
+    if (typeof r.provider === 'string' && r.provider) lastProvider = r.provider;
+    if (typeof r.observed_model === 'string' && r.observed_model) lastObservedModel = r.observed_model;
+    if (typeof r.observed_billing === 'string' && r.observed_billing) lastObservedBilling = r.observed_billing;
     // Generation-side observation volume. r.count is observations created in
     // this turn (NOT the rollup's turn count); sum it so the rollup carries
     // observations_created alongside total_cost_usd.
@@ -237,6 +259,14 @@ function computeSessionCompressedRollup(
     }
     rollup.top_model = topModel;
   }
+
+  // Source fields: only present if at least one record carried them (matches
+  // top_model). Observed-session fields: always present so PostHog can filter
+  // on 'unknown' explicitly rather than on a missing property.
+  if (lastIde) rollup.ide = lastIde;
+  if (lastProvider) rollup.provider = lastProvider;
+  rollup.observed_model = lastObservedModel ?? 'unknown';
+  rollup.observed_billing = lastObservedBilling ?? 'unknown';
 
   return rollup;
 }

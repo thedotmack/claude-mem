@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeSubmitPrompt": [
+      { "command": "npx -y claude-mem hook cursor session-init" },
+      { "command": "npx -y claude-mem hook cursor context" }
+    ],
+    "afterMCPExecution": [
+      { "command": "npx -y claude-mem hook cursor observation" }
+    ],
+    "afterShellExecution": [
+      { "command": "npx -y claude-mem hook cursor observation" }
+    ],
+    "afterFileEdit": [
+      { "command": "npx -y claude-mem hook cursor file-edit" }
+    ],
+    "stop": [
+      { "command": "npx -y claude-mem hook cursor summarize" }
+    ]
+  }
+}
