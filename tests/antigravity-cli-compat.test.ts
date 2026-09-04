@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'fs';
 import { antigravityCliAdapter } from '../src/cli/adapters/antigravity-cli.js';
+import { extractLastMessageFromJsonl } from '../src/shared/transcript-parser.js';
 
 const INSTALLER_PATH = 'src/services/integrations/AntigravityCliHooksInstaller.ts';
 
@@ -293,6 +294,92 @@ describe('antigravityCliAdapter - formatOutput', () => {
   it('passes through suppressOutput when explicitly set', () => {
     const result = antigravityCliAdapter.formatOutput({ suppressOutput: true }) as Record<string, unknown>;
     expect(result.suppressOutput).toBe(true);
+  });
+});
+
+describe('Antigravity transcript parsing compatibility', () => {
+  it('extracts user message from Antigravity JSONL transcript', () => {
+    const transcript = [
+      JSON.stringify({
+        step_index: 0,
+        source: 'USER_EXPLICIT',
+        type: 'USER_INPUT',
+        status: 'DONE',
+        content: 'Why my antigravity sessions aren\'t showing up in claude-mem?',
+      }),
+      JSON.stringify({
+        step_index: 1,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        content: 'Checking your hooks configuration...',
+      }),
+    ].join('\n');
+
+    expect(extractLastMessageFromJsonl(transcript, 'user', false)).toBe(
+      'Why my antigravity sessions aren\'t showing up in claude-mem?'
+    );
+  });
+
+  it('extracts assistant message from Antigravity JSONL transcript', () => {
+    const transcript = [
+      JSON.stringify({
+        step_index: 0,
+        source: 'USER_EXPLICIT',
+        type: 'USER_INPUT',
+        status: 'DONE',
+        content: 'Please summarize project roadmap',
+      }),
+      JSON.stringify({
+        step_index: 1,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        content: 'Here is the project roadmap summary.',
+      }),
+    ].join('\n');
+
+    expect(extractLastMessageFromJsonl(transcript, 'assistant', false)).toBe(
+      'Here is the project roadmap summary.'
+    );
+  });
+
+  it('skips tool-only turns and extracts the most recent text-bearing assistant turn', () => {
+    const transcript = [
+      JSON.stringify({
+        step_index: 0,
+        source: 'USER_EXPLICIT',
+        type: 'USER_INPUT',
+        status: 'DONE',
+        content: 'List files and summarize',
+      }),
+      JSON.stringify({
+        step_index: 1,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        content: 'I have found 5 files in the directory.',
+      }),
+      JSON.stringify({
+        step_index: 2,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        tool_calls: [{ name: 'view_file', args: {} }],
+        content: '',
+      }),
+      JSON.stringify({
+        step_index: 3,
+        source: 'MODEL',
+        type: 'GENERIC',
+        status: 'DONE',
+        content: 'File contents...',
+      }),
+    ].join('\n');
+
+    expect(extractLastMessageFromJsonl(transcript, 'assistant', false)).toBe(
+      'I have found 5 files in the directory.'
+    );
   });
 });
 
