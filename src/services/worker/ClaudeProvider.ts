@@ -271,6 +271,7 @@ export class ClaudeProvider {
       }
 
       ensureDir(OBSERVER_SESSIONS_DIR);
+      const mode = ModeManager.getInstance().getActiveMode();
       const queryResult = query({
         prompt: messageGenerator,
         options: buildHardenedSdkOptions({
@@ -278,6 +279,7 @@ export class ClaudeProvider {
           sessionDbId: session.sessionDbId,
           contentSessionId: session.contentSessionId,
           project: session.project,
+          systemPrompt: mode.prompts.system_identity,
           model: modelId,
           env: isolatedEnv,  // Use isolated credentials from ~/.claude-mem/.env, not process.env
           pathToClaudeCodeExecutable: claudePath,
