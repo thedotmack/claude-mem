@@ -72,6 +72,36 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
     expect(second.map(m => m.tool_name)).toEqual(['Write']);
   });
 
+  test('resetClaimed re-yields an in-flight message without a durable processing row', async () => {
+    const buffer = new SessionMessageBuffer();
+    const controller = new AbortController();
+    const iterator = buffer.drain({
+      sessionDbId: 1,
+      signal: controller.signal,
+      idleTimeoutMs: 10_000,
+    });
+
+    const messageId = buffer.enqueue(1, obs('Read', 'tool-1'));
+
+    const first = await iterator.next();
+    expect(first.done).toBe(false);
+    expect(first.value._persistentId).toBe(messageId);
+    expect(first.value.toolUseId).toBe('tool-1');
+    expect(buffer.getPendingCount(1)).toBe(1);
+
+    expect(buffer.resetClaimed(1)).toBe(1);
+
+    const second = await iterator.next();
+    expect(second.done).toBe(false);
+    expect(second.value._persistentId).toBe(messageId);
+    expect(second.value.toolUseId).toBe('tool-1');
+
+    expect(buffer.confirm(messageId)).toBe(1);
+    expect(buffer.getPendingCount(1)).toBe(0);
+
+    controller.abort();
+  });
+
   test('clear empties a session; dispose forgets it', () => {
     const buffer = new SessionMessageBuffer();
     buffer.enqueue(1, obs('Read', 'a'));
