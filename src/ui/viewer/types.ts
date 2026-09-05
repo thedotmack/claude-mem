@@ -79,6 +79,15 @@ export interface Settings {
   CLAUDE_MEM_OPENROUTER_MODEL?: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL?: string;
   CLAUDE_MEM_OPENROUTER_APP_NAME?: string;
+  CLAUDE_MEM_CODEX_MODEL?: string;
+  CLAUDE_MEM_CODEX_PATH?: string;
+  CLAUDE_MEM_CODEX_REASONING_EFFORT?: string;
+  /** Legacy round-trip setting; shared observer recycling now owns history. */
+  CLAUDE_MEM_CODEX_MAX_CONTEXT_MESSAGES?: string;
+  CLAUDE_MEM_CODEX_MAX_TOKENS?: string;
+  CLAUDE_MEM_CODEX_TIMEOUT_MS?: string;
+  /** Legacy round-trip setting; no longer limits observation capture. */
+  CLAUDE_MEM_CODEX_MAX_OBSERVATIONS_PER_PROMPT?: string;
 
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS?: string;
   CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS?: string;

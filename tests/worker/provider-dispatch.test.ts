@@ -6,6 +6,7 @@ import { tmpdir } from 'os';
 import {
   CMEM_FALLBACK_RETRY_MS,
   getSelectedProvider,
+  selectProviderForGenerator,
   recordCmemFallbackIfEligible,
   shouldUseCmemFallback,
 } from '../../src/services/worker/provider-dispatch.js';
@@ -58,6 +59,15 @@ describe('provider-dispatch', () => {
   }
 
   describe('getSelectedProvider', () => {
+    it('keeps explicit codex in both dispatch paths despite gateway fallback or absent keys', () => {
+      pinOpenRouterEnv({ CLAUDE_MEM_PRO_FALLBACK_AT: new Date().toISOString() });
+      process.env.CLAUDE_MEM_PROVIDER = 'codex';
+      for (const key of ['', 'test-key']) {
+        process.env.CLAUDE_MEM_OPENROUTER_API_KEY = key;
+        expect(getSelectedProvider()).toBe('codex');
+        expect(selectProviderForGenerator()).toEqual({ provider: 'codex', gatewayProbeClaimId: null });
+      }
+    });
     it('returns openrouter when selected, keyed, and no fallback is recorded', () => {
       pinOpenRouterEnv();
       expect(getSelectedProvider()).toBe('openrouter');

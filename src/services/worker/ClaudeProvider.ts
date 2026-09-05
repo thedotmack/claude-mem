@@ -38,6 +38,7 @@ import { recycleObserverConversation, loadSessionStartContext } from './session/
 import { optimizeObservationFields, buildFieldCompressionPrompt, type FieldCompressor } from './field-optimizer.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
 import { captureEvent } from '../telemetry/telemetry.js';
+import { clearQuotaCooldown, getQuotaCooldown, recordQuotaExhausted, releaseQuotaProbe, tryAdmitQuotaProbe } from '../../shared/quota-cooldown.js';
 import { clearDependencyStatus, recordClaudeCliSetupRequired } from '../../shared/dependency-health.js';
 
 /**
@@ -103,7 +104,7 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
   }
 
   // Quota.
-  if (message.toLowerCase().includes('quota exceeded')) {
+  if (errAny.status === 402 || message.toLowerCase().includes('quota exceeded')) {
     return new ClassifiedProviderError(message, { kind: 'quota_exhausted', cause: err });
   }
 
@@ -214,8 +215,8 @@ export class ClaudeProvider {
     session.lastResultTotalCostUsd = null;
 
     const activeResponseContext = { current: snapshotResponseContext(session) };
-    const compressField: FieldCompressor = (text, budgetChars) =>
-      this.compressField(text, budgetChars, session, modelId, claudePath);
+    const compressField: FieldCompressor = (text, budgetChars, { signal }) =>
+      this.compressField(text, budgetChars, session, modelId, claudePath, signal);
     const messageGenerator = this.createMessageGenerator(session, cwdTracker, activeResponseContext, worker, compressField);
 
     if (session.memorySessionId) {
@@ -510,35 +511,93 @@ export class ClaudeProvider {
     session: ActiveSession,
     modelId: string,
     claudePath: string,
+    signal: AbortSignal,
   ): Promise<string | null> {
-    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
-    const result = query({
-      prompt: buildFieldCompressionPrompt(text, budgetChars),
-      options: {
-        ...buildHardenedSdkOptions({
-          source: 'Observer',
-          sessionDbId: session.sessionDbId,
-          contentSessionId: session.contentSessionId,
-          project: session.project,
-          model: modelId,
-          env: isolatedEnv,
-          pathToClaudeCodeExecutable: claudePath,
-          abortController: session.abortController,
-        }),
-        maxTurns: 1,
-      },
-    });
-
-    let out = '';
-    for await (const message of result) {
-      if (message.type === 'assistant') {
-        const content = (message as any).message.content;
-        out += Array.isArray(content)
-          ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
-          : typeof content === 'string' ? content : '';
-      }
+    signal.throwIfAborted();
+    const cooldown = getQuotaCooldown('claude');
+    const ownsProbe = cooldown?.probeClaimId != null && cooldown.probeClaimId === session.quotaProbeClaimId;
+    const admission = ownsProbe
+      ? { admitted: true, claimId: session.quotaProbeClaimId ?? null }
+      : tryAdmitQuotaProbe('claude');
+    if (!admission.admitted) {
+      throw new ClassifiedProviderError('Claude quota cooldown is active', { kind: 'quota_paused', cause: null });
     }
-    return out || null;
+    const controller = new AbortController();
+    const abort = () => controller.abort(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+    try {
+      const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
+      signal.throwIfAborted();
+      const result = query({
+        prompt: buildFieldCompressionPrompt(text, budgetChars),
+        options: {
+          ...buildHardenedSdkOptions({
+            source: 'Observer',
+            sessionDbId: session.sessionDbId,
+            contentSessionId: session.contentSessionId,
+            project: session.project,
+            model: modelId,
+            env: isolatedEnv,
+            pathToClaudeCodeExecutable: claudePath,
+            abortController: controller,
+          }),
+          maxTurns: 1,
+        },
+      });
+
+      let out = '';
+      for await (const message of result) {
+        signal.throwIfAborted();
+        const info = extractRateLimitInfo(message);
+        if (info) {
+          globalRateLimitStore.set(info);
+          const decision = shouldAbortForQuota(getAuthMethodDescription(), globalRateLimitStore);
+          if (decision.abort) {
+            controller.abort();
+            throw new ClassifiedProviderError('Claude field compression quota guard stopped the request', { kind: 'quota_exhausted', cause: null });
+          }
+        }
+        if (message.type === 'assistant') {
+          if (message.error) {
+            const kind = ['authentication_failed', 'oauth_org_not_allowed', 'account_on_hold'].includes(message.error)
+              ? 'auth_invalid'
+              : message.error === 'billing_error' ? 'quota_exhausted'
+                : message.error === 'rate_limit' ? 'rate_limit'
+                  : ['invalid_request', 'model_not_found', 'max_output_tokens'].includes(message.error)
+                    ? 'unrecoverable' : 'transient';
+            throw new ClassifiedProviderError(`Claude field compression failed (${message.error})`, { kind, cause: null });
+          }
+          const content = (message as any).message.content;
+          out += Array.isArray(content)
+            ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
+            : typeof content === 'string' ? content : '';
+        }
+        if (message.type === 'result' && message.is_error) {
+          // Error-result text is provider failure metadata, not a successful
+          // condensation. Preserve quota/auth classification on this boundary.
+          const errorText = message.subtype === 'success' ? message.result : message.errors.join('\n');
+          const status = 'api_error_status' in message ? message.api_error_status : undefined;
+          throw classifyClaudeError(Object.assign(
+            new Error(errorText || `Claude field compression failed (${message.subtype})`),
+            { status: typeof status === 'number' ? status : undefined },
+          ));
+        }
+      }
+      signal.throwIfAborted();
+      // Successful plain text may itself describe session limits/auth failures.
+      // Only the SDK status fields above establish a provider refusal.
+      clearQuotaCooldown('claude');
+      return out || null;
+    } catch (error) {
+      if (signal.aborted) throw signal.reason;
+      const classified = error instanceof ClassifiedProviderError ? error : classifyClaudeError(error);
+      if (classified.kind === 'quota_exhausted') recordQuotaExhausted('claude', classified.message);
+      throw classified;
+    } finally {
+      controller.abort();
+      signal.removeEventListener('abort', abort);
+      releaseQuotaProbe('claude', admission.claimId);
+    }
   }
 
   private async *createMessageGenerator(
@@ -619,6 +678,8 @@ export class ClaudeProvider {
               { toolInput: message.tool_input, toolOutput: message.tool_response },
               compressField,
               { sessionDbId: session.sessionDbId, toolName: message.tool_name },
+              undefined,
+              { signal: session.abortController.signal },
             )
           : { toolInput: message.tool_input, toolOutput: message.tool_response };
 

@@ -3,12 +3,13 @@ import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
-import type { ActiveSession, ConversationMessage } from '../worker-types.js';
+import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt, type Observation } from '../../sdk/prompts.js';
+import type { ActiveSession, ConversationMessage, PendingMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
-import { isClassified } from './provider-errors.js';
+import { ClassifiedProviderError, isClassified } from './provider-errors.js';
+import { clearQuotaCooldown, getQuotaCooldown, recordQuotaExhausted, releaseQuotaProbe, tryAdmitQuotaProbe } from '../../shared/quota-cooldown.js';
 import {
   shouldRecycleConversation,
   conversationChars,
@@ -39,6 +40,8 @@ export interface ProviderQueryResult {
   /** The model that actually served the request, when reported. */
   servedModel?: string;
 }
+
+export type ProviderQueryPurpose = 'observer' | 'field-compression';
 
 /**
  * Shared scaffolding for OpenAI-compatible, multi-turn HTTP providers
@@ -77,7 +80,12 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   protected abstract missingApiKeyError(): Error;
 
   /** Issue the actual HTTP request and normalize its response. */
-  protected abstract query(history: ConversationMessage[], config: TConfig): Promise<ProviderQueryResult>;
+  protected abstract query(
+    history: ConversationMessage[],
+    config: TConfig,
+    abortSignal?: AbortSignal,
+    purpose?: ProviderQueryPurpose,
+  ): Promise<ProviderQueryResult>;
 
   /**
    * One bounded, standalone call that condenses an oversized tool payload.
@@ -86,12 +94,33 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
    * `session.conversationHistory` would grow the very conversation the recycle
    * logic exists to bound.
    */
-  private async compressField(text: string, budgetChars: number, config: TConfig): Promise<string | null> {
-    const result = await this.query(
-      [{ role: 'user', content: buildFieldCompressionPrompt(text, budgetChars) }],
-      config,
-    );
-    return result.content || null;
+  private async compressField(text: string, budgetChars: number, config: TConfig, signal: AbortSignal, session: ActiveSession): Promise<string | null> {
+    signal.throwIfAborted();
+    // Codex performs admission for every request, including auxiliary calls.
+    const provider = session.currentProvider;
+    const cooldown = provider ? getQuotaCooldown(provider) : null;
+    const ownsProbe = cooldown?.probeClaimId != null && cooldown.probeClaimId === session.quotaProbeClaimId;
+    const admission = provider && provider !== 'codex'
+      ? ownsProbe ? { admitted: true, claimId: session.quotaProbeClaimId ?? null } : tryAdmitQuotaProbe(provider)
+      : null;
+    if (admission && !admission.admitted) {
+      throw new ClassifiedProviderError('Provider quota cooldown is active', { kind: 'quota_paused', cause: null });
+    }
+    try {
+      const result = await this.query(
+        [{ role: 'user', content: buildFieldCompressionPrompt(text, budgetChars) }], config, signal, 'field-compression',
+      );
+      signal.throwIfAborted();
+      // Plain-text condensation may discuss application limits or auth errors.
+      // Only transport/SDK failure metadata can establish an auxiliary refusal.
+      if (provider) clearQuotaCooldown(provider);
+      return result.content || null;
+    } catch (error) {
+      if (provider && isClassified(error) && error.kind === 'quota_exhausted') recordQuotaExhausted(provider, error.message);
+      throw error;
+    } finally {
+      if (provider && admission) releaseQuotaProbe(provider, admission.claimId);
+    }
   }
 
   /** Estimate token count for a single message body. */
@@ -103,12 +132,26 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   /** Hook for per-session setup that runs once config is resolved (e.g. endpointClass). */
   protected prepareSessionExtras(_session: ActiveSession, _config: TConfig): void {}
 
+  /** Transport framing is reserved by providers with an exact input-byte gate. */
+  protected fieldInputMaxBytes(_config: TConfig): number | undefined { return undefined; }
+
   /** Character budget for one observer generation, operator-overridable (#3800). */
   protected conversationMaxChars(): number {
     return resolveConversationMaxChars(
       SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS
     );
   }
+
+  /** Hook for providers that need stricter observation-output contracts. */
+  protected buildObservationPrompt(obs: Observation, _config: TConfig): string {
+    return buildObservationPrompt(obs);
+  }
+
+  /** Hook for providers that need to enforce their output contract before storage. */
+  protected sanitizeObservationResponseContent(content: string, _config: TConfig): string {
+    return content;
+  }
+
 
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     const config = this.getConfig();
@@ -142,8 +185,12 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     try {
       session.lastPromptSentAt = Date.now();
       session.lastGeneratorSource = 'init';
-      const initResponse = await this.query(session.conversationHistory, config);
+      const initResponse = await this.query(session.conversationHistory, config, session.abortController.signal);
+      const pendingRecycleAttempts = session.consecutiveContextOverflows;
       await this.handleInitResponse(initResponse, session, worker, model, initContext);
+      // An init acknowledgement does not prove the queued observation fits.
+      if (session.abortController.signal.aborted) return;
+      session.consecutiveContextOverflows = pendingRecycleAttempts;
     } catch (error: unknown) {
       // Classified errors are logged once, at SessionRoutes' `Observer failed`
       // line; here they're debug-level so one failure isn't five error lines.
@@ -187,6 +234,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     let lastCwd: string | undefined;
 
     for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
+      if (session.abortController.signal.aborted) return;
       session.pendingAgentId = message.agentId ?? null;
       session.pendingAgentType = message.agentType ?? null;
 
@@ -229,7 +277,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
   private async processObservationMessage(
     session: ActiveSession,
-    message: { prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; cwd?: string },
+    message: PendingMessage,
     worker: WorkerRef | undefined,
     config: TConfig,
     originalTimestamp: number | null,
@@ -262,26 +310,32 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     // rather than a head/tail slice with the middle cut out (#3800).
     const optimized = await optimizeObservationFields(
       { toolInput: message.tool_input, toolOutput: message.tool_response },
-      (text, budgetChars) => this.compressField(text, budgetChars, config),
+      (text, budgetChars, { signal }) => this.compressField(text, budgetChars, config, signal, session),
       { sessionDbId: session.sessionDbId, toolName: message.tool_name },
+      undefined,
+      { signal: session.abortController.signal, maxInputBytes: this.fieldInputMaxBytes(config) },
     );
 
-    const obsPrompt = buildObservationPrompt({
+    const obsPrompt = this.buildObservationPrompt({
       id: 0,
       tool_name: message.tool_name!,
       tool_input: JSON.stringify(optimized.toolInput),
       tool_output: JSON.stringify(optimized.toolOutput),
       created_at_epoch: originalTimestamp ?? Date.now(),
       cwd: message.cwd
-    });
+    }, config);
     const responseContext = snapshotResponseContext(session);
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'ingest';
-    const obsResponse = await this.query(session.conversationHistory, config);
+    const obsResponse = await this.query(session.conversationHistory, config, session.abortController.signal);
 
     let tokensUsed = 0;
+    const sanitizedContent = obsResponse.content
+      ? this.sanitizeObservationResponseContent(obsResponse.content, config)
+      : '';
+
     if (obsResponse.content) {
       // The assistant turn is appended once, by processAgentResponse below.
       // Appending it here too stored every reply twice (#3619), inflating the
@@ -294,9 +348,9 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       session.lastUsage = this.buildLastUsage(obsResponse);
     }
 
-    if (obsResponse.content || this.forwardEmptyMessageResponse) {
+    if (sanitizedContent || this.forwardEmptyMessageResponse) {
       await processAgentResponse(
-        obsResponse.content || '', session, this.dbManager, this.sessionManager,
+        sanitizedContent || '', session, this.dbManager, this.sessionManager,
         worker, tokensUsed, originalTimestamp, this.providerName, lastCwd, obsResponse.servedModel ?? config.model, responseContext
       );
     } else {
@@ -339,7 +393,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         sessionId: session.sessionDbId, model: summaryModel
       });
     }
-    const summaryResponse = await this.query(session.conversationHistory, summaryConfig);
+    const summaryResponse = await this.query(session.conversationHistory, summaryConfig, session.abortController.signal);
 
     let tokensUsed = 0;
     if (summaryResponse.content) {
@@ -362,7 +416,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
   }
 
-  protected handleSessionError(error: unknown, session: ActiveSession, _worker?: WorkerRef): never {
+  protected async handleSessionError(error: unknown, session: ActiveSession, worker?: WorkerRef): Promise<void> {
+    if (isClassified(error) && error.kind === 'context_overflow') {
+      await recycleObserverConversation(session, this.sessionManager, worker, 'budget', error.message);
+      return;
+    }
     if (isAbortError(error)) {
       logger.warn('SDK', `${this.providerName} agent aborted`, { sessionId: session.sessionDbId });
       throw error;

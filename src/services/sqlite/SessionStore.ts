@@ -2742,6 +2742,17 @@ export class SessionStore {
     return storeTx();
   }
 
+  countObservationsForPrompt(memorySessionId: string, promptNumber: number): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM observations
+      WHERE memory_session_id = ?
+        AND prompt_number = ?
+    `).get(memorySessionId, promptNumber) as { count: number } | undefined;
+
+    return row?.count ?? 0;
+  }
+
   getSessionSummariesByIds(
     ids: number[],
     options: { orderBy?: 'date_desc' | 'date_asc' | 'relevance'; limit?: number; project?: string; platformSource?: string } = {}

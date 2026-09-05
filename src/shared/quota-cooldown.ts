@@ -41,7 +41,7 @@ import { dirname, join } from 'path';
 import { paths } from './paths.js';
 import { logger } from '../utils/logger.js';
 
-export type QuotaProvider = 'claude' | 'gemini' | 'openrouter' | 'cmem-gateway';
+export type QuotaProvider = 'claude' | 'gemini' | 'openrouter' | 'codex' | 'cmem-gateway';
 
 export const QUOTA_COOLDOWN_FILENAME = 'quota-cooldown.json';
 

@@ -11,6 +11,7 @@ import { ClaudeProvider } from '../../ClaudeProvider.js';
 import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
 import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator } from '../../provider-dispatch.js';
+import { CodexProvider } from '../../CodexProvider.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -40,6 +41,8 @@ import {
 } from '../../../../shared/quota-cooldown.js';
 import { isClassified, describeProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
+import { FieldCompressionError, FieldInputBudgetError } from '../../field-optimizer.js';
+import { OVERFLOW_EXHAUSTED_COOLDOWN_MS } from '../../session/recycle-conversation.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
@@ -68,6 +71,7 @@ export class SessionRoutes extends BaseRouteHandler {
     private sdkAgent: ClaudeProvider,
     private geminiAgent: GeminiProvider,
     private openRouterAgent: OpenRouterProvider,
+    private codexAgent: CodexProvider,
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService,
     private completionHandler: SessionCompletionHandler,
@@ -197,7 +201,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private async startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'gemini' | 'openrouter',
+    provider: 'claude' | 'gemini' | 'openrouter' | 'codex',
     source: string,
     /** The quota probe this run claimed, or null when it was admitted without one. */
     quotaProbeClaimId: number | null,
@@ -213,8 +217,18 @@ export class SessionRoutes extends BaseRouteHandler {
       session.abortController = new AbortController();
     }
 
-    const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
-    const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
+    const agent =
+      provider === 'codex'
+        ? this.codexAgent
+        : provider === 'openrouter'
+          ? this.openRouterAgent
+          : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
+    const agentName =
+      provider === 'codex'
+        ? 'Codex'
+        : provider === 'openrouter'
+          ? 'OpenRouter'
+          : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
 
     const actualQueueDepth = this.sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId);
 
@@ -225,6 +239,7 @@ export class SessionRoutes extends BaseRouteHandler {
     });
 
     session.currentProvider = provider;
+    session.quotaProbeClaimId = quotaProbeClaimId;
     session.lastGeneratorActivity = Date.now();
     // Providers refine this per-prompt ('init'|'ingest'|'summarize'); this is
     // the fallback when a generator dies before dispatching its first prompt.
@@ -237,12 +252,32 @@ export class SessionRoutes extends BaseRouteHandler {
 
     generatorPromise = agent.startSession(session, this.workerService)
       .catch(async error => {
-        if (myController.signal.aborted) {
+        // The Claude SDK aborts its controller when the prompt iterator throws.
+        // That is a generator failure, not an operator/idle/shutdown cancellation.
+        const abortCause = myController.signal.reason;
+        const promptStreamFailure = provider === 'claude' && myController.signal.aborted && !session.abortReason &&
+          (abortCause instanceof FieldCompressionError || abortCause instanceof FieldInputBudgetError ||
+            isClassified(abortCause) || (abortCause instanceof Error && abortCause.name === 'TimeoutError'));
+        if (promptStreamFailure) error = abortCause;
+        if (myController.signal.aborted && !promptStreamFailure) {
           logger.debug('HTTP', 'Generator catch: ignoring error after abort', { sessionId: session.sessionDbId });
           return;
         }
 
         const errorMsg = error instanceof Error ? error.message : String(error);
+        // Native Codex has no fallback. A failed request must leave the batch
+        // available for recovery after auth, quota, or transport repair.
+        if (promptStreamFailure || provider === 'codex' || error instanceof FieldInputBudgetError || error instanceof FieldCompressionError ||
+            (error instanceof Error && ['AbortError', 'TimeoutError'].includes(error.name)) ||
+            (isClassified(error) && ['quota_exhausted', 'quota_paused', 'auth_invalid'].includes(error.kind))) {
+          await this.sessionManager.resetProcessingToPending(session.sessionDbId);
+          skipGeneratorExitFinalization = true;
+          session.conversationHistory = [];
+          session.forceInit = true;
+          if (error instanceof FieldInputBudgetError || error instanceof FieldCompressionError) {
+            session.overflowPausedUntilMs = Date.now() + OVERFLOW_EXHAUSTED_COOLDOWN_MS;
+          }
+        }
         if (provider === 'claude' && isClassified(error) && error.kind === 'setup_required') {
           skipGeneratorExitFinalization = true;
           recordClaudeCliSetupRequired(error.message);

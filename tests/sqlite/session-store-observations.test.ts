@@ -111,6 +111,17 @@ describe('SessionStore.storeObservation', () => {
     expect(row?.agent_id).toBeNull();
   });
 
+  it('counts observations by memory session and prompt number', () => {
+    const mem = session('mem-count');
+    store.storeObservation(mem, 'project', obs({ title: 'Prompt 3 A', narrative: 'narrative A' }), 3);
+    store.storeObservation(mem, 'project', obs({ title: 'Prompt 3 B', narrative: 'narrative B' }), 3);
+    store.storeObservation(mem, 'project', obs({ title: 'Prompt 4 A', narrative: 'narrative C' }), 4);
+
+    expect(store.countObservationsForPrompt(mem, 3)).toBe(2);
+    expect(store.countObservationsForPrompt(mem, 4)).toBe(1);
+    expect(store.countObservationsForPrompt(mem, 5)).toBe(0);
+  });
+
   it('getFirstObservationCreatedAt returns null when empty and the earliest ISO otherwise', () => {
     expect(getFirstObservationCreatedAt(store.db)).toBeNull();
 

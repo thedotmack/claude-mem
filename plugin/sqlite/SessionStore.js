@@ -807,7 +807,12 @@ ${I.stack??""}
           (memory_session_id, project, request, investigated, learned, completed,
            next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(e,t,n.request,n.investigated,n.learned,n.completed,n.next_steps,n.notes,r||null,o,u,c);N=Number(f.lastInsertRowid)}return{observationIds:m,summaryId:N,createdAtEpoch:c}})()}getSessionSummariesByIds(e,t={}){if(e.length===0)return[];let{orderBy:s="date_desc",limit:n,project:r,platformSource:o}=t,a=s==="relevance",_=a?"":`ORDER BY ss.created_at_epoch ${s==="date_asc"?"ASC":"DESC"}`,c=n&&!a?`LIMIT ${n}`:"",u=e.map(()=>"?").join(","),l=[...e],m=[];r&&(m.push("(ss.project = ? OR ss.merged_into_project = ?)"),l.push(r,r)),o&&(m.push(`COALESCE(NULLIF(s.platform_source, ''), '${p}') = ?`),l.push(L(o)));let h=m.length>0?`AND ${m.join(" AND ")}`:"",N=this.db.prepare(`
+        `).run(e,t,n.request,n.investigated,n.learned,n.completed,n.next_steps,n.notes,r||null,o,u,c);N=Number(f.lastInsertRowid)}return{observationIds:m,summaryId:N,createdAtEpoch:c}})()}countObservationsForPrompt(e,t){return this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM observations
+      WHERE memory_session_id = ?
+        AND prompt_number = ?
+    `).get(e,t)?.count??0}getSessionSummariesByIds(e,t={}){if(e.length===0)return[];let{orderBy:s="date_desc",limit:n,project:r,platformSource:o}=t,a=s==="relevance",_=a?"":`ORDER BY ss.created_at_epoch ${s==="date_asc"?"ASC":"DESC"}`,c=n&&!a?`LIMIT ${n}`:"",u=e.map(()=>"?").join(","),l=[...e],m=[];r&&(m.push("(ss.project = ? OR ss.merged_into_project = ?)"),l.push(r,r)),o&&(m.push(`COALESCE(NULLIF(s.platform_source, ''), '${p}') = ?`),l.push(L(o)));let h=m.length>0?`AND ${m.join(" AND ")}`:"",N=this.db.prepare(`
       SELECT ss.*
       FROM session_summaries ss
       LEFT JOIN sdk_sessions s ON s.memory_session_id = ss.memory_session_id

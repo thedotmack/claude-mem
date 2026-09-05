@@ -743,6 +743,18 @@ function writeMarketplaceInstallMarkers(
   writeInstallMarker(join(marketplaceDir, 'plugin'), version, bunVersion, uvVersion);
 }
 
+function defaultMarketplaceRuntimeReadyPaths(): string[] {
+  const pluginDir = join(marketplaceDirectory(), 'plugin');
+  return [
+    join(pluginDir, 'scripts', 'worker-service.cjs'),
+    join(pluginDir, 'node_modules', 'zod', 'package.json'),
+    join(pluginDir, 'node_modules', 'zod', 'v3'),
+  ];
+}
+
+export function isMarketplaceRuntimeReady(requiredPaths = defaultMarketplaceRuntimeReadyPaths()): boolean {
+  return requiredPaths.every((filePath) => existsSync(filePath));
+}
 /**
  * Install marketplace dependencies, strict-first.
  *
@@ -822,13 +834,15 @@ function mergeSettings(updates: Record<string, string>): boolean {
     if (existsSync(path)) {
       try {
         const parsed = parseJsonWithBom(readFileSync(path, 'utf-8'));
-        if (parsed && typeof parsed === 'object') {
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
           document = parsed as Record<string, unknown>;
-          envNested = typeof document.env === 'object' && document.env !== null;
+          envNested = typeof document.env === 'object' && document.env !== null && !Array.isArray(document.env);
+        } else {
+          throw new Error('settings.json must contain an object');
         }
       } catch (parseError: unknown) {
-        console.warn('[install] Failed to parse existing settings.json, starting from empty:', parseError instanceof Error ? parseError.message : String(parseError));
-        document = {};
+        console.warn('[install] Failed to parse existing settings.json; leaving it unchanged:', parseError instanceof Error ? parseError.message : String(parseError));
+        return false;
       }
     } else {
       const dir = dirname(path);
@@ -861,12 +875,12 @@ function mergeSettings(updates: Record<string, string>): boolean {
   }
 }
 
-type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'host';
+type ProviderId = 'claude' | 'codex' | 'gemini' | 'openrouter' | 'host';
 /**
  * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
  * it configures the generic OpenAI-compatible path (base URL + model + key) and
  * persists CLAUDE_MEM_PROVIDER='openrouter'. The worker only understands
- * 'claude' | 'gemini' | 'openrouter', so 'cmem' must never reach settings.json.
+ * 'claude' | 'codex' | 'gemini' | 'openrouter', so 'cmem' must never reach settings.json.
  */
 type ProviderChoice = ProviderId | 'cmem';
 // Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
@@ -1042,17 +1056,16 @@ function openBrowser(url: string): void {
   }
 }
 
-async function promptProvider(
+export async function promptProvider(
   options: InstallOptions,
   /**
-   * Null only when login was skipped, which happens solely for an explicit
-   * `--provider claude`. That path cannot reach the CMEM branch below, which
+   * Null when login was skipped for an explicit local provider
+   * (Claude, Codex, or host). That path cannot reach the CMEM branch below, which
    * re-checks rather than assuming.
    */
   pairing: InstallerOAuthPairing | null,
   version: string,
 ): Promise<ProviderId> {
-  const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
   const persistedSettings = readPersistedInstallerSettings();
 
   const persistClaudeProvider = (authMethod?: 'subscription' | 'api-key' | 'gateway') => {
@@ -1120,7 +1133,7 @@ async function promptProvider(
   // so "use the CMEM observer model" is four settings writes and nothing else.
   if (selectedProvider === 'cmem') {
     if (!pairing) {
-      // Unreachable via the flag that skips login (it forces 'claude'), but a
+      // Unreachable via a local-provider flag that skips login, but a
       // future caller passing null here would otherwise enroll against nothing.
       throw new Error('CMEM Pro requires a signed-in claude-mem account.');
     }
@@ -1164,6 +1177,14 @@ async function promptProvider(
     }
     log.info(`Configured host observer for ${observerModel}.`);
     return 'openrouter';
+  }
+
+  if (selectedProvider === 'codex') {
+    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'codex' });
+    if (!wrote) throw new Error('Could not save the local Codex configuration.');
+    log.info('Saved provider=codex to ~/.claude-mem/settings.json');
+    log.info('Codex provider uses your local Codex CLI login. Run `codex login` if the CLI is not authenticated yet.');
+    return 'codex';
   }
 
   const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
@@ -1292,6 +1313,38 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
   if (wrote) {
     log.info(`Saved Claude model=${selectedModel} to ~/.claude-mem/settings.json`);
   }
+}
+
+export async function promptCodexModel(options: InstallOptions): Promise<void> {
+  const initialModel = getSetting('CLAUDE_MEM_CODEX_MODEL') || 'gpt-5.6-luna';
+
+  if (options.model !== undefined) {
+    const model = options.model.trim();
+    if (!model) throw new Error('Codex model must not be empty.');
+    const wrote = mergeSettings({ CLAUDE_MEM_CODEX_MODEL: model });
+    if (!wrote) throw new Error('Could not save the Codex model.');
+    log.info(`Saved Codex model=${model} to ~/.claude-mem/settings.json`);
+    return;
+  }
+
+  if (!isInteractive) return;
+
+  const result = await p.text({
+    message: 'Which Codex model should claude-mem use to compress observations?',
+    placeholder: 'gpt-5.6-luna',
+    defaultValue: initialModel,
+    validate: (v?: string) => (!v || v.trim().length === 0) ? 'Model required' : undefined,
+  });
+
+  if (p.isCancel(result)) {
+    p.cancel('Installation cancelled.');
+    process.exit(0);
+  }
+
+  const selectedModel = String(result).trim();
+  const wrote = mergeSettings({ CLAUDE_MEM_CODEX_MODEL: selectedModel });
+  if (!wrote) throw new Error('Could not save the Codex model.');
+  log.info(`Saved Codex model=${selectedModel} to ~/.claude-mem/settings.json`);
 }
 
 // --- claude-mem OAuth pairing ----------------------------------------------
@@ -1818,8 +1871,8 @@ async function promptTelemetryOptIn(): Promise<void> {
 /**
  * Whether an install still has an account question to answer.
  *
- * `--provider claude` and `--provider host` are exempt: they either run on the
- * user's own Anthropic plan or the logged-in host agent and need no claude-mem
+ * Explicit Claude, Codex, and host providers are exempt: they run on the
+ * user's native provider login or the logged-in host agent and need no claude-mem
  * credentials. `gemini` and
  * `openrouter` are NOT exempt — openrouter is the transport for the cmem
  * gateway, so an explicit `openrouter` install may still be reaching cmem.ai.
@@ -1827,12 +1880,12 @@ async function promptTelemetryOptIn(): Promise<void> {
  * must happen first.
  */
 export function providerNeedsAccount(provider: InstallOptions['provider']): boolean {
-  return provider !== 'claude' && provider !== 'host';
+  return provider !== 'claude' && provider !== 'codex' && provider !== 'host';
 }
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter' | 'host';
+  provider?: ProviderId;
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;
@@ -2132,6 +2185,31 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
           } finally {
             stopHeartbeat();
           }
+          if (!isMarketplaceRuntimeReady()) {
+            const pluginDir = join(marketplaceDirectory(), 'plugin');
+            const { bunPath } = await ensureBun(summary);
+            const pluginStopHeartbeat = startHeartbeat(message, 'Installing marketplace plugin runtime dependencies (bun install)…');
+            try {
+              await installPluginDependencies(pluginDir, bunPath);
+            } catch (error: unknown) {
+              installerError(ErrorSeverity.ABORT, {
+                component: 'marketplace-plugin-runtime',
+                phase: 'marketplace-deps',
+                cause: error instanceof Error ? error : new Error(String(error)),
+                details: `Failed to install plugin runtime dependencies in ${pluginDir}.`,
+              }, summary);
+            } finally {
+              pluginStopHeartbeat();
+            }
+          }
+          if (!isMarketplaceRuntimeReady()) {
+            installerError(ErrorSeverity.ABORT, {
+              component: 'marketplace-runtime',
+              phase: 'marketplace-deps',
+              cause: new Error('Marketplace runtime is missing required dependencies. Expected plugin/node_modules/zod/v3 next to the marketplace package.'),
+              details: 'Run `npx claude-mem repair` or reinstall so marketplace runtime dependencies are rebuilt.',
+            }, summary);
+          }
           return `Dependencies installed ${styleText('green', 'OK')}`;
         },
       });
@@ -2196,7 +2274,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   } else {
     const skipReason = options.provider === 'host'
       ? 'host observer uses the logged-in host agent over a local OpenAI-compatible shim.'
-      : '--provider claude runs memory on your own Anthropic plan.';
+      : options.provider === 'codex'
+        ? '--provider codex uses your local Codex CLI login.'
+        : '--provider claude runs memory on your own Anthropic plan.';
     log.info(`Skipping claude-mem login: ${skipReason}`);
   }
   const selectedProvider = await promptProvider(options, oauthPairing, version);
@@ -2207,6 +2287,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   ].every((value) => typeof value === 'string' && value.trim().length > 0);
   if (selectedProvider === 'claude') {
     await promptClaudeModel(options);
+  } else if (selectedProvider === 'codex') {
+    await promptCodexModel(options);
   }
 
   // The server runtime is brought up via its own stack (Docker pg+redis +

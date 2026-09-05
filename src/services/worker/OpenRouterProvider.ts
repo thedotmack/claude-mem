@@ -348,8 +348,8 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     }));
   }
 
-  protected async query(history: ConversationMessage[], config: OpenRouterConfig): Promise<ProviderQueryResult> {
-    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName);
+  protected async query(history: ConversationMessage[], config: OpenRouterConfig, abortSignal?: AbortSignal): Promise<ProviderQueryResult> {
+    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName, abortSignal);
   }
 
   /** POST the chat-completions request. Extracted so the retry try block stays narrow. */
@@ -391,7 +391,8 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     model: string,
     apiUrl: string,
     siteUrl?: string,
-    appName?: string
+    appName?: string,
+    abortSignal?: AbortSignal,
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
@@ -446,7 +447,9 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       }
 
       return responseData;
-    }, { label: `OpenRouter ${model}` });
+    }, { label: `OpenRouter ${model}`, abortSignal });
+
+    abortSignal?.throwIfAborted();
 
     // A successful cmem-gateway response proves the delivered key is funded
     // again (resubscribed) — clear the trial-expiry fallback marker so

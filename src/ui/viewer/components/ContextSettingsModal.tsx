@@ -332,13 +332,14 @@ export function ContextSettingsModal({
             >
               <FormField
                 label="AI Provider"
-                tooltip="Choose the provider that generates observations: Claude (via Agent SDK), Gemini (via REST API), or OpenRouter — also used by the claude-mem observer"
+                tooltip="Choose the provider that generates observations: Claude (Agent SDK), Codex (native CLI login), Gemini (REST API), or OpenRouter (including the claude-mem and host observers)"
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
                   onChange={(e) => updateSetting('CLAUDE_MEM_PROVIDER', e.target.value)}
                 >
                   <option value="claude">Claude (uses your Claude account)</option>
+                  <option value="codex">Codex CLI (uses your Codex login)</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter / claude-mem observer</option>
                 </select>
@@ -358,6 +359,76 @@ export function ContextSettingsModal({
                     <option value="opus">opus (highest quality)</option>
                   </select>
                 </FormField>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'codex' && (
+                <>
+                  <FormField
+                    label="Codex Model"
+                    tooltip="Model used by the native Codex app-server"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_CODEX_MODEL || 'gpt-5.6-luna'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_MODEL', e.target.value)}
+                      placeholder="gpt-5.6-luna"
+                    />
+                  </FormField>
+                  <FormField
+                    label="Codex CLI Path"
+                    tooltip="Codex executable path; leave as codex when it is on PATH"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_CODEX_PATH || 'codex'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_PATH', e.target.value)}
+                      placeholder="codex"
+                    />
+                  </FormField>
+                  <FormField
+                    label="Codex Reasoning Effort"
+                    tooltip="Reasoning effort used by the native Codex app-server"
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_CODEX_REASONING_EFFORT ?? 'low'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_REASONING_EFFORT', e.target.value)}
+                    >
+                      <option value="">model default</option>
+                      <option value="none">none</option>
+                      <option value="minimal">minimal</option>
+                      <option value="low">low</option>
+                      <option value="medium">medium</option>
+                      <option value="high">high</option>
+                      <option value="xhigh">xhigh</option>
+                    </select>
+                  </FormField>
+                  <FormField
+                    label="Codex Max Tokens"
+                    tooltip="Estimated input token budget for the Codex observer"
+                  >
+                    <input
+                      type="number"
+                      min="1000"
+                      max="1000000"
+                      step="1000"
+                      value={formState.CLAUDE_MEM_CODEX_MAX_TOKENS || '100000'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_MAX_TOKENS', e.target.value)}
+                    />
+                  </FormField>
+                  <FormField
+                    label="Codex Timeout"
+                    tooltip="Per-attempt Codex app-server timeout in milliseconds"
+                  >
+                    <input
+                      type="number"
+                      min="10000"
+                      max="600000"
+                      step="10000"
+                      value={formState.CLAUDE_MEM_CODEX_TIMEOUT_MS || '120000'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_TIMEOUT_MS', e.target.value)}
+                    />
+                  </FormField>
+                </>
               )}
 
               {formState.CLAUDE_MEM_PROVIDER === 'gemini' && (

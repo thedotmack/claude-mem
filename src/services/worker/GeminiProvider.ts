@@ -10,6 +10,7 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ClassifiedProviderError } from './provider-errors.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
+import { setTimeout as delay } from 'node:timers/promises';
 
 // v1beta is required: the current Gemini 3.x models and the Google-maintained
 // `-latest` aliases are only exposed under v1beta, and the retired v1-only 2.x
@@ -174,7 +175,8 @@ export function categorizeGeminiBadRequest(bodyText: string): GeminiBadRequestCa
   return 'unknown_bad_request';
 }
 
-async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled: boolean): Promise<void> {
+async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled: boolean, abortSignal?: AbortSignal): Promise<void> {
+  abortSignal?.throwIfAborted();
   if (!rateLimitingEnabled) {
     return;
   }
@@ -188,9 +190,10 @@ async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled:
   if (timeSinceLastRequest < minimumDelayMs) {
     const waitTime = minimumDelayMs - timeSinceLastRequest;
     logger.debug('SDK', `Rate limiting: waiting ${waitTime}ms before Gemini request`, { model, rpm });
-    await new Promise(resolve => setTimeout(resolve, waitTime));
+    await delay(waitTime, undefined, { signal: abortSignal });
   }
 
+  abortSignal?.throwIfAborted();
   lastRequestTime = Date.now();
 }
 
@@ -292,8 +295,8 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     return contents;
   }
 
-  protected async query(history: ConversationMessage[], config: GeminiConfig): Promise<ProviderQueryResult> {
-    return this.queryGeminiMultiTurn(history, config.apiKey, config.model, config.rateLimitingEnabled);
+  protected async query(history: ConversationMessage[], config: GeminiConfig, abortSignal?: AbortSignal): Promise<ProviderQueryResult> {
+    return this.queryGeminiMultiTurn(history, config.apiKey, config.model, config.rateLimitingEnabled, abortSignal);
   }
 
   private fetchGenerateContent(
@@ -323,7 +326,8 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     history: ConversationMessage[],
     apiKey: string,
     model: GeminiModel,
-    rateLimitingEnabled: boolean
+    rateLimitingEnabled: boolean,
+    abortSignal?: AbortSignal,
   ): Promise<ProviderQueryResult> {
     const contents = this.conversationToGeminiContents(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
@@ -335,7 +339,7 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
 
     const url = `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`;
 
-    await enforceRateLimitForModel(model, rateLimitingEnabled);
+    await enforceRateLimitForModel(model, rateLimitingEnabled, abortSignal);
 
     // Track request-id (best-effort dedup) across retries.
     let priorRequestId: string | null = null;
@@ -371,7 +375,9 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
       }
 
       return await response.json() as GeminiResponse;
-    }, { label: `Gemini ${model}` });
+    }, { label: `Gemini ${model}`, abortSignal });
+
+    abortSignal?.throwIfAborted();
 
     if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
       logger.error('SDK', 'Empty response from Gemini');

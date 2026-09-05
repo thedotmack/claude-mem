@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-const { execSync } = require('child_process');
-const { existsSync, readFileSync } = require('fs');
+const { execFileSync, execSync } = require('child_process');
+const { existsSync, readFileSync, writeFileSync } = require('fs');
 const path = require('path');
 const os = require('os');
 const { mirrorDirectory } = require('./mirror-dir.cjs');
@@ -65,6 +65,26 @@ function getPluginVersion() {
   }
 }
 
+function probeVersion(command, args) {
+  try {
+    return execFileSync(command, args, {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return 'unavailable';
+  }
+}
+
+function writeInstallMarker(directory, version, bunVersion, uvVersion) {
+  writeFileSync(path.join(directory, '.install-version'), `${JSON.stringify({
+    version,
+    bun: bunVersion,
+    uv: uvVersion,
+    installedAt: new Date().toISOString(),
+  }, null, 2)}\n`, { mode: 0o600 });
+}
+
 function main() {
   const branch = getCurrentBranch();
   const isForce = process.argv.includes('--force');
@@ -85,14 +105,17 @@ function main() {
   console.log('Syncing to marketplace...');
   try {
     const rootDir = path.join(__dirname, '..');
+    const skipInstall = process.env.CLAUDE_MEM_SYNC_SKIP_INSTALL === '1';
 
     const marketplace = mirrorDirectory(rootDir, INSTALLED_PATH, {
       exclude: getMarketplaceExcludes(rootDir)
     });
     console.log(`Marketplace: ${marketplace.copied} copied, ${marketplace.metadata} metadata reconciled, ${marketplace.deleted} stale removed`);
 
-    console.log('Running bun install in marketplace...');
-    execSync('bun install', { cwd: INSTALLED_PATH, stdio: 'inherit' });
+    if (!skipInstall) {
+      console.log('Running bun install in marketplace...');
+      execSync('bun install', { cwd: INSTALLED_PATH, stdio: 'inherit' });
+    }
 
     const version = getPluginVersion();
     const CACHE_VERSION_PATH = path.join(CACHE_BASE_PATH, version);
@@ -105,8 +128,16 @@ function main() {
     });
     console.log(`Cache: ${cache.copied} copied, ${cache.metadata} metadata reconciled, ${cache.deleted} stale removed`);
 
-    console.log(`Running bun install in cache folder (version ${version})...`);
-    execSync(`bun install`, { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
+    if (!skipInstall) {
+      console.log(`Running bun install in cache folder (version ${version})...`);
+      execSync('bun install', { cwd: CACHE_VERSION_PATH, stdio: 'inherit' });
+    }
+
+    const bunVersion = probeVersion('bun', ['--version']);
+    const uvVersion = probeVersion('uv', ['--version']);
+    writeInstallMarker(INSTALLED_PATH, version, bunVersion, uvVersion);
+    writeInstallMarker(path.join(INSTALLED_PATH, 'plugin'), version, bunVersion, uvVersion);
+    writeInstallMarker(CACHE_VERSION_PATH, version, bunVersion, uvVersion);
 
     console.log('\x1b[32m%s\x1b[0m', 'Sync complete!');
 

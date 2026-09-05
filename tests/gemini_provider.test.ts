@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:te
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import * as timers from 'node:timers/promises';
 import { GeminiProvider } from '../src/services/worker/GeminiProvider';
 import { DatabaseManager } from '../src/services/worker/DatabaseManager';
 import { SessionManager } from '../src/services/worker/SessionManager';
@@ -76,6 +77,7 @@ let modeManagerSpy: ReturnType<typeof spyOn>;
 describe('GeminiProvider', () => {
   let agent: GeminiProvider;
   let originalFetch: typeof global.fetch;
+  let delaySpy: ReturnType<typeof spyOn> | undefined;
 
   let mockStoreObservation: any;
   let mockStoreObservations: any; 
@@ -168,6 +170,8 @@ describe('GeminiProvider', () => {
   });
 
   afterEach(() => {
+    delaySpy?.mockRestore();
+    delaySpy = undefined;
     global.fetch = originalFetch;
     if (modeManagerSpy) modeManagerSpy.mockRestore();
     if (loadFromFileSpy) loadFromFileSpy.mockRestore();
@@ -471,38 +475,18 @@ describe('GeminiProvider', () => {
   it('should respect rate limits when rate limiting enabled', async () => {
     rateLimitingEnabled = 'true';
 
-    const originalSetTimeout = global.setTimeout;
-    const mockSetTimeout = mock((cb: any) => cb());
-    global.setTimeout = mockSetTimeout as any;
+    delaySpy = spyOn(timers, 'setTimeout').mockResolvedValue(undefined);
 
-    try {
-      const session = {
-        sessionDbId: 1,
-        contentSessionId: 'test-session',
-        memorySessionId: 'mem-session-123',
-        project: 'test-project',
-        userPrompt: 'test prompt',
-        conversationHistory: [],
-        lastPromptNumber: 1,
-        cumulativeInputTokens: 0,
-        cumulativeOutputTokens: 0,
-        abortController: new AbortController(),
-        generatorPromise: null,
-        currentProvider: null,
-        startTime: Date.now(),
-      } as any;
+    const session = makeSession();
 
-      global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
-        candidates: [{ content: { parts: [{ text: 'ok' }] } }]
-      }))));
+    mockSuccessfulGeminiFetch();
 
-      await agent.startSession(session);
-      await agent.startSession(session);
+    await agent.startSession(session);
+    await agent.startSession(session);
 
-      expect(mockSetTimeout).toHaveBeenCalled();
-    } finally {
-      global.setTimeout = originalSetTimeout;
-    }
+    expect(delaySpy).toHaveBeenCalled();
+    expect(delaySpy.mock.calls.at(-1)?.[0]).toBeGreaterThan(0);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
   });
 
   describe('gemini-3-flash-preview model support', () => {
