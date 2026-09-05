@@ -249,6 +249,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     session.currentProvider = provider;
     session.quotaProbeClaimId = quotaProbeClaimId;
+    session.codexSetupProbeClaimId = setupProbeClaimId;
     session.lastGeneratorActivity = Date.now();
     // Providers refine this per-prompt ('init'|'ingest'|'summarize'); this is
     // the fallback when a generator dies before dispatching its first prompt.

@@ -25,6 +25,8 @@ export interface ActiveSession {
   currentProvider: 'claude' | 'gemini' | 'openrouter' | 'codex' | null;
   /** Claim owned by the current generator; Codex shares it with request admission. */
   quotaProbeClaimId?: number | null;
+  /** Codex setup recovery probe owned by this generator. */
+  codexSetupProbeClaimId?: number | null;
   consecutiveRestarts: number;
   /**
    * Legacy invalid-output counter, intentionally always 0: ordinary non-XML

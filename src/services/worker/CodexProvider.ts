@@ -15,6 +15,7 @@ interface CodexConfig {
   timeoutMs: number;
   signal?: AbortSignal;
   quotaProbeClaimId?: number | null;
+  setupProbeClaimId?: number | null;
 }
 
 export function classifyCodexError(cause: unknown): ClassifiedProviderError {
@@ -81,6 +82,7 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
   protected prepareSessionExtras(session: ActiveSession, config: CodexConfig): void {
     config.signal = session.abortController.signal;
     config.quotaProbeClaimId = session.quotaProbeClaimId;
+    config.setupProbeClaimId = session.codexSetupProbeClaimId;
     session.lastModelId = config.model || 'codex-default';
   }
 
@@ -102,9 +104,20 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
             signal,
             beforeSend: () => {
               signal.throwIfAborted();
+              const setup = getQuotaCooldown('codex-setup');
+              if (setup && (setup.probeClaimId == null || setup.probeClaimId !== config.setupProbeClaimId)) {
+                throw new ClassifiedProviderError('Codex setup cooldown is active', { kind: 'setup_paused', cause: null });
+              }
               const cooldown = getQuotaCooldown('codex');
               if (cooldown && (cooldown.probeClaimId == null || cooldown.probeClaimId !== config.quotaProbeClaimId)) {
                 throw new ClassifiedProviderError('Codex quota cooldown is active', { kind: 'quota_paused', cause: null });
+              }
+            },
+            onFailure: error => {
+              if (signal.aborted) return;
+              const classified = error instanceof ClassifiedProviderError ? error : classifyCodexError(error);
+              if (classified.kind === 'unrecoverable' || classified.kind === 'auth_invalid') {
+                recordQuotaExhausted('codex-setup', classified.message);
               }
             },
           });

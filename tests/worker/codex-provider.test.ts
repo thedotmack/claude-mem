@@ -154,6 +154,60 @@ describe('Codex provider integration', () => {
     expect(sends).toBe(0);
   });
 
+  for (const message of ['Codex executable not found', 'not logged in']) {
+    it(`blocks already queued sessions before startup after ${message}`, async () => {
+      const provider = new CodexProvider(null as any, null as any) as any;
+      let release!: () => void;
+      const blocked = new Promise<void>(resolve => { release = resolve; });
+      const starts = mock(async () => { await blocked; throw new Error(message); });
+      // Keep the real client queue and failure callback; only replace process startup.
+      provider.appServer.ensureStarted = starts;
+      const runs = Array.from({ length: 3 }, () => harness(async s => {
+        const c = { ...config };
+        provider.prepareSessionExtras(s, c);
+        await provider.query([{ role: 'user', content: 'input' }], c);
+      }));
+      try {
+        for (const h of runs) await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'queued');
+        expect(runs.every(h => h.codex.mock.calls.length === 1)).toBe(true);
+        release();
+        await Promise.all(runs.map(h => h.s.generatorPromise));
+        expect(starts).toHaveBeenCalledTimes(1);
+        expect(getQuotaCooldown('codex-setup')).not.toBeNull();
+        expect(getQuotaCooldown('codex')).toBeNull();
+        for (const h of runs) {
+          expect(h.reset).toHaveBeenCalledTimes(1);
+          expect(h.finalize).not.toHaveBeenCalled();
+          expect(h.other).not.toHaveBeenCalled();
+        }
+        recordQuotaExhausted('codex-setup', 'fixture', undefined, Date.now() - CODEX_SETUP_RECHECK_COOLDOWN_MS - 1);
+        await runs[0].routes.ensureGeneratorRunning(runs[0].s.sessionDbId, 'recovery');
+        await runs[0].s.generatorPromise;
+        expect(starts).toHaveBeenCalledTimes(2);
+        expect(getQuotaCooldown('codex-setup')?.probeClaimId).toBeNull();
+      } finally {
+        release();
+        await provider.close();
+      }
+    });
+  }
+
+  it('allows only the owned setup probe through send admission and clears it on success', async () => {
+    recordQuotaExhausted('codex-setup', 'fixture', undefined, Date.now() - CODEX_SETUP_RECHECK_COOLDOWN_MS - 1);
+    const claim = tryAdmitQuotaProbe('codex-setup', Date.now(), CODEX_SETUP_RECHECK_COOLDOWN_MS);
+    const provider = new CodexProvider(null as any, null as any) as any;
+    const sends = mock(async (options: any) => { options.beforeSend(); return { content: '' }; });
+    provider.appServer.runTurn = sends;
+    const s = session();
+    s.codexSetupProbeClaimId = claim.claimId;
+    const c = { ...config };
+    provider.prepareSessionExtras(s, c);
+    await expect(provider.query([{ role: 'user', content: 'input' }], config)).rejects.toMatchObject({ kind: 'setup_paused' });
+    expect(getQuotaCooldown('codex-setup')?.probeClaimId).toBe(claim.claimId);
+    await provider.query([{ role: 'user', content: 'probe' }], c);
+    expect(getQuotaCooldown('codex-setup')).toBeNull();
+  });
+
   it('forwards all conversation text and accepts successful quota-related prose', async () => {
     const provider = new CodexProvider(null as any, null as any) as any;
     const turn = mock(async () => ({ content: 'The application session limit is configurable.', inputTokens: 10, outputTokens: 4 }));
