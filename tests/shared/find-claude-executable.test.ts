@@ -18,6 +18,12 @@ interface FakeCli {
   supportsDontAsk: boolean;
   /** Fails every probe (corrupt install / desktop app) — the `broken` branch. */
   broken?: boolean;
+  /**
+   * Number of leading capability probes that time out before the binary
+   * responds — models a Windows cold start losing the 10 s race. Plain
+   * `--version` probes always answer (they warm the binary).
+   */
+  capabilityTimeouts?: number;
 }
 
 const ORIGINALS = { ..._internals };
@@ -26,6 +32,8 @@ const ORIGINALS = { ..._internals };
 let fakeClis: Map<string, FakeCli>;
 /** Every execFileSync invocation, for probe-count assertions. */
 let probeCalls: Array<{ path: string; args: string[] }>;
+/** Capability-probe count per path, so `capabilityTimeouts` fires only the first N. */
+let capabilityProbeCounts: Map<string, number>;
 /** Symlink map for realpathSync; identity when absent. */
 let realPaths: Map<string, string>;
 /** stdout of `which -a claude`; null = which fails. */
@@ -52,19 +60,39 @@ function installFakes(options: { settingsPath?: string; platform?: NodeJS.Platfo
     probeCalls.push({ path, args });
     const real = realPaths.get(path) ?? path;
     const cli = fakeClis.get(path) ?? fakeClis.get(real);
+    const isCapabilityProbe = args.includes('--permission-mode');
     if (!cli) {
-      const error = new Error(`spawn ${path} ENOENT`) as Error & { stderr: string };
+      const error = new Error(`spawn ${path} ENOENT`) as Error & { stderr: string; code: string };
       error.stderr = '';
+      error.code = 'ENOENT';
       throw error;
     }
     if (cli.broken) {
-      const error = new Error('Command failed') as Error & { stderr: string };
+      // A genuine failure exits non-zero with a diagnostic on stderr.
+      const error = new Error('Command failed') as Error & { stderr: string; status: number };
       error.stderr = 'cannot execute binary file';
+      error.status = 126;
       throw error;
     }
-    if (args.includes('--permission-mode') && !cli.supportsDontAsk) {
-      const error = new Error('Command failed') as Error & { stderr: string };
+    if (isCapabilityProbe && cli.capabilityTimeouts) {
+      const seen = capabilityProbeCounts.get(path) ?? 0;
+      if (seen < cli.capabilityTimeouts) {
+        capabilityProbeCounts.set(path, seen + 1);
+        // A 10 s timeout kills the spawn with a signal and leaves stderr empty
+        // — no flag-rejection evidence, so it must stay retryable.
+        const error = new Error(`spawnSync ${path} ETIMEDOUT`) as Error & { stderr: string; killed: boolean; signal: string };
+        error.stderr = '';
+        error.killed = true;
+        error.signal = 'SIGTERM';
+        throw error;
+      }
+    }
+    if (isCapabilityProbe && !cli.supportsDontAsk) {
+      // A real flag rejection: the CLI parsed the flag, wrote a diagnostic to
+      // stderr, and exited non-zero.
+      const error = new Error('Command failed') as Error & { stderr: string; status: number };
       error.stderr = "error: option '--permission-mode <mode>' argument 'dontAsk' is invalid. Allowed choices are acceptEdits, bypassPermissions, default, plan.";
+      error.status = 1;
       throw error;
     }
     return `${cli.version} (Claude Code)`;
@@ -75,6 +103,7 @@ beforeEach(() => {
   resetClaudeExecutableCache();
   fakeClis = new Map();
   probeCalls = [];
+  capabilityProbeCounts = new Map();
   realPaths = new Map();
   whichOutput = null;
 });
@@ -153,6 +182,45 @@ describe('findClaudeExecutable candidate selection', () => {
   it('keeps the not-found error when nothing is installed', () => {
     installFakes();
     expect(() => findClaudeExecutable('SDK')).toThrow(/Claude executable not found/);
+  });
+});
+
+describe('findClaudeExecutable cold-start race', () => {
+  // The reported Windows failure: a current CLI whose first capability probe
+  // times out gets mislabeled "too old". The capability probe must be re-run
+  // on the warm binary, and only real flag rejection may classify it as old.
+  it('selects a current CLI whose first capability probe times out on a cold start', () => {
+    installFakes();
+    whichOutput = '/home/tester/.local/bin/claude\n';
+    fakeClis.set('/home/tester/.local/bin/claude', {
+      version: '2.1.176',
+      supportsDontAsk: true,
+      capabilityTimeouts: 1,
+    });
+
+    expect(findClaudeExecutable('SDK')).toBe('/home/tester/.local/bin/claude');
+  });
+
+  it('does not throw "too old" when a timing-out capability probe leaves no flag-rejection proof', () => {
+    installFakes();
+    whichOutput = '/home/tester/.local/bin/claude\n';
+    // Every capability probe times out, but --version answers — no proof the
+    // CLI rejects the flag, so use it rather than throw the misleading error.
+    fakeClis.set('/home/tester/.local/bin/claude', {
+      version: '2.1.176',
+      supportsDontAsk: true,
+      capabilityTimeouts: 5,
+    });
+
+    expect(findClaudeExecutable('SDK')).toBe('/home/tester/.local/bin/claude');
+  });
+
+  it('still rejects a genuinely old CLI that writes a flag-rejection error to stderr', () => {
+    installFakes();
+    whichOutput = '/opt/homebrew/bin/claude\n';
+    fakeClis.set('/opt/homebrew/bin/claude', { version: '2.0.42', supportsDontAsk: false });
+
+    expect(() => findClaudeExecutable('SDK')).toThrow(/too old/);
   });
 });
 

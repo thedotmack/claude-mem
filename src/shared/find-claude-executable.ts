@@ -124,7 +124,7 @@ type ProbeResult =
  * injection if the path contains characters like `"`, `;`, `&` — reachable
  * on Windows via a crafted CLAUDE_CODE_PATH in settings.json.
  */
-function runProbe(candidate: string, args: readonly string[]): { stdout: string } | { error: string } {
+function runProbe(candidate: string, args: readonly string[]): { stdout: string } | { error: string; flagRejection: boolean } {
   try {
     const stdout = _internals.execFileSync(candidate, [...args], {
       encoding: 'utf8',
@@ -135,14 +135,24 @@ function runProbe(candidate: string, args: readonly string[]): { stdout: string 
     return { stdout };
   } catch (error) {
     const stderr = (error as { stderr?: unknown }).stderr;
-    const firstLine = String(stderr ?? (error instanceof Error ? error.message : error))
+    const stderrText = String(stderr ?? '').trim();
+    const firstLine = (stderrText || (error instanceof Error ? error.message : String(error)))
       .split('\n')[0]
       .trim();
+    // A genuine flag rejection is the ONLY proof a CLI is too old: it ran to
+    // argument parsing, wrote a diagnostic to stderr, and exited non-zero.
+    // A timeout or signal kill (killed/signal set, empty stderr — a Windows
+    // cold start losing the 10 s race) leaves no such proof, so it must stay
+    // retryable and never classify as incompatible.
+    const status = (error as { status?: unknown }).status;
+    const killed = (error as { killed?: unknown }).killed === true;
+    const signalled = (error as { signal?: unknown }).signal != null;
+    const flagRejection = stderrText.length > 0 && !killed && !signalled && typeof status === 'number' && status !== 0;
     // Probe failures are expected classification signals (stale CLI, desktop
     // app, broken install); callers warn on or surface the detail, so this
     // stays at debug with the full error for deep troubleshooting.
-    logger.debug('SDK', `Probe of "${candidate}" failed: ${firstLine || 'probe failed'}`, { args: [...args] }, error);
-    return { error: firstLine || 'probe failed' };
+    logger.debug('SDK', `Probe of "${candidate}" failed: ${firstLine || 'probe failed'}`, { args: [...args], flagRejection }, error);
+    return { error: firstLine || 'probe failed', flagRejection };
   }
 }
 
@@ -152,6 +162,13 @@ function runProbe(candidate: string, args: readonly string[]): { stdout: string 
  * plain `--version` spawn run, to split "runs but too old" from "doesn't run
  * at all" without pattern-matching stderr wording — so the two-spawn cost is
  * paid only for stale/broken installs, and the result is cached.
+ *
+ * A capability probe that failed WITHOUT flag-rejection evidence (empty
+ * stderr from a timeout or signal kill) is not proof of an old CLI: on a
+ * Windows cold start the first spawn can lose the 10 s race, then the now-warm
+ * plain `--version` returns instantly — which must NOT read as "runs but too
+ * old". So after `--version` warms the binary, the capability probe runs once
+ * more; only real flag rejection classifies the CLI as incompatible.
  */
 function probeCandidate(candidate: string): ProbeResult {
   const capability = runProbe(candidate, CAPABILITY_PROBE_ARGS);
@@ -165,8 +182,24 @@ function probeCandidate(candidate: string): ProbeResult {
   // variants) classifies the same way, so no stderr pattern-matching.
   const plain = runProbe(candidate, ['--version']);
   if ('stdout' in plain && plain.stdout) {
-    const detail = 'error' in capability ? capability.error : 'rejects capability flags';
-    return { kind: 'incompatible', version: plain.stdout, detail };
+    if ('flagRejection' in capability && capability.flagRejection) {
+      return { kind: 'incompatible', version: plain.stdout, detail: capability.error };
+    }
+    // No flag-rejection evidence: the capability probe most likely lost a
+    // cold-start race that the --version spawn just warmed away. Re-probe the
+    // warm binary once before giving up.
+    const warm = runProbe(candidate, CAPABILITY_PROBE_ARGS);
+    if ('stdout' in warm && warm.stdout) {
+      return { kind: 'capable', version: warm.stdout };
+    }
+    if ('flagRejection' in warm && warm.flagRejection) {
+      return { kind: 'incompatible', version: plain.stdout, detail: warm.error };
+    }
+    // Still no flag-rejection proof, only ambiguous failures. Use the binary
+    // rather than throw the misleading "too old" error and strand a CLI that
+    // answers --version; a genuinely old CLI rejects the flag with a non-empty
+    // stderr, which the checks above already catch.
+    return { kind: 'capable', version: plain.stdout };
   }
 
   const detail = 'error' in capability ? capability.error : 'failed --version check';
