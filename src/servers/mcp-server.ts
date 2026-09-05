@@ -232,6 +232,8 @@ function wrapHandler<Args>(
 interface ObservationAddArgs {
   projectId?: string;
   serverSessionId?: string | null;
+  contentSessionId?: string | null;
+  platformSource?: string | null;
   kind?: string;
   content: string;
   metadata?: Record<string, unknown>;
@@ -247,6 +249,8 @@ const handleObservationAdd = wrapHandler('observation_add', async (args: Observa
     projectId,
     content: args.content,
     ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
+    ...(args.contentSessionId !== undefined ? { contentSessionId: args.contentSessionId } : {}),
+    ...(args.platformSource !== undefined ? { platformSource: args.platformSource } : {}),
     ...(args.kind !== undefined ? { kind: args.kind } : {}),
     ...(args.metadata !== undefined ? { metadata: args.metadata } : {}),
   };

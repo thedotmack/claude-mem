@@ -874,6 +874,16 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       z.object({
         projectId: z.string().min(1),
         serverSessionId: z.string().min(1).nullable().optional(),
+        // Callers that write memories from inside a session know the agent's own
+        // session id, not the server_sessions row UUID. /v1/events already accepts
+        // contentSessionId and resolves it (#2634); without the same affordance here
+        // every such memory lands with server_session_id NULL and can never be
+        // grouped, scoped or compared by session.
+        contentSessionId: z.string().min(1).nullable().optional(),
+        // Two sessions in the same team/project can share a contentSessionId across
+        // platforms; without the scope the lookup picks whichever started last, so a
+        // Cursor memory can land on a Codex session. /v1/events already scopes this.
+        platformSource: z.string().min(1).nullable().optional(),
         kind: z.string().min(1).optional(),
         content: z.string().min(1),
         metadata: z.record(z.string(), z.unknown()).optional(),
@@ -882,10 +892,19 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         const teamId = this.requireTeamId(req, res);
         if (!teamId) return;
         if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+        const linkedSessionId = await this.resolveMemorySessionLink({
+          serverSessionId: body.serverSessionId ?? null,
+          contentSessionId: body.contentSessionId ?? null,
+          projectId: body.projectId,
+          teamId,
+          // same normalization the ingest path applies, so an omitted field and an
+          // explicit null keep meaning different things
+          ...this.sessionLookupPlatformScope(req.body),
+        });
         const createInput = {
           projectId: body.projectId,
           teamId,
-          serverSessionId: body.serverSessionId ?? null,
+          serverSessionId: linkedSessionId,
           kind: body.kind ?? 'manual',
           content: body.content,
           metadata: body.metadata ?? {},
@@ -1183,6 +1202,49 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       return null;
     }
     return teamId;
+  }
+
+
+  /**
+   * Resolve the server_sessions row for a memory write.
+   *
+   * Callers writing from inside a session know the agent's own session id, not the
+   * server_sessions row UUID. /v1/events already accepts contentSessionId and resolves
+   * it (#2634); without the same affordance on the memory path every such write lands
+   * with server_session_id NULL and can never be grouped or scoped by session.
+   *
+   * Explicit serverSessionId always wins. The lookup is best-effort, mirroring the
+   * ingest path: a failure must not fail the write — store unlinked, as before.
+   * Unlike /v1/events there is no idempotency concern: observations key off `id`, and
+   * server_session_id is a plain FK (ON DELETE SET NULL), so linking later cannot
+   * drift a key.
+   */
+  private async resolveMemorySessionLink(input: {
+    serverSessionId: string | null;
+    contentSessionId: string | null;
+    projectId: string;
+    teamId: string;
+    platformSource?: string | null;
+  }): Promise<string | null> {
+    if (input.serverSessionId) return input.serverSessionId;
+    if (!input.contentSessionId) return null;
+    const platformScope = Object.prototype.hasOwnProperty.call(input, 'platformSource')
+      ? { platformSource: input.platformSource ?? null }
+      : {};
+    try {
+      return await new PostgresServerSessionsRepository(this.options.pool)
+        .findIdByContentSessionId({
+          contentSessionId: input.contentSessionId,
+          projectId: input.projectId,
+          teamId: input.teamId,
+          ...platformScope,
+        });
+    } catch (err) {
+      logger.warn('HTTP', 'session linkage lookup failed; storing memory unlinked', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
   }
 
   private async applyContentSessionLinks(
