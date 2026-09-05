@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "13.24.0",
+  "version": "13.24.1",
   "description": "Persistent memory for coding agents. Cursor and Grok Bot install independently; worker and observer can be local or remote.",
   "homepage": "https://github.com/thedotmack/claude-mem",
   "skills": "./claude-mem-grok-bot/skills/",
