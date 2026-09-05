@@ -574,9 +574,16 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       logger.info('SYSTEM', 'Worker not running — lazy-spawning', { runtimePath, scriptPath });
 
       try {
+        // A cwd that does not exist makes spawn fail with ENOENT, and paths.ts resolves
+        // DATA_DIR without creating it. Idempotent, so the usual case costs one stat.
+        mkdirSync(DATA_DIR, { recursive: true });
         const proc = spawnHidden(runtimePath, [scriptPath, '--daemon'], {
           detached: true,
           stdio: ['ignore', 'ignore', 'ignore'],
+          // This spawn runs from a hook, so the inherited cwd is the user's project. A
+          // daemon holds its cwd open for its whole life, and on Windows that locks the
+          // folder against rename or move long after the session ends (#3706).
+          cwd: DATA_DIR,
         });
         proc.unref();
       } catch (error: unknown) {
