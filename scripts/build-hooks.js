@@ -3,9 +3,65 @@
 import { build } from 'esbuild';
 import fs from 'fs';
 import path from 'path';
+import vm from 'node:vm';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Map every __dirname/__filename in the bundled body to runtime-computed
+// globals, applied by esbuild BEFORE minification. Any absolute build-machine
+// path a dependency would otherwise inline becomes a reference to the banner
+// values below, so nothing needs to be rewritten after emit. This replaces the
+// old post-build regex rewrite (stripHardcodedDirname), which swept a 2.6 MB
+// minified bundle and could delete a top-level declaration — the worker then
+// died with an unhandled "ReferenceError: <name> is not defined". See
+// assertBundleIntegrity.
+const DIRNAME_DEFINE = {
+  '__dirname': '__CM_DIRNAME__',
+  '__filename': '__CM_FILENAME__',
+};
+
+// Declares the globals DIRNAME_DEFINE maps to. `define` never rewrites banner
+// text, so these lines still read Node's native __dirname/__filename (present
+// in every CJS module) and fall back to argv[1] when the bundle is the process
+// entrypoint under Bun.
+const DIRNAME_BANNER = [
+  'var __CM_FILENAME__ = typeof __filename !== "undefined" ? __filename : require("node:path").resolve(process.argv[1] || "");',
+  'var __CM_DIRNAME__ = typeof __dirname !== "undefined" ? __dirname : require("node:path").dirname(__CM_FILENAME__);',
+];
+
+// Emit an external source map (names only, no inlined source text) next to each
+// bundle. Bun and Node symbolicate stack traces against the adjacent .map, so a
+// worker crash names the real symbol instead of a two-letter minified id.
+const SOURCEMAP_OPTS = { sourcemap: true, sourcesContent: false };
+
+// A bundle must parse and must not carry an absolute build path. esbuild emits a
+// closed, self-consistent module graph and we now ship it verbatim, so either
+// failure means a real regression — fail the build rather than ship a bundle
+// that throws at load or leaks the builder's filesystem layout.
+function assertBundleIntegrity(filePath) {
+  const content = fs.readFileSync(filePath, 'utf-8');
+  try {
+    new vm.Script(content.replace(/^#!.*\n/, ''), { filename: filePath });
+  } catch (err) {
+    throw new Error(`${filePath} does not parse after build (${err.message}). Refusing to ship a corrupt bundle.`);
+  }
+  // esbuild's ESM __dirname inlining (the leak the old rewrite existed for)
+  // emits the absolute directory of a bundled module — always under the
+  // checkout's node_modules/ or src/. Match those exact prefixes, not any
+  // substring of the checkout path, so a legitimate runtime path that merely
+  // shares an ancestor of the build dir (e.g. Bun's /home/linuxbrew/.bun/bin/bun
+  // when building from /home) is never misread as a leak.
+  const buildDir = process.cwd();
+  const leaked = ['node_modules', 'src']
+    .map((dir) => buildDir + path.sep + dir + path.sep)
+    .find((prefix) => content.includes(prefix));
+  if (leaked) {
+    throw new Error(
+      `${filePath} inlined the absolute build path ${leaked}…: a __dirname/__filename literal leaked. Check the esbuild \`define\` mapping.`
+    );
+  }
+}
 
 const WORKER_SERVICE = {
   name: 'worker-service',
@@ -31,28 +87,6 @@ const TRANSCRIPT_WATCHER = {
   name: 'transcript-watcher',
   source: 'src/services/transcripts/transcript-watcher-entry.ts'
 };
-
-function stripHardcodedDirname(filePath) {
-  let content = fs.readFileSync(filePath, 'utf-8');
-  const before = content.length;
-
-  const str = `(?:"[^"]*"|'[^']*')`;
-
-  for (const id of ['__dirname', '__filename']) {
-    content = content.replace(new RegExp(`\\bvar ${id}\\s*=\\s*${str},\\s*`, 'g'), 'var ');
-    content = content.replace(new RegExp(`\\bvar ${id}\\s*=\\s*${str};\\s*`, 'g'), '');
-    content = content.replace(new RegExp(`,\\s*${id}\\s*=\\s*${str}`, 'g'), '');
-  }
-
-  content = content.replace(/\bvar\s*;/g, '');
-  content = content.replace(/[ \t]+$/gm, '');
-
-  const removed = before - content.length;
-  if (removed > 0) {
-    fs.writeFileSync(filePath, content);
-    console.log(`  ✓ Stripped hardcoded __dirname/__filename paths (${removed} bytes)`);
-  }
-}
 
 /**
  * Rule A canonical-template manifest: maps each host-managed config file's
@@ -326,6 +360,7 @@ async function buildHooks() {
       format: 'cjs',
       outfile: `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
       minify: true,
+      ...SOURCEMAP_OPTS,
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
         'bun:sqlite',
@@ -348,6 +383,7 @@ async function buildHooks() {
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        ...DIRNAME_DEFINE,
         // Polyfill import.meta.url for ESM deps bundled into CJS output.
         // @anthropic-ai/claude-agent-sdk's *.mjs files use createRequire(import.meta.url)
         // and `new URL(rel, import.meta.url)`. We map import.meta.url to a file:// URL
@@ -357,14 +393,13 @@ async function buildHooks() {
       banner: {
         js: [
           '#!/usr/bin/env bun',
-          'var __filename = __filename || require("node:path").resolve(process.argv[1] || "");',
-          'var __dirname = __dirname || require("node:path").dirname(__filename);',
-          'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__filename).href;'
+          ...DIRNAME_BANNER,
+          'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__CM_FILENAME__).href;'
         ].join('\n')
       }
     });
 
-    stripHardcodedDirname(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
+    assertBundleIntegrity(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
 
     fs.chmodSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 0o755);
     const workerStats = fs.statSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
@@ -401,6 +436,7 @@ async function buildHooks() {
         format: 'cjs',
         outfile: mod.out,
         minify: true,
+        ...SOURCEMAP_OPTS,
         logLevel: 'error',
         external: [
           'bun:sqlite',
@@ -416,12 +452,17 @@ async function buildHooks() {
         ],
         define: {
           '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+          ...DIRNAME_DEFINE,
           'import.meta.url': '__IMPORT_META_URL__'
         },
         banner: {
-          js: 'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__filename).href;'
+          js: [
+            ...DIRNAME_BANNER,
+            'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__CM_FILENAME__).href;'
+          ].join('\n')
         }
       });
+      assertBundleIntegrity(mod.out);
       console.log(`✓ ${mod.out} built (${(fs.statSync(mod.out).size / 1024).toFixed(2)} KB)`);
     }
 
@@ -434,24 +475,25 @@ async function buildHooks() {
       format: 'cjs',
       outfile: `${hooksDir}/${SERVER_SERVICE.name}.cjs`,
       minify: true,
+      ...SOURCEMAP_OPTS,
       logLevel: 'error',
       external: [
         'bun:sqlite',
         'zod',
       ],
       define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        ...DIRNAME_DEFINE
       },
       banner: {
         js: [
           '#!/usr/bin/env bun',
-          'var __filename = __filename || require("node:path").resolve(process.argv[1] || "");',
-          'var __dirname = __dirname || require("node:path").dirname(__filename);'
+          ...DIRNAME_BANNER
         ].join('\n')
       }
     });
 
-    stripHardcodedDirname(`${hooksDir}/${SERVER_SERVICE.name}.cjs`);
+    assertBundleIntegrity(`${hooksDir}/${SERVER_SERVICE.name}.cjs`);
 
     fs.chmodSync(`${hooksDir}/${SERVER_SERVICE.name}.cjs`, 0o755);
     const serverStats = fs.statSync(`${hooksDir}/${SERVER_SERVICE.name}.cjs`);
@@ -466,6 +508,7 @@ async function buildHooks() {
       format: 'cjs',
       outfile: `${hooksDir}/${MCP_SERVER.name}.cjs`,
       minify: true,
+      ...SOURCEMAP_OPTS,
       logLevel: 'error',
       external: [
         'bun:sqlite',
@@ -495,14 +538,18 @@ async function buildHooks() {
         '@tree-sitter-grammars/tree-sitter-markdown',
       ],
       define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        ...DIRNAME_DEFINE
       },
       banner: {
-        js: '#!/usr/bin/env node'
+        js: [
+          '#!/usr/bin/env node',
+          ...DIRNAME_BANNER
+        ].join('\n')
       }
     });
 
-    stripHardcodedDirname(`${hooksDir}/${MCP_SERVER.name}.cjs`);
+    assertBundleIntegrity(`${hooksDir}/${MCP_SERVER.name}.cjs`);
 
     fs.chmodSync(`${hooksDir}/${MCP_SERVER.name}.cjs`, 0o755);
     const mcpServerStats = fs.statSync(`${hooksDir}/${MCP_SERVER.name}.cjs`);
@@ -540,15 +587,19 @@ async function buildHooks() {
       format: 'cjs',
       outfile: `${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`,
       minify: true,
+      ...SOURCEMAP_OPTS,
       logLevel: 'error',
       external: ['bun:sqlite', 'zod'],
       define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        ...DIRNAME_DEFINE
       },
-      // No banner needed: CJS files under Node.js have __dirname/__filename natively
+      banner: {
+        js: DIRNAME_BANNER.join('\n')
+      }
     });
 
-    stripHardcodedDirname(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
+    assertBundleIntegrity(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
 
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
@@ -562,6 +613,7 @@ async function buildHooks() {
       format: 'cjs',
       outfile: `${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`,
       minify: true,
+      ...SOURCEMAP_OPTS,
       logLevel: 'error',
       // Externalize zod for consistency with worker-service / server-beta-service —
       // any zod usage in the processor.ts import chain should resolve at runtime
@@ -569,14 +621,18 @@ async function buildHooks() {
       // instance hazards and keeps the bundle slim).
       external: ['bun:sqlite', 'zod'],
       define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        ...DIRNAME_DEFINE
       },
       banner: {
-        js: '#!/usr/bin/env bun'
+        js: [
+          '#!/usr/bin/env bun',
+          ...DIRNAME_BANNER
+        ].join('\n')
       }
     });
 
-    stripHardcodedDirname(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`);
+    assertBundleIntegrity(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`);
 
     fs.chmodSync(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`, 0o755);
     const transcriptWatcherStats = fs.statSync(`${hooksDir}/${TRANSCRIPT_WATCHER.name}.cjs`);
