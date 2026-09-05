@@ -135,7 +135,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     const initPrompt = session.lastPromptNumber === 1
       ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode, priorContext)
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode, priorContext);
-    const initContext = snapshotResponseContext(session);
 
     session.conversationHistory.push({ role: 'user', content: initPrompt });
 
@@ -143,7 +142,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       session.lastPromptSentAt = Date.now();
       session.lastGeneratorSource = 'init';
       const initResponse = await this.query(session.conversationHistory, config);
-      await this.handleInitResponse(initResponse, session, worker, model, initContext);
+      this.handleInitResponse(initResponse, session, model);
     } catch (error: unknown) {
       // Classified errors are logged once, at SessionRoutes' `Observer failed`
       // line; here they're debug-level so one failure isn't five error lines.
@@ -203,28 +202,27 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
   }
 
-  private async handleInitResponse(
+  private handleInitResponse(
     initResponse: ProviderQueryResult,
     session: ActiveSession,
-    worker: WorkerRef | undefined,
-    model: string,
-    responseContext: ReturnType<typeof snapshotResponseContext>
-  ): Promise<void> {
-    if (initResponse.content) {
-      // Appended once, by processAgentResponse below — see processObservationMessage.
-      const tokensUsed = initResponse.tokensUsed || 0;
-      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-      session.lastUsage = this.buildLastUsage(initResponse);
-      await processAgentResponse(
-        initResponse.content, session, this.dbManager, this.sessionManager,
-        worker, tokensUsed, null, this.providerName, undefined, initResponse.servedModel ?? model, responseContext
-      );
-    } else {
+    model: string
+  ): void {
+    if (!initResponse.content) {
       logger.error('SDK', `Empty ${this.providerName} init response - session may lack context`, {
         sessionId: session.sessionDbId, model
       });
+      return;
     }
+
+    const tokensUsed = initResponse.tokensUsed || 0;
+    session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
+    session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+    // The init prompt carries the user's request and no tool call, so nothing in
+    // its reply can be an observation of this session — an <observation> here was
+    // invented from <user_request> alone and would be stored as memory for work
+    // that never happened. Keep the turn so role alternation holds, but never
+    // hand it to the storage path.
+    session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
   }
 
   private async processObservationMessage(
