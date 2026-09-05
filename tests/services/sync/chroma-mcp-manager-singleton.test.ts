@@ -126,7 +126,10 @@ mock.module('@modelcontextprotocol/sdk/client/stdio.js', () => ({
 }));
 
 let connectImpl: (transport: FakeTransport) => Promise<void> = async () => {};
-let callToolImpl: (request?: { name: string; arguments?: Record<string, unknown> }) => Promise<unknown> = async () => ({
+let callToolImpl: (
+  request?: { name: string; arguments?: Record<string, unknown> },
+  options?: { timeout?: number }
+) => Promise<unknown> = async () => ({
   content: [{ type: 'text', text: '{}' }],
 });
 
@@ -135,8 +138,12 @@ class FakeClient {
   async connect(transport: FakeTransport): Promise<void> {
     await connectImpl(transport);
   }
-  async callTool(request?: { name: string; arguments?: Record<string, unknown> }): Promise<unknown> {
-    return await callToolImpl(request);
+  async callTool(
+    request?: { name: string; arguments?: Record<string, unknown> },
+    _resultSchema?: unknown,
+    options?: { timeout?: number }
+  ): Promise<unknown> {
+    return await callToolImpl(request, options);
   }
   async close(): Promise<void> {
     this.closed = true;
@@ -153,6 +160,7 @@ mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
     getInt: () => 0,
     loadFromFile: () => ({
       CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: '5000',
+      CLAUDE_MEM_CHROMA_MUTATION_TIMEOUT_MS: '600000',
       ...mockedSettings,
     }),
   },
@@ -509,6 +517,26 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     await Promise.all([firstMutation, secondMutation]);
 
     expect(maxActiveMutations).toBe(1);
+  });
+
+  it('extends only mutation request timeouts and honors the configured bound', async () => {
+    mockedSettings = {
+      CLAUDE_MEM_CHROMA_MUTATION_TIMEOUT_MS: '900000',
+    };
+    const mgr = ChromaMcpManager.getInstance();
+    const calls: Array<{ name?: string; timeout?: number }> = [];
+    callToolImpl = async (request, options) => {
+      calls.push({ name: request?.name, timeout: options?.timeout });
+      return { content: [{ type: 'text', text: '{}' }] };
+    };
+
+    await mgr.callTool('chroma_add_documents', { ids: ['one'] });
+    await mgr.callTool('chroma_query_documents', { query_texts: ['fast read'] });
+
+    expect(calls).toEqual([
+      { name: 'chroma_add_documents', timeout: 900000 },
+      { name: 'chroma_query_documents', timeout: undefined },
+    ]);
   });
 
   it('bounds the pending mutation queue and leaves rejected writes for backfill', async () => {
