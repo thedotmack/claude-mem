@@ -1,15 +1,145 @@
 #!/usr/bin/env node
 import { spawnSync } from 'child_process';
-import { existsSync, readFileSync, rmSync } from 'fs';
+import { existsSync, readFileSync, rmSync, statSync } from 'fs';
+import { createRequire } from 'module';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const IS_WINDOWS = process.platform === 'win32';
 const VERSION_CHECK_LOG_PREFIX = '[version-check]';
-const BUN_INSTALL_ARGS = Object.freeze(['install', '--production']);
+const BUN_INSTALL_ARGS = Object.freeze(['install', '--production', '--ignore-scripts']);
 const BUN_INSTALL_TIMEOUT_MS = 120_000;
 const NODE_MODULES_DIRNAME = 'node_modules';
+const PACKAGE_NAME_SEGMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
+const REQUIRED_DEPENDENCY_SUBPATHS = Object.freeze({
+  zod: Object.freeze(['zod', 'zod/v3', 'zod/v4', 'zod/v4-mini']),
+});
+const TREE_SITTER_CLI = 'tree-sitter-cli';
+const TREE_SITTER_BINARY = IS_WINDOWS ? 'tree-sitter.exe' : 'tree-sitter';
+const TREE_SITTER_VERSION_TIMEOUT_MS = 10_000;
+
+function dependencyPathSegments(name) {
+  if (typeof name !== 'string') return null;
+
+  const segments = name.split('/');
+  if (segments.length === 1 && PACKAGE_NAME_SEGMENT_RE.test(segments[0])) {
+    return segments;
+  }
+  if (
+    segments.length === 2
+    && /^@[A-Za-z0-9][A-Za-z0-9._~-]*$/.test(segments[0])
+    && PACKAGE_NAME_SEGMENT_RE.test(segments[1])
+  ) {
+    return segments;
+  }
+  return null;
+}
+
+function readJsonObject(path) {
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf-8'));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return false;
+    return null;
+  }
+}
+
+function isFile(path) {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function isUsableTreeSitterBinary(path) {
+  if (!isFile(path)) return false;
+
+  try {
+    const result = spawnSync(path, ['--version'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: TREE_SITTER_VERSION_TIMEOUT_MS,
+      windowsHide: true,
+    });
+    return result.status === 0 && /^tree-sitter \d+\.\d+\.\d+(?:\s|$)/.test(result.stdout.trim());
+  } catch {
+    return false;
+  }
+}
+
+const FRESH_RESOLVE_SCRIPT = [
+  "const { createRequire } = require('module');",
+  "const requireFromPlugin = createRequire(require('path').join(process.cwd(), 'package.json'));",
+  "for (const specifier of process.argv.slice(1)) requireFromPlugin.resolve(specifier);",
+].join('\n');
+
+function hasFreshDependencyResolutions(pluginRoot, requiredSubpaths) {
+  if (requiredSubpaths.length === 0) return true;
+
+  try {
+    const result = spawnSync(process.execPath, ['-e', FRESH_RESOLVE_SCRIPT, ...requiredSubpaths], {
+      cwd: pluginRoot,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: TREE_SITTER_VERSION_TIMEOUT_MS,
+      windowsHide: true,
+    });
+    return result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+function hasCompletePluginDependencies(pluginRoot, { freshResolver = false, requireTreeSitterBinary = true } = {}) {
+  const packageManifest = readJsonObject(join(pluginRoot, 'package.json'));
+  // Preserve the existing existence semantics when the manifest cannot be
+  // trusted; Setup must remain fail-open for malformed plugin metadata.
+  if (!packageManifest) return true;
+  if (!packageManifest.dependencies || typeof packageManifest.dependencies !== 'object' || Array.isArray(packageManifest.dependencies)) return true;
+
+  const nodeModulesRoot = join(pluginRoot, NODE_MODULES_DIRNAME);
+  let requireFromPlugin;
+  if (!freshResolver) {
+    try {
+      requireFromPlugin = createRequire(join(pluginRoot, 'package.json'));
+    } catch {
+      return true;
+    }
+  }
+
+  for (const dependencyName of Object.keys(packageManifest.dependencies)) {
+    const segments = dependencyPathSegments(dependencyName);
+    if (!segments) continue;
+
+    const installedManifest = readJsonObject(join(nodeModulesRoot, ...segments, 'package.json'));
+    if (installedManifest === false || installedManifest === null) return false;
+
+    const requiredSubpaths = REQUIRED_DEPENDENCY_SUBPATHS[dependencyName] || [];
+    if (freshResolver) {
+      if (!hasFreshDependencyResolutions(pluginRoot, requiredSubpaths)) return false;
+    } else {
+      for (const subpath of requiredSubpaths) {
+        try {
+          requireFromPlugin.resolve(subpath);
+        } catch {
+          return false;
+        }
+      }
+    }
+
+    if (
+      requireTreeSitterBinary
+      && dependencyName === TREE_SITTER_CLI
+      && !isUsableTreeSitterBinary(join(nodeModulesRoot, ...segments, TREE_SITTER_BINARY))
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 
 function findBun() {
   const pathCheck = IS_WINDOWS
@@ -18,7 +148,10 @@ function findBun() {
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
     if (IS_WINDOWS) {
-      const bunCmdPath = pathCheck.stdout.split('\n').find((line) => line.trim().endsWith('bun.cmd'));
+      const bunPaths = pathCheck.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      const bunExePath = bunPaths.find((line) => line.toLowerCase().endsWith('bun.exe'));
+      if (bunExePath) return bunExePath;
+      const bunCmdPath = bunPaths.find((line) => line.toLowerCase().endsWith('bun.cmd'));
       if (bunCmdPath) return bunCmdPath.trim();
     }
     return 'bun';
@@ -40,6 +173,59 @@ function findBun() {
   return null;
 }
 
+function bunInstallInvocation(bunPath) {
+  if (IS_WINDOWS && /\.(cmd|bat)$/i.test(bunPath)) {
+    const quote = (value) => `"${String(value).replace(/"/g, '\\"')}"`;
+    const commandLine = [bunPath, ...BUN_INSTALL_ARGS].map(quote).join(' ');
+    return {
+      command: process.env.ComSpec || 'cmd.exe',
+      args: ['/d', '/s', '/c', `"${commandLine}"`],
+      options: { windowsVerbatimArguments: true },
+    };
+  }
+  return { command: bunPath, args: BUN_INSTALL_ARGS, options: {} };
+}
+
+function provisionTreeSitterCliBinary(pluginRoot) {
+  const cliDir = join(pluginRoot, NODE_MODULES_DIRNAME, TREE_SITTER_CLI);
+  const binaryPath = join(cliDir, TREE_SITTER_BINARY);
+  if (!existsSync(cliDir) || isUsableTreeSitterBinary(binaryPath)) return 'complete';
+
+  const installScript = join(cliDir, 'install.js');
+  if (!existsSync(installScript)) {
+    console.error(`${VERSION_CHECK_LOG_PREFIX} tree-sitter-cli install script not found; plugin dependencies remain incomplete`);
+    return 'missing-installer';
+  }
+
+  let result;
+  try {
+    result = spawnSync(process.execPath, [installScript], {
+      cwd: cliDir,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: BUN_INSTALL_TIMEOUT_MS,
+      windowsHide: true,
+      windowsVerbatimArguments: true,
+    });
+  } catch (err) {
+    const reason = err && err.message ? err.message : String(err);
+    console.error(`${VERSION_CHECK_LOG_PREFIX} tree-sitter-cli binary provisioning threw (${reason})`);
+    return 'failed';
+  }
+
+  const killedBySignal = result.status === null && !!result.signal;
+  const nonZeroExit = result.status !== null && result.status !== 0;
+  if (result.error || nonZeroExit || killedBySignal) {
+    const reason = result.error
+      ? result.error.message
+      : killedBySignal
+        ? `killed by ${result.signal}`
+        : `exit ${result.status}`;
+    console.error(`${VERSION_CHECK_LOG_PREFIX} tree-sitter-cli binary provisioning failed (${reason})`);
+  }
+  return isUsableTreeSitterBinary(binaryPath) ? 'complete' : 'failed';
+}
+
 // Setup-phase auto-install of plugin runtime dependencies.
 //
 // The plugin marketplace extracts files into ~/.claude/plugins/cache/...
@@ -58,9 +244,22 @@ function findBun() {
 function ensurePluginDependencies(pluginRoot) {
   if (!existsSync(join(pluginRoot, 'package.json'))) return;
 
-  // Guard on node_modules (package-manager marker) rather than a specific
-  // package, so the check stays correct if dependencies are later renamed.
-  if (existsSync(join(pluginRoot, NODE_MODULES_DIRNAME))) return;
+  // Check the declared closure rather than treating the directory itself as
+  // proof that an interrupted install finished.
+  if (existsSync(join(pluginRoot, NODE_MODULES_DIRNAME))) {
+    if (hasCompletePluginDependencies(pluginRoot)) return;
+
+    // A generated CLI binary can be repaired from the installed package; do
+    // that before repeating the full dependency installation.
+    if (hasCompletePluginDependencies(pluginRoot, { requireTreeSitterBinary: false })) {
+      const provisioningStatus = provisionTreeSitterCliBinary(pluginRoot);
+      if (hasCompletePluginDependencies(pluginRoot)) return;
+      if (provisioningStatus !== 'missing-installer') {
+        console.error(`${VERSION_CHECK_LOG_PREFIX} tree-sitter-cli binary remains unavailable; retrying provisioning on the next Setup`);
+        return;
+      }
+    }
+  }
 
   const bunPath = findBun();
   if (!bunPath) {
@@ -73,12 +272,14 @@ function ensurePluginDependencies(pluginRoot) {
 
   let result;
   try {
-    result = spawnSync(bunPath, BUN_INSTALL_ARGS, {
+    const invocation = bunInstallInvocation(bunPath);
+    result = spawnSync(invocation.command, invocation.args, {
       cwd: pluginRoot,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: BUN_INSTALL_TIMEOUT_MS,
       windowsHide: true,
+      ...invocation.options,
     });
   } catch (err) {
     const reason = err && err.message ? err.message : String(err);
@@ -118,6 +319,12 @@ function ensurePluginDependencies(pluginRoot) {
       console.error(`${VERSION_CHECK_LOG_PREFIX} failed to clean up partial node_modules (${rmReason}); next Setup run may skip retry`);
     }
   } else {
+    provisionTreeSitterCliBinary(pluginRoot);
+    // Bun can retain package-resolution metadata across an in-process install.
+    if (!hasCompletePluginDependencies(pluginRoot, { freshResolver: true })) {
+      console.error(`${VERSION_CHECK_LOG_PREFIX} plugin dependencies remain incomplete after install`);
+      return;
+    }
     // Close the diagnostic loop: a Setup hook that can block for up to
     // 120s needs an explicit completion line so users can distinguish a
     // hung install from one that finished silently (gh #2650 review).
