@@ -114,6 +114,7 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
         }
       }, { label: 'Codex', maxRetries: 1, perAttemptTimeoutMs: config.timeoutMs, abortSignal: config.signal });
       clearQuotaCooldown('codex');
+      clearQuotaCooldown('codex-setup');
       return result;
     } catch (error) {
       if (error instanceof ClassifiedProviderError && error.kind === 'quota_exhausted') {
