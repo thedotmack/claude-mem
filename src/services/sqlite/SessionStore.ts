@@ -1906,6 +1906,14 @@ export class SessionStore {
   }
 
   updateMemorySessionId(sessionDbId: number, memorySessionId: string | null): void {
+    const current = this.db.prepare(`
+      SELECT memory_session_id
+      FROM sdk_sessions
+      WHERE id = ?
+    `).get(sessionDbId) as { memory_session_id: string | null } | undefined;
+
+    if (!current || current.memory_session_id === memorySessionId) return;
+
     this.db.prepare(`
       UPDATE sdk_sessions
       SET memory_session_id = ?

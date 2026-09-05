@@ -168,6 +168,16 @@ describe('mutation sites', () => {
       }
     });
 
+    it('updateMemorySessionId emits nothing when the id is unchanged', () => {
+      store.updateMemorySessionId(1, 'mem-late');
+      expect(outboxRows(db).length).toBe(2);
+
+      store.updateMemorySessionId(1, 'mem-late');
+
+      expect(outboxRows(db).length).toBe(2);
+      for (const row of promptRows()) expect(row.sync_rev).toBe('2');
+    });
+
     it('ensureMemorySessionIdRegistered goes through the same repair (only when the id actually changes)', () => {
       store.ensureMemorySessionIdRegistered(1, 'mem-late');
       expect(outboxRows(db).length).toBe(2);
