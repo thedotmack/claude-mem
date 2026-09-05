@@ -38,6 +38,8 @@ export interface ProviderQueryResult {
   costUsd?: number;
   /** The model that actually served the request, when reported. */
   servedModel?: string;
+  /** finish_reason from the provider response, when reported — 'length' flags a truncated (not just empty/prose) output (#3606). */
+  finishReason?: string;
 }
 
 /**
@@ -216,6 +218,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
       session.lastUsage = this.buildLastUsage(initResponse);
+      session.lastFinishReason = initResponse.finishReason ?? null;
       await processAgentResponse(
         initResponse.content, session, this.dbManager, this.sessionManager,
         worker, tokensUsed, null, this.providerName, undefined, initResponse.servedModel ?? model, responseContext
@@ -295,6 +298,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
 
     if (obsResponse.content || this.forwardEmptyMessageResponse) {
+      session.lastFinishReason = obsResponse.finishReason ?? null;
       await processAgentResponse(
         obsResponse.content || '', session, this.dbManager, this.sessionManager,
         worker, tokensUsed, originalTimestamp, this.providerName, lastCwd, obsResponse.servedModel ?? config.model, responseContext
@@ -351,6 +355,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
 
     if (summaryResponse.content || this.forwardEmptyMessageResponse) {
+      session.lastFinishReason = summaryResponse.finishReason ?? null;
       await processAgentResponse(
         summaryResponse.content || '', session, this.dbManager, this.sessionManager,
         worker, tokensUsed, originalTimestamp, this.providerName, lastCwd, summaryResponse.servedModel ?? summaryConfig.model, responseContext

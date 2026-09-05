@@ -294,6 +294,22 @@ export async function processAgentResponse(
   session.lastGeneratorActivity = Date.now();
   const context = responseContext ?? snapshotResponseContext(session);
 
+  // Consume-and-clear immediately, unconditionally, on every call: this field
+  // is scoped to the single response that produced `text` (each OpenAI-
+  // compatible call site sets it right before invoking this function — see
+  // OpenAICompatibleProvider's handleInitResponse/processObservationMessage/
+  // processSummaryMessage). Reading and clearing it here, before branching on
+  // parse validity below, guarantees the NEXT call — from any provider,
+  // whether or not this response happened to parse as valid XML — starts
+  // from null instead of inheriting a finish reason an OpenAI-compatible
+  // turn set several responses ago. Without the clear, a session that fails
+  // over from OpenRouter to Claude (e.g. the cmem-gateway trial-expiry
+  // fallback in provider-dispatch.ts) would have a later empty Claude reply
+  // misread the OpenRouter turn's leftover 'length', mistaking a designed
+  // skip for a truncation.
+  const finishReason = session.lastFinishReason ?? null;
+  session.lastFinishReason = null;
+
   // Classify rejections BEFORE growing the window. "Prompt is too long", quota
   // prose and auth prose are refusals, not conversational turns; appending them
   // makes the next request strictly larger than the one that just failed, which
@@ -373,11 +389,40 @@ export async function processAgentResponse(
     }
 
     // Classify the non-XML output so a dropped batch is visible, not silent.
-    // Ordinary idle/prose is a claimed no-op batch: confirm it and do not build
-    // any respawn debt from repeated skip acknowledgements.
+    // A truly idle (empty) reply with a normal finish reason is the prompt's
+    // designed way to say "nothing to report" — confirm it as a no-op and do
+    // not build respawn debt. Everything else (prose, malformed XML, or an
+    // idle reply that is actually a 'length' truncation) is a real dropped
+    // batch and counts toward consecutiveInvalidOutputs (#3606 — the counter
+    // was previously write-only/always-0, hiding every one of these).
+    //
+    // This function is shared by every provider (Claude/SDK, Gemini,
+    // OpenRouter/OpenAI-compatible) — the counter fix and the truncated/
+    // logger.error-vs-warn split below apply uniformly to all of them, not
+    // just OpenRouter, and that is intentional rather than an accidental
+    // blast radius: nothing downstream branches on provider identity when
+    // reading consecutiveInvalidOutputs. `truncated` is always false on the
+    // other two paths: ClaudeProvider never assigns session.lastFinishReason
+    // at all, and GeminiProvider's query() result never populates a
+    // finishReason, so the OpenAICompatibleProvider call sites that set it
+    // write `null` for Gemini on every response — and `finishReason` above
+    // was already consumed-and-cleared for THIS response at the top of this
+    // function, so neither path can observe a value an earlier OpenRouter
+    // turn left behind. This branch therefore degrades for Claude/Gemini to
+    // exactly its prior behavior, just with a real (no longer write-only)
+    // counter.
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
-    session.consecutiveInvalidOutputs = 0;
+    const truncated = finishReason === 'length';
+    // A designed skip is exactly: idle output AND a finish reason that is
+    // either null (Claude/Gemini never report one — their behavior is
+    // unchanged) or 'stop' (the OpenAI-compatible provider's designed
+    // no-op). Every other finish reason — 'length' (truncation),
+    // 'content_filter', 'tool_calls', 'function_call', 'missing', or
+    // 'malformed' — is a real dropped batch even though the text itself is
+    // idle/empty, because the provider never reached the designed no-op path.
+    const isDesignedSkip = outputClass === 'idle' && (finishReason === null || finishReason === 'stop');
+
     // The overflow/quota/auth rejections returned above, so reaching here means
     // the provider accepted this prompt and answered it. That is proof the
     // conversation fits, whether or not the answer parsed — so the recycle
@@ -385,16 +430,25 @@ export async function processAgentResponse(
     // that answered "idle" twice in a row trip the exhausted branch and wedge.
     session.consecutiveContextOverflows = 0;
 
-    // consecutiveInvalidOutputs is deliberately always 0 here (see worker-types),
-    // so logging it read as "the breaker is fine" on every rejection and hid
-    // #3800 for a full day of failures. Report the counter that can actually be
-    // non-zero instead.
-    logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
-      sessionId: session.sessionDbId,
-      outputClass,
-      preview,
-      consecutiveContextOverflows: session.consecutiveContextOverflows,
-    });
+    if (isDesignedSkip) {
+      session.consecutiveInvalidOutputs = 0;
+      logger.info('PARSER', `${agentName} returned an empty response — observer skipped the batch`, {
+        sessionId: session.sessionDbId,
+        outputClass,
+        finishReason,
+      });
+    } else {
+      session.consecutiveInvalidOutputs += 1;
+      const log = (truncated || outputClass === 'xml') ? logger.error : logger.warn;
+      log.call(logger, 'PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
+        sessionId: session.sessionDbId,
+        outputClass,
+        preview,
+        finishReason,
+        truncated,
+        consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+      });
+    }
 
     // Plain-text skip responses are intentionally ignored. Re-queueing them
     // creates an observer loop where the same low-signal batch is retried.

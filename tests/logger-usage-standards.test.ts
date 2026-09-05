@@ -45,6 +45,7 @@ const EXCLUDED_PATTERNS = [
   /build\/hook-shell-template\.ts$/,  // Pure build-time shell-string generator (no runtime/observability surface); drift is enforced by build-hooks.js + plugin-distribution.test.ts
   /worker\/model-aliases\.ts$/,  // Pure $TIER alias resolver (#2289); side-effect-free passthrough, logging happens at the request-time call site
   /worker\/TimelineService\.ts$/,  // Pure filterByDepth helper after dead-code removal; no side effects (mirrors FallbackErrorHandler)
+  /worker\/context-window\.ts$/,  // Pure history-bounding transform (#3606); no side effects, logging happens at the OpenRouterProvider call site (mirrors output-classifier.ts)
 ];
 
 const HIGH_PRIORITY_PATTERNS = [
