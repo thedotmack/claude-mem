@@ -46,11 +46,26 @@ export abstract class BaseRouteHandler {
     return value;
   }
 
+  /** Cap the array descent in {@link firstString}. Express only ever nests one
+   * level deep (repeated query keys → `string[]`); anything deeper is malformed
+   * or hostile input, so a small bound is safe. */
+  private static readonly MAX_ARRAY_DEPTH = 8;
+
   protected static firstString(value: unknown): string | undefined {
-    if (Array.isArray(value)) {
-      return BaseRouteHandler.firstString(value[0]);
+    // Walk to the first non-array leaf. `value` is untrusted request input
+    // (req.query / req.body), so a crafted deeply-nested array — or a
+    // self-referential one (`a[0] = a`) — must never recurse without bound:
+    // that overflows the stack (RangeError: Maximum call stack size exceeded)
+    // and takes down request handling. Descend iteratively up to a fixed cap
+    // and bail rather than follow it forever.
+    let current = value;
+    for (let depth = 0; depth < BaseRouteHandler.MAX_ARRAY_DEPTH && Array.isArray(current); depth++) {
+      current = current[0];
     }
-    return typeof value === 'string' && value.trim() ? value : undefined;
+    if (Array.isArray(current)) {
+      return undefined; // still nested past the cap — treat as absent
+    }
+    return typeof current === 'string' && current.trim() ? current : undefined;
   }
 
   private static rawPlatformSourceFromRequest(req: Request): string | undefined {
