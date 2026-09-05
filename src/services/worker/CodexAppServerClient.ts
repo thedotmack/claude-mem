@@ -120,6 +120,8 @@ export interface CodexAppServerTurnOptions {
   signal?: AbortSignal;
   /** Recheck caller-owned admission after waiting in the serialized queue. */
   beforeSend?: () => void;
+  /** Publish admission failures before releasing the queue to the next caller. */
+  onFailure?: (error: unknown) => void;
 }
 
 export interface CodexAppServerTurnResult {
@@ -278,7 +280,14 @@ export class CodexAppServerClient {
   }
 
   async runTurn(options: CodexAppServerTurnOptions): Promise<CodexAppServerTurnResult> {
-    return this.withExclusive(options.signal, async () => this.runTurnExclusive(options));
+    return this.withExclusive(options.signal, async () => {
+      try {
+        return await this.runTurnExclusive(options);
+      } catch (error) {
+        options.onFailure?.(error);
+        throw error;
+      }
+    });
   }
 
   async close(): Promise<void> {
@@ -326,6 +335,7 @@ export class CodexAppServerClient {
   }
 
   private async runTurnExclusive(options: CodexAppServerTurnOptions): Promise<CodexAppServerTurnResult> {
+    options.beforeSend?.();
     await this.ensureStarted(options.codexPath, options.timeoutMs, options.signal);
     const workspace = this.workspace;
     if (!workspace) throw new Error('Codex app-server workspace is unavailable');
