@@ -175,6 +175,7 @@ export function classifyOpenRouterError(input: {
 }
 
 const CHARS_PER_TOKEN_ESTIMATE = 4;
+const OPENROUTER_EMPTY_HISTORY_FALLBACK = '(context unavailable)';
 
 interface OpenAIMessage {
   role: 'user' | 'assistant' | 'system';
@@ -342,10 +343,42 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   }
 
   private conversationToOpenAIMessages(history: ConversationMessage[]): OpenAIMessage[] {
-    return history.map(msg => ({
-      role: msg.role === 'assistant' ? 'assistant' : 'user',
-      content: msg.content
-    }));
+    let newestNonEmptyContent: string | null = null;
+    for (const msg of history) {
+      const trimmed = msg.content.trim();
+      if (trimmed.length > 0) {
+        newestNonEmptyContent = trimmed;
+      }
+    }
+
+    const messages: OpenAIMessage[] = [];
+    for (const msg of history) {
+      const trimmed = msg.content.trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      const role = msg.role === 'assistant' ? 'assistant' : 'user';
+      if (messages.length === 0 && role === 'assistant') {
+        continue;
+      }
+
+      const previous = messages[messages.length - 1];
+      if (previous?.role === role) {
+        previous.content = `${previous.content}\n\n${msg.content}`;
+      } else {
+        messages.push({ role, content: msg.content });
+      }
+    }
+
+    if (messages.length === 0) {
+      return [{
+        role: 'user',
+        content: newestNonEmptyContent ?? OPENROUTER_EMPTY_HISTORY_FALLBACK,
+      }];
+    }
+
+    return messages;
   }
 
   protected async query(history: ConversationMessage[], config: OpenRouterConfig): Promise<ProviderQueryResult> {
@@ -395,7 +428,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
-    const estimatedTokens = this.estimateTokens(history.map(m => m.content).join(''));
+    const estimatedTokens = this.estimateTokens(messages.map(m => m.content).join(''));
 
     logger.debug('SDK', `Querying OpenRouter multi-turn (${model})`, {
       turns: history.length,
