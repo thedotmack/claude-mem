@@ -243,7 +243,25 @@ export class SettingsDefaultsManager {
   }
 
   static get(key: keyof SettingsDefaults): string {
-    return process.env[key] ?? this.DEFAULTS[key];
+    const value = process.env[key] ?? this.DEFAULTS[key];
+    if (key === 'CLAUDE_MEM_WORKER_HOST') {
+      return this.normalizeWorkerHost(value);
+    }
+    return value;
+  }
+
+  // 'localhost' resolves IPv6-first on modern Windows resolvers while
+  // server.listen(port, 'localhost') binds ::1 only, so the hook client and
+  // the worker can land on different loopback families (#2992). Pin the
+  // documented IPv4 loopback so every consumer of the setting agrees.
+  private static normalizeWorkerHost(host: string): string {
+    return host === 'localhost' ? '127.0.0.1' : host;
+  }
+
+  private static finalizeSettings(settings: SettingsDefaults, applyEnvOverrides: boolean): SettingsDefaults {
+    const result = applyEnvOverrides ? this.applyEnvOverrides(settings) : settings;
+    result.CLAUDE_MEM_WORKER_HOST = this.normalizeWorkerHost(result.CLAUDE_MEM_WORKER_HOST);
+    return result;
   }
 
   static getInt(key: keyof SettingsDefaults): number {
@@ -274,7 +292,7 @@ export class SettingsDefaultsManager {
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error instanceof Error ? error.message : String(error));
         }
-        return applyEnvOverrides ? this.applyEnvOverrides(defaults) : defaults;
+        return this.finalizeSettings(defaults, applyEnvOverrides);
       }
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
@@ -327,11 +345,11 @@ export class SettingsDefaultsManager {
         }
       }
 
-      return applyEnvOverrides ? this.applyEnvOverrides(result) : result;
+      return this.finalizeSettings(result, applyEnvOverrides);
     } catch (error: unknown) {
       console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error instanceof Error ? error.message : String(error));
       const defaults = this.getAllDefaults();
-      return applyEnvOverrides ? this.applyEnvOverrides(defaults) : defaults;
+      return this.finalizeSettings(defaults, applyEnvOverrides);
     }
   }
 }

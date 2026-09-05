@@ -239,6 +239,23 @@ describe('HealthMonitor', () => {
     });
 
     it('should honor configured worker host when polling health', async () => {
+      process.env.CLAUDE_MEM_WORKER_HOST = '127.0.0.2';
+      const fetchMock = mock(() => Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve('')
+      } as unknown as Response));
+      global.fetch = fetchMock;
+
+      await waitForHealth(37777, 1000);
+
+      expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.2:37777/api/health');
+    });
+
+    it('should normalize a localhost worker host to 127.0.0.1 when polling health', async () => {
+      // 'localhost' resolves IPv6-first on modern Windows while the worker
+      // binds a single family, so SettingsDefaultsManager pins it to the
+      // IPv4 loopback (#2992) — the poll URL must reflect that.
       process.env.CLAUDE_MEM_WORKER_HOST = 'localhost';
       const fetchMock = mock(() => Promise.resolve({
         ok: true,
@@ -249,7 +266,7 @@ describe('HealthMonitor', () => {
 
       await waitForHealth(37777, 1000);
 
-      expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:37777/api/health');
+      expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:37777/api/health');
     });
 
     it('should use default timeout when not specified', async () => {
