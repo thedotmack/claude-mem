@@ -452,3 +452,53 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
     }));
   });
 });
+
+describe('SearchManager searchObservations date grouping', () => {
+  const makeObservation = (id: number, title: string, createdAt: string) => ({
+    id,
+    memory_session_id: `session-${id}`,
+    project: 'search-project',
+    text: null,
+    type: 'discovery',
+    title,
+    subtitle: null,
+    facts: '[]',
+    narrative: null,
+    concepts: '[]',
+    files_read: '[]',
+    files_modified: '[]',
+    prompt_number: 1,
+    discovery_tokens: 0,
+    created_at: createdAt,
+    created_at_epoch: new Date(createdAt).getTime(),
+  });
+
+  it('renders results under day headers so older results are not undated', async () => {
+    const { FormattingService } = await import('../../src/services/worker/FormattingService.js');
+    const { ModeManager } = await import('../../src/services/domain/ModeManager.js');
+    ModeManager.getInstance().loadMode('code');
+    const april = makeObservation(1, 'April observation', '2026-04-10T12:00:00Z');
+    const august = makeObservation(2, 'August observation', '2026-08-22T12:00:00Z');
+
+    const manager = new SearchManager(
+      {
+        searchObservations: mock(() => [august, april]),
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {} as any,
+      null,
+      new FormattingService(),
+      {} as any,
+    );
+
+    const result = await manager.searchObservations({ query: 'observation' });
+    const text = result.content[0].text;
+
+    expect(text).toContain('Found 2 observation(s) matching "observation"');
+    expect(text).toContain('### Apr 10, 2026');
+    expect(text).toContain('### Aug 22, 2026');
+    expect(text).toContain('April observation');
+    expect(text).toContain('August observation');
+  });
+});
