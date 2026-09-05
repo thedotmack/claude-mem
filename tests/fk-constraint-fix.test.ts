@@ -1,6 +1,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../src/services/sqlite/SessionStore.js';
+import { ClaudeProvider } from '../src/services/worker/ClaudeProvider.js';
 
 describe('FK Constraint Fix (Issue #846)', () => {
   let store: SessionStore;
@@ -73,6 +74,74 @@ describe('FK Constraint Fix (Issue #846)', () => {
     }).toThrow('Session 99999 not found in sdk_sessions');
   });
 
+  it('should survive a second generator pass over a session that already has child rows (#3628)', () => {
+    // A worker that already stored data for a session starts a second
+    // generator pass. The old code wrote NULL to sdk_sessions.memory_session_id
+    // to force a fresh SDK start. That NULL cascaded through ON UPDATE CASCADE
+    // into the NOT NULL child columns and rolled back the whole transaction.
+    // The fix resets only the in-memory ID, so re-keying and storing still work.
+    const sessionDbId = store.createSDKSession('second-pass-id', 'test-project', 'test prompt');
+    const firstMemorySessionId = 'first-pass-memory-id';
+
+    store.ensureMemorySessionIdRegistered(sessionDbId, firstMemorySessionId);
+    store.storeObservation(
+      firstMemorySessionId,
+      'test-project',
+      {
+        type: 'discovery',
+        title: 'First pass observation',
+        subtitle: null,
+        facts: [],
+        narrative: null,
+        concepts: [],
+        files_read: [],
+        files_modified: []
+      }
+    );
+    store.storeSummary(
+      firstMemorySessionId,
+      'test-project',
+      {
+        request: 'req',
+        investigated: 'inv',
+        learned: 'learn',
+        completed: 'done',
+        next_steps: 'next',
+        notes: null
+      }
+    );
+
+    // A NULL write with child rows present is the crash the fix removes.
+    expect(() => {
+      store.updateMemorySessionId(sessionDbId, null);
+    }).toThrow(/NOT NULL constraint failed/);
+
+    // The session ID and its child rows stay intact after the failed write.
+    expect(store.getSessionById(sessionDbId)?.memory_session_id).toBe(firstMemorySessionId);
+
+    // The second pass captures a fresh SDK id and re-keys through the
+    // supported path. Storing new child rows succeeds.
+    const secondMemorySessionId = 'second-pass-memory-id';
+    store.ensureMemorySessionIdRegistered(sessionDbId, secondMemorySessionId);
+    expect(store.getSessionById(sessionDbId)?.memory_session_id).toBe(secondMemorySessionId);
+
+    const result = store.storeObservation(
+      secondMemorySessionId,
+      'test-project',
+      {
+        type: 'discovery',
+        title: 'Second pass observation',
+        subtitle: null,
+        facts: [],
+        narrative: null,
+        concepts: [],
+        files_read: [],
+        files_modified: []
+      }
+    );
+    expect(result.id).toBeGreaterThan(0);
+  });
+
   it('should handle observation storage after worker restart scenario', () => {
     const sessionDbId = store.createSDKSession('restart-test-id', 'test-project', 'test prompt');
 
@@ -105,5 +174,48 @@ describe('FK Constraint Fix (Issue #846)', () => {
     );
 
     expect(result.id).toBeGreaterThan(0);
+  });
+
+  it('ClaudeProvider start must reset the carried memory id in memory only, never in the database (#3628)', () => {
+    // Drive the changed provider path directly. A second generator pass over a
+    // session that already has child rows must leave the stored
+    // memory_session_id untouched. A NULL write here would cascade into the
+    // NOT NULL child columns and roll back the storage transaction.
+    const sessionDbId = store.createSDKSession('provider-reset-id', 'test-project', 'test prompt');
+    const memorySessionId = 'carried-memory-id';
+
+    store.ensureMemorySessionIdRegistered(sessionDbId, memorySessionId);
+    store.storeObservation(
+      memorySessionId,
+      'test-project',
+      {
+        type: 'discovery',
+        title: 'Existing child row',
+        subtitle: null,
+        facts: [],
+        narrative: null,
+        concepts: [],
+        files_read: [],
+        files_modified: []
+      }
+    );
+
+    // Fail the test if the provider writes to memory_session_id at all.
+    let updateCalled = false;
+    const originalUpdate = store.updateMemorySessionId.bind(store);
+    store.updateMemorySessionId = (id, value) => {
+      updateCalled = true;
+      return originalUpdate(id, value);
+    };
+
+    const dbManager = { getSessionStore: () => store } as any;
+    const provider = new ClaudeProvider(dbManager, {} as any);
+    const session = { sessionDbId, memorySessionId } as any;
+
+    (provider as any).resetCarriedMemorySessionId(session);
+
+    expect(updateCalled).toBe(false);
+    expect(session.memorySessionId).toBeNull();
+    expect(store.getSessionById(sessionDbId)?.memory_session_id).toBe(memorySessionId);
   });
 });
