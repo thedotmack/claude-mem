@@ -1462,6 +1462,13 @@ export class ChromaMcpManager {
     // Disable Chroma's anonymous telemetry — it issues background HTTP from
     // the embedding subprocess on every collection touch.
     if (!baseEnv.ANONYMIZED_TELEMETRY) baseEnv.ANONYMIZED_TELEMETRY = 'false';
+
+    // Force UTF-8 on the Python child's stdio. Without this, a non-UTF-8 ANSI
+    // code page (e.g. cp936) makes Python encode JSON-RPC stdout in the locale
+    // encoding, which Node then decodes as UTF-8 — the bad bytes become U+FFFD
+    // and JSON.parse throws. These vars govern both directions of the pipe.
+    baseEnv.PYTHONUTF8 = '1';
+    baseEnv.PYTHONIOENCODING = 'utf-8';
     return baseEnv;
   }
 

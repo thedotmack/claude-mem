@@ -761,7 +761,24 @@ export class ChromaSync {
     kind: 'observations' | 'summaries' | 'prompts',
     backfillProject: string
   ): Promise<number> {
-    const rowsWithDocs = rows.map(row => ({ row, docs: formatDocs(row) }));
+    const rowsWithDocs: Array<{ row: T; docs: ChromaDocument[] }> = [];
+    for (const row of rows) {
+      try {
+        rowsWithDocs.push({ row, docs: formatDocs(row) });
+      } catch (error) {
+        // A single unformattable row (e.g. a malformed JSON column) must not
+        // abort the whole backfill. Skip and log it so the rest of the run
+        // proceeds. Mark the id pending so a later higher-id row that advances
+        // the watermark does not strand it: the pending path re-fetches it on
+        // the next run, which self-heals once its format issue is resolved.
+        ChromaSyncState.markPending(backfillProject, kind, [row.id]);
+        logger.warn('CHROMA_SYNC', 'Skipped unformattable row during backfill', {
+          project: backfillProject,
+          kind,
+          rowId: row.id
+        }, error instanceof Error ? error : new Error(String(error)));
+      }
+    }
     const totalDocs = rowsWithDocs.reduce((sum, { docs }) => sum + docs.length, 0);
     let processedDocs = 0;
 
