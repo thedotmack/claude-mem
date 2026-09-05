@@ -3,7 +3,6 @@ import { TableNameRow } from '../../types/database.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { isDirectChild } from '../../shared/path-utils.js';
-import { AppError } from '../server/ErrorHandler.js';
 import {
   ObservationSearchResult,
   SessionSummarySearchResult,
@@ -18,8 +17,6 @@ import { applySqliteConnectionPragmas } from './connection.js';
 
 export class SessionSearch {
   private db: Database;
-
-  private static readonly MISSING_SEARCH_INPUT_MESSAGE = 'Either query or filters required for search';
 
   constructor(dbPathOrDb: string | Database = DB_PATH) {
     if (dbPathOrDb instanceof Database) {
@@ -251,7 +248,9 @@ export class SessionSearch {
     if (!query) {
       const filterClause = this.buildFilterClause(filters, params, 'o');
       if (!filterClause) {
-        throw new AppError(SessionSearch.MISSING_SEARCH_INPUT_MESSAGE, 400, 'INVALID_SEARCH_REQUEST');
+        // No query text and no filters: nothing to match, so return an empty
+        // result set rather than treating a benign empty search as an error.
+        return [];
       }
 
       const orderClause = this.buildOrderClause(orderBy, false);
@@ -307,7 +306,9 @@ export class SessionSearch {
       delete filterOptions.type;
       const filterClause = this.buildFilterClause(filterOptions, params, 's');
       if (!filterClause) {
-        throw new AppError(SessionSearch.MISSING_SEARCH_INPUT_MESSAGE, 400, 'INVALID_SEARCH_REQUEST');
+        // No query text and no filters: nothing to match, so return an empty
+        // result set rather than treating a benign empty search as an error.
+        return [];
       }
 
       const orderClause = orderBy === 'date_asc'
@@ -558,7 +559,9 @@ export class SessionSearch {
 
     if (!query) {
       if (baseConditions.length === 0) {
-        throw new AppError(SessionSearch.MISSING_SEARCH_INPUT_MESSAGE, 400, 'INVALID_SEARCH_REQUEST');
+        // No query text and no filters: nothing to match, so return an empty
+        // result set rather than treating a benign empty search as an error.
+        return [];
       }
 
       const whereClause = `WHERE ${baseConditions.join(' AND ')}`;
