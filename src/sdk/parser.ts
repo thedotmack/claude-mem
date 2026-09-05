@@ -34,6 +34,10 @@ export interface ParsedSummary {
   skip_reason?: string | null;
 }
 
+const OBSERVATION_TITLE_MAX_GRAPHEMES = 120;
+const OBSERVATION_TITLE_TRUNCATE_AT = 117;
+const observationGraphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
 export type ParseResult =
   | { valid: true; observations: ParsedObservation[]; summary: ParsedSummary | null }
   | { valid: false };
@@ -124,6 +128,8 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
         return (colonIndex === -1 ? c : c.slice(0, colonIndex)).trim();
       })
       .filter(c => c !== '' && c !== finalType);
+    let finalTitle = title;
+    let finalNarrative = narrative;
 
     if (cleanedConcepts.length !== concepts.length) {
       logger.debug('PARSER', 'Removed observation type from concepts array', {
@@ -135,19 +141,31 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
     }
 
     if (!title && !narrative && facts.length === 0 && cleanedConcepts.length === 0) {
-      logger.warn('PARSER', 'Skipping empty observation (all content fields null)', {
+      const salvageNarrative = extractUnstructuredObservationText(obsContent);
+      if (!salvageNarrative) {
+        logger.warn('PARSER', 'Skipping empty observation (all content fields null)', {
+          correlationId,
+          type: finalType
+        });
+        continue;
+      }
+
+      const salvage = extractObservationFallback(salvageNarrative);
+      finalTitle = salvage.title;
+      finalNarrative = salvage.narrative;
+      logger.warn('PARSER', 'Salvaged unstructured observation prose as narrative', {
         correlationId,
-        type: finalType
+        type: finalType,
+        chars: salvageNarrative.length
       });
-      continue;
     }
 
     observations.push({
       type: finalType,
-      title,
+      title: finalTitle,
       subtitle,
       facts,
-      narrative,
+      narrative: finalNarrative,
       concepts: cleanedConcepts,
       files_read,
       files_modified
@@ -217,4 +235,50 @@ function extractArrayElements(content: string, arrayName: string, elementName: s
   }
 
   return elements;
+}
+
+function extractUnstructuredObservationText(content: string): string | null {
+  if (/<\/?(summary|skip_summary)\b/i.test(content)) {
+    return null;
+  }
+
+  const stripped = content
+    .replace(
+      /<(type|title|subtitle|narrative|facts|concepts|files_read|files_modified)(?:\s*\/>|>[\s\S]*?<\/\1>)/g,
+      ' '
+    )
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line !== '')
+    .join('\n')
+    .trim();
+
+  return stripped === '' ? null : stripped;
+}
+
+function extractObservationFallback(text: string): { title: string; narrative: string | null } {
+  const lines = text
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line !== '');
+  const firstLine = lines[0] ?? text.trim();
+  const firstLineGraphemes = Array.from(observationGraphemeSegmenter.segment(firstLine), part => part.segment);
+  const hasOverflow = firstLineGraphemes.length > OBSERVATION_TITLE_MAX_GRAPHEMES;
+  const title = hasOverflow
+    ? `${firstLineGraphemes.slice(0, OBSERVATION_TITLE_TRUNCATE_AT).join('')}...`
+    : firstLine;
+  const narrativeLines = hasOverflow
+    ? [firstLineGraphemes.slice(OBSERVATION_TITLE_TRUNCATE_AT).join('').trim(), ...lines.slice(1)]
+    : lines.slice(1);
+  const narrative = narrativeLines
+    .filter(line => line !== '')
+    .join('\n')
+    .trim();
+
+  return {
+    title,
+    narrative: narrative === '' ? null : narrative,
+  };
 }

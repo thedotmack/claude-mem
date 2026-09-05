@@ -109,6 +109,89 @@ describe('parseAgentXml — observations', () => {
     expect(result.valid).toBe(false);
   });
 
+  it('salvages freeform prose inside a closed observation block', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      Refactored transformer_markdown.py helpers and narrowed the shared formatting path.
+      The follow-up kept the line-range handling aligned with the new helpers.
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('discovery');
+    expect(result[0].title).toBe('Refactored transformer_markdown.py helpers and narrowed the shared formatting path.');
+    expect(result[0].narrative).toContain('line-range handling aligned with the new helpers');
+    expect(result[0].narrative).not.toContain('Refactored transformer_markdown.py helpers and narrowed the shared formatting path.');
+  });
+
+  it('keeps self-closing empty fields out of the prose salvage path', () => {
+    const xml = `<observation>
+      <type>bugfix</type>
+      <title/>
+      <narrative/>
+    </observation>`;
+
+    const result = parseAgentXml(xml);
+    expect(result.valid).toBe(false);
+  });
+
+  it('preserves overflow from a long first prose line in the narrative', () => {
+    const longFirstLine = 'A'.repeat(140);
+    const xml = `<observation>
+      <type>discovery</type>
+      ${longFirstLine}
+      Follow-up detail stays in the narrative.
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].title).toBe(`${'A'.repeat(117)}...`);
+    expect(result[0].narrative).toContain('A'.repeat(23));
+    expect(result[0].narrative).toContain('Follow-up detail stays in the narrative.');
+  });
+
+  it('keeps surrogate-pair characters intact when a long first prose line overflows', () => {
+    const longFirstLine = `${'A'.repeat(116)}🧠${'B'.repeat(10)}`;
+    const xml = `<observation>
+      <type>discovery</type>
+      ${longFirstLine}
+      Follow-up detail stays in the narrative.
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].title).toBe(`${'A'.repeat(116)}🧠...`);
+    expect(result[0].title).not.toContain('�');
+    expect(result[0].narrative).toContain('B'.repeat(10));
+    expect(result[0].narrative).toContain('Follow-up detail stays in the narrative.');
+    expect(result[0].narrative).not.toContain('�');
+  });
+
+  it('keeps grapheme clusters intact when a long first prose line overflows', () => {
+    const cases = [
+      { label: 'combining mark', cluster: 'e\u0301' },
+      { label: 'zwj emoji', cluster: '👩‍💻' },
+    ];
+
+    for (const { label, cluster } of cases) {
+      const longFirstLine = `${'A'.repeat(116)}${cluster}${'B'.repeat(10)}`;
+      const xml = `<observation>
+        <type>discovery</type>
+        ${longFirstLine}
+        Follow-up detail stays in the narrative.
+      </observation>`;
+
+      const result = expectObservation(xml);
+
+      expect(result, label).toHaveLength(1);
+      expect(result[0].title, label).toBe(`${'A'.repeat(116)}${cluster}...`);
+      expect(result[0].narrative, label).toBe(`${'B'.repeat(10)}\nFollow-up detail stays in the narrative.`);
+    }
+  });
+
   it('filters out multiple ghost observations while keeping valid ones (#1625)', () => {
     const xml = `
       <observation><type>bugfix</type></observation>
