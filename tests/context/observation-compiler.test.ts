@@ -295,6 +295,72 @@ describe('context compiler platform scoping', () => {
   });
 });
 
+describe('case-insensitive project retrieval (#3531)', () => {
+  const config: ContextConfig = {
+    totalObservationCount: 20,
+    fullObservationCount: 3,
+    sessionCount: 20,
+    showReadTokens: true,
+    showWorkTokens: true,
+    showSavingsAmount: true,
+    showSavingsPercent: true,
+    observationTypes: new Set(['discovery']),
+    observationConcepts: new Set(['case-scope']),
+    fullObservationField: 'narrative',
+    showLastSummary: true,
+    showLastMessage: false,
+  };
+
+  it('resolves rows stored under a mixed-case key when queried with a different case', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      // Machine A wrote the bucket as `PasteyPal` (mixed case). Machine B, whose
+      // directory name differs only in case, now derives `pasteypal` and must
+      // still reach those rows.
+      const sessionDbId = store.createSDKSession('content-3531', 'PasteyPal', 'prompt');
+      store.ensureMemorySessionIdRegistered(sessionDbId, 'mem-3531');
+      store.storeObservation(
+        'mem-3531',
+        'PasteyPal',
+        {
+          type: 'discovery',
+          title: 'CASE_OBS',
+          subtitle: null,
+          facts: [],
+          narrative: 'case narrative',
+          concepts: ['case-scope'],
+          files_read: [],
+          files_modified: [],
+        },
+        1,
+        0,
+        1_700_000_000_000,
+      );
+      store.storeSummary(
+        'mem-3531',
+        'PasteyPal',
+        {
+          request: 'CASE_SUMMARY',
+          investigated: 'investigated',
+          learned: 'learned',
+          completed: 'completed',
+          next_steps: 'next',
+          notes: null,
+        },
+        1,
+        0,
+        1_700_000_000_000,
+      );
+
+      expect(queryObservationsMulti(store, ['pasteypal'], config).map(o => o.title)).toEqual(['CASE_OBS']);
+      expect(querySummariesMulti(store, ['pasteypal'], config).map(s => s.request)).toEqual(['CASE_SUMMARY']);
+      expect(countObservationsByProjects(store, ['pasteypal'])).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+});
+
 describe('concept exact-match injection (#3379)', () => {
   const config: ContextConfig = {
     totalObservationCount: 20,

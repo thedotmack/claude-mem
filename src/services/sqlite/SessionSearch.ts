@@ -159,7 +159,7 @@ export class SessionSearch {
     const conditions: string[] = [];
 
     if (filters.project) {
-      conditions.push(`${tableAlias}.project = ?`);
+      conditions.push(`${tableAlias}.project COLLATE NOCASE = ?`);
       params.push(filters.project);
     }
 
@@ -453,7 +453,7 @@ export class SessionSearch {
 
     const baseConditions: string[] = [];
     if (sessionFilters.project) {
-      baseConditions.push('s.project = ?');
+      baseConditions.push('s.project COLLATE NOCASE = ?');
       sessionParams.push(sessionFilters.project);
     }
 
@@ -533,7 +533,7 @@ export class SessionSearch {
 
     const baseConditions: string[] = [];
     if (filters.project) {
-      baseConditions.push('s.project = ?');
+      baseConditions.push('s.project COLLATE NOCASE = ?');
       params.push(filters.project);
     }
 
