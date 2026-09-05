@@ -1,7 +1,7 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, statSync, utimesSync, copyFileSync } from 'fs';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, statSync, utimesSync, copyFileSync, realpathSync } from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { spawnHidden } from '../../shared/spawn.js';
 import { logger } from '../../utils/logger.js';
@@ -14,6 +14,9 @@ import { paths } from '../../shared/paths.js';
 const DATA_DIR = paths.dataDir();
 const PID_FILE = paths.workerPid();
 
+const BUN_NOT_FOUND_MESSAGE =
+  'Bun runtime not found — install from https://bun.sh and ensure it is on PATH or set BUN env var. The worker daemon requires Bun because it uses bun:sqlite.';
+
 interface RuntimeResolverOptions {
   platform?: NodeJS.Platform;
   execPath?: string;
@@ -21,6 +24,15 @@ interface RuntimeResolverOptions {
   homeDirectory?: string;
   pathExists?: (candidatePath: string) => boolean;
   lookupInPath?: (binaryName: string, platform: NodeJS.Platform) => string | null;
+  realpath?: (candidatePath: string) => string | null;
+}
+
+function resolveRealPath(candidatePath: string): string | null {
+  try {
+    return realpathSync(candidatePath);
+  } catch {
+    return null;
+  }
 }
 
 function isBunExecutablePath(executablePath: string | undefined | null): boolean {
@@ -84,6 +96,7 @@ function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): stri
   const homeDirectory = options.homeDirectory ?? homedir();
   const pathExists = options.pathExists ?? existsSync;
   const lookupInPath = options.lookupInPath ?? lookupBinaryInPath;
+  const realpath = options.realpath ?? resolveRealPath;
 
   const candidatePaths: (string | undefined)[] = platform === 'win32'
     ? [
@@ -94,6 +107,7 @@ function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): stri
         env.USERPROFILE ? path.join(env.USERPROFILE, '.bun', 'bin', 'bun.exe') : undefined,
         env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'bun', 'bun.exe') : undefined,
         env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'bun', 'bin', 'bun.exe') : undefined,
+        env.npm_config_prefix ? path.join(env.npm_config_prefix, 'bun.exe') : undefined, // npm -g install path
       ]
     : [
         env.BUN,
@@ -104,6 +118,7 @@ function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): stri
         '/home/linuxbrew/.linuxbrew/bin/bun',
         '/usr/bin/bun', // Debian/Ubuntu apt install path
         '/snap/bin/bun', // Ubuntu Snap install path
+        env.npm_config_prefix ? path.join(env.npm_config_prefix, 'bin', 'bun') : undefined, // npm -g install path
       ];
 
   for (const candidate of candidatePaths) {
@@ -119,7 +134,17 @@ function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): stri
     }
   }
 
-  return lookupInPath('bun', platform);
+  // PATH fallback. `which bun` returns a path that is on PATH but may be a
+  // dangling npm/nvm shim — the `bun` package's bin symlink whose real binary
+  // never downloaded. Guard it the same way the explicit candidates are
+  // guarded, resolving symlinks so a shim pointing at a missing target is
+  // rejected instead of returned (a bad path here later crashes the spawn).
+  const pathFallback = lookupInPath('bun', platform)?.trim();
+  if (!pathFallback || !isBunExecutablePath(pathFallback)) {
+    return null;
+  }
+  const realFallback = realpath(pathFallback) ?? pathFallback;
+  return pathExists(realFallback) ? realFallback : null;
 }
 
 import {
@@ -384,10 +409,7 @@ export function spawnDaemon(
 
   const runtimePath = resolveWorkerRuntimePath();
   if (!runtimePath) {
-    logger.error(
-      'SYSTEM',
-      'Bun runtime not found — install from https://bun.sh and ensure it is on PATH or set BUN env var. The worker daemon requires Bun because it uses bun:sqlite.'
-    );
+    logger.error('SYSTEM', BUN_NOT_FOUND_MESSAGE);
     return undefined;
   }
 
@@ -426,6 +448,15 @@ export function spawnDaemon(
     detached: true,
     stdio: 'ignore',
     env
+  });
+
+  // Node reports a bad runtime path (dangling shim, missing binary) as an
+  // asynchronous 'error' event, not a synchronous throw. Without this listener
+  // that ENOENT escapes as an uncaught exception in this long-lived process.
+  // Degrade to the Bun-not-found log; the caller sees the failure through the
+  // worker never binding its port.
+  child.on('error', (error: Error) => {
+    logger.error('SYSTEM', BUN_NOT_FOUND_MESSAGE, { runtimePath, execPath }, error);
   });
 
   if (child.pid === undefined) {
