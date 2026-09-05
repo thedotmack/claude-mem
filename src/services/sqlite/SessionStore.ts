@@ -2652,12 +2652,16 @@ export class SessionStore {
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
     generatedByModel?: string
-  ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
+  ): { observationIds: number[]; insertedObservationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
     const storeTx = this.db.transaction(() => {
       const observationIds: number[] = [];
+      // IDs of rows this turn physically inserted, excluding rows that
+      // deduplicated onto earlier turns. Only these may take a later
+      // result-usage discovery_tokens correction; a historical row keeps its own.
+      const insertedObservationIds: number[] = [];
 
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
@@ -2698,6 +2702,7 @@ export class SessionStore {
 
         if (inserted) {
           observationIds.push(inserted.id);
+          insertedObservationIds.push(inserted.id);
           continue;
         }
 
@@ -2736,10 +2741,39 @@ export class SessionStore {
         summaryId = Number(result.lastInsertRowid);
       }
 
-      return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
+      return { observationIds, insertedObservationIds, summaryId, createdAtEpoch: timestampEpoch };
     });
 
     return storeTx();
+  }
+
+  /**
+   * Correct discovery_tokens for a turn's rows after the fact. The claude path
+   * stores discovery_tokens from the streamed assistant frame, which an
+   * SSE-synthesizing gateway leaves at 0 input tokens; the SDK result message
+   * carries the finalized per-turn usage that back-patches those rows.
+   */
+  updateDiscoveryTokens(
+    observationIds: number[],
+    summaryId: number | null,
+    discoveryTokens: number
+  ): void {
+    if (observationIds.length === 0 && summaryId === null) return;
+
+    const updateTx = this.db.transaction(() => {
+      if (observationIds.length > 0) {
+        const obsStmt = this.db.prepare('UPDATE observations SET discovery_tokens = ? WHERE id = ?');
+        for (const id of observationIds) {
+          obsStmt.run(discoveryTokens, id);
+        }
+      }
+      if (summaryId !== null) {
+        this.db.prepare('UPDATE session_summaries SET discovery_tokens = ? WHERE id = ?')
+          .run(discoveryTokens, summaryId);
+      }
+    });
+
+    updateTx();
   }
 
   getSessionSummariesByIds(
