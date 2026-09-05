@@ -20,22 +20,32 @@ import { proTrialLine } from '../../../../shared/pro-promo.js';
 
 const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
 
-const cachedOnboardingExplainer: string | null = (() => {
+// Read on first request, not at import. Hook processes share this module but
+// never serve the onboarding explainer, so caching at import made every hook
+// spawn read the file and log a boot line for nothing (#3665).
+let onboardingExplainerCache: { text: string | null } | undefined;
+
+function getOnboardingExplainer(): string | null {
+  if (onboardingExplainerCache) {
+    return onboardingExplainerCache.text;
+  }
+  let text: string | null;
   try {
-    const text = fs.readFileSync(ONBOARDING_EXPLAINER_PATH, 'utf-8');
-    logger.info('SYSTEM', 'Cached onboarding explainer at boot', {
+    text = fs.readFileSync(ONBOARDING_EXPLAINER_PATH, 'utf-8');
+    logger.debug('SYSTEM', 'Cached onboarding explainer on first request', {
       path: ONBOARDING_EXPLAINER_PATH,
       bytes: Buffer.byteLength(text, 'utf-8'),
     });
-    return text;
   } catch (error: unknown) {
-    logger.debug('SYSTEM', 'Onboarding explainer not present at boot, /api/onboarding/explainer will 404', {
+    logger.debug('SYSTEM', 'Onboarding explainer not present, /api/onboarding/explainer will 404', {
       path: ONBOARDING_EXPLAINER_PATH,
       message: error instanceof Error ? error.message : String(error),
     });
-    return null;
+    text = null;
   }
-})();
+  onboardingExplainerCache = { text };
+  return text;
+}
 
 // TTL-cached settings reader. handleContextInject runs on every hook callback
 // (PostToolUse fires after every Read/Edit), so re-parsing settings.json from
@@ -438,6 +448,7 @@ export class SearchRoutes extends BaseRouteHandler {
   }
 
   private handleOnboardingExplainer = this.wrapHandler((_req: Request, res: Response): void => {
+    const cachedOnboardingExplainer = getOnboardingExplainer();
     if (cachedOnboardingExplainer === null) {
       res.status(404).json({ error: 'Onboarding explainer not available' });
       return;

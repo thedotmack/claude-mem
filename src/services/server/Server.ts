@@ -20,44 +20,61 @@ const INSTRUCTIONS_BASE_DIR: string = path.resolve(__dirname, '../skills/mem-sea
 const INSTRUCTIONS_OPERATIONS_DIR: string = path.join(INSTRUCTIONS_BASE_DIR, 'operations');
 const INSTRUCTIONS_SKILL_PATH: string = path.join(INSTRUCTIONS_BASE_DIR, 'SKILL.md');
 
-const cachedSkillMd: string | null = (() => {
+// Read on first request, not at import. Hook processes import this module but
+// never serve /api/instructions, so caching at import made every hook spawn
+// read SKILL.md plus every operation file and log boot lines for nothing
+// (#3665).
+let skillMdCache: { text: string | null } | undefined;
+
+function getSkillMd(): string | null {
+  if (skillMdCache) {
+    return skillMdCache.text;
+  }
+  let text: string | null;
   try {
-    const text = fs.readFileSync(INSTRUCTIONS_SKILL_PATH, 'utf-8');
-    logger.info('SYSTEM', 'Cached SKILL.md at boot', {
+    text = fs.readFileSync(INSTRUCTIONS_SKILL_PATH, 'utf-8');
+    logger.debug('SYSTEM', 'Cached SKILL.md on first request', {
       path: INSTRUCTIONS_SKILL_PATH,
       bytes: Buffer.byteLength(text, 'utf-8'),
     });
-    return text;
   } catch (error: unknown) {
-    logger.debug('SYSTEM', 'SKILL.md not present at boot, /api/instructions will 404 for topic queries', {
+    logger.debug('SYSTEM', 'SKILL.md not present, /api/instructions will 404 for topic queries', {
       path: INSTRUCTIONS_SKILL_PATH,
       message: error instanceof Error ? error.message : String(error),
     });
-    return null;
+    text = null;
   }
-})();
+  skillMdCache = { text };
+  return text;
+}
 
-const cachedOperationContent: ReadonlyMap<string, string> = (() => {
+let operationContentCache: ReadonlyMap<string, string> | undefined;
+
+function getOperationContent(): ReadonlyMap<string, string> {
+  if (operationContentCache) {
+    return operationContentCache;
+  }
   const map = new Map<string, string>();
   for (const operation of ALLOWED_OPERATIONS) {
     const operationPath = path.join(INSTRUCTIONS_OPERATIONS_DIR, `${operation}.md`);
     try {
       map.set(operation, fs.readFileSync(operationPath, 'utf-8'));
     } catch (error: unknown) {
-      logger.debug('SYSTEM', 'Operation instruction file not present at boot', {
+      logger.debug('SYSTEM', 'Operation instruction file not present', {
         path: operationPath,
         message: error instanceof Error ? error.message : String(error),
       });
     }
   }
   if (map.size > 0) {
-    logger.info('SYSTEM', 'Cached operation instruction files at boot', {
+    logger.debug('SYSTEM', 'Cached operation instruction files on first request', {
       count: map.size,
       operations: Array.from(map.keys()),
     });
   }
+  operationContentCache = map;
   return map;
-})();
+}
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
@@ -272,16 +289,17 @@ export class Server {
       }
 
       if (operation) {
-        const cached = cachedOperationContent.get(operation);
+        const cached = getOperationContent().get(operation);
         if (cached === undefined) {
-          logger.debug('HTTP', 'Instruction file not cached at boot', { operation });
+          logger.debug('HTTP', 'Instruction file not available', { operation });
           return res.status(404).json({ error: 'Instruction not found' });
         }
         return res.json({ content: [{ type: 'text', text: cached }] });
       }
 
+      const cachedSkillMd = getSkillMd();
       if (cachedSkillMd === null) {
-        logger.debug('HTTP', 'SKILL.md not cached at boot', { topic });
+        logger.debug('HTTP', 'SKILL.md not available', { topic });
         return res.status(404).json({ error: 'Instruction not found' });
       }
       const sectionText = this.extractInstructionSection(cachedSkillMd, topic);
