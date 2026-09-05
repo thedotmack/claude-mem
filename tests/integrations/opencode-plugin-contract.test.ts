@@ -106,8 +106,14 @@ describe("OpenCode plugin event contract", () => {
       const plugin = await ClaudeMemPlugin(pluginCtx);
       const toolAfter = plugin["tool.execute.after"];
       await toolAfter(
-        { tool: "read", sessionID: "ses_1", callID: "c1" },
-        { title: "Read", output: "file contents", metadata: {}, args: { path: "/a" } },
+        {
+          tool: "read",
+          sessionID: "ses_input_only",
+          callID: "c1",
+          // Matches the issue-author's captured OpenCode payload: args are on input.
+          args: { path: "/a" },
+        },
+        { title: "Read", output: "file contents", metadata: {} },
       );
 
       const initPost = posts.find((p) => p.url.includes("/api/sessions/init"));
@@ -116,7 +122,99 @@ describe("OpenCode plugin event contract", () => {
       expect(obsPost, "tool.execute.after should POST an observation").toBeTruthy();
       const obsBody = obsPost!.body as Record<string, unknown>;
       expect(obsBody.tool_name).toBe("read");
+      expect(obsBody.tool_input).toEqual({ path: "/a" });
       expect(obsBody.tool_response).toBe("file contents");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("prefers input args when both hook payloads contain arguments", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["tool.execute.after"](
+        { tool: "write", sessionID: "ses_precedence", callID: "c2", args: { path: "/input" } },
+        { title: "Write", output: "ok", metadata: {}, args: { path: "/output" } },
+      );
+
+      const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
+      expect((obsPost!.body as Record<string, unknown>).tool_input).toEqual({ path: "/input" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("retains output args as the fallback when input args are absent", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_output_fallback", callID: "c3" },
+        { title: "Read", output: "ok", metadata: {}, args: { path: "/fallback" } },
+      );
+
+      const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
+      expect((obsPost!.body as Record<string, unknown>).tool_input).toEqual({ path: "/fallback" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("uses an empty object when neither hook payload contains args", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["tool.execute.after"](
+        { tool: "list", sessionID: "ses_empty_fallback", callID: "c4" },
+        { title: "List", output: "ok", metadata: {} },
+      );
+
+      const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
+      expect((obsPost!.body as Record<string, unknown>).tool_input).toEqual({});
+      expect((obsPost!.body as Record<string, unknown>).tool_name).toBe("list");
+      expect((obsPost!.body as Record<string, unknown>).tool_response).toBe("ok");
+      expect((obsPost!.body as Record<string, unknown>).cwd).toBe("/tmp/x");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("keeps the selected empty input object when output args are also present", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const plugin = await ClaudeMemPlugin(pluginCtx);
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_empty_input", callID: "c5", args: {} },
+        { title: "Read", output: "ok", metadata: {}, args: { path: "/output" } },
+      );
+
+      const obsPost = posts.find((p) => p.url.includes("/api/sessions/observations"));
+      expect((obsPost!.body as Record<string, unknown>).tool_input).toEqual({});
     } finally {
       globalThis.fetch = originalFetch;
     }
