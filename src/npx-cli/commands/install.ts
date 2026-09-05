@@ -20,6 +20,7 @@ import {
   installPluginDependencies,
   writeInstallMarker,
   isInstallCurrent,
+  ensureInstallCompleteMarker,
 } from '../install/setup-runtime.js';
 import { playBanner } from '../banner.js';
 import { normalizeRuntimeFlag } from './server-runtime-setup.js';
@@ -2098,6 +2099,12 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             }
             writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
           }
+          // isInstallCurrent's fast path above can skip installPluginDependencies
+          // entirely for an already-good install, which would otherwise never get
+          // the completion marker Setup's own auto-install requires (PR #3799
+          // review) — a legacy-valid tree would then look interrupted and get
+          // deleted on the next launch. No-op if the marker is already there.
+          ensureInstallCompleteMarker(cacheDir);
           writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion);
           return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${styleText('green', 'OK')}`;
         },

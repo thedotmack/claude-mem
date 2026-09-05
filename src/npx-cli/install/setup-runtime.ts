@@ -71,6 +71,14 @@ interface MarkerSchema {
 const LEGACY_VERSION_MARKER_RE =
   /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
+// Duplicated literal, not shared: this must match plugin/scripts/version-check.js's
+// NODE_MODULES_INSTALL_COMPLETE_MARKER exactly. version-check.js is a dependency-free
+// bootstrap script that cannot import from this compiled module (it runs before/while
+// node_modules is being materialised), so the two files intentionally duplicate this
+// filename rather than share it — matching this file's existing LEGACY_VERSION_MARKER_RE
+// duplication with the same script.
+const NODE_MODULES_INSTALL_COMPLETE_MARKER = '.claude-mem-install-complete';
+
 function markerPath(targetDir: string): string {
   return join(targetDir, '.install-version');
 }
@@ -455,7 +463,26 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
     throw new Error(`bun install failed in ${targetDir}\n${describeExecError(err)}`);
   }
 
+  ensureInstallCompleteMarker(targetDir);
+}
+
+/**
+ * Write node_modules/.claude-mem-install-complete if it isn't already there,
+ * after confirming targetDir's dependencies actually resolve. version-check.js's
+ * Setup-phase auto-install (gh #3793) treats node_modules without this marker
+ * as an interrupted install and deletes it. A caller that determines an
+ * install is already current (isInstallCurrent) can skip calling
+ * installPluginDependencies entirely and so never reach the write above -
+ * that legacy-valid tree would then look interrupted to Setup and get
+ * deleted, breaking the plugin if the forced reinstall then fails (PR #3799
+ * review). Callers that know an install is current, not just freshly
+ * installed, must still call this to keep the marker's invariant true.
+ */
+export function ensureInstallCompleteMarker(targetDir: string): void {
+  const markerPath = join(targetDir, 'node_modules', NODE_MODULES_INSTALL_COMPLETE_MARKER);
+  if (existsSync(markerPath)) return;
   verifyCriticalModules(targetDir);
+  writeFileSync(markerPath, '');
 }
 
 export function readInstallMarker(targetDir: string): MarkerSchema | null {
