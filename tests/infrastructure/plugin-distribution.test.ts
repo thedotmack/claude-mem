@@ -280,7 +280,7 @@ describe('Plugin Distribution - package.json Files Field', () => {
     expect(packageJson.files).toContain('plugin/sqlite');
   });
 
-  it('npm tarball includes sqlite runtime modules required by the worker', () => {
+  it('npm tarball includes runtime and Claude marketplace root manifests required by clean installs (#3424)', () => {
     const result = spawnSync('npm', ['pack', '--dry-run', '--json'], {
       cwd: projectRoot,
       encoding: 'utf-8',
@@ -292,6 +292,8 @@ describe('Plugin Distribution - package.json Files Field', () => {
 
     expect(filePaths.has('plugin/sqlite/SessionStore.js')).toBe(true);
     expect(filePaths.has('plugin/sqlite/observations/files.js')).toBe(true);
+    expect(filePaths.has('.claude-plugin/marketplace.json')).toBe(true);
+    expect(filePaths.has('.claude-plugin/plugin.json')).toBe(true);
   });
 });
 
