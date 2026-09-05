@@ -47,6 +47,30 @@ const HOOK_READINESS_TIMEOUT_MS = readTimeoutEnv(
   { min: 0, max: 300000 }
 );
 
+/**
+ * How long a worker may stay healthy-but-never-ready before it is treated as
+ * WEDGED and recycled (seconds of the worker's own reported uptime).
+ *
+ * Readiness is not recycled on eagerly: a cold boot is legitimately un-ready
+ * for a while (Chroma prewarm alone defaults to 120s), and killing during boot
+ * is exactly the restart storm #3378 documents. The worker's self-reported
+ * uptime separates the two cases without any new state file — a freshly
+ * spawned replacement starts at ~0s and is therefore immune until it has had
+ * the full window to finish initializing, so this cannot feed back on itself.
+ *
+ * Without this, a worker whose background init threw stays `initialized:false`
+ * forever while still serving 200 on /api/health. Because it reports the
+ * CORRECT version, the version-mismatch recycle below never fires and the hook
+ * skips every call indefinitely (observed: one worker wedged for 7.15 days
+ * after a bun:sqlite API error, until the hook-failure counter tripped and
+ * started blocking hooks outright).
+ */
+const WEDGED_WORKER_UPTIME_S = readTimeoutEnv(
+  'CLAUDE_MEM_WEDGED_WORKER_UPTIME_S',
+  300,
+  { min: 60, max: 86400 }
+);
+
 const API_REQUEST_TIMEOUT_BOUNDS = { min: 500, max: 300000 } as const;
 
 export async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs: number): Promise<Response> {
@@ -398,6 +422,26 @@ async function fetchWorkerHealthVersion(): Promise<string | null> {
 }
 
 /**
+ * Read the worker's self-reported uptime in seconds from GET /api/health
+ * (Server.ts publishes `getUptimeSeconds(startTime)`). Used only to tell a
+ * wedged worker apart from one that is still booting. Returns null when the
+ * worker is unreachable or the payload lacks a usable number, and callers
+ * MUST treat null as "not wedged" — an unreadable uptime is never grounds to
+ * kill a process.
+ */
+async function fetchWorkerHealthUptimeSeconds(): Promise<number | null> {
+  try {
+    const response = await workerHttpRequest('/api/health', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
+    const body = await response.json() as { uptime?: unknown };
+    return typeof body.uptime === 'number' && Number.isFinite(body.uptime) ? body.uptime : null;
+  } catch (error: unknown) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.debug('SYSTEM', 'Worker health-uptime fetch failed', {}, err);
+    return null;
+  }
+}
+
+/**
  * After SIGKILLing the stale worker, wait for the OS to release its listen
  * socket before lazy-spawning — the worker boot refuses to start while the
  * port is bound. A rejected connection is the port-free signal. Only called
@@ -479,20 +523,37 @@ export async function ensureWorkerRunning(): Promise<boolean> {
     }
     if (matches) {
       const ready = await waitForWorkerReadiness();
-      if (!ready) {
-        logger.warn('SYSTEM', 'Worker is healthy but not ready; skipping hook API call');
+      if (ready) {
+        if (expectedPluginVersion !== null) {
+          await warnIfVersionStillMismatched(expectedPluginVersion);
+        }
+        return true;
+      }
+
+      // Same version, but not ready. Either it is still booting (leave it
+      // alone) or its background init died and it will NEVER become ready
+      // (recycle it — nothing else will, because the version matches). The
+      // worker's own uptime is the discriminator; see WEDGED_WORKER_UPTIME_S.
+      const uptimeSeconds = await fetchWorkerHealthUptimeSeconds();
+      if (uptimeSeconds === null || uptimeSeconds < WEDGED_WORKER_UPTIME_S) {
+        logger.warn('SYSTEM', 'Worker is healthy but not ready; skipping hook API call', {
+          uptimeSeconds,
+          wedgedAfterSeconds: WEDGED_WORKER_UPTIME_S,
+        });
         return false;
       }
-      if (expectedPluginVersion !== null) {
-        await warnIfVersionStillMismatched(expectedPluginVersion);
-      }
-      return true;
-    }
 
-    logger.info('SYSTEM', 'Worker version mismatch — killing stale worker', {
-      pluginVersion,
-      workerVersion,
-    });
+      logger.info('SYSTEM', 'Worker healthy but never became ready — recycling wedged worker', {
+        uptimeSeconds,
+        wedgedAfterSeconds: WEDGED_WORKER_UPTIME_S,
+        version: workerVersion,
+      });
+    } else {
+      logger.info('SYSTEM', 'Worker version mismatch — killing stale worker', {
+        pluginVersion,
+        workerVersion,
+      });
+    }
     // The stale worker must never run its own replacement. The previous
     // design (POST /api/admin/restart, then the dying worker spawns its
     // successor) executed the OLD install's handoff code: a ≤13.11.0 worker
