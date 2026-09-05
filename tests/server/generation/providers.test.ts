@@ -20,14 +20,14 @@ import { OpenRouterObservationProvider } from '../../../src/server/generation/pr
 import { buildServerGenerationPrompt } from '../../../src/server/generation/providers/shared/prompt-builder.js';
 import type { ServerGenerationContext } from '../../../src/server/generation/providers/shared/types.js';
 
-function makeContext(overrides: Partial<{ payload: unknown; serverSessionId: string | null }> = {}): ServerGenerationContext {
+function makeContext(overrides: Partial<{ payload: unknown; serverSessionId: string | null; sourceType: 'agent_event' | 'session_summary' }> = {}): ServerGenerationContext {
   return {
     job: {
       id: 'job-1',
       projectId: 'proj-1',
       teamId: 'team-1',
       agentEventId: 'evt-1',
-      sourceType: 'agent_event',
+      sourceType: overrides.sourceType ?? 'agent_event',
       sourceId: 'evt-1',
       serverSessionId: overrides.serverSessionId ?? null,
       jobType: 'observation_generate_for_event',
@@ -159,6 +159,35 @@ describe('shared error classification', () => {
 });
 
 describe('buildServerGenerationPrompt', () => {
+  // A session_summary job is a different task, and its persistence path only
+  // understands a <summary> block. Asking it for <observation> produced responses
+  // that the summary path discarded without a trace.
+  it('asks for a <summary> block on session_summary jobs', () => {
+    const result = buildServerGenerationPrompt(makeContext({ sourceType: 'session_summary' }));
+    expect(result.prompt).toContain('<summary>...</summary>');
+    expect(result.prompt).toContain('<request>');
+    expect(result.prompt).toContain('<learned>');
+    expect(result.prompt).toContain('<next_steps>');
+  });
+
+  it('does not ask a session_summary job for <observation> blocks', () => {
+    const result = buildServerGenerationPrompt(makeContext({ sourceType: 'session_summary' }));
+    expect(result.prompt).not.toContain('<observation>...</observation>');
+  });
+
+  it('still asks for <observation> blocks on agent_event jobs', () => {
+    const result = buildServerGenerationPrompt(makeContext());
+    expect(result.prompt).toContain('<observation>...</observation>');
+    expect(result.prompt).not.toContain('<summary>...</summary>');
+  });
+
+  it('keeps offering the skip escape hatch on both job types', () => {
+    for (const sourceType of ['agent_event', 'session_summary'] as const) {
+      expect(buildServerGenerationPrompt(makeContext({ sourceType })).prompt)
+        .toContain('<skip_summary />');
+    }
+  });
+
   it('strips <private> tags from event payload before sending', () => {
     const context = makeContext({
       payload: '<private>secret</private>visible',
