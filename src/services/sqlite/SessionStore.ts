@@ -1326,26 +1326,20 @@ export class SessionStore {
   }
 
   private ensureDiscoveryTokensColumn(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(11) as SchemaVersion | undefined;
-    if (applied) return;
-
+    // Guard on actual table schema, not schema_versions history (#3738).
+    // An old-version worker can rebuild tables and drop columns while
+    // schema_versions still records the migration as applied.
     const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
-    const obsHasDiscoveryTokens = observationsInfo.some(col => col.name === 'discovery_tokens');
-
-    if (!obsHasDiscoveryTokens) {
+    if (!observationsInfo.some(col => col.name === 'discovery_tokens')) {
       this.db.run('ALTER TABLE observations ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
       logger.debug('DB', 'Added discovery_tokens column to observations table');
     }
 
     const summariesInfo = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
-    const sumHasDiscoveryTokens = summariesInfo.some(col => col.name === 'discovery_tokens');
-
-    if (!sumHasDiscoveryTokens) {
+    if (!summariesInfo.some(col => col.name === 'discovery_tokens')) {
       this.db.run('ALTER TABLE session_summaries ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
       logger.debug('DB', 'Added discovery_tokens column to session_summaries table');
     }
-
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(11, new Date().toISOString());
   }
 
   private createPendingMessagesTable(): void {
