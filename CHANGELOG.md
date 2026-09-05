@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.24.1] - 2026-09-05
+
+## Patch release — ship the rebuilt plugin bundles
+
+`v13.24.0` bumped every manifest to 13.24.0 but never re-ran the build, so the committed
+`plugin/scripts/*.cjs` artifacts still carried the 13.23.1 bytes. Because the Claude Code
+marketplace installs straight from this repo (`.claude-plugin/marketplace.json` →
+`"source": "./plugin"`), marketplace users on 13.24.0 were executing 13.23.1 code.
+
+That mismatch put the worker in an unbounded kill/respawn loop: `ensureWorkerRunning()`
+compares the resolved plugin version (13.24.0, from the plugin cache directory name)
+against the worker's baked-in `__DEFAULT_PACKAGE_VERSION__` (13.23.1, reported by
+`/api/health`), SIGKILLs on mismatch, and respawns the same stale file on the next hook
+event — taking the in-flight observer down with it every time.
+
+### What's in this release
+
+- **Rebuilt plugin bundles** (#3857, merged as #3878) — `plugin/scripts/worker-service.cjs`,
+  `mcp-server.cjs`, `server-service.cjs`, `transcript-watcher.cjs` and `plugin/sqlite/SessionStore.js`
+  are regenerated from source, so the shipped artifacts match the manifest version.
+- **Clean patch version** — 13.24.1 so existing 13.24.0 installs actually pull the corrected
+  artifacts on upgrade rather than sitting on a cached, byte-identical 13.24.0.
+
+### Upgrading
+
+Marketplace users: update the plugin. npm users: `npx claude-mem@13.24.1`.
+
+Ships the fix for #3857 (PR #3878).
+
 ## [13.24.0] - 2026-09-03
 
 ## Independent Cursor and Grok Bot marketplace plugins
