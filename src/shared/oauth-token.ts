@@ -113,18 +113,37 @@ async function readMacOsKeychain(): Promise<OAuthTokenResult> {
  * CredRead API. We use a PowerShell snippet that calls CredRead for the
  * common target name patterns Claude Desktop is known to use.
  */
-async function readWindowsCredentialManager(): Promise<OAuthTokenResult> {
+/**
+ * Printed by the snippet below when the P/Invoke shim itself fails to compile.
+ *
+ * Without it a shim failure is indistinguishable from an empty read — the script exits 0
+ * with no output, and the caller reports "no entry for Claude Code-credentials", sending
+ * anyone debugging it to look for a credential that is in fact present.
+ */
+export const WINDOWS_CRED_SHIM_ERROR_MARKER = '__CLAUDEMEM_CRED_SHIM_ERROR__';
+
+/**
+ * Build the PowerShell snippet that reads the OAuth blob out of Credential Manager.
+ *
+ * Exported so the shim can be checked without a Windows host. `Add-Type -Name <X>`
+ * generates a C# class `<X>`, and C# rejects a class containing a member of its own name
+ * with CS0542, "member names cannot be the same as their enclosing type". The shim was
+ * `-Name CredRead` declaring `CredRead`, so the type never compiled, every call threw,
+ * and the two SilentlyContinue settings swallowed it.
+ */
+export function buildWindowsCredentialScript(username: string): string {
   // PowerShell snippet enumerates likely target names and prints the JSON blob.
   // The exact target name on Windows is "Claude Code-credentials" or
   // "Claude Code:credentials" (Claude Desktop uses `${service}:${account}` or
   // `${service}` depending on version). This script tries both.
   // Username is escaped with PowerShell's single-quote convention (' → '') in
   // case future Windows versions or domain-joined machines permit ' in usernames.
-  const psSafeUsername = userInfo().username.replace(/'/g, "''");
-  const psScript = `
+  const psSafeUsername = username.replace(/'/g, "''");
+  return `
     $ErrorActionPreference = 'SilentlyContinue'
     $candidates = @('Claude Code-credentials', 'Claude Code:credentials', 'Claude Code-credentials:${psSafeUsername}')
-    Add-Type -Namespace ClaudeMem -Name CredRead -MemberDefinition @"
+    try {
+      Add-Type -Namespace ClaudeMem -Name CredApi -MemberDefinition @"
       [DllImport("Advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
       public static extern bool CredRead(string target, uint type, uint reservedFlag, out IntPtr CredentialPtr);
       [DllImport("Advapi32.dll", SetLastError=true)]
@@ -137,21 +156,29 @@ async function readWindowsCredentialManager(): Promise<OAuthTokenResult> {
         public uint Persist; public uint AttributeCount; public IntPtr Attributes;
         public string TargetAlias; public string UserName;
       }
-"@ -ErrorAction SilentlyContinue
+"@ -ErrorAction Stop
+    } catch {
+      Write-Output "${WINDOWS_CRED_SHIM_ERROR_MARKER} $($_.Exception.Message)"
+      exit 0
+    }
     foreach ($t in $candidates) {
       $ptr = [IntPtr]::Zero
-      $ok = [ClaudeMem.CredRead]::CredRead($t, 1, 0, [ref]$ptr)
+      $ok = [ClaudeMem.CredApi]::CredRead($t, 1, 0, [ref]$ptr)
       if ($ok) {
-        $cred = [System.Runtime.InteropServices.Marshal]::PtrToStructure($ptr, [Type][ClaudeMem.CredRead+CREDENTIAL])
+        $cred = [System.Runtime.InteropServices.Marshal]::PtrToStructure($ptr, [Type][ClaudeMem.CredApi+CREDENTIAL])
         $bytes = New-Object byte[] $cred.CredentialBlobSize
         [System.Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, $cred.CredentialBlobSize)
-        [ClaudeMem.CredRead]::CredFree($ptr) | Out-Null
+        [ClaudeMem.CredApi]::CredFree($ptr) | Out-Null
         [System.Text.Encoding]::Unicode.GetString($bytes)
         exit 0
       }
     }
     exit 0
   `.trim();
+}
+
+async function readWindowsCredentialManager(): Promise<OAuthTokenResult> {
+  const psScript = buildWindowsCredentialScript(userInfo().username);
 
   let stdout: string;
   try {
@@ -169,6 +196,19 @@ async function readWindowsCredentialManager(): Promise<OAuthTokenResult> {
     };
   }
   const raw = stdout.trim();
+  if (raw.startsWith(WINDOWS_CRED_SHIM_ERROR_MARKER)) {
+    // The lookup never ran, so nothing here says anything about whether a credential
+    // exists. Reporting "no entry" would be a wrong answer rather than a missing one.
+    const detail = raw.slice(WINDOWS_CRED_SHIM_ERROR_MARKER.length).trim();
+    logger.warn('OAUTH', 'Windows Credential Manager shim failed to compile', {
+      service: KEYCHAIN_SERVICE_NAME,
+      detail,
+    });
+    return {
+      kind: 'absent',
+      reason: `Windows Credential Manager could not be queried: the CredRead shim failed to compile (${detail})`,
+    };
+  }
   if (!raw) {
     return { kind: 'absent', reason: 'Windows Credential Manager has no entry for "Claude Code-credentials"' };
   }
