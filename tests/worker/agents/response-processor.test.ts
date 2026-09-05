@@ -1102,6 +1102,36 @@ describe('ResponseProcessor', () => {
     });
   });
 
+  describe('signed-out CLI prose preserves the batch (#3606)', () => {
+    // End to end over the branch the matcher gates: the CLI's signed-out
+    // wording must reach the auth branch (reset to pending + abort) instead of
+    // the prose fallback, which confirms the claim and loses the work.
+    it('resets the batch to pending instead of confirming it', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(1));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+      const session = createMockSession();
+
+      await processAgentResponse(
+        'Not logged in · Please run /login',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(session.abortReason).toBe('auth:observer_text');
+    });
+  });
   describe('lastSummaryStored tracking (#1633)', () => {
     it('should set lastSummaryStored=true when storage returns a summaryId', async () => {
       mockStoreObservations.mockImplementation(() => ({

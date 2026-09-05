@@ -186,3 +186,59 @@ describe('previewOutput', () => {
     expect(previewOutput(42)).toContain('non-string');
   });
 });
+
+describe('isAuthFailureObserverOutput recognises the CLI signed-out wording (#3606)', () => {
+  // Reported from a 25-session fleet: after a reboot logged the default
+  // ~/.claude profile out, every batch came back as this prose. None of the
+  // existing patterns mention it — they all key on the word "authentication" —
+  // so the response fell through to the prose branch, which calls
+  // confirmClaimedMessages. 857 batches were confirmed and dropped over three
+  // hours, and no observation was written.
+  const SIGNED_OUT = [
+    'Not logged in · Please run /login',
+    'Not logged in',
+    'Invalid API key · Please run /login',
+    'Please run /login',
+    // The status line may stand alone, or introduce its remediation.
+    'Not logged in.',
+    'Not logged in: run /login',
+    'Not logged in — Please run /login',
+  ];
+
+  for (const output of SIGNED_OUT) {
+    it(`preserves the batch for: ${output}`, () => {
+      expect(isAuthFailureObserverOutput(output)).toBe(true);
+    });
+  }
+
+  // The same words in a completed observation must stay prose. Preserving a
+  // batch that already succeeded pauses the generator and retries it, so a
+  // false positive here is the mirror of the bug being fixed.
+  const NARRATIVE = [
+    'The observer noted the session was not logged in during the reboot window.',
+    'Please run /login in the observed project instructions.',
+    'The project authentication guide says to run /login before testing.',
+    'Documented that "Not logged in" is the wording the CLI uses when signed out.',
+    // Reported on review: anchoring alone does not separate the CLI's status
+    // line from an observation that OPENS with the same words. Preserving one
+    // of these resets a batch that already succeeded and pauses the generator.
+    'Not logged in during the reboot window; the observer recorded no new findings.',
+    'Not logged in. The observer recorded no new findings for this batch.',
+    'Not logged in sessions were reviewed and the retry path documented.',
+    // Reported on the second review round: a separator after the status is
+    // not enough either, so the status must be the WHOLE response.
+    'Not logged in — the observer recorded nothing new.',
+    'Not logged in: sessions were reviewed and the retry path documented.',
+    'Not logged in · the reboot window is documented in the runbook.',
+  ];
+
+  for (const prose of NARRATIVE) {
+    it(`leaves prose alone: ${prose.slice(0, 45)}…`, () => {
+      expect(isAuthFailureObserverOutput(prose)).toBe(false);
+    });
+  }
+
+  it('still leaves XML alone', () => {
+    expect(isAuthFailureObserverOutput('<observation><title>Not logged in</title></observation>')).toBe(false);
+  });
+});
