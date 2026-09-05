@@ -2,6 +2,7 @@
 import { getCredential } from '../../shared/EnvManager.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { openRouterAttributionHeaders, OPENROUTER_APP_TITLE } from '../../shared/openrouter-attribution.js';
+import { fetchWithOpenRouterTokenCompatibility } from '../../shared/openrouter-token-compatibility.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { clearProFallbackOnGatewaySuccess, isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
@@ -363,7 +364,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     priorRequestId: string | null,
     attemptSignal: AbortSignal
   ): Promise<Response> {
-    return fetch(apiUrl, {
+    return fetchWithOpenRouterTokenCompatibility(fetch, apiUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -371,18 +372,16 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         'Content-Type': 'application/json',
         ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
       },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature: 0.3,  // Lower temperature for structured extraction
-        max_tokens: 4096,
-        // Ask openrouter.ai for usage accounting (token counts + cost).
-        // Only sent to openrouter.ai — strict custom gateways may reject
-        // unknown body fields.
-        ...(apiUrl.includes('openrouter.ai') ? { usage: { include: true } } : {}),
-      }),
       signal: attemptSignal,
-    });
+    }, {
+      model,
+      messages,
+      temperature: 0.3,  // Lower temperature for structured extraction
+      // Ask openrouter.ai for usage accounting (token counts + cost).
+      // Only sent to openrouter.ai — strict custom gateways may reject
+      // unknown body fields.
+      ...(apiUrl.includes('openrouter.ai') ? { usage: { include: true } } : {}),
+    }, 4096);
   }
 
   private async queryOpenRouterMultiTurn(

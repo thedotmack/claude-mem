@@ -2,6 +2,7 @@
 
 import { resolveOpenRouterChatCompletionsUrl } from '../../../shared/openrouter-base-url.js';
 import { openRouterAttributionHeaders, OPENROUTER_APP_URL, OPENROUTER_APP_TITLE } from '../../../shared/openrouter-attribution.js';
+import { fetchWithOpenRouterTokenCompatibility } from '../../../shared/openrouter-token-compatibility.js';
 import { logger } from '../../../utils/logger.js';
 import {
   ServerClassifiedProviderError,
@@ -141,21 +142,19 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
   }
 
   private postChatCompletion(prompt: string, signal?: AbortSignal): Promise<Response> {
-    return this.fetchImpl(this.apiUrl, {
+    return fetchWithOpenRouterTokenCompatibility(this.fetchImpl, this.apiUrl, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
         ...openRouterAttributionHeaders(this.siteUrl, this.appName),
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: this.model,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.3,
-        max_tokens: this.maxOutputTokens,
-      }),
       signal,
-    });
+    }, {
+      model: this.model,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.3,
+    }, this.maxOutputTokens);
   }
 }
 
