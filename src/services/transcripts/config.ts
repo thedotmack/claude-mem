@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
-import { paths } from '../../shared/paths.js';
+import { expandTilde, paths } from '../../shared/paths.js';
 import type { TranscriptSchema, TranscriptWatchConfig } from './types.js';
 
 export const DEFAULT_CONFIG_PATH = paths.transcriptsConfig();
@@ -55,10 +55,12 @@ export function filterNativeHookBackedCodexWatches(
 
 export function expandHomePath(inputPath: string): string {
   if (!inputPath) return inputPath;
-  if (inputPath.startsWith('~')) {
-    return join(homedir(), inputPath.slice(1));
-  }
-  return inputPath;
+  // expandTilde rather than expandHome: both leave `~user/...` alone, which is the point of this
+  // change, but only expandTilde also accepts the Windows `~\` form the replaced inline version
+  // handled by slicing one character off any leading tilde. These are filesystem paths with no
+  // separator-normalising pass anywhere downstream, so dropping `~\` would leave a configured
+  // transcript path unresolved and the config simply failing to load.
+  return expandTilde(inputPath);
 }
 
 export function loadTranscriptWatchConfig(path = DEFAULT_CONFIG_PATH): TranscriptWatchConfig {
