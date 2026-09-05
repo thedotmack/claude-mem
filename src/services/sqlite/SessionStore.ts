@@ -73,10 +73,25 @@ interface SdkSessionDetailRow {
   observed_billing: string | null;
 }
 
+export interface SessionStoreOptions {
+  /**
+   * Whether this store may enqueue mutation ops into sync_outbox. The only
+   * consumer of that queue is CloudSync's drain, and DatabaseManager
+   * constructs CloudSync iff cloud sync is fully credentialed — so the
+   * worker bootstrap passes the same configuration state here, and an
+   * unconfigured install produces no ops it can never drain. Defaults to
+   * true (the pre-flag behavior) for direct constructions that never wire
+   * the flag.
+   */
+  syncOpsEnabled?: boolean;
+}
+
 export class SessionStore {
   public db: Database;
+  private readonly syncOpsEnabled: boolean;
 
-  constructor(dbPathOrDb: string | Database = DB_PATH) {
+  constructor(dbPathOrDb: string | Database = DB_PATH, options: SessionStoreOptions = {}) {
+    this.syncOpsEnabled = options.syncOpsEnabled ?? true;
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
     } else {
@@ -1922,8 +1937,25 @@ export class SessionStore {
    * RULES, SyncApply.ts). Pure SQL, no notify(): callers on the worker
    * connection nudge CloudSync themselves; the startup drain catches the
    * rest.
+   *
+   * Producer gate: acked ops are DELETEd by CloudSync's drain — the queue's
+   * ONLY retention path — and CloudSync exists iff cloud sync is fully
+   * credentialed. With syncOpsEnabled false (unconfigured install) this
+   * no-ops instead of growing sync_outbox forever.
+   *
+   * Supersede, don't append (set_prompt_session): every session
+   * re-registration re-emits the repair for EVERY prompt in the session
+   * (requeuePromptSync), and the mutation site bumps the prompt's sync_rev
+   * before each enqueue — so per target the newest op always carries the
+   * complete field set at the highest rev, and a still-queued older op is
+   * dead weight. Replicas apply by the op.rev >= row sync_rev guard, so
+   * dropping an unsent superseded op cannot regress them; one already pushed
+   * (ack lost mid-flight) is ordered before the newer op in the hub log and
+   * converges the same way. This bounds the outbox at one
+   * set_prompt_session row per prompt regardless of re-registration count.
    */
   private enqueueMutationOp(rev: string | number, body: CanonicalMutation): void {
+    if (!this.syncOpsEnabled) return;
     // set_prompt_session records NULL as the durable "this device" marker;
     // validate the exact mutation shape/UTF-8 bounds with a temporary valid
     // device id before appending. CloudSync substitutes the resolved device
@@ -1934,6 +1966,22 @@ export class SessionStore {
       if (target?.origin_device_id === null) target.origin_device_id = 'self';
     }
     validateCanonicalMutation(candidate);
+    if (body.op === 'set_prompt_session') {
+      // json_valid guards tampered rows from aborting the enqueue (the v49
+      // precedent); every writer stores JSON.stringify output. No rev guard:
+      // the sync_rev bump above each enqueue makes revs monotonic per
+      // target, so the incoming op always supersedes what is queued.
+      this.db.prepare(`
+        DELETE FROM sync_outbox
+        WHERE json_valid(body)
+          AND json_extract(body, '$.op') = 'set_prompt_session'
+          AND json_extract(body, '$.target.origin_device_id') IS ?
+          AND json_extract(body, '$.target.origin_local_id') = ?
+      `).run(
+        (body.target?.origin_device_id ?? null) as string | null,
+        String(body.target?.origin_local_id ?? ''),
+      );
+    }
     this.db.prepare(`
       INSERT INTO sync_outbox (op_uuid, rev, body, created_at_epoch)
       VALUES (?, ?, ?, ?)
@@ -1961,8 +2009,17 @@ export class SessionStore {
    * stampGuard unnecessary: the drain stamps synced_at only where the acked
    * rev still equals the row's sync_rev, so a registration landing while a
    * POST is in flight leaves the row unsynced and it re-pushes corrected.
+   *
+   * With sync ops disabled the whole repair is skipped: the bump + re-null
+   * exist only so already-pushed rows re-push corrected, nothing pushes
+   * without CloudSync, and a prompt that first syncs after a later
+   * enablement resolves its session join fields at snapshot time anyway
+   * (the drain SELECT joins sdk_sessions). Skipping also keeps v47
+   * launch-baseline rows excluded instead of promoting them into sync
+   * eligibility via the rev bump.
    */
   private requeuePromptSync(sessionDbId: number): void {
+    if (!this.syncOpsEnabled) return;
     const session = this.db.prepare(`
       SELECT memory_session_id, project, content_session_id, platform_source
       FROM sdk_sessions WHERE id = ?
