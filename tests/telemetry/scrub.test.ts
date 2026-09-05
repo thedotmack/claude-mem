@@ -216,6 +216,20 @@ describe('scrubProperties', () => {
     });
   });
 
+  it('keeps the observed-session identity keys with primitive values', () => {
+    const result = scrubProperties({
+      top_model: 'claude-haiku-4-5',
+      observed_model: 'claude-fable-5-1',
+      observed_billing: 'max',
+    });
+
+    expect(result).toEqual({
+      top_model: 'claude-haiku-4-5',
+      observed_model: 'claude-fable-5-1',
+      observed_billing: 'max',
+    });
+  });
+
   it('drops unknown keys silently', () => {
     const result = scrubProperties({
       version: '1.0.0',

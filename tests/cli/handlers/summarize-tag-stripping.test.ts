@@ -30,12 +30,16 @@ mock.module('../../../src/shared/hook-settings.js', () => ({
 }));
 
 let mockExtractedMessage: string = '';
+// Counts transcript reads: the Stop hook reads the transcript exactly once via
+// extractLastAssistantTurn (text + model together), never via extractLastMessage.
 let extractCallCount = 0;
 mock.module('../../../src/shared/transcript-parser.js', () => ({
-  extractLastMessage: () => {
+  extractLastMessage: () => mockExtractedMessage,
+  extractLastAssistantTurn: () => {
     extractCallCount += 1;
-    return mockExtractedMessage;
+    return { text: mockExtractedMessage, model: 'claude-test-model' };
   },
+  extractLastAssistantModel: () => 'claude-test-model',
 }));
 
 const workerCallLog: Array<{ path: string; method: string; body: any }> = [];
@@ -136,6 +140,7 @@ describe('summarizeHandler — privacy tag stripping', () => {
     const result = await summarizeHandler.execute(baseInput as any);
 
     expect(result.continue).toBe(true);
+    expect(extractCallCount).toBe(1);
     const body = postedBody();
     expect(body.last_assistant_message).not.toContain('SECRET-VALUE-42');
     expect(body.last_assistant_message).not.toContain('<private>');

@@ -17,7 +17,13 @@ import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { proTrialLine } from '../../shared/pro-promo.js';
+import { proTrialLine, proTrialUrl, PLAN_USAGE_GAIN_PERCENT } from '../../shared/pro-promo.js';
+import {
+  hasShownProFallbackNotice,
+  isCmemGatewayUrl,
+  markProFallbackNoticeShown,
+  trialDaysRemaining,
+} from '../../shared/cmem-gateway.js';
 
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -91,6 +97,23 @@ export const contextHandler: EventHandler = {
         : hint;
     }
 
+    // Trial-expiry fallback notice (plan 2026-08-26 Phase 6): the worker wrote
+    // CLAUDE_MEM_PRO_FALLBACK_AT when the cmem gateway terminally rejected the
+    // delivered key, and dispatch now runs memory on the Anthropic plan. Tell
+    // the user exactly once (DATA_DIR marker file, oauth-stale pattern); the
+    // marker resets whenever the fallback is cleared.
+    const fallbackActive = settings.CLAUDE_MEM_PRO_FALLBACK_AT !== ''
+      && settings.CLAUDE_MEM_PROVIDER === 'openrouter'
+      && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
+    if (fallbackActive && !hasShownProFallbackNotice()) {
+      const fallbackNotice = 'Your claude-mem free trial ended — memory now runs on your Anthropic plan.\n'
+        + `Keep it off-plan (up to ${PLAN_USAGE_GAIN_PERCENT}% more usage): ${proTrialUrl('fallback')}`;
+      additionalContext = additionalContext
+        ? `${fallbackNotice}\n\n${additionalContext}`
+        : fallbackNotice;
+      markProFallbackNoticeShown();
+    }
+
     let coloredTimeline = '';
     if (showTerminalOutput) {
       const colorResult = await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, workerOptions);
@@ -107,8 +130,18 @@ export const contextHandler: EventHandler = {
     // back to the plain additionalContext for terminal display.
     const displayContent = coloredTimeline || (platform === 'antigravity-cli' ? additionalContext : '');
 
+    // Days-remaining nicety: while the free trial is active (plan 'trial', an
+    // end date stored, no fallback), append the countdown. Computed locally —
+    // no network — and display-only: nothing is enabled or disabled by it.
+    const daysLeft = !fallbackActive && settings.CLAUDE_MEM_PRO_PLAN === 'trial'
+      ? trialDaysRemaining(settings.CLAUDE_MEM_PRO_TRIAL_ENDS_AT)
+      : null;
+    const trialDaysLine = daysLeft !== null && daysLeft >= 0
+      ? `claude-mem free trial: ${daysLeft} day${daysLeft === 1 ? '' : 's'} left`
+      : null;
+
     const systemMessage = showTerminalOutput && displayContent
-      ? `${displayContent}\n\nView Observations Live @ http://localhost:${port}\n${proTrialLine('session-start')}`
+      ? `${displayContent}\n\nView Observations Live @ http://localhost:${port}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}`
       : undefined;
 
     return {

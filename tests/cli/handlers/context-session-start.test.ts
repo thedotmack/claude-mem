@@ -5,6 +5,17 @@ import * as realOauthToken from '../../../src/shared/oauth-token.js';
 import * as realProjectName from '../../../src/utils/project-name.js';
 import * as realWorkerUtils from '../../../src/shared/worker-utils.js';
 
+/**
+ * Snapshot the real namespaces EAGERLY, before the mock.module calls below.
+ * `import * as x` yields a live namespace object that bun re-points when the
+ * module is mocked, so spreading it later (inside afterAll) would copy the
+ * stubs back in and leak them into every test file that runs after this one.
+ */
+const realHookSettingsSnapshot = { ...realHookSettings };
+const realOauthTokenSnapshot = { ...realOauthToken };
+const realProjectNameSnapshot = { ...realProjectName };
+const realWorkerUtilsSnapshot = { ...realWorkerUtils };
+
 const calls: unknown[][] = [];
 
 mock.module('../../../src/shared/hook-settings.js', () => ({
@@ -32,10 +43,10 @@ mock.module('../../../src/shared/worker-utils.js', () => ({
 }));
 
 afterAll(() => {
-  mock.module('../../../src/shared/hook-settings.js', () => ({ ...realHookSettings }));
-  mock.module('../../../src/shared/oauth-token.js', () => ({ ...realOauthToken }));
-  mock.module('../../../src/utils/project-name.js', () => ({ ...realProjectName }));
-  mock.module('../../../src/shared/worker-utils.js', () => ({ ...realWorkerUtils }));
+  mock.module('../../../src/shared/hook-settings.js', () => realHookSettingsSnapshot);
+  mock.module('../../../src/shared/oauth-token.js', () => realOauthTokenSnapshot);
+  mock.module('../../../src/utils/project-name.js', () => realProjectNameSnapshot);
+  mock.module('../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
 });
 
 describe('contextHandler SessionStart path', () => {

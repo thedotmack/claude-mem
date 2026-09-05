@@ -1,4 +1,3 @@
-
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import type { Request, Response } from 'express';
 import { logger } from '../../../../src/utils/logger.js';
@@ -84,7 +83,7 @@ describe('MemoryRoutes — POST /api/memory/save (#2116)', () => {
       storeObservationCalls.push(args);
       return { id: 42, createdAtEpoch: 1234567890 };
     });
-    mockGetOrCreateManualSession = mock((project: string) => `manual-${project}`);
+    mockGetOrCreateManualSession = mock((project: string, _platformSource?: string) => `manual-${project}`);
 
     const mockDbManager = {
       getSessionStore: () => ({
@@ -147,7 +146,7 @@ describe('MemoryRoutes — POST /api/memory/save (#2116)', () => {
     });
     handler(req as Request, res as Response);
 
-    expect(mockGetOrCreateManualSession).toHaveBeenCalledWith('top-level-project');
+    expect(mockGetOrCreateManualSession).toHaveBeenCalledWith('top-level-project', undefined);
     expect(storeObservationCalls[0][1]).toBe('top-level-project');
   });
 
@@ -159,7 +158,7 @@ describe('MemoryRoutes — POST /api/memory/save (#2116)', () => {
     });
     handler(req as Request, res as Response);
 
-    expect(mockGetOrCreateManualSession).toHaveBeenCalledWith('my-custom-project');
+    expect(mockGetOrCreateManualSession).toHaveBeenCalledWith('my-custom-project', undefined);
     expect(storeObservationCalls[0][1]).toBe('my-custom-project');
   });
 
@@ -168,8 +167,19 @@ describe('MemoryRoutes — POST /api/memory/save (#2116)', () => {
     const { req, res } = createMockReqRes({ text: 'hello' });
     handler(req as Request, res as Response);
 
-    expect(mockGetOrCreateManualSession).toHaveBeenCalledWith('claude-mem');
+    expect(mockGetOrCreateManualSession).toHaveBeenCalledWith('claude-mem', undefined);
     expect(storeObservationCalls[0][1]).toBe('claude-mem');
+  });
+
+  it('honors metadata.platformSource on manual save', () => {
+    const handler = buildHandler();
+    const { req, res } = createMockReqRes({
+      text: 'hello from cursor',
+      metadata: { platformSource: 'cursor' },
+    });
+    handler(req as Request, res as Response);
+
+    expect(mockGetOrCreateManualSession).toHaveBeenCalledWith('claude-mem', 'cursor');
   });
 
   it('rejects unknown top-level fields with HTTP 400 (no silent drop)', () => {

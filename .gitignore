@@ -1,5 +1,5 @@
 datasets/
-node_modules/
+node_modules
 dist/
 **/_tree-sitter/
 *.log
