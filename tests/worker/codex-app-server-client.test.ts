@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
+import { getSupervisor } from '../../src/supervisor/index.js';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,7 +19,7 @@ interface FakeCodex {
 
 interface FakeCodexOptions {
   instructionSources?: string[];
-  mode?: 'normal' | 'terminal-response' | 'slow-first-turn';
+  mode?: 'normal' | 'terminal-response' | 'slow-first-turn' | 'reject-first-init';
 }
 
 function createFakeCodex(options: FakeCodexOptions = {}): FakeCodex {
@@ -32,10 +33,11 @@ function createFakeCodex(options: FakeCodexOptions = {}): FakeCodex {
   writeFileSync(join(authHome, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: {} }), { mode: 0o600 });
   const source = [
     '#!/usr/bin/env bun',
-    "import { appendFileSync, statSync } from 'node:fs';",
+    "import { appendFileSync, statSync, existsSync } from 'node:fs';",
     `const trace = ${JSON.stringify(trace)};`,
     `const instructionSources = ${JSON.stringify(instructionSources)};`,
     `const mode = ${JSON.stringify(mode)};`,
+    "const rejectInit = mode === 'reject-first-init' && !existsSync(trace);",
     "const record = value => appendFileSync(trace, JSON.stringify(value) + '\\n');",
     "record({ method: 'process/start', args: process.argv.slice(2), codexHome: process.env.CODEX_HOME, pid: process.pid });",
     "const send = value => process.stdout.write(JSON.stringify(value) + '\\n');",
@@ -50,7 +52,7 @@ function createFakeCodex(options: FakeCodexOptions = {}): FakeCodex {
     '    const message = JSON.parse(line);',
     '    record(message);',
     "    if (message.method === 'initialized') continue;",
-    "    if (message.method === 'initialize') send({ id: message.id, result: { userAgent: 'fake-codex' } });",
+    "    if (message.method === 'initialize') send(rejectInit ? { id: message.id, error: { code: -32600, message: 'initialize rejected' } } : { id: message.id, result: { userAgent: 'fake-codex' } });",
     "    else if (message.method === 'config/read') send({ id: message.id, result: { config: { mcp_servers: { inherited: { command: 'false' } } }, layers: [] } });",
     "    else if (message.method === 'thread/start') {",
     "      const mode = statSync(message.params.cwd).mode & 0o777;",
@@ -165,6 +167,62 @@ describe('CodexAppServerClient configuration', () => {
 const itPosix = process.platform === 'win32' ? it.skip : it;
 
 describe('CodexAppServerClient transport', () => {
+  itPosix('reaps a rejected handshake and initializes a fresh supervised child', async () => {
+    const fake = createFakeCodex({ mode: 'reject-first-init' });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    const register = spyOn(getSupervisor(), 'registerProcess');
+    const unregister = spyOn(getSupervisor(), 'unregisterProcess');
+    const options = { codexPath: fake.executable, model: '', reasoningEffort: null,
+      prompt: 'Summarize.', timeoutMs: 5000 };
+    try {
+      await expect(client.runTurn(options)).rejects.toThrow('initialize rejected');
+      expect((client as any).child).toBeNull();
+      expect((client as any).privateRoot).toBeNull();
+      const firstPid = readTrace(fake.trace).find(entry => entry.method === 'process/start')!.pid;
+      expect(() => process.kill(firstPid, 0)).toThrow();
+      expect((await client.runTurn(options)).content).toContain('Captured.');
+      const starts = readTrace(fake.trace).filter(entry => entry.method === 'process/start');
+      expect(starts).toHaveLength(2);
+      expect(starts[1].pid).not.toBe(firstPid);
+      expect(getSupervisor().getRegistry().getRuntimeProcess(`codex-app-server:${starts[1].pid}`)).toBe((client as any).child);
+      expect(readTrace(fake.trace).filter(entry => entry.method === 'initialize')).toHaveLength(2);
+      expect(register).toHaveBeenCalledTimes(2);
+      await (client as any).invalidate(new Error('late old-child failure'), register.mock.calls[0][2]);
+      expect((client as any).child.pid).toBe(starts[1].pid);
+      await client.close();
+      await Bun.sleep(20);
+      for (const start of starts) {
+        expect(unregister).toHaveBeenCalledWith(`codex-app-server:${start.pid}`);
+        expect(getSupervisor().getRegistry().getAll().some(entry => entry.pid === start.pid)).toBe(false);
+        expect(existsSync(start.codexHome)).toBe(false);
+      }
+    } finally {
+      await client.close();
+      register.mockRestore();
+      unregister.mockRestore();
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('does not spawn while the supervisor is shutting down', async () => {
+    const fake = createFakeCodex();
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    const guard = spyOn(getSupervisor(), 'assertCanSpawn').mockImplementation(() => {
+      throw new Error('Supervisor is shutting down');
+    });
+    try {
+      await expect(client.runTurn({ codexPath: fake.executable, model: '', reasoningEffort: null,
+        prompt: 'Summarize.', timeoutMs: 5000 })).rejects.toThrow('Supervisor is shutting down');
+      expect(guard).toHaveBeenCalledWith('codex');
+      expect(readTrace(fake.trace)).toHaveLength(0);
+      expect((client as any).privateRoot).toBeNull();
+    } finally {
+      guard.mockRestore();
+      await client.close();
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
   itPosix('reuses one process while isolating and validating every turn', async () => {
     const fake = createFakeCodex();
     const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
