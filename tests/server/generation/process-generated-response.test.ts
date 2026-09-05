@@ -291,6 +291,89 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
     expect(reloaded?.status).toBe('processing');
   });
 
+  it('copies the session folder label onto generated observation metadata', async () => {
+    const session = await storage.sessions.create({
+      projectId,
+      teamId,
+      externalSessionId: 'ext-session-folder',
+      metadata: { project: 'my-folder' },
+    });
+    const event = await storage.agentEvents.create({
+      projectId,
+      teamId,
+      sourceAdapter: 'api',
+      eventType: 'tool_use',
+      payload: { tool: 'bash', input: 'pwd' },
+      occurredAt: new Date(),
+    });
+    const job = await storage.observationGenerationJobs.create({
+      projectId,
+      teamId,
+      sourceType: 'agent_event',
+      sourceId: event.id,
+      agentEventId: event.id,
+      serverSessionId: session.id,
+      jobType: 'observation_generate_for_event',
+    });
+    await storage.observationGenerationJobs.transitionStatus({
+      id: job.id,
+      projectId,
+      teamId,
+      status: 'processing',
+    });
+    const fresh = (await storage.observationGenerationJobs.getByIdForScope({
+      id: job.id,
+      projectId,
+      teamId,
+    }))!;
+
+    const outcome = await processGeneratedResponse({
+      pool: pool as unknown as Parameters<typeof processGeneratedResponse>[0]['pool'],
+      job: fresh,
+      rawText: `
+        <observation>
+          <type>discovery</type>
+          <title>Folder travels</title>
+          <facts><fact>session metadata carries the folder</fact></facts>
+        </observation>
+      `,
+      providerLabel: 'fake',
+    });
+
+    expect(outcome.kind).toBe('completed');
+    if (outcome.kind === 'completed') {
+      expect(outcome.observations).toHaveLength(1);
+      expect(outcome.observations[0]!.metadata.project).toBe('my-folder');
+    }
+  });
+
+  it('writes project: null when the job carries no server session (legacy jobs)', async () => {
+    await storage.observationGenerationJobs.transitionStatus({
+      id: jobId,
+      projectId,
+      teamId,
+      status: 'processing',
+    });
+    const fresh = (await reloadJob())!;
+    const outcome = await processGeneratedResponse({
+      pool: pool as unknown as Parameters<typeof processGeneratedResponse>[0]['pool'],
+      job: fresh,
+      rawText: `
+        <observation>
+          <type>discovery</type>
+          <title>No session</title>
+          <facts><fact>legacy job without a session row</fact></facts>
+        </observation>
+      `,
+      providerLabel: 'fake',
+    });
+
+    expect(outcome.kind).toBe('completed');
+    if (outcome.kind === 'completed') {
+      expect(outcome.observations[0]!.metadata.project).toBeNull();
+    }
+  });
+
   it('markGenerationFailed routes to retry when retryable and attempts left', async () => {
     await storage.observationGenerationJobs.transitionStatus({
       id: jobId,
