@@ -287,6 +287,13 @@ export class ClaudeProvider {
         }),
       });
 
+      // A single SDK turn streams several assistant messages; thinking-only
+      // and tool_use-only chunks carry no text block. Tracked per turn so an
+      // empty batch is forwarded once, after the turn ends.
+      let sawTextResponse = false;
+      // One re-queue per generator pass for a batch a failed turn never read.
+      let retriedAfterErrorResult = false;
+
       for await (const message of queryResult) {
         // Quota-aware wall-clock guard (#2234): the SDK pushes
         // `rate_limit_event` messages carrying live subscription quota state
@@ -413,19 +420,22 @@ export class ClaudeProvider {
             throw new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env');
           }
 
-          await processAgentResponse(
-            textContent,
-            session,
-            this.dbManager,
-            this.sessionManager,
-            worker,
-            discoveryTokens,
-            originalTimestamp,
-            'SDK',
-            cwdTracker.lastCwd,
-            modelId,
-            activeResponseContext.current
-          );
+          if (responseSize > 0) {
+            sawTextResponse = true;
+            await processAgentResponse(
+              textContent,
+              session,
+              this.dbManager,
+              this.sessionManager,
+              worker,
+              discoveryTokens,
+              originalTimestamp,
+              'SDK',
+              cwdTracker.lastCwd,
+              modelId,
+              activeResponseContext.current
+            );
+          }
         }
 
         if (message.type === 'result') {
@@ -471,6 +481,46 @@ export class ClaudeProvider {
                   : undefined,
             });
           }
+
+          const resultSubtype = (message as any).subtype as string | undefined;
+          const resultIsError = (message as any).is_error === true || resultSubtype !== 'success';
+
+          // The turn is over and the model never emitted text. Only a
+          // successful turn means "the model read the batch and chose to skip
+          // it" — forward the empty response once so the claim is acknowledged
+          // instead of being retried forever. A failed turn never reached that
+          // judgement, so its batch goes back to the buffer for the drain to
+          // re-yield. Exactly one such retry per generator pass: a message is
+          // always pending while a batch is re-queued, so the buffer never
+          // idles out, and an endlessly failing turn would spin on it.
+          if (!sawTextResponse) {
+            if (resultIsError && !retriedAfterErrorResult) {
+              retriedAfterErrorResult = true;
+              logger.warn('SDK', 'SDK turn failed before emitting text, re-queueing the claimed batch', {
+                sessionId: session.sessionDbId,
+                subtype: resultSubtype,
+              });
+              await this.sessionManager.resetProcessingToPending(session.sessionDbId);
+            } else {
+              await processAgentResponse(
+                '',
+                session,
+                this.dbManager,
+                this.sessionManager,
+                worker,
+                0,
+                session.earliestPendingTimestamp,
+                'SDK',
+                cwdTracker.lastCwd,
+                modelId,
+                activeResponseContext.current
+              );
+            }
+          }
+          if (!resultIsError) {
+            retriedAfterErrorResult = false;
+          }
+          sawTextResponse = false;
         }
       }
     } finally {
