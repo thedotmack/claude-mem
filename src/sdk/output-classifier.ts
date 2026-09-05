@@ -64,6 +64,11 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
   }
 
   const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+  const sessionLimitPrefix = /^(?:(?:you(?:'ve| have)\s+)?(?:hit|reached|exceeded|exhausted)\s+(?:your\s+)?(?:5-hour(?:\s+usage)?|session)\s+limit\b|(?:your\s+)?(?:5-hour(?:\s+usage)?|session)\s+limit\s+(?:(?:has|was|is)\s+)?(?:been\s+)?(?:hit|reached|exceeded|exhausted)\b)/.exec(text);
+  const sessionLimitSuffix = sessionLimitPrefix ? text.slice(sessionLimitPrefix[0].length) : null;
+  const sessionLimitNotice = sessionLimitSuffix !== null
+    && (/^\s*[.!?]?\s*$/.test(sessionLimitSuffix)
+      || /^\s*[·,:-]\s*(?:resets?\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?(?:\s*\((?:utc|gmt|pst|pdt|est|edt|cst|cdt|mst|mdt|ast|adt|nst|ndt|akst|akdt|hst|cet|cest|eet|eest|wet|west|ist|jst|kst|aest|aedt|nzst|nzdt|[a-z][a-z0-9_-]+\/[a-z0-9_+-]+)\))?|try again\s+(?:in\s+\d+\s*(?:minutes?|hours?)|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?))(?:[.!?])?\s*$/i.test(sessionLimitSuffix));
 
   return (
     // Wordings Claude Code actually writes when a subscription window or the
@@ -80,7 +85,8 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
     /\bweekly\b.*\b(limit|quota)\b.*\b(reached|exceeded|exhausted|reset|resets|try again)\b/.test(text) ||
     /\b(reached|exceeded|exhausted)\b.*\bweekly\b.*\b(limit|quota)\b/.test(text) ||
     /\bsubscription\b.*\b(limit|quota)\b.*\b(reached|exceeded|exhausted|reset|resets|try again)\b/.test(text) ||
-    /\b(rate limit|quota)\b.*\b(subscription|weekly|claude usage)\b.*\b(reached|exceeded|exhausted|reset|resets|try again)\b/.test(text)
+    /\b(rate limit|quota)\b.*\b(subscription|weekly|claude usage)\b.*\b(reached|exceeded|exhausted|reset|resets|try again)\b/.test(text) ||
+    sessionLimitNotice
   );
 }
 

@@ -53,6 +53,24 @@ describe('classifyObserverOutput (plan-11 #2485)', () => {
 });
 
 describe('isQuotaLimitedObserverOutput', () => {
+  it('detects Claude Code session and 5-hour limit notices', () => {
+    expect(isQuotaLimitedObserverOutput("You've hit your session limit · resets 4:10am")).toBe(true);
+    expect(isQuotaLimitedObserverOutput("You've hit your 5-hour usage limit · resets 4:10am (Europe/Paris)")).toBe(true);
+  });
+
+  it('detects reversed-order exhausted session-limit wording', () => {
+    expect(isQuotaLimitedObserverOutput('Your session limit has been reached.')).toBe(true);
+    expect(isQuotaLimitedObserverOutput('Your 5-hour usage limit was exceeded.')).toBe(true);
+    expect(isQuotaLimitedObserverOutput('Session limit reached · resets 4:10am')).toBe(true);
+    expect(isQuotaLimitedObserverOutput('5-hour limit reached · resets 4:10am')).toBe(true);
+    expect(isQuotaLimitedObserverOutput('Session limit exceeded')).toBe(true);
+  });
+
+  it('accepts standard timezone abbreviations in concrete reset details', () => {
+    expect(isQuotaLimitedObserverOutput("You've hit your session limit · resets 8:10pm (UTC)")).toBe(true);
+    expect(isQuotaLimitedObserverOutput("You've hit your session limit · resets 8:10pm (PST)")).toBe(true);
+  });
+
   it('detects Claude weekly-limit prose', () => {
     expect(
       isQuotaLimitedObserverOutput('Claude usage limit reached. Your weekly limit will reset soon.'),
@@ -97,6 +115,26 @@ describe('isQuotaLimitedObserverOutput', () => {
 
   it('does not treat ordinary observer prose as quota prose', () => {
     expect(isQuotaLimitedObserverOutput('No observations to record.')).toBe(false);
+  });
+
+  it('does not treat approaching or documentation prose as quota prose', () => {
+    expect(isQuotaLimitedObserverOutput('Approaching your 5-hour usage limit')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('The session limit is configurable in the documentation.')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('Refactored so the session limit is exceeded only after retries')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('The user reached session limit handling in ResponseProcessor')).toBe(false);
+    expect(isQuotaLimitedObserverOutput("You're about to hit your 5-hour usage limit")).toBe(false);
+    expect(isQuotaLimitedObserverOutput("You haven't reached your session limit")).toBe(false);
+    expect(isQuotaLimitedObserverOutput('The documentation says your session limit was exceeded')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('Your session limit is exceeded only after retries')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('Session limit exceeded is documented behavior')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('Session limit exceeded is documented; reset handling is tested')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('Your session limit has been reached in the implementation; reset the fixture')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('You\'ve hit your session limit: resets are performed only after the next window.')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('You\'ve hit your session limit · try again if the window has reset.')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('You\'ve hit your session limit · resets is documented behavior.')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('You\'ve hit your session limit · resets 4 (documentation only)')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('Your monthly usage limit has been reached')).toBe(false);
+    expect(isQuotaLimitedObserverOutput('The monthly usage limit has been reached for your account')).toBe(false);
   });
 });
 

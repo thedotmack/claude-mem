@@ -534,6 +534,41 @@ describe('ResponseProcessor', () => {
   });
 
   describe('non-XML observer responses', () => {
+    it('preserves claimed work for Claude Code session-limit notices', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(1));
+      mockSessionManager = {
+        ...mockSessionManager,
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+      claimedMessages = [
+        { type: 'observation', tool_name: 'read_file', tool_input: { filePath: 'src/example.ts' } },
+      ];
+
+      const notices = [
+        "You've hit your session limit · resets 4:10am",
+        "You've hit your 5-hour usage limit · resets 4:10am (Europe/Paris)",
+      ];
+
+      for (const responseText of notices) {
+        const session = createMockSession();
+        await processAgentResponse(
+          responseText, session, mockDbManager, mockSessionManager, mockWorker,
+          100, null, 'TestAgent'
+        );
+        expect(session.abortReason).toBe('quota:observer_text');
+        expect(session.abortController.signal.aborted).toBe(true);
+      }
+
+      expect(resetProcessingToPending).toHaveBeenCalledTimes(notices.length);
+      expect(resetProcessingToPending).toHaveBeenNthCalledWith(1, 1);
+      expect(resetProcessingToPending).toHaveBeenNthCalledWith(2, 1);
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(mockBroadcastProcessingStatus).toHaveBeenCalledTimes(notices.length);
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+
     it('warns and clears pending work when the observer returns non-XML prose', async () => {
       const confirmClaimedMessages = mock(() => Promise.resolve(0));
       mockSessionManager = {
