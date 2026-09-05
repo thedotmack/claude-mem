@@ -231,6 +231,39 @@ export class SessionSearch {
     return conditions.length > 0 ? conditions.join(' AND ') : '';
   }
 
+  /**
+   * Scripts whose runs FTS5's unicode61 tokenizer cannot split: Hiragana, Katakana, the CJK
+   * ideograph blocks, Bopomofo, and Hangul. unicode61 breaks on Unicode whitespace and
+   * punctuation, and these scripts put neither between the characters of a run — so a run
+   * folds into a single token and no substring of it can ever match (#3801), which is every
+   * query a user types in them.
+   *
+   * Korean does space its words, so only the sub-word case is affected there — but that is
+   * still every partial-word query. Measured directly against `tokenize='unicode61'`:
+   *
+   *   설정   inside 설정을            -> 0 rows
+   *   설정을 as a whole token         -> 1 row
+   *   ㄓㄨ   inside ㄓㄨㄛ            -> 0 rows
+   *   项目   inside 修改了项目配置    -> 0 rows
+   *
+   * Bopomofo and Hangul were raised in review on #3810. The blocks are adjacent, so
+   * \u3100-\u318F covers Bopomofo together with the Hangul compatibility jamo beside it.
+   */
+  private static readonly UNSEGMENTED_SCRIPT =
+    /[\u3040-\u30FF\u3100-\u318F\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]/;
+
+  /**
+   * Build the substring predicate used when the index cannot represent the query. The
+   * escaping matches {@link searchUserPrompts}, which has always searched by substring.
+   */
+  private static buildSubstringClause(query: string, columns: string[]): { clause: string; params: string[] } {
+    const pattern = `%${query.replace(/[\\%_]/g, '\\$&')}%`;
+    return {
+      clause: `(${columns.map(column => `${column} LIKE ? ESCAPE '\\'`).join(' OR ')})`,
+      params: columns.map(() => pattern),
+    };
+  }
+
   private buildOrderClause(orderBy: SearchOptions['orderBy'] = 'relevance', hasFTS: boolean = true, ftsTable: string = 'observations_fts'): string {
     switch (orderBy) {
       case 'relevance':
@@ -264,6 +297,27 @@ export class SessionSearch {
         LIMIT ? OFFSET ?
       `;
 
+      params.push(limit, offset);
+      return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
+    }
+
+    if (SessionSearch.UNSEGMENTED_SCRIPT.test(query)) {
+      const filterClause = this.buildFilterClause(filters, params, 'o');
+      const orderClause = this.buildOrderClause(orderBy, false);
+      const match = SessionSearch.buildSubstringClause(query, [
+        'o.title', 'o.subtitle', 'o.narrative', 'o.text', 'o.facts', 'o.concepts',
+      ]);
+
+      const sql = `
+        SELECT o.*, o.discovery_tokens
+        FROM observations o
+        WHERE ${match.clause}
+        ${filterClause ? 'AND ' + filterClause : ''}
+        ${orderClause}
+        LIMIT ? OFFSET ?
+      `;
+
+      params.unshift(...match.params);
       params.push(limit, offset);
       return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
     }
@@ -322,6 +376,31 @@ export class SessionSearch {
         LIMIT ? OFFSET ?
       `;
 
+      params.push(limit, offset);
+      return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
+    }
+
+    if (SessionSearch.UNSEGMENTED_SCRIPT.test(query)) {
+      const filterOptions = { ...filters };
+      delete filterOptions.type;
+      const filterClause = this.buildFilterClause(filterOptions, params, 's');
+      const orderClause = orderBy === 'date_asc'
+        ? 'ORDER BY s.created_at_epoch ASC'
+        : 'ORDER BY s.created_at_epoch DESC';
+      const match = SessionSearch.buildSubstringClause(query, [
+        's.request', 's.investigated', 's.learned', 's.completed', 's.next_steps', 's.notes',
+      ]);
+
+      const sql = `
+        SELECT s.*, s.discovery_tokens
+        FROM session_summaries s
+        WHERE ${match.clause}
+        ${filterClause ? 'AND ' + filterClause : ''}
+        ${orderClause}
+        LIMIT ? OFFSET ?
+      `;
+
+      params.unshift(...match.params);
       params.push(limit, offset);
       return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
     }
