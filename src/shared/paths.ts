@@ -46,7 +46,18 @@ export const MARKETPLACE_ROOT = join(CLAUDE_CONFIG_DIR, 'plugins', 'marketplaces
 
 export const LOGS_DIR = join(DATA_DIR, 'logs');
 export const USER_SETTINGS_PATH = join(DATA_DIR, 'settings.json');
-export const DB_PATH = join(DATA_DIR, 'claude-mem.db');
+export const DB_FILENAME = 'claude-mem.db';
+
+/**
+ * Database path resolved at CALL time. `DB_PATH` freezes `DATA_DIR` at import,
+ * which is right for long-lived processes but wrong for anything that must
+ * honor a `CLAUDE_MEM_DATA_DIR` set after this module was loaded.
+ */
+export function resolveDbPath(): string {
+  return join(resolveDataDir(), DB_FILENAME);
+}
+
+export const DB_PATH = join(DATA_DIR, DB_FILENAME);
 
 export const OBSERVER_SESSIONS_DIR = join(DATA_DIR, 'observer-sessions');
 
@@ -89,7 +100,7 @@ export const paths = {
   serverPort: () => join(DATA_DIR, '.server-beta.port'),
   serverRuntime: () => join(DATA_DIR, '.server-beta.runtime.json'),
   settings: () => join(DATA_DIR, 'settings.json'),
-  database: () => join(DATA_DIR, 'claude-mem.db'),
+  database: () => join(DATA_DIR, DB_FILENAME),
   chroma: () => join(DATA_DIR, 'chroma'),
   combinedCerts: () => join(DATA_DIR, 'combined_certs.pem'),
   transcriptsConfig: () => join(DATA_DIR, 'transcript-watch.json'),
