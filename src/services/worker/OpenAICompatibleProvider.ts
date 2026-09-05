@@ -8,7 +8,7 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
-import { isClassified } from './provider-errors.js';
+import { isClassified, type ClassifiedProviderError } from './provider-errors.js';
 import {
   shouldRecycleConversation,
   conversationChars,
@@ -362,6 +362,32 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
   }
 
+  /**
+   * Map a classified provider failure onto the abortReason category that keeps
+   * buffered work alive.
+   *
+   * handleGeneratorExit finalizes the session — dropping whatever is buffered —
+   * for every category outside its preserve list. Quota was only ever set by
+   * the two PROACTIVE sites (the pre-request rate-limit guard and the
+   * observer-text heuristic), so a real 429 coming back from the provider left
+   * abortReason null and the session was torn down as if the failure were
+   * fatal (#3700). These conditions clear on their own; the work should still
+   * be there when they do.
+   */
+  private preservingAbortReason(error: ClassifiedProviderError): string | null {
+    switch (error.kind) {
+      case 'quota_exhausted':
+      case 'rate_limit':
+        return `quota:${error.kind}`;
+      // Same shape, same list: handleGeneratorExit already honours 'auth', and
+      // credentials that are fixed by /login are no more fatal than a 429.
+      case 'auth_invalid':
+        return `auth:${error.kind}`;
+      default:
+        return null;
+    }
+  }
+
   protected handleSessionError(error: unknown, session: ActiveSession, _worker?: WorkerRef): never {
     if (isAbortError(error)) {
       logger.warn('SDK', `${this.providerName} agent aborted`, { sessionId: session.sessionDbId });
@@ -369,6 +395,29 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
 
     if (isClassified(error)) {
+      // Set BEFORE the rethrow: the .finally() in SessionRoutes reads
+      // session.abortReason to decide whether to finalize the session, so a
+      // reason recorded after unwinding would arrive too late to matter.
+      const preserving = this.preservingAbortReason(error);
+      if (preserving !== null) {
+        session.abortReason = preserving;
+        // Abort as well as label. Without it the controller stays live while
+        // the error unwinds, and the session route books the failure twice —
+        // an observer failure and an error outcome on the way out, then the
+        // aborted outcome at finalization — leaving observer-health marked
+        // failed for a pause that is not a failure. This is what the two
+        // observer-text paths already do for the same conditions.
+        try {
+          session.abortController.abort();
+        } catch {
+          // best-effort; AbortController.abort() should not throw in normal use.
+        }
+        logger.warn('SDK', `${this.providerName} paused on ${error.kind}; preserving buffered work`, {
+          sessionId: session.sessionDbId,
+          kind: error.kind,
+        });
+      }
+
       // Logged once at SessionRoutes' `Observer failed` line.
       logger.debug('SDK', `${this.providerName} agent error`, { sessionDbId: session.sessionDbId, kind: error.kind }, error);
     } else {
