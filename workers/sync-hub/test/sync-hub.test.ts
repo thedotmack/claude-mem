@@ -709,6 +709,37 @@ describe("projection checkpoint, lease fencing, and launch log retention", () =>
 		)).acquired).toBe(true);
 		expect(releaseCalls).toBe(0);
 	});
+
+	it("bounds scheduled repair work and releases the lease after safe progress", async () => {
+		const userId = "projection-bounded-repair";
+		const stub = hub(userId);
+		const ops = await Promise.all(
+			Array.from({ length: 101 }, (_, index) => observationOp(String(index + 1))),
+		);
+		const pushed = ok(await stub.pushOps("dev-a", ops));
+
+		const partial = await drainProjection(projectionEnv("success"), userId, pushed.head_seq, {
+			maxPages: 1,
+			fetchTimeoutMs: 100,
+		});
+		expect(partial).toEqual({ ok: true, projectedSeq: "100" });
+		expect((await stub.getProjectionState()).projected_seq).toBe("100");
+
+		// The bounded success is deterministic and checkpointed, so the lease is
+		// released immediately and the next cron can finish the same user.
+		const finished = await drainProjection(projectionEnv("success"), userId, pushed.head_seq, {
+			maxPages: 1,
+			fetchTimeoutMs: 100,
+		});
+		expect(finished).toEqual({ ok: true, projectedSeq: "101" });
+		expect((await stub.getProjectionState()).projected_seq).toBe("101");
+	});
+
+	it("rejects invalid projection page budgets before acquiring a lease", async () => {
+		await expect(drainProjection(projectionEnv("success"), "projection-bad-budget", "1", {
+			maxPages: 0,
+		})).rejects.toThrow(/positive safe integer/);
+	});
 });
 
 describe("large cursor pagination", () => {
@@ -792,6 +823,34 @@ describe("front Worker durability and repair", () => {
 		expect(response.status).toBe(200);
 		const body = await response.json() as { head_seq: string; projected_through_seq: string };
 		expect(body.projected_through_seq).toBe(body.head_seq);
+	});
+
+	it("returns 202 until a bounded scheduled repair reaches its target", async () => {
+		const repairUser = "66666666-6666-4666-8666-666666666667";
+		const stub = hub(repairUser);
+		const ops = await Promise.all(
+			Array.from({ length: 101 }, (_, index) => observationOp(String(index + 1))),
+		);
+		ok(await stub.pushOps("dev-a", ops));
+		const request = () => SELF.fetch(`${base}/internal/v1/projection/drain`, {
+			method: "POST",
+			headers: { Authorization: "Bearer test-projector-secret", "Content-Type": "application/json" },
+			body: JSON.stringify({ protocol_version: 1, user_id: repairUser }),
+		});
+
+		const partial = await request();
+		expect(partial.status).toBe(202);
+		expect(await partial.json()).toMatchObject({
+			head_seq: "101",
+			projected_through_seq: "100",
+		});
+
+		const complete = await request();
+		expect(complete.status).toBe(200);
+		expect(await complete.json()).toMatchObject({
+			head_seq: "101",
+			projected_through_seq: "101",
+		});
 	});
 
 	it("surfaces deterministic Pro document rejection as nonretryable 409", async () => {

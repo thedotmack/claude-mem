@@ -81,6 +81,10 @@ const DEFAULT_CACHE_TTL_SECONDS = 60;
 const MAX_OPS_PER_PUSH = 500; // mirrors the getChanges page cap
 const MAX_PUSH_BODY_BYTES = 8_000_000;
 const CANONICAL_DECIMAL = /^(?:0|[1-9][0-9]*)$/;
+// Scheduled repair is deliberately incremental. One page is at most 100 ops or
+// 4 MB, so a deeply lagging user cannot monopolize a cron request or keep the
+// per-user projection lease busy while every other user waits.
+const REPAIR_DRAIN_MAX_PAGES = 1;
 
 /**
  * Pro declares a 60-second maximum duration. Abort the complete response-body
@@ -591,6 +595,8 @@ export interface ProjectionDrainDependencies {
 	fetchImpl?: ProjectionFetch;
 	/** Test seam for deterministic Durable Object lease timestamps. */
 	now?: () => number;
+	/** Optional page budget. Omitted client-triggered drains still reach target. */
+	maxPages?: number;
 }
 
 function projectionNow(dependencies: ProjectionDrainDependencies): number | undefined {
@@ -607,6 +613,12 @@ export async function drainProjection(
 	targetSeq: string,
 	dependencies: ProjectionDrainDependencies = {},
 ): Promise<DrainResult> {
+	if (
+		dependencies.maxPages !== undefined
+		&& (!Number.isSafeInteger(dependencies.maxPages) || dependencies.maxPages < 1)
+	) {
+		throw new Error("projection maxPages must be a positive safe integer");
+	}
 	const stub = env.SYNC_HUB.getByName(userId);
 	let state = await stub.getProjectionState();
 	if (decimalAtLeast(state.projected_seq, targetSeq)) {
@@ -641,6 +653,7 @@ export async function drainProjection(
 
 	const token = lease.lease_token;
 	let releaseLeaseEarly = false;
+	let projectedPages = 0;
 	try {
 		for (;;) {
 			state = await stub.getProjectionState();
@@ -774,10 +787,10 @@ export async function drainProjection(
 					httpStatus: 503,
 					retryable: true,
 				};
-			}
-			const checkpointAt = projectionNow(dependencies);
-			state = checkpointAt === undefined
-				? await stub.advanceProjectionCheckpoint(
+				}
+				const checkpointAt = projectionNow(dependencies);
+				state = checkpointAt === undefined
+					? await stub.advanceProjectionCheckpoint(
 					token,
 					page.epoch,
 					page.from_seq_exclusive,
@@ -787,11 +800,19 @@ export async function drainProjection(
 					token,
 					page.epoch,
 					page.from_seq_exclusive,
-					page.through_seq,
-					checkpointAt,
-				);
-			releaseLeaseEarly = true;
-		}
+						page.through_seq,
+						checkpointAt,
+					);
+				releaseLeaseEarly = true;
+				projectedPages++;
+				if (
+					dependencies.maxPages !== undefined
+					&& projectedPages >= dependencies.maxPages
+					&& !decimalAtLeast(state.projected_seq, targetSeq)
+				) {
+					return { ok: true, projectedSeq: state.projected_seq };
+				}
+			}
 	} catch (error) {
 		return {
 			ok: false,
@@ -831,7 +852,9 @@ async function handleRepairDrain(request: Request, env: Env): Promise<Response> 
 	if (decimalAtLeast(target, state.head_seq) && target !== state.head_seq) {
 		return errorResponse(400, "through_seq exceeds Hub head_seq");
 	}
-	const drained = await drainProjection(env, record.user_id, target);
+	const drained = await drainProjection(env, record.user_id, target, {
+		maxPages: REPAIR_DRAIN_MAX_PAGES,
+	});
 	const finalState = await stub.getProjectionState();
 	if (!drained.ok) {
 		return json(drained.httpStatus, {
@@ -843,7 +866,13 @@ async function handleRepairDrain(request: Request, env: Env): Promise<Response> 
 			projected_through_seq: finalState.projected_seq,
 		});
 	}
-	return json(200, {
+	// A bounded repair that checkpointed one page is successful progress, but it
+	// is not a completed request until the original target has been reached.
+	// HTTP 202 preserves the existing JSON schema while giving the Pro caller an
+	// explicit continuation signal. Explicit through_seq callers are complete
+	// once their requested target is reached even if newer ops arrived meanwhile.
+	const complete = decimalAtLeast(finalState.projected_seq, target);
+	return json(complete ? 200 : 202, {
 		protocol_version: 1,
 		user_id: record.user_id,
 		epoch: finalState.epoch,
