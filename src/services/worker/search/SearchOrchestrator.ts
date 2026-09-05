@@ -58,8 +58,8 @@ export class SearchOrchestrator {
       logger.debug('SEARCH', 'Orchestrator: Using Chroma semantic search', {});
       try {
         const chromaResult = await this.chromaStrategy.search(options);
-        if (options.platformSource && this.isEmptyResult(chromaResult)) {
-          logger.debug('SEARCH', 'Orchestrator: platform-scoped Chroma search returned zero matches; falling back to SQLite', {});
+        if (this.isEmptyResult(chromaResult)) {
+          logger.debug('SEARCH', 'Orchestrator: Chroma search returned zero matches; falling back to SQLite', {});
           return await this.sqliteStrategy.search(options);
         }
         return chromaResult;
