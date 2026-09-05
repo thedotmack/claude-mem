@@ -7,7 +7,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '../..');
 
 describe('Version Consistency', () => {
-  let rootVersion: string;
+  const rootVersion: string = JSON.parse(
+    readFileSync(path.join(projectRoot, 'package.json'), 'utf-8')
+  ).version;
 
   it('should read version from root package.json', () => {
     const packageJsonPath = path.join(projectRoot, 'package.json');
@@ -16,8 +18,6 @@ describe('Version Consistency', () => {
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     expect(packageJson.version).toBeDefined();
     expect(packageJson.version).toMatch(/^\d+\.\d+\.\d+$/);
-    
-    rootVersion = packageJson.version;
   });
 
   it('should have matching version in plugin/package.json', () => {
@@ -74,34 +74,26 @@ describe('Version Consistency', () => {
     ]);
   });
 
-  it('should have version injected into built worker-service.cjs', () => {
-    const workerServicePath = path.join(projectRoot, 'plugin/scripts/worker-service.cjs');
-    
-    if (!existsSync(workerServicePath)) {
-      console.log('⚠️  worker-service.cjs not found - run npm run build first');
-      return;
-    }
-    
-    const workerServiceContent = readFileSync(workerServicePath, 'utf-8');
+  // Marketplace installs execute these committed bundles without rebuilding.
+  // Run this suite on the pristine checkout as well as after npm run build.
+  for (const bundle of [
+    'worker-service.cjs',
+    'mcp-server.cjs',
+    'server-service.cjs',
+    'transcript-watcher.cjs',
+  ]) {
+    it(`should ship ${bundle} with the manifest version`, () => {
+      const bundlePath = path.join(projectRoot, 'plugin/scripts', bundle);
+      expect(existsSync(bundlePath), `${bundle} is missing; run npm run build and commit the artifacts`).toBe(true);
 
-    const versionPattern = new RegExp(`"${rootVersion.replace(/\./g, '\\.')}"`, 'g');
-    const matches = workerServiceContent.match(versionPattern);
-    
-    expect(matches).toBeTruthy();
-    expect(matches!.length).toBeGreaterThan(0);
-  });
-
-  it('should have built mcp-server.cjs', () => {
-    const mcpServerPath = path.join(projectRoot, 'plugin/scripts/mcp-server.cjs');
-
-    if (!existsSync(mcpServerPath)) {
-      console.log('⚠️  mcp-server.cjs not found - run npm run build first');
-      return;
-    }
-
-    const mcpServerContent = readFileSync(mcpServerPath, 'utf-8');
-    expect(mcpServerContent.length).toBeGreaterThan(0);
-  });
+      const content = readFileSync(bundlePath, 'utf-8');
+      // Match the full quoted value so a longer version cannot match a prefix.
+      expect(
+        content.includes(JSON.stringify(rootVersion)),
+        `${bundle} lacks version ${rootVersion}; run npm run build and commit the artifacts`
+      ).toBe(true);
+    });
+  }
 
   it('should validate version format is semver compliant', () => {
     expect(rootVersion).toMatch(/^\d+\.\d+\.\d+$/);

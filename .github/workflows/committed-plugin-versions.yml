@@ -1,0 +1,26 @@
+name: Committed plugin versions
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  committed-plugin-versions:
+    name: Validate marketplace artifacts before build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      # Marketplace installs use the committed bundles. A build here would
+      # repair stale artifacts and hide the mismatch that caused #3857.
+      # This suite uses only Bun and Node built-ins; no install is necessary.
+      - name: Check committed manifests and bundle versions
+        run: bun test tests/infrastructure/version-consistency.test.ts
