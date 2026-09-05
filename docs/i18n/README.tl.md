@@ -27,6 +27,7 @@
   <a href="README.fr.md">🇫🇷 Français</a> •
   <a href="README.he.md">🇮🇱 עברית</a> •
   <a href="README.ar.md">🇸🇦 العربية</a> •
+  <a href="README.fa.md">🇮🇷 فارسی</a> •
   <a href="README.ru.md">🇷🇺 Русский</a> •
   <a href="README.pl.md">🇵🇱 Polski</a> •
   <a href="README.cs.md">🇨🇿 Čeština</a> •

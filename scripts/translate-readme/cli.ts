@@ -77,6 +77,7 @@ function printLanguages(): void {
     fr: "French",
     he: "Hebrew",
     ar: "Arabic",
+    fa: "Persian",
     ru: "Russian",
     pl: "Polish",
     cs: "Czech",
