@@ -11,9 +11,10 @@
 
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { createHash } from 'crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
-import { userInfo } from 'os';
-import { join } from 'path';
+import { userInfo, homedir } from 'os';
+import { join, resolve } from 'path';
 import { paths } from './paths.js';
 import { logger } from '../utils/logger.js';
 
@@ -21,6 +22,35 @@ const execFileAsync = promisify(execFile);
 
 const KEYCHAIN_SERVICE_NAME = 'Claude Code-credentials';
 const READ_TIMEOUT_MS = 5000;
+
+/**
+ * Keychain service names to try, most specific first.
+ *
+ * Claude Code scopes its credential entry by config directory: with a non-default
+ * `CLAUDE_CONFIG_DIR` the token lives under `Claude Code-credentials-<sha256(dir)[:8]>`,
+ * not the plain name. Reading only the plain name finds whatever stale token happens to
+ * sit there, decides it is expired, and writes the stale marker — so every session start
+ * warns "re-login via Claude Desktop" about a token that is not the one in use, and
+ * re-logging in changes nothing (#3718).
+ *
+ * The plain name always stays in the list, so a default install reads exactly what it
+ * read before and an unscoped entry is still found when the scoped one is absent.
+ */
+export function keychainServiceNames(
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = homedir(),
+): string[] {
+  const configDir = env.CLAUDE_CONFIG_DIR?.trim();
+  if (!configDir) return [KEYCHAIN_SERVICE_NAME];
+
+  // The default directory is the unscoped case: Claude Code does not hash it.
+  if (resolve(configDir) === resolve(join(home, '.claude'))) {
+    return [KEYCHAIN_SERVICE_NAME];
+  }
+
+  const digest = createHash('sha256').update(configDir).digest('hex').slice(0, 8);
+  return [`${KEYCHAIN_SERVICE_NAME}-${digest}`, KEYCHAIN_SERVICE_NAME];
+}
 
 // Grace window: even if expiresAt is in the past by less than this, allow the
 // token through. Claude Desktop typically refreshes shortly before expiry, so
@@ -80,27 +110,52 @@ function isExpired(expiresAtMs: number | undefined): boolean {
  */
 async function readMacOsKeychain(): Promise<OAuthTokenResult> {
   const account = userInfo().username;
-  let stdout: string;
-  try {
-    ({ stdout } = await execFileAsync(
-      'security',
-      ['find-generic-password', '-s', KEYCHAIN_SERVICE_NAME, '-a', account, '-w'],
-      { timeout: READ_TIMEOUT_MS, windowsHide: true },
-    ));
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    // `security` exits non-zero when the entry doesn't exist — fail-fast as absent.
-    logger.warn('OAUTH', 'macOS keychain lookup failed', { service: KEYCHAIN_SERVICE_NAME, account }, err);
+  const services = keychainServiceNames();
+  let lastError: Error | undefined;
+
+  for (const service of services) {
+    let stdout: string;
+    try {
+      ({ stdout } = await execFileAsync(
+        'security',
+        ['find-generic-password', '-s', service, '-a', account, '-w'],
+        { timeout: READ_TIMEOUT_MS, windowsHide: true },
+      ));
+    } catch (error) {
+      // `security` exits non-zero when the entry doesn't exist, so a miss here is
+      // ordinary when a more specific name is being tried first.
+      lastError = error instanceof Error ? error : new Error(String(error));
+      continue;
+    }
+    const raw = stdout.trim();
+    if (raw) return parseKeychainPayload(raw);
+  }
+
+  const tried = services.join('", "');
+  if (lastError) {
+    logger.warn('OAUTH', 'macOS keychain lookup failed', { services, account }, lastError);
     return {
       kind: 'absent',
-      reason: `macOS keychain lookup failed for service "${KEYCHAIN_SERVICE_NAME}" (account=${account}): ${err.message}`,
+      reason: `macOS keychain lookup failed for service "${tried}" (account=${account}): ${lastError.message}`,
     };
   }
-  const raw = stdout.trim();
-  if (!raw) {
-    return { kind: 'absent', reason: 'macOS keychain returned empty value for "Claude Code-credentials"' };
-  }
-  return parseKeychainPayload(raw);
+  return { kind: 'absent', reason: `macOS keychain returned empty value for "${tried}"` };
+}
+
+/**
+ * Windows Credential Manager target names to try, most specific first.
+ *
+ * Returned RAW — the caller applies the single PowerShell escaping pass. Escaping a
+ * component here instead would double it: for username `O'Brien` the literal became
+ * `'Claude Code-credentials:O''''Brien'`, which PowerShell parses as
+ * `Claude Code-credentials:O''Brien` — a different target than the stored credential,
+ * so CredRead missed it and the account fell through to the re-login warning.
+ */
+export function windowsCredentialTargets(
+  username: string = userInfo().username,
+  services: string[] = keychainServiceNames(),
+): string[] {
+  return [...services, 'Claude Code:credentials', `Claude Code-credentials:${username}`];
 }
 
 /**
@@ -118,12 +173,14 @@ async function readWindowsCredentialManager(): Promise<OAuthTokenResult> {
   // The exact target name on Windows is "Claude Code-credentials" or
   // "Claude Code:credentials" (Claude Desktop uses `${service}:${account}` or
   // `${service}` depending on version). This script tries both.
-  // Username is escaped with PowerShell's single-quote convention (' → '') in
-  // case future Windows versions or domain-joined machines permit ' in usernames.
-  const psSafeUsername = userInfo().username.replace(/'/g, "''");
+  const psCandidates = windowsCredentialTargets()
+    // Sole PowerShell escaping pass: ' → '' inside a single-quoted literal. Targets must
+    // reach here raw — pre-escaping any part of one would double it (see the helper).
+    .map(name => `'${name.replace(/'/g, "''")}'`)
+    .join(', ');
   const psScript = `
     $ErrorActionPreference = 'SilentlyContinue'
-    $candidates = @('Claude Code-credentials', 'Claude Code:credentials', 'Claude Code-credentials:${psSafeUsername}')
+    $candidates = @(${psCandidates})
     Add-Type -Namespace ClaudeMem -Name CredRead -MemberDefinition @"
       [DllImport("Advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
       public static extern bool CredRead(string target, uint type, uint reservedFlag, out IntPtr CredentialPtr);
@@ -182,26 +239,34 @@ async function readWindowsCredentialManager(): Promise<OAuthTokenResult> {
  */
 async function readLinuxLibsecret(): Promise<OAuthTokenResult> {
   const account = userInfo().username;
-  let stdout: string;
-  try {
-    ({ stdout } = await execFileAsync(
-      'secret-tool',
-      ['lookup', 'service', KEYCHAIN_SERVICE_NAME, 'account', account],
-      { timeout: READ_TIMEOUT_MS, windowsHide: true },
-    ));
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.warn('OAUTH', 'Linux libsecret lookup failed', { service: KEYCHAIN_SERVICE_NAME, account }, err);
+  const services = keychainServiceNames();
+  let lastError: Error | undefined;
+
+  for (const service of services) {
+    let stdout: string;
+    try {
+      ({ stdout } = await execFileAsync(
+        'secret-tool',
+        ['lookup', 'service', service, 'account', account],
+        { timeout: READ_TIMEOUT_MS, windowsHide: true },
+      ));
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      continue;
+    }
+    const raw = stdout.trim();
+    if (raw) return parseKeychainPayload(raw);
+  }
+
+  const tried = services.join('", "');
+  if (lastError) {
+    logger.warn('OAUTH', 'Linux libsecret lookup failed', { services, account }, lastError);
     return {
       kind: 'absent',
-      reason: `Linux libsecret lookup failed (is secret-tool installed?): ${err.message}`,
+      reason: `Linux libsecret lookup failed (is secret-tool installed?): ${lastError.message}`,
     };
   }
-  const raw = stdout.trim();
-  if (!raw) {
-    return { kind: 'absent', reason: 'Linux libsecret returned empty value for "Claude Code-credentials"' };
-  }
-  return parseKeychainPayload(raw);
+  return { kind: 'absent', reason: `Linux libsecret returned empty value for "${tried}"` };
 }
 
 /**
