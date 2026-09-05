@@ -79,7 +79,14 @@ export function readPluginVersion(): string {
 
 export function isPluginInstalled(): boolean {
   const marketplaceDir = marketplaceDirectory();
-  return existsSync(join(marketplaceDir, 'plugin', '.claude-plugin', 'plugin.json'));
+  // The nested plugin.json alone is not enough: Claude Code loads the plugin
+  // through the marketplace root manifest, so a missing marketplace.json makes
+  // `claude plugin list` cache-miss even though the worker runs (#3656). Assert
+  // both so install/repair/doctor cannot report success on a broken install.
+  return (
+    existsSync(join(marketplaceDir, '.claude-plugin', 'marketplace.json')) &&
+    existsSync(join(marketplaceDir, 'plugin', '.claude-plugin', 'plugin.json'))
+  );
 }
 
 export { readJsonSafe } from '../../utils/json-utils.js';

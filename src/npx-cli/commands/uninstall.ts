@@ -6,7 +6,6 @@ import { join } from 'path';
 import {
   claudeSettingsPath,
   installedPluginsPath,
-  isPluginInstalled,
   knownMarketplacesPath,
   marketplaceDirectory,
   pluginsDirectory,
@@ -73,13 +72,32 @@ function removeMarketplaceDirectory(): boolean {
   return false;
 }
 
+function claudeMemCacheDirectory(): string {
+  return join(pluginsDirectory(), 'cache', 'thedotmack', 'claude-mem');
+}
+
 function removeCacheDirectory(): boolean {
-  const cacheDirectory = join(pluginsDirectory(), 'cache', 'thedotmack', 'claude-mem');
+  const cacheDirectory = claudeMemCacheDirectory();
   if (existsSync(cacheDirectory)) {
     rmSync(cacheDirectory, { recursive: true, force: true });
     return true;
   }
   return false;
+}
+
+// Uninstall must clean up whatever claude-mem left behind, including legacy or
+// broken installs that predate the marketplace root manifest (#3656). It cannot
+// gate on isPluginInstalled(), which now asserts a *healthy* install: an install
+// missing the root manifest would otherwise leak its marketplace directory,
+// cache, and registrations on a non-interactive uninstall. Detect any owned
+// artifact instead.
+export function hasInstallArtifacts(): boolean {
+  if (existsSync(marketplaceDirectory())) return true;
+  if (existsSync(claudeMemCacheDirectory())) return true;
+  const knownMarketplaces = readJsonSafe<Record<string, any>>(knownMarketplacesPath(), {});
+  if (knownMarketplaces['thedotmack']) return true;
+  const installedPlugins = readJsonSafe<Record<string, any>>(installedPluginsPath(), {});
+  return Boolean(installedPlugins.plugins?.['claude-mem@thedotmack']);
 }
 
 function removeFromKnownMarketplaces(): void {
@@ -239,7 +257,7 @@ function removeStrayClaudeMemPaths(): number {
 export async function runUninstallCommand(): Promise<void> {
   p.intro(styleText(['bgRed', 'white'], ' claude-mem uninstall '));
 
-  if (!isPluginInstalled()) {
+  if (!hasInstallArtifacts()) {
     p.log.warn('claude-mem does not appear to be installed.');
 
     if (process.stdin.isTTY) {

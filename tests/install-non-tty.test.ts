@@ -134,11 +134,22 @@ describe('Install Non-TTY Support', () => {
         installSource.indexOf('function copyPluginToCache'),
       );
       expect(copyRegion).toContain("'.agents'");
+      // The root marketplace manifest must land in the durable marketplace
+      // root, or Claude Code cache-misses on plugin load (#3656).
+      expect(copyRegion).toContain("'.claude-plugin'");
       expect(copyRegion).toContain("'.codex-plugin'");
       // Root .mcp.json was dropped in #2411; the MCP manifest now ships
       // exclusively as plugin/.mcp.json (bundled inside the 'plugin' entry).
       expect(copyRegion).toContain("'plugin'");
       expect(copyRegion).not.toContain("'.mcp.json'");
+    });
+
+    it('publishes the marketplace root manifest in the npm package (#3656)', () => {
+      const packageJson = JSON.parse(
+        readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'),
+      );
+      expect(packageJson.files).toContain('.claude-plugin');
+      expect(packageJson.files).toContain('plugin/.claude-plugin');
     });
 
     it('validates the bundled plugin as the Codex marketplace source', () => {
