@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -8,6 +8,7 @@ const realChromaMcpManagerSnapshot = { ...realChromaMcpManager };
 
 let existingObservationIds = new Set<number>();
 const addDocumentCalls: string[][] = [];
+const addDocumentPayloads: Array<{ ids: string[]; documents: string[]; metadatas: Array<Record<string, unknown>> }> = [];
 
 mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
   ChromaMcpManager: {
@@ -33,6 +34,11 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
 
         if (toolName === 'chroma_add_documents') {
           addDocumentCalls.push((args.ids as string[]) ?? []);
+          addDocumentPayloads.push({
+            ids: (args.ids as string[]) ?? [],
+            documents: (args.documents as string[]) ?? [],
+            metadatas: (args.metadatas as Array<Record<string, unknown>>) ?? [],
+          });
           return {};
         }
 
@@ -44,6 +50,7 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
 
 import { ChromaSync } from '../../../src/services/sync/ChromaSync.js';
 import { ChromaSyncState } from '../../../src/services/sync/ChromaSyncState.js';
+import { logger } from '../../../src/utils/logger.js';
 
 afterAll(() => {
   mock.module('../../../src/services/sync/ChromaMcpManager.js', () => realChromaMcpManagerSnapshot);
@@ -138,6 +145,7 @@ describe('ChromaSync watermark gap persistence', () => {
     process.env.CLAUDE_MEM_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-watermarks-'));
     existingObservationIds = new Set<number>();
     addDocumentCalls.length = 0;
+    addDocumentPayloads.length = 0;
     ChromaSyncState.replace(project, { observations: 0, summaries: 0, prompts: 0, pending: {} });
   });
 
@@ -235,5 +243,81 @@ describe('ChromaSync watermark gap persistence', () => {
     expect(ChromaSyncState.get(project).observations).toBe(1);
     expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
     expect(addDocumentCalls.some(batch => batch.includes('obs_1_fact_100'))).toBe(true);
+  });
+
+  it('backfills CJK plain-string facts and concepts without JSON parse failure', async () => {
+    const cjkFact = '用户身份定位——轻量数字化改造枢纽';
+    const cjkConcept = '数字化改造';
+    const cjkRow = {
+      ...makeObservationRow(1, project),
+      title: '观察: 用户身份定位',
+      facts: cjkFact,
+      concepts: cjkConcept,
+      narrative: '项目记录包含中文叙述',
+      text: '中文观察正文',
+    };
+    ChromaSyncState.replace(project, {
+      observations: 0,
+      summaries: 0,
+      prompts: 0,
+      pending: {},
+    });
+    const sync = new ChromaSync(project);
+
+    await sync.ensureBackfilled(project, makeStoreFromRows(project, [cjkRow]));
+
+    const writtenIds = addDocumentCalls.flat();
+    expect(writtenIds).toContain('obs_1_fact_0');
+    expect(addDocumentPayloads.flatMap(payload => payload.documents)).toContain(cjkFact);
+    expect(addDocumentPayloads.flatMap(payload => payload.metadatas).some(metadata => (
+      metadata.concepts === cjkConcept
+    ))).toBe(true);
+    expect(ChromaSyncState.get(project).observations).toBe(1);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
+  });
+
+  it('preserves JSON-looking plain-string list fields without logging raw memory content', async () => {
+    const secretFact = 'TREX_SECRET_OBSERVATION_TOKEN_9f3a7c_DO_NOT_LOG';
+    const jsonLookingFact = `{"note":"${secretFact}"}`;
+    const decodedJsonScalarConcept = '数字化改造';
+    const jsonScalarConcept = JSON.stringify(decodedJsonScalarConcept);
+    const malformedSecretFact = 'TREX_MALFORMED_SECRET_4b1e_DO_NOT_LOG';
+    const malformedJsonFact = `{"note":"${malformedSecretFact}"`;
+    const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+    const rowId = 1;
+    const malformedRowId = 2;
+    const cjkRow = {
+      ...makeObservationRow(rowId, project),
+      facts: jsonLookingFact,
+      concepts: jsonScalarConcept,
+      narrative: 'json-looking fallback row',
+    };
+    const malformedRow = {
+      ...makeObservationRow(malformedRowId, project),
+      facts: malformedJsonFact,
+      narrative: 'malformed fallback row',
+    };
+    ChromaSyncState.replace(project, {
+      observations: 0,
+      summaries: 0,
+      prompts: 0,
+      pending: {},
+    });
+    const sync = new ChromaSync(project);
+
+    try {
+      await sync.ensureBackfilled(project, makeStoreFromRows(project, [cjkRow, malformedRow]));
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    expect(addDocumentPayloads.flatMap(payload => payload.documents)).toContain(jsonLookingFact);
+    expect(addDocumentPayloads.flatMap(payload => payload.documents)).toContain(malformedJsonFact);
+    expect(addDocumentPayloads.flatMap(payload => payload.metadatas).some(metadata => (
+      metadata.concepts === decodedJsonScalarConcept
+    ))).toBe(true);
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(secretFact);
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(malformedSecretFact);
+    expect(ChromaSyncState.get(project).observations).toBe(malformedRowId);
   });
 });
