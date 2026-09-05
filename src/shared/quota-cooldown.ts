@@ -45,7 +45,10 @@ import {
   recordObserverQuotaCooldown,
 } from './observer-health.js';
 
-export type QuotaProvider = 'claude' | 'gemini' | 'openrouter' | 'codex' | 'cmem-gateway';
+export type QuotaProvider = 'claude' | 'gemini' | 'openrouter' | 'codex' | 'codex-setup' | 'cmem-gateway';
+
+/** Separate from allowance exhaustion: recheck missing CLI/login after repair. */
+export const CODEX_SETUP_RECHECK_COOLDOWN_MS = 5 * 60_000;
 
 export const QUOTA_COOLDOWN_FILENAME = 'quota-cooldown.json';
 

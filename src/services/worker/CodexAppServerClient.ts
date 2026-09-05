@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { killProcessTree } from '../../shared/kill-process-tree.js';
 import { spawnHidden } from '../../shared/spawn.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
+import { getSupervisor } from '../../supervisor/index.js';
 import { logger } from '../../utils/logger.js';
 
 const APP_SERVER_WORKDIR_PREFIX = 'claude-mem-codex-app-server-';
@@ -538,6 +539,8 @@ export class CodexAppServerClient {
   }
 
   private async start(codexPath: string, fingerprint: string, timeoutMs: number, signal?: AbortSignal): Promise<void> {
+    const supervisor = getSupervisor();
+    supervisor.assertCanSpawn('codex');
     const runtime = createPrivateRuntime(this.nativeCodexHome);
     this.privateRoot = runtime.root;
     this.workspace = runtime.workspace;
@@ -546,36 +549,54 @@ export class CodexAppServerClient {
     this.protocolBuffer = '';
     this.stderrTail = '';
 
-    const child = spawnHidden(codexPath, buildCodexAppServerArgs(), {
-      cwd: this.workspace,
-      env: sanitizeEnv(buildCodexAppServerEnv(process.env, runtime.codexHome)),
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: false,
-    }) as ChildProcessWithoutNullStreams;
-    this.child = child;
+    let expectedChild: ChildProcessWithoutNullStreams | undefined;
+    try {
+      const child = spawnHidden(codexPath, buildCodexAppServerArgs(), {
+        cwd: this.workspace,
+        env: sanitizeEnv(buildCodexAppServerEnv(process.env, runtime.codexHome)),
+        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: false,
+      }) as ChildProcessWithoutNullStreams;
+      expectedChild = child;
+      this.child = child;
 
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', chunk => this.onStdout(child, String(chunk)));
-    child.stderr.on('data', chunk => {
-      if (this.child !== child) return;
-      this.stderrTail = `${this.stderrTail}${String(chunk)}`.slice(-MAX_STDERR_TAIL_BYTES);
-    });
-    child.on('error', error => this.onChildExit(child, error));
-    child.on('close', (code, childSignal) => {
-      this.onChildExit(child, new Error(`Codex app-server exited with code ${String(code)} signal ${String(childSignal)}: ${this.stderrTail.trim()}`));
-    });
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', chunk => this.onStdout(child, String(chunk)));
+      child.stderr.on('data', chunk => {
+        if (this.child !== child) return;
+        this.stderrTail = `${this.stderrTail}${String(chunk)}`.slice(-MAX_STDERR_TAIL_BYTES);
+      });
+      child.on('error', error => this.onChildExit(child, error));
+      child.on('close', (code, childSignal) => {
+        this.onChildExit(child, new Error(`Codex app-server exited with code ${String(code)} signal ${String(childSignal)}: ${this.stderrTail.trim()}`));
+      });
 
-    await this.request('initialize', {
-      clientInfo: { name: 'claude_mem', title: 'claude-mem', version: '1' },
-      capabilities: {
-        experimentalApi: true,
-        requestAttestation: false,
-        optOutNotificationMethods: ['item/agentMessage/delta'],
-      },
-    }, timeoutMs, signal);
-    this.writeMessage({ method: 'initialized', params: {} });
-    logger.debug('SDK', 'Started persistent Codex app-server', { pid: child.pid });
+      if (child.pid) {
+        const id = `codex-app-server:${child.pid}`;
+        const unregister = () => supervisor.unregisterProcess(id);
+        child.once('exit', unregister);
+        child.once('close', unregister);
+        supervisor.registerProcess(id, {
+          pid: child.pid, type: 'codex', startedAt: new Date().toISOString(),
+        }, child);
+      }
+
+      await this.request('initialize', {
+        clientInfo: { name: 'claude_mem', title: 'claude-mem', version: '1' },
+        capabilities: {
+          experimentalApi: true,
+          requestAttestation: false,
+          optOutNotificationMethods: ['item/agentMessage/delta'],
+        },
+      }, timeoutMs, signal);
+      this.writeMessage({ method: 'initialized', params: {} });
+      logger.debug('SDK', 'Started persistent Codex app-server', { pid: child.pid });
+    } catch (error) {
+      // A rejected initialize RPC leaves a live but unusable child. Never cache it.
+      await this.invalidate(error instanceof Error ? error : new Error(String(error)), expectedChild);
+      throw error;
+    }
   }
 
   private request(method: string, params: unknown, timeoutMs: number, signal?: AbortSignal): Promise<unknown> {

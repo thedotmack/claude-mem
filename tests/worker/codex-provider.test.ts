@@ -5,7 +5,7 @@ import { SettingsRoutes } from '../../src/services/worker/http/routes/SettingsRo
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
 import { getSelectedProvider, selectProviderForGenerator } from '../../src/services/worker/provider-dispatch.js';
-import { getQuotaCooldown, recordQuotaExhausted, resetQuotaCooldownsForTesting, tryAdmitQuotaProbe, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS } from '../../src/shared/quota-cooldown.js';
+import { getQuotaCooldown, recordQuotaExhausted, resetQuotaCooldownsForTesting, tryAdmitQuotaProbe, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS, CODEX_SETUP_RECHECK_COOLDOWN_MS } from '../../src/shared/quota-cooldown.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 
 const config = { apiKey: 'native', model: '', reasoningEffort: null, codexPath: 'codex', timeoutMs: 1000 };
@@ -79,6 +79,61 @@ describe('Codex provider integration', () => {
     await h.s.generatorPromise;
     expect(getQuotaCooldown('codex')?.probeClaimId).toBeNull();
     expect(tryAdmitQuotaProbe('codex').admitted).toBe(true);
+  });
+
+  for (const kind of ['unrecoverable', 'auth_invalid']) {
+    it(`pauses repeated starts after ${kind} and re-arms a failed setup probe`, async () => {
+      const h = harness(async () => { throw new ClassifiedProviderError('setup fixture', { kind, cause: null }); });
+      await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'first');
+      await h.s.generatorPromise;
+      await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'second');
+      expect(h.codex).toHaveBeenCalledTimes(1);
+      expect(h.reset).toHaveBeenCalledTimes(1);
+      expect(getQuotaCooldown('codex')).toBeNull();
+      recordQuotaExhausted('codex-setup', 'fixture', undefined, Date.now() - CODEX_SETUP_RECHECK_COOLDOWN_MS - 1);
+      await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'probe');
+      await h.s.generatorPromise;
+      await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'third');
+      expect(h.codex).toHaveBeenCalledTimes(2);
+      expect(getQuotaCooldown('codex-setup')?.probeClaimId).toBeNull();
+      expect(tryAdmitQuotaProbe('codex-setup', Date.now(), CODEX_SETUP_RECHECK_COOLDOWN_MS).admitted).toBe(false);
+      expect(h.finalize).not.toHaveBeenCalled();
+      expect(h.other).not.toHaveBeenCalled();
+    });
+  }
+
+  it('admits only one setup probe and clears setup cooldown on successful generation', async () => {
+    recordQuotaExhausted('codex-setup', 'fixture', undefined, Date.now() - CODEX_SETUP_RECHECK_COOLDOWN_MS - 1);
+    const provider = new CodexProvider(null as any, null as any) as any;
+    let release!: () => void;
+    provider.appServer.runTurn = () => new Promise(resolve => { release = () => resolve({ content: '' }); });
+    const h = harness(async () => { await provider.query([{ role: 'user', content: 'input' }], config); });
+    const other = harness(async () => {});
+    await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'probe');
+    await other.routes.ensureGeneratorRunning(other.s.sessionDbId, 'concurrent');
+    expect(other.codex).not.toHaveBeenCalled();
+    release();
+    await h.s.generatorPromise;
+    expect(getQuotaCooldown('codex-setup')).toBeNull();
+    expect(tryAdmitQuotaProbe('codex-setup').admitted).toBe(true);
+  });
+
+  it('releases a setup probe when admission setup throws', async () => {
+    recordQuotaExhausted('codex-setup', 'fixture', undefined, Date.now() - CODEX_SETUP_RECHECK_COOLDOWN_MS - 1);
+    const h = harness(async () => {});
+    (h.routes as any).applyTierRouting = async () => { throw new Error('routing fixture'); };
+    await expect(h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'probe')).rejects.toThrow('routing fixture');
+    expect(h.codex).not.toHaveBeenCalled();
+    expect(getQuotaCooldown('codex-setup')?.probeClaimId).toBeNull();
+  });
+
+  it('releases a setup probe on an unrelated transient failure', async () => {
+    recordQuotaExhausted('codex-setup', 'fixture', undefined, Date.now() - CODEX_SETUP_RECHECK_COOLDOWN_MS - 1);
+    const h = harness(async () => { throw new ClassifiedProviderError('network fixture', { kind: 'transient', cause: null }); });
+    await h.routes.ensureGeneratorRunning(h.s.sessionDbId, 'probe');
+    await h.s.generatorPromise;
+    expect(getQuotaCooldown('codex-setup')?.probeClaimId).toBeNull();
+    expect(tryAdmitQuotaProbe('codex-setup', Date.now(), CODEX_SETUP_RECHECK_COOLDOWN_MS).admitted).toBe(true);
   });
 
   it('does not send a queued request after another session exhausts quota', async () => {
