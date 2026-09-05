@@ -17,8 +17,21 @@ const VIEWER_HTML_CANDIDATE_PATHS: readonly string[] = (() => {
   ];
 })();
 
+const TV_HTML_CANDIDATE_PATHS: readonly string[] = (() => {
+  const packageRoot = getPackageRoot();
+  return [
+    path.join(packageRoot, 'ui', 'tv.html'),
+    path.join(packageRoot, 'plugin', 'ui', 'tv.html'),
+  ];
+})();
+
 const resolvedViewerHtmlPath: string | null =
   VIEWER_HTML_CANDIDATE_PATHS.find((candidate) => existsSync(candidate)) ?? null;
+
+const resolvedTvHtmlPath: string | null =
+  TV_HTML_CANDIDATE_PATHS.find((candidate) => existsSync(candidate)) ?? null;
+
+const tvHtmlBytes: Buffer | null = resolvedTvHtmlPath ? readFileSync(resolvedTvHtmlPath) : null;
 
 const viewerHtmlBytes: Buffer | null = resolvedViewerHtmlPath
   ? readFileSync(resolvedViewerHtmlPath)
@@ -146,6 +159,7 @@ export class ViewerRoutes extends BaseRouteHandler {
 
     app.get('/health', this.handleHealth.bind(this));
     app.get('/', this.handleViewerUI.bind(this));
+    app.get('/tv', this.handleTvUI.bind(this));
     app.get('/restart', this.handleRestartPage.bind(this));
     app.get('/stream', this.handleSSEStream.bind(this));
   }
@@ -170,6 +184,19 @@ export class ViewerRoutes extends BaseRouteHandler {
     }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(viewerHtmlBytes);
+  });
+
+  /**
+   * Observation TV: the same /stream the viewer consumes, rendered as a
+   * full-screen fading title card. Static, dependency-free, and served from
+   * the same origin so the EventSource needs no CORS of its own.
+   */
+  private handleTvUI = this.wrapHandler((req: Request, res: Response): void => {
+    if (!tvHtmlBytes) {
+      throw new Error('Observation TV UI not found at any expected location');
+    }
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(tvHtmlBytes);
   });
 
   /**

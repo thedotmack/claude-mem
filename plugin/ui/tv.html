@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>claude-mem · Observation TV</title>
+<style>
+  :root {
+    --bg: #0d0d0c;
+    --fg: #f4f2ee;
+    --dim: rgba(244, 242, 238, 0.45);
+    --accent: #c15f3c;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 400 16px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    overflow: hidden;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  #stage {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: max(4vmin, env(safe-area-inset-top)) 6vmin;
+    text-align: center;
+  }
+
+  #card {
+    max-width: 22ch;
+    opacity: 0;
+    transition: opacity 900ms ease, transform 900ms ease;
+    transform: scale(0.985);
+    will-change: opacity, transform;
+  }
+  #card.show { opacity: 1; transform: scale(1); }
+
+  #title {
+    margin: 0;
+    font-size: clamp(2rem, 7.5vw, 6.5rem);
+    font-weight: 650;
+    letter-spacing: -0.02em;
+    line-height: 1.06;
+    text-wrap: balance;
+  }
+
+  #meta {
+    margin-top: 3vmin;
+    font-size: clamp(0.75rem, 1.6vw, 1.1rem);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+  #meta .type { color: var(--accent); }
+
+  #idle {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    color: var(--dim);
+    font-size: clamp(0.8rem, 1.6vw, 1rem);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    opacity: 0;
+    transition: opacity 600ms ease;
+    pointer-events: none;
+  }
+  #idle.show { opacity: 1; }
+
+  #hud {
+    position: fixed;
+    top: max(1rem, env(safe-area-inset-top));
+    right: max(1rem, env(safe-area-inset-right));
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    opacity: 0;
+    transition: opacity 400ms ease;
+  }
+  #hud.show { opacity: 1; }
+  #hud button {
+    font: inherit;
+    font-size: 0.8rem;
+    letter-spacing: 0.06em;
+    padding: 0.45rem 0.85rem;
+    color: var(--fg);
+    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  #hud button:hover { background: rgba(255, 255, 255, 0.14); }
+  #dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: #666;
+    margin-right: 0.25rem;
+  }
+  #dot.live { background: #4ec07a; }
+
+  /* Off-screen source for the canvas route into picture-in-picture. */
+  #pip { position: fixed; left: -9999px; top: 0; width: 640px; height: 360px; }
+  #pipcanvas { position: fixed; left: -9999px; top: 0; }
+
+  @media (prefers-reduced-motion: reduce) {
+    #card { transition-duration: 1ms; }
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="card">
+    <h1 id="title"></h1>
+    <div id="meta"></div>
+  </div>
+</div>
+<div id="idle">waiting for observations</div>
+<div id="hud">
+  <span id="dot" title="stream status"></span>
+  <button id="pipBtn" type="button">PiP</button>
+  <button id="fsBtn" type="button">Full screen</button>
+</div>
+<video id="pip" muted playsinline></video>
+<canvas id="pipcanvas" width="1280" height="720"></canvas>
+
+<script>
+(() => {
+  'use strict';
+
+  function clampInt(raw, fallback, min, max) {
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(Math.max(n, min), max);
+  }
+
+  const params = new URLSearchParams(location.search);
+  const project = params.get('project') || null;
+  const source = params.get('source') || null;
+  const DWELL_MS = clampInt(params.get('dwell'), 6000, 1200, 60000);
+  const FADE_MS = clampInt(params.get('fade'), 900, 100, 5000);
+  const REPLAY = params.get('replay') !== '0';
+  const SEED_LIMIT = clampInt(params.get('seed'), 25, 0, 100);
+
+  const els = {
+    stage: document.getElementById('stage'),
+    card: document.getElementById('card'),
+    title: document.getElementById('title'),
+    meta: document.getElementById('meta'),
+    idle: document.getElementById('idle'),
+    hud: document.getElementById('hud'),
+    dot: document.getElementById('dot'),
+    pipBtn: document.getElementById('pipBtn'),
+    fsBtn: document.getElementById('fsBtn'),
+    video: document.getElementById('pip'),
+    canvas: document.getElementById('pipcanvas'),
+  };
+
+  // live = observations that arrived while this page was open; they play first,
+  // in arrival order. replay = the recent backlog, cycled whenever live is
+  // empty so an idle worker still leaves something on screen.
+  const live = [];
+  let replay = [];
+  let replayIndex = 0;
+  let current = null;
+
+  function leafProject(name) {
+    if (!name) return '';
+    const str = String(name);
+    return str.includes('/') ? str.split('/').pop() : str;
+  }
+
+  function normalize(obs) {
+    if (!obs) return null;
+    const title = (obs.title || obs.subtitle || obs.text || '').trim();
+    if (!title) return null;
+    return {
+      id: obs.id,
+      title,
+      type: (obs.type || 'observation').replace(/_/g, ' '),
+      project: leafProject(obs.project),
+      at: obs.created_at_epoch || Date.now(),
+    };
+  }
+
+  function matchesFilter(obs) {
+    if (project && leafProject(obs.project) !== leafProject(project)) return false;
+    if (source && (obs.platform_source || 'claude') !== source) return false;
+    return true;
+  }
+
+  function nextItem() {
+    if (live.length) return live.shift();
+    if (!REPLAY || replay.length === 0) return null;
+    const item = replay[replayIndex % replay.length];
+    replayIndex += 1;
+    return item;
+  }
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  function show(on) {
+    els.card.classList.toggle('show', on);
+  }
+
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, (c) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+  }
+
+  function relTime(epoch) {
+    const secs = Math.max(0, Math.round((Date.now() - epoch) / 1000));
+    if (secs < 60) return 'just now';
+    const mins = Math.round(secs / 60);
+    if (mins < 60) return mins + 'm ago';
+    const hrs = Math.round(mins / 60);
+    if (hrs < 24) return hrs + 'h ago';
+    return Math.round(hrs / 24) + 'd ago';
+  }
+
+  function render(item) {
+    els.title.textContent = item.title;
+    const bits = ['<span class="type">' + escapeHtml(item.type) + '</span>'];
+    if (item.project) bits.push(escapeHtml(item.project));
+    bits.push(escapeHtml(relTime(item.at)));
+    els.meta.innerHTML = bits.join(' &nbsp;·&nbsp; ');
+    document.title = item.title + ' · claude-mem TV';
+  }
+
+  async function loop() {
+    for (;;) {
+      const item = nextItem();
+      if (!item) {
+        current = null;
+        show(false);
+        els.idle.classList.add('show');
+        await sleep(500);
+        continue;
+      }
+      els.idle.classList.remove('show');
+      current = item;
+      render(item);
+      show(true);
+      await sleep(DWELL_MS);
+      show(false);
+      await sleep(FADE_MS);
+    }
+  }
+
+  async function seed() {
+    if (SEED_LIMIT === 0) return;
+    const qs = new URLSearchParams({ limit: String(SEED_LIMIT) });
+    if (project) qs.set('project', project);
+    if (source) qs.set('platformSource', source);
+    try {
+      const res = await fetch('/api/observations?' + qs.toString(), { cache: 'no-store' });
+      if (!res.ok) return;
+      const body = await res.json();
+      // The API returns newest first; the TV plays oldest first so the backlog
+      // reads forward in time.
+      replay = (body.items || []).map(normalize).filter(Boolean).reverse();
+    } catch {
+      // The live stream alone is enough to run the TV.
+    }
+  }
+
+  function connect() {
+    const es = new EventSource('/stream');
+
+    es.onopen = () => els.dot.classList.add('live');
+
+    es.onerror = () => {
+      els.dot.classList.remove('live');
+      es.close();
+      setTimeout(connect, 3000);
+    };
+
+    es.onmessage = (event) => {
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      if (data.type !== 'new_observation' || !data.observation) return;
+      if (!matchesFilter(data.observation)) return;
+      const item = normalize(data.observation);
+      if (!item) return;
+      live.push(item);
+      replay.push(item);
+      if (replay.length > 100) replay.shift();
+    };
+  }
+
+  /* Picture-in-picture, two routes and no library. Document PiP (Chromium)
+   * moves the real DOM into the floating window, so the CSS fades keep
+   * running. Everywhere else — including iOS Safari, which is the phone case —
+   * PiP only accepts a <video>, so the card is painted into a canvas whose
+   * captureStream() feeds a muted video element. */
+  const hasDocumentPiP = 'documentPictureInPicture' in window;
+  let pipWindow = null;
+  let canvasTimer = null;
+
+  async function toggleDocumentPiP() {
+    if (pipWindow) {
+      pipWindow.close();
+      pipWindow = null;
+      return;
+    }
+    pipWindow = await window.documentPictureInPicture.requestWindow({ width: 480, height: 270 });
+    for (const sheet of document.styleSheets) {
+      try {
+        const css = Array.from(sheet.cssRules).map((rule) => rule.cssText).join('\n');
+        const style = pipWindow.document.createElement('style');
+        style.textContent = css;
+        pipWindow.document.head.appendChild(style);
+      } catch {
+        // Cross-origin sheet — nothing to copy.
+      }
+    }
+    pipWindow.document.body.appendChild(els.stage);
+    pipWindow.addEventListener('pagehide', () => {
+      document.body.prepend(els.stage);
+      pipWindow = null;
+    });
+  }
+
+  function wrap(ctx, text, maxWidth, fontSize) {
+    let size = fontSize;
+    for (;;) {
+      ctx.font = '650 ' + size + 'px ui-sans-serif, system-ui, sans-serif';
+      const words = String(text).split(/\s+/);
+      const lines = [];
+      let line = '';
+      for (const word of words) {
+        const candidate = line ? line + ' ' + word : word;
+        if (ctx.measureText(candidate).width > maxWidth && line) {
+          lines.push(line);
+          line = word;
+        } else {
+          line = candidate;
+        }
+      }
+      if (line) lines.push(line);
+      if (lines.length <= 4 || size <= 32) return lines.slice(0, 4);
+      size -= 8;
+    }
+  }
+
+  function paintCanvas(ctx) {
+    const w = els.canvas.width;
+    const h = els.canvas.height;
+    const style = getComputedStyle(document.body);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = style.getPropertyValue('--bg').trim() || '#0d0d0c';
+    ctx.fillRect(0, 0, w, h);
+    if (!current) return;
+
+    const alpha = els.card.classList.contains('show') ? 1 : 0.12;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = style.getPropertyValue('--fg').trim() || '#f4f2ee';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    const lines = wrap(ctx, current.title, w * 0.84, 72);
+    const lineHeight = 78;
+    const startY = h / 2 - ((lines.length - 1) * lineHeight) / 2;
+    lines.forEach((line, i) => ctx.fillText(line, w / 2, startY + i * lineHeight));
+
+    ctx.globalAlpha = alpha * 0.5;
+    ctx.font = '500 24px ui-sans-serif, system-ui, sans-serif';
+    const sub = [current.type, current.project].filter(Boolean).join('  ·  ').toUpperCase();
+    ctx.fillText(sub, w / 2, startY + lines.length * lineHeight + 24);
+    ctx.globalAlpha = 1;
+  }
+
+  function startCanvas() {
+    if (canvasTimer) return;
+    const ctx = els.canvas.getContext('2d');
+    canvasTimer = setInterval(() => paintCanvas(ctx), 1000 / 15);
+  }
+
+  function stopCanvas() {
+    if (!canvasTimer) return;
+    clearInterval(canvasTimer);
+    canvasTimer = null;
+  }
+
+  async function toggleVideoPiP() {
+    const video = els.video;
+    if (document.pictureInPictureElement) {
+      await document.exitPictureInPicture();
+      stopCanvas();
+      return;
+    }
+    startCanvas();
+    if (!video.srcObject) video.srcObject = els.canvas.captureStream(15);
+    await video.play();
+    if (video.requestPictureInPicture) {
+      await video.requestPictureInPicture();
+    } else if (video.webkitSetPresentationMode) {
+      video.webkitSetPresentationMode('picture-in-picture');
+    }
+  }
+
+  async function togglePiP() {
+    try {
+      if (hasDocumentPiP) {
+        await toggleDocumentPiP();
+        return;
+      }
+      await toggleVideoPiP();
+    } catch (err) {
+      console.warn('[tv] picture-in-picture failed', err);
+    }
+  }
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else if (document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen();
+    }
+  }
+
+  let hudTimer = null;
+  function pokeHud() {
+    els.hud.classList.add('show');
+    clearTimeout(hudTimer);
+    hudTimer = setTimeout(() => els.hud.classList.remove('show'), 2500);
+  }
+
+  els.pipBtn.addEventListener('click', togglePiP);
+  els.fsBtn.addEventListener('click', toggleFullscreen);
+  document.addEventListener('mousemove', pokeHud);
+  document.addEventListener('touchstart', pokeHud, { passive: true });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'f') toggleFullscreen();
+    if (event.key === 'p') togglePiP();
+  });
+
+  pokeHud();
+  connect();
+  seed().finally(loop);
+})();
+</script>
+</body>
+</html>

@@ -40,6 +40,12 @@ async function buildViewer() {
       htmlTemplate
     );
 
+    // Observation TV is a standalone page with no bundle — copy it verbatim.
+    fs.copyFileSync(
+      path.join(rootDir, 'src/ui/tv.html'),
+      path.join(rootDir, 'plugin/ui/tv.html')
+    );
+
     const fontsDir = path.join(rootDir, 'src/ui/viewer/assets/fonts');
     const outputFontsDir = path.join(rootDir, 'plugin/ui/assets/fonts');
 
@@ -67,6 +73,7 @@ async function buildViewer() {
     console.log('✓ React viewer built successfully');
     console.log('  - plugin/ui/viewer-bundle.js');
     console.log('  - plugin/ui/viewer.html (from viewer-template.html)');
+    console.log('  - plugin/ui/tv.html (from src/ui/tv.html)');
     console.log('  - plugin/ui/assets/fonts/* (font files)');
     console.log(`  - plugin/ui/icon-thick-*.svg (${iconFiles.length} icon files)`);
   } catch (error) {
