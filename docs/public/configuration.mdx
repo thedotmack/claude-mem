@@ -64,6 +64,41 @@ Use [LiteLLM Gateway](configuration/litellm-gateway) when you want `CLAUDE_MEM_P
 | `CLAUDE_MEM_PYTHON_VERSION`   | `3.13`                          | Python version for chroma-mcp         |
 | `CLAUDE_CODE_PATH`            | _(auto-detect)_                 | Path to Claude Code CLI (for Windows) |
 
+### Observation Trigger Notifications
+
+Use the existing Telegram trigger filters (`CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES` and `CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS`) to control both Telegram pushes and optional Grok Bot brainbeat webhooks.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_TELEGRAM_ENABLED` | `true` | Enables Telegram delivery when bot token + chat ID are configured |
+| `CLAUDE_MEM_TELEGRAM_BOT_TOKEN` | — | Telegram Bot API token |
+| `CLAUDE_MEM_TELEGRAM_CHAT_ID` | — | Telegram chat ID |
+| `CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES` | `security_alert,sensitive` | Comma-separated observation types that trigger notifications |
+| `CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS` | — | Comma-separated concepts that trigger notifications |
+| `CLAUDE_MEM_GROK_BOT_WEBHOOK_URL` | — | Optional URL for Grok Bot brainbeat webhook POSTs |
+| `CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET` | — | Optional shared secret sent as `x-claude-mem-shared-secret` |
+
+When an observation matches the trigger filters, claude-mem sends a fire-and-forget JSON POST to `CLAUDE_MEM_GROK_BOT_WEBHOOK_URL` (if set):
+
+```json
+{
+  "event": "claude_mem.brainbeat",
+  "observation_id": 1234,
+  "type": "security_alert",
+  "title": "PII exposure in logs",
+  "subtitle": "Raw token printed in retry path",
+  "project": "payments-service",
+  "concepts": ["auth", "logging"],
+  "why_fired": {
+    "matched_type": true,
+    "matched_concepts": ["auth"]
+  },
+  "timestamp": "2026-09-02T02:56:46.087Z"
+}
+```
+
+Webhook failures are logged and never block observation ingest.
+
 ## Model Configuration
 
 Configure which Claude model compresses your observations (only applies when `CLAUDE_MEM_PROVIDER=claude`).

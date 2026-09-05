@@ -500,6 +500,8 @@ describe('SettingsDefaultsManager', () => {
 
       expect(defaults.CLAUDE_MEM_DATA_DIR).toBeDefined();
       expect(defaults.CLAUDE_MEM_LOG_LEVEL).toBeDefined();
+      expect(defaults.CLAUDE_MEM_GROK_BOT_WEBHOOK_URL).toBeDefined();
+      expect(defaults.CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET).toBeDefined();
     });
   });
 
