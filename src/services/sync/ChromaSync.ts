@@ -95,10 +95,75 @@ interface StoredUserPrompt {
   platform_source: string;
 }
 
+/**
+ * Chroma brute-forces the metadata-matched candidate set instead of walking the
+ * HNSW graph, so a `where` clause costs ~30-50us per MATCHED document while an
+ * unfiltered query is flat regardless of n_results. Measured on a 347k-doc
+ * collection: unfiltered 0.15-0.29s for n_results 100..2000, versus 6.10s for
+ * `where {project: <60% of corpus>}`.
+ *
+ * So over-fetch unfiltered and filter here. Over-fetching is close to free;
+ * pushing a non-selective filter into chroma is not.
+ */
+const CHROMA_OVERFETCH_FACTOR = 20;
+const CHROMA_OVERFETCH_CAP = 2000;
+
+/**
+ * Build a client-side equivalent of a chroma `where` clause, or null if the
+ * clause uses anything we do not evaluate identically to chroma.
+ *
+ * Deliberately narrow: literal equality and $eq, combined with $and. Any
+ * operator we are not certain we match exactly ($in, $or, $ne, ranges) returns
+ * null so the query goes to chroma unchanged. A wrong client-side filter would
+ * silently drop results, which is far worse than a slow query.
+ */
+function buildClientSidePredicate(
+  where: Record<string, any>
+): ((metadata: Record<string, any>) => boolean) | null {
+  if (!where || typeof where !== 'object' || Array.isArray(where)) return null;
+
+  const entries = Object.entries(where);
+  if (entries.length === 0) return null;
+
+  const predicates: ((metadata: Record<string, any>) => boolean)[] = [];
+
+  for (const [key, value] of entries) {
+    if (key === '$and') {
+      if (!Array.isArray(value)) return null;
+      const inner = value.map(clause => buildClientSidePredicate(clause));
+      if (inner.some(p => p === null)) return null;
+      predicates.push(metadata => inner.every(p => p!(metadata)));
+      continue;
+    }
+    if (key.startsWith('$')) return null;
+
+    if (value !== null && typeof value === 'object') {
+      const operators = Object.keys(value);
+      if (operators.length !== 1 || operators[0] !== '$eq') return null;
+      const expected = (value as any).$eq;
+      predicates.push(metadata => metadata?.[key] === expected);
+      continue;
+    }
+    predicates.push(metadata => metadata?.[key] === value);
+  }
+
+  return metadata => predicates.every(p => p(metadata));
+}
+
 export class ChromaSync {
   private project: string;
   private collectionName: string;
   private collectionCreated = false;
+  /**
+   * Where-clauses observed to be selective, keyed by clause signature.
+   *
+   * The over-fetch fast path is a net loss for a selective filter: it pays the
+   * unfiltered fetch AND the filtered query it was trying to avoid. One miss is
+   * enough to learn that, after which we go straight to chroma -- which is cheap
+   * for exactly these filters. Bounded so it cannot grow without limit.
+   */
+  private selectiveFilters = new Map<string, number>();
+  private static readonly SELECTIVE_FILTER_MEMO_CAP = 256;
   private collectionCreation: Promise<void> | null = null;
   private readonly BATCH_SIZE = 100;
 
@@ -986,15 +1051,67 @@ export class ChromaSync {
     await this.ensureCollectionExists();
 
     let results: any;
-    try {
+    const runQuery = async (nResults: number, where?: Record<string, any>) => {
       const chromaMcp = ChromaMcpManager.getInstance();
-      results = await chromaMcp.callTool('chroma_query_documents', {
+      return await chromaMcp.callTool('chroma_query_documents', {
         collection_name: this.collectionName,
         query_texts: [query],
-        n_results: limit,
-        ...(whereFilter && { where: whereFilter }),
+        n_results: nResults,
+        ...(where && { where }),
         include: ['documents', 'metadatas', 'distances']
       });
+    };
+
+    try {
+      // Fast path: keep a non-selective filter out of chroma by over-fetching
+      // unfiltered and applying the clause here (see CHROMA_OVERFETCH_FACTOR).
+      const predicate = whereFilter ? buildClientSidePredicate(whereFilter) : null;
+      const filterKey = whereFilter ? JSON.stringify(whereFilter) : '';
+      const knownSurvivors = this.selectiveFilters.get(filterKey);
+      if (predicate && (knownSurvivors === undefined || knownSurvivors >= limit)) {
+        const overfetch = Math.min(
+          Math.max(limit * CHROMA_OVERFETCH_FACTOR, limit),
+          CHROMA_OVERFETCH_CAP
+        );
+        const raw: any = await runQuery(overfetch);
+        const rawIds = raw?.ids?.[0] || [];
+        const rawMetadatas = raw?.metadatas?.[0] || [];
+        const rawDistances = raw?.distances?.[0] || [];
+
+        const keptIds: string[] = [];
+        const keptMetadatas: any[] = [];
+        const keptDistances: number[] = [];
+        for (let i = 0; i < rawIds.length; i++) {
+          if (!predicate(rawMetadatas[i] ?? {})) continue;
+          keptIds.push(rawIds[i]);
+          keptMetadatas.push(rawMetadatas[i]);
+          keptDistances.push(rawDistances[i]);
+        }
+
+        const filtered = this.deduplicateQueryResults({
+          ids: [keptIds], metadatas: [keptMetadatas], distances: [keptDistances]
+        });
+
+        // Enough survivors means the filter was not selective and the fast path
+        // is sound. Too few means it WAS selective -- the case SearchManager
+        // pushes into chroma so small projects are not crowded out of the top-N
+        // -- and chroma handles a selective filter cheaply. So fall through.
+        if (filtered.ids.length >= limit) {
+          this.selectiveFilters.delete(filterKey);
+          return {
+            ids: filtered.ids.slice(0, limit),
+            distances: filtered.distances.slice(0, limit),
+            metadatas: filtered.metadatas.slice(0, limit)
+          };
+        }
+
+        if (this.selectiveFilters.size >= ChromaSync.SELECTIVE_FILTER_MEMO_CAP) {
+          this.selectiveFilters.clear();
+        }
+        this.selectiveFilters.set(filterKey, filtered.ids.length);
+      }
+
+      results = await runQuery(limit, whereFilter);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
 
