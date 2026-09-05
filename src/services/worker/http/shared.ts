@@ -54,6 +54,49 @@ export interface ObservationPayload {
   toolUseId?: string;
 }
 
+/** Remove binary image content that the text-only observer cannot use. */
+export function stripImageContent(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value
+      .filter(item => !(item && typeof item === 'object' && isBase64ImageBlock(item)))
+      .map(stripImageContent);
+  }
+
+  if (value && typeof value === 'object') {
+    if (Object.getPrototypeOf(value) !== Object.prototype) return value;
+    if (isBase64ImageBlock(value)) return undefined;
+
+    const record = value as Record<string, unknown>;
+    const cleaned: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(record)) {
+      const next = stripImageContent(child);
+      if (next !== undefined) cleaned[key] = next;
+    }
+    return cleaned;
+  }
+
+  return value;
+}
+
+function isBase64ImageBlock(value: object): boolean {
+  const record = value as Record<string, unknown>;
+  if (record.type !== 'image') return false;
+  if (isBinaryImageData(record.data)) return true;
+  const source = record.source;
+  if (source === null || typeof source !== 'object') return false;
+  const sourceRecord = source as Record<string, unknown>;
+  const sourceData = sourceRecord.data;
+  if (sourceRecord.type === 'url') return false;
+  return sourceRecord.type === 'base64' && isBinaryImageData(sourceData);
+}
+
+function isBinaryImageData(value: unknown): boolean {
+  return typeof value === 'string'
+    || (typeof Buffer !== 'undefined' && Buffer.isBuffer(value))
+    || value instanceof ArrayBuffer
+    || ArrayBuffer.isView(value);
+}
+
 export async function ingestObservation(payload: ObservationPayload): Promise<IngestResult> {
   const { sessionManager, dbManager, eventBroadcaster, ensureGeneratorRunning } = requireContext();
 
@@ -112,10 +155,10 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   }
 
   const cleanedToolInput = payload.toolInput !== undefined
-    ? stripMemoryTags(JSON.stringify(payload.toolInput))
+    ? stripMemoryTags(JSON.stringify(stripImageContent(payload.toolInput)) ?? '{}')
     : '{}';
   const cleanedToolResponse = payload.toolResponse !== undefined
-    ? stripMemoryTags(JSON.stringify(payload.toolResponse))
+    ? stripMemoryTags(JSON.stringify(stripImageContent(payload.toolResponse)) ?? '{}')
     : '{}';
 
   await sessionManager.queueObservation(sessionDbId, {
