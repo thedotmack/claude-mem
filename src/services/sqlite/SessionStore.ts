@@ -1,4 +1,4 @@
-import { Database, type SQLQueryBindings } from 'bun:sqlite';
+import { Database, type SQLQueryBindings, type Statement } from 'bun:sqlite';
 import { randomUUID } from 'crypto';
 import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
@@ -75,6 +75,15 @@ interface SdkSessionDetailRow {
 
 export class SessionStore {
   public db: Database;
+  /**
+   * Statements reused across every requeuePromptSync call. The insert runs once
+   * per prompt inside the transaction loop and the rev bump once per prompt
+   * too, so preparing either afresh leaked native handles — per prompt inside
+   * the loop, and per call for the bump — until prepare() ran out of memory.
+   * One cached handle each, prepared lazily on the live connection.
+   */
+  private syncOutboxInsertStmt?: Statement;
+  private bumpPromptRevStmt?: Statement;
 
   constructor(dbPathOrDb: string | Database = DB_PATH) {
     if (dbPathOrDb instanceof Database) {
@@ -1934,10 +1943,11 @@ export class SessionStore {
       if (target?.origin_device_id === null) target.origin_device_id = 'self';
     }
     validateCanonicalMutation(candidate);
-    this.db.prepare(`
+    this.syncOutboxInsertStmt ??= this.db.prepare(`
       INSERT INTO sync_outbox (op_uuid, rev, body, created_at_epoch)
       VALUES (?, ?, ?, ?)
-    `).run(randomUUID(), String(rev), JSON.stringify(body), Date.now());
+    `);
+    this.syncOutboxInsertStmt.run(randomUUID(), String(rev), JSON.stringify(body), Date.now());
   }
 
   /**
@@ -1981,12 +1991,17 @@ export class SessionStore {
       `).all(sessionDbId) as Array<{ id: string; sync_rev: string }>;
       if (prompts.length === 0) return;
 
+      // Cached on the instance, not prepared here: the SQL is invariant, so a
+      // fresh prepare per prompt (inner loop) or per call leaked handles until
+      // prepare() OOMed.
+      this.bumpPromptRevStmt ??= this.db.prepare(`
+        UPDATE user_prompts SET sync_rev = ?, synced_at = NULL
+        WHERE id = ? AND origin_device_id IS NULL
+      `);
+
       for (const prompt of prompts) {
         const nextRev = incrementCanonicalDecimal(prompt.sync_rev);
-        this.db.prepare(`
-          UPDATE user_prompts SET sync_rev = ?, synced_at = NULL
-          WHERE id = ? AND origin_device_id IS NULL
-        `).run(nextRev, prompt.id);
+        this.bumpPromptRevStmt.run(nextRev, prompt.id);
         this.enqueueMutationOp(nextRev, {
           op: 'set_prompt_session',
           target: { origin_device_id: null, origin_local_id: prompt.id },
