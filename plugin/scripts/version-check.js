@@ -174,9 +174,26 @@ function readInstallMarkerVersion(markerPath) {
   }
 }
 
+function resolveInstallMarkerPath(root, version) {
+  const localMarkerPath = join(root, '.install-version');
+  if (existsSync(localMarkerPath)) return localMarkerPath;
+
+  const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+  const cacheMarkerPath = join(
+    claudeConfigDir,
+    'plugins',
+    'cache',
+    'thedotmack',
+    'claude-mem',
+    version,
+    '.install-version',
+  );
+  return existsSync(cacheMarkerPath) ? cacheMarkerPath : localMarkerPath;
+}
+
 try {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
-  const markerPath = join(ROOT, '.install-version');
+  const markerPath = resolveInstallMarkerPath(ROOT, pkg.version);
   if (!existsSync(markerPath)) {
     emitUpgradeHint('claude-mem: runtime not yet set up - run: npx claude-mem@latest install');
     process.exit(0);
