@@ -1325,10 +1325,23 @@ export class SessionStore {
     logger.debug('DB', 'Successfully created user_prompts table');
   }
 
+  /**
+   * Add `discovery_tokens` to `observations` / `session_summaries` when it is
+   * missing.
+   *
+   * Deliberately NOT short-circuited on `schema_versions` row 11. The row
+   * records that the migration once ran, which is not the same as the column
+   * being there now: an old-version worker spawned from a stale plugin cache
+   * rebuilds `session_summaries` in its pre-`discovery_tokens` shape, and the
+   * version row survives that. Guarding on history meant the repair was
+   * skipped forever and every summary write failed with
+   * "table session_summaries has no column named discovery_tokens" until
+   * someone ran the ALTER by hand (#3738).
+   *
+   * The two PRAGMAs below are the actual guard, they are already idempotent,
+   * and they cost one table_info each at boot.
+   */
   private ensureDiscoveryTokensColumn(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(11) as SchemaVersion | undefined;
-    if (applied) return;
-
     const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
     const obsHasDiscoveryTokens = observationsInfo.some(col => col.name === 'discovery_tokens');
 
