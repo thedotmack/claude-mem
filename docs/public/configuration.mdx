@@ -247,6 +247,18 @@ Then restart the worker:
 npm run worker:restart
 ```
 
+### Watching Off-LAN (cmem.ai Pro)
+
+Everything above is the LAN path. Watching from *outside* your network — on cellular, at a coffee shop, from another house — is a **cmem.ai Pro** feature: open `https://cmem.ai/tv` in any browser while signed in to your account. It requires [Cloud Sync](/cloud-sync) to be enabled, because the hosted page reads titles your worker has already pushed to your sync hub.
+
+**No token, no open port, no inbound connection.** This path needs neither `CLAUDE_MEM_TV_TOKEN` nor a non-loopback `CLAUDE_MEM_WORKER_HOST` — both belong to the LAN path and have no effect on it, so leave them at their defaults. The box never accepts an inbound connection for the hosted TV; the worker only ever dials out. No tunnel (cloudflared, ngrok, or anything like them) is needed, and none is recommended.
+
+**The hosted TV surface shows observation titles and nothing else.** It never renders narratives, facts, file lists, snippets or prompt text.
+
+**That is not the same as "only titles leave your machine."** The hosted TV is a feature *of* cloud sync, and cloud sync uploads your observation narratives and your full prompt text to the sync hub under your cmem.ai account. The hosted page is titles-only; the upload standing behind it is not. Don't enable cloud sync if that content must stay on your machine.
+
+**One rendering difference.** An observation with no title still appears on the LAN TV, which falls back to the subtitle. It does not appear on the hosted phone TV — that surface receives titles only, so it has no subtitle to fall back to.
+
 ## Folder Context Files
 
 Claude-mem can automatically generate `CLAUDE.md` files in your project folders with activity timelines. This feature is disabled by default.
