@@ -23,10 +23,11 @@ class FileTailer {
     private filePath: string,
     initialOffset: number,
     private onLine: (line: string) => Promise<void>,
-    private onOffset: (offset: number) => void,
-    private isZstd = false
+    private onOffset: (offset: number, partial: string) => void,
+    private isZstd = false,
+    initialPartial = ''
   ) {
-    this.tailState = { offset: initialOffset, partial: '' };
+    this.tailState = { offset: initialOffset, partial: initialPartial };
   }
 
   start(): void {
@@ -120,7 +121,7 @@ class FileTailer {
         await this.onLine(trimmed);
       }
       this.tailState.offset = nextOffset;
-      this.onOffset(nextOffset);
+      this.onOffset(nextOffset, '');
     }
 
     if (!this.closed) {
@@ -202,7 +203,12 @@ class FileTailer {
     const nextOffset = !stoppedBeforeTorn && scan.tornStart !== null && scan.tornStart > processedEnd ? scan.tornStart : processedEnd;
     if (nextOffset > this.tailState.offset) {
       this.tailState.offset = nextOffset;
-      this.onOffset(nextOffset);
+      // A complete zstd frame can end mid-JSONL-record; the durable offset is
+      // only resumable at frame boundaries, so persist the unterminated prefix
+      // with the offset. Without it a replacement tailer would parse the
+      // suffix from the next frame as a standalone (malformed) line and the
+      // record spanning the two frames would be lost.
+      this.onOffset(nextOffset, this.tailState.partial);
     }
   }
 }
@@ -387,11 +393,18 @@ export class TranscriptWatcher {
       async (line: string) => {
         await this.handleLine(line, watch, schema, filePath, sessionIdOverride);
       },
-      (newOffset: number) => {
+      (newOffset: number, partial: string) => {
         this.state.offsets[filePath] = newOffset;
+        const partials = (this.state.partials ??= {});
+        if (partial) {
+          partials[filePath] = partial;
+        } else {
+          delete partials[filePath];
+        }
         saveWatchState(this.statePath, this.state);
       },
-      filePath.endsWith('.jsonl.zstd')
+      filePath.endsWith('.jsonl.zstd'),
+      this.state.partials?.[filePath] ?? ''
     );
 
     tailer.start();

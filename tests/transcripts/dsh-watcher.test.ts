@@ -378,4 +378,56 @@ describe('TranscriptWatcher zstd (DSH session logs)', () => {
     expect(sessionInitCalls.filter(call => call.prompt === 'zstd first')).toHaveLength(2);
     expect(sessionInitCalls.filter(call => call.prompt === 'zstd second')).toHaveLength(1);
   });
+
+  it('reassembles a JSONL record split across zstd frames after watcher replacement', async () => {
+    const sessionId = '2f1a0b3c-aaaa-bbbb-cccc-ddddeeeeffff';
+    const sessionDir = join(tmpRoot, `session-${sessionId}`);
+    mkdirSync(sessionDir, { recursive: true });
+    const filePath = join(sessionDir, 'session.jsonl.zstd');
+    const statePath = join(tmpRoot, 'state.json');
+
+    const watch: WatchTarget = {
+      name: 'dsh',
+      path: join(tmpRoot, '**', '*.jsonl.zstd'),
+      schema: dshSchema,
+    };
+
+    // Frame A ends in the middle of the second JSONL record: one complete
+    // line, then the record's prefix with no trailing newline.
+    const firstEvent = userMessageEvent(0, 'complete in frame A');
+    const secondEvent = userMessageEvent(1, 'split across frames');
+    const splitAt = secondEvent.length - 18;
+    const prefix = secondEvent.slice(0, splitAt);
+    const suffix = secondEvent.slice(splitAt);
+    expect(prefix).not.toContain('\n');
+    expect(suffix).not.toContain('\n');
+
+    const frameA = zstdCompressSync(Buffer.from(`${firstEvent}\n${prefix}`, 'utf8'));
+    writeFileSync(filePath, frameA);
+
+    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+    await (watcher as any).addTailer(filePath, watch, dshSchema);
+    await waitForAsyncTail();
+
+    // The complete line dispatched; the durable offset advanced past all of
+    // frame A together with the persisted unterminated prefix.
+    expect(sessionInitCalls.map(call => call.prompt)).toContain('complete in frame A');
+    const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+    expect(persisted.offsets[filePath]).toBe(frameA.length);
+    expect(persisted.partials[filePath]).toBe(prefix);
+    watcher.stop();
+
+    // Frame B arrives only after the watcher was replaced: without a persisted
+    // prefix the replacement would parse the bare suffix as a standalone line
+    // and silently drop the event that spans the two frames.
+    appendFileSync(filePath, zstdCompressSync(Buffer.from(`${suffix}\n`, 'utf8')));
+    const replacement = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+    await (replacement as any).addTailer(filePath, watch, dshSchema);
+    await waitForAsyncTail();
+    replacement.stop();
+
+    const prompts = sessionInitCalls.map(call => call.prompt);
+    expect(prompts.filter(p => p === 'complete in frame A')).toHaveLength(1);
+    expect(prompts.filter(p => p === 'split across frames')).toHaveLength(1);
+  });
 });
