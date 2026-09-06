@@ -9,7 +9,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
-import { DATA_DIR, DB_PATH, ensureDir } from '../shared/paths.js';
+import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir } from '../shared/paths.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
@@ -202,6 +202,8 @@ export class WorkerService implements WorkerRef {
   // the previous run's stale PID file + the clean-shutdown sentinel.
   private previousShutdown: 'clean' | 'crash' | 'unknown' = 'unknown';
   private previousUptimeSeconds: number | null = null;
+  // Observation TV shared secret, resolved once in the constructor. Empty = off.
+  private tvToken: string = '';
   private mcpClient: Client;
 
   private mcpReady: boolean = false;
@@ -270,6 +272,18 @@ export class WorkerService implements WorkerRef {
       version: packageVersion
     }, { capabilities: {} });
 
+    // Observation TV remote broadcast secret. Must be read from settings.json —
+    // SettingsDefaultsManager.get() only consults process.env and DEFAULTS, so a
+    // token written to ~/.claude-mem/settings.json would be invisible to it.
+    // Whitespace-only is OFF, not a secret equal to a space.
+    // RESOLUTION POINT: the token is the single switch. It is passed to the
+    // Server below as `remoteReadOnly`, and only when it is non-empty — so a
+    // token-less install constructs an options object identical to today's and
+    // the read-only guard is never mounted.
+    const workerSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const tvToken = (workerSettings.CLAUDE_MEM_TV_TOKEN ?? '').trim();
+    this.tvToken = tvToken;
+
     this.server = new Server({
       getInitializationComplete: () => this.initializationCompleteFlag,
       getMcpReady: () => this.mcpReady,
@@ -294,6 +308,7 @@ export class WorkerService implements WorkerRef {
       preBodyParserRoutes: [
         new BetterAuthRoutes(() => this.dbManager.getConnection()),
       ],
+      ...(tvToken ? { remoteReadOnly: { getToken: () => tvToken } } : {}),
     });
 
     this.registerRoutes();
@@ -418,6 +433,23 @@ export class WorkerService implements WorkerRef {
     await startSupervisor();
 
     await this.server.listen(port, host);
+
+    if (this.tvToken) {
+      // Operators need to see, in the log, that a remote surface is open.
+      // Never log the token itself.
+      logger.info('SYSTEM', 'Observation TV remote broadcast enabled', {
+        host,
+        allowedPaths: ['/tv', '/tv.html', '/stream', 'GET /api/observations'],
+      });
+    } else if (host !== '127.0.0.1' && host !== '::1' && host !== '::ffff:127.0.0.1' && host !== 'localhost') {
+      // Warn, do not refuse to bind: docs/docker.md tells people to set
+      // CLAUDE_MEM_WORKER_HOST=0.0.0.0, and refusing would break that install.
+      logger.warn(
+        'SECURITY',
+        'Worker bound to a non-loopback host with no CLAUDE_MEM_TV_TOKEN — the full worker API, including provider API keys via GET /api/settings, is reachable from the network',
+        { host }
+      );
+    }
 
     writePidFile({
       pid: process.pid,

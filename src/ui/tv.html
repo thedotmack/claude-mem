@@ -149,6 +149,9 @@
   const FADE_MS = clampInt(params.get('fade'), 900, 100, 5000);
   const REPLAY = params.get('replay') !== '0';
   const SEED_LIMIT = clampInt(params.get('seed'), 25, 0, 100);
+  // Shared secret for remote (non-loopback) access. Loopback never needs it.
+  // Held by the bookmark only — deliberately never stored and never logged.
+  const TOKEN = params.get('token') || '';
 
   const els = {
     stage: document.getElementById('stage'),
@@ -178,6 +181,29 @@
     return str.includes('/') ? str.split('/').pop() : str;
   }
 
+  // The canonical vocabulary lives in src/shared/platform-source.ts —
+  // DEFAULT_PLATFORM_SOURCE is 'claude' and the three known names are
+  // claude / codex / cursor. Only those three names are mirrored here; the full
+  // normalizePlatformSource() mapping is not duplicated. Anything else keeps
+  // its own name and is hashed to a hue.
+  const SOURCE_COLORS = {
+    claude: '#c15f3c',
+    codex: '#4f9d8c',
+    cursor: '#8b7ad6',
+  };
+
+  function platformSource(value) {
+    const raw = String(value == null ? '' : value).trim().toLowerCase().replace(/\s+/g, '-');
+    return raw || 'claude';
+  }
+
+  function sourceColor(name) {
+    if (Object.prototype.hasOwnProperty.call(SOURCE_COLORS, name)) return SOURCE_COLORS[name];
+    let hash = 0;
+    for (let i = 0; i < name.length; i += 1) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+    return 'hsl(' + (hash % 360) + ', 58%, 62%)';
+  }
+
   function normalize(obs) {
     if (!obs) return null;
     const title = (obs.title || obs.subtitle || obs.text || '').trim();
@@ -187,6 +213,7 @@
       title,
       type: (obs.type || 'observation').replace(/_/g, ' '),
       project: leafProject(obs.project),
+      platform: platformSource(obs.platform_source),
       at: obs.created_at_epoch || Date.now(),
     };
   }
@@ -231,6 +258,12 @@
     els.title.textContent = item.title;
     const bits = ['<span class="type">' + escapeHtml(item.type) + '</span>'];
     if (item.project) bits.push(escapeHtml(item.project));
+    // The colour comes from sourceColor(), never from the raw field, so it is
+    // always a literal this file produced.
+    bits.push(
+      '<span class="source" style="color: ' + sourceColor(item.platform) + '">'
+      + escapeHtml(item.platform) + '</span>'
+    );
     bits.push(escapeHtml(relTime(item.at)));
     els.meta.innerHTML = bits.join(' &nbsp;·&nbsp; ');
     document.title = item.title + ' · claude-mem TV';
@@ -261,6 +294,7 @@
     const qs = new URLSearchParams({ limit: String(SEED_LIMIT) });
     if (project) qs.set('project', project);
     if (source) qs.set('platformSource', source);
+    if (TOKEN) qs.set('token', TOKEN);
     try {
       const res = await fetch('/api/observations?' + qs.toString(), { cache: 'no-store' });
       if (!res.ok) return;
@@ -274,7 +308,9 @@
   }
 
   function connect() {
-    const es = new EventSource('/stream');
+    // EventSource cannot set request headers, so a remote stream carries the
+    // token in the query string.
+    const es = new EventSource('/stream' + (TOKEN ? '?token=' + encodeURIComponent(TOKEN) : ''));
 
     es.onopen = () => els.dot.classList.add('live');
 
@@ -378,8 +414,20 @@
 
     ctx.globalAlpha = alpha * 0.5;
     ctx.font = '500 24px ui-sans-serif, system-ui, sans-serif';
-    const sub = [current.type, current.project].filter(Boolean).join('  ·  ').toUpperCase();
-    ctx.fillText(sub, w / 2, startY + lines.length * lineHeight + 24);
+    const subY = startY + lines.length * lineHeight + 24;
+    const sep = '  ·  ';
+    // The platform source is painted in its own accent, so the sub line is laid
+    // out left-to-right by hand instead of as one centred string.
+    const lead = [current.type, current.project].filter(Boolean).join(sep).toUpperCase();
+    const leadText = lead ? lead + sep : '';
+    const sourceText = current.platform.toUpperCase();
+    const leadWidth = ctx.measureText(leadText).width;
+    const startX = w / 2 - (leadWidth + ctx.measureText(sourceText).width) / 2;
+    ctx.textAlign = 'left';
+    if (leadText) ctx.fillText(leadText, startX, subY);
+    ctx.fillStyle = sourceColor(current.platform);
+    ctx.fillText(sourceText, startX + leadWidth, subY);
+    ctx.textAlign = 'center';
     ctx.globalAlpha = 1;
   }
 

@@ -20,6 +20,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_WORKER_PORT`      | `37700 + (uid % 100)`           | Worker service port (per-user default; override for fixed port) |
 | `CLAUDE_MEM_WORKER_HOST`      | `127.0.0.1`                     | Worker service host address           |
+| `CLAUDE_MEM_TV_TOKEN`         | —                               | Shared secret for Observation TV remote access. Empty = off. With a non-loopback `CLAUDE_MEM_WORKER_HOST`, only `/tv`, `/tv.html`, `/stream` and `GET /api/observations` are reachable, and only with this token. |
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data root — every other path (database, chroma, logs, settings.json, worker.pid) derives from this |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
 
@@ -184,6 +185,67 @@ Search operations are provided via:
 ## Worker Service Management
 
 Worker service is managed by Bun as a background process. The worker auto-starts on first session and runs continuously in the background.
+
+### Observation TV Remote Access
+
+The worker binds to `127.0.0.1` by default and has **no request authentication** — the loopback bind is its only defence. `CLAUDE_MEM_TV_TOKEN` adds a read-only broadcast surface so a second device on your LAN (a phone, an iPad, a spare monitor) can watch Observation TV and do nothing else.
+
+Mint a token:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+```
+
+The host setting and the token work as a pair:
+
+| `CLAUDE_MEM_WORKER_HOST` | `CLAUDE_MEM_TV_TOKEN` | Result |
+|---|---|---|
+| `127.0.0.1` (default) | empty | Today. Nothing reachable off-box. **Recommended for everyone not using the TV remotely.** |
+| `127.0.0.1` | set | Token is inert — nothing can reach the port anyway. Harmless. |
+| `0.0.0.0` | **empty** | **Dangerous, and unchanged from today**: the full API — settings incl. provider API keys, deletes, import, better-auth — is on the LAN. This is what the Docker setup already tells people to do, so the worker warns rather than refuses to bind. |
+| `0.0.0.0` | set | The point of the feature. LAN devices reach `/tv`, `/tv.html`, `/stream`, `GET /api/observations` with the secret, and get 404/403/401 for everything else. |
+
+Booting with a non-loopback host and no token logs a `SECURITY` warning; the worker still binds.
+
+**A local port-forward reopens the whole API.** The guard exempts loopback by socket peer, so anything that arrives *as* loopback bypasses it entirely — including `ssh -L <port>:127.0.0.1:<port> <box>` from another device, or any local forwarding proxy. To the worker that traffic is indistinguishable from the operator's own browser, so it gets the full API, `GET /api/settings` and its provider API keys included. This is the one concrete way "the device can do nothing else" stops being true: only forward the port to devices you would hand the machine to.
+
+**Docker and bridge networking.** With `CLAUDE_MEM_WORKER_HOST=0.0.0.0` inside a bridge-network container, requests from the host's own browser arrive from the bridge gateway address, not `127.0.0.1`. Once a token is set, that browser is treated as remote like any other device and must supply `?token=` to open the TV — and the React viewer at `/` is denied outright, exactly as it is for any other remote device.
+
+Open the TV on the second device at `http://<lan-ip>:<port>/tv.html?token=<secret>`.
+
+**The React viewer at `/` stops working remotely when a token is set.** That is intended — the viewer needs the write and settings routes the guard denies. Loopback is never gated, so the viewer keeps working normally on the machine running the worker.
+
+**Treat the URL as the secret.** The token rides in the query string for `/stream` because the browser's `EventSource` API cannot set request headers. It is *not* written to the worker log (the request logger records `req.path`, which excludes the query string), but it **will** be in the browser's history on the device you open it on. `Authorization: Bearer <token>` and `X-Api-Key: <token>` also work for anything that can set headers.
+
+**This is plain HTTP.** The token stops an unauthenticated device from reading the stream; it does not encrypt it. Anyone who can sniff your LAN sees observation titles. For a home network that is the accepted tradeoff; for anything else, terminate TLS in front of the worker (out of scope here) — and still never a tunnel to the unmodified worker, which would publish `GET /api/settings` and its provider API keys to the open internet.
+
+**Use the exact paths.** The allowlist is exact-match and case-sensitive: `/tv.html`, `/tv`, `/stream`, `/api/observations` and nothing else. A trailing slash or a different case — `/tv/`, `/API/observations`, `/api/observations/by-file` — returns 404 even with a valid token. That is deliberate fail-closed behavior, not a bug.
+
+The TV's `?project=` and `?source=` filters are **client-side only**. They are display filters, not access control — a token holder still receives every project's observations.
+
+Accepted risks, stated plainly:
+
+1. **`GET /api/observations` returns full observation bodies** — `narrative`, `facts`, `text`, `files_read`, `files_modified` — for **every project on the box**, not just the four fields the TV renders. A token holder can page through the entire memory database with `offset`.
+2. **`/stream` is unfiltered.** It carries every observation for every project on the box, plus the project catalog and processing status. There is no per-client filtering.
+3. **No rate limiting.** A token holder can hammer `GET /api/observations` freely.
+4. **The token is readable on loopback** via `GET /api/settings`, exactly like your provider API keys are today. It is deliberately *not* writable through `POST /api/settings` (that route is unauthenticated), so it can only be set by someone with filesystem or environment access.
+5. **`/stream` is not side-effect-free.** Every new connection triggers an `initial_load` broadcast to *all* connected clients, and the client list is unbounded. A token holder reconnecting in a loop can therefore disturb the operator's own local viewer. This is pre-existing worker behavior; the token is what newly makes it reachable from the LAN.
+
+### Manual Configuration
+
+Edit `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_WORKER_HOST": "0.0.0.0",
+  "CLAUDE_MEM_TV_TOKEN": "your-minted-token"
+}
+```
+
+Then restart the worker:
+```bash
+npm run worker:restart
+```
 
 ## Folder Context Files
 

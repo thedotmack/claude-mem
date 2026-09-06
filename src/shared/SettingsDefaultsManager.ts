@@ -90,6 +90,12 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: string;
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: string;
   CLAUDE_MEM_CLOUD_SYNC_WS: string;    // advisory WebSocket speed layer (Phase 4) — 'false' = HTTP polling only
+  // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
+  // mounted and the worker behaves exactly as before. Set (with a non-loopback
+  // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
+  // GET /api/observations to holders of this secret. Mint with:
+  //   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+  CLAUDE_MEM_TV_TOKEN: string;
   // claude-mem sign-in funnel state, written by the installer's browser-login
   // step (install.ts promptBrowserLogin/completeTrialPairing). Declared here so
   // loadFromFile round-trips them instead of dropping unknown keys.
@@ -203,6 +209,12 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',      // Minted at first CloudSync start, then persisted back here
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: hostname(),  // Human-readable label for the cmem.ai Devices panel
     CLAUDE_MEM_CLOUD_SYNC_WS: 'true',  // Advisory WebSocket speed layer (plan Phase 4). 'false' = HTTP polling only — sync stays fully correct, just poll-latency (prime directive #2)
+    // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
+    // mounted and the worker behaves exactly as before. Set (with a non-loopback
+    // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
+    // GET /api/observations to holders of this secret. Mint with:
+    //   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+    CLAUDE_MEM_TV_TOKEN: '',
     // claude-mem sign-in funnel state: all empty until the installer's
     // browser-login step writes them.
     CLAUDE_MEM_PRO_TRIAL_EMAIL: '',     // Email the sign-in link was sent to (don't-re-nag marker)
