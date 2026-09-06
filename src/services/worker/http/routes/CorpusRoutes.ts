@@ -36,7 +36,18 @@ const positiveIntegerLike = z.preprocess((value) => {
   return value;
 }, z.number().int().positive().optional());
 
-const buildCorpusSchema = z.object({
+// The MCP tool schema and the search endpoints use camelCase (dateStart/dateEnd)
+// while the corpus filter uses snake_case. Normalize before validation so a
+// camelCase date filter is never silently dropped at the HTTP boundary.
+const buildCorpusSchema = z.preprocess((value) => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+  const body = value as Record<string, unknown>;
+  return {
+    ...body,
+    date_start: body.date_start ?? body.dateStart,
+    date_end: body.date_end ?? body.dateEnd,
+  };
+}, z.object({
   // Validate the raw name — do NOT .trim() first, or a padded name like
   // " bad " would be silently normalized to "bad" and accepted instead of
   // rejected. CORPUS_NAME_PATTERN already disallows whitespace, so surrounding
@@ -54,7 +65,7 @@ const buildCorpusSchema = z.object({
   date_start: z.string().optional(),
   date_end: z.string().optional(),
   limit: positiveIntegerLike,
-}).passthrough();
+}).passthrough());
 
 const queryCorpusSchema = z.object({
   question: z.string().trim().min(1),
@@ -105,7 +116,16 @@ export class CorpusRoutes extends BaseRouteHandler {
     logger.info('SEARCH', 'Building corpus', { name, project, filterKeys: Object.keys(filter) });
     const corpus = await this.corpusBuilder.build(name, description || '', filter);
 
+    // An empty corpus is a valid response but almost always means a filter
+    // mismatch, so surface a warning instead of a clean success.
     const { observations, ...metadata } = corpus;
+    if (metadata.stats.observation_count === 0) {
+      res.json({
+        ...metadata,
+        warning: 'Corpus created with 0 observations: no filter matched. Check dateStart/dateEnd, project, types and query.'
+      });
+      return;
+    }
     res.json(metadata);
   });
 
@@ -152,7 +172,16 @@ export class CorpusRoutes extends BaseRouteHandler {
 
     const corpus = await this.corpusBuilder.build(name, existingCorpus.description, existingCorpus.filter);
 
+    // Same empty-corpus warning as handleBuildCorpus: a rebuild that matches
+    // nothing must not look like a clean success.
     const { observations, ...metadata } = corpus;
+    if (metadata.stats.observation_count === 0) {
+      res.json({
+        ...metadata,
+        warning: 'Corpus rebuilt with 0 observations: no filter matched. Check the stored filter (dateStart/dateEnd, project, types, query).'
+      });
+      return;
+    }
     res.json(metadata);
   });
 
