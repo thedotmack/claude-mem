@@ -4,6 +4,9 @@ import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { parseJsonWithBom } from './atomic-json.js';
+import { expandHome } from './expand-home.js';
+
+export { expandHome } from './expand-home.js';
 
 function getDirname(): string {
   if (typeof __dirname !== 'undefined') {
@@ -13,27 +16,6 @@ function getDirname(): string {
 }
 
 const _dirname = getDirname();
-
-/**
- * Expand a leading `~/` (or a bare `~`) to the user's home directory.
- *
- * Node's `path.join` / `fs` do NOT expand `~` — only the shell does. So a
- * literal `~/.claude-mem` read from `settings.json` or an env var is treated
- * as a *relative* path, creating a directory literally named `~` in the
- * process cwd. claude-mem workers inherit the cwd of whatever spawned them
- * (subagents pinned to a subdirectory, a plugin-install dir, etc.), so a
- * `~`-prefixed DATA_DIR scattered stray `~/.claude-mem/` trees across the
- * workspace. Expanding here keeps every downstream path absolute regardless
- * of how the value was written.
- */
-export function expandHome(p: string): string {
-  if (typeof p !== 'string' || p.length === 0) return p;
-  if (p === '~') return homedir();
-  if (p.startsWith('~/')) return join(homedir(), p.slice(2));
-  // A `~user/...` form is intentionally left untouched — resolving another
-  // user's home is out of scope and platform-dependent.
-  return p;
-}
 
 export function resolveDataDir(): string {
   if (process.env.CLAUDE_MEM_DATA_DIR) {
@@ -89,12 +71,12 @@ export function getPackageRoot(): string {
  *
  * `home` is injectable so callers behind a homedir() test seam stay testable.
  */
-export function expandTilde(filePath: string, home: string = homedir()): string {
-  if (filePath === '~') return home;
-  if (filePath.startsWith('~/') || filePath.startsWith('~\\')) {
-    return join(home, filePath.slice(2));
-  }
-  return filePath;
+export function expandTilde(
+  filePath: string,
+  home: string = homedir(),
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return expandHome(filePath, platform, home);
 }
 
 export const paths = {

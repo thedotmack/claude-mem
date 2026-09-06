@@ -61,8 +61,15 @@ ${mode.prompts.format_examples}
 ${mode.prompts.footer}`;
 }
 
-export function buildInitPrompt(project: string, sessionId: string, userPrompt: string, mode: ModeConfig): string {
+export function buildInitPrompt(
+  project: string,
+  sessionId: string,
+  userPrompt: string,
+  mode: ModeConfig,
+  priorContext: string = '',
+): string {
   return `${mode.prompts.system_identity}
+${wrapPriorContext(priorContext)}
 
 <observed_from_primary_session>
   <user_request>${userPrompt}</user_request>
@@ -80,6 +87,34 @@ ${mode.prompts.skip_guidance}
 ${observationSkeleton(mode)}
 
 ${mode.prompts.header_memory_start}`;
+}
+
+/**
+ * Wrap the session-start context block for a generation that begins partway
+ * through a session (#3800).
+ *
+ * The text comes from `generateContext` — the same builder the SessionStart
+ * hook uses to tell a brand-new Claude Code session what happened before it.
+ * An observer generation that starts after a recycle is in exactly that
+ * position, so it gets exactly that context rather than a second, parallel
+ * rendering of the same rows.
+ *
+ * Returns '' when there is nothing yet, so a first generation is unchanged.
+ */
+export function wrapPriorContext(priorContext: string): string {
+  const trimmed = priorContext.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  return `
+<session_start_context>
+${trimmed}
+</session_start_context>
+
+The context above is what you have already recorded for this work. Continue from
+there: do not re-record it, and do not treat its absence from the conversation
+above as meaning the work did not happen.`;
 }
 
 // Per-field character budget for the <parameters> / <outcome> blocks in an
@@ -100,7 +135,7 @@ ${mode.prompts.header_memory_start}`;
 // tools put their canonical signal — file path, error message, command
 // header) and the tail (where errors / final-line context typically sit)
 // while dropping the middle. The 10% remainder is the elision marker.
-const OBS_PROMPT_FIELD_MAX_CHARS = 16_000;
+export const OBS_PROMPT_FIELD_MAX_CHARS = 16_000;
 const OBS_PROMPT_FIELD_HEAD_RATIO = 0.6;
 const OBS_PROMPT_FIELD_TAIL_RATIO = 0.3;
 
@@ -149,7 +184,7 @@ export function buildObservationPrompt(obs: Observation): string {
 
 If a <parameters> or <outcome> block above contains an "<elided chars=... />" marker, that field was truncated to fit the observer's context window. Describe only what you can see in the kept portion and do not infer details about the elided range.
 
-Return either one or more <observation>...</observation> blocks, or an empty response if this tool use should be skipped.
+Return either one or more <observation>...</observation> blocks, or <skip_summary reason="noise" /> if this tool use should be skipped.
 Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection count as durable discoveries and should be recorded.
 Never reply with prose such as "Skipping", "No substantive tool executions", or any explanation outside XML. Non-XML text is discarded.`;
 }
@@ -188,8 +223,15 @@ REMINDER: Your response MUST use <summary> as the root tag, NOT <observation>.
 ${mode.prompts.summary_footer}`;
 }
 
-export function buildContinuationPrompt(userPrompt: string, promptNumber: number, contentSessionId: string, mode: ModeConfig): string {
+export function buildContinuationPrompt(
+  userPrompt: string,
+  promptNumber: number,
+  contentSessionId: string,
+  mode: ModeConfig,
+  priorContext: string = '',
+): string {
   return `${mode.prompts.continuation_greeting}
+${wrapPriorContext(priorContext)}
 
 <observed_from_primary_session>
   <user_request>${userPrompt}</user_request>

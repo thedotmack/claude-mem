@@ -103,6 +103,8 @@ export class DatabaseManager {
     user_prompt: string;
     custom_title: string | null;
     status: string;
+    observed_model: string | null;
+    observed_billing: string | null;
   } {
     const session = this.getSessionStore().getSessionById(sessionDbId);
     if (!session) {

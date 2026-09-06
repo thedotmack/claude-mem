@@ -235,6 +235,25 @@ describe('SettingsDefaultsManager', () => {
         expect(parsed.env).toBeUndefined();
         expect(parsed.CLAUDE_MEM_MODEL).toBe('migrated-model');
       });
+
+      it('should preserve peer root keys instead of flattening a mixed nested document', () => {
+        const nestedSettings = {
+          theme: 'dark',
+          permissions: { defaultMode: 'auto' },
+          env: {
+            CLAUDE_MEM_MODEL: 'nested-model',
+          },
+        };
+        writeFileSync(settingsPath, JSON.stringify(nestedSettings));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_MODEL).toBe('nested-model');
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.theme).toBe('dark');
+        expect(parsed.permissions).toEqual({ defaultMode: 'auto' });
+        expect(parsed.env.CLAUDE_MEM_MODEL).toBe('nested-model');
+      });
     });
 
     // A fresh settings.json is seeded with every default, so installs created
@@ -309,6 +328,63 @@ describe('SettingsDefaultsManager', () => {
         const second = SettingsDefaultsManager.loadFromFile(settingsPath);
 
         expect(second.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES).toBe(first.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES);
+      });
+    });
+
+    // loadFromFile only carries keys declared in DEFAULTS, so before the Pro
+    // sign-in keys were declared, an installer-written settings.json lost
+    // them on every load (the round-trip-loss gap fixed by the install-first
+    // login flow plan, Phase 4).
+    describe('CMEM Pro sign-in keys round-trip', () => {
+      const proKeys = {
+        CLAUDE_MEM_PRO_TRIAL_EMAIL: 'dev@example.com',
+        CLAUDE_MEM_PRO_TRIAL_AT: '2026-08-26T12:00:00.000Z',
+        CLAUDE_MEM_PRO_TRIAL_STATE: 'active',
+        CLAUDE_MEM_PRO_TRIAL_ENDS_AT: '2026-09-02T12:00:00.000Z',
+        CLAUDE_MEM_PRO_PLAN: 'trial',
+        CLAUDE_MEM_PRO_MEMORY_KEY: 'cm_pro_staged_test_key',
+        CLAUDE_MEM_PRO_MEMORY_BASE_URL: 'https://cmem.ai/api/inference/v1',
+        CLAUDE_MEM_PRO_MEMORY_MODEL: 'cmem-observer',
+      };
+
+      it('should surface all Pro account and staged-memory keys from settings.json', () => {
+        writeFileSync(settingsPath, JSON.stringify(proKeys));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_PRO_TRIAL_EMAIL).toBe('dev@example.com');
+        expect(result.CLAUDE_MEM_PRO_TRIAL_AT).toBe('2026-08-26T12:00:00.000Z');
+        expect(result.CLAUDE_MEM_PRO_TRIAL_STATE).toBe('active');
+        expect(result.CLAUDE_MEM_PRO_TRIAL_ENDS_AT).toBe('2026-09-02T12:00:00.000Z');
+        expect(result.CLAUDE_MEM_PRO_PLAN).toBe('trial');
+        expect(result.CLAUDE_MEM_PRO_MEMORY_KEY).toBe('cm_pro_staged_test_key');
+        expect(result.CLAUDE_MEM_PRO_MEMORY_BASE_URL).toBe('https://cmem.ai/api/inference/v1');
+        expect(result.CLAUDE_MEM_PRO_MEMORY_MODEL).toBe('cmem-observer');
+      });
+
+      it('should default all Pro account and staged-memory keys to empty strings', () => {
+        const defaults = SettingsDefaultsManager.getAllDefaults();
+
+        expect(defaults.CLAUDE_MEM_PRO_TRIAL_EMAIL).toBe('');
+        expect(defaults.CLAUDE_MEM_PRO_TRIAL_AT).toBe('');
+        expect(defaults.CLAUDE_MEM_PRO_TRIAL_STATE).toBe('');
+        expect(defaults.CLAUDE_MEM_PRO_TRIAL_ENDS_AT).toBe('');
+        expect(defaults.CLAUDE_MEM_PRO_PLAN).toBe('');
+        expect(defaults.CLAUDE_MEM_PRO_MEMORY_KEY).toBe('');
+        expect(defaults.CLAUDE_MEM_PRO_MEMORY_BASE_URL).toBe('');
+        expect(defaults.CLAUDE_MEM_PRO_MEMORY_MODEL).toBe('');
+      });
+
+      it('should keep the Pro keys on disk when loading rewrites the file (nested-schema migration)', () => {
+        writeFileSync(settingsPath, JSON.stringify({ env: proKeys }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_PRO_TRIAL_STATE).toBe('active');
+        const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        expect(parsed.CLAUDE_MEM_PRO_TRIAL_EMAIL).toBe('dev@example.com');
+        expect(parsed.CLAUDE_MEM_PRO_PLAN).toBe('trial');
+        expect(parsed.CLAUDE_MEM_PRO_MEMORY_KEY).toBe('cm_pro_staged_test_key');
       });
     });
 

@@ -25,11 +25,31 @@ export interface ActiveSession {
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
   consecutiveRestarts: number;
   /**
-   * Legacy invalid-output counter. Ordinary non-XML observer output is now
-   * confirmed as a no-op and resets this to 0 so skip acknowledgements never
-   * accumulate respawn debt.
+   * Legacy invalid-output counter, intentionally always 0: ordinary non-XML
+   * observer output is confirmed as a no-op and resets this so benign skip
+   * acknowledgements never accumulate respawn debt.
+   *
+   * It is deliberately NOT the breaker for repeated hard rejections — counting
+   * skips and rejections on one counter is what produced the respawn storm this
+   * reset was added to stop. Hard rejections are counted by
+   * `consecutiveContextOverflows` instead.
    */
   consecutiveInvalidOutputs: number;
+  /**
+   * Consecutive "prompt too long" rejections on this session's conversation.
+   *
+   * Unlike a skip, an overflow rejection is not a no-op: the conversation has
+   * outgrown the model's context window and every later request re-sends it at
+   * full cost and fails identically. Counting these drives conversation recycle
+   * and, if recycling does not help, a hard pause (#3800).
+   */
+  consecutiveContextOverflows: number;
+  /**
+   * Epoch ms until which observer restarts are withheld after recycling failed
+   * to produce a conversation that fits. Without this gate the next captured
+   * tool call spawns a generator that can only abort on the same budget check.
+   */
+  overflowPausedUntilMs?: number;
   forceInit?: boolean;
   idleTimedOut?: boolean;  
   lastGeneratorActivity: number;
@@ -47,6 +67,10 @@ export interface ActiveSession {
   lastGeneratorSource?: string;
   /** Model id resolved when the generator started — error-path telemetry, where no response model exists. */
   lastModelId?: string;
+  /** Model the OBSERVED IDE session is running (from its transcript) — telemetry observed_model. Not the observer model. */
+  observedModel?: string;
+  /** Billing posture of the observed Claude Code session (closed enum, see observed-billing.ts) — telemetry observed_billing. */
+  observedBilling?: string;
   /** Whether the OpenRouter provider targets openrouter.ai or a custom OpenAI-compatible gateway — telemetry endpoint_class. */
   endpointClass?: 'openrouter' | 'custom';
   /**

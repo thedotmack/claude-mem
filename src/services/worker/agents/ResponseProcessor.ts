@@ -4,6 +4,7 @@ import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../..
 import {
   classifyObserverOutput,
   isAuthFailureObserverOutput,
+  isContextOverflowObserverOutput,
   isQuotaLimitedObserverOutput,
   previewOutput,
 } from '../../../sdk/output-classifier.js';
@@ -12,6 +13,8 @@ import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
 import { recordObserverSuccess } from '../../../shared/observer-health.js';
+import { clearQuotaCooldown } from '../../../shared/quota-cooldown.js';
+import { recycleObserverConversation } from '../session/recycle-conversation.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import type { ActiveSession, PendingMessage } from '../../worker-types.js';
@@ -291,7 +294,17 @@ export async function processAgentResponse(
   session.lastGeneratorActivity = Date.now();
   const context = responseContext ?? snapshotResponseContext(session);
 
-  if (text) {
+  // Classify rejections BEFORE growing the window. "Prompt is too long", quota
+  // prose and auth prose are refusals, not conversational turns; appending them
+  // makes the next request strictly larger than the one that just failed, which
+  // is how an overflowed session could never recover on its own (#3800).
+  const isRejectionProse =
+    !!text &&
+    (isContextOverflowObserverOutput(text) ||
+      isQuotaLimitedObserverOutput(text) ||
+      isAuthFailureObserverOutput(text));
+
+  if (text && !isRejectionProse) {
     session.conversationHistory.push({ role: 'assistant', content: text });
   }
 
@@ -305,6 +318,20 @@ export async function processAgentResponse(
     'claude';
 
   if (!parsed.valid) {
+    // The conversation filled up. Retire it and start a fresh generation
+    // seeded with this session's own observations, rather than re-queueing into
+    // a conversation that can only keep growing.
+    if (isContextOverflowObserverOutput(text)) {
+      await recycleObserverConversation(
+        session,
+        sessionManager,
+        worker,
+        'refused',
+        `${agentName} refused the prompt as too long: ${previewOutput(text)}`,
+      );
+      return;
+    }
+
     if (isQuotaLimitedObserverOutput(text)) {
       session.consecutiveInvalidOutputs = 0;
 
@@ -351,12 +378,22 @@ export async function processAgentResponse(
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
     session.consecutiveInvalidOutputs = 0;
+    // The overflow/quota/auth rejections returned above, so reaching here means
+    // the provider accepted this prompt and answered it. That is proof the
+    // conversation fits, whether or not the answer parsed — so the recycle
+    // counter resets here too. Resetting only on a valid parse let a generation
+    // that answered "idle" twice in a row trip the exhausted branch and wedge.
+    session.consecutiveContextOverflows = 0;
 
+    // consecutiveInvalidOutputs is deliberately always 0 here (see worker-types),
+    // so logging it read as "the breaker is fine" on every rejection and hid
+    // #3800 for a full day of failures. Report the counter that can actually be
+    // non-zero instead.
     logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
       sessionId: session.sessionDbId,
       outputClass,
       preview,
-      consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+      consecutiveContextOverflows: session.consecutiveContextOverflows,
     });
 
     // Plain-text skip responses are intentionally ignored. Re-queueing them
@@ -367,8 +404,10 @@ export async function processAgentResponse(
   }
 
   // Valid parse — clear the invalid-output counter so transient misses don't
-  // accumulate toward a respawn across a healthy session.
+  // accumulate toward a respawn across a healthy session, and clear the overflow
+  // counter so recycles only ever trip on *consecutive* failures.
   session.consecutiveInvalidOutputs = 0;
+  session.consecutiveContextOverflows = 0;
 
   if (!session.memorySessionId) {
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {
@@ -426,8 +465,13 @@ export async function processAgentResponse(
   session.lastSummaryStored = result.summaryId !== null;
 
   // A completed store proves the observer pipeline works end-to-end — clear
-  // the failure streak in the observer-health ledger.
+  // the failure streak in the observer-health ledger, and release any quota
+  // breaker so a re-probe that succeeds restores full speed at once rather
+  // than waiting out the remaining cooldown (#3634).
   recordObserverSuccess();
+  if (session.currentProvider) {
+    clearQuotaCooldown(session.currentProvider);
+  }
 
   // Telemetry: counts, enums, and REAL usage only (lastUsage is never an
   // estimate — providers leave it null when the API gave no usage split).
@@ -454,6 +498,11 @@ export async function processAgentResponse(
     // as "no model" in PostHog — stamp 'unknown' instead.
     model: typeof modelId === 'string' && modelId ? modelId : 'unknown',
     ide: session.platformSource,
+    // Observed-session identity (NOT the observer): the model the user's IDE
+    // session ran and its billing posture, stamped by the Stop hook. Omitted
+    // when unknown — the rollup fills 'unknown' at flush time.
+    observed_model: session.observedModel,
+    observed_billing: session.observedBilling,
     hook: session.lastGeneratorSource,
     endpoint_class: session.endpointClass,
     compression_ms: compressionMs,

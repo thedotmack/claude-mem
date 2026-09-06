@@ -41,8 +41,12 @@ export async function handleGeneratorExit(
   session.generatorPromise = null;
   session.currentProvider = null;
 
+  // 'overflow' joins quota/auth as a pause-and-preserve exit: ResponseProcessor
+  // has already reset the claimed batch to pending and (on a recycle) cleared
+  // the conversation, so the session must survive for the next ingest to open a
+  // fresh generator and drain it. Finalizing here would drop that work (#3800).
   const abortCategory = (reason ?? '').split(':')[0];
-  if (abortCategory === 'quota' || abortCategory === 'auth') {
+  if (abortCategory === 'quota' || abortCategory === 'auth' || abortCategory === 'overflow') {
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),

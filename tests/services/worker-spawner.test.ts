@@ -1,6 +1,22 @@
 
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, afterAll } from 'bun:test';
 import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
+import * as realProcessManager from '../../src/services/infrastructure/ProcessManager.js';
+import * as realHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
+import * as realWorkerSpawnGate from '../../src/shared/worker-spawn-gate.js';
+
+/**
+ * The whole suite runs in one bun process and `mock.module` mutates the shared
+ * module registry, so the stubs below leak into every test file that loads
+ * after this one (tests/infrastructure/{health-monitor,process-manager}.test.ts
+ * import the same modules via src/services/infrastructure/index.js and would
+ * silently exercise these fakes). Snapshot the real namespaces before the mocks
+ * are installed and put them back in afterAll — same pattern as
+ * tests/shared/worker-utils-version-recycle.test.ts.
+ */
+const realProcessManagerSnapshot = { ...realProcessManager };
+const realHealthMonitorSnapshot = { ...realHealthMonitor };
+const realWorkerSpawnGateSnapshot = { ...realWorkerSpawnGate };
 
 const processManager = {
   cleanStalePidFile: mock(() => 'dead' as 'alive' | 'dead'),
@@ -23,6 +39,12 @@ const spawnGate = {
 mock.module('../../src/services/infrastructure/ProcessManager.js', () => processManager);
 mock.module('../../src/services/infrastructure/HealthMonitor.js', () => healthMonitor);
 mock.module('../../src/shared/worker-spawn-gate.js', () => spawnGate);
+
+afterAll(() => {
+  mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManagerSnapshot);
+  mock.module('../../src/services/infrastructure/HealthMonitor.js', () => realHealthMonitorSnapshot);
+  mock.module('../../src/shared/worker-spawn-gate.js', () => realWorkerSpawnGateSnapshot);
+});
 
 const { ensureWorkerStarted } = await import('../../src/services/worker-spawner.js');
 

@@ -35,12 +35,22 @@ describe('paths namespace', () => {
 });
 
 describe('expandHome', () => {
-  it('expands a leading ~/ to the home directory', () => {
-    expect(expandHome('~/foo/bar')).toBe(join(homedir(), 'foo/bar'));
+  it('expands a leading ~/ on POSIX and Windows', () => {
+    expect(expandHome('~/x', 'linux')).toBe(join(homedir(), 'x'));
+    expect(expandHome('~/x', 'win32')).toBe(join(homedir(), 'x'));
   });
 
-  it('expands a bare ~ to the home directory', () => {
-    expect(expandHome('~')).toBe(homedir());
+  it('expands a leading ~\\ on Windows', () => {
+    expect(expandHome('~\\x', 'win32')).toBe(join(homedir(), 'x'));
+  });
+
+  it('leaves a leading ~\\ untouched on POSIX', () => {
+    expect(expandHome('~\\x', 'linux')).toBe('~\\x');
+  });
+
+  it('expands a bare ~ on POSIX and Windows', () => {
+    expect(expandHome('~', 'linux')).toBe(homedir());
+    expect(expandHome('~', 'win32')).toBe(homedir());
   });
 
   it('leaves an absolute path untouched', () => {
@@ -48,8 +58,9 @@ describe('expandHome', () => {
     expect(expandHome(abs)).toBe(abs);
   });
 
-  it('leaves a relative path (no ~) untouched', () => {
-    expect(expandHome('foo/bar')).toBe('foo/bar');
+  it('leaves a path with no tilde untouched on POSIX and Windows', () => {
+    expect(expandHome('foo/bar', 'linux')).toBe('foo/bar');
+    expect(expandHome('foo\\bar', 'win32')).toBe('foo\\bar');
   });
 
   it('does not expand ~ not at position 0', () => {

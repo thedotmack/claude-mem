@@ -44,6 +44,12 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'bun_version',
   'uv_version',
   'claude_code_version',
+  // Installer CMEM Pro offer exposure — a fixed trial-length integer plus
+  // closed experiment/surface/source enums. Never user or account data.
+  'trial_days',
+  'trial_variant',
+  'offer_surface',
+  'funnel_source',
   // context_injected depth/economics — integers, booleans, and our own enums.
   'observation_count',
   'session_count',
@@ -117,6 +123,15 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'error_mode',
   'consecutive_failures',
   'threshold_tripped',
+  // usage_limit_hit — the SDK's rate_limit_info projected to closed enums:
+  // limit_window (five_hour | seven_day | seven_day_opus | seven_day_sonnet |
+  // overage | unknown), overage_status (allowed | allowed_warning | rejected |
+  // unknown), a boolean, and whole minutes until the window resets. Never the
+  // provider's limit message text.
+  'limit_window',
+  'overage_status',
+  'is_using_overage',
+  'resets_in_minutes',
   // Historical backfill (backfill.ts) — anonymous per-day rollup counters,
   // the backfilled:true flag, and the single inferred-install date string
   // (YYYY-MM-DD). Counts/sums and closed-enum buckets only — never project
@@ -154,6 +169,11 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'outcomes_aborted',
   'outcomes_invalid_output',
   'top_model',
+  // Observed-session identity (NOT the observer): the model id the user's IDE
+  // session ran (from its transcript) and a closed-enum billing posture
+  // (max | pro | team | enterprise | subscription | api_key | bedrock | vertex | foundry | unknown).
+  'observed_model',
+  'observed_billing',
   'window_start_ts',
   // Phase 2 per-session rollup: rollup_reason is a closed enum
   // (session_end | worker_shutdown | safety_flush) explaining why the session's

@@ -10,9 +10,11 @@ import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
+import { killProcessTree, collectDescendantIdentities } from '../../shared/kill-process-tree.js';
+import { stripForeignPythonEnv } from '../../shared/uvx-env.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
-import { captureProcessStartToken, isPidAlive } from '../../supervisor/process-registry.js';
+import { captureProcessStartToken, isSameProcess, isPidAlive } from '../../supervisor/process-registry.js';
 import { clearDependencyStatus, recordChromaVectorSearchUnavailable, recordUvxVectorSearchUnavailable } from '../../shared/dependency-health.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
 
@@ -25,6 +27,11 @@ const DEFAULT_CHROMA_PREWARM_TIMEOUT_MS = 120_000;
 const CHROMA_PREWARM_TIMEOUT_SETTING = 'CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS';
 const CHROMA_PREWARM_TIMEOUT_BOUNDS = { min: 1, max: 600_000 } as const;
 const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
+// Bounded wait for the child's 'exit' after close() resolves. close() can
+// return before Node processes the event, and treating that gap as "still
+// alive" escalates to a hard kill against a process that already exited —
+// which is what SIGKILLs `uv` mid-build and leaks its scratch dir (#3540).
+const CHROMA_EXIT_OBSERVE_TIMEOUT_MS = 1_000;
 const RECONNECT_BACKOFF_MS = 10_000;
 const CHROMA_WRITER_LOCK_FILENAME = '.claude-mem-chroma-writer.lock';
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
@@ -69,6 +76,31 @@ class ChromaMcpConnectionCancelledError extends Error {
   }
 }
 
+/**
+ * A child PID paired with the start token captured WHILE IT WAS ALIVE.
+ *
+ * killProcessTree self-captures the root token when a caller does not supply
+ * one, which is safe only if the process is still alive at the moment of the
+ * call. Every deferred cleanup in this class violates that: `onclose` fires
+ * BECAUSE the child died, and the prewarm paths kill a handle that may have
+ * exited already. Self-capture there reads whatever now owns the number — so
+ * it would bind to a replacement and then validate it against itself.
+ *
+ * Pairing the token with the PID at spawn time makes that structural: the two
+ * travel together, so no cleanup path in this class can forget to carry it.
+ */
+interface TrackedChild {
+  pid: number;
+  startToken: string | null;
+}
+
+/** Capture identity while the child is provably ours — call right after spawn. */
+function trackChild(child: ChildProcess): TrackedChild | null {
+  const pid = child.pid;
+  if (!pid) return null;
+  return { pid, startToken: captureProcessStartToken(pid) };
+}
+
 interface ChromaWriterLockPayload {
   pid: number;
   ownerId: string;
@@ -85,6 +117,8 @@ export class ChromaMcpManager {
   private lastConnectionFailureTimestamp: number = 0;
   private connecting: Promise<void> | null = null;
   private activePrewarmChild: ChildProcess | null = null;
+  /** Identity of activePrewarmChild, captured at spawn while it was alive. */
+  private activePrewarmTracked: TrackedChild | null = null;
   private connectionGeneration: number = 0;
   private intentionallyClosingTransports = new WeakSet<object>();
   private readonly chromaWriterOwnerId = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
@@ -265,7 +299,11 @@ export class ChromaMcpManager {
     logger.info('CHROMA_MCP', 'Connected to chroma-mcp successfully');
 
     const currentTransport = this.transport;
-    const currentTrackedPid = (this.transport as unknown as { _process?: ChildProcess })._process?.pid;
+    // Captured HERE, while the child is alive and attached — not in the
+    // onclose handler below, which by definition runs after it has died.
+    const transportChild = (this.transport as unknown as { _process?: ChildProcess })._process;
+    const currentTracked = transportChild ? trackChild(transportChild) : null;
+    const currentTrackedPid = currentTracked?.pid;
     this.transport.onclose = () => {
       if (this.transport !== currentTransport) {
         logger.debug('CHROMA_MCP', 'Ignoring stale onclose from previous transport');
@@ -290,13 +328,13 @@ export class ChromaMcpManager {
       // does not use process groups. Sweep the descendant tree using the
       // captured PID — best-effort; pgrep returns nothing if everything
       // already exited (#2313).
-      this.scheduleUnexpectedCloseCleanup(currentTrackedPid);
+      this.scheduleUnexpectedCloseCleanup(currentTracked);
     };
   }
 
-  private scheduleUnexpectedCloseCleanup(pid: number | undefined): void {
+  private scheduleUnexpectedCloseCleanup(tracked: TrackedChild | null): void {
     let cleanup: Promise<void>;
-    cleanup = this.cleanupUnexpectedCloseSubprocess(pid).finally(() => {
+    cleanup = this.cleanupUnexpectedCloseSubprocess(tracked).finally(() => {
       if (this.unexpectedCloseCleanup === cleanup) {
         this.unexpectedCloseCleanup = null;
       }
@@ -304,10 +342,16 @@ export class ChromaMcpManager {
     this.unexpectedCloseCleanup = cleanup;
   }
 
-  private async cleanupUnexpectedCloseSubprocess(pid: number | undefined): Promise<void> {
+  private async cleanupUnexpectedCloseSubprocess(tracked: TrackedChild | null): Promise<void> {
+    const pid = tracked?.pid;
     try {
-      if (pid) {
-        await ChromaMcpManager.killProcessTree(pid);
+      if (tracked) {
+        // The spawn-time token is REQUIRED here, not an optimisation. This
+        // path runs because the child already exited, so killProcessTree's
+        // self-capture would read whatever now holds that PID and validate the
+        // replacement against itself — then `taskkill /T /F` would take that
+        // stranger and its whole subtree down.
+        await killProcessTree(tracked.pid, { expectedStartToken: tracked.startToken });
       }
     } catch (error) {
       logger.debug('CHROMA_MCP', 'Background tree-kill after onclose finished (best-effort)', {
@@ -619,6 +663,8 @@ export class ChromaMcpManager {
       windowsHide: process.platform === 'win32',
     });
     this.activePrewarmChild = child;
+    const prewarmTracked = trackChild(child);
+    this.activePrewarmTracked = prewarmTracked;
 
     const stdoutTail = ChromaMcpManager.captureOutputTail(child.stdout);
     const stderrTail = ChromaMcpManager.captureOutputTail(child.stderr);
@@ -677,7 +723,10 @@ export class ChromaMcpManager {
 
       if (pid) {
         try {
-          await ChromaMcpManager.killProcessTree(pid);
+          // Token from spawn time: by here the prewarm may already have exited
+          // (that is often WHY we are in this branch), so self-capture would
+          // read a replacement rather than the child we spawned.
+          await killProcessTree(pid, { expectedStartToken: prewarmTracked?.startToken ?? null });
         } catch (killError) {
           logger.debug('CHROMA_MCP', 'prewarm process tree kill finished (best-effort)', {
             pid,
@@ -697,6 +746,7 @@ export class ChromaMcpManager {
       }
       if (this.activePrewarmChild === child) {
         this.activePrewarmChild = null;
+        this.activePrewarmTracked = null;
       }
     }
   }
@@ -912,9 +962,62 @@ export class ChromaMcpManager {
     const chromaProcess = (this.transport as unknown as { _process?: ChildProcess })?._process;
     const trackedPid = chromaProcess?.pid;
 
-    if (trackedPid) {
+    // #3540 — graceful FIRST, hard tree-kill only as escalation.
+    //
+    // The previous order tree-killed before closing, so `uv` was always
+    // SIGKILLed mid-build and never unlinked its builds-v0/.tmp* scratch dir.
+    // StdioClientTransport.close() already implements exactly the escalation
+    // this needs — stdin EOF, wait 2s, SIGTERM, wait 2s, SIGKILL — so the
+    // grace period is the SDK's, not a new timer scheme of ours.
+    //
+    // The #2313 singleton invariant is preserved, but it needs the descendant
+    // set captured BEFORE the close: once the root exits, its children
+    // re-parent and drop out of the walk, so a post-mortem scan finds nothing
+    // to reap. collectDescendantPids() enumerates on Windows too — a
+    // POSIX-only walk returned [] there and left the chain untracked.
+    // The ROOT's identity, captured BEFORE close(). uvx can exit during the
+    // close, and on Windows the escalation below is unconditional — so without
+    // this, a reused PID would be handed to `taskkill /PID <pid> /T /F`, force
+    // terminating an unrelated process AND its entire descendant tree.
+    const rootStartToken = trackedPid ? captureProcessStartToken(trackedPid) : null;
+    const descendantsBeforeClose = trackedPid
+      ? await ChromaMcpManager.snapshotDescendantIdentities(trackedPid)
+      : [];
+
+    if (closingTransport) {
+      try { await closingTransport.close(); } catch { /* already dead */ }
+    }
+    if (this.client) {
+      try { await this.client.close(); } catch { /* already dead */ }
+    }
+
+    // Both directions of the close/exit race have to be handled, and they pull
+    // opposite ways:
+    //
+    //   - Escalate too eagerly and `uv` gets SIGKILLed mid-build, which is
+    //     #3540 (leaked builds-v0/.tmp* scratch). close() can resolve before
+    //     Node has processed the child's 'exit', so exitCode is briefly still
+    //     null for a process that is already gone — hence the bounded wait
+    //     below rather than reading exitCode the instant close() returns.
+    //   - Escalate too reluctantly and the chain is orphaned, which is #3482.
+    //
+    // On Windows the second risk dominates and cannot be handled by the
+    // exitCode check at all: close() ends in TerminateProcess against ONE pid,
+    // so uvx.exe dies while uv -> python -> chroma-mcp keep running. Reading
+    // exitCode there would skip the `taskkill /T /F` that is the only thing
+    // able to reach them. So win32 always escalates; taskkill against an
+    // already-dead pid is the tolerated not-found case, not an error.
+    const exitedCleanly = chromaProcess
+      ? await ChromaMcpManager.waitForChildExit(chromaProcess, CHROMA_EXIT_OBSERVE_TIMEOUT_MS)
+      : true;
+    const mustEscalate = process.platform === 'win32' || !exitedCleanly;
+
+    if (trackedPid && mustEscalate) {
       try {
-        await ChromaMcpManager.killProcessTree(trackedPid);
+        // expectedStartToken makes this a no-op if the PID was reused; the
+        // identity-validated descendant reap below still runs, which is the
+        // part that matters once the real root is gone.
+        await killProcessTree(trackedPid, { expectedStartToken: rootStartToken });
       } catch (error) {
         logger.warn('CHROMA_MCP', 'failed to kill prior chroma-mcp tree (best-effort)', {
           pid: trackedPid,
@@ -923,12 +1026,21 @@ export class ChromaMcpManager {
       }
     }
 
-    if (closingTransport) {
-      try { await closingTransport.close(); } catch { /* already dead */ }
-    }
-    if (this.client) {
-      try { await this.client.close(); } catch { /* already dead */ }
-    }
+    // Re-scan AFTER the close and union with the pre-close snapshot.
+    //
+    // The pre-close snapshot alone leaves a hole: if the walk ran before uvx
+    // had forked `uv`, the snapshot is empty. Re-collecting here catches any
+    // layer that became visible after the first walk and is still reachable
+    // from the root. Descendants re-parent once the root is gone, so this
+    // second walk is not guaranteed to see everything — which is exactly why
+    // it UNIONS with the pre-close set rather than replacing it. Between the
+    // two, a descendant has to be invisible at BOTH sample points to escape.
+    // Only re-scan when the root is still the process we recorded — walking a
+    // reused PID would enumerate a stranger's children and then reap them.
+    const descendantsAfterClose = trackedPid && isSameProcess(trackedPid, rootStartToken)
+      ? await ChromaMcpManager.snapshotDescendantIdentities(trackedPid)
+      : [];
+    ChromaMcpManager.reapOrphanedDescendants([...descendantsBeforeClose, ...descendantsAfterClose]);
 
     if (trackedPid) {
       getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID);
@@ -940,19 +1052,108 @@ export class ChromaMcpManager {
     this.connected = false;
   }
 
+  /**
+   * Wait (bounded) for a child's 'exit' to be observed.
+   *
+   * close() can resolve before Node has processed the exit event, so reading
+   * `exitCode` the instant it returns reports a live process that is already
+   * gone — and escalating on that false negative is what SIGKILLs `uv`
+   * mid-build (#3540). Resolves true when the child is known to have exited.
+   */
+  private static waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      return Promise.resolve(true);
+    }
+    return new Promise<boolean>(resolve => {
+      const onExit = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      const timer = setTimeout(() => {
+        child.off('exit', onExit);
+        resolve(child.exitCode !== null || child.signalCode !== null);
+      }, timeoutMs);
+      child.once('exit', onExit);
+    });
+  }
+
+  /**
+   * Descendants of `rootPid` with their start tokens captured.
+   *
+   * The token is what makes the later reap safe: a bare PID can be recycled by
+   * the OS between snapshot and teardown, and SIGKILLing a recycled PID kills
+   * an unrelated process. Captured here, at snapshot time, so it describes the
+   * process we actually intend to reap.
+   */
+  private static async snapshotDescendantIdentities(
+    rootPid: number
+  ): Promise<Array<{ pid: number; startToken: string | null }>> {
+    // Identity comes from the SAME process-table read that discovered the PID.
+    // Enumerating first and probing each PID afterwards would let a reissued
+    // number have the REPLACEMENT's token captured, which the later check would
+    // then happily validate — certifying a stranger as a legitimate target.
+    return collectDescendantIdentities(rootPid);
+  }
+
+  /**
+   * SIGKILL descendants that outlived their parent, verifying identity first.
+   *
+   * These have already had the full graceful window (stdin EOF -> SIGTERM ->
+   * SIGKILL against their parent); surviving it means they re-parented and
+   * nothing else will ever reap them.
+   *
+   * A PID alone is not sufficient authority to kill: if the descendant died
+   * and the OS reissued its number, the start token no longer matches and the
+   * entry is skipped rather than killing a stranger. When no token could be
+   * captured at snapshot time we fall back to liveness — the pre-existing
+   * behavior — because refusing to reap would resurrect #2313.
+   */
+  private static reapOrphanedDescendants(
+    entries: Array<{ pid: number; startToken: string | null }>
+  ): void {
+    const seen = new Set<number>();
+
+    for (const { pid, startToken } of entries) {
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      if (!isPidAlive(pid)) continue;
+
+      if (!isSameProcess(pid, startToken)) {
+        logger.debug('CHROMA_MCP', 'Skipping reap: PID was recycled since the snapshot', { pid });
+        continue;
+      }
+
+      try {
+        process.kill(pid, 'SIGKILL');
+        logger.debug('CHROMA_MCP', 'Reaped orphaned chroma-mcp descendant', { pid });
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'ESRCH') {
+          logger.warn('CHROMA_MCP', 'Failed to reap orphaned chroma-mcp descendant', {
+            pid,
+            code,
+          });
+        }
+      }
+    }
+  }
+
   private async disposeActivePrewarm(): Promise<void> {
     const prewarmChild = this.activePrewarmChild;
+    const tracked = this.activePrewarmTracked;
     if (!prewarmChild) {
       return;
     }
     if (this.activePrewarmChild === prewarmChild) {
       this.activePrewarmChild = null;
+      this.activePrewarmTracked = null;
     }
 
     const pid = prewarmChild.pid;
     if (pid) {
       try {
-        await ChromaMcpManager.killProcessTree(pid);
+        // Spawn-time identity: this handle may already have exited.
+        await killProcessTree(pid, { expectedStartToken: tracked?.startToken ?? null });
       } catch (error) {
         logger.warn('CHROMA_MCP', 'failed to kill in-flight chroma-mcp prewarm tree (best-effort)', {
           pid,
@@ -1023,134 +1224,6 @@ export class ChromaMcpManager {
     this.connecting = null;
 
     logger.info('CHROMA_MCP', 'chroma-mcp MCP connection stopped');
-  }
-
-  /**
-   * Kill a process and all its descendants (tree-kill).
-   *
-   * POSIX: Sends SIGTERM to the process, then uses `pkill -P` to signal
-   * children recursively. Falls back to single-PID kill if pkill is unavailable.
-   *
-   * Windows: Uses `taskkill /T /F /PID` for full subtree teardown (same
-   * pattern as shutdown.ts).
-   *
-   * Best-effort — swallows ESRCH (already dead) and logs other errors.
-   */
-  private static async killProcessTree(pid: number): Promise<void> {
-    logger.debug('CHROMA_MCP', `Killing process tree rooted at PID ${pid}`);
-
-    if (process.platform === 'win32') {
-      try {
-        await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], {
-          timeout: 5_000,
-          windowsHide: true
-        });
-      } catch (error) {
-        // taskkill exits non-zero when the process is already dead — that's fine.
-        logger.debug('CHROMA_MCP', `taskkill tree-kill finished (may already be dead)`, {
-          pid,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
-      return;
-    }
-
-    // POSIX: walk descendants recursively (bottom-up) and signal each.
-    // `pkill -P <pid>` only reaches direct children, so `python` /
-    // `chroma-mcp` under `uv` (grandchildren) get re-parented to init and
-    // survive. We collect the full descendant set via `pgrep -P` walks before
-    // signaling, so the SIGTERM phase reaches every layer
-    // (CodeRabbit review on PR #2282).
-    try {
-      const descendantsBeforeTerm = await ChromaMcpManager.collectDescendantPids(pid);
-      // Signal leaves first, then the root.
-      for (const child of descendantsBeforeTerm) {
-        try {
-          process.kill(child, 'SIGTERM');
-        } catch {
-          // Already gone — fine.
-        }
-      }
-      try {
-        process.kill(pid, 'SIGTERM');
-      } catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code !== 'ESRCH') {
-          logger.debug('CHROMA_MCP', `Failed to SIGTERM PID ${pid}`, { code }, err);
-        }
-      }
-
-      // Brief wait for SIGTERM to propagate, then SIGKILL stragglers.
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      // Re-collect descendants — some layers may have re-parented during the
-      // SIGTERM grace window.
-      //
-      // SIGKILL targets the UNION of pre-TERM and post-wait descendant sets:
-      // when the root exits between snapshots, children get re-parented to
-      // init and drop out of `pgrep -P <root>`. Without the union, those
-      // re-parented descendants would never receive SIGKILL even though they
-      // were definitely children before SIGTERM (CodeRabbit review on PR
-      // #2282). Dedupe via Set since `descendantsBeforeKill` typically
-      // overlaps with `descendantsBeforeTerm`.
-      const descendantsBeforeKill = await ChromaMcpManager.collectDescendantPids(pid);
-      const killTargets = Array.from(new Set([...descendantsBeforeTerm, ...descendantsBeforeKill]));
-      for (const child of killTargets) {
-        try {
-          process.kill(child, 'SIGKILL');
-        } catch {
-          // Already dead — fine.
-        }
-      }
-      try {
-        process.kill(pid, 'SIGKILL');
-      } catch {
-        // Already dead — fine.
-      }
-    } catch (error) {
-      logger.debug('CHROMA_MCP', `Process tree kill completed (best-effort)`, {
-        pid,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  }
-
-  /**
-   * Recursively collect all descendant PIDs of `rootPid` using `pgrep -P`.
-   * Returned bottom-up (leaves first) so callers can signal leaves before
-   * their ancestors. Best-effort: missing pgrep / non-zero exits return [].
-   */
-  private static async collectDescendantPids(rootPid: number): Promise<number[]> {
-    const seen = new Set<number>();
-    const collected: number[] = [];
-
-    async function walk(pid: number): Promise<void> {
-      let stdout = '';
-      try {
-        const result = await execFileAsync('pgrep', ['-P', String(pid)], { timeout: 2_000 });
-        stdout = result.stdout;
-      } catch {
-        // [ANTI-PATTERN IGNORED]: pgrep exits 1 whenever a PID has no children, which is the expected leaf case on every recursive walk; recovery is treating the node as childless and returning early.
-        return;
-      }
-      const children = stdout
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => line.length > 0)
-        .map(line => Number.parseInt(line, 10))
-        .filter(n => Number.isFinite(n) && n > 0 && !seen.has(n));
-
-      for (const child of children) {
-        seen.add(child);
-        await walk(child);
-        // Bottom-up: push after recursion so leaves come first.
-        collected.push(child);
-      }
-    }
-
-    await walk(rootPid);
-    return collected;
   }
 
   /**
@@ -1380,6 +1453,11 @@ export class ChromaMcpManager {
     // Ensure uvx is resolvable even if the worker's inherited PATH omits uv's
     // bin dir (#2790).
     ChromaMcpManager.ensureUvOnPath(baseEnv);
+
+    // Never let an activated venv / conda shell leak its interpreter into the
+    // uvx child (#3552). This is THE spawn env for chroma-mcp, so this is the
+    // call that actually fixes the numpy ABI clash.
+    stripForeignPythonEnv(baseEnv);
 
     // Disable Chroma's anonymous telemetry — it issues background HTTP from
     // the embedding subprocess on every collection touch.

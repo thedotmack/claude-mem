@@ -5,7 +5,8 @@
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
-import { extractLastMessage } from '../../shared/transcript-parser.js';
+import { extractLastAssistantTurn, extractLastAssistantModel } from '../../shared/transcript-parser.js';
+import { detectObservedBilling } from '../../shared/observed-billing.js';
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
@@ -80,9 +81,13 @@ export const summarizeHandler: EventHandler = {
     }
 
     let lastAssistantMessage = '';
+    // Observed-session model for telemetry (NOT the observer model): the model
+    // the user's IDE session is running, read from its transcript.
+    let observedModel: string | undefined;
 
     if (input.lastAssistantMessage !== undefined) {
       lastAssistantMessage = stripMemoryTags(input.lastAssistantMessage);
+      observedModel = transcriptPath ? extractLastAssistantModel(transcriptPath) : undefined;
     } else {
       if (!transcriptPath) {
         logger.debug('HOOK', `No transcriptPath in Stop hook input for session ${sessionId} - skipping summary`);
@@ -90,8 +95,10 @@ export const summarizeHandler: EventHandler = {
       }
 
       try {
-        lastAssistantMessage = extractLastMessage(transcriptPath, 'assistant', true);
-        lastAssistantMessage = stripMemoryTags(lastAssistantMessage);
+        // One read of the transcript yields both the text and the model.
+        const turn = extractLastAssistantTurn(transcriptPath, true);
+        lastAssistantMessage = stripMemoryTags(turn.text);
+        observedModel = turn.model;
       } catch (err) {
         logger.warn('HOOK', `Stop hook: failed to extract last assistant message for session ${sessionId}: ${err instanceof Error ? err.message : err}`);
         return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
@@ -111,6 +118,11 @@ export const summarizeHandler: EventHandler = {
     });
 
     const platformSource = normalizePlatformSource(input.platform);
+
+    // Observed-session billing posture for telemetry (NOT the observer
+    // provider). `.claude.json` is Claude Code specific, so billing detection
+    // is skipped on other platforms.
+    const observedBilling = input.platform === 'claude-code' ? detectObservedBilling() : undefined;
 
     const runtime = resolveRuntimeContext();
     // Phase 1a (cmem-sdk rename): `runtime.runtime` is the canonical `'server'`
@@ -142,6 +154,8 @@ export const summarizeHandler: EventHandler = {
         contentSessionId: sessionId,
         last_assistant_message: lastAssistantMessage,
         platformSource,
+        observedModel,
+        observedBilling,
       },
     );
     if (isWorkerFallback(queueResult)) {

@@ -35,27 +35,32 @@ export function quoteWindowsCmdArgument(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
-export function lookupWindowsCommand(command: string): string | null {
-  if (process.platform !== 'win32') return null;
+/** Every PATH hit for `command`, in `where` order (PATH order). */
+export function lookupWindowsCommandCandidates(command: string): string[] {
+  if (process.platform !== 'win32') return [];
   try {
     const result = spawnSync('where', [command], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
     });
-    if (result.status !== 0 || !result.stdout.trim()) return null;
-    const candidates = result.stdout
+    if (result.status !== 0 || !result.stdout.trim()) return [];
+    return result.stdout
       .split(/\r?\n/)
       .map(line => line.trim())
       .filter(Boolean);
-    return candidates.find(candidate => WINDOWS_NATIVE_EXTENSIONS.has(extname(candidate).toLowerCase()))
-      ?? candidates.find(candidate => WINDOWS_COMMAND_EXTENSIONS.has(extname(candidate).toLowerCase()))
-      ?? candidates[0]
-      ?? null;
   } catch {
     // where exits non-zero when absent and can throw if PATH is malformed.
-    return null;
+    return [];
   }
+}
+
+export function lookupWindowsCommand(command: string): string | null {
+  const candidates = lookupWindowsCommandCandidates(command);
+  return candidates.find(candidate => WINDOWS_NATIVE_EXTENSIONS.has(extname(candidate).toLowerCase()))
+    ?? candidates.find(candidate => WINDOWS_COMMAND_EXTENSIONS.has(extname(candidate).toLowerCase()))
+    ?? candidates[0]
+    ?? null;
 }
 
 export function buildSpawnSyncInvocation(

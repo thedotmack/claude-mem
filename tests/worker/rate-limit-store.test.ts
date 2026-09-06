@@ -3,6 +3,10 @@ import {
   RateLimitStore,
   shouldAbortForQuota,
   isApiKeyAuth,
+  isNewRejection,
+  extractRateLimitInfo,
+  minutesUntilReset,
+  buildUsageLimitHitProps,
   type RateLimitInfo,
 } from '../../src/services/worker/RateLimitStore.js';
 
@@ -205,5 +209,129 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
   it('does not abort with empty store', () => {
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
     expect(decision.abort).toBe(false);
+  });
+});
+
+// usage_limit_hit telemetry: one event per exhausted window, never one per
+// observer request against the wall.
+describe('RateLimitStore.set → new-rejection signal', () => {
+  it('reports the first rejected snapshot for a window', () => {
+    const store = freshStore();
+    expect(store.set({ rateLimitType: 'five_hour', status: 'allowed', utilization: 0.4 })).toBe(false);
+    expect(store.set({ rateLimitType: 'five_hour', status: 'rejected', resetsAt: FIXED_NOW + 60_000 })).toBe(true);
+  });
+
+  it('does not re-report the same rejection on later requests', () => {
+    const store = freshStore();
+    const rejected: RateLimitInfo = { rateLimitType: 'five_hour', status: 'rejected', resetsAt: FIXED_NOW + 60_000 };
+    expect(store.set(rejected)).toBe(true);
+    expect(store.set(rejected)).toBe(false);
+    expect(store.set({ ...rejected, utilization: 1 })).toBe(false);
+  });
+
+  it('reports again when the same window is exhausted after a reset', () => {
+    const store = freshStore();
+    expect(store.set({ rateLimitType: 'five_hour', status: 'rejected', resetsAt: FIXED_NOW + 60_000 })).toBe(true);
+    expect(store.set({ rateLimitType: 'five_hour', status: 'rejected', resetsAt: FIXED_NOW + 6 * 3_600_000 })).toBe(true);
+  });
+
+  it('reports again after an allowed snapshot in between', () => {
+    const store = freshStore();
+    const rejected: RateLimitInfo = { rateLimitType: 'seven_day', status: 'rejected', resetsAt: FIXED_NOW + 60_000 };
+    expect(store.set(rejected)).toBe(true);
+    expect(store.set({ rateLimitType: 'seven_day', status: 'allowed' })).toBe(false);
+    expect(store.set(rejected)).toBe(true);
+  });
+
+  it('tracks windows independently', () => {
+    const store = freshStore();
+    expect(store.set({ rateLimitType: 'five_hour', status: 'rejected', resetsAt: 1 })).toBe(true);
+    expect(store.set({ rateLimitType: 'seven_day', status: 'rejected', resetsAt: 1 })).toBe(true);
+  });
+
+  it('never reports allowed or warning snapshots', () => {
+    expect(isNewRejection(undefined, { status: 'allowed' })).toBe(false);
+    expect(isNewRejection(undefined, { status: 'allowed_warning', utilization: 0.99 })).toBe(false);
+    expect(isNewRejection(undefined, {})).toBe(false);
+  });
+
+  it('ignores malformed payloads', () => {
+    const store = freshStore();
+    expect(store.set(undefined)).toBe(false);
+    expect(store.set(null)).toBe(false);
+  });
+});
+
+describe('minutesUntilReset', () => {
+  it('handles epoch-ms and epoch-seconds resetsAt', () => {
+    expect(minutesUntilReset(FIXED_NOW + 30 * 60_000, FIXED_NOW)).toBe(30);
+    expect(minutesUntilReset(Math.floor(FIXED_NOW / 1000) + 30 * 60, FIXED_NOW)).toBe(30);
+  });
+
+  it('floors at zero and drops non-numbers', () => {
+    expect(minutesUntilReset(FIXED_NOW - 60_000, FIXED_NOW)).toBe(0);
+    expect(minutesUntilReset(undefined, FIXED_NOW)).toBeUndefined();
+    expect(minutesUntilReset(Number.NaN, FIXED_NOW)).toBeUndefined();
+  });
+});
+
+describe('buildUsageLimitHitProps', () => {
+  it('projects rate_limit_info to closed enums and one integer', () => {
+    expect(
+      buildUsageLimitHitProps(
+        {
+          status: 'rejected',
+          rateLimitType: 'five_hour',
+          resetsAt: FIXED_NOW + 112 * 60_000,
+          overageStatus: 'rejected',
+          isUsingOverage: false,
+        },
+        FIXED_NOW,
+      ),
+    ).toEqual({
+      limit_window: 'five_hour',
+      overage_status: 'rejected',
+      is_using_overage: false,
+      resets_in_minutes: 112,
+    });
+  });
+
+  it('fills unknown for missing enum fields', () => {
+    expect(buildUsageLimitHitProps({ status: 'rejected' }, FIXED_NOW)).toEqual({
+      limit_window: 'unknown',
+      overage_status: 'unknown',
+      is_using_overage: false,
+      resets_in_minutes: undefined,
+    });
+  });
+});
+
+// The SDK emits `{ type: 'rate_limit_event', rate_limit_info }` (SDKRateLimitEvent
+// in sdk.d.ts). The original guard matched a `system` message with subtype
+// `rate_limit`, which the SDK never sends, so the whole quota path was dead.
+describe('extractRateLimitInfo', () => {
+  const info: RateLimitInfo = { status: 'rejected', rateLimitType: 'five_hour', resetsAt: FIXED_NOW + 60_000 };
+
+  it('accepts the SDK rate_limit_event message', () => {
+    expect(
+      extractRateLimitInfo({ type: 'rate_limit_event', rate_limit_info: info, uuid: 'u', session_id: 's' }),
+    ).toEqual(info);
+  });
+
+  it('still accepts the legacy system/rate_limit shape', () => {
+    expect(extractRateLimitInfo({ type: 'system', subtype: 'rate_limit', rate_limit_info: info })).toEqual(info);
+  });
+
+  it('ignores every other stream message', () => {
+    expect(extractRateLimitInfo({ type: 'system', subtype: 'init' })).toBeUndefined();
+    expect(extractRateLimitInfo({ type: 'assistant', message: {} })).toBeUndefined();
+    expect(extractRateLimitInfo({ type: 'result', subtype: 'success' })).toBeUndefined();
+    expect(extractRateLimitInfo(undefined)).toBeUndefined();
+    expect(extractRateLimitInfo('rate_limit_event')).toBeUndefined();
+  });
+
+  it('ignores a rate_limit_event with no payload', () => {
+    expect(extractRateLimitInfo({ type: 'rate_limit_event' })).toBeUndefined();
+    expect(extractRateLimitInfo({ type: 'rate_limit_event', rate_limit_info: null })).toBeUndefined();
   });
 });

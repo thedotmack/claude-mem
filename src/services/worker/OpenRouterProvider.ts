@@ -4,6 +4,7 @@ import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-bas
 import { openRouterAttributionHeaders, OPENROUTER_APP_TITLE } from '../../shared/openrouter-attribution.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { clearProFallbackOnGatewaySuccess, isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
@@ -207,12 +208,94 @@ interface OpenRouterResponse {
   };
 }
 
-interface OpenRouterConfig {
+export interface OpenRouterConfig {
   apiKey: string;
   model: string;
   apiUrl: string;
   siteUrl?: string;
   appName?: string;
+}
+
+function hasProcessEnvOverride(key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(process.env, key);
+}
+
+function normalizeOpenRouterModel(rawModel: unknown): string {
+  return typeof rawModel === 'string' && rawModel.trim()
+    ? rawModel
+    : Array.isArray(rawModel) && rawModel.length > 0
+      ? rawModel.map(String).join(',')
+      : SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
+}
+
+/**
+ * Resolve key/base/model as a source-coherent tuple. In particular, a
+ * key-only environment override must never inherit a persisted cmem.ai base
+ * URL and send a personal OpenRouter credential to the cmem gateway. To
+ * replace a stored cmem tuple at runtime, explicitly override the base URL too
+ * (an empty CLAUDE_MEM_OPENROUTER_BASE_URL selects normal OpenRouter).
+ */
+export function resolveOpenRouterConfig(
+  settingsPath: string = USER_SETTINGS_PATH,
+): OpenRouterConfig {
+  const persisted = SettingsDefaultsManager.loadFromFile(settingsPath, false);
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  const persistedBaseUrl = typeof persisted.CLAUDE_MEM_OPENROUTER_BASE_URL === 'string'
+    ? persisted.CLAUDE_MEM_OPENROUTER_BASE_URL.trim()
+    : '';
+  const hasBaseOverride = hasProcessEnvOverride('CLAUDE_MEM_OPENROUTER_BASE_URL');
+  const lockPersistedCmemTuple = isCmemGatewayUrl(persistedBaseUrl) && !hasBaseOverride;
+
+  const configuredBaseUrl = typeof settings.CLAUDE_MEM_OPENROUTER_BASE_URL === 'string'
+    ? settings.CLAUDE_MEM_OPENROUTER_BASE_URL.trim()
+    : '';
+  const baseUrl = lockPersistedCmemTuple
+    ? persistedBaseUrl
+    : configuredBaseUrl || process.env.OPENROUTER_BASE_URL?.trim() || '';
+
+  const detachPersistedCmemTuple = isCmemGatewayUrl(persistedBaseUrl)
+    && hasBaseOverride
+    && !isCmemGatewayUrl(baseUrl);
+
+  const persistedKey = typeof persisted.CLAUDE_MEM_OPENROUTER_API_KEY === 'string'
+    ? persisted.CLAUDE_MEM_OPENROUTER_API_KEY.trim()
+    : '';
+  const configuredKey = typeof settings.CLAUDE_MEM_OPENROUTER_API_KEY === 'string'
+    ? settings.CLAUDE_MEM_OPENROUTER_API_KEY.trim()
+    : '';
+  const explicitKey = hasProcessEnvOverride('CLAUDE_MEM_OPENROUTER_API_KEY')
+    ? process.env.CLAUDE_MEM_OPENROUTER_API_KEY?.trim() ?? ''
+    : '';
+  const apiKey = lockPersistedCmemTuple
+    ? persistedKey
+    : detachPersistedCmemTuple
+      // A base-only override must not carry the account-owned cmem key to a
+      // different host. Accept only a key supplied as part of this runtime
+      // tuple or the user's personal key from ~/.claude-mem/.env.
+      ? explicitKey || getCredential('OPENROUTER_API_KEY') || ''
+      : configuredKey || getCredential('OPENROUTER_API_KEY') || '';
+
+  let rawModel: unknown = lockPersistedCmemTuple
+    ? persisted.CLAUDE_MEM_OPENROUTER_MODEL
+    : settings.CLAUDE_MEM_OPENROUTER_MODEL;
+  if (
+    isCmemGatewayUrl(persistedBaseUrl)
+    && hasBaseOverride
+    && !isCmemGatewayUrl(baseUrl)
+    && !hasProcessEnvOverride('CLAUDE_MEM_OPENROUTER_MODEL')
+  ) {
+    // A base override that moves away from cmem must not retain the gateway's
+    // cmem-observer model. Restore the ordinary OpenRouter default unless the
+    // operator supplied a model override as part of the new tuple.
+    rawModel = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
+  }
+  const model = normalizeOpenRouterModel(rawModel);
+
+  const apiUrl = resolveOpenRouterChatCompletionsUrl(baseUrl);
+  const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
+  const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || OPENROUTER_APP_TITLE;
+
+  return { apiKey, model, apiUrl, siteUrl, appName };
 }
 
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
@@ -225,7 +308,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   }
 
   protected getConfig(): OpenRouterConfig {
-    return this.getOpenRouterConfig();
+    return resolveOpenRouterConfig();
   }
 
   protected missingApiKeyError(): Error {
@@ -365,6 +448,11 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       return responseData;
     }, { label: `OpenRouter ${model}` });
 
+    // A successful cmem-gateway response proves the delivered key is funded
+    // again (resubscribed) — clear the trial-expiry fallback marker so
+    // dispatch returns to the gateway. No-op for every other endpoint.
+    clearProFallbackOnGatewaySuccess(apiUrl);
+
     if (!data.choices?.[0]?.message?.content) {
       logger.error('SDK', 'Empty response from OpenRouter');
       return { content: '' };
@@ -407,40 +495,10 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     return { content, tokensUsed, inputTokens: realInputTokens, outputTokens: realOutputTokens, costUsd, servedModel };
   }
 
-  private getOpenRouterConfig(): OpenRouterConfig {
-    const settingsPath = USER_SETTINGS_PATH;
-    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-
-    const apiKey = settings.CLAUDE_MEM_OPENROUTER_API_KEY || getCredential('OPENROUTER_API_KEY') || '';
-
-    // Model is passed verbatim — any OpenAI-compatible model id is accepted
-    // (e.g. deepseek-chat, an LM Studio local model). #2393. Settings are raw
-    // JSON passthrough, so coerce non-string spellings (e.g. a JSON-array
-    // fallback list) to a string instead of leaking them downstream, where
-    // the telemetry scrubber drops non-string model values silently.
-    const rawModel: unknown = settings.CLAUDE_MEM_OPENROUTER_MODEL;
-    const model = typeof rawModel === 'string' && rawModel.trim()
-      ? rawModel
-      : Array.isArray(rawModel) && rawModel.length > 0
-        ? rawModel.map(String).join(',')
-        : 'xiaomi/mimo-v2-flash:free';
-
-    // Base URL: settings value wins, then OPENROUTER_BASE_URL env var, else
-    // the default OpenRouter endpoint (unchanged behavior). #2382/#2590/#2622/#2393.
-    const baseUrl = settings.CLAUDE_MEM_OPENROUTER_BASE_URL || process.env.OPENROUTER_BASE_URL || '';
-    const apiUrl = resolveOpenRouterChatCompletionsUrl(baseUrl);
-
-    const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
-    const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || OPENROUTER_APP_TITLE;
-
-    return { apiKey, model, apiUrl, siteUrl, appName };
-  }
 }
 
-export function isOpenRouterAvailable(): boolean {
-  const settingsPath = USER_SETTINGS_PATH;
-  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return !!(settings.CLAUDE_MEM_OPENROUTER_API_KEY || getCredential('OPENROUTER_API_KEY'));
+export function isOpenRouterAvailable(settingsPath: string = USER_SETTINGS_PATH): boolean {
+  return Boolean(resolveOpenRouterConfig(settingsPath).apiKey);
 }
 
 export function isOpenRouterSelected(): boolean {

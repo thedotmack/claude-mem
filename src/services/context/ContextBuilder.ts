@@ -10,6 +10,7 @@ import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
 
 import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
+import { colors } from './types.js';
 import { loadContextConfig } from './ContextConfigLoader.js';
 import { calculateTokenEconomics } from './TokenCalculator.js';
 import {
@@ -174,18 +175,38 @@ function buildInjectStats(
 }
 
 /**
- * Prepend the observer-health outage warning when the observer is failing.
+ * Paint every non-blank line, rather than wrapping the block once: session
+ * context is long enough to scroll, and a single leading escape leaves the
+ * warning uncolored wherever the terminal reflows or the reader scrolls back.
+ */
+function paintRed(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => (line.trim() ? `${colors.red}${line}${colors.reset}` : line))
+    .join('\n');
+}
+
+/**
+ * Append the observer-health outage warning when the observer is failing.
  * Applied to EVERY context path (including empty-state, missing-DB, and the
  * no-memories-yet welcome hint in SearchRoutes) so the outage is surfaced even
  * when there is nothing else to render.
+ *
+ * BELOW the context, not above it: the timeline runs long, so a warning at the
+ * top has already scrolled off by the time the context finishes printing. The
+ * last thing rendered is the thing still on screen — and for the model, the
+ * closest thing to its first reply.
  */
-export function withObserverHealthWarning(text: string): string {
+export function withObserverHealthWarning(text: string, forHuman: boolean = false): string {
   const health = readObserverHealth();
   if (!isObserverUnhealthy(health)) {
     return text;
   }
   const warning = renderObserverHealthWarning(health);
-  return text ? `${warning}\n\n${text}` : warning;
+  // Colors only on the human render: the agent copy is fetched separately
+  // (colors=false) and ANSI escapes there are noise in the model's context.
+  const rendered = forHuman ? paintRed(warning) : warning;
+  return text ? `${text}\n\n${rendered}` : rendered;
 }
 
 export async function generateContextWithStats(
@@ -206,7 +227,7 @@ export async function generateContextWithStats(
 
   const rawDb = initializeDatabase();
   if (!rawDb) {
-    return { text: withObserverHealthWarning(''), stats: null };
+    return { text: withObserverHealthWarning('', forHuman), stats: null };
   }
 
   try {
@@ -219,7 +240,7 @@ export async function generateContextWithStats(
     const summaries = querySummariesMulti(db, queryProjects, config, platformSource);
 
     if (observations.length === 0 && summaries.length === 0) {
-      return { text: withObserverHealthWarning(renderEmptyState(project, forHuman)), stats: null };
+      return { text: withObserverHealthWarning(renderEmptyState(project, forHuman), forHuman), stats: null };
     }
 
     const output = buildContextOutput(
@@ -233,7 +254,7 @@ export async function generateContextWithStats(
     );
 
     return {
-      text: withObserverHealthWarning(output),
+      text: withObserverHealthWarning(output, forHuman),
       stats: buildInjectStats(observations, summaries, Boolean(input?.full)),
     };
   } finally {

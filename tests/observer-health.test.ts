@@ -7,6 +7,7 @@ import {
   recordObserverFailure,
   recordObserverSuccess,
   isObserverUnhealthy,
+  workerRestartUrl,
   renderObserverHealthWarning,
   describeDuration,
   scrubErrorMessage,
@@ -15,6 +16,9 @@ import {
 } from '../src/shared/observer-health.ts';
 
 const repoRoot = process.cwd();
+
+const RED = '\x1b[31m';
+const RESET = '\x1b[0m';
 
 let dataDir: string;
 let healthPath: string;
@@ -271,6 +275,35 @@ describe('renderObserverHealthWarning', () => {
     expect(warning).toContain('~/.claude-mem/settings.json');
   });
 
+  it('offers both a click-to-restart link and the terminal command, then doctor', () => {
+    const warning = renderObserverHealthWarning(unhealthyState());
+    expect(warning).toContain(workerRestartUrl());
+    expect(warning).toContain('npx claude-mem restart');
+    expect(warning).toContain('npx claude-mem doctor');
+    expect(warning.indexOf(workerRestartUrl())).toBeLessThan(warning.indexOf('npx claude-mem doctor'));
+  });
+
+  it('points the restart link at the worker port, not a hardcoded one', () => {
+    expect(workerRestartUrl()).toMatch(/^http:\/\/localhost:\d+\/restart$/);
+  });
+
+  it('leaves the restart to the user rather than telling the assistant to fire it', () => {
+    const instruction = renderObserverHealthWarning(unhealthyState());
+    const assistantBlock = instruction.slice(instruction.indexOf('(Assistant:'));
+    expect(assistantBlock).toContain('let them press it');
+    expect(assistantBlock).not.toContain('npx claude-mem restart');
+  });
+
+  it('keeps the remedy steps even when the error is classified', () => {
+    const warning = renderObserverHealthWarning(unhealthyState({
+      lastErrorAction: 'Add credits to keep going now.',
+    }));
+    expect(warning).toContain(workerRestartUrl());
+    expect(warning).toContain('npx claude-mem doctor');
+    expect(warning).toContain('What to do: Add credits to keep going now.');
+    expect(warning).not.toContain('~/.claude-mem/settings.json');
+  });
+
   it('re-scrubs the action at render time', () => {
     const warning = renderObserverHealthWarning(unhealthyState({
       lastErrorAction: 'rotate; token=SUPERSECRETACTION',
@@ -290,13 +323,21 @@ describe('describeDuration', () => {
 });
 
 describe('ContextBuilder observer-health injection', () => {
-  function runContextChild(childDataDir: string): { emptyDbText: string } {
+  interface ChildRender {
+    emptyDbText: string;
+    agentText: string;
+    humanText: string;
+  }
+
+  function runContextChild(childDataDir: string): ChildRender {
     const result = Bun.spawnSync(['bun', '-e', `
-      import { generateContext } from './src/services/context/ContextBuilder.ts';
+      import { generateContext, withObserverHealthWarning } from './src/services/context/ContextBuilder.ts';
       import { ModeManager } from './src/services/domain/ModeManager.ts';
       ModeManager.getInstance().loadMode('code');
       const emptyDbText = await generateContext({ projects: ['observer-health-test'] });
-      console.log(JSON.stringify({ emptyDbText }));
+      const agentText = withObserverHealthWarning('TIMELINE_BODY', false);
+      const humanText = withObserverHealthWarning('TIMELINE_BODY', true);
+      console.log(JSON.stringify({ emptyDbText, agentText, humanText }));
     `], {
       cwd: repoRoot,
       env: {
@@ -312,11 +353,45 @@ describe('ContextBuilder observer-health injection', () => {
     return JSON.parse(new TextDecoder().decode(result.stdout).trim());
   }
 
-  it('prepends the outage warning even when there is no database to render', () => {
+  it('shows the outage warning even when there is no database to render', () => {
     writeFileSync(join(dataDir, 'observer-health.json'), JSON.stringify(unhealthyState()));
     const { emptyDbText } = runContextChild(dataDir);
     expect(emptyDbText).toContain("can't save memories");
     expect(emptyDbText).toContain('openrouter');
+  });
+
+  it('puts the warning BELOW the context, where a long timeline cannot scroll it away', () => {
+    writeFileSync(join(dataDir, 'observer-health.json'), JSON.stringify(unhealthyState()));
+    const { agentText, humanText } = runContextChild(dataDir);
+    for (const text of [agentText, humanText]) {
+      expect(text).toContain('TIMELINE_BODY');
+      expect(text).toContain("can't save memories");
+      expect(text.indexOf('TIMELINE_BODY')).toBeLessThan(text.indexOf("can't save memories"));
+    }
+  });
+
+  it('paints the warning red for the terminal and leaves the agent copy clean', () => {
+    writeFileSync(join(dataDir, 'observer-health.json'), JSON.stringify(unhealthyState()));
+    const { agentText, humanText } = runContextChild(dataDir);
+
+    expect(humanText).toContain(RED);
+    expect(humanText).toContain(RESET);
+    // Every non-blank warning line is painted, not just the first.
+    const warningLines = humanText
+      .slice(humanText.indexOf(RED))
+      .split('\n')
+      .filter((line) => line.trim());
+    expect(warningLines.every((line) => line.startsWith(RED) && line.endsWith(RESET))).toBe(true);
+
+    expect(agentText).not.toContain(RED);
+    expect(agentText).not.toContain('\x1b[');
+  });
+
+  it('leaves the context body itself unpainted', () => {
+    writeFileSync(join(dataDir, 'observer-health.json'), JSON.stringify(unhealthyState()));
+    const { humanText } = runContextChild(dataDir);
+    expect(humanText.slice(0, humanText.indexOf(RED))).toContain('TIMELINE_BODY');
+    expect(humanText.slice(0, humanText.indexOf(RED))).not.toContain('\x1b[');
   });
 
   it('stays silent when the observer is healthy', () => {
@@ -324,7 +399,8 @@ describe('ContextBuilder observer-health injection', () => {
       join(dataDir, 'observer-health.json'),
       JSON.stringify(unhealthyState({ consecutiveFailures: 0, lastSuccessAt: Date.now() }))
     );
-    const { emptyDbText } = runContextChild(dataDir);
+    const { emptyDbText, humanText } = runContextChild(dataDir);
     expect(emptyDbText).not.toContain("can't save memories");
+    expect(humanText).toBe('TIMELINE_BODY');
   });
 });

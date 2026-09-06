@@ -1,0 +1,21 @@
+{
+  "name": "claude-mem",
+  "owner": {
+    "name": "Alex Newman"
+  },
+  "metadata": {
+    "description": "Persistent memory for Cursor and Grok Bot. Install either host, or both. Worker and observer can be local or remote."
+  },
+  "plugins": [
+    {
+      "name": "claude-mem-cursor",
+      "source": "claude-mem-cursor",
+      "description": "claude-mem for Cursor: hooks, MCP search, local or remote worker/observer."
+    },
+    {
+      "name": "claude-mem-grok-bot",
+      "source": "claude-mem-grok-bot",
+      "description": "claude-mem for Grok Bot: MCP search, session-start skill, host-login observer. No Cursor hooks."
+    }
+  ]
+}

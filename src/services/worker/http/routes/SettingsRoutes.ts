@@ -74,6 +74,10 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
+    // Write whitelist. Secrets are deliberately absent: the Observation TV token,
+    // and the Chroma / Telegram / CloudSync keys. POST /api/settings has no
+    // authentication, so any page the user visits could set one of its choosing.
+    // Keeping them off this list means only the filesystem or the env can set them.
     const settingKeys = [
       'CLAUDE_MEM_MODEL',
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
@@ -85,6 +89,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
       'CLAUDE_MEM_OPENROUTER_API_KEY',
+      'CLAUDE_MEM_OPENROUTER_BASE_URL',
       'CLAUDE_MEM_OPENROUTER_MODEL',
       'CLAUDE_MEM_OPENROUTER_SITE_URL',
       'CLAUDE_MEM_OPENROUTER_APP_NAME',

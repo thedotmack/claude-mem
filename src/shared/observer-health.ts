@@ -16,6 +16,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { paths } from './paths.js';
+import { loadFromFileOnce } from './hook-settings.js';
 import { logger } from '../utils/logger.js';
 
 export interface ObserverHealthState {
@@ -45,6 +46,12 @@ export interface ObserverHealthState {
   lastErrorUrl?: string | null;
   /** Gateway/upstream request id for support. */
   lastErrorRequestId?: string | null;
+  /**
+   * Classified failure kind (`quota_exhausted`, `auth`, …). The warning reads
+   * this to pick its remedy: a spent allowance is the one outage a restart
+   * cannot clear, so it must not be offered one.
+   */
+  lastErrorKind?: string | null;
 }
 
 /**
@@ -54,6 +61,8 @@ export interface ObserverHealthState {
  */
 export interface ObserverFailureDetail {
   message: string;
+  /** Classified error kind, when the failure came from the provider taxonomy. */
+  kind?: string;
   code?: string;
   action?: string;
   url?: string;
@@ -228,6 +237,7 @@ export function recordObserverFailure(
       // Always overwrite (never inherit from `prior`): a string-form failure
       // after a classified one must not keep the stale action/link/request id.
       lastErrorCode: detail.code ?? null,
+      lastErrorKind: detail.kind ?? null,
       lastErrorAction: detail.action ? scrubErrorMessage(detail.action) : null,
       lastErrorUrl: detail.url ?? null,
       lastErrorRequestId: detail.requestId ?? null,
@@ -263,11 +273,38 @@ export function describeDuration(ms: number): string {
 }
 
 /**
+ * Where the one-click restart lives. Read through hook-settings rather than
+ * worker-utils' getWorkerPort: this module is imported by hooks as well as the
+ * worker, and must not drag in the supervisor, telemetry and process-management
+ * tree just to format a URL.
+ */
+export function workerRestartUrl(): string {
+  return `http://localhost:${loadFromFileOnce().CLAUDE_MEM_WORKER_PORT}/restart`;
+}
+
+/**
  * The block prepended to session-start context when unhealthy. Read by both
  * the user and the agent, so it stays calm and plain-spoken — but the agent
  * must still relay the outage (and the remedy embedded in the provider's
  * error message) to the user immediately.
+ *
+ * A restart clears nearly every observer outage (a wedged or SIGKILL'd provider
+ * subprocess), so the remedy leads with one — as a link the user clicks, not as
+ * something claude-mem fires on its own. Restarting the worker from inside the
+ * worker means guarding the automation against itself (once per outage? per
+ * flap? what about two failures racing?), and every one of those guards is a
+ * bound on a loop that only exists because the restart was automatic. A human
+ * pressing the button is the bound.
  */
+/**
+ * True when the current outage is a spent provider allowance. Reads the
+ * classified `kind` recorded with the failure; the quota-as-prose path records
+ * the same kind so both outage shapes are covered.
+ */
+export function isQuotaFailure(state: ObserverHealthState): boolean {
+  return state.lastErrorKind === 'quota_exhausted';
+}
+
 export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: number = Date.now()): string {
   const since = state.failingSinceAt ?? state.lastErrorAt;
   const sinceText = since
@@ -276,6 +313,41 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
   const provider = state.lastErrorProvider ?? 'unknown provider';
   const count = state.consecutiveFailures;
   const action = state.lastErrorAction ? scrubErrorMessage(state.lastErrorAction) : null;
+
+  // A spent allowance is the one outage a restart cannot clear. Worse, the
+  // restart link is the code path that clears the quota breaker (the process
+  // serving /api/admin/restart is the process holding the cooldown), so
+  // offering it here talks the user into re-opening the per-observation
+  // request storm the breaker exists to stop. Nothing is wedged; the account
+  // is out of allowance. Say that, and relay the provider's own remedy.
+  if (isQuotaFailure(state)) {
+    return [
+      "⚠️ Heads up: claude-mem can't save memories right now.",
+      '',
+      `The memory observer's allowance on ${provider} is used up (since ${sinceText.replace(/^for .*?\(since /, '').replace(/\)$/, '')}).`,
+      '',
+      `Latest error: ${state.lastErrorMessage ? scrubErrorMessage(state.lastErrorMessage) : 'unknown'}`,
+      ...(action ? [`What to do: ${action}`] : []),
+      ...(state.lastErrorUrl ? [`Link: ${state.lastErrorUrl}`] : []),
+      ...(state.lastErrorRequestId ? [`Request id: ${state.lastErrorRequestId}`] : []),
+      '',
+      "Until the allowance resets or you add capacity, nothing from this session — or any",
+      'other — will be remembered.',
+      '',
+      // Deliberately no restart link: nothing is broken to restart, and doing
+      // it disarms the breaker that is currently protecting the account.
+      'Restarting will NOT help here, and it clears the backoff that is currently keeping',
+      'claude-mem from hammering the provider — so please leave the worker alone.',
+      ...(action ? [] : [
+        'Switch the observer to another provider in ~/.claude-mem/settings.json if you need',
+        'memory capture before the allowance resets.',
+      ]),
+      '',
+      '(Assistant: tell the user about this outage at the very start of your first reply,',
+      'quoting the error above. Do NOT restart the worker and do NOT suggest restarting it.)',
+    ].join('\n');
+  }
+
   const lines = [
     "⚠️ Heads up: claude-mem can't save memories right now.",
     '',
@@ -287,15 +359,22 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
     ...(state.lastErrorRequestId ? [`Request id: ${state.lastErrorRequestId}`] : []),
     '',
     "Until it's fixed, nothing from this session — or any other — will be remembered.",
+    '',
+    'Restarting the memory worker clears almost every outage. Do one of these:',
+    `  Click to restart:  ${workerRestartUrl()}`,
+    '  Or in a terminal:  npx claude-mem restart',
+    '',
+    'Still failing after the restart? Run: npx claude-mem doctor',
     // A classified error already says what to do; the generic settings.json
     // remedy is wrong for e.g. Pro users whose allowance ran out.
     ...(action ? [] : [
-      "To fix it, check the observer provider's API key, spend limit, and base URL in",
-      '~/.claude-mem/settings.json. The error above may include a management link with the remedy.',
+      "If doctor comes back clean, check the observer provider's API key, spend limit, and base",
+      'URL in ~/.claude-mem/settings.json. The error above may include a management link.',
     ]),
     '',
-    '(Assistant: please tell the user about this outage at the very start of your first reply,',
-    'quoting the error above.)',
+    '(Assistant: tell the user about this outage at the very start of your first reply,',
+    'quoting the error above, and give them the restart link — let them press it rather',
+    'than restarting the worker yourself.)',
   ];
   return lines.join('\n');
 }

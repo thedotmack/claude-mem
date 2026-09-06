@@ -78,6 +78,22 @@ describe('scrubProperties', () => {
     });
   });
 
+  it('keeps bounded installer offer experiment properties', () => {
+    const result = scrubProperties({
+      trial_days: 14,
+      trial_variant: 'test_14',
+      offer_surface: 'installer',
+      funnel_source: 'installer',
+    });
+
+    expect(result).toEqual({
+      trial_days: 14,
+      trial_variant: 'test_14',
+      offer_surface: 'installer',
+      funnel_source: 'installer',
+    });
+  });
+
   it('keeps the depth/economics keys with primitive values', () => {
     const result = scrubProperties({
       observation_count: 50,
@@ -197,6 +213,20 @@ describe('scrubProperties', () => {
       error_mode: 'worker_unavailable',
       consecutive_failures: 3,
       threshold_tripped: true,
+    });
+  });
+
+  it('keeps the observed-session identity keys with primitive values', () => {
+    const result = scrubProperties({
+      top_model: 'claude-haiku-4-5',
+      observed_model: 'claude-fable-5-1',
+      observed_billing: 'max',
+    });
+
+    expect(result).toEqual({
+      top_model: 'claude-haiku-4-5',
+      observed_model: 'claude-fable-5-1',
+      observed_billing: 'max',
     });
   });
 

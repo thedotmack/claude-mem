@@ -85,6 +85,13 @@ describe('Plugin Distribution - Required Files', () => {
     'plugin/skills/mem-search/SKILL.md',
     'plugin/skills/mode-creator/SKILL.md',
     '.agents/plugins/marketplace.json',
+    '.cursor-plugin/marketplace.json',
+    'claude-mem-cursor/.cursor-plugin/plugin.json',
+    'claude-mem-cursor/mcp.json',
+    'claude-mem-cursor/hooks/hooks.json',
+    'claude-mem-grok-bot/.cursor-plugin/plugin.json',
+    'claude-mem-grok-bot/mcp.json',
+    'claude-mem-grok-bot/skills/host-observer/SKILL.md',
   ];
 
   for (const filePath of requiredFiles) {
@@ -137,7 +144,8 @@ describe('Plugin Distribution - Codex Marketplace', () => {
   it('ships a single Codex SessionStart command', () => {
     const codexHooks = readJson('plugin/hooks/codex-hooks.json');
     expect(codexHooks.hooks.SessionStart[0].hooks).toHaveLength(1);
-    expect(codexHooks.hooks.SessionStart[0].hooks[0].commandWindows).toContain('version-check.js');
+    expect(codexHooks.hooks.SessionStart[0].hooks[0].command).not.toContain('version-check.js');
+    expect(codexHooks.hooks.SessionStart[0].hooks[0].commandWindows).not.toContain('version-check.js');
   });
 
   it('MCP launcher can recover without plugin root environment variables', () => {
@@ -148,6 +156,33 @@ describe('Plugin Distribution - Codex Marketplace', () => {
     expect(command).toContain('.codex/plugins/cache/claude-mem-local/claude-mem');
     expect(command).toContain('plugins/cache/thedotmack/claude-mem');
     expect(command).toContain('claude-mem: mcp server not found');
+  });
+});
+
+
+describe('Plugin Distribution - Cursor Marketplace', () => {
+  it('ships independent Cursor and Grok Bot marketplace entries', () => {
+    const marketplace = readJson('.cursor-plugin/marketplace.json');
+    expect(marketplace.owner.name).toBe('Alex Newman');
+    expect(marketplace.plugins.map((plugin: any) => plugin.name)).toEqual([
+      'claude-mem-cursor',
+      'claude-mem-grok-bot',
+    ]);
+  });
+
+  it('wires Cursor hooks through the npx hook entrypoint', () => {
+    const hooks = readJson('claude-mem-cursor/hooks/hooks.json');
+    expect(hooks.hooks.beforeSubmitPrompt[0].command).toContain('npx -y claude-mem hook cursor session-init');
+    expect(hooks.hooks.stop[0].command).toContain('npx -y claude-mem hook cursor summarize');
+  });
+
+  it('ships the shared local and remote MCP definitions for both plugins', () => {
+    for (const relativePath of ['claude-mem-cursor/mcp.json', 'claude-mem-grok-bot/mcp.json']) {
+      const mcp = readJson(relativePath);
+      expect(mcp.mcpServers['claude-mem-local'].args).toEqual(['-y', 'claude-mem', 'mcp']);
+      const expected = 'Bearer ' + '${' + 'CLAUDE_MEM_MCP_TOKEN' + '}';
+      expect(mcp.mcpServers['claude-mem-remote'].headers.Authorization).toBe(expected);
+    }
   });
 });
 
@@ -337,19 +372,9 @@ const codexHook = (tail: string[]) => buildShellCommand({
   trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
   extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
 });
-const codexStartupHook = () => buildShellCommand({
-  host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
-  trailingCommand: [
-    '_V=$(CLAUDE_MEM_CODEX_HOOK=1 node "$_P/scripts/version-check.js" || true);',
-    'if [ -n "$_V" ]; then printf \'%s\\n\' "$_V"; else',
-    'CLAUDE_MEM_CODEX_HOOK=1', ...ccTrailing('hook', 'codex', 'context'),
-    '; fi',
-  ],
-  notFoundMessage: 'claude-mem: plugin scripts not found',
-});
-const codexHookPair = (tail: string[], options: { startupVersionCheck?: boolean } = {}) => ({
-  command: options.startupVersionCheck ? codexStartupHook() : codexHook(tail),
-  commandWindows: buildCodexWindowsCommand(tail, options),
+const codexHookPair = (tail: string[]) => ({
+  command: codexHook(tail),
+  commandWindows: buildCodexWindowsCommand(tail),
 });
 
 type RuleAExpectation = string | { command: string; commandWindows: string };
@@ -375,7 +400,7 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
     'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
   },
   'plugin/hooks/codex-hooks.json': {
-    'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context'], { startupVersionCheck: true }),
+    'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context']),
     'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
     'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
     'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),

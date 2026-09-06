@@ -332,7 +332,7 @@ export function ContextSettingsModal({
             >
               <FormField
                 label="AI Provider"
-                tooltip="Choose between Claude (via Agent SDK) or Gemini (via REST API)"
+                tooltip="Choose the provider that generates observations: Claude (via Agent SDK), Gemini (via REST API), or OpenRouter — also used by the claude-mem observer"
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
@@ -340,7 +340,7 @@ export function ContextSettingsModal({
                 >
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
-                  <option value="openrouter">OpenRouter (multi-model)</option>
+                  <option value="openrouter">OpenRouter / claude-mem observer</option>
                 </select>
               </FormField>
 
