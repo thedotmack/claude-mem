@@ -909,9 +909,6 @@ function applyOpenCodeEndpointSettings(
   settings.CLAUDE_MEM_OPENCODE_BASE_URL = options.opencodeBaseUrl || DEFAULT_OPENCODE_GO_BASE_URL;
   settings.CLAUDE_MEM_OPENCODE_MODEL = options.opencodeModel || options.model || DEFAULT_OPENCODE_GO_MODEL;
 }
-type ClaudeAccessMode = 'subscription' | 'api-key';
-type ClaudeApiMode = 'direct' | 'gateway';
->>>>>>> feat/opencode-provider
 // Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
 // enums, `server-beta-worker` lockedBy marker) are intentionally preserved in
 // the source code; runtime-selector dual-accepts both `'server'` and
