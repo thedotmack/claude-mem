@@ -40,6 +40,7 @@ import {
 } from '../../../../shared/quota-cooldown.js';
 import { isClassified, describeProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
+import { isSessionParkedForSlot } from '../../../../supervisor/process-registry.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
@@ -50,18 +51,34 @@ const MAX_USER_PROMPT_BYTES = 256 * 1024;
  */
 function normalizeAbortReason(
   reason: string | null | undefined
-): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'none' {
+): 'idle' | 'shutdown' | 'overflow' | 'restart_guard' | 'quota' | 'provider_switch' | 'none' {
   switch ((reason ?? '').split(':')[0]) {
     case 'idle': return 'idle';
     case 'shutdown': return 'shutdown';
     case 'overflow': return 'overflow';
     case 'restart-guard': return 'restart_guard';
     case 'quota': return 'quota';
+    case 'provider_switch': return 'provider_switch';
     default: return 'none';
   }
 }
 
 export class SessionRoutes extends BaseRouteHandler {
+  // #2756 round 3: ensureGeneratorRunning is called from independent HTTP
+  // request handlers (observation ingest, /summarize, /init — see
+  // shared.ts:138 and this file's own callers below), so two calls for the
+  // SAME sessionDbId can genuinely run concurrently. Both branches of the
+  // method below have an async gap — an `await` between reading
+  // `session.generatorPromise`/`session.currentProvider` and the eventual
+  // `startGeneratorWithProvider` call that reassigns them — during which a
+  // second concurrent call sees stale state and starts its own generator,
+  // producing two live generators for one session. This map serializes
+  // ensureGeneratorRunning calls per sessionDbId (a promise-chained mutex) so
+  // only one call's body runs at a time; calls for different sessionDbIds
+  // remain fully concurrent. See ensureGeneratorRunningLocked for the actual
+  // logic this now gates.
+  private ensureGeneratorLocks = new Map<number, Promise<void>>();
+
   constructor(
     private sessionManager: SessionManager,
     private dbManager: DatabaseManager,
@@ -75,7 +92,35 @@ export class SessionRoutes extends BaseRouteHandler {
     super();
   }
 
-  public async ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
+  public ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
+    const priorTail = this.ensureGeneratorLocks.get(sessionDbId) ?? Promise.resolve();
+    // .catch(() => {}) on the PRIOR tail only: one call's rejection must
+    // never jam the queue for the next call on this session. `tail` itself
+    // is left un-caught here so its own rejection still propagates to ITS
+    // caller (the caller of ensureGeneratorRunning gets back `tail`).
+    const tail: Promise<void> = priorTail
+      .catch(() => {})
+      .then(() => this.ensureGeneratorRunningLocked(sessionDbId, source));
+
+    this.ensureGeneratorLocks.set(sessionDbId, tail);
+
+    // Drop the map entry once this call is the last one queued, so the map
+    // doesn't grow forever for sessions that stop calling in. Identity
+    // check against `tail` itself: if a later call has already replaced
+    // this entry with its own tail, leave that one in place. The `.catch`
+    // here is only to stop bun/node from reporting an unhandled rejection
+    // on this cleanup-only branch — it does not affect the `tail` promise
+    // returned below, which callers still see reject normally.
+    tail.catch(() => {}).finally(() => {
+      if (this.ensureGeneratorLocks.get(sessionDbId) === tail) {
+        this.ensureGeneratorLocks.delete(sessionDbId);
+      }
+    });
+
+    return tail;
+  }
+
+  private async ensureGeneratorRunningLocked(sessionDbId: number, source: string): Promise<void> {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
 
@@ -144,38 +189,45 @@ export class SessionRoutes extends BaseRouteHandler {
           }
         }
       }
-      // Quota breaker (#3634). Without this, an exhausted allowance produced one
-      // doomed request per captured tool call for the rest of the billing cycle:
-      // the generator exits on the refusal, and the next observation starts a
-      // fresh one that earns the same refusal. Withhold requests for a cooldown,
-      // then let exactly one through to re-probe.
-      // Claim the probe rather than merely reading the clock: every live session
-      // sees the window elapse at the same instant, so a bare check would let
-      // them all through together.
-      const admission = tryAdmitQuotaProbe(selectedProvider);
-      if (!admission.admitted) {
-        // This run is not starting, so it must not hold the gateway re-probe.
-        releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
-        const cooldown = getQuotaCooldown(selectedProvider);
-        logger.warn('SESSION', 'Skipping generator start while the provider quota cooldown is active', {
-          sessionId: sessionDbId,
-          source,
-          provider: selectedProvider,
-          ...(cooldown?.window ? { window: cooldown.window } : {}),
-          probeInFlight: cooldown?.probeInFlightSinceMs !== null,
-          retryInMs: cooldown
-            ? Math.max(0, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - (Date.now() - cooldown.armedAtMs))
-            : 0,
-        });
-        return;
+      await this.admitAndStartGenerator(session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId);
+      return;
+    }
+
+    // #2756: a generator that never acquired its concurrency slot (still
+    // parked in waitForSlot) can wait indefinitely — it never idles-out,
+    // because the idle monitor only runs once the generator loop is
+    // consuming messages. Abort the parked wait and restart with the new
+    // provider immediately instead of leaving it stuck. A generator that HAS
+    // acquired its slot (mid-response) is left alone — falls through to the
+    // log-only "switch after it finishes" path below, unchanged.
+    if (session.currentProvider && session.currentProvider !== selectedProvider && isSessionParkedForSlot(sessionDbId)) {
+      // Defensive re-guard: `session` is already narrowed non-null by the
+      // early return above, but this branch spans a 3-operand `&&` plus a
+      // trailing function call before any property access — re-asserting
+      // the guard here costs nothing and removes any dependency on TS
+      // control-flow narrowing surviving that shape across the awaits below.
+      if (!session) return;
+      logger.info('SESSION', 'Provider changed while generator parked waiting for a slot; aborting the wait to switch now', {
+        sessionId: sessionDbId,
+        currentProvider: session.currentProvider,
+        selectedProvider,
+        historyLength: session.conversationHistory.length
+      });
+
+      const oldGeneratorPromise = session.generatorPromise;
+      session.abortReason = 'provider_switch';
+      session.abortController.abort();
+
+      // Must fully await the OLD generator's .catch().finally() chain (which
+      // runs handleGeneratorExit) before starting a new one: handleGeneratorExit
+      // nulls session.generatorPromise/currentProvider unconditionally with no
+      // identity check, so racing this would let the old generator's async
+      // cleanup stomp the freshly-started generator's state.
+      if (oldGeneratorPromise) {
+        await oldGeneratorPromise;
       }
 
-      await this.applyTierRouting(session);
-      // The claim travels with the run that took it: only that run may release
-      // it, or an earlier generator's exit would clear a later session's probe.
-      await this.startGeneratorWithProvider(
-        session, selectedProvider, source, admission.claimId, selection.gatewayProbeClaimId,
-      );
+      await this.admitAndStartGenerator(session, sessionDbId, selectedProvider, source, selection.gatewayProbeClaimId);
       return;
     }
 
@@ -193,6 +245,54 @@ export class SessionRoutes extends BaseRouteHandler {
       // Let current generator finish naturally, next one will use new provider
       // The shared conversationHistory ensures context is preserved
     }
+  }
+
+  /**
+   * Claim the quota probe (if the breaker permits it) and start a generator
+   * for `selectedProvider`. Shared by the fresh-start path above and the
+   * #2756 parked-generator provider-switch path (which is itself a fresh
+   * start for the newly-selected provider, just triggered from the
+   * "already running" branch instead of "no generator yet").
+   */
+  private async admitAndStartGenerator(
+    session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>,
+    sessionDbId: number,
+    selectedProvider: 'claude' | 'gemini' | 'openrouter',
+    source: string,
+    gatewayProbeClaimId: number | null,
+  ): Promise<void> {
+    // Quota breaker (#3634). Without this, an exhausted allowance produced one
+    // doomed request per captured tool call for the rest of the billing cycle:
+    // the generator exits on the refusal, and the next observation starts a
+    // fresh one that earns the same refusal. Withhold requests for a cooldown,
+    // then let exactly one through to re-probe.
+    // Claim the probe rather than merely reading the clock: every live session
+    // sees the window elapse at the same instant, so a bare check would let
+    // them all through together.
+    const admission = tryAdmitQuotaProbe(selectedProvider);
+    if (!admission.admitted) {
+      // This run is not starting, so it must not hold the gateway re-probe.
+      releaseCmemGatewayProbe(gatewayProbeClaimId);
+      const cooldown = getQuotaCooldown(selectedProvider);
+      logger.warn('SESSION', 'Skipping generator start while the provider quota cooldown is active', {
+        sessionId: sessionDbId,
+        source,
+        provider: selectedProvider,
+        ...(cooldown?.window ? { window: cooldown.window } : {}),
+        probeInFlight: cooldown?.probeInFlightSinceMs !== null,
+        retryInMs: cooldown
+          ? Math.max(0, QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - (Date.now() - cooldown.armedAtMs))
+          : 0,
+      });
+      return;
+    }
+
+    await this.applyTierRouting(session);
+    // The claim travels with the run that took it: only that run may release
+    // it, or an earlier generator's exit would clear a later session's probe.
+    await this.startGeneratorWithProvider(
+      session, selectedProvider, source, admission.claimId, gatewayProbeClaimId,
+    );
   }
 
   private async startGeneratorWithProvider(

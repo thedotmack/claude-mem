@@ -16,6 +16,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 import { getFirstObservationCreatedAt } from '../../../sqlite/observations/recent.js';
+import { getParkedSlotWaiterCount } from '../../../../supervisor/process-registry.js';
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
 import { assertCanonicalDecimal, type ContentKind } from '../../../sync/CanonicalContent.js';
 
@@ -442,8 +443,11 @@ export class DataRoutes extends BaseRouteHandler {
 
   private handleGetProcessingStatus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const isProcessing = await this.sessionManager.isAnySessionProcessing();
-    const queueDepth = await this.sessionManager.getTotalActiveWork(); 
-    res.json({ isProcessing, queueDepth });
+    const queueDepth = await this.sessionManager.getTotalActiveWork();
+    // #2756 — additive: sessions currently parked in waitForSlot, never a
+    // breaking change to existing isProcessing/queueDepth consumers.
+    const parkedSessions = getParkedSlotWaiterCount();
+    res.json({ isProcessing, queueDepth, parkedSessions });
   });
 
   private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; platformSource?: string } {

@@ -237,13 +237,21 @@ export class ClaudeProvider {
       session.forceInit = false;
     }
 
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const maxConcurrent = parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2;
     // waitForSlot reserves the slot it grants (#3287). The spawn factory
     // releases the reservation once the spawned process is a registry record;
     // the finally below covers every path where the spawn never happens
     // (OAuth failure, abort, query() throwing). release() is idempotent.
-    const slotReservation = await waitForSlot(maxConcurrent, session.abortController.signal);
+    //
+    // #2756: pass a thunk, not a frozen number — re-reads settings on every
+    // recheck so raising CLAUDE_MEM_MAX_CONCURRENT_AGENTS releases an
+    // already-parked waiter without a worker restart. sessionId lets
+    // SessionRoutes detect via isSessionParkedForSlot() whether this session
+    // is parked here (vs. mid-response) when the selected provider changes.
+    const slotReservation = await waitForSlot(
+      () => parseInt(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2,
+      session.abortController.signal,
+      session.sessionDbId
+    );
 
     try {
       const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
