@@ -15,12 +15,22 @@ function formatHostForUrl(host: string): string {
   return host.includes(':') ? `[${host}]` : host;
 }
 
+// Probes against a ghost listener (plan-15 #3603) can connect — the kernel
+// completes handshakes on the inherited socket — but never receive a response,
+// because no application is reading. An unbounded fetch would hang the probe
+// forever, so every HTTP probe is aborted after this budget. 5s is above a
+// healthy worker's sub-100ms response and below every caller's retry budget.
+const HEALTH_PROBE_TIMEOUT_MS = 5_000;
+
 async function httpRequestToWorker(
   port: number,
   endpointPath: string,
   method: string = 'GET'
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
-  const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, { method });
+  const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, {
+    method,
+    signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
+  });
   let body = '';
   try {
     body = await response.text();

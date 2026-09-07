@@ -17,6 +17,7 @@ import {
 } from './infrastructure/HealthMonitor.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
 import { isPidAlive } from '../supervisor/process-registry.js';
+import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
 
 const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
 
@@ -125,8 +126,31 @@ export async function ensureWorkerStarted(
       logger.info('SYSTEM', 'Worker is now healthy');
       return ready ? 'ready' : 'warming';
     }
-    logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
-    return 'dead';
+    // The port is bound but nothing answers health. Usually this is a dead
+    // worker whose surviving chroma sidecar chain (uvx -> uv -> python) holds
+    // the inherited listening socket — a ghost listener under a dead PID
+    // (plan-15 #3603). Without a reclaim the launcher returns 'dead' forever
+    // and the port stays blocked until a human tree-kills the chain by hand.
+    // Reclaim only fires when the owner is provably dead and the survivors
+    // are chroma sidecars; a live owner keeps the old 'dead' behavior.
+    const reclaim = await reclaimGhostListeningPort(port);
+    if (reclaim.reclaimed) {
+      logger.info('SYSTEM', 'Reclaimed ghost listener left by a dead worker — proceeding to spawn', {
+        port,
+        killedPids: reclaim.killedPids,
+      });
+      // The cooldown marker may have been written by the very spawn attempts
+      // this ghost blocked; the reason for those failures is now gone, so a
+      // time-based cooldown would only delay the recovery that just became
+      // possible (the plan-15 "cooldowns keyed to evidence, not time" rule).
+      clearWorkerSpawnAttempted();
+    } else {
+      logger.error('SYSTEM', 'Port in use but worker not responding to health checks', {
+        port,
+        reclaimReason: reclaim.reason,
+      });
+      return 'dead';
+    }
   }
 
   if (shouldSkipSpawnOnWindows()) {
