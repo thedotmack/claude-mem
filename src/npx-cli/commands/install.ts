@@ -8,7 +8,14 @@ import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
-import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
+import {
+  DEFAULT_OPENCODE_GO_BASE_URL,
+  DEFAULT_OPENCODE_GO_MODEL,
+  DEFAULT_OPENCODE_ZEN_BASE_URL,
+  DEFAULT_OPENCODE_ZEN_MODEL,
+  SettingsDefaultsManager,
+  type SettingsDefaults,
+} from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { parseJsonWithBom, writeJsonFileAtomic as writeSettingsJsonAtomic } from '../../shared/atomic-json.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
@@ -861,14 +868,50 @@ function mergeSettings(updates: Record<string, string>): boolean {
   }
 }
 
-type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'host';
+type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'opencode' | 'host';
 /**
  * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
  * it configures the generic OpenAI-compatible path (base URL + model + key) and
  * persists CLAUDE_MEM_PROVIDER='openrouter'. The worker only understands
- * 'claude' | 'gemini' | 'openrouter', so 'cmem' must never reach settings.json.
+ * 'claude' | 'gemini' | 'openrouter' | 'opencode', so 'cmem' must never reach settings.json.
  */
-type ProviderChoice = ProviderId | 'cmem';
+type ProviderChoice = ProviderId | 'cmem' | 'opencode-go' | 'opencode-zen';
+
+function normalizeProviderChoice(
+  choice: Exclude<ProviderChoice, 'cmem'>,
+  options: InstallOptions,
+): ProviderId;
+function normalizeProviderChoice(
+  choice: ProviderChoice,
+  options: InstallOptions,
+): ProviderId | 'cmem' {
+  if (choice === 'opencode-zen') {
+    options.opencodeFlavor = 'zen';
+    return 'opencode';
+  }
+  if (choice === 'opencode-go') {
+    options.opencodeFlavor = 'go';
+    return 'opencode';
+  }
+  return choice;
+}
+
+function applyOpenCodeEndpointSettings(
+  settings: Record<string, string>,
+  options: InstallOptions,
+  flavor: 'go' | 'zen',
+): void {
+  if (flavor === 'zen') {
+    settings.CLAUDE_MEM_OPENCODE_BASE_URL = options.opencodeBaseUrl || DEFAULT_OPENCODE_ZEN_BASE_URL;
+    settings.CLAUDE_MEM_OPENCODE_MODEL = options.opencodeModel || options.model || DEFAULT_OPENCODE_ZEN_MODEL;
+    return;
+  }
+  settings.CLAUDE_MEM_OPENCODE_BASE_URL = options.opencodeBaseUrl || DEFAULT_OPENCODE_GO_BASE_URL;
+  settings.CLAUDE_MEM_OPENCODE_MODEL = options.opencodeModel || options.model || DEFAULT_OPENCODE_GO_MODEL;
+}
+type ClaudeAccessMode = 'subscription' | 'api-key';
+type ClaudeApiMode = 'direct' | 'gateway';
+>>>>>>> feat/opencode-provider
 // Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
 // enums, `server-beta-worker` lockedBy marker) are intentionally preserved in
 // the source code; runtime-selector dual-accepts both `'server'` and
@@ -1081,21 +1124,22 @@ async function promptProvider(
 
   let selectedProvider: ProviderChoice;
   if (options.provider) {
-    selectedProvider = options.provider;
+    selectedProvider = normalizeProviderChoice(options.provider, options);
   } else {
     if (!isInteractive) {
       throw new Error('Non-interactive provider validation did not run.');
     }
     const labels = buildProviderLabels();
 
-    // Multiselect gives both choices square controls. Exactly one provider is
-    // still required; selecting both re-opens the prompt instead of guessing.
+    // Multiselect gives choices square controls. Exactly one provider is
+    // still required; selecting multiple re-opens the prompt instead of guessing.
     while (true) {
       const providerResult = await p.multiselect<ProviderChoice>({
         message: PROVIDER_PROMPT_MESSAGE,
         options: [
           { value: 'cmem', label: labels.cmem, hint: labels.cmemHint },
           { value: 'claude', label: labels.claude, hint: labels.claudeHint },
+          { value: 'opencode', label: 'OpenCode (Zen / Go API key)' },
         ],
         // CMEM Pro pre-selected: it is the recommended path and the one the
         // funnel is built around. Selecting it no longer means "pay now" —
@@ -1150,6 +1194,8 @@ async function promptProvider(
     return 'openrouter';
   }
 
+  selectedProvider = normalizeProviderChoice(selectedProvider, options);
+
   if (selectedProvider === 'claude') {
     useSubscriptionAuth();
     return 'claude';
@@ -1166,10 +1212,37 @@ async function promptProvider(
     return 'openrouter';
   }
 
-  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
+  if (selectedProvider === 'opencode') {
+    let flavor = options.opencodeFlavor;
+    if (!flavor && isInteractive) {
+      const flavorResult = await p.select<'go' | 'zen'>({
+        message: 'Which OpenCode endpoint flavor do you use?',
+        options: [
+          { value: 'go', label: `OpenCode Go (Subscription — default: ${DEFAULT_OPENCODE_GO_MODEL})` },
+          { value: 'zen', label: `OpenCode Zen (Pay-as-you-go — default: ${DEFAULT_OPENCODE_ZEN_MODEL})` },
+        ],
+        initialValue: 'go',
+      });
+      if (p.isCancel(flavorResult)) {
+        log.warn(`OpenCode flavor prompt cancelled — falling back to Claude provider.`);
+        persistClaudeProvider();
+        return 'claude';
+      }
+      flavor = flavorResult;
+    }
+    options.opencodeFlavor = flavor || 'go';
+  }
+
+  const providerLabel = selectedProvider === 'gemini'
+    ? 'Gemini'
+    : selectedProvider === 'opencode'
+      ? 'OpenCode'
+      : 'OpenRouter';
   const keyEnvName = selectedProvider === 'gemini'
     ? 'CLAUDE_MEM_GEMINI_API_KEY'
-    : 'CLAUDE_MEM_OPENROUTER_API_KEY';
+    : selectedProvider === 'opencode'
+      ? 'CLAUDE_MEM_OPENCODE_API_KEY'
+      : 'CLAUDE_MEM_OPENROUTER_API_KEY';
 
   const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
   const existingOpenRouterBaseUrl = selectedProvider === 'openrouter'
@@ -1178,7 +1251,13 @@ async function promptProvider(
   const existingKeyIsCmem = selectedProvider === 'openrouter'
     && isCmemGatewayUrl(existingOpenRouterBaseUrl);
   if (existingKey && existingKey.trim().length > 0 && !existingKeyIsCmem) {
-    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: selectedProvider });
+    const settingsToMerge: Record<string, string> = {
+      CLAUDE_MEM_PROVIDER: selectedProvider,
+    };
+    if (selectedProvider === 'opencode') {
+      applyOpenCodeEndpointSettings(settingsToMerge, options, options.opencodeFlavor || 'go');
+    }
+    const wrote = mergeSettings(settingsToMerge);
     if (wrote) log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
     return selectedProvider;
   }
@@ -1206,10 +1285,19 @@ async function promptProvider(
       readPersistedInstallerSettings(),
       SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL,
     )
-    : {
-      CLAUDE_MEM_PROVIDER: selectedProvider,
-      [keyEnvName]: apiKey,
-    };
+    : selectedProvider === 'opencode'
+      ? (() => {
+          const s: Record<string, string> = {
+            CLAUDE_MEM_PROVIDER: selectedProvider,
+            [keyEnvName]: apiKey,
+          };
+          applyOpenCodeEndpointSettings(s, options, options.opencodeFlavor || 'go');
+          return s;
+        })()
+      : {
+          CLAUDE_MEM_PROVIDER: selectedProvider,
+          [keyEnvName]: apiKey,
+        };
   const wrote = mergeSettings(updates);
   if (wrote) {
     log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
@@ -1827,12 +1915,15 @@ async function promptTelemetryOptIn(): Promise<void> {
  * must happen first.
  */
 export function providerNeedsAccount(provider: InstallOptions['provider']): boolean {
-  return provider !== 'claude' && provider !== 'host';
+  return provider !== 'claude' && provider !== 'host' && provider !== 'opencode' && provider !== 'opencode-go' && provider !== 'opencode-zen';
 }
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter' | 'host';
+  provider?: 'claude' | 'gemini' | 'openrouter' | 'opencode' | 'opencode-go' | 'opencode-zen' | 'host';
+  opencodeFlavor?: 'go' | 'zen';
+  opencodeBaseUrl?: string;
+  opencodeModel?: string;
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;

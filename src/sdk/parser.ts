@@ -84,6 +84,43 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
   return { valid: true, observations: [], summary };
 }
 
+export function deriveFallbackTitle(
+  subtitle?: string | null,
+  narrative?: string | null,
+  facts: string[] = []
+): string | null {
+  const hasSubstance =
+    (narrative !== undefined && narrative !== null && narrative.trim().length > 0) ||
+    (facts && facts.length > 0 && facts.some((f) => f && f.trim().length > 0));
+
+  if (hasSubstance && subtitle && subtitle.trim()) {
+    const trimmed = subtitle.trim();
+    if (trimmed.length <= 100) return trimmed.replace(/\.$/, '');
+    return trimmed.slice(0, 97).replace(/\s+\S*$/, '') + '...';
+  }
+
+  if (narrative && narrative.trim()) {
+    const trimmed = narrative.trim();
+    const firstSentenceMatch = trimmed.match(/^([^.?! \n]+(?: [^.?! \n]+){0,14}[.?!]?)/);
+    let titleCandidate = (firstSentenceMatch ? firstSentenceMatch[1] : trimmed).trim();
+    if (titleCandidate.length > 100) {
+      titleCandidate = titleCandidate.slice(0, 97).replace(/\s+\S*$/, '') + '...';
+    }
+    titleCandidate = titleCandidate.replace(/\.$/, '').trim();
+    if (titleCandidate) return titleCandidate;
+  }
+
+  if (facts && facts.length > 0 && facts[0].trim()) {
+    let factCandidate = facts[0].trim();
+    if (factCandidate.length > 100) {
+      factCandidate = factCandidate.slice(0, 97).replace(/\s+\S*$/, '') + '...';
+    }
+    return factCandidate.replace(/\.$/, '').trim();
+  }
+
+  return null;
+}
+
 function parseObservationBlocks(text: string, correlationId?: string | number): ParsedObservation[] {
   const observations: ParsedObservation[] = [];
 
@@ -134,7 +171,13 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
       });
     }
 
-    if (!title && !narrative && facts.length === 0 && cleanedConcepts.length === 0) {
+    const hasSubstantiveContent =
+      (title !== undefined && title !== null && title.trim().length > 0) ||
+      (narrative !== undefined && narrative !== null && narrative.trim().length > 0) ||
+      (facts.length > 0 && facts.some((f) => f && f.trim().length > 0)) ||
+      cleanedConcepts.length > 0;
+
+    if (!hasSubstantiveContent) {
       logger.warn('PARSER', 'Skipping empty observation (all content fields null)', {
         correlationId,
         type: finalType
@@ -142,9 +185,16 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
       continue;
     }
 
+    const finalTitle = title && title.trim()
+      ? title.trim()
+      : deriveFallbackTitle(subtitle, narrative, facts) ||
+        (cleanedConcepts.length > 0
+          ? `${cleanedConcepts.join(', ')} (${finalType})`
+          : `${finalType.charAt(0).toUpperCase() + finalType.slice(1)} observation`);
+
     observations.push({
       type: finalType,
-      title,
+      title: finalTitle,
       subtitle,
       facts,
       narrative,

@@ -130,6 +130,7 @@ describe('Claude setup-required generator gate', () => {
       claudeProvider as any,
       { startSession: async () => {} } as any,
       { startSession: async () => {} } as any,
+      { startSession: async () => {} } as any,
       {} as any,
       {} as any,
       {

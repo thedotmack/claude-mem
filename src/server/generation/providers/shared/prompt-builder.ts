@@ -148,10 +148,10 @@ function buildObservationOutputSchema(mode: ModeConfig | { observation_types: Re
   return [
     '<observation>',
     `  <type>[ ${types} ]</type>`,
-    '  <title>...</title>',
-    '  <subtitle>...</subtitle>',
+    '  <title>Concise title capturing what was discovered or built (REQUIRED)</title>',
+    '  <subtitle>One sentence summary (optional)</subtitle>',
     '  <facts><fact>...</fact></facts>',
-    '  <narrative>...</narrative>',
+    '  <narrative>Full context: What was done, how it works, why it matters</narrative>',
     '  <concepts><concept>...</concept></concepts>',
     '  <files_read><file>...</file></files_read>',
     '  <files_modified><file>...</file></files_modified>',
