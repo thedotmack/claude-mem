@@ -464,6 +464,39 @@ export async function processAgentResponse(
 
   session.lastSummaryStored = result.summaryId !== null;
 
+  // Late link: point the durable tool_uses rows this batch was generated from
+  // at the observation that now summarizes them. It has to happen here and not
+  // at ingest — the observation did not exist yet, and neither did
+  // memorySessionId. The batch's FIRST observation id owns the link (see
+  // linkToolUsesToObservation), and RECEIPT-JOIN.md documents that
+  // observation_id is a pointer into the batch, not a 1:1 mapping; the reliable
+  // per-call join stays (content_session_id, tool_use_id).
+  //
+  // Never fatal: a failed link costs a back-reference, not an observation.
+  const claimedToolUseIds = Array.from(new Set(
+    claimedMessages
+      .map(message => message.toolUseId)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0)
+  ));
+  if (claimedToolUseIds.length > 0 && result.observationIds.length > 0) {
+    try {
+      const linked = sessionStore.linkToolUsesToObservation({
+        contentSessionId: session.contentSessionId,
+        toolUseIds: claimedToolUseIds,
+        observationId: result.observationIds[0],
+        memorySessionId: session.memorySessionId,
+      });
+      logger.debug('DB', `TOOL_USES_LINKED | sessionDbId=${session.sessionDbId} | rows=${linked} | observationId=${result.observationIds[0]}`, {
+        sessionId: session.sessionDbId
+      });
+    } catch (error) {
+      logger.warn('DB', 'tool_uses observation link failed', {
+        sessionId: session.sessionDbId,
+        observationId: result.observationIds[0],
+      }, error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
   // A completed store proves the observer pipeline works end-to-end — clear
   // the failure streak in the observer-health ledger, and release any quota
   // breaker so a re-probe that succeeds restores full speed at once rather

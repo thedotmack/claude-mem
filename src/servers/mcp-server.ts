@@ -438,10 +438,11 @@ async function ensureWorkerConnection(): Promise<boolean> {
 const tools = [
   {
     name: 'important_workflow',
-    description: `3-LAYER WORKFLOW (ALWAYS FOLLOW):
+    description: `LAYERED WORKFLOW (ALWAYS FOLLOW):
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
 3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
+4. get_tool_uses([IDs]) → Raw tool_input/tool_response, ONLY when the summary is not enough
 NEVER fetch full details without filtering first. 10x token savings.`,
     inputSchema: {
       type: 'object',
@@ -466,7 +467,11 @@ NEVER fetch full details without filtering first. 10x token savings.`,
    \`get_observations(ids=[...])\`  # ALWAYS batch for 2+ items
    Returns: Complete details (~500-1000 tokens/result)
 
-**Why:** 10x token savings. Never fetch full details without filtering first.`
+4. **Disclose raw tool I/O** - Last resort, when the observation summary does not answer the question
+   \`get_tool_uses(ids=[...])\`
+   Returns: The original tool_input / tool_response bodies (UNSUMMARIZED — can be thousands of tokens each)
+
+**Why:** 10x token savings. Never fetch full details without filtering first, and never reach for layer 4 before layer 3 answered.`
       }]
     })
   },
@@ -556,6 +561,28 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     },
     handler: async (args: any) => {
       return await callWorker('/api/observations/batch', { body: args });
+    }
+  },
+  {
+    name: 'get_tool_uses',
+    description: 'Step 4 (raw tool I/O, rarely needed): fetch the ORIGINAL tool_input/tool_response for tool calls you already identified. Requires ids — run search/timeline/get_observations first and pass only the ids you actually need; these payloads are large and unsummarized. ids accept numeric tool_uses ids or tool_use_id strings. Params: ids (required), limit, project, contentSessionId.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: {
+          type: 'array',
+          items: { type: ['number', 'string'] },
+          description: 'Tool-use ids to fetch (required). Numeric tool_uses.id or opaque tool_use_id strings.'
+        },
+        limit: { type: 'number', description: 'Max rows to return' },
+        project: { type: 'string', description: 'Filter by project name' },
+        contentSessionId: { type: 'string', description: 'Filter to one content session' }
+      },
+      required: ['ids'],
+      additionalProperties: true
+    },
+    handler: async (args: any) => {
+      return await callWorker('/api/tool-uses/batch', { body: args });
     }
   },
   {

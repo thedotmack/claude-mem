@@ -456,6 +456,12 @@ export class SessionRoutes extends BaseRouteHandler {
     platformSource: z.string().optional(),
     tool_use_id: z.string().optional(),
     toolUseId: z.string().optional(),
+    // Receipt join keys (frozen 2026-09-06). Pure pass-through onto tool_uses;
+    // Claude-Mem never derives them and stores no cost field of its own.
+    or_generation_id: z.string().optional(),
+    orGenerationId: z.string().optional(),
+    or_session_id: z.string().optional(),
+    orSessionId: z.string().optional(),
   }).passthrough();
 
   private static readonly summarizeByClaudeIdSchema = z.object({
@@ -478,6 +484,10 @@ export class SessionRoutes extends BaseRouteHandler {
       agentType,
       tool_use_id,
       toolUseId,
+      or_generation_id,
+      orGenerationId,
+      or_session_id,
+      orSessionId,
     } = req.body;
     const platformSource = this.getPlatformSourceFromRequest(req);
 
@@ -491,6 +501,8 @@ export class SessionRoutes extends BaseRouteHandler {
       agentId,
       agentType,
       toolUseId: typeof tool_use_id === 'string' ? tool_use_id : (typeof toolUseId === 'string' ? toolUseId : undefined),
+      orGenerationId: typeof or_generation_id === 'string' ? or_generation_id : (typeof orGenerationId === 'string' ? orGenerationId : undefined),
+      orSessionId: typeof or_session_id === 'string' ? or_session_id : (typeof orSessionId === 'string' ? orSessionId : undefined),
     });
 
     if (!result.ok) {

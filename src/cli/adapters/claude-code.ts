@@ -19,6 +19,7 @@ export const claudeCodeAdapter: PlatformAdapter = {
       toolName: r.tool_name,
       toolInput: r.tool_input,
       toolResponse: r.tool_response,
+      toolUseId: typeof r.tool_use_id === 'string' ? r.tool_use_id : undefined,
       transcriptPath: r.transcript_path,
       agentId: pickAgentField(r.agent_id),
       agentType: pickAgentField(r.agent_type),

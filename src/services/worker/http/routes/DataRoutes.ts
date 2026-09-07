@@ -60,6 +60,32 @@ const sdkSessionsBatchSchema = z.object({
   memorySessionIds: stringArrayLike,
 }).passthrough();
 
+// Layer 4 of progressive disclosure: raw tool bodies, by explicit id only.
+// `ids` accepts numeric tool_uses.id AND opaque tool_use_id strings, because a
+// caller may hold either (search/list hands back the former, a transcript or an
+// observation ref the latter). Required and non-empty on purpose — this route
+// must never be a way to page the whole table of raw payloads.
+const toolUsesBatchSchema = z.object({
+  ids: z.preprocess((value) => {
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        // not JSON, fall through to comma split
+      }
+      return value.split(',').map((part) => part.trim()).filter(Boolean);
+    }
+    return value;
+  }, z.array(z.union([z.number().int(), z.string()]))),
+  limit: z.number().int().positive().max(200).optional(),
+  project: z.string().optional(),
+  contentSessionId: z.string().optional(),
+  platformSource: z.string().optional(),
+  platform_source: z.string().optional(),
+}).passthrough();
+
 const importSchema = z.object({
   sessions: z.array(z.unknown()).optional(),
   summaries: z.array(z.unknown()).optional(),
@@ -89,6 +115,8 @@ export class DataRoutes extends BaseRouteHandler {
     app.post('/api/observations/batch', validateBody(observationsBatchSchema), this.handleGetObservationsByIds.bind(this));
     app.get('/api/session/:id', this.handleGetSessionById.bind(this));
     app.post('/api/sdk-sessions/batch', validateBody(sdkSessionsBatchSchema), this.handleGetSdkSessionsByIds.bind(this));
+    app.get('/api/tool-uses', this.handleListToolUses.bind(this));
+    app.post('/api/tool-uses/batch', validateBody(toolUsesBatchSchema), this.handleGetToolUsesByIds.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
     app.delete('/api/observation/:id', this.handleDeleteObservation.bind(this));
     app.delete('/api/summary/:id', this.handleDeleteSummary.bind(this));
@@ -174,6 +202,77 @@ export class DataRoutes extends BaseRouteHandler {
     const observations = store.getObservationsByIds(ids, { orderBy, limit, project, platformSource });
 
     res.json(observations);
+  });
+
+  /**
+   * Index/tally listing for `tool_uses` — Receipt's read path and the way a
+   * caller finds ids worth disclosing. Deliberately projects a CHEAP shape:
+   * identity + sizes, never `tool_input` / `tool_response`. Full bodies come
+   * only from POST /api/tool-uses/batch with explicit ids.
+   */
+  private handleListToolUses = this.wrapHandler((req: Request, res: Response): void => {
+    const store = this.dbManager.getSessionStore();
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+
+    const asString = (value: unknown): string | undefined =>
+      typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+    const asNumber = (value: unknown): number | undefined => {
+      const parsed = Number(asString(value));
+      return Number.isFinite(parsed) ? parsed : undefined;
+    };
+
+    const toolName = asString(req.query.tool_name ?? req.query.toolName);
+
+    const rows = store.queryToolUses({
+      project: asString(req.query.project),
+      contentSessionId: asString(req.query.session ?? req.query.contentSessionId),
+      memorySessionId: asString(req.query.memorySessionId),
+      toolName: toolName ? toolName.split(',').map(part => part.trim()).filter(Boolean) : undefined,
+      agentId: asString(req.query.agentId),
+      platformSource,
+      dateStart: asNumber(req.query.dateStart),
+      dateEnd: asNumber(req.query.dateEnd),
+      limit: asNumber(req.query.limit),
+      offset: asNumber(req.query.offset),
+      orderBy: req.query.orderBy === 'date_asc' ? 'date_asc' : 'date_desc',
+    });
+
+    res.json({
+      count: rows.length,
+      toolUses: rows.map(row => ({
+        id: row.id,
+        tool_use_id: row.tool_use_id,
+        tool_name: row.tool_name,
+        project: row.project,
+        content_session_id: row.content_session_id,
+        memory_session_id: row.memory_session_id,
+        platform_source: row.platform_source,
+        agent_id: row.agent_id,
+        agent_type: row.agent_type,
+        observation_id: row.observation_id,
+        or_generation_id: row.or_generation_id,
+        or_session_id: row.or_session_id,
+        prompt_number: row.prompt_number,
+        created_at: row.created_at,
+        created_at_epoch: row.created_at_epoch,
+        // Size hints so a caller can budget tokens before disclosing a body.
+        tool_input_bytes: row.tool_input ? Buffer.byteLength(row.tool_input, 'utf8') : 0,
+        tool_response_bytes: row.tool_response ? Buffer.byteLength(row.tool_response, 'utf8') : 0,
+      })),
+    });
+  });
+
+  private handleGetToolUsesByIds = this.wrapHandler((req: Request, res: Response): void => {
+    const { ids, limit, project, contentSessionId } = req.body as z.infer<typeof toolUsesBatchSchema>;
+
+    if (ids.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    res.json(store.getToolUsesByIds(ids, { limit, project, contentSessionId, platformSource }));
   });
 
   private handleGetSessionById = this.wrapHandler((req: Request, res: Response): void => {

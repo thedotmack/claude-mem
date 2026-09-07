@@ -14,6 +14,17 @@ import {
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash } from './observations/store.js';
+import {
+  createToolUsesSchema,
+  upsertToolUse as upsertToolUseRow,
+  linkToolUsesToObservation as linkToolUsesToObservationRows,
+  getToolUsesByIds as getToolUsesByIdsRows,
+  queryToolUses as queryToolUsesRows,
+  countToolUses as countToolUsesRows,
+  type ToolUseRow,
+  type UpsertToolUseInput,
+  type ToolUseQueryFilters,
+} from './tool-uses.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
@@ -123,6 +134,7 @@ export class SessionStore {
     this.initializeSyncHubLaunchBaseline();
     this.normalizeConceptTags();
     this.ensureSDKSessionsObservedColumns();
+    this.ensureToolUsesTable();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -1725,6 +1737,20 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(50, new Date().toISOString());
   }
 
+  // v51 — durable `tool_uses` backup index for raw tool I/O.
+  //
+  // `pending_messages` stays exactly what it is (the generation queue, drained
+  // and deleted); this table is the side index that survives it, so mem-search
+  // can disclose a tool body by reference and Receipt can COUNT usages without
+  // re-parsing transcripts. Not gated on the version row alone: the DDL is
+  // idempotent, so a DB that was created fresh (table already present) and one
+  // migrating up both converge, and a fixture that deliberately drops the row
+  // re-runs harmlessly.
+  private ensureToolUsesTable(): void {
+    createToolUsesSchema(this.db);
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(51, new Date().toISOString());
+  }
+
   private ensureMergedIntoProjectColumns(): void {
     const obsCols = this.db
       .query('PRAGMA table_info(observations)')
@@ -2232,6 +2258,39 @@ export class SessionStore {
     `);
 
     return stmt.get(id, normalizePlatformSource(platformSource)) as ObservationRecord | undefined || null;
+  }
+
+  // ---------------------------------------------------------------------
+  // tool_uses (v51) — durable raw tool I/O side index. See ./tool-uses.ts for
+  // why this is separate from pending_messages and why no cost column exists.
+  // ---------------------------------------------------------------------
+
+  upsertToolUse(input: UpsertToolUseInput): number | null {
+    return upsertToolUseRow(this.db, input);
+  }
+
+  linkToolUsesToObservation(params: {
+    contentSessionId: string;
+    toolUseIds: string[];
+    observationId: number;
+    memorySessionId?: string | null;
+  }): number {
+    return linkToolUsesToObservationRows(this.db, params);
+  }
+
+  getToolUsesByIds(
+    ids: Array<number | string>,
+    options: { limit?: number; project?: string; platformSource?: string; contentSessionId?: string } = {}
+  ): ToolUseRow[] {
+    return getToolUsesByIdsRows(this.db, ids, options);
+  }
+
+  queryToolUses(filters: ToolUseQueryFilters = {}): ToolUseRow[] {
+    return queryToolUsesRows(this.db, filters);
+  }
+
+  countToolUses(filters: ToolUseQueryFilters = {}): Array<{ tool_name: string; uses: number }> {
+    return countToolUsesRows(this.db, filters);
   }
 
   getObservationsByIds(

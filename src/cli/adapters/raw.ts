@@ -15,6 +15,7 @@ export const rawAdapter: PlatformAdapter = {
       toolName: r.toolName ?? r.tool_name,
       toolInput: r.toolInput ?? r.tool_input,
       toolResponse: r.toolResponse ?? r.tool_response,
+      toolUseId: r.toolUseId ?? r.tool_use_id,
       transcriptPath: r.transcriptPath ?? r.transcript_path,
       filePath: r.filePath ?? r.file_path,
       edits: r.edits,

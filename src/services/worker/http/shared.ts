@@ -52,6 +52,14 @@ export interface ObservationPayload {
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
+  /**
+   * Receipt join keys (frozen 2026-09-06). Both nullable and both pass-through:
+   * Claude-Mem never derives them, it only echoes what a stamper supplied, so
+   * `tool_uses` can be joined to an OpenRouter spend line. No cost field here —
+   * dollars stay on the OR stamp / spend log.
+   */
+  orGenerationId?: string;
+  orSessionId?: string;
 }
 
 export async function ingestObservation(payload: ObservationPayload): Promise<IngestResult> {
@@ -117,6 +125,42 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   const cleanedToolResponse = payload.toolResponse !== undefined
     ? stripMemoryTags(JSON.stringify(payload.toolResponse))
     : '{}';
+
+  // Dual-write: the durable `tool_uses` side index (v51) alongside — never
+  // instead of — the pending_messages → generator queue below. This is the one
+  // choke point both the PostToolUse hook route and the transcript-watch
+  // processor already funnel through, so the JSONL spine keeps its own path and
+  // no second capture surface exists to drift.
+  //
+  // Best-effort by construction: an observation must still be generated if the
+  // backup index write fails, so a throw here is logged and swallowed. Rows
+  // without a tool_use_id are skipped by upsertToolUse (nothing to de-dupe on).
+  if (payload.toolUseId) {
+    try {
+      store.upsertToolUse({
+        toolUseId: payload.toolUseId,
+        contentSessionId: payload.contentSessionId,
+        sessionDbId,
+        project,
+        platformSource,
+        toolName: payload.toolName,
+        toolInput: cleanedToolInput,
+        toolResponse: cleanedToolResponse,
+        cwd: cwd || null,
+        promptNumber,
+        agentType: typeof payload.agentType === 'string' ? payload.agentType : null,
+        agentId: typeof payload.agentId === 'string' ? payload.agentId : null,
+        orGenerationId: typeof payload.orGenerationId === 'string' ? payload.orGenerationId : null,
+        orSessionId: typeof payload.orSessionId === 'string' ? payload.orSessionId : null,
+      });
+    } catch (error) {
+      logger.warn('INGEST', 'tool_uses backup write failed (observation still queued)', {
+        sessionId: sessionDbId,
+        toolName: payload.toolName,
+        toolUseId: payload.toolUseId,
+      }, error instanceof Error ? error : new Error(String(error)));
+    }
+  }
 
   await sessionManager.queueObservation(sessionDbId, {
     tool_name: payload.toolName,
