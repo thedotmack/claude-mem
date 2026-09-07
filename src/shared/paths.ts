@@ -40,7 +40,13 @@ export function resolveDataDir(): string {
 }
 
 export const DATA_DIR = resolveDataDir();
-export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+// #2753 — the literal default config dir, independent of process.env state.
+// Lets callers (oauth-token.ts) compare an *effective* config dir against the
+// TRUE default rather than against CLAUDE_CONFIG_DIR (which already folds in
+// process.env). Purely additive: does not change CLAUDE_CONFIG_DIR's own
+// derivation or MARKETPLACE_ROOT below.
+export const DEFAULT_CLAUDE_CONFIG_DIR = join(homedir(), '.claude');
+export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || DEFAULT_CLAUDE_CONFIG_DIR;
 
 export const MARKETPLACE_ROOT = join(CLAUDE_CONFIG_DIR, 'plugins', 'marketplaces', 'thedotmack');
 

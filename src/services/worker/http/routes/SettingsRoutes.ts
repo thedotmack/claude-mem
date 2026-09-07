@@ -97,6 +97,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
       'CLAUDE_CODE_PATH',
+      'CLAUDE_MEM_CLAUDE_CONFIG_DIR',
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
@@ -200,6 +201,21 @@ export class SettingsRoutes extends BaseRouteHandler {
       const pythonVersionRegex = /^3\.\d{1,2}$/;
       if (!pythonVersionRegex.test(settings.CLAUDE_MEM_PYTHON_VERSION)) {
         return { valid: false, error: 'CLAUDE_MEM_PYTHON_VERSION must be in format "3.X" or "3.XX" (e.g., "3.13")' };
+      }
+    }
+
+    // #2753 — CLAUDE_MEM_CLAUDE_CONFIG_DIR controls which keychain identity's
+    // OAuth token gets read (oauth-token.ts's deriveMacKeychainServiceName)
+    // and which CLAUDE_CONFIG_DIR gets stamped onto every spawned SDK
+    // subprocess (EnvManager.ts's buildIsolatedEnv), so — unlike most of this
+    // whitelist — a malformed value here has spawn/auth-identity consequences,
+    // not just a rejected form field. Empty string is valid (the documented
+    // "fall through to default" sentinel); a present value must be a
+    // non-empty-after-trim string so a type-confused payload (number, array,
+    // object) can't reach path.join/createHash downstream.
+    if (settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR !== undefined && settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR !== '') {
+      if (typeof settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR !== 'string' || !settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR.trim()) {
+        return { valid: false, error: 'CLAUDE_MEM_CLAUDE_CONFIG_DIR must be a non-empty path string, or "" to use the default' };
       }
     }
 
