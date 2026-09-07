@@ -1,12 +1,20 @@
 {
   "name": "claude-mem-cursor",
   "version": "13.24.0",
-  "description": "Persistent memory for Cursor. Hooks ingest tool use; MCP searches past sessions. Works with a local worker or a remote cmem.ai worker, and a local host-login observer or remote inference.",
-  "author": { "name": "Alex Newman" },
-  "homepage": "https://github.com/thedotmack/claude-mem",
+  "description": "Memory compression system for Claude Code - persist context across sessions",
+  "author": {
+    "name": "Alex Newman"
+  },
+  "homepage": "https://github.com/thedotmack/claude-mem#readme",
   "repository": "https://github.com/thedotmack/claude-mem",
   "license": "Apache-2.0",
-  "keywords": ["claude-mem", "memory", "cursor", "mcp", "cmem"],
+  "keywords": [
+    "claude-mem",
+    "memory",
+    "cursor",
+    "mcp",
+    "cmem"
+  ],
   "category": "MCP",
   "skills": "./skills/",
   "hooks": "./hooks/hooks.json",

@@ -214,6 +214,7 @@ export interface OpenRouterConfig {
   apiUrl: string;
   siteUrl?: string;
   appName?: string;
+  timeoutMs?: number;
 }
 
 function hasProcessEnvOverride(key: string): boolean {
@@ -295,7 +296,18 @@ export function resolveOpenRouterConfig(
   const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
   const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || OPENROUTER_APP_TITLE;
 
-  return { apiKey, model, apiUrl, siteUrl, appName };
+  const isCustomEndpoint = !apiUrl.includes('openrouter.ai');
+  const envTimeout = process.env.CLAUDE_MEM_OPENROUTER_TIMEOUT_MS;
+  const parsedEnvTimeout = envTimeout ? parseInt(envTimeout, 10) : NaN;
+  const settingTimeout = settings.CLAUDE_MEM_API_TIMEOUT_MS ? parseInt(settings.CLAUDE_MEM_API_TIMEOUT_MS, 10) : NaN;
+
+  const timeoutMs = !isNaN(parsedEnvTimeout) && parsedEnvTimeout > 0
+    ? parsedEnvTimeout
+    : isCustomEndpoint
+      ? Math.max(120_000, !isNaN(settingTimeout) && settingTimeout > 0 ? settingTimeout : 0)
+      : (!isNaN(settingTimeout) && settingTimeout > 0 ? settingTimeout : 30_000);
+
+  return { apiKey, model, apiUrl, siteUrl, appName, timeoutMs };
 }
 
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
@@ -349,7 +361,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   }
 
   protected async query(history: ConversationMessage[], config: OpenRouterConfig): Promise<ProviderQueryResult> {
-    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName);
+    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName, config.timeoutMs);
   }
 
   /** POST the chat-completions request. Extracted so the retry try block stays narrow. */
@@ -391,7 +403,8 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     model: string,
     apiUrl: string,
     siteUrl?: string,
-    appName?: string
+    appName?: string,
+    timeoutMs?: number
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
@@ -446,7 +459,10 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       }
 
       return responseData;
-    }, { label: `OpenRouter ${model}` });
+    }, {
+      label: `OpenRouter ${model}`,
+      ...(typeof timeoutMs === 'number' && timeoutMs > 0 ? { perAttemptTimeoutMs: timeoutMs } : {})
+    });
 
     // A successful cmem-gateway response proves the delivered key is funded
     // again (resubscribed) — clear the trial-expiry fallback marker so
