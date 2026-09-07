@@ -272,6 +272,53 @@ describe('antigravityCliAdapter - normalizeInput', () => {
     expect(result.toolInput).toEqual({ notification_type: 'permission', message: 'allow?' });
     expect(result.toolResponse).toEqual({ details: { foo: 'bar' } });
   });
+
+  it('supports protojson camelCase aliases across hookEventName, promptResponse, and notificationType', () => {
+    // AfterAgent with camelCase hookEventName and promptResponse
+    const afterAgent = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      hookEventName: 'AfterAgent',
+      prompt: 'test prompt',
+      promptResponse: 'camel response',
+    });
+    expect(afterAgent.toolName).toBe('AntigravityProvider');
+    expect(afterAgent.toolInput).toEqual({ prompt: 'test prompt' });
+    expect(afterAgent.toolResponse).toEqual({ response: 'camel response' });
+
+    // Notification with camelCase hookEventName and notificationType
+    const notification = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      hookEventName: 'Notification',
+      notificationType: 'alert',
+      message: 'notice',
+      details: { ok: true },
+    });
+    expect(notification.toolName).toBe('AntigravityNotification');
+    expect(notification.toolInput).toEqual({ notification_type: 'alert', message: 'notice' });
+    expect(notification.toolResponse).toEqual({ details: { ok: true } });
+
+    // Direct tool fields with camelCase toolName, toolInput, toolResponse
+    const directTool = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      sessionId: 'sess-123',
+      toolName: 'my_tool',
+      toolInput: { arg: 1 },
+      toolResponse: { res: 2 },
+    });
+    expect(directTool.sessionId).toBe('sess-123');
+    expect(directTool.toolName).toBe('my_tool');
+    expect(directTool.toolInput).toEqual({ arg: 1 });
+    expect(directTool.toolResponse).toEqual({ res: 2 });
+
+    // workspace_paths array fallback and step_idx fallback
+    const pathsResult = antigravityCliAdapter.normalizeInput({
+      workspace_paths: ['/tmp/from_workspace_paths'],
+      toolName: 'exec',
+      step_idx: 99,
+    });
+    expect(pathsResult.cwd).toBe('/tmp/from_workspace_paths');
+    expect(pathsResult.toolResponse).toEqual({ status: 'completed', stepIdx: 99 });
+  });
 });
 
 describe('antigravityCliAdapter - formatOutput', () => {

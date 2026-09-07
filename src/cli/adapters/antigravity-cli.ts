@@ -5,8 +5,10 @@ export const antigravityCliAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
 
+    const workspacePath = (Array.isArray(r.workspacePaths) && r.workspacePaths[0] ? r.workspacePaths[0] : undefined)
+      ?? (Array.isArray(r.workspace_paths) && r.workspace_paths[0] ? r.workspace_paths[0] : undefined);
     const cwd = r.cwd
-      ?? (Array.isArray(r.workspacePaths) && r.workspacePaths[0] ? r.workspacePaths[0] : undefined)
+      ?? workspacePath
       ?? process.env.GEMINI_CWD
       ?? process.env.GEMINI_PROJECT_DIR
       ?? process.env.CLAUDE_PROJECT_DIR
@@ -17,19 +19,23 @@ export const antigravityCliAdapter: PlatformAdapter = {
 
     const sessionId = r.session_id
       ?? r.conversationId
+      ?? r.sessionId
       ?? process.env.GEMINI_SESSION_ID
       ?? undefined;
 
-    const hookEventName: string | undefined = r.hook_event_name;
+    const hookEventName: string | undefined = r.hook_event_name ?? r.hookEventName;
+    const stepIdx = r.stepIdx ?? r.step_idx;
+    const prompt = r.prompt;
+    const promptResponse = r.prompt_response ?? r.promptResponse;
 
-    let toolName: string | undefined = r.tool_name ?? r.toolCall?.name;
-    let toolInput: unknown = r.tool_input ?? r.toolCall?.args;
-    let toolResponse: unknown = r.tool_response ?? r.error ?? r.output;
+    let toolName: string | undefined = r.tool_name ?? r.toolName ?? r.toolCall?.name;
+    let toolInput: unknown = r.tool_input ?? r.toolInput ?? r.toolCall?.args;
+    let toolResponse: unknown = r.tool_response ?? r.toolResponse ?? r.response ?? r.error ?? r.output;
 
-    if (hookEventName === 'AfterAgent' && r.prompt_response !== undefined) {
+    if (hookEventName === 'AfterAgent' && promptResponse !== undefined) {
       toolName = toolName ?? 'AntigravityProvider';
-      toolInput = toolInput ?? { prompt: r.prompt };
-      toolResponse = toolResponse ?? { response: r.prompt_response };
+      toolInput = toolInput ?? { prompt };
+      toolResponse = toolResponse ?? { response: promptResponse };
     }
 
     if ((hookEventName === 'BeforeTool' || hookEventName === 'PreToolUse') && toolName && toolResponse === undefined) {
@@ -39,7 +45,7 @@ export const antigravityCliAdapter: PlatformAdapter = {
     if (hookEventName === 'Notification') {
       toolName = toolName ?? 'AntigravityNotification';
       toolInput = toolInput ?? {
-        notification_type: r.notification_type,
+        notification_type: r.notification_type ?? r.notificationType,
         message: r.message,
       };
       toolResponse = toolResponse ?? { details: r.details };
@@ -47,13 +53,13 @@ export const antigravityCliAdapter: PlatformAdapter = {
 
     // Default toolResponse if none provided so observation handler does not drop tool steps
     if (toolName && toolResponse === undefined) {
-      toolResponse = { status: 'completed', stepIdx: r.stepIdx };
+      toolResponse = { status: 'completed', stepIdx };
     }
 
     return {
       sessionId,
       cwd,
-      prompt: r.prompt,
+      prompt,
       toolName,
       toolInput,
       toolResponse,
