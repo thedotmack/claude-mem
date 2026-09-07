@@ -26,7 +26,7 @@ export const antigravityCliAdapter: PlatformAdapter = {
     let toolInput: unknown = r.tool_input ?? r.toolCall?.args;
     let toolResponse: unknown = r.tool_response ?? r.error ?? r.output;
 
-    if (hookEventName === 'AfterAgent' && r.prompt_response) {
+    if (hookEventName === 'AfterAgent' && r.prompt_response !== undefined) {
       toolName = toolName ?? 'AntigravityProvider';
       toolInput = toolInput ?? { prompt: r.prompt };
       toolResponse = toolResponse ?? { response: r.prompt_response };

@@ -218,6 +218,18 @@ describe('antigravityCliAdapter - normalizeInput', () => {
     expect(result.toolResponse).toEqual({ response: 'hello there' });
   });
 
+  it('preserves empty string and falsy AfterAgent prompt_response values', () => {
+    const emptyResult = antigravityCliAdapter.normalizeInput({
+      cwd: '/tmp',
+      hook_event_name: 'AfterAgent',
+      prompt: 'do something',
+      prompt_response: '',
+    });
+    expect(emptyResult.toolName).toBe('AntigravityProvider');
+    expect(emptyResult.toolInput).toEqual({ prompt: 'do something' });
+    expect(emptyResult.toolResponse).toEqual({ response: '' });
+  });
+
   it('marks a BeforeTool or PreToolUse call as pre-execution when no response is present', () => {
     const beforeTool = antigravityCliAdapter.normalizeInput({
       cwd: '/tmp',
