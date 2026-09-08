@@ -72,6 +72,24 @@ describe('error taxonomy', () => {
     expect(cat.severity).toBe(ErrorSeverity.ABORT);
   });
 
+  it('classifies missing non-interactive providers separately from unknown errors', () => {
+    const cat = classifyError(new Error('A provider must be explicit when stdin is not interactive.'), {
+      component: 'provider-selection',
+      phase: 'non-interactive-validation',
+    });
+    expect(cat.id).toBe('non-interactive-provider-required');
+    expect(cat.severity).toBe(ErrorSeverity.ABORT);
+  });
+
+  it('classifies missing non-interactive provider credentials separately', () => {
+    const cat = classifyError(new Error('gemini requires a preconfigured personal API key when stdin is not interactive.'), {
+      component: 'provider-credentials',
+      phase: 'non-interactive-validation',
+    });
+    expect(cat.id).toBe('non-interactive-provider-credentials-required');
+    expect(cat.severity).toBe(ErrorSeverity.ABORT);
+  });
+
   it('defaults unknown errors to ABORT (fail-loud)', () => {
     const cat = classifyError(new Error('something we have never seen'), {
       component: 'mystery',
@@ -128,6 +146,18 @@ describe('installerError decision logic', () => {
     expect(record.categoryId).toBe('tree-sitter-eresolve');
     expect(record.severity).toBe('ABORT');
     expect(record.details).toContain('While resolving');
+  });
+
+  it('persists the dedicated category for a missing non-interactive provider', () => {
+    const summary = createInstallSummary();
+    expect(() => installerError(ErrorSeverity.ABORT, {
+      component: 'provider-selection',
+      phase: 'non-interactive-validation',
+      cause: new Error('A provider must be explicit when stdin is not interactive.'),
+    }, summary)).toThrow(InstallAbortError);
+
+    const record = JSON.parse(readFileSync(join(home, 'last-install-error.json'), 'utf-8'));
+    expect(record.categoryId).toBe('non-interactive-provider-required');
   });
 
   it('WARN_CONTINUE appends to summary and does not throw', () => {
@@ -250,7 +280,7 @@ function simulateInstall(_ide: string, scenario: Scenario): Outcome {
   return { status, aborted: false };
 }
 
-describe('cross-IDE failure matrix (11 IDEs x 4 scenarios)', () => {
+describe('cross-IDE failure matrix (12 IDEs x 4 scenarios)', () => {
   const scenarios: Scenario[] = ['happy', 'eresolve', 'missing-uv', 'missing-bun'];
 
   let prevMatrixDataDir: string | undefined;

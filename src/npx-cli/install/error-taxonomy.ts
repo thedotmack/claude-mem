@@ -155,6 +155,22 @@ export const ERROR_CATEGORIES: ErrorCategory[] = [
       'An install command did not finish in time. Check network connectivity. On a slow host, raise the budget with CLAUDE_MEM_INSTALL_TIMEOUT_MS and re-run.',
   },
   {
+    id: 'non-interactive-provider-required',
+    severity: ErrorSeverity.ABORT,
+    match: (_cause, ctx) =>
+      ctx.component === 'provider-selection' && ctx.phase === 'non-interactive-validation',
+    remediation: () =>
+      'Pass an explicit provider with `--provider claude|gemini|openrouter|host`, or run the installer in an interactive terminal.',
+  },
+  {
+    id: 'non-interactive-provider-credentials-required',
+    severity: ErrorSeverity.ABORT,
+    match: (_cause, ctx) =>
+      ctx.component === 'provider-credentials' && ctx.phase === 'non-interactive-validation',
+    remediation: () =>
+      'Configure the selected provider credentials before running the installer non-interactively, or run it in an interactive terminal.',
+  },
+  {
     id: 'unknown-install-error',
     severity: ErrorSeverity.ABORT,
     match: () => true,
