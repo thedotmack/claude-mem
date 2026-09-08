@@ -86,10 +86,11 @@ function pathPrelude(host: ShellTemplateHost): string {
 
 function fileExistsClause(options: ShellTemplateOptions): string {
   const primary = `[ -f "$_Q/scripts/${options.requireFile}" ]`;
+  const dependencies = options.host === 'codex-cli' ? ' && [ -d "$_Q/node_modules" ]' : '';
   if (options.requireFileSecondary) {
-    return `${primary} && [ -f "$_Q/scripts/${options.requireFileSecondary}" ]`;
+    return `${primary} && [ -f "$_Q/scripts/${options.requireFileSecondary}" ]${dependencies}`;
   }
-  return primary;
+  return `${primary}${dependencies}`;
 }
 
 /**
@@ -268,7 +269,7 @@ export function buildCodexWindowsCommand(
     "try{roots.push(...fs.readdirSync(cache).filter(n=>{const ch=n.charAt(0);return ch>='0'&&ch<='9'}).map(n=>p.join(cache,n)).filter(r=>{try{return fs.statSync(r).isDirectory()&&!fs.existsSync(p.join(r,'.orphaned_at'))}catch{return false}}).sort((a,b)=>W(p.basename(a),p.basename(b))))}catch{}",
     "roots.push(p.join(C,'plugins','marketplaces','thedotmack','plugin'));",
     "let R=null;",
-    "for(const k of roots){const r=fs.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(fs.existsSync(p.join(r,'scripts','bun-runner.js'))&&fs.existsSync(p.join(r,'scripts','worker-service.cjs'))){R=r;break}}",
+    "for(const k of roots){const r=fs.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(fs.existsSync(p.join(r,'scripts','bun-runner.js'))&&fs.existsSync(p.join(r,'scripts','worker-service.cjs'))&&fs.existsSync(p.join(r,'node_modules'))){R=r;break}}",
     "if(!R){process.stderr.write('claude-mem: plugin scripts not found\\n');process.exit(1)}",
     "const env={...process.env,CLAUDE_MEM_CODEX_HOOK:'1'};",
   ];
