@@ -1,6 +1,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../src/services/sqlite/SessionStore.js';
+import { ClaudeProvider } from '../src/services/worker/ClaudeProvider.js';
 
 describe('FK Constraint Fix (Issue #846)', () => {
   let store: SessionStore;
@@ -105,5 +106,59 @@ describe('FK Constraint Fix (Issue #846)', () => {
     );
 
     expect(result.id).toBeGreaterThan(0);
+  });
+
+  it('preserves the persisted memory session id when starting a fresh observer session', async () => {
+    const sessionDbId = store.createSDKSession('provider-reset-id', 'test-project', 'test prompt');
+    const memorySessionId = 'carried-memory-id';
+
+    store.ensureMemorySessionIdRegistered(sessionDbId, memorySessionId);
+    store.storeObservation(
+      memorySessionId,
+      'test-project',
+      {
+        type: 'discovery',
+        title: 'Existing child row',
+        subtitle: null,
+        facts: [],
+        narrative: null,
+        concepts: [],
+        files_read: [],
+        files_modified: []
+      }
+    );
+
+    const updateCalls: Array<{ id: number; value: string | null }> = [];
+    store.updateMemorySessionId = (id, value) => {
+      updateCalls.push({ id, value });
+    };
+
+    const provider = new ClaudeProvider({ getSessionStore: () => store } as any, {} as any);
+    const abortController = new AbortController();
+    abortController.abort();
+    const session = {
+      sessionDbId,
+      contentSessionId: 'content-session',
+      memorySessionId,
+      project: 'test-project',
+      userPrompt: 'test prompt',
+      modelOverride: 'test-model',
+      abortController,
+      lastPromptNumber: 1,
+      conversationHistory: [],
+      pendingAgentId: null,
+      pendingAgentType: null,
+      forceInit: false,
+      startTime: Date.now(),
+      cumulativeInputTokens: 0,
+      cumulativeOutputTokens: 0,
+      lastResultTotalCostUsd: null,
+    } as any;
+
+    await expect(provider.startSession(session)).rejects.toThrow();
+
+    expect(updateCalls).toEqual([]);
+    expect(session.memorySessionId).toBeNull();
+    expect(store.getSessionById(sessionDbId)?.memory_session_id).toBe(memorySessionId);
   });
 });
