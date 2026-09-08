@@ -12,6 +12,7 @@ import {
   describeDuration,
   scrubErrorMessage,
   OBSERVER_UNHEALTHY_FAILURE_THRESHOLD,
+  OBSERVER_UNHEALTHY_MAX_ERROR_AGE_MS,
   type ObserverHealthState,
 } from '../src/shared/observer-health.ts';
 
@@ -213,10 +214,26 @@ describe('observer-health ledger', () => {
 describe('isObserverUnhealthy', () => {
   it('requires the failure threshold AND failures newer than the last success', () => {
     expect(isObserverUnhealthy(null)).toBe(false);
-    expect(isObserverUnhealthy(unhealthyState())).toBe(true);
-    expect(isObserverUnhealthy(unhealthyState({ consecutiveFailures: OBSERVER_UNHEALTHY_FAILURE_THRESHOLD - 1 }))).toBe(false);
+    expect(isObserverUnhealthy(unhealthyState(), 1_754_700_100_001)).toBe(true);
+    expect(isObserverUnhealthy(unhealthyState({ consecutiveFailures: OBSERVER_UNHEALTHY_FAILURE_THRESHOLD - 1 }), 1_754_700_100_001)).toBe(false);
     expect(isObserverUnhealthy(unhealthyState({ lastSuccessAt: Date.now() + 60_000 }))).toBe(false);
-    expect(isObserverUnhealthy(unhealthyState({ lastSuccessAt: null }))).toBe(true);
+    expect(isObserverUnhealthy(unhealthyState({ lastSuccessAt: null }), 1_754_700_100_001)).toBe(true);
+  });
+
+  it('does not report an outage after the last failure becomes stale', () => {
+    const lastErrorAt = 1_754_700_100_000;
+    expect(isObserverUnhealthy(
+      unhealthyState({ lastErrorAt }),
+      lastErrorAt + OBSERVER_UNHEALTHY_MAX_ERROR_AGE_MS + 1,
+    )).toBe(false);
+  });
+
+  it('does not trust a failure timestamp from the future', () => {
+    const nowMs = 1_754_700_100_000;
+    expect(isObserverUnhealthy(
+      unhealthyState({ lastErrorAt: nowMs + 1 }),
+      nowMs,
+    )).toBe(false);
   });
 });
 
@@ -325,19 +342,22 @@ describe('describeDuration', () => {
 describe('ContextBuilder observer-health injection', () => {
   interface ChildRender {
     emptyDbText: string;
+    observerText: string;
     agentText: string;
     humanText: string;
   }
 
   function runContextChild(childDataDir: string): ChildRender {
     const result = Bun.spawnSync(['bun', '-e', `
-      import { generateContext, withObserverHealthWarning } from './src/services/context/ContextBuilder.ts';
+      import { generateContext } from './src/services/context-generator.ts';
+      import { withObserverHealthWarning } from './src/services/context/ContextBuilder.ts';
       import { ModeManager } from './src/services/domain/ModeManager.ts';
       ModeManager.getInstance().loadMode('code');
       const emptyDbText = await generateContext({ projects: ['observer-health-test'] });
+      const observerText = await generateContext({ projects: ['observer-health-test'], source: 'compact' });
       const agentText = withObserverHealthWarning('TIMELINE_BODY', false);
       const humanText = withObserverHealthWarning('TIMELINE_BODY', true);
-      console.log(JSON.stringify({ emptyDbText, agentText, humanText }));
+      console.log(JSON.stringify({ emptyDbText, observerText, agentText, humanText }));
     `], {
       cwd: repoRoot,
       env: {
@@ -353,15 +373,24 @@ describe('ContextBuilder observer-health injection', () => {
     return JSON.parse(new TextDecoder().decode(result.stdout).trim());
   }
 
+  function writeFreshUnhealthyState(): void {
+    const now = Date.now();
+    writeFileSync(join(dataDir, 'observer-health.json'), JSON.stringify(unhealthyState({
+      failingSinceAt: now - 60_000,
+      lastErrorAt: now,
+      lastSuccessAt: now - 120_000,
+    })));
+  }
+
   it('shows the outage warning even when there is no database to render', () => {
-    writeFileSync(join(dataDir, 'observer-health.json'), JSON.stringify(unhealthyState()));
+    writeFreshUnhealthyState();
     const { emptyDbText } = runContextChild(dataDir);
     expect(emptyDbText).toContain("can't save memories");
     expect(emptyDbText).toContain('openrouter');
   });
 
   it('puts the warning BELOW the context, where a long timeline cannot scroll it away', () => {
-    writeFileSync(join(dataDir, 'observer-health.json'), JSON.stringify(unhealthyState()));
+    writeFreshUnhealthyState();
     const { agentText, humanText } = runContextChild(dataDir);
     for (const text of [agentText, humanText]) {
       expect(text).toContain('TIMELINE_BODY');
@@ -370,8 +399,14 @@ describe('ContextBuilder observer-health injection', () => {
     }
   });
 
+  it('does not feed the health warning into a recycled observer context', () => {
+    writeFreshUnhealthyState();
+    const { observerText } = runContextChild(dataDir);
+    expect(observerText).not.toContain("can't save memories");
+  });
+
   it('paints the warning red for the terminal and leaves the agent copy clean', () => {
-    writeFileSync(join(dataDir, 'observer-health.json'), JSON.stringify(unhealthyState()));
+    writeFreshUnhealthyState();
     const { agentText, humanText } = runContextChild(dataDir);
 
     expect(humanText).toContain(RED);
@@ -388,7 +423,7 @@ describe('ContextBuilder observer-health injection', () => {
   });
 
   it('leaves the context body itself unpainted', () => {
-    writeFileSync(join(dataDir, 'observer-health.json'), JSON.stringify(unhealthyState()));
+    writeFreshUnhealthyState();
     const { humanText } = runContextChild(dataDir);
     expect(humanText.slice(0, humanText.indexOf(RED))).toContain('TIMELINE_BODY');
     expect(humanText.slice(0, humanText.indexOf(RED))).not.toContain('\x1b[');

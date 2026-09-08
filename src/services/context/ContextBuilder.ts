@@ -197,7 +197,14 @@ function paintRed(text: string): string {
  * last thing rendered is the thing still on screen — and for the model, the
  * closest thing to its first reply.
  */
-export function withObserverHealthWarning(text: string, forHuman: boolean = false): string {
+export function withObserverHealthWarning(
+  text: string,
+  forHuman: boolean = false,
+  includeWarning: boolean = true,
+): string {
+  if (!includeWarning) {
+    return text;
+  }
   const health = readObserverHealth();
   if (!isObserverUnhealthy(health)) {
     return text;
@@ -213,6 +220,7 @@ export async function generateContextWithStats(
   input?: ContextInput,
   forHuman: boolean = false
 ): Promise<{ text: string; stats: ContextInjectStats | null }> {
+  const includeHealthWarning = input?.source !== 'compact';
   const config = loadContextConfig();
   const cwd = input?.cwd ?? process.cwd();
   const context = getProjectContext(cwd);
@@ -227,7 +235,7 @@ export async function generateContextWithStats(
 
   const rawDb = initializeDatabase();
   if (!rawDb) {
-    return { text: withObserverHealthWarning('', forHuman), stats: null };
+    return { text: withObserverHealthWarning('', forHuman, includeHealthWarning), stats: null };
   }
 
   try {
@@ -240,7 +248,10 @@ export async function generateContextWithStats(
     const summaries = querySummariesMulti(db, queryProjects, config, platformSource);
 
     if (observations.length === 0 && summaries.length === 0) {
-      return { text: withObserverHealthWarning(renderEmptyState(project, forHuman), forHuman), stats: null };
+      return {
+        text: withObserverHealthWarning(renderEmptyState(project, forHuman), forHuman, includeHealthWarning),
+        stats: null,
+      };
     }
 
     const output = buildContextOutput(
@@ -254,7 +265,7 @@ export async function generateContextWithStats(
     );
 
     return {
-      text: withObserverHealthWarning(output, forHuman),
+      text: withObserverHealthWarning(output, forHuman, includeHealthWarning),
       stats: buildInjectStats(observations, summaries, Boolean(input?.full)),
     };
   } finally {

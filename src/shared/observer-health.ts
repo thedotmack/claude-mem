@@ -73,6 +73,8 @@ export const OBSERVER_HEALTH_FILENAME = 'observer-health.json';
 
 /** Warn only after repeated failures — a single blip self-heals on retry. */
 export const OBSERVER_UNHEALTHY_FAILURE_THRESHOLD = 3;
+/** A failure that has not been refreshed recently is no longer actionable. */
+export const OBSERVER_UNHEALTHY_MAX_ERROR_AGE_MS = 6 * 60 * 60_000;
 
 const MAX_ERROR_MESSAGE_LENGTH = 600;
 
@@ -257,10 +259,15 @@ export function recordObserverSuccess(filePath: string = defaultHealthFilePath()
   });
 }
 
-export function isObserverUnhealthy(state: ObserverHealthState | null): state is ObserverHealthState {
+export function isObserverUnhealthy(
+  state: ObserverHealthState | null,
+  nowMs: number = Date.now(),
+): state is ObserverHealthState {
   return state !== null
     && state.consecutiveFailures >= OBSERVER_UNHEALTHY_FAILURE_THRESHOLD
-    && (state.lastErrorAt ?? 0) > (state.lastSuccessAt ?? 0);
+    && (state.lastErrorAt ?? 0) > (state.lastSuccessAt ?? 0)
+    && (state.lastErrorAt ?? 0) <= nowMs
+    && nowMs - (state.lastErrorAt ?? 0) <= OBSERVER_UNHEALTHY_MAX_ERROR_AGE_MS;
 }
 
 /** "3 minutes" / "about 2 hours" / "about 3 days" for outage durations. */
