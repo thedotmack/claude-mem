@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import { dirname, join, win32 } from 'path';
@@ -261,5 +261,29 @@ describe('bun-runner.js spawn: no cmd.exe for .exe targets (#3196)', () => {
     const shellAssignments = source.match(/spawnOptions\.shell = true/g) ?? [];
     expect(shellAssignments.length).toBe(1);
     expect(source).not.toMatch(/if \(IS_WINDOWS\) \{\s*const quote/);
+  });
+});
+
+describe('bun-runner.js stdin pipe errors', () => {
+  it('does not crash when the child closes stdin before the payload is written', () => {
+    const fixtureDir = mkdtempSync(join(tmpdir(), 'bun-runner-epipe-'));
+    const bunPath = join(fixtureDir, 'bun');
+
+    try {
+      writeFileSync(bunPath, '#!/bin/sh\nexec 0<&-\nsleep 0.1\n');
+      chmodSync(bunPath, 0o755);
+
+      const result = spawnSync(process.execPath, [BUN_RUNNER_PATH, 'worker-service.cjs', 'hook'], {
+        encoding: 'utf-8',
+        env: { ...process.env, PATH: `${fixtureDir}:${process.env.PATH || ''}` },
+        input: Buffer.alloc(1024 * 1024, 'x')
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).not.toContain('Unhandled');
+      expect(result.stderr).not.toContain('write EPIPE');
+    } finally {
+      rmSync(fixtureDir, { recursive: true, force: true });
+    }
   });
 });
