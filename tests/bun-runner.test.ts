@@ -30,8 +30,9 @@ interface WhereResult {
 
 function runFindBun(
   whereResult: WhereResult,
-  { isWindows = true, existingPaths = [] as string[] } = {}
+  { isWindows = true, existingPaths = [] as string[], wherePathsExist = true } = {}
 ): string | null {
+  const wherePaths = whereResult.stdout.split(/\r?\n/).map(path => path.trim()).filter(Boolean);
   const factory = new Function(
     'spawnSync',
     'IS_WINDOWS',
@@ -47,7 +48,7 @@ function runFindBun(
     isWindows ? win32.join : join,
     isWindows ? win32.dirname : dirname,
     () => (isWindows ? 'C:\\Users\\test' : '/home/test'),
-    (p: string) => existingPaths.includes(p)
+    (p: string) => existingPaths.includes(p) || (wherePathsExist && wherePaths.includes(p))
   );
 }
 
@@ -79,7 +80,7 @@ function findBunForWhereOutput(stdout: string) {
   return createFindBun({
     IS_WINDOWS: true,
     dirname: win32.dirname,
-    existsSync: () => false,
+    existsSync: path => stdout.split(/\r?\n/).map(line => line.trim()).includes(path),
     homedir: () => 'C:\\Users\\fixture',
     join,
     spawnSync: (() => ({
@@ -232,6 +233,18 @@ describe('bun-runner.js findBun: absolute bun.exe resolution (#3196)', () => {
       { status: 1, stdout: '' },
       { existingPaths: [expected] }
     );
+    expect(result).toBe(expected);
+  });
+
+  it('falls back when where.exe returns a path corrupted by the active code page', () => {
+    const expected = win32.join('C:\\Users\\test', '.bun', 'bin', 'bun.exe');
+    const corruptedWherePath = 'C:\\Users\\\ufffdR\\\ufffdc\\.bun\\bin\\bun.exe';
+
+    const result = runFindBun(
+      { status: 0, stdout: `${corruptedWherePath}\r\n` },
+      { existingPaths: [expected], wherePathsExist: false }
+    );
+
     expect(result).toBe(expected);
   });
 

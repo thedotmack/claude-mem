@@ -43,11 +43,15 @@ function findBun() {
       const firstInstallPaths = firstBunDir
         ? bunPaths.filter(line => dirname(line).toLowerCase() === firstBunDir)
         : [];
-      const bunExePath = firstInstallPaths.find(line => line.toLowerCase().endsWith('bun.exe'));
+      const bunExePath = firstInstallPaths.find(line =>
+        line.toLowerCase().endsWith('bun.exe') && existsSync(line)
+      );
       if (bunExePath) {
         return bunExePath;
       }
-      const bunCmdPath = firstInstallPaths.find(line => line.toLowerCase().endsWith('bun.cmd'));
+      const bunCmdPath = firstInstallPaths.find(line =>
+        line.toLowerCase().endsWith('bun.cmd') && existsSync(line)
+      );
       if (bunCmdPath) {
         return bunCmdPath;
       }
@@ -55,12 +59,14 @@ function findBun() {
       // the resolved absolute path instead of falling through to the bare
       // name: resolving a bare `bun` later relies on the child's PATH, which
       // cmd.exe drops entirely when it exceeds ~8191 chars (issue #3196).
-      const firstWherePath = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).find(Boolean);
+      const firstWherePath = bunPaths.find(line => existsSync(line));
       if (firstWherePath) {
         return firstWherePath;
       }
     }
-    return 'bun';
+    if (!IS_WINDOWS) {
+      return 'bun';
+    }
   }
 
   const bunPaths = IS_WINDOWS
