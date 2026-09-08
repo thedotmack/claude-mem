@@ -1,5 +1,6 @@
 import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.js';
 import { AdapterRejectedInput, isValidCwd } from './errors.js';
+import { resolveHookProjectPath } from '../../utils/project-name.js';
 
 const MAX_AGENT_FIELD_LEN = 128;
 const pickAgentField = (v: unknown): string | undefined =>
@@ -8,7 +9,11 @@ const pickAgentField = (v: unknown): string | undefined =>
 export const claudeCodeAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
-    const cwd = r.cwd ?? process.cwd();
+    const inputCwd = r.cwd ?? process.cwd();
+    if (!isValidCwd(inputCwd)) {
+      throw new AdapterRejectedInput('invalid_cwd');
+    }
+    const cwd = resolveHookProjectPath(inputCwd);
     if (!isValidCwd(cwd)) {
       throw new AdapterRejectedInput('invalid_cwd');
     }
