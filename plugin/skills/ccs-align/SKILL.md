@@ -1,21 +1,20 @@
 ---
 name: ccs-align
-description: Run the CCS Align seat's hourly breathing cycle — prove the local claude-mem worker is healthy, pull needle observations through search → timeline → get_observations, land them in a seat-owned middle cache via atomic grab → append → filter exclude-marks → replace, and manage exclude marks that filter observations out of the compiled cache. Use when asked to run CCS Align, breathe the alignment seat, refresh the middle cache, exclude or restore an observation, or check the Worker Watch board.
+description: Run the CCS Align seat's hourly breathing cycle — prove the local claude-mem worker is healthy, pull needle observations through search → timeline → get_observations, land them in a seat-owned middle cache via atomic grab → append → filter exclude-marks → replace, manage exclude marks, and walk house → project → seat rules to detect conflicts (SHADOW_HOUSE, DENY_ALLOW, DRIFT, CLOCK_HEADER) with an append-only rules-report.md. Use when asked to run CCS Align, breathe the alignment seat, refresh the middle cache, exclude or restore an observation, walk rules, check rules conflicts, or check the Worker Watch board.
 ---
 
-# CCS Align — Worker Watch seat (Phase 0 + Phase 1: breathing slice + exclude marks)
+# CCS Align — Worker Watch seat (Phase 0 + Phase 1 + Phase 2: breathing slice + exclude marks + rules alignment)
 
 CCS Align is a **standing seat**, not a bird's-eye planner. Its one job, once an hour: talk to the **local** claude-mem worker, pull recent needle observations through the existing three-layer disclosure ladder, and land them in a **seat-owned middle cache** using grab → append → replace.
 
-This skill implements the Phase 0 breathing slice and Phase 1 exclude marks from the plan of record, `plans/2026-09-09-ccs-align.md`. It is **not** a context compiler, **not** Focus/mouth, and **not** Grok Memory Phase 2. When you speak to the human, address them as **Alex**.
+This skill implements the Phase 0 breathing slice, Phase 1 exclude marks, and Phase 2 rules alignment from the plan of record, `plans/2026-09-09-ccs-align.md`. It is **not** a context compiler, **not** Focus/mouth, and **not** Grok Memory Phase 2. When you speak to the human, address them as **Alex**.
 
-## What is implemented (Phase 0 + Phase 1)
+## What is implemented (Phase 0 + Phase 1 + Phase 2)
 
 - **Phase 0 — Breathing slice:** health check → `search` → `timeline` → `get_observations` → append records to `~/.claude-mem/ccs-align/<viewerId>/middle.jsonl` (atomic, deduped).
 - **Phase 1 — Exclude marks:** mark observations (and linked tool-use ids) as excluded from the compiled middle cache. "Purge" means the compiled `middle.jsonl` no longer contains the record — the diary / SQLite stay authoritative. Unmarking + rebuild restores the observation. `DELETE /api/observation/:id` is **forbidden**.
-- **Does not:** delete history, write `profile.md`, write LFG/Orifice `[awareness]` logs (that seam belongs to [#3931](https://github.com/thedotmack/claude-mem/pull/3931)), add a sixth `processAgentResponse` consumer, restart the worker, or run a per-turn drip update.
-
-Later phases (rules alignment, final verification) are documented in the plan of record and are **not** implemented here.
+- **Phase 2 — Rules alignment:** walk house → project → seat layers, detect conflicts (`SHADOW_HOUSE`, `DENY_ALLOW`, `DRIFT`, `CLOCK_HEADER`), emit an append-only `rules-report.md`. Optionally dry-run/apply `SHADOW_HOUSE` leaf patches when `CLAUDE_MEM_CCS_ALIGN_PATCH_SHADOWS=true`. Runs every 6th hour of the hourly Worker Watch cycle (D4). This is a **checklist**, not a parser — no `.cas` compiler.
+- **Does not:** delete history, write `profile.md`, write LFG/Orifice `[awareness]` logs (that seam belongs to [#3931](https://github.com/thedotmack/claude-mem/pull/3931)), add a sixth `processAgentResponse` consumer, restart the worker, run a per-turn drip update, enforce Focus/mouth/standing rules, or copy house text into seats.
 
 ## Prerequisites
 
@@ -38,7 +37,7 @@ Defaults live in `SettingsDefaultsManager.ts`; override in `~/.claude-mem/settin
 | `CLAUDE_MEM_CCS_ALIGN_ENABLED` | `true` | Master switch for the seat. |
 | `CLAUDE_MEM_CCS_ALIGN_VIEWER_IDS` | `ccs-align` | Comma-separated viewer ids the seat maintains a cache for. |
 | `CLAUDE_MEM_CCS_ALIGN_TRIGGER_TYPES` | `decision,bugfix,security_alert,sensitive` | Needle observation types to pull (copied from #3931's list, D6). |
-| `CLAUDE_MEM_CCS_ALIGN_PATCH_SHADOWS` | `false` | Phase 2 rules-shadow patch gate. **Off** in Phase 0; documented only. |
+| `CLAUDE_MEM_CCS_ALIGN_PATCH_SHADOWS` | `false` | Phase 2 rules-shadow patch gate. When `true`, the rules walker removes `SHADOW_HOUSE` duplicate lines from leaf files (atomic temp+rename). Default **off** — report-only. |
 
 Pilot viewer id is `ccs-align`. The seat **may read** LFG observations (agent id `521e962d-2ec3-4488-bfbc-54d5209ce118`) as a project filter, but **must not write** LFG/Orifice monthly logs or any `profile.md`.
 
@@ -57,7 +56,7 @@ every hour (weekday house board):
   6. grab middle.jsonl → append new → filter exclude-marks → replace atomic
   7. if original-cache path set and not writable: append-only to middle.jsonl (already done)
   8. update cursor.json
-  9. every 6th hour: rules walk → append rules-report.md   (Phase 2 — not in this slice)
+  9. every 6th hour: rules walk → append rules-report.md   (Phase 2 — see below)
  10. Speak to Alex only on red (worker down, write refused, unexpected profile.md touch)
 ```
 
@@ -270,15 +269,92 @@ rebuildMiddleCache({
 - ❌ Restarting the worker, or `POST /api/settings`.
 - ❌ Addressing the human as "Az". Always **Alex**.
 - ❌ Claiming a context compiler / brainbeat shipped. Those are future work.
+- ❌ "Fixing" deny/allow by flipping rules — report only.
+- ❌ Copying house text into seats — that is the bug this phase detects.
+- ❌ Building a `.cas` compiler so the report looks smarter.
+- ❌ Patching standing / Focus / always / never / danger files.
+- ❌ Attention trough / curse-salience experiments (Phase-N backlog only).
+
+## Phase 2 — Rules alignment (house → project → seat)
+
+Every 6th hour of the hourly Worker Watch cycle (D4), the seat walks house → project → seat layers to detect and report rules conflicts. This is a **checklist**, not a parser. No `.cas` compiler.
+
+### Cascade rules (from Notion CCS)
+
+- Write once at HOUSE; seats inherit
+- A leaf copy **shadows** the cascade (bug, not feature)
+- Deny beats allow
+- Siblings deny heavy buckets (`obs`, `note`, `person`) by default
+- Fail closed: if no rule exists, deny
+
+### Layer walk
+
+| Layer | Where to look (house box) | Bucket |
+|---|---|---|
+| House | `user-memory/` shared profile; Notion CCS `:root` | `profile`, `standing`, `owns` |
+| Project | `.cmem-projects/<project>/`, repo `CLAUDE.md` | project overrides |
+| Seat | `agents/<uuid>/profile.md`, `agents/<uuid>/memory/` | leaf — must not duplicate house |
+
+On a box with no agent-data tree, the report records `MISS: house-box paths` and exits cleanly.
+
+### Conflict classes (v1)
+
+| Code | Pattern | Agency |
+|---|---|---|
+| `SHADOW_HOUSE` | Leaf file contains a line that also exists at house (or starts with `House rule`) | Dry-run remove-from-leaf; apply only if `CLAUDE_MEM_CCS_ALIGN_PATCH_SHADOWS=true` |
+| `DENY_ALLOW` | Same bucket allow at one layer, deny at another | Report only |
+| `DRIFT` | House text changed; leaf still has old wording (partial prefix match) | Report only |
+| `CLOCK_HEADER` | Top-of-prompt clock / "current time is" in a profile | Report only (house rule: no clock in the prefix) |
+
+### Rules report
+
+Output: `~/.claude-mem/ccs-align/<viewerId>/rules-report.md` — dated, append-only sections. Each run appends a new section with a timestamp, a table of conflicts, any MISS entries, and a patches-applied count. Status rolls **up** to Prioritizer (never peer spam).
+
+### Limited patch (D8 default off)
+
+When `CLAUDE_MEM_CCS_ALIGN_PATCH_SHADOWS=true`:
+
+1. Only `SHADOW_HOUSE` conflicts are patched — never `DENY_ALLOW`, `DRIFT`, or `CLOCK_HEADER`.
+2. The would-be diff is written into the report **before** any patch is applied.
+3. The leaf file is copied, duplicate lines are stripped, and the file is replaced atomically (temp + rename, same primitive as `CcsAlignMiddleCache`).
+4. **Never patches `standing` / Focus / `always.md` / `never.md` / `danger.md` / `profile.md`.**
+5. House files are never modified.
+
+### Programmatic usage
+
+```ts
+import {
+  walkRules,
+  discoverLayerPaths,
+  type RulesWalkerConfig,
+} from '../../src/services/integrations/CcsAlignRulesWalker.js';
+
+// Discover paths on the current box
+const paths = discoverLayerPaths({ project: 'claude-mem' });
+
+const config: RulesWalkerConfig = {
+  dataRoot: '~/.claude-mem',
+  viewerId: 'ccs-align',
+  patchShadows: false,  // report-only by default
+  housePaths: paths.housePaths,
+  projectPaths: paths.projectPaths,
+  seatPaths: paths.seatPaths,
+};
+
+const result = walkRules(config);
+// result.conflicts — array of detected conflicts
+// result.misses — paths that were not found
+// result.reportPath — path to the appended rules-report.md
+// result.patchesApplied — number of SHADOW_HOUSE lines removed (0 if patchShadows=false)
+```
 
 ## Later phases (documented, not implemented here)
 
-- **Phase 2 — Rules alignment:** house → project → seat conflict/drift **report** (`rules-report.md`). Report-only unless `CLAUDE_MEM_CCS_ALIGN_PATCH_SHADOWS=true`.
 - **Phase 3 — Verify:** two-cycle dedupe, rebuild-from-diary, #3931 tests still green.
 
 See `plans/2026-09-09-ccs-align.md` for the full contract.
 
-## Verification (Phase 0 + Phase 1)
+## Verification (Phase 0 + Phase 1 + Phase 2)
 
 ```bash
 bun test tests/integrations/ccs-align-middle-cache.test.ts
@@ -287,24 +363,27 @@ bun test tests/integrations/ccs-align-middle-cache.test.ts
 #           unmark+rebuild, exclude-marks round-trip, buildExcludeSet, secure-isolation,
 #           corrupt marks fail-closed, marked ids skipped on ingest
 
+bun test tests/integrations/ccs-align-rules-walker.test.ts
+# Phase 2: SHADOW_HOUSE detection (exact dup + "House rule" prefix), default report-only
+#           (leaf unchanged), patchShadows=true (leaf loses duplicates, house unchanged),
+#           never patches standing/always/never, MISS on absent paths, CLOCK_HEADER detection,
+#           DENY_ALLOW detection, DRIFT detection, append-only report, atomic patch,
+#           full walkRules integration, edge cases
+
 # #3931 must not regress — LFG/Orifice still get [awareness] lines from the worker pusher, not Align
 bun test tests/integrations/grok-bot-awareness-pusher.test.ts
 ```
 
-Verification greps (plan §1.3):
+Verification greps (plan §2.3):
 
 ```bash
-# No delete-observation in the skill or helper
-rg -n "DELETE /api/observation|handleDeleteObservation" plugin/skills/ccs-align src/services/integrations/CcsAlignMiddleCache.ts
-# expect 0
-
-# Marks file schema present
-rg -n "exclude-marks" plugin/skills/ccs-align/SKILL.md
+# Report path documented
+rg -n "rules-report" plugin/skills/ccs-align/SKILL.md
 # expect ≥1
 
-# get_tool_uses only after get_observations, with layer-4 warning
-rg -n "get_tool_uses" plugin/skills/ccs-align/SKILL.md
-# expect a warning that it is layer 4 / mark-time only
+# Patch gated
+rg -n "CCS_ALIGN_PATCH_SHADOWS" plugin/skills/ccs-align/SKILL.md
+# expect ≥1
 ```
 
 Live-box checks (house, not CI — a cloud VM may have no live worker; record a MISS if so):
