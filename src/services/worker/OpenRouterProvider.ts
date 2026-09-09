@@ -210,7 +210,14 @@ interface OpenRouterResponse {
 
 export interface OpenRouterConfig {
   apiKey: string;
+  /** First entry of the configured list; the one named in logs and sessions. */
   model: string;
+  /**
+   * The rest of the configured list, in priority order, sent as OpenRouter's
+   * native `models` fallback array. Empty for the ordinary single-model
+   * configuration, which is every install that has not opted in.
+   */
+  fallbackModels: string[];
   apiUrl: string;
   siteUrl?: string;
   appName?: string;
@@ -220,12 +227,73 @@ function hasProcessEnvOverride(key: string): boolean {
   return Object.prototype.hasOwnProperty.call(process.env, key);
 }
 
-function normalizeOpenRouterModel(rawModel: unknown): string {
-  return typeof rawModel === 'string' && rawModel.trim()
-    ? rawModel
-    : Array.isArray(rawModel) && rawModel.length > 0
-      ? rawModel.map(String).join(',')
-      : SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
+/**
+ * Split CLAUDE_MEM_OPENROUTER_MODEL into a primary model and its fallbacks.
+ *
+ * The setting has always accepted an array, and the array has always been
+ * comma-joined into a single `model` string that OpenRouter rejects outright —
+ * #3829 item 3. No model id contains a comma, so the joined form is never
+ * anything a user wanted; a comma- or whitespace-separated STRING is the same
+ * mistake typed a different way, and is split here too.
+ *
+ * The first entry becomes `model`, which keeps every single-model install
+ * byte-identical, and the rest become OpenRouter's native `models` fallback
+ * array. Blanks and repeats are dropped: a repeat would spend a fallback slot
+ * re-trying the model that just failed.
+ */
+export function normalizeOpenRouterModel(rawModel: unknown): { model: string; fallbackModels: string[] } {
+  const parts = (Array.isArray(rawModel) ? rawModel : [rawModel])
+    // Strings only: a non-string scalar resolved to the default before this
+    // change, and no model id is a bare number.
+    .filter((entry): entry is string => typeof entry === 'string')
+    .flatMap(entry => entry.split(/[\s,]+/))
+    .map(entry => entry.trim())
+    .filter(entry => entry.length > 0);
+
+  const unique = [...new Set(parts)];
+  if (unique.length === 0) {
+    return {
+      model: SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL,
+      fallbackModels: [],
+    };
+  }
+  return { model: unique[0], fallbackModels: unique.slice(1) };
+}
+
+/**
+ * Build the chat-completions request body.
+ *
+ * Exported so the body shape is testable without a network round trip, which
+ * matters here: in OpenRouter's documented fallback shape `models` REPLACES
+ * `model` rather than accompanying it, and that is not a thing to get wrong
+ * silently.
+ *
+ * `models` is only sent to openrouter.ai. A custom gateway reached through
+ * CLAUDE_MEM_OPENROUTER_BASE_URL speaks plain OpenAI, where an unknown body
+ * field is a 400 — the same reason `usage` is already gated. Such a gateway
+ * gets the first model, still strictly better than today's rejected
+ * comma-joined string.
+ */
+export function buildOpenRouterRequestBody(input: {
+  model: string;
+  fallbackModels: string[];
+  messages: OpenAIMessage[];
+  apiUrl: string;
+}): Record<string, unknown> {
+  const isOpenRouter = input.apiUrl.includes('openrouter.ai');
+  const useFallbacks = isOpenRouter && input.fallbackModels.length > 0;
+  return {
+    ...(useFallbacks
+      ? { models: [input.model, ...input.fallbackModels] }
+      : { model: input.model }),
+    messages: input.messages,
+    temperature: 0.3,  // Lower temperature for structured extraction
+    max_tokens: 4096,
+    // Ask openrouter.ai for usage accounting (token counts + cost).
+    // Only sent to openrouter.ai — strict custom gateways may reject
+    // unknown body fields.
+    ...(isOpenRouter ? { usage: { include: true } } : {}),
+  };
 }
 
 /**
@@ -289,13 +357,13 @@ export function resolveOpenRouterConfig(
     // operator supplied a model override as part of the new tuple.
     rawModel = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
   }
-  const model = normalizeOpenRouterModel(rawModel);
+  const { model, fallbackModels } = normalizeOpenRouterModel(rawModel);
 
   const apiUrl = resolveOpenRouterChatCompletionsUrl(baseUrl);
   const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
   const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || OPENROUTER_APP_TITLE;
 
-  return { apiKey, model, apiUrl, siteUrl, appName };
+  return { apiKey, model, fallbackModels, apiUrl, siteUrl, appName };
 }
 
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
@@ -349,7 +417,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   }
 
   protected async query(history: ConversationMessage[], config: OpenRouterConfig): Promise<ProviderQueryResult> {
-    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName);
+    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName);
   }
 
   /** POST the chat-completions request. Extracted so the retry try block stays narrow. */
@@ -357,6 +425,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     apiUrl: string,
     apiKey: string,
     model: string,
+    fallbackModels: string[],
     messages: OpenAIMessage[],
     siteUrl: string | undefined,
     appName: string | undefined,
@@ -371,16 +440,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         'Content-Type': 'application/json',
         ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
       },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature: 0.3,  // Lower temperature for structured extraction
-        max_tokens: 4096,
-        // Ask openrouter.ai for usage accounting (token counts + cost).
-        // Only sent to openrouter.ai — strict custom gateways may reject
-        // unknown body fields.
-        ...(apiUrl.includes('openrouter.ai') ? { usage: { include: true } } : {}),
-      }),
+      body: JSON.stringify(buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl })),
       signal: attemptSignal,
     });
   }
@@ -389,6 +449,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     history: ConversationMessage[],
     apiKey: string,
     model: string,
+    fallbackModels: string[],
     apiUrl: string,
     siteUrl?: string,
     appName?: string
@@ -408,7 +469,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await this.fetchChatCompletion(apiUrl, apiKey, model, messages, siteUrl, appName, priorRequestId, attemptSignal);
+        response = await this.fetchChatCompletion(apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, priorRequestId, attemptSignal);
       } catch (networkError: unknown) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         throw classifyOpenRouterError({ cause: err });
