@@ -151,6 +151,100 @@ describe('ChromaSync watermark gap persistence', () => {
     expect(ChromaSyncState.getPending(project, 'observations')).toEqual([2]);
   });
 
+  it('marks a failed live observation write pending so a later write cannot orphan it (#3917)', async () => {
+    ChromaSyncState.replace(project, {
+      observations: 4,
+      summaries: 0,
+      prompts: 0,
+      pending: {},
+    });
+    const sync = new ChromaSync(project) as ChromaSync & {
+      addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
+    };
+    const observation = {
+      type: 'discovery',
+      title: 'Observation',
+      subtitle: null,
+      facts: [],
+      narrative: 'Narrative',
+      concepts: [],
+      files_read: [],
+      files_modified: [],
+    };
+
+    // Chroma is down while observation 5 is written.
+    sync.addDocuments = async () => 0;
+    await sync.syncObservation(5, 'mem-5', project, observation, 5, 1_700_000_000_005, 'claude');
+    expect(ChromaSyncState.get(project).observations).toBe(4);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([5]);
+
+    // Chroma is back for observation 6: the watermark moves past 5, but 5 stays reachable.
+    sync.addDocuments = async (documents) => {
+      addDocumentCalls.push(documents.map(document => document.id));
+      return documents.length;
+    };
+    await sync.syncObservation(6, 'mem-6', project, observation, 6, 1_700_000_000_006, 'claude');
+    expect(ChromaSyncState.get(project).observations).toBe(6);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([5]);
+
+    // The next backfill picks the orphan up through the pending list.
+    await sync.ensureBackfilled(project, makeStore(project, [1, 2, 3, 4, 5, 6]));
+    expect(addDocumentCalls.flat()).toContain('obs_5_narrative');
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
+  });
+
+  it('marks a failed live prompt write pending and clears it once the prompt lands (#3917)', async () => {
+    ChromaSyncState.replace(project, {
+      observations: 0,
+      summaries: 0,
+      prompts: 2,
+      pending: {},
+    });
+    const sync = new ChromaSync(project) as ChromaSync & {
+      addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
+    };
+
+    sync.addDocuments = async () => 0;
+    await sync.syncUserPrompt(3, 'mem-3', project, 'prompt text', 3, 1_700_000_000_003, 'claude');
+    expect(ChromaSyncState.get(project).prompts).toBe(2);
+    expect(ChromaSyncState.getPending(project, 'prompts')).toEqual([3]);
+
+    sync.addDocuments = async (documents) => documents.length;
+    await sync.syncUserPrompt(3, 'mem-3', project, 'prompt text', 3, 1_700_000_000_003, 'claude');
+    expect(ChromaSyncState.get(project).prompts).toBe(3);
+    expect(ChromaSyncState.getPending(project, 'prompts')).toEqual([]);
+  });
+
+  it('marks a failed live summary write pending (#3917)', async () => {
+    ChromaSyncState.replace(project, {
+      observations: 0,
+      summaries: 7,
+      prompts: 0,
+      pending: {},
+    });
+    const sync = new ChromaSync(project) as ChromaSync & {
+      addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
+    };
+    const summary = {
+      request: 'request',
+      investigated: 'investigated',
+      learned: 'learned',
+      completed: 'completed',
+      next_steps: null,
+      notes: null,
+    };
+
+    sync.addDocuments = async () => 0;
+    await sync.syncSummary(8, 'mem-8', project, summary, 8, 1_700_000_000_008, 'claude');
+    expect(ChromaSyncState.get(project).summaries).toBe(7);
+    expect(ChromaSyncState.getPending(project, 'summaries')).toEqual([8]);
+
+    sync.addDocuments = async (documents) => documents.length;
+    await sync.syncSummary(9, 'mem-9', project, summary, 9, 1_700_000_000_009, 'claude');
+    expect(ChromaSyncState.get(project).summaries).toBe(9);
+    expect(ChromaSyncState.getPending(project, 'summaries')).toEqual([8]);
+  });
+
   it('keeps pending observation ids when live sync advances past the gap', async () => {
     ChromaSyncState.replace(project, {
       observations: 4,
