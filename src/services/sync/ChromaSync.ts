@@ -101,6 +101,10 @@ export class ChromaSync {
   private collectionCreated = false;
   private collectionCreation: Promise<void> | null = null;
   private readonly BATCH_SIZE = 100;
+  // How many rows in a row may fail to write before a backfill run gives up
+  // (#3928). Set per run in ensureBackfilled and read by runBackfillPipeline.
+  private readonly MAX_CONSECUTIVE_BATCH_FAILURES = 3;
+  private backfillAborted = false;
 
   constructor(project: string) {
     this.project = project;
@@ -719,6 +723,7 @@ export class ChromaSync {
 
     await this.ensureCollectionExists();
 
+    this.backfillAborted = false;
     const watermarks = ChromaSyncState.get(project);
 
     try {
@@ -735,8 +740,17 @@ export class ChromaSync {
     watermarks: ProjectWatermarks
   ): Promise<void> {
     const observationDocs = await this.backfillObservations(db, backfillProject, watermarks.observations);
+    if (this.backfillAborted) {
+      return;
+    }
     const summaryDocs = await this.backfillSummaries(db, backfillProject, watermarks.summaries);
+    if (this.backfillAborted) {
+      return;
+    }
     const promptDocs = await this.backfillPrompts(db, backfillProject, watermarks.prompts);
+    if (this.backfillAborted) {
+      return;
+    }
 
     logger.info('CHROMA_SYNC', 'Smart backfill complete', {
       project: backfillProject,
@@ -764,8 +778,10 @@ export class ChromaSync {
     const rowsWithDocs = rows.map(row => ({ row, docs: formatDocs(row) }));
     const totalDocs = rowsWithDocs.reduce((sum, { docs }) => sum + docs.length, 0);
     let processedDocs = 0;
+    let consecutiveFailures = 0;
 
-    for (const { row, docs } of rowsWithDocs) {
+    for (let rowIndex = 0; rowIndex < rowsWithDocs.length; rowIndex += 1) {
+      const { row, docs } = rowsWithDocs[rowIndex];
       if (docs.length === 0) {
         continue;
       }
@@ -792,6 +808,7 @@ export class ChromaSync {
           break;
         }
 
+        consecutiveFailures = 0;
         logger.debug('CHROMA_SYNC', 'Backfill progress', {
           project: backfillProject,
           progress: `${Math.min(processedDocs, totalDocs)}/${totalDocs}`
@@ -799,6 +816,24 @@ export class ChromaSync {
       }
 
       if (!rowComplete) {
+        consecutiveFailures += 1;
+        // A write that fails for several rows in a row is not a per-row
+        // problem, it is Chroma refusing writes. Walking every remaining row
+        // through the same failure logs one identical error per row (millions
+        // of lines on a large store, #3928) and never advances anything, so
+        // stop this run here. Nothing is lost: the rows keep their pending
+        // marks or stay above the watermark and the next backfill retries them.
+        if (consecutiveFailures >= this.MAX_CONSECUTIVE_BATCH_FAILURES) {
+          this.backfillAborted = true;
+          logger.error('CHROMA_SYNC', 'Backfill stopped after repeated batch failures', {
+            project: backfillProject,
+            kind,
+            consecutiveFailures,
+            lastRowId: row.id,
+            remainingRows: rowsWithDocs.length - rowIndex - 1
+          });
+          return totalDocs;
+        }
         continue;
       }
 

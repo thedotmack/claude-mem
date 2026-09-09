@@ -202,6 +202,64 @@ describe('ChromaSync watermark gap persistence', () => {
     expect(ChromaSyncState.get(project).observations).toBe(5);
   });
 
+  it('stops a backfill run after repeated batch failures instead of walking every row (#3928)', async () => {
+    ChromaSyncState.replace(project, {
+      observations: 0,
+      summaries: 0,
+      prompts: 0,
+      pending: {},
+    });
+    const sync = new ChromaSync(project) as ChromaSync & {
+      addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
+    };
+    let attempts = 0;
+    sync.addDocuments = async () => {
+      attempts += 1;
+      return 0; // Chroma refuses every write
+    };
+
+    await sync.ensureBackfilled(project, makeStore(project, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
+
+    // Three failed rows, then the run stops; the other seven are never attempted.
+    expect(attempts).toBe(3);
+    expect(ChromaSyncState.get(project).observations).toBe(0);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([1, 2, 3]);
+
+    // Once Chroma writes again the same call finishes the whole backlog.
+    sync.addDocuments = async (documents) => {
+      addDocumentCalls.push(documents.map(document => document.id));
+      return documents.length;
+    };
+    await sync.ensureBackfilled(project, makeStore(project, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
+
+    expect(ChromaSyncState.get(project).observations).toBe(10);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
+    expect(addDocumentCalls.flat()).toContain('obs_10_narrative');
+  });
+
+  it('resets the failure streak when a later row succeeds', async () => {
+    ChromaSyncState.replace(project, {
+      observations: 0,
+      summaries: 0,
+      prompts: 0,
+      pending: {},
+    });
+    const sync = new ChromaSync(project) as ChromaSync & {
+      addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
+    };
+    let attempts = 0;
+    sync.addDocuments = async (documents) => {
+      attempts += 1;
+      // Rows 1-2 fail, row 3 succeeds, rows 4-5 fail, row 6 succeeds: never three in a row.
+      return attempts % 3 === 0 ? documents.length : 0;
+    };
+
+    await sync.ensureBackfilled(project, makeStore(project, [1, 2, 3, 4, 5, 6]));
+
+    expect(attempts).toBe(6);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([1, 2, 4, 5]);
+  });
+
   it('keeps a split observation row pending until every batch for that row lands', async () => {
     const splitRow = makeObservationRow(1, project, 101);
     ChromaSyncState.replace(project, {
