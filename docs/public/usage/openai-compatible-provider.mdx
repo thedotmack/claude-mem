@@ -1,0 +1,167 @@
+---
+title: "OpenAI-Compatible Provider (NVIDIA NIM & others)"
+description: "Run observation extraction on NVIDIA NIM, DeepSeek, Groq, Together, Ollama, LM Studio, or any OpenAI-compatible endpoint"
+---
+
+# OpenAI-Compatible Provider
+
+Claude-mem can run observation extraction against any endpoint that speaks the
+OpenAI `/chat/completions` shape. Set `CLAUDE_MEM_PROVIDER` to
+`openai-compatible`, pick a preset (or supply a base URL), and memory runs
+entirely off your Claude plan.
+
+<Tip>
+**NVIDIA NIM is free to start.** A key from
+[build.nvidia.com](https://build.nvidia.com) gives you hosted inference across
+NVIDIA-served models with no card on file, which is a good fit for observation
+extraction — it is high-volume, structured, and does not need a frontier model.
+</Tip>
+
+## Why this is separate from the OpenRouter provider
+
+`CLAUDE_MEM_OPENROUTER_BASE_URL` already lets the OpenRouter client talk to any
+OpenAI-compatible endpoint, and it keeps working — nothing on that path changed.
+But it carries three things that belong to openrouter.ai specifically:
+
+- **Attribution headers.** `HTTP-Referer` and `X-Title` are sent to whatever
+  host the base URL names, so pointing it at NVIDIA announces claude-mem's
+  OpenRouter identity to NVIDIA.
+- **`usage: { include: true }`**, gated on the URL containing `openrouter.ai`.
+- **The cmem.ai gateway's credential-pinning rules**, which decide when a
+  persisted base URL pins a persisted key. Those rules exist so an
+  account-delivered gateway credential is never sent somewhere else — correct,
+  and irrelevant to an endpoint you configured yourself, but you still share
+  the same three settings keys with them.
+
+This provider has its own settings keys and sends a deliberately plain request
+body: `model`, `messages`, `temperature`, `max_tokens`, and nothing else. Strict
+servers (vLLM in particular) reject unknown fields.
+
+## Quick start: NVIDIA NIM
+
+<Steps>
+<Step title="Get a key">
+Sign in at [build.nvidia.com](https://build.nvidia.com) and create an API key.
+It starts with `nvapi-`.
+</Step>
+
+<Step title="Point claude-mem at it">
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "nvidia-nim",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "nvapi-..."
+}
+```
+
+Or keep the key out of `settings.json` and put it in `~/.claude-mem/.env`:
+
+```
+OPENAI_COMPAT_API_KEY=nvapi-...
+```
+</Step>
+
+<Step title="Pick a model (optional)">
+The preset defaults to a small, fast NVIDIA-served model. Any model id from
+build.nvidia.com works and is passed verbatim:
+
+```json
+{ "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "nvidia/nemotron-3-super-120b-a12b" }
+```
+</Step>
+
+<Step title="Restart the worker">
+```bash
+npx claude-mem restart
+```
+</Step>
+</Steps>
+
+## Presets
+
+A preset only supplies a default base URL and a default model. Anything it sets
+is overridden by the matching setting, so switching preset never moves an
+endpoint or model you pinned yourself.
+
+| Preset | Base URL | Key required |
+|--------|----------|--------------|
+| `nvidia-nim` | `https://integrate.api.nvidia.com/v1` | yes |
+| `deepseek` | `https://api.deepseek.com/v1` | yes |
+| `groq` | `https://api.groq.com/openai/v1` | yes |
+| `together` | `https://api.together.xyz/v1` | yes |
+| `ollama` | `http://localhost:11434/v1` | no |
+| `lmstudio` | `http://localhost:1234/v1` | no |
+| `vllm` | `http://localhost:8000/v1` | no |
+| `custom` | — set it yourself | no |
+
+<Note>
+Local presets need a model id — claude-mem cannot guess which model you loaded.
+Set `CLAUDE_MEM_OPENAI_COMPAT_MODEL` to whatever `ollama list` (or your server)
+reports, or the provider reports itself unconfigured and dispatch falls through
+to Claude.
+</Note>
+
+## Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_PROVIDER` | `claude` | Set to `openai-compatible` to select this provider |
+| `CLAUDE_MEM_OPENAI_COMPAT_PRESET` | `''` (= `custom`) | Named endpoint preset from the table above |
+| `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` | preset's | OpenAI-compatible base URL. `/chat/completions` is appended if absent |
+| `CLAUDE_MEM_OPENAI_COMPAT_MODEL` | preset's | Model id, passed verbatim |
+| `CLAUDE_MEM_OPENAI_COMPAT_API_KEY` | `''` | API key. Also read from `OPENAI_COMPAT_API_KEY` in `~/.claude-mem/.env` |
+| `CLAUDE_MEM_OPENAI_COMPAT_API_KEYS` | `''` | Extra keys for rotation — see [multi-key rotation](/usage/multi-key-rotation) |
+
+An unknown preset id degrades to `custom` rather than failing, because settings
+are read during status polling and a typo should not crash a poll.
+
+## Any other endpoint
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_BASE_URL": "https://my-gateway.example.com/v1",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "my-model-id",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "..."
+}
+```
+
+### When a key is required
+
+Setting `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL` replaces the preset's endpoint, so
+whether a key is needed is decided by the endpoint you pointed at, not by the
+preset name you started from:
+
+| Endpoint | Key required |
+|----------|--------------|
+| `localhost`, `127.0.0.1`, `[::1]`, `*.local` | No |
+| A private network address (`10.x`, `192.168.x`, `172.16–31.x`) | No |
+| Anything else | Yes |
+
+Without an override, the preset decides — the hosted presets need a key, the
+local ones do not.
+
+A remote endpoint that genuinely needs no authentication still works: set
+`CLAUDE_MEM_OPENAI_COMPAT_API_KEY` to any non-empty value. The default errs
+toward asking for a key because the alternative is a provider that reports
+itself ready and then fails every observation with a 401.
+
+## Troubleshooting
+
+**Memory silently runs on Claude instead.** Dispatch falls through to Claude
+when the provider is selected but not fully configured — a missing base URL, a
+missing model, or a missing key on a preset that needs one. That fall-through is
+deliberate: a half-configured endpoint should not fail every observation. Check
+`npx claude-mem doctor`.
+
+**404 from the endpoint.** Almost always a wrong base URL or a model the
+endpoint does not serve; the error names both settings. Note that some gateways
+prefix model ids differently from the vendor's own docs.
+
+**Repeated 30s timeouts.** The per-attempt deadline is currently fixed at 30
+seconds, which some large models exceed. Prefer a small, fast model for
+observation extraction.
+
+**Empty observations.** A model that will not hold to the output schema produces
+nothing usable. Small instruct-tuned models generally do better here than
+reasoning models, whose thinking output tends to crowd out the structured reply.

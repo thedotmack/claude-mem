@@ -3,7 +3,8 @@
  * and worker-service (getAiStatus) — previously duplicated in both.
  *
  * Semantics: openrouter wins when selected AND a key exists; else gemini when
- * selected AND a key exists; else claude (silent fall-through, unchanged).
+ * selected AND a key exists; else openai-compatible when selected AND fully
+ * configured; else claude (silent fall-through, unchanged).
  *
  * Trial-expiry fallback (plan 2026-08-26 Phase 6): when the selected
  * openrouter config points at the cmem.ai gateway AND a terminal quota/key
@@ -20,8 +21,17 @@ import { logger } from '../../utils/logger.js';
 import { isCmemGatewayUrl, writeProFallbackAt } from '../../shared/cmem-gateway.js';
 import { isGeminiAvailable, isGeminiSelected } from './GeminiProvider.js';
 import { isOpenRouterAvailable, isOpenRouterSelected } from './OpenRouterProvider.js';
+import { isOpenAICompatAvailable, isOpenAICompatSelected } from './OpenAICompatProvider.js';
 import type { ClassifiedProviderError } from './provider-errors.js';
 import { releaseQuotaProbe, tryAdmitQuotaProbe } from '../../shared/quota-cooldown.js';
+
+/**
+ * Every provider dispatch can name. `openai-compatible` is the generic
+ * OpenAI-shaped endpoint provider (NVIDIA NIM and friends) — see
+ * src/shared/openai-compat-presets.ts for why it is not folded into
+ * openrouter.
+ */
+export type SelectableProvider = 'claude' | 'gemini' | 'openrouter' | 'openai-compatible';
 
 /** Retry a fallen-back gateway occasionally so a later subscription recovers. */
 export const CMEM_FALLBACK_RETRY_MS = 15 * 60_000;
@@ -44,7 +54,7 @@ export function shouldUseCmemFallback(
  * handed back to `releaseCmemGatewayProbe` when that run ends.
  */
 export interface ProviderSelection {
-  provider: 'claude' | 'gemini' | 'openrouter';
+  provider: SelectableProvider;
   gatewayProbeClaimId: number | null;
 }
 
@@ -53,7 +63,7 @@ export interface ProviderSelection {
  * is safe to call from anywhere — but a caller about to actually SEND must use
  * `selectProviderForGenerator` instead, or it becomes part of the herd.
  */
-export function getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
+export function getSelectedProvider(): SelectableProvider {
   if (isOpenRouterSelected() && isOpenRouterAvailable()) {
     const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
     if (
@@ -65,7 +75,9 @@ export function getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
     }
     return 'openrouter';
   }
-  return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
+  if (isGeminiSelected() && isGeminiAvailable()) return 'gemini';
+  if (isOpenAICompatSelected() && isOpenAICompatAvailable()) return 'openai-compatible';
+  return 'claude';
 }
 
 /**
@@ -104,10 +116,13 @@ export function selectProviderForGenerator(): ProviderSelection {
     }
     return { provider: 'openrouter', gatewayProbeClaimId: null };
   }
-  return {
-    provider: (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude',
-    gatewayProbeClaimId: null,
-  };
+  if (isGeminiSelected() && isGeminiAvailable()) {
+    return { provider: 'gemini', gatewayProbeClaimId: null };
+  }
+  if (isOpenAICompatSelected() && isOpenAICompatAvailable()) {
+    return { provider: 'openai-compatible', gatewayProbeClaimId: null };
+  }
+  return { provider: 'claude', gatewayProbeClaimId: null };
 }
 
 /** Release a gateway re-probe claim taken by `selectProviderForGenerator`. */
