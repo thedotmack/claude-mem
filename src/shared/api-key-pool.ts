@@ -54,7 +54,7 @@ import { paths } from './paths.js';
 import { logger } from '../utils/logger.js';
 
 /** Which pools exist. One per provider that resolves an HTTP API key. */
-export type KeyPoolId = 'gemini' | 'openrouter';
+export type KeyPoolId = 'gemini' | 'openrouter' | 'openai-compatible';
 
 export const API_KEY_COOLDOWN_FILENAME = 'api-key-cooldown.json';
 

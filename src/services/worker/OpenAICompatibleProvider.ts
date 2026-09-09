@@ -76,6 +76,19 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   /** Throw a provider-specific "API key not configured" error. */
   protected abstract missingApiKeyError(): Error;
 
+  /**
+   * Whether an empty API key is a misconfiguration for this provider.
+   *
+   * True for every hosted endpoint, and the default so Gemini and OpenRouter
+   * keep failing fast exactly as before. A local OpenAI-compatible server
+   * (Ollama, LM Studio, an unauthenticated vLLM) accepts any bearer token or
+   * none, so for those an empty key is the correct configuration and must not
+   * be treated as an unconfigured provider.
+   */
+  protected requiresApiKey(_config: TConfig): boolean {
+    return true;
+  }
+
   /** Issue the actual HTTP request and normalize its response. */
   protected abstract query(history: ConversationMessage[], config: TConfig, signal?: AbortSignal): Promise<ProviderQueryResult>;
 
@@ -117,7 +130,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session.lastModelId = model;
     this.prepareSessionExtras(session, config);
 
-    if (!apiKey) {
+    if (!apiKey && this.requiresApiKey(config)) {
       throw this.missingApiKeyError();
     }
 

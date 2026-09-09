@@ -22,7 +22,7 @@ export interface ActiveSession {
   earliestPendingTimestamp: number | null;  
   claimedMessageIds: number[];
   conversationHistory: ConversationMessage[];  
-  currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
+  currentProvider: 'claude' | 'gemini' | 'openrouter' | 'openai-compatible' | null;
   consecutiveRestarts: number;
   /**
    * Legacy invalid-output counter, intentionally always 0: ordinary non-XML
