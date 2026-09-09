@@ -1,22 +1,21 @@
 ---
 name: ccs-align
-description: Run the CCS Align seat's hourly breathing cycle — prove the local claude-mem worker is healthy, pull needle observations through search → timeline → get_observations, and land them in a seat-owned middle cache via an atomic grab → append → replace. Use when asked to run CCS Align, breathe the alignment seat, refresh the middle cache, or check the Worker Watch board.
+description: Run the CCS Align seat's hourly breathing cycle — prove the local claude-mem worker is healthy, pull needle observations through search → timeline → get_observations, land them in a seat-owned middle cache via atomic grab → append → filter exclude-marks → replace, and manage exclude marks that filter observations out of the compiled cache. Use when asked to run CCS Align, breathe the alignment seat, refresh the middle cache, exclude or restore an observation, or check the Worker Watch board.
 ---
 
-# CCS Align — Worker Watch seat (Phase 0: breathing slice)
+# CCS Align — Worker Watch seat (Phase 0 + Phase 1: breathing slice + exclude marks)
 
 CCS Align is a **standing seat**, not a bird's-eye planner. Its one job, once an hour: talk to the **local** claude-mem worker, pull recent needle observations through the existing three-layer disclosure ladder, and land them in a **seat-owned middle cache** using grab → append → replace.
 
-This skill is the Phase 0 breathing slice of the plan of record, `plans/2026-09-09-ccs-align.md`. It is **not** a context compiler, **not** Focus/mouth, and **not** Grok Memory Phase 2. When you speak to the human, address them as **Alex**.
+This skill implements the Phase 0 breathing slice and Phase 1 exclude marks from the plan of record, `plans/2026-09-09-ccs-align.md`. It is **not** a context compiler, **not** Focus/mouth, and **not** Grok Memory Phase 2. When you speak to the human, address them as **Alex**.
 
-## What Phase 0 is (and is not)
+## What is implemented (Phase 0 + Phase 1)
 
-Phase 0 proves the boundary, not a product:
-
-- **Does:** health check → `search` → `timeline` → `get_observations` → append records to `~/.claude-mem/ccs-align/<viewerId>/middle.jsonl` (atomic, deduped).
+- **Phase 0 — Breathing slice:** health check → `search` → `timeline` → `get_observations` → append records to `~/.claude-mem/ccs-align/<viewerId>/middle.jsonl` (atomic, deduped).
+- **Phase 1 — Exclude marks:** mark observations (and linked tool-use ids) as excluded from the compiled middle cache. "Purge" means the compiled `middle.jsonl` no longer contains the record — the diary / SQLite stay authoritative. Unmarking + rebuild restores the observation. `DELETE /api/observation/:id` is **forbidden**.
 - **Does not:** delete history, write `profile.md`, write LFG/Orifice `[awareness]` logs (that seam belongs to [#3931](https://github.com/thedotmack/claude-mem/pull/3931)), add a sixth `processAgentResponse` consumer, restart the worker, or run a per-turn drip update.
 
-Later phases (exclude marks, rules alignment) are documented in the plan of record and are **not** implemented here.
+Later phases (rules alignment, final verification) are documented in the plan of record and are **not** implemented here.
 
 ## Prerequisites
 
@@ -54,6 +53,7 @@ every hour (weekday house board):
   3. search(obs_type=needles, limit=20) since cursor.lastObservationId
   4. timeline(anchor=newest)          → collect neighbor ids
   5. get_observations(ids=…)
+  5b. (Phase 1, mark-time only) If excluding: get_tool_uses for tool ids → record on mark
   6. grab middle.jsonl → append new → filter exclude-marks → replace atomic
   7. if original-cache path set and not writable: append-only to middle.jsonl (already done)
   8. update cursor.json
@@ -103,7 +103,7 @@ The disclosure order is **`search` → `timeline` → `get_observations`**. Neve
 
 The MCP twins are `search` → `timeline` → `get_observations`. Worker `get_observations` ids are **numbers**; do not pass cloud `observation:<base64>` ids into `/api/observations/batch`.
 
-### Step 4 — Grab → append → replace (atomic middle cache)
+### Step 4 — Grab → append → filter exclude-marks → replace (atomic middle cache)
 
 Land the observations with the seat helper `src/services/integrations/CcsAlignMiddleCache.ts`
 (`landObservationsInMiddleCache`). It copies the #3931 atomic primitive
@@ -111,9 +111,12 @@ Land the observations with the seat helper `src/services/integrations/CcsAlignMi
 the tag is `[ccs-align]`, the path root is `~/.claude-mem/ccs-align/<viewerId>/`,
 and the file is `middle.jsonl`.
 
+Phase 1 adds an exclude-marks filter inside the atomic pipeline:
+
 ```
 grab:    read middle.jsonl if it exists, else empty
-append:  for each new observation id not already present, append one record
+filter:  load exclude-marks.json; drop any record whose id is marked
+append:  for each new observation id not already present AND not marked, append one record
 replace: write temp + rename (copy appendAwarenessLineAtomic; never appendFileSync)
 fallback: if an OPTIONAL original-cache path is set and not writable, skip grab/replace
           on that path and append timeline items to middle.jsonl only
@@ -170,6 +173,92 @@ Use `writeCursor` from the helper (atomic temp + rename).
 
 Roll status **up** to the Prioritizer. Only speak to Alex on red: worker down, a write was refused, or an unexpected `profile.md` touch. Otherwise stay quiet.
 
+## Phase 1 — Exclude marks
+
+"Purge" means the compiled `middle.jsonl` no longer contains the observation or its tool I/O for that viewer. The diary stays. This is Secure Isolated Awareness + context-stripper — **not** delete.
+
+### Exclude-marks file
+
+Each viewer has `~/.claude-mem/ccs-align/<viewerId>/exclude-marks.json`:
+
+```json
+{
+  "v": 1,
+  "marks": [
+    {
+      "observationId": 12345,
+      "toolUseIds": ["toolu_01abc", 678],
+      "reason": "sibling-wall|manual|stripper|secure-isolation",
+      "markedAt": "2026-09-09T00:00:00.000Z",
+      "markedBy": "ccs-align"
+    }
+  ]
+}
+```
+
+Marks are managed by `addExcludeMark` / `removeExcludeMark` in `CcsAlignMiddleCache.ts`, or by manual JSON edit.
+
+### How marks get created (v1)
+
+1. **Manual JSON edit** — open `exclude-marks.json` and add a mark entry.
+2. **Skill flag** — `exclude <observationId> --reason …` (manual, sibling-wall, stripper, secure-isolation).
+3. No auto-promotion from chat text (poison surface — see Memory dig findings).
+
+### Purge tools (compiled only)
+
+When recording tool-use ids on a mark:
+
+1. After `get_observations`, if you need tool ids, call `get_tool_uses` / `POST /api/tool-uses/batch` (layer 4).
+2. Record those ids on the mark's `toolUseIds` array.
+3. **Never persist raw `tool_input` / `tool_response` into `middle.jsonl`** — layer 4 stays out of the laminate.
+4. **Do not** call `DELETE /api/observation/:id` — that tombstones the diary and breaks rebuild-from-history.
+
+> **Warning:** `get_tool_uses` is **layer 4** of the progressive disclosure ladder. It returns raw tool I/O and should only be called at mark-time to capture tool-use ids for an exclude mark. Never call it during the normal hourly cycle. Never persist its `tool_input` / `tool_response` payloads into any cache file.
+
+### Unmark + rebuild
+
+To restore a previously excluded observation:
+
+1. Remove the mark from `exclude-marks.json` (`removeExcludeMark` or manual edit).
+2. Re-pull the diary through the three-layer ladder (`search` → `timeline` → `get_observations`).
+3. Call `rebuildMiddleCache` to clear and re-land the compiled file from the authoritative diary.
+
+The observation reappears in `middle.jsonl` on the next cycle because the diary was never touched.
+
+### Viewer isolation
+
+Each viewer's middle cache is independent:
+
+- `~/.claude-mem/ccs-align/viewer-a/middle.jsonl`
+- `~/.claude-mem/ccs-align/viewer-b/middle.jsonl`
+
+Observations landed for viewer A never appear in viewer B's compiled file. Exclude marks for viewer A do not affect viewer B. This implements the Secure Isolated Awareness property: inject a unique eval token into viewer A's cache → run viewer B → assert A's token never appears in B's compiled file.
+
+### Programmatic usage
+
+```ts
+import {
+  addExcludeMark,
+  removeExcludeMark,
+  rebuildMiddleCache,
+  ccsAlignExcludeMarksPath,
+  readExcludeMarks,
+} from '../../src/services/integrations/CcsAlignMiddleCache.js';
+
+const marksPath = ccsAlignExcludeMarksPath(dataRoot, 'ccs-align');
+
+// Mark an observation as excluded (with optional tool-use ids)
+addExcludeMark(marksPath, 12345, ['toolu_01abc'], 'manual');
+
+// Unmark and rebuild
+removeExcludeMark(marksPath, 12345);
+rebuildMiddleCache({
+  viewerId: 'ccs-align',
+  observations: allObservationsFromDiary,
+  dataRoot,
+});
+```
+
 ## Hard forbids (every phase)
 
 - ❌ `DELETE /api/observation/:id` — tombstone ≠ exclude mark; breaks rebuild-from-history.
@@ -184,20 +273,38 @@ Roll status **up** to the Prioritizer. Only speak to Alex on red: worker down, a
 
 ## Later phases (documented, not implemented here)
 
-- **Phase 1 — Exclude marks:** compile-time omit of observations + linked tool-use ids from the middle cache; history stays; no `DELETE`. Marks file `exclude-marks.json`.
 - **Phase 2 — Rules alignment:** house → project → seat conflict/drift **report** (`rules-report.md`). Report-only unless `CLAUDE_MEM_CCS_ALIGN_PATCH_SHADOWS=true`.
 - **Phase 3 — Verify:** two-cycle dedupe, rebuild-from-diary, #3931 tests still green.
 
 See `plans/2026-09-09-ccs-align.md` for the full contract.
 
-## Verification (Phase 0)
+## Verification (Phase 0 + Phase 1)
 
 ```bash
 bun test tests/integrations/ccs-align-middle-cache.test.ts
-# format/truncate, needle match, append, dedupe, path safety, never-throw, cursor round-trip
+# Phase 0: format/truncate, needle match, append, dedupe, path safety, never-throw, cursor round-trip
+# Phase 1: mark drop, diary present, tool ids not in middle.jsonl, viewer isolation,
+#           unmark+rebuild, exclude-marks round-trip, buildExcludeSet, secure-isolation,
+#           corrupt marks fail-closed, marked ids skipped on ingest
 
 # #3931 must not regress — LFG/Orifice still get [awareness] lines from the worker pusher, not Align
 bun test tests/integrations/grok-bot-awareness-pusher.test.ts
+```
+
+Verification greps (plan §1.3):
+
+```bash
+# No delete-observation in the skill or helper
+rg -n "DELETE /api/observation|handleDeleteObservation" plugin/skills/ccs-align src/services/integrations/CcsAlignMiddleCache.ts
+# expect 0
+
+# Marks file schema present
+rg -n "exclude-marks" plugin/skills/ccs-align/SKILL.md
+# expect ≥1
+
+# get_tool_uses only after get_observations, with layer-4 warning
+rg -n "get_tool_uses" plugin/skills/ccs-align/SKILL.md
+# expect a warning that it is layer 4 / mark-time only
 ```
 
 Live-box checks (house, not CI — a cloud VM may have no live worker; record a MISS if so):
@@ -205,5 +312,10 @@ Live-box checks (house, not CI — a cloud VM may have no live worker; record a 
 - `curl -sS "http://127.0.0.1:$WORKER_PORT/api/health"` returns `status: ok`
 - After one cycle, `~/.claude-mem/ccs-align/ccs-align/middle.jsonl` exists
 - A second cycle with the same observations does **not** grow the file (dedupe)
+- Mark observation N → next cycle drops N from `middle.jsonl`
+- SQLite / `GET /api/observation/N` still returns the row (diary is authoritative)
+- Linked tool-use ids on the mark never appear in `middle.jsonl`
+- Viewer B's cache does not contain viewer A's unique eval token
+- Unmark (remove from JSON) + cycle restores N on the next pull
 - `profile.md` under any `agents/` path is byte-identical to before
 - LFG/Orifice `memory/log/YYYY-MM.md` unchanged by Align

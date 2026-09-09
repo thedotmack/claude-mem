@@ -5,16 +5,21 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH, DATA_DIR } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 
-// CCS Align — Phase 0 breathing slice.
+// CCS Align — Phase 0 breathing slice + Phase 1 exclude marks.
 //
-// This is a deliberate copy of the #3931 atomic append primitive
-// (`appendAwarenessLineAtomic` / `awarenessLineBody` / `formatAwarenessLine`
-// in `GrokBotAwarenessPusher.ts`) with three — and only three — changes locked
-// by the plan of record (`plans/2026-09-09-ccs-align.md`, D1/D2/§0.1):
+// Phase 0 (merged as #3934): a deliberate copy of the #3931 atomic append
+// primitive with three — and only three — changes locked by the plan of record
+// (`plans/2026-09-09-ccs-align.md`, D1/D2/§0.1):
 //   1. Tag is `[ccs-align]`, NOT a second `[awareness]` writer.
 //   2. Path root is seat-owned `~/.claude-mem/ccs-align/<viewerId>/`, never
 //      `agents/<id>/memory/log/`.
 //   3. File is `middle.jsonl` (one JSON record per line).
+//
+// Phase 1 (§1.1–1.4): exclude marks filter the *compiled* middle cache — the
+// diary / SQLite stay authoritative. A mark records observation ids and
+// tool-use ids; the grab→append→replace pipeline drops marked records so they
+// never appear in the compiled file. Unmarking + rebuild restores them from
+// the diary on the next pull. `DELETE /api/observation/:id` is FORBIDDEN.
 //
 // It does NOT delete history, does NOT write `profile.md`, and does NOT add a
 // sixth `processAgentResponse` consumer. It is a seat-owned middle cache the
@@ -25,7 +30,9 @@ const CCS_ALIGN_TAG = '[ccs-align]';
 const CCS_ALIGN_DIRNAME = 'ccs-align';
 const MIDDLE_CACHE_FILENAME = 'middle.jsonl';
 const CURSOR_FILENAME = 'cursor.json';
+const EXCLUDE_MARKS_FILENAME = 'exclude-marks.json';
 const RECORD_VERSION = 1;
+const EXCLUDE_MARKS_VERSION = 1;
 
 /**
  * The subset of an observation the middle cache lands. `id`/`created_at`/
@@ -64,6 +71,23 @@ export interface CcsAlignCursor {
   lastObservationId: number | null;
   healthPath: string;
   workerPort: number | null;
+}
+
+// --- Phase 1: Exclude marks ---
+
+export type ExcludeMarkReason = 'sibling-wall' | 'manual' | 'stripper' | 'secure-isolation';
+
+export interface ExcludeMark {
+  observationId: number;
+  toolUseIds: (string | number)[];
+  reason: ExcludeMarkReason;
+  markedAt: string;
+  markedBy: string;
+}
+
+export interface ExcludeMarksFile {
+  v: number;
+  marks: ExcludeMark[];
 }
 
 export interface CcsAlignConfig {
@@ -160,6 +184,92 @@ export function ccsAlignCursorPath(dataRoot: string, viewerId: string): string {
   return path.join(ccsAlignViewerDir(dataRoot, viewerId), CURSOR_FILENAME);
 }
 
+export function ccsAlignExcludeMarksPath(dataRoot: string, viewerId: string): string {
+  return path.join(ccsAlignViewerDir(dataRoot, viewerId), EXCLUDE_MARKS_FILENAME);
+}
+
+/** Read the exclude-marks file for a viewer. Returns empty marks if missing or corrupt. */
+export function readExcludeMarks(marksPath: string): ExcludeMarksFile {
+  const empty: ExcludeMarksFile = { v: EXCLUDE_MARKS_VERSION, marks: [] };
+  if (!existsSync(marksPath)) return empty;
+  try {
+    const parsed = JSON.parse(readFileSync(marksPath, 'utf8')) as ExcludeMarksFile;
+    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.marks)) {
+      return { v: parsed.v ?? EXCLUDE_MARKS_VERSION, marks: parsed.marks };
+    }
+  } catch { /* corrupt file — treat as empty */ }
+  return empty;
+}
+
+/** Write the exclude-marks file atomically (temp + rename). */
+export function writeExcludeMarks(marksPath: string, data: ExcludeMarksFile): void {
+  const dir = path.dirname(marksPath);
+  mkdirSync(dir, { recursive: true });
+  const tmpPath = `${marksPath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+    renameSync(tmpPath, marksPath);
+  } catch (error) {
+    try { unlinkSync(tmpPath); } catch { /* ignore cleanup */ }
+    throw error;
+  }
+}
+
+/** Add an exclude mark for an observation (and its tool-use ids). Idempotent per observationId. */
+export function addExcludeMark(
+  marksPath: string,
+  observationId: number,
+  toolUseIds: (string | number)[] = [],
+  reason: ExcludeMarkReason = 'manual',
+  markedBy: string = 'ccs-align',
+  now: Date = new Date(),
+): ExcludeMarksFile {
+  const data = readExcludeMarks(marksPath);
+  if (data.marks.some(m => m.observationId === observationId)) {
+    return data;
+  }
+  data.marks.push({
+    observationId,
+    toolUseIds,
+    reason,
+    markedAt: now.toISOString(),
+    markedBy,
+  });
+  writeExcludeMarks(marksPath, data);
+  return data;
+}
+
+/** Remove an exclude mark by observationId. Returns the updated file (unchanged if not found). */
+export function removeExcludeMark(marksPath: string, observationId: number): ExcludeMarksFile {
+  const data = readExcludeMarks(marksPath);
+  const before = data.marks.length;
+  data.marks = data.marks.filter(m => m.observationId !== observationId);
+  if (data.marks.length < before) {
+    writeExcludeMarks(marksPath, data);
+  }
+  return data;
+}
+
+/**
+ * Build the set of observation ids and tool-use ids that are excluded for a
+ * given viewer. Used by the grab→append→replace pipeline to filter the
+ * compiled middle cache.
+ */
+export function buildExcludeSet(marks: ExcludeMark[]): {
+  excludedObsIds: Set<number>;
+  excludedToolUseIds: Set<string | number>;
+} {
+  const excludedObsIds = new Set<number>();
+  const excludedToolUseIds = new Set<string | number>();
+  for (const mark of marks) {
+    excludedObsIds.add(mark.observationId);
+    for (const tid of mark.toolUseIds) {
+      excludedToolUseIds.add(tid);
+    }
+  }
+  return { excludedObsIds, excludedToolUseIds };
+}
+
 /**
  * Refuse any write that escapes the seat-owned CCS Align root, targets
  * `profile.md`, or lands inside an `agents/.../memory/log` tree (that is the
@@ -221,35 +331,47 @@ export function readMiddleCache(cachePath: string): CcsAlignMiddleRecord[] {
 }
 
 /**
- * Grab -> append -> replace, atomically.
+ * Grab -> append -> filter exclude marks -> replace, atomically.
  *
  * grab:    read `middle.jsonl` if it exists, else empty.
+ * filter:  drop any existing record whose `id` is in `excludedObsIds`.
  * append:  keep only records whose observation id AND body are not already
- *          present (body key excludes the date, matching #3931).
+ *          present (body key excludes the date, matching #3931). Also skip
+ *          records whose id is in `excludedObsIds`.
  * replace: write a temp file + `renameSync` (never `appendFileSync`).
  *
- * Returns the records actually appended. A no-op returns `[]` and does not
- * rewrite the file.
+ * Returns the records actually appended. A no-op that also removes no
+ * excluded records returns `[]` and does not rewrite the file.
  */
 export function appendMiddleCacheRecordsAtomic(
   cachePath: string,
   records: CcsAlignMiddleRecord[],
-): CcsAlignMiddleRecord[] {
+  excludedObsIds: Set<number> = new Set(),
+): { appended: CcsAlignMiddleRecord[]; dropped: number } {
   const dir = path.dirname(cachePath);
   mkdirSync(dir, { recursive: true });
 
-  const existing = existsSync(cachePath) ? readFileSync(cachePath, 'utf8') : '';
+  const existingRaw = existsSync(cachePath) ? readFileSync(cachePath, 'utf8') : '';
   const seenIds = new Set<number>();
   const seenBodies = new Set<string>();
-  for (const rawLine of existing.split('\n')) {
+
+  const survivingLines: string[] = [];
+  let dropped = 0;
+  for (const rawLine of existingRaw.split('\n')) {
     const record = parseRecordLine(rawLine);
     if (!record) continue;
+    if (excludedObsIds.has(record.id)) {
+      dropped++;
+      continue;
+    }
     seenIds.add(record.id);
     seenBodies.add(ccsAlignLineBody(record.line));
+    survivingLines.push(rawLine.trim());
   }
 
   const toAppend: CcsAlignMiddleRecord[] = [];
   for (const record of records) {
+    if (excludedObsIds.has(record.id)) continue;
     const body = ccsAlignLineBody(record.line);
     if (seenIds.has(record.id) || seenBodies.has(body)) continue;
     seenIds.add(record.id);
@@ -257,13 +379,13 @@ export function appendMiddleCacheRecordsAtomic(
     toAppend.push(record);
   }
 
-  if (toAppend.length === 0) {
-    return [];
+  if (toAppend.length === 0 && dropped === 0) {
+    return { appended: [], dropped: 0 };
   }
 
-  const appended = toAppend.map(record => JSON.stringify(record)).join('\n');
-  const prefix = existing.length === 0 || existing.endsWith('\n') ? existing : `${existing}\n`;
-  const next = `${prefix}${appended}\n`;
+  const appendedLines = toAppend.map(record => JSON.stringify(record));
+  const allLines = [...survivingLines, ...appendedLines];
+  const next = allLines.length > 0 ? `${allLines.join('\n')}\n` : '';
   const tmpPath = `${cachePath}.${process.pid}.${Date.now()}.tmp`;
   try {
     writeFileSync(tmpPath, next, 'utf8');
@@ -272,7 +394,7 @@ export function appendMiddleCacheRecordsAtomic(
     try { unlinkSync(tmpPath); } catch { /* ignore cleanup */ }
     throw error;
   }
-  return toAppend;
+  return { appended: toAppend, dropped };
 }
 
 export function readCursor(cursorPath: string): CcsAlignCursor | null {
@@ -328,6 +450,7 @@ export interface LandObservationsInput {
 
 export interface LandObservationsResult {
   appended: CcsAlignMiddleRecord[];
+  dropped: number;
   cachePath: string;
 }
 
@@ -335,6 +458,11 @@ export interface LandObservationsResult {
  * Land needle observations into the seat's middle cache. Never throws into the
  * caller — a broken write path is logged and swallowed, matching the #3931
  * pusher's never-throw contract.
+ *
+ * Phase 1: loads the viewer's exclude-marks file and passes the excluded
+ * observation ids into the atomic pipeline so marked records are filtered from
+ * the compiled output. The diary / SQLite stay authoritative — this is a
+ * compile-time omit, not a delete.
  */
 export function landObservationsInMiddleCache(input: LandObservationsInput): LandObservationsResult {
   const dataRoot = input.dataRoot ?? DATA_DIR;
@@ -350,20 +478,42 @@ export function landObservationsInMiddleCache(input: LandObservationsInput): Lan
       });
     }
 
+    const marksPath = ccsAlignExcludeMarksPath(dataRoot, input.viewerId);
+    const marksFile = readExcludeMarks(marksPath);
+    const { excludedObsIds } = buildExcludeSet(marksFile.marks);
+
     const records = input.observations.map(obs => buildCcsAlignRecord(obs, now));
-    const appended = appendMiddleCacheRecordsAtomic(cachePath, records);
-    if (appended.length > 0) {
+    const { appended, dropped } = appendMiddleCacheRecordsAtomic(cachePath, records, excludedObsIds);
+    if (appended.length > 0 || dropped > 0) {
       logger.debug('AWARENESS', 'CCS Align landed observations in middle cache', {
         viewerId: input.viewerId,
         appended: appended.length,
+        dropped,
       });
     }
-    return { appended, cachePath };
+    return { appended, dropped, cachePath };
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     logger.warn('AWARENESS', 'CCS Align middle-cache write skipped', {
       viewerId: input.viewerId,
     }, err);
-    return { appended: [], cachePath };
+    return { appended: [], dropped: 0, cachePath };
   }
+}
+
+/**
+ * Rebuild the middle cache from scratch: clear the file, re-land the given
+ * observations, and apply current exclude marks. This is the unmark+rebuild
+ * path — after removing a mark, the caller re-pulls the diary through the
+ * three-layer ladder and rebuilds the compiled file.
+ */
+export function rebuildMiddleCache(input: LandObservationsInput): LandObservationsResult {
+  const dataRoot = input.dataRoot ?? DATA_DIR;
+  const cachePath = ccsAlignMiddleCachePath(dataRoot, input.viewerId);
+  try {
+    if (existsSync(cachePath)) {
+      unlinkSync(cachePath);
+    }
+  } catch { /* if it can't be removed, landObservationsInMiddleCache will handle it */ }
+  return landObservationsInMiddleCache(input);
 }
