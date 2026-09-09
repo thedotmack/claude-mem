@@ -11,6 +11,7 @@ import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { ClassifiedProviderError, type ProviderErrorClass } from './provider-errors.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
+import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 
 /**
@@ -211,6 +212,16 @@ interface OpenRouterResponse {
 
 export interface OpenRouterConfig {
   apiKey: string;
+  /**
+   * The rotation pool: `apiKey` followed by CLAUDE_MEM_OPENROUTER_API_KEYS.
+   *
+   * Always exactly `[apiKey]` when the endpoint is the cmem.ai gateway. The
+   * gateway key is account-delivered, so there is no second one to rotate to,
+   * and the list is by definition the user's PERSONAL keys — sending those to
+   * the gateway is the exact leak `resolveOpenRouterConfig` already refuses to
+   * commit when a key-only override meets a persisted cmem base URL.
+   */
+  apiKeys: string[];
   /** First entry of the configured list; the one named in logs and sessions. */
   model: string;
   /**
@@ -380,7 +391,16 @@ export function resolveOpenRouterConfig(
   const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
   const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || OPENROUTER_APP_TITLE;
 
-  return { apiKey, model, fallbackModels, apiUrl, siteUrl, appName };
+  const apiKeys = isCmemGatewayUrl(baseUrl)
+    ? (apiKey ? [apiKey] : [])
+    : buildKeyPool(
+        apiKey,
+        hasProcessEnvOverride('CLAUDE_MEM_OPENROUTER_API_KEYS')
+          ? process.env.CLAUDE_MEM_OPENROUTER_API_KEYS?.trim() ?? ''
+          : settings.CLAUDE_MEM_OPENROUTER_API_KEYS || getCredential('OPENROUTER_API_KEYS') || '',
+      );
+
+  return { apiKey: apiKey || apiKeys[0] || '', apiKeys, model, fallbackModels, apiUrl, siteUrl, appName };
 }
 
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
@@ -466,7 +486,15 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   }
 
   protected async query(history: ConversationMessage[], config: OpenRouterConfig, signal?: AbortSignal): Promise<ProviderQueryResult> {
-    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName, signal);
+    // Rotation wraps withRetry rather than living inside it: the inner retry
+    // still owns transient failures against one key, and this outer sweep moves
+    // on only for the kinds that mean the key itself is spent. A pool of one —
+    // every install that has not opted in, and every cmem-gateway install — is
+    // a pass-through.
+    return withKeyPool(
+      { poolId: 'openrouter', keys: resolvePoolKeys(config), label: 'OpenRouter' },
+      ({ key, poolSize }) => this.queryOpenRouterMultiTurn(history, key, poolSize, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName, signal),
+    );
   }
 
   /** POST the chat-completions request. Extracted so the retry try block stays narrow. */
@@ -497,6 +525,8 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   private async queryOpenRouterMultiTurn(
     history: ConversationMessage[],
     apiKey: string,
+    /** Size of the rotation pool this attempt belongs to; 1 means no rotation. */
+    poolSize: number,
     model: string,
     fallbackModels: string[],
     apiUrl: string,
@@ -557,7 +587,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       }
 
       return responseData;
-    }, { label: `OpenRouter ${model}`, abortSignal: signal, ...(signal ? { maxRetries: 0 } : {}) });
+    }, { label: `OpenRouter ${model}`, abortSignal: signal, ...(signal ? { maxRetries: 0 } : {}), ...retryPolicyForPool(poolSize) });
 
     // A successful cmem-gateway response proves the delivered key is funded
     // again (resubscribed) — clear the trial-expiry fallback marker so
@@ -610,6 +640,14 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
 
 export function isOpenRouterAvailable(settingsPath: string = USER_SETTINGS_PATH): boolean {
   return Boolean(resolveOpenRouterConfig(settingsPath).apiKey);
+}
+
+/**
+ * Pool size for diagnostics (`/doctor`, status). Zero and one are both
+ * "no rotation"; anything higher is an opted-in pool.
+ */
+export function openRouterKeyPoolSize(settingsPath: string = USER_SETTINGS_PATH): number {
+  return resolveOpenRouterConfig(settingsPath).apiKeys.length;
 }
 
 export function isOpenRouterSelected(): boolean {
