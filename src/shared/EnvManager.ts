@@ -63,6 +63,8 @@ export interface ClaudeMemEnv {
   GEMINI_API_KEYS?: string;
   OPENROUTER_API_KEY?: string;
   OPENROUTER_API_KEYS?: string;
+  OPENAI_COMPAT_API_KEY?: string;
+  OPENAI_COMPAT_API_KEYS?: string;
 }
 
 /**
@@ -73,7 +75,10 @@ export interface ClaudeMemEnv {
  * CLAUDE_CODE_* or a typo'd ANTHROPIC_* variant) through (see #2375).
  *
  * The `*_API_KEYS` plural entries are the multi-key rotation pools
- * (src/shared/api-key-pool.ts).
+ * (src/shared/api-key-pool.ts). They are deliberately generic: a third-party
+ * endpoint reached through the `openai-compatible` provider supplies its key as
+ * OPENAI_COMPAT_API_KEY rather than as a per-vendor name, so adding an endpoint
+ * never means widening this whitelist.
  */
 const CREDENTIAL_KEYS = [
   'ANTHROPIC_API_KEY',
@@ -83,6 +88,8 @@ const CREDENTIAL_KEYS = [
   'GEMINI_API_KEYS',
   'OPENROUTER_API_KEY',
   'OPENROUTER_API_KEYS',
+  'OPENAI_COMPAT_API_KEY',
+  'OPENAI_COMPAT_API_KEYS',
 ] as const;
 
 // Node's stdlib .env parser (util.parseEnv, Node ≥20.12 / stable in 24):

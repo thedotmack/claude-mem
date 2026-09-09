@@ -43,10 +43,11 @@ separated by newlines, commas, or spaces.
 |----------|-----------|---------------|
 | Gemini | `CLAUDE_MEM_GEMINI_API_KEY` | `CLAUDE_MEM_GEMINI_API_KEYS` |
 | OpenRouter | `CLAUDE_MEM_OPENROUTER_API_KEY` | `CLAUDE_MEM_OPENROUTER_API_KEYS` |
+| OpenAI-compatible | `CLAUDE_MEM_OPENAI_COMPAT_API_KEY` | `CLAUDE_MEM_OPENAI_COMPAT_API_KEYS` |
 
 Each plural setting is also readable from `~/.claude-mem/.env` as
-`GEMINI_API_KEYS` or `OPENROUTER_API_KEYS`, which keeps keys out of
-`settings.json`.
+`GEMINI_API_KEYS`, `OPENROUTER_API_KEYS`, or `OPENAI_COMPAT_API_KEYS`, which
+keeps keys out of `settings.json`.
 
 The single key stays first in the pool. You can also leave it empty and supply
 every key through the list — the first listed key is promoted, so availability
