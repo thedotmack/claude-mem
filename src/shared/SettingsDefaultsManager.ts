@@ -121,6 +121,13 @@ export interface SettingsDefaults {
   CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: string;
   CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: string;
   CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_CONCEPTS: string;
+  // CCS Align (Worker Watch seat, Phase 0 breathing slice). Seat-owned middle
+  // cache under ~/.claude-mem/ccs-align/<viewerId>/; pull-only, never a second
+  // writer on LFG/Orifice logs. See plans/2026-09-09-ccs-align.md.
+  CLAUDE_MEM_CCS_ALIGN_ENABLED: string;
+  CLAUDE_MEM_CCS_ALIGN_VIEWER_IDS: string;
+  CLAUDE_MEM_CCS_ALIGN_TRIGGER_TYPES: string;
+  CLAUDE_MEM_CCS_ALIGN_PATCH_SHADOWS: string;
   CLAUDE_MEM_QUEUE_ENGINE: string;
   CLAUDE_MEM_REDIS_URL: string;
   CLAUDE_MEM_REDIS_HOST: string;
@@ -240,6 +247,12 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: '521e962d-2ec3-4488-bfbc-54d5209ce118,95601360-61f7-4fd9-bb3a-2c976b2b85c0',
     CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: 'decision,bugfix,security_alert,sensitive',
     CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_CONCEPTS: '',
+    CLAUDE_MEM_CCS_ALIGN_ENABLED: 'true',
+    CLAUDE_MEM_CCS_ALIGN_VIEWER_IDS: 'ccs-align',
+    // Copy of the Grok needle list (D6). Same episodic needles, seat-owned cache.
+    CLAUDE_MEM_CCS_ALIGN_TRIGGER_TYPES: 'decision,bugfix,security_alert,sensitive',
+    // Phase 2 rules-shadow patch stays a Prioritizer flag, not a silent /do (D8).
+    CLAUDE_MEM_CCS_ALIGN_PATCH_SHADOWS: 'false',
     CLAUDE_MEM_QUEUE_ENGINE: 'sqlite',
     CLAUDE_MEM_REDIS_URL: '',
     CLAUDE_MEM_REDIS_HOST: '127.0.0.1',
