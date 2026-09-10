@@ -127,6 +127,51 @@ export const ChromaSyncState = {
     persist();
   },
 
+  /**
+   * Mark a group of source rows durable with one state-file write.
+   *
+   * Backfill writes Chroma documents in batches. Persisting the watermark once
+   * per source row turns a large rebuild into thousands of tiny fsync/rename
+   * cycles, so successful batches advance to their highest row id and clear
+   * any repaired gaps atomically.
+   */
+  completeBatch(project: string, kind: DocKind, ids: number[]): void {
+    const normalizedIds = normalizePendingIds(ids);
+    if (normalizedIds.length === 0) return;
+
+    const all = load();
+    const current = normalizeProjectWatermarks(all[project] ?? ZERO);
+    let changed = false;
+    const highestId = normalizedIds[normalizedIds.length - 1];
+
+    if (highestId > current[kind]) {
+      current[kind] = highestId;
+      changed = true;
+    }
+
+    const pending = current.pending?.[kind] ?? [];
+    if (pending.length > 0) {
+      const completed = new Set(normalizedIds);
+      const filtered = pending.filter(id => !completed.has(id));
+      if (filtered.length !== pending.length) {
+        current.pending = current.pending ?? {};
+        if (filtered.length === 0) {
+          delete current.pending[kind];
+        } else {
+          current.pending[kind] = filtered;
+        }
+        if (current.pending && Object.keys(current.pending).length === 0) {
+          delete current.pending;
+        }
+        changed = true;
+      }
+    }
+
+    if (!changed) return;
+    all[project] = current;
+    persist();
+  },
+
   replace(project: string, marks: ProjectWatermarks): void {
     const all = load();
     all[project] = normalizeProjectWatermarks(marks);

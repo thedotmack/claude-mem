@@ -120,11 +120,13 @@ function expectLauncherPrefixBeforeMode(args: string[], mode: 'http' | 'persiste
   const fromIdx = args.indexOf('--from');
   expect(fromIdx).toBeGreaterThan(-1);
   expect(args[fromIdx + 1]).toBe('chroma-mcp==0.2.6');
-  expect(args[fromIdx + 2]).toBe('chroma-mcp');
-  expect(args[fromIdx + 3]).toBe('--client-type');
-  expect(args[fromIdx + 4]).toBe(mode);
+  expect(args[fromIdx + 2]).toBe('python');
+  expect(args[fromIdx + 3]).toEndWith('plugin/scripts/chroma-mcp-bridge.py');
+  expect(args[fromIdx + 4]).toBe('--client-type');
+  expect(args[fromIdx + 5]).toBe(mode);
   expect(args.slice(0, fromIdx)).toEqual([
     '--python', '3.13',
+    '--with', 'chromadb==1.5.9',
     '--with', 'onnxruntime>=1.20',
     '--with', 'protobuf<7',
   ]);
