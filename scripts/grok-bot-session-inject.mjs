@@ -284,7 +284,15 @@ export function injectTextToFactLines(text, { projects, maxLines, maxLineChars, 
   const primary = projects[projects.length - 1] ?? 'unknown';
   const head = [
     `Claude-Mem session context for ${primary}`,
-    meta.map(line => line.replace(/^#\s*/, '')).join(' · '),
+    meta
+      .map(line => line.replace(/^#\s*/, ''))
+      // The inject header carries a fetch clock. Keeping it would make the
+      // fact block differ on every poll, so the host would see a "memory
+      // changed" delta — and re-announce it on the next turn — for a timestamp
+      // and nothing else. Facts already carry a date.
+      .map(line => line.replace(/\s*recent context,.*$/, '').trim())
+      .filter(Boolean)
+      .join(' · '),
     'fetch detail with the claude-mem tools (get_observations by ID)',
   ]
     .filter(Boolean)
