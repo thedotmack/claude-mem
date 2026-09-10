@@ -28,7 +28,7 @@
  *   ... --dry-run                                       # never write
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, watch } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, watch } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -132,7 +132,7 @@ function discoverAgentDataRoot(env) {
  * The dedicated file keeps pilot wiring out of the live settings.json the
  * worker owns and rewrites.
  */
-function loadConfig(env = process.env) {
+export function loadConfig(env = process.env) {
   const settings = readJson(path.join(dataDir(), 'settings.json'), {});
   const local = readJson(path.join(dataDir(), 'grok-bot-session-inject.json'), {});
   const pick = key => env[key] ?? local[key] ?? settings[key];
@@ -141,10 +141,16 @@ function loadConfig(env = process.env) {
     return Number.isFinite(raw) && raw > 0 ? raw : fallback;
   };
 
-  const agentIds = splitCsv(pick('CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS')).filter(id => AGENT_ID_RE.test(id));
+  const agentIdsRaw = String(pick('CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS') ?? '').trim();
+  const agentIdsAuto = agentIdsRaw === '*' || agentIdsRaw.toLowerCase() === 'all';
+  const agentIds = agentIdsAuto
+    ? []
+    : splitCsv(agentIdsRaw).filter(id => AGENT_ID_RE.test(id));
 
   return {
     enabled: String(pick('CLAUDE_MEM_GROK_BOT_INJECT_ENABLED') ?? '').toLowerCase() === 'true',
+    /** When true, every live seat in transcript-watch.json is included (and new seats are ensured). */
+    agentIdsAuto,
     agentIds,
     /** `agentId=projA,projB;agentId2=projC` — overrides transcript-watch.json. */
     projectsByAgent: parseProjectMap(pick('CLAUDE_MEM_GROK_BOT_INJECT_PROJECTS_BY_AGENT')),
@@ -191,7 +197,7 @@ function parseProjectMap(raw) {
  * Agent -> project comes from the transcript-watch config the Grok Bot
  * installer already writes, so there is exactly one mapping on the box.
  */
-function projectsForAgent(cfg, agentId) {
+export function projectsForAgent(cfg, agentId) {
   const override = cfg.projectsByAgent.get(agentId.toLowerCase());
   if (override) return override;
   const watches = readJson(cfg.watchConfigFile, {})?.watches ?? [];
@@ -202,6 +208,117 @@ function projectsForAgent(cfg, agentId) {
     if (project && !projects.includes(project)) projects.push(project);
   }
   return projects;
+}
+
+export function slugGrokBotProject(name) {
+  const base = String(name ?? '').replace(/\/+$/, '').split('/').pop() || '';
+  const cleaned = base.replace(/[^\w\s-]/gu, '');
+  const slug = cleaned
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+  const generic = new Set(['', 'root', 'box', 'home', 'user', 'work', 'workspace', 'tmp', 'uploads', 'outputs', 'claude']);
+  return 'cmem_work_' + (generic.has(slug) ? 'root' : slug);
+}
+
+export function listLiveAgents(agentDataRoot) {
+  const agentsDir = path.join(agentDataRoot, 'agents');
+  if (!existsSync(agentsDir)) return [];
+  const out = [];
+  for (const entry of readdirSync(agentsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !AGENT_ID_RE.test(entry.name)) continue;
+    const profilePath = path.join(agentsDir, entry.name, 'profile.json');
+    if (!existsSync(profilePath)) continue;
+    let name = entry.name;
+    try {
+      const profile = JSON.parse(readFileSync(profilePath, 'utf8'));
+      if (typeof profile?.name === 'string' && profile.name.trim()) name = profile.name.trim();
+    } catch {}
+    out.push({ id: entry.name, name });
+  }
+  return out;
+}
+
+/**
+ * Keep transcript-watch in sync with live seats: prune deleted, add missing.
+ * Preserves existing project names so diaries do not jump buckets on rename.
+ */
+export function ensureWatchesForLiveAgents(cfg, { log = () => {} } = {}) {
+  const watchCfg = readJson(cfg.watchConfigFile, null);
+  if (!watchCfg || !Array.isArray(watchCfg.watches)) return { added: 0, pruned: 0 };
+
+  const live = listLiveAgents(cfg.agentDataRoot);
+  const liveIds = new Set(live.map(a => a.id));
+  const before = watchCfg.watches.length;
+
+  const kept = [];
+  const seen = new Set();
+  let pruned = 0;
+  for (const watch of watchCfg.watches) {
+    if (watch?.name !== 'grok-bot') {
+      kept.push(watch);
+      continue;
+    }
+    const agentId = String(watch?.agentId ?? '').trim();
+    if (!agentId || agentId === '*') {
+      pruned += 1;
+      continue;
+    }
+    if (!liveIds.has(agentId)) {
+      pruned += 1;
+      continue;
+    }
+    kept.push(watch);
+    seen.add(agentId);
+  }
+
+  let added = 0;
+  for (const agent of live) {
+    if (seen.has(agent.id)) continue;
+    const project = slugGrokBotProject(agent.name);
+    const workspace = path.join(cfg.agentDataRoot, '.cmem-projects', project);
+    const transcriptDir = path.join(cfg.agentDataRoot, 'agent-transcripts', agent.id);
+    mkdirSync(workspace, { recursive: true });
+    mkdirSync(transcriptDir, { recursive: true });
+    kept.push({
+      name: 'grok-bot',
+      schema: 'grok-bot',
+      path: path.join(transcriptDir, '*.jsonl'),
+      workspace,
+      project,
+      startAtEnd: true,
+      agentId: agent.id,
+    });
+    seen.add(agent.id);
+    added += 1;
+    log(`watch+ ${agent.name} (${agent.id}) -> ${project}`);
+  }
+
+  if (added || pruned || kept.length !== before) {
+    watchCfg.watches = kept;
+    watchCfg.version = watchCfg.version || 1;
+    writeFileAtomic(cfg.watchConfigFile, JSON.stringify(watchCfg, null, 2) + '\n');
+  }
+  return { added, pruned };
+}
+
+/** Resolve the seat list for this pass. Auto mode = every live watched seat. */
+export function resolveAgentIds(cfg, { log = () => {} } = {}) {
+  if (cfg.agentIdsAuto) {
+    ensureWatchesForLiveAgents(cfg, { log });
+    const watches = readJson(cfg.watchConfigFile, {})?.watches ?? [];
+    const ids = [];
+    for (const watch of watches) {
+      if (watch?.name !== 'grok-bot') continue;
+      const agentId = String(watch?.agentId ?? '').trim();
+      if (!AGENT_ID_RE.test(agentId)) continue;
+      if (!existsSync(path.join(cfg.agentDataRoot, 'agents', agentId))) continue;
+      if (!ids.includes(agentId)) ids.push(agentId);
+    }
+    return ids;
+  }
+  return cfg.agentIds;
 }
 
 // ------------------------------------------------------------- inject io ----
@@ -420,7 +537,8 @@ function factBlock(contents) {
 
 async function runOnce(cfg, opts) {
   const results = [];
-  for (const agentId of cfg.agentIds) {
+  const agentIds = resolveAgentIds(cfg, opts);
+  for (const agentId of agentIds) {
     try {
       results.push(await refreshAgent(cfg, agentId, opts));
     } catch (error) {
@@ -432,16 +550,38 @@ async function runOnce(cfg, opts) {
 
 // ----------------------------------------------------------------- watch ----
 
-function runWatch(cfg) {
+function runWatch(initialCfg) {
   const log = message => console.log(`[grok-inject ${new Date().toISOString()}] ${message}`);
-  log(`watching ${cfg.agentIds.length} agent(s); worker :${cfg.workerPort}; interval ${cfg.intervalMs}ms; root ${cfg.agentDataRoot}`);
+  let cfg = initialCfg;
+  const agentIds = resolveAgentIds(cfg, { log });
+  log(`watching ${cfg.agentIdsAuto ? 'AUTO' : agentIds.length} seat(s); worker :${cfg.workerPort}; interval ${cfg.intervalMs}ms; root ${cfg.agentDataRoot}`);
 
   let lastRunAt = 0;
   let pending = null;
   let running = false;
+  const watchedDirs = new Set();
+
+  const ensureActivityWatches = (ids) => {
+    for (const agentId of ids) {
+      for (const dir of [
+        path.join(cfg.agentDataRoot, 'agents', agentId),
+        path.join(cfg.agentDataRoot, 'agent-transcripts', agentId),
+      ]) {
+        if (!existsSync(dir) || watchedDirs.has(dir)) continue;
+        watchedDirs.add(dir);
+        try {
+          watch(dir, { persistent: true }, () => void kick('activity'));
+        } catch (error) {
+          log(`watch failed for ${dir}: ${error?.message ?? error}`);
+        }
+      }
+    }
+  };
 
   const kick = async reason => {
     if (running) return;
+    // Reload config each pass so * picks up new hires without a process restart.
+    cfg = loadConfig();
     const since = Date.now() - lastRunAt;
     if (since < cfg.minGapMs) {
       if (pending === null) {
@@ -455,49 +595,30 @@ function runWatch(cfg) {
     running = true;
     lastRunAt = Date.now();
     try {
+      const ids = resolveAgentIds(cfg, { log });
+      ensureActivityWatches(ids);
       for (const result of await runOnce(cfg, { log })) {
         if (result.status === 'error') log(`ERROR ${result.agentId}: ${result.reason}`);
         else if (result.status === 'skipped') log(`skip ${result.agentId}: ${result.reason}`);
+        else if (result.status === 'written') log(`wrote ${result.agentId} (${result.factLines} lines)`);
       }
     } finally {
       running = false;
     }
   };
 
-  // Turn activity: the host touches the agent's store while a turn runs, and
-  // appends to the transcript when it lands. Either is a cue to refresh, so the
-  // delta is already staged for the agent's next cold turn.
-  const activityPaths = [];
-  for (const agentId of cfg.agentIds) {
-    for (const dir of [
-      path.join(cfg.agentDataRoot, 'agents', agentId),
-      path.join(cfg.agentDataRoot, 'agent-transcripts', agentId),
-    ]) {
-      if (!existsSync(dir)) continue;
-      activityPaths.push(dir);
-      try {
-        watch(dir, { persistent: true }, () => void kick('activity'));
-      } catch (error) {
-        // Boxes run out of inotify descriptors; the mtime poll below covers it.
-        log(`WARN cannot watch ${dir} (${error?.code ?? error?.message}) — falling back to mtime poll`);
-      }
-    }
-  }
+  ensureActivityWatches(agentIds);
 
+  // mtime poll fallback when inotify watches are unavailable.
   const mtimes = new Map();
   const pollActivity = () => {
-    for (const dir of activityPaths) {
-      let stamp;
+    for (const dir of watchedDirs) {
       try {
-        stamp = statSync(dir).mtimeMs;
-      } catch {
-        continue;
-      }
-      if (mtimes.get(dir) !== stamp) {
-        const first = !mtimes.has(dir);
-        mtimes.set(dir, stamp);
-        if (!first) void kick('mtime');
-      }
+        const st = statSync(dir);
+        const prev = mtimes.get(dir);
+        mtimes.set(dir, st.mtimeMs);
+        if (prev !== undefined && st.mtimeMs !== prev) void kick('poll');
+      } catch {}
     }
   };
   pollActivity();
@@ -515,7 +636,7 @@ function printStatus(cfg) {
     enabled: cfg.enabled,
     agentDataRoot: cfg.agentDataRoot,
     workerPort: cfg.workerPort,
-    agents: cfg.agentIds.map(agentId => {
+    agents: resolveAgentIds(cfg).map(agentId => {
       const filePath = injectLogPath(cfg.agentDataRoot, agentId);
       const exists = existsSync(filePath);
       return {
@@ -531,14 +652,14 @@ function printStatus(cfg) {
 }
 
 function clearAgents(cfg) {
-  for (const agentId of cfg.agentIds) {
+  for (const agentId of resolveAgentIds(cfg)) {
     const filePath = injectLogPath(cfg.agentDataRoot, agentId);
     assertSafeInjectPath(cfg.agentDataRoot, agentId, filePath);
     rmSync(filePath, { force: true });
     console.log(`removed ${filePath}`);
   }
   const state = loadState(cfg);
-  for (const agentId of cfg.agentIds) delete state[agentId];
+  for (const agentId of resolveAgentIds(cfg)) delete state[agentId];
   saveState(cfg, state);
 }
 
@@ -554,8 +675,8 @@ async function main() {
     process.exitCode = 78; // EX_CONFIG
     return;
   }
-  if (cfg.agentIds.length === 0) {
-    console.error('No allowlisted agents. Set CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS.');
+  if (!cfg.agentIdsAuto && cfg.agentIds.length === 0) {
+    console.error('No allowlisted agents. Set CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS to a list or *.');
     process.exitCode = 78;
     return;
   }

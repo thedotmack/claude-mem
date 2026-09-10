@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Grok Bot house-wide silent session inject
+
+- `CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS=*` (or `all`) injects every live Grok Bot seat, not just an Orifice allowlist. The allowlist reloads each watch tick.
+- `ensureWatchesForLiveAgents` prunes deleted seats and adds missing live seats with their own `cmem_work_*` project (existing project names stay). Each seat injects that one project only.
+
 ### Grok Bot awareness push pilot (Phase 0 + Phase 1)
 
 - Transcript watches now carry `agentId` from `agent-transcripts/<agent_id>/` through `ingestObservation`, so Grok Bot observations are labeled with the host agent.

@@ -154,6 +154,8 @@ Grok Bot has no host hooks, so we watch the chat log files. Default is CMEM Pro,
 
 **Awareness push pilot (LFG + Orifice):** needle observations (`decision`, `bugfix`, `security_alert`, `sensitive`) are appended as dated `- YYYY-MM-DD [awareness] …` lines into that bot's `memory/log/YYYY-MM.md`. Grok Bot already re-reads the log from disk. This does not write `profile.md`, user-memory, or project memory. Disable with `CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED=false`.
 
+**Silent session inject:** `scripts/grok-bot-session-inject.mjs` stages the worker's existing `/api/context/inject` text (Allowed params only) into each seat's `memory/log/zz-claude-mem-inject.md` so the next cold turn sees Claude-Mem without a tool call. `CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS=*` (or `all`) covers every live seat and auto-adds `cmem_work_*` watches for new hires. Off by default (`CLAUDE_MEM_GROK_BOT_INJECT_ENABLED`).
+
 Install with a single command:
 
 ```bash
