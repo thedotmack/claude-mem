@@ -1110,6 +1110,21 @@ export class SessionStore {
     // first or a single orphan aborts the migration chain (#3378).
     this.repairOrphanedSessionParents('session_summaries');
 
+    // The DDL below is the v7 column set. Fresh installs stamp every
+    // migration at once, so a database whose base schema already carried a
+    // later column (v11's discovery_tokens) next to the v7 UNIQUE constraint
+    // lost that column here, and its ADD COLUMN migration never re-ran:
+    // every summary write failed with "no column named discovery_tokens"
+    // from then on (#3890). Carry the live table's extra columns over,
+    // type and default included, so no later column is dropped again.
+    const v7Columns = [
+      'id', 'memory_session_id', 'project', 'request', 'investigated', 'learned',
+      'completed', 'next_steps', 'files_read', 'files_edited', 'notes',
+      'prompt_number', 'created_at', 'created_at_epoch',
+    ];
+    const liveColumns = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
+    const extraColumns = liveColumns.filter(col => !v7Columns.includes(col.name));
+
     this.db.run('DROP TABLE IF EXISTS session_summaries_new');
 
     this.db.run(`
@@ -1132,11 +1147,19 @@ export class SessionStore {
       )
     `);
 
+    for (const col of extraColumns) {
+      const type = col.type ? ` ${col.type}` : '';
+      const dflt = col.dflt_value === null || col.dflt_value === undefined ? '' : ` DEFAULT ${col.dflt_value}`;
+      this.db.run(`ALTER TABLE session_summaries_new ADD COLUMN "${col.name}"${type}${dflt}`);
+      logger.debug('DB', `Carried ${col.name} over the session_summaries UNIQUE-constraint rebuild (#3890)`);
+    }
+
+    const copyColumns = [...v7Columns, ...extraColumns.map(col => col.name)]
+      .map(name => `"${name}"`)
+      .join(', ');
     this.db.run(`
-      INSERT INTO session_summaries_new
-      SELECT id, memory_session_id, project, request, investigated, learned,
-             completed, next_steps, files_read, files_edited, notes,
-             prompt_number, created_at, created_at_epoch
+      INSERT INTO session_summaries_new (${copyColumns})
+      SELECT ${copyColumns}
       FROM session_summaries
     `);
 
@@ -1338,9 +1361,9 @@ export class SessionStore {
   }
 
   private ensureDiscoveryTokensColumn(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(11) as SchemaVersion | undefined;
-    if (applied) return;
-
+    // Not gated on the schema_versions row: a table rebuild that ran after
+    // version 11 was stamped could have dropped the column again (#3890),
+    // and the PRAGMA presence checks below are idempotent anyway.
     const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
     const obsHasDiscoveryTokens = observationsInfo.some(col => col.name === 'discovery_tokens');
 
