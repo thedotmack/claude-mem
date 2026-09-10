@@ -360,4 +360,15 @@ Cast: **Alex** (human, sole board), **Prioritizer** (shipmaster), **CCS Align** 
 
 ---
 
+## 7. Lock-next overnight (2026-09-10)
+
+Alex skipped the PASS widget, so this brief is being treated as the research SoT overnight. Lock-next items 1 and 2 from section 6 now have full specs:
+
+1. **Conflict rule (scenario 6)** → [`plans/2026-09-09-ccs-lock-conflict-dedupe.md`](./2026-09-09-ccs-lock-conflict-dedupe.md) — node identity + one-fact-once dedupe, the restricting-bucket flag (deny beats allow, fail closed), stripped views as explicitly authored derived nodes with `derived-from` edges (not compiler renderings), who sees full / stripped / nothing, packing once per matching cache, anti-patterns, open questions.
+2. **"Not in group" apply target (scenario 7)** → [`plans/2026-09-09-ccs-lock-not-in-group.md`](./2026-09-09-ccs-lock-not-in-group.md) — recommendation: **managed positive buckets** (`bucket:onboarding` with membership coupled atomically to mint and group-join ops); raw negation `not(group:building)` specced for the record but rejected (fail-open inversion, whole-set evaluation, unauditable audiences). Covers new-hire day one, onboarding packs, and join/leave migration.
+
+On PASS of those two files, scenario 6's OPEN, scenario 7's OPEN, and the apply-target table's negation row are resolved. Items 3–5 of section 6 (band-migration cadence, usage-left names/audiences, bucket-membership listing) remain unlocked. Attention trough: still Phase-N, still not designed.
+
+---
+
 *Research brief for Alex Newman / CMEM house. CCS Align (seat leaf) is the scenario source of truth; copy to Notion + box reports on PASS. Skillex owns subagent-deploy internals referenced in scenarios 9–10.*
