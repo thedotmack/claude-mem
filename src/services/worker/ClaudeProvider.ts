@@ -218,11 +218,9 @@ export class ClaudeProvider {
       this.compressField(text, budgetChars, session, modelId, claudePath);
     const messageGenerator = this.createMessageGenerator(session, cwdTracker, activeResponseContext, worker, compressField);
 
+    // Fresh observer spawns must not persist NULL: the FK cascade would violate
+    // child rows' NOT NULL memory_session_id. Clear only the in-memory ID.
     if (session.memorySessionId) {
-      // Observer spawns intentionally opt out of Claude transcript persistence.
-      // A carried session_id from an earlier no-persist spawn is therefore not
-      // safe to feed back into `resume` on a later fresh process.
-      this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
       session.memorySessionId = null;
     }
 
