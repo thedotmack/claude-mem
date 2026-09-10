@@ -1,10 +1,10 @@
 /**
- * Closed-set skill identity for `skill_invoked` telemetry.
+ * Closed-set skill identity for skill_invoked telemetry.
  *
- * First-party ids are pinned to `plugin/skills/*/`. Sibling copies of the
- * same skill (cursor / cowork / grok-bot `mem-search`) collapse to that one
- * id. Third-party names never leave the machine — they become `skill_id: other`
- * with `skill_source: third_party`.
+ * First-party ids are pinned to plugin/skills/<name>/. Sibling copies of the
+ * same skill (cursor / cowork / grok-bot mem-search) collapse to that one
+ * id. Third-party names never leave the machine — they become skill_id other
+ * with skill_source third_party.
  *
  * Pure module: no I/O, never throws, never returns caller-supplied free text.
  */
