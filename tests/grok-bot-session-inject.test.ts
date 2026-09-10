@@ -1,5 +1,19 @@
 import { describe, it, expect } from 'bun:test';
-import { injectTextToFactLines, injectLogPath } from '../scripts/grok-bot-session-inject.mjs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import {
+  injectTextToFactLines,
+  injectLogPath,
+  parseAgentIdsSetting,
+  listLiveAgents,
+  resolveGrokBotProject,
+  resolveInjectAgentIds,
+  loadConfig,
+  reloadAllowlist,
+  projectsForAgent,
+  ensureWatchesForLiveAgents,
+} from '../scripts/grok-bot-session-inject.mjs';
 
 /**
  * The whole point of this shim is that the sand host parses what it writes.
@@ -104,5 +118,162 @@ describe('injectLogPath', () => {
   it('uses a filename the host never writes itself (host owns YYYY-MM.md)', () => {
     const filePath = injectLogPath('/root', '95601360-61f7-4fd9-bb3a-2c976b2b85c0');
     expect(/\d{4}-\d{2}\.md$/.test(filePath)).toBe(false);
+  });
+});
+
+const ORIFICE = '95601360-61f7-4fd9-bb3a-2c976b2b85c0';
+const BIFF = '1e5a61c5-5e1e-4ba6-862f-cd831dac62e9';
+const GONE = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+
+function writeSeat(root: string, agentId: string, name?: string, { memory = false } = {}): void {
+  mkdirSync(path.join(root, 'agents', agentId), { recursive: true });
+  mkdirSync(path.join(root, 'agent-transcripts', agentId), { recursive: true });
+  if (name !== undefined) {
+    writeFileSync(path.join(root, 'agents', agentId, 'profile.json'), JSON.stringify({ name }));
+  }
+  if (memory) {
+    mkdirSync(path.join(root, 'agents', agentId, 'memory', 'log'), { recursive: true });
+  }
+}
+
+describe('parseAgentIdsSetting / * mode', () => {
+  it('treats * and all as every live seat', () => {
+    expect(parseAgentIdsSetting('*')).toEqual({ auto: true, ids: [] });
+    expect(parseAgentIdsSetting('all')).toEqual({ auto: true, ids: [] });
+    expect(parseAgentIdsSetting('ALL')).toEqual({ auto: true, ids: [] });
+    expect(parseAgentIdsSetting(` ${ORIFICE},${BIFF} `)).toEqual({ auto: false, ids: [ORIFICE, BIFF] });
+    expect(parseAgentIdsSetting('not-a-uuid,also-bad')).toEqual({ auto: false, ids: [] });
+  });
+
+  it('lists every live UUID seat and skips sand-subagent leftovers', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'grok-inject-live-'));
+    try {
+      writeSeat(root, ORIFICE, 'Orifice');
+      writeSeat(root, BIFF, 'Biff');
+      writeSeat(root, 'sand-subagent-zzzz', 'Sub');
+      mkdirSync(path.join(root, 'agents', 'not-a-uuid'), { recursive: true });
+      writeFileSync(path.join(root, 'agents', 'not-a-uuid', 'profile.json'), JSON.stringify({ name: 'Nope' }));
+
+      const live = listLiveAgents(root);
+      expect(live.map(agent => agent.id).sort()).toEqual([BIFF, ORIFICE].sort());
+      expect(live.find(agent => agent.id === ORIFICE)?.name).toBe('Orifice');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('loadConfig(*) resolves every live seat and reloadAllowlist picks up a new hire', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'grok-inject-star-'));
+    try {
+      writeSeat(root, ORIFICE, 'Orifice');
+      const env = {
+        ...process.env,
+        GROK_BOT_AGENT_DATA: root,
+        CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS: '*',
+      };
+      const cfg = loadConfig(env);
+      expect(cfg.agentIdsAuto).toBe(true);
+      expect(resolveInjectAgentIds(cfg)).toEqual([ORIFICE]);
+
+      writeSeat(root, BIFF, 'Biff');
+      reloadAllowlist(cfg, env);
+      expect(cfg.agentIdsAuto).toBe(true);
+      expect(resolveInjectAgentIds(cfg).sort()).toEqual([BIFF, ORIFICE].sort());
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('projectsForAgent (CCS seat-level L1)', () => {
+  it('injects only that seat\'s own project, never a neighbor or catch-all', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'grok-inject-own-'));
+    const watchConfigFile = path.join(root, 'transcript-watch.json');
+    try {
+      writeFileSync(watchConfigFile, JSON.stringify({
+        watches: [
+          { name: 'grok-bot', agentId: '*', project: 'cmem_work_root' },
+          { name: 'grok-bot', agentId: ORIFICE, project: 'cmem_work_orifice' },
+          { name: 'grok-bot', agentId: BIFF, project: 'cmem_work_biff' },
+        ],
+      }));
+      const cfg = { projectsByAgent: new Map(), watchConfigFile };
+      expect(projectsForAgent(cfg, ORIFICE)).toEqual(['cmem_work_orifice']);
+      expect(projectsForAgent(cfg, BIFF)).toEqual(['cmem_work_biff']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('ensureWatchesForLiveAgents', () => {
+  it('adds missing live seats with cmem_work_* and preserves existing project names', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'grok-inject-ensure-'));
+    const watchConfigFile = path.join(root, 'transcript-watch.json');
+    try {
+      writeSeat(root, ORIFICE, 'Orifice');
+      writeSeat(root, BIFF, 'Biff');
+      writeFileSync(watchConfigFile, JSON.stringify({
+        version: 1,
+        schemas: { cursor: { name: 'cursor' } },
+        watches: [
+          { name: 'cursor', path: '/tmp/cursor.jsonl', schema: 'cursor' },
+          { name: 'grok-bot', agentId: ORIFICE, project: 'cmem_work_orifice_pilot', schema: 'grok-bot' },
+        ],
+      }));
+
+      const result = ensureWatchesForLiveAgents({ agentDataRoot: root, watchConfigFile });
+      expect(result.added).toEqual([{ agentId: BIFF, project: 'cmem_work_biff' }]);
+      expect(result.pruned).toEqual([]);
+
+      const parsed = JSON.parse(readFileSync(watchConfigFile, 'utf8'));
+      expect(parsed.schemas.cursor.name).toBe('cursor');
+      const cursor = parsed.watches.filter((watch: { name: string }) => watch.name === 'cursor');
+      expect(cursor).toHaveLength(1);
+
+      const byId = Object.fromEntries(
+        parsed.watches
+          .filter((watch: { agentId?: string }) => watch.agentId)
+          .map((watch: { agentId: string }) => [watch.agentId, watch]),
+      );
+      expect(byId[ORIFICE].project).toBe('cmem_work_orifice_pilot');
+      expect(byId[BIFF].project).toBe('cmem_work_biff');
+      expect(byId[BIFF].path).toBe(path.join(root, 'agent-transcripts', BIFF, '*.jsonl'));
+      expect(byId[BIFF].workspace).toBe(path.join(root, '.cmem-projects', 'cmem_work_biff'));
+      expect(existsSync(path.join(root, '.cmem-projects', 'cmem_work_biff'))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('prunes grok-bot watches for deleted seats and leaves other watches alone', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'grok-inject-prune-'));
+    const watchConfigFile = path.join(root, 'transcript-watch.json');
+    try {
+      writeSeat(root, ORIFICE, 'Orifice');
+      writeFileSync(watchConfigFile, JSON.stringify({
+        watches: [
+          { name: 'cursor', path: '/tmp/cursor.jsonl', schema: 'cursor' },
+          { name: 'grok-bot', agentId: ORIFICE, project: 'cmem_work_orifice' },
+          { name: 'grok-bot', agentId: GONE, project: 'cmem_work_gone' },
+        ],
+      }));
+
+      const result = ensureWatchesForLiveAgents({ agentDataRoot: root, watchConfigFile });
+      expect(result.pruned).toEqual([GONE]);
+      expect(result.added).toEqual([]);
+
+      const parsed = JSON.parse(readFileSync(watchConfigFile, 'utf8'));
+      expect(parsed.watches.map((watch: { agentId?: string; name: string }) => watch.agentId || watch.name))
+        .toEqual(['cursor', ORIFICE]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('slugs new-hire profile names the same way the installer does', () => {
+    expect(resolveGrokBotProject('Biff')).toBe('cmem_work_biff');
+    expect(resolveGrokBotProject('New Bot')).toBe('cmem_work_new-bot');
+    expect(resolveGrokBotProject('box')).toBe('cmem_work_root');
   });
 });
