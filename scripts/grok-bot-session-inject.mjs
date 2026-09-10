@@ -14,10 +14,22 @@
  *   existing Memory mid-attach transport:
  *
  *     GET /api/context/inject  (Allowed params only: projects, platformSource)
- *       → <data>/ccs/<agentId>/timeline.md     (L1 seat bucket, editable)
+ *       → <agentDataRoot>/ccs/seats/<agentId>/TIMELINE.md   (L1 seat bucket)
  *       → agents/<id>/memory/log/zz-claude-mem-inject.md
  *       → host WatchedDirectory → getFrozenSectionUpdatesForTurn()
  *       → <instructions_update> "## Memory"
+ *
+ * CCS L1 tree (shape stamp). One clear default, under the agent-data tree
+ * so bots can edit it:
+ *
+ *     <agentDataRoot>/ccs/seats/<agentId>/TIMELINE.md   ← Phase 1 source
+ *     <agentDataRoot>/ccs/seats/<agentId>/PRIVATE.md    ← may exist; never written
+ *     <agentDataRoot>/ccs/house/                        ← reserved, inherit later
+ *     <agentDataRoot>/ccs/groups/                       ← reserved
+ *
+ * Override the `ccs/` root with CLAUDE_MEM_CCS_ROOT if needed. L1 pilot
+ * compiles one seat TIMELINE.md only. Allowlist (Orifice / Grok Memory),
+ * not house-wide * as the product.
  *
  * Host has no native `ccs_timeline` section (closed freeze list). That is an
  * implement hack, not a product rewrite. Native registry is a later upgrade.
@@ -48,8 +60,13 @@ const AGENT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 const HOST_MAX_FACT_CHARS = 500;
 const INJECT_TAG = '[claude-mem]';
 const INJECT_LOG_BASENAME = 'zz-claude-mem-inject.md';
-const TIMELINE_BUCKET_BASENAME = 'timeline.md';
+const TIMELINE_BUCKET_BASENAME = 'TIMELINE.md';
+const PRIVATE_BUCKET_BASENAME = 'PRIVATE.md';
 const PROFILE_BASENAME = 'profile.md';
+const CCS_DIRNAME = 'ccs';
+const CCS_SEATS_DIRNAME = 'seats';
+const CCS_HOUSE_DIRNAME = 'house';
+const CCS_GROUPS_DIRNAME = 'groups';
 
 /**
  * Slide-off window for the compiled INDEX. #3953 defaulted to 2 packed
@@ -82,7 +99,7 @@ const FILE_HEADER = [
   '',
   '<!-- Written by claude-mem grok-bot-session-inject (Phase 1 JIT).',
   '     Rich timeline INDEX compiled from the CCS L1 seat bucket',
-  '     (<data>/ccs/<agentId>/timeline.md). Landed here so the host Memory',
+  '     (<agentDataRoot>/ccs/seats/<agentId>/TIMELINE.md). Landed here so the host Memory',
   '     mid-attach (`<instructions_update>`) picks it up — same transport as #3953.',
   '     Dated facts, one observation per line as "- (YYYY-MM-DD) <fact>".',
   '     Each row keeps its observation ID for get_observations. Safe to read.',
@@ -93,9 +110,11 @@ const FILE_HEADER = [
 const BUCKET_HEADER = [
   '# Timeline bucket',
   '',
-  '<!-- CCS L1 seat bucket (editable). Claude-Mem is the JIT compiler:',
-  '     mtime change → recompile → zz-claude-mem-inject.md → host Memory.',
+  '<!-- CCS L1 seat bucket (editable). Path: ccs/seats/<seat-id>/TIMELINE.md.',
+  '     Claude-Mem is the JIT compiler: mtime change → recompile →',
+  '     zz-claude-mem-inject.md → host Memory mid-attach.',
   '     Row grammar: ID TIME TYPE TITLE. Keep the observation ID on every row.',
+  '     Sibling PRIVATE.md is reserved (this compiler never writes it).',
   '     Do not rename this file to profile.md. -->',
   '',
 ].join('\n');
@@ -210,6 +229,7 @@ export function loadConfig(env = process.env) {
     pick('CLAUDE_MEM_GROK_BOT_INJECT_WINDOW'),
     pick('CLAUDE_MEM_GROK_BOT_INJECT_MAX_LINES'),
   );
+  const agentDataRoot = discoverAgentDataRoot(env);
 
   return {
     enabled: String(pick('CLAUDE_MEM_GROK_BOT_INJECT_ENABLED') ?? '').toLowerCase() === 'true',
@@ -238,8 +258,13 @@ export function loadConfig(env = process.env) {
     // mtime poll used when inotify watches are unavailable (this box runs out
     // of watch descriptors regularly). Two statSync calls per agent per tick.
     pollMs: num('CLAUDE_MEM_GROK_BOT_INJECT_POLL_MS', 10_000),
-    agentDataRoot: discoverAgentDataRoot(env),
-    ccsRoot: String(pick('CLAUDE_MEM_CCS_ROOT') ?? '').trim() || path.join(dataDir(), 'ccs'),
+    agentDataRoot,
+    /**
+     * Default CCS root lives under the agent-data tree so bots can edit
+     * TIMELINE.md. CLAUDE_MEM_CCS_ROOT overrides (e.g. a data-dir-relative
+     * `ccs/` if a seat wants that instead).
+     */
+    ccsRoot: String(pick('CLAUDE_MEM_CCS_ROOT') ?? '').trim() || path.join(agentDataRoot, CCS_DIRNAME),
     stateFile: path.join(dataDir(), 'state', 'grok-bot-session-inject.json'),
     watchConfigFile: path.join(dataDir(), 'transcript-watch.json'),
   };
@@ -577,17 +602,33 @@ export function injectLogPath(agentDataRoot, agentId) {
   return path.join(agentDataRoot, 'agents', agentId, 'memory', 'log', INJECT_LOG_BASENAME);
 }
 
-/** L1 seat-level CCS bucket. House-wide tree cascade is a later upgrade. */
-export function timelineBucketPath(ccsRoot, agentId) {
+/** `ccs/seats/<seat-id>/` — L1 seat folder. house/ and groups/ are siblings, later. */
+export function seatBucketDir(ccsRoot, agentId) {
   if (!AGENT_ID_RE.test(agentId)) {
     throw new Error(`Refusing bucket path for non-UUID agent id: ${agentId}`);
   }
-  return path.join(ccsRoot, agentId, TIMELINE_BUCKET_BASENAME);
+  return path.join(ccsRoot, CCS_SEATS_DIRNAME, agentId);
+}
+
+/** Primary L1 timeline bucket. Concrete default: `<agentDataRoot>/ccs/seats/<id>/TIMELINE.md`. */
+export function timelineBucketPath(ccsRoot, agentId) {
+  return path.join(seatBucketDir(ccsRoot, agentId), TIMELINE_BUCKET_BASENAME);
+}
+
+/** Reserved sibling. This compiler never writes or compiles it. */
+export function privateBucketPath(ccsRoot, agentId) {
+  return path.join(seatBucketDir(ccsRoot, agentId), PRIVATE_BUCKET_BASENAME);
 }
 
 function refuseProfile(basename) {
   if (String(basename).toLowerCase() === PROFILE_BASENAME) {
     throw new Error('Refusing write to profile.md');
+  }
+}
+
+function refusePrivate(basename) {
+  if (String(basename).toUpperCase() === PRIVATE_BUCKET_BASENAME) {
+    throw new Error('Refusing write to PRIVATE.md');
   }
 }
 
@@ -605,14 +646,21 @@ export function assertSafeInjectPath(agentDataRoot, agentId, filePath) {
 }
 
 export function assertSafeBucketPath(ccsRoot, agentId, filePath) {
-  const expectedDir = path.resolve(path.join(ccsRoot, agentId));
+  const expectedDir = path.resolve(seatBucketDir(ccsRoot, agentId));
   const resolved = path.resolve(filePath);
-  refuseProfile(path.basename(resolved));
+  const base = path.basename(resolved);
+  refuseProfile(base);
+  refusePrivate(base);
   if (path.dirname(resolved) !== expectedDir) {
     throw new Error('Refusing bucket write outside CCS L1 seat folder');
   }
-  if (path.basename(resolved) !== TIMELINE_BUCKET_BASENAME) {
-    throw new Error(`Refusing bucket write to a file this compiler does not own: ${path.basename(resolved)}`);
+  // house/ and groups/ are reserved; the dirname check already excludes them.
+  if (resolved.includes(`${path.sep}${CCS_HOUSE_DIRNAME}${path.sep}`)
+    || resolved.includes(`${path.sep}${CCS_GROUPS_DIRNAME}${path.sep}`)) {
+    throw new Error('Refusing bucket write under ccs/house or ccs/groups');
+  }
+  if (base !== TIMELINE_BUCKET_BASENAME) {
+    throw new Error(`Refusing bucket write to a file this compiler does not own: ${base}`);
   }
 }
 
@@ -825,7 +873,7 @@ function runWatch(initialCfg) {
       for (const dir of [
         path.join(cfg.agentDataRoot, 'agents', agentId),
         path.join(cfg.agentDataRoot, 'agent-transcripts', agentId),
-        path.join(cfg.ccsRoot, agentId),
+        seatBucketDir(cfg.ccsRoot, agentId),
       ]) {
         if (!existsSync(dir) || watchedDirs.has(dir)) continue;
         watchedDirs.add(dir);
@@ -876,7 +924,7 @@ function runWatch(initialCfg) {
   const pollActivity = () => {
     const dirs = new Set(watchedDirs);
     for (const agentId of resolveAgentIds(cfg)) {
-      dirs.add(path.join(cfg.ccsRoot, agentId));
+      dirs.add(seatBucketDir(cfg.ccsRoot, agentId));
       const bucket = timelineBucketPath(cfg.ccsRoot, agentId);
       dirs.add(bucket);
     }

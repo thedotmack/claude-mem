@@ -6,6 +6,8 @@ import {
   injectTextToFactLines,
   injectLogPath,
   timelineBucketPath,
+  privateBucketPath,
+  seatBucketDir,
   loadConfig,
   slugGrokBotProject,
   listLiveAgents,
@@ -345,11 +347,48 @@ describe('mtime-stable rewrite', () => {
     const b = a.replace('3:41am UTC', '9:00pm UTC');
     expect(bucketRowPayload(a)).toBe(bucketRowPayload(b));
   });
+
+  it('writes TIMELINE.md under ccs/seats/<id> and never touches PRIVATE.md', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'grok-inject-layout-'));
+    try {
+      writeSeat(root, ORIFICE, 'Orifice');
+      writeFileSync(path.join(root, 'transcript-watch.json'), JSON.stringify({
+        watches: [{ name: 'grok-bot', agentId: ORIFICE, project: 'cmem_work_orifice' }],
+      }));
+      const ccsRoot = path.join(root, 'ccs');
+      const privatePath = privateBucketPath(ccsRoot, ORIFICE);
+      mkdirSync(path.dirname(privatePath), { recursive: true });
+      writeFileSync(privatePath, '# keep me\n');
+
+      const result = await refreshAgent({
+        agentIdsAuto: false,
+        agentIds: [ORIFICE],
+        agentDataRoot: root,
+        ccsRoot,
+        watchConfigFile: path.join(root, 'transcript-watch.json'),
+        projectsByAgent: new Map(),
+        window: 80,
+        maxLineChars: 160,
+        tier: 'episode',
+        stateFile: path.join(root, 'state.json'),
+      }, ORIFICE, {
+        fetchInjectFn: async () => ({ url: 'http://inject', body: sampleInject(3) }),
+      });
+
+      expect(result.bucketPath).toBe(`${ccsRoot}/seats/${ORIFICE}/TIMELINE.md`);
+      expect(existsSync(result.bucketPath as string)).toBe(true);
+      expect(readFileSync(privatePath, 'utf8')).toBe('# keep me\n');
+      expect(existsSync(path.join(ccsRoot, 'house'))).toBe(false);
+      expect(existsSync(path.join(ccsRoot, 'groups'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('path guards', () => {
   const root = '/home/box/agent-data';
-  const ccs = '/home/box/.claude-mem/ccs';
+  const ccs = path.join(root, 'ccs');
 
   it('targets the agent log folder and never profile.md', () => {
     const filePath = injectLogPath(root, ORIFICE);
@@ -373,18 +412,35 @@ describe('path guards', () => {
       .toThrow(/does not own/);
   });
 
-  it('places the editable bucket at CCS L1 seat-level, never profile.md', () => {
+  it('places the editable bucket at ccs/seats/<seat-id>/TIMELINE.md', () => {
     const bucket = timelineBucketPath(ccs, ORIFICE);
-    expect(bucket).toBe(`${ccs}/${ORIFICE}/timeline.md`);
+    expect(bucket).toBe(`${ccs}/seats/${ORIFICE}/TIMELINE.md`);
+    expect(seatBucketDir(ccs, ORIFICE)).toBe(`${ccs}/seats/${ORIFICE}`);
+    expect(privateBucketPath(ccs, ORIFICE)).toBe(`${ccs}/seats/${ORIFICE}/PRIVATE.md`);
     expect(bucket.endsWith('profile.md')).toBe(false);
+    expect(bucket.endsWith('PRIVATE.md')).toBe(false);
   });
 
-  it('refuses bucket writes to profile.md or outside the seat folder', () => {
-    expect(() => assertSafeBucketPath(ccs, ORIFICE, path.join(ccs, ORIFICE, 'profile.md')))
+  it('defaults CCS under the agent-data tree (bots can edit TIMELINE.md)', () => {
+    const cfg = loadConfig({ GROK_BOT_AGENT_DATA: root });
+    expect(cfg.ccsRoot).toBe(path.join(root, 'ccs'));
+    expect(timelineBucketPath(cfg.ccsRoot, ORIFICE)).toBe(
+      `${root}/ccs/seats/${ORIFICE}/TIMELINE.md`,
+    );
+  });
+
+  it('refuses bucket writes to profile.md, PRIVATE.md, house/, groups/, or another seat', () => {
+    expect(() => assertSafeBucketPath(ccs, ORIFICE, path.join(ccs, 'seats', ORIFICE, 'profile.md')))
       .toThrow(/profile\.md/);
-    expect(() => assertSafeBucketPath(ccs, ORIFICE, path.join(ccs, 'other', 'timeline.md')))
+    expect(() => assertSafeBucketPath(ccs, ORIFICE, path.join(ccs, 'seats', ORIFICE, 'PRIVATE.md')))
+      .toThrow(/PRIVATE\.md/);
+    expect(() => assertSafeBucketPath(ccs, ORIFICE, path.join(ccs, 'house', 'TIMELINE.md')))
+      .toThrow(/outside CCS L1 seat folder|house/);
+    expect(() => assertSafeBucketPath(ccs, ORIFICE, path.join(ccs, 'groups', 'TIMELINE.md')))
+      .toThrow(/outside CCS L1 seat folder|groups/);
+    expect(() => assertSafeBucketPath(ccs, ORIFICE, path.join(ccs, 'seats', BIFF, 'TIMELINE.md')))
       .toThrow(/outside CCS L1 seat folder/);
-    expect(() => assertSafeBucketPath(ccs, ORIFICE, path.join(ccs, ORIFICE, '..', BIFF, 'timeline.md')))
+    expect(() => assertSafeBucketPath(ccs, ORIFICE, path.join(ccs, 'seats', ORIFICE, '..', BIFF, 'TIMELINE.md')))
       .toThrow(/outside CCS L1 seat folder/);
     expect(() => assertSafeInjectPath(root, ORIFICE, path.join(root, 'agents', ORIFICE, 'memory', 'log', '..', 'profile.md')))
       .toThrow(/profile\.md|outside/);
@@ -397,7 +453,7 @@ describe('path guards', () => {
 });
 
 describe('loadConfig defaults', () => {
-  it('prefers the Orifice/pilot allowlist; * / all are opt-in', () => {
+  it('prefers the Orifice / Grok Memory allowlist; * / all are infra, not the product', () => {
     const listed = loadConfig({ CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS: `${ORIFICE}` });
     expect(listed.agentIdsAuto).toBe(false);
     expect(listed.agentIds).toEqual([ORIFICE]);
