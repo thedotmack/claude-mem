@@ -185,6 +185,13 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // context_injected_rollup aggregation fields:
   'total_tokens',
   'avg_tokens',
+  // skill_invoked — closed skill identity only. skill_id is a first-party
+  // plugin/skills/ name or `other`; skill_source is first_party | third_party;
+  // skill_trigger is tool | prompt. Never a third-party skill name, never
+  // tool_input.args, never the prompt body.
+  'skill_id',
+  'skill_source',
+  'skill_trigger',
   // Per-session/window observation volume folded into the rollups so the
   // context-cache-value and observation-type metrics survive the retirement of
   // the legacy per-occurrence streams. observations_created (generation side,
