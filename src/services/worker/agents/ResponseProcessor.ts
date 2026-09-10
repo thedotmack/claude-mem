@@ -290,7 +290,7 @@ export async function processAgentResponse(
   projectRoot?: string,
   modelId?: string,
   responseContext?: ResponseContext
-): Promise<void> {
+): Promise<StorageResult | null> {
   const processingStartedAt = Date.now();
   session.lastGeneratorActivity = Date.now();
   const context = responseContext ?? snapshotResponseContext(session);
@@ -350,7 +350,7 @@ export async function processAgentResponse(
         // best-effort; AbortController.abort() should not throw in normal use.
       }
       worker?.broadcastProcessingStatus?.();
-      return;
+      return null;
     }
 
     if (isAuthFailureObserverOutput(text)) {
@@ -370,7 +370,7 @@ export async function processAgentResponse(
         remediation: '/login',
         preview: previewOutput(text),
       });
-      return;
+      return null;
     }
 
     // Classify the non-XML output so a dropped batch is visible, not silent.
@@ -401,7 +401,7 @@ export async function processAgentResponse(
     // creates an observer loop where the same low-signal batch is retried.
     await sessionManager.confirmClaimedMessages(session.sessionDbId);
     session.earliestPendingTimestamp = null;
-    return;
+    return null;
   }
 
   // Valid parse — clear the invalid-output counter so transient misses don't
@@ -418,7 +418,7 @@ export async function processAgentResponse(
     // count as "in progress" and trigger a respawn loop while we wait for the
     // memory session id to appear. The next generator pass will re-claim them.
     await sessionManager.resetProcessingToPending(session.sessionDbId);
-    return;
+    return null;
   }
 
   const { observations, summary } = parsed;
@@ -614,6 +614,8 @@ export async function processAgentResponse(
     worker,
     agentName
   );
+
+  return result;
 }
 
 function normalizeSummaryForStorage(summary: ParsedSummary | null): {

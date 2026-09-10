@@ -46,6 +46,8 @@ export type SSEEventPayload =
 
 export interface StorageResult {
   observationIds: number[];
+  /** Subset of observationIds this turn physically inserted (deduplicated rows excluded). */
+  insertedObservationIds: number[];
   summaryId: number | null;
   createdAtEpoch: number;
 }
