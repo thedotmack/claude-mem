@@ -26,14 +26,6 @@
  *   node scripts/grok-bot-session-inject.mjs --status   # what is on disk now
  *   node scripts/grok-bot-session-inject.mjs --clear    # remove injected file
  *   ... --dry-run                                       # never write
- *
- * CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS:
- *   CSV of agent UUIDs — allowlist those seats only
- *   `*` or `all` — every live seat under agent-data/agents/ (house-wide).
- *   In `*` / `all` mode, each tick reloads the allowlist and
- *   ensureWatchesForLiveAgents prunes deleted seats and adds missing live
- *   seats with their own cmem_work_* project (existing project names stay).
- *   Each seat injects that one project only (CCS seat-level L1).
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, watch } from 'node:fs';
@@ -109,84 +101,6 @@ function splitCsv(value) {
     .filter(entry => entry.length > 0);
 }
 
-/** `*` or `all` = every live seat; otherwise a CSV of agent UUIDs. */
-export function parseAgentIdsSetting(raw) {
-  const token = String(raw ?? '').trim();
-  const auto = token === '*' || token.toLowerCase() === 'all';
-  if (auto) return { auto: true, ids: [] };
-  return { auto: false, ids: splitCsv(token).filter(id => AGENT_ID_RE.test(id)) };
-}
-
-/**
- * Cowork-style project prefix, plus `box` (Grok Bot host home is /home/box).
- * Same slug rules as GrokBotInstaller.resolveGrokBotProject — kept local so
- * this shim stays a standalone script.
- */
-const GENERIC_DIRS = new Set([
-  '',
-  '/',
-  'root',
-  'claude',
-  'user',
-  'home',
-  'work',
-  'workspace',
-  'tmp',
-  'uploads',
-  'outputs',
-  'box',
-]);
-
-export function resolveGrokBotProject(name) {
-  const base = String(name ?? '').replace(/\/+$/, '').split('/').pop() || '';
-  const slug = base
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 40);
-  return 'cmem_work_' + (GENERIC_DIRS.has(slug) ? 'root' : slug);
-}
-
-/**
- * Live Grok Bot seats: UUID dirs under agents/, not sand-subagent-*.
- * A seat counts if it has profile.json and/or a memory/ tree (same as the
- * installer — pilot seats sometimes ship memory before a profile).
- */
-export function listLiveAgents(agentDataRoot) {
-  const agentsDir = path.join(agentDataRoot, 'agents');
-  if (!existsSync(agentsDir)) return [];
-
-  const agents = [];
-  for (const entry of readdirSync(agentsDir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    if (entry.name.startsWith('sand-subagent-')) continue;
-    if (!AGENT_ID_RE.test(entry.name)) continue;
-
-    const profilePath = path.join(agentsDir, entry.name, 'profile.json');
-    const memoryDir = path.join(agentsDir, entry.name, 'memory');
-    const hasProfile = existsSync(profilePath);
-    const hasMemory = existsSync(memoryDir);
-    if (!hasProfile && !hasMemory) continue;
-
-    let name = '';
-    if (hasProfile) {
-      try {
-        const profile = JSON.parse(readFileSync(profilePath, 'utf8'));
-        name = typeof profile?.name === 'string' ? profile.name : '';
-      } catch {
-        if (!hasMemory) continue;
-      }
-    }
-    agents.push({ id: entry.name, name });
-  }
-  return agents;
-}
-
-export function resolveInjectAgentIds(cfg) {
-  if (cfg.agentIdsAuto) return listLiveAgents(cfg.agentDataRoot).map(agent => agent.id);
-  return [...cfg.agentIds];
-}
-
 function hasAgentsAndTranscripts(dir) {
   return existsSync(path.join(dir, 'agents')) && existsSync(path.join(dir, 'agent-transcripts'));
 }
@@ -227,15 +141,17 @@ export function loadConfig(env = process.env) {
     return Number.isFinite(raw) && raw > 0 ? raw : fallback;
   };
 
-  const parsedIds = parseAgentIdsSetting(pick('CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS'));
-  const agentDataRoot = discoverAgentDataRoot(env);
+  const agentIdsRaw = String(pick('CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS') ?? '').trim();
+  const agentIdsAuto = agentIdsRaw === '*' || agentIdsRaw.toLowerCase() === 'all';
+  const agentIds = agentIdsAuto
+    ? []
+    : splitCsv(agentIdsRaw).filter(id => AGENT_ID_RE.test(id));
 
   return {
     enabled: String(pick('CLAUDE_MEM_GROK_BOT_INJECT_ENABLED') ?? '').toLowerCase() === 'true',
-    agentIdsAuto: parsedIds.auto,
-    agentIds: parsedIds.auto
-      ? listLiveAgents(agentDataRoot).map(agent => agent.id)
-      : parsedIds.ids,
+    /** When true, every live seat in transcript-watch.json is included (and new seats are ensured). */
+    agentIdsAuto,
+    agentIds,
     /** `agentId=projA,projB;agentId2=projC` — overrides transcript-watch.json. */
     projectsByAgent: parseProjectMap(pick('CLAUDE_MEM_GROK_BOT_INJECT_PROJECTS_BY_AGENT')),
     workerPort: String(pick('CLAUDE_MEM_WORKER_PORT') ?? 37700).trim(),
@@ -258,17 +174,10 @@ export function loadConfig(env = process.env) {
     // mtime poll used when inotify watches are unavailable (this box runs out
     // of watch descriptors regularly). Two statSync calls per agent per tick.
     pollMs: num('CLAUDE_MEM_GROK_BOT_INJECT_POLL_MS', 10_000),
-    agentDataRoot,
+    agentDataRoot: discoverAgentDataRoot(env),
     stateFile: path.join(dataDir(), 'state', 'grok-bot-session-inject.json'),
     watchConfigFile: path.join(dataDir(), 'transcript-watch.json'),
   };
-}
-
-/** Re-read env + settings + live seats. Watch mode calls this every tick. */
-export function reloadAllowlist(cfg, env = process.env) {
-  const next = loadConfig(env);
-  Object.assign(cfg, next);
-  return cfg;
 }
 
 function parseProjectMap(raw) {
@@ -287,95 +196,129 @@ function parseProjectMap(raw) {
 /**
  * Agent -> project comes from the transcript-watch config the Grok Bot
  * installer already writes, so there is exactly one mapping on the box.
- *
- * CCS seat-level L1: a seat injects **its own** project only. Catch-all
- * `*` watches and other seats' projects are ignored. An explicit
- * PROJECTS_BY_AGENT override still wins, but only the last (primary) name
- * is sent — Allowed inject params stay `projects` + optional platformSource.
  */
 export function projectsForAgent(cfg, agentId) {
   const override = cfg.projectsByAgent.get(agentId.toLowerCase());
-  if (override?.length) return override.slice(-1);
+  if (override) return override;
   const watches = readJson(cfg.watchConfigFile, {})?.watches ?? [];
+  const projects = [];
   for (const watch of watches) {
     if (String(watch?.agentId ?? '').toLowerCase() !== agentId.toLowerCase()) continue;
     const project = String(watch?.project ?? '').trim();
-    if (project) return [project];
+    if (project && !projects.includes(project)) projects.push(project);
   }
-  return [];
+  return projects;
 }
 
-function grokBotWatchForAgent(agentDataRoot, agentId, project) {
-  const workspace = path.join(agentDataRoot, '.cmem-projects', project);
-  mkdirSync(workspace, { recursive: true });
-  mkdirSync(path.join(agentDataRoot, 'agent-transcripts', agentId), { recursive: true });
-  return {
-    name: 'grok-bot',
-    schema: 'grok-bot',
-    path: path.join(agentDataRoot, 'agent-transcripts', agentId, '*.jsonl'),
-    workspace,
-    project,
-    startAtEnd: true,
-    agentId,
-  };
+export function slugGrokBotProject(name) {
+  const base = String(name ?? '').replace(/\/+$/, '').split('/').pop() || '';
+  const cleaned = base.replace(/[^\w\s-]/gu, '');
+  const slug = cleaned
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+  const generic = new Set(['', 'root', 'box', 'home', 'user', 'work', 'workspace', 'tmp', 'uploads', 'outputs', 'claude']);
+  return 'cmem_work_' + (generic.has(slug) ? 'root' : slug);
 }
 
-function isGrokBotSeatWatch(watch) {
-  const name = String(watch?.name ?? '');
-  const schema = String(watch?.schema ?? '');
-  return name === 'grok-bot' || schema === 'grok-bot';
+export function listLiveAgents(agentDataRoot) {
+  const agentsDir = path.join(agentDataRoot, 'agents');
+  if (!existsSync(agentsDir)) return [];
+  const out = [];
+  for (const entry of readdirSync(agentsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !AGENT_ID_RE.test(entry.name)) continue;
+    const profilePath = path.join(agentsDir, entry.name, 'profile.json');
+    if (!existsSync(profilePath)) continue;
+    let name = entry.name;
+    try {
+      const profile = JSON.parse(readFileSync(profilePath, 'utf8'));
+      if (typeof profile?.name === 'string' && profile.name.trim()) name = profile.name.trim();
+    } catch {}
+    out.push({ id: entry.name, name });
+  }
+  return out;
 }
 
 /**
- * House-wide `*` / `all` mode: keep transcript-watch.json aligned with live
- * seats so a new hire gets a `cmem_work_*` project (and inject) without a
- * reinstall. Existing project names are left alone. Deleted seats' grok-bot
- * watches are pruned. Non-grok-bot watches are untouched.
+ * Keep transcript-watch in sync with live seats: prune deleted, add missing.
+ * Preserves existing project names so diaries do not jump buckets on rename.
  */
 export function ensureWatchesForLiveAgents(cfg, { log = () => {} } = {}) {
+  const watchCfg = readJson(cfg.watchConfigFile, null);
+  if (!watchCfg || !Array.isArray(watchCfg.watches)) return { added: 0, pruned: 0 };
+
   const live = listLiveAgents(cfg.agentDataRoot);
-  const liveIds = new Set(live.map(agent => agent.id.toLowerCase()));
-  const existing = readJson(cfg.watchConfigFile, null);
-  const config = existing && typeof existing === 'object'
-    ? { ...existing, watches: Array.isArray(existing.watches) ? [...existing.watches] : [] }
-    : { version: 1, watches: [] };
+  const liveIds = new Set(live.map(a => a.id));
+  const before = watchCfg.watches.length;
 
   const kept = [];
   const seen = new Set();
-  const added = [];
-  const pruned = [];
-
-  for (const watch of config.watches) {
+  let pruned = 0;
+  for (const watch of watchCfg.watches) {
+    if (watch?.name !== 'grok-bot') {
+      kept.push(watch);
+      continue;
+    }
     const agentId = String(watch?.agentId ?? '').trim();
-    if (isGrokBotSeatWatch(watch) && AGENT_ID_RE.test(agentId) && !liveIds.has(agentId.toLowerCase())) {
-      pruned.push(agentId);
+    if (!agentId || agentId === '*') {
+      pruned += 1;
+      continue;
+    }
+    if (!liveIds.has(agentId)) {
+      pruned += 1;
       continue;
     }
     kept.push(watch);
-    if (AGENT_ID_RE.test(agentId)) seen.add(agentId.toLowerCase());
+    seen.add(agentId);
   }
 
+  let added = 0;
   for (const agent of live) {
-    if (seen.has(agent.id.toLowerCase())) continue;
-    const project = resolveGrokBotProject(agent.name);
-    kept.push(grokBotWatchForAgent(cfg.agentDataRoot, agent.id, project));
-    added.push({ agentId: agent.id, project });
+    if (seen.has(agent.id)) continue;
+    const project = slugGrokBotProject(agent.name);
+    const workspace = path.join(cfg.agentDataRoot, '.cmem-projects', project);
+    const transcriptDir = path.join(cfg.agentDataRoot, 'agent-transcripts', agent.id);
+    mkdirSync(workspace, { recursive: true });
+    mkdirSync(transcriptDir, { recursive: true });
+    kept.push({
+      name: 'grok-bot',
+      schema: 'grok-bot',
+      path: path.join(transcriptDir, '*.jsonl'),
+      workspace,
+      project,
+      startAtEnd: true,
+      agentId: agent.id,
+    });
+    seen.add(agent.id);
+    added += 1;
+    log(`watch+ ${agent.name} (${agent.id}) -> ${project}`);
   }
 
-  const changed = added.length > 0 || pruned.length > 0;
-  if (changed) {
-    config.watches = kept;
-    mkdirSync(path.dirname(cfg.watchConfigFile), { recursive: true });
-    writeFileAtomic(cfg.watchConfigFile, `${JSON.stringify(config, null, 2)}\n`);
-    if (added.length > 0) {
-      log(`watch ensure: added ${added.map(row => `${row.agentId}=${row.project}`).join(', ')}`);
-    }
-    if (pruned.length > 0) {
-      log(`watch ensure: pruned ${pruned.join(', ')}`);
-    }
+  if (added || pruned || kept.length !== before) {
+    watchCfg.watches = kept;
+    watchCfg.version = watchCfg.version || 1;
+    writeFileAtomic(cfg.watchConfigFile, JSON.stringify(watchCfg, null, 2) + '\n');
   }
+  return { added, pruned };
+}
 
-  return { changed, added, pruned, watches: kept };
+/** Resolve the seat list for this pass. Auto mode = every live watched seat. */
+export function resolveAgentIds(cfg, { log = () => {} } = {}) {
+  if (cfg.agentIdsAuto) {
+    ensureWatchesForLiveAgents(cfg, { log });
+    const watches = readJson(cfg.watchConfigFile, {})?.watches ?? [];
+    const ids = [];
+    for (const watch of watches) {
+      if (watch?.name !== 'grok-bot') continue;
+      const agentId = String(watch?.agentId ?? '').trim();
+      if (!AGENT_ID_RE.test(agentId)) continue;
+      if (!existsSync(path.join(cfg.agentDataRoot, 'agents', agentId))) continue;
+      if (!ids.includes(agentId)) ids.push(agentId);
+    }
+    return ids;
+  }
+  return cfg.agentIds;
 }
 
 // ------------------------------------------------------------- inject io ----
@@ -593,9 +536,8 @@ function factBlock(contents) {
 }
 
 async function runOnce(cfg, opts) {
-  if (cfg.agentIdsAuto) ensureWatchesForLiveAgents(cfg, opts);
-  const agentIds = resolveInjectAgentIds(cfg);
   const results = [];
+  const agentIds = resolveAgentIds(cfg, opts);
   for (const agentId of agentIds) {
     try {
       results.push(await refreshAgent(cfg, agentId, opts));
@@ -608,42 +550,38 @@ async function runOnce(cfg, opts) {
 
 // ----------------------------------------------------------------- watch ----
 
-function runWatch(cfg) {
+function runWatch(initialCfg) {
   const log = message => console.log(`[grok-inject ${new Date().toISOString()}] ${message}`);
-  const seatLabel = cfg.agentIdsAuto ? 'all live seats (*)' : `${cfg.agentIds.length} agent(s)`;
-  log(`watching ${seatLabel}; worker :${cfg.workerPort}; interval ${cfg.intervalMs}ms; root ${cfg.agentDataRoot}`);
+  let cfg = initialCfg;
+  const agentIds = resolveAgentIds(cfg, { log });
+  log(`watching ${cfg.agentIdsAuto ? 'AUTO' : agentIds.length} seat(s); worker :${cfg.workerPort}; interval ${cfg.intervalMs}ms; root ${cfg.agentDataRoot}`);
 
   let lastRunAt = 0;
   let pending = null;
   let running = false;
-  const activityPaths = [];
   const watchedDirs = new Set();
 
-  const ensureActivity = agentId => {
-    for (const dir of [
-      path.join(cfg.agentDataRoot, 'agents', agentId),
-      path.join(cfg.agentDataRoot, 'agent-transcripts', agentId),
-    ]) {
-      if (!existsSync(dir) || watchedDirs.has(dir)) continue;
-      watchedDirs.add(dir);
-      activityPaths.push(dir);
-      try {
-        watch(dir, { persistent: true }, () => void kick('activity'));
-      } catch (error) {
-        // Boxes run out of inotify descriptors; the mtime poll below covers it.
-        log(`WARN cannot watch ${dir} (${error?.code ?? error?.message}) — falling back to mtime poll`);
+  const ensureActivityWatches = (ids) => {
+    for (const agentId of ids) {
+      for (const dir of [
+        path.join(cfg.agentDataRoot, 'agents', agentId),
+        path.join(cfg.agentDataRoot, 'agent-transcripts', agentId),
+      ]) {
+        if (!existsSync(dir) || watchedDirs.has(dir)) continue;
+        watchedDirs.add(dir);
+        try {
+          watch(dir, { persistent: true }, () => void kick('activity'));
+        } catch (error) {
+          log(`watch failed for ${dir}: ${error?.message ?? error}`);
+        }
       }
     }
   };
 
-  const prepareTick = () => {
-    reloadAllowlist(cfg);
-    if (cfg.agentIdsAuto) ensureWatchesForLiveAgents(cfg, { log });
-    for (const agentId of resolveInjectAgentIds(cfg)) ensureActivity(agentId);
-  };
-
   const kick = async reason => {
     if (running) return;
+    // Reload config each pass so * picks up new hires without a process restart.
+    cfg = loadConfig();
     const since = Date.now() - lastRunAt;
     if (since < cfg.minGapMs) {
       if (pending === null) {
@@ -657,35 +595,30 @@ function runWatch(cfg) {
     running = true;
     lastRunAt = Date.now();
     try {
-      prepareTick();
+      const ids = resolveAgentIds(cfg, { log });
+      ensureActivityWatches(ids);
       for (const result of await runOnce(cfg, { log })) {
         if (result.status === 'error') log(`ERROR ${result.agentId}: ${result.reason}`);
         else if (result.status === 'skipped') log(`skip ${result.agentId}: ${result.reason}`);
+        else if (result.status === 'written') log(`wrote ${result.agentId} (${result.factLines} lines)`);
       }
     } finally {
       running = false;
     }
   };
 
-  // Turn activity: the host touches the agent's store while a turn runs, and
-  // appends to the transcript when it lands. Either is a cue to refresh, so the
-  // delta is already staged for the agent's next cold turn.
-  prepareTick();
+  ensureActivityWatches(agentIds);
 
+  // mtime poll fallback when inotify watches are unavailable.
   const mtimes = new Map();
   const pollActivity = () => {
-    for (const dir of activityPaths) {
-      let stamp;
+    for (const dir of watchedDirs) {
       try {
-        stamp = statSync(dir).mtimeMs;
-      } catch {
-        continue;
-      }
-      if (mtimes.get(dir) !== stamp) {
-        const first = !mtimes.has(dir);
-        mtimes.set(dir, stamp);
-        if (!first) void kick('mtime');
-      }
+        const st = statSync(dir);
+        const prev = mtimes.get(dir);
+        mtimes.set(dir, st.mtimeMs);
+        if (prev !== undefined && st.mtimeMs !== prev) void kick('poll');
+      } catch {}
     }
   };
   pollActivity();
@@ -699,13 +632,11 @@ function runWatch(cfg) {
 // ------------------------------------------------------------------ main ----
 
 function printStatus(cfg) {
-  const agentIds = resolveInjectAgentIds(cfg);
   console.log(JSON.stringify({
     enabled: cfg.enabled,
-    agentIdsAuto: cfg.agentIdsAuto,
     agentDataRoot: cfg.agentDataRoot,
     workerPort: cfg.workerPort,
-    agents: agentIds.map(agentId => {
+    agents: resolveAgentIds(cfg).map(agentId => {
       const filePath = injectLogPath(cfg.agentDataRoot, agentId);
       const exists = existsSync(filePath);
       return {
@@ -721,15 +652,14 @@ function printStatus(cfg) {
 }
 
 function clearAgents(cfg) {
-  const agentIds = resolveInjectAgentIds(cfg);
-  for (const agentId of agentIds) {
+  for (const agentId of resolveAgentIds(cfg)) {
     const filePath = injectLogPath(cfg.agentDataRoot, agentId);
     assertSafeInjectPath(cfg.agentDataRoot, agentId, filePath);
     rmSync(filePath, { force: true });
     console.log(`removed ${filePath}`);
   }
   const state = loadState(cfg);
-  for (const agentId of agentIds) delete state[agentId];
+  for (const agentId of resolveAgentIds(cfg)) delete state[agentId];
   saveState(cfg, state);
 }
 
@@ -746,7 +676,7 @@ async function main() {
     return;
   }
   if (!cfg.agentIdsAuto && cfg.agentIds.length === 0) {
-    console.error('No allowlisted agents. Set CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS to a CSV of ids, or * / all for every live seat.');
+    console.error('No allowlisted agents. Set CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS to a list or *.');
     process.exitCode = 78;
     return;
   }
