@@ -5,8 +5,10 @@ import {
   waitForHealth,
   waitForPortFree,
   getRunningWorkerVersion,
-  checkVersionMatch
+  checkVersionMatch,
+  httpShutdown
 } from '../../src/services/infrastructure/index.js';
+import { logger } from '../../src/utils/logger.js';
 
 describe('HealthMonitor', () => {
   const originalFetch = global.fetch;
@@ -172,6 +174,68 @@ describe('HealthMonitor', () => {
       } finally {
         Object.defineProperty(process, 'platform', { value: origPlatform, configurable: true });
       }
+    });
+  });
+
+  describe('httpShutdown', () => {
+    // A refused connection means "worker already stopped" — expected during
+    // stop/restart flows — and must log at debug, not error. Its shape is
+    // runtime-dependent: Bun sets code 'ConnectionRefused' with an
+    // "Unable to connect..." message; Node's undici throws TypeError
+    // 'fetch failed' with ECONNREFUSED only on error.cause.
+    let errorSpy: ReturnType<typeof spyOn> | null = null;
+    let debugSpy: ReturnType<typeof spyOn> | null = null;
+
+    // Restore in teardown so a failed assertion cannot leave the logger
+    // mocked for subsequent tests.
+    afterEach(() => {
+      errorSpy?.mockRestore();
+      debugSpy?.mockRestore();
+      errorSpy = null;
+      debugSpy = null;
+    });
+
+    it('treats a Bun-shaped ConnectionRefused as worker-already-stopped, not an unexpected failure', async () => {
+      const bunRefusal = Object.assign(
+        new Error('Unable to connect. Is the computer able to access the url?'),
+        { code: 'ConnectionRefused' }
+      );
+      global.fetch = mock(() => Promise.reject(bunRefusal));
+      errorSpy = spyOn(logger, 'error').mockImplementation(() => {});
+      debugSpy = spyOn(logger, 'debug').mockImplementation(() => {});
+
+      const result = await httpShutdown(39999);
+
+      expect(result).toBe(false);
+      expect(errorSpy).not.toHaveBeenCalled();
+      expect(debugSpy).toHaveBeenCalled();
+    });
+
+    it('treats an undici-shaped fetch failed with cause ECONNREFUSED as worker-already-stopped', async () => {
+      const undiciRefusal = new TypeError('fetch failed');
+      (undiciRefusal as { cause?: unknown }).cause = Object.assign(
+        new Error('connect ECONNREFUSED 127.0.0.1:39999'),
+        { code: 'ECONNREFUSED' }
+      );
+      global.fetch = mock(() => Promise.reject(undiciRefusal));
+      errorSpy = spyOn(logger, 'error').mockImplementation(() => {});
+      debugSpy = spyOn(logger, 'debug').mockImplementation(() => {});
+
+      const result = await httpShutdown(39999);
+
+      expect(result).toBe(false);
+      expect(errorSpy).not.toHaveBeenCalled();
+      expect(debugSpy).toHaveBeenCalled();
+    });
+
+    it('still logs genuinely unexpected shutdown failures at error level', async () => {
+      global.fetch = mock(() => Promise.reject(new Error('TLS handshake exploded')));
+      errorSpy = spyOn(logger, 'error').mockImplementation(() => {});
+
+      const result = await httpShutdown(39999);
+
+      expect(result).toBe(false);
+      expect(errorSpy).toHaveBeenCalled();
     });
   });
 

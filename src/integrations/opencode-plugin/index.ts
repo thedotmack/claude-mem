@@ -105,6 +105,20 @@ const MAX_TOOL_RESPONSE_LENGTH = 1000;
 
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
 
+// A refused connection (worker simply not running) must stay quiet, but its
+// shape is runtime-dependent: Bun's fetch throws code 'ConnectionRefused'
+// ("Unable to connect..."), Node's undici throws TypeError 'fetch failed'
+// with ECONNREFUSED only on error.cause — a message.includes('ECONNREFUSED')
+// check matches neither. Local copy (not imported from HealthMonitor) to keep
+// worker-only modules out of the plugin bundle. Exported for the contract test.
+export function isConnectionRefusedError(error: unknown): boolean {
+  const err = error as { code?: unknown; cause?: { code?: unknown } };
+  if (err?.code === "ECONNREFUSED" || err?.code === "ConnectionRefused") return true;
+  if (err?.cause?.code === "ECONNREFUSED") return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("ECONNREFUSED");
+}
+
 function workerPostFireAndForget(
   path: string,
   body: Record<string, unknown>,
@@ -114,8 +128,8 @@ function workerPostFireAndForget(
     headers: JSON_HEADERS,
     body: JSON.stringify(body),
   }).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("ECONNREFUSED")) {
+    if (!isConnectionRefusedError(error)) {
+      const message = error instanceof Error ? error.message : String(error);
       console.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
     }
   });
@@ -130,8 +144,8 @@ async function workerGetText(path: string): Promise<string | null> {
     }
     return await response.text();
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("ECONNREFUSED")) {
+    if (!isConnectionRefusedError(error)) {
+      const message = error instanceof Error ? error.message : String(error);
       console.warn(`[claude-mem] Worker GET ${path} failed: ${message}`);
     }
     return null;
