@@ -10,6 +10,8 @@ import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import { getProjectContext } from '../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../shared/platform-source.js';
 import { PrivacyCheckValidator } from '../validation/PrivacyCheckValidator.js';
+import { captureEvent } from '../../telemetry/telemetry.js';
+import { classifySkillId, skillNameFromToolInput } from '../../telemetry/skill-id.js';
 
 interface IngestContext {
   sessionManager: SessionManager;
@@ -79,6 +81,17 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     settings.CLAUDE_MEM_SKIP_TOOLS.split(',').map(t => t.trim()).filter(Boolean)
   );
   if (skipTools.has(payload.toolName)) {
+    if (payload.toolName === 'Skill') {
+      const { skill_id, skill_source } = classifySkillId(
+        skillNameFromToolInput(payload.toolName, payload.toolInput),
+      );
+      captureEvent('skill_invoked', {
+        skill_id,
+        skill_source,
+        skill_trigger: 'tool',
+        ide: platformSource,
+      });
+    }
     return { ok: true, status: 'skipped', reason: 'tool_excluded' };
   }
 

@@ -20,6 +20,8 @@ import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
+import { captureEvent } from '../../../telemetry/telemetry.js';
+import { firstPartySkillFromSlashPrompt } from '../../../telemetry/skill-id.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
 import {
@@ -578,6 +580,16 @@ export class SessionRoutes extends BaseRouteHandler {
       logger.debug('HTTP', 'session-init: skipping internal protocol payload before session creation', { contentSessionId });
       res.json({ skipped: true, reason: 'internal_protocol' });
       return;
+    }
+
+    const slashSkillId = firstPartySkillFromSlashPrompt(rawPrompt);
+    if (slashSkillId) {
+      captureEvent('skill_invoked', {
+        skill_id: slashSkillId,
+        skill_source: 'first_party',
+        skill_trigger: 'prompt',
+        ide: platformSource,
+      });
     }
 
     let prompt = rawPrompt || '[media prompt]';
