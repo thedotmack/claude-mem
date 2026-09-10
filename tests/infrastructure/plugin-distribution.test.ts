@@ -121,6 +121,16 @@ describe('Plugin Distribution - Codex Marketplace', () => {
     }
   });
 
+  it('skips Codex cache roots without installed runtime dependencies', () => {
+    const entries = commandHookEntriesFrom('plugin/hooks/codex-hooks.json');
+
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) {
+      expect(entry.command).toContain('$_Q/node_modules');
+      expect(entry.commandWindows).toContain("node_modules");
+    }
+  });
+
   it('sets Windows Codex hook overrides without POSIX-only shell syntax', () => {
     const entries = commandHookEntriesFrom('plugin/hooks/codex-hooks.json');
     const posixOnlyTokens = ['$(', '${', '[ -', 'printenv', 'export PATH', 'command -v', '2>/dev/null', 'while IFS'];
