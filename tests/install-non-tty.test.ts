@@ -11,6 +11,7 @@ const installSourcePath = join(
   'install.ts',
 );
 const installSource = readFileSync(installSourcePath, 'utf-8');
+const readmeSource = readFileSync(join(__dirname, '..', 'README.md'), 'utf-8');
 const codexInstallerSourcePath = join(
   __dirname,
   '..',
@@ -100,6 +101,16 @@ describe('Install Non-TTY Support', () => {
       expect(validationIndex).toBeGreaterThan(-1);
       expect(validationIndex).toBeLessThan(oauthIndex);
       expect(installSource).toContain('A provider must be explicit when stdin is not interactive.');
+    });
+
+    it('rejects unknown install flags instead of silently swallowing them', () => {
+      expect(readFileSync(join(__dirname, '..', 'src', 'npx-cli', 'index.ts'), 'utf-8'))
+        .toContain('strict: true');
+    });
+
+    it('documents the explicit provider requirement and Grok Bot exception', () => {
+      expect(readmeSource).toContain('For Claude Code and other IDEs in CI or any non-interactive shell, pass `--provider`');
+      expect(readmeSource).toContain('Grok Bot is the exception and defaults to CMEM Pro.');
     });
 
     it('never opens an API-key prompt on non-interactive stdin', () => {

@@ -75,7 +75,7 @@ function parseInstallOptions(argv: string[]): InstallOptions {
       'no-auto-start': { type: 'boolean' },
       'disable-auto-memory': { type: 'boolean' },
     },
-    strict: false,
+    strict: true,
     allowPositionals: true,
   });
   const flag = (name: string): string | undefined =>
