@@ -214,8 +214,8 @@ export class ClaudeProvider {
     session.lastResultTotalCostUsd = null;
 
     const activeResponseContext = { current: snapshotResponseContext(session) };
-    const compressField: FieldCompressor = (text, budgetChars) =>
-      this.compressField(text, budgetChars, session, modelId, claudePath);
+    const compressField: FieldCompressor = (text, budgetChars, signal) =>
+      this.compressField(text, budgetChars, session, modelId, claudePath, signal);
     const messageGenerator = this.createMessageGenerator(session, cwdTracker, activeResponseContext, worker, compressField);
 
     if (session.memorySessionId) {
@@ -510,35 +510,48 @@ export class ClaudeProvider {
     session: ActiveSession,
     modelId: string,
     claudePath: string,
+    signal: AbortSignal,
   ): Promise<string | null> {
     const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
-    const result = query({
-      prompt: buildFieldCompressionPrompt(text, budgetChars),
-      options: {
-        ...buildHardenedSdkOptions({
-          source: 'Observer',
-          sessionDbId: session.sessionDbId,
-          contentSessionId: session.contentSessionId,
-          project: session.project,
-          model: modelId,
-          env: isolatedEnv,
-          pathToClaudeCodeExecutable: claudePath,
-          abortController: session.abortController,
-        }),
-        maxTurns: 1,
-      },
-    });
-
-    let out = '';
-    for await (const message of result) {
-      if (message.type === 'assistant') {
-        const content = (message as any).message.content;
-        out += Array.isArray(content)
-          ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
-          : typeof content === 'string' ? content : '';
-      }
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    const signals = [signal, session.abortController.signal];
+    for (const source of signals) {
+      source.addEventListener('abort', abort, { once: true });
+      if (source.aborted) abort();
     }
-    return out || null;
+    try {
+      if (controller.signal.aborted) return null;
+      const result = query({
+        prompt: buildFieldCompressionPrompt(text, budgetChars),
+        options: {
+          ...buildHardenedSdkOptions({
+            source: 'Observer',
+            sessionDbId: session.sessionDbId,
+            contentSessionId: session.contentSessionId,
+            project: session.project,
+            model: modelId,
+            env: isolatedEnv,
+            pathToClaudeCodeExecutable: claudePath,
+            abortController: controller,
+          }),
+          maxTurns: 1,
+        },
+      });
+
+      let out = '';
+      for await (const message of result) {
+        if (message.type === 'assistant') {
+          const content = (message as any).message.content;
+          out += Array.isArray(content)
+            ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
+            : typeof content === 'string' ? content : '';
+        }
+      }
+      return out || null;
+    } finally {
+      for (const source of signals) source.removeEventListener('abort', abort);
+    }
   }
 
   private async *createMessageGenerator(
