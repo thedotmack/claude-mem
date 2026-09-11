@@ -65,7 +65,10 @@ const FALLBACK_PER_ATTEMPT_TIMEOUT_MS = 30_000;
 export function resolveLlmTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.CLAUDE_MEM_LLM_TIMEOUT_MS;
   if (!raw) return FALLBACK_PER_ATTEMPT_TIMEOUT_MS;
-  const parsed = Number.parseInt(raw, 10);
+  // Complete integer only. parseInt('90000ms') would silently accept a typo
+  // as 90000 — Greptile reproduced that on #3808.
+  const trimmed = raw.trim();
+  const parsed = /^\d+$/.test(trimmed) ? Number(trimmed) : Number.NaN;
   if (
     Number.isFinite(parsed)
     && parsed >= LLM_TIMEOUT_BOUNDS.min

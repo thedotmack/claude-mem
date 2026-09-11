@@ -20,7 +20,7 @@ describe('resolveLlmTimeoutMs', () => {
     // A zero or a negative would disable the deadline; a huge one would park a
     // worker for hours. Both keep the default, matching the other
     // CLAUDE_MEM_*_TIMEOUT_MS settings.
-    for (const value of ['0', '-1', '499', '300001', 'abc', '']) {
+    for (const value of ['0', '-1', '499', '300001', 'abc', '', '90000ms']) {
       expect(resolveLlmTimeoutMs({ CLAUDE_MEM_LLM_TIMEOUT_MS: value })).toBe(30_000);
     }
   });
