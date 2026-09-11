@@ -5,7 +5,9 @@ import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.j
 import { USER_SETTINGS_PATH } from '../src/shared/paths.js';
 
 const workerSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-const WORKER_HOST = process.env.CLAUDE_MEM_WORKER_HOST || workerSettings.CLAUDE_MEM_WORKER_HOST;
+// loadFromFile already applies env overrides and normalizes 'localhost' to
+// 127.0.0.1 (#2992); a raw process.env read here would bypass both.
+const WORKER_HOST = workerSettings.CLAUDE_MEM_WORKER_HOST;
 const WORKER_PORT = process.env.CLAUDE_MEM_WORKER_PORT || workerSettings.CLAUDE_MEM_WORKER_PORT;
 const WORKER_URL = `http://${WORKER_HOST}:${WORKER_PORT}`;
 
