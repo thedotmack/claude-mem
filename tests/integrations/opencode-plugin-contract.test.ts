@@ -1,4 +1,7 @@
 import { describe, it, expect } from "bun:test";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   ClaudeMemPlugin,
   parseSearchResponse,
@@ -50,6 +53,55 @@ const pluginCtx = {
 };
 
 describe("OpenCode plugin event contract", () => {
+  it("reads the worker port from persisted settings without importing worker-utils", () => {
+    const source = readFileSync(
+      "src/integrations/opencode-plugin/index.ts",
+      "utf8",
+    );
+
+    expect(source).not.toContain('from "../../shared/worker-utils.js"');
+    expect(source).toContain('SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_WORKER_PORT');
+  });
+
+  it("uses the persisted worker port in OpenCode worker requests", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-settings-"));
+    const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const originalPort = process.env.CLAUDE_MEM_WORKER_PORT;
+    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    delete process.env.CLAUDE_MEM_WORKER_PORT;
+    writeFileSync(
+      join(dataDir, "settings.json"),
+      JSON.stringify({ CLAUDE_MEM_WORKER_PORT: "45678" }),
+    );
+
+    const originalFetch = globalThis.fetch;
+    const seenUrls: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      seenUrls.push(String(url));
+      return new Response(JSON.stringify({ status: "queued" }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const { ClaudeMemPlugin: ReloadedPlugin } = await import(
+        `../../src/integrations/opencode-plugin/index.ts?opencode-settings-${Date.now()}`
+      );
+      const plugin = await ReloadedPlugin(pluginCtx);
+      await plugin["tool.execute.after"](
+        { tool: "read", sessionID: "ses_45678", callID: "c1" },
+        { title: "Read", output: "file contents", metadata: {}, args: { path: "/a" } },
+      );
+
+      expect(seenUrls.some((url) => url.startsWith("http://127.0.0.1:45678/"))).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+      if (originalPort === undefined) delete process.env.CLAUDE_MEM_WORKER_PORT;
+      else process.env.CLAUDE_MEM_WORKER_PORT = originalPort;
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("only registers hooks that are part of OpenCode's real contract", async () => {
     const plugin = await ClaudeMemPlugin(pluginCtx);
     const hookKeys = Object.keys(plugin);
