@@ -7,7 +7,7 @@ import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaul
 import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile, readOwnedWorkerPidInfo } from "../supervisor/index.js";
-import { emitBlockingError } from "./hook-io.js";
+import { emitBlockingError, emitDiagnostic } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
 import { checkVersionMatch } from "../services/infrastructure/index.js";
 // Imported from ProcessManager.js directly (not the infrastructure barrel):
@@ -50,11 +50,76 @@ const HOOK_READINESS_TIMEOUT_MS = readTimeoutEnv(
 
 const API_REQUEST_TIMEOUT_BOUNDS = { min: 500, max: 300000 } as const;
 
+/**
+ * Node/undici RequestInit extension. Passing `{ verbose: true }` is the
+ * documented way to get socket-level fetch diagnostics (issue #3957).
+ * Not part of the DOM lib, so we keep it local instead of widening RequestInit.
+ */
+type WorkerFetchInit = RequestInit & { verbose?: boolean };
+
+/**
+ * Opt-in only. Default stays off so hook/IPC noise is unchanged.
+ * Accepts 1/true/on/yes (any case). Env-only — not a settings.json default.
+ */
+export function isWorkerFetchVerboseEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.CLAUDE_MEM_FETCH_VERBOSE;
+  if (raw === undefined) return false;
+  const normalized = raw.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'on' || normalized === 'yes';
+}
+
+function withFetchDiagnostics(init: RequestInit): WorkerFetchInit {
+  if (!isWorkerFetchVerboseEnabled()) return init;
+  return { ...init, verbose: true };
+}
+
+function describeFetchError(err: unknown): Record<string, unknown> {
+  const details: Record<string, unknown> = {};
+  let current: unknown = err;
+  for (let depth = 0; current && depth < 4; depth++) {
+    const key = depth === 0 ? 'error' : `cause${depth}`;
+    if (current instanceof Error) {
+      const errno = current as NodeJS.ErrnoException;
+      details[key] = {
+        name: current.name,
+        message: current.message,
+        ...(errno.code !== undefined ? { code: errno.code } : {}),
+      };
+      current = current.cause;
+      continue;
+    }
+    details[key] = String(current);
+    break;
+  }
+  return details;
+}
+
+function logVerboseFetchFailure(url: string, init: RequestInit, err: unknown): void {
+  const method = typeof init.method === 'string' ? init.method : 'GET';
+  const details = describeFetchError(err);
+  logger.warn('SYSTEM', 'Worker IPC fetch failed', { url, method }, details);
+  // Bypass the hook stderr buffer (#2292) so undici's own verbose dumps plus
+  // this cause chain stay visible when CLAUDE_MEM_FETCH_VERBOSE is on.
+  emitDiagnostic(`[claude-mem] fetch verbose: ${method} ${url} ${JSON.stringify(details)}\n`);
+}
+
+async function workerFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const requestInit = withFetchDiagnostics(init);
+  try {
+    return await fetch(url, requestInit);
+  } catch (err: unknown) {
+    if (isWorkerFetchVerboseEnabled()) {
+      logVerboseFetchFailure(url, init, err);
+    }
+    throw err;
+  }
+}
+
 export async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs: number): Promise<Response> {
   try {
     // AbortSignal.timeout (Node 18+) replaces the manual setTimeout/clearTimeout
     // race. On expiry it aborts with a TimeoutError DOMException.
-    return await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    return await workerFetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
   } catch (err: unknown) {
     // Preserve the historical timeout-error message ("...timed out...") that
     // callers match on (hook-command.ts, server-beta-client.ts) — the
@@ -198,7 +263,7 @@ export function workerHttpRequest(
   if (timeoutMs > 0) {
     return fetchWithTimeout(url, init, timeoutMs);
   }
-  return fetch(url, init);
+  return workerFetch(url, init);
 }
 
 async function isWorkerHealthy(): Promise<boolean> {
