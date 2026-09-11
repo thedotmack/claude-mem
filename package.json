@@ -139,7 +139,7 @@
     "posthog-node": "^5.36.15",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
-    "shell-quote": "^1.8.3",
+    "shell-quote": "1.9.0",
     "zod": "^4.4.3",
     "@derekstride/tree-sitter-sql": "^0.3.11",
     "@tree-sitter-grammars/tree-sitter-lua": "^0.4.1",

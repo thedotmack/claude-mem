@@ -288,7 +288,7 @@ async function buildHooks() {
         '@tree-sitter-grammars/tree-sitter-yaml': '^0.7.1',
         '@derekstride/tree-sitter-sql': '^0.3.11',
         '@tree-sitter-grammars/tree-sitter-markdown': '^0.3.2',
-        'shell-quote': '^1.8.3',
+        'shell-quote': '1.9.0',
       },
       overrides: {
         'tree-sitter': '^0.25.0'
