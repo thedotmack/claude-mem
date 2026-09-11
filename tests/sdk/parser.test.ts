@@ -49,6 +49,30 @@ describe('parseAgentXml — observations', () => {
     expect(result[0].narrative).toBe('The token refresh logic skips expired tokens.');
   });
 
+  it('unwraps a label-wrapped title echoed by a local observer (#3907)', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <title>[**title**: Example observation]</title>
+      <narrative>Some narrative.</narrative>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result[0].title).toBe('Example observation');
+  });
+
+  it('leaves bracketed and partially wrapped titles untouched (#3907)', () => {
+    for (const title of ['[Example observation]', '**title**: Example', '[**title**: ]', '[**subtitle**: x]']) {
+      const xml = `<observation>
+        <type>discovery</type>
+        <title>${title}</title>
+        <narrative>Some narrative.</narrative>
+      </observation>`;
+
+      expect(expectObservation(xml)[0].title).toBe(title);
+    }
+  });
+
   it('returns a populated observation when only narrative is present (no title)', () => {
     const xml = `<observation>
       <type>bugfix</type>
