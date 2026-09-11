@@ -49,8 +49,8 @@ export function queryObservationsMulti(
       o.project
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE (o.project IN (${projectPlaceholders})
-           OR o.merged_into_project IN (${projectPlaceholders}))
+    WHERE (o.project COLLATE NOCASE IN (${projectPlaceholders})
+           OR o.merged_into_project COLLATE NOCASE IN (${projectPlaceholders}))
       AND (? IS NULL OR s.platform_source = ?)
       AND type IN (${typePlaceholders})
       AND EXISTS (
@@ -77,8 +77,8 @@ export function countObservationsByProjects(db: DatabaseOwner, projects: string[
     SELECT COUNT(*) as count
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE (o.project IN (${projectPlaceholders})
-       OR o.merged_into_project IN (${projectPlaceholders}))
+    WHERE (o.project COLLATE NOCASE IN (${projectPlaceholders})
+       OR o.merged_into_project COLLATE NOCASE IN (${projectPlaceholders}))
       AND (? IS NULL OR s.platform_source = ?)
   `).get(...projects, ...projects, platformSource ?? null, platformSource ?? null) as { count: number } | undefined;
   return row?.count ?? 0;
@@ -107,8 +107,8 @@ export function querySummariesMulti(
       ss.project
     FROM session_summaries ss
     LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
-    WHERE (ss.project IN (${projectPlaceholders})
-           OR ss.merged_into_project IN (${projectPlaceholders}))
+    WHERE (ss.project COLLATE NOCASE IN (${projectPlaceholders})
+           OR ss.merged_into_project COLLATE NOCASE IN (${projectPlaceholders}))
       AND (? IS NULL OR s.platform_source = ?)
     ORDER BY ss.created_at_epoch DESC
     LIMIT ?
