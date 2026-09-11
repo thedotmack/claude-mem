@@ -74,11 +74,46 @@ export function extractLastAssistantTurn(
 }
 
 /**
+ * Antigravity CLI (`agy`) transcript node types → chat roles. Its
+ * `brain/<session>/.system_generated/logs/transcript.jsonl` lines are shaped
+ * `{step_index, source, type, content}` with the text at the TOP LEVEL
+ * (`content`), not under `message.content` (issue #4057). Only PLANNER_RESPONSE
+ * carries the assistant's final text — RUN_COMMAND / VIEW_FILE / etc. also
+ * carry `source: 'MODEL'`, so we discriminate on `type`, never on `source`.
+ */
+const ANTIGRAVITY_TYPE_TO_ROLE: Record<string, 'user' | 'assistant'> = {
+  USER_INPUT: 'user',
+  PLANNER_RESPONSE: 'assistant',
+};
+
+/**
+ * Reduce a message content value to plain text. Returns `null` for an unknown
+ * shape so callers can skip the line (rather than treating it as empty text).
+ * Handles a top-level string, a Claude-style content array (`{type:'text',text}`),
+ * and a generic `{text}` array (Antigravity, when content isn't a bare string).
+ */
+function contentToText(msgContent: unknown): string | null {
+  if (typeof msgContent === 'string') return msgContent;
+  if (Array.isArray(msgContent)) {
+    return msgContent
+      .filter(
+        (c: any): c is { text: string } =>
+          !!c && typeof c === 'object' && typeof c.text === 'string' &&
+          (c.type === undefined || c.type === 'text')
+      )
+      .map((c) => c.text)
+      .join('\n');
+  }
+  return null;
+}
+
+/**
  * Extract last message from a JSONL transcript.
  *
- * Supports two field conventions for the per-line role marker:
- * - Claude Code:  `{"type":"assistant",...}`
- * - Cursor:       `{"role":"assistant",...}`
+ * Supports three field conventions for the per-line role marker:
+ * - Claude Code:      `{"type":"assistant","message":{"content":...}}`
+ * - Cursor:           `{"role":"assistant","message":{"content":...}}`
+ * - Antigravity CLI:  `{"type":"PLANNER_RESPONSE","content":"..."}` (top-level)
  *
  * The most recent assistant turn is often a pure tool_use block with no text
  * content (especially in Cursor, where the agent's last action before the
@@ -95,32 +130,26 @@ export function extractLastMessageFromJsonl(
   let lastEmptyText: string | null = null;
 
   for (const line of parseJsonlLinesBackward(content)) {
-    const lineRole = line.type ?? line.role;
+    const antigravityRole = typeof line.type === 'string'
+      ? ANTIGRAVITY_TYPE_TO_ROLE[line.type]
+      : undefined;
+    const lineRole = antigravityRole ?? line.type ?? line.role;
     if (lineRole !== role) continue;
     foundMatchingRole = true;
 
-    if (!line.message?.content) continue;
+    // Antigravity nodes carry text at the top level; Claude/Cursor nest it under
+    // `message.content`.
+    const msgContent = antigravityRole !== undefined ? line.content : line.message?.content;
+    if (msgContent === undefined || msgContent === null) continue;
 
-    let text = '';
-    const msgContent = line.message.content;
-    if (typeof msgContent === 'string') {
-      text = msgContent;
-    } else if (Array.isArray(msgContent)) {
-      text = msgContent
-        .filter(
-          (c: any): c is { type: 'text'; text: string } =>
-            !!c && typeof c === 'object' && c.type === 'text' && typeof c.text === 'string'
-        )
-        .map((c) => c.text)
-        .join('\n');
-    } else {
-      // Unknown content shape (null, number, plain object, etc.) — skip rather
-      // than throw. A single weird line should not crash the entire summary
-      // pipeline; we already tolerate malformed JSONL in parseJsonlLinesBackward,
-      // and this is the same class of defensive forward compat
-      // (CodeRabbit / Greptile review on PR #2282).
-      continue;
-    }
+    // Unknown content shape (number, plain object, etc.) — skip rather than
+    // throw. A single weird line should not crash the entire summary pipeline;
+    // we already tolerate malformed JSONL in parseJsonlLinesBackward, and this
+    // is the same class of defensive forward compat (CodeRabbit / Greptile
+    // review on PR #2282).
+    const extracted = contentToText(msgContent);
+    if (extracted === null) continue;
+    let text = extracted;
 
     if (stripSystemReminders) {
       text = text.replace(SYSTEM_REMINDER_REGEX, '');
