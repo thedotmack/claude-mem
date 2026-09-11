@@ -208,7 +208,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session: ActiveSession,
     model: string
   ): void {
-    if (!initResponse.content) {
+    if (!initResponse.content && !this.forwardEmptyMessageResponse) {
       logger.error('SDK', `Empty ${this.providerName} init response - session may lack context`, {
         sessionId: session.sessionDbId, model
       });
@@ -223,7 +223,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     // invented from <user_request> alone and would be stored as memory for work
     // that never happened. Keep the turn so role alternation holds, but never
     // hand it to the storage path.
-    session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
+    session.conversationHistory.push({ role: 'assistant', content: initResponse.content || '' });
   }
 
   private async processObservationMessage(
