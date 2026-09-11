@@ -59,6 +59,7 @@ export function isUsableCodexBundle(
     stdio: 'ignore',
     windowsHide: true,
     timeout: 5_000,
+    killSignal: 'SIGKILL',
   });
   return !result.error && result.status === 0;
 }

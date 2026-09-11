@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'bun:test';
+import { spawnSync } from 'child_process';
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
 import {
   codexSpawn,
@@ -175,13 +176,33 @@ describe('macOS Codex Desktop bundle resolution', () => {
     expect(probed).toEqual([chatGptBundledCodex, legacyBundledCodex]);
   });
 
-  it('bounds the bundled CLI probe so a hung candidate cannot block fallback', () => {
-    const probe = ((_command: string, _args: string[], options: { timeout?: number }) => {
+  it('bounds the bundled CLI probe and force-kills a hung candidate', () => {
+    const probe = ((_command: string, _args: string[], options: { timeout?: number; killSignal?: string }) => {
       expect(options.timeout).toBe(5_000);
+      expect(options.killSignal).toBe('SIGKILL');
       return { error: new Error('ETIMEDOUT'), status: null };
     }) as typeof import('child_process').spawnSync;
 
     expect(isUsableCodexBundle(chatGptBundledCodex, probe)).toBe(false);
+  });
+
+  it('returns after the deadline when the bundled CLI ignores SIGTERM', () => {
+    if (process.platform === 'win32') return;
+
+    const probe = ((_command: string, _args: string[], options: Parameters<typeof spawnSync>[2]) => (
+      spawnSync(process.execPath, ['-e', [
+        "process.on('SIGTERM', () => {});",
+        'setTimeout(() => process.exit(17), 3_000);',
+        'setInterval(() => {}, 1_000);',
+      ].join('')], {
+        ...options,
+        timeout: 200,
+      })
+    )) as typeof spawnSync;
+
+    const startedAt = Date.now();
+    expect(isUsableCodexBundle(chatGptBundledCodex, probe)).toBe(false);
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
   });
 
   it('passes the bundled CLI path through the shared spawn resolver', () => {
