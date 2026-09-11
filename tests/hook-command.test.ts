@@ -88,6 +88,16 @@ describe('isWorkerUnavailableError', () => {
       expect(isWorkerUnavailableError(error)).toBe(true);
     });
 
+    it('should classify Bun "socket connection was closed unexpectedly" as worker unavailable (#3871)', () => {
+      const error = new Error('The socket connection was closed unexpectedly');
+      expect(isWorkerUnavailableError(error)).toBe(true);
+    });
+
+    it('should classify "connection closed" as worker unavailable (#3871)', () => {
+      const error = new Error('connection closed');
+      expect(isWorkerUnavailableError(error)).toBe(true);
+    });
+
     it('should classify ECONNABORTED as worker unavailable', () => {
       const error = new Error('ECONNABORTED');
       expect(isWorkerUnavailableError(error)).toBe(true);
