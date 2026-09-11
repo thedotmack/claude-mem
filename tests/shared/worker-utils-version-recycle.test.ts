@@ -31,6 +31,17 @@ let versionMatchResult: { matches: boolean; pluginVersion: string; workerVersion
   workerVersion: PLUGIN_VERSION,
 };
 
+// Every checkVersionMatch call, so the hook-side deadline plumbing can be
+// asserted: the version probe must inherit the caller's remaining budget
+// (#3434), not the standalone health-check timeout.
+const versionMatchCalls: Array<{ port: number; expectedVersion: string | null; timeoutMs?: number }> = [];
+let versionMatchDelayMs = 0;
+
+// Session-init budget used by the deadline test. Deliberately far below
+// HOOK_TIMEOUTS.HEALTH_CHECK so an unbounded probe is distinguishable.
+const SESSION_INIT_BUDGET_MS = 400;
+const VERSION_MATCH_BUDGET_EXHAUST_DELAY_MS = SESSION_INIT_BUDGET_MS + 50;
+
 // What the supervisor's PID-file reader reports (null = unidentifiable).
 let ownedPidInfo: { pid: number; port: number; startedAt: string } | null = null;
 
@@ -43,7 +54,13 @@ let successorUp = false;
 const spawnCalls: Array<{ command: string; args: string[] }> = [];
 
 mock.module('../../src/services/infrastructure/index.js', () => ({
-  checkVersionMatch: () => Promise.resolve(versionMatchResult),
+  checkVersionMatch: async (port: number, expectedVersion: string | null, timeoutMs?: number) => {
+    versionMatchCalls.push({ port, expectedVersion, timeoutMs });
+    if (versionMatchDelayMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, versionMatchDelayMs));
+    }
+    return versionMatchResult;
+  },
 }));
 
 mock.module('../../src/supervisor/index.js', () => ({
@@ -108,6 +125,8 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
     process.env.CLAUDE_MEM_DATA_DIR = tempDataDir;
     installFetchMock();
     spawnCalls.length = 0;
+    versionMatchCalls.length = 0;
+    versionMatchDelayMs = 0;
     staleWorkerAlive = true;
     successorUp = false;
     ownedPidInfo = null;
@@ -178,6 +197,35 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
     expect(result).toBe(false);
     expect(killCalls.length).toBe(0);
     expect(spawnCalls.length).toBe(0);
+  });
+
+  it('bounds the version probe by the hook budget, not the standalone health timeout (3434)', async () => {
+    versionMatchResult = { matches: true, pluginVersion: PLUGIN_VERSION, workerVersion: PLUGIN_VERSION };
+
+    const workerUtils = await importWorkerUtilsFresh();
+    ownedPidInfo = { pid: STALE_PID, port: workerUtils.getWorkerPort(), startedAt: new Date().toISOString() };
+
+    await workerUtils.executeWithWorkerFallback('/api/sessions/init', 'POST', {}, {
+      timeoutMs: SESSION_INIT_BUDGET_MS,
+    });
+
+    expect(versionMatchCalls.length).toBe(1);
+    expect(versionMatchCalls[0].timeoutMs).toBeLessThanOrEqual(SESSION_INIT_BUDGET_MS);
+  });
+
+  it('does not start readiness when the matching-version probe exhausts the hook budget (3434)', async () => {
+    versionMatchResult = { matches: true, pluginVersion: PLUGIN_VERSION, workerVersion: PLUGIN_VERSION };
+    versionMatchDelayMs = VERSION_MATCH_BUDGET_EXHAUST_DELAY_MS;
+
+    const workerUtils = await importWorkerUtilsFresh();
+    ownedPidInfo = { pid: STALE_PID, port: workerUtils.getWorkerPort(), startedAt: new Date().toISOString() };
+
+    await workerUtils.executeWithWorkerFallback('/api/sessions/init', 'POST', {}, {
+      timeoutMs: SESSION_INIT_BUDGET_MS,
+    });
+
+    const readinessCalls = fetchLog.filter(c => c.url.includes('/api/readiness'));
+    expect(readinessCalls.length).toBe(0);
   });
 
   it('proceeds to lazy-spawn when the stale worker already exited (ESRCH on kill)', async () => {
