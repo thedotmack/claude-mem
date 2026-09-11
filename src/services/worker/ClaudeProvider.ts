@@ -303,6 +303,8 @@ export class ClaudeProvider {
       // without one still needs the idle hand-off, otherwise the claimed batch
       // is left dangling for session teardown to discard.
       let turnDispatchedText = false;
+      // One re-queue per generator pass for a batch a failed turn never read.
+      let retriedAfterErrorResult = false;
 
       for await (const message of queryResult) {
         // Quota-aware wall-clock guard (#2234): the SDK pushes
@@ -514,27 +516,44 @@ export class ClaudeProvider {
             });
           }
 
+          const resultSubtype = (message as any).subtype as string | undefined;
+          const resultIsError = (message as any).is_error === true || resultSubtype !== 'success';
+
+          // The turn is over and the model never emitted text. Only a
+          // successful turn means "the model read the batch and chose to skip
+          // it" — forward the empty response once so the claim is acknowledged
+          // instead of being retried forever. A failed turn never reached that
+          // judgement, so its batch goes back to the buffer for the drain to
+          // re-yield. Exactly one such retry per generator pass: a message is
+          // always pending while a batch is re-queued, so the buffer never
+          // idles out, and an endlessly failing turn would spin on it.
           if (!turnDispatchedText) {
-            // The whole turn carried no text, so no frame handed the claimed
-            // batch to the parser. Do it once here with the empty response the
-            // turn actually produced: the batch is classified idle and
-            // confirmed, exactly as before #3492's frame-level skip. Skipping
-            // this would leave the batch claimed until session teardown
-            // disposes the in-RAM buffer, which drops it with no hand-off.
-            await processAgentResponse(
-              '',
-              session,
-              this.dbManager,
-              this.sessionManager,
-              worker,
-              (session.cumulativeInputTokens + session.cumulativeOutputTokens) - discoveryTokenBaseline,
-              session.earliestPendingTimestamp,
-              'SDK',
-              cwdTracker.lastCwd,
-              modelId,
-              activeResponseContext.current
-            );
-            discoveryTokenBaseline = session.cumulativeInputTokens + session.cumulativeOutputTokens;
+            if (resultIsError && !retriedAfterErrorResult) {
+              retriedAfterErrorResult = true;
+              logger.warn('SDK', 'SDK turn failed before emitting text, re-queueing the claimed batch', {
+                sessionId: session.sessionDbId,
+                subtype: resultSubtype,
+              });
+              await this.sessionManager.resetProcessingToPending(session.sessionDbId);
+            } else {
+              await processAgentResponse(
+                '',
+                session,
+                this.dbManager,
+                this.sessionManager,
+                worker,
+                (session.cumulativeInputTokens + session.cumulativeOutputTokens) - discoveryTokenBaseline,
+                session.earliestPendingTimestamp,
+                'SDK',
+                cwdTracker.lastCwd,
+                modelId,
+                activeResponseContext.current
+              );
+              discoveryTokenBaseline = session.cumulativeInputTokens + session.cumulativeOutputTokens;
+            }
+          }
+          if (!resultIsError) {
+            retriedAfterErrorResult = false;
           }
           turnDispatchedText = false;
         }
