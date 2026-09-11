@@ -153,4 +153,45 @@ describe('SessionStore prompts', () => {
       expect(store.getPromptNumberFromUserPrompts(session)).toBe(100);
     });
   });
+
+  describe('getLatestPromptTextFromUserPrompts', () => {
+    it('returns null when none exist', () => {
+      expect(store.getLatestPromptTextFromUserPrompts('nonexistent-session')).toBeNull();
+    });
+
+    it('returns the latest non-empty prompt_text by prompt_number', () => {
+      const session = createSession('latest-prompt-session');
+      store.saveUserPrompt(session, 1, 'prompt1');
+      store.saveUserPrompt(session, 11, 'prompt11');
+
+      expect(store.getLatestPromptTextFromUserPrompts(session)).toBe('prompt11');
+    });
+
+    it('skips empty prompt_text and returns the previous non-empty row', () => {
+      const session = createSession('latest-empty-prompt-session');
+      const sessionDbId = (store.db.prepare(
+        'SELECT id FROM sdk_sessions WHERE content_session_id = ?'
+      ).get(session) as { id: number }).id;
+      store.saveUserPrompt(session, 1, 'prompt1', sessionDbId);
+      store.db.prepare(`
+        INSERT INTO user_prompts
+        (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(sessionDbId, session, 12, '   ', new Date().toISOString(), Date.now());
+
+      expect(store.getLatestPromptTextFromUserPrompts(session, sessionDbId)).toBe('prompt1');
+    });
+
+    it('is session-isolated when the same content_session_id is shared', () => {
+      const contentSessionId = 'shared-latest-content-id';
+      const claudeId = store.createSDKSession(contentSessionId, 'claude-project', 'prompt1', undefined, 'claude');
+      const cursorId = store.createSDKSession(contentSessionId, 'cursor-project', 'cursor first', undefined, 'cursor');
+      store.saveUserPrompt(contentSessionId, 1, 'claude prompt1', claudeId);
+      store.saveUserPrompt(contentSessionId, 11, 'claude prompt11', claudeId);
+      store.saveUserPrompt(contentSessionId, 1, 'cursor prompt1', cursorId);
+
+      expect(store.getLatestPromptTextFromUserPrompts(contentSessionId, claudeId)).toBe('claude prompt11');
+      expect(store.getLatestPromptTextFromUserPrompts(contentSessionId, cursorId)).toBe('cursor prompt1');
+    });
+  });
 });
