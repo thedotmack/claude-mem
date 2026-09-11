@@ -471,9 +471,14 @@ export class ChromaSync {
     // #2282).
     const written = await this.addDocuments(documents);
     if (written === documents.length) {
+      ChromaSyncState.clearPending(project, 'observations', [observationId]);
       ChromaSyncState.bump(project, 'observations', observationId);
     } else {
-      logger.warn('CHROMA_SYNC', 'Observation watermark bump skipped — partial write', {
+      // Not bumping is not enough: the watermark is a high-water mark, so the
+      // next row that does write would skip past this one for good (#3917).
+      // Record it as pending so the backfill retries it, like backfillKind().
+      ChromaSyncState.markPending(project, 'observations', [observationId]);
+      logger.warn('CHROMA_SYNC', 'Observation watermark bump skipped — partial write, row marked pending', {
         observationId,
         project,
         requested: documents.length,
@@ -518,9 +523,11 @@ export class ChromaSync {
     // Only bump on a confirmed full write — see syncObservation() for rationale.
     const written = await this.addDocuments(documents);
     if (written === documents.length) {
+      ChromaSyncState.clearPending(project, 'summaries', [summaryId]);
       ChromaSyncState.bump(project, 'summaries', summaryId);
     } else {
-      logger.warn('CHROMA_SYNC', 'Summary watermark bump skipped — partial write', {
+      ChromaSyncState.markPending(project, 'summaries', [summaryId]);
+      logger.warn('CHROMA_SYNC', 'Summary watermark bump skipped — partial write, row marked pending', {
         summaryId,
         project,
         requested: documents.length,
@@ -575,9 +582,11 @@ export class ChromaSync {
     // Only bump on a confirmed full write — see syncObservation() for rationale.
     const written = await this.addDocuments([document]);
     if (written === 1) {
+      ChromaSyncState.clearPending(project, 'prompts', [promptId]);
       ChromaSyncState.bump(project, 'prompts', promptId);
     } else {
-      logger.warn('CHROMA_SYNC', 'Prompt watermark bump skipped — write failed', {
+      ChromaSyncState.markPending(project, 'prompts', [promptId]);
+      logger.warn('CHROMA_SYNC', 'Prompt watermark bump skipped — write failed, row marked pending', {
         promptId,
         project,
         written
