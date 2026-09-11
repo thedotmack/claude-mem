@@ -223,7 +223,7 @@ export class TranscriptWatcher {
   }
 
   private scanGlob(pattern: string): string[] {
-    return Array.from(new Bun.Glob(pattern).scanSync({ absolute: true, onlyFiles: true }));
+    return Array.from(new Bun.Glob(pattern).scanSync({ absolute: true, onlyFiles: true, dot: true }));
   }
 
   private normalizeGlobPattern(inputPath: string): string {
