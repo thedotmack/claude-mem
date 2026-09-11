@@ -89,6 +89,11 @@ function persist(): void {
 }
 
 export const ChromaSyncState = {
+  /** Test hook: drop the in-memory watermark cache so the next read hits disk. */
+  resetCacheForTests(): void {
+    cache = null;
+  },
+
   exists(): boolean {
     return existsSync(statePath());
   },
