@@ -59,9 +59,13 @@ const RUN_GATE = process.env.CLAUDE_MEM_TEST_CHROMA === '1';
 // entirely, because the fixture cannot produce a ghost on POSIX.
 const IS_WINDOWS = process.platform === 'win32';
 
-// Below the 600s bun cap on purpose: a fixture that never reports ready must
-// fail with its full event dump while there is still room to print it (the
-// first CI runs of this gate raced bun's own timeout and lost the diagnosis).
+// Deliberately well below the 600s bun cap, which covers the WHOLE test —
+// readiness plus the recovery this gate exercises (ghost settle, the launcher,
+// orphan settle, health). A fixture that never reports ready must fail early,
+// with its full event dump, while there is still room to print it: the first
+// CI runs of this gate consumed the entire cap in the wait and lost the
+// diagnosis. Readiness on a healthy run is seconds; this is the "something is
+// broken, bail loudly" line, not a cold-start allowance.
 const FIXTURE_READY_TIMEOUT_MS = 240_000;
 const RECOVERY_TIMEOUT_MS = 600_000;
 const GHOST_SETTLE_TIMEOUT_MS = 30_000;
@@ -85,6 +89,13 @@ interface FixtureHandle {
 }
 
 let active: FixtureHandle | null = null;
+// The detached fixture's pid, tracked from the moment Start-Process returns.
+// `active` is only assigned by the ready event, so without this a fixture that
+// hangs before readiness has no teardown handle and its tree outlives the run.
+let spawnedFixturePid: number | null = null;
+// The port the fixture reported binding (it rides along on every progress
+// event), so a listener it leaves behind can be swept even without `ready`.
+let reportedPort: number | null = null;
 // A deadline failure cannot cancel ensureWorkerStarted() — track the call so
 // teardown can let it settle (or reap what it spawned) before cleanup runs.
 let inflightEnsureStarted: Promise<unknown> | null = null;
@@ -183,12 +194,15 @@ async function startFixture(): Promise<FixtureHandle> {
   // only: a buffered stdout can hold a single ready line unflushed until the
   // process dies, and every CI run of this gate before the events file
   // existed failed exactly that way (ready only visible at the 600s cap).
+  // The path travels as an ARGUMENT, not through process.env: a variable set
+  // on process.env here never reaches the fixture (bun hands child processes
+  // the environment it started with, so the env-var version of this silently
+  // wrote no events at all).
   const eventsFile = path.join(dir, 'events.jsonl');
-  process.env.GHOST_FIXTURE_EVENTS_FILE = eventsFile;
 
   const command =
     `$p = Start-Process -FilePath '${bunExecutable().replace(/'/g, "''")}' ` +
-    `-ArgumentList @('run', '${FIXTURE.replace(/'/g, "''")}') ` +
+    `-ArgumentList @('run', '${FIXTURE.replace(/'/g, "''")}', '${eventsFile.replace(/'/g, "''")}') ` +
     `-WorkingDirectory '${process.cwd().replace(/'/g, "''")}' ` +
     `-RedirectStandardOutput '${stdoutFile.replace(/'/g, "''")}' ` +
     `-RedirectStandardError '${stderrFile.replace(/'/g, "''")}' -PassThru; ` +
@@ -204,6 +218,9 @@ async function startFixture(): Promise<FixtureHandle> {
   if (!Number.isInteger(spawnedPid) || spawnedPid <= 0) {
     throw new Error(`fixture Start-Process returned an invalid pid: ${spawnedPid}`);
   }
+  // Recorded BEFORE any waiting: every failure below this line must still
+  // leave teardown a handle on the process it just started.
+  spawnedFixturePid = spawnedPid;
 
   const startedAt = Date.now();
   const deadline = startedAt + FIXTURE_READY_TIMEOUT_MS;
@@ -217,12 +234,17 @@ async function startFixture(): Promise<FixtureHandle> {
       );
     }
 
-    // Events file first (the contract), stdout as a fallback for an older
-    // fixture build that predates the file.
-    for (const line of [...readJsonLines(eventsFile), ...readJsonLines(stdoutFile)]) {
+    // Only the events file is a contract channel — stdout is deliberately NOT
+    // read back. A fallback would mask a broken file channel exactly as it did
+    // before (the env-var handshake never wrote the file, every local run
+    // passed on the fallback anyway, and CI kept hanging), and on CI it cannot
+    // save the run either: the buffering that hides the events is what
+    // redirects to that same stdout.
+    for (const line of readJsonLines(eventsFile)) {
       const payload = JSON.parse(line) as Record<string, unknown>;
       if (payload.event === 'progress') {
         lastStage = `${String(payload.stage)}@${String(payload.elapsedMs)}ms`;
+        if (typeof payload.port === 'number') reportedPort = payload.port;
         continue;
       }
       if (payload.event === 'ready') {
@@ -297,12 +319,23 @@ afterEach(async () => {
   // still be alive if the gate failed before the reclaim ran.
   const handle = active;
   active = null;
-  if (!handle) return;
+  const detachedPid = spawnedFixturePid;
+  spawnedFixturePid = null;
+  const fixturePort = handle?.port ?? reportedPort;
+  reportedPort = null;
+  if (!handle && detachedPid === null) return;
 
   const { killProcessTree } = await import('../../src/shared/kill-process-tree.js');
-  await killProcessTree(handle.chromaRootPid).catch(() => {});
-  if (processExists(handle.pid)) {
-    killProcessOnly(handle.pid);
+  if (handle) {
+    await killProcessTree(handle.chromaRootPid).catch(() => {});
+    if (processExists(handle.pid)) {
+      killProcessOnly(handle.pid);
+    }
+  } else if (detachedPid !== null && processExists(detachedPid)) {
+    // Readiness never arrived, so no chroma root pid was ever reported: take
+    // the whole tree from the fixture root, where the sidecar chain is still a
+    // descendant.
+    await killProcessTree(detachedPid).catch(() => {});
   }
 
   const { paths } = await import('../../src/shared/paths.js');
@@ -311,12 +344,14 @@ afterEach(async () => {
     const pidFile = paths.workerPid();
     if (!fs.existsSync(pidFile)) return;
     const info = JSON.parse(fs.readFileSync(pidFile, 'utf-8')) as { pid?: number };
-    if (typeof info.pid === 'number' && info.pid !== handle.pid) {
+    if (typeof info.pid === 'number' && info.pid !== handle?.pid) {
       await killProcessTree(info.pid).catch(() => {});
     }
     fs.rmSync(pidFile, { force: true });
   };
   await killPidFileWorker();
+
+  if (fixturePort === null) return;
 
   // Bounded sweep. The wait above is time-boxed, so a launcher that was still
   // mid-flight can spawn its worker or reclaim the chain AFTER the kills —
@@ -324,8 +359,8 @@ afterEach(async () => {
   // run. Repeat "reap the worker, free the port" until the port is quiet.
   const { reclaimGhostListeningPort } = await import('../../src/shared/port-reclaim.js');
   for (let attempt = 0; attempt < 3; attempt++) {
-    if (listeningOwnerPids(handle.port).length === 0) return;
-    await reclaimGhostListeningPort(handle.port).catch(() => {});
+    if (listeningOwnerPids(fixturePort).length === 0) return;
+    await reclaimGhostListeningPort(fixturePort).catch(() => {});
     await new Promise(resolve => setTimeout(resolve, 2_000));
     await killPidFileWorker();
   }

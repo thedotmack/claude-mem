@@ -19,6 +19,7 @@
  * Contract with the parent test (stdout redirected to a file, one JSON
  * object per line):
  *   {"event":"ready","pid":N,"port":N,"chromaRootPid":N}
+ *   {"event":"progress","stage":"...","elapsedMs":N,"port":N}
  *   {"event":"error","message":"..."}
  */
 
@@ -37,8 +38,14 @@ import { paths } from '../../../src/shared/paths.js';
  * gate's CI runs died on exactly that shape (the ready line only became
  * visible when the fixture was killed at the 600s cap). The file write cannot
  * hit that: it is a syscall on every call.
+ *
+ * The path arrives as argv[2], NOT through the environment: a variable written
+ * to process.env by the test runner does not survive its child_process call
+ * (bun snapshots the environment at startup), so the env-var version of this
+ * handshake never wrote a single event — and the stdout fallback in the reader
+ * hid that, so every local run "passed" while CI still hung.
  */
-const EVENTS_FILE = process.env.GHOST_FIXTURE_EVENTS_FILE ?? null;
+const EVENTS_FILE = process.argv[2] ?? null;
 
 function emit(payload: Record<string, unknown>): void {
   const line = `${JSON.stringify(payload)}\n`;
@@ -83,8 +90,10 @@ async function main(): Promise<void> {
   //    after the listen above, the chain inherits the listening socket the
   //    way the production worker's sidecar does.
   const startedAt = Date.now();
+  // The port rides along on every stage: the parent needs it to sweep a
+  // listener left behind even if this fixture never reaches `ready`.
   const progress = (stage: string): void =>
-    emit({ event: 'progress', stage, elapsedMs: Date.now() - startedAt });
+    emit({ event: 'progress', stage, elapsedMs: Date.now() - startedAt, port });
 
   progress('port-bound');
 
