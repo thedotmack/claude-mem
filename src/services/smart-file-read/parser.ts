@@ -408,6 +408,12 @@ const GRAMMAR_SOURCE_FILES = ["parser.c", "scanner.c", "scanner.cc"];
 // re-derived for every file batch.
 const grammarLibOptOut = new Set<string>();
 
+/** @internal — test-only: clear the build opt-out set so a prior failure does
+ *  not permanently poison subsequent test cases running in the same process. */
+export function _resetGrammarLibOptOut(): void {
+  grammarLibOptOut.clear();
+}
+
 function newestGrammarSourceMtime(grammarPath: string): number {
   let newest = 0;
   for (const file of GRAMMAR_SOURCE_FILES) {
