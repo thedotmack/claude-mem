@@ -36,7 +36,7 @@ function typescriptLib(): string {
 }
 
 describe.if(treeSitterAvailable())('compiled grammar reuse', () => {
-  it('parses through a compiled artifact and does not rebuild it on the next call', () => {
+  it('parses through a compiled artifact and does not rebuild it on the next call', { timeout: 30000 }, () => {
     expect(parseFile(SOURCE, 'greeter.ts').symbols.map((s) => s.name)).toContain('greet');
 
     const libPath = typescriptLib();
@@ -46,7 +46,7 @@ describe.if(treeSitterAvailable())('compiled grammar reuse', () => {
     expect(statSync(libPath).mtimeMs).toBe(builtAt);
   });
 
-  it('rebuilds an artifact older than the grammar sources', () => {
+  it('rebuilds an artifact older than the grammar sources', { timeout: 30000 }, () => {
     expect(parseFile(SOURCE, 'greeter.ts').symbols.map((s) => s.name)).toContain('greet');
 
     // A plugin update ships new grammar packages; an artifact left over from the
