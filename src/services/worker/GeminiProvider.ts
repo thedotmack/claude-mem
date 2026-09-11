@@ -291,13 +291,8 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     return contents;
   }
 
-<<<<<<< HEAD
-  protected async query(history: ConversationMessage[], config: GeminiConfig): Promise<ProviderQueryResult> {
-    return this.executeWithDynamicCascade(history, config);
-=======
   protected async query(history: ConversationMessage[], config: GeminiConfig, signal?: AbortSignal): Promise<ProviderQueryResult> {
-    return this.queryGeminiMultiTurn(history, config.apiKey, config.model, config.rateLimitingEnabled, signal);
->>>>>>> 7bfc40162770570f623240c220384ff74294185a
+    return this.executeWithDynamicCascade(history, config, signal);
   }
 
   private fetchGenerateContent(
@@ -329,14 +324,8 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
    */
   private async executeWithDynamicCascade(
     history: ConversationMessage[],
-<<<<<<< HEAD
-    config: GeminiConfig
-=======
-    apiKey: string,
-    model: GeminiModel,
-    rateLimitingEnabled: boolean,
+    config: GeminiConfig,
     signal?: AbortSignal
->>>>>>> 7bfc40162770570f623240c220384ff74294185a
   ): Promise<ProviderQueryResult> {
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
     const estimatedTokens = Math.max(100, Math.ceil(totalChars / 4));
@@ -505,34 +494,6 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
 
         throw lastErr;
       }
-<<<<<<< HEAD
-=======
-
-      const requestId = response.headers.get('x-goog-request-id') ?? response.headers.get('x-request-id');
-      if (requestId) {
-        priorRequestId = requestId;
-      } else {
-        logger.debug('SDK', 'Gemini response missing request-id header; retry dedup is best-effort');
-      }
-
-      if (!response.ok) {
-        const errorBody = await response.text();
-        throw classifyGeminiError({
-          status: response.status,
-          bodyText: errorBody,
-          headers: response.headers,
-          cause: new Error(`Gemini API error (status ${response.status})`),
-          ...(requestId ? { requestId } : {}),
-        });
-      }
-
-      return await response.json() as GeminiResponse;
-    }, { label: `Gemini ${model}`, abortSignal: signal, ...(signal ? { maxRetries: 0 } : {}) });
-
-    if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
-      logger.error('SDK', 'Empty response from Gemini');
-      return { content: '' };
->>>>>>> 7bfc40162770570f623240c220384ff74294185a
     }
 
     throw new Error('Gemini cascade exhausted all available models without success.');
