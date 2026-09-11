@@ -143,6 +143,7 @@ describe('HealthMonitor', () => {
 
     it('should probe Windows health through an abortable signal so a ghost listener cannot hang it (#3603)', async () => {
       const origPlatform = process.platform;
+      let restoreNet: (() => void) | undefined;
       try {
         Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
 
@@ -168,6 +169,7 @@ describe('HealthMonitor', () => {
         }));
 
         const netSpy = spyOn(net, 'createServer').mockImplementation(createServerMock as any);
+        restoreNet = () => netSpy.mockRestore();
 
         const result = await isPortInUse(37777);
 
@@ -178,9 +180,10 @@ describe('HealthMonitor', () => {
         // so the launcher can go on to reclaim the ghost.
         expect(result).toBe(true);
         expect(net.createServer).toHaveBeenCalled();
-
-        netSpy.mockRestore();
       } finally {
+        // Failure-safe: a failed assertion above must not leave the net mock
+        // installed for later tests in this file.
+        restoreNet?.();
         Object.defineProperty(process, 'platform', { value: origPlatform, configurable: true });
       }
     });

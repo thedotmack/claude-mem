@@ -19,6 +19,7 @@
  * Contract with the parent test (stdout redirected to a file, one JSON
  * object per line):
  *   {"event":"ready","pid":N,"port":N,"chromaRootPid":N}
+ *   {"event":"progress","stage":"...","elapsedMs":N,"port":N}
  *   {"event":"error","message":"..."}
  */
 
@@ -29,8 +30,33 @@ import { getSupervisor } from '../../../src/supervisor/index.js';
 import { getWorkerPort, getWorkerHost } from '../../../src/shared/worker-utils.js';
 import { paths } from '../../../src/shared/paths.js';
 
+/**
+ * Progress is reported through an append-only EVENTS FILE as well as stdout.
+ * The stdout copy is for humans reading the redirected log; the file copy is
+ * the CONTRACT. A redirected stdout can be buffered, and a single small line
+ * written by a process that then idles can sit unflushed indefinitely — this
+ * gate's CI runs died on exactly that shape (the ready line only became
+ * visible when the fixture was killed at the 600s cap). The file write cannot
+ * hit that: it is a syscall on every call.
+ *
+ * The path arrives as argv[2], NOT through the environment: a variable written
+ * to process.env by the test runner does not survive its child_process call
+ * (bun snapshots the environment at startup), so the env-var version of this
+ * handshake never wrote a single event — and the stdout fallback in the reader
+ * hid that, so every local run "passed" while CI still hung.
+ */
+const EVENTS_FILE = process.argv[2] ?? null;
+
 function emit(payload: Record<string, unknown>): void {
-  process.stdout.write(`${JSON.stringify(payload)}\n`);
+  const line = `${JSON.stringify(payload)}\n`;
+  process.stdout.write(line);
+  if (EVENTS_FILE) {
+    try {
+      fs.appendFileSync(EVENTS_FILE, line, 'utf-8');
+    } catch {
+      // Best effort — stdout remains the fallback channel.
+    }
+  }
 }
 
 async function main(): Promise<void> {
@@ -63,14 +89,25 @@ async function main(): Promise<void> {
   // 2. Build a real chroma-mcp subprocess tree owned by THIS process. Spawned
   //    after the listen above, the chain inherits the listening socket the
   //    way the production worker's sidecar does.
+  const startedAt = Date.now();
+  // The port rides along on every stage: the parent needs it to sweep a
+  // listener left behind even if this fixture never reaches `ready`.
+  const progress = (stage: string): void =>
+    emit({ event: 'progress', stage, elapsedMs: Date.now() - startedAt, port });
+
+  progress('port-bound');
+
   const manager = ChromaMcpManager.getInstance();
   const collection = `ghost_fixture_${Date.now()}`;
+  progress('create-collection-start');
   await manager.callTool('chroma_create_collection', { collection_name: collection });
+  progress('create-collection-done');
   await manager.callTool('chroma_add_documents', {
     collection_name: collection,
     documents: ['ghost fixture document'],
     ids: [`fixture_${Date.now()}`],
   });
+  progress('add-documents-done');
 
   const chromaRecord = getSupervisor().getRegistry().getAll().find(r => r.id === 'chroma-mcp');
   if (!chromaRecord?.pid) {
