@@ -4,6 +4,98 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.24.15] - 2026-09-11
+
+- #3727 / #3706 — daemon no longer inherits user project cwd; worker cwd is DATA_DIR (Windows folder lock fix)
+- #4021 — test(windows): only skip the ghost gate for the one runtime signature
+
+## [13.24.14] - 2026-09-11
+
+- #4015 — skip creating empty CLAUDE.md files
+- #4016 — scan configured dot-directories for transcripts
+- #4017 — accept empty OpenRouter reasoning responses
+- #4014 — tolerate negative statfs availability in cleanup
+- #4019 — serialize FileTailer reads; clear partial on truncation
+- #4018 — upgrade shell-quote to 1.9.0 (CVE-2026-13311)
+
+## [13.24.13] - 2026-09-11
+
+- #3726 — Windows CredRead shim compiles (OAuth token lookup)
+- #4009 — ship bug-report CLI in the package
+- #4010 — Windsurf hooks.json BOM-tolerant read
+- #4011 — project-filter expand ~ with a path separator
+- #4012 — stop reparenting ~user/ transcript watch paths
+
+## [13.24.12] - 2026-09-11
+
+- #4003 retry max_completion_tokens on GPT-5 400s
+- #4005 use remote ancestry to adopt merged worktrees
+- #4006 fail open on malformed hook stdin
+- #3826 delete the stale trial acknowledgement constant
+- #3773 mention Codex hook trust after install
+- #4008 resolve Volta Bun shims to bun.exe
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.24.11...v13.24.12
+
+## [13.24.11] - 2026-09-11
+
+- #3994 CLAUDE_MEM_FETCH_VERBOSE
+- #3992 ghost-gate fixture handshake
+- #3996 strip image payloads from observation prompt
+- #3998 requeue on observer transport failure
+- #3999 pause session on reactive quota error
+- #3995 fit session block to hook output limit
+- #3997 CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS
+- #4000 configurable LLM per-attempt deadline
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.24.10...v13.24.11
+
+## [13.24.10] - 2026-09-11
+
+## What's Changed
+* fix(sync): shrink content flush batches and raise hub push timeout by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3991
+* chore(release): 13.24.10 by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3993
+
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.24.9...v13.24.10
+
+## [13.24.9] - 2026-09-11
+
+## What's Changed
+* chore(release): 13.24.8 by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3981
+* fix(worker): salvage prose-only observations instead of dropping them (closes #3351) by @rodboev in https://github.com/thedotmack/claude-mem/pull/3363
+* fix(observer): skip textless assistant frames before batch confirm (Fixes #3492) by @stantheman0128 in https://github.com/thedotmack/claude-mem/pull/3501
+* fix(installer): tolerate non-string OpenCode context bodies (refs #3330) by @rodboev in https://github.com/thedotmack/claude-mem/pull/3383
+* fix(opencode): honor persisted worker port settings (closes #3365) by @rodboev in https://github.com/thedotmack/claude-mem/pull/3402
+* fix(search): fall back after empty semantic misses (closes #3361) by @rodboev in https://github.com/thedotmack/claude-mem/pull/3399
+* fix(chroma): tolerate CJK list backfill by @ousamabenyounes in https://github.com/thedotmack/claude-mem/pull/3430
+* fix(sqlite): populate session_summaries files_read and files_edited (#3517) by @stantheman0128 in https://github.com/thedotmack/claude-mem/pull/3530
+* fix(hooks): dedupe file-context injection per session (#3480) by @ousamabenyounes in https://github.com/thedotmack/claude-mem/pull/3486
+* fix(observer): don't store observations parsed from the init reply by @sanztheo in https://github.com/thedotmack/claude-mem/pull/3877
+* fix(hooks): stop login-shell PATH rebuild on Claude Code hooks (#3190) by @stantheman0128 in https://github.com/thedotmack/claude-mem/pull/3453
+* fix: say why the worker died instead of listing suspects by @yetanotherflo in https://github.com/thedotmack/claude-mem/pull/3894
+* fix(openrouter): never send an empty messages array to the API (Fixes #3491) by @stantheman0128 in https://github.com/thedotmack/claude-mem/pull/3493
+* fix(server-beta): carry session folder onto generated observation metadata by @alessandropcostabr in https://github.com/thedotmack/claude-mem/pull/2671
+* fix(server-beta): re-pin payload.generation_job_id on idempotent re-create by @alessandropcostabr in https://github.com/thedotmack/claude-mem/pull/3583
+* fix(server-beta): accept contentSessionId on /v1/memories, mirroring /v1/events by @alessandropcostabr in https://github.com/thedotmack/claude-mem/pull/3586
+* fix(search): answer CJK and Japanese queries by substring by @ntdatt812 in https://github.com/thedotmack/claude-mem/pull/3810
+* fix(observer): recognise the CLI's signed-out wording as an auth failure by @ntdatt812 in https://github.com/thedotmack/claude-mem/pull/3786
+* fix(observer): don't confirm the queued batch on mid-stream empty SDK chunks (#3869) by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3984
+* security: close credential leak paths (#3861 / #3680) by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3985
+* fix(sync): quarantine stale content-outbox origin_device_id after device remint by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3987
+* fix(opencode): read tool arguments from hook input (refs #3678) by @rodboev in https://github.com/thedotmack/claude-mem/pull/3766
+* fix(opencode): stamp platformSource on worker posts (refs #3678) by @rodboev in https://github.com/thedotmack/claude-mem/pull/3767
+* fix(windows): bound the port-occupancy probe so a ghost listener cannot hang the launcher by @weiconghe in https://github.com/thedotmack/claude-mem/pull/3989
+* fix(observer): surface quota cooldown on observer-health and session-start by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3986
+* chore(release): 13.24.9 by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3990
+
+## New Contributors
+* @sanztheo made their first contribution in https://github.com/thedotmack/claude-mem/pull/3877
+* @yetanotherflo made their first contribution in https://github.com/thedotmack/claude-mem/pull/3894
+* @ntdatt812 made their first contribution in https://github.com/thedotmack/claude-mem/pull/3810
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.24.8...v13.24.9
+
 ## [13.24.8] - 2026-09-11
 
 Bugfix patch — eight fixes that landed after 13.24.7.
