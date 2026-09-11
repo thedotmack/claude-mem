@@ -66,20 +66,81 @@ export async function isPortInUse(port: number): Promise<boolean> {
     // net.createServer() approach to definitively check port occupancy.
   }
 
+  return (await classifyPortOccupancy(port)) === 'occupied';
+}
+
+export type PortOccupancy = 'free' | 'occupied' | 'indeterminate';
+
+export function classifyPortOccupancy(port: number, timeoutMs: number = 5000): Promise<PortOccupancy> {
+  if (timeoutMs <= 0) return Promise.resolve('indeterminate');
+
   return new Promise((resolve) => {
-    const server = net.createServer();
-    const workerHost = getWorkerHost();
-    server.once('error', (err: NodeJS.ErrnoException) => {
-      if (err.code === 'EADDRINUSE') {
-        resolve(true);
-      } else {
-        resolve(false);
+    let settled = false;
+    let listening = false;
+    let closeRequested = false;
+    let server: net.Server;
+    try {
+      server = net.createServer();
+    } catch {
+      resolve('indeterminate');
+      return;
+    }
+    const closeServer = (callback?: (error?: Error) => void): void => {
+      if (closeRequested) {
+        callback?.();
+        return;
       }
+      closeRequested = true;
+      try {
+        server.close(callback);
+      } catch (error: unknown) {
+        callback?.(error instanceof Error ? error : new Error(String(error)));
+      }
+    };
+
+    const timer = setTimeout(() => {
+      if (listening) {
+        closeServer();
+      } else {
+        try { server.close(); } catch { /* the listening handler retries cleanup */ }
+      }
+      settle('indeterminate');
+    }, timeoutMs);
+
+    const settle = (result: PortOccupancy): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+
+    server.once('error', (err: NodeJS.ErrnoException) => {
+      if (listening) {
+        closeServer();
+      } else {
+        try { server.close(); } catch { /* the bind did not start */ }
+      }
+      settle(err.code === 'EADDRINUSE' ? 'occupied' : 'indeterminate');
     });
     server.once('listening', () => {
-      server.close(() => resolve(false));
+      listening = true;
+      if (settled) {
+        closeServer();
+        return;
+      }
+      try {
+        closeServer((error?: Error) => settle(error ? 'indeterminate' : 'free'));
+      } catch {
+        settle('indeterminate');
+      }
     });
-    server.listen(port, workerHost);
+
+    try {
+      server.listen(port, getWorkerHost());
+    } catch {
+      try { server.close(); } catch { /* the bind did not start */ }
+      settle('indeterminate');
+    }
   });
 }
 
