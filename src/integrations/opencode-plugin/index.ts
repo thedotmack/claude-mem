@@ -61,6 +61,7 @@ interface ToolExecuteAfterInput {
   tool: string;
   sessionID: string;
   callID: string;
+  args?: Record<string, unknown>;
 }
 
 interface ToolExecuteAfterOutput {
@@ -205,7 +206,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       workerPostFireAndForget("/api/sessions/observations", {
         contentSessionId,
         tool_name: input.tool,
-        tool_input: output.args || {},
+        tool_input: input.args || output.args || {},
         tool_response: truncate(output.output || ""),
         cwd: ctx.directory,
       });
