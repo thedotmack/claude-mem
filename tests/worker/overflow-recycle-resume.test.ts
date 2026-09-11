@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll } from 'bun:test';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 import { resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
 import { resetDependencyStatusesForTesting } from '../../src/shared/dependency-health.js';
@@ -67,6 +67,28 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
   beforeEach(() => {
     resetQuotaCooldownsForTesting();
     resetDependencyStatusesForTesting();
+  });
+
+  // #2756 round-3 review finding (important) — this file drives
+  // SessionRoutes.ensureGeneratorRunning() for real, which runs the real
+  // (unmocked) generator-exit handling; the "does not resume on a quota
+  // pause" test below legitimately arms the real, module-level
+  // quota-cooldown singleton as a side effect of that exit path, and (like
+  // every other test here) relies on the NEXT test's own `beforeEach`
+  // rather than cleaning up immediately — verified: adding
+  // guardSharedQuotaCooldownSingleton's per-test before/after assertion to
+  // this file (tried and reverted) false-positives on exactly that
+  // legitimate, by-design behavior. Without this `afterAll`, a leftover
+  // armed cooldown would still be sitting there for whichever OTHER file
+  // runs next in the same `bun test` process — this file shares that
+  // singleton with tests/worker/quota-cooldown.test.ts (which already
+  // carries this same afterAll) and
+  // tests/worker/http/routes/session-routes-provider-switch.test.ts (guarded
+  // via tests/shared/quota-cooldown-singleton-guard.ts). Matches the
+  // existing precedent in quota-cooldown.test.ts rather than a per-test
+  // guard, since only file-boundary cleanup is safe here.
+  afterAll(() => {
+    resetQuotaCooldownsForTesting();
   });
 
   it('starts a replacement generation without waiting for another captured tool call', async () => {

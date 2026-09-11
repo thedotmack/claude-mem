@@ -463,7 +463,23 @@ export async function ensureSdkProcessExit(
 
 const TOTAL_PROCESS_HARD_CAP = 10;
 const SLOT_RECHECK_INTERVAL_MS = 5_000;
-const slotWaiters: Array<() => void> = [];
+
+// #2756: a session parked here for longer than this gets one WARN log line
+// via the recheck timer below. Deliberately duplicated from
+// SessionMessageBuffer's IDLE_TIMEOUT_MS (180_000ms) rather than imported —
+// no file under src/supervisor/ imports from src/services/, and importing it
+// here would create that layering violation. If IDLE_TIMEOUT_MS ever
+// changes, update this twin constant too.
+const PARKED_WARN_THRESHOLD_MS = 3 * 60 * 1000;
+
+interface SlotWaiterRecord {
+  sessionId?: number | string;
+  parkedSince: number;
+  warnedParked: boolean;
+  notify: () => void;
+}
+
+const slotWaiters: SlotWaiterRecord[] = [];
 
 /**
  * Slots granted by waitForSlot() that are not yet visible as registry
@@ -498,7 +514,31 @@ function getActiveSdkCount(): number {
 
 function notifySlotAvailable(): void {
   const waiter = slotWaiters.shift();
-  if (waiter) waiter();
+  if (waiter) waiter.notify();
+}
+
+/** Number of sessions currently parked waiting for a concurrency slot — exposed on GET /api/processing-status (#2756). */
+export function getParkedSlotWaiterCount(): number {
+  return slotWaiters.length;
+}
+
+/**
+ * Slots granted by waitForSlot() but not yet visible as a registry 'sdk'
+ * record (or already released). Exported so tests that share this
+ * module-level singleton across files in the same `bun test` process (see
+ * tests/supervisor/process-registry-singleton-guard.ts) can assert this
+ * back to zero between tests too — a leaked reservation is invisible to
+ * getParkedSlotWaiterCount() and to a registry.getAll() scan, but still
+ * inflates getActiveSdkCount() for every later test in the same process.
+ */
+export function getReservedSlotCount(): number {
+  return reservedSlots;
+}
+
+/** Whether `sessionId` currently has a generator parked in waitForSlot (never acquired a slot / never spawned) (#2756). */
+export function isSessionParkedForSlot(sessionId: number | string): boolean {
+  const normalized = String(sessionId);
+  return slotWaiters.some(w => w.sessionId !== undefined && String(w.sessionId) === normalized);
 }
 
 /**
@@ -508,32 +548,56 @@ function notifySlotAvailable(): void {
  * reservation once the spawned process is registered (the registry record
  * takes over the accounting) or when the spawn fails or never happens:
  * a leaked reservation would occupy the slot until the worker restarts.
+ *
+ * `maxConcurrent` may be a plain number (frozen for this call) or a thunk
+ * that is re-read on every recheck — pass a thunk so a mid-wait settings
+ * change (raising CLAUDE_MEM_MAX_CONCURRENT_AGENTS) can release an
+ * already-parked waiter without a worker restart (#2756). `sessionId`, when
+ * provided, lets callers (SessionRoutes) detect via isSessionParkedForSlot()
+ * whether this specific session is currently parked here, to distinguish a
+ * provider-switch onto a parked generator from one that is already
+ * mid-response.
  */
-export async function waitForSlot(maxConcurrent: number, signal?: AbortSignal): Promise<SlotReservation> {
+export async function waitForSlot(
+  maxConcurrent: number | (() => number),
+  signal?: AbortSignal,
+  sessionId?: number | string
+): Promise<SlotReservation> {
+  const getMax = typeof maxConcurrent === 'function' ? maxConcurrent : () => maxConcurrent;
+
   getProcessRegistry().pruneDeadEntries();
   const activeCount = getActiveSdkCount();
   if (activeCount >= TOTAL_PROCESS_HARD_CAP) {
     throw new Error(`Hard cap exceeded: ${activeCount} processes in registry (cap=${TOTAL_PROCESS_HARD_CAP}). Refusing to spawn more.`);
   }
 
-  if (activeCount < maxConcurrent) return takeSlotReservation();
+  if (activeCount < getMax()) return takeSlotReservation();
 
   if (signal?.aborted) {
     throw new Error('waitForSlot aborted before queuing');
   }
 
-  logger.info('PROCESS', `Pool limit reached (${activeCount}/${maxConcurrent}), waiting for slot...`);
+  logger.info('PROCESS', `Pool limit reached (${activeCount}/${getMax()}), waiting for slot...`);
 
   return new Promise<SlotReservation>((resolve, reject) => {
     let recheckTimer: ReturnType<typeof setInterval> | null = null;
     let abortHandler: (() => void) | null = null;
+    const record: SlotWaiterRecord = {
+      sessionId,
+      parkedSince: Date.now(),
+      warnedParked: false,
+      notify: () => {},
+    };
     const cleanup = () => {
       if (recheckTimer) clearInterval(recheckTimer);
       if (abortHandler && signal) signal.removeEventListener('abort', abortHandler);
-      const idx = slotWaiters.indexOf(onSlot);
+      const idx = slotWaiters.indexOf(record);
       if (idx >= 0) slotWaiters.splice(idx, 1);
     };
     const onSlot = () => {
+      // Re-read getMax() here (not a frozen value) so a settings raise
+      // reaches an already-parked waiter the next time it's poked — either
+      // by this recheck timer or by another slot freeing up via unregister().
       const count = getActiveSdkCount();
       if (count >= TOTAL_PROCESS_HARD_CAP) {
         cleanup();
@@ -541,13 +605,14 @@ export async function waitForSlot(maxConcurrent: number, signal?: AbortSignal): 
         return;
       }
 
-      if (count < maxConcurrent) {
+      if (count < getMax()) {
         cleanup();
         resolve(takeSlotReservation());
       } else {
-        slotWaiters.push(onSlot);
+        slotWaiters.push(record);
       }
     };
+    record.notify = onSlot;
 
     if (signal) {
       abortHandler = () => {
@@ -557,14 +622,22 @@ export async function waitForSlot(maxConcurrent: number, signal?: AbortSignal): 
       signal.addEventListener('abort', abortHandler, { once: true });
     }
 
-    slotWaiters.push(onSlot);
+    slotWaiters.push(record);
     recheckTimer = setInterval(() => {
       const removed = getProcessRegistry().pruneDeadEntries();
       if (removed > 0) {
         logger.info('PROCESS', 'Pruned stale process registry entries while waiting for agent slot', { removed });
-        return;
+      } else {
+        notifySlotAvailable();
       }
-      notifySlotAvailable();
+
+      if (!record.warnedParked && Date.now() - record.parkedSince >= PARKED_WARN_THRESHOLD_MS) {
+        record.warnedParked = true;
+        logger.warn('PROCESS', `Session parked waiting for an agent slot for over ${Math.round(PARKED_WARN_THRESHOLD_MS / 1000)}s`, {
+          sessionId: record.sessionId,
+          parkedForMs: Date.now() - record.parkedSince,
+        });
+      }
     }, SLOT_RECHECK_INTERVAL_MS);
     recheckTimer.unref?.();
   });
