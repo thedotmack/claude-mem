@@ -2,9 +2,10 @@
 // session_summaries.memory_session_id FK. addOnUpdateCascadeToForeignKeys
 // (v21) is version-row gated and runs once; removeSessionSummariesUniqueConstraint
 // (v7) is introspection-gated and can fire later, recreating the table with
-// ON DELETE CASCADE only. Parent-key rewrites in ensureMemorySessionIdRegistered
-// then throw FOREIGN KEY constraint failed for any session that already has a
-// summary. The same class of defect as #3890, on the FK clause rather than the
+// ON DELETE CASCADE only. Parent-key rewrites then throw FOREIGN KEY
+// constraint failed for any session that already has a summary. Those
+// rewrites go through updateMemorySessionId (ensure only fills a NULL id).
+// The same class of defect as #3890, on the FK clause rather than the
 // column list.
 import { describe, it, expect, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -227,7 +228,7 @@ describe('session_summaries ON UPDATE CASCADE survives v7 rebuild (#3849)', () =
     const session = store.db.prepare(
       `SELECT id FROM sdk_sessions WHERE memory_session_id = 'mem-healthy'`
     ).get() as { id: number };
-    store.ensureMemorySessionIdRegistered(session.id, 'mem-rotated');
+    store.updateMemorySessionId(session.id, 'mem-rotated');
 
     expect(store.db.prepare(
       `SELECT memory_session_id FROM sdk_sessions WHERE id = ?`
@@ -272,7 +273,7 @@ describe('session_summaries ON UPDATE CASCADE survives v7 rebuild (#3849)', () =
     const session = store.db.prepare(
       `SELECT id FROM sdk_sessions WHERE memory_session_id = 'mem-healthy'`
     ).get() as { id: number };
-    expect(() => store.ensureMemorySessionIdRegistered(session.id, 'mem-rotated')).not.toThrow();
+    expect(() => store.updateMemorySessionId(session.id, 'mem-rotated')).not.toThrow();
     expect(store.db.prepare(
       `SELECT memory_session_id FROM session_summaries WHERE request = 'already summarised'`
     ).get()).toEqual({ memory_session_id: 'mem-rotated' });
@@ -296,7 +297,7 @@ describe('session_summaries ON UPDATE CASCADE survives v7 rebuild (#3849)', () =
     const session = store.db.prepare(
       `SELECT id FROM sdk_sessions WHERE memory_session_id = 'mem-healthy'`
     ).get() as { id: number };
-    store.ensureMemorySessionIdRegistered(session.id, 'mem-rotated');
+    store.updateMemorySessionId(session.id, 'mem-rotated');
     expect(store.db.prepare(
       `SELECT memory_session_id FROM observations WHERE text = 'obs that should cascade'`
     ).get()).toEqual({ memory_session_id: 'mem-rotated' });
@@ -312,7 +313,7 @@ describe('session_summaries ON UPDATE CASCADE survives v7 rebuild (#3849)', () =
     const session = first.db.prepare(
       `SELECT id FROM sdk_sessions WHERE memory_session_id = 'mem-healthy'`
     ).get() as { id: number };
-    first.ensureMemorySessionIdRegistered(session.id, 'mem-rotated');
+    first.updateMemorySessionId(session.id, 'mem-rotated');
     first.db.close();
 
     const second = new SessionStore(dbPath);
@@ -320,7 +321,7 @@ describe('session_summaries ON UPDATE CASCADE survives v7 rebuild (#3849)', () =
     expect(second.db.prepare(
       `SELECT COUNT(*) AS n FROM session_summaries WHERE memory_session_id = 'mem-rotated'`
     ).get()).toEqual({ n: 1 });
-    expect(() => second.ensureMemorySessionIdRegistered(session.id, 'mem-rotated-again')).not.toThrow();
+    expect(() => second.updateMemorySessionId(session.id, 'mem-rotated-again')).not.toThrow();
     expect(second.db.prepare(
       `SELECT memory_session_id FROM session_summaries WHERE request = 'already summarised'`
     ).get()).toEqual({ memory_session_id: 'mem-rotated-again' });

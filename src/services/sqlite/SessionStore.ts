@@ -2152,7 +2152,7 @@ export class SessionStore {
     sessionDbId: number,
     memorySessionId: string,
     workerPort?: number
-  ): void {
+  ): string {
     const session = this.db.prepare(`
       SELECT id, memory_session_id, worker_port FROM sdk_sessions WHERE id = ?
     `).get(sessionDbId) as { id: number; memory_session_id: string | null; worker_port: number | null } | undefined;
@@ -2208,6 +2208,8 @@ export class SessionStore {
         UPDATE sdk_sessions SET worker_port = ? WHERE id = ?
       `).run(workerPort, sessionDbId);
     }
+
+    return session.memory_session_id ?? memorySessionId;
   }
 
   getAllProjects(platformSource?: string): string[] {

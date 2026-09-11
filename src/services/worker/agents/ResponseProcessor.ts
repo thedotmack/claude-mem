@@ -465,11 +465,16 @@ export async function processAgentResponse(
   );
 
   const sessionStore = dbManager.getSessionStore();
-  sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId, getWorkerPort());
+  // ensure registers only when the stored id is NULL. Persist against the
+  // registered identity so a later turn's fresh SDK session_id cannot FK-miss
+  // observations/summaries that already hang off the first id.
+  const registeredMemorySessionId =
+    sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId, getWorkerPort())
+    || session.memorySessionId;
 
-  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${sanitizedObservations.length} | hasSummary=${!!summaryForStore}`, {
+  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${registeredMemorySessionId} | obsCount=${sanitizedObservations.length} | hasSummary=${!!summaryForStore}`, {
     sessionId: session.sessionDbId,
-    memorySessionId: session.memorySessionId
+    memorySessionId: registeredMemorySessionId
   });
 
   const labeledObservations = sanitizedObservations.map(obs => ({
@@ -481,7 +486,7 @@ export async function processAgentResponse(
   let result: ReturnType<typeof sessionStore.storeObservations>;
   try {
     result = sessionStore.storeObservations(
-      session.memorySessionId,
+      registeredMemorySessionId,
       context.project,
       labeledObservations,
       summaryForStore,
@@ -495,9 +500,9 @@ export async function processAgentResponse(
     session.pendingAgentType = null;
   }
 
-  logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
+  logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${registeredMemorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
     sessionId: session.sessionDbId,
-    memorySessionId: session.memorySessionId
+    memorySessionId: registeredMemorySessionId
   });
 
   session.lastSummaryStored = result.summaryId !== null;
