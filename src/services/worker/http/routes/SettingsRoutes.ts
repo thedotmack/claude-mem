@@ -18,6 +18,47 @@ const toggleMcpSchema = z.object({
   enabled: z.boolean(),
 }).passthrough();
 
+// GET /api/settings has no auth. Mask known secrets before they leave the
+// process. Explicit allowlist — a /API_KEY|_TOKEN|SECRET/i regex also matches
+// CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS / SHOW_WORK_TOKENS (boolean display
+// prefs) and corrupts them on every GET (#3680 / #3861).
+const SECRET_SETTING_KEYS = new Set([
+  'CLAUDE_MEM_GEMINI_API_KEY',
+  'CLAUDE_MEM_OPENROUTER_API_KEY',
+  'CLAUDE_MEM_CHROMA_API_KEY',
+  'CLAUDE_MEM_CLOUD_SYNC_TOKEN',
+  'CLAUDE_MEM_TELEGRAM_BOT_TOKEN',
+  'CLAUDE_MEM_SERVER_API_KEY',
+  'CLAUDE_MEM_SERVER_BETA_API_KEY',
+  'CLAUDE_MEM_TV_TOKEN',
+  'CLAUDE_MEM_PRO_MEMORY_KEY',
+  'CLAUDE_MEM_REDIS_URL',
+]);
+
+function maskSecretValue(value: unknown): unknown {
+  if (typeof value !== 'string' || value.length === 0) return value;
+  if (value.length <= 4) return '*'.repeat(value.length);
+  return `${'*'.repeat(value.length - 4)}${value.slice(-4)}`;
+}
+
+// Viewer save posts the GET body back unchanged. Treat a secret as untouched
+// only when the submitted value equals the mask of the currently stored
+// secret — not "any string starting with *", which would silently drop a
+// legitimate replacement key that happens to begin with '*'.
+function isUnchangedMaskedSecret(incoming: unknown, stored: unknown): boolean {
+  return typeof incoming === 'string' && incoming === maskSecretValue(stored);
+}
+
+function redactSecretSettings<T extends object>(settings: T): T {
+  const redacted: Record<string, unknown> = { ...(settings as Record<string, unknown>) };
+  for (const key of SECRET_SETTING_KEYS) {
+    if (key in redacted) {
+      redacted[key] = maskSecretValue(redacted[key]);
+    }
+  }
+  return redacted as T;
+}
+
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(
     private settingsManager: SettingsManager
@@ -38,7 +79,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     const settingsPath = paths.settings();
     this.ensureSettingsFile(settingsPath);
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-    res.json(settings);
+    res.json(redactSecretSettings(settings));
   });
 
   private handleGetDependencyHealth = this.wrapHandler((_req: Request, res: Response): void => {
@@ -114,6 +155,9 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     for (const key of settingKeys) {
       if (req.body[key] !== undefined) {
+        if (SECRET_SETTING_KEYS.has(key) && isUnchangedMaskedSecret(req.body[key], settings[key])) {
+          continue;
+        }
         settings[key] = req.body[key];
       }
     }
@@ -184,9 +228,12 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     if (settings.CLAUDE_MEM_WORKER_HOST) {
       const host = settings.CLAUDE_MEM_WORKER_HOST;
-      const validHostPattern = /^(127\.0\.0\.1|0\.0\.0\.0|localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
+      // Loopback, plus the documented bind-all addresses used by Observation TV
+      // and Docker (docs/public/configuration.mdx). Arbitrary IPv4 used to be
+      // accepted and would expose the unauthenticated worker API on that NIC.
+      const validHostPattern = /^(127\.0\.0\.1|0\.0\.0\.0|::1|::|localhost)$/;
       if (!validHostPattern.test(host)) {
-        return { valid: false, error: 'CLAUDE_MEM_WORKER_HOST must be a valid IP address (e.g., 127.0.0.1, 0.0.0.0)' };
+        return { valid: false, error: 'CLAUDE_MEM_WORKER_HOST must be a loopback address (127.0.0.1, ::1, localhost) or a bind-all address (0.0.0.0, ::) for Observation TV / Docker' };
       }
     }
 
