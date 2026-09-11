@@ -357,7 +357,33 @@ function executeCwdRemap(dbPath: string, effectiveDataDir: string, markerPath: s
   }
 }
 
-export function buildWindowsDaemonStartCommand(runtimePath: string, scriptPath: string): string {
+/**
+ * Where a detached daemon should stand, which is anywhere but the user's project.
+ *
+ * A process holds an open handle on its working directory. On Windows that makes the
+ * directory unrenamable and unmovable for the daemon's whole lifetime, and the daemon
+ * outlives the session that spawned it -- so a project folder became permanently locked
+ * with "The process cannot access the file because it is being used by another process"
+ * until the user found and killed bun.exe (#3706). POSIX allows the rename but still
+ * pins the directory against unmount. claude-mem's own data directory always exists by
+ * the time a daemon starts and is never a directory the user is reorganising.
+ */
+export function daemonWorkingDirectory(): string {
+  const dir = paths.dataDir();
+  // Created here rather than assumed: a cwd that does not exist makes spawn fail with
+  // ENOENT and Start-Process fail outright, so passing one turns a first run on a fresh
+  // install into a launch failure. paths.ts resolves DATA_DIR but does not create it --
+  // today something else happens to create it first, which is a coupling this must not
+  // depend on. mkdir -p is idempotent, so the usual case costs one stat.
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+export function buildWindowsDaemonStartCommand(
+  runtimePath: string,
+  scriptPath: string,
+  workingDirectory: string = daemonWorkingDirectory()
+): string {
   const psSingleQuote = (value: string) => value.replace(/'/g, "''");
   // Windows PowerShell 5.1 joins -ArgumentList elements with spaces WITHOUT
   // quoting them when it builds the child's native command line, so a script
@@ -366,7 +392,102 @@ export function buildWindowsDaemonStartCommand(runtimePath: string, scriptPath: 
   // double quotes inside the single-quoted PS string keeps the path a single
   // argument. -FilePath is safe as-is: it is a single-string parameter and
   // never goes through that join.
-  return `Start-Process -FilePath '${psSingleQuote(runtimePath)}' -ArgumentList @('"${psSingleQuote(scriptPath)}"','--daemon') -WindowStyle Hidden`;
+  return `Start-Process -FilePath '${psSingleQuote(runtimePath)}' -ArgumentList @('"${psSingleQuote(scriptPath)}"','--daemon') -WorkingDirectory '${psSingleQuote(workingDirectory)}' -WindowStyle Hidden`;
+}
+
+export const WORKER_BOOT_PROBE_TIMEOUT_MS = 5000;
+const WORKER_BOOT_PROBE_MAX_LINES = 8;
+
+/**
+ * Did the probe "time out" too early for that timeout to be real?
+ *
+ * Called from the worker-start failure path, the FIRST sync spawn comes back
+ * ETIMEDOUT in ~25ms — the child SIGTERMed before it could print a byte — no
+ * matter how generous the window is (measured identically at 8s and at 60s
+ * under Bun 1.3.13 on Windows). A second, identical spawn immediately after
+ * always answers in ~180ms, so the deadline is being resolved against something
+ * stale that the first call refreshes. A genuine timeout burns the whole window
+ * instead, which is what separates the two here.
+ */
+export function shouldRetryWorkerBootProbe(
+  error: Error | undefined,
+  elapsedMs: number,
+  timeoutMs: number
+): boolean {
+  if ((error as NodeJS.ErrnoException | undefined)?.code !== 'ETIMEDOUT') return false;
+  return elapsedMs < timeoutMs / 2;
+}
+
+/**
+ * Re-run the worker bundle in the foreground to recover the stderr spawnDaemon
+ * threw away.
+ *
+ * The daemon is detached with its stdio discarded (Start-Process -WindowStyle
+ * Hidden on Windows, stdio:'ignore' elsewhere), so a bundle that dies during
+ * module resolution — a truncated `bun install` in the plugin cache, a pruned
+ * dependency — leaves the caller with nothing but "worker exited", and the
+ * operator is left guessing between Bun, the bundle and the port. Running the
+ * same bundle where we CAN read stderr puts the actual error back in the log.
+ *
+ * `status` is the probe command: it executes every top-level require in the
+ * bundle — which is where these failures happen, long before argv is parsed —
+ * then exits 0 on every branch without starting a server, so a healthy bundle
+ * costs one silent subprocess. scripts/smoke-clean-room.cjs guards the same
+ * class of failure at build time with the same trick.
+ *
+ * Failure-path only, and never throws: a probe that cannot run tells us nothing
+ * about the bundle, so it stays quiet rather than blaming the wrong thing.
+ */
+export function probeWorkerBootFailure(
+  scriptPath: string,
+  timeoutMs: number = getPlatformTimeout(WORKER_BOOT_PROBE_TIMEOUT_MS)
+): string | undefined {
+  const runtimePath = resolveWorkerRuntimePath();
+  if (!runtimePath) return undefined;
+
+  const runProbe = (): { result: ReturnType<typeof spawnSync>; elapsedMs: number } | undefined => {
+    const startedAt = Date.now();
+    try {
+      const result = spawnSync(runtimePath, [scriptPath, 'status'], {
+        encoding: 'utf-8',
+        timeout: timeoutMs,
+        windowsHide: true,
+        env: sanitizeEnv({ ...process.env })
+      });
+      return { result, elapsedMs: Date.now() - startedAt };
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      logger.debug('SYSTEM', 'Worker boot probe could not be launched', { scriptPath }, err);
+      return undefined;
+    }
+  };
+
+  let attempt = runProbe();
+  if (attempt === undefined) return undefined;
+
+  // One retry when the window expired too early to be real — see
+  // shouldRetryWorkerBootProbe. Without it the probe stays silent on exactly
+  // the platform this fix exists for.
+  if (shouldRetryWorkerBootProbe(attempt.result.error, attempt.elapsedMs, timeoutMs)) {
+    logger.debug('SYSTEM', 'Worker boot probe timed out before it could run — retrying once', {
+      scriptPath,
+      elapsedMs: attempt.elapsedMs,
+      timeoutMs
+    });
+    attempt = runProbe();
+    if (attempt === undefined) return undefined;
+  }
+
+  const { result } = attempt;
+  // Timed out for real, or never launched at all — inconclusive either way.
+  if (result.error) return undefined;
+  // The bundle loaded and answered. Whatever killed the daemon, it was not this.
+  if (result.status === 0) return undefined;
+
+  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
+  if (!output) return undefined;
+
+  return output.split(/\r?\n/).slice(0, WORKER_BOOT_PROBE_MAX_LINES).join('\n');
 }
 
 export function spawnDaemon(
@@ -425,6 +546,7 @@ export function spawnDaemon(
   const child = spawnHidden(execPath, args, {
     detached: true,
     stdio: 'ignore',
+    cwd: daemonWorkingDirectory(),
     env
   });
 

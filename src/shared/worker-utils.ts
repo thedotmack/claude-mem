@@ -4,17 +4,19 @@ import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
-import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
+import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile, readOwnedWorkerPidInfo } from "../supervisor/index.js";
-import { emitBlockingError } from "./hook-io.js";
+import { emitBlockingError, emitDiagnostic } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
-import { checkVersionMatch } from "../services/infrastructure/index.js";
+import { checkVersionMatch, isPortInUse } from "../services/infrastructure/index.js";
 // Imported from ProcessManager.js directly (not the infrastructure barrel):
 // tests mock the barrel module wholesale, and the resolver must stay real.
 // ProcessManager imports nothing from worker-utils, so no cycle.
 import { resolveWorkerRuntimePath } from "../services/infrastructure/ProcessManager.js";
 import { acquireSpawnLock, releaseSpawnLock } from "./worker-spawn-gate.js";
+import { killProcessTree } from "./kill-process-tree.js";
+import { writeJsonFileAtomic } from "./atomic-json.js";
 
 function readTimeoutEnv(
   envName: string,
@@ -48,11 +50,79 @@ const HOOK_READINESS_TIMEOUT_MS = readTimeoutEnv(
 
 const API_REQUEST_TIMEOUT_BOUNDS = { min: 500, max: 300000 } as const;
 
+/**
+ * Node/undici RequestInit extension. Passing `{ verbose: true }` is the
+ * documented way to get socket-level fetch diagnostics (issue #3957).
+ * Not part of the DOM lib, so we keep it local instead of widening RequestInit.
+ */
+type WorkerFetchInit = RequestInit & { verbose?: boolean };
+
+/**
+ * Opt-in only. Default stays off so hook/IPC noise is unchanged.
+ * Accepts 1/true/on/yes (any case). Env-only — not a settings.json default.
+ */
+export function isWorkerFetchVerboseEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.CLAUDE_MEM_FETCH_VERBOSE;
+  if (raw === undefined) return false;
+  const normalized = raw.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'on' || normalized === 'yes';
+}
+
+function withFetchDiagnostics(init: RequestInit): WorkerFetchInit {
+  if (!isWorkerFetchVerboseEnabled()) return init;
+  return { ...init, verbose: true };
+}
+
+function describeFetchError(err: unknown): Record<string, unknown> {
+  const details: Record<string, unknown> = {};
+  let current: unknown = err;
+  for (let depth = 0; current && depth < 4; depth++) {
+    const key = depth === 0 ? 'error' : `cause${depth}`;
+    if (current instanceof Error) {
+      const errno = current as NodeJS.ErrnoException;
+      details[key] = {
+        name: current.name,
+        message: current.message,
+        ...(errno.code !== undefined ? { code: errno.code } : {}),
+      };
+      current = current.cause;
+      continue;
+    }
+    details[key] = String(current);
+    break;
+  }
+  return details;
+}
+
+function logVerboseFetchFailure(url: string, init: RequestInit, err: unknown): void {
+  const method = typeof init.method === 'string' ? init.method : 'GET';
+  const details = describeFetchError(err);
+  // Serialize before logging: logger.formatData abbreviates objects with more
+  // than 3 keys, which would drop nested cause messages at the default INFO level.
+  const serialized = JSON.stringify(details);
+  logger.warn('SYSTEM', 'Worker IPC fetch failed', { url, method }, serialized);
+  // Bypass the hook stderr buffer (#2292) so undici's own verbose dumps plus
+  // this cause chain stay visible when CLAUDE_MEM_FETCH_VERBOSE is on.
+  emitDiagnostic(`[claude-mem] fetch verbose: ${method} ${url} ${serialized}\n`);
+}
+
+async function workerFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const requestInit = withFetchDiagnostics(init);
+  try {
+    return await fetch(url, requestInit);
+  } catch (err: unknown) {
+    if (isWorkerFetchVerboseEnabled()) {
+      logVerboseFetchFailure(url, init, err);
+    }
+    throw err;
+  }
+}
+
 export async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs: number): Promise<Response> {
   try {
     // AbortSignal.timeout (Node 18+) replaces the manual setTimeout/clearTimeout
     // race. On expiry it aborts with a TimeoutError DOMException.
-    return await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    return await workerFetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
   } catch (err: unknown) {
     // Preserve the historical timeout-error message ("...timed out...") that
     // callers match on (hook-command.ts, server-beta-client.ts) — the
@@ -196,7 +266,7 @@ export function workerHttpRequest(
   if (timeoutMs > 0) {
     return fetchWithTimeout(url, init, timeoutMs);
   }
-  return fetch(url, init);
+  return workerFetch(url, init);
 }
 
 async function isWorkerHealthy(): Promise<boolean> {
@@ -204,8 +274,8 @@ async function isWorkerHealthy(): Promise<boolean> {
   return response.ok;
 }
 
-async function isWorkerReady(): Promise<boolean> {
-  const response = await workerHttpRequest('/api/readiness', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
+async function isWorkerReady(timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<boolean> {
+  const response = await workerHttpRequest('/api/readiness', { timeoutMs });
   return response.ok;
 }
 
@@ -416,16 +486,49 @@ async function waitForWorkerPortClosed(timeoutMs = 5000): Promise<boolean> {
   }
 }
 
-/**
- * Amplifier guard: a hook recycles a stale worker AT MOST once per
- * invocation. If the worker that became ready still reports a mismatched
- * version, warn and return — the NEXT hook event retries. Recycling again in
- * the same invocation re-creates the restart storm.
- */
-async function warnIfVersionStillMismatched(expectedPluginVersion: string): Promise<void> {
+// A mislabeled bundle can survive a restart with the same stale version.
+// Persist that result because each hook runs in a fresh process. Replacing the
+// bundle (even without a version bump) makes it eligible for another attempt.
+function workerBuildKey(script: WorkerScriptCandidate | null, expectedVersion: string): string | null {
+  if (!script) return null;
+  try {
+    const stat = statSync(script.scriptPath);
+    return JSON.stringify([script.scriptPath, expectedVersion, stat.size, stat.mtimeMs, stat.ctimeMs]);
+  } catch {
+    return null;
+  }
+}
+
+function failedRecyclePath(): string {
+  return path.join(resolveDataDir(), 'worker-version-recycle.json');
+}
+
+function alreadyRecycledBundle(buildKey: string | null, workerVersion: string | null): boolean {
+  if (buildKey === null || workerVersion === null) return false;
+  try {
+    const previous = JSON.parse(readFileSync(failedRecyclePath(), 'utf-8'));
+    return previous?.buildKey === buildKey && previous?.workerVersion === workerVersion;
+  } catch {
+    return false;
+  }
+}
+
+async function warnIfVersionStillMismatched(
+  expectedPluginVersion: string,
+  buildKey: string | null = null,
+): Promise<void> {
   const observedVersion = await fetchWorkerHealthVersion();
   if (observedVersion !== null && observedVersion !== expectedPluginVersion) {
-    logger.warn('SYSTEM', 'Worker is ready but still reports a stale version; not recycling again in this hook invocation (one recycle per hook event)', {
+    if (buildKey !== null) {
+      try {
+        writeJsonFileAtomic(failedRecyclePath(), { buildKey, workerVersion: observedVersion });
+      } catch (error: unknown) {
+        logger.warn('SYSTEM', 'Could not persist the failed worker version recycle', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    logger.warn('SYSTEM', 'Worker is ready but still reports a stale version; rebuild or reinstall the worker bundle before retrying', {
       pluginVersion: expectedPluginVersion,
       workerVersion: observedVersion,
     });
@@ -465,6 +568,7 @@ export async function ensureWorkerRunning(): Promise<boolean> {
   // (plain cold-start lazy-spawn — no recycle happened, nothing to amplify)
   // or when the resolved version is unreadable ('unknown').
   let expectedPluginVersion: string | null = null;
+  let recycleBuildKey: string | null = null;
 
   if (await isWorkerPortAlive()) {
     // A worker is already alive. If it is a DIFFERENT version than the one
@@ -486,6 +590,16 @@ export async function ensureWorkerRunning(): Promise<boolean> {
         await warnIfVersionStillMismatched(expectedPluginVersion);
       }
       return true;
+    }
+
+    recycleBuildKey = workerBuildKey(resolvedScript, pluginVersion);
+    if (alreadyRecycledBundle(recycleBuildKey, workerVersion)) {
+      logger.warn('SYSTEM', 'Skipping repeated worker recycle: the unchanged bundle still reports a stale version; rebuild or reinstall it', {
+        pluginVersion,
+        workerVersion,
+        scriptPath: resolvedScript?.scriptPath,
+      });
+      return waitForWorkerReadiness();
     }
 
     logger.info('SYSTEM', 'Worker version mismatch — killing stale worker', {
@@ -510,18 +624,28 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       });
       return false;
     }
+    // #3482 — a single-PID kill here orphans the stale worker's whole spawn
+    // chain (uvx -> uv -> python -> chroma-mcp). Those descendants inherited
+    // the worker's listening socket, so they keep the port bound after the
+    // root dies: waitForWorkerPortClosed() below never succeeds, every hook
+    // hard-blocks, and the recycle repeats forever (834 health-check failures
+    // observed). This is NOT Windows-specific — on POSIX the same descendants
+    // simply re-parent to init and survive identically.
+    //
+    // 'immediate' is required, not incidental: it sends SIGKILL with no
+    // SIGTERM and no grace window, so the #3378 invariant above still holds
+    // exactly as written — SIGKILL is uncatchable, so zero stale-version
+    // shutdown code runs anywhere in the tree. A graceful tree-kill would let
+    // the stale worker execute the dying install's handoff logic, which is the
+    // restart storm that invariant exists to prevent.
     try {
-      process.kill(stalePidInfo.pid, 'SIGKILL');
+      await killProcessTree(stalePidInfo.pid, { signalMode: 'immediate' });
     } catch (error: unknown) {
-      // ESRCH: it exited between the health probe and the kill — the port is
-      // free (or about to be) either way.
-      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
-        logger.error('SYSTEM', 'Could not kill stale worker', {
-          pid: stalePidInfo.pid,
-          port: stalePidInfo.port,
-        }, error instanceof Error ? error : new Error(String(error)));
-        return false;
-      }
+      logger.error('SYSTEM', 'Could not kill stale worker', {
+        pid: stalePidInfo.pid,
+        port: stalePidInfo.port,
+      }, error instanceof Error ? error : new Error(String(error)));
+      return false;
     }
     if (!(await waitForWorkerPortClosed())) {
       logger.error('SYSTEM', 'Stale worker port still open after SIGKILL; skipping spawn this hook event', {
@@ -563,9 +687,16 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       logger.info('SYSTEM', 'Worker not running — lazy-spawning', { runtimePath, scriptPath });
 
       try {
+        // A cwd that does not exist makes spawn fail with ENOENT, and paths.ts resolves
+        // DATA_DIR without creating it. Idempotent, so the usual case costs one stat.
+        mkdirSync(DATA_DIR, { recursive: true });
         const proc = spawnHidden(runtimePath, [scriptPath, '--daemon'], {
           detached: true,
           stdio: ['ignore', 'ignore', 'ignore'],
+          // This spawn runs from a hook, so the inherited cwd is the user's project. A
+          // daemon holds its cwd open for its whole life, and on Windows that locks the
+          // folder against rename or move long after the session ends (#3706).
+          cwd: DATA_DIR,
         });
         proc.unref();
       } catch (error: unknown) {
@@ -594,6 +725,24 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       logger.warn('SYSTEM', spawnLockHeld
         ? 'Worker port did not open after lazy-spawn within the cold-boot wait (~15s)'
         : 'Spawn-lock holder\'s worker port did not open within the cold-boot wait (~15s)');
+      // Zombie-socket diagnosis. Only reachable once the full cold-boot wait
+      // has expired, so a worker that merely bound late (server.listen runs
+      // BEFORE writePidFile — a warming worker legitimately has an occupied
+      // port and no PID file) has already had its chance to answer. If the
+      // port is STILL occupied with no reachable worker and no PID file
+      // naming a killable owner, the socket is orphaned at the OS level:
+      // Windows can leave a LISTEN socket behind for a process that no
+      // longer exists. Every future spawn is doomed — the new daemon's
+      // duplicate-gate sees the occupied port and exit(0)s without binding —
+      // so name the actual fix instead of letting the generic "unreachable"
+      // counter climb forever.
+      if (readOwnedWorkerPidInfo() === null && (await isPortInUse(getWorkerPort()))) {
+        orphanedPortDiagnosis = getWorkerPort();
+        logger.error('SYSTEM', 'Worker port is occupied by an unreachable process that no PID file claims (likely an orphaned OS socket); every lazy-spawn on this port will be silently refused', {
+          port: orphanedPortDiagnosis,
+          fix: ORPHANED_PORT_REMEDIATION,
+        });
+      }
       return false;
     }
   } finally {
@@ -604,13 +753,26 @@ export async function ensureWorkerRunning(): Promise<boolean> {
     logger.warn('SYSTEM', 'Worker lazy-spawned but did not become ready before hook readiness timeout');
     return false;
   }
-  // Amplifier guard: even if the worker that won the port is still stale,
-  // never recycle a second time in the same hook invocation.
+  // Remember a failed version change across hook invocations, so a stale
+  // bundled artifact cannot trigger a restart on every tool call.
   if (expectedPluginVersion !== null) {
-    await warnIfVersionStillMismatched(expectedPluginVersion);
+    await warnIfVersionStillMismatched(expectedPluginVersion, recycleBuildKey);
   }
   return true;
 }
+
+const ORPHANED_PORT_REMEDIATION =
+  'Set CLAUDE_MEM_WORKER_PORT to a different port in claude-mem settings, or reboot to release the stuck port';
+
+/**
+ * Port number diagnosed as holding an orphaned OS socket during this hook
+ * process, or null if that condition was never observed. Set by
+ * ensureWorkerRunning and read by recordWorkerUnreachable so the fail-loud
+ * message names the fix. Process-scoped deliberately: it is only ever set
+ * from a fresh probe earlier in the same invocation, so it cannot go stale
+ * across a reboot or a port change the way a persisted flag could.
+ */
+let orphanedPortDiagnosis: number | null = null;
 
 let aliveCache: boolean | null = null;
 
@@ -618,6 +780,52 @@ export async function ensureWorkerAliveOnce(): Promise<boolean> {
   if (aliveCache !== null) return aliveCache;
   aliveCache = await ensureWorkerRunning();
   return aliveCache;
+}
+
+async function ensureWorkerReadyWithin(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  const probe = async (): Promise<boolean> => {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return false;
+    try {
+      return await isWorkerReady(Math.min(500, remainingMs));
+    } catch {
+      return false;
+    }
+  };
+
+  if (await probe()) return true;
+
+  const runtimePath = resolveWorkerRuntimePath();
+  const scriptPath = resolveWorkerScriptPath();
+  if (!runtimePath || !scriptPath) return false;
+
+  const spawnLockHeld = acquireSpawnLock();
+  try {
+    if (spawnLockHeld) {
+      const proc = spawnHidden(runtimePath, [scriptPath, '--daemon'], {
+        detached: true,
+        stdio: ['ignore', 'ignore', 'ignore'],
+      });
+      proc.unref();
+    }
+
+    while (Date.now() < deadline) {
+      if (await probe()) return true;
+      const remainingMs = deadline - Date.now();
+      if (remainingMs > 0) {
+        await new Promise<void>(resolve => setTimeout(resolve, Math.min(100, remainingMs)));
+      }
+    }
+    return false;
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Bounded worker startup failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  } finally {
+    if (spawnLockHeld) releaseSpawnLock();
+  }
 }
 
 interface HookFailureState {
@@ -748,7 +956,9 @@ export async function recordWorkerUnreachable(): Promise<number> {
     // via the bypass channel + exits 2. Previously this raw process.stderr.write
     // was swallowed by hookCommand's blanket no-op, so the user/model never saw it.
     emitBlockingError(
-      `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`
+      orphanedPortDiagnosis !== null
+        ? `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks: port ${orphanedPortDiagnosis} is held by an unreachable process that no PID file claims, so the worker cannot bind it. ${ORPHANED_PORT_REMEDIATION}.`
+        : `claude-mem worker unreachable for ${next.consecutiveFailures} consecutive hooks.`
     );
   }
   return next.consecutiveFailures;
@@ -776,6 +986,7 @@ export function isWorkerFallback<T>(result: WorkerCallResult<T>): result is Work
 
 export interface WorkerFallbackOptions {
   timeoutMs?: number;
+  workerStartupTimeoutMs?: number;
 }
 
 export async function executeWithWorkerFallback<T = unknown>(
@@ -784,9 +995,14 @@ export async function executeWithWorkerFallback<T = unknown>(
   body?: unknown,
   options: WorkerFallbackOptions = {},
 ): Promise<WorkerCallResult<T>> {
-  const alive = await ensureWorkerAliveOnce();
+  const boundedStartup = options.workerStartupTimeoutMs !== undefined;
+  const alive = boundedStartup
+    ? await ensureWorkerReadyWithin(options.workerStartupTimeoutMs!)
+    : await ensureWorkerAliveOnce();
   if (!alive) {
-    await recordWorkerUnreachable();
+    if (!boundedStartup) {
+      await recordWorkerUnreachable();
+    }
     return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
   }
 
@@ -799,7 +1015,16 @@ export async function executeWithWorkerFallback<T = unknown>(
     init.timeoutMs = options.timeoutMs;
   }
 
-  const response = await workerHttpRequest(url, init);
+  let response: Response;
+  try {
+    response = await workerHttpRequest(url, init);
+  } catch (error) {
+    if (!boundedStartup) throw error;
+    logger.debug('SYSTEM', 'Worker unavailable for best-effort hook call', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
+  }
   if (!response.ok) {
     const text = await response.text().catch(() => '');
     resetWorkerFailureCounter();

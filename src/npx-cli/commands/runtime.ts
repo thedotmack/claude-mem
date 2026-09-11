@@ -4,7 +4,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { styleText } from 'node:util';
 import { getBunPath } from '../install/setup-runtime.js';
-import { isPluginInstalled, marketplaceDirectory } from '../utils/paths.js';
+import { isPluginInstalled, marketplaceDirectory, npmPackageRootDirectory } from '../utils/paths.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 
 function ensureInstalledOrExit(): void {
@@ -40,6 +40,10 @@ function serverServiceScriptPath(): string {
     return renamed;
   }
   return join(scriptsDir, 'server-beta-service.cjs');
+}
+
+function packagePluginScriptPath(scriptName: string): string {
+  return join(npmPackageRootDirectory(), 'plugin', 'scripts', scriptName);
 }
 
 /**
@@ -153,6 +157,53 @@ export function runAdoptCommand(extraArgs: string[] = []): void {
 
 export function runCleanupCommand(extraArgs: string[] = []): void {
   spawnBunWorkerCommand('cleanup', extraArgs);
+}
+
+export function runMcpCommand(): void {
+  const mcpScript = packagePluginScriptPath('mcp-server.cjs');
+  if (!existsSync(mcpScript)) {
+    console.error(styleText('red', `MCP server script not found at: ${mcpScript}`));
+    process.exit(1);
+  }
+
+  const child = spawnHidden(process.execPath, [mcpScript], {
+    stdio: 'inherit',
+    cwd: npmPackageRootDirectory(),
+    env: sanitizeEnv(process.env),
+  });
+
+  child.on('error', (error) => {
+    console.error(styleText('red', `Failed to start MCP server: ${error.message}`));
+    process.exit(1);
+  });
+
+  child.on('close', (exitCode) => {
+    process.exit(exitCode ?? 0);
+  });
+}
+
+export function runHookCommand(extraArgs: string[] = []): void {
+  const workerScript = packagePluginScriptPath('worker-service.cjs');
+  if (!existsSync(workerScript)) {
+    console.error(styleText('red', `Worker script not found at: ${workerScript}`));
+    process.exit(1);
+  }
+
+  const bunPath = resolveBunOrExit();
+  const child = spawnHidden(bunPath, [workerScript, 'hook', ...extraArgs], {
+    stdio: 'inherit',
+    cwd: process.cwd(),
+    env: sanitizeEnv(process.env),
+  });
+
+  child.on('error', (error) => {
+    console.error(styleText('red', `Failed to start Cursor hook forwarding: ${error.message}`));
+    process.exit(1);
+  });
+
+  child.on('close', (exitCode) => {
+    process.exit(exitCode ?? 0);
+  });
 }
 
 export async function runSearchCommand(queryParts: string[]): Promise<void> {

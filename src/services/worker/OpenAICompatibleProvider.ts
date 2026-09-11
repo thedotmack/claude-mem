@@ -8,7 +8,15 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
-import { isClassified } from './provider-errors.js';
+import { isClassified, type ClassifiedProviderError } from './provider-errors.js';
+import {
+  shouldRecycleConversation,
+  conversationChars,
+  resolveConversationMaxChars,
+} from '../../shared/observer-recycle.js';
+import { recycleObserverConversation, loadSessionStartContext } from './session/recycle-conversation.js';
+import { optimizeObservationFields, buildFieldCompressionPrompt } from './field-optimizer.js';
+
 import {
   processAgentResponse,
   snapshotResponseContext,
@@ -69,7 +77,23 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   protected abstract missingApiKeyError(): Error;
 
   /** Issue the actual HTTP request and normalize its response. */
-  protected abstract query(history: ConversationMessage[], config: TConfig): Promise<ProviderQueryResult>;
+  protected abstract query(history: ConversationMessage[], config: TConfig, signal?: AbortSignal): Promise<ProviderQueryResult>;
+
+  /**
+   * One bounded, standalone call that condenses an oversized tool payload.
+   *
+   * Issued off to the side with its own single-message history: adding it to
+   * `session.conversationHistory` would grow the very conversation the recycle
+   * logic exists to bound.
+   */
+  private async compressField(text: string, budgetChars: number, config: TConfig, signal: AbortSignal): Promise<string | null> {
+    const result = await this.query(
+      [{ role: 'user', content: buildFieldCompressionPrompt(text, budgetChars) }],
+      config,
+      signal,
+    );
+    return result.content || null;
+  }
 
   /** Estimate token count for a single message body. */
   protected abstract estimateTokens(text: string): number;
@@ -79,6 +103,13 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
   /** Hook for per-session setup that runs once config is resolved (e.g. endpointClass). */
   protected prepareSessionExtras(_session: ActiveSession, _config: TConfig): void {}
+
+  /** Character budget for one observer generation, operator-overridable (#3800). */
+  protected conversationMaxChars(): number {
+    return resolveConversationMaxChars(
+      SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS
+    );
+  }
 
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     const config = this.getConfig();
@@ -98,10 +129,13 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
 
     const mode = ModeManager.getInstance().getActiveMode();
+    // Seed the generation with what this session already observed, so a
+    // conversation that starts partway through (a recycle, or a resume after a
+    // quota pause) continues from the memory rather than from nothing (#3800).
+    const priorContext = await loadSessionStartContext(session);
     const initPrompt = session.lastPromptNumber === 1
-      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
-      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
-    const initContext = snapshotResponseContext(session);
+      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode, priorContext)
+      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode, priorContext);
 
     session.conversationHistory.push({ role: 'user', content: initPrompt });
 
@@ -109,7 +143,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       session.lastPromptSentAt = Date.now();
       session.lastGeneratorSource = 'init';
       const initResponse = await this.query(session.conversationHistory, config);
-      await this.handleInitResponse(initResponse, session, worker, model, initContext);
+      this.handleInitResponse(initResponse, session, model);
     } catch (error: unknown) {
       // Classified errors are logged once, at SessionRoutes' `Observer failed`
       // line; here they're debug-level so one failure isn't five error lines.
@@ -169,28 +203,27 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
   }
 
-  private async handleInitResponse(
+  private handleInitResponse(
     initResponse: ProviderQueryResult,
     session: ActiveSession,
-    worker: WorkerRef | undefined,
-    model: string,
-    responseContext: ReturnType<typeof snapshotResponseContext>
-  ): Promise<void> {
-    if (initResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
-      const tokensUsed = initResponse.tokensUsed || 0;
-      session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-      session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-      session.lastUsage = this.buildLastUsage(initResponse);
-      await processAgentResponse(
-        initResponse.content, session, this.dbManager, this.sessionManager,
-        worker, tokensUsed, null, this.providerName, undefined, initResponse.servedModel ?? model, responseContext
-      );
-    } else {
+    model: string
+  ): void {
+    if (!initResponse.content && !this.forwardEmptyMessageResponse) {
       logger.error('SDK', `Empty ${this.providerName} init response - session may lack context`, {
         sessionId: session.sessionDbId, model
       });
+      return;
     }
+
+    const tokensUsed = initResponse.tokensUsed || 0;
+    session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
+    session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+    // The init prompt carries the user's request and no tool call, so nothing in
+    // its reply can be an observation of this session — an <observation> here was
+    // invented from <user_request> alone and would be stored as memory for work
+    // that never happened. Keep the turn so role alternation holds, but never
+    // hand it to the storage path.
+    session.conversationHistory.push({ role: 'assistant', content: initResponse.content || '' });
   }
 
   private async processObservationMessage(
@@ -209,11 +242,34 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
 
+    // Retire a full generation BEFORE sending, so the request that would cross
+    // the ceiling is never paid for. The batch is preserved and drained by the
+    // fresh generation the next ingest starts (#3800).
+    if (shouldRecycleConversation(session.conversationHistory, this.conversationMaxChars())) {
+      await recycleObserverConversation(
+        session,
+        this.sessionManager,
+        worker,
+        'budget',
+        `conversation reached ${conversationChars(session.conversationHistory)} chars`,
+      );
+      return;
+    }
+
+    // An oversized payload is condensed by a bounded model pass before the
+    // prompt is built, so the observation carries a summary of the whole field
+    // rather than a head/tail slice with the middle cut out (#3800).
+    const optimized = await optimizeObservationFields(
+      { toolInput: message.tool_input, toolOutput: message.tool_response },
+      (text, budgetChars, signal) => this.compressField(text, budgetChars, config, signal),
+      { sessionDbId: session.sessionDbId, toolName: message.tool_name },
+    );
+
     const obsPrompt = buildObservationPrompt({
       id: 0,
       tool_name: message.tool_name!,
-      tool_input: JSON.stringify(message.tool_input),
-      tool_output: JSON.stringify(message.tool_response),
+      tool_input: JSON.stringify(optimized.toolInput),
+      tool_output: JSON.stringify(optimized.toolOutput),
       created_at_epoch: originalTimestamp ?? Date.now(),
       cwd: message.cwd
     });
@@ -226,7 +282,9 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     let tokensUsed = 0;
     if (obsResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
+      // The assistant turn is appended once, by processAgentResponse below.
+      // Appending it here too stored every reply twice (#3619), inflating the
+      // window — and therefore every subsequent request — by ~50%.
       tokensUsed = obsResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
@@ -284,7 +342,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     let tokensUsed = 0;
     if (summaryResponse.content) {
-      session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
+      // Appended once, by processAgentResponse below — see processObservationMessage.
       tokensUsed = summaryResponse.tokensUsed || 0;
       session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
       session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
@@ -303,6 +361,32 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
   }
 
+  /**
+   * Map a classified provider failure onto the abortReason category that keeps
+   * buffered work alive.
+   *
+   * handleGeneratorExit finalizes the session — dropping whatever is buffered —
+   * for every category outside its preserve list. Quota was only ever set by
+   * the two PROACTIVE sites (the pre-request rate-limit guard and the
+   * observer-text heuristic), so a real 429 coming back from the provider left
+   * abortReason null and the session was torn down as if the failure were
+   * fatal (#3700). These conditions clear on their own; the work should still
+   * be there when they do.
+   */
+  private preservingAbortReason(error: ClassifiedProviderError): string | null {
+    switch (error.kind) {
+      case 'quota_exhausted':
+      case 'rate_limit':
+        return `quota:${error.kind}`;
+      // Same shape, same list: handleGeneratorExit already honours 'auth', and
+      // credentials that are fixed by /login are no more fatal than a 429.
+      case 'auth_invalid':
+        return `auth:${error.kind}`;
+      default:
+        return null;
+    }
+  }
+
   protected handleSessionError(error: unknown, session: ActiveSession, _worker?: WorkerRef): never {
     if (isAbortError(error)) {
       logger.warn('SDK', `${this.providerName} agent aborted`, { sessionId: session.sessionDbId });
@@ -310,6 +394,29 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
 
     if (isClassified(error)) {
+      // Set BEFORE the rethrow: the .finally() in SessionRoutes reads
+      // session.abortReason to decide whether to finalize the session, so a
+      // reason recorded after unwinding would arrive too late to matter.
+      const preserving = this.preservingAbortReason(error);
+      if (preserving !== null) {
+        session.abortReason = preserving;
+        // Abort as well as label. Without it the controller stays live while
+        // the error unwinds, and the session route books the failure twice —
+        // an observer failure and an error outcome on the way out, then the
+        // aborted outcome at finalization — leaving observer-health marked
+        // failed for a pause that is not a failure. This is what the two
+        // observer-text paths already do for the same conditions.
+        try {
+          session.abortController.abort();
+        } catch {
+          // best-effort; AbortController.abort() should not throw in normal use.
+        }
+        logger.warn('SDK', `${this.providerName} paused on ${error.kind}; preserving buffered work`, {
+          sessionId: session.sessionDbId,
+          kind: error.kind,
+        });
+      }
+
       // Logged once at SessionRoutes' `Observer failed` line.
       logger.debug('SDK', `${this.providerName} agent error`, { sessionDbId: session.sessionDbId, kind: error.kind }, error);
     } else {

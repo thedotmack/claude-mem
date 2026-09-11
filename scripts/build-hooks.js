@@ -75,19 +75,9 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
     trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
     extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
   });
-  const codexStartupHook = () => buildShellCommand({
-    host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
-    trailingCommand: [
-      '_V=$(CLAUDE_MEM_CODEX_HOOK=1 node "$_P/scripts/version-check.js" || true);',
-      'if [ -n "$_V" ]; then printf \'%s\\n\' "$_V"; else',
-      'CLAUDE_MEM_CODEX_HOOK=1', ...ccTrailing('hook', 'codex', 'context'),
-      '; fi',
-    ],
-    notFoundMessage: 'claude-mem: plugin scripts not found',
-  });
-  const codexHookPair = (tail, options = {}) => ({
-    command: options.startupVersionCheck ? codexStartupHook() : codexHook(tail),
-    commandWindows: buildCodexWindowsCommand(tail, options),
+  const codexHookPair = (tail) => ({
+    command: codexHook(tail),
+    commandWindows: buildCodexWindowsCommand(tail),
   });
 
   return {
@@ -116,7 +106,7 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
     'plugin/hooks/codex-hooks.json': {
       kind: 'hooks',
       commands: {
-        'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context'], { startupVersionCheck: true }),
+        'SessionStart.0.0': codexHookPair(['hook', 'codex', 'context']),
         'UserPromptSubmit.0.0': codexHookPair(['hook', 'codex', 'session-init']),
         'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
         'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
@@ -298,7 +288,7 @@ async function buildHooks() {
         '@tree-sitter-grammars/tree-sitter-yaml': '^0.7.1',
         '@derekstride/tree-sitter-sql': '^0.3.11',
         '@tree-sitter-grammars/tree-sitter-markdown': '^0.3.2',
-        'shell-quote': '^1.8.3',
+        'shell-quote': '1.9.0',
       },
       overrides: {
         'tree-sitter': '^0.25.0'
@@ -630,6 +620,32 @@ async function buildHooks() {
     const npxCliStats = fs.statSync(`${npxCliOutDir}/index.js`);
     console.log(`✓ npx-cli built (${(npxCliStats.size / 1024).toFixed(2)} KB)`);
 
+    console.log(`\n🔧 Building bug-report CLI...`);
+    const bugReportOutDir = 'dist/bug-report';
+    if (!fs.existsSync(bugReportOutDir)) {
+      fs.mkdirSync(bugReportOutDir, { recursive: true });
+    }
+    await build({
+      entryPoints: ['scripts/bug-report/cli.ts'],
+      bundle: true,
+      platform: 'node',
+      target: 'node20',
+      format: 'esm',
+      outfile: `${bugReportOutDir}/index.js`,
+      minify: true,
+      logLevel: 'error',
+      external: [
+        'fs', 'fs/promises', 'path', 'os', 'child_process', 'url',
+        'crypto', 'http', 'https', 'net', 'stream', 'util', 'events',
+        'buffer', 'querystring', 'readline', 'tty', 'assert',
+        'bun:sqlite',
+      ],
+    });
+
+    fs.chmodSync(`${bugReportOutDir}/index.js`, 0o755);
+    const bugReportStats = fs.statSync(`${bugReportOutDir}/index.js`);
+    console.log(`✓ bug-report built (${(bugReportStats.size / 1024).toFixed(2)} KB)`);
+
     if (fs.existsSync('openclaw/src/index.ts')) {
       console.log(`\n🔧 Building OpenClaw plugin...`);
       const openclawOutDir = 'openclaw/dist';
@@ -717,6 +733,7 @@ async function buildHooks() {
       'plugin/.mcp.json',
       '.codex-plugin/plugin.json',
       '.agents/plugins/marketplace.json',
+      'dist/bug-report/index.js',
     ];
     for (const filePath of requiredDistributionFiles) {
       if (!fs.existsSync(filePath)) {

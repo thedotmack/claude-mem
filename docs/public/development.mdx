@@ -44,6 +44,24 @@ The build process uses esbuild to compile TypeScript:
 - MCP server: `mcp-server.cjs` (CJS format)
 - Viewer UI: `viewer.html` (self-contained HTML bundle)
 
+### Committed release bundles
+
+Marketplace installs run the committed files in `plugin/scripts/`. When changing
+release versions or worker lifecycle code, regenerate and commit the affected
+runtime bundles with `npm run build`. A newer manifest paired with an older
+worker bundle can trigger repeated version-mismatch restarts.
+
+CI checks committed bundle versions **before** rebuilding:
+
+```bash
+bun test tests/infrastructure/version-consistency.test.ts
+```
+
+If a replacement worker still reports a stale version, hooks remember the failed
+recycle in the data directory and skip further recycles of that unchanged bundle.
+Rebuild or reinstall the bundle to correct the version; a changed bundle allows
+another recycle attempt.
+
 ### Build Scripts
 
 ```bash

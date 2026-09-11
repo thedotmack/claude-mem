@@ -5,6 +5,12 @@ import path from 'path';
 import { logger } from '../utils/logger.js';
 import { sanitizeEnv } from './env-sanitizer.js';
 import { paths } from '../shared/paths.js';
+// Moved to shared/ so kill-process-tree.ts can use it without closing an
+// import cycle (process-registry already imports kill-process-tree). Re-exported
+// here so every existing caller keeps its import path.
+import { captureProcessStartToken, isSameProcess } from '../shared/process-identity.js';
+export { captureProcessStartToken, isSameProcess };
+import { killProcessTree } from '../shared/kill-process-tree.js';
 
 const REAP_SESSION_SIGTERM_TIMEOUT_MS = 5_000;
 const REAP_SESSION_SIGKILL_TIMEOUT_MS = 1_000;
@@ -63,104 +69,6 @@ export interface PidInfo {
   port: number;
   startedAt: string;
   startToken?: string;
-}
-
-// Windows lacks a cheap /proc-style start-time read and `ps lstart`, so we
-// shell to PowerShell's CIM (wmic is removed on Windows 11). The lookup is
-// ~100-300ms, so cache per-pid for 5s to avoid re-shelling when the same PID
-// is validated repeatedly within one spawn-decision window.
-const WINDOWS_START_TOKEN_CACHE_TTL_MS = 5_000;
-const windowsStartTokenCache = new Map<number, { token: string | null; capturedAtMs: number }>();
-
-function queryWindowsCreationDate(pid: number): string | null {
-  // CreationDate is a CIM DATETIME (yyyyMMddHHmmss.ffffff±UTCoffset) that is
-  // unique-enough per (pid, boot) to detect PID reuse. `-NoProfile` keeps it
-  // fast; sanitizeEnv keeps the spawn-env discipline uniform (#2357/#2375).
-  const result = spawnSync(
-    'powershell.exe',
-    [
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      `(Get-CimInstance Win32_Process -Filter \"ProcessId=${pid}\").CreationDate.ToString('yyyyMMddHHmmss.ffffff')`
-    ],
-    {
-      encoding: 'utf-8',
-      timeout: 5000,
-      windowsHide: true,
-      env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
-    }
-  );
-  if (result.status === 0) {
-    const trimmed = result.stdout.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-  return null;
-}
-
-function captureWindowsStartToken(pid: number): string | null {
-  const cached = windowsStartTokenCache.get(pid);
-  if (cached && Date.now() - cached.capturedAtMs < WINDOWS_START_TOKEN_CACHE_TTL_MS) {
-    return cached.token;
-  }
-
-  let token: string | null = null;
-  try {
-    token = queryWindowsCreationDate(pid);
-  } catch (error: unknown) {
-    logger.debug('SYSTEM', 'captureProcessStartToken: powershell CIM lookup failed', {
-      pid,
-      error: error instanceof Error ? error.message : String(error)
-    });
-    token = null;
-  }
-
-  windowsStartTokenCache.set(pid, { token, capturedAtMs: Date.now() });
-  return token;
-}
-
-export function captureProcessStartToken(pid: number): string | null {
-  if (!Number.isInteger(pid) || pid <= 0) return null;
-
-  if (process.platform === 'linux') {
-    try {
-      const raw = readFileSync(`/proc/${pid}/stat`, 'utf-8');
-      const tailStart = raw.lastIndexOf(') ');
-      if (tailStart < 0) return null;
-      const fields = raw.slice(tailStart + 2).split(' ');
-      const starttime = fields[19];
-      return starttime && /^\d+$/.test(starttime) ? starttime : null;
-    } catch (error: unknown) {
-      logger.debug('SYSTEM', 'captureProcessStartToken: /proc read failed', {
-        pid,
-        error: error instanceof Error ? error.message : String(error)
-      });
-      return null;
-    }
-  }
-
-  if (process.platform === 'win32') {
-    return captureWindowsStartToken(pid);
-  }
-
-  try {
-    const result = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], {
-      encoding: 'utf-8',
-      timeout: 2000,
-      // Uniform spawn-env discipline: sanitize even for read-only system
-      // binaries so the spawn-env CI check stays a single rule (#2357/#2375).
-      env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' }
-    });
-    if (result.status !== 0) return null;
-    const token = result.stdout.trim();
-    return token.length > 0 ? token : null;
-  } catch (error: unknown) {
-    logger.debug('SYSTEM', 'captureProcessStartToken: ps exec failed', {
-      pid,
-      error: error instanceof Error ? error.message : String(error)
-    });
-    return null;
-  }
 }
 
 export function verifyPidFileOwnership(info: PidInfo | null): info is PidInfo {
@@ -311,9 +219,27 @@ export class ProcessRegistry {
     });
 
     const aliveRecords = sessionRecords.filter(r => isPidAlive(r.pid));
+    // Identities captured up front. The SIGKILL phase below runs after a 5s
+    // waitForExit, and a record whose process exits during that window can
+    // have its PID reissued — force-killing it would hit a stranger, and the
+    // tree-kill form would take that stranger's children too.
+    const startTokens = new Map<number, string | null>(
+      aliveRecords.map(r => [r.pid, captureProcessStartToken(r.pid)])
+    );
     for (const record of aliveRecords) {
       try {
-        if (typeof record.pgid === 'number' && process.platform !== 'win32') {
+        if (process.platform === 'win32') {
+          // Windows has no process groups, and process.kill() force-terminates
+          // exactly one PID — a `.cmd` shim dies while the real child it wraps
+          // survives. taskkill /T is the only teardown that reaches descendants.
+          //
+          // The token is passed rather than left to killProcessTree's own
+          // self-capture because this loop captured it EARLIER (before the
+          // preceding iterations' awaits), which is the stronger guarantee.
+          await killProcessTree(record.pid, {
+            expectedStartToken: startTokens.get(record.pid) ?? null,
+          });
+        } else if (typeof record.pgid === 'number') {
           process.kill(-record.pgid, 'SIGTERM');
         } else {
           process.kill(record.pid, 'SIGTERM');
@@ -346,8 +272,19 @@ export class ProcessRegistry {
         pgid: record.pgid,
         sessionId: sessionIdNum
       });
+      const expectedStartToken = startTokens.get(record.pid) ?? null;
+      if (!isSameProcess(record.pid, expectedStartToken)) {
+        logger.warn('SYSTEM', 'Skipping SIGKILL: session process PID was reused during the grace window', {
+          pid: record.pid,
+          sessionId: sessionIdNum,
+        });
+        continue;
+      }
+
       try {
-        if (typeof record.pgid === 'number' && process.platform !== 'win32') {
+        if (process.platform === 'win32') {
+          await killProcessTree(record.pid, { expectedStartToken });
+        } else if (typeof record.pgid === 'number') {
           process.kill(-record.pgid, 'SIGKILL');
         } else {
           process.kill(record.pid, 'SIGKILL');
@@ -460,6 +397,10 @@ export async function ensureSdkProcessExit(
 
   if (proc.exitCode !== null) return;
 
+  // Captured BEFORE the exit race below. That race waits up to timeoutMs, and
+  // a PID that exits inside it can be reissued before the force-kill runs.
+  const expectedStartToken = captureProcessStartToken(pid);
+
   const exitPromise = new Promise<void>((resolve) => {
     proc.once('exit', () => resolve());
   });
@@ -475,14 +416,40 @@ export async function ensureSdkProcessExit(
   logger.warn('PROCESS', `PID ${pid} did not exit after ${timeoutMs}ms, sending SIGKILL to process group`, {
     pid, pgid, timeoutMs,
   });
+  if (!isSameProcess(pid, expectedStartToken)) {
+    logger.warn('PROCESS', 'Skipping force-kill: SDK process PID was reused while awaiting exit', {
+      pid,
+      pgid,
+    });
+    return;
+  }
+
   try {
-    if (typeof pgid === 'number' && process.platform !== 'win32') {
+    if (process.platform === 'win32') {
+      // proc.kill() only reaches the direct child — on Windows that is often a
+      // `.cmd`/`.exe` shim whose real payload keeps running (and keeps the
+      // inherited socket open). Tree-kill the whole chain instead.
+      await killProcessTree(pid, { expectedStartToken });
+    } else if (typeof pgid === 'number') {
       process.kill(-pgid, 'SIGKILL');
     } else {
       proc.kill('SIGKILL');
     }
-  } catch {
-    // Already dead — fine.
+  } catch (error: unknown) {
+    // A bare swallow here used to be accurate — process.kill()/proc.kill()
+    // only ever raised ESRCH ("already dead — fine"). killProcessTree() also
+    // raises ProcessTreeKillError for a genuine failure (Windows taskkill
+    // access-denied), and silently discarding that would hide a live SDK tree
+    // behind a clean-looking teardown. ESRCH stays tolerated; anything else is
+    // surfaced.
+    const errno = (error as NodeJS.ErrnoException).code;
+    if (errno !== 'ESRCH') {
+      logger.warn('PROCESS', `Force-kill of SDK process PID ${pid} failed`, {
+        pid,
+        pgid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   const sigkillExit = new Promise<void>((resolve) => {
@@ -496,7 +463,23 @@ export async function ensureSdkProcessExit(
 
 const TOTAL_PROCESS_HARD_CAP = 10;
 const SLOT_RECHECK_INTERVAL_MS = 5_000;
-const slotWaiters: Array<() => void> = [];
+
+// #2756: a session parked here for longer than this gets one WARN log line
+// via the recheck timer below. Deliberately duplicated from
+// SessionMessageBuffer's IDLE_TIMEOUT_MS (180_000ms) rather than imported —
+// no file under src/supervisor/ imports from src/services/, and importing it
+// here would create that layering violation. If IDLE_TIMEOUT_MS ever
+// changes, update this twin constant too.
+const PARKED_WARN_THRESHOLD_MS = 3 * 60 * 1000;
+
+interface SlotWaiterRecord {
+  sessionId?: number | string;
+  parkedSince: number;
+  warnedParked: boolean;
+  notify: () => void;
+}
+
+const slotWaiters: SlotWaiterRecord[] = [];
 
 /**
  * Slots granted by waitForSlot() that are not yet visible as registry
@@ -531,7 +514,31 @@ function getActiveSdkCount(): number {
 
 function notifySlotAvailable(): void {
   const waiter = slotWaiters.shift();
-  if (waiter) waiter();
+  if (waiter) waiter.notify();
+}
+
+/** Number of sessions currently parked waiting for a concurrency slot — exposed on GET /api/processing-status (#2756). */
+export function getParkedSlotWaiterCount(): number {
+  return slotWaiters.length;
+}
+
+/**
+ * Slots granted by waitForSlot() but not yet visible as a registry 'sdk'
+ * record (or already released). Exported so tests that share this
+ * module-level singleton across files in the same `bun test` process (see
+ * tests/supervisor/process-registry-singleton-guard.ts) can assert this
+ * back to zero between tests too — a leaked reservation is invisible to
+ * getParkedSlotWaiterCount() and to a registry.getAll() scan, but still
+ * inflates getActiveSdkCount() for every later test in the same process.
+ */
+export function getReservedSlotCount(): number {
+  return reservedSlots;
+}
+
+/** Whether `sessionId` currently has a generator parked in waitForSlot (never acquired a slot / never spawned) (#2756). */
+export function isSessionParkedForSlot(sessionId: number | string): boolean {
+  const normalized = String(sessionId);
+  return slotWaiters.some(w => w.sessionId !== undefined && String(w.sessionId) === normalized);
 }
 
 /**
@@ -541,32 +548,56 @@ function notifySlotAvailable(): void {
  * reservation once the spawned process is registered (the registry record
  * takes over the accounting) or when the spawn fails or never happens:
  * a leaked reservation would occupy the slot until the worker restarts.
+ *
+ * `maxConcurrent` may be a plain number (frozen for this call) or a thunk
+ * that is re-read on every recheck — pass a thunk so a mid-wait settings
+ * change (raising CLAUDE_MEM_MAX_CONCURRENT_AGENTS) can release an
+ * already-parked waiter without a worker restart (#2756). `sessionId`, when
+ * provided, lets callers (SessionRoutes) detect via isSessionParkedForSlot()
+ * whether this specific session is currently parked here, to distinguish a
+ * provider-switch onto a parked generator from one that is already
+ * mid-response.
  */
-export async function waitForSlot(maxConcurrent: number, signal?: AbortSignal): Promise<SlotReservation> {
+export async function waitForSlot(
+  maxConcurrent: number | (() => number),
+  signal?: AbortSignal,
+  sessionId?: number | string
+): Promise<SlotReservation> {
+  const getMax = typeof maxConcurrent === 'function' ? maxConcurrent : () => maxConcurrent;
+
   getProcessRegistry().pruneDeadEntries();
   const activeCount = getActiveSdkCount();
   if (activeCount >= TOTAL_PROCESS_HARD_CAP) {
     throw new Error(`Hard cap exceeded: ${activeCount} processes in registry (cap=${TOTAL_PROCESS_HARD_CAP}). Refusing to spawn more.`);
   }
 
-  if (activeCount < maxConcurrent) return takeSlotReservation();
+  if (activeCount < getMax()) return takeSlotReservation();
 
   if (signal?.aborted) {
     throw new Error('waitForSlot aborted before queuing');
   }
 
-  logger.info('PROCESS', `Pool limit reached (${activeCount}/${maxConcurrent}), waiting for slot...`);
+  logger.info('PROCESS', `Pool limit reached (${activeCount}/${getMax()}), waiting for slot...`);
 
   return new Promise<SlotReservation>((resolve, reject) => {
     let recheckTimer: ReturnType<typeof setInterval> | null = null;
     let abortHandler: (() => void) | null = null;
+    const record: SlotWaiterRecord = {
+      sessionId,
+      parkedSince: Date.now(),
+      warnedParked: false,
+      notify: () => {},
+    };
     const cleanup = () => {
       if (recheckTimer) clearInterval(recheckTimer);
       if (abortHandler && signal) signal.removeEventListener('abort', abortHandler);
-      const idx = slotWaiters.indexOf(onSlot);
+      const idx = slotWaiters.indexOf(record);
       if (idx >= 0) slotWaiters.splice(idx, 1);
     };
     const onSlot = () => {
+      // Re-read getMax() here (not a frozen value) so a settings raise
+      // reaches an already-parked waiter the next time it's poked — either
+      // by this recheck timer or by another slot freeing up via unregister().
       const count = getActiveSdkCount();
       if (count >= TOTAL_PROCESS_HARD_CAP) {
         cleanup();
@@ -574,13 +605,14 @@ export async function waitForSlot(maxConcurrent: number, signal?: AbortSignal): 
         return;
       }
 
-      if (count < maxConcurrent) {
+      if (count < getMax()) {
         cleanup();
         resolve(takeSlotReservation());
       } else {
-        slotWaiters.push(onSlot);
+        slotWaiters.push(record);
       }
     };
+    record.notify = onSlot;
 
     if (signal) {
       abortHandler = () => {
@@ -590,14 +622,22 @@ export async function waitForSlot(maxConcurrent: number, signal?: AbortSignal): 
       signal.addEventListener('abort', abortHandler, { once: true });
     }
 
-    slotWaiters.push(onSlot);
+    slotWaiters.push(record);
     recheckTimer = setInterval(() => {
       const removed = getProcessRegistry().pruneDeadEntries();
       if (removed > 0) {
         logger.info('PROCESS', 'Pruned stale process registry entries while waiting for agent slot', { removed });
-        return;
+      } else {
+        notifySlotAvailable();
       }
-      notifySlotAvailable();
+
+      if (!record.warnedParked && Date.now() - record.parkedSince >= PARKED_WARN_THRESHOLD_MS) {
+        record.warnedParked = true;
+        logger.warn('PROCESS', `Session parked waiting for an agent slot for over ${Math.round(PARKED_WARN_THRESHOLD_MS / 1000)}s`, {
+          sessionId: record.sessionId,
+          parkedForMs: Date.now() - record.parkedSince,
+        });
+      }
     }, SLOT_RECHECK_INTERVAL_MS);
     recheckTimer.unref?.();
   });
@@ -763,12 +803,26 @@ export function spawnSdkProcess(
 }
 
 function sigtermDuplicateSdkProcess(record: ManagedProcessRecord, sessionDbId: number): void {
-  if (typeof record.pgid === 'number') {
-    if (process.platform !== 'win32') {
-      process.kill(-record.pgid, 'SIGTERM');
-    } else {
-      process.kill(record.pid, 'SIGTERM');
-    }
+  if (process.platform === 'win32') {
+    // The SDK spawn factory is synchronous (it must return SpawnedSdkProcess
+    // to its caller), so the tree-kill cannot be awaited here. That matches
+    // the pre-existing contract: this function only *starts* the teardown —
+    // process.kill() never waited for the duplicate to exit either. taskkill
+    // /T is what makes the teardown reach the duplicate's descendants instead
+    // of orphaning them.
+    //
+    // killProcessTree now REJECTS on a genuine kill failure, so this
+    // fire-and-forget call must terminate its own promise chain — an
+    // unhandled rejection here would take the worker down on a duplicate that
+    // merely failed to die.
+    killProcessTree(record.pid).catch((error: unknown) => {
+      logger.warn('PROCESS', `Tree-kill of duplicate SDK process PID ${record.pid} failed`, {
+        sessionDbId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  } else if (typeof record.pgid === 'number') {
+    process.kill(-record.pgid, 'SIGTERM');
   } else {
     process.kill(record.pid, 'SIGTERM');
   }

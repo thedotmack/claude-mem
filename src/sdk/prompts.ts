@@ -61,8 +61,15 @@ ${mode.prompts.format_examples}
 ${mode.prompts.footer}`;
 }
 
-export function buildInitPrompt(project: string, sessionId: string, userPrompt: string, mode: ModeConfig): string {
+export function buildInitPrompt(
+  project: string,
+  sessionId: string,
+  userPrompt: string,
+  mode: ModeConfig,
+  priorContext: string = '',
+): string {
   return `${mode.prompts.system_identity}
+${wrapPriorContext(priorContext)}
 
 <observed_from_primary_session>
   <user_request>${userPrompt}</user_request>
@@ -80,6 +87,34 @@ ${mode.prompts.skip_guidance}
 ${observationSkeleton(mode)}
 
 ${mode.prompts.header_memory_start}`;
+}
+
+/**
+ * Wrap the session-start context block for a generation that begins partway
+ * through a session (#3800).
+ *
+ * The text comes from `generateContext` — the same builder the SessionStart
+ * hook uses to tell a brand-new Claude Code session what happened before it.
+ * An observer generation that starts after a recycle is in exactly that
+ * position, so it gets exactly that context rather than a second, parallel
+ * rendering of the same rows.
+ *
+ * Returns '' when there is nothing yet, so a first generation is unchanged.
+ */
+export function wrapPriorContext(priorContext: string): string {
+  const trimmed = priorContext.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  return `
+<session_start_context>
+${trimmed}
+</session_start_context>
+
+The context above is what you have already recorded for this work. Continue from
+there: do not re-record it, and do not treat its absence from the conversation
+above as meaning the work did not happen.`;
 }
 
 // Per-field character budget for the <parameters> / <outcome> blocks in an
@@ -100,9 +135,82 @@ ${mode.prompts.header_memory_start}`;
 // tools put their canonical signal — file path, error message, command
 // header) and the tail (where errors / final-line context typically sit)
 // while dropping the middle. The 10% remainder is the elision marker.
-const OBS_PROMPT_FIELD_MAX_CHARS = 16_000;
+export const OBS_PROMPT_FIELD_MAX_CHARS = 16_000;
 const OBS_PROMPT_FIELD_HEAD_RATIO = 0.6;
 const OBS_PROMPT_FIELD_TAIL_RATIO = 0.3;
+
+// Image content blocks carry base64 payloads that are worthless to a text
+// observer and ruinously expensive to carry. Two things compound (#3730):
+// truncateObservationField keeps the head and tail of an oversized field, so
+// what survives a screenshot is thousands of characters of base64 rather than
+// the caption beside it; and the prompt is appended to
+// session.conversationHistory, which every later observation in the session
+// re-sends in full. A browser-automation session taking a few hundred
+// screenshots replays all of it, every time.
+//
+// Stripping generically, on the shape of the content block, rather than by
+// tool name: CLAUDE_MEM_SKIP_TOOLS needs every screenshot-producing tool
+// enumerated ahead of time, and it drops the observation entirely instead of
+// keeping the part that has signal.
+const MAX_SANITIZE_DEPTH = 12;
+
+// URI schemes are case-insensitive. A `DATA:image/png;base64,…` source is the
+// same inlined payload as `data:` — Greptile reproduced the bypass on #3762.
+function isDataUrl(url: string): boolean {
+  return url.slice(0, 5).toLowerCase() === 'data:';
+}
+
+function elideImageSource(source: Record<string, unknown>): Record<string, unknown> {
+  const data = source.data;
+  const elided: Record<string, unknown> = { elided: 'image data withheld from the observer' };
+  if (typeof source.media_type === 'string') elided.media_type = source.media_type;
+  if (typeof data === 'string') elided.bytes = data.length;
+  return elided;
+}
+
+function stripImagePayloads(value: unknown, depth = 0): unknown {
+  if (depth > MAX_SANITIZE_DEPTH || value === null || typeof value !== 'object') return value;
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => stripImagePayloads(entry, depth + 1));
+  }
+
+  const record = value as Record<string, unknown>;
+
+  // Anthropic content block: { type: 'image', source: { data: '<base64>' } }.
+  // A url-backed source is the same case as OpenAI's plain http URL — short,
+  // and it carries signal — so only an inlined payload is removed.
+  const source = record.source;
+  if (record.type === 'image' && source !== null && typeof source === 'object') {
+    const record_source = source as Record<string, unknown>;
+    const url = record_source.url;
+    if (typeof url === 'string' && !isDataUrl(url)) {
+      return value;
+    }
+    return { type: 'image', source: elideImageSource(record_source) };
+  }
+
+  // OpenAI content block: { type: 'image_url', image_url: { url: 'data:...' } }.
+  const imageUrl = record.image_url;
+  if (record.type === 'image_url' && imageUrl !== null && typeof imageUrl === 'object') {
+    const url = (imageUrl as Record<string, unknown>).url;
+    // A plain http(s) URL is short and can carry signal; only a data: URL is
+    // the inlined payload this exists to remove.
+    if (typeof url === 'string' && isDataUrl(url)) {
+      return {
+        type: 'image_url',
+        image_url: { elided: 'image data withheld from the observer', bytes: url.length },
+      };
+    }
+    return value;
+  }
+
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(record)) {
+    out[key] = stripImagePayloads(entry, depth + 1);
+  }
+  return out;
+}
 
 function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_FIELD_MAX_CHARS): string {
   // JSON.stringify returns undefined for undefined / functions / symbols;
@@ -143,13 +251,13 @@ export function buildObservationPrompt(obs: Observation): string {
   return `<observed_from_primary_session>
   <what_happened>${obs.tool_name}</what_happened>
   <occurred_at>${new Date(obs.created_at_epoch).toISOString()}</occurred_at>${obs.cwd ? `\n  <working_directory>${obs.cwd}</working_directory>` : ''}
-  <parameters>${truncateObservationField(toolInput)}</parameters>
-  <outcome>${truncateObservationField(toolOutput)}</outcome>
+  <parameters>${truncateObservationField(stripImagePayloads(toolInput))}</parameters>
+  <outcome>${truncateObservationField(stripImagePayloads(toolOutput))}</outcome>
 </observed_from_primary_session>
 
 If a <parameters> or <outcome> block above contains an "<elided chars=... />" marker, that field was truncated to fit the observer's context window. Describe only what you can see in the kept portion and do not infer details about the elided range.
 
-Return either one or more <observation>...</observation> blocks, or an empty response if this tool use should be skipped.
+Return either one or more <observation>...</observation> blocks, or <skip_summary reason="noise" /> if this tool use should be skipped.
 Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection count as durable discoveries and should be recorded.
 Never reply with prose such as "Skipping", "No substantive tool executions", or any explanation outside XML. Non-XML text is discarded.`;
 }
@@ -188,8 +296,15 @@ REMINDER: Your response MUST use <summary> as the root tag, NOT <observation>.
 ${mode.prompts.summary_footer}`;
 }
 
-export function buildContinuationPrompt(userPrompt: string, promptNumber: number, contentSessionId: string, mode: ModeConfig): string {
+export function buildContinuationPrompt(
+  userPrompt: string,
+  promptNumber: number,
+  contentSessionId: string,
+  mode: ModeConfig,
+  priorContext: string = '',
+): string {
   return `${mode.prompts.continuation_greeting}
+${wrapPriorContext(priorContext)}
 
 <observed_from_primary_session>
   <user_request>${userPrompt}</user_request>

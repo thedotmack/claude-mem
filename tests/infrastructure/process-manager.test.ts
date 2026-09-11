@@ -26,7 +26,10 @@ const {
   isPidFileRecent,
   touchPidFile,
   spawnDaemon,
+  probeWorkerBootFailure,
+  shouldRetryWorkerBootProbe,
   buildWindowsDaemonStartCommand,
+  daemonWorkingDirectory,
   resolveWorkerRuntimePath,
   captureProcessStartToken,
   verifyPidFileOwnership,
@@ -686,10 +689,10 @@ describe('ProcessManager', () => {
       const runtimePath = String.raw`C:\Users\Test User\.bun\bin\bun.exe`;
       const scriptPath = String.raw`C:\Users\Test User\.claude\plugins\marketplaces\thedotmack\plugin\scripts\worker-service.cjs`;
 
-      const command = buildWindowsDaemonStartCommand(runtimePath, scriptPath);
+      const command = buildWindowsDaemonStartCommand(runtimePath, scriptPath, String.raw`C:\daemon-home`);
 
       expect(command).toBe(
-        `Start-Process -FilePath '${runtimePath}' -ArgumentList @('"${scriptPath}"','--daemon') -WindowStyle Hidden`
+        `Start-Process -FilePath '${runtimePath}' -ArgumentList @('"${scriptPath}"','--daemon') -WorkingDirectory 'C:\\daemon-home' -WindowStyle Hidden`
       );
     });
 
@@ -709,8 +712,140 @@ describe('ProcessManager', () => {
       );
 
       expect(command).toBe(
-        `Start-Process -FilePath 'C:\\Users\\O''Brien\\.bun\\bin\\bun.exe' -ArgumentList @('"C:\\Users\\O''Brien\\plugin\\scripts\\worker-service.cjs"','--daemon') -WindowStyle Hidden`
+        `Start-Process -FilePath 'C:\\Users\\O''Brien\\.bun\\bin\\bun.exe' -ArgumentList @('"C:\\Users\\O''Brien\\plugin\\scripts\\worker-service.cjs"','--daemon') -WorkingDirectory '${DATA_DIR.replace(/'/g, "''")}' -WindowStyle Hidden`
       );
+    });
+  });
+
+  describe('probeWorkerBootFailure', () => {
+    // spawnDaemon detaches the worker with its stdio discarded, so a bundle
+    // that dies during module resolution — the shape a truncated `bun install`
+    // in the plugin cache takes — used to leave nothing behind but "worker
+    // exited". These run real subprocesses against the same runtime resolution
+    // the probe uses in production; a stub would only prove the stub.
+    const PROBE_DIR = path.join(DATA_DIR, 'boot-probe');
+
+    const writeProbeScript = (name: string, body: string): string => {
+      mkdirSync(PROBE_DIR, { recursive: true });
+      const scriptPath = path.join(PROBE_DIR, name);
+      writeFileSync(scriptPath, body, 'utf-8');
+      return scriptPath;
+    };
+
+    afterAll(() => {
+      rmSync(PROBE_DIR, { recursive: true, force: true });
+    });
+
+    it('reports the error from a bundle that cannot resolve its dependencies', () => {
+      const scriptPath = writeProbeScript(
+        'unresolvable.cjs',
+        `require('./this-dependency-was-never-installed.cjs');\n`
+      );
+
+      const failure = probeWorkerBootFailure(scriptPath);
+
+      expect(failure).toBeDefined();
+      expect(failure!).toMatch(/this-dependency-was-never-installed/);
+    });
+
+    it('stays silent when the bundle loads and exits cleanly', () => {
+      const scriptPath = writeProbeScript(
+        'healthy.cjs',
+        `console.log('Worker is not running');\nprocess.exit(0);\n`
+      );
+
+      expect(probeWorkerBootFailure(scriptPath)).toBeUndefined();
+    });
+
+    it('stays silent when the bundle fails without saying anything', () => {
+      const scriptPath = writeProbeScript('mute.cjs', `process.exit(1);\n`);
+
+      expect(probeWorkerBootFailure(scriptPath)).toBeUndefined();
+    });
+
+    it('caps a runaway stack trace instead of pasting it whole into the log', () => {
+      const scriptPath = writeProbeScript(
+        'noisy.cjs',
+        `for (let i = 0; i < 200; i++) console.error('boot noise line ' + i);\nprocess.exit(1);\n`
+      );
+
+      const failure = probeWorkerBootFailure(scriptPath);
+
+      expect(failure).toBeDefined();
+      expect(failure!.split('\n').length).toBeLessThanOrEqual(8);
+      expect(failure!).toContain('boot noise line 0');
+    });
+
+    it('returns rather than throwing when the script does not exist at all', () => {
+      const missing = path.join(PROBE_DIR, 'no-such-worker-bundle.cjs');
+
+      expect(() => probeWorkerBootFailure(missing)).not.toThrow();
+    });
+
+    describe('shouldRetryWorkerBootProbe', () => {
+      const etimedout = (): Error => Object.assign(new Error('spawnSync ETIMEDOUT'), { code: 'ETIMEDOUT' });
+
+      it('retries a window that expired far too early to be real', () => {
+        // The measured shape of the bug: ETIMEDOUT after 25ms of a 5s window.
+        expect(shouldRetryWorkerBootProbe(etimedout(), 25, 5000)).toBe(true);
+      });
+
+      it('does not retry a timeout that burned its whole window', () => {
+        expect(shouldRetryWorkerBootProbe(etimedout(), 5001, 5000)).toBe(false);
+        expect(shouldRetryWorkerBootProbe(etimedout(), 2500, 5000)).toBe(false);
+      });
+
+      it('does not retry failures that are not timeouts', () => {
+        const enoent = Object.assign(new Error('spawnSync ENOENT'), { code: 'ENOENT' });
+
+        expect(shouldRetryWorkerBootProbe(enoent, 5, 5000)).toBe(false);
+        expect(shouldRetryWorkerBootProbe(undefined, 5, 5000)).toBe(false);
+      });
+    });
+  });
+
+  // A process holds an open handle on its working directory. On Windows that locks the
+  // directory against rename and move for as long as the process lives, and a daemon
+  // outlives the session that spawned it -- so a hook-spawned daemon inheriting the
+  // project folder left it permanently locked (#3706).
+  describe('daemon working directory (#3706)', () => {
+    it('pins the daemon to a directory the user is not working in', () => {
+      const command = buildWindowsDaemonStartCommand(
+        String.raw`C:\bun\bun.exe`,
+        String.raw`C:\plugin\worker-service.cjs`
+      );
+
+      expect(command).toContain('-WorkingDirectory');
+      expect(command).toContain(`-WorkingDirectory '${DATA_DIR.replace(/'/g, "''")}'`);
+    });
+
+    it('escapes a single quote in the working directory', () => {
+      const command = buildWindowsDaemonStartCommand(
+        String.raw`C:\bun\bun.exe`,
+        String.raw`C:\plugin\worker-service.cjs`,
+        String.raw`C:\Users\O'Brien\.claude-mem`
+      );
+
+      expect(command).toContain(String.raw`-WorkingDirectory 'C:\Users\O''Brien\.claude-mem'`);
+    });
+
+    it('defaults to the claude-mem data directory, never the caller cwd', () => {
+      expect(daemonWorkingDirectory()).toBe(DATA_DIR);
+      expect(daemonWorkingDirectory()).not.toBe(process.cwd());
+    });
+
+    // Passing a cwd that does not exist is worse than passing none: spawn fails with
+    // ENOENT and Start-Process refuses outright, so this fix would turn a first run on
+    // a fresh install into a launch failure. paths.ts resolves DATA_DIR but never
+    // creates it — today some earlier caller happens to, which is not a guarantee.
+    it('creates the directory it hands out, so a fresh install can spawn', () => {
+      rmSync(DATA_DIR, { recursive: true, force: true });
+      expect(existsSync(DATA_DIR)).toBe(false);
+
+      const dir = daemonWorkingDirectory();
+
+      expect(existsSync(dir)).toBe(true);
+      expect(statSync(dir).isDirectory()).toBe(true);
     });
   });
 

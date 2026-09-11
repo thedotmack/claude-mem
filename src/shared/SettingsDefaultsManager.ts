@@ -40,6 +40,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_LOG_LEVEL: string;
   CLAUDE_MEM_PYTHON_VERSION: string;
   CLAUDE_CODE_PATH: string;
+  /** #2753 — override the effective CLAUDE_CONFIG_DIR for the keychain lookup + SDK subprocess env only. Empty = fall through to process.env.CLAUDE_CONFIG_DIR / default. Never touches the worker's own MARKETPLACE_ROOT/paths. */
+  CLAUDE_MEM_CLAUDE_CONFIG_DIR: string;
   CLAUDE_MEM_MODE: string;
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: string;
   CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: string;
@@ -58,6 +60,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: string;  
   CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: string;
   CLAUDE_MEM_MAX_CONCURRENT_AGENTS: string;  
+  CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: string;
   CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: string;  
   CLAUDE_MEM_EXCLUDED_PROJECTS: string;  
   CLAUDE_MEM_FOLDER_MD_EXCLUDE: string;
@@ -89,11 +92,48 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: string;
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: string;
   CLAUDE_MEM_CLOUD_SYNC_WS: string;    // advisory WebSocket speed layer (Phase 4) — 'false' = HTTP polling only
+  // Content flush knobs. 200-op pages + 30s timeout hit hub projection_busy
+  // (#3618). Defaults: 40 ops / 90s (hub projection lease).
+  CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: string;
+  CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: string;
+  // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
+  // mounted and the worker behaves exactly as before. Set (with a non-loopback
+  // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
+  // GET /api/observations to holders of this secret. Mint with:
+  //   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+  CLAUDE_MEM_TV_TOKEN: string;
+  // claude-mem sign-in funnel state, written by the installer's browser-login
+  // step (install.ts promptBrowserLogin/completeTrialPairing). Declared here so
+  // loadFromFile round-trips them instead of dropping unknown keys.
+  CLAUDE_MEM_PRO_TRIAL_EMAIL: string;
+  CLAUDE_MEM_PRO_TRIAL_AT: string;
+  CLAUDE_MEM_PRO_TRIAL_STATE: string;
+  CLAUDE_MEM_PRO_TRIAL_ENDS_AT: string;
+  CLAUDE_MEM_PRO_PLAN: string;
+  CLAUDE_MEM_PRO_FALLBACK_AT: string;
+  // One-shot memory credentials delivered by browser pairing. These staging
+  // fields keep the key recoverable until the user chooses a provider; when
+  // claude-mem is selected the installer atomically moves them into the
+  // generic OpenRouter fields and clears the staging copy.
+  CLAUDE_MEM_PRO_MEMORY_KEY: string;
+  CLAUDE_MEM_PRO_MEMORY_BASE_URL: string;
+  CLAUDE_MEM_PRO_MEMORY_MODEL: string;
   CLAUDE_MEM_TELEGRAM_ENABLED: string;
   CLAUDE_MEM_TELEGRAM_BOT_TOKEN: string;
   CLAUDE_MEM_TELEGRAM_CHAT_ID: string;
   CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: string;
   CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS: string;
+  CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: string;
+  CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: string;
+  CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: string;
+  CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_CONCEPTS: string;
+  // CCS Align (Worker Watch seat, Phase 0 breathing slice). Seat-owned middle
+  // cache under ~/.claude-mem/ccs-align/<viewerId>/; pull-only, never a second
+  // writer on LFG/Orifice logs. See plans/2026-09-09-ccs-align.md.
+  CLAUDE_MEM_CCS_ALIGN_ENABLED: string;
+  CLAUDE_MEM_CCS_ALIGN_VIEWER_IDS: string;
+  CLAUDE_MEM_CCS_ALIGN_TRIGGER_TYPES: string;
+  CLAUDE_MEM_CCS_ALIGN_PATCH_SHADOWS: string;
   CLAUDE_MEM_QUEUE_ENGINE: string;
   CLAUDE_MEM_REDIS_URL: string;
   CLAUDE_MEM_REDIS_HOST: string;
@@ -121,7 +161,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
     CLAUDE_MEM_API_TIMEOUT_MS: String(getTimeout(HOOK_TIMEOUTS.API_REQUEST)),
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
-    CLAUDE_MEM_PROVIDER: 'claude',  // Default to Claude
+    // Deliberate divergence from the installer prompt: the interactive
+    // provider prompt defaults to 'cmem' (the hosted observer), but headless
+    // installs land here — no delivered key exists headlessly, so the settings
+    // default stays 'claude'.
+    CLAUDE_MEM_PROVIDER: 'claude',
     CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',  // Default to logged-in Claude SDK auth (not API key)
     CLAUDE_MEM_GEMINI_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',  // Google-maintained alias → current GA Flash model (stays valid for new API keys)
@@ -135,6 +179,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',
     CLAUDE_CODE_PATH: '', // Empty means auto-detect via 'which claude'
+    CLAUDE_MEM_CLAUDE_CONFIG_DIR: '', // #2753 — override CLAUDE_CONFIG_DIR for the keychain lookup + SDK subprocess only; empty = fall through to process.env.CLAUDE_CONFIG_DIR/default
     CLAUDE_MEM_MODE: 'code', // Default mode profile
     CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'false',
     CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'false',
@@ -153,6 +198,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH: join(homedir(), '.claude-mem', 'transcript-watch.json'),
     CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: 'false',
     CLAUDE_MEM_MAX_CONCURRENT_AGENTS: '2',  // Max concurrent Claude SDK agent subprocesses
+    CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS: '400000',  // Retire an observer conversation past this size and start a fresh generation (#3800)
     CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '3',  // Plan 05 Phase 8 — escalate to exit code 2 after N consecutive worker-unreachable hook invocations
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
@@ -181,11 +227,41 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',      // Minted at first CloudSync start, then persisted back here
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: hostname(),  // Human-readable label for the cmem.ai Devices panel
     CLAUDE_MEM_CLOUD_SYNC_WS: 'true',  // Advisory WebSocket speed layer (plan Phase 4). 'false' = HTTP polling only — sync stays fully correct, just poll-latency (prime directive #2)
+    CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: '40',  // Drain page size; 200-op content pushes timed out under hub projection_busy
+    CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: '90000',  // Content-push AbortSignal; matches hub PROJECTION_LEASE_MS (90s)
+    // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
+    // mounted and the worker behaves exactly as before. Set (with a non-loopback
+    // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
+    // GET /api/observations to holders of this secret. Mint with:
+    //   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+    CLAUDE_MEM_TV_TOKEN: '',
+    // claude-mem sign-in funnel state: all empty until the installer's
+    // browser-login step writes them.
+    CLAUDE_MEM_PRO_TRIAL_EMAIL: '',     // Email the sign-in link was sent to (don't-re-nag marker)
+    CLAUDE_MEM_PRO_TRIAL_AT: '',        // ISO timestamp of the last sign-in link send
+    CLAUDE_MEM_PRO_TRIAL_STATE: '',     // 'link_sent' (started, credentials never picked up) | 'active' (done)
+    CLAUDE_MEM_PRO_TRIAL_ENDS_AT: '',   // ISO date the free trial ends (from poll trial.ends_at); '' when absent
+    CLAUDE_MEM_PRO_PLAN: '',            // 'trial' | 'pro' | 'none' — plan reported by the poll on ready
+    CLAUDE_MEM_PRO_FALLBACK_AT: '',     // ISO timestamp when the cmem gateway terminally rejected the delivered key and memory fell back to the Anthropic plan; '' = no fallback. Event-driven only (never set from trial dates); cleared by a successful gateway response or fresh installer key material.
+    CLAUDE_MEM_PRO_MEMORY_KEY: '',       // One-shot browser-pairing memory key, staged until provider selection (settings.json is chmod 0600 by the installer)
+    CLAUDE_MEM_PRO_MEMORY_BASE_URL: '',  // Backend-supplied endpoint paired with CLAUDE_MEM_PRO_MEMORY_KEY
+    CLAUDE_MEM_PRO_MEMORY_MODEL: '',     // Backend-supplied model paired with CLAUDE_MEM_PRO_MEMORY_KEY
     CLAUDE_MEM_TELEGRAM_ENABLED: 'true',
     CLAUDE_MEM_TELEGRAM_BOT_TOKEN: '',
     CLAUDE_MEM_TELEGRAM_CHAT_ID: '',
     CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert,sensitive',
     CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS: '',
+    CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: 'true',
+    // Pilot agents: LFG + Orifice. Empty list = no writes.
+    CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: '521e962d-2ec3-4488-bfbc-54d5209ce118,95601360-61f7-4fd9-bb3a-2c976b2b85c0',
+    CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: 'decision,bugfix,security_alert,sensitive',
+    CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_CONCEPTS: '',
+    CLAUDE_MEM_CCS_ALIGN_ENABLED: 'true',
+    CLAUDE_MEM_CCS_ALIGN_VIEWER_IDS: 'ccs-align',
+    // Copy of the Grok needle list (D6). Same episodic needles, seat-owned cache.
+    CLAUDE_MEM_CCS_ALIGN_TRIGGER_TYPES: 'decision,bugfix,security_alert,sensitive',
+    // Phase 2 rules-shadow patch stays a Prioritizer flag, not a silent /do (D8).
+    CLAUDE_MEM_CCS_ALIGN_PATCH_SHADOWS: 'false',
     CLAUDE_MEM_QUEUE_ENGINE: 'sqlite',
     CLAUDE_MEM_REDIS_URL: '',
     CLAUDE_MEM_REDIS_HOST: '127.0.0.1',
@@ -248,16 +324,23 @@ export class SettingsDefaultsManager {
       const settings = parseJsonWithBom<Record<string, any>>(settingsData);
 
       let flatSettings = settings;
-      if (settings.env && typeof settings.env === 'object') {
+      const hasNestedEnv = settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env);
+      const hasPeerRootKeys = hasNestedEnv && Object.keys(settings).some((key) => key !== 'env');
+      if (hasNestedEnv) {
         flatSettings = settings.env;
 
-        try {
-          writeJsonFileAtomic(settingsPath, flatSettings);
-          // stderr, never stdout — same JSON-on-stdout contract as above.
-          console.warn('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
-        } catch (error: unknown) {
-          console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error instanceof Error ? error.message : String(error));
-          // Continue with in-memory migration even if write fails
+        // A legacy file containing only `{ env: {...} }` can be flattened
+        // safely. If it also contains peer root keys (hooks, permissions,
+        // theme, etc.), retain the wrapper: flattening would destroy user data.
+        if (!hasPeerRootKeys) {
+          try {
+            writeJsonFileAtomic(settingsPath, flatSettings);
+            // stderr, never stdout — same JSON-on-stdout contract as above.
+            console.warn('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
+          } catch (error: unknown) {
+            console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error instanceof Error ? error.message : String(error));
+            // Continue with in-memory migration even if write fails
+          }
         }
       }
 
@@ -268,7 +351,10 @@ export class SettingsDefaultsManager {
         };
 
         try {
-          writeJsonFileAtomic(settingsPath, flatSettings);
+          writeJsonFileAtomic(
+            settingsPath,
+            hasPeerRootKeys ? { ...settings, env: flatSettings } : flatSettings,
+          );
           // stderr, never stdout — same JSON-on-stdout contract as above.
           console.warn('[SETTINGS] Migrated Telegram trigger types off the legacy default:', settingsPath);
         } catch (error: unknown) {
