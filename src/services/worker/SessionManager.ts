@@ -5,15 +5,32 @@ import { SessionMessageBuffer } from './SessionMessageBuffer.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
+import { RateLimitTracker } from './gemini/RateLimitTracker.js';
 
 export class SessionManager {
   private dbManager: DatabaseManager;
   private sessions: Map<number, ActiveSession> = new Map();
   private onPendingMutate?: () => void;
-  private readonly buffer = new SessionMessageBuffer(() => this.onPendingMutate?.());
+  private idleEvictionTimer?: ReturnType<typeof setInterval>;
+  private readonly buffer = new SessionMessageBuffer(() => {
+    try {
+      RateLimitTracker.getInstance().updateQueueState({ depth: this.buffer.getTotalDepth() });
+    } catch {}
+    this.onPendingMutate?.();
+  });
 
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager;
+    this.idleEvictionTimer = setInterval(() => {
+      try {
+        this.evictIdleSessions();
+      } catch (err) {
+        logger.warn('SESSION', 'Error during idle session eviction sweep', { err });
+      }
+    }, 5 * 60 * 1000);
+    if (typeof this.idleEvictionTimer.unref === 'function') {
+      this.idleEvictionTimer.unref();
+    }
   }
 
   setOnPendingMutate(cb: () => void): void {
@@ -235,6 +252,14 @@ export class SessionManager {
     return this.buffer.resetClaimed(sessionDbId);
   }
 
+  /**
+   * Reset claimed messages for a session so they return to pending state.
+   * Alias for resetProcessingToPending to ensure API compatibility.
+   */
+  async resetClaimed(sessionDbId: number): Promise<number> {
+    return this.resetProcessingToPending(sessionDbId);
+  }
+
   async confirmClaimedMessages(sessionDbId: number): Promise<number> {
     const session = this.sessions.get(sessionDbId);
     const claimedIds = session?.claimedMessageIds ?? [];
@@ -344,7 +369,38 @@ export class SessionManager {
     });
   }
 
+  /**
+   * Evict idle sessions from RAM that have zero pending work and have been inactive
+   * for longer than maxIdleAgeMs (default: 30 minutes).
+   * Frees buffers, event listeners, and conversation histories while ensuring
+   * completed sessions are cleanly removed.
+   */
+  evictIdleSessions(maxIdleAgeMs: number = 30 * 60 * 1000, now: number = Date.now()): number {
+    let evicted = 0;
+    for (const [sessionDbId, session] of this.sessions.entries()) {
+      // Never evict if there is an active generator running or pending messages in buffer
+      if (session.generatorPromise !== null) continue;
+      if (this.buffer.getPendingCount(sessionDbId) > 0) continue;
+      if (session.claimedMessageIds.length > 0) continue;
+
+      const lastActivity = session.lastGeneratorActivity || session.startTime;
+      if (now - lastActivity >= maxIdleAgeMs) {
+        logger.info('SESSION', `Evicting idle session from RAM (idle for ${Math.round((now - lastActivity) / 1000)}s)`, {
+          sessionDbId,
+          project: session.project,
+        });
+        this.removeSessionImmediate(sessionDbId);
+        evicted++;
+      }
+    }
+    return evicted;
+  }
+
   async shutdownAll(): Promise<void> {
+    if (this.idleEvictionTimer) {
+      clearInterval(this.idleEvictionTimer);
+      this.idleEvictionTimer = undefined;
+    }
     const sessionIds = Array.from(this.sessions.keys());
     await Promise.all(sessionIds.map(id => this.deleteSession(id)));
   }
@@ -400,5 +456,36 @@ export class SessionManager {
   /** Read-only access to the in-RAM buffer for diagnostics. */
   getMessageBuffer(): SessionMessageBuffer {
     return this.buffer;
+  }
+
+  /**
+   * Re-queue any tool_uses from SQLite that were stored but not yet linked
+   * to an observation (e.g. after worker restart).
+   */
+  requeueUnobservedToolUses(sessionDbId: number): number {
+    try {
+      const db = this.dbManager.getConnection();
+      const rows = db.query(
+        'SELECT tool_name, tool_input, tool_response, cwd, prompt_number, agent_id, agent_type, tool_use_id FROM tool_uses WHERE session_db_id = ? AND observation_id IS NULL ORDER BY id ASC'
+      ).all(sessionDbId) as any[];
+
+      let requeued = 0;
+      for (const row of rows) {
+        this.queueObservation(sessionDbId, {
+          tool_name: row.tool_name,
+          tool_input: row.tool_input ?? '{}',
+          tool_response: row.tool_response ?? '{}',
+          prompt_number: row.prompt_number ?? 1,
+          cwd: row.cwd ?? '',
+          agentId: row.agent_id ?? undefined,
+          agentType: row.agent_type ?? undefined,
+          toolUseId: row.tool_use_id ?? undefined,
+        });
+        requeued++;
+      }
+      return requeued;
+    } catch {
+      return 0;
+    }
   }
 }

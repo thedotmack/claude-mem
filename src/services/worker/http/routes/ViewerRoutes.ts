@@ -8,6 +8,7 @@ import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { SessionManager } from '../../SessionManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { RateLimitTracker } from '../../gemini/RateLimitTracker.js';
 
 const VIEWER_HTML_CANDIDATE_PATHS: readonly string[] = (() => {
   const packageRoot = getPackageRoot();
@@ -256,6 +257,11 @@ export class ViewerRoutes extends BaseRouteHandler {
           type: 'processing_status',
           isProcessing,
           queueDepth
+        });
+        this.sseBroadcaster.broadcast({
+          type: 'gemini_status_update',
+          data: RateLimitTracker.getInstance().getStatus(),
+          timestamp: Date.now()
         });
       } catch (error) {
         logger.warn('HTTP', 'Failed to broadcast initial processing status', {

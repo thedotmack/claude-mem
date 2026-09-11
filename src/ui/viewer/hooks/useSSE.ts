@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
-import { Observation, Summary, UserPrompt, StreamEvent } from '../types';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Observation, Summary, UserPrompt, StreamEvent, GeminiRateLimitsStatus } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
 
@@ -10,6 +10,8 @@ export function useSSE() {
   const [projects, setProjects] = useState<string[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [queueDepth, setQueueDepth] = useState(0);
+  const [geminiStatus, setGeminiStatus] = useState<GeminiRateLimitsStatus | null>(null);
+
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
 
@@ -17,7 +19,21 @@ export function useSSE() {
     setProjects(prev => prev.includes(project) ? prev : [...prev, project]);
   };
 
+  const fetchGeminiStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/gemini/status');
+      if (res.ok) {
+        const data = await res.json() as GeminiRateLimitsStatus;
+        setGeminiStatus(data);
+      }
+    } catch {
+      // Best-effort
+    }
+  }, []);
+
   useEffect(() => {
+    void fetchGeminiStatus();
+
     const connect = () => {
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
@@ -86,6 +102,48 @@ export function useSSE() {
               setQueueDepth(data.queueDepth || 0);
             }
             break;
+
+          case 'gemini_status_update':
+            if (data.data) {
+              setGeminiStatus(data.data as GeminiRateLimitsStatus);
+            }
+            break;
+
+          case 'gemini_model_switched':
+            if (data.data) {
+              setGeminiStatus(prev => prev ? {
+                ...prev,
+                activeModel: data.data.toModel,
+                lastSwitchEvent: data.data,
+              } : null);
+            }
+            break;
+
+          case 'gemini_queue_paused':
+            if (data.data) {
+              setGeminiStatus(prev => prev ? {
+                ...prev,
+                queue: {
+                  ...prev.queue,
+                  isWaitingForQuota: true,
+                  quotaWaitRemainingMs: data.data.waitSeconds * 1000,
+                  lastEvent: `Queue paused for ${data.data.waitSeconds}s: ${data.data.reason}`,
+                }
+              } : null);
+            }
+            break;
+
+          case 'gemini_queue_resumed':
+            setGeminiStatus(prev => prev ? {
+              ...prev,
+              queue: {
+                ...prev.queue,
+                isWaitingForQuota: false,
+                quotaWaitRemainingMs: 0,
+                lastEvent: 'Queue resumed',
+              }
+            } : null);
+            break;
         }
       };
     };
@@ -100,7 +158,7 @@ export function useSSE() {
         clearTimeout(reconnectTimeoutRef.current);
       }
     };
-  }, []);
+  }, [fetchGeminiStatus]);
 
   return {
     observations,
@@ -108,6 +166,8 @@ export function useSSE() {
     prompts,
     projects,
     isProcessing,
-    queueDepth
+    queueDepth,
+    geminiStatus,
+    fetchGeminiStatus,
   };
 }

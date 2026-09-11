@@ -118,23 +118,71 @@ describe('antigravityCliAdapter - normalizeInput', () => {
 });
 
 describe('antigravityCliAdapter - formatOutput', () => {
-  it('strips ANSI escape codes from systemMessage (real bug fix carried over from Gemini CLI adapter)', () => {
-    const raw = '[31mRed text[0m';
+  it('formats systemMessage into injectSteps and strips ANSI escape codes', () => {
+    const raw = '\u001b[31mRed text\u001b[0m';
     const result = antigravityCliAdapter.formatOutput({ systemMessage: raw }) as Record<string, unknown>;
-    expect(result.systemMessage).toBe('Red text');
+    expect(result.injectSteps).toEqual([{ ephemeralMessage: 'Red text' }]);
   });
 
-  it('defaults continue to true and passes through hookSpecificOutput.additionalContext', () => {
+  it('formats injectSteps for Antigravity CLI PreInvocation ephemeral context', () => {
     const result = antigravityCliAdapter.formatOutput({
-      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'ctx' },
+      hookSpecificOutput: { additionalContext: 'Project memory timeline' },
     }) as Record<string, unknown>;
-    expect(result.continue).toBe(true);
-    expect(result.hookSpecificOutput).toEqual({ additionalContext: 'ctx' });
+    expect(result.injectSteps).toEqual([
+      { ephemeralMessage: 'Project memory timeline' },
+    ]);
   });
 
-  it('passes through suppressOutput when explicitly set', () => {
-    const result = antigravityCliAdapter.formatOutput({ suppressOutput: true }) as Record<string, unknown>;
-    expect(result.suppressOutput).toBe(true);
+  it('returns an empty object {} for PostToolUse to comply with Antigravity protojson', () => {
+    const result = antigravityCliAdapter.formatOutput({
+      continue: true,
+      suppressOutput: true,
+    }) as Record<string, unknown>;
+    expect(result).toEqual({});
+  });
+});
+
+describe('antigravityCliAdapter - native camelCase and toolCall support', () => {
+  it('normalizes Antigravity CLI camelCase conversationId, workspacePaths, and toolCall', () => {
+    const result = antigravityCliAdapter.normalizeInput({
+      conversationId: 'conv-12345',
+      workspacePaths: ['/path/to/project'],
+      toolCall: {
+        name: 'run_command',
+        args: { CommandLine: 'npm test' },
+      },
+    });
+
+    expect(result.sessionId).toBe('conv-12345');
+    expect(result.cwd).toBe('/path/to/project');
+    expect(result.toolName).toBe('run_command');
+    expect(result.toolInput).toEqual({ CommandLine: 'npm test' });
+  });
+
+  it('normalizes Antigravity CLI Stop event termination payload', () => {
+    const result = antigravityCliAdapter.normalizeInput({
+      conversationId: 'conv-999',
+      workspacePaths: ['/path/to/project'],
+      transcriptPath: '/path/to/transcript.jsonl',
+      terminationReason: 'model_stop',
+    });
+
+    expect(result.sessionId).toBe('conv-999');
+    expect(result.cwd).toBe('/path/to/project');
+    expect(result.transcriptPath).toBe('/path/to/transcript.jsonl');
+  });
+});
+
+describe('platform-source - antigravity-cli support', () => {
+  it('normalizes antigravity, agy, and antigravity-cli to antigravity-cli', async () => {
+    const { normalizePlatformSource, sortPlatformSources } = await import('../src/shared/platform-source.js');
+    expect(normalizePlatformSource('antigravity')).toBe('antigravity-cli');
+    expect(normalizePlatformSource('agy')).toBe('antigravity-cli');
+    expect(normalizePlatformSource('antigravity-cli')).toBe('antigravity-cli');
+    expect(normalizePlatformSource('ANTIGRAVITY')).toBe('antigravity-cli');
+
+    const sorted = sortPlatformSources(['cursor', 'antigravity-cli', 'codex', 'claude']);
+    expect(sorted).toEqual(['claude', 'codex', 'antigravity-cli', 'cursor']);
   });
 });
 

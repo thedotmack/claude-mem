@@ -14,13 +14,14 @@ interface UseContextPreviewResult {
 }
 
 function getPreferredSource(sources: string[]): string | null {
+  if (sources.includes('antigravity-cli')) return 'antigravity-cli';
   if (sources.includes('claude')) return 'claude';
   if (sources.includes('codex')) return 'codex';
   return sources[0] || null;
 }
 
 function withDefaultSources(sources: string[]): string[] {
-  const merged = ['claude', 'codex', ...sources];
+  const merged = ['claude', 'codex', 'antigravity-cli', ...sources];
   return Array.from(new Set(merged));
 }
 

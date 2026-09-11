@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Header } from './components/Header';
 import { Feed } from './components/Feed';
 import { ContextSettingsModal } from './components/ContextSettingsModal';
+import { GeminiStatusModal } from './components/GeminiStatusModal';
 import { LogsDrawer } from './components/LogsModal';
 import { WelcomeCard, getStoredWelcomeDismissed, setStoredWelcomeDismissed } from './components/WelcomeCard';
 import { useSSE } from './hooks/useSSE';
@@ -14,13 +15,14 @@ import { mergeAndDeduplicateByProject } from './utils/data';
 export function App() {
   const [currentFilter, setCurrentFilter] = useState('');
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
+  const [geminiModalOpen, setGeminiModalOpen] = useState(false);
   const [logsModalOpen, setLogsModalOpen] = useState(false);
   const [welcomeDismissed, setWelcomeDismissed] = useState<boolean>(getStoredWelcomeDismissed);
   const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
 
-  const { observations, summaries, prompts, projects, isProcessing, queueDepth } = useSSE();
+  const { observations, summaries, prompts, projects, isProcessing, queueDepth, geminiStatus, fetchGeminiStatus } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { preference, setThemePreference } = useTheme();
   const pagination = usePagination(currentFilter);
@@ -106,6 +108,8 @@ export function App() {
           setStoredWelcomeDismissed(false);
           setWelcomeDismissed(false);
         }}
+        geminiStatus={geminiStatus}
+        onOpenGeminiStatus={() => setGeminiModalOpen(true)}
       />
 
       <Feed
@@ -128,6 +132,13 @@ export function App() {
         onSave={saveSettings}
         isSaving={isSaving}
         saveStatus={saveStatus}
+      />
+
+      <GeminiStatusModal
+        isOpen={geminiModalOpen}
+        onClose={() => setGeminiModalOpen(false)}
+        geminiStatus={geminiStatus}
+        onRefresh={fetchGeminiStatus}
       />
 
       <button
