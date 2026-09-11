@@ -306,13 +306,28 @@ afterEach(async () => {
   }
 
   const { paths } = await import('../../src/shared/paths.js');
-  const pidFile = paths.workerPid();
-  if (fs.existsSync(pidFile)) {
+
+  const killPidFileWorker = async (): Promise<void> => {
+    const pidFile = paths.workerPid();
+    if (!fs.existsSync(pidFile)) return;
     const info = JSON.parse(fs.readFileSync(pidFile, 'utf-8')) as { pid?: number };
     if (typeof info.pid === 'number' && info.pid !== handle.pid) {
       await killProcessTree(info.pid).catch(() => {});
     }
     fs.rmSync(pidFile, { force: true });
+  };
+  await killPidFileWorker();
+
+  // Bounded sweep. The wait above is time-boxed, so a launcher that was still
+  // mid-flight can spawn its worker or reclaim the chain AFTER the kills —
+  // that late work is what survives cleanup and leaks a listener into the next
+  // run. Repeat "reap the worker, free the port" until the port is quiet.
+  const { reclaimGhostListeningPort } = await import('../../src/shared/port-reclaim.js');
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (listeningOwnerPids(handle.port).length === 0) return;
+    await reclaimGhostListeningPort(handle.port).catch(() => {});
+    await new Promise(resolve => setTimeout(resolve, 2_000));
+    await killPidFileWorker();
   }
 });
 
