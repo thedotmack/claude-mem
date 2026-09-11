@@ -14,6 +14,7 @@ function makeDbManager(userPrompt: string | null): DatabaseManager {
     }),
     getSessionStore: () => ({
       getPromptNumberFromUserPrompts: () => 1,
+      getLatestUserPrompt: () => undefined,
     }),
   } as unknown as DatabaseManager;
 }

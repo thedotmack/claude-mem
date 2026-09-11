@@ -99,13 +99,17 @@ export class SessionManager {
       });
     }
 
-    const userPrompt = currentUserPrompt || dbSession.user_prompt;
+    const latestPrompt = currentUserPrompt
+      ? undefined
+      : this.dbManager.getSessionStore().getLatestUserPrompt(dbSession.content_session_id, sessionDbId);
+    const userPrompt = currentUserPrompt || latestPrompt?.prompt_text || dbSession.user_prompt;
 
     if (!currentUserPrompt) {
-      logger.debug('SESSION', 'No currentUserPrompt provided for new session, using database', {
+      logger.debug('SESSION', 'No currentUserPrompt provided for new session, using latest prompt from database', {
         sessionDbId,
         promptNumber,
-        dbPrompt: dbSession.user_prompt?.substring(0, 80) ?? ''
+        usedLatestPromptTable: !!latestPrompt,
+        dbPrompt: userPrompt?.substring(0, 80) ?? ''
       });
     } else {
       logger.debug('SESSION', 'Initializing session with fresh userPrompt', {
