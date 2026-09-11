@@ -200,14 +200,16 @@ function discoverCandidates(): string[] {
   if (_internals.platform() === 'win32') {
     // claude.cmd first: spawning the .cmd wrapper avoids spawn issues with
     // spaces in the .exe path (long-standing Windows preference).
-    for (const command of ['where claude.cmd', 'where claude']) {
+    // Use where.exe argv (not a shell string) so PATH lookups do not flash a
+    // console and binary names with spaces stay argv-safe.
+    for (const name of ['claude.cmd', 'claude']) {
       try {
-        const output = _internals.execSync(command, {
+        const output = _internals.execFileSync('where.exe', [name], {
           encoding: 'utf8',
           windowsHide: true,
           stdio: ['ignore', 'pipe', 'ignore'],
         });
-        candidates.push(...output.split('\n').map((line) => line.trim()).filter(Boolean));
+        candidates.push(...output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
       } catch {
         // Not found via this lookup — try the next discovery source.
       }
