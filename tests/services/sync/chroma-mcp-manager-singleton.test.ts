@@ -882,6 +882,21 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(transportInstances.length).toBe(1);
   });
 
+  it('allows a new manager instance in this process to re-acquire its writer lock', async () => {
+    const firstManager = ChromaMcpManager.getInstance();
+    await firstManager.callTool('chroma_list_collections', { limit: 1 });
+    const firstOwnerId = (firstManager as unknown as { chromaWriterOwnerId: string }).chromaWriterOwnerId;
+
+    await ChromaMcpManager.reset();
+    writeChromaWriterLock(process.pid, firstOwnerId);
+
+    const secondManager = ChromaMcpManager.getInstance();
+    await secondManager.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(2);
+    expect(existsSync(chromaWriterLockPath())).toBe(true);
+  });
+
   it('preserves remote mutation concurrency', async () => {
     mockedSettings = {
       CLAUDE_MEM_CHROMA_MODE: 'remote',

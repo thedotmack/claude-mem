@@ -109,6 +109,11 @@ interface ChromaWriterLockPayload {
   startToken?: string | null;
 }
 
+// Keep one writer identity for the lifetime of this process. Multiple manager
+// instances can be created during reconnects/tests, and they must be able to
+// re-acquire a lock that this process already owns.
+const CHROMA_WRITER_OWNER_ID = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+
 export class ChromaMcpManager {
   private static instance: ChromaMcpManager | null = null;
   private client: Client | null = null;
@@ -121,7 +126,7 @@ export class ChromaMcpManager {
   private activePrewarmTracked: TrackedChild | null = null;
   private connectionGeneration: number = 0;
   private intentionallyClosingTransports = new WeakSet<object>();
-  private readonly chromaWriterOwnerId = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  private readonly chromaWriterOwnerId = CHROMA_WRITER_OWNER_ID;
   private chromaWriterLock: { path: string; dataDir: string; ownerId: string } | null = null;
   private unexpectedCloseCleanup: Promise<void> | null = null;
   private mutationTail: Promise<void> = Promise.resolve();
