@@ -56,6 +56,8 @@ export function isWorkerUnavailableError(error: unknown): boolean {
     'fetch failed',
     'unable to connect',
     'socket hang up',
+    'socket connection was closed',
+    'connection closed',
   ];
   if (transportPatterns.some(p => lower.includes(p))) return true;
 
