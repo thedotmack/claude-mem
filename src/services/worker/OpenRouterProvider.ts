@@ -261,6 +261,22 @@ export function normalizeOpenRouterModel(rawModel: unknown): { model: string; fa
 }
 
 /**
+ * True only when the URL hostname is exactly `openrouter.ai`.
+ *
+ * Path text and lookalike hosts must not inherit OpenRouter-only body fields
+ * (`models`, `usage`) — strict OpenAI-compatible gateways 400 on those.
+ * Malformed URLs fail closed (treat as non-OpenRouter). Shared by the request
+ * body and `session.endpointClass` so the two sites cannot drift.
+ */
+export function isOpenRouterApiUrl(apiUrl: string): boolean {
+  try {
+    return new URL(apiUrl).hostname.toLowerCase() === 'openrouter.ai';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Build the chat-completions request body.
  *
  * Exported so the body shape is testable without a network round trip, which
@@ -280,7 +296,7 @@ export function buildOpenRouterRequestBody(input: {
   messages: OpenAIMessage[];
   apiUrl: string;
 }): Record<string, unknown> {
-  const isOpenRouter = input.apiUrl.includes('openrouter.ai');
+  const isOpenRouter = isOpenRouterApiUrl(input.apiUrl);
   const useFallbacks = isOpenRouter && input.fallbackModels.length > 0;
   return {
     ...(useFallbacks
@@ -386,7 +402,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   protected prepareSessionExtras(session: ActiveSession, config: OpenRouterConfig): void {
     // openrouter.ai responses carry real usage/cost; custom OpenAI-compatible
     // gateways often fabricate or omit usage — let telemetry segment the two.
-    session.endpointClass = config.apiUrl.includes('openrouter.ai') ? 'openrouter' : 'custom';
+    session.endpointClass = isOpenRouterApiUrl(config.apiUrl) ? 'openrouter' : 'custom';
   }
 
   protected estimateTokens(text: string): number {
