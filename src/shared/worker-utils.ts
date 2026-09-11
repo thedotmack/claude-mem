@@ -4,7 +4,7 @@ import { spawnHidden } from "./spawn.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager, type SettingsDefaults } from "./SettingsDefaultsManager.js";
-import { MARKETPLACE_ROOT, DATA_DIR } from "./paths.js";
+import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { validateWorkerPidFile, readOwnedWorkerPidInfo } from "../supervisor/index.js";
 import { emitBlockingError } from "./hook-io.js";
@@ -16,6 +16,7 @@ import { checkVersionMatch } from "../services/infrastructure/index.js";
 import { resolveWorkerRuntimePath } from "../services/infrastructure/ProcessManager.js";
 import { acquireSpawnLock, releaseSpawnLock } from "./worker-spawn-gate.js";
 import { killProcessTree } from "./kill-process-tree.js";
+import { writeJsonFileAtomic } from "./atomic-json.js";
 
 function readTimeoutEnv(
   envName: string,
@@ -417,16 +418,49 @@ async function waitForWorkerPortClosed(timeoutMs = 5000): Promise<boolean> {
   }
 }
 
-/**
- * Amplifier guard: a hook recycles a stale worker AT MOST once per
- * invocation. If the worker that became ready still reports a mismatched
- * version, warn and return — the NEXT hook event retries. Recycling again in
- * the same invocation re-creates the restart storm.
- */
-async function warnIfVersionStillMismatched(expectedPluginVersion: string): Promise<void> {
+// A mislabeled bundle can survive a restart with the same stale version.
+// Persist that result because each hook runs in a fresh process. Replacing the
+// bundle (even without a version bump) makes it eligible for another attempt.
+function workerBuildKey(script: WorkerScriptCandidate | null, expectedVersion: string): string | null {
+  if (!script) return null;
+  try {
+    const stat = statSync(script.scriptPath);
+    return JSON.stringify([script.scriptPath, expectedVersion, stat.size, stat.mtimeMs, stat.ctimeMs]);
+  } catch {
+    return null;
+  }
+}
+
+function failedRecyclePath(): string {
+  return path.join(resolveDataDir(), 'worker-version-recycle.json');
+}
+
+function alreadyRecycledBundle(buildKey: string | null, workerVersion: string | null): boolean {
+  if (buildKey === null || workerVersion === null) return false;
+  try {
+    const previous = JSON.parse(readFileSync(failedRecyclePath(), 'utf-8'));
+    return previous?.buildKey === buildKey && previous?.workerVersion === workerVersion;
+  } catch {
+    return false;
+  }
+}
+
+async function warnIfVersionStillMismatched(
+  expectedPluginVersion: string,
+  buildKey: string | null = null,
+): Promise<void> {
   const observedVersion = await fetchWorkerHealthVersion();
   if (observedVersion !== null && observedVersion !== expectedPluginVersion) {
-    logger.warn('SYSTEM', 'Worker is ready but still reports a stale version; not recycling again in this hook invocation (one recycle per hook event)', {
+    if (buildKey !== null) {
+      try {
+        writeJsonFileAtomic(failedRecyclePath(), { buildKey, workerVersion: observedVersion });
+      } catch (error: unknown) {
+        logger.warn('SYSTEM', 'Could not persist the failed worker version recycle', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    logger.warn('SYSTEM', 'Worker is ready but still reports a stale version; rebuild or reinstall the worker bundle before retrying', {
       pluginVersion: expectedPluginVersion,
       workerVersion: observedVersion,
     });
@@ -466,6 +500,7 @@ export async function ensureWorkerRunning(): Promise<boolean> {
   // (plain cold-start lazy-spawn — no recycle happened, nothing to amplify)
   // or when the resolved version is unreadable ('unknown').
   let expectedPluginVersion: string | null = null;
+  let recycleBuildKey: string | null = null;
 
   if (await isWorkerPortAlive()) {
     // A worker is already alive. If it is a DIFFERENT version than the one
@@ -487,6 +522,16 @@ export async function ensureWorkerRunning(): Promise<boolean> {
         await warnIfVersionStillMismatched(expectedPluginVersion);
       }
       return true;
+    }
+
+    recycleBuildKey = workerBuildKey(resolvedScript, pluginVersion);
+    if (alreadyRecycledBundle(recycleBuildKey, workerVersion)) {
+      logger.warn('SYSTEM', 'Skipping repeated worker recycle: the unchanged bundle still reports a stale version; rebuild or reinstall it', {
+        pluginVersion,
+        workerVersion,
+        scriptPath: resolvedScript?.scriptPath,
+      });
+      return waitForWorkerReadiness();
     }
 
     logger.info('SYSTEM', 'Worker version mismatch — killing stale worker', {
@@ -615,10 +660,10 @@ export async function ensureWorkerRunning(): Promise<boolean> {
     logger.warn('SYSTEM', 'Worker lazy-spawned but did not become ready before hook readiness timeout');
     return false;
   }
-  // Amplifier guard: even if the worker that won the port is still stale,
-  // never recycle a second time in the same hook invocation.
+  // Remember a failed version change across hook invocations, so a stale
+  // bundled artifact cannot trigger a restart on every tool call.
   if (expectedPluginVersion !== null) {
-    await warnIfVersionStillMismatched(expectedPluginVersion);
+    await warnIfVersionStillMismatched(expectedPluginVersion, recycleBuildKey);
   }
   return true;
 }
