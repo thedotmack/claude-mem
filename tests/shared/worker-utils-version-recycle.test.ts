@@ -59,6 +59,34 @@ mock.module('../../src/shared/spawn.js', () => ({
   },
 }));
 
+// Port release is now decided by a real bind attempt (isWorkerPortReleased),
+// not by a refused HTTP connect — a connect probe cannot distinguish "free"
+// from "orphaned listener still holding the port", which is what wedged
+// Windows on 2026-07-26. Without this seam these tests would bind the real
+// worker port on the developer's machine and block for the full release wait.
+mock.module('net', () => ({
+  default: {
+    createServer: () => {
+      const handlers: Record<string, ((arg?: unknown) => void)[]> = {};
+      const on = (ev: string, fn: (arg?: unknown) => void) => {
+        (handlers[ev] ??= []).push(fn);
+        return api;
+      };
+      const api = {
+        once: on,
+        on,
+        address: () => ({ port: 41999 }),
+        close: (cb?: () => void) => { if (cb) setTimeout(cb, 0); return api; },
+        listen: () => {
+          setTimeout(() => (handlers['listening'] ?? []).forEach(f => f()), 0);
+          return api;
+        },
+      };
+      return api;
+    },
+  },
+}));
+
 async function importWorkerUtilsFresh() {
   return import(`../../src/shared/worker-utils.js?worker-utils-version-recycle=${Date.now()}-${Math.random()}`);
 }
