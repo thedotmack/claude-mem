@@ -97,10 +97,13 @@ function describeFetchError(err: unknown): Record<string, unknown> {
 function logVerboseFetchFailure(url: string, init: RequestInit, err: unknown): void {
   const method = typeof init.method === 'string' ? init.method : 'GET';
   const details = describeFetchError(err);
-  logger.warn('SYSTEM', 'Worker IPC fetch failed', { url, method }, details);
+  // Serialize before logging: logger.formatData abbreviates objects with more
+  // than 3 keys, which would drop nested cause messages at the default INFO level.
+  const serialized = JSON.stringify(details);
+  logger.warn('SYSTEM', 'Worker IPC fetch failed', { url, method }, serialized);
   // Bypass the hook stderr buffer (#2292) so undici's own verbose dumps plus
   // this cause chain stay visible when CLAUDE_MEM_FETCH_VERBOSE is on.
-  emitDiagnostic(`[claude-mem] fetch verbose: ${method} ${url} ${JSON.stringify(details)}\n`);
+  emitDiagnostic(`[claude-mem] fetch verbose: ${method} ${url} ${serialized}\n`);
 }
 
 async function workerFetch(url: string, init: RequestInit = {}): Promise<Response> {

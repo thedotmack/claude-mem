@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -122,16 +122,55 @@ describe('worker-utils fetch verbose diagnostics', () => {
     expect(inits[0].verbose).toBeUndefined();
   });
 
-  it('rethrows fetch failures and still surfaces the cause when verbose is on', async () => {
+  it('rethrows fetch failures and emits the nested cause chain when verbose is on', async () => {
     process.env.CLAUDE_MEM_FETCH_VERBOSE = '1';
-    const cause = Object.assign(new Error('The socket connection was closed unexpectedly'), { code: 'UND_ERR_SOCKET' });
+    const cause3 = new Error('read ECONNRESET');
+    const cause2 = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET', cause: cause3 });
+    const cause1 = Object.assign(new Error('The socket connection was closed unexpectedly'), {
+      code: 'UND_ERR_SOCKET',
+      cause: cause2,
+    });
     const failure = new TypeError('fetch failed');
-    failure.cause = cause;
+    failure.cause = cause1;
 
     global.fetch = mock(() => Promise.reject(failure)) as unknown as typeof fetch;
 
-    const workerUtils = await import('../../src/shared/worker-utils.js');
-    await expect(workerUtils.fetchWithTimeout('http://127.0.0.1:37777/api/sessions/init', { method: 'POST' }, 1000))
-      .rejects.toBe(failure);
+    const stderr: string[] = [];
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+      stderr.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+      return true;
+    }) as typeof process.stderr.write;
+
+    const loggerModule = await import('../../src/utils/logger.js');
+    const warnSpy = spyOn(loggerModule.logger, 'warn').mockImplementation(() => {});
+
+    try {
+      const workerUtils = await import('../../src/shared/worker-utils.js');
+      await expect(
+        workerUtils.fetchWithTimeout('http://127.0.0.1:37777/api/sessions/init', { method: 'POST' }, 1000),
+      ).rejects.toBe(failure);
+
+      const diagnostic = stderr.join('');
+      expect(diagnostic).toContain('[claude-mem] fetch verbose: POST http://127.0.0.1:37777/api/sessions/init');
+      expect(diagnostic).toContain('The socket connection was closed unexpectedly');
+      expect(diagnostic).toContain('UND_ERR_SOCKET');
+      expect(diagnostic).toContain('socket hang up');
+      expect(diagnostic).toContain('read ECONNRESET');
+
+      const warnCall = warnSpy.mock.calls.find((call) => call[1] === 'Worker IPC fetch failed');
+      expect(warnCall).toBeDefined();
+      expect(warnCall?.[2]).toEqual({
+        url: 'http://127.0.0.1:37777/api/sessions/init',
+        method: 'POST',
+      });
+      expect(typeof warnCall?.[3]).toBe('string');
+      expect(warnCall?.[3]).toContain('UND_ERR_SOCKET');
+      expect(warnCall?.[3]).toContain('The socket connection was closed unexpectedly');
+      expect(warnCall?.[3]).toContain('read ECONNRESET');
+    } finally {
+      warnSpy.mockRestore();
+      process.stderr.write = originalWrite as typeof process.stderr.write;
+    }
   });
 });
