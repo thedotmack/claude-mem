@@ -2675,6 +2675,22 @@ export class SessionStore {
     return result.count;
   }
 
+  getLatestPromptTextFromUserPrompts(contentSessionId: string, sessionDbId?: number): string | null {
+    const resolvedSessionDbId = this.resolvePromptSessionDbId(contentSessionId, sessionDbId);
+    const whereClause = resolvedSessionDbId !== null ? 'session_db_id = ?' : 'content_session_id = ?';
+    const param = resolvedSessionDbId !== null ? resolvedSessionDbId : contentSessionId;
+    const result = this.db.prepare(`
+      SELECT prompt_text
+      FROM user_prompts
+      WHERE ${whereClause}
+        AND prompt_text IS NOT NULL
+        AND length(trim(prompt_text)) > 0
+      ORDER BY prompt_number DESC, created_at_epoch DESC
+      LIMIT 1
+    `).get(param) as { prompt_text: string } | undefined;
+    return result?.prompt_text ?? null;
+  }
+
   createSDKSession(
     contentSessionId: string,
     project: string,
