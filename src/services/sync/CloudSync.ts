@@ -60,12 +60,41 @@ import {
   type ContentKind,
 } from './CanonicalContent.js';
 
-// Page size for the drain SELECTs.
-const BATCH = 200;
+// Page size for drain SELECTs. 200-op content pushes timed out at 30s under
+// hub projection_busy (plan-24 #3618 / Alex Mac). 40 stays under one hub
+// projection page (PROJECTION_PAGE_MAX_OPS = 100).
+export const DEFAULT_CONTENT_BATCH_SIZE = 40;
+// Hub projection fetch aborts at 45s and holds a 90s lease
+// (workers/sync-hub PROJECTION_FETCH_TIMEOUT_MS / PROJECTION_LEASE_MS).
+// The previous 30s client timeout was shorter than both, so the client
+// aborted mid-lease and retried into projection_busy. Default matches the lease.
+export const DEFAULT_REQUEST_TIMEOUT_MS = 90_000;
+export const CONTENT_BATCH_SIZE_MIN = 1;
+export const CONTENT_BATCH_SIZE_MAX = 500;
+export const REQUEST_TIMEOUT_MS_MIN = 5_000;
+export const REQUEST_TIMEOUT_MS_MAX = 180_000;
 // Request-body packing budget — well under the hub's 8,000,000-byte cap.
 const MAX_BODY_BYTES = 4_000_000;
 // Hub cap: ≤500 ops per POST /v1/sync/ops request.
 const MAX_OPS_PER_PUSH = 500;
+
+function parseBoundedInt(raw: string | undefined, fallback: number, min: number, max: number): number {
+  if (raw == null || raw === '') return fallback;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < min || n > max) return fallback;
+  return n;
+}
+
+/** Settings / env knob for content flush page size. Out-of-range → default 40. */
+export function parseContentBatchSize(raw: string | undefined): number {
+  return parseBoundedInt(raw, DEFAULT_CONTENT_BATCH_SIZE, CONTENT_BATCH_SIZE_MIN, CONTENT_BATCH_SIZE_MAX);
+}
+
+/** Settings / env knob for content-push AbortSignal timeout. Out-of-range → 90s. */
+export function parseRequestTimeoutMs(raw: string | undefined): number {
+  return parseBoundedInt(raw, DEFAULT_REQUEST_TIMEOUT_MS, REQUEST_TIMEOUT_MS_MIN, REQUEST_TIMEOUT_MS_MAX);
+}
+
 const EMPTY_PUSH_REQUEST_BYTES = Buffer.byteLength(
   JSON.stringify({ protocol_version: 2, ops: [] }),
   'utf8',
@@ -202,7 +231,7 @@ const KINDS: KindSpec[] = [
         metadata, merged_into_project, created_at, created_at_epoch
       FROM observations
       WHERE synced_at IS NULL AND origin_device_id IS NULL
-      ORDER BY id LIMIT ${BATCH}`,
+      ORDER BY id LIMIT ?`,
     selectOneSql: `
       SELECT CAST(id AS TEXT) AS id, CAST(sync_rev AS TEXT) AS sync_rev,
         memory_session_id, project, text, type, title, subtitle,
@@ -245,7 +274,7 @@ const KINDS: KindSpec[] = [
         discovery_tokens, merged_into_project, created_at, created_at_epoch
       FROM session_summaries
       WHERE synced_at IS NULL AND origin_device_id IS NULL
-      ORDER BY id LIMIT ${BATCH}`,
+      ORDER BY id LIMIT ?`,
     selectOneSql: `
       SELECT CAST(id AS TEXT) AS id, CAST(sync_rev AS TEXT) AS sync_rev,
         memory_session_id, project, request, investigated, learned,
@@ -297,7 +326,7 @@ const KINDS: KindSpec[] = [
         s.platform_source AS platform_source
       FROM user_prompts up LEFT JOIN sdk_sessions s ON up.session_db_id = s.id
       WHERE up.synced_at IS NULL AND up.origin_device_id IS NULL
-      ORDER BY up.id LIMIT ${BATCH}`,
+      ORDER BY up.id LIMIT ?`,
     selectOneSql: `
       SELECT CAST(up.id AS TEXT) AS id, CAST(up.sync_rev AS TEXT) AS sync_rev,
         up.content_session_id AS content_session_id,
@@ -327,13 +356,18 @@ export type CloudSyncSettingKeys = Pick<SettingsDefaults,
   | 'CLAUDE_MEM_CLOUD_SYNC_HUB_URL'
   | 'CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID'
   | 'CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME'
->;
+> & Partial<Pick<SettingsDefaults,
+  | 'CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE'
+  | 'CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS'
+>>;
 
 export interface CloudSyncOptions {
   /** Injectable for tests; defaults to globalThis.fetch. */
   fetchImpl?: typeof fetch;
   /** settings.json path where a newly resolved device id is persisted. */
   settingsPath?: string;
+  /** Override content/mutation drain page size (default 40). */
+  contentBatchSize?: number;
   /** Trailing debounce for notify() bursts. */
   debounceMs?: number;
   /**
@@ -346,7 +380,7 @@ export interface CloudSyncOptions {
   /** First retry delay after a failed flush; doubles up to backoffMaxMs. */
   backoffInitialMs?: number;
   backoffMaxMs?: number;
-  /** Per-request timeout — a hub POST can never hang the drain. */
+  /** Per-request timeout — a hub POST can never hang the drain. Default 90s. */
   requestTimeoutMs?: number;
 }
 
@@ -379,6 +413,7 @@ export class CloudSync {
   private readonly fastDebounceMs: number;
   private readonly backoffInitialMs: number;
   private readonly backoffMaxMs: number;
+  private readonly contentBatchSize: number;
   private readonly requestTimeoutMs: number;
 
   /** '' when unconfigured or when device-id resolution failed closed. */
@@ -432,7 +467,12 @@ export class CloudSync {
     this.fastDebounceMs = options.fastDebounceMs ?? 250;
     this.backoffInitialMs = options.backoffInitialMs ?? 30_000;
     this.backoffMaxMs = options.backoffMaxMs ?? 600_000;
-    this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
+    this.contentBatchSize = options.contentBatchSize ?? parseContentBatchSize(
+      settings.CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE,
+    );
+    this.requestTimeoutMs = options.requestTimeoutMs ?? parseRequestTimeoutMs(
+      settings.CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS,
+    );
     this.nextBackoffMs = this.backoffInitialMs;
 
     if (this.isConfigured()) {
@@ -748,8 +788,8 @@ export class CloudSync {
       if (this.stopped) return;
       const rows = this.db.prepare(`
         SELECT body, operation_sha256 FROM sync_content_outbox
-        ORDER BY deleted DESC, id LIMIT ${BATCH}
-      `).all() as Array<CanonicalWireOp>;
+        ORDER BY deleted DESC, id LIMIT ?
+      `).all(this.contentBatchSize) as Array<CanonicalWireOp>;
       if (rows.length === 0) return;
       let batch: WireOp[] = [];
       let bytes = 0;
@@ -784,8 +824,8 @@ export class CloudSync {
       const rows = this.db.prepare(
         `SELECT CAST(id AS TEXT) AS id, op_uuid, CAST(rev AS TEXT) AS rev,
                 body, canonical_body, operation_sha256
-         FROM sync_outbox ORDER BY id LIMIT ${BATCH}`
-      ).all() as MutationOutboxRow[];
+         FROM sync_outbox ORDER BY id LIMIT ?`
+      ).all(this.contentBatchSize) as MutationOutboxRow[];
       if (rows.length === 0) break;
 
       // Same size-bounded packing as drainKind: mutation bodies are usually
@@ -863,7 +903,7 @@ export class CloudSync {
     // change a retry's body/hash; ack reconciliation queues a higher revision.
     for (;;) {
       if (this.stopped) return;
-      const rows = this.db.prepare(kind.selectSql).all() as LocalRow[];
+      const rows = this.db.prepare(kind.selectSql).all(this.contentBatchSize) as LocalRow[];
       if (rows.length === 0) break;
       for (const r of rows) {
         this.snapshotContentRow(kind, r);

@@ -12,7 +12,15 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
-import { CloudSync, type CloudSyncSettingKeys, type CloudSyncOptions } from '../../../src/services/sync/CloudSync.js';
+import {
+  CloudSync,
+  parseContentBatchSize,
+  parseRequestTimeoutMs,
+  DEFAULT_CONTENT_BATCH_SIZE,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  type CloudSyncSettingKeys,
+  type CloudSyncOptions,
+} from '../../../src/services/sync/CloudSync.js';
 import { buildContentOperation, buildMutationOperation, stableDocumentId } from '../../../src/services/sync/CanonicalContent.js';
 
 const ISO = '2026-07-09T00:00:00.000Z';
@@ -121,6 +129,29 @@ function makeFetchMock(handler?: (call: number) => Response | Error | undefined)
   }) as typeof fetch;
   return { impl, calls };
 }
+
+describe('cloud sync flush knobs', () => {
+  it('defaults content batch to 40 and request timeout to 90s', () => {
+    expect(DEFAULT_CONTENT_BATCH_SIZE).toBe(40);
+    expect(DEFAULT_REQUEST_TIMEOUT_MS).toBe(90_000);
+    expect(parseContentBatchSize(undefined)).toBe(40);
+    expect(parseRequestTimeoutMs(undefined)).toBe(90_000);
+  });
+
+  it('accepts in-range settings and rejects out-of-range / garbage', () => {
+    expect(parseContentBatchSize('10')).toBe(10);
+    expect(parseContentBatchSize('500')).toBe(500);
+    expect(parseContentBatchSize('0')).toBe(40);
+    expect(parseContentBatchSize('501')).toBe(40);
+    expect(parseContentBatchSize('nope')).toBe(40);
+    expect(parseRequestTimeoutMs('60000')).toBe(60_000);
+    expect(parseRequestTimeoutMs('5000')).toBe(5_000);
+    expect(parseRequestTimeoutMs('180000')).toBe(180_000);
+    expect(parseRequestTimeoutMs('4999')).toBe(90_000);
+    expect(parseRequestTimeoutMs('180001')).toBe(90_000);
+    expect(parseRequestTimeoutMs('')).toBe(90_000);
+  });
+});
 
 describe('CloudSync', () => {
   let tempDir: string;
@@ -510,21 +541,75 @@ describe('CloudSync', () => {
     sync.stop();
   });
 
-  it('loops 200-row pages until fully drained and stamps every batch', async () => {
-    for (let i = 0; i < 450; i++) seedObservation({ title: `obs ${i}` });
+  it('loops default 40-row pages until fully drained and stamps every batch', async () => {
+    for (let i = 0; i < 90; i++) seedObservation({ title: `obs ${i}` });
 
     const { impl, calls } = makeFetchMock();
     const sync = makeCloudSync(impl);
     await sync.flush();
 
     expect(calls.length).toBe(3);
-    expect(calls.map(c => c.parsed.ops.length)).toEqual([200, 200, 50]);
+    expect(calls.map(c => c.parsed.ops.length)).toEqual([40, 40, 10]);
     expect(pendingCount('observations')).toBe(0);
 
     const status = sync.status();
     expect(status.pending).toEqual({ observations: 0, summaries: 0, prompts: 0, mutations: 0, tombstones: 0 });
     expect(status.lastFlushAt).not.toBeNull();
     expect(status.lastError).toBeNull();
+  });
+
+  it('pages content flushes at CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE', async () => {
+    for (let i = 0; i < 25; i++) seedObservation({ title: `obs ${i}` });
+
+    const { impl, calls } = makeFetchMock();
+    const sync = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: '10' });
+    await sync.flush();
+
+    expect(calls.map(c => c.parsed.ops.length)).toEqual([10, 10, 5]);
+    expect(pendingCount('observations')).toBe(0);
+  });
+
+  it('lets options.contentBatchSize override the settings page size', async () => {
+    for (let i = 0; i < 15; i++) seedObservation({ title: `obs ${i}` });
+
+    const { impl, calls } = makeFetchMock();
+    const sync = makeCloudSync(
+      impl,
+      { CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: '10' },
+      { contentBatchSize: 6 },
+    );
+    await sync.flush();
+
+    expect(calls.map(c => c.parsed.ops.length)).toEqual([6, 6, 3]);
+  });
+
+  it('falls back to the default content batch when the setting is out of range', async () => {
+    for (let i = 0; i < 90; i++) seedObservation({ title: `obs ${i}` });
+
+    const { impl, calls } = makeFetchMock();
+    const sync = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: '9999' });
+    await sync.flush();
+
+    expect(calls.map(c => c.parsed.ops.length)).toEqual([40, 40, 10]);
+  });
+
+  it('aborts a hung content push at the configured requestTimeoutMs', async () => {
+    seedObservation({ title: 'hung-push' });
+    const impl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const signal = init?.signal;
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 80);
+        signal?.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(signal.reason ?? new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+        });
+      });
+      return canonicalSuccess([], 0);
+    }) as typeof fetch;
+    const sync = makeCloudSync(impl, {}, { requestTimeoutMs: 20 });
+    await sync.flush();
+    expect(sync.status().lastError).toMatch(/aborted|timed out|timeout|TimeoutError/i);
+    expect(pendingCount('observations')).toBe(1);
   });
 
   it('authenticates a read-only Hub status probe even when the local queue is empty', async () => {

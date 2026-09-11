@@ -310,6 +310,20 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
+    if (settings.CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE) {
+      const batch = parseInt(settings.CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE, 10);
+      if (isNaN(batch) || batch < 1 || batch > 500) {
+        return { valid: false, error: 'CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE must be between 1 and 500' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS) {
+      const timeoutMs = parseInt(settings.CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS, 10);
+      if (isNaN(timeoutMs) || timeoutMs < 5000 || timeoutMs > 180000) {
+        return { valid: false, error: 'CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS must be between 5000 and 180000' };
+      }
+    }
+
     return { valid: true };
   }
 
