@@ -693,11 +693,11 @@ ${A.stack??""}
       WHERE id = ?
     `).run(t,s,e)}ensureMemorySessionIdRegistered(e,s,t){let n=this.db.prepare(`
       SELECT id, memory_session_id, worker_port FROM sdk_sessions WHERE id = ?
-    `).get(e);if(!n)throw new Error(`Session ${e} not found in sdk_sessions`);n.memory_session_id!==s&&(this.db.prepare(`
+    `).get(e);if(!n)throw new Error(`Session ${e} not found in sdk_sessions`);return n.memory_session_id===null?(this.db.prepare(`
         UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?
-      `).run(s,e),this.requeuePromptSync(e),_.info("DB","Registered memory_session_id before storage (FK fix)",{sessionDbId:e,oldId:n.memory_session_id,newId:s})),typeof t=="number"&&n.worker_port!==t&&this.db.prepare(`
+      `).run(s,e),this.requeuePromptSync(e),_.info("DB","Registered memory_session_id before storage (FK fix)",{sessionDbId:e,newId:s})):n.memory_session_id!==s&&_.debug("DB","Keeping the registered memory_session_id",{sessionDbId:e,registered:n.memory_session_id,offered:s}),typeof t=="number"&&n.worker_port!==t&&this.db.prepare(`
         UPDATE sdk_sessions SET worker_port = ? WHERE id = ?
-      `).run(t,e)}getAllProjects(e){let s=e?R(e):void 0,t=`
+      `).run(t,e),n.memory_session_id??s}getAllProjects(e){let s=e?R(e):void 0,t=`
       SELECT DISTINCT project
       FROM sdk_sessions
       WHERE project IS NOT NULL AND project != ''
