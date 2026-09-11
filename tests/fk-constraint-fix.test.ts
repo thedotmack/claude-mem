@@ -119,14 +119,16 @@ describe('FK Constraint Fix (Issue #846)', () => {
     // The session ID and its child rows stay intact after the failed write.
     expect(store.getSessionById(sessionDbId)?.memory_session_id).toBe(firstMemorySessionId);
 
-    // The second pass captures a fresh SDK id and re-keys through the
-    // supported path. Storing new child rows succeeds.
+    // A later generator pass offers a fresh SDK id. ensure registers only
+    // when the stored id is NULL — it must not re-identify the session.
+    // Deliberate re-keying is updateMemorySessionId. Storage stays on the
+    // registered identity so ON UPDATE CASCADE / NOT NULL children stay valid.
     const secondMemorySessionId = 'second-pass-memory-id';
     store.ensureMemorySessionIdRegistered(sessionDbId, secondMemorySessionId);
-    expect(store.getSessionById(sessionDbId)?.memory_session_id).toBe(secondMemorySessionId);
+    expect(store.getSessionById(sessionDbId)?.memory_session_id).toBe(firstMemorySessionId);
 
     const result = store.storeObservation(
-      secondMemorySessionId,
+      firstMemorySessionId,
       'test-project',
       {
         type: 'discovery',
@@ -156,10 +158,10 @@ describe('FK Constraint Fix (Issue #846)', () => {
     store.ensureMemorySessionIdRegistered(sessionDbId, newMemorySessionId);
 
     const after = store.getSessionById(sessionDbId);
-    expect(after?.memory_session_id).toBe(newMemorySessionId);
+    expect(after?.memory_session_id).toBe(oldMemorySessionId);
 
     const result = store.storeObservation(
-      newMemorySessionId,
+      oldMemorySessionId,
       'test-project',
       {
         type: 'bugfix',

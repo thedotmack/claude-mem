@@ -2152,7 +2152,7 @@ export class SessionStore {
     sessionDbId: number,
     memorySessionId: string,
     workerPort?: number
-  ): void {
+  ): string {
     const session = this.db.prepare(`
       SELECT id, memory_session_id, worker_port FROM sdk_sessions WHERE id = ?
     `).get(sessionDbId) as { id: number; memory_session_id: string | null; worker_port: number | null } | undefined;
@@ -2161,7 +2161,27 @@ export class SessionStore {
       throw new Error(`Session ${sessionDbId} not found in sdk_sessions`);
     }
 
-    if (session.memory_session_id !== memorySessionId) {
+    // REGISTER, DO NOT RE-REGISTER. `memory_session_id` is the FK parent key of
+    // `observations` and `session_summaries` (ON UPDATE CASCADE) and the join
+    // field `requeuePromptSync` pushes to replicas, so overwriting it is not a
+    // field update — it rewrites every memory the session owns and re-enqueues
+    // every prompt it has.
+    //
+    // The caller that made this matter is ClaudeProvider: a fresh SDK process
+    // mints a new session_id every turn, `resetCarriedMemorySessionId` clears the
+    // in-memory copy before each one, and nothing consumes a later turn's id
+    // (`shouldResume` is a hardcoded false, so `resume` never receives it). The
+    // condition below used to be `!==`, so every turn looked like a new identity.
+    //
+    // MEASURED on one store: sync_outbox held 1,100,783 rows for 6,930 distinct
+    // prompts — 158.8x, 393 MB of an 854 MB database — with its worst single
+    // prompt carrying 3,464 rows and 3,464 DISTINCT memory_session_ids. That is
+    // `requeuePromptSync`, whose own docstring describes a one-time repair
+    // ("Once the mapping lands"), running once per turn per prompt instead.
+    //
+    // A deliberate change of identity is still available through
+    // `updateMemorySessionId`. "Ensure registered" means make sure one exists.
+    if (session.memory_session_id === null) {
       this.db.prepare(`
         UPDATE sdk_sessions SET memory_session_id = ? WHERE id = ?
       `).run(memorySessionId, sessionDbId);
@@ -2169,8 +2189,13 @@ export class SessionStore {
 
       logger.info('DB', 'Registered memory_session_id before storage (FK fix)', {
         sessionDbId,
-        oldId: session.memory_session_id,
         newId: memorySessionId
+      });
+    } else if (session.memory_session_id !== memorySessionId) {
+      logger.debug('DB', 'Keeping the registered memory_session_id', {
+        sessionDbId,
+        registered: session.memory_session_id,
+        offered: memorySessionId
       });
     }
 
@@ -2183,6 +2208,8 @@ export class SessionStore {
         UPDATE sdk_sessions SET worker_port = ? WHERE id = ?
       `).run(workerPort, sessionDbId);
     }
+
+    return session.memory_session_id ?? memorySessionId;
   }
 
   getAllProjects(platformSource?: string): string[] {

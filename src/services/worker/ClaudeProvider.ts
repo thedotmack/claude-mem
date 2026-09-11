@@ -200,7 +200,8 @@ export class ClaudeProvider {
    * links observations and session_summaries carries ON UPDATE CASCADE plus a
    * NOT NULL column. A NULL write cascades into the child rows and violates
    * NOT NULL, which rolls back the whole storage transaction (#3628).
-   * Legitimate re-keying flows through ensureMemorySessionIdRegistered.
+   * Legitimate re-keying flows through updateMemorySessionId.
+   * ensureMemorySessionIdRegistered only fills a NULL id.
    */
   private resetCarriedMemorySessionId(session: ActiveSession): void {
     if (session.memorySessionId) {
@@ -367,12 +368,11 @@ export class ClaudeProvider {
         if (message.session_id && message.session_id !== session.memorySessionId) {
           const previousId = session.memorySessionId;
           session.memorySessionId = message.session_id;
-          this.dbManager.getSessionStore().ensureMemorySessionIdRegistered(
+          const registeredId = this.dbManager.getSessionStore().ensureMemorySessionIdRegistered(
             session.sessionDbId,
             message.session_id
           );
-          const verification = this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
-          const dbVerified = verification?.memory_session_id === message.session_id;
+          const dbVerified = registeredId === message.session_id;
           const logMessage = previousId
             ? `MEMORY_ID_CHANGED | sessionDbId=${session.sessionDbId} | from=${previousId} | to=${message.session_id} | dbVerified=${dbVerified}`
             : `MEMORY_ID_CAPTURED | sessionDbId=${session.sessionDbId} | memorySessionId=${message.session_id} | dbVerified=${dbVerified}`;
@@ -382,7 +382,8 @@ export class ClaudeProvider {
             previousId
           });
           if (!dbVerified) {
-            logger.error('SESSION', `MEMORY_ID_MISMATCH | sessionDbId=${session.sessionDbId} | expected=${message.session_id} | got=${verification?.memory_session_id}`, {
+            // Expected on later turns: ensure keeps the first registered id.
+            logger.debug('SESSION', `Keeping the registered memory_session_id | sessionDbId=${session.sessionDbId} | registered=${registeredId} | offered=${message.session_id}`, {
               sessionId: session.sessionDbId
             });
           }
