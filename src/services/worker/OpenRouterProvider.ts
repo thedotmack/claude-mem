@@ -2,6 +2,7 @@
 import { getCredential } from '../../shared/EnvManager.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { openRouterAttributionHeaders, OPENROUTER_APP_TITLE } from '../../shared/openrouter-attribution.js';
+import { fetchWithOpenRouterTokenCompatibility } from '../../shared/openrouter-token-compatibility.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { clearProFallbackOnGatewaySuccess, isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
@@ -481,7 +482,9 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     priorRequestId: string | null,
     attemptSignal: AbortSignal
   ): Promise<Response> {
-    return fetch(apiUrl, {
+    const body = buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl });
+    const maxOutputTokens = typeof body.max_tokens === 'number' ? body.max_tokens : 4096;
+    return fetchWithOpenRouterTokenCompatibility(fetch, apiUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -489,9 +492,8 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         'Content-Type': 'application/json',
         ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
       },
-      body: JSON.stringify(buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl })),
       signal: attemptSignal,
-    });
+    }, body, maxOutputTokens);
   }
 
   private async queryOpenRouterMultiTurn(
