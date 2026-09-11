@@ -62,6 +62,14 @@ import {
 
 // Page size for the drain SELECTs.
 const BATCH = 200;
+// Real-world user_prompts rows carry pathological text (observed: single 7.4MB
+// prompts from pasted logs). The drain SELECT clamps prompt_text with substr so
+// the giant string never crosses the bun:sqlite FFI boundary in .all() —
+// truncating the value AFTER the read still materializes it and OOMs the
+// worker. length(prompt_text) reports the pre-clamp size so toBody can append a
+// marker when the value was cut.
+const MAX_PROMPT_TEXT_CHARS = 200_000;
+const PROMPT_TRUNC_MARK = '\n…[truncated by cloud-sync: prompt_text exceeded 200000 characters]';
 // Request-body packing budget — well under the hub's 8,000,000-byte cap.
 const MAX_BODY_BYTES = 4_000_000;
 // Hub cap: ≤500 ops per POST /v1/sync/ops request.
@@ -273,7 +281,8 @@ const KINDS: KindSpec[] = [
       SELECT CAST(up.id AS TEXT) AS id, CAST(up.sync_rev AS TEXT) AS sync_rev,
         up.content_session_id AS content_session_id,
         up.prompt_number AS prompt_number,
-        up.prompt_text AS prompt_text,
+        substr(up.prompt_text, 1, ${MAX_PROMPT_TEXT_CHARS}) AS prompt_text,
+        length(up.prompt_text) AS prompt_text_len,
         up.created_at AS created_at, up.created_at_epoch AS created_at_epoch,
         s.memory_session_id AS memory_session_id, s.project AS project,
         s.platform_source AS platform_source
@@ -284,7 +293,8 @@ const KINDS: KindSpec[] = [
       SELECT CAST(up.id AS TEXT) AS id, CAST(up.sync_rev AS TEXT) AS sync_rev,
         up.content_session_id AS content_session_id,
         up.prompt_number AS prompt_number,
-        up.prompt_text AS prompt_text,
+        substr(up.prompt_text, 1, ${MAX_PROMPT_TEXT_CHARS}) AS prompt_text,
+        length(up.prompt_text) AS prompt_text_len,
         up.created_at AS created_at, up.created_at_epoch AS created_at_epoch,
         s.memory_session_id AS memory_session_id, s.project AS project,
         s.platform_source AS platform_source
@@ -293,7 +303,9 @@ const KINDS: KindSpec[] = [
     toBody: (r) => ({
       content_session_id: r.content_session_id ?? null,
       prompt_number: decimalPayload(r.prompt_number, 'prompt_number'),
-      prompt_text: r.prompt_text ?? null,
+      prompt_text: r.prompt_text != null && (r.prompt_text_len as number) > MAX_PROMPT_TEXT_CHARS
+        ? String(r.prompt_text) + PROMPT_TRUNC_MARK
+        : r.prompt_text ?? null,
       created_at: r.created_at ?? null,
       created_at_epoch: decimalPayload(r.created_at_epoch, 'created_at_epoch'),
       memory_session_id: r.memory_session_id ?? null,

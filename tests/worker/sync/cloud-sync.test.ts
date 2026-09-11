@@ -625,7 +625,9 @@ describe('CloudSync', () => {
   });
 
   it('rejects a prompt whose canonical body exceeds the 256KB bound without stamping it', async () => {
-    seedPrompt('x'.repeat(300_000));
+    // The substr clamp bounds prompt_text at 200000 CHARACTERS, so a body can
+    // still exceed the 256KB BYTE cap with multibyte text (200000 × 3 bytes).
+    seedPrompt('☃'.repeat(300_000));
     seedPrompt('following row', 6);
 
     const { impl, calls } = makeFetchMock();
@@ -640,6 +642,24 @@ describe('CloudSync', () => {
     expect(sync.status().quarantine.latestReason).toMatch(/256000 UTF-8 bytes/);
     expect(db.prepare('SELECT synced_at FROM user_prompts WHERE id = 2').get() as { synced_at: number })
       .toMatchObject({ synced_at: expect.any(Number) });
+  });
+
+  it('clamps oversized prompt_text in SQL and pushes it truncated (regression: bun:sqlite OOM)', async () => {
+    // The drain SELECT must substr prompt_text so the pathological value never
+    // crosses the bun:sqlite FFI boundary in .all(). Truncating after the read
+    // still materializes the full string and OOMs the worker. This clamp was
+    // shipped in 7c8c6ebc and silently removed by the v2 refactor (1e3b2853).
+    seedPrompt('x'.repeat(1_000_000));
+
+    const { impl, calls } = makeFetchMock();
+    const sync = makeCloudSync(impl);
+    await sync.flush();
+
+    const body = calls[0].parsed.ops[0].body;
+    expect(body.prompt_text).toHaveLength(200_000 + '\n…[truncated by cloud-sync: prompt_text exceeded 200000 characters]'.length);
+    expect(body.prompt_text.endsWith('[truncated by cloud-sync: prompt_text exceeded 200000 characters]')).toBe(true);
+    expect(pendingCount('user_prompts')).toBe(0);
+    expect(sync.status().quarantine.count).toBe(0);
   });
 
   it('queues a durable tombstone and revives the same stable entity at a higher revision', async () => {
