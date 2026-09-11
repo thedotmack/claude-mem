@@ -1,6 +1,6 @@
 {
   "name": "claude-mem-grok-bot",
-  "version": "13.24.21",
+  "version": "13.24.22",
   "description": "Persistent memory for Grok Bot. No host hooks: transcript watcher plus MCP. Local worker with host-login observer, or remote cmem.ai. Install without Cursor.",
   "author": {
     "name": "Alex Newman"
