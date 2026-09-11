@@ -4,6 +4,47 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.24.7] - 2026-09-11
+
+Post-13.24.6 stability & correctness fixes.
+
+### Chroma / vector store
+- **Chroma lock/owner**: reuse Chroma writer owner within process (#3919); reap unreadable writer lock past grace (#3916)
+- **Chroma backfill**: stop a backfill run after repeated batch failures
+- **Chroma-MCP reap**: reap chroma-mcp trees no worker owns at boot (#3905)
+
+### Quota & resource management
+- **Quota overage**: ignore inactive overage utilization (#3903)
+
+### Grammar & parsing
+- **Grammar-once**: build each grammar once instead of recompiling per query (#3926)
+
+### Windows
+- **Ghost listeners**: reclaim ghost listeners left by out-of-band worker deaths (#3900)
+
+### Auth / config
+- **OAuth CLAUDE_CONFIG_DIR**: honor CLAUDE_CONFIG_DIR for the Claude Code keychain entry and the SDK subprocess env (#3908)
+
+### Codex
+- **Codex reinject**: re-inject memory after compact and clear (#3880)
+
+### Search
+- **Search relevance**: hydrate Chroma matches in relevance order, not by date (#3881)
+
+### Worker / supervisor
+- **Field optimizer**: honor field optimizer deadline and compact Edit observer view (#3939)
+- **Supervisor concurrency**: parked slot-waiters follow the live concurrency cap; a provider switch restarts a parked generator (#3909)
+
+### OpenRouter
+- **Model fallbacks**: map the model list onto the native models[] fallback array (#3971)
+
+### Setup
+- **Plugin deps**: guard plugin deps on completeness, not node_modules existence (#3972)
+
+---
+
+**npm publish** is handled separately by the Prioritizer.
+
 ## [13.24.6] - 2026-09-11
 
 ### Bug Fixes
