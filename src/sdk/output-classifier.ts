@@ -137,6 +137,28 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
   const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
 
   return (
+    // The CLI's own signed-out wording, which says nothing about
+    // "authentication" and so matched none of the patterns below.
+    //
+    // Anchored at BOTH ends, because every looser shape I tried let prose
+    // through: a completed observation can open with the same words ("Not
+    // logged in during the reboot window; …"), and it can follow them with a
+    // separator too ("Not logged in — the observer recorded nothing new"). A
+    // leading anchor answers the first and not the second; only requiring the
+    // status to be the WHOLE response answers both. Misclassifying prose here
+    // resets a batch that already succeeded and pauses the generator, so the
+    // rule has to close, not narrow.
+    //
+    // Two shapes, and the CLI emits no third: the status alone, or the status
+    // plus its own /login remediation.
+    /^not logged in\b\s*[.!]?\s*$/.test(text) ||
+    /^not logged in\b\s*[·|:\-–—]\s*(?:please\s+)?run\s+\/login\b\s*[.!]?\s*$/.test(text) ||
+    // The remediation half of the same line: "<state> · Please run /login".
+    // Required to END the response, so it is the CLI telling the user what to
+    // do rather than an observation quoting the instruction — the existing
+    // false cases ("Please run /login in the observed project instructions")
+    // run on into a sentence and stay unmatched.
+    /(?:^|[·|]\s*)please run \/login\b\s*[.!]?\s*$/.test(text) ||
     /\bfailed to authenticate\b/.test(text) ||
     /\bauthentication (?:failed|failure|error)\b/.test(text) ||
     /\b(?:authentication|auth)\b.{0,20}\b(?:required|expired|invalid|again)\b.{0,20}\/login\b/.test(text) ||
