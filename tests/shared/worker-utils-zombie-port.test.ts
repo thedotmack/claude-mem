@@ -50,7 +50,7 @@ mock.module('../../src/supervisor/index.js', () => ({
 mock.module('../../src/shared/spawn.js', () => ({
   spawnHidden: (command: string, args: string[]) => {
     spawnCalls.push({ command, args });
-    return { pid: 5151, unref: () => {} };
+    return { pid: 5151, unref: () => {}, on: () => {} };
   },
 }));
 
