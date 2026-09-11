@@ -38,10 +38,13 @@
  * socket handles, and bun >= 1.4 no longer passes the listening socket into
  * spawned children. Measured on one machine with identical code and logging:
  * under 1.3.6 the port stays LISTENING under the dead worker (ghost), under
- * 1.4.0 it is released with the worker. Where the scenario cannot be
- * constructed the gate says so and skips the recovery assertions, because
- * failing would report the runtime's behaviour, not the product's (the
- * fixture's sidecar chain is asserted first, so a broken fixture still fails).
+ * 1.4.0 it is released with the worker. The gate skips the recovery
+ * assertions for exactly that signature — port free AND the pre-kill-verified
+ * sidecar chain still alive (classifyPostKillState, helpers/ghost-state.ts) —
+ * because failing there would report the runtime's behaviour, not the
+ * product's. Every other non-ghost shape (chain died with the worker, port
+ * held by other processes, shared ghost, recycled pid) is malformed and
+ * FAILS: skipping those would pass the gate without exercising recovery.
  *
  * Requires the same isolation contract as the other chroma gates:
  * CLAUDE_MEM_DATA_DIR set in the environment before this process starts, and
@@ -60,6 +63,7 @@ import {
   describeProcesses,
   type ProcessIdentity,
 } from './helpers/process-tree.js';
+import { classifyPostKillState } from './helpers/ghost-state.js';
 
 const RUN_GATE = process.env.CLAUDE_MEM_TEST_CHROMA === '1';
 
@@ -437,22 +441,50 @@ describe.if(RUN_GATE && IS_WINDOWS)('worker recovers from a ghost listener left 
       await new Promise(resolve => setTimeout(resolve, 500));
     }
     const survivorsAfterKill = survivingProcesses(snapshot);
-    if (!ownerUnderDeadPid) {
-      // RUNTIME CAPABILITY SKIP, not a vacuous pass. The fixture above is
-      // verified (sidecar chain present AND matched by name), so the only
-      // thing missing is the socket inheritance the ghost is made of: bun >= 1.4
-      // no longer hands the listening socket to spawned children. Measured on
-      // one machine with identical code — 1.3.6 leaves the port bound under the
-      // dead worker, 1.4.0 releases it the moment the worker dies. Without
-      // inheritance there is no ghost for the reclaim to recover, and failing
-      // here would only report the runtime's behaviour, not the product's.
+    // Classify the settled state. Exactly ONE non-ghost state may skip — the
+    // port is free AND the pre-kill-verified sidecar chain is still alive —
+    // because that is the measured bun >= 1.4 signature (spawned children no
+    // longer inherit the listening socket). Every other non-ghost state is
+    // malformed: a chain that died with the worker proves nothing about socket
+    // inheritance, and a port held by an unrelated process, a shared ghost, or
+    // a recycled fixture pid means the scenario did not form. Skipping any of
+    // those would pass the gate without ever exercising recovery.
+    const finalOwners = listeningOwnerPids(fixture.port);
+    const state = classifyPostKillState({
+      fixturePid: fixture.pid,
+      fixtureAlive: processExists(fixture.pid),
+      portOwners: finalOwners,
+      chainSurvived: survivorsAfterKill.length > 0,
+    });
+    if (state.kind === 'runtime-capability-skip') {
+      // RUNTIME CAPABILITY SKIP, not a vacuous pass. The fixture's chain was
+      // verified before the kill and has survived it (asserted in the
+      // classification above), so the only thing missing is the socket
+      // inheritance the ghost is made of: bun >= 1.4 no longer hands the
+      // listening socket to spawned children. Measured on one machine with
+      // identical code — 1.3.6 leaves the port bound under the dead worker,
+      // 1.4.0 releases it the moment the worker dies. Without inheritance
+      // there is no ghost for the reclaim to recover, and failing here would
+      // only report the runtime's behaviour, not the product's.
       console.log(
-        `[ghost-gate] no ghost after the out-of-band kill: port ${fixture.port} is free, sidecar chain was present ` +
-          `(${describeProcesses(survivorsAfterKill)}). This runtime does not inherit the listening socket into ` +
+        `[ghost-gate] no ghost after the out-of-band kill: port ${fixture.port} is free and the verified sidecar chain ` +
+          `survived (${describeProcesses(survivorsAfterKill)}). This runtime does not inherit the listening socket into ` +
           'sidecar children (bun >= 1.4), so the ghost-listener scenario cannot be constructed here — skipping the ' +
           'recovery assertions. On bun <= 1.3 the scenario does form and the assertions below run.'
       );
       return;
+    }
+    if (state.kind === 'malformed') {
+      const describeOwner = (pid: number) => `${pid}${processExists(pid) ? ' (alive)' : ' (dead)'}`;
+      expect(
+        state.kind,
+        `post-kill state is malformed (${state.reason}): port ${fixture.port} owners=` +
+          `[${finalOwners.map(describeOwner).join(',')}] (fixture was ${fixture.pid}), sidecar chain ` +
+          `${survivorsAfterKill.length > 0 ? 'survived' : 'died'} ` +
+          `(${describeProcesses(survivorsAfterKill.length > 0 ? survivorsAfterKill : snapshot)}). ` +
+          'Not the bun >= 1.4 capability signature — failing instead of skipping, because these ' +
+          'states would pass the gate without exercising recovery.'
+      ).toBe('ghost');
     }
     expect(ownerUnderDeadPid, 'port must be LISTENING under the dead fixture PID (ghost)').toBe(true);
     expect(processExists(fixture.pid)).toBe(false);
