@@ -93,12 +93,15 @@ function assistantFrame(content: unknown) {
   };
 }
 
-function resultFrame() {
+function resultFrame(overrides: Record<string, unknown> = {}) {
   return {
     type: 'result',
     session_id: MEMORY_SESSION_ID,
+    subtype: 'success',
+    is_error: false,
     usage: { input_tokens: 120, output_tokens: 40 },
     total_cost_usd: 0.001,
+    ...overrides,
   };
 }
 
@@ -326,5 +329,22 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
     // the flag must not stay latched from the first turn.
     expect(harness.storeObservations).toHaveBeenCalledTimes(1);
     expect(harness.confirmClaimedMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-queues the claimed batch when a textless turn ends on an SDK error (#3869)', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'thinking', thinking: 'considering the batch', signature: 'sig' }]),
+      resultFrame({ subtype: 'error_during_execution', is_error: true }),
+    ];
+
+    await harness.provider.startSession(session);
+
+    expect(harness.storeObservations).not.toHaveBeenCalled();
+    expect(harness.confirmClaimedMessages).not.toHaveBeenCalled();
+    expect(harness.resetProcessingToPending).toHaveBeenCalledTimes(1);
+    expect(harness.remainingClaimed()).toHaveLength(1);
   });
 });
