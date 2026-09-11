@@ -25,6 +25,24 @@ const KEYCHAIN_SERVICE_NAME = 'Claude Code-credentials';
 const READ_TIMEOUT_MS = 5000;
 
 /**
+ * #4037 — Claude Code (measured in 2.1.268 `pk()`) only accepts keychain
+ * account names matching `/^[a-zA-Z0-9._-]+$/`. A Unix username that fails
+ * that test (MDM Macs named after an email, e.g. `first.last@example.com`)
+ * is stored and read as the literal `claude-code-user`. We must query the
+ * same account Claude Code wrote, or the lookup permanently misses.
+ */
+const MACOS_KEYCHAIN_ACCOUNT_SAFE = /^[a-zA-Z0-9._-]+$/;
+const MACOS_KEYCHAIN_ACCOUNT_FALLBACK = 'claude-code-user';
+
+/**
+ * Map a Unix username to the macOS keychain `-a` account Claude Code uses.
+ * Exported so tests can pin the charset rule independently of `security`.
+ */
+export function sanitizeMacOsKeychainAccount(username: string): string {
+  return MACOS_KEYCHAIN_ACCOUNT_SAFE.test(username) ? username : MACOS_KEYCHAIN_ACCOUNT_FALLBACK;
+}
+
+/**
  * #2753 — resolve the effective CLAUDE_CONFIG_DIR for the keychain lookup +
  * SDK subprocess env, honoring the precedence: the
  * CLAUDE_MEM_CLAUDE_CONFIG_DIR setting > process.env.CLAUDE_CONFIG_DIR >
@@ -154,12 +172,18 @@ function isExpired(expiresAtMs: number | undefined): boolean {
  * touching the real `security` binary. Exported (not just internal to
  * readClaudeOAuthToken) specifically so tests can drive it directly with a
  * fake execImpl.
+ *
+ * `username` is the same kind of test seam for #4037: `userInfo()` is also
+ * captured at call time from the host OS, so tests pass a raw Unix username
+ * here and assert the `-a` account that actually gets queried. Production
+ * call sites omit it and we read `userInfo().username`.
  */
 export async function readMacOsKeychain(
   serviceName: string,
   execImpl: typeof execFileAsync = execFileAsync,
+  username: string = userInfo().username,
 ): Promise<OAuthTokenResult> {
-  const account = userInfo().username;
+  const account = sanitizeMacOsKeychainAccount(username);
   let stdout: string;
   try {
     ({ stdout } = await execImpl(

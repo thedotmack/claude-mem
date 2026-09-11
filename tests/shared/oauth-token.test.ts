@@ -12,6 +12,7 @@ import {
   resolveEffectiveClaudeConfigDir,
   deriveMacKeychainServiceName,
   readMacOsKeychain,
+  sanitizeMacOsKeychainAccount,
 } from '../../src/shared/oauth-token.js';
 import { paths, CLAUDE_CONFIG_DIR, DEFAULT_CLAUDE_CONFIG_DIR } from '../../src/shared/paths.js';
 import { buildIsolatedEnvWithFreshOAuth } from '../../src/shared/EnvManager.js';
@@ -550,6 +551,83 @@ describe('readClaudeOAuthToken (#2753) — darwin dispatch wires the derived ser
     expect(result.kind).toBe('present');
     if (result.kind === 'present') {
       expect(result.token).toBe('sk-ant-oat01-default-token');
+    }
+  });
+});
+
+/**
+ * #4037 — Claude Code stores the OAuth blob under `-a claude-code-user`
+ * when the Unix username fails `/^[a-zA-Z0-9._-]+$/` (MDM Macs named
+ * after an email). readMacOsKeychain must query that same account, not
+ * the raw `userInfo().username`. username is injected (same reason as
+ * execImpl) so this never depends on the host OS account.
+ */
+describe('sanitizeMacOsKeychainAccount (#4037)', () => {
+  it('returns the raw username when it matches Claude Code\'s safe charset', () => {
+    expect(sanitizeMacOsKeychainAccount('alex')).toBe('alex');
+    expect(sanitizeMacOsKeychainAccount('alex.newman')).toBe('alex.newman');
+    expect(sanitizeMacOsKeychainAccount('alex_newman-1')).toBe('alex_newman-1');
+    expect(sanitizeMacOsKeychainAccount('Runner.01')).toBe('Runner.01');
+  });
+
+  it('falls back to claude-code-user when the username contains @ or other illegal chars', () => {
+    expect(sanitizeMacOsKeychainAccount('first.last@example.com')).toBe('claude-code-user');
+    expect(sanitizeMacOsKeychainAccount('alex newman')).toBe('claude-code-user');
+    expect(sanitizeMacOsKeychainAccount('alex+mem')).toBe('claude-code-user');
+    expect(sanitizeMacOsKeychainAccount('')).toBe('claude-code-user');
+  });
+});
+
+describe('readMacOsKeychain (#4037) — keychain -a account follows Claude Code sanitize', () => {
+  const futureExpiresAt = Date.now() + 60 * 60 * 1000;
+  const payload = JSON.stringify({
+    claudeAiOauth: { accessToken: 'sk-ant-oat01-account-token', expiresAt: futureExpiresAt },
+  });
+
+  function fakeExecForAccount(expectedAccount: string) {
+    return mock((_cmd: string, args: readonly string[]) => {
+      const accountArgIndex = args.indexOf('-a');
+      const account = accountArgIndex >= 0 ? args[accountArgIndex + 1] : undefined;
+      if (account === expectedAccount) {
+        return Promise.resolve({ stdout: payload, stderr: '' });
+      }
+      return Promise.reject(new Error(`unexpected keychain account: ${account}`));
+    });
+  }
+
+  it('queries account claude-code-user when the Unix username contains @', async () => {
+    const fakeExecImpl = fakeExecForAccount('claude-code-user');
+    const result = await readMacOsKeychain(
+      'Claude Code-credentials',
+      fakeExecImpl,
+      'first.last@example.com',
+    );
+
+    expect(fakeExecImpl).toHaveBeenCalledTimes(1);
+    const callArgs = fakeExecImpl.mock.calls[0][1] as string[];
+    expect(callArgs[callArgs.indexOf('-a') + 1]).toBe('claude-code-user');
+    expect(callArgs).not.toContain('first.last@example.com');
+    expect(result.kind).toBe('present');
+    if (result.kind === 'present') {
+      expect(result.token).toBe('sk-ant-oat01-account-token');
+    }
+  });
+
+  it('queries the raw username when it is legal for Claude Code\'s keychain account', async () => {
+    const fakeExecImpl = fakeExecForAccount('alex.newman');
+    const result = await readMacOsKeychain(
+      'Claude Code-credentials',
+      fakeExecImpl,
+      'alex.newman',
+    );
+
+    expect(fakeExecImpl).toHaveBeenCalledTimes(1);
+    const callArgs = fakeExecImpl.mock.calls[0][1] as string[];
+    expect(callArgs[callArgs.indexOf('-a') + 1]).toBe('alex.newman');
+    expect(callArgs).not.toContain('claude-code-user');
+    expect(result.kind).toBe('present');
+    if (result.kind === 'present') {
+      expect(result.token).toBe('sk-ant-oat01-account-token');
     }
   });
 });
