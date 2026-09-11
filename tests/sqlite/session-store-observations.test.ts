@@ -121,3 +121,119 @@ describe('SessionStore.storeObservation', () => {
     expect(getFirstObservationCreatedAt(store.db)).toBe(new Date(1000000000000).toISOString());
   });
 });
+
+describe('SessionStore.importObservation', () => {
+  let store: SessionStore;
+
+  beforeEach(() => {
+    store = new SessionStore(':memory:');
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  // observations.memory_session_id is an enforced FK to sdk_sessions; register it first.
+  function registeredSession(memorySessionId: string): void {
+    const id = store.createSDKSession(`content-${memorySessionId}`, 'project', 'prompt');
+    store.updateMemorySessionId(id, memorySessionId);
+  }
+
+  function importedObs(memorySessionId: string | null | undefined) {
+    return {
+      memory_session_id: memorySessionId,
+      project: 'project',
+      text: null,
+      type: 'discovery',
+      title: 'Imported observation',
+      subtitle: null,
+      facts: JSON.stringify(['fact1']),
+      narrative: 'Imported narrative',
+      concepts: JSON.stringify(['concept1']),
+      files_read: JSON.stringify([]),
+      files_modified: JSON.stringify([]),
+      prompt_number: 1,
+      discovery_tokens: 0,
+      created_at: new Date(1000000000000).toISOString(),
+      created_at_epoch: 1000000000000,
+    };
+  }
+
+  function observationCount(): number {
+    return (store.db.prepare('SELECT COUNT(*) AS n FROM observations').get() as { n: number }).n;
+  }
+
+  // Regression: /api/import (DataRoutes.handleImport) feeds unvalidated payload
+  // rows (z.array(z.unknown())) straight into importObservation. A row whose
+  // memory_session_id is null/undefined must be rejected with a warning rather
+  // than crashing with "NOT NULL constraint failed: observations.memory_session_id".
+  it('rejects an observation with null memory_session_id without throwing or inserting', () => {
+    const result = store.importObservation(importedObs(null) as any);
+
+    expect(result.imported).toBe(false);
+    expect(observationCount()).toBe(0);
+  });
+
+  it('rejects an observation with undefined memory_session_id without throwing or inserting', () => {
+    const result = store.importObservation(importedObs(undefined) as any);
+
+    expect(result.imported).toBe(false);
+    expect(observationCount()).toBe(0);
+  });
+
+  it('still imports valid rows that follow a rejected one in the same batch', () => {
+    registeredSession('mem-import');
+
+    const rejected = store.importObservation(importedObs(null) as any);
+    const accepted = store.importObservation(importedObs('mem-import'));
+
+    expect(rejected.imported).toBe(false);
+    expect(accepted.imported).toBe(true);
+    expect(accepted.id).toBeGreaterThan(0);
+    expect(observationCount()).toBe(1);
+  });
+});
+
+describe('SessionStore.importSessionSummary', () => {
+  let store: SessionStore;
+
+  beforeEach(() => {
+    store = new SessionStore(':memory:');
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  function importedSummary(memorySessionId: string | null | undefined) {
+    return {
+      memory_session_id: memorySessionId,
+      project: 'project',
+      request: 'Imported request',
+      investigated: null,
+      learned: null,
+      completed: null,
+      next_steps: null,
+      files_read: null,
+      files_edited: null,
+      notes: null,
+      prompt_number: 1,
+      discovery_tokens: 0,
+      created_at: new Date(1000000000000).toISOString(),
+      created_at_epoch: 1000000000000,
+    };
+  }
+
+  function summaryCount(): number {
+    return (store.db.prepare('SELECT COUNT(*) AS n FROM session_summaries').get() as { n: number }).n;
+  }
+
+  // Regression: same /api/import unvalidated-payload exposure as
+  // importObservation — session_summaries.memory_session_id is NOT NULL.
+  it('rejects a summary with null memory_session_id without throwing or inserting', () => {
+    const result = store.importSessionSummary(importedSummary(null) as any);
+
+    expect(result.imported).toBe(false);
+    expect(summaryCount()).toBe(0);
+  });
+});
