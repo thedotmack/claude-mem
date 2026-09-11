@@ -11,16 +11,82 @@
 
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { createHash } from 'crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
 import { userInfo } from 'os';
 import { join } from 'path';
-import { paths } from './paths.js';
+import { paths, CLAUDE_CONFIG_DIR, DEFAULT_CLAUDE_CONFIG_DIR, expandTilde } from './paths.js';
+import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { logger } from '../utils/logger.js';
 
 const execFileAsync = promisify(execFile);
 
 const KEYCHAIN_SERVICE_NAME = 'Claude Code-credentials';
 const READ_TIMEOUT_MS = 5000;
+
+/**
+ * #2753 — resolve the effective CLAUDE_CONFIG_DIR for the keychain lookup +
+ * SDK subprocess env, honoring the precedence: the
+ * CLAUDE_MEM_CLAUDE_CONFIG_DIR setting > process.env.CLAUDE_CONFIG_DIR >
+ * default (~/.claude). `paths.CLAUDE_CONFIG_DIR` already folds in
+ * process.env/default, so once the setting is empty this just returns that.
+ *
+ * The setting is human-typed (settings.json, or POSTed through the settings
+ * HTTP route), so a leading `~` is expanded the same way every other
+ * user-typed path setting in this codebase already is (CLAUDE_CODE_PATH via
+ * SettingsRoutes, CLAUDE_MEM_DATA_DIR via paths.ts's resolveDataDir) —
+ * otherwise a literal `~` reaches sha256() unexpanded in
+ * deriveMacKeychainServiceName, producing a suffix that never matches the
+ * real keychain entry Claude Code stores under the expanded absolute path.
+ * process.env.CLAUDE_CONFIG_DIR itself is left untouched: a shell-exported
+ * env var is already tilde-expanded by the shell before this process sees it.
+ *
+ * Round 3 fix: a trailing path separator is ALSO stripped, from both the
+ * setting branch and the CLAUDE_CONFIG_DIR fallback branch. `path.join`
+ * (which both `expandTilde` and `CLAUDE_CONFIG_DIR`'s own derivation in
+ * paths.ts route through) preserves a trailing separator rather than
+ * normalizing it away, so a very plausible human/shell-completion input like
+ * `~/.claude/` — typed to mean "my default profile" — survives expansion as
+ * "<home>/.claude/" and then fails deriveMacKeychainServiceName's bare
+ * `=== DEFAULT_CLAUDE_CONFIG_DIR` string comparison, silently deriving a
+ * WRONG suffixed keychain service name instead of the bare default one. The
+ * same divergence hits a `CLAUDE_CONFIG_DIR` shell export with a trailing
+ * slash. Stripping here — the single point every consumer (keychain lookup,
+ * the SDK-subprocess env, the profile label) resolves through — fixes all of
+ * them at once instead of re-normalizing at each comparison site.
+ */
+export function resolveEffectiveClaudeConfigDir(settingValue?: string): string {
+  const trimmed = settingValue?.trim();
+  if (trimmed) return stripTrailingSep(expandTilde(trimmed));
+  return stripTrailingSep(CLAUDE_CONFIG_DIR);
+}
+
+/**
+ * Strip one or more trailing `/` or `\` characters. Never reduces a bare
+ * separator-only string (e.g. "/") to "" — not a real config dir in
+ * practice, but a defensive no-op is cheaper than returning an empty path.
+ */
+function stripTrailingSep(dir: string): string {
+  const stripped = dir.replace(/[/\\]+$/, '');
+  return stripped.length > 0 ? stripped : dir;
+}
+
+/**
+ * #2753 — macOS derivation, empirically verified on the Studio (see #2756/
+ * #2753 background table): Claude Code stores per-config-dir credentials
+ * under 'Claude Code-credentials' for the default config dir, and under
+ * 'Claude Code-credentials-<suffix>' (suffix = first 8 hex chars of
+ * sha256(effectiveConfigDir path string)) for every other config dir.
+ *
+ * Windows/Linux are NOT covered by this function — see readWindowsCredentialManager /
+ * readLinuxLibsecret for why those two paths are left on the bare service
+ * name (no verified evidence in this repo of their suffix scheme).
+ */
+export function deriveMacKeychainServiceName(effectiveConfigDir: string): string {
+  if (effectiveConfigDir === DEFAULT_CLAUDE_CONFIG_DIR) return KEYCHAIN_SERVICE_NAME;
+  const suffix = createHash('sha256').update(effectiveConfigDir).digest('hex').slice(0, 8);
+  return `${KEYCHAIN_SERVICE_NAME}-${suffix}`;
+}
 
 // Grace window: even if expiresAt is in the past by less than this, allow the
 // token through. Claude Desktop typically refreshes shortly before expiry, so
@@ -74,31 +140,45 @@ function isExpired(expiresAtMs: number | undefined): boolean {
 }
 
 /**
- * macOS: read the JSON blob stored under "Claude Code-credentials" service in
- * the user's login keychain. The blob looks like:
+ * macOS: read the JSON blob stored under the given service name (the default
+ * "Claude Code-credentials", or a per-config-dir suffixed variant — see
+ * deriveMacKeychainServiceName, #2753) in the user's login keychain. The blob
+ * looks like:
  *   {"claudeAiOauth":{"accessToken":"...","refreshToken":"...","expiresAt":<ms>}}
+ *
+ * `execImpl` is an injectable seam for tests: promisify(execFile) is captured
+ * once at import time as the module-level `execFileAsync`, so tests cannot
+ * intercept the real one post-hoc (see tests/shared/oauth-token.test.ts for
+ * the fuller explanation) — passing a fake here lets a test fake two
+ * different keychain responses keyed by service-name argument without
+ * touching the real `security` binary. Exported (not just internal to
+ * readClaudeOAuthToken) specifically so tests can drive it directly with a
+ * fake execImpl.
  */
-async function readMacOsKeychain(): Promise<OAuthTokenResult> {
+export async function readMacOsKeychain(
+  serviceName: string,
+  execImpl: typeof execFileAsync = execFileAsync,
+): Promise<OAuthTokenResult> {
   const account = userInfo().username;
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync(
+    ({ stdout } = await execImpl(
       'security',
-      ['find-generic-password', '-s', KEYCHAIN_SERVICE_NAME, '-a', account, '-w'],
+      ['find-generic-password', '-s', serviceName, '-a', account, '-w'],
       { timeout: READ_TIMEOUT_MS, windowsHide: true },
     ));
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     // `security` exits non-zero when the entry doesn't exist — fail-fast as absent.
-    logger.warn('OAUTH', 'macOS keychain lookup failed', { service: KEYCHAIN_SERVICE_NAME, account }, err);
+    logger.warn('OAUTH', 'macOS keychain lookup failed', { service: serviceName, account }, err);
     return {
       kind: 'absent',
-      reason: `macOS keychain lookup failed for service "${KEYCHAIN_SERVICE_NAME}" (account=${account}): ${err.message}`,
+      reason: `macOS keychain lookup failed for service "${serviceName}" (account=${account}): ${err.message}`,
     };
   }
   const raw = stdout.trim();
   if (!raw) {
-    return { kind: 'absent', reason: 'macOS keychain returned empty value for "Claude Code-credentials"' };
+    return { kind: 'absent', reason: `macOS keychain returned empty value for "${serviceName}"` };
   }
   return parseKeychainPayload(raw);
 }
@@ -112,6 +192,13 @@ async function readMacOsKeychain(): Promise<OAuthTokenResult> {
  * secret requires PowerShell + the CredentialManager module OR the Win32
  * CredRead API. We use a PowerShell snippet that calls CredRead for the
  * common target name patterns Claude Desktop is known to use.
+ *
+ * #2753: deliberately NOT given a per-config-dir suffixed service/target
+ * name like the macOS branch (deriveMacKeychainServiceName). There is no
+ * verified evidence in this repo of whether Windows Credential Manager
+ * target names follow the same sha256(configDir)[:8] suffix scheme as
+ * macOS's keychain — this always reads the bare `KEYCHAIN_SERVICE_NAME`
+ * candidates until that is confirmed on an actual Windows box.
  */
 async function readWindowsCredentialManager(): Promise<OAuthTokenResult> {
   // PowerShell snippet enumerates likely target names and prints the JSON blob.
@@ -179,6 +266,11 @@ async function readWindowsCredentialManager(): Promise<OAuthTokenResult> {
  * Linux: libsecret via the `secret-tool` CLI. Claude Desktop on Linux stores
  * the credential under the same service name "Claude Code-credentials" with
  * the account attribute set to the OS username.
+ *
+ * #2753: same rationale as readWindowsCredentialManager above — left on the
+ * bare KEYCHAIN_SERVICE_NAME. No verified evidence in this repo of Linux's
+ * per-config-dir suffix scheme; do not guess-extend deriveMacKeychainServiceName's
+ * logic here without separate verification on an actual Linux box.
  */
 async function readLinuxLibsecret(): Promise<OAuthTokenResult> {
   const account = userInfo().username;
@@ -276,13 +368,29 @@ function readSidecarExpiresAt(): number | undefined {
  * store. Falls back to the CLAUDE_CODE_OAUTH_TOKEN environment variable only
  * when the keychain has no entry — env-as-primary is intended for CI/headless
  * setups where no keychain exists.
+ *
+ * `execImpl` is the same injectable seam `readMacOsKeychain` exposes (see its
+ * doc comment) — threaded through here, not just down at readMacOsKeychain,
+ * so a test can drive this function end-to-end and assert the darwin branch
+ * actually derives and passes the config-dir-suffixed service name, rather
+ * than only exercising deriveMacKeychainServiceName/readMacOsKeychain as
+ * standalone units. Defaults to the real execFileAsync for every production
+ * call site (only src/shared/EnvManager.ts calls this today, with no args).
  */
-export async function readClaudeOAuthToken(): Promise<OAuthTokenResult> {
+export async function readClaudeOAuthToken(
+  execImpl: typeof execFileAsync = execFileAsync,
+): Promise<OAuthTokenResult> {
   let keychainResult: OAuthTokenResult;
+
+  // #2753 — resolve the effective config dir (setting > env > default) once
+  // per call; only the macOS branch currently has a verified per-config-dir
+  // service-name suffix, so it's the only branch that consumes it.
+  const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+  const effectiveConfigDir = resolveEffectiveClaudeConfigDir(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
 
   switch (process.platform) {
     case 'darwin':
-      keychainResult = await readMacOsKeychain();
+      keychainResult = await readMacOsKeychain(deriveMacKeychainServiceName(effectiveConfigDir), execImpl);
       break;
     case 'win32':
       keychainResult = await readWindowsCredentialManager();

@@ -48,6 +48,7 @@ import {
   touchPidFile
 } from './infrastructure/ProcessManager.js';
 import { runOneTimeV12_4_3Cleanup } from './infrastructure/CleanupV12_4_3.js';
+import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
 import {
   isPortInUse,
   waitForHealth,
@@ -1451,8 +1452,28 @@ async function main() {
       // port — the port cannot be faked by a stale or clobbered file. Exit 0:
       // duplicate suppression is a success, not a failure.
       if (await isPortInUse(port)) {
-        logger.info('SYSTEM', 'Port already in use, refusing to start duplicate', { port });
-        process.exit(0);
+        // A live worker answers health — this is a genuine duplicate.
+        if (await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.HEALTH_CHECK))) {
+          logger.info('SYSTEM', 'Worker already running (health verified), refusing to start duplicate', { port });
+          process.exit(0);
+        }
+        // Bound but silent: likely a ghost listener — a dead worker whose
+        // surviving chroma sidecar chain holds the inherited socket
+        // (plan-15 #3603). Reclaim when the owner is provably dead; a live
+        // owner (wedged worker, foreign process) keeps the duplicate refusal.
+        const reclaim = await reclaimGhostListeningPort(port);
+        if (reclaim.reclaimed) {
+          logger.info('SYSTEM', 'Reclaimed ghost listener left by a dead worker — starting anyway', {
+            port,
+            killedPids: reclaim.killedPids,
+          });
+        } else {
+          logger.info('SYSTEM', 'Port already in use, refusing to start duplicate', {
+            port,
+            reclaimReason: reclaim.reason,
+          });
+          process.exit(0);
+        }
       }
 
       // PID file second, ADVISORY only: it covers a dying-but-still-alive

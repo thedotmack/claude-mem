@@ -214,8 +214,8 @@ export class ClaudeProvider {
     session.lastResultTotalCostUsd = null;
 
     const activeResponseContext = { current: snapshotResponseContext(session) };
-    const compressField: FieldCompressor = (text, budgetChars) =>
-      this.compressField(text, budgetChars, session, modelId, claudePath);
+    const compressField: FieldCompressor = (text, budgetChars, signal) =>
+      this.compressField(text, budgetChars, session, modelId, claudePath, signal);
     const messageGenerator = this.createMessageGenerator(session, cwdTracker, activeResponseContext, worker, compressField);
 
     if (session.memorySessionId) {
@@ -237,13 +237,21 @@ export class ClaudeProvider {
       session.forceInit = false;
     }
 
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const maxConcurrent = parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2;
     // waitForSlot reserves the slot it grants (#3287). The spawn factory
     // releases the reservation once the spawned process is a registry record;
     // the finally below covers every path where the spawn never happens
     // (OAuth failure, abort, query() throwing). release() is idempotent.
-    const slotReservation = await waitForSlot(maxConcurrent, session.abortController.signal);
+    //
+    // #2756: pass a thunk, not a frozen number — re-reads settings on every
+    // recheck so raising CLAUDE_MEM_MAX_CONCURRENT_AGENTS releases an
+    // already-parked waiter without a worker restart. sessionId lets
+    // SessionRoutes detect via isSessionParkedForSlot() whether this session
+    // is parked here (vs. mid-response) when the selected provider changes.
+    const slotReservation = await waitForSlot(
+      () => parseInt(SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2,
+      session.abortController.signal,
+      session.sessionDbId
+    );
 
     try {
       const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
@@ -510,35 +518,48 @@ export class ClaudeProvider {
     session: ActiveSession,
     modelId: string,
     claudePath: string,
+    signal: AbortSignal,
   ): Promise<string | null> {
     const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
-    const result = query({
-      prompt: buildFieldCompressionPrompt(text, budgetChars),
-      options: {
-        ...buildHardenedSdkOptions({
-          source: 'Observer',
-          sessionDbId: session.sessionDbId,
-          contentSessionId: session.contentSessionId,
-          project: session.project,
-          model: modelId,
-          env: isolatedEnv,
-          pathToClaudeCodeExecutable: claudePath,
-          abortController: session.abortController,
-        }),
-        maxTurns: 1,
-      },
-    });
-
-    let out = '';
-    for await (const message of result) {
-      if (message.type === 'assistant') {
-        const content = (message as any).message.content;
-        out += Array.isArray(content)
-          ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
-          : typeof content === 'string' ? content : '';
-      }
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    const signals = [signal, session.abortController.signal];
+    for (const source of signals) {
+      source.addEventListener('abort', abort, { once: true });
+      if (source.aborted) abort();
     }
-    return out || null;
+    try {
+      if (controller.signal.aborted) return null;
+      const result = query({
+        prompt: buildFieldCompressionPrompt(text, budgetChars),
+        options: {
+          ...buildHardenedSdkOptions({
+            source: 'Observer',
+            sessionDbId: session.sessionDbId,
+            contentSessionId: session.contentSessionId,
+            project: session.project,
+            model: modelId,
+            env: isolatedEnv,
+            pathToClaudeCodeExecutable: claudePath,
+            abortController: controller,
+          }),
+          maxTurns: 1,
+        },
+      });
+
+      let out = '';
+      for await (const message of result) {
+        if (message.type === 'assistant') {
+          const content = (message as any).message.content;
+          out += Array.isArray(content)
+            ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
+            : typeof content === 'string' ? content : '';
+        }
+      }
+      return out || null;
+    } finally {
+      for (const source of signals) source.removeEventListener('abort', abort);
+    }
   }
 
   private async *createMessageGenerator(

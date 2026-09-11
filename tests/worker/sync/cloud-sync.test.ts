@@ -13,7 +13,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { CloudSync, type CloudSyncSettingKeys, type CloudSyncOptions } from '../../../src/services/sync/CloudSync.js';
-import { buildContentOperation, stableDocumentId } from '../../../src/services/sync/CanonicalContent.js';
+import { buildContentOperation, buildMutationOperation, stableDocumentId } from '../../../src/services/sync/CanonicalContent.js';
 
 const ISO = '2026-07-09T00:00:00.000Z';
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -1010,6 +1010,116 @@ describe('CloudSync', () => {
         "SELECT raw_body FROM sync_dead_letter WHERE lane = 'mutation'"
       ).get() as { raw_body: string };
       expect(JSON.parse(dead.raw_body).fields.custom_title).toBe('X'.repeat(2_100_000));
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // After a device-id mint, frozen canonical_body rows stay hash-locked to
+  // the previous origin_device_id. The hub 400s invalid_ops on the batch
+  // head; those poison ops must dead-letter so later healthy ops can drain.
+  // ---------------------------------------------------------------------------
+  describe('stale origin_device_id invalid_ops quarantine', () => {
+    const STALE_DEVICE_ID = '1e1798f5-1111-4111-8111-111111111111';
+    const STALE_OP_UUID = '11111111-1111-4111-8111-111111111111';
+    const STALE_OP_UUID_2 = '22222222-2222-4222-8222-222222222222';
+
+    function seedFrozenStaleMutation(opUuid: string): void {
+      const mutation = {
+        op: 'set_prompt_session' as const,
+        target: { origin_device_id: STALE_DEVICE_ID, origin_local_id: '1632' },
+        fields: { memory_session_id: 'mem-stale' },
+      };
+      const op = buildMutationOperation({
+        originDeviceId: STALE_DEVICE_ID,
+        mutationId: opUuid,
+        entityRev: '1',
+        mutation,
+      });
+      db.prepare(`
+        INSERT INTO sync_outbox
+          (op_uuid, rev, body, canonical_body, operation_sha256, created_at_epoch)
+        VALUES (?, 1, ?, ?, ?, 1)
+      `).run(opUuid, JSON.stringify(mutation), op.body, op.operation_sha256);
+    }
+
+    it('dead-letters a stale-head mutation so the healthy op behind it drains', async () => {
+      seedFrozenStaleMutation(STALE_OP_UUID);
+      store.createSDKSession('sess-healthy', 'proj-x', 'p', 'healthy title', 'claude');
+      expect(outboxRows()[0].op_uuid).toBe(STALE_OP_UUID);
+      expect(outboxRows().length).toBe(2);
+
+      const { impl, calls } = makeFetchMock(call => {
+        const ops = calls[call - 1]?.wireParsed?.ops ?? [];
+        const hasStale = ops.some((op: { body: string }) => {
+          const body = JSON.parse(op.body) as { origin_device_id?: string };
+          return body.origin_device_id === STALE_DEVICE_ID;
+        });
+        if (!hasStale) return undefined;
+        return new Response(JSON.stringify({
+          error: 'invalid_ops: ops[0] origin_device_id does not match authenticated X-Device-Id',
+        }), { status: 400 });
+      });
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(outboxRows().length).toBe(0);
+      expect(sync.status().lastError).toBeNull();
+      expect(sync.status().quarantine.count).toBe(1);
+      expect(sync.status().quarantine.latestReason).toMatch(
+        /invalid_ops: ops\[0\] origin_device_id does not match authenticated X-Device-Id/,
+      );
+      const dead = db.prepare(
+        "SELECT queue_key, raw_body FROM sync_dead_letter WHERE lane = 'mutation'"
+      ).get() as { queue_key: string; raw_body: string };
+      expect(dead.queue_key).toBe(STALE_OP_UUID);
+      expect(JSON.parse(dead.raw_body).origin_device_id).toBe(STALE_DEVICE_ID);
+
+      const healthyPushes = calls.filter(c =>
+        c.parsed.ops.some((o: { kind: string; body: { fields?: { custom_title?: string } } }) =>
+          o.kind === 'mutation' && o.body.fields?.custom_title === 'healthy title',
+        ),
+      );
+      expect(healthyPushes.length).toBeGreaterThan(0);
+      expect(healthyPushes.some(c =>
+        c.parsed.ops.every((o: { body: { fields?: { custom_title?: string } } }) =>
+          o.body.fields?.custom_title === 'healthy title',
+        ),
+      )).toBe(true);
+      sync.stop();
+    });
+
+    it('quarantines every stale-head op in a rejected batch before draining later work', async () => {
+      seedFrozenStaleMutation(STALE_OP_UUID);
+      seedFrozenStaleMutation(STALE_OP_UUID_2);
+      store.createSDKSession('sess-healthy', 'proj-x', 'p', 'healthy title', 'claude');
+
+      const { impl, calls } = makeFetchMock(call => {
+        const ops = calls[call - 1]?.wireParsed?.ops ?? [];
+        const hasStale = ops.some((op: { body: string }) => {
+          const body = JSON.parse(op.body) as { origin_device_id?: string };
+          return body.origin_device_id === STALE_DEVICE_ID;
+        });
+        if (!hasStale) return undefined;
+        return new Response(JSON.stringify({
+          error: 'invalid_ops: ops[0] origin_device_id does not match authenticated X-Device-Id',
+        }), { status: 400 });
+      });
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(outboxRows().length).toBe(0);
+      expect(sync.status().lastError).toBeNull();
+      expect(sync.status().quarantine.count).toBe(2);
+      const deadKeys = (db.prepare(
+        "SELECT queue_key FROM sync_dead_letter WHERE lane = 'mutation' ORDER BY queue_key"
+      ).all() as Array<{ queue_key: string }>).map(r => r.queue_key);
+      expect(deadKeys).toEqual([STALE_OP_UUID, STALE_OP_UUID_2]);
+      expect(calls.some(c =>
+        c.parsed.ops.some((o: { kind: string; body: { fields?: { custom_title?: string } } }) =>
+          o.kind === 'mutation' && o.body.fields?.custom_title === 'healthy title',
+        ),
+      )).toBe(true);
+      sync.stop();
     });
   });
 

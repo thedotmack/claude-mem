@@ -121,6 +121,13 @@ function operationTupleKey(tuple: {
   ]);
 }
 
+/** Hub 400 that names a frozen origin_device_id ≠ authenticated X-Device-Id. */
+function isStaleOriginDeviceIdReject(message: string): boolean {
+  return message.includes('sync hub push 400:')
+    && message.includes('invalid_ops')
+    && message.includes('origin_device_id does not match authenticated X-Device-Id');
+}
+
 const TABLE_BY_KIND: Record<RowKind, string> = {
   observation: 'observations',
   summary: 'session_summaries',
@@ -925,14 +932,75 @@ export class CloudSync {
 
   /** POST one batch to the hub and stamp/delete on ack. */
   private async sendOps(ops: WireOp[]): Promise<void> {
-    const response = await this.pushOps(ops);
-    // stop() while the POST was in flight: the DB may already be closing, so
-    // skip the stamp. The hub dedupes on (origin_device, kind, origin_id,
-    // rev), so re-pushing these ops on next start is harmless.
-    if (this.stopped) return;
-    this.validatePushResponse(response, ops);
-    this.stampAcked(response.acked, ops);
-    this.emitHeadSeq(response.head_seq);
+    let remaining = ops;
+    for (;;) {
+      try {
+        const response = await this.pushOps(remaining);
+        // stop() while the POST was in flight: the DB may already be closing, so
+        // skip the stamp. The hub dedupes on (origin_device, kind, origin_id,
+        // rev), so re-pushing these ops on next start is harmless.
+        if (this.stopped) return;
+        this.validatePushResponse(response, remaining);
+        this.stampAcked(response.acked, remaining);
+        this.emitHeadSeq(response.head_seq);
+        return;
+      } catch (error) {
+        const next = this.dropStaleOriginDeviceIdOps(remaining, error);
+        if (next === null) throw error;
+        if (next.length === 0 || this.stopped) return;
+        remaining = next;
+      }
+    }
+  }
+
+  /**
+   * After a device-id mint, hash-locked sync_outbox rows still carry the old
+   * origin_device_id. The hub 400s the whole batch and nothing else removes
+   * those poison heads, so healthy ops behind them never drain. Dead-letter
+   * the mismatched mutation ops and return the rest of the batch (or null
+   * when this is not that failure class / no matching rows were found).
+   */
+  private dropStaleOriginDeviceIdOps(ops: WireOp[], error: unknown): WireOp[] | null {
+    const reason = error instanceof Error ? error.message : String(error);
+    if (!isStaleOriginDeviceIdReject(reason)) return null;
+    const kept: WireOp[] = [];
+    let quarantined = 0;
+    for (const op of ops) {
+      if (this.quarantineStaleOriginDeviceIdMutation(op, reason)) {
+        quarantined++;
+        continue;
+      }
+      kept.push(op);
+    }
+    return quarantined === 0 ? null : kept;
+  }
+
+  private quarantineStaleOriginDeviceIdMutation(op: WireOp, reason: string): boolean {
+    let originDeviceId: string | undefined;
+    let mutationId: string | undefined;
+    try {
+      const body = JSON.parse(op.body) as {
+        origin_device_id?: unknown;
+        kind?: unknown;
+        id?: unknown;
+      };
+      if (typeof body.origin_device_id === 'string') originDeviceId = body.origin_device_id;
+      if (body.kind === 'mutation' && typeof body.id === 'string' && body.id.startsWith('mutation:')) {
+        mutationId = body.id.slice('mutation:'.length);
+      }
+    } catch {
+      return false;
+    }
+    if (!originDeviceId || originDeviceId === this.deviceId || !mutationId) return false;
+    const row = this.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id, op_uuid, CAST(rev AS TEXT) AS rev,
+             body, canonical_body, operation_sha256
+      FROM sync_outbox
+      WHERE op_uuid = ? AND (operation_sha256 IS NULL OR operation_sha256 = ?)
+    `).get(mutationId, op.operation_sha256) as MutationOutboxRow | undefined;
+    if (!row) return false;
+    this.quarantineMutation(row, reason);
+    return true;
   }
 
   private async pushOps(ops: WireOp[]): Promise<PushResponse> {

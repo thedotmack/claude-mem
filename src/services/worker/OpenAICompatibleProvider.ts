@@ -77,7 +77,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   protected abstract missingApiKeyError(): Error;
 
   /** Issue the actual HTTP request and normalize its response. */
-  protected abstract query(history: ConversationMessage[], config: TConfig): Promise<ProviderQueryResult>;
+  protected abstract query(history: ConversationMessage[], config: TConfig, signal?: AbortSignal): Promise<ProviderQueryResult>;
 
   /**
    * One bounded, standalone call that condenses an oversized tool payload.
@@ -86,10 +86,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
    * `session.conversationHistory` would grow the very conversation the recycle
    * logic exists to bound.
    */
-  private async compressField(text: string, budgetChars: number, config: TConfig): Promise<string | null> {
+  private async compressField(text: string, budgetChars: number, config: TConfig, signal: AbortSignal): Promise<string | null> {
     const result = await this.query(
       [{ role: 'user', content: buildFieldCompressionPrompt(text, budgetChars) }],
       config,
+      signal,
     );
     return result.content || null;
   }
@@ -262,7 +263,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     // rather than a head/tail slice with the middle cut out (#3800).
     const optimized = await optimizeObservationFields(
       { toolInput: message.tool_input, toolOutput: message.tool_response },
-      (text, budgetChars) => this.compressField(text, budgetChars, config),
+      (text, budgetChars, signal) => this.compressField(text, budgetChars, config, signal),
       { sessionDbId: session.sessionDbId, toolName: message.tool_name },
     );
 

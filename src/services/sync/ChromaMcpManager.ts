@@ -34,6 +34,9 @@ const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
 const CHROMA_EXIT_OBSERVE_TIMEOUT_MS = 1_000;
 const RECONNECT_BACKOFF_MS = 10_000;
 const CHROMA_WRITER_LOCK_FILENAME = '.claude-mem-chroma-writer.lock';
+// An unparseable lock (typically a 0-byte file left by a crash mid-write) has no
+// owner to probe; once it is this old no concurrent writer is still filling it in.
+const CHROMA_WRITER_LOCK_UNREADABLE_GRACE_MS = 10_000;
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
 const CHROMA_OUTPUT_TAIL_MAX_CHARS = 2048;
 const DEFAULT_MAX_PENDING_MUTATIONS = 5_000;
@@ -469,6 +472,20 @@ export class ChromaMcpManager {
 
         const existing = ChromaMcpManager.readChromaWriterLock(lockPath);
         if (!existing) {
+          // Without a readable owner the liveness reaper below can never run,
+          // so vector sync would stay dead until someone deletes the file (#3916).
+          // Treat an unreadable lock that is past the write grace period as stale.
+          if (ChromaMcpManager.isChromaWriterLockAbandoned(lockPath)) {
+            try {
+              fs.rmSync(lockPath, { force: true });
+              logger.info('CHROMA_MCP', 'Removed unreadable Chroma writer lock', { lockPath });
+              continue;
+            } catch (removeError) {
+              const message = `Unable to remove unreadable Chroma writer lock at ${lockPath}: ${removeError instanceof Error ? removeError.message : String(removeError)}`;
+              recordChromaVectorSearchUnavailable(message);
+              throw new ChromaUnavailableError(message, removeError instanceof Error ? removeError : undefined);
+            }
+          }
           const message = `Chroma writer lock at ${lockPath} is unreadable; refusing to start a second writer`;
           recordChromaVectorSearchUnavailable(message);
           throw new ChromaUnavailableError(message);
@@ -561,6 +578,15 @@ export class ChromaMcpManager {
       };
     } catch {
       return null;
+    }
+  }
+
+  private static isChromaWriterLockAbandoned(lockPath: string): boolean {
+    try {
+      return Date.now() - fs.statSync(lockPath).mtimeMs >= CHROMA_WRITER_LOCK_UNREADABLE_GRACE_MS;
+    } catch {
+      // Vanished between the failed create and the stat: nothing left to reap.
+      return true;
     }
   }
 

@@ -1,15 +1,19 @@
-import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import * as childProcess from 'child_process';
 import * as fs from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 import {
   readClaudeOAuthToken,
   decodeJwtExpMs,
   writeStaleMarker,
   clearStaleMarker,
   readStaleMarker,
+  resolveEffectiveClaudeConfigDir,
+  deriveMacKeychainServiceName,
+  readMacOsKeychain,
 } from '../../src/shared/oauth-token.js';
-import { paths } from '../../src/shared/paths.js';
+import { paths, CLAUDE_CONFIG_DIR, DEFAULT_CLAUDE_CONFIG_DIR } from '../../src/shared/paths.js';
 import { buildIsolatedEnvWithFreshOAuth } from '../../src/shared/EnvManager.js';
 
 /**
@@ -288,5 +292,264 @@ describe('buildIsolatedEnvWithFreshOAuth — absent token clears stale marker', 
     }
 
     expect(readStaleMarker()).toBeUndefined();
+  });
+});
+
+/**
+ * #2753 — resolveEffectiveClaudeConfigDir precedence: the
+ * CLAUDE_MEM_CLAUDE_CONFIG_DIR setting wins when non-empty; an empty,
+ * whitespace-only, or absent setting falls through to paths.CLAUDE_CONFIG_DIR
+ * (which already folds in process.env.CLAUDE_CONFIG_DIR vs. the default —
+ * see the frozen-at-module-load note in tests/env-isolation.test.ts for why
+ * that half of the fallback isn't re-tested dynamically here).
+ */
+describe('resolveEffectiveClaudeConfigDir (#2753)', () => {
+  it('returns the trimmed setting when it is non-empty', () => {
+    expect(resolveEffectiveClaudeConfigDir('/custom/config/dir')).toBe('/custom/config/dir');
+    expect(resolveEffectiveClaudeConfigDir('  /padded/dir  ')).toBe('/padded/dir');
+  });
+
+  it('falls through to the frozen CLAUDE_CONFIG_DIR for an empty, whitespace-only, or absent setting', () => {
+    expect(resolveEffectiveClaudeConfigDir('')).toBe(CLAUDE_CONFIG_DIR);
+    expect(resolveEffectiveClaudeConfigDir('   ')).toBe(CLAUDE_CONFIG_DIR);
+    expect(resolveEffectiveClaudeConfigDir(undefined)).toBe(CLAUDE_CONFIG_DIR);
+  });
+
+  // Round 2 fix: a human-typed '~/...' setting value must expand to the same
+  // effective dir (and therefore the same keychain suffix) as its already-
+  // expanded absolute-path form — otherwise deriveMacKeychainServiceName
+  // hashes the literal tilde string and never matches the real keychain entry.
+  it('expands a leading ~ to the same effective dir as the equivalent absolute path', () => {
+    const absolute = join(homedir(), '.ccs', 'instances', 'nyeq50');
+    const tilde = '~/.ccs/instances/nyeq50';
+
+    const resolvedFromTilde = resolveEffectiveClaudeConfigDir(tilde);
+    const resolvedFromAbsolute = resolveEffectiveClaudeConfigDir(absolute);
+
+    expect(resolvedFromTilde).toBe(resolvedFromAbsolute);
+    expect(resolvedFromTilde).toBe(absolute);
+    // And the downstream keychain suffix derivation must therefore agree too —
+    // this is the actual failure mode a missing expansion produces.
+    expect(deriveMacKeychainServiceName(resolvedFromTilde)).toBe(
+      deriveMacKeychainServiceName(resolvedFromAbsolute),
+    );
+  });
+
+  it('expands a padded "~/..." setting value (trim then expand, not expand then trim)', () => {
+    const absolute = join(homedir(), '.ccs', 'instances', 'nyeq50');
+    expect(resolveEffectiveClaudeConfigDir('  ~/.ccs/instances/nyeq50  ')).toBe(absolute);
+  });
+
+  // Round 3 fix: a trailing separator must not survive into the effective
+  // dir — otherwise `~/.claude/` (a very plausible human/shell-completion
+  // typo for "my default profile") resolves to "<home>/.claude/", which
+  // fails deriveMacKeychainServiceName's bare `=== DEFAULT_CLAUDE_CONFIG_DIR`
+  // check and derives a WRONG suffixed service name for what the user meant
+  // as the default. Node's path.join (used by both expandTilde and
+  // DEFAULT_CLAUDE_CONFIG_DIR's own derivation) preserves a trailing
+  // separator rather than normalizing it away, so this is not hypothetical.
+  it('strips a trailing separator so "~/.claude/" resolves to the bare default, not a suffixed dir', () => {
+    const resolvedFromTildeSlash = resolveEffectiveClaudeConfigDir('~/.claude/');
+    expect(resolvedFromTildeSlash).toBe(DEFAULT_CLAUDE_CONFIG_DIR);
+    expect(deriveMacKeychainServiceName(resolvedFromTildeSlash)).toBe('Claude Code-credentials');
+  });
+
+  it('strips a trailing separator from an already-absolute setting value with a trailing slash', () => {
+    const absoluteWithSlash = `${DEFAULT_CLAUDE_CONFIG_DIR}/`;
+    const resolved = resolveEffectiveClaudeConfigDir(absoluteWithSlash);
+    expect(resolved).toBe(DEFAULT_CLAUDE_CONFIG_DIR);
+    expect(deriveMacKeychainServiceName(resolved)).toBe('Claude Code-credentials');
+  });
+
+  it('strips a trailing separator so an instance dir with a trailing slash matches its no-slash suffix', () => {
+    const noSlash = '/Users/matthewdnye/.ccs/instances/iveg50';
+    const withSlash = `${noSlash}/`;
+    const resolvedNoSlash = resolveEffectiveClaudeConfigDir(noSlash);
+    const resolvedWithSlash = resolveEffectiveClaudeConfigDir(withSlash);
+    expect(resolvedWithSlash).toBe(resolvedNoSlash);
+    expect(deriveMacKeychainServiceName(resolvedWithSlash)).toBe(
+      deriveMacKeychainServiceName(resolvedNoSlash),
+    );
+  });
+});
+
+/**
+ * #2753 — deriveMacKeychainServiceName suffix-derivation table, empirically
+ * verified 2026-09-06 on the Mac Studio (see the task background): Claude
+ * Code stores per-config-dir credentials under
+ * 'Claude Code-credentials-<sha256(configDirPath)[:8]>' for every config dir
+ * other than the literal default (~/.claude), which stays unsuffixed. These
+ * are pure sha256-of-a-literal-string computations — deterministic on any
+ * machine regardless of its actual $HOME, so the hardcoded Studio paths
+ * below are a legitimate portable fixture, not an environment dependency.
+ */
+describe('deriveMacKeychainServiceName (#2753) — suffix-derivation table', () => {
+  it('returns the bare "Claude Code-credentials" for the literal default config dir', () => {
+    expect(deriveMacKeychainServiceName(DEFAULT_CLAUDE_CONFIG_DIR)).toBe('Claude Code-credentials');
+  });
+
+  const studioTable: Array<{ instance: string; configDir: string; suffix: string }> = [
+    { instance: 'iveg50', configDir: '/Users/matthewdnye/.ccs/instances/iveg50', suffix: 'faf0d083' },
+    { instance: 'nyem50', configDir: '/Users/matthewdnye/.ccs/instances/nyem50', suffix: '7034a92a' },
+    { instance: 'qcom50', configDir: '/Users/matthewdnye/.ccs/instances/qcom50', suffix: '8bb48066' },
+    { instance: 'flee50', configDir: '/Users/matthewdnye/.ccs/instances/flee50', suffix: '53f0e97f' },
+    { instance: 'nyeq50', configDir: '/Users/matthewdnye/.ccs/instances/nyeq50', suffix: 'e38871d4' },
+    { instance: 'repl00', configDir: '/Users/matthewdnye/.ccs/instances/repl00', suffix: '2e1325ac' },
+  ];
+
+  for (const { instance, configDir, suffix } of studioTable) {
+    it(`suffixes ${instance} (${configDir}) as "Claude Code-credentials-${suffix}"`, () => {
+      expect(deriveMacKeychainServiceName(configDir)).toBe(`Claude Code-credentials-${suffix}`);
+    });
+  }
+});
+
+/**
+ * #2753 — readMacOsKeychain's injectable execImpl seam, exercised directly
+ * (not through readClaudeOAuthToken/process.platform dispatch — see the
+ * module-load comment on readMacOsKeychain for why the module-level
+ * execFileAsync can't be intercepted post-hoc). Because execImpl is fully
+ * injected here, this never shells out to the real `security` binary, so —
+ * unlike the platform-dispatch tests elsewhere in this file — it does NOT
+ * need a `if (process.platform !== 'darwin') return;` guard; it runs on any
+ * host OS and never touches the real keychain.
+ */
+describe('readMacOsKeychain with an injected execImpl (#2753)', () => {
+  it('the default service name returns absent while a per-config-dir suffixed service name returns present ("default item empty, instance item valid")', async () => {
+    const instanceServiceName = deriveMacKeychainServiceName('/Users/matthewdnye/.ccs/instances/iveg50');
+    const futureExpiresAt = Date.now() + 60 * 60 * 1000;
+    const instancePayload = JSON.stringify({
+      claudeAiOauth: { accessToken: 'sk-ant-oat01-instance-token', expiresAt: futureExpiresAt },
+    });
+
+    const fakeExecImpl = mock((_cmd: string, args: readonly string[]) => {
+      const serviceArgIndex = args.indexOf('-s');
+      const serviceName = serviceArgIndex >= 0 ? args[serviceArgIndex + 1] : undefined;
+      if (serviceName === instanceServiceName) {
+        return Promise.resolve({ stdout: instancePayload, stderr: '' });
+      }
+      // The default item is empty (no keychain entry) — `security` exits
+      // non-zero and execFile rejects, exactly like the real binary.
+      return Promise.reject(new Error(
+        'security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.'
+      ));
+    }) as any;
+
+    const defaultResult = await readMacOsKeychain('Claude Code-credentials', fakeExecImpl);
+    expect(defaultResult.kind).toBe('absent');
+
+    const instanceResult = await readMacOsKeychain(instanceServiceName, fakeExecImpl);
+    expect(instanceResult.kind).toBe('present');
+    if (instanceResult.kind === 'present') {
+      expect(instanceResult.token).toBe('sk-ant-oat01-instance-token');
+      expect(instanceResult.source).toBe('keychain');
+      expect(instanceResult.expiresAt).toBe(futureExpiresAt);
+    }
+
+    expect(fakeExecImpl).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * #2753 — the gap the tests above leave open: they only exercise
+ * resolveEffectiveClaudeConfigDir / deriveMacKeychainServiceName /
+ * readMacOsKeychain as standalone units. None of them assert what
+ * readClaudeOAuthToken() ITSELF passes to readMacOsKeychain on the darwin
+ * dispatch — so a future refactor or merge-conflict resolution could
+ * silently drop the `deriveMacKeychainServiceName(effectiveConfigDir)` call
+ * at that one call site (reverting to the pre-#2753 bug: always the bare
+ * default keychain item, regardless of CLAUDE_CONFIG_DIR) and every existing
+ * test would still pass. These tests close that gap by driving
+ * readClaudeOAuthToken() end-to-end with an injected execImpl (the same seam
+ * readMacOsKeychain already exposes, now threaded through
+ * readClaudeOAuthToken too) plus a spied paths.settings() pointing at a
+ * controlled temp settings.json, and asserting the actual `-s <name>`
+ * argument the darwin branch hands to the exec call.
+ *
+ * Like the "injected execImpl" describe above, this never shells out to the
+ * real `security` binary, so it spoofs platform to darwin unconditionally
+ * and runs on any host OS.
+ */
+describe('readClaudeOAuthToken (#2753) — darwin dispatch wires the derived service name through', () => {
+  let settingsPathSpy: ReturnType<typeof spyOn> | undefined;
+
+  beforeEach(() => {
+    setPlatform('darwin');
+  });
+
+  afterEach(() => {
+    settingsPathSpy?.mockRestore();
+    settingsPathSpy = undefined;
+  });
+
+  function stubSettingsFile(configDirSetting: string): void {
+    const settingsPath = join(tempDir, 'settings.json');
+    fs.writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_CLAUDE_CONFIG_DIR: configDirSetting }));
+    settingsPathSpy = spyOn(paths, 'settings').mockImplementation(() => settingsPath);
+  }
+
+  function fakeExecFor(expectedServiceName: string, payload: string): any {
+    return mock((_cmd: string, args: readonly string[]) => {
+      const serviceArgIndex = args.indexOf('-s');
+      const serviceName = serviceArgIndex >= 0 ? args[serviceArgIndex + 1] : undefined;
+      if (serviceName === expectedServiceName) {
+        return Promise.resolve({ stdout: payload, stderr: '' });
+      }
+      return Promise.reject(new Error(`unexpected keychain service name: ${serviceName}`));
+    });
+  }
+
+  it('passes deriveMacKeychainServiceName(effectiveConfigDir) through — not the bare default — when the setting is non-empty', async () => {
+    const instanceConfigDir = '/Users/matthewdnye/.ccs/instances/iveg50';
+    stubSettingsFile(instanceConfigDir);
+    const expectedServiceName = deriveMacKeychainServiceName(instanceConfigDir);
+    expect(expectedServiceName).not.toBe('Claude Code-credentials');
+
+    const futureExpiresAt = Date.now() + 60 * 60 * 1000;
+    const payload = JSON.stringify({
+      claudeAiOauth: { accessToken: 'sk-ant-oat01-wired-token', expiresAt: futureExpiresAt },
+    });
+    const fakeExecImpl = fakeExecFor(expectedServiceName, payload);
+
+    const result = await readClaudeOAuthToken(fakeExecImpl);
+
+    expect(fakeExecImpl).toHaveBeenCalledTimes(1);
+    const callArgs = fakeExecImpl.mock.calls[0][1] as string[];
+    expect(callArgs).toContain(expectedServiceName);
+    expect(callArgs).not.toContain('Claude Code-credentials');
+    expect(result.kind).toBe('present');
+    if (result.kind === 'present') {
+      expect(result.token).toBe('sk-ant-oat01-wired-token');
+      expect(result.source).toBe('keychain');
+    }
+  });
+
+  it('falls through to deriveMacKeychainServiceName(CLAUDE_CONFIG_DIR) when the setting is empty', async () => {
+    stubSettingsFile('');
+    // NOT hardcoded to the bare 'Claude Code-credentials': CLAUDE_CONFIG_DIR
+    // is frozen at module load from process.env.CLAUDE_CONFIG_DIR (or the
+    // default), and this suite itself may be running under a non-default
+    // CCS-instance config dir (e.g. iveg50) — exactly the "fleet" scenario
+    // the critical finding warned a silent regression would hit hardest. The
+    // expected value must track whatever this process's own CLAUDE_CONFIG_DIR
+    // actually is, the same way resolveEffectiveClaudeConfigDir's own
+    // fall-through tests do above.
+    const expectedServiceName = deriveMacKeychainServiceName(CLAUDE_CONFIG_DIR);
+
+    const futureExpiresAt = Date.now() + 60 * 60 * 1000;
+    const payload = JSON.stringify({
+      claudeAiOauth: { accessToken: 'sk-ant-oat01-default-token', expiresAt: futureExpiresAt },
+    });
+    const fakeExecImpl = fakeExecFor(expectedServiceName, payload);
+
+    const result = await readClaudeOAuthToken(fakeExecImpl);
+
+    expect(fakeExecImpl).toHaveBeenCalledTimes(1);
+    const callArgs = fakeExecImpl.mock.calls[0][1] as string[];
+    expect(callArgs).toContain(expectedServiceName);
+    expect(result.kind).toBe('present');
+    if (result.kind === 'present') {
+      expect(result.token).toBe('sk-ant-oat01-default-token');
+    }
   });
 });
