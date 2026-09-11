@@ -25,11 +25,12 @@ const HEALTH_PROBE_TIMEOUT_MS = 5_000;
 async function httpRequestToWorker(
   port: number,
   endpointPath: string,
-  method: string = 'GET'
+  method: string = 'GET',
+  timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS,
 ): Promise<{ ok: boolean; statusCode: number; body: string }> {
   const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}${endpointPath}`, {
     method,
-    signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
+    signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
   });
   let body = '';
   try {
@@ -40,7 +41,7 @@ async function httpRequestToWorker(
   return { ok: response.ok, statusCode: response.status, body };
 }
 
-export async function isPortInUse(port: number): Promise<boolean> {
+export async function isPortInUse(port: number, timeoutMs: number = HEALTH_PROBE_TIMEOUT_MS): Promise<boolean> {
   if (process.platform === 'win32') {
     // Fast path: HTTP health check. A live claude-mem worker responds to
     // /api/health, so this is the cheapest non-disruptive probe for the
@@ -56,7 +57,7 @@ export async function isPortInUse(port: number): Promise<boolean> {
     // which still reports a bound port as in use.
     try {
       const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`, {
-        signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
+        signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
       });
       if (response.ok) return true;
       // Non-ok response: port is reachable but the worker is unhealthy.
@@ -110,10 +111,16 @@ async function pollEndpointUntilOk(
   timeoutMs: number,
   retryLogMessage: string
 ): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     try {
-      const result = await httpRequestToWorker(port, endpointPath);
+      const remainingMs = deadline - Date.now();
+      const result = await httpRequestToWorker(
+        port,
+        endpointPath,
+        'GET',
+        Math.min(HEALTH_PROBE_TIMEOUT_MS, remainingMs),
+      );
       if (result.ok) return true;
     } catch (error) {
       if (error instanceof Error) {
@@ -122,7 +129,10 @@ async function pollEndpointUntilOk(
         logger.debug('SYSTEM', retryLogMessage, { error: String(error) });
       }
     }
-    await new Promise(r => setTimeout(r, 500));
+    const retryDelayMs = Math.min(500, deadline - Date.now());
+    if (retryDelayMs > 0) {
+      await new Promise(r => setTimeout(r, retryDelayMs));
+    }
   }
   return false;
 }
@@ -136,10 +146,14 @@ export function waitForReadiness(port: number, timeoutMs: number = 30000): Promi
 }
 
 export async function waitForPortFree(port: number, timeoutMs: number = 10000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (!(await isPortInUse(port))) return true;
-    await new Promise(r => setTimeout(r, 500));
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const remainingMs = deadline - Date.now();
+    if (!(await isPortInUse(port, Math.min(HEALTH_PROBE_TIMEOUT_MS, remainingMs)))) return true;
+    const retryDelayMs = Math.min(500, deadline - Date.now());
+    if (retryDelayMs > 0) {
+      await new Promise(r => setTimeout(r, retryDelayMs));
+    }
   }
   return false;
 }

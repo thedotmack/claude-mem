@@ -250,6 +250,29 @@ describe('HealthMonitor', () => {
       expect(elapsed).toBeLessThan(2500);
     });
 
+    // #3575 leftover after plan-15 already bounded each probe at 5s: a hung
+    // fetch must still honor the *caller* deadline, not sit out the full
+    // HEALTH_PROBE_TIMEOUT_MS. Without the remaining-ms cap, waitForHealth(100)
+    // would block ~5s inside AbortSignal.timeout.
+    it('should abort a fetch that never responds within the overall timeout', async () => {
+      global.fetch = mock((_input: RequestInfo | URL, init?: RequestInit) => new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) {
+          reject(new Error('expected an abort signal'));
+          return;
+        }
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      }));
+
+      const start = Date.now();
+      const result = await waitForHealth(39999, 100);
+      const elapsed = Date.now() - start;
+
+      expect(result).toBe(false);
+      expect(elapsed).toBeGreaterThanOrEqual(90);
+      expect(elapsed).toBeLessThan(500);
+    });
+
     it('should succeed after server becomes available', async () => {
       let callCount = 0;
       global.fetch = mock(() => {
