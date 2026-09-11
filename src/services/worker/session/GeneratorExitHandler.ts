@@ -53,7 +53,12 @@ export async function handleGeneratorExit(
   // in-RAM buffer (SessionManager.removeSessionImmediate -> buffer.dispose),
   // wiping the very queue/conversationHistory the switch is meant to preserve.
   const abortCategory = (reason ?? '').split(':')[0];
-  if (abortCategory === 'quota' || abortCategory === 'auth' || abortCategory === 'overflow' || abortCategory === 'provider_switch') {
+  // Every category listed here has ALREADY called resetProcessingToPending
+  // (except provider_switch, which parks a live buffer for a provider change).
+  // Falling through to finalizeSession would remove the session and undo that
+  // preservation — the second half of #3752.
+  const PRESERVES_CLAIMED_WORK = ['quota', 'auth', 'overflow', 'provider_switch', 'transport'];
+  if (PRESERVES_CLAIMED_WORK.includes(abortCategory)) {
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
