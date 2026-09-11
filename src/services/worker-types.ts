@@ -25,14 +25,16 @@ export interface ActiveSession {
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;
   consecutiveRestarts: number;
   /**
-   * Legacy invalid-output counter, intentionally always 0: ordinary non-XML
-   * observer output is confirmed as a no-op and resets this so benign skip
-   * acknowledgements never accumulate respawn debt.
+   * Real invalid-output counter (#3606): incremented on a dropped batch
+   * (non-XML output that is not a designed empty skip), reset to 0 on a
+   * valid parse or a designed empty skip (idle output with a non-'length'
+   * finish reason — the prompt allows an empty reply to signal "nothing to
+   * report").
    *
    * It is deliberately NOT the breaker for repeated hard rejections — counting
-   * skips and rejections on one counter is what produced the respawn storm this
-   * reset was added to stop. Hard rejections are counted by
-   * `consecutiveContextOverflows` instead.
+   * skips and rejections on one counter is what produced the respawn storm the
+   * write-only reset this replaces was added to stop. Hard rejections are
+   * counted by `consecutiveContextOverflows` instead.
    */
   consecutiveInvalidOutputs: number;
   /**
@@ -82,6 +84,8 @@ export interface ActiveSession {
   pendingCompressionEvent?: Record<string, unknown> | null;
   /** Cumulative total_cost_usd from the SDK's latest result message — per-compression cost is the delta between results. */
   lastResultTotalCostUsd?: number | null;
+  /** finish_reason from the latest OpenAI-compatible provider response — 'length' flags a truncated (not just empty/prose) observer output (#3606). */
+  lastFinishReason?: string | null;
 }
 
 export interface PendingMessage {

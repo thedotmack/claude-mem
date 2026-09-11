@@ -88,12 +88,16 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
     expect(sm.getMessageBuffer().getPendingCount(1)).toBe(0);
     expect(session.claimedMessageIds).toEqual([]);
     expect(session.earliestPendingTimestamp).toBeNull();
-    expect(session.consecutiveInvalidOutputs).toBe(0);
+    // #3606: consecutiveInvalidOutputs is now a real counter — this text
+    // classifies structurally as 'xml' (has an <observation> root tag) but
+    // fails to parse (no closing tag), so it's a genuine dropped batch and
+    // increments (2 -> 3) instead of resetting.
+    expect(session.consecutiveInvalidOutputs).toBe(3);
     expect(session.abortController.signal.aborted).toBe(false);
     expect(session.abortReason ?? null).toBeNull();
   });
 
-  it('repeated "No observations to record" acknowledgements confirm and never build respawn debt', async () => {
+  it('repeated "No observations to record" acknowledgements confirm and drop the queue each time', async () => {
     const sm = new SessionManager(makeDbManager());
     const session = sm.initializeSession(2, 'do the thing', 1);
     session.memorySessionId = 'mem-2';
@@ -113,7 +117,12 @@ describe('observer invalid-output handling (Phase 3 recovery)', () => {
         null,
         'TestAgent',
       );
-      expect(session.consecutiveInvalidOutputs).toBe(0);
+      // #3606: this prose ("No observations to record.") is not idle — it's
+      // a real dropped batch (not the designed empty-reply skip), so the
+      // real counter climbs each call rather than staying pinned at 0. The
+      // queue-level guarantee this test is really about — confirmed, never
+      // aborted, never re-queued — is asserted below.
+      expect(session.consecutiveInvalidOutputs).toBe(i + 1);
       expect(session.abortController.signal.aborted).toBe(false);
     }
 
