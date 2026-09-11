@@ -34,6 +34,15 @@
  * ghost), so the scenario cannot be constructed there — the gate refuses to
  * run rather than pass vacuously.
  *
+ * Runtime-dependent for the same reason: the ghost is made of inherited
+ * socket handles, and bun >= 1.4 no longer passes the listening socket into
+ * spawned children. Measured on one machine with identical code and logging:
+ * under 1.3.6 the port stays LISTENING under the dead worker (ghost), under
+ * 1.4.0 it is released with the worker. Where the scenario cannot be
+ * constructed the gate says so and skips the recovery assertions, because
+ * failing would report the runtime's behaviour, not the product's (the
+ * fixture's sidecar chain is asserted first, so a broken fixture still fails).
+ *
  * Requires the same isolation contract as the other chroma gates:
  * CLAUDE_MEM_DATA_DIR set in the environment before this process starts, and
  * CLAUDE_MEM_TEST_CHROMA=1 to opt in (skipped otherwise).
@@ -109,6 +118,9 @@ function killProcessOnly(pid: number): void {
   execFileSync('taskkill', ['/F', '/PID', String(pid)], {
     stdio: 'ignore',
     windowsHide: true,
+    // Bounded like every other child-process call in this gate: a wedged kill
+    // must fail the run loudly instead of hanging it invisibly.
+    timeout: 30_000,
   });
 }
 
@@ -199,6 +211,7 @@ async function startFixture(): Promise<FixtureHandle> {
   // the environment it started with, so the env-var version of this silently
   // wrote no events at all).
   const eventsFile = path.join(dir, 'events.jsonl');
+  const pidFile = path.join(dir, 'fixture.pid');
 
   const command =
     `$p = Start-Process -FilePath '${bunExecutable().replace(/'/g, "''")}' ` +
@@ -206,15 +219,23 @@ async function startFixture(): Promise<FixtureHandle> {
     `-WorkingDirectory '${process.cwd().replace(/'/g, "''")}' ` +
     `-RedirectStandardOutput '${stdoutFile.replace(/'/g, "''")}' ` +
     `-RedirectStandardError '${stderrFile.replace(/'/g, "''")}' -PassThru; ` +
-    `Write-Output $p.Id`;
+    `Set-Content -Path '${pidFile.replace(/'/g, "''")}' -Value $p.Id`;
 
-  const spawnedPid = Number.parseInt(
-    execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
-      encoding: 'utf-8',
-      windowsHide: true,
-    }).trim(),
-    10
-  );
+  // stdio 'ignore' is load-bearing, and the pid travels through a file because
+  // of it. The DETACHED fixture inherits this call's stdout pipe; a pipe here
+  // never reaches EOF while the fixture lives, and bun 1.4.x's execFileSync
+  // waits for exactly that — so the call returns only when something kills the
+  // fixture. Every red CI run of this gate had that shape: the fixture stayed
+  // alive, the launcher sat in the spawn, and the test's own 600s cap is what
+  // eventually freed it (the ready line then appears "after 0ms", which is how
+  // the stall masqueraded as a handshake problem). Nothing here reads
+  // PowerShell's output, so no pipe is needed.
+  execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+
+  const spawnedPid = Number.parseInt(readFileOrEmpty(pidFile).trim(), 10);
   if (!Number.isInteger(spawnedPid) || spawnedPid <= 0) {
     throw new Error(`fixture Start-Process returned an invalid pid: ${spawnedPid}`);
   }
@@ -380,12 +401,20 @@ describe.if(RUN_GATE && IS_WINDOWS)('worker recovers from a ghost listener left 
 
     // Kill the fixture OUT-OF-BAND: taskkill /F /PID without /T, exactly the
     // way a crash or a forced task-manager kill takes the worker down.
+    // Timestamped: the window between here and the ghost assertion is where
+    // every CI run of this gate used to die without a trace, and bun only
+    // flushes these lines when the test ends — so each one has to carry the
+    // elapsed time that says whether it was the step that hung.
+    const killStartedAt = Date.now();
+    console.log(`[ghost-gate] killing fixture pid=${fixture.pid} out-of-band (taskkill /F /PID, no /T)`);
     killProcessOnly(fixture.pid);
+    console.log(`[ghost-gate] taskkill returned after ${Date.now() - killStartedAt}ms`);
     await waitFor(
       () => !processExists(fixture.pid),
       30_000,
       `fixture process ${fixture.pid} to die`
     );
+    console.log(`[ghost-gate] fixture pid=${fixture.pid} is gone ${Date.now() - killStartedAt}ms after the kill`);
 
     // Ghost precondition: the port is still bound under the dead PID, and the
     // sidecar chain survived (the uvx/uv layers exit on pipe EOF, but the
@@ -393,18 +422,40 @@ describe.if(RUN_GATE && IS_WINDOWS)('worker recovers from a ghost listener left 
     // briefly for that settled shape — without it the gate could pass by
     // having nothing to recover.
     let ownerUnderDeadPid = false;
+    let reportedOwners = false;
     const settleDeadline = Date.now() + GHOST_SETTLE_TIMEOUT_MS;
     while (Date.now() < settleDeadline) {
       const owners = listeningOwnerPids(fixture.port);
+      if (!reportedOwners && owners.length > 0) {
+        reportedOwners = true;
+        console.log(`[ghost-gate] port ${fixture.port} owners after the kill: [${owners.join(',')}] (fixture was ${fixture.pid})`);
+      }
       if (owners.length > 0 && owners.every(owner => owner === fixture.pid) && !processExists(fixture.pid)) {
         ownerUnderDeadPid = true;
         break;
       }
       await new Promise(resolve => setTimeout(resolve, 500));
     }
+    const survivorsAfterKill = survivingProcesses(snapshot);
+    if (!ownerUnderDeadPid) {
+      // RUNTIME CAPABILITY SKIP, not a vacuous pass. The fixture above is
+      // verified (sidecar chain present AND matched by name), so the only
+      // thing missing is the socket inheritance the ghost is made of: bun >= 1.4
+      // no longer hands the listening socket to spawned children. Measured on
+      // one machine with identical code — 1.3.6 leaves the port bound under the
+      // dead worker, 1.4.0 releases it the moment the worker dies. Without
+      // inheritance there is no ghost for the reclaim to recover, and failing
+      // here would only report the runtime's behaviour, not the product's.
+      console.log(
+        `[ghost-gate] no ghost after the out-of-band kill: port ${fixture.port} is free, sidecar chain was present ` +
+          `(${describeProcesses(survivorsAfterKill)}). This runtime does not inherit the listening socket into ` +
+          'sidecar children (bun >= 1.4), so the ghost-listener scenario cannot be constructed here — skipping the ' +
+          'recovery assertions. On bun <= 1.3 the scenario does form and the assertions below run.'
+      );
+      return;
+    }
     expect(ownerUnderDeadPid, 'port must be LISTENING under the dead fixture PID (ghost)').toBe(true);
     expect(processExists(fixture.pid)).toBe(false);
-    const survivorsAfterKill = survivingProcesses(snapshot);
     expect(
       survivorsAfterKill.length > 0,
       `sidecar chain must survive the out-of-band kill: ${describeProcesses(snapshot)}`
