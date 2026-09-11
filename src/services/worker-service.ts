@@ -21,7 +21,7 @@ import { openConfiguredSqliteDatabase } from './sqlite/connection.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 
-import { ensureWorkerStarted as ensureWorkerStartedShared, type WorkerStartResult } from './worker-spawner.js';
+import { ensureWorkerStarted as ensureWorkerStartedShared, getLastWorkerBootFailure, type WorkerStartResult } from './worker-spawner.js';
 import { acquireSpawnLock, releaseSpawnLock } from '../shared/worker-spawn-gate.js';
 import { snapshotDependencyHealth, type DependencyHealthSnapshot } from '../shared/dependency-health.js';
 import { captureEvent, captureException, shutdownTelemetry, enableExceptionAutocaptureForWorker } from './telemetry/telemetry.js';
@@ -1115,7 +1115,14 @@ async function main() {
     case 'start': {
       const result = await ensureWorkerStarted(port);
       if (result === 'dead') {
-        exitWithStatus('error', 'Failed to start worker');
+        // Carry the boot probe's own words into the hook's status line — this
+        // is the one place a user reliably sees, and "Failed to start worker"
+        // on its own sends them to the log to find out nothing more.
+        const bootFailure = getLastWorkerBootFailure();
+        exitWithStatus(
+          'error',
+          bootFailure ? `Failed to start worker: ${bootFailure}` : 'Failed to start worker'
+        );
       } else {
         exitWithStatus('ready', result === 'warming' ? 'Worker started; still warming up' : undefined);
       }
