@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll } from 'bun:test';
+import { join } from 'path';
 import {
   isQuotaCooldownActive,
   tryAdmitQuotaProbe,
@@ -10,6 +11,13 @@ import {
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
   QUOTA_PROBE_STALE_MS,
 } from '../../src/shared/quota-cooldown.js';
+import {
+  isObserverQuotaCooldownActive,
+  isObserverUnhealthy,
+  OBSERVER_HEALTH_FILENAME,
+  readObserverHealth,
+} from '../../src/shared/observer-health.js';
+import { paths } from '../../src/shared/paths.js';
 
 describe('quota cooldown breaker (#3634)', () => {
   beforeEach(() => {
@@ -246,5 +254,27 @@ describe('quota cooldown breaker (#3634)', () => {
 
     // Before the fix this loop sent ~720 doomed requests; now it sends one.
     expect(requestsSent).toBe(1);
+  });
+
+  it('mirrors the armed window into observer-health.json and clears it on success', () => {
+    const healthPath = join(paths.dataDir(), OBSERVER_HEALTH_FILENAME);
+    const priorFailures = readObserverHealth(healthPath)?.consecutiveFailures ?? 0;
+    recordQuotaExhausted('claude', 'Weekly limit reached', 'weekly');
+
+    const armed = readObserverHealth(healthPath)!;
+    expect(armed.consecutiveFailures).toBe(priorFailures);
+    expect(armed.quotaCooldown).not.toBeNull();
+    expect(armed.quotaCooldown!.active).toBe(true);
+    expect(armed.quotaCooldown!.provider).toBe('claude');
+    expect(armed.quotaCooldown!.window).toBe('weekly');
+    expect(armed.quotaCooldown!.until).toBe(armed.quotaCooldown!.armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS);
+    expect(isObserverQuotaCooldownActive(armed)).toBe(true);
+    // A cooldown is not a failure: arming must not itself trip the banner.
+    expect(isObserverUnhealthy({ ...armed, consecutiveFailures: 0, lastErrorAt: null })).toBe(false);
+
+    clearQuotaCooldown('claude');
+    const cleared = readObserverHealth(healthPath);
+    expect(cleared === null || cleared.quotaCooldown === null).toBe(true);
+    expect(isObserverQuotaCooldownActive(cleared)).toBe(false);
   });
 });

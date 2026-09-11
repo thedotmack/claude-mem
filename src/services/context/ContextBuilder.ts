@@ -30,7 +30,9 @@ import { renderHumanEmptyState } from './formatters/HumanFormatter.js';
 import {
   readObserverHealth,
   isObserverUnhealthy,
+  isObserverQuotaCooldownActive,
   renderObserverHealthWarning,
+  renderObserverQuotaCooldownNotice,
 } from '../../shared/observer-health.js';
 
 const VERSION_MARKER_PATH = path.join(
@@ -187,10 +189,11 @@ function paintRed(text: string): string {
 }
 
 /**
- * Append the observer-health outage warning when the observer is failing.
- * Applied to EVERY context path (including empty-state, missing-DB, and the
- * no-memories-yet welcome hint in SearchRoutes) so the outage is surfaced even
- * when there is nothing else to render.
+ * Append the observer-health outage warning when the observer is failing,
+ * or the quota-cooldown pause notice when the breaker is withholding the
+ * generator without a failure streak. Applied to EVERY context path
+ * (including empty-state, missing-DB, and the no-memories-yet welcome hint
+ * in SearchRoutes) so a multi-hour intentional pause is not silent.
  *
  * BELOW the context, not above it: the timeline runs long, so a warning at the
  * top has already scrolled off by the time the context finishes printing. The
@@ -199,13 +202,23 @@ function paintRed(text: string): string {
  */
 export function withObserverHealthWarning(text: string, forHuman: boolean = false): string {
   const health = readObserverHealth();
-  if (!isObserverUnhealthy(health)) {
+  // Failure banner wins when both are set: the quota-exhausted copy already
+  // says capture is paused, and a cooldown is not a second outage. Cooldown
+  // alone (consecutiveFailures still below the unhealthy threshold) is the
+  // gap this notice exists to close — the breaker withholds the generator
+  // without ever incrementing the failure streak.
+  let notice: string | null = null;
+  if (isObserverUnhealthy(health)) {
+    notice = renderObserverHealthWarning(health);
+  } else if (isObserverQuotaCooldownActive(health)) {
+    notice = renderObserverQuotaCooldownNotice(health);
+  }
+  if (!notice) {
     return text;
   }
-  const warning = renderObserverHealthWarning(health);
   // Colors only on the human render: the agent copy is fetched separately
   // (colors=false) and ANSI escapes there are noise in the model's context.
-  const rendered = forHuman ? paintRed(warning) : warning;
+  const rendered = forHuman ? paintRed(notice) : notice;
   return text ? `${text}\n\n${rendered}` : rendered;
 }
 
