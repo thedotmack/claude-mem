@@ -94,7 +94,7 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
     const obsContent = match[1];
 
     const type = extractField(obsContent, 'type');
-    const title = extractField(obsContent, 'title');
+    const title = unwrapLabelWrappedTitle(extractField(obsContent, 'title'));
     const subtitle = extractField(obsContent, 'subtitle');
     const narrative = extractField(obsContent, 'narrative');
     const facts = extractArrayElements(obsContent, 'facts', 'fact');
@@ -184,6 +184,20 @@ function parseSummaryBlock(text: string, correlationId?: string | number): Parse
     next_steps,
     notes,
   };
+}
+
+// Some local observers echo the field label into the value, producing
+// `<title>[**title**: Example observation]</title>`. Only this complete,
+// unambiguous wrapper is unwrapped; partial forms and legitimately bracketed
+// titles are stored as-is (#3907).
+const LABEL_WRAPPED_TITLE = /^\[\*\*title\*\*:\s*([\s\S]+?)\s*\]$/;
+
+function unwrapLabelWrappedTitle(title: string | null): string | null {
+  if (title === null) return null;
+  const match = LABEL_WRAPPED_TITLE.exec(title);
+  if (!match) return title;
+  const inner = match[1].trim();
+  return inner === '' ? title : inner;
 }
 
 function extractField(content: string, fieldName: string): string | null {
