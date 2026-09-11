@@ -693,6 +693,7 @@ function copyPluginToMarketplace(): void {
 
   const allowedTopLevelEntries = [
     '.agents',
+    '.claude-plugin',
     '.codex-plugin',
     '.cursor-plugin',
     'claude-mem-cursor',
