@@ -118,7 +118,10 @@ describe('a session keeps the identity it was given', () => {
     store.updateMemorySessionId(1, 'msid-B');
 
     expect(storedId(db)).toBe('msid-B');
-    expect(outboxCount(db)).toBe(afterFirst + 4); // every prompt, again
+    // Supersede, don't append: the repair still runs for every prompt, but
+    // replaces the queued set_prompt_session op per target. Cost stays one
+    // row per prompt, not afterFirst + 4.
+    expect(outboxCount(db)).toBe(afterFirst);
     // ON UPDATE CASCADE carried the change into the memory too.
     const observed = (db.prepare('SELECT memory_session_id AS id FROM observations').get() as { id: string }).id;
     expect(observed).toBe('msid-B');
