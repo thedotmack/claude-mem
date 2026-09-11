@@ -1,9 +1,9 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeEach } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import { readdirSync, statSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveDataDir } from '../../../src/shared/paths.js';
-import { parseFile, resolveTreeSitterBinPath } from '../../../src/services/smart-file-read/parser.js';
+import { parseFile, resolveTreeSitterBinPath, _resetGrammarLibOptOut } from '../../../src/services/smart-file-read/parser.js';
 
 // Grammar compile reuse (#3926): `tree-sitter query -p <grammar-dir>` implies
 // --rebuild, so the CLI recompiled the grammar from C on every smart_outline /
@@ -35,7 +35,15 @@ function typescriptLib(): string {
   return join(LIB_DIR, entry);
 }
 
+// The initial `tree-sitter build` compiles C grammar sources from scratch in a
+// fresh temp data dir (pinned by tests/preload.ts). On CI runners this can take
+// 10-30 s, so each test carries a generous per-test timeout. The first test
+// naturally warms the compiled artifact; the second benefits from the cache.
 describe.if(treeSitterAvailable())('compiled grammar reuse', () => {
+  beforeEach(() => {
+    _resetGrammarLibOptOut();
+  });
+
   it('parses through a compiled artifact and does not rebuild it on the next call', () => {
     expect(parseFile(SOURCE, 'greeter.ts').symbols.map((s) => s.name)).toContain('greet');
 
@@ -44,7 +52,7 @@ describe.if(treeSitterAvailable())('compiled grammar reuse', () => {
 
     expect(parseFile(SOURCE, 'greeter.ts').symbols.map((s) => s.name)).toContain('greet');
     expect(statSync(libPath).mtimeMs).toBe(builtAt);
-  });
+  }, 120_000);
 
   it('rebuilds an artifact older than the grammar sources', () => {
     expect(parseFile(SOURCE, 'greeter.ts').symbols.map((s) => s.name)).toContain('greet');
@@ -59,5 +67,5 @@ describe.if(treeSitterAvailable())('compiled grammar reuse', () => {
 
     expect(parseFile(SOURCE, 'greeter.ts').symbols.map((s) => s.name)).toContain('greet');
     expect(statSync(libPath).mtimeMs).toBeGreaterThan(0);
-  });
+  }, 120_000);
 });
