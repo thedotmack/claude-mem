@@ -1087,6 +1087,48 @@ export class SessionStore {
     logger.warn('DB', `Created ${orphaned} stub sdk_sessions parent(s) for orphaned ${childTable} rows before rebuild (#3378)`);
   }
 
+  /**
+   * Live FK clause, not the schema_versions row: a later table rebuild can
+   * strip ON UPDATE CASCADE after v21 was already stamped (#3849).
+   */
+  private hasMemorySessionIdOnUpdateCascade(table: 'observations' | 'session_summaries'): boolean {
+    const fks = this.db.query(`PRAGMA foreign_key_list(${table})`).all() as Array<{
+      table: string;
+      from: string;
+      on_update: string;
+    }>;
+    return fks.some(fk =>
+      fk.table === 'sdk_sessions' &&
+      fk.from === 'memory_session_id' &&
+      fk.on_update === 'CASCADE'
+    );
+  }
+
+  /**
+   * After CREATE TABLE <newTable> from a fixed historical column list, add
+   * every live source column that list omitted (type and DEFAULT included)
+   * and return the full copy order. Same discipline as the v7 rebuild (#3890)
+   * so a repair of an already-migrated database cannot drop later columns.
+   */
+  private carryLiveColumnsOntoNewTable(
+    sourceTable: string,
+    newTable: string,
+    knownColumns: string[]
+  ): string[] {
+    const liveColumns = this.db.query(`PRAGMA table_info(${sourceTable})`).all() as TableColumnInfo[];
+    const extraColumns = liveColumns.filter(col => !knownColumns.includes(col.name));
+    for (const col of extraColumns) {
+      const type = col.type ? ` ${col.type}` : '';
+      const dflt = col.dflt_value === null || col.dflt_value === undefined ? '' : ` DEFAULT ${col.dflt_value}`;
+      this.db.run(`ALTER TABLE ${newTable} ADD COLUMN "${col.name}"${type}${dflt}`);
+      logger.debug('DB', `Carried ${col.name} over the ${sourceTable} rebuild (#3849)`);
+    }
+    // Copy only columns the source actually has. Known CREATE columns that
+    // the live table never grew (e.g. v8 hierarchical fields) stay at their
+    // new-table defaults instead of failing the SELECT.
+    return liveColumns.map(col => col.name);
+  }
+
   private removeSessionSummariesUniqueConstraint(): void {
     const summariesIndexes = this.db.query('PRAGMA index_list(session_summaries)').all() as IndexInfo[];
     // Only table-level UNIQUE constraints (PRAGMA origin 'u' — the v7 target,
@@ -1143,7 +1185,7 @@ export class SessionStore {
         prompt_number INTEGER,
         created_at TEXT NOT NULL,
         created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
+        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
       )
     `);
 
@@ -1248,7 +1290,7 @@ export class SessionStore {
         prompt_number INTEGER,
         created_at TEXT NOT NULL,
         created_at_epoch INTEGER NOT NULL,
-        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
+        FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
       )
     `);
 
@@ -1486,28 +1528,27 @@ export class SessionStore {
   }
 
   private addOnUpdateCascadeToForeignKeys(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(21) as SchemaVersion | undefined;
-    if (applied) return;
+    // Introspection, not the version row: v7 (and v9) can rebuild these
+    // tables after v21 is already stamped and silently drop ON UPDATE
+    // CASCADE. The live FK clause is the only reliable guard (#3849).
+    const observationsNeedsCascade = !this.hasMemorySessionIdOnUpdateCascade('observations');
+    const summariesNeedsCascade = !this.hasMemorySessionIdOnUpdateCascade('session_summaries');
+
+    if (!observationsNeedsCascade && !summariesNeedsCascade) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
+      return;
+    }
 
     logger.debug('DB', 'Adding ON UPDATE CASCADE to FK constraints on observations and session_summaries');
 
     this.db.run('PRAGMA foreign_keys = OFF');
     this.db.run('BEGIN TRANSACTION');
 
-    this.db.run('DROP TRIGGER IF EXISTS observations_ai');
-    this.db.run('DROP TRIGGER IF EXISTS observations_ad');
-    this.db.run('DROP TRIGGER IF EXISTS observations_au');
-
-    this.db.run('DROP TABLE IF EXISTS observations_new');
-
-    const observationsCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
-    const observationsHasMetadata = observationsCols.some(c => c.name === 'metadata');
-    const observationsHasContentHash = observationsCols.some(c => c.name === 'content_hash');
-    const metadataColumnSQL = observationsHasMetadata ? ',\n        metadata TEXT' : '';
-    const metadataSelectSQL = observationsHasMetadata ? ', metadata' : '';
-    const contentHashColumnSQL = observationsHasContentHash ? ',\n        content_hash TEXT' : '';
-    const contentHashSelectSQL = observationsHasContentHash ? ', content_hash' : '';
-
+    const observationsKnownColumns = [
+      'id', 'memory_session_id', 'project', 'text', 'type', 'title', 'subtitle',
+      'facts', 'narrative', 'concepts', 'files_read', 'files_modified',
+      'prompt_number', 'discovery_tokens', 'created_at', 'created_at_epoch',
+    ];
     const observationsNewSQL = `
       CREATE TABLE observations_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1525,16 +1566,9 @@ export class SessionStore {
         prompt_number INTEGER,
         discovery_tokens INTEGER DEFAULT 0,
         created_at TEXT NOT NULL,
-        created_at_epoch INTEGER NOT NULL${metadataColumnSQL}${contentHashColumnSQL},
+        created_at_epoch INTEGER NOT NULL,
         FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
       )
-    `;
-    const observationsCopySQL = `
-      INSERT INTO observations_new
-      SELECT id, memory_session_id, project, text, type, title, subtitle, facts,
-             narrative, concepts, files_read, files_modified, prompt_number,
-             discovery_tokens, created_at, created_at_epoch${metadataSelectSQL}${contentHashSelectSQL}
-      FROM observations
     `;
     const observationsIndexesSQL = `
       CREATE INDEX idx_observations_sdk_session ON observations(memory_session_id);
@@ -1561,12 +1595,11 @@ export class SessionStore {
       END;
     `;
 
-    this.db.run('DROP TRIGGER IF EXISTS session_summaries_ai');
-    this.db.run('DROP TRIGGER IF EXISTS session_summaries_ad');
-    this.db.run('DROP TRIGGER IF EXISTS session_summaries_au');
-
-    this.db.run('DROP TABLE IF EXISTS session_summaries_new');
-
+    const summariesKnownColumns = [
+      'id', 'memory_session_id', 'project', 'request', 'investigated', 'learned',
+      'completed', 'next_steps', 'files_read', 'files_edited', 'notes',
+      'prompt_number', 'discovery_tokens', 'created_at', 'created_at_epoch',
+    ];
     const summariesNewSQL = `
       CREATE TABLE session_summaries_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1586,13 +1619,6 @@ export class SessionStore {
         created_at_epoch INTEGER NOT NULL,
         FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
       )
-    `;
-    const summariesCopySQL = `
-      INSERT INTO session_summaries_new
-      SELECT id, memory_session_id, project, request, investigated, learned,
-             completed, next_steps, files_read, files_edited, notes,
-             prompt_number, discovery_tokens, created_at, created_at_epoch
-      FROM session_summaries
     `;
     const summariesIndexesSQL = `
       CREATE INDEX idx_session_summaries_sdk_session ON session_summaries(memory_session_id);
@@ -1619,8 +1645,30 @@ export class SessionStore {
     `;
 
     try {
-      this.recreateObservationsWithCascade(observationsNewSQL, observationsCopySQL, observationsIndexesSQL, observationsFTSTriggersSQL);
-      this.recreateSessionSummariesWithCascade(summariesNewSQL, summariesCopySQL, summariesIndexesSQL, summariesFTSTriggersSQL);
+      if (observationsNeedsCascade) {
+        this.db.run('DROP TRIGGER IF EXISTS observations_ai');
+        this.db.run('DROP TRIGGER IF EXISTS observations_ad');
+        this.db.run('DROP TRIGGER IF EXISTS observations_au');
+        this.db.run('DROP TABLE IF EXISTS observations_new');
+        this.recreateObservationsWithCascade(
+          observationsNewSQL,
+          observationsKnownColumns,
+          observationsIndexesSQL,
+          observationsFTSTriggersSQL
+        );
+      }
+      if (summariesNeedsCascade) {
+        this.db.run('DROP TRIGGER IF EXISTS session_summaries_ai');
+        this.db.run('DROP TRIGGER IF EXISTS session_summaries_ad');
+        this.db.run('DROP TRIGGER IF EXISTS session_summaries_au');
+        this.db.run('DROP TABLE IF EXISTS session_summaries_new');
+        this.recreateSessionSummariesWithCascade(
+          summariesNewSQL,
+          summariesKnownColumns,
+          summariesIndexesSQL,
+          summariesFTSTriggersSQL
+        );
+      }
 
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
       this.db.run('COMMIT');
@@ -1636,9 +1684,16 @@ export class SessionStore {
     }
   }
 
-  private recreateObservationsWithCascade(createSQL: string, copySQL: string, indexesSQL: string, ftsTriggersSQL: string): void {
+  private recreateObservationsWithCascade(
+    createSQL: string,
+    knownColumns: string[],
+    indexesSQL: string,
+    ftsTriggersSQL: string
+  ): void {
     this.db.run(createSQL);
-    this.db.run(copySQL);
+    const copyColumns = this.carryLiveColumnsOntoNewTable('observations', 'observations_new', knownColumns);
+    const quoted = copyColumns.map(name => `"${name}"`).join(', ');
+    this.db.run(`INSERT INTO observations_new (${quoted}) SELECT ${quoted} FROM observations`);
     this.db.run('DROP TABLE observations');
     this.db.run('ALTER TABLE observations_new RENAME TO observations');
     this.db.run(indexesSQL);
@@ -1649,9 +1704,16 @@ export class SessionStore {
     }
   }
 
-  private recreateSessionSummariesWithCascade(createSQL: string, copySQL: string, indexesSQL: string, ftsTriggersSQL: string): void {
+  private recreateSessionSummariesWithCascade(
+    createSQL: string,
+    knownColumns: string[],
+    indexesSQL: string,
+    ftsTriggersSQL: string
+  ): void {
     this.db.run(createSQL);
-    this.db.run(copySQL);
+    const copyColumns = this.carryLiveColumnsOntoNewTable('session_summaries', 'session_summaries_new', knownColumns);
+    const quoted = copyColumns.map(name => `"${name}"`).join(', ');
+    this.db.run(`INSERT INTO session_summaries_new (${quoted}) SELECT ${quoted} FROM session_summaries`);
     this.db.run('DROP TABLE session_summaries');
     this.db.run('ALTER TABLE session_summaries_new RENAME TO session_summaries');
     this.db.run(indexesSQL);
