@@ -36,6 +36,10 @@ function typescriptLib(): string {
 }
 
 describe.if(treeSitterAvailable())('compiled grammar reuse', () => {
+  // First-time tree-sitter grammar compile from C regularly exceeds bun's 5s
+  // default on a cold CI runner (the 13.24.7 bump CI timed out at 5007ms).
+  const COMPILE_TIMEOUT_MS = 30_000;
+
   it('parses through a compiled artifact and does not rebuild it on the next call', () => {
     expect(parseFile(SOURCE, 'greeter.ts').symbols.map((s) => s.name)).toContain('greet');
 
@@ -44,7 +48,7 @@ describe.if(treeSitterAvailable())('compiled grammar reuse', () => {
 
     expect(parseFile(SOURCE, 'greeter.ts').symbols.map((s) => s.name)).toContain('greet');
     expect(statSync(libPath).mtimeMs).toBe(builtAt);
-  });
+  }, { timeout: COMPILE_TIMEOUT_MS });
 
   it('rebuilds an artifact older than the grammar sources', () => {
     expect(parseFile(SOURCE, 'greeter.ts').symbols.map((s) => s.name)).toContain('greet');
@@ -59,5 +63,5 @@ describe.if(treeSitterAvailable())('compiled grammar reuse', () => {
 
     expect(parseFile(SOURCE, 'greeter.ts').symbols.map((s) => s.name)).toContain('greet');
     expect(statSync(libPath).mtimeMs).toBeGreaterThan(0);
-  });
+  }, { timeout: COMPILE_TIMEOUT_MS });
 });
