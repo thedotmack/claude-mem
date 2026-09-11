@@ -31,7 +31,7 @@ export const cursorAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
     const isShellCommand = !!r.command && !r.tool_name;
-    const cwd = r.workspace_roots?.[0] ?? r.cwd ?? process.cwd();
+    const cwd = r.workspace_roots?.[0] || r.cwd || process.cwd();
     if (!isValidCwd(cwd)) {
       throw new AdapterRejectedInput('invalid_cwd');
     }

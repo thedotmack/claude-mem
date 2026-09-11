@@ -6,14 +6,19 @@ import {
   readObserverHealth,
   recordObserverFailure,
   recordObserverSuccess,
+  recordObserverQuotaCooldown,
+  clearObserverQuotaCooldown,
   isObserverUnhealthy,
+  isObserverQuotaCooldownActive,
   workerRestartUrl,
   renderObserverHealthWarning,
+  renderObserverQuotaCooldownNotice,
   describeDuration,
   scrubErrorMessage,
   OBSERVER_UNHEALTHY_FAILURE_THRESHOLD,
   type ObserverHealthState,
 } from '../src/shared/observer-health.ts';
+import { QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS } from '../src/shared/quota-cooldown.ts';
 
 const repoRoot = process.cwd();
 
@@ -40,6 +45,20 @@ function unhealthyState(overrides: Partial<ObserverHealthState> = {}): ObserverH
     lastErrorMessage: 'Key limit exceeded (monthly limit). Manage it using https://openrouter.ai/keys/abc',
     lastErrorProvider: 'openrouter',
     lastSuccessAt: 1_754_600_000_000,
+    quotaCooldown: null,
+    ...overrides,
+  };
+}
+
+function activeCooldown(overrides: Partial<NonNullable<ObserverHealthState['quotaCooldown']>> = {}) {
+  const armedAt = 1_754_700_000_000;
+  return {
+    active: true,
+    provider: 'claude',
+    armedAt,
+    until: armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+    window: 'five_hour',
+    message: 'Weekly limit reached',
     ...overrides,
   };
 }
@@ -151,6 +170,49 @@ describe('observer-health ledger', () => {
     expect(state.lastErrorAction).toBeNull();
     expect(state.lastErrorUrl).toBeNull();
     expect(state.lastErrorRequestId).toBeNull();
+    expect(state.quotaCooldown).toBeNull();
+  });
+
+  it('records a quota cooldown without incrementing the failure streak', () => {
+    recordObserverQuotaCooldown(activeCooldown(), healthPath);
+    const state = readObserverHealth(healthPath)!;
+    expect(state.consecutiveFailures).toBe(0);
+    expect(state.quotaCooldown).not.toBeNull();
+    expect(state.quotaCooldown!.active).toBe(true);
+    expect(state.quotaCooldown!.provider).toBe('claude');
+    expect(state.quotaCooldown!.window).toBe('five_hour');
+    expect(state.quotaCooldown!.until).toBe(state.quotaCooldown!.armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS);
+    expect(state.quotaCooldown!.message).toBe('Weekly limit reached');
+    expect(isObserverUnhealthy(state)).toBe(false);
+
+    const raw = JSON.parse(readFileSync(healthPath, 'utf-8'));
+    expect(raw.quotaCooldown.active).toBe(true);
+    expect(raw.quotaCooldown.until).toBe(raw.quotaCooldown.armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS);
+  });
+
+  it('clears the quota cooldown field and leaves error details intact', () => {
+    recordObserverFailure('claude', 'boom', healthPath);
+    recordObserverQuotaCooldown(activeCooldown(), healthPath);
+    clearObserverQuotaCooldown(healthPath);
+    const state = readObserverHealth(healthPath)!;
+    expect(state.quotaCooldown).toBeNull();
+    expect(state.lastErrorMessage).toBe('boom');
+    expect(state.consecutiveFailures).toBe(1);
+  });
+
+  it('preserves quota cooldown across failure and success writes', () => {
+    recordObserverQuotaCooldown(activeCooldown(), healthPath);
+    recordObserverFailure('claude', 'later boom', healthPath);
+    recordObserverSuccess(healthPath);
+    const state = readObserverHealth(healthPath)!;
+    expect(state.consecutiveFailures).toBe(0);
+    expect(state.quotaCooldown!.provider).toBe('claude');
+    expect(state.quotaCooldown!.active).toBe(true);
+  });
+
+  it('scrubs credential-shaped cooldown messages', () => {
+    recordObserverQuotaCooldown(activeCooldown({ message: 'rejected api_key=SUPERSECRETCOOLDOWN' }), healthPath);
+    expect(readObserverHealth(healthPath)!.quotaCooldown!.message).not.toContain('SUPERSECRETCOOLDOWN');
   });
 
   it('scrubs credential-shaped content but keeps remedy URLs, and truncates', () => {
@@ -217,6 +279,42 @@ describe('isObserverUnhealthy', () => {
     expect(isObserverUnhealthy(unhealthyState({ consecutiveFailures: OBSERVER_UNHEALTHY_FAILURE_THRESHOLD - 1 }))).toBe(false);
     expect(isObserverUnhealthy(unhealthyState({ lastSuccessAt: Date.now() + 60_000 }))).toBe(false);
     expect(isObserverUnhealthy(unhealthyState({ lastSuccessAt: null }))).toBe(true);
+  });
+
+  it('does not treat an armed quota cooldown as unhealthy', () => {
+    expect(isObserverUnhealthy(unhealthyState({
+      consecutiveFailures: 0,
+      lastErrorAt: null,
+      lastSuccessAt: Date.now(),
+      quotaCooldown: activeCooldown(),
+    }))).toBe(false);
+  });
+});
+
+describe('isObserverQuotaCooldownActive', () => {
+  const nowMs = 1_754_700_000_000 + 60_000;
+
+  it('is true while until is in the future, even when the ledger is otherwise green', () => {
+    const state = unhealthyState({
+      consecutiveFailures: 0,
+      lastErrorAt: null,
+      lastSuccessAt: nowMs,
+      quotaCooldown: activeCooldown(),
+    });
+    expect(isObserverQuotaCooldownActive(state, nowMs)).toBe(true);
+  });
+
+  it('is false when until has elapsed, even if active is still true', () => {
+    const state = unhealthyState({
+      consecutiveFailures: 0,
+      quotaCooldown: activeCooldown({ active: true, until: nowMs - 1 }),
+    });
+    expect(isObserverQuotaCooldownActive(state, nowMs)).toBe(false);
+  });
+
+  it('is false when the field is missing or null', () => {
+    expect(isObserverQuotaCooldownActive(null, nowMs)).toBe(false);
+    expect(isObserverQuotaCooldownActive(unhealthyState({ quotaCooldown: null }), nowMs)).toBe(false);
   });
 });
 
@@ -313,6 +411,26 @@ describe('renderObserverHealthWarning', () => {
   });
 });
 
+describe('renderObserverQuotaCooldownNotice', () => {
+  it('names the pause, the provider, the until timestamp, and tells the user it is not a failure', () => {
+    const armedAt = 1_754_700_000_000;
+    const nowMs = armedAt + 5 * 60_000;
+    const notice = renderObserverQuotaCooldownNotice(unhealthyState({
+      consecutiveFailures: 0,
+      quotaCooldown: activeCooldown({ armedAt, until: armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS }),
+    }), nowMs);
+    expect(notice).toContain('paused while a provider quota cooldown is active');
+    expect(notice).toContain('claude');
+    expect(notice).toContain('five_hour');
+    expect(notice).toContain(new Date(armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS).toISOString());
+    expect(notice).toContain('This is not a failure');
+    expect(notice).toContain('stay queued');
+    expect(notice).toContain('Restarting will NOT help');
+    expect(notice).toContain('Do NOT restart the worker');
+    expect(notice).not.toContain(workerRestartUrl());
+  });
+});
+
 describe('describeDuration', () => {
   it('renders minutes, hours, and days at human granularity', () => {
     expect(describeDuration(30_000)).toBe('1 minute');
@@ -401,6 +519,52 @@ describe('ContextBuilder observer-health injection', () => {
     );
     const { emptyDbText, humanText } = runContextChild(dataDir);
     expect(emptyDbText).not.toContain("can't save memories");
+    expect(emptyDbText).not.toContain('quota cooldown');
     expect(humanText).toBe('TIMELINE_BODY');
+  });
+
+  it('surfaces a cooldown pause when the ledger is otherwise green', () => {
+    writeFileSync(
+      join(dataDir, 'observer-health.json'),
+      JSON.stringify(unhealthyState({
+        consecutiveFailures: 0,
+        lastErrorAt: null,
+        lastSuccessAt: Date.now(),
+        quotaCooldown: activeCooldown({ until: Date.now() + 20 * 60_000 }),
+      }))
+    );
+    const { emptyDbText, humanText } = runContextChild(dataDir);
+    expect(emptyDbText).toContain('paused while a provider quota cooldown is active');
+    expect(emptyDbText).toContain('This is not a failure');
+    expect(emptyDbText).not.toContain("can't save memories");
+    expect(humanText).toContain('paused while a provider quota cooldown is active');
+    expect(humanText).toContain('TIMELINE_BODY');
+    expect(humanText.indexOf('TIMELINE_BODY')).toBeLessThan(humanText.indexOf('quota cooldown'));
+  });
+
+  it('stays silent when a persisted cooldown has already expired', () => {
+    writeFileSync(
+      join(dataDir, 'observer-health.json'),
+      JSON.stringify(unhealthyState({
+        consecutiveFailures: 0,
+        lastSuccessAt: Date.now(),
+        quotaCooldown: activeCooldown({ active: true, until: Date.now() - 1 }),
+      }))
+    );
+    const { emptyDbText, humanText } = runContextChild(dataDir);
+    expect(emptyDbText).not.toContain('quota cooldown');
+    expect(humanText).toBe('TIMELINE_BODY');
+  });
+
+  it('keeps the failure warning when unhealthy even if a cooldown is also armed', () => {
+    writeFileSync(
+      join(dataDir, 'observer-health.json'),
+      JSON.stringify(unhealthyState({
+        quotaCooldown: activeCooldown({ until: Date.now() + 20 * 60_000 }),
+      }))
+    );
+    const { emptyDbText } = runContextChild(dataDir);
+    expect(emptyDbText).toContain("can't save memories");
+    expect(emptyDbText).not.toContain('This is not a failure');
   });
 });

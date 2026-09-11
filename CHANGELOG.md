@@ -4,6 +4,196 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.24.15] - 2026-09-11
+
+- #3727 / #3706 — daemon no longer inherits user project cwd; worker cwd is DATA_DIR (Windows folder lock fix)
+- #4021 — test(windows): only skip the ghost gate for the one runtime signature
+
+## [13.24.14] - 2026-09-11
+
+- #4015 — skip creating empty CLAUDE.md files
+- #4016 — scan configured dot-directories for transcripts
+- #4017 — accept empty OpenRouter reasoning responses
+- #4014 — tolerate negative statfs availability in cleanup
+- #4019 — serialize FileTailer reads; clear partial on truncation
+- #4018 — upgrade shell-quote to 1.9.0 (CVE-2026-13311)
+
+## [13.24.13] - 2026-09-11
+
+- #3726 — Windows CredRead shim compiles (OAuth token lookup)
+- #4009 — ship bug-report CLI in the package
+- #4010 — Windsurf hooks.json BOM-tolerant read
+- #4011 — project-filter expand ~ with a path separator
+- #4012 — stop reparenting ~user/ transcript watch paths
+
+## [13.24.12] - 2026-09-11
+
+- #4003 retry max_completion_tokens on GPT-5 400s
+- #4005 use remote ancestry to adopt merged worktrees
+- #4006 fail open on malformed hook stdin
+- #3826 delete the stale trial acknowledgement constant
+- #3773 mention Codex hook trust after install
+- #4008 resolve Volta Bun shims to bun.exe
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.24.11...v13.24.12
+
+## [13.24.11] - 2026-09-11
+
+- #3994 CLAUDE_MEM_FETCH_VERBOSE
+- #3992 ghost-gate fixture handshake
+- #3996 strip image payloads from observation prompt
+- #3998 requeue on observer transport failure
+- #3999 pause session on reactive quota error
+- #3995 fit session block to hook output limit
+- #3997 CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS
+- #4000 configurable LLM per-attempt deadline
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.24.10...v13.24.11
+
+## [13.24.10] - 2026-09-11
+
+## What's Changed
+* fix(sync): shrink content flush batches and raise hub push timeout by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3991
+* chore(release): 13.24.10 by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3993
+
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.24.9...v13.24.10
+
+## [13.24.9] - 2026-09-11
+
+## What's Changed
+* chore(release): 13.24.8 by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3981
+* fix(worker): salvage prose-only observations instead of dropping them (closes #3351) by @rodboev in https://github.com/thedotmack/claude-mem/pull/3363
+* fix(observer): skip textless assistant frames before batch confirm (Fixes #3492) by @stantheman0128 in https://github.com/thedotmack/claude-mem/pull/3501
+* fix(installer): tolerate non-string OpenCode context bodies (refs #3330) by @rodboev in https://github.com/thedotmack/claude-mem/pull/3383
+* fix(opencode): honor persisted worker port settings (closes #3365) by @rodboev in https://github.com/thedotmack/claude-mem/pull/3402
+* fix(search): fall back after empty semantic misses (closes #3361) by @rodboev in https://github.com/thedotmack/claude-mem/pull/3399
+* fix(chroma): tolerate CJK list backfill by @ousamabenyounes in https://github.com/thedotmack/claude-mem/pull/3430
+* fix(sqlite): populate session_summaries files_read and files_edited (#3517) by @stantheman0128 in https://github.com/thedotmack/claude-mem/pull/3530
+* fix(hooks): dedupe file-context injection per session (#3480) by @ousamabenyounes in https://github.com/thedotmack/claude-mem/pull/3486
+* fix(observer): don't store observations parsed from the init reply by @sanztheo in https://github.com/thedotmack/claude-mem/pull/3877
+* fix(hooks): stop login-shell PATH rebuild on Claude Code hooks (#3190) by @stantheman0128 in https://github.com/thedotmack/claude-mem/pull/3453
+* fix: say why the worker died instead of listing suspects by @yetanotherflo in https://github.com/thedotmack/claude-mem/pull/3894
+* fix(openrouter): never send an empty messages array to the API (Fixes #3491) by @stantheman0128 in https://github.com/thedotmack/claude-mem/pull/3493
+* fix(server-beta): carry session folder onto generated observation metadata by @alessandropcostabr in https://github.com/thedotmack/claude-mem/pull/2671
+* fix(server-beta): re-pin payload.generation_job_id on idempotent re-create by @alessandropcostabr in https://github.com/thedotmack/claude-mem/pull/3583
+* fix(server-beta): accept contentSessionId on /v1/memories, mirroring /v1/events by @alessandropcostabr in https://github.com/thedotmack/claude-mem/pull/3586
+* fix(search): answer CJK and Japanese queries by substring by @ntdatt812 in https://github.com/thedotmack/claude-mem/pull/3810
+* fix(observer): recognise the CLI's signed-out wording as an auth failure by @ntdatt812 in https://github.com/thedotmack/claude-mem/pull/3786
+* fix(observer): don't confirm the queued batch on mid-stream empty SDK chunks (#3869) by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3984
+* security: close credential leak paths (#3861 / #3680) by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3985
+* fix(sync): quarantine stale content-outbox origin_device_id after device remint by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3987
+* fix(opencode): read tool arguments from hook input (refs #3678) by @rodboev in https://github.com/thedotmack/claude-mem/pull/3766
+* fix(opencode): stamp platformSource on worker posts (refs #3678) by @rodboev in https://github.com/thedotmack/claude-mem/pull/3767
+* fix(windows): bound the port-occupancy probe so a ghost listener cannot hang the launcher by @weiconghe in https://github.com/thedotmack/claude-mem/pull/3989
+* fix(observer): surface quota cooldown on observer-health and session-start by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3986
+* chore(release): 13.24.9 by @thedotmack in https://github.com/thedotmack/claude-mem/pull/3990
+
+## New Contributors
+* @sanztheo made their first contribution in https://github.com/thedotmack/claude-mem/pull/3877
+* @yetanotherflo made their first contribution in https://github.com/thedotmack/claude-mem/pull/3894
+* @ntdatt812 made their first contribution in https://github.com/thedotmack/claude-mem/pull/3810
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.24.8...v13.24.9
+
+## [13.24.8] - 2026-09-11
+
+Bugfix patch — eight fixes that landed after 13.24.7.
+
+### Cloud sync
+- **Stale device-id outbox heads**: ops stamped with a stale `origin_device_id` that the server rejects with `400 invalid_ops` are now quarantined instead of blocking the whole sync outbox forever (#3973)
+
+### Hooks & sessions
+- **`resume` matcher**: the SessionStart hook now fires on `claude --resume`, so resumed sessions get memory context injected (#3969)
+- **Empty-string cwd**: an empty `cwd` is treated as absent and falls through to the normal fallbacks instead of resolving to the wrong project (#3977)
+
+### Worker / runtime
+- **bun-runner EPIPE**: `child.stdin` now has an error listener, so a worker that exits early no longer crashes the hook with an unhandled EPIPE (#3976)
+- **Bun socket closed**: Bun's "socket connection was closed" error is classified as worker-unavailable, so it takes the graceful fallback path rather than surfacing as a hard failure (#3978)
+
+### Providers
+- **OpenRouter detection**: OpenRouter is classified by exact hostname, not a URL substring match, so lookalike base URLs are no longer misrouted (#3979)
+
+### Database
+- **session_summaries FK cascade**: `ON UPDATE CASCADE` is preserved when the `session_summaries` table is rebuilt by migrations (#3980)
+
+### CI
+- **grammar-lib-reuse test**: fixed a CI timeout and an inter-test state leak (#3975)
+
+**Upgrade:** `npx claude-mem@13.24.8` or update the plugin from the marketplace.
+
+## [13.24.7] - 2026-09-11
+
+Post-13.24.6 stability & correctness fixes.
+
+### Chroma / vector store
+- **Chroma lock/owner**: reuse Chroma writer owner within process (#3919); reap unreadable writer lock past grace (#3916)
+- **Chroma backfill**: stop a backfill run after repeated batch failures
+- **Chroma-MCP reap**: reap chroma-mcp trees no worker owns at boot (#3905)
+
+### Quota & resource management
+- **Quota overage**: ignore inactive overage utilization (#3903)
+
+### Grammar & parsing
+- **Grammar-once**: build each grammar once instead of recompiling per query (#3926)
+
+### Windows
+- **Ghost listeners**: reclaim ghost listeners left by out-of-band worker deaths (#3900)
+
+### Auth / config
+- **OAuth CLAUDE_CONFIG_DIR**: honor CLAUDE_CONFIG_DIR for the Claude Code keychain entry and the SDK subprocess env (#3908)
+
+### Codex
+- **Codex reinject**: re-inject memory after compact and clear (#3880)
+
+### Search
+- **Search relevance**: hydrate Chroma matches in relevance order, not by date (#3881)
+
+### Worker / supervisor
+- **Field optimizer**: honor field optimizer deadline and compact Edit observer view (#3939)
+- **Supervisor concurrency**: parked slot-waiters follow the live concurrency cap; a provider switch restarts a parked generator (#3909)
+
+### OpenRouter
+- **Model fallbacks**: map the model list onto the native models[] fallback array (#3971)
+
+### Setup
+- **Plugin deps**: guard plugin deps on completeness, not node_modules existence (#3972)
+
+---
+
+**npm publish** is handled separately by the Prioritizer.
+
+## [13.24.6] - 2026-09-11
+
+### Bug Fixes
+
+- **Fix version-mismatch kill loop** — stale worker bundles stamped 13.24.1 triggered continuous recycle storms; worker-service now validates its own bundle version and exits cleanly on mismatch (#3940, #3961)
+- **Corpus type filter** — observation type filters are now preserved through corpus build, fixing incorrect unfiltered results (#3892)
+- **Title unwrap** — parser correctly unwraps label-wrapped observation titles instead of double-wrapping (#3907, #3947)
+
+### Also included (landed between v13.24.5 tag and this release)
+
+- fix(chroma): record failed live writes as pending (#3917, #3949)
+- fix(sqlite): keep post-v7 columns through session_summaries rebuild (#3955)
+
+### Notes
+
+- v13.24.5 was published with bundles incorrectly stamped 13.24.1, causing the kill-loop. This release rebuilds all bundles with the correct 13.24.6 stamp.
+- npm publish is handled separately by the Prioritizer.
+
+## [13.24.5] - 2026-09-09
+
+## CCS Align + overnight ships
+
+Fleet can install from npm again (`npx claude-mem@13.24.5` / `latest`).
+
+### Highlights since v13.24.1
+- **CCS Align Phases 0–3** (#3934–#3937) — middle cache, exclude marks, rules walker, sign-off; skill at `plugin/skills/ccs-align`
+- **Grok Bot awareness push pilot Phase 0+1** (#3931)
+- **OpenRouter daily list-price history** for expense reports (#3932)
+
+Main tip: `8bc631a7`
+
 ## [Unreleased]
 
 ### Grok Bot awareness push pilot (Phase 0 + Phase 1)

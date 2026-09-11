@@ -18,6 +18,7 @@ import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../sh
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
 import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
+import { resolveWithinWorkspace } from '../services/smart-file-read/workspace-path.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -232,6 +233,8 @@ function wrapHandler<Args>(
 interface ObservationAddArgs {
   projectId?: string;
   serverSessionId?: string | null;
+  contentSessionId?: string | null;
+  platformSource?: string | null;
   kind?: string;
   content: string;
   metadata?: Record<string, unknown>;
@@ -247,6 +250,8 @@ const handleObservationAdd = wrapHandler('observation_add', async (args: Observa
     projectId,
     content: args.content,
     ...(args.serverSessionId !== undefined ? { serverSessionId: args.serverSessionId } : {}),
+    ...(args.contentSessionId !== undefined ? { contentSessionId: args.contentSessionId } : {}),
+    ...(args.platformSource !== undefined ? { platformSource: args.platformSource } : {}),
     ...(args.kind !== undefined ? { kind: args.kind } : {}),
     ...(args.metadata !== undefined ? { metadata: args.metadata } : {}),
   };
@@ -718,7 +723,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['query']
     },
     handler: async (args: any) => {
-      const rootDir = resolve(args.path || process.cwd());
+      const rootDir = await resolveWithinWorkspace(args.path || process.cwd());
       const result = await searchCodebase(rootDir, args.query, {
         maxResults: args.max_results || 20,
         filePattern: args.file_pattern
@@ -747,7 +752,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['file_path', 'symbol_name']
     },
     handler: async (args: any) => {
-      const filePath = resolve(args.file_path);
+      const filePath = await resolveWithinWorkspace(args.file_path);
       const content = await readFile(filePath, 'utf-8');
       const unfolded = unfoldSymbol(content, filePath, args.symbol_name);
       if (unfolded) {
@@ -787,7 +792,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['file_path']
     },
     handler: async (args: any) => {
-      const filePath = resolve(args.file_path);
+      const filePath = await resolveWithinWorkspace(args.file_path);
       const content = await readFile(filePath, 'utf-8');
       const parsed = parseFile(content, filePath);
       if (parsed.symbols.length > 0) {

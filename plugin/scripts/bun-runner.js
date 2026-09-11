@@ -175,6 +175,7 @@ if (needsCmdShell) {
 const child = spawn(spawnCmd, spawnArgs, spawnOptions);
 
 if (child.stdin) {
+  child.stdin.on('error', () => {});
   if (stdinData && stdinData.length > 0) {
     child.stdin.write(stdinData);
     child.stdin.end();

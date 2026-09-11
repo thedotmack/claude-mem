@@ -52,6 +52,31 @@ export interface ObserverHealthState {
    * cannot clear, so it must not be offered one.
    */
   lastErrorKind?: string | null;
+  /**
+   * Intentional pause while the provider quota breaker is withholding
+   * generator starts. Distinct from lastError*: a cooldown is not a failure,
+   * and must not flip the ledger to unhealthy. Null when no breaker is armed
+   * (or after it was cleared on a successful store).
+   */
+  quotaCooldown: ObserverQuotaCooldown | null;
+}
+
+/**
+ * Persisted half of the quota breaker, mirrored into the health ledger so a
+ * cooldown is visible without tailing the worker log. `until` is authoritative:
+ * a stale `active: true` after expiry must not keep the banner up.
+ */
+export interface ObserverQuotaCooldown {
+  active: boolean;
+  provider: string;
+  /** Epoch ms when the breaker was armed. */
+  armedAt: number;
+  /** Epoch ms when the next probe is allowed. */
+  until: number;
+  /** Window the provider named, when it named one (e.g. 'weekly'). */
+  window?: string;
+  /** Provider-reported reason, already free of any user prompt text. */
+  message?: string;
 }
 
 /**
@@ -87,6 +112,7 @@ const EMPTY_STATE: ObserverHealthState = {
   lastErrorAction: null,
   lastErrorUrl: null,
   lastErrorRequestId: null,
+  quotaCooldown: null,
 };
 
 function defaultHealthFilePath(): string {
@@ -257,6 +283,41 @@ export function recordObserverSuccess(filePath: string = defaultHealthFilePath()
   });
 }
 
+/**
+ * Mirror an armed quota breaker into the health ledger. Does not increment
+ * consecutiveFailures — a cooldown is an intentional pause, not a failure.
+ */
+export function recordObserverQuotaCooldown(
+  cooldown: ObserverQuotaCooldown,
+  filePath: string = defaultHealthFilePath(),
+): void {
+  withLedgerLock(filePath, () => {
+    const prior = readObserverHealth(filePath) ?? EMPTY_STATE;
+    writeObserverHealth({
+      ...prior,
+      quotaCooldown: {
+        active: true,
+        provider: cooldown.provider,
+        armedAt: cooldown.armedAt,
+        until: cooldown.until,
+        ...(cooldown.window ? { window: cooldown.window } : {}),
+        ...(cooldown.message ? { message: scrubErrorMessage(cooldown.message) } : {}),
+      },
+    }, filePath);
+  });
+}
+
+/** Clear the cooldown field after the breaker is released. */
+export function clearObserverQuotaCooldown(
+  filePath: string = defaultHealthFilePath(),
+): void {
+  withLedgerLock(filePath, () => {
+    const prior = readObserverHealth(filePath);
+    if (!prior || prior.quotaCooldown === null) return;
+    writeObserverHealth({ ...prior, quotaCooldown: null }, filePath);
+  });
+}
+
 export function isObserverUnhealthy(state: ObserverHealthState | null): state is ObserverHealthState {
   return state !== null
     && state.consecutiveFailures >= OBSERVER_UNHEALTHY_FAILURE_THRESHOLD
@@ -303,6 +364,58 @@ export function workerRestartUrl(): string {
  */
 export function isQuotaFailure(state: ObserverHealthState): boolean {
   return state.lastErrorKind === 'quota_exhausted';
+}
+
+/**
+ * True while the persisted cooldown window is still in the future. `until`
+ * wins over the stored `active` flag so an expired ledger cannot latch the
+ * banner (the #3902 failure mode, inverted).
+ */
+export function isObserverQuotaCooldownActive(
+  state: ObserverHealthState | null,
+  nowMs: number = Date.now(),
+): state is ObserverHealthState {
+  const cooldown = state?.quotaCooldown;
+  return cooldown != null
+    && typeof cooldown.until === 'number'
+    && cooldown.until > nowMs;
+}
+
+/**
+ * Session-start notice for an intentional quota pause. Distinct from the
+ * failure warning: nothing is broken, the generator is withheld on purpose,
+ * and queued work drains when the window clears.
+ */
+export function renderObserverQuotaCooldownNotice(
+  state: ObserverHealthState,
+  nowMs: number = Date.now(),
+): string {
+  const cooldown = state.quotaCooldown;
+  const provider = cooldown?.provider ?? 'unknown provider';
+  const until = cooldown?.until;
+  const untilText = until
+    ? `${new Date(until).toISOString()} (${describeDuration(Math.max(0, until - nowMs))} from now)`
+    : 'the next probe window';
+  const windowText = cooldown?.window ? ` (${cooldown.window})` : '';
+  const message = cooldown?.message ? scrubErrorMessage(cooldown.message) : null;
+
+  return [
+    '⚠️ Heads up: claude-mem is paused while a provider quota cooldown is active.',
+    '',
+    `The memory observer is waiting out a quota cooldown on ${provider}${windowText} until ${untilText}.`,
+    '',
+    ...(message ? [`Latest signal: ${message}`, ''] : []),
+    'This is not a failure. Incoming observations stay queued and will be written',
+    'when the cooldown clears — the worker is intentionally not starting the',
+    'generator so it does not keep spending a spent allowance.',
+    '',
+    'Restarting will NOT help here, and it clears the backoff that is currently keeping',
+    'claude-mem from hammering the provider — so please leave the worker alone.',
+    '',
+    '(Assistant: tell the user that memory capture is paused for a quota cooldown',
+    'at the very start of your first reply. Do NOT restart the worker and do NOT',
+    'suggest restarting it.)',
+  ].join('\n');
 }
 
 export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: number = Date.now()): string {

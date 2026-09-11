@@ -6,9 +6,12 @@ import {
   addOpenCodePluginReference,
   deregisterOpenCodePluginFromConfig,
   getOpenCodeConfigPath,
+  getOpenCodeAgentsMdPath,
+  installOpenCodeIntegration,
   removeOpenCodePluginReference,
   registerOpenCodePluginInConfig,
 } from '../../src/services/integrations/OpenCodeInstaller.js';
+import { logger } from '../../src/utils/logger.js';
 
 describe('OpenCode installer config registration', () => {
   let tempDir: string;
@@ -103,5 +106,83 @@ describe('OpenCode installer config registration', () => {
     expect(result).toBe(0);
     const config = JSON.parse(readFileSync(getOpenCodeConfigPath(), 'utf-8'));
     expect(config.plugin).toEqual(['context-mode']);
+  });
+});
+
+describe('OpenCode installer context retrieval', () => {
+  let tempDir: string;
+  let previousConfigDir: string | undefined;
+  let previousClaudeConfigDir: string | undefined;
+  let previousFetch: typeof globalThis.fetch;
+  let previousDebug: typeof logger.debug;
+  let previousInfo: typeof logger.info;
+
+  beforeEach(() => {
+    tempDir = join(tmpdir(), `opencode-context-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const marketplacePluginPath = join(tempDir, 'plugins', 'marketplaces', 'thedotmack', 'dist', 'opencode-plugin', 'index.js');
+    mkdirSync(join(marketplacePluginPath, '..'), { recursive: true });
+    writeFileSync(marketplacePluginPath, 'export default {}\n', 'utf-8');
+
+    previousConfigDir = process.env.OPENCODE_CONFIG_DIR;
+    previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    previousFetch = globalThis.fetch;
+    previousDebug = logger.debug;
+    previousInfo = logger.info;
+    process.env.OPENCODE_CONFIG_DIR = tempDir;
+    process.env.CLAUDE_CONFIG_DIR = tempDir;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = previousFetch;
+    logger.debug = previousDebug;
+    logger.info = previousInfo;
+    if (previousConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
+    else process.env.OPENCODE_CONFIG_DIR = previousConfigDir;
+    if (previousClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function stubWorkerContext(body: unknown, diagnostics: string[]): void {
+    logger.debug = (_component, message) => diagnostics.push(message);
+    logger.info = () => {};
+    globalThis.fetch = async (input) => ({
+      ok: true,
+      text: async () => input.toString().includes('/api/context/inject') ? body : '',
+    }) as Response;
+  }
+
+  it('rejects a wrapped object body without coercion or unavailable-worker diagnostics', async () => {
+    const diagnostics: string[] = [];
+    const wrappedBody = Object.freeze({ wrapped: true, value: '# Existing memory' });
+    stubWorkerContext(wrappedBody, diagnostics);
+
+    expect(await installOpenCodeIntegration()).toBe(0);
+
+    const agentsMd = readFileSync(getOpenCodeAgentsMdPath(), 'utf-8');
+    expect(agentsMd).toContain('*No context yet. Complete your first session and context will appear here.*');
+    expect(agentsMd).not.toContain('# Existing memory');
+    expect(diagnostics).toEqual([]);
+  });
+
+  it('preserves valid existing context exactly', async () => {
+    const diagnostics: string[] = [];
+    const context = '  # Existing memory  ';
+    stubWorkerContext(context, diagnostics);
+
+    expect(await installOpenCodeIntegration()).toBe(0);
+
+    expect(readFileSync(getOpenCodeAgentsMdPath(), 'utf-8')).toContain(context);
+    expect(diagnostics).toEqual([]);
+  });
+
+  it('uses placeholder context for blank strings', async () => {
+    const diagnostics: string[] = [];
+    stubWorkerContext(' \t\n ', diagnostics);
+
+    expect(await installOpenCodeIntegration()).toBe(0);
+
+    expect(readFileSync(getOpenCodeAgentsMdPath(), 'utf-8')).toContain('*No context yet. Complete your first session and context will appear here.*');
+    expect(diagnostics).toEqual([]);
   });
 });

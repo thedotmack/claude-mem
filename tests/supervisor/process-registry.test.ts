@@ -2,7 +2,28 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import { createProcessRegistry, isPidAlive, normalizeSpawnSdkArgs } from '../../src/supervisor/process-registry.js';
+import {
+  createProcessRegistry,
+  isPidAlive,
+  normalizeSpawnSdkArgs,
+  getProcessRegistry,
+  waitForSlot,
+  getParkedSlotWaiterCount,
+  isSessionParkedForSlot,
+  type SlotReservation,
+} from '../../src/supervisor/process-registry.js';
+import { guardSharedProcessRegistrySingleton } from './process-registry-singleton-guard.js';
+
+// Registered at true file top level (outside every describe below), NOT
+// nested inside describe('waitForSlot / parked waiters (#2756)', ...): bun
+// (like Jest/Mocha) runs afterEach hooks inner-scope-first, outer-scope-last
+// (LIFO), regardless of source order — so an outer-scope guard is
+// guaranteed to run its "after" check only once that describe's own local
+// `afterEach` cleanup (nested one level in) has already finished, no matter
+// where within the describe that local afterEach is declared. Its
+// beforeEach half runs outer-first (before any nested describe's own
+// beforeEach or test body), which is exactly what a "before" check needs.
+guardSharedProcessRegistrySingleton('process-registry.test.ts');
 
 function makeTempDir(): string {
   return path.join(tmpdir(), `claude-mem-supervisor-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -434,5 +455,146 @@ describe('supervisor ProcessRegistry', () => {
 
       expect(registry.getAll()).toHaveLength(1);
     });
+  });
+});
+
+/**
+ * #2756 — these tests exercise waitForSlot/getParkedSlotWaiterCount/
+ * isSessionParkedForSlot against the REAL module singleton (getProcessRegistry()),
+ * because waitForSlot is hardcoded to that singleton rather than accepting an
+ * injected registry. This is safe re: data isolation: tests/preload.ts pins
+ * CLAUDE_MEM_DATA_DIR to a fresh temp dir for the whole `bun test` run before
+ * any module loads. It is NOT the only file touching this singleton's
+ * in-memory state, though — tests/worker/http/routes/
+ * session-routes-provider-switch.test.ts and tests/worker/http/routes/
+ * data-routes-processing-status.test.ts both register real 'sdk'-typed
+ * entries and drive real waitForSlot/slotWaiters against this exact same
+ * process-global module, so a leak here can affect those files (and vice
+ * versa) within the same `bun test` process — see
+ * process-registry-singleton-guard.ts for the mechanism and the isolation
+ * guard installed above (at file top level, on purpose — see its comment).
+ * Every fake 'sdk' entry registered below is still unregistered in
+ * afterEach on top of that guard.
+ */
+describe('waitForSlot / parked waiters (#2756)', () => {
+  const registry = getProcessRegistry();
+  const registeredIds: string[] = [];
+  // waitForSlot resolves to a SlotReservation (#3287, upstream since this
+  // fork's base) rather than void — every reservation granted below is
+  // captured here and released in afterEach so the reservedSlots counter it
+  // holds doesn't leak into getActiveSdkCount() for a later test in this
+  // file, or for another file sharing this singleton in the same `bun test`
+  // process (the guard above only checks parked waiters and registry 'sdk'
+  // entries, not reservedSlots).
+  const grantedReservations: SlotReservation[] = [];
+
+  function registerFakeSdk(sessionId: string | number): string {
+    const id = `sdk:test-${sessionId}:${Math.random().toString(36).slice(2)}`;
+    // pid=process.pid is always alive per isPidAlive, so pruneDeadEntries()
+    // never removes these out from under a test.
+    registry.register(id, {
+      pid: process.pid,
+      type: 'sdk',
+      sessionId,
+      startedAt: new Date().toISOString(),
+    });
+    registeredIds.push(id);
+    return id;
+  }
+
+  afterEach(() => {
+    while (grantedReservations.length > 0) {
+      grantedReservations.pop()!.release();
+    }
+    while (registeredIds.length > 0) {
+      const id = registeredIds.pop();
+      if (id) registry.unregister(id);
+    }
+  });
+
+  it('parked waiter is released by a settings raise, without waiting the real recheck interval', async () => {
+    registerFakeSdk('occupant-1');
+    registerFakeSdk('occupant-2');
+
+    let currentMax = 2;
+    const parkedPromise = waitForSlot(() => currentMax, undefined, 'sess-settings-raise');
+
+    // The Promise executor runs synchronously before any await, so the push
+    // onto slotWaiters is already visible here.
+    expect(isSessionParkedForSlot('sess-settings-raise')).toBe(true);
+    expect(getParkedSlotWaiterCount()).toBe(1);
+
+    // Raise the limit — this alone must NOT release the waiter (nothing has
+    // poked the queue yet); the (a) fix is that the NEXT recheck observes it.
+    currentMax = 3;
+    expect(isSessionParkedForSlot('sess-settings-raise')).toBe(true);
+
+    // Poke a recheck deterministically, without waiting the real 5s
+    // SLOT_RECHECK_INTERVAL_MS: register+unregister a throwaway 3rd 'sdk'
+    // entry. unregister() calls notifySlotAvailable() synchronously, and by
+    // then the throwaway is already removed, so the recheck sees count=2 < 3.
+    const throwawayId = registerFakeSdk('throwaway');
+    registry.unregister(throwawayId);
+
+    grantedReservations.push(await parkedPromise);
+
+    expect(isSessionParkedForSlot('sess-settings-raise')).toBe(false);
+    expect(getParkedSlotWaiterCount()).toBe(0);
+  });
+
+  it('releases parked waiters in FIFO order as slots free up one at a time', async () => {
+    const occupantA = registerFakeSdk('occ-a');
+    const occupantB = registerFakeSdk('occ-b');
+    const currentMax = 2;
+
+    const resolvedOrder: string[] = [];
+    const waiterFirst = waitForSlot(() => currentMax, undefined, 'sess-first').then((reservation) => {
+      grantedReservations.push(reservation);
+      resolvedOrder.push('first');
+    });
+    const waiterSecond = waitForSlot(() => currentMax, undefined, 'sess-second').then((reservation) => {
+      grantedReservations.push(reservation);
+      resolvedOrder.push('second');
+    });
+
+    expect(isSessionParkedForSlot('sess-first')).toBe(true);
+    expect(isSessionParkedForSlot('sess-second')).toBe(true);
+    expect(getParkedSlotWaiterCount()).toBe(2);
+
+    // Free exactly one slot: only the FRONT waiter (first) should resolve —
+    // the second waiter's own recheck hasn't been poked yet.
+    registry.unregister(occupantA);
+    await waiterFirst;
+
+    expect(resolvedOrder).toEqual(['first']);
+    expect(isSessionParkedForSlot('sess-first')).toBe(false);
+    expect(isSessionParkedForSlot('sess-second')).toBe(true);
+    expect(getParkedSlotWaiterCount()).toBe(1);
+
+    // Free the second slot: the remaining waiter (second) resolves.
+    registry.unregister(occupantB);
+    await waiterSecond;
+
+    expect(resolvedOrder).toEqual(['first', 'second']);
+    expect(getParkedSlotWaiterCount()).toBe(0);
+  });
+
+  it('rejects immediately when the hard cap is already exceeded, without parking', async () => {
+    for (let i = 0; i < 10; i++) {
+      registerFakeSdk(`hardcap-${i}`);
+    }
+
+    await expect(waitForSlot(1, undefined, 'sess-hardcap')).rejects.toThrow(/Hard cap exceeded/);
+    expect(isSessionParkedForSlot('sess-hardcap')).toBe(false);
+    expect(getParkedSlotWaiterCount()).toBe(0);
+  });
+
+  it('resolves immediately (no parking) when the active count is already under the limit', async () => {
+    registerFakeSdk('solo-occupant');
+
+    grantedReservations.push(await waitForSlot(() => 5, undefined, 'sess-not-parked'));
+
+    expect(isSessionParkedForSlot('sess-not-parked')).toBe(false);
+    expect(getParkedSlotWaiterCount()).toBe(0);
   });
 });

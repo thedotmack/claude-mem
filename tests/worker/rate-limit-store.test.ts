@@ -123,6 +123,65 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     store = freshStore();
   });
 
+  it('does not abort on inactive overage at 100% utilization', () => {
+    store.set({
+      rateLimitType: 'overage',
+      utilization: 1,
+      isUsingOverage: false,
+      status: 'allowed_warning',
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(false);
+  });
+
+  it('aborts on active overage above the utilization threshold', () => {
+    store.set({
+      rateLimitType: 'overage',
+      utilization: 0.96,
+      isUsingOverage: true,
+      status: 'allowed_warning',
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('overage');
+  });
+
+  it('preserves overage utilization behavior when isUsingOverage is missing', () => {
+    store.set({
+      rateLimitType: 'overage',
+      utilization: 0.96,
+      status: 'allowed_warning',
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('overage');
+  });
+
+  it('aborts when inactive overage is rejected by overageStatus', () => {
+    store.set({
+      rateLimitType: 'overage',
+      utilization: 0,
+      isUsingOverage: false,
+      status: 'allowed_warning',
+      overageStatus: 'rejected',
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('overage');
+  });
+
+  it('aborts when inactive overage is rejected by status', () => {
+    store.set({
+      rateLimitType: 'overage',
+      utilization: 0,
+      isUsingOverage: false,
+      status: 'rejected',
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('overage');
+  });
+
   it('aborts on five_hour at 0.96 with reason mentioning "five_hour"', () => {
     store.set({ rateLimitType: 'five_hour', utilization: 0.96 });
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);

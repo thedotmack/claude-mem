@@ -49,6 +49,30 @@ describe('parseAgentXml — observations', () => {
     expect(result[0].narrative).toBe('The token refresh logic skips expired tokens.');
   });
 
+  it('unwraps a label-wrapped title echoed by a local observer (#3907)', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      <title>[**title**: Example observation]</title>
+      <narrative>Some narrative.</narrative>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result[0].title).toBe('Example observation');
+  });
+
+  it('leaves bracketed and partially wrapped titles untouched (#3907)', () => {
+    for (const title of ['[Example observation]', '**title**: Example', '[**title**: ]', '[**subtitle**: x]']) {
+      const xml = `<observation>
+        <type>discovery</type>
+        <title>${title}</title>
+        <narrative>Some narrative.</narrative>
+      </observation>`;
+
+      expect(expectObservation(xml)[0].title).toBe(title);
+    }
+  });
+
   it('returns a populated observation when only narrative is present (no title)', () => {
     const xml = `<observation>
       <type>bugfix</type>
@@ -107,6 +131,89 @@ describe('parseAgentXml — observations', () => {
 
     const result = parseAgentXml(xml);
     expect(result.valid).toBe(false);
+  });
+
+  it('salvages freeform prose inside a closed observation block', () => {
+    const xml = `<observation>
+      <type>discovery</type>
+      Refactored transformer_markdown.py helpers and narrowed the shared formatting path.
+      The follow-up kept the line-range handling aligned with the new helpers.
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('discovery');
+    expect(result[0].title).toBe('Refactored transformer_markdown.py helpers and narrowed the shared formatting path.');
+    expect(result[0].narrative).toContain('line-range handling aligned with the new helpers');
+    expect(result[0].narrative).not.toContain('Refactored transformer_markdown.py helpers and narrowed the shared formatting path.');
+  });
+
+  it('keeps self-closing empty fields out of the prose salvage path', () => {
+    const xml = `<observation>
+      <type>bugfix</type>
+      <title/>
+      <narrative/>
+    </observation>`;
+
+    const result = parseAgentXml(xml);
+    expect(result.valid).toBe(false);
+  });
+
+  it('preserves overflow from a long first prose line in the narrative', () => {
+    const longFirstLine = 'A'.repeat(140);
+    const xml = `<observation>
+      <type>discovery</type>
+      ${longFirstLine}
+      Follow-up detail stays in the narrative.
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].title).toBe(`${'A'.repeat(117)}...`);
+    expect(result[0].narrative).toContain('A'.repeat(23));
+    expect(result[0].narrative).toContain('Follow-up detail stays in the narrative.');
+  });
+
+  it('keeps surrogate-pair characters intact when a long first prose line overflows', () => {
+    const longFirstLine = `${'A'.repeat(116)}🧠${'B'.repeat(10)}`;
+    const xml = `<observation>
+      <type>discovery</type>
+      ${longFirstLine}
+      Follow-up detail stays in the narrative.
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].title).toBe(`${'A'.repeat(116)}🧠...`);
+    expect(result[0].title).not.toContain('�');
+    expect(result[0].narrative).toContain('B'.repeat(10));
+    expect(result[0].narrative).toContain('Follow-up detail stays in the narrative.');
+    expect(result[0].narrative).not.toContain('�');
+  });
+
+  it('keeps grapheme clusters intact when a long first prose line overflows', () => {
+    const cases = [
+      { label: 'combining mark', cluster: 'e\u0301' },
+      { label: 'zwj emoji', cluster: '👩‍💻' },
+    ];
+
+    for (const { label, cluster } of cases) {
+      const longFirstLine = `${'A'.repeat(116)}${cluster}${'B'.repeat(10)}`;
+      const xml = `<observation>
+        <type>discovery</type>
+        ${longFirstLine}
+        Follow-up detail stays in the narrative.
+      </observation>`;
+
+      const result = expectObservation(xml);
+
+      expect(result, label).toHaveLength(1);
+      expect(result[0].title, label).toBe(`${'A'.repeat(116)}${cluster}...`);
+      expect(result[0].narrative, label).toBe(`${'B'.repeat(10)}\nFollow-up detail stays in the narrative.`);
+    }
   });
 
   it('filters out multiple ghost observations while keeping valid ones (#1625)', () => {
@@ -313,5 +420,54 @@ describe('parseAgentXml — concept normalization (#3379)', () => {
 
     expect(result).toHaveLength(1);
     expect(result[0].concepts).toEqual([]);
+  });
+});
+
+// #3592: the active mode's `observation_types` enum is advisory — it is rendered
+// into the observer's prompt but never enforced at the parse site. These pin the
+// two branches as they behave today, so that whichever way the enum is eventually
+// enforced, the change is visible in the diff rather than silent.
+describe('parseAgentXml — observation type against the mode enum', () => {
+  it('preserves a type that is outside the enum', () => {
+    const xml = `<observation>
+      <type>sample-gate</type>
+      <title>Type the mode never declared</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('sample-gate');
+  });
+
+  it('falls back to the first declared type when <type> is absent', () => {
+    const xml = `<observation>
+      <title>No type element at all</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    // Positional, not neutral: the fallback is observation_types[0], which in the
+    // bundled `code` mode is `bugfix`. An untyped observation is therefore filed
+    // as a bug fix rather than as unclassified.
+    expect(result[0].type).toBe('bugfix');
+  });
+
+  it('follows the enum order rather than any fixed default', () => {
+    const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
+    modeManager.activeMode = {
+      observation_types: [{ id: 'refactor' }, { id: 'bugfix' }, { id: 'discovery' }],
+      observation_concepts: [],
+    };
+
+    const xml = `<observation>
+      <title>No type, reordered enum</title>
+    </observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('refactor');
   });
 });

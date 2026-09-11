@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -302,6 +302,7 @@ const stubbedProcessKill = ((pid: number, signal?: string | number) => {
 process.kill = stubbedProcessKill;
 
 import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js';
+import { ChromaUnavailableError } from '../../../src/services/worker/search/errors.js';
 import {
   getDependencyStatus,
   resetDependencyStatusesForTesting,
@@ -786,6 +787,28 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(prewarmSpawnCalls.length).toBe(1);
   });
 
+  it('classifies a mid-handshake transport death as ChromaUnavailableError without error-tracking noise', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    // The MCP SDK throws a bare `Error: Not connected` when the subprocess dies
+    // between `initialize` and `notifications/initialized`.
+    connectImpl = async () => {
+      throw new Error('Not connected');
+    };
+
+    const failure = await mgr.callTool('chroma_list_collections', { limit: 1 }).catch(error => error);
+
+    expect(failure).toBeInstanceOf(ChromaUnavailableError);
+    expect((failure as Error).message).toContain('Not connected');
+    // Logged at warn, not error, so the transient failure never reaches the
+    // error sink (captureException).
+    expect(logEntries.some(entry => entry.level === 'error' && entry.message === 'Connection attempt failed')).toBe(false);
+    expect(logEntries.some(entry => entry.level === 'warn' && entry.message === 'Connection attempt failed; Chroma unavailable')).toBe(true);
+    expect(getDependencyStatus('chroma')).toMatchObject({
+      dependency: 'chroma',
+      kind: 'vector_search_unavailable',
+    });
+  });
+
   it('captures a bounded chroma-mcp stderr tail on MCP connect failure', async () => {
     const mgr = ChromaMcpManager.getInstance();
     const stderrPayload = `head-${'x'.repeat(2500)}-stderr-tail-marker`;
@@ -880,6 +903,46 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(lock.pid).toBe(process.pid);
     expect(lock.ownerId).not.toBe('dead-worker-owner');
     expect(transportInstances.length).toBe(1);
+  });
+
+  it('allows a new manager instance in this process to re-acquire its writer lock', async () => {
+    const firstManager = ChromaMcpManager.getInstance();
+    await firstManager.callTool('chroma_list_collections', { limit: 1 });
+    const firstOwnerId = (firstManager as unknown as { chromaWriterOwnerId: string }).chromaWriterOwnerId;
+
+    await ChromaMcpManager.reset();
+    writeChromaWriterLock(process.pid, firstOwnerId);
+
+    const secondManager = ChromaMcpManager.getInstance();
+    await secondManager.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(transportInstances.length).toBe(2);
+    expect(existsSync(chromaWriterLockPath())).toBe(true);
+  });
+
+  it('replaces an unreadable Chroma writer lock once it is past the write grace period (#3916)', async () => {
+    mkdirSync(mockedChromaDir, { recursive: true });
+    writeFileSync(chromaWriterLockPath(), '');
+    const stale = new Date(Date.now() - 60_000);
+    utimesSync(chromaWriterLockPath(), stale, stale);
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    const lock = JSON.parse(readFileSync(chromaWriterLockPath(), 'utf-8'));
+    expect(lock.pid).toBe(process.pid);
+    expect(transportInstances.length).toBe(1);
+  });
+
+  it('still refuses a freshly written unreadable Chroma writer lock', async () => {
+    mkdirSync(mockedChromaDir, { recursive: true });
+    writeFileSync(chromaWriterLockPath(), '');
+    const mgr = ChromaMcpManager.getInstance();
+
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('is unreadable');
+
+    expect(existsSync(chromaWriterLockPath())).toBe(true);
+    expect(transportInstances.length).toBe(0);
   });
 
   it('preserves remote mutation concurrency', async () => {

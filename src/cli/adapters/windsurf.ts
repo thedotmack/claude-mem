@@ -7,7 +7,7 @@ export const windsurfAdapter: PlatformAdapter = {
     const toolInfo = r.tool_info ?? {};
     const actionName: string = r.agent_action_name ?? '';
 
-    const cwd = toolInfo.cwd ?? process.cwd();
+    const cwd = toolInfo.cwd || process.cwd();
     if (!isValidCwd(cwd)) {
       throw new AdapterRejectedInput('invalid_cwd');
     }

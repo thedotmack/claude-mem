@@ -29,7 +29,7 @@ import { logger } from '../../utils/logger.js';
  * Returns null when the provider cannot do it. Supplied by each provider so
  * this module stays free of provider wiring and is testable on its own.
  */
-export type FieldCompressor = (text: string, budgetChars: number) => Promise<string | null>;
+export type FieldCompressor = (text: string, budgetChars: number, signal: AbortSignal) => Promise<string | null>;
 
 /** How long one compression pass may run before the observer gives up on it. */
 export const FIELD_OPTIMIZE_TIMEOUT_MS = 30_000;
@@ -57,13 +57,14 @@ ${text}
 </payload>`;
 }
 
-async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T | null> {
+async function withTimeout<T>(work: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T | null> {
+  const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      work,
+      work(controller.signal),
       new Promise<null>(resolve => {
-        timer = setTimeout(() => resolve(null), ms);
+        timer = setTimeout(() => { controller.abort(); resolve(null); }, ms);
         timer.unref?.();
       }),
     ]);
@@ -93,7 +94,7 @@ export async function optimizeField(
   const budget = Math.floor(maxChars * FIELD_OPTIMIZE_TARGET_RATIO);
   let condensed: string | null = null;
   try {
-    condensed = await withTimeout(compress(raw, budget), FIELD_OPTIMIZE_TIMEOUT_MS);
+    condensed = await withTimeout(signal => compress(raw, budget, signal), FIELD_OPTIMIZE_TIMEOUT_MS);
   } catch (error) {
     logger.warn('SDK', 'Oversized field compression failed; falling back to truncation', {
       sessionId: context.sessionDbId,
@@ -134,6 +135,44 @@ export async function optimizeField(
  * Condense whichever of an observation's two payload fields are over budget,
  * so the observation can then be built and sent at full fidelity-per-token.
  */
+function compactEditOutput(fields: { toolInput: unknown; toolOutput: unknown }, maxChars: number): unknown {
+  try {
+    const input: any = typeof fields.toolInput === 'string' ? JSON.parse(fields.toolInput) : fields.toolInput;
+    const output: any = typeof fields.toolOutput === 'string' ? JSON.parse(fields.toolOutput) : fields.toolOutput;
+    if (!input || !output || Array.isArray(output) || output.userModified !== false
+        || typeof input.file_path !== 'string' || !input.file_path
+        || typeof input.old_string !== 'string' || !input.old_string || typeof input.new_string !== 'string'
+        || output.filePath !== input.file_path || output.oldString !== input.old_string || output.newString !== input.new_string
+        || (output.originalFile !== null && typeof output.originalFile !== 'string')
+        || Object.keys(output).some(k => !['filePath', 'oldString', 'newString', 'originalFile', 'structuredPatch', 'userModified', 'replaceAll'].includes(k))
+        || (input.replace_all !== undefined && typeof input.replace_all !== 'boolean')
+        || (output.replaceAll !== undefined && output.replaceAll !== (input.replace_all ?? false))
+        || !Array.isArray(output.structuredPatch) || !output.structuredPatch.length) return fields.toolOutput;
+    const rawLength = JSON.stringify(fields.toolOutput, null, 2).length;
+    if (rawLength <= maxChars) return fields.toolOutput;
+    for (const h of output.structuredPatch) {
+      if (!h || Object.keys(h).some(k => !['oldStart', 'oldLines', 'newStart', 'newLines', 'lines'].includes(k))
+          || !['oldStart', 'oldLines', 'newStart', 'newLines'].every(k => Number.isSafeInteger(h[k]) && h[k] >= 0)
+          || !Array.isArray(h.lines) || !h.lines.every((line: unknown) => typeof line === 'string' && (/^[ +\-]/.test(line) || line === '\\ No newline at end of file'))
+          || h.lines.filter((l: string) => l[0] === ' ' || l[0] === '-').length !== h.oldLines
+          || h.lines.filter((l: string) => l[0] === ' ' || l[0] === '+').length !== h.newLines) return fields.toolOutput;
+      const before = h.lines.filter((l: string) => l[0] === ' ' || l[0] === '-').map((l: string) => l.slice(1)).join('\n');
+      const after = h.lines.filter((l: string) => l[0] === ' ' || l[0] === '+').map((l: string) => l.slice(1)).join('\n');
+      const replaced = input.replace_all ? before.split(input.old_string).join(input.new_string)
+        : before.replace(input.old_string, () => input.new_string);
+      if (!before.includes(input.old_string) || replaced !== after) return fields.toolOutput;
+    }
+    // Observer-only view: canonical native replacements survive, raw capture is untouched.
+    const view = { ...output,
+      originalFile: output.originalFile === null ? null : `[omitted ${output.originalFile.length} source characters]`,
+      structuredPatch: output.structuredPatch.map(({ lines, ...h }: any) => ({ ...h, omitted_lines: lines.length })),
+      observer_note: 'Redundant full-source and patch lines omitted; exact native oldString/newString and hunk locations retained. Raw tool payload unchanged.' };
+    return JSON.stringify(view, null, 2).length <= maxChars ? view : fields.toolOutput;
+  } catch {
+    return fields.toolOutput; // Unknown/non-JSON shapes retain the existing bounded model/fallback path.
+  }
+}
+
 export async function optimizeObservationFields(
   fields: { toolInput: unknown; toolOutput: unknown },
   compress: FieldCompressor,
@@ -142,7 +181,8 @@ export async function optimizeObservationFields(
 ): Promise<{ toolInput: unknown; toolOutput: unknown }> {
   const [toolInput, toolOutput] = await Promise.all([
     optimizeField(fields.toolInput, compress, { ...context, field: 'parameters' }, maxChars),
-    optimizeField(fields.toolOutput, compress, { ...context, field: 'outcome' }, maxChars),
+    optimizeField(context.toolName === 'Edit' ? compactEditOutput(fields, maxChars) : fields.toolOutput,
+      compress, { ...context, field: 'outcome' }, maxChars),
   ]);
   return { toolInput, toolOutput };
 }

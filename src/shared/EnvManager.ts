@@ -1,14 +1,24 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { parseEnv } from 'util';
+import { basename } from 'path';
 import { logger } from '../utils/logger.js';
-import { paths } from './paths.js';
+import { paths, DEFAULT_CLAUDE_CONFIG_DIR } from './paths.js';
+import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import {
   readClaudeOAuthToken,
   writeStaleMarker,
   clearStaleMarker,
+  resolveEffectiveClaudeConfigDir,
   type OAuthTokenResult,
 } from './oauth-token.js';
+
+/** #2753 — the effective config dir's profile label for logging (never the token itself): 'default' for ~/.claude, else its basename. */
+function resolveConfigDirProfileLabel(): string {
+  const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+  const effectiveConfigDir = resolveEffectiveClaudeConfigDir(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
+  return effectiveConfigDir === DEFAULT_CLAUDE_CONFIG_DIR ? 'default' : basename(effectiveConfigDir);
+}
 
 // Resolved lazily so tests (and any rare runtime path-overrides) can target a
 // temp file via CLAUDE_MEM_ENV_FILE without depending on module-load order.
@@ -182,6 +192,16 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
 
   isolatedEnv.CLAUDE_MEM_INTERNAL = '1';
 
+  // #2753 — override whatever the blanket copy above put in
+  // CLAUDE_CONFIG_DIR (the WORKER's own env) with the effective config dir
+  // for the SDK SUBPROCESS only: the CLAUDE_MEM_CLAUDE_CONFIG_DIR setting
+  // when set, else process.env.CLAUDE_CONFIG_DIR/default (unchanged from
+  // today). This never touches the worker's own paths.CLAUDE_CONFIG_DIR /
+  // MARKETPLACE_ROOT, which stay derived solely from
+  // process.env.CLAUDE_CONFIG_DIR at module load.
+  const configDirSettings = SettingsDefaultsManager.loadFromFile(paths.settings());
+  isolatedEnv.CLAUDE_CONFIG_DIR = resolveEffectiveClaudeConfigDir(configDirSettings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
+
   if (includeCredentials) {
     const credentials = loadClaudeMemEnv();
 
@@ -319,8 +339,12 @@ export function getAuthMethodDescription(): string {
   // Note: this is a quick sync hint for logging — the authoritative OAuth
   // path is buildIsolatedEnvWithFreshOAuth() which reads the keychain at
   // spawn time. process.env may or may not carry a token here.
+  // #2753: names the resolved profile (suffix/dir basename or 'default'),
+  // never the token itself — the profile is the whole point (which
+  // config-dir identity's keychain entry this worker will inject).
+  const profile = resolveConfigDirProfileLabel();
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-    return 'Claude Code OAuth token (env, refreshed via keychain at spawn)';
+    return `Claude Code OAuth token (env, refreshed via keychain at spawn) profile=${profile}`;
   }
-  return 'Claude Code OAuth token (read from system keychain at spawn)';
+  return `Claude Code OAuth token (read from system keychain at spawn) profile=${profile}`;
 }

@@ -347,9 +347,15 @@ GET /api/processing-status
 ```json Response
 {
   "isProcessing": boolean,
-  "queueDepth": number
+  "queueDepth": number,
+  "parkedSessions": number
 }
 ```
+
+`parkedSessions` counts sessions currently parked waiting for a free
+concurrency slot (e.g. blocked behind `CLAUDE_MEM_MAX_CONCURRENT_AGENTS`).
+It is independent of `queueDepth`, which counts buffered messages —
+a session can be parked with or without buffered messages.
 
 ### Search Operations (SearchRoutes)
 

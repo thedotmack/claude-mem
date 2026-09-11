@@ -113,8 +113,13 @@ type ProbeResult =
   | { kind: 'capable'; version: string }
   /** Runs (`--version` works) but rejects the capability flags — too old. */
   | { kind: 'incompatible'; version: string; detail: string }
-  /** Does not run at all (desktop app, missing interpreter, corrupt install). */
-  | { kind: 'broken'; detail: string };
+  /**
+   * Does not resolve to a usable CLI. `launchFailed` is true only when the OS
+   * could not start the process at all (desktop app, missing interpreter,
+   * corrupt install); false when the process ran but failed its version probe
+   * (non-zero exit, timeout, or no version output).
+   */
+  | { kind: 'broken'; detail: string; launchFailed: boolean };
 
 /**
  * Run `<candidate> <args>` and return trimmed stdout, or null on any failure.
@@ -124,7 +129,7 @@ type ProbeResult =
  * injection if the path contains characters like `"`, `;`, `&` — reachable
  * on Windows via a crafted CLAUDE_CODE_PATH in settings.json.
  */
-function runProbe(candidate: string, args: readonly string[]): { stdout: string } | { error: string } {
+function runProbe(candidate: string, args: readonly string[]): { stdout: string } | { error: string; flagRejection: boolean; launchFailed: boolean } {
   try {
     const stdout = _internals.execFileSync(candidate, [...args], {
       encoding: 'utf8',
@@ -134,15 +139,31 @@ function runProbe(candidate: string, args: readonly string[]): { stdout: string 
     }).trim();
     return { stdout };
   } catch (error) {
-    const stderr = (error as { stderr?: unknown }).stderr;
-    const firstLine = String(stderr ?? (error instanceof Error ? error.message : error))
+    const err = error as { stderr?: unknown; status?: unknown; signal?: unknown; killed?: unknown };
+    const stderrText = String(err.stderr ?? '').trim();
+    const firstLine = (stderrText || (error instanceof Error ? error.message : String(error)))
       .split('\n')[0]
       .trim();
+    // A genuine flag rejection is the ONLY proof a CLI is too old: it ran to
+    // argument parsing, wrote a diagnostic to stderr, and exited non-zero.
+    // A timeout or signal kill (killed/signal set, empty stderr — a Windows
+    // cold start losing the 10 s race) leaves no such proof, so it must stay
+    // retryable and never classify as incompatible.
+    const status = err.status;
+    const killed = err.killed === true;
+    const signalled = err.signal != null;
+    const flagRejection = stderrText.length > 0 && !killed && !signalled && typeof status === 'number' && status !== 0;
+    // Did the OS fail to launch the process at all (ENOENT/EACCES/ENOEXEC), or
+    // did the process run and then fail? A launch failure yields neither an
+    // exit status nor a termination signal — the child never started. A
+    // non-zero exit sets `status`; a timeout sets `signal`/`killed`. Only a
+    // true launch failure is the "found but could not be executed" case.
+    const launchFailed = err.status == null && err.signal == null && !err.killed;
     // Probe failures are expected classification signals (stale CLI, desktop
     // app, broken install); callers warn on or surface the detail, so this
     // stays at debug with the full error for deep troubleshooting.
-    logger.debug('SDK', `Probe of "${candidate}" failed: ${firstLine || 'probe failed'}`, { args: [...args] }, error);
-    return { error: firstLine || 'probe failed' };
+    logger.debug('SDK', `Probe of "${candidate}" failed: ${firstLine || 'probe failed'}`, { args: [...args], flagRejection, launchFailed }, error);
+    return { error: firstLine || 'probe failed', flagRejection, launchFailed };
   }
 }
 
@@ -152,6 +173,13 @@ function runProbe(candidate: string, args: readonly string[]): { stdout: string 
  * plain `--version` spawn run, to split "runs but too old" from "doesn't run
  * at all" without pattern-matching stderr wording — so the two-spawn cost is
  * paid only for stale/broken installs, and the result is cached.
+ *
+ * A capability probe that failed WITHOUT flag-rejection evidence (empty
+ * stderr from a timeout or signal kill) is not proof of an old CLI: on a
+ * Windows cold start the first spawn can lose the 10 s race, then the now-warm
+ * plain `--version` returns instantly — which must NOT read as "runs but too
+ * old". So after `--version` warms the binary, the capability probe runs once
+ * more; only real flag rejection classifies the CLI as incompatible.
  */
 function probeCandidate(candidate: string): ProbeResult {
   const capability = runProbe(candidate, CAPABILITY_PROBE_ARGS);
@@ -165,12 +193,33 @@ function probeCandidate(candidate: string): ProbeResult {
   // variants) classifies the same way, so no stderr pattern-matching.
   const plain = runProbe(candidate, ['--version']);
   if ('stdout' in plain && plain.stdout) {
-    const detail = 'error' in capability ? capability.error : 'rejects capability flags';
-    return { kind: 'incompatible', version: plain.stdout, detail };
+    if ('flagRejection' in capability && capability.flagRejection) {
+      return { kind: 'incompatible', version: plain.stdout, detail: capability.error };
+    }
+    // No flag-rejection evidence: the capability probe most likely lost a
+    // cold-start race that the --version spawn just warmed away. Re-probe the
+    // warm binary once before giving up.
+    const warm = runProbe(candidate, CAPABILITY_PROBE_ARGS);
+    if ('stdout' in warm && warm.stdout) {
+      return { kind: 'capable', version: warm.stdout };
+    }
+    if ('flagRejection' in warm && warm.flagRejection) {
+      return { kind: 'incompatible', version: plain.stdout, detail: warm.error };
+    }
+    // Still no flag-rejection proof, only ambiguous failures. Use the binary
+    // rather than throw the misleading "too old" error and strand a CLI that
+    // answers --version; a genuinely old CLI rejects the flag with a non-empty
+    // stderr, which the checks above already catch.
+    return { kind: 'capable', version: plain.stdout };
   }
 
   const detail = 'error' in capability ? capability.error : 'failed --version check';
-  return { kind: 'broken', detail };
+  // The plain --version is the last word on whether this binary can launch:
+  // if it errored on a spawn failure, so did the capability probe (same
+  // binary); if it exited cleanly with no output, `launchFailed` is absent
+  // (it ran, it just gave no version), so default to false.
+  const launchFailed = 'launchFailed' in plain ? plain.launchFailed : false;
+  return { kind: 'broken', detail, launchFailed };
 }
 
 /** Parse "2.1.176 (Claude Code)" → [2, 1, 176]; unparseable sorts lowest. */
@@ -255,6 +304,25 @@ function discoverCandidates(): string[] {
   return deduped;
 }
 
+/**
+ * Describe a configured CLAUDE_CODE_PATH for an error message without ambiguity.
+ *
+ * Telemetry scrubbing rewrites the home directory to `~` before an error
+ * reaches error tracking (see redactHomeDir in
+ * src/services/telemetry/error-scrub.ts), so a real absolute path such as
+ * /home/user/.local/bin/claude arrives tildified and looks exactly like a
+ * literal `~` the user typed into settings — the tilde bug already fixed in
+ * find-claude-executable (expandTilde below). Stating whether the value is the
+ * raw setting or the tilde-expanded one stops a redacted `~` from being read as
+ * a settings `~`, so the next person does not re-fix a fixed bug.
+ */
+function describeConfiguredPath(rawSetting: string, expandedPath: string): string {
+  if (rawSetting === expandedPath) {
+    return `"${rawSetting}" (used verbatim, no tilde expansion)`;
+  }
+  return `"${rawSetting}" (tilde-expanded to "${expandedPath}")`;
+}
+
 function updateInstructions(): string {
   return (
     'Update it (`claude update`, or `npm install -g @anthropic-ai/claude-code@latest` for npm installs), ' +
@@ -291,9 +359,10 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
     // probe spawn see a real absolute path (SettingsRoutes also normalizes on
     // write; this covers files edited by hand).
     const configuredPath = expandTilde(settings.CLAUDE_CODE_PATH, _internals.homedir());
+    const describedPath = describeConfiguredPath(settings.CLAUDE_CODE_PATH, configuredPath);
     if (!_internals.existsSync(configuredPath)) {
       throw new Error(
-        `CLAUDE_CODE_PATH is set to "${settings.CLAUDE_CODE_PATH}" but the file does not exist.`
+        `CLAUDE_CODE_PATH is set to ${describedPath} but the file does not exist.`
       );
     }
 
@@ -309,19 +378,34 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
     }
     if (probe.kind === 'incompatible') {
       throw new Error(
-        `CLAUDE_CODE_PATH is set to "${settings.CLAUDE_CODE_PATH}" (${probe.version}) but that CLI is too old for claude-mem — ` +
+        `CLAUDE_CODE_PATH is set to ${describedPath} (${probe.version}) but that CLI is too old for claude-mem — ` +
         `it rejects flags every memory agent spawn requires (${probe.detail}). ${updateInstructions()}`
       );
     }
     if (looksLikeDesktopAppPath(configuredPath)) {
       throw new Error(
-        `Found desktop app at "${settings.CLAUDE_CODE_PATH}" but it doesn't support headless mode. ` +
+        `Found desktop app at ${describedPath} but it doesn't support headless mode. ` +
         `Install Claude Code CLI: npm install -g @anthropic-ai/claude-code`
       );
     }
+    // existsSync passed above, so the file is really there — the probe failed.
+    // Split the two ways that happens. A launch failure (ENOENT from a launcher
+    // whose shebang interpreter is missing, or a native-installer stub pointing
+    // at a deleted version directory) means the OS never ran the file; a
+    // re-check of the path cannot fix it, so name the likely cause. A process
+    // that ran but exited non-zero, timed out, or printed no version is a
+    // different problem — do not claim it "could not be executed".
+    if (probe.launchFailed) {
+      throw new Error(
+        `CLAUDE_CODE_PATH is set to ${describedPath} — the file exists but could not be executed (${probe.detail}). ` +
+        `A launcher script whose interpreter (shebang) is missing, or a native-installer stub pointing at a deleted version directory, fails this way. ` +
+        `Reinstall the Claude Code CLI or point CLAUDE_CODE_PATH at a working binary.`
+      );
+    }
     throw new Error(
-      `CLAUDE_CODE_PATH is set to "${settings.CLAUDE_CODE_PATH}" but it failed the --version check (${probe.detail}). ` +
-      `Ensure this is a working Claude Code CLI binary.`
+      `CLAUDE_CODE_PATH is set to ${describedPath} — the file ran but failed its version probe (${probe.detail}). ` +
+      `It may be the wrong program, or a wrapper that errors before printing a version. ` +
+      `Ensure CLAUDE_CODE_PATH points at a working Claude Code CLI binary.`
     );
   }
 

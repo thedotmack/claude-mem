@@ -247,7 +247,9 @@ export async function collectDiagnostics(
 
   const pidInfo = await readPidFile(dataDir);
   const workerSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-  const workerHost = process.env.CLAUDE_MEM_WORKER_HOST || workerSettings.CLAUDE_MEM_WORKER_HOST;
+  // loadFromFile already applies env overrides and normalizes 'localhost' to
+  // 127.0.0.1 (#2992); a raw process.env read here would bypass both.
+  const workerHost = workerSettings.CLAUDE_MEM_WORKER_HOST;
   const configuredWorkerPort = process.env.CLAUDE_MEM_WORKER_PORT || workerSettings.CLAUDE_MEM_WORKER_PORT;
   const workerPort = typeof pidInfo?.port === "number"
     ? pidInfo.port

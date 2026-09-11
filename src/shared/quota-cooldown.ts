@@ -40,6 +40,10 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname, join } from 'path';
 import { paths } from './paths.js';
 import { logger } from '../utils/logger.js';
+import {
+  clearObserverQuotaCooldown,
+  recordObserverQuotaCooldown,
+} from './observer-health.js';
 
 export type QuotaProvider = 'claude' | 'gemini' | 'openrouter' | 'cmem-gateway';
 
@@ -196,6 +200,7 @@ export function recordQuotaExhausted(
   };
   cooldowns.set(provider, state);
   persistToDisk();
+  syncObserverHealthQuotaCooldown();
   return state;
 }
 
@@ -204,6 +209,7 @@ export function clearQuotaCooldown(provider: QuotaProvider): void {
   hydrateFromDisk();
   cooldowns.delete(provider);
   persistToDisk();
+  syncObserverHealthQuotaCooldown();
 }
 
 export function getQuotaCooldown(provider: QuotaProvider): QuotaCooldownState | null {
@@ -309,5 +315,38 @@ export function resetQuotaCooldownsForTesting(): void {
     if (existsSync(filePath)) unlinkSync(filePath);
   } catch {
     // Nothing to clean up.
+  }
+  try {
+    clearObserverQuotaCooldown();
+  } catch {
+    // Observability must never affect the breaker, including test reset.
+  }
+}
+
+/**
+ * Mirror the in-memory breaker into observer-health.json so session-start
+ * and external monitors can see an intentional pause. Best-effort: a health
+ * write failure must not change admission or drain-on-clear.
+ */
+function syncObserverHealthQuotaCooldown(): void {
+  try {
+    let latest: QuotaCooldownState | null = null;
+    for (const state of cooldowns.values()) {
+      if (!latest || state.armedAtMs > latest.armedAtMs) latest = state;
+    }
+    if (!latest) {
+      clearObserverQuotaCooldown();
+      return;
+    }
+    recordObserverQuotaCooldown({
+      active: true,
+      provider: latest.provider,
+      armedAt: latest.armedAtMs,
+      until: latest.armedAtMs + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+      ...(latest.window ? { window: latest.window } : {}),
+      message: latest.message,
+    });
+  } catch (err) {
+    logger.warn('SESSION', 'Failed to mirror quota cooldown into observer-health', {}, err as Error);
   }
 }

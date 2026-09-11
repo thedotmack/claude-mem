@@ -77,7 +77,7 @@ All free models support:
 |---------|--------|---------|-------------|
 | `CLAUDE_MEM_PROVIDER` | `claude`, `gemini`, `openrouter` | `claude` | AI provider for observation extraction |
 | `CLAUDE_MEM_OPENROUTER_API_KEY` | string | — | Your OpenRouter API key |
-| `CLAUDE_MEM_OPENROUTER_MODEL` | string | `xiaomi/mimo-v2-flash:free` | Model identifier (see list above) |
+| `CLAUDE_MEM_OPENROUTER_MODEL` | string or array | `xiaomi/mimo-v2-flash:free` | Model identifier, or a list to fall back through (see [Model fallbacks](#model-fallbacks)) |
 | `CLAUDE_MEM_OPENROUTER_SITE_URL` | string | — | Optional: URL for analytics attribution |
 | `CLAUDE_MEM_OPENROUTER_APP_NAME` | string | `claude-mem` | Optional: App name for analytics |
 
@@ -102,6 +102,31 @@ Edit `~/.claude-mem/settings.json`:
   "CLAUDE_MEM_OPENROUTER_MODEL": "xiaomi/mimo-v2-flash:free"
 }
 ```
+
+### Model fallbacks
+
+`CLAUDE_MEM_OPENROUTER_MODEL` also accepts a **list** of model ids. The first is
+the one normally used; the rest are handed to OpenRouter's native `models`
+fallback array, which tries them in order when the one before it errors.
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openrouter",
+  "CLAUDE_MEM_OPENROUTER_API_KEY": "sk-or-v1-your-key-here",
+  "CLAUDE_MEM_OPENROUTER_MODEL": [
+    "vendor/fast-model:free",
+    "vendor/backup-model:free",
+    "vendor/paid-model"
+  ]
+}
+```
+
+A comma- or space-separated string works too, so
+`"vendor/a, vendor/b"` means the same thing as the two-entry array.
+
+Fallbacks are sent only to `openrouter.ai`. A custom
+`CLAUDE_MEM_OPENROUTER_BASE_URL` gateway speaks plain OpenAI, which has no
+`models` field, so it receives the **first** id and ignores the rest.
 
 Alternatively, set the API key via environment variable:
 

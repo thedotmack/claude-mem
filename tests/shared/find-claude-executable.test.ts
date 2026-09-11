@@ -16,8 +16,16 @@ import { logger } from '../../src/utils/logger.js';
 interface FakeCli {
   version: string;
   supportsDontAsk: boolean;
-  /** Fails every probe (corrupt install / desktop app) — the `broken` branch. */
+  /** Fails to launch on every probe (corrupt install / desktop app) — the `broken` branch. */
   broken?: boolean;
+  /** Launches but exits non-zero on every probe — a `broken` result whose process still ran. */
+  ranButFailed?: boolean;
+  /**
+   * Number of leading capability probes that time out before the binary
+   * responds — models a Windows cold start losing the 10 s race. Plain
+   * `--version` probes always answer (they warm the binary).
+   */
+  capabilityTimeouts?: number;
 }
 
 const ORIGINALS = { ..._internals };
@@ -26,6 +34,8 @@ const ORIGINALS = { ..._internals };
 let fakeClis: Map<string, FakeCli>;
 /** Every execFileSync invocation, for probe-count assertions. */
 let probeCalls: Array<{ path: string; args: string[] }>;
+/** Capability-probe count per path, so `capabilityTimeouts` fires only the first N. */
+let capabilityProbeCounts: Map<string, number>;
 /** Symlink map for realpathSync; identity when absent. */
 let realPaths: Map<string, string>;
 /** stdout of `which -a claude`; null = which fails. */
@@ -52,19 +62,47 @@ function installFakes(options: { settingsPath?: string; platform?: NodeJS.Platfo
     probeCalls.push({ path, args });
     const real = realPaths.get(path) ?? path;
     const cli = fakeClis.get(path) ?? fakeClis.get(real);
+    const isCapabilityProbe = args.includes('--permission-mode');
     if (!cli) {
-      const error = new Error(`spawn ${path} ENOENT`) as Error & { stderr: string };
+      const error = new Error(`spawn ${path} ENOENT`) as Error & { stderr: string; code: string };
       error.stderr = '';
+      error.code = 'ENOENT';
       throw error;
     }
     if (cli.broken) {
+      // Spawn/launch failure: the OS never started the process, so no exit
+      // status or signal is set (mirrors ENOENT/EACCES from execFileSync).
       const error = new Error('Command failed') as Error & { stderr: string };
       error.stderr = 'cannot execute binary file';
       throw error;
     }
-    if (args.includes('--permission-mode') && !cli.supportsDontAsk) {
-      const error = new Error('Command failed') as Error & { stderr: string };
+    if (cli.ranButFailed) {
+      // The process ran and exited non-zero: `status` is set, so this is NOT a
+      // launch failure.
+      const error = new Error('Command failed') as Error & { stderr: string; status: number };
+      error.stderr = 'boom: exiting 17';
+      error.status = 17;
+      throw error;
+    }
+    if (isCapabilityProbe && cli.capabilityTimeouts) {
+      const seen = capabilityProbeCounts.get(path) ?? 0;
+      if (seen < cli.capabilityTimeouts) {
+        capabilityProbeCounts.set(path, seen + 1);
+        // A 10 s timeout kills the spawn with a signal and leaves stderr empty
+        // — no flag-rejection evidence, so it must stay retryable.
+        const error = new Error(`spawnSync ${path} ETIMEDOUT`) as Error & { stderr: string; killed: boolean; signal: string };
+        error.stderr = '';
+        error.killed = true;
+        error.signal = 'SIGTERM';
+        throw error;
+      }
+    }
+    if (isCapabilityProbe && !cli.supportsDontAsk) {
+      // A real flag rejection: the CLI parsed the flag, wrote a diagnostic to
+      // stderr, and exited non-zero.
+      const error = new Error('Command failed') as Error & { stderr: string; status: number };
       error.stderr = "error: option '--permission-mode <mode>' argument 'dontAsk' is invalid. Allowed choices are acceptEdits, bypassPermissions, default, plan.";
+      error.status = 1;
       throw error;
     }
     return `${cli.version} (Claude Code)`;
@@ -75,6 +113,7 @@ beforeEach(() => {
   resetClaudeExecutableCache();
   fakeClis = new Map();
   probeCalls = [];
+  capabilityProbeCounts = new Map();
   realPaths = new Map();
   whichOutput = null;
 });
@@ -156,6 +195,45 @@ describe('findClaudeExecutable candidate selection', () => {
   });
 });
 
+describe('findClaudeExecutable cold-start race', () => {
+  // The reported Windows failure: a current CLI whose first capability probe
+  // times out gets mislabeled "too old". The capability probe must be re-run
+  // on the warm binary, and only real flag rejection may classify it as old.
+  it('selects a current CLI whose first capability probe times out on a cold start', () => {
+    installFakes();
+    whichOutput = '/home/tester/.local/bin/claude\n';
+    fakeClis.set('/home/tester/.local/bin/claude', {
+      version: '2.1.176',
+      supportsDontAsk: true,
+      capabilityTimeouts: 1,
+    });
+
+    expect(findClaudeExecutable('SDK')).toBe('/home/tester/.local/bin/claude');
+  });
+
+  it('does not throw "too old" when a timing-out capability probe leaves no flag-rejection proof', () => {
+    installFakes();
+    whichOutput = '/home/tester/.local/bin/claude\n';
+    // Every capability probe times out, but --version answers — no proof the
+    // CLI rejects the flag, so use it rather than throw the misleading error.
+    fakeClis.set('/home/tester/.local/bin/claude', {
+      version: '2.1.176',
+      supportsDontAsk: true,
+      capabilityTimeouts: 5,
+    });
+
+    expect(findClaudeExecutable('SDK')).toBe('/home/tester/.local/bin/claude');
+  });
+
+  it('still rejects a genuinely old CLI that writes a flag-rejection error to stderr', () => {
+    installFakes();
+    whichOutput = '/opt/homebrew/bin/claude\n';
+    fakeClis.set('/opt/homebrew/bin/claude', { version: '2.0.42', supportsDontAsk: false });
+
+    expect(() => findClaudeExecutable('SDK')).toThrow(/too old/);
+  });
+});
+
 describe('findClaudeExecutable broken candidates', () => {
   // A "broken" install fails BOTH the capability probe and plain --version
   // (corrupt binary, dangling symlink, desktop app). Distinct from
@@ -206,11 +284,25 @@ describe('findClaudeExecutable broken candidates', () => {
     expect(() => findClaudeExecutable('SDK')).toThrow(/Claude executable not found/);
   });
 
-  it('reports a broken configured CLAUDE_CODE_PATH with the probe failure', () => {
+  it('reports a configured CLAUDE_CODE_PATH that exists but cannot be launched', () => {
     installFakes({ settingsPath: '/custom/claude' });
     fakeClis.set('/custom/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
 
-    expect(() => findClaudeExecutable('SDK')).toThrow(/failed the --version check/);
+    // The file exists (existsSync passes) and the OS could not launch it (no
+    // exit status), so it is reported as "exists but could not be executed" —
+    // not "file does not exist" and not the old dead-end "--version check".
+    expect(() => findClaudeExecutable('SDK')).toThrow(/exists but could not be executed/);
+    expect(() => findClaudeExecutable('SDK')).toThrow(/shebang|native-installer/);
+  });
+
+  it('reports a configured CLAUDE_CODE_PATH that ran but failed its version probe without claiming it could not launch', () => {
+    installFakes({ settingsPath: '/custom/claude' });
+    fakeClis.set('/custom/claude', { version: '0.0.0', supportsDontAsk: false, ranButFailed: true });
+
+    // The process started and exited non-zero, so the launch-failure guidance
+    // (shebang / native-installer stub) must NOT appear.
+    expect(() => findClaudeExecutable('SDK')).toThrow(/ran but failed its version probe/);
+    expect(() => findClaudeExecutable('SDK')).not.toThrow(/could not be executed|shebang|native-installer/);
   });
 
   it('reports a desktop-app CLAUDE_CODE_PATH with CLI install guidance', () => {
@@ -254,6 +346,23 @@ describe('findClaudeExecutable explicit CLAUDE_CODE_PATH', () => {
     expect(findClaudeExecutable('SDK')).toBe('/home/tester/.local/bin/claude');
     // Every spawn must see the expanded path, never the literal tilde.
     expect(probeCalls.every((call) => call.path === '/home/tester/.local/bin/claude')).toBe(true);
+  });
+
+  it('labels a verbatim absolute path as un-expanded so a redacted ~ is not mistaken for a tilde setting', () => {
+    // Telemetry rewrites /home/tester -> ~ before an error is sent, so this
+    // absolute path arrives tildified. The "used verbatim" note tells the
+    // reader no tilde was expanded, so a ~ in the report is redaction.
+    installFakes({ settingsPath: '/home/tester/.local/bin/claude' });
+    fakeClis.set('/home/tester/.local/bin/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
+
+    expect(() => findClaudeExecutable('SDK')).toThrow(/used verbatim, no tilde expansion/);
+  });
+
+  it('labels a tilde path as expanded in the error so the two forms are visible', () => {
+    installFakes({ settingsPath: '~/.local/bin/claude' });
+    fakeClis.set('/home/tester/.local/bin/claude', { version: '0.0.0', supportsDontAsk: false, broken: true });
+
+    expect(() => findClaudeExecutable('SDK')).toThrow(/tilde-expanded to "\/home\/tester\/\.local\/bin\/claude"/);
   });
 });
 

@@ -9,6 +9,7 @@ import {
 } from './process-registry.js';
 import { runShutdownCascade } from './shutdown.js';
 import { startHealthChecker, stopHealthChecker } from './health-checker.js';
+import { sweepOrphanedChromaTrees } from './orphan-chroma-sweep.js';
 import { paths } from '../shared/paths.js';
 
 const PID_FILE = paths.workerPid();
@@ -42,6 +43,16 @@ class Supervisor {
     }
 
     this.started = true;
+
+    // Reap chroma-mcp trees that no worker owns (#3905). Detached and best-effort: the sweep reads
+    // the process table, so it must never gate boot, and a failure leaves the pre-sweep state.
+    // It runs here, after initialize() and before anything of ours is spawned, so every signature
+    // tree in the table with a dead or PID-1 parent is by construction someone else's leftover.
+    void sweepOrphanedChromaTrees({ registry: this.registry }).catch((error: unknown) => {
+      logger.warn('PROCESS', 'Orphaned chroma-mcp sweep failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
 
     startHealthChecker();
   }

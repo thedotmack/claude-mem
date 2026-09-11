@@ -60,12 +60,41 @@ import {
   type ContentKind,
 } from './CanonicalContent.js';
 
-// Page size for the drain SELECTs.
-const BATCH = 200;
+// Page size for drain SELECTs. 200-op content pushes timed out at 30s under
+// hub projection_busy (plan-24 #3618 / Alex Mac). 40 stays under one hub
+// projection page (PROJECTION_PAGE_MAX_OPS = 100).
+export const DEFAULT_CONTENT_BATCH_SIZE = 40;
+// Hub projection fetch aborts at 45s and holds a 90s lease
+// (workers/sync-hub PROJECTION_FETCH_TIMEOUT_MS / PROJECTION_LEASE_MS).
+// The previous 30s client timeout was shorter than both, so the client
+// aborted mid-lease and retried into projection_busy. Default matches the lease.
+export const DEFAULT_REQUEST_TIMEOUT_MS = 90_000;
+export const CONTENT_BATCH_SIZE_MIN = 1;
+export const CONTENT_BATCH_SIZE_MAX = 500;
+export const REQUEST_TIMEOUT_MS_MIN = 5_000;
+export const REQUEST_TIMEOUT_MS_MAX = 180_000;
 // Request-body packing budget — well under the hub's 8,000,000-byte cap.
 const MAX_BODY_BYTES = 4_000_000;
 // Hub cap: ≤500 ops per POST /v1/sync/ops request.
 const MAX_OPS_PER_PUSH = 500;
+
+function parseBoundedInt(raw: string | undefined, fallback: number, min: number, max: number): number {
+  if (raw == null || raw === '') return fallback;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < min || n > max) return fallback;
+  return n;
+}
+
+/** Settings / env knob for content flush page size. Out-of-range → default 40. */
+export function parseContentBatchSize(raw: string | undefined): number {
+  return parseBoundedInt(raw, DEFAULT_CONTENT_BATCH_SIZE, CONTENT_BATCH_SIZE_MIN, CONTENT_BATCH_SIZE_MAX);
+}
+
+/** Settings / env knob for content-push AbortSignal timeout. Out-of-range → 90s. */
+export function parseRequestTimeoutMs(raw: string | undefined): number {
+  return parseBoundedInt(raw, DEFAULT_REQUEST_TIMEOUT_MS, REQUEST_TIMEOUT_MS_MIN, REQUEST_TIMEOUT_MS_MAX);
+}
+
 const EMPTY_PUSH_REQUEST_BYTES = Buffer.byteLength(
   JSON.stringify({ protocol_version: 2, ops: [] }),
   'utf8',
@@ -89,6 +118,17 @@ interface MutationOutboxRow {
   body: string;
   canonical_body: string | null;
   operation_sha256: string | null;
+}
+
+interface ContentOutboxRow {
+  id: string;
+  entity_id: string;
+  kind: string;
+  origin_local_id: string;
+  entity_rev: string;
+  body: string;
+  operation_sha256: string;
+  deleted: number;
 }
 
 interface AckedOp {
@@ -119,6 +159,13 @@ function operationTupleKey(tuple: {
     tuple.entity_rev,
     tuple.operation_sha256,
   ]);
+}
+
+/** Hub 400 that names a frozen origin_device_id ≠ authenticated X-Device-Id. */
+function isStaleOriginDeviceIdReject(message: string): boolean {
+  return message.includes('sync hub push 400:')
+    && message.includes('invalid_ops')
+    && message.includes('origin_device_id does not match authenticated X-Device-Id');
 }
 
 const TABLE_BY_KIND: Record<RowKind, string> = {
@@ -184,7 +231,7 @@ const KINDS: KindSpec[] = [
         metadata, merged_into_project, created_at, created_at_epoch
       FROM observations
       WHERE synced_at IS NULL AND origin_device_id IS NULL
-      ORDER BY id LIMIT ${BATCH}`,
+      ORDER BY id LIMIT ?`,
     selectOneSql: `
       SELECT CAST(id AS TEXT) AS id, CAST(sync_rev AS TEXT) AS sync_rev,
         memory_session_id, project, text, type, title, subtitle,
@@ -227,7 +274,7 @@ const KINDS: KindSpec[] = [
         discovery_tokens, merged_into_project, created_at, created_at_epoch
       FROM session_summaries
       WHERE synced_at IS NULL AND origin_device_id IS NULL
-      ORDER BY id LIMIT ${BATCH}`,
+      ORDER BY id LIMIT ?`,
     selectOneSql: `
       SELECT CAST(id AS TEXT) AS id, CAST(sync_rev AS TEXT) AS sync_rev,
         memory_session_id, project, request, investigated, learned,
@@ -279,7 +326,7 @@ const KINDS: KindSpec[] = [
         s.platform_source AS platform_source
       FROM user_prompts up LEFT JOIN sdk_sessions s ON up.session_db_id = s.id
       WHERE up.synced_at IS NULL AND up.origin_device_id IS NULL
-      ORDER BY up.id LIMIT ${BATCH}`,
+      ORDER BY up.id LIMIT ?`,
     selectOneSql: `
       SELECT CAST(up.id AS TEXT) AS id, CAST(up.sync_rev AS TEXT) AS sync_rev,
         up.content_session_id AS content_session_id,
@@ -309,13 +356,18 @@ export type CloudSyncSettingKeys = Pick<SettingsDefaults,
   | 'CLAUDE_MEM_CLOUD_SYNC_HUB_URL'
   | 'CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID'
   | 'CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME'
->;
+> & Partial<Pick<SettingsDefaults,
+  | 'CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE'
+  | 'CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS'
+>>;
 
 export interface CloudSyncOptions {
   /** Injectable for tests; defaults to globalThis.fetch. */
   fetchImpl?: typeof fetch;
   /** settings.json path where a newly resolved device id is persisted. */
   settingsPath?: string;
+  /** Override content/mutation drain page size (default 40). */
+  contentBatchSize?: number;
   /** Trailing debounce for notify() bursts. */
   debounceMs?: number;
   /**
@@ -328,7 +380,7 @@ export interface CloudSyncOptions {
   /** First retry delay after a failed flush; doubles up to backoffMaxMs. */
   backoffInitialMs?: number;
   backoffMaxMs?: number;
-  /** Per-request timeout — a hub POST can never hang the drain. */
+  /** Per-request timeout — a hub POST can never hang the drain. Default 90s. */
   requestTimeoutMs?: number;
 }
 
@@ -361,6 +413,7 @@ export class CloudSync {
   private readonly fastDebounceMs: number;
   private readonly backoffInitialMs: number;
   private readonly backoffMaxMs: number;
+  private readonly contentBatchSize: number;
   private readonly requestTimeoutMs: number;
 
   /** '' when unconfigured or when device-id resolution failed closed. */
@@ -414,7 +467,12 @@ export class CloudSync {
     this.fastDebounceMs = options.fastDebounceMs ?? 250;
     this.backoffInitialMs = options.backoffInitialMs ?? 30_000;
     this.backoffMaxMs = options.backoffMaxMs ?? 600_000;
-    this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
+    this.contentBatchSize = options.contentBatchSize ?? parseContentBatchSize(
+      settings.CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE,
+    );
+    this.requestTimeoutMs = options.requestTimeoutMs ?? parseRequestTimeoutMs(
+      settings.CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS,
+    );
     this.nextBackoffMs = this.backoffInitialMs;
 
     if (this.isConfigured()) {
@@ -478,6 +536,7 @@ export class CloudSync {
       deviceName: this.deviceName,
       tokenLength: this.token.length, // never the token itself
     });
+    // flush() drops reminted-device stale outbox snapshots before drain.
     void this.flush();
   }
 
@@ -519,6 +578,7 @@ export class CloudSync {
     }
     this.flushing = true;
     try {
+      this.dropStaleOriginDeviceIdSnapshots();
       do {
         this.flushAgainRequested = false;
         await this.drainContentOutbox();
@@ -728,8 +788,8 @@ export class CloudSync {
       if (this.stopped) return;
       const rows = this.db.prepare(`
         SELECT body, operation_sha256 FROM sync_content_outbox
-        ORDER BY deleted DESC, id LIMIT ${BATCH}
-      `).all() as Array<CanonicalWireOp>;
+        ORDER BY deleted DESC, id LIMIT ?
+      `).all(this.contentBatchSize) as Array<CanonicalWireOp>;
       if (rows.length === 0) return;
       let batch: WireOp[] = [];
       let bytes = 0;
@@ -764,8 +824,8 @@ export class CloudSync {
       const rows = this.db.prepare(
         `SELECT CAST(id AS TEXT) AS id, op_uuid, CAST(rev AS TEXT) AS rev,
                 body, canonical_body, operation_sha256
-         FROM sync_outbox ORDER BY id LIMIT ${BATCH}`
-      ).all() as MutationOutboxRow[];
+         FROM sync_outbox ORDER BY id LIMIT ?`
+      ).all(this.contentBatchSize) as MutationOutboxRow[];
       if (rows.length === 0) break;
 
       // Same size-bounded packing as drainKind: mutation bodies are usually
@@ -843,7 +903,7 @@ export class CloudSync {
     // change a retry's body/hash; ack reconciliation queues a higher revision.
     for (;;) {
       if (this.stopped) return;
-      const rows = this.db.prepare(kind.selectSql).all() as LocalRow[];
+      const rows = this.db.prepare(kind.selectSql).all(this.contentBatchSize) as LocalRow[];
       if (rows.length === 0) break;
       for (const r of rows) {
         this.snapshotContentRow(kind, r);
@@ -925,14 +985,181 @@ export class CloudSync {
 
   /** POST one batch to the hub and stamp/delete on ack. */
   private async sendOps(ops: WireOp[]): Promise<void> {
-    const response = await this.pushOps(ops);
-    // stop() while the POST was in flight: the DB may already be closing, so
-    // skip the stamp. The hub dedupes on (origin_device, kind, origin_id,
-    // rev), so re-pushing these ops on next start is harmless.
-    if (this.stopped) return;
-    this.validatePushResponse(response, ops);
-    this.stampAcked(response.acked, ops);
-    this.emitHeadSeq(response.head_seq);
+    let remaining = ops;
+    for (;;) {
+      try {
+        const response = await this.pushOps(remaining);
+        // stop() while the POST was in flight: the DB may already be closing, so
+        // skip the stamp. The hub dedupes on (origin_device, kind, origin_id,
+        // rev), so re-pushing these ops on next start is harmless.
+        if (this.stopped) return;
+        this.validatePushResponse(response, remaining);
+        this.stampAcked(response.acked, remaining);
+        this.emitHeadSeq(response.head_seq);
+        return;
+      } catch (error) {
+        const next = this.dropStaleOriginDeviceIdOps(remaining, error);
+        if (next === null) throw error;
+        if (next.length === 0 || this.stopped) return;
+        remaining = next;
+      }
+    }
+  }
+
+  /**
+   * After a device-id mint, hash-locked sync_outbox / sync_content_outbox
+   * rows still carry the old origin_device_id. The hub 400s the whole batch
+   * and nothing else removes those poison heads, so healthy ops behind them
+   * never drain. Dead-letter the mismatched ops (content rows are dropped so
+   * drainKind can resnapshot under this.deviceId) and return the rest of the
+   * batch (or null when this is not that failure class / no matching rows
+   * were found).
+   */
+  private dropStaleOriginDeviceIdOps(ops: WireOp[], error: unknown): WireOp[] | null {
+    const reason = error instanceof Error ? error.message : String(error);
+    if (!isStaleOriginDeviceIdReject(reason)) return null;
+    const kept: WireOp[] = [];
+    let quarantined = 0;
+    for (const op of ops) {
+      if (
+        this.quarantineStaleOriginDeviceIdMutation(op, reason)
+        || this.quarantineStaleOriginDeviceIdContent(op, reason)
+      ) {
+        quarantined++;
+        continue;
+      }
+      kept.push(op);
+    }
+    return quarantined === 0 ? null : kept;
+  }
+
+  /**
+   * Client-side outbox hygiene after a device-id remint. Frozen content
+   * snapshots (and mutation canonical bodies) whose origin_device_id is not
+   * this.deviceId can never pass hub auth; drop them before the first POST
+   * so drainContentOutbox cannot wedge the flush.
+   */
+  private dropStaleOriginDeviceIdSnapshots(): void {
+    if (!this.deviceId) return;
+    const contentRows = this.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id, entity_id, kind, origin_local_id, entity_rev,
+             body, operation_sha256, deleted
+      FROM sync_content_outbox
+      WHERE json_extract(body, '$.origin_device_id') IS NOT NULL
+        AND json_extract(body, '$.origin_device_id') != ?
+    `).all(this.deviceId) as ContentOutboxRow[];
+    const reason = 'stale origin_device_id does not match authenticated X-Device-Id';
+    for (const row of contentRows) {
+      this.quarantineStaleContentOutbox(row, reason);
+    }
+
+    const mutationRows = this.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id, op_uuid, CAST(rev AS TEXT) AS rev,
+             body, canonical_body, operation_sha256
+      FROM sync_outbox
+      WHERE canonical_body IS NOT NULL
+        AND json_extract(canonical_body, '$.origin_device_id') IS NOT NULL
+        AND json_extract(canonical_body, '$.origin_device_id') != ?
+    `).all(this.deviceId) as MutationOutboxRow[];
+    for (const row of mutationRows) {
+      this.quarantineMutation(row, reason);
+    }
+  }
+
+  private quarantineStaleOriginDeviceIdMutation(op: WireOp, reason: string): boolean {
+    let originDeviceId: string | undefined;
+    let mutationId: string | undefined;
+    try {
+      const body = JSON.parse(op.body) as {
+        origin_device_id?: unknown;
+        kind?: unknown;
+        id?: unknown;
+      };
+      if (typeof body.origin_device_id === 'string') originDeviceId = body.origin_device_id;
+      if (body.kind === 'mutation' && typeof body.id === 'string' && body.id.startsWith('mutation:')) {
+        mutationId = body.id.slice('mutation:'.length);
+      }
+    } catch {
+      return false;
+    }
+    if (!originDeviceId || originDeviceId === this.deviceId || !mutationId) return false;
+    const row = this.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id, op_uuid, CAST(rev AS TEXT) AS rev,
+             body, canonical_body, operation_sha256
+      FROM sync_outbox
+      WHERE op_uuid = ? AND (operation_sha256 IS NULL OR operation_sha256 = ?)
+    `).get(mutationId, op.operation_sha256) as MutationOutboxRow | undefined;
+    if (!row) return false;
+    this.quarantineMutation(row, reason);
+    return true;
+  }
+
+  private quarantineStaleOriginDeviceIdContent(op: WireOp, reason: string): boolean {
+    let originDeviceId: string | undefined;
+    let entityId: string | undefined;
+    let entityRev: string | undefined;
+    let kind: string | undefined;
+    try {
+      const body = JSON.parse(op.body) as {
+        origin_device_id?: unknown;
+        kind?: unknown;
+        id?: unknown;
+        entity_rev?: unknown;
+      };
+      if (typeof body.origin_device_id === 'string') originDeviceId = body.origin_device_id;
+      if (typeof body.id === 'string') entityId = body.id;
+      if (typeof body.entity_rev === 'string') entityRev = body.entity_rev;
+      if (typeof body.kind === 'string') kind = body.kind;
+    } catch {
+      return false;
+    }
+    if (!originDeviceId || originDeviceId === this.deviceId) return false;
+    if (!kind || !(kind in TABLE_BY_KIND) || !entityId || !entityRev) return false;
+    const row = this.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id, entity_id, kind, origin_local_id, entity_rev,
+             body, operation_sha256, deleted
+      FROM sync_content_outbox
+      WHERE entity_id = ? AND entity_rev = ? AND operation_sha256 = ?
+    `).get(entityId, entityRev, op.operation_sha256) as ContentOutboxRow | undefined;
+    if (!row) return false;
+    this.quarantineStaleContentOutbox(row, reason);
+    return true;
+  }
+
+  /**
+   * Dead-letter a frozen content snapshot whose origin_device_id cannot pass
+   * hub auth, then delete it. Native local rows stay at synced_at NULL /
+   * origin_device_id NULL so drainKind resnapshots under this.deviceId.
+   * Tombstones have no local row left; dropping them is the only safe move
+   * (the old identity cannot be rewritten without forking attribution).
+   */
+  private quarantineStaleContentOutbox(row: ContentOutboxRow, reason: string): void {
+    const table = TABLE_BY_KIND[row.kind as RowKind];
+    const tx = this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO sync_dead_letter
+          (lane, queue_key, kind, origin_local_id, entity_rev, reason, raw_body, created_at_epoch)
+        VALUES ('content', ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(lane, queue_key, entity_rev, reason) DO NOTHING
+      `).run(row.entity_id, row.kind, row.origin_local_id, row.entity_rev, reason, row.body, Date.now());
+      this.db.prepare('DELETE FROM sync_content_outbox WHERE id = ?').run(row.id);
+      if (row.deleted === 0 && table) {
+        // Re-queue native rows that were never successfully stamped. Do not
+        // unstamp a current-device ack (synced_at > 0) — that would loop
+        // drainKind against an already-projected head.
+        this.db.prepare(`
+          UPDATE ${table} SET synced_at = NULL
+          WHERE id = ? AND origin_device_id IS NULL AND (synced_at IS NULL OR synced_at < 0)
+        `).run(row.origin_local_id);
+      }
+    });
+    tx();
+    logger.error('CLOUD_SYNC', 'Dropped stale content outbox snapshot; local row left unsynced for resnapshot', {
+      kind: row.kind,
+      originLocalId: row.origin_local_id,
+      entityRev: row.entity_rev,
+      reason,
+    });
   }
 
   private async pushOps(ops: WireOp[]): Promise<PushResponse> {

@@ -360,7 +360,7 @@ export async function updateFolderClaudeMdFiles(
       continue;
     }
 
-    if (hasNoActivity && !fileExists) {
+    if (isEmptyOrSkeleton && !fileExists) {
       logger.debug('FOLDER_INDEX', 'Skipping empty context file creation', { folderPath, targetFilename });
       continue;
     }

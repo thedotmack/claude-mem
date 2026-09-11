@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
-import { paths } from '../../shared/paths.js';
+import { expandTilde, paths } from '../../shared/paths.js';
 import type { TranscriptSchema, TranscriptWatchConfig } from './types.js';
 
 export const DEFAULT_CONFIG_PATH = paths.transcriptsConfig();
@@ -55,10 +55,11 @@ export function filterNativeHookBackedCodexWatches(
 
 export function expandHomePath(inputPath: string): string {
   if (!inputPath) return inputPath;
-  if (inputPath.startsWith('~')) {
-    return join(homedir(), inputPath.slice(1));
-  }
-  return inputPath;
+  // Shared expandTilde/expandHome leave `~user/...` alone (resolving another
+  // user's home is out of scope). The old inline version sliced one character
+  // off any leading tilde, so `~alice/transcripts` was rewritten to
+  // `<home>/alice/transcripts` and the watcher ingested nothing silently.
+  return expandTilde(inputPath);
 }
 
 export function loadTranscriptWatchConfig(path = DEFAULT_CONFIG_PATH): TranscriptWatchConfig {

@@ -10,6 +10,7 @@ import { statSync } from 'fs';
 import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { getProjectContext } from '../../utils/project-name.js';
+import { claimFileContextInjection } from './file-context-dedupe.js';
 
 const FILE_READ_GATE_MIN_BYTES = 1_500;
 
@@ -213,7 +214,12 @@ async function buildFileContextTimeline(input: NormalizedHookInput, filePath: st
 
   const context = getProjectContext(input.cwd);
   const cwd = input.cwd || process.cwd();
-  const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
+  // path.resolve normalizes dot-segments (`a/../b` -> `b`) for BOTH absolute and
+  // relative inputs, so `/p/src/../src/f.ts` and `/p/src/f.ts` collapse to one
+  // canonical dedupe key instead of two. It ignores `cwd` when `filePath` is
+  // already absolute, so absolute inputs are still honored verbatim (minus the
+  // redundant `.`/`..` segments).
+  const absolutePath = path.resolve(cwd, filePath);
   const relativePath = path.relative(cwd, absolutePath).split(path.sep).join("/");
 
   // #2691 — PostToolUse stores whatever path form the observer recorded
@@ -252,20 +258,33 @@ async function buildFileContextTimeline(input: NormalizedHookInput, filePath: st
     return null;
   }
 
-  if (fileMtimeMs > 0) {
-    const newestObservationMs = Math.max(...data.observations.map(o => o.created_at_epoch));
-    if (fileMtimeMs >= newestObservationMs) {
-      logger.debug('HOOK', 'File modified since last observation, skipping context injection', {
-        filePath: relativePath,
-        fileMtimeMs,
-        newestObservationMs,
-      });
-      return null;
-    }
+  const newestObservationMs = Math.max(...data.observations.map(o => o.created_at_epoch));
+
+  if (fileMtimeMs > 0 && fileMtimeMs >= newestObservationMs) {
+    logger.debug('HOOK', 'File modified since last observation, skipping context injection', {
+      filePath: relativePath,
+      fileMtimeMs,
+      newestObservationMs,
+    });
+    return null;
   }
 
+  // Never empty: the `observations.length === 0` guard above already returned,
+  // and deduplicateObservations only ever drops same-session duplicates and
+  // truncates to DISPLAY_LIMIT, so at least one row always survives.
   const dedupedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT);
-  if (dedupedObservations.length === 0) {
+
+  // #3480 — skip re-injecting the same still-valid timeline for a file already
+  // surfaced this session; re-inject only once a newer observation has landed.
+  // Claimed last, after every other reason to bail out, so a suppressed
+  // injection never burns the claim — and claiming IS recording, so two
+  // concurrent Reads of this file cannot both inject.
+  if (!claimFileContextInjection(input.sessionId, absolutePath, newestObservationMs)) {
+    logger.debug('HOOK', 'File context already surfaced this session, skipping re-injection', {
+      filePath: relativePath,
+      sessionId: input.sessionId,
+      newestObservationMs,
+    });
     return null;
   }
 

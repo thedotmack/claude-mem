@@ -121,4 +121,37 @@ describe('OpenAICompatibleProvider summary tier routing', () => {
 
     expect(provider.queriedModels).toEqual(['session-model', 'session-model']);
   });
+
+  it('reuses the persisted synthetic id when an in-memory session restarts', async () => {
+    const updateMemorySessionId = mock(() => {});
+    const provider = new TestProvider({
+      getSessionById: () => ({ memory_session_id: 'test-test-session-1234' }),
+      getSessionStore: () => ({ updateMemorySessionId }),
+    } as any, {
+      getMessageIterator: async function* () {},
+    } as any);
+    const session = makeSession({ memorySessionId: null });
+
+    await provider.startSession(session);
+
+    expect(session.memorySessionId).toBe('test-test-session-1234');
+    expect(updateMemorySessionId).not.toHaveBeenCalled();
+  });
+
+  it('replaces a persisted synthetic id from a different provider', async () => {
+    const updateMemorySessionId = mock(() => {});
+    const provider = new TestProvider({
+      getSessionById: () => ({ memory_session_id: 'other-test-session-1234' }),
+      getSessionStore: () => ({ updateMemorySessionId }),
+    } as any, {
+      getMessageIterator: async function* () {},
+    } as any);
+    const session = makeSession({ memorySessionId: null });
+
+    await provider.startSession(session);
+
+    expect(session.memorySessionId).toStartWith('test-test-session-');
+    expect(updateMemorySessionId).toHaveBeenCalledTimes(1);
+    expect(updateMemorySessionId).toHaveBeenCalledWith(1, session.memorySessionId);
+  });
 });

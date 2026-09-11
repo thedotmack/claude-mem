@@ -8,7 +8,7 @@ const pickAgentField = (v: unknown): string | undefined =>
 export const claudeCodeAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
-    const cwd = r.cwd ?? process.cwd();
+    const cwd = r.cwd || process.cwd();
     if (!isValidCwd(cwd)) {
       throw new AdapterRejectedInput('invalid_cwd');
     }

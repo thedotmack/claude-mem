@@ -21,6 +21,7 @@ import { logger } from '../utils/logger.js';
 
 export interface HookCommandOptions {
   skipExit?: boolean;
+  stdinSafetyTimeoutMs?: number;
 }
 
 /**
@@ -56,6 +57,8 @@ export function isWorkerUnavailableError(error: unknown): boolean {
     'fetch failed',
     'unable to connect',
     'socket hang up',
+    'socket connection was closed',
+    'connection closed',
   ];
   if (transportPatterns.some(p => lower.includes(p))) return true;
 
@@ -78,6 +81,10 @@ export function isNonBlockingHookInputError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
 
+  if (lower.startsWith('malformed json at stdin eof:') || lower.startsWith('incomplete json after ')) {
+    return true;
+  }
+
   return lower.includes('transcript path') &&
     (lower.includes('missing') || lower.includes('does not exist'));
 }
@@ -88,7 +95,7 @@ async function executeHookPipeline(
   platform: string,
   options: HookCommandOptions
 ): Promise<number> {
-  const rawInput = await readJsonFromStdin();
+  const rawInput = await readJsonFromStdin({ safetyTimeoutMs: options.stdinSafetyTimeoutMs });
   const input = adapter.normalizeInput(rawInput);
   input.platform = platform;
   const result = await handler.execute(input);

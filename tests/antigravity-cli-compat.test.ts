@@ -78,8 +78,9 @@ describe('antigravityCliAdapter - normalizeInput', () => {
     expect(result.cwd).toBe('/tmp/explicit-cwd');
   });
 
-  it('rejects an invalid (empty) cwd', () => {
-    expect(() => antigravityCliAdapter.normalizeInput({ cwd: '' })).toThrow('adapter rejected input: invalid_cwd');
+  it('falls back to process.cwd() when cwd is an empty string (#3887)', () => {
+    const result = antigravityCliAdapter.normalizeInput({ cwd: '' });
+    expect(result.cwd).toBe(process.cwd());
   });
 
   it('maps AfterAgent prompt_response into toolName/toolInput/toolResponse', () => {

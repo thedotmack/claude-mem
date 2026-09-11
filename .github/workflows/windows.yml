@@ -201,6 +201,19 @@ jobs:
           $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
           & $bun test tests/integration/worker-recycle-orphans.test.ts --timeout 600000
 
+      # Ghost-listener recovery gate (plan-15 #3603). Fails on main: a worker
+      # killed OUT-OF-BAND (taskkill /F without /T) leaves its chroma sidecar
+      # chain holding the inherited listening socket, and no launcher reclaims
+      # the port — ensureWorkerStarted returns 'dead' forever. Passes once the
+      # spawn path reclaims the dead owner's sidecar descendants and starts.
+      - name: Ghost-listener recovery gate (#3603)
+        shell: pwsh
+        env:
+          CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}\claude-mem-ghost-data
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
+          & $bun test tests/integration/worker-ghost-port-recovery.test.ts --timeout 600000
+
       # Diagnostic only — never fails the job. Ancestry/identity filtering is
       # done inside the tests; this is just a human-readable postmortem for
       # when the gate above goes red.

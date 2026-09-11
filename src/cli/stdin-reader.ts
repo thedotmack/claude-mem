@@ -33,12 +33,18 @@ function tryParseJson(input: string): { success: true; value: unknown } | { succ
   }
 }
 
-const SAFETY_TIMEOUT_MS = 30000;
+export const SAFETY_TIMEOUT_MS = 30000;
 
-export async function readJsonFromStdin(): Promise<unknown> {
+export interface ReadJsonFromStdinOptions {
+  safetyTimeoutMs?: number;
+}
+
+export async function readJsonFromStdin(options: ReadJsonFromStdinOptions = {}): Promise<unknown> {
   if (!isStdinAvailable()) {
     return undefined;
   }
+
+  const safetyTimeoutMs = options.safetyTimeoutMs ?? SAFETY_TIMEOUT_MS;
 
   return new Promise((resolve, reject) => {
     let input = '';
@@ -83,13 +89,13 @@ export async function readJsonFromStdin(): Promise<unknown> {
       if (!resolved) {
         if (!tryResolveWithJson()) {
           if (input.trim()) {
-            rejectWith(new Error(`Incomplete JSON after ${SAFETY_TIMEOUT_MS}ms: ${input.slice(0, 100)}...`));
+            rejectWith(new Error(`Incomplete JSON after ${safetyTimeoutMs}ms: ${input.slice(0, 100)}...`));
           } else {
             resolveWith(undefined);
           }
         }
       }
-    }, SAFETY_TIMEOUT_MS);
+    }, safetyTimeoutMs);
 
     const onData = (chunk: Buffer | string) => {
       input += chunk;
