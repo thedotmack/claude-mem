@@ -510,6 +510,12 @@ describe('SettingsDefaultsManager', () => {
     it('CLAUDE_MEM_CLAUDE_CONFIG_DIR defaults to empty string', () => {
       expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CLAUDE_CONFIG_DIR).toBe('');
     });
+
+    it('cloud sync content flush knobs default to 40 ops / 90s', () => {
+      const defaults = SettingsDefaultsManager.getAllDefaults();
+      expect(defaults.CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE).toBe('40');
+      expect(defaults.CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS).toBe('90000');
+    });
   });
 
   describe('get', () => {

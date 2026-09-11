@@ -92,6 +92,10 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: string;
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: string;
   CLAUDE_MEM_CLOUD_SYNC_WS: string;    // advisory WebSocket speed layer (Phase 4) — 'false' = HTTP polling only
+  // Content flush knobs. 200-op pages + 30s timeout hit hub projection_busy
+  // (#3618). Defaults: 40 ops / 90s (hub projection lease).
+  CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: string;
+  CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: string;
   // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
   // mounted and the worker behaves exactly as before. Set (with a non-loopback
   // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
@@ -223,6 +227,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',      // Minted at first CloudSync start, then persisted back here
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: hostname(),  // Human-readable label for the cmem.ai Devices panel
     CLAUDE_MEM_CLOUD_SYNC_WS: 'true',  // Advisory WebSocket speed layer (plan Phase 4). 'false' = HTTP polling only — sync stays fully correct, just poll-latency (prime directive #2)
+    CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: '40',  // Drain page size; 200-op content pushes timed out under hub projection_busy
+    CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: '90000',  // Content-push AbortSignal; matches hub PROJECTION_LEASE_MS (90s)
     // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
     // mounted and the worker behaves exactly as before. Set (with a non-loopback
     // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
