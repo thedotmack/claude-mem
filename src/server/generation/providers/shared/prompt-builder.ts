@@ -72,6 +72,42 @@ export function buildServerGenerationPrompt(
 
   const observationOutputSchema = buildObservationOutputSchema(mode);
 
+  // Summary jobs are a different task from event jobs, and the persistence path
+  // for them (processGeneratedResponse -> parsed.summary) only understands a
+  // <summary> block. Asking for <observation> here yields a response the summary
+  // path silently discards, so branch the instruction on the job's source type.
+  const isSessionSummary = context.job.sourceType === 'session_summary';
+
+  const summaryInstruction = [
+    'You are reviewing a complete agent session. Return a single',
+    '<summary>...</summary> XML block describing the arc of the session. If the',
+    'session contains nothing worth recording (e.g., everything was scrubbed by',
+    'privacy filters or the activity was trivial), return a single self-closing',
+    '<skip_summary /> tag and nothing else. Do not include any prose outside the XML.',
+    '',
+    'Schema for the <summary> block (at least one of the first five is required):',
+    '<summary>',
+    '  <request>what the user asked for</request>',
+    '  <investigated>what was explored, and how</investigated>',
+    '  <learned>durable findings worth remembering later</learned>',
+    '  <completed>what was actually done</completed>',
+    '  <next_steps>what is left open</next_steps>',
+    '  <notes>anything else worth keeping</notes>',
+    '</summary>',
+  ];
+
+  const observationInstruction = [
+    'You are observing an agent at work. Return one or more',
+    '<observation>...</observation> XML blocks summarizing durable, useful',
+    'discoveries from the events above. If the events contain nothing worth',
+    'recording (e.g., everything was scrubbed by privacy filters or the',
+    'activity was trivial), return a single self-closing <skip_summary />',
+    'tag and nothing else. Do not include any prose outside the XML.',
+    '',
+    'Schema for each <observation> block:',
+    observationOutputSchema,
+  ];
+
   const prompt = [
     '<server_beta_observation_request>',
     `  <project_id>${escapeXml(context.project.projectId)}</project_id>`,
@@ -82,15 +118,7 @@ export function buildServerGenerationPrompt(
     '  </agent_events>',
     '</server_beta_observation_request>',
     '',
-    'You are observing an agent at work. Return one or more',
-    '<observation>...</observation> XML blocks summarizing durable, useful',
-    'discoveries from the events above. If the events contain nothing worth',
-    'recording (e.g., everything was scrubbed by privacy filters or the',
-    'activity was trivial), return a single self-closing <skip_summary />',
-    'tag and nothing else. Do not include any prose outside the XML.',
-    '',
-    'Schema for each <observation> block:',
-    observationOutputSchema,
+    ...(isSessionSummary ? summaryInstruction : observationInstruction),
   ].join('\n');
 
   return { prompt, hadPrivateContent, skippedAll };
