@@ -1,5 +1,19 @@
-import { describe, it, expect } from 'bun:test';
-import { buildNoOpResult, isNonBlockingHookInputError, isWorkerUnavailableError } from '../src/cli/hook-command.js';
+import { describe, it, expect, afterEach } from 'bun:test';
+import {
+  buildNoOpResult,
+  hookCommand,
+  isNonBlockingHookInputError,
+  isWorkerUnavailableError,
+} from '../src/cli/hook-command.js';
+import { SAFETY_TIMEOUT_MS } from '../src/cli/stdin-reader.js';
+import { installFakeStdin, installOpenFakeStdin, restoreStdin } from './fake-stdin.js';
+
+const realConsoleLog = console.log;
+
+afterEach(() => {
+  restoreStdin();
+  console.log = realConsoleLog;
+});
 
 describe('buildNoOpResult', () => {
   it('attaches a valid SessionStart hookSpecificOutput for the context event (#2972)', () => {
@@ -43,6 +57,54 @@ describe('isNonBlockingHookInputError', () => {
   it('does not classify unrelated hook errors as non-blocking input errors', () => {
     expect(isNonBlockingHookInputError(new Error('Cannot read properties of undefined'))).toBe(false);
     expect(isNonBlockingHookInputError(new Error('Request failed: 400'))).toBe(false);
+  });
+
+  it('fails open through hookCommand for truncated stdin and emits one no-op envelope', async () => {
+    installFakeStdin('{"session_id":');
+    const output: string[] = [];
+    console.log = (...args: unknown[]) => output.push(args.join(' '));
+
+    const exitCode = await hookCommand('claude-code', 'context', { skipExit: true });
+
+    expect(exitCode).toBe(0);
+    expect(output).toEqual([
+      JSON.stringify({
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+      }),
+    ]);
+  });
+
+  it('fails open through hookCommand for the UserPromptSubmit session-init hook and emits one empty envelope', async () => {
+    installFakeStdin('{"session_id":');
+    const output: string[] = [];
+    console.log = (...args: unknown[]) => output.push(args.join(' '));
+
+    const exitCode = await hookCommand('claude-code', 'session-init', { skipExit: true });
+
+    expect(exitCode).toBe(0);
+    expect(output).toEqual(['{}']);
+  });
+
+  it('fails open through hookCommand when stdin reaches the incomplete timeout path', async () => {
+    installOpenFakeStdin('{"session_id":');
+    const output: string[] = [];
+    console.log = (...args: unknown[]) => output.push(args.join(' '));
+
+    const exitCode = await hookCommand('claude-code', 'session-init', {
+      skipExit: true,
+      stdinSafetyTimeoutMs: 1,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(output).toEqual(['{}']);
+  });
+
+  it('classifies incomplete stdin timeout diagnostics as non-blocking', () => {
+    expect(isNonBlockingHookInputError(new Error(`Incomplete JSON after ${SAFETY_TIMEOUT_MS}ms: {"session_id":...`))).toBe(true);
+  });
+
+  it('keeps unrelated errors with a reader phrase blocking', () => {
+    expect(isNonBlockingHookInputError(new Error('Handler failed: Malformed JSON at stdin EOF: {"session_id":...'))).toBe(false);
   });
 });
 
