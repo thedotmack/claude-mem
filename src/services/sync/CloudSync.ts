@@ -528,6 +528,11 @@ export class CloudSync {
     try {
       do {
         this.flushAgainRequested = false;
+        // Remint / settings-loss leaves hash-locked outbox heads on the
+        // previous origin_device_id while this launch authenticates as
+        // X-Device-Id: this.deviceId. Realign before any POST so the hub
+        // never sees a mismatched batch (#3973 is the 400 safety net).
+        this.realignPendingOpsToAuthenticatedDevice();
         await this.drainContentOutbox();
         await this.drainMutations();
         for (const kind of KINDS) {
@@ -762,8 +767,10 @@ export class CloudSync {
    * Drain the sync_outbox (migration v42). Acked ops are DELETEd — the
    * outbox is a queue, not data — so the page SELECT naturally advances.
    * set_prompt_session bodies store target.origin_device_id = NULL ("this
-   * device"); the resolved id is substituted here, at push time, keeping
-   * device identity single-sourced (SyncApply DEVICE IDENTITY note).
+   * device"); the authenticated id is stamped here at snapshot time so the
+   * envelope, target, and X-Device-Id cannot diverge (SyncApply DEVICE
+   * IDENTITY note). Stale frozen snapshots are unfrozen by
+   * realignPendingOpsToAuthenticatedDevice() before this drain runs.
    */
   private async drainMutations(): Promise<void> {
     for (;;) {
@@ -807,7 +814,10 @@ export class CloudSync {
             const body = parsed as OpBody;
             if (body.op === 'set_prompt_session' && typeof body.target === 'object' && body.target !== null) {
               const target = body.target as Record<string, unknown>;
-              if (target.origin_device_id == null) target.origin_device_id = this.deviceId;
+              // Local-origin only: NULL / "self" / a reminted stale id all
+              // mean "this device". Stamp the authenticated id here so the
+              // envelope and target cannot diverge from X-Device-Id.
+              target.origin_device_id = this.deviceId;
             }
             op = buildMutationOperation({
               originDeviceId: this.deviceId,
@@ -932,7 +942,8 @@ export class CloudSync {
 
   /** POST one batch to the hub and stamp/delete on ack. */
   private async sendOps(ops: WireOp[]): Promise<void> {
-    let remaining = ops;
+    let remaining = this.rejectMismatchedOriginDeviceIdOps(ops);
+    if (remaining.length === 0) return;
     for (;;) {
       try {
         const response = await this.pushOps(remaining);
@@ -950,6 +961,38 @@ export class CloudSync {
         if (next.length === 0 || this.stopped) return;
         remaining = next;
       }
+    }
+  }
+
+  /**
+   * Never POST an op whose frozen origin_device_id ≠ X-Device-Id. Realign
+   * should have rewritten these; if any slip through, drop them locally
+   * (rewrite tombstones / re-snapshot live content; quarantine mutations)
+   * instead of eating a hub 400 on the whole batch.
+   */
+  private rejectMismatchedOriginDeviceIdOps(ops: WireOp[]): WireOp[] {
+    const kept: WireOp[] = [];
+    for (const op of ops) {
+      const originDeviceId = this.wireOpOriginDeviceId(op);
+      if (originDeviceId === this.deviceId) {
+        kept.push(op);
+        continue;
+      }
+      const reason = 'origin_device_id does not match authenticated X-Device-Id';
+      if (this.quarantineStaleOriginDeviceIdMutation(op, reason)) continue;
+      this.dropOrRewriteStaleContentOp(op);
+    }
+    return kept;
+  }
+
+  private wireOpOriginDeviceId(op: WireOp): string | null {
+    try {
+      const body = JSON.parse(op.body) as { origin_device_id?: unknown };
+      return typeof body.origin_device_id === 'string' && body.origin_device_id.length > 0
+        ? body.origin_device_id
+        : null;
+    } catch {
+      return null;
     }
   }
 
@@ -991,7 +1034,7 @@ export class CloudSync {
     } catch {
       return false;
     }
-    if (!originDeviceId || originDeviceId === this.deviceId || !mutationId) return false;
+    if (originDeviceId === this.deviceId || !mutationId) return false;
     const row = this.db.prepare(`
       SELECT CAST(id AS TEXT) AS id, op_uuid, CAST(rev AS TEXT) AS rev,
              body, canonical_body, operation_sha256
@@ -1484,11 +1527,219 @@ export class CloudSync {
   // -------------------------------------------------------------------------
 
   /**
+   * Unacked outbox snapshots are hash-locked to whatever device id was
+   * current when they were first canonicalised. After a remint they still
+   * carry the previous origin_device_id while this launch sends
+   * X-Device-Id: this.deviceId. Rewrite those pending rows onto the
+   * authenticated id before any POST. Already-acked work is not in the
+   * outbox. #3973 remains the hub-400 safety net.
+   */
+  private realignPendingOpsToAuthenticatedDevice(): void {
+    if (this.deviceId === '') return;
+    const mutations = this.realignPendingMutations();
+    const content = this.realignPendingContent();
+    if (mutations + content === 0) return;
+    logger.info('CLOUD_SYNC', 'Realigned pending outbox ops onto authenticated device id', {
+      deviceId: this.deviceId,
+      mutations,
+      content,
+    });
+  }
+
+  private realignPendingMutations(): number {
+    const rows = this.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id, op_uuid, CAST(rev AS TEXT) AS rev,
+             body, canonical_body, operation_sha256
+      FROM sync_outbox
+    `).all() as MutationOutboxRow[];
+    let rewritten = 0;
+    const tx = this.db.transaction(() => {
+      for (const row of rows) {
+        if (!this.mutationNeedsDeviceRealign(row)) continue;
+        this.rewriteMutationOntoAuthenticatedDevice(row);
+        rewritten++;
+      }
+    });
+    tx();
+    return rewritten;
+  }
+
+  private mutationNeedsDeviceRealign(row: MutationOutboxRow): boolean {
+    if (row.canonical_body !== null) {
+      try {
+        const body = JSON.parse(row.canonical_body) as { origin_device_id?: unknown };
+        if (typeof body.origin_device_id === 'string' && body.origin_device_id === this.deviceId) {
+          return this.mutationBodyTargetNeedsRealign(row.body);
+        }
+      } catch {
+        return true;
+      }
+      return true;
+    }
+    return this.mutationBodyTargetNeedsRealign(row.body);
+  }
+
+  private mutationBodyTargetNeedsRealign(rawBody: string): boolean {
+    try {
+      const parsed = JSON.parse(rawBody) as {
+        op?: unknown;
+        target?: { origin_device_id?: unknown } | null;
+      };
+      if (parsed.op !== 'set_prompt_session' || !parsed.target || typeof parsed.target !== 'object') {
+        return false;
+      }
+      const targetId = parsed.target.origin_device_id;
+      if (targetId == null || targetId === 'self') return false;
+      return targetId !== this.deviceId;
+    } catch {
+      return false;
+    }
+  }
+
+  private rewriteMutationOntoAuthenticatedDevice(row: MutationOutboxRow): void {
+    let nextBody = row.body;
+    try {
+      const parsed = JSON.parse(row.body) as {
+        op?: unknown;
+        target?: Record<string, unknown> | null;
+      };
+      if (
+        parsed.op === 'set_prompt_session'
+        && parsed.target
+        && typeof parsed.target === 'object'
+        && !Array.isArray(parsed.target)
+      ) {
+        parsed.target.origin_device_id = this.deviceId;
+        nextBody = JSON.stringify(parsed);
+      }
+    } catch {
+      nextBody = row.body;
+    }
+    this.db.prepare(`
+      UPDATE sync_outbox
+      SET body = ?, canonical_body = NULL, operation_sha256 = NULL
+      WHERE id = ?
+    `).run(nextBody, row.id);
+  }
+
+  private realignPendingContent(): number {
+    const rows = this.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id, entity_id, kind, origin_local_id,
+             CAST(entity_rev AS TEXT) AS entity_rev, body, deleted
+      FROM sync_content_outbox
+    `).all() as Array<{
+      id: string;
+      entity_id: string;
+      kind: RowKind;
+      origin_local_id: string;
+      entity_rev: string;
+      body: string;
+      deleted: number;
+    }>;
+    let rewritten = 0;
+    const tx = this.db.transaction(() => {
+      for (const row of rows) {
+        let originDeviceId: string | null = null;
+        try {
+          const body = JSON.parse(row.body) as { origin_device_id?: unknown };
+          if (typeof body.origin_device_id === 'string') originDeviceId = body.origin_device_id;
+        } catch {
+          continue;
+        }
+        if (originDeviceId === this.deviceId) continue;
+        if (row.deleted === 1) {
+          this.rewriteStaleContentTombstone(row);
+        } else {
+          // Live snapshot: drop it. The native row stays unsynced
+          // (origin_device_id IS NULL); drainKind re-snapshots under this.deviceId.
+          this.db.prepare('DELETE FROM sync_content_outbox WHERE id = ?').run(row.id);
+        }
+        rewritten++;
+      }
+    });
+    tx();
+    return rewritten;
+  }
+
+  private rewriteStaleContentTombstone(row: {
+    id: string;
+    kind: RowKind;
+    origin_local_id: string;
+    entity_rev: string;
+    body: string;
+  }): void {
+    let deletedAt = new Date().toISOString();
+    try {
+      const body = JSON.parse(row.body) as { deleted_at?: unknown };
+      if (typeof body.deleted_at === 'string' && body.deleted_at.length > 0) {
+        deletedAt = body.deleted_at;
+      }
+    } catch { /* keep now */ }
+    const op = buildContentOperation({
+      kind: row.kind,
+      originDeviceId: this.deviceId,
+      originLocalId: row.origin_local_id,
+      entityRev: row.entity_rev,
+      payload: null,
+      deleted: true,
+      deletedAt,
+    });
+    this.db.prepare('DELETE FROM sync_content_outbox WHERE id = ?').run(row.id);
+    this.db.prepare(`
+      INSERT INTO sync_content_outbox
+        (entity_id, kind, origin_local_id, entity_rev, body,
+         operation_sha256, deleted, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+      ON CONFLICT(entity_id, entity_rev) DO NOTHING
+    `).run(
+      stableDocumentId(row.kind, this.deviceId, row.origin_local_id),
+      row.kind, row.origin_local_id, row.entity_rev,
+      op.body, op.operation_sha256, Date.now(),
+    );
+  }
+
+  private dropOrRewriteStaleContentOp(op: WireOp): void {
+    let entityId: string | undefined;
+    let deleted = false;
+    try {
+      const body = JSON.parse(op.body) as { id?: unknown; deleted?: unknown };
+      if (typeof body.id === 'string') entityId = body.id;
+      deleted = body.deleted === true;
+    } catch {
+      return;
+    }
+    if (!entityId) return;
+    if (deleted) {
+      const row = this.db.prepare(`
+        SELECT CAST(id AS TEXT) AS id, kind, origin_local_id,
+               CAST(entity_rev AS TEXT) AS entity_rev, body
+        FROM sync_content_outbox
+        WHERE entity_id = ? AND operation_sha256 = ?
+      `).get(entityId, op.operation_sha256) as {
+        id: string;
+        kind: RowKind;
+        origin_local_id: string;
+        entity_rev: string;
+        body: string;
+      } | undefined;
+      if (row) this.rewriteStaleContentTombstone(row);
+      return;
+    }
+    this.db.prepare(`
+      DELETE FROM sync_content_outbox
+      WHERE entity_id = ? AND operation_sha256 = ?
+    `).run(entityId, op.operation_sha256);
+  }
+
+  /**
    * Resolve this launch client's stable device id from settings, or mint and
    * immediately persist one. There is no standalone-client state to adopt.
+   * Whitespace-only values are treated as unset — the hub trims X-Device-Id,
+   * so a padded configured id would 400 against its own stamp.
    */
   private resolveDeviceId(configuredId: string): string {
-    if (configuredId) return configuredId;
+    const trimmed = configuredId.trim();
+    if (trimmed) return trimmed;
 
     // First run: mint and persist immediately, so a later
     // transient failure can't mint a different one and fork device identity.

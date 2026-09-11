@@ -1014,11 +1014,12 @@ describe('CloudSync', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // After a device-id mint, frozen canonical_body rows stay hash-locked to
-  // the previous origin_device_id. The hub 400s invalid_ops on the batch
-  // head; those poison ops must dead-letter so later healthy ops can drain.
+  // After a device-id mint, frozen canonical_body / content-outbox rows stay
+  // hash-locked to the previous origin_device_id. Flush must rewrite those
+  // unacked snapshots onto the authenticated device id before POST — a hub
+  // 400 is the #3973 safety net, not the recovery path.
   // ---------------------------------------------------------------------------
-  describe('stale origin_device_id invalid_ops quarantine', () => {
+  describe('stale origin_device_id realign before push', () => {
     const STALE_DEVICE_ID = '1e1798f5-1111-4111-8111-111111111111';
     const STALE_OP_UUID = '11111111-1111-4111-8111-111111111111';
     const STALE_OP_UUID_2 = '22222222-2222-4222-8222-222222222222';
@@ -1042,85 +1043,208 @@ describe('CloudSync', () => {
       `).run(opUuid, JSON.stringify(mutation), op.body, op.operation_sha256);
     }
 
-    it('dead-letters a stale-head mutation so the healthy op behind it drains', async () => {
+    function seedUnfrozenStaleTargetMutation(opUuid: string): void {
+      db.prepare(`
+        INSERT INTO sync_outbox (op_uuid, rev, body, created_at_epoch)
+        VALUES (?, 1, ?, 1)
+      `).run(opUuid, JSON.stringify({
+        op: 'set_prompt_session',
+        target: { origin_device_id: STALE_DEVICE_ID, origin_local_id: '99' },
+        fields: { memory_session_id: 'mem-unfrozen' },
+      }));
+    }
+
+    function rejectIfStaleDevice(calls: RecordedRequest[]) {
+      return (call: number) => {
+        const ops = calls[call - 1]?.wireParsed?.ops ?? [];
+        const hasStale = ops.some((op: { body: string }) => {
+          const body = JSON.parse(op.body) as { origin_device_id?: string; mutation?: { target?: { origin_device_id?: string } } };
+          return body.origin_device_id === STALE_DEVICE_ID
+            || body.mutation?.target?.origin_device_id === STALE_DEVICE_ID;
+        });
+        if (!hasStale) return undefined;
+        return new Response(JSON.stringify({
+          error: 'invalid_ops: ops[0] origin_device_id does not match authenticated X-Device-Id',
+        }), { status: 400 });
+      };
+    }
+
+    function expectAuthenticatedStamps(calls: RecordedRequest[], deviceId: string): void {
+      expect(calls.length).toBeGreaterThan(0);
+      for (const call of calls) {
+        expect(call.headers['X-Device-Id']).toBe(deviceId);
+        for (const op of call.wireParsed.ops as Array<{ body: string }>) {
+          const body = JSON.parse(op.body) as {
+            origin_device_id: string;
+            mutation?: { op?: string; target?: { origin_device_id?: string } };
+          };
+          expect(body.origin_device_id).toBe(deviceId);
+          if (body.mutation?.op === 'set_prompt_session') {
+            expect(body.mutation.target?.origin_device_id).toBe(deviceId);
+          }
+        }
+      }
+    }
+
+    it('rewrites a frozen stale-head mutation onto the authenticated device id and drains the healthy op', async () => {
       seedFrozenStaleMutation(STALE_OP_UUID);
       store.createSDKSession('sess-healthy', 'proj-x', 'p', 'healthy title', 'claude');
       expect(outboxRows()[0].op_uuid).toBe(STALE_OP_UUID);
       expect(outboxRows().length).toBe(2);
 
-      const { impl, calls } = makeFetchMock(call => {
-        const ops = calls[call - 1]?.wireParsed?.ops ?? [];
-        const hasStale = ops.some((op: { body: string }) => {
-          const body = JSON.parse(op.body) as { origin_device_id?: string };
-          return body.origin_device_id === STALE_DEVICE_ID;
-        });
-        if (!hasStale) return undefined;
-        return new Response(JSON.stringify({
-          error: 'invalid_ops: ops[0] origin_device_id does not match authenticated X-Device-Id',
-        }), { status: 400 });
-      });
+      const { impl, calls } = makeFetchMock(call => rejectIfStaleDevice(calls)(call));
       const sync = makeCloudSync(impl);
       await sync.flush();
 
       expect(outboxRows().length).toBe(0);
       expect(sync.status().lastError).toBeNull();
-      expect(sync.status().quarantine.count).toBe(1);
-      expect(sync.status().quarantine.latestReason).toMatch(
-        /invalid_ops: ops\[0\] origin_device_id does not match authenticated X-Device-Id/,
-      );
-      const dead = db.prepare(
-        "SELECT queue_key, raw_body FROM sync_dead_letter WHERE lane = 'mutation'"
-      ).get() as { queue_key: string; raw_body: string };
-      expect(dead.queue_key).toBe(STALE_OP_UUID);
-      expect(JSON.parse(dead.raw_body).origin_device_id).toBe(STALE_DEVICE_ID);
-
-      const healthyPushes = calls.filter(c =>
-        c.parsed.ops.some((o: { kind: string; body: { fields?: { custom_title?: string } } }) =>
-          o.kind === 'mutation' && o.body.fields?.custom_title === 'healthy title',
-        ),
-      );
-      expect(healthyPushes.length).toBeGreaterThan(0);
-      expect(healthyPushes.some(c =>
-        c.parsed.ops.every((o: { body: { fields?: { custom_title?: string } } }) =>
-          o.body.fields?.custom_title === 'healthy title',
-        ),
-      )).toBe(true);
-      sync.stop();
-    });
-
-    it('quarantines every stale-head op in a rejected batch before draining later work', async () => {
-      seedFrozenStaleMutation(STALE_OP_UUID);
-      seedFrozenStaleMutation(STALE_OP_UUID_2);
-      store.createSDKSession('sess-healthy', 'proj-x', 'p', 'healthy title', 'claude');
-
-      const { impl, calls } = makeFetchMock(call => {
-        const ops = calls[call - 1]?.wireParsed?.ops ?? [];
-        const hasStale = ops.some((op: { body: string }) => {
-          const body = JSON.parse(op.body) as { origin_device_id?: string };
-          return body.origin_device_id === STALE_DEVICE_ID;
-        });
-        if (!hasStale) return undefined;
-        return new Response(JSON.stringify({
-          error: 'invalid_ops: ops[0] origin_device_id does not match authenticated X-Device-Id',
-        }), { status: 400 });
-      });
-      const sync = makeCloudSync(impl);
-      await sync.flush();
-
-      expect(outboxRows().length).toBe(0);
-      expect(sync.status().lastError).toBeNull();
-      expect(sync.status().quarantine.count).toBe(2);
-      const deadKeys = (db.prepare(
-        "SELECT queue_key FROM sync_dead_letter WHERE lane = 'mutation' ORDER BY queue_key"
-      ).all() as Array<{ queue_key: string }>).map(r => r.queue_key);
-      expect(deadKeys).toEqual([STALE_OP_UUID, STALE_OP_UUID_2]);
+      expect(sync.status().quarantine.count).toBe(0);
+      expectAuthenticatedStamps(calls, 'device-fixture');
       expect(calls.some(c =>
         c.parsed.ops.some((o: { kind: string; body: { fields?: { custom_title?: string } } }) =>
           o.kind === 'mutation' && o.body.fields?.custom_title === 'healthy title',
         ),
       )).toBe(true);
+      const repaired = calls.flatMap(c => c.parsed.ops).filter((o: { body?: { op?: string } }) =>
+        o.body?.op === 'set_prompt_session',
+      );
+      expect(repaired.length).toBe(1);
+      expect(repaired[0].body.target.origin_device_id).toBe('device-fixture');
       sync.stop();
     });
+
+    it('rewrites every stale-head op in the queue before draining later work', async () => {
+      seedFrozenStaleMutation(STALE_OP_UUID);
+      seedFrozenStaleMutation(STALE_OP_UUID_2);
+      store.createSDKSession('sess-healthy', 'proj-x', 'p', 'healthy title', 'claude');
+
+      const { impl, calls } = makeFetchMock(call => rejectIfStaleDevice(calls)(call));
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(outboxRows().length).toBe(0);
+      expect(sync.status().lastError).toBeNull();
+      expect(sync.status().quarantine.count).toBe(0);
+      expectAuthenticatedStamps(calls, 'device-fixture');
+      const repaired = calls.flatMap(c => c.parsed.ops).filter((o: { body?: { op?: string } }) =>
+        o.body?.op === 'set_prompt_session',
+      );
+      expect(repaired.length).toBe(2);
+      expect(db.prepare('SELECT COUNT(*) AS n FROM sync_dead_letter').get()).toEqual({ n: 0 });
+      sync.stop();
+    });
+
+    it('stamps an unfrozen set_prompt_session whose raw target still has a stale device id', async () => {
+      seedUnfrozenStaleTargetMutation(STALE_OP_UUID);
+      const { impl, calls } = makeFetchMock(call => rejectIfStaleDevice(calls)(call));
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(outboxRows().length).toBe(0);
+      expect(sync.status().quarantine.count).toBe(0);
+      expectAuthenticatedStamps(calls, 'device-fixture');
+      sync.stop();
+    });
+
+    it('drops a stale live content snapshot and re-snapshots under the authenticated device id', async () => {
+      seedObservation();
+      const stale = buildContentOperation({
+        kind: 'observation',
+        originDeviceId: STALE_DEVICE_ID,
+        originLocalId: '1',
+        entityRev: '1',
+        payload: observationPayload('Title A'),
+      });
+      const staleBody = JSON.parse(stale.body);
+      db.prepare(`
+        INSERT INTO sync_content_outbox
+          (entity_id, kind, origin_local_id, entity_rev, body,
+           operation_sha256, deleted, created_at_epoch)
+        VALUES (?, 'observation', '1', '1', ?, ?, 0, 1)
+      `).run(staleBody.id, stale.body, stale.operation_sha256);
+
+      const { impl, calls } = makeFetchMock(call => rejectIfStaleDevice(calls)(call));
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(pendingCount('observations')).toBe(0);
+      expect(sync.status().lastError).toBeNull();
+      expect(sync.status().quarantine.count).toBe(0);
+      expectAuthenticatedStamps(calls, 'device-fixture');
+      const observationOps = calls.flatMap(c => c.wireParsed.ops as Array<{ body: string }>)
+        .map(op => JSON.parse(op.body) as { kind: string; id: string; origin_device_id: string })
+        .filter(body => body.kind === 'observation');
+      expect(observationOps.length).toBe(1);
+      expect(observationOps[0].origin_device_id).toBe('device-fixture');
+      expect(observationOps[0].id).toBe(stableDocumentId('observation', 'device-fixture', '1'));
+      expect(observationOps[0].id).not.toBe(staleBody.id);
+      sync.stop();
+    });
+
+    it('rewrites a stale content tombstone onto the authenticated device id', async () => {
+      const stale = buildContentOperation({
+        kind: 'observation',
+        originDeviceId: STALE_DEVICE_ID,
+        originLocalId: '7',
+        entityRev: '3',
+        payload: null,
+        deleted: true,
+        deletedAt: ISO,
+      });
+      const staleBody = JSON.parse(stale.body);
+      db.prepare(`
+        INSERT INTO sync_content_outbox
+          (entity_id, kind, origin_local_id, entity_rev, body,
+           operation_sha256, deleted, created_at_epoch)
+        VALUES (?, 'observation', '7', '3', ?, ?, 1, 1)
+      `).run(staleBody.id, stale.body, stale.operation_sha256);
+
+      const { impl, calls } = makeFetchMock(call => rejectIfStaleDevice(calls)(call));
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(sync.status().lastError).toBeNull();
+      expect(sync.status().quarantine.count).toBe(0);
+      expect(sync.status().pending.tombstones).toBe(0);
+      expectAuthenticatedStamps(calls, 'device-fixture');
+      const tombstones = calls.flatMap(c => c.wireParsed.ops as Array<{ body: string }>)
+        .map(op => JSON.parse(op.body) as { deleted: boolean; origin_device_id: string; origin_local_id: string });
+      expect(tombstones.length).toBe(1);
+      expect(tombstones[0]).toMatchObject({
+        deleted: true,
+        origin_device_id: 'device-fixture',
+        origin_local_id: '7',
+      });
+      sync.stop();
+    });
+
+    it('realigns a frozen queue onto a freshly minted device id (upgrade / settings-loss)', async () => {
+      seedFrozenStaleMutation(STALE_OP_UUID);
+      seedObservation();
+
+      const { impl, calls } = makeFetchMock(call => rejectIfStaleDevice(calls)(call));
+      const sync = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '' });
+      const minted = sync.status().deviceId;
+      expect(minted).toMatch(/^[0-9a-f-]{36}$/);
+      await sync.flush();
+
+      expect(outboxRows().length).toBe(0);
+      expect(pendingCount('observations')).toBe(0);
+      expect(sync.status().lastError).toBeNull();
+      expect(sync.status().quarantine.count).toBe(0);
+      expectAuthenticatedStamps(calls, minted);
+      sync.stop();
+    });
+
+    it('treats a whitespace-only configured device id as unset (hub trims X-Device-Id)', () => {
+      const { impl } = makeFetchMock();
+      const sync = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '   ' });
+      const deviceId = sync.status().deviceId;
+      expect(deviceId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(deviceId.trim()).toBe(deviceId);
+      sync.stop();
+    });
+
   });
 
   // ---------------------------------------------------------------------------
@@ -1514,6 +1638,22 @@ describe('CloudSync', () => {
       const sync = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: 'settings-dev-9' });
       expect(sync.status().deviceId).toBe('settings-dev-9');
       expect(existsSync(settingsPath)).toBe(false);
+    });
+
+    it('trims a padded configured device id so the stamp matches X-Device-Id', async () => {
+      seedObservation();
+      const { impl, calls } = makeFetchMock();
+      const sync = makeCloudSync(impl, { CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '  device-fixture  ' });
+      expect(sync.status().deviceId).toBe('device-fixture');
+      await sync.flush();
+      expect(calls.length).toBeGreaterThan(0);
+      for (const call of calls) {
+        expect(call.headers['X-Device-Id']).toBe('device-fixture');
+        for (const op of call.wireParsed.ops as Array<{ body: string }>) {
+          expect(JSON.parse(op.body).origin_device_id).toBe('device-fixture');
+        }
+      }
+      sync.stop();
     });
 
     it('mints a UUID and persists it when settings have no device id', () => {
