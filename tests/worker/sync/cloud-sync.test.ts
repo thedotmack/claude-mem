@@ -1066,7 +1066,7 @@ describe('CloudSync', () => {
       expect(sync.status().lastError).toBeNull();
       expect(sync.status().quarantine.count).toBe(1);
       expect(sync.status().quarantine.latestReason).toMatch(
-        /invalid_ops: ops\[0\] origin_device_id does not match authenticated X-Device-Id/,
+        /origin_device_id does not match authenticated X-Device-Id/,
       );
       const dead = db.prepare(
         "SELECT queue_key, raw_body FROM sync_dead_letter WHERE lane = 'mutation'"
@@ -1117,6 +1117,112 @@ describe('CloudSync', () => {
       expect(calls.some(c =>
         c.parsed.ops.some((o: { kind: string; body: { fields?: { custom_title?: string } } }) =>
           o.kind === 'mutation' && o.body.fields?.custom_title === 'healthy title',
+        ),
+      )).toBe(true);
+      sync.stop();
+    });
+
+    function seedFrozenStaleContent(originLocalId: string, title: string, deleted = false): string {
+      const op = buildContentOperation({
+        kind: 'observation',
+        originDeviceId: STALE_DEVICE_ID,
+        originLocalId,
+        entityRev: '1',
+        payload: deleted ? null : observationPayload(title),
+        deleted,
+        deletedAt: deleted ? ISO : undefined,
+      });
+      const body = JSON.parse(op.body) as { id: string };
+      db.prepare(`
+        INSERT INTO sync_content_outbox
+          (entity_id, kind, origin_local_id, entity_rev, body,
+           operation_sha256, deleted, created_at_epoch)
+        VALUES (?, 'observation', ?, '1', ?, ?, ?, 1)
+      `).run(body.id, originLocalId, op.body, op.operation_sha256, deleted ? 1 : 0);
+      return body.id;
+    }
+
+    it('drops a reminted-device stale content outbox so flush resnapshots and drains', async () => {
+      seedObservation({ title: 'Title A' });
+      seedObservation({ title: 'healthy later' });
+      const staleEntityId = seedFrozenStaleContent('1', 'Title A');
+      expect(db.prepare('SELECT COUNT(*) AS n FROM sync_content_outbox').get()).toEqual({ n: 1 });
+
+      const { impl, calls } = makeFetchMock(call => {
+        const ops = calls[call - 1]?.wireParsed?.ops ?? [];
+        const hasStale = ops.some((op: { body: string }) => {
+          const body = JSON.parse(op.body) as { origin_device_id?: string };
+          return body.origin_device_id === STALE_DEVICE_ID;
+        });
+        if (!hasStale) return undefined;
+        return new Response(JSON.stringify({
+          error: 'invalid_ops: ops[0] origin_device_id does not match authenticated X-Device-Id',
+        }), { status: 400 });
+      });
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(sync.status().lastError).toBeNull();
+      expect(sync.status().lastFlushAt).not.toBeNull();
+      expect(db.prepare('SELECT COUNT(*) AS n FROM sync_content_outbox').get()).toEqual({ n: 0 });
+      expect(pendingCount('observations')).toBe(0);
+      expect(sync.status().quarantine.count).toBe(1);
+      expect(sync.status().quarantine.latestReason).toMatch(
+        /origin_device_id does not match authenticated X-Device-Id/,
+      );
+
+      const dead = db.prepare(
+        "SELECT queue_key, kind, raw_body FROM sync_dead_letter WHERE lane = 'content'"
+      ).get() as { queue_key: string; kind: string; raw_body: string };
+      expect(dead.queue_key).toBe(staleEntityId);
+      expect(dead.kind).toBe('observation');
+      expect(JSON.parse(dead.raw_body).origin_device_id).toBe(STALE_DEVICE_ID);
+
+      const pushed = calls.flatMap(c => c.wireParsed.ops.map((op: { body: string }) => JSON.parse(op.body)));
+      expect(pushed.every((body: { origin_device_id: string }) => body.origin_device_id === 'device-fixture')).toBe(true);
+      expect(pushed.some((body: { origin_local_id: string; payload?: { title?: string } }) =>
+        body.origin_local_id === '1' && body.payload?.title === 'Title A',
+      )).toBe(true);
+      expect(pushed.some((body: { origin_local_id: string; payload?: { title?: string } }) =>
+        body.origin_local_id === '2' && body.payload?.title === 'healthy later',
+      )).toBe(true);
+      sync.stop();
+    });
+
+    it('drops a reminted-device stale content tombstone so later live snapshots drain', async () => {
+      seedObservation({ title: 'Title A' });
+      seedFrozenStaleContent('99', 'gone', true);
+
+      const { impl, calls } = makeFetchMock(call => {
+        const ops = calls[call - 1]?.wireParsed?.ops ?? [];
+        const hasStale = ops.some((op: { body: string }) => {
+          const body = JSON.parse(op.body) as { origin_device_id?: string };
+          return body.origin_device_id === STALE_DEVICE_ID;
+        });
+        if (!hasStale) return undefined;
+        return new Response(JSON.stringify({
+          error: 'invalid_ops: ops[0] origin_device_id does not match authenticated X-Device-Id',
+        }), { status: 400 });
+      });
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(sync.status().lastError).toBeNull();
+      expect(sync.status().lastFlushAt).not.toBeNull();
+      expect(db.prepare('SELECT COUNT(*) AS n FROM sync_content_outbox').get()).toEqual({ n: 0 });
+      expect(pendingCount('observations')).toBe(0);
+      expect(sync.status().quarantine.count).toBe(1);
+      const dead = db.prepare(
+        "SELECT origin_local_id, raw_body FROM sync_dead_letter WHERE lane = 'content'"
+      ).get() as { origin_local_id: string; raw_body: string };
+      expect(dead.origin_local_id).toBe('99');
+      expect(JSON.parse(dead.raw_body)).toMatchObject({
+        origin_device_id: STALE_DEVICE_ID,
+        deleted: true,
+      });
+      expect(calls.some(c =>
+        c.parsed.ops.some((o: { kind: string; origin_id: string }) =>
+          o.kind === 'observation' && o.origin_id === '1',
         ),
       )).toBe(true);
       sync.stop();

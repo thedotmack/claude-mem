@@ -91,6 +91,17 @@ interface MutationOutboxRow {
   operation_sha256: string | null;
 }
 
+interface ContentOutboxRow {
+  id: string;
+  entity_id: string;
+  kind: string;
+  origin_local_id: string;
+  entity_rev: string;
+  body: string;
+  operation_sha256: string;
+  deleted: number;
+}
+
 interface AckedOp {
   id: string;
   kind: string;
@@ -485,6 +496,7 @@ export class CloudSync {
       deviceName: this.deviceName,
       tokenLength: this.token.length, // never the token itself
     });
+    // flush() drops reminted-device stale outbox snapshots before drain.
     void this.flush();
   }
 
@@ -526,6 +538,7 @@ export class CloudSync {
     }
     this.flushing = true;
     try {
+      this.dropStaleOriginDeviceIdSnapshots();
       do {
         this.flushAgainRequested = false;
         await this.drainContentOutbox();
@@ -954,11 +967,13 @@ export class CloudSync {
   }
 
   /**
-   * After a device-id mint, hash-locked sync_outbox rows still carry the old
-   * origin_device_id. The hub 400s the whole batch and nothing else removes
-   * those poison heads, so healthy ops behind them never drain. Dead-letter
-   * the mismatched mutation ops and return the rest of the batch (or null
-   * when this is not that failure class / no matching rows were found).
+   * After a device-id mint, hash-locked sync_outbox / sync_content_outbox
+   * rows still carry the old origin_device_id. The hub 400s the whole batch
+   * and nothing else removes those poison heads, so healthy ops behind them
+   * never drain. Dead-letter the mismatched ops (content rows are dropped so
+   * drainKind can resnapshot under this.deviceId) and return the rest of the
+   * batch (or null when this is not that failure class / no matching rows
+   * were found).
    */
   private dropStaleOriginDeviceIdOps(ops: WireOp[], error: unknown): WireOp[] | null {
     const reason = error instanceof Error ? error.message : String(error);
@@ -966,13 +981,49 @@ export class CloudSync {
     const kept: WireOp[] = [];
     let quarantined = 0;
     for (const op of ops) {
-      if (this.quarantineStaleOriginDeviceIdMutation(op, reason)) {
+      if (
+        this.quarantineStaleOriginDeviceIdMutation(op, reason)
+        || this.quarantineStaleOriginDeviceIdContent(op, reason)
+      ) {
         quarantined++;
         continue;
       }
       kept.push(op);
     }
     return quarantined === 0 ? null : kept;
+  }
+
+  /**
+   * Client-side outbox hygiene after a device-id remint. Frozen content
+   * snapshots (and mutation canonical bodies) whose origin_device_id is not
+   * this.deviceId can never pass hub auth; drop them before the first POST
+   * so drainContentOutbox cannot wedge the flush.
+   */
+  private dropStaleOriginDeviceIdSnapshots(): void {
+    if (!this.deviceId) return;
+    const contentRows = this.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id, entity_id, kind, origin_local_id, entity_rev,
+             body, operation_sha256, deleted
+      FROM sync_content_outbox
+      WHERE json_extract(body, '$.origin_device_id') IS NOT NULL
+        AND json_extract(body, '$.origin_device_id') != ?
+    `).all(this.deviceId) as ContentOutboxRow[];
+    const reason = 'stale origin_device_id does not match authenticated X-Device-Id';
+    for (const row of contentRows) {
+      this.quarantineStaleContentOutbox(row, reason);
+    }
+
+    const mutationRows = this.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id, op_uuid, CAST(rev AS TEXT) AS rev,
+             body, canonical_body, operation_sha256
+      FROM sync_outbox
+      WHERE canonical_body IS NOT NULL
+        AND json_extract(canonical_body, '$.origin_device_id') IS NOT NULL
+        AND json_extract(canonical_body, '$.origin_device_id') != ?
+    `).all(this.deviceId) as MutationOutboxRow[];
+    for (const row of mutationRows) {
+      this.quarantineMutation(row, reason);
+    }
   }
 
   private quarantineStaleOriginDeviceIdMutation(op: WireOp, reason: string): boolean {
@@ -1001,6 +1052,74 @@ export class CloudSync {
     if (!row) return false;
     this.quarantineMutation(row, reason);
     return true;
+  }
+
+  private quarantineStaleOriginDeviceIdContent(op: WireOp, reason: string): boolean {
+    let originDeviceId: string | undefined;
+    let entityId: string | undefined;
+    let entityRev: string | undefined;
+    let kind: string | undefined;
+    try {
+      const body = JSON.parse(op.body) as {
+        origin_device_id?: unknown;
+        kind?: unknown;
+        id?: unknown;
+        entity_rev?: unknown;
+      };
+      if (typeof body.origin_device_id === 'string') originDeviceId = body.origin_device_id;
+      if (typeof body.id === 'string') entityId = body.id;
+      if (typeof body.entity_rev === 'string') entityRev = body.entity_rev;
+      if (typeof body.kind === 'string') kind = body.kind;
+    } catch {
+      return false;
+    }
+    if (!originDeviceId || originDeviceId === this.deviceId) return false;
+    if (!kind || !(kind in TABLE_BY_KIND) || !entityId || !entityRev) return false;
+    const row = this.db.prepare(`
+      SELECT CAST(id AS TEXT) AS id, entity_id, kind, origin_local_id, entity_rev,
+             body, operation_sha256, deleted
+      FROM sync_content_outbox
+      WHERE entity_id = ? AND entity_rev = ? AND operation_sha256 = ?
+    `).get(entityId, entityRev, op.operation_sha256) as ContentOutboxRow | undefined;
+    if (!row) return false;
+    this.quarantineStaleContentOutbox(row, reason);
+    return true;
+  }
+
+  /**
+   * Dead-letter a frozen content snapshot whose origin_device_id cannot pass
+   * hub auth, then delete it. Native local rows stay at synced_at NULL /
+   * origin_device_id NULL so drainKind resnapshots under this.deviceId.
+   * Tombstones have no local row left; dropping them is the only safe move
+   * (the old identity cannot be rewritten without forking attribution).
+   */
+  private quarantineStaleContentOutbox(row: ContentOutboxRow, reason: string): void {
+    const table = TABLE_BY_KIND[row.kind as RowKind];
+    const tx = this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO sync_dead_letter
+          (lane, queue_key, kind, origin_local_id, entity_rev, reason, raw_body, created_at_epoch)
+        VALUES ('content', ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(lane, queue_key, entity_rev, reason) DO NOTHING
+      `).run(row.entity_id, row.kind, row.origin_local_id, row.entity_rev, reason, row.body, Date.now());
+      this.db.prepare('DELETE FROM sync_content_outbox WHERE id = ?').run(row.id);
+      if (row.deleted === 0 && table) {
+        // Re-queue native rows that were never successfully stamped. Do not
+        // unstamp a current-device ack (synced_at > 0) — that would loop
+        // drainKind against an already-projected head.
+        this.db.prepare(`
+          UPDATE ${table} SET synced_at = NULL
+          WHERE id = ? AND origin_device_id IS NULL AND (synced_at IS NULL OR synced_at < 0)
+        `).run(row.origin_local_id);
+      }
+    });
+    tx();
+    logger.error('CLOUD_SYNC', 'Dropped stale content outbox snapshot; local row left unsynced for resnapshot', {
+      kind: row.kind,
+      originLocalId: row.origin_local_id,
+      entityRev: row.entity_rev,
+      reason,
+    });
   }
 
   private async pushOps(ops: WireOp[]): Promise<PushResponse> {
