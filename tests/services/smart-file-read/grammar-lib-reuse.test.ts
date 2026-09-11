@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import { readdirSync, statSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
@@ -35,15 +35,11 @@ function typescriptLib(): string {
   return join(LIB_DIR, entry);
 }
 
-// The initial `tree-sitter build` compiles C grammar sources — on CI runners
-// this can take 10-30 seconds, far longer than the default 5 s test timeout.
-// A generous block-level timeout and a warm-up beforeAll keep the assertions
-// deterministic without weakening coverage.
+// The initial `tree-sitter build` compiles C grammar sources from scratch in a
+// fresh temp data dir (pinned by tests/preload.ts). On CI runners this can take
+// 10-30 s, so each test carries a generous per-test timeout. The first test
+// naturally warms the compiled artifact; the second benefits from the cache.
 describe.if(treeSitterAvailable())('compiled grammar reuse', () => {
-  beforeAll(() => {
-    parseFile(SOURCE, 'greeter.ts');
-  });
-
   beforeEach(() => {
     _resetGrammarLibOptOut();
   });
@@ -56,7 +52,7 @@ describe.if(treeSitterAvailable())('compiled grammar reuse', () => {
 
     expect(parseFile(SOURCE, 'greeter.ts').symbols.map((s) => s.name)).toContain('greet');
     expect(statSync(libPath).mtimeMs).toBe(builtAt);
-  });
+  }, 120_000);
 
   it('rebuilds an artifact older than the grammar sources', () => {
     expect(parseFile(SOURCE, 'greeter.ts').symbols.map((s) => s.name)).toContain('greet');
@@ -71,5 +67,5 @@ describe.if(treeSitterAvailable())('compiled grammar reuse', () => {
 
     expect(parseFile(SOURCE, 'greeter.ts').symbols.map((s) => s.name)).toContain('greet');
     expect(statSync(libPath).mtimeMs).toBeGreaterThan(0);
-  });
-}, { timeout: 120_000 });
+  }, 120_000);
+});
