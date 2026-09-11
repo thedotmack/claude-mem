@@ -227,4 +227,22 @@ describe('buildObservationPrompt keeps url-backed image sources (#3730 review)',
     expect(/A{200,}/.test(prompt)).toBe(false);
     expect(prompt).toContain('image data withheld from the observer');
   });
+
+  it('elides an uppercase DATA: URI the same as lowercase data:', () => {
+    const prompt = buildObservationPrompt({
+      id: 11,
+      tool_name: 'mcp__browser__shot',
+      tool_input: JSON.stringify({}),
+      tool_output: JSON.stringify({
+        content: [
+          { type: 'image', source: { type: 'url', url: 'DATA:image/png;base64,' + 'A'.repeat(100_000) } },
+        ],
+      }),
+      created_at_epoch: Date.now(),
+      cwd: '/repo',
+    });
+
+    expect(/A{200,}/.test(prompt)).toBe(false);
+    expect(prompt).toContain('image data withheld from the observer');
+  });
 });

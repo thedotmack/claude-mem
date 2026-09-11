@@ -154,6 +154,12 @@ const OBS_PROMPT_FIELD_TAIL_RATIO = 0.3;
 // keeping the part that has signal.
 const MAX_SANITIZE_DEPTH = 12;
 
+// URI schemes are case-insensitive. A `DATA:image/png;base64,…` source is the
+// same inlined payload as `data:` — Greptile reproduced the bypass on #3762.
+function isDataUrl(url: string): boolean {
+  return url.slice(0, 5).toLowerCase() === 'data:';
+}
+
 function elideImageSource(source: Record<string, unknown>): Record<string, unknown> {
   const data = source.data;
   const elided: Record<string, unknown> = { elided: 'image data withheld from the observer' };
@@ -178,7 +184,7 @@ function stripImagePayloads(value: unknown, depth = 0): unknown {
   if (record.type === 'image' && source !== null && typeof source === 'object') {
     const record_source = source as Record<string, unknown>;
     const url = record_source.url;
-    if (typeof url === 'string' && !url.startsWith('data:')) {
+    if (typeof url === 'string' && !isDataUrl(url)) {
       return value;
     }
     return { type: 'image', source: elideImageSource(record_source) };
@@ -190,7 +196,7 @@ function stripImagePayloads(value: unknown, depth = 0): unknown {
     const url = (imageUrl as Record<string, unknown>).url;
     // A plain http(s) URL is short and can carry signal; only a data: URL is
     // the inlined payload this exists to remove.
-    if (typeof url === 'string' && url.startsWith('data:')) {
+    if (typeof url === 'string' && isDataUrl(url)) {
       return {
         type: 'image_url',
         image_url: { elided: 'image data withheld from the observer', bytes: url.length },
