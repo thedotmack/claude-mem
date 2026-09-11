@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.24.6] - 2026-09-11
+
+### Bug Fixes
+
+- **Fix version-mismatch kill loop** — stale worker bundles stamped 13.24.1 triggered continuous recycle storms; worker-service now validates its own bundle version and exits cleanly on mismatch (#3940, #3961)
+- **Corpus type filter** — observation type filters are now preserved through corpus build, fixing incorrect unfiltered results (#3892)
+- **Title unwrap** — parser correctly unwraps label-wrapped observation titles instead of double-wrapping (#3907, #3947)
+
+### Also included (landed between v13.24.5 tag and this release)
+
+- fix(chroma): record failed live writes as pending (#3917, #3949)
+- fix(sqlite): keep post-v7 columns through session_summaries rebuild (#3955)
+
+### Notes
+
+- v13.24.5 was published with bundles incorrectly stamped 13.24.1, causing the kill-loop. This release rebuilds all bundles with the correct 13.24.6 stamp.
+- npm publish is handled separately by the Prioritizer.
+
+## [13.24.5] - 2026-09-09
+
+## CCS Align + overnight ships
+
+Fleet can install from npm again (`npx claude-mem@13.24.5` / `latest`).
+
+### Highlights since v13.24.1
+- **CCS Align Phases 0–3** (#3934–#3937) — middle cache, exclude marks, rules walker, sign-off; skill at `plugin/skills/ccs-align`
+- **Grok Bot awareness push pilot Phase 0+1** (#3931)
+- **OpenRouter daily list-price history** for expense reports (#3932)
+
+Main tip: `8bc631a7`
+
 ## [Unreleased]
 
 ### Grok Bot awareness push pilot (Phase 0 + Phase 1)
