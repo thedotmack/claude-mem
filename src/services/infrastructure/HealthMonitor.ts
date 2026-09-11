@@ -45,8 +45,19 @@ export async function isPortInUse(port: number): Promise<boolean> {
     // Fast path: HTTP health check. A live claude-mem worker responds to
     // /api/health, so this is the cheapest non-disruptive probe for the
     // common case (worker is running and healthy).
+    //
+    // Bounded like every other probe (HEALTH_PROBE_TIMEOUT_MS): a ghost
+    // listener — the dead worker's inherited socket, held open by its chroma
+    // sidecar chain (plan-15 #3603) — completes the TCP handshake and then
+    // never answers. Unbounded, this fetch would hang forever, and with it
+    // ensureWorkerStarted(), which calls this BEFORE it can reach the reclaim:
+    // the very bug the reclaim exists to fix would instead wedge every
+    // launcher. On timeout the flow falls through to the socket probe below,
+    // which still reports a bound port as in use.
     try {
-      const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`);
+      const response = await fetch(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`, {
+        signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
+      });
       if (response.ok) return true;
       // Non-ok response: port is reachable but the worker is unhealthy.
       // Fall through to the net.createServer check below so we still report

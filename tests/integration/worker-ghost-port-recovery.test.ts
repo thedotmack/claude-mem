@@ -64,6 +64,14 @@ const RECOVERY_TIMEOUT_MS = 600_000;
 const GHOST_SETTLE_TIMEOUT_MS = 30_000;
 const ORPHAN_SETTLE_TIMEOUT_MS = 30_000;
 
+// Every stage inside ensureWorkerStarted() is supposed to carry its own
+// deadline (health probes, the reclaim, the readiness wait). The first CI run
+// of this gate proved how expensive a MISSING one is: the launcher awaited a
+// ghost's silent socket forever, and the gate died on bun's 600s cap with no
+// output pointing at the stage. Racing the call itself turns any future
+// unbounded await into a named failure — and a stage line in the log.
+const ENSURE_STARTED_DEADLINE_MS = 300_000;
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(here, 'fixtures', 'ghost-worker-host.ts');
 
@@ -114,6 +122,21 @@ function listeningOwnerPids(port: number): number[] {
     }
   }
   return [...owners];
+}
+
+/** Bound an external await whose internals this test cannot inspect. */
+async function withDeadline<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out waiting for: ${label}`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs: number, label: string): Promise<void> {
@@ -236,6 +259,7 @@ describe.if(RUN_GATE && IS_WINDOWS)('worker recovers from a ghost listener left 
   it('reclaims the dead worker\'s sidecar chain and starts a new worker', async () => {
     assertIsolatedDataDir();
     const fixture = await startFixture();
+    console.log(`[ghost-gate] fixture ready: pid=${fixture.pid} port=${fixture.port} chromaRootPid=${fixture.chromaRootPid}`);
 
     // Snapshot BEFORE the kill: once the root exits, identity is the only
     // way to tell the survivors apart from anything that recycled its PID.
@@ -275,6 +299,7 @@ describe.if(RUN_GATE && IS_WINDOWS)('worker recovers from a ghost listener left 
       survivorsAfterKill.length > 0,
       `sidecar chain must survive the out-of-band kill: ${describeProcesses(snapshot)}`
     ).toBe(true);
+    console.log(`[ghost-gate] ghost confirmed: port LISTENING under dead pid=${fixture.pid}; survivors: ${describeProcesses(survivorsAfterKill)}`);
 
     // Drive the PRODUCTION launcher. On main this returns 'dead' — no
     // reclaim exists, so the ghost blocks every spawn forever.
@@ -282,7 +307,14 @@ describe.if(RUN_GATE && IS_WINDOWS)('worker recovers from a ghost listener left 
     const { resolveWorkerScriptPath } = await import('../../src/shared/worker-utils.js');
     const scriptPath = resolveWorkerScriptPath();
     expect(scriptPath).not.toBeNull();
-    const result = await ensureWorkerStarted(fixture.port, scriptPath!);
+    console.log(`[ghost-gate] driving production ensureWorkerStarted() on port ${fixture.port}`);
+    const startedAt = Date.now();
+    const result = await withDeadline(
+      ensureWorkerStarted(fixture.port, scriptPath!),
+      ENSURE_STARTED_DEADLINE_MS,
+      'ensureWorkerStarted'
+    );
+    console.log(`[ghost-gate] ensureWorkerStarted returned '${result}' after ${Date.now() - startedAt}ms`);
     expect(result, `ensureWorkerStarted must not give up on a reclaimable ghost (was: ${result})`).not.toBe('dead');
 
     // The reclaim must have taken the sidecar chain down with the ghost.
