@@ -64,6 +64,22 @@ describe('#2292 — fail-loud diagnostic is no longer swallowed', () => {
     expect(src).toContain('emitBlockingError(');
     expect(src).not.toMatch(/process\.stderr\.write\(\s*\n\s*`claude-mem worker unreachable/);
   });
+
+  it('claims the one-time latch under an inter-process lock before blocking', () => {
+    const src = readFileSync(join(REPO_ROOT, 'src', 'shared', 'worker-utils.ts'), 'utf-8');
+    const start = src.indexOf('export async function recordWorkerUnreachable');
+    const end = src.indexOf('function resetWorkerFailureCounter', start);
+    const implementation = src.slice(start, end);
+
+    expect(implementation).toContain('const lockToken = await acquireHookFailureLock()');
+    expect(implementation).toContain('next.consecutiveFailures >= threshold && !next.thresholdTripped');
+    expect(implementation).not.toContain('next.consecutiveFailures === threshold');
+    expect(implementation).toContain('shouldEscalate = shouldEscalate && statePersisted');
+    expect(implementation.indexOf('const statePersisted = writeHookFailureStateAtomic(next)'))
+      .toBeLessThan(implementation.indexOf("await captureCliEvent('hook_failed'"));
+    expect(implementation.indexOf('releaseHookFailureLock(lockToken)'))
+      .toBeLessThan(implementation.indexOf("await captureCliEvent('hook_failed'"));
+  });
 });
 
 describe('worker-unavailable transient path stays quiet (exit 0)', () => {
