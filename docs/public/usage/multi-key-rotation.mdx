@@ -1,0 +1,109 @@
+---
+title: "Multi-Key Rotation"
+description: "Configure several API keys per provider so a rate-limited or exhausted key rotates to the next one instead of stopping memory"
+---
+
+# Multi-Key Rotation
+
+Give a provider more than one API key and claude-mem rotates through them: a key
+that hits a rate limit, spends its quota, or turns out to be invalid is set aside
+for a cooldown, and the next request uses the next key.
+
+<Tip>
+This is aimed at free tiers. A free Gemini or OpenRouter key has a daily
+allowance measured in a few hundred requests, and a busy day of capture spends
+it before evening. Two or three keys turn that from a stop into a shrug.
+</Tip>
+
+## What it fixes
+
+Without a pool, one key's exhaustion stops memory for the rest of the window:
+
+- `rate_limit` is retried twice more against the **same** key, honoring a
+  `Retry-After` that defaults to 60 seconds — so each observation stalls a full
+  minute and then fails anyway.
+- `quota_exhausted` and `auth_invalid` are not retryable at all. The generator
+  exits and the provider quota breaker arms the whole provider shut for 30
+  minutes.
+
+## Configuration
+
+Add the plural setting alongside the existing single-key one. Keys can be
+separated by newlines, commas, or spaces.
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "gemini",
+  "CLAUDE_MEM_GEMINI_API_KEY": "AIza...primary",
+  "CLAUDE_MEM_GEMINI_API_KEYS": "AIza...second\nAIza...third"
+}
+```
+
+| Provider | Single key | Rotation pool |
+|----------|-----------|---------------|
+| Gemini | `CLAUDE_MEM_GEMINI_API_KEY` | `CLAUDE_MEM_GEMINI_API_KEYS` |
+| OpenRouter | `CLAUDE_MEM_OPENROUTER_API_KEY` | `CLAUDE_MEM_OPENROUTER_API_KEYS` |
+| OpenAI-compatible | `CLAUDE_MEM_OPENAI_COMPAT_API_KEY` | `CLAUDE_MEM_OPENAI_COMPAT_API_KEYS` |
+
+Each plural setting is also readable from `~/.claude-mem/.env` as
+`GEMINI_API_KEYS`, `OPENROUTER_API_KEYS`, or `OPENAI_COMPAT_API_KEYS`, which
+keeps keys out of `settings.json`.
+
+The single key stays first in the pool. You can also leave it empty and supply
+every key through the list — the first listed key is promoted, so availability
+checks and error messages keep working.
+
+## How rotation behaves
+
+**Rotates on** `rate_limit`, `quota_exhausted`, `auth_invalid` — the three
+classifications that mean *this key* is the problem.
+
+**Does not rotate on** `transient` (network blips, 5xx) or `unrecoverable` (a
+malformed request, a bad model id). Retries already own the first, and the second
+would fail identically on every key — rotating would just spend the pool.
+
+**Cooldown windows**
+
+| Kind | Window |
+|------|--------|
+| `rate_limit` | the endpoint's `Retry-After`, clamped to 1s–15m; 60s if it sends none |
+| `quota_exhausted` | 30 minutes |
+| `auth_invalid` | 6 hours |
+
+A success clears that key's cooldown immediately, so recovery never waits out a
+window. Correcting a mistyped key also takes effect at once.
+
+**When every key is cooling**, claude-mem still tries the one nearest to expiry
+rather than failing without sending anything — a misclassification, or an
+endpoint that reset earlier than it announced, should not become a hard stop. If
+that attempt also fails, the last classified error propagates unchanged, so the
+existing pause and breaker behaviour is exactly what it was.
+
+Cooldowns are written to `~/.claude-mem/api-key-cooldown.json` so they survive a
+worker restart. **Keys are never written to that file or to any log line** —
+both use a salted fingerprint that is meaningless outside your install.
+
+## What does not change
+
+- **One key behaves exactly as before.** A pool of one is a pass-through: same
+  request path, same error, no cooldown bookkeeping.
+- **Provider selection is untouched.** Rotation happens *within* the provider you
+  selected. When a pool is fully spent, claude-mem does not silently switch to a
+  different provider.
+- **The cmem.ai gateway never pools.** Its key is account-delivered, and the list
+  is by definition your personal keys — sending those to the gateway would be a
+  credential leak, so a gateway endpoint always uses exactly its one delivered
+  key.
+
+## Verifying
+
+```bash
+npx claude-mem doctor
+```
+
+Rotation events are logged at `warn` with the pool position and key
+fingerprint — never the key:
+
+```
+OpenRouter key 1/3 hit quota_exhausted; rotating to the next key
+```

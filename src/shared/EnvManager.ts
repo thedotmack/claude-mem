@@ -60,22 +60,36 @@ export interface ClaudeMemEnv {
   ANTHROPIC_BASE_URL?: string;
   ANTHROPIC_AUTH_TOKEN?: string;
   GEMINI_API_KEY?: string;
+  GEMINI_API_KEYS?: string;
   OPENROUTER_API_KEY?: string;
+  OPENROUTER_API_KEYS?: string;
+  OPENAI_COMPAT_API_KEY?: string;
+  OPENAI_COMPAT_API_KEYS?: string;
 }
 
 /**
  * The only env keys ever copied out of ~/.claude-mem/.env. This is the
- * whitelist that load/save/buildIsolatedEnv enforce — only these five keys
- * cross the boundary. Do NOT replace the per-key copy loops with
+ * whitelist that load/save/buildIsolatedEnv enforce — only the keys listed
+ * here cross the boundary. Do NOT replace the per-key copy loops with
  * Object.assign(result, parsed): that would let arbitrary keys (a leaked
  * CLAUDE_CODE_* or a typo'd ANTHROPIC_* variant) through (see #2375).
+ *
+ * The `*_API_KEYS` plural entries are the multi-key rotation pools
+ * (src/shared/api-key-pool.ts). They are deliberately generic: a third-party
+ * endpoint reached through the `openai-compatible` provider supplies its key as
+ * OPENAI_COMPAT_API_KEY rather than as a per-vendor name, so adding an endpoint
+ * never means widening this whitelist.
  */
 const CREDENTIAL_KEYS = [
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_AUTH_TOKEN',
   'GEMINI_API_KEY',
+  'GEMINI_API_KEYS',
   'OPENROUTER_API_KEY',
+  'OPENROUTER_API_KEYS',
+  'OPENAI_COMPAT_API_KEY',
+  'OPENAI_COMPAT_API_KEYS',
 ] as const;
 
 // Node's stdlib .env parser (util.parseEnv, Node ≥20.12 / stable in 24):
