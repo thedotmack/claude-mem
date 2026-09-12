@@ -23,6 +23,7 @@ import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
+import { sendObservationToast } from './ToastNotifier.js';
 import { cleanupProcessedMessages } from './SessionCleanupHelper.js';
 
 /**
@@ -245,6 +246,9 @@ async function syncAndBroadcastObservations(
       prompt_number: session.lastPromptNumber,
       created_at_epoch: result.createdAtEpoch
     });
+
+    // Send macOS toast notification (fire-and-forget)
+    sendObservationToast(obs.title, obs.subtitle);
   }
 
   // Update folder CLAUDE.md files for touched folders (fire-and-forget)
