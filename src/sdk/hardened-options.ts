@@ -9,58 +9,47 @@
  * guarantee was enforced ONLY by `disallowedTools`. If a future SDK release
  * shipped a new built-in tool that was not in our deny-list, the Observer could
  * autonomously call Edit/Write/Bash on the user's source tree. This helper
- * makes the prompt's guarantee true at the SDK-config layer with
- * defense-in-depth — no single option is load-bearing:
+ * makes the prompt's guarantee true at the SDK-config layer with a simplified
+ * two-layer model:
  *
- *   - belt:        `tools: []`           — the SDK's TRUE restrictive allowlist.
+ *   - restriction: `tools: []`           — the SDK's TRUE restrictive allowlist.
  *                                          Per the SDK type docs, `tools: []`
  *                                          disables ALL built-in tools. (Note:
  *                                          `allowedTools` is an AUTO-APPROVE
- *                                          list, NOT a restriction — see below.)
- *   - empty allow: `allowedTools: []`    — nothing is auto-approved.
- *   - suspenders:  `disallowedTools`     — explicit per-tool deny list.
- *   - braces:      `permissionMode`      — 'dontAsk' = deny unless pre-approved
- *                                          (nothing is pre-approved here).
+ *                                          list, NOT a restriction, so it is
+ *                                          not part of this model.)
  *   - backstop:    `canUseTool`          — denies EVERY invocation and writes an
  *                                          append-only audit entry.
+ *
+ * Three formerly redundant layers — `allowedTools: []`, `disallowedTools`
+ * (the explicit per-tool deny list), and `permissionMode: 'dontAsk'` — were
+ * removed. All three operate on a tool surface that `tools: []` has already
+ * emptied: once the SDK's built-in tool list is `[]`, there is nothing left
+ * for an auto-approve list, a deny list, or a permission-prompt mode to act
+ * on. Keeping them added no independent security property, only maintenance
+ * surface (e.g. a deny-list that could silently drift out of sync with a new
+ * SDK-added tool while still being masked by `tools: []`).
+ *
+ * `systemPrompt` (below) adds a defense-in-depth layer of its own, separate
+ * from tool lockdown: it re-asserts the "no tool access" identity text
+ * directly in the subprocess's system prompt, complementing
+ * `settingSources: []` which already suppresses CLAUDE.md inheritance.
+ *
  *   - isolation:   `cwd` jail + `mcpServers:{}` + `settingSources:[]` +
  *                  `strictMcpConfig` + `additionalDirectories:[]` — even with
  *                  tools disabled, these prevent settings/MCP inheritance and
  *                  filesystem escape hatches.
  *
- * The redundancy IS the security property: removing any one layer must not
- * re-open the gap. Verified against @anthropic-ai/claude-agent-sdk v0.2.141
- * (sdk.d.ts): `tools`, `allowedTools`, `disallowedTools`, `permissionMode`
- * ('dontAsk' = "Don't prompt for permissions, deny if not pre-approved"),
- * `canUseTool` (returns PermissionResult { behavior: 'deny', message }),
- * `additionalDirectories`, `mcpServers`, `settingSources`, `strictMcpConfig`
- * all exist on the `Options` type.
+ * Verified against @anthropic-ai/claude-agent-sdk v0.2.141 (sdk.d.ts):
+ * `tools`, `canUseTool` (returns PermissionResult { behavior: 'deny', message }),
+ * `additionalDirectories`, `mcpServers`, `settingSources`, `strictMcpConfig`,
+ * `systemPrompt` all exist on the `Options` type.
  */
 
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import { OBSERVER_SESSIONS_DIR } from '../shared/paths.js';
 import { recordObserverToolAttempt } from '../utils/observer-audit.js';
 import { logger } from '../utils/logger.js';
-
-/**
- * Tools explicitly named in the deny-list. `tools: []` already disables all
- * built-ins; this list is the redundant "suspenders" layer and documents
- * intent for human reviewers.
- */
-export const OBSERVER_DISALLOWED_TOOLS = [
-  'Bash',           // Prevent infinite loops
-  'Read',           // No file reading
-  'Write',          // No file writing
-  'Edit',           // No file editing
-  'Grep',           // No code searching
-  'Glob',           // No file pattern matching
-  'WebFetch',       // No web fetching
-  'WebSearch',      // No web searching
-  'Task',           // No spawning sub-agents
-  'NotebookEdit',   // No notebook editing
-  'AskUserQuestion',// No asking questions
-  'TodoWrite',
-] as const;
 
 export interface HardenedSdkOptionsInput {
   /** Which call site is constructing options — flows into audit entries. */
@@ -69,6 +58,9 @@ export interface HardenedSdkOptionsInput {
   sessionDbId?: number;
   contentSessionId?: string;
   project?: string;
+
+  /** System identity text for the subprocess (defense-in-depth). */
+  systemPrompt: string;
 
   // Pass-through fields the caller still owns:
   model: string;
@@ -117,6 +109,7 @@ export function buildHardenedSdkOptions(input: HardenedSdkOptionsInput): Options
     cwd: input.cwd ?? OBSERVER_SESSIONS_DIR,
     env: input.env,
     pathToClaudeCodeExecutable: input.pathToClaudeCodeExecutable,
+    systemPrompt: input.systemPrompt,
     ...(input.abortController ? { abortController: input.abortController } : {}),
     ...(input.resume ? { resume: input.resume } : {}),
     ...(input.spawnClaudeCodeProcess ? { spawnClaudeCodeProcess: input.spawnClaudeCodeProcess } : {}),
@@ -124,10 +117,7 @@ export function buildHardenedSdkOptions(input: HardenedSdkOptionsInput): Options
     ...(input.source === 'Observer' ? { thinkingConfig: { type: 'disabled' as const } } : {}),
 
     // === Tool lockdown (defense-in-depth) ===
-    tools: [],                                        // belt: disable ALL built-in tools
-    allowedTools: [],                                 // nothing auto-approved
-    disallowedTools: [...OBSERVER_DISALLOWED_TOOLS],  // suspenders: explicit deny
-    permissionMode: 'dontAsk',                        // braces: deny unless pre-approved (nothing is)
+    tools: [],                                        // restriction: disable ALL built-in tools
     canUseTool,                                       // backstop: deny + audit every attempt
 
     // === Filesystem / settings / MCP isolation ===

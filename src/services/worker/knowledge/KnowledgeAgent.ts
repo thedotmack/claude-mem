@@ -45,6 +45,7 @@ export class KnowledgeAgent {
       options: buildHardenedSdkOptions({
         source: 'KnowledgeAgent',
         project: corpus.name,
+        systemPrompt: corpus.system_prompt,
         model: this.getModelId(),
         env: isolatedEnv,
         pathToClaudeCodeExecutable: claudePath,
@@ -137,6 +138,7 @@ export class KnowledgeAgent {
       options: buildHardenedSdkOptions({
         source: 'KnowledgeAgent',
         project: corpus.name,
+        systemPrompt: corpus.system_prompt,
         model: this.getModelId(),
         env: isolatedEnv,
         pathToClaudeCodeExecutable: claudePath,
