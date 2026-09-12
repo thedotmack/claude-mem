@@ -185,6 +185,12 @@ export function recordCmemFallbackIfEligible(
       { kind: error.kind, ...(error.code ? { code: error.code } : {}) },
       writeError instanceof Error ? writeError : new Error(String(writeError)),
     );
+    // Even unhandled, a definitive terminal stop must not be re-bought by the
+    // very next observation. With no marker on disk, dispatch would stay on
+    // openrouter, and the caller's own breaker arming covers only the
+    // quota_exhausted kind — so arm it here for every eligible terminal code
+    // (re-arming from the caller merely restamps the same cooldown).
+    recordQuotaExhausted('openrouter', describeCmemTerminalStop(error));
     return false;
   }
   // No usable fallback (choice 'none', or 'gemini' without a key): the marker

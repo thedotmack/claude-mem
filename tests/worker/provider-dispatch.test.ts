@@ -292,5 +292,23 @@ describe('provider-dispatch', () => {
       expect(getQuotaCooldown('openrouter')?.message).toContain('allowance_exhausted');
       resetQuotaCooldownsForTesting();
     });
+
+    it('arms the breaker when the marker write itself fails, for every eligible code', () => {
+      // A failed persist returns false (unhandled), but with no marker on
+      // disk the next dispatch would stay on openrouter and re-buy the same
+      // terminal stop — the auth-kind codes especially, since the caller's
+      // own breaker arming covers only quota_exhausted.
+      resetQuotaCooldownsForTesting();
+      pinOpenRouterEnv({ CLAUDE_MEM_FALLBACK_PROVIDER: 'claude' });
+      const unwritable = join(tempDir, 'settings-as-dir');
+      mkdirSync(unwritable, { recursive: true });
+      expect(recordCmemFallbackIfEligible(gatewayError(403, 'subscription_inactive'), unwritable)).toBe(false);
+      expect(getQuotaCooldown('openrouter')?.message).toContain('subscription_inactive');
+
+      resetQuotaCooldownsForTesting();
+      expect(recordCmemFallbackIfEligible(gatewayError(403, 'key_invalid'), unwritable)).toBe(false);
+      expect(getQuotaCooldown('openrouter')?.message).toContain('key_invalid');
+      resetQuotaCooldownsForTesting();
+    });
   });
 });
