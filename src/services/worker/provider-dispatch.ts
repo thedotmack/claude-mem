@@ -23,7 +23,7 @@ import { isCmemGatewayUrl, writeProFallbackAt } from '../../shared/cmem-gateway.
 import { isGeminiAvailable, isGeminiSelected } from './GeminiProvider.js';
 import { isOpenRouterAvailable, isOpenRouterSelected } from './OpenRouterProvider.js';
 import type { ClassifiedProviderError } from './provider-errors.js';
-import { releaseQuotaProbe, tryAdmitQuotaProbe } from '../../shared/quota-cooldown.js';
+import { recordQuotaExhausted, releaseQuotaProbe, tryAdmitQuotaProbe } from '../../shared/quota-cooldown.js';
 
 /** Retry a fallen-back gateway occasionally so a later subscription recovers. */
 export const CMEM_FALLBACK_RETRY_MS = 15 * 60_000;
@@ -151,15 +151,21 @@ export function releaseCmemGatewayProbe(claimId: number | null): void {
  *
  * Eligible errors are the terminal gateway rejections only: kind
  * 'quota_exhausted' (gateway code allowance_exhausted, or a legacy 402) and
- * gateway code 'key_invalid'. Rate limits, transient upstream errors, and
- * every failure on a non-gateway base URL (a personal openrouter.ai key
- * running dry) stay on the existing outage-warning path.
+ * gateway codes 'key_invalid' and 'subscription_inactive' — the last is the
+ * expired/cancelled trial, the very case the installer's fallback promise is
+ * for. Rate limits, transient upstream errors, and every failure on a
+ * non-gateway base URL (a personal openrouter.ai key running dry) stay on the
+ * existing outage-warning path.
  */
 export function recordCmemFallbackIfEligible(
   error: ClassifiedProviderError,
   settingsPath: string = paths.settings(),
 ): boolean {
-  if (error.kind !== 'quota_exhausted' && error.code !== 'key_invalid') {
+  if (
+    error.kind !== 'quota_exhausted'
+    && error.code !== 'key_invalid'
+    && error.code !== 'subscription_inactive'
+  ) {
     return false;
   }
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
@@ -181,10 +187,25 @@ export function recordCmemFallbackIfEligible(
     );
     return false;
   }
-  logger.info('SESSION', 'Recorded cmem trial-expiry fallback; dispatch switches to the Claude provider', {
+  // No usable fallback (choice 'none', or 'gemini' without a key): the marker
+  // cannot hold dispatch — selectProviderForGenerator's null-fallback branch
+  // stays on openrouter — so arm the provider quota breaker instead. One hold
+  // mechanism per path: divertable fallback → the marker; null fallback → the
+  // breaker (whose own cooldown then admits the single re-probe).
+  if (resolveCmemFallbackProvider(settings) === null) {
+    recordQuotaExhausted('openrouter', describeCmemTerminalStop(error));
+  }
+  logger.info('SESSION', 'Recorded cmem trial-expiry fallback; dispatch honors the configured fallback provider', {
     kind: error.kind,
     ...(error.code ? { code: error.code } : {}),
     fallbackAt,
   });
   return true;
+}
+
+/** Breaker message for a terminal cmem gateway stop with no usable fallback. */
+function describeCmemTerminalStop(error: ClassifiedProviderError): string {
+  return error.code
+    ? `cmem gateway terminal stop (${error.code})`
+    : `cmem gateway terminal stop: ${error.message}`;
 }

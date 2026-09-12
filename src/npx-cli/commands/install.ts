@@ -1272,7 +1272,9 @@ async function promptProFallbackProvider(): Promise<void> {
     initialValue: 'claude',
   });
 
-  let choice: FallbackChoice = p.isCancel(fallbackResult) ? 'claude' : fallbackResult;
+  // @clack/prompts 1.8: isCancel narrows to unique CANCEL_SYMBOL, not generic symbol.
+  let choice: FallbackChoice =
+    p.isCancel(fallbackResult) || typeof fallbackResult === 'symbol' ? 'claude' : fallbackResult;
 
   if (choice === 'gemini') {
     // Same key slot and prompt shape as the gemini branch of promptProvider —

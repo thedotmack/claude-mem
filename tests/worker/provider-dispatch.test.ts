@@ -11,6 +11,7 @@ import {
   shouldUseCmemFallback,
 } from '../../src/services/worker/provider-dispatch.js';
 import { classifyOpenRouterError } from '../../src/services/worker/OpenRouterProvider.js';
+import { getQuotaCooldown, resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
 
 const CMEM_GATEWAY_BASE = 'https://cmem.ai/api/inference/v1';
 
@@ -255,11 +256,41 @@ describe('provider-dispatch', () => {
       expect(persisted.CLAUDE_MEM_PRO_FALLBACK_AT).toBe('');
     });
 
-    it('ignores non-terminal gateway errors (rate limits, transient, inactive subscription)', () => {
+    it('ignores non-terminal gateway errors (rate limits, transient)', () => {
       pinOpenRouterEnv();
       expect(recordCmemFallbackIfEligible(gatewayError(429, 'rate_limited'), settingsPath)).toBe(false);
       expect(recordCmemFallbackIfEligible(gatewayError(503, 'upstream_unavailable'), settingsPath)).toBe(false);
-      expect(recordCmemFallbackIfEligible(gatewayError(403, 'subscription_inactive'), settingsPath)).toBe(false);
+    });
+
+    it('triggers for subscription_inactive — the expired trial is the canonical fallback moment', () => {
+      pinOpenRouterEnv();
+      expect(recordCmemFallbackIfEligible(gatewayError(403, 'subscription_inactive'), settingsPath)).toBe(true);
+      const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      expect(persisted.CLAUDE_MEM_PRO_FALLBACK_AT).not.toBe('');
+    });
+
+    it('arms the openrouter quota breaker when no usable fallback exists', () => {
+      resetQuotaCooldownsForTesting();
+      // Fallback 'none': the marker cannot divert dispatch, so the recording
+      // itself must arm the breaker — otherwise every later observation buys
+      // another doomed request against the dead gateway.
+      pinOpenRouterEnv({ CLAUDE_MEM_FALLBACK_PROVIDER: 'none' });
+      expect(recordCmemFallbackIfEligible(gatewayError(403, 'key_invalid'), settingsPath)).toBe(true);
+      expect(getQuotaCooldown('openrouter')?.message).toContain('key_invalid');
+
+      // A divertable fallback (default 'claude') must NOT arm the breaker —
+      // the marker is the hold on that path, per the SessionRoutes comment.
+      resetQuotaCooldownsForTesting();
+      pinOpenRouterEnv({ CLAUDE_MEM_FALLBACK_PROVIDER: 'claude' });
+      expect(recordCmemFallbackIfEligible(gatewayError(403, 'key_invalid'), settingsPath)).toBe(true);
+      expect(getQuotaCooldown('openrouter')).toBeNull();
+
+      // 'gemini' without a key resolves to no usable fallback → breaker arms.
+      resetQuotaCooldownsForTesting();
+      pinOpenRouterEnv({ CLAUDE_MEM_FALLBACK_PROVIDER: 'gemini' });
+      expect(recordCmemFallbackIfEligible(gatewayError(402, 'allowance_exhausted'), settingsPath)).toBe(true);
+      expect(getQuotaCooldown('openrouter')?.message).toContain('allowance_exhausted');
+      resetQuotaCooldownsForTesting();
     });
   });
 });
