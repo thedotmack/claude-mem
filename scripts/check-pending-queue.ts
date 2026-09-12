@@ -8,7 +8,9 @@ const DEFAULT_WORKER_HOST = workerSettings.CLAUDE_MEM_WORKER_HOST;
 const DEFAULT_WORKER_PORT = workerSettings.CLAUDE_MEM_WORKER_PORT;
 
 function resolveWorkerHost(): string {
-  return process.env.CLAUDE_MEM_WORKER_HOST || DEFAULT_WORKER_HOST;
+  // loadFromFile already applies env overrides and normalizes 'localhost'
+  // to 127.0.0.1 (#2992); a raw process.env read here would bypass both.
+  return DEFAULT_WORKER_HOST;
 }
 
 function resolveWorkerPort(): string {

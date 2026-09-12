@@ -150,4 +150,10 @@ describe('ChromaMcpManager child PATH Homebrew coverage (#3271)', () => {
 
     expect(childPath()).toEqual(['/usr/bin', '/bin']);
   });
+
+  it('forces UTF-8 on the Python child stdio so locale code pages cannot corrupt JSON-RPC', () => {
+    const env = getUvxPreflightEnv();
+    expect(env.PYTHONUTF8).toBe('1');
+    expect(env.PYTHONIOENCODING).toBe('utf-8');
+  });
 });

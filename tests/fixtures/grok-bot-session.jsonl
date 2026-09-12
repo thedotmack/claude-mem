@@ -1,0 +1,2 @@
+{"role":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_123","name":"Read","input":{"file_path":"src/index.ts"}}]}}
+{"role":"tool","message":{"content":[{"toolUseId":"toolu_123","content":{"contents":"export const answer = 42;"}}]}}

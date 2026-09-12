@@ -4,6 +4,7 @@ import fs from 'fs';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { findClaudeExecutable as defaultFindClaudeExecutable } from '../../shared/find-claude-executable.js';
 import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
+import { stripForeignPythonEnv } from '../../shared/uvx-env.js';
 import { logger } from '../../utils/logger.js';
 import {
   clearDependencyStatus,
@@ -96,6 +97,14 @@ function effectiveUvxEnv(options: WorkerDependencyPreflightOptions): Record<stri
   if (additions.length > 0) {
     env[pathKey] = [...additions, ...currentPathEntries].join(separator);
   }
+
+  // Defense in depth for #3552. Today this env is only read for its PATH key
+  // (hasExecutableOnPath / resolveUvxCommand probe the filesystem with it and
+  // never spawn), so stripping changes no current behavior — it exists so that
+  // the day someone does hand this env to a child, it cannot carry a foreign
+  // interpreter in. The env that actually reaches chroma-mcp is built by
+  // ChromaMcpManager.getUvxPreflightEnv(), which applies the same rule.
+  stripForeignPythonEnv(env);
 
   return env;
 }

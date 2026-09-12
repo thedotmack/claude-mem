@@ -26,6 +26,7 @@ const CANONICAL_IDES = [
   'windsurf',
   'codex-cli',
   'cursor',
+  'grok-bot',
   'copilot-cli',
   'antigravity',
   'goose',
@@ -268,8 +269,8 @@ describe('cross-IDE failure matrix (11 IDEs x 4 scenarios)', () => {
     else process.env.CLAUDE_MEM_DATA_DIR = prevMatrixDataDir;
   });
 
-  it('produces 44 cells (11 IDEs x 4 scenarios)', () => {
-    expect(CANONICAL_IDES.length * scenarios.length).toBe(44);
+  it('produces 48 cells (12 IDEs x 4 scenarios)', () => {
+    expect(CANONICAL_IDES.length * scenarios.length).toBe(48);
   });
 
   for (const ide of CANONICAL_IDES) {

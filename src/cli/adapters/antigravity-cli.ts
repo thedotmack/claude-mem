@@ -7,10 +7,10 @@ export const antigravityCliAdapter: PlatformAdapter = {
 
     // unverified: confirm Antigravity sets GEMINI_* env vars on first real hook firing
     const cwd = r.cwd
-      ?? process.env.GEMINI_CWD
-      ?? process.env.GEMINI_PROJECT_DIR
-      ?? process.env.CLAUDE_PROJECT_DIR
-      ?? process.cwd();
+      || process.env.GEMINI_CWD
+      || process.env.GEMINI_PROJECT_DIR
+      || process.env.CLAUDE_PROJECT_DIR
+      || process.cwd();
     if (!isValidCwd(cwd)) {
       throw new AdapterRejectedInput('invalid_cwd');
     }

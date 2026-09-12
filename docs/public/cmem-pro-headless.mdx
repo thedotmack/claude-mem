@@ -1,0 +1,129 @@
+---
+title: "CMEM Pro (manual / headless)"
+description: "What npx claude-mem install writes for CMEM Pro — OAuth pairing, settings.json keys, and how to verify without the interactive installer"
+---
+
+# CMEM Pro (manual / headless)
+
+Use this when you already have a [cmem.ai](https://cmem.ai) account and need to wire CMEM Pro without the interactive installer (CI, a second machine, or a box you SSH into). The usual path is still [`npx claude-mem install`](/installation).
+
+<Warning>
+Never paste real `cm_pro_…` keys, setup tokens, or OpenRouter `sk-or-` keys into chat, tickets, or docs. The examples below are placeholders only. Keep `~/.claude-mem/settings.json` mode `0600`.
+</Warning>
+
+## What the installer does
+
+Three stages:
+
+1. **Runtime** — Bun/uv if needed, IDE plugin files, worker deps.
+2. **Sign in** — skipped only for `--provider claude` (that path never talks to cmem.ai). Otherwise the CLI does **not** ask for an email:
+   - `POST https://cmem.ai/api/installer/oauth/start` with `{ source: "npx-installer", device_name: <hostname> }`
+   - prints a device code `XXXX-XXXX` and opens `authorization_url`
+   - polls `https://cmem.ai/api/pro/trial/poll` until authenticated
+3. **Provider** — **CMEM Pro is pre-selected.** Choosing it opens `checkout_url` (trial/claim), polls until `status: "ready"`, then writes settings and restarts the worker.
+
+`--provider openrouter` with a **personal** key is a different path: empty `CLAUDE_MEM_OPENROUTER_BASE_URL` (or `https://openrouter.ai/api/v1`). Never send a personal `sk-or-` key to `https://cmem.ai/api/inference`.
+
+## Settings the installer writes
+
+Credentials are **staged**, then **activated**. File: `~/.claude-mem/settings.json`.
+
+### Staged (sync + trial metadata)
+
+| Key | From the ready poll |
+| --- | --- |
+| `CLAUDE_MEM_CLOUD_SYNC_TOKEN` | `setup_token` |
+| `CLAUDE_MEM_CLOUD_SYNC_USER_ID` | `user_id` |
+| `CLAUDE_MEM_CLOUD_SYNC_HUB_URL` | `hub_url` |
+| `CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID` | `""` (worker mints on first start) |
+| `CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME` | hostname |
+| `CLAUDE_MEM_PRO_TRIAL_STATE` | `active` |
+| `CLAUDE_MEM_PRO_TRIAL_ENDS_AT` | `trial.ends_at` or `""` |
+| `CLAUDE_MEM_PRO_PLAN` | `trial` / `pro` / `none` |
+| `CLAUDE_MEM_PRO_MEMORY_KEY` | `memory_key`, or `setup_token` if omitted |
+| `CLAUDE_MEM_PRO_MEMORY_BASE_URL` | `memory_base_url`, or `https://cmem.ai/api/inference/v1` |
+| `CLAUDE_MEM_PRO_MEMORY_MODEL` | `memory_model`, or `cmem-observer` |
+| `CLAUDE_MEM_PRO_FALLBACK_AT` | `""` |
+
+Cloud sync is on only when the token, user id, **and** hub URL are all non-empty. See [Cloud Sync](/cloud-sync).
+
+### Activated (this is what makes observations run)
+
+The worker talks to cmem.ai through the generic OpenRouter client. There is no separate CMEM provider implementation.
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openrouter",
+  "CLAUDE_MEM_OPENROUTER_BASE_URL": "https://cmem.ai/api/inference/v1",
+  "CLAUDE_MEM_OPENROUTER_MODEL": "cmem-observer",
+  "CLAUDE_MEM_OPENROUTER_API_KEY": "cm_pro_YOUR_MEMORY_KEY",
+  "CLAUDE_MEM_PRO_MEMORY_KEY": "",
+  "CLAUDE_MEM_PRO_MEMORY_BASE_URL": "",
+  "CLAUDE_MEM_PRO_MEMORY_MODEL": ""
+}
+```
+
+Keep the cloud-sync trio from staging. `memory_key` and `setup_token` are often the same (`cm_pro_…`). If the poll returns a distinct `memory_key`, use that for `CLAUDE_MEM_OPENROUTER_API_KEY` and keep `setup_token` only on `CLAUDE_MEM_CLOUD_SYNC_TOKEN`.
+
+## Manual recipe (you already have tokens)
+
+1. From **cmem.ai → Connect** (or an installer pairing), copy `setup_token`, `user_id`, `hub_url`, and `memory_key` (if missing, use `setup_token`).
+2. Merge staged + activated keys into `~/.claude-mem/settings.json`. Placeholders only:
+
+```json
+{
+  "CLAUDE_MEM_CLOUD_SYNC_TOKEN": "cm_pro_YOUR_SETUP_TOKEN",
+  "CLAUDE_MEM_CLOUD_SYNC_USER_ID": "YOUR_USER_ID",
+  "CLAUDE_MEM_CLOUD_SYNC_HUB_URL": "https://YOUR_HUB_URL",
+  "CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID": "",
+  "CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME": "my-machine",
+  "CLAUDE_MEM_PRO_TRIAL_STATE": "active",
+  "CLAUDE_MEM_PRO_TRIAL_ENDS_AT": "",
+  "CLAUDE_MEM_PRO_PLAN": "trial",
+  "CLAUDE_MEM_PRO_FALLBACK_AT": "",
+  "CLAUDE_MEM_PROVIDER": "openrouter",
+  "CLAUDE_MEM_OPENROUTER_BASE_URL": "https://cmem.ai/api/inference/v1",
+  "CLAUDE_MEM_OPENROUTER_MODEL": "cmem-observer",
+  "CLAUDE_MEM_OPENROUTER_API_KEY": "cm_pro_YOUR_MEMORY_KEY"
+}
+```
+
+3. `chmod 600 ~/.claude-mem/settings.json`
+4. Restart the worker so it is not holding old in-memory provider/sync state:
+
+```bash
+npx claude-mem restart
+```
+
+The interactive installer stops the worker after it persists the provider for the same reason.
+
+5. Verify (port is `CLAUDE_MEM_WORKER_PORT` or `~/.claude-mem/.worker.port`):
+
+```bash
+curl -s "http://127.0.0.1:${CLAUDE_MEM_WORKER_PORT}/api/health"
+curl -s "http://127.0.0.1:${CLAUDE_MEM_WORKER_PORT}/api/sync/status"
+```
+
+Expect health with provider `openrouter`, and sync `configured: true` plus `hub.reachable: true`.
+
+6. First real observation should store via model `cmem-observer`. Gateway success **clears** `CLAUDE_MEM_PRO_FALLBACK_AT`. A terminal quota/key error from the gateway **sets** that timestamp and memory falls back to the Anthropic plan.
+
+<Info>
+Fallback is **event-driven**, not a calendar date. Do not treat `CLAUDE_MEM_PRO_TRIAL_ENDS_AT` as the switch. The switch is `CLAUDE_MEM_PRO_FALLBACK_AT`.
+</Info>
+
+## What not to mix
+
+| Path | OpenRouter base URL | Key |
+| --- | --- | --- |
+| CMEM Pro (this page) | `https://cmem.ai/api/inference/v1` | `cm_pro_…` memory key |
+| Personal OpenRouter | empty, or `https://openrouter.ai/api/v1` | your `sk-or-…` |
+| Anthropic plan | n/a | `--provider claude` — local Max; cloud sync and CMEM keys cleared |
+
+Never send a personal OpenRouter key to the cmem gateway.
+
+## Next steps
+
+- [Installation](/installation) — interactive three-stage installer
+- [Cloud Sync](/cloud-sync) — what the sync trio replicates
+- [OpenRouter provider](/usage/openrouter-provider) — personal OpenRouter keys (not cmem.ai)
