@@ -1676,7 +1676,9 @@ export class SessionStore {
     const { orderBy = 'date_desc', limit, project, type, concepts, files } = options;
     const preserveIdOrder = orderBy === 'relevance';
     const orderClause = preserveIdOrder ? '' : `ORDER BY created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
-    const limitClause = limit ? `LIMIT ${limit}` : '';
+    // When preserving relevance order, defer LIMIT until after the in-memory reorder —
+    // applying LIMIT in SQL drops rows in arbitrary rowid order, before the Chroma ranking is honored.
+    const limitClause = (limit && !preserveIdOrder) ? `LIMIT ${limit}` : '';
 
     // Build placeholders for IN clause
     const placeholders = ids.map(() => '?').join(',');
@@ -1738,9 +1740,11 @@ export class SessionStore {
     const rows = stmt.all(...params) as ObservationSearchResult[];
     if (!preserveIdOrder) return rows;
 
-    // Preserve caller-provided ID order (Chroma vector similarity ranking)
+    // Preserve caller-provided ID order (Chroma vector similarity ranking).
+    // Apply limit after reorder so we keep the top-ranked rows, not arbitrary ones.
     const rowMap = new Map(rows.map(r => [r.id, r]));
-    return ids.map(id => rowMap.get(id)).filter((r): r is ObservationSearchResult => !!r);
+    const ordered = ids.map(id => rowMap.get(id)).filter((r): r is ObservationSearchResult => !!r);
+    return limit ? ordered.slice(0, limit) : ordered;
   }
 
   /**
