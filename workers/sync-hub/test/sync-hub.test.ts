@@ -767,7 +767,10 @@ describe("large cursor pagination", () => {
 			}
 		}
 		expect(count).toBe(10_001);
-	});
+		// 10,001 real ops through the DO on a shared CI runner can outrun the
+		// 5s vitest default (observed on a run whose diff never touched
+		// sync-hub); same explicit budget as the other heavy test above.
+	}, 15_000);
 });
 
 describe("front Worker durability and repair", () => {
