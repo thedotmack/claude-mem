@@ -89,6 +89,37 @@ export const _internals = {
 };
 
 /**
+ * A Claude CLI binary exists on disk at a discovered path but this worker
+ * process can no longer spawn it (ENOENT on posix_spawn despite the file
+ * being present — typically a stale worker after Claude Code's native
+ * auto-updater swapped the binary underneath a long-running process).
+ *
+ * Carries every present-but-unspawnable candidate plus the probe detail, so
+ * callers can surface a single actionable error rather than a generic
+ * not-found. The message deliberately includes the literal token `ENOENT` so
+ * `classifyClaudeError` keeps mapping it to `setup_required` — but the
+ * `isClaudeExecutableUnspawnable` discriminator lets the routes layer
+ * distinguish it from a genuine setup gap and trigger a self-heal restart.
+ */
+export class ClaudeExecutableUnspawnableError extends Error {
+  readonly candidates: ReadonlyArray<{ path: string; detail: string }>;
+  constructor(candidates: ReadonlyArray<{ path: string; detail: string }>) {
+    const list = candidates.map(c => `  - ${c.path} — ${c.detail}`).join('\n');
+    super(
+      'Claude executable(s) exist on disk but could not be spawned by this worker process ' +
+      '(ENOENT on posix_spawn despite the file being present — typically a stale worker after a ' +
+      `Claude Code CLI auto-update):\n${list}\n` +
+      `Restarting the worker resolves this. ${updateInstructions()}`
+    );
+    this.name = 'ClaudeExecutableUnspawnableError';
+    this.candidates = candidates;
+  }
+}
+export function isClaudeExecutableUnspawnable(err: unknown): err is ClaudeExecutableUnspawnableError {
+  return err instanceof ClaudeExecutableUnspawnableError;
+}
+
+/**
  * Returns true if the path looks like a Windows desktop-app installation
  * (AppData or Program Files) rather than a CLI installed via npm/volta/etc.
  */
@@ -396,11 +427,20 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
     // that ran but exited non-zero, timed out, or printed no version is a
     // different problem — do not claim it "could not be executed".
     if (probe.launchFailed) {
-      throw new Error(
-        `CLAUDE_CODE_PATH is set to ${describedPath} — the file exists but could not be executed (${probe.detail}). ` +
-        `A launcher script whose interpreter (shebang) is missing, or a native-installer stub pointing at a deleted version directory, fails this way. ` +
-        `Reinstall the Claude Code CLI or point CLAUDE_CODE_PATH at a working binary.`
-      );
+      // Present on disk (existsSync guard above) but the OS could not launch
+      // it — the same stale-worker signature as the discovered-candidate path
+      // (#3290). Pinned installs must surface the self-heal discriminator too,
+      // or a wedged CLAUDE_CODE_PATH parks the worker in setup_required
+      // forever; the launch-failure guidance rides in the candidate detail.
+      throw new ClaudeExecutableUnspawnableError([
+        {
+          path: configuredPath,
+          detail:
+            `CLAUDE_CODE_PATH is set to ${describedPath} — the file exists but could not be executed (${probe.detail}). ` +
+            `A launcher script whose interpreter (shebang) is missing, or a native-installer stub pointing at a deleted version directory, fails this way. ` +
+            `Reinstall the Claude Code CLI or point CLAUDE_CODE_PATH at a working binary.`,
+        },
+      ]);
     }
     throw new Error(
       `CLAUDE_CODE_PATH is set to ${describedPath} — the file ran but failed its version probe (${probe.detail}). ` +
@@ -412,6 +452,11 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
   // --- 2. Probe every discovered candidate ---------------------------------
   const capable: Array<{ path: string; version: string; key: [number, number, number]; order: number }> = [];
   const incompatible: Array<{ path: string; version: string; detail: string }> = [];
+  // Candidates that are present on disk but every probe failed (broken/ENOENT).
+  // When this set is non-empty AND nothing capable was found, the final throw
+  // is a ClaudeExecutableUnspawnableError so callers can self-heal restart
+  // instead of looping forever in setup_required cooldown.
+  const presentButUnspawnable: Array<{ path: string; detail: string }> = [];
 
   const candidates = discoverCandidates();
   for (let order = 0; order < candidates.length; order++) {
@@ -440,6 +485,19 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
       );
     } else {
       logger.warn(logComponent, `Skipping "${candidate}" — failed --version check (${probe.detail})`);
+      // A file that is present on disk but the OS could not launch is the
+      // signature of a stale worker after a CLI auto-update — collected here
+      // so the final throw can be a ClaudeExecutableUnspawnableError (which
+      // callers use to self-heal restart) instead of a generic not-found.
+      // Two guards, both load-bearing: launchFailed because a candidate that
+      // RAN but failed its version probe is a wrong program, not a stale
+      // spawn — a restart can never fix it, so it must not burn the self-heal
+      // budget (matches the configured-path branch); existsSync because a
+      // MISSING file also probes as launchFailed (spawn ENOENT sets no status
+      // or signal) and a dangling PATH entry is the genuine not-found case.
+      if (probe.launchFailed && _internals.existsSync(candidate)) {
+        presentButUnspawnable.push({ path: candidate, detail: probe.detail });
+      }
     }
   }
 
@@ -470,6 +528,9 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
     );
   }
 
+  if (presentButUnspawnable.length > 0) {
+    throw new ClaudeExecutableUnspawnableError(presentButUnspawnable);
+  }
   throw new Error(
     'Claude executable not found. Please either:\n' +
     '1. Add "claude" to your system PATH, or\n' +
