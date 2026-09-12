@@ -531,6 +531,27 @@ describe('findClaudeExecutable present-but-unspawnable detection', () => {
     expect(caught).toBeInstanceOf(Error);
     expect((caught as Error).message).toContain('Claude executable not found');
   });
+
+  it('throws the generic not-found Error (NOT ClaudeExecutableUnspawnableError) when the only candidate ran but failed its version probe', () => {
+    // A wrong wrapper that launches fine and exits non-zero is an install
+    // problem a restart can never fix. Collecting it as present-but-unspawnable
+    // would burn the self-heal restart budget on every worker start before
+    // parking in setup_required, instead of surfacing the bad install now.
+    installFakes();
+    whichOutput = '/wrong/claude\n';
+    fakeClis.set('/wrong/claude', { version: '0.0.0', supportsDontAsk: false, ranButFailed: true });
+
+    let caught: unknown;
+    try {
+      findClaudeExecutable('SDK');
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeDefined();
+    expect(isClaudeExecutableUnspawnable(caught)).toBe(false);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain('Claude executable not found');
+  });
 });
 
 describe('capability probe contract', () => {

@@ -485,11 +485,17 @@ export function findClaudeExecutable(logComponent: Component = 'SDK'): string {
       );
     } else {
       logger.warn(logComponent, `Skipping "${candidate}" — failed --version check (${probe.detail})`);
-      // A file that is present on disk but cannot be spawned is the signature
-      // of a stale worker after a CLI auto-update — collected here so the
-      // final throw can be a ClaudeExecutableUnspawnableError (which callers
-      // use to self-heal restart) instead of a generic not-found.
-      if (_internals.existsSync(candidate)) {
+      // A file that is present on disk but the OS could not launch is the
+      // signature of a stale worker after a CLI auto-update — collected here
+      // so the final throw can be a ClaudeExecutableUnspawnableError (which
+      // callers use to self-heal restart) instead of a generic not-found.
+      // Two guards, both load-bearing: launchFailed because a candidate that
+      // RAN but failed its version probe is a wrong program, not a stale
+      // spawn — a restart can never fix it, so it must not burn the self-heal
+      // budget (matches the configured-path branch); existsSync because a
+      // MISSING file also probes as launchFailed (spawn ENOENT sets no status
+      // or signal) and a dangling PATH entry is the genuine not-found case.
+      if (probe.launchFailed && _internals.existsSync(candidate)) {
         presentButUnspawnable.push({ path: candidate, detail: probe.detail });
       }
     }
