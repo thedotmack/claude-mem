@@ -1,0 +1,20 @@
+{
+  "note": "Map observation.generated_by_model / settings model ids onto OpenRouter list-price rows. Join after aliasing.",
+  "aliases": {
+    "cmem-observer": {
+      "openrouter_id": "deepseek/deepseek-v4-flash",
+      "from": "2026-08-08",
+      "before": "deepseek/deepseek-chat",
+      "reason": "CMEM Pro hosted observer alias. Default switched from deepseek-chat to v4-flash on 2026-08-08."
+    },
+    "claude-sonnet-4-6": { "openrouter_id": "anthropic/claude-sonnet-4.6" },
+    "claude-sonnet-4.6": { "openrouter_id": "anthropic/claude-sonnet-4.6" },
+    "claude-sonnet-5": { "openrouter_id": "anthropic/claude-sonnet-5" },
+    "claude-haiku-4-5-20251001": { "openrouter_id": "anthropic/claude-haiku-4.5" },
+    "claude-haiku-4.5": { "openrouter_id": "anthropic/claude-haiku-4.5" },
+    "haiku": { "openrouter_id": "anthropic/claude-haiku-4.5" },
+    "sonnet": { "openrouter_id": "anthropic/claude-sonnet-5" },
+    "deepseek-v4-flash": { "openrouter_id": "deepseek/deepseek-v4-flash" },
+    "deepseek-chat": { "openrouter_id": "deepseek/deepseek-chat" }
+  }
+}

@@ -78,6 +78,22 @@ describe('scrubProperties', () => {
     });
   });
 
+  it('keeps bounded installer offer experiment properties', () => {
+    const result = scrubProperties({
+      trial_days: 14,
+      trial_variant: 'test_14',
+      offer_surface: 'installer',
+      funnel_source: 'installer',
+    });
+
+    expect(result).toEqual({
+      trial_days: 14,
+      trial_variant: 'test_14',
+      offer_surface: 'installer',
+      funnel_source: 'installer',
+    });
+  });
+
   it('keeps the depth/economics keys with primitive values', () => {
     const result = scrubProperties({
       observation_count: 50,
@@ -200,6 +216,20 @@ describe('scrubProperties', () => {
     });
   });
 
+  it('keeps the observed-session identity keys with primitive values', () => {
+    const result = scrubProperties({
+      top_model: 'claude-haiku-4-5',
+      observed_model: 'claude-fable-5-1',
+      observed_billing: 'max',
+    });
+
+    expect(result).toEqual({
+      top_model: 'claude-haiku-4-5',
+      observed_model: 'claude-fable-5-1',
+      observed_billing: 'max',
+    });
+  });
+
   it('drops unknown keys silently', () => {
     const result = scrubProperties({
       version: '1.0.0',
@@ -208,6 +238,20 @@ describe('scrubProperties', () => {
     });
 
     expect(result).toEqual({ version: '1.0.0' });
+  });
+
+  it('keeps the skill_invoked identity keys with primitive values', () => {
+    const result = scrubProperties({
+      skill_id: 'mem-search',
+      skill_source: 'first_party',
+      skill_trigger: 'tool',
+    });
+
+    expect(result).toEqual({
+      skill_id: 'mem-search',
+      skill_source: 'first_party',
+      skill_trigger: 'tool',
+    });
   });
 
   it('drops sensitive-looking keys even if present', () => {
@@ -232,8 +276,30 @@ describe('scrubProperties', () => {
     expect(Object.keys(result)).not.toContain('ip');
   });
 
+  it('drops skill args / raw skill / prompt keys even when skill identity is present', () => {
+    const result = scrubProperties({
+      skill_id: 'other',
+      skill_source: 'third_party',
+      skill_trigger: 'tool',
+      skill: 'someone-else:evil',
+      args: '/Users/alice/secret --pr 42',
+      command: '/foo do the thing',
+      prompt: '/foo leak this body',
+    });
+
+    expect(result).toEqual({
+      skill_id: 'other',
+      skill_source: 'third_party',
+      skill_trigger: 'tool',
+    });
+    expect(Object.keys(result)).not.toContain('skill');
+    expect(Object.keys(result)).not.toContain('args');
+    expect(Object.keys(result)).not.toContain('command');
+    expect(Object.keys(result)).not.toContain('prompt');
+  });
+
   it('whitelist never contains sensitive keys', () => {
-    for (const key of ['path', 'cwd', 'prompt', 'query', 'project_name', 'email', 'ip']) {
+    for (const key of ['path', 'cwd', 'prompt', 'query', 'project_name', 'email', 'ip', 'args', 'skill', 'command']) {
       expect(ALLOWED_PROPERTY_KEYS.has(key)).toBe(false);
     }
   });

@@ -57,6 +57,12 @@ export class SessionManager {
       if (dbSession.platform_source && dbSession.platform_source !== session.platformSource) {
         session.platformSource = dbSession.platform_source;
       }
+      if (dbSession.observed_model && dbSession.observed_model !== session.observedModel) {
+        session.observedModel = dbSession.observed_model;
+      }
+      if (dbSession.observed_billing && dbSession.observed_billing !== session.observedBilling) {
+        session.observedBilling = dbSession.observed_billing;
+      }
 
       if (currentUserPrompt) {
         logger.debug('SESSION', 'Updating userPrompt for continuation', {
@@ -93,12 +99,21 @@ export class SessionManager {
       });
     }
 
-    const userPrompt = currentUserPrompt || dbSession.user_prompt;
+    const latestPromptText = currentUserPrompt
+      ? null
+      : this.dbManager.getSessionStore().getLatestPromptTextFromUserPrompts(
+          dbSession.content_session_id,
+          sessionDbId,
+        );
+    const userPrompt = currentUserPrompt || latestPromptText || dbSession.user_prompt;
 
     if (!currentUserPrompt) {
-      logger.debug('SESSION', 'No currentUserPrompt provided for new session, using database', {
+      logger.debug('SESSION', latestPromptText
+        ? 'No currentUserPrompt provided for new session, using latest user_prompts'
+        : 'No currentUserPrompt provided for new session, using database', {
         sessionDbId,
         promptNumber,
+        latestPrompt: latestPromptText?.substring(0, 80) ?? '',
         dbPrompt: dbSession.user_prompt?.substring(0, 80) ?? ''
       });
     } else {
@@ -115,6 +130,8 @@ export class SessionManager {
       memorySessionId: null,  // Always start fresh - SDK will capture new ID
       project: suppliedProject || dbSession.project,
       platformSource: dbSession.platform_source,
+      observedModel: dbSession.observed_model ?? undefined,
+      observedBilling: dbSession.observed_billing ?? undefined,
       userPrompt,
       abortController: new AbortController(),
       generatorPromise: null,
@@ -128,6 +145,7 @@ export class SessionManager {
       currentProvider: null,  // Will be set when generator starts
       consecutiveRestarts: 0,
       consecutiveInvalidOutputs: 0,
+      consecutiveContextOverflows: 0,
       lastGeneratorActivity: Date.now(),  // Initialize for stale detection (Issue #1099)
       pendingAgentId: null,   // Subagent identity carried from the most recent claimed message
       pendingAgentType: null

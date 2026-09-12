@@ -1,14 +1,29 @@
-import { homedir } from 'os'
 import path from 'path';
 import { execFileSync } from 'child_process';
+import { expandHome } from '../shared/expand-home.js';
 import { logger } from './logger.js';
 import { detectWorktree } from './worktree.js';
 
-function expandTilde(p: string): string {
-  if (p === '~' || p.startsWith('~/')) {
-    return p.replace(/^~/, homedir())
+const CLAUDE_PROJECT_DIR_ENV = 'CLAUDE_PROJECT_DIR';
+const UNKNOWN_PROJECT_NAME = 'unknown-project';
+
+/**
+ * Resolve the anchor directory for a Claude Code hook payload: prefer
+ * `CLAUDE_PROJECT_DIR` (the directory Claude Code declares for the session) over
+ * the raw hook cwd, so SDK/subagent temp cwds never become the project identity
+ * (#3437). Returns `null` when neither a declared project dir nor a usable cwd
+ * exists. Scoped to the hook adapter boundary — callers that already hold an
+ * authoritative cwd (worker, transcript, worktree) must not route through this.
+ */
+export function resolveHookProjectPath(cwd: string | null | undefined): string | null {
+  const claudeProjectDir = process.env[CLAUDE_PROJECT_DIR_ENV]?.trim();
+  if (claudeProjectDir) {
+    return claudeProjectDir;
   }
-  return p
+  if (!cwd || cwd.trim() === '') {
+    return null;
+  }
+  return cwd;
 }
 
 /**
@@ -35,13 +50,16 @@ function findGitRepoRoot(dir: string): string | null {
   }
 }
 
-export function getProjectName(cwd: string | null | undefined): string {
+export function getProjectName(
+  cwd: string | null | undefined,
+  platform: NodeJS.Platform = process.platform,
+): string {
   if (!cwd || cwd.trim() === '') {
     logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
-    return 'unknown-project';
+    return UNKNOWN_PROJECT_NAME;
   }
 
-  const expanded = expandTilde(cwd)
+  const expanded = expandHome(cwd, platform);
 
   // #2663 — derive the project name from the git repo root when inside a repo so
   // the name is stable across subdirectories/worktrees. Fall back to the cwd
@@ -63,7 +81,7 @@ export function getProjectName(cwd: string | null | undefined): string {
       }
     }
     logger.warn('PROJECT_NAME', 'Root directory detected, using fallback', { cwd });
-    return 'unknown-project';
+    return UNKNOWN_PROJECT_NAME;
   }
 
   return basename;
@@ -76,14 +94,17 @@ export interface ProjectContext {
   allProjects: string[];
 }
 
-export function getProjectContext(cwd: string | null | undefined): ProjectContext {
-  const cwdProjectName = getProjectName(cwd);
+export function getProjectContext(
+  cwd: string | null | undefined,
+  platform: NodeJS.Platform = process.platform,
+): ProjectContext {
+  const cwdProjectName = getProjectName(cwd, platform);
 
   if (!cwd) {
     return { primary: cwdProjectName, parent: null, isWorktree: false, allProjects: [cwdProjectName] };
   }
 
-  const expandedCwd = expandTilde(cwd);
+  const expandedCwd = expandHome(cwd, platform);
   // #3262 — detectWorktree stats `<cwd>/.git`, which only exists at the
   // worktree root. Resolve the git working-tree root first (same pattern as
   // getProjectName / #2663) so sessions started in a subdirectory still get

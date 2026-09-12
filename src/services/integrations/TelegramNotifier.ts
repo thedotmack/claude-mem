@@ -16,6 +16,7 @@ const MARKDOWN_V2_RESERVED = /[_*\[\]()~`>#+\-=|{}.!\\]/g;
 const TYPE_EMOJI: Record<string, string> = {
   security_alert: '🚨',
   security_note: '🔐',
+  sensitive: '🤫',
 };
 const DEFAULT_EMOJI = '🔔';
 

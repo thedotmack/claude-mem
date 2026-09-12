@@ -5,8 +5,8 @@ import { spawnSync } from 'child_process';
 import { loadTelemetryConfig, saveTelemetryConfig } from '../../services/telemetry/consent.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../../shared/spawn.js';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { homedir } from 'os';
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -32,6 +32,24 @@ import {
   type InstallSummary,
 } from '../install/error-reporter.js';
 import { extractEresolveBlock, isEresolve, runNpmStrict } from '../install/npm-install-helper.js';
+import {
+  buildProviderLabels,
+  CMEM_INSTALLER_OAUTH_POLL_URL,
+  CMEM_INSTALLER_OAUTH_START_URL,
+  CMEM_PRO_BASE_URL,
+  CMEM_PRO_MODEL,
+  PROVIDER_PROMPT_MESSAGE,
+} from '../cmem-pro-costs.js';
+import { clearProFallback, isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
+import { PRO_TRIAL_PITCH, proTrialUrl } from '../../shared/pro-promo.js';
+import {
+  buildAnthropicMaxLocalSettings,
+  buildCmemActivationSettings,
+  buildHostObserverSettings,
+  buildNonInteractiveOpenRouterSettings,
+  buildPersonalOpenRouterSettings,
+  resolveCmemMemoryCredentials,
+} from '../cmem-memory-credentials.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
@@ -163,6 +181,7 @@ import { readJsonSafe } from '../../utils/json-utils.js';
 import { readFlatSettings } from '../utils/settings.js';
 import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
 import { detectInstalledIDEs } from './ide-detection.js';
+import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 
 function registerMarketplace(): void {
   const knownMarketplaces = readJsonSafe<Record<string, any>>(knownMarketplacesPath(), {});
@@ -272,7 +291,8 @@ async function resolveClaudeAutoMemoryChoice(
     initialValue: 'leave-enabled',
   });
 
-  if (p.isCancel(choice)) {
+  // @clack/prompts 1.8: isCancel narrows to unique CANCEL_SYMBOL, not generic symbol.
+  if (p.isCancel(choice) || typeof choice === 'symbol') {
     p.cancel('Installation cancelled.');
     process.exit(0);
   }
@@ -319,7 +339,23 @@ function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | n
           if (mcpResult === 0) {
             return `Cursor: hooks + MCP installed ${styleText('green', 'OK')}`;
           }
-          return `Cursor: hooks installed; MCP setup failed — run \`npx claude-mem cursor mcp\` ${styleText('yellow', '!')}`;
+          return `Cursor: hooks installed; MCP setup failed — run \`npx claude-mem mcp\` ${styleText('yellow', '!')}`;
+        },
+      };
+    }
+
+    case 'grok-bot': {
+      return {
+        title: 'Grok Bot: installing transcript watch',
+        task: async (message) => {
+          message('Configuring Grok Bot transcript watch…');
+          const { installGrokBotIntegration } = await import('../../services/integrations/GrokBotInstaller.js');
+          const { result, output } = await bufferConsole(async () => installGrokBotIntegration());
+          if (result !== 0) {
+            recordFailure('Grok Bot: transcript watch installation failed', output);
+            return `Grok Bot: transcript watch installation failed ${styleText('red', 'FAIL')}`;
+          }
+          return `Grok Bot: transcript watch installed ${styleText('green', 'OK')}`;
         },
       };
     }
@@ -627,10 +663,17 @@ async function promptForIDESelection(): Promise<string[]> {
     };
   });
 
+  // Pre-check Claude Code (plus anything else detected). It is the IDE almost
+  // everyone installing claude-mem is running, and an empty multiselect makes
+  // the common case a required chore before the install can continue.
+  const preselected = detectedIDEs
+    .filter((ide) => ide.detected || ide.id === 'claude-code')
+    .map((ide) => ide.id);
+
   const result = await p.multiselect({
     message: 'Which IDEs do you use?',
     options,
-    initialValues: [],
+    initialValues: preselected,
     required: true,
   });
 
@@ -651,8 +694,10 @@ function copyPluginToMarketplace(): void {
   const allowedTopLevelEntries = [
     '.agents',
     '.codex-plugin',
+    '.cursor-plugin',
+    'claude-mem-cursor',
+    'claude-mem-grok-bot',
     'plugin',
-    'package.json',
     'package-lock.json',
     'openclaw',
     'dist',
@@ -674,6 +719,30 @@ function copyPluginToMarketplace(): void {
       force: true,
     });
   }
+
+  writeTrimmedMarketplacePackageJson(packageRoot, marketplaceDir);
+}
+
+/**
+ * Write a runtime-only package.json into the marketplace directory.
+ *
+ * The root package.json declares ~40 dev-only tree-sitter grammars whose peer
+ * ranges conflict (@derekstride/tree-sitter-sql wants tree-sitter@^0.21.0 while
+ * @tree-sitter-grammars/tree-sitter-lua wants tree-sitter@^0.22.4). Copying it
+ * verbatim makes `npm install --omit=dev` still resolve those dev edges and
+ * abort with ERESOLVE (#3636). A consumer install needs only the two live
+ * runtime deps, so we strip devDependencies and trustedDependencies before npm
+ * ever sees the graph.
+ */
+export function writeTrimmedMarketplacePackageJson(packageRoot: string, marketplaceDir: string): void {
+  const sourcePath = join(packageRoot, 'package.json');
+  if (!existsSync(sourcePath)) return;
+
+  const pkg = JSON.parse(readFileSync(sourcePath, 'utf-8')) as Record<string, unknown>;
+  delete pkg.devDependencies;
+  delete pkg.trustedDependencies;
+
+  writeFileSync(join(marketplaceDir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
 }
 
 function copyPluginToCache(version: string): void {
@@ -800,6 +869,15 @@ function mergeSettings(updates: Record<string, string>): boolean {
     }
 
     writeSettingsJsonAtomic(path, document);
+    // settings.json can carry tokens (CMEM Pro setup token, provider API
+    // keys); a fresh file inherits the umask (usually 0644), leaving them
+    // world-readable. Tighten to owner-only. Fail-soft: a chmod failure must
+    // never fail the settings write itself, but it is not silent.
+    try {
+      chmodSync(path, 0o600);
+    } catch (chmodError: unknown) {
+      log.warn(`Could not restrict permissions on ${path} to 0600: ${chmodError instanceof Error ? chmodError.message : String(chmodError)}`);
+    }
     return true;
   } catch (error: unknown) {
     log.error(`Failed to write settings to ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -807,9 +885,14 @@ function mergeSettings(updates: Record<string, string>): boolean {
   }
 }
 
-type ProviderId = 'claude' | 'gemini' | 'openrouter';
-type ClaudeAccessMode = 'subscription' | 'api-key';
-type ClaudeApiMode = 'direct' | 'gateway';
+type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'host';
+/**
+ * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
+ * it configures the generic OpenAI-compatible path (base URL + model + key) and
+ * persists CLAUDE_MEM_PROVIDER='openrouter'. The worker only understands
+ * 'claude' | 'gemini' | 'openrouter', so 'cmem' must never reach settings.json.
+ */
+type ProviderChoice = ProviderId | 'cmem';
 // Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
 // enums, `server-beta-worker` lockedBy marker) are intentionally preserved in
 // the source code; runtime-selector dual-accepts both `'server'` and
@@ -817,6 +900,17 @@ type ClaudeApiMode = 'direct' | 'gateway';
 // form `'server'` going forward (settings keys: CLAUDE_MEM_SERVER_{URL,
 // API_KEY,PROJECT_ID}).
 type RuntimeId = 'worker' | 'server';
+
+/** Read only persisted values: environment secrets must never be copied to disk. */
+function readPersistedInstallerSettings(): Record<string, unknown> {
+  try {
+    return readFlatSettings(USER_SETTINGS_PATH) ?? {};
+  } catch {
+    // settings.json is optional and may be hand-edited; provider prompts retain
+    // their normal recovery paths when it cannot be read.
+    return {};
+  }
+}
 
 function readRawStoredAuthMethod(): 'subscription' | 'api-key' | 'gateway' | undefined {
   try {
@@ -873,7 +967,8 @@ async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
     initialValue: 'worker',
   });
 
-  if (p.isCancel(selected)) {
+  // @clack/prompts 1.8: isCancel narrows to unique CANCEL_SYMBOL, not generic symbol.
+  if (p.isCancel(selected) || typeof selected === 'symbol') {
     p.cancel('Installation cancelled.');
     process.exit(0);
   }
@@ -951,8 +1046,39 @@ async function bootstrapAndPersistServerApiKey(): Promise<void> {
   );
 }
 
-async function promptProvider(options: InstallOptions): Promise<ProviderId> {
+/**
+ * Best-effort "open this URL in the user's browser". Every failure mode is
+ * non-fatal — the caller has already printed the URL, so the worst case is the
+ * user clicks it themselves.
+ */
+function openBrowser(url: string): void {
+  try {
+    if (process.platform === 'darwin') {
+      spawnSync('open', [url], { stdio: 'ignore' });
+    } else if (process.platform === 'win32') {
+      spawnSync('cmd', ['/c', 'start', '', url], { stdio: 'ignore' });
+    } else {
+      spawnSync('xdg-open', [url], { stdio: 'ignore' });
+    }
+  } catch {
+    // [ANTI-PATTERN IGNORED]: opening a browser is a convenience, not a step of the
+    // install; the recovery is the URL already printed above this call, which the
+    // user can open by hand. A headless box legitimately has no opener at all.
+  }
+}
+
+async function promptProvider(
+  options: InstallOptions,
+  /**
+   * Null only when login was skipped, which happens solely for an explicit
+   * `--provider claude`. That path cannot reach the CMEM branch below, which
+   * re-checks rather than assuming.
+   */
+  pairing: InstallerOAuthPairing | null,
+  version: string,
+): Promise<ProviderId> {
   const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
+  const persistedSettings = readPersistedInstallerSettings();
 
   const persistClaudeProvider = (authMethod?: 'subscription' | 'api-key' | 'gateway') => {
     const resolvedAuthMethod = authMethod ?? resolveClaudeAuthMethod();
@@ -964,189 +1090,106 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   };
 
   const useSubscriptionAuth = () => {
-    persistClaudeProvider('subscription');
+    const wrote = mergeSettings(buildAnthropicMaxLocalSettings(persistedSettings));
+    if (!wrote) {
+      p.cancel('Could not save the local Anthropic Max configuration.');
+      process.exit(1);
+    }
     saveClaudeMemEnv({
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_BASE_URL: '',
       ANTHROPIC_AUTH_TOKEN: '',
     });
+    log.info('Disabled cloud sync and saved local Anthropic Max configuration.');
     log.info('Configured claude-mem to use your logged-in Claude SDK account.');
   };
 
-  const configureDirectApiKey = async (): Promise<void> => {
-    const existing = loadClaudeMemEnv().ANTHROPIC_API_KEY || '';
-    if (existing.trim().length > 0) {
-      const choice = await p.select<'keep' | 'replace'>({
-        message: 'An Anthropic API key is already configured. Keep it or enter a new one?',
-        options: [
-          { value: 'keep', label: 'Keep existing key' },
-          { value: 'replace', label: 'Enter a new key (rotate)' },
-        ],
-        initialValue: 'keep',
-      });
-      if (p.isCancel(choice)) {
-        log.warn('API key prompt cancelled — leaving existing configuration untouched.');
-        return;
-      }
-      if (choice === 'keep') {
-        saveClaudeMemEnv({
-          ANTHROPIC_API_KEY: existing.trim(),
-          ANTHROPIC_BASE_URL: '',
-          ANTHROPIC_AUTH_TOKEN: '',
-        });
-        persistClaudeProvider('api-key');
-        return;
-      }
-    }
-
-    const apiKeyResult = await p.password({
-      message: 'Paste your Anthropic API key:',
-      mask: '*',
-      validate: (v?: string) => (!v || v.trim().length === 0) ? 'API key required' : undefined,
-    });
-
-    if (p.isCancel(apiKeyResult)) {
-      log.warn('API key prompt cancelled — leaving existing configuration untouched.');
-      return;
-    }
-
-    saveClaudeMemEnv({
-      ANTHROPIC_API_KEY: String(apiKeyResult).trim(),
-      ANTHROPIC_BASE_URL: '',
-      ANTHROPIC_AUTH_TOKEN: '',
-    });
-    persistClaudeProvider('api-key');
-    log.info('Saved Anthropic API key for the Claude Agent SDK path.');
-  };
-
-  const configureGateway = async (): Promise<void> => {
-    const existing = loadClaudeMemEnv();
-    const baseUrlResult = await p.text({
-      message: 'Gateway URL:',
-      placeholder: existing.ANTHROPIC_BASE_URL || 'http://localhost:4000',
-      defaultValue: existing.ANTHROPIC_BASE_URL || '',
-      validate: (v?: string) => {
-        const value = v?.trim() ?? '';
-        if (!value) return 'Gateway URL required';
-        try {
-          new URL(value);
-          return undefined;
-        } catch {
-          // [ANTI-PATTERN IGNORED]: a URL parse failure here just means the user typed an invalid gateway URL; the recovery is the inline validation message the prompt displays on every attempt.
-          return 'Enter a valid URL, for example http://localhost:4000';
-        }
-      },
-    });
-
-    if (p.isCancel(baseUrlResult)) {
-      log.warn('Gateway setup cancelled — leaving existing configuration untouched.');
-      return;
-    }
-
-    const tokenResult = await p.password({
-      message: 'Gateway key/token (leave blank to keep current token, or type a new one):',
-      mask: '*',
-    });
-
-    const tokenCancelled = p.isCancel(tokenResult);
-    const tokenInput = tokenCancelled ? '' : String(tokenResult).trim();
-    const env: Record<string, string> = {
-      ANTHROPIC_API_KEY: '',
-      ANTHROPIC_BASE_URL: String(baseUrlResult).trim(),
-    };
-    if (!tokenCancelled && tokenInput.length > 0) {
-      env.ANTHROPIC_AUTH_TOKEN = tokenInput;
-    }
-    saveClaudeMemEnv(env);
-    persistClaudeProvider('gateway');
-    if (tokenCancelled || tokenInput.length === 0) {
-      log.info('Gateway URL saved; existing gateway token preserved.');
-    } else {
-      log.info('Configured Claude Agent SDK gateway in ~/.claude-mem/.env.');
-    }
-  };
-
-  if (!isInteractive) {
-    if (options.provider) {
-      if (options.provider === 'claude') {
-        persistClaudeProvider();
-        return 'claude';
-      }
-      const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: options.provider });
-      if (wrote) log.info(`Saved provider=${options.provider} to ~/.claude-mem/settings.json`);
-      log.warn(`Provider=${options.provider} requested non-interactively. API key prompt skipped — set CLAUDE_MEM_${options.provider.toUpperCase()}_API_KEY and CLAUDE_MEM_PROVIDER in settings.json or env manually if not already set.`);
-      return options.provider;
-    }
-    return initialProvider;
-  }
-
-  const runClaudeAuthFlow = async (): Promise<void> => {
-    const resolvedAuthMethod = resolveClaudeAuthMethod();
-    const initialAccessMode: ClaudeAccessMode =
-      resolvedAuthMethod === 'subscription' ? 'subscription' : 'api-key';
-
-    const result = await p.select<ClaudeAccessMode>({
-      message: 'Do you use a subscription plan or an API key/gateway for the memory agent?',
-      options: [
-        { value: 'subscription', label: 'Subscription plan (recommended — uses your logged-in Claude SDK account)' },
-        { value: 'api-key', label: 'API key or gateway (Anthropic, LiteLLM, or compatible proxy)' },
-      ],
-      initialValue: initialAccessMode,
-    });
-
-    if (p.isCancel(result)) {
-      p.cancel('Installation cancelled.');
-      process.exit(0);
-    }
-    if (result === 'subscription') {
-      useSubscriptionAuth();
-      return;
-    }
-
-    const apiModeResult = await p.select<ClaudeApiMode>({
-      message: 'How should claude-mem connect?',
-      options: [
-        { value: 'direct', label: 'Anthropic API key' },
-        { value: 'gateway', label: 'LiteLLM or custom gateway' },
-      ],
-      initialValue: resolvedAuthMethod === 'gateway' || loadClaudeMemEnv().ANTHROPIC_BASE_URL ? 'gateway' : 'direct',
-    });
-
-    if (p.isCancel(apiModeResult)) {
-      p.cancel('Installation cancelled.');
-      process.exit(0);
-    }
-
-    if (apiModeResult === 'gateway') {
-      await configureGateway();
-    } else {
-      await configureDirectApiKey();
-    }
-  };
-
-  let selectedProvider: ProviderId;
+  let selectedProvider: ProviderChoice;
   if (options.provider) {
     selectedProvider = options.provider;
   } else {
-    const providerResult = await p.select<ProviderId>({
-      message: 'Which memory provider do you want to use?',
-      options: [
-        { value: 'claude', label: 'Claude Agent SDK (recommended)' },
-        { value: 'gemini', label: 'Gemini' },
-        { value: 'openrouter', label: 'OpenRouter' },
-      ],
-      initialValue: initialProvider,
-    });
-    if (p.isCancel(providerResult)) {
-      p.cancel('Installation cancelled.');
-      process.exit(0);
+    if (!isInteractive) {
+      throw new Error('Non-interactive provider validation did not run.');
     }
-    selectedProvider = providerResult;
+    const labels = buildProviderLabels();
+
+    // Multiselect gives both choices square controls. Exactly one provider is
+    // still required; selecting both re-opens the prompt instead of guessing.
+    while (true) {
+      const providerResult = await p.multiselect<ProviderChoice>({
+        message: PROVIDER_PROMPT_MESSAGE,
+        options: [
+          { value: 'cmem', label: labels.cmem, hint: labels.cmemHint },
+          { value: 'claude', label: labels.claude, hint: labels.claudeHint },
+        ],
+        // CMEM Pro pre-selected: it is the recommended path and the one the
+        // funnel is built around. Selecting it no longer means "pay now" —
+        // it opens the offer page to read first.
+        initialValues: ['cmem'],
+        required: true,
+      });
+      // @clack/prompts 1.8: isCancel narrows to unique CANCEL_SYMBOL, not generic symbol.
+      if (p.isCancel(providerResult) || !Array.isArray(providerResult)) {
+        p.cancel('Installation cancelled.');
+        process.exit(1);
+      }
+      if (providerResult.length === 1) {
+        selectedProvider = providerResult[0];
+        break;
+      }
+      log.warn('Select exactly one provider.');
+    }
+  }
+
+  // CMEM Pro: no new provider code. The worker's OpenRouter client is a generic
+  // OpenAI-compatible client whose endpoint and model both come from settings,
+  // so "use the CMEM observer model" is four settings writes and nothing else.
+  if (selectedProvider === 'cmem') {
+    if (!pairing) {
+      // Unreachable via the flag that skips login (it forces 'claude'), but a
+      // future caller passing null here would otherwise enroll against nothing.
+      throw new Error('CMEM Pro requires a signed-in claude-mem account.');
+    }
+    // The billing disclosure lives on the checkout page, not here. It is a term
+    // of the charge, so it belongs on the screen that takes the payment method,
+    // where it can be shown next to the price and the card field. Re-asking for
+    // it in the terminal made the user consent twice to the same thing, before
+    // ever seeing what they were agreeing to.
+    const enrollment = await completeCmemTrialPairing(pairing, version);
+    if (!enrollment) {
+      p.cancel('CMEM Pro setup was not completed. Run npx claude-mem install to try again.');
+      process.exit(1);
+    }
+    const cmemCredentials = resolveCmemMemoryCredentials(enrollment, persistedSettings);
+    if (!cmemCredentials) {
+      p.cancel('CMEM Pro did not return memory credentials. Run npx claude-mem install to try again.');
+      process.exit(1);
+    }
+
+    const wrote = mergeSettings(buildCmemActivationSettings(cmemCredentials));
+    if (!wrote) {
+      p.cancel('Could not save the CMEM Pro configuration.');
+      process.exit(1);
+    }
+    if (cmemCredentials.clearFallback) clearProFallback();
+    log.info('CMEM Pro configured with your signed-in memory key.');
+    return 'openrouter';
   }
 
   if (selectedProvider === 'claude') {
-    await runClaudeAuthFlow();
+    useSubscriptionAuth();
     return 'claude';
+  }
+
+  if (selectedProvider === 'host') {
+    const observerModel = options.ide === 'grok-bot' ? 'grok-bot' : 'cursor';
+    const wrote = mergeSettings(buildHostObserverSettings(observerModel, persistedSettings));
+    if (!wrote) {
+      p.cancel('Could not save the host observer configuration.');
+      process.exit(1);
+    }
+    log.info(`Configured host observer for ${observerModel}.`);
+    return 'openrouter';
   }
 
   const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
@@ -1155,10 +1198,19 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     : 'CLAUDE_MEM_OPENROUTER_API_KEY';
 
   const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
-  if (existingKey && existingKey.trim().length > 0) {
+  const existingOpenRouterBaseUrl = selectedProvider === 'openrouter'
+    ? String(getSetting('CLAUDE_MEM_OPENROUTER_BASE_URL') ?? '')
+    : '';
+  const existingKeyIsCmem = selectedProvider === 'openrouter'
+    && isCmemGatewayUrl(existingOpenRouterBaseUrl);
+  if (existingKey && existingKey.trim().length > 0 && !existingKeyIsCmem) {
     const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: selectedProvider });
     if (wrote) log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
     return selectedProvider;
+  }
+
+  if (!isInteractive) {
+    throw new Error(`Non-interactive ${providerLabel} configuration is missing a personal API key.`);
   }
 
   const apiKeyResult = await p.password({
@@ -1174,10 +1226,17 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   }
 
   const apiKey = String(apiKeyResult).trim();
-  const wrote = mergeSettings({
-    CLAUDE_MEM_PROVIDER: selectedProvider,
-    [keyEnvName]: apiKey,
-  });
+  const updates = selectedProvider === 'openrouter'
+    ? buildPersonalOpenRouterSettings(
+      apiKey,
+      readPersistedInstallerSettings(),
+      SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL,
+    )
+    : {
+      CLAUDE_MEM_PROVIDER: selectedProvider,
+      [keyEnvName]: apiKey,
+    };
+  const wrote = mergeSettings(updates);
   if (wrote) {
     log.info(`Saved provider=${selectedProvider} to ~/.claude-mem/settings.json`);
   }
@@ -1244,7 +1303,7 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
     options: [
       { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (recommended — fast, cheap, great for compression)' },
       { value: 'claude-sonnet-5', label: 'Sonnet 5 (balanced quality and cost)' },
-      { value: 'claude-opus-4-8', label: 'Opus 4.8 (highest quality, most expensive)' },
+      { value: 'claude-opus-4-8', label: 'Opus 4.8 (highest quality, slowest)' },
     ],
     initialValue,
   });
@@ -1261,73 +1320,491 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
   }
 }
 
-// --- CMEM Online email opt-in ----------------------------------------------
-// Interactive, optional. The CLI POSTs the email + optional note to the live
-// waitlist endpoint (cmem.ai/api/waitlist), which handles persistence, dedup,
-// and the confirmation email server-side. CLAUDE_MEM_SIGNUP_URL overrides the
-// default for testing/staging. No API keys ever ship in the npx package — the
-// endpoint is unauthenticated and the secret (Resend) stays server-side.
-// Anything that goes wrong here is swallowed — a marketing opt-in must never
-// block or fail the install.
+// --- claude-mem OAuth pairing ----------------------------------------------
+// Every installer authenticates through the same GitHub/Google OAuth screen as
+// cmem.ai. Login only proves account ownership; provider selection happens
+// afterward, and only the CMEM Pro choice continues into trial enrollment.
 
-const DEFAULT_SIGNUP_ENDPOINT = 'https://cmem.ai/api/waitlist';
-const SIGNUP_ENDPOINT = process.env.CLAUDE_MEM_SIGNUP_URL?.trim() || DEFAULT_SIGNUP_ENDPOINT;
-const SIGNUP_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-interface StoredSignup {
-  email: string;
-  note: string;
-  sent: boolean;
+function nonEmptyTrimmedString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 }
 
-function parseStoredSignup(): StoredSignup | null {
-  const flat = readFlatSettings(USER_SETTINGS_PATH);
-  if (!flat) return null;
-  const email = typeof flat.CLAUDE_MEM_ONLINE_SIGNUP_EMAIL === 'string' ? flat.CLAUDE_MEM_ONLINE_SIGNUP_EMAIL : '';
-  if (!email) return null;
-  return {
-    email,
-    note: typeof flat.CLAUDE_MEM_ONLINE_SIGNUP_NOTE === 'string' ? flat.CLAUDE_MEM_ONLINE_SIGNUP_NOTE : '',
-    sent: flat.CLAUDE_MEM_ONLINE_SIGNUP_SENT === 'true',
-  };
+const OAUTH_START_TIMEOUT_MS = 10_000;
+const OAUTH_POLL_TIMEOUT_MS = 10_000;
+const OAUTH_POLL_BUDGET_MS = 240_000;
+const OAUTH_DEFAULT_POLL_INTERVAL_S = 3;
+
+type InstallerPollStage = 'awaiting_login' | 'awaiting_checkout' | 'awaiting_approval';
+type TrialPlan = 'trial' | 'pro' | 'none';
+
+export interface InstallerOAuthPairing {
+  pairingId: string;
+  secret: string;
+  userCode: string;
+  authorizationUrl: string;
+  checkoutUrl: string;
+  pollIntervalMs: number;
+  /** Defensive compatibility for a server that returns ready during login. */
+  delivered?: TrialReadyResult;
 }
 
-function readStoredSignup(): StoredSignup | null {
+function parseBrowserUrl(value: unknown, expectedPath: string): URL | null {
+  const candidate = nonEmptyTrimmedString(value);
+  if (!candidate) return null;
   try {
-    return parseStoredSignup();
+    const parsed = new URL(candidate);
+    const expectedOrigin = new URL(CMEM_INSTALLER_OAUTH_START_URL).origin;
+    if (
+      parsed.origin !== expectedOrigin
+      || parsed.pathname !== expectedPath
+      || parsed.username
+      || parsed.password
+      || parsed.hash
+    ) return null;
+    return parsed;
   } catch {
-    // [ANTI-PATTERN IGNORED]: settings.json is optional and may be missing or hand-edited into invalid JSON; treating that as "no stored signup" simply re-asks the opt-in, the designed recovery for this never-blocking marketing flow.
     return null;
   }
 }
 
-async function postSignup(payload: { email: string; note: string; version: string }, signal: AbortSignal): Promise<boolean> {
-  const res = await fetch(SIGNUP_ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      email: payload.email,
-      note: payload.note,
-      version: payload.version,
-      platform: process.platform,
-      source: 'npx-installer',
-    }),
-    signal,
-  });
-  return res.ok;
+function hasExactSearchParams(url: URL, expected: Record<string, string>): boolean {
+  const entries = [...url.searchParams.entries()];
+  const expectedEntries = Object.entries(expected);
+  return entries.length === expectedEntries.length
+    && expectedEntries.every(([key, value]) => url.searchParams.get(key) === value);
 }
 
-async function submitOnlineSignup(payload: { email: string; note: string; version: string }): Promise<boolean> {
+/**
+ * The checkout URL must carry exactly `pairing` and `trial`, and nothing else —
+ * but the trial LENGTH is not the installer's business to pin.
+ *
+ * This previously required `trial: '7'` exactly. That made the server unable to
+ * change the offer without breaking every installer already published: a
+ * `trial=30` URL was rejected outright, surfacing as "Could not start OAuth
+ * login" with no hint that the length was the reason. The shape stays strict
+ * (both params present, pairing must match, no extras); only the number is now
+ * the server's to choose.
+ */
+function hasPairingAndTrialParams(url: URL, pairingId: string): boolean {
+  const entries = [...url.searchParams.entries()];
+  if (entries.length !== 2) return false;
+  if (url.searchParams.get('pairing') !== pairingId) return false;
+  const trial = url.searchParams.get('trial');
+  if (trial === null || !/^[0-9]{1,3}$/.test(trial)) return false;
+  const days = Number(trial);
+  return days >= 1 && days <= 365;
+}
+
+/** Pure parser used by the mock-server contract tests. */
+export function parseInstallerOAuthStartBody(body: unknown): InstallerOAuthPairing | null {
+  if (!body || typeof body !== 'object') return null;
+  const b = body as {
+    pairing_id?: unknown;
+    secret?: unknown;
+    user_code?: unknown;
+    authorization_url?: unknown;
+    checkout_url?: unknown;
+    poll_interval?: unknown;
+  };
+  const pairingId = nonEmptyTrimmedString(b.pairing_id);
+  const secret = nonEmptyTrimmedString(b.secret);
+  const userCode = nonEmptyTrimmedString(b.user_code);
+  const authorizationUrl = parseBrowserUrl(b.authorization_url, '/login');
+  const checkoutUrl = parseBrowserUrl(b.checkout_url, '/api/pro/trial/claim');
+  if (
+    !pairingId
+    || !/^[0-9a-f]{32}$/.test(pairingId)
+    || !secret
+    || !/^[0-9a-f]{48}$/.test(secret)
+    || !userCode
+    || !/^[A-HJ-KM-NP-TV-Z2-9]{4}-[A-HJ-KM-NP-TV-Z2-9]{4}$/.test(userCode)
+    || !authorizationUrl
+    || !checkoutUrl
+  ) return null;
+
+  const expectedOrigin = new URL(CMEM_INSTALLER_OAUTH_START_URL).origin;
+  const loginNext = authorizationUrl.searchParams.get('next');
+  if (
+    !loginNext
+    || !loginNext.startsWith('/')
+    || loginNext.startsWith('//')
+    || !hasExactSearchParams(authorizationUrl, { next: loginNext })
+  ) return null;
+
+  const loginClaim = parseBrowserUrl(`${expectedOrigin}${loginNext}`, '/api/pro/trial/claim');
+  if (
+    !loginClaim
+    || !hasExactSearchParams(loginClaim, { pairing: pairingId, login_only: '1' })
+    || !hasPairingAndTrialParams(checkoutUrl, pairingId)
+  ) return null;
+
+  const pollIntervalS =
+    typeof b.poll_interval === 'number' && Number.isFinite(b.poll_interval) && b.poll_interval > 0
+      ? Math.min(Math.max(b.poll_interval, 1), 30)
+      : OAUTH_DEFAULT_POLL_INTERVAL_S;
+
+  return {
+    pairingId,
+    secret,
+    userCode,
+    authorizationUrl: authorizationUrl.toString(),
+    checkoutUrl: checkoutUrl.toString(),
+    pollIntervalMs: pollIntervalS * 1000,
+  };
+}
+
+/** Starts an OAuth pairing. No email address or identity is accepted from the CLI. */
+export async function startInstallerOAuthPairing(): Promise<InstallerOAuthPairing | null> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5000);
+  const timer = setTimeout(() => controller.abort(), OAUTH_START_TIMEOUT_MS);
   try {
-    return await postSignup(payload, controller.signal);
+    const response = await fetch(CMEM_INSTALLER_OAUTH_START_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: 'npx-installer', device_name: hostname() }),
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    return parseInstallerOAuthStartBody(await response.json());
   } catch {
-    // [ANTI-PATTERN IGNORED]: network/timeout failures of this optional waitlist POST are expected offline; the caller persists the email locally and retries silently on the next install run.
-    return false;
+    return null;
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Everything a ready poll delivers. The memory credentials are staged before
+ * provider activation so one-shot delivery cannot be lost after enrollment.
+ */
+export interface TrialReadyResult {
+  userId: string;
+  setupToken: string;
+  hubUrl: string;
+  memoryKey: string;
+  memoryBaseUrl: string;
+  memoryModel: string;
+  plan: TrialPlan;
+  trialEndsAt: string | null;
+}
+
+export function buildTrialReadySettings(
+  result: TrialReadyResult,
+  deviceName: string = hostname(),
+): Record<string, string> {
+  return {
+    CLAUDE_MEM_CLOUD_SYNC_TOKEN: result.setupToken,
+    CLAUDE_MEM_CLOUD_SYNC_USER_ID: result.userId,
+    CLAUDE_MEM_CLOUD_SYNC_HUB_URL: result.hubUrl,
+    CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',
+    CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: deviceName,
+    CLAUDE_MEM_PRO_TRIAL_STATE: 'active',
+    CLAUDE_MEM_PRO_TRIAL_ENDS_AT: result.trialEndsAt ?? '',
+    CLAUDE_MEM_PRO_PLAN: result.plan,
+    CLAUDE_MEM_PRO_MEMORY_KEY: result.memoryKey,
+    CLAUDE_MEM_PRO_MEMORY_BASE_URL: result.memoryBaseUrl,
+    CLAUDE_MEM_PRO_MEMORY_MODEL: result.memoryModel,
+    CLAUDE_MEM_PRO_FALLBACK_AT: '',
+  };
+}
+
+export function parseTrialReadyBody(body: unknown): TrialReadyResult | null {
+  if (!body || typeof body !== 'object') return null;
+  const b = body as {
+    status?: unknown;
+    user_id?: unknown;
+    setup_token?: unknown;
+    hub_url?: unknown;
+    memory_key?: unknown;
+    memory_base_url?: unknown;
+    memory_model?: unknown;
+    plan?: unknown;
+    trial?: { ends_at?: unknown };
+  };
+  const userId = nonEmptyTrimmedString(b.user_id);
+  const setupToken = nonEmptyTrimmedString(b.setup_token);
+  const hubUrl = nonEmptyTrimmedString(b.hub_url);
+  if (b.status !== 'ready' || !userId || !setupToken || !hubUrl) return null;
+
+  return {
+    userId,
+    setupToken,
+    hubUrl,
+    memoryKey: nonEmptyTrimmedString(b.memory_key) ?? setupToken,
+    memoryBaseUrl: nonEmptyTrimmedString(b.memory_base_url) ?? CMEM_PRO_BASE_URL,
+    memoryModel: nonEmptyTrimmedString(b.memory_model) ?? CMEM_PRO_MODEL,
+    plan: b.plan === 'trial' || b.plan === 'pro' || b.plan === 'none' ? b.plan : 'trial',
+    trialEndsAt: nonEmptyTrimmedString(b.trial?.ends_at),
+  };
+}
+
+type InstallerPollOutcome =
+  | { kind: 'authenticated'; userId: string }
+  | { kind: 'pending'; stage: InstallerPollStage }
+  | ({ kind: 'ready' } & TrialReadyResult)
+  | { kind: 'gone' }
+  | { kind: 'unreachable' };
+
+async function pollInstallerPairingOnce(pairing: InstallerOAuthPairing): Promise<InstallerPollOutcome> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OAUTH_POLL_TIMEOUT_MS);
+  try {
+    const response = await fetch(CMEM_INSTALLER_OAUTH_POLL_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pairing_id: pairing.pairingId, secret: pairing.secret }),
+      signal: controller.signal,
+    });
+    if (response.status === 404 || response.status === 410) return { kind: 'gone' };
+
+    const body = await response.json().catch(() => ({})) as {
+      status?: unknown;
+      stage?: unknown;
+      user_id?: unknown;
+    };
+    if (response.status === 202) {
+      const stage: InstallerPollStage =
+        body.stage === 'awaiting_checkout' || body.stage === 'awaiting_approval'
+          ? body.stage
+          : 'awaiting_login';
+      return { kind: 'pending', stage };
+    }
+    if (response.ok && body.status === 'authenticated') {
+      const userId = nonEmptyTrimmedString(body.user_id);
+      return userId ? { kind: 'authenticated', userId } : { kind: 'unreachable' };
+    }
+    if (response.ok) {
+      const ready = parseTrialReadyBody(body);
+      return ready ? { kind: 'ready', ...ready } : { kind: 'unreachable' };
+    }
+    return { kind: 'unreachable' };
+  } catch {
+    return { kind: 'unreachable' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function sleepUnlessCancelled(ms: number, isCancelled: () => boolean): Promise<void> {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      if (isCancelled() || Date.now() - startedAt >= ms) {
+        clearInterval(timer);
+        resolve();
+      }
+    }, 250);
+  });
+}
+
+async function waitForInstallerPairing(
+  pairing: InstallerOAuthPairing,
+  phase: 'login' | 'enrollment',
+  version: string,
+): Promise<InstallerPollOutcome | null> {
+  const startedAt = Date.now();
+  // The login phase must never name CMEM Pro. Logging in is required of every
+  // user and happens BEFORE the provider choice, so naming a paid plan here
+  // reads as an upsell attached to a mandatory step and muddies the funnel.
+  // The poll loop prints whatever stage the server reports, so a server-side
+  // 'awaiting_checkout' during login would otherwise leak the Pro wording.
+  const stageMessages: Record<InstallerPollStage, string> = {
+    awaiting_login: 'Waiting for OAuth login in the browser…',
+    awaiting_checkout: phase === 'login'
+      ? 'Waiting for the browser to finish signing you in…'
+      : 'Waiting for CMEM Pro setup in the browser…',
+    awaiting_approval: `Enter code ${pairing.userCode} in the browser to approve this device…`,
+  };
+  let stage: InstallerPollStage = phase === 'login' ? 'awaiting_login' : 'awaiting_checkout';
+  log.info(stageMessages[stage]);
+
+  let cancelled = false;
+  const onStdinData = (chunk: Buffer | string): void => {
+    if (typeof chunk === 'string' ? chunk.includes('\x03') : chunk.includes(0x03)) cancelled = true;
+  };
+  const onSigint = (): void => {
+    cancelled = true;
+  };
+  const useRawInput = process.stdin.isTTY === true;
+  const stdinWasRaw = process.stdin.isRaw === true;
+  let changedRawMode = false;
+  if (useRawInput) {
+    process.stdin.on('data', onStdinData);
+    if (!stdinWasRaw) {
+      process.stdin.setRawMode(true);
+      changedRawMode = true;
+    }
+    process.stdin.resume();
+  }
+  process.on('SIGINT', onSigint);
+
+  try {
+    let consecutiveFailures = 0;
+    while (Date.now() - startedAt < OAUTH_POLL_BUDGET_MS) {
+      if (cancelled) return null;
+      const result = await pollInstallerPairingOnce(pairing);
+      if (cancelled) return null;
+
+      if (result.kind === 'authenticated' && phase === 'login') return result;
+      if (result.kind === 'ready') return result;
+      if (result.kind === 'gone') {
+        log.error('This browser authorization expired. Run the installer again.');
+        return null;
+      }
+      if (result.kind === 'unreachable') {
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= 3) {
+          log.error('cmem.ai is not responding. Run the installer again when it is reachable.');
+          return null;
+        }
+      } else {
+        consecutiveFailures = 0;
+        if (result.kind === 'pending' && result.stage !== stage) {
+          stage = result.stage;
+          log.info(stageMessages[stage]);
+        }
+      }
+      await sleepUnlessCancelled(pairing.pollIntervalMs, () => cancelled);
+    }
+
+    await captureCliEvent('installer_oauth_timeout', {
+      version,
+      phase,
+      duration_ms: Date.now() - startedAt,
+    });
+    log.error('Browser authorization timed out. Run the installer again.');
+    return null;
+  } finally {
+    process.off('SIGINT', onSigint);
+    if (useRawInput) {
+      process.stdin.off('data', onStdinData);
+      if (changedRawMode) process.stdin.setRawMode(false);
+      process.stdin.pause();
+    }
+  }
+}
+
+/**
+ * Required account step. OAuth completes before provider choice and never
+ * chooses or enrolls a paid provider on its own.
+ */
+export async function completeInstallerOAuthLogin(
+  pairing: InstallerOAuthPairing,
+  version: string,
+): Promise<boolean> {
+  const result = await waitForInstallerPairing(pairing, 'login', version);
+  if (!result) return false;
+  if (result.kind === 'ready') {
+    if (!mergeSettings(buildTrialReadySettings(result))) return false;
+    pairing.delivered = result;
+  }
+  log.success('OAuth login complete.');
+  await captureCliEvent('installer_oauth_completed', { version });
+  return result.kind === 'authenticated' || result.kind === 'ready';
+}
+
+/**
+ * Holds until the user presses Return, then the caller opens the browser. The
+ * URL is printed BEFORE this, so a user who cannot use an opener (headless box,
+ * SSH) is never blocked — they can open it by hand and the wait still clears on
+ * Return. Ctrl-C falls through to the normal SIGINT handling.
+ *
+ * Raw mode mirrors waitForInstallerPairing: only toggled when this call turned
+ * it on, and always restored.
+ */
+async function waitForReturnToOpenBrowser(message: string): Promise<void> {
+  if (!isInteractive || process.stdin.isTTY !== true) return;
+  log.info(message);
+  await new Promise<void>((resolve) => {
+    const wasRaw = process.stdin.isRaw === true;
+    let changedRawMode = false;
+    const finish = (): void => {
+      process.stdin.off('data', onData);
+      if (changedRawMode) process.stdin.setRawMode(false);
+      process.stdin.pause();
+      resolve();
+    };
+    const onData = (chunk: Buffer | string): void => {
+      const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      if (text.includes('\r') || text.includes('\n') || text.includes('\x03')) finish();
+    };
+    if (!wasRaw) {
+      process.stdin.setRawMode(true);
+      changedRawMode = true;
+    }
+    process.stdin.resume();
+    process.stdin.on('data', onData);
+  });
+}
+
+async function requireInstallerOAuthLogin(version: string): Promise<InstallerOAuthPairing | null> {
+  const spinner = isInteractive ? p.spinner() : null;
+  spinner?.start('Starting secure OAuth login…');
+  const pairing = await startInstallerOAuthPairing();
+  if (!pairing) {
+    spinner?.stop(styleText('red', 'Could not start OAuth login.'));
+    log.error('OAuth login is required. Run npx claude-mem install again when cmem.ai is reachable.');
+    return null;
+  }
+  spinner?.stop('OAuth login ready.');
+
+  // No provider, plan, or pricing language on this step: logging in is required
+  // of every user and runs BEFORE the provider choice, so anything about a paid
+  // plan here is an upsell bolted onto a mandatory step.
+  log.info(`Open this URL: ${pairing.authorizationUrl}`);
+  await waitForReturnToOpenBrowser('Continue setup in browser... (hit return to open automatically)');
+  openBrowser(pairing.authorizationUrl);
+  await captureCliEvent('installer_oauth_started', { version });
+
+  const completed = await completeInstallerOAuthLogin(pairing, version);
+  return completed ? pairing : null;
+}
+
+function noteDeviceCode(pairing: InstallerOAuthPairing): void {
+  const message = [
+    styleText(['bold', 'cyan'], pairing.userCode),
+    '',
+    'Enter this code in the browser to approve this device.',
+  ].join('\n');
+  if (isInteractive) p.note(message, 'Your device code');
+  else log.info(`Device code: ${pairing.userCode}`);
+}
+
+/**
+ * Continues the already-authenticated pairing only after the CMEM Pro choice
+ * and required trial acknowledgement.
+ */
+export async function completeCmemTrialPairing(
+  pairing: InstallerOAuthPairing,
+  version: string,
+): Promise<TrialReadyResult | null> {
+  if (pairing.delivered) return pairing.delivered;
+
+  noteDeviceCode(pairing);
+  // Deliberately NO return-wait here, unlike the login hand-off.
+  //
+  // A second wait at this point stalled the install: stdin has already been
+  // through the login wait and a clack prompt by now, and the listener did not
+  // reliably receive the keypress, so the flow stopped before it could even
+  // print "Waiting for CMEM Pro setup in the browser…". Opening directly is
+  // also the better behaviour here — the user has already chosen CMEM Pro, so
+  // there is nothing left to confirm before the browser takes over.
+  log.info(`Continue CMEM Pro setup: ${pairing.checkoutUrl}`);
+  openBrowser(pairing.checkoutUrl);
+
+  const result = await waitForInstallerPairing(pairing, 'enrollment', version);
+  if (!result || result.kind !== 'ready') return null;
+
+  const wrote = mergeSettings(buildTrialReadySettings(result));
+  if (!wrote) {
+    log.error('Could not save the one-time CMEM Pro credentials.');
+    return null;
+  }
+  pairing.delivered = result;
+  clearProFallback();
+  log.success('CMEM Pro Free Trial active.');
+  await captureCliEvent('trial_activated', { version });
+  return result;
 }
 
 /**
@@ -1364,77 +1841,24 @@ async function promptTelemetryOptIn(): Promise<void> {
   log.success(consent ? 'Thanks! Anonymized usage sharing is on.' : 'No problem — telemetry is off.');
 }
 
-async function promptCmemOnlineOptIn(version: string): Promise<void> {
-  // Interactive-only, and easy to turn off for CI / scripted installs.
-  if (!isInteractive) return;
-  if (process.env.CI) return;
-  if (String(process.env.CLAUDE_MEM_ONLINE_OPTIN ?? '').trim().toLowerCase() === 'false') return;
-
-  const prior = readStoredSignup();
-  if (prior) {
-    // We already captured this email — don't re-nag. If a previous send never
-    // reached the service, quietly retry once now and record the result.
-    if (!prior.sent) {
-      const ok = await submitOnlineSignup({ email: prior.email, note: prior.note, version });
-      if (ok) mergeSettings({ CLAUDE_MEM_ONLINE_SIGNUP_SENT: 'true' });
-    }
-    return;
-  }
-
-  p.note(
-    [
-      styleText(['bold', 'cyan'], 'New! CMEM Online: every mem everywhere all at once.'),
-      '',
-      "Share your email and we'll send you a link. We're rolling this out to our",
-      'top users first, then everyone ASAP.',
-    ].join('\n'),
-    'CMEM Online',
-  );
-
-  const emailResult = await p.text({
-    message: 'Your work email (press Enter to skip):',
-    placeholder: 'you@company.com',
-    defaultValue: '',
-    validate: (v?: string) => {
-      const value = (v ?? '').trim();
-      if (value.length === 0) return undefined; // empty = skip, not an error
-      if (!SIGNUP_EMAIL_RE.test(value)) return "That doesn't look like an email — fix it, or clear the field to skip.";
-      return undefined;
-    },
-  });
-
-  if (p.isCancel(emailResult)) return;
-  const email = String(emailResult).trim();
-  if (email.length === 0) return;
-
-  const noteResult = await p.text({
-    message: 'Optionally: what are you working on, or how can we help you and your team? (Enter to skip)',
-    placeholder: 'e.g. migrating a monorepo, onboarding a 5-dev team…',
-    defaultValue: '',
-  });
-  const note = p.isCancel(noteResult) ? '' : String(noteResult).trim();
-
-  const spin = p.spinner();
-  spin.start('Signing you up for CMEM Online…');
-  const ok = await submitOnlineSignup({ email, note, version });
-  // Persist locally regardless of the network result so we never re-prompt;
-  // a failed send is retried silently on the next install (see above).
-  mergeSettings({
-    CLAUDE_MEM_ONLINE_SIGNUP_EMAIL: email,
-    CLAUDE_MEM_ONLINE_SIGNUP_NOTE: note,
-    CLAUDE_MEM_ONLINE_SIGNUP_AT: new Date().toISOString(),
-    CLAUDE_MEM_ONLINE_SIGNUP_SENT: ok ? 'true' : 'false',
-  });
-  if (ok) {
-    spin.stop(`You're on the list — we'll email ${styleText('cyan', email)} your CMEM Online link.`);
-  } else {
-    spin.stop(styleText('yellow', `Saved ${email} — we'll finish signing you up next time you run the installer.`));
-  }
+/**
+ * Whether an install still has an account question to answer.
+ *
+ * `--provider claude` and `--provider host` are exempt: they either run on the
+ * user's own Anthropic plan or the logged-in host agent and need no claude-mem
+ * credentials. `gemini` and
+ * `openrouter` are NOT exempt — openrouter is the transport for the cmem
+ * gateway, so an explicit `openrouter` install may still be reaching cmem.ai.
+ * With no flag at all the provider screen can still offer CMEM Pro, so login
+ * must happen first.
+ */
+export function providerNeedsAccount(provider: InstallOptions['provider']): boolean {
+  return provider !== 'claude' && provider !== 'host';
 }
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter';
+  provider?: 'claude' | 'gemini' | 'openrouter' | 'host';
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;
@@ -1443,6 +1867,81 @@ export interface InstallOptions {
   runtime?: 'worker' | 'server' | 'server-beta';
   // Base URL the server runtime (and the injected IDE MCP config) targets.
   serverUrl?: string;
+}
+
+async function requireWorkerStopped(
+  port: number | string,
+  phase: 'pre-overwrite' | 'provider-cutover',
+  summary: InstallSummary,
+): Promise<void> {
+  const spinner = isInteractive ? p.spinner() : null;
+  const action = phase === 'pre-overwrite'
+    ? 'Stopping running worker (so we can overwrite cleanly)…'
+    : 'Confirming the old worker is stopped before provider cutover…';
+  spinner?.start(action);
+
+  try {
+    const result = await shutdownWorkerAndWait(port, 10000);
+    if (!result.stopped) {
+      spinner?.error('Running worker did not stop; refusing to overwrite its live configuration.');
+      installerError(ErrorSeverity.ABORT, {
+        component: 'worker-shutdown',
+        phase,
+        cause: new Error('The existing worker did not stop within 10 seconds.'),
+        remediation: 'Run `npx claude-mem stop`, verify it exits, then run `npx claude-mem install` again.',
+      }, summary);
+    }
+
+    const stopMessage = result.workerWasRunning
+      ? 'Stopped running worker before configuration cutover.'
+      : 'No worker running — proceeding.';
+    if (spinner) spinner.stop(stopMessage);
+    else if (result.workerWasRunning) log.info(stopMessage);
+  } catch (error: unknown) {
+    if (error instanceof InstallAbortError) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    if (spinner) spinner.error(`Worker shutdown failed: ${message}`);
+    else console.warn('[install] Worker shutdown failed:', message);
+    installerError(ErrorSeverity.ABORT, {
+      component: 'worker-shutdown',
+      phase,
+      cause: error,
+      remediation: 'Run `npx claude-mem stop`, verify it exits, then run `npx claude-mem install` again.',
+    }, summary);
+  }
+}
+
+function validateNonInteractiveProvider(
+  options: InstallOptions,
+  summary: InstallSummary,
+): void {
+  if (isInteractive) return;
+
+  if (!options.provider) {
+    installerError(ErrorSeverity.ABORT, {
+      component: 'provider-selection',
+      phase: 'non-interactive-validation',
+      cause: new Error('A provider must be explicit when stdin is not interactive.'),
+      remediation: 'Re-run with `--provider claude`, or run the installer in an interactive terminal to compare CMEM Pro and local benefits.',
+    }, summary);
+  }
+
+  if (options.provider === 'host') return;
+  if (options.provider !== 'gemini' && options.provider !== 'openrouter') return;
+  const keyName = options.provider === 'gemini'
+    ? 'CLAUDE_MEM_GEMINI_API_KEY'
+    : 'CLAUDE_MEM_OPENROUTER_API_KEY';
+  const key = String(getSetting(keyName as keyof SettingsDefaults) ?? '').trim();
+  const configuredCmemKey = options.provider === 'openrouter'
+    && isCmemGatewayUrl(String(getSetting('CLAUDE_MEM_OPENROUTER_BASE_URL') ?? ''));
+  if (!key || configuredCmemKey) {
+    installerError(ErrorSeverity.ABORT, {
+      component: 'provider-credentials',
+      phase: 'non-interactive-validation',
+      cause: new Error(`${options.provider} requires a preconfigured personal API key when stdin is not interactive.`),
+      remediation: `Save ${keyName} first, or run the installer in an interactive terminal so it can ask securely.`,
+    }, summary);
+  }
 }
 
 export async function runInstallCommand(options: InstallOptions = {}): Promise<void> {
@@ -1482,6 +1981,7 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
 async function runInstallCommandInner(options: InstallOptions, summary: InstallSummary): Promise<void> {
   const installStartedAt = Date.now();
   const version = readPluginVersion();
+  validateNonInteractiveProvider(options, summary);
   // Captured by the runtime-setup task below; reported on install_completed
   // so funnel dropoff can be sliced by toolchain versions.
   let installedBunVersion: string | undefined;
@@ -1517,7 +2017,17 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   }
   log.info(segments.join(` ${dot} `));
 
-  await promptCmemOnlineOptIn(version);
+  // All claude-mem hooks run via `"shell": "bash"`; on Windows, Claude Code
+  // resolves that through Git for Windows with no WSL fallback. Surfacing it
+  // here — rather than letting the first hook throw an unbranded error — is
+  // a warning, not a hard stop: the operator may install Git for Windows
+  // after this run and hooks will start working without a reinstall.
+  if (IS_WINDOWS) {
+    const gitBash = checkWindowsGitBash();
+    if (!gitBash.ok) {
+      log.warn(gitBash.detail);
+    }
+  }
 
   if (alreadyInstalled) {
     if (process.stdin.isTTY) {
@@ -1550,10 +2060,6 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   }
 
   const selectedRuntime = await promptRuntime(options);
-  const selectedProvider = await promptProvider(options);
-  if (selectedProvider === 'claude') {
-    await promptClaudeModel(options);
-  }
 
   let workerStartResult: WorkerStartResult = 'dead';
   // Claude Code consumes the marketplace plugin system directly, so any selection
@@ -1565,24 +2071,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   {
     if (needsMarketplace) {
       const installPort = getSetting('CLAUDE_MEM_WORKER_PORT');
-      const shutdownSpinner = isInteractive ? p.spinner() : null;
-      shutdownSpinner?.start('Stopping running worker (so we can overwrite cleanly)…');
-      try {
-        const result = await shutdownWorkerAndWait(installPort, 10000);
-        const stopMessage = result.workerWasRunning ? 'Stopped running worker before overwrite.' : 'No worker running — proceeding.';
-        if (shutdownSpinner) {
-          shutdownSpinner.stop(stopMessage);
-        } else if (result.workerWasRunning) {
-          log.info('Stopped running worker before overwrite.');
-        }
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (shutdownSpinner) {
-          shutdownSpinner.error(`Pre-overwrite worker shutdown failed: ${message}`);
-        } else {
-          console.warn('[install] Pre-overwrite worker shutdown failed:', message);
-        }
-      }
+      await requireWorkerStopped(installPort, 'pre-overwrite', summary);
     }
 
     const tasks: TaskDescriptor[] = [
@@ -1712,6 +2201,40 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     log.info('Claude Code: leaving native auto-memory enabled unless you explicitly opt in to disabling it.');
   }
 
+  // Login is account-first for every install EXCEPT one that has already named
+  // a provider needing no claude-mem account. `--provider claude` runs memory
+  // on the user's own Anthropic plan and never touches cmem.ai, so gating it on
+  // browser OAuth made an unrelated cmem.ai outage fail an install that could
+  // have completed offline — and there is no account question left to ask,
+  // because the flag already answered it.
+  //
+  // Deliberately keyed on the explicit flag, not on reachability: a silent
+  // fallback to a local install whenever cmem.ai is down would quietly change
+  // what the user gets. This only skips a step the user's own flag made moot.
+  let oauthPairing: InstallerOAuthPairing | null = null;
+  if (providerNeedsAccount(options.provider)) {
+    oauthPairing = await requireInstallerOAuthLogin(version);
+    if (!oauthPairing) {
+      if (isInteractive) p.cancel('OAuth login is required to finish installation.');
+      else console.error('OAuth login is required to finish installation.');
+      process.exit(1);
+    }
+  } else {
+    const skipReason = options.provider === 'host'
+      ? 'host observer uses the logged-in host agent over a local OpenAI-compatible shim.'
+      : '--provider claude runs memory on your own Anthropic plan.';
+    log.info(`Skipping claude-mem login: ${skipReason}`);
+  }
+  const selectedProvider = await promptProvider(options, oauthPairing, version);
+  const cloudSyncConfigured = [
+    getSetting('CLAUDE_MEM_CLOUD_SYNC_TOKEN'),
+    getSetting('CLAUDE_MEM_CLOUD_SYNC_USER_ID'),
+    getSetting('CLAUDE_MEM_CLOUD_SYNC_HUB_URL'),
+  ].every((value) => typeof value === 'string' && value.trim().length > 0);
+  if (selectedProvider === 'claude') {
+    await promptClaudeModel(options);
+  }
+
   // The server runtime is brought up via its own stack (Docker pg+redis +
   // `claude-mem server start`), NOT the worker-service spawner. Skip the
   // worker-only autostart entirely so the server runtime never invokes the
@@ -1737,6 +2260,10 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
         // selectedRuntime is narrowed to 'worker' here: the server case
         // returned above and never reaches the worker-service spawner.
         message(`Spawning worker on port ${port}...`);
+        // Stop any worker that came up during install with the previous
+        // provider so the RAM queue cannot mix old/new settings. Runtime
+        // POST /api/settings still must not recycle a healthy worker.
+        await requireWorkerStopped(port, 'provider-cutover', summary);
         workerStartResult = await ensureWorkerStarted(port, scriptPath);
         switch (workerStartResult) {
           case 'ready':
@@ -1756,11 +2283,16 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // stale local count.
   const hasFailures = summary.failedIDEs.length > 0;
   const installStatus = hasFailures ? 'Installation Partial' : 'Installation Complete';
+  const accountStatus = providerNeedsAccount(options.provider)
+    ? 'OAuth login complete'
+    : (options.provider === 'host' ? 'Not required (host observer)' : 'Not required (local provider)');
   const summaryLines = [
     `Version:     ${styleText('cyan', version)}`,
     `Plugin dir:  ${styleText('cyan', marketplaceDir)}`,
     `IDEs:        ${styleText('cyan', selectedIDEs.join(', '))}`,
   ];
+  summaryLines.push(`Account:     ${styleText('cyan', accountStatus)}`);
+  summaryLines.push(`Cloud sync:  ${styleText('cyan', cloudSyncConfigured ? 'ON (CMEM Pro)' : 'OFF (local)')}`);
   if (autoMemoryStatus === 'disabled') {
     summaryLines.push(`Auto-memory: ${styleText('cyan', 'disabled')} (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)`);
   } else if (autoMemoryStatus === 'already-disabled') {
@@ -1821,6 +2353,28 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     } catch {
       healthSpinner?.stop(`Worker not yet responding on port ${workerPort} (still starting)`);
     }
+
+    // A sign-in just wrote cloud-sync settings the worker booted with, so
+    // one cheap read of /api/sync/status confirms sync is really configured.
+    // Purely informational and fail-soft — a warming worker legitimately
+    // can't answer yet, and the state is always visible via the cloud-sync skill.
+    if (cloudSyncConfigured && workerReady) {
+      try {
+        const syncResponse = await fetch(`http://${workerUrlHost}:${actualPort}/api/sync/status`, {
+          signal: AbortSignal.timeout(3000),
+        });
+        if (syncResponse.ok) {
+          const sync = await syncResponse.json() as { configured?: boolean };
+          if (sync && sync.configured === false) {
+            log.warn('Cloud sync: worker has not picked up the sync settings yet — it will on its next restart.');
+          } else {
+            log.success('Cloud sync: configured — the worker is reporting sync status.');
+          }
+        }
+      } catch {
+        // [ANTI-PATTERN IGNORED]: this read-through is purely informational; a worker still warming up legitimately can't answer, and sync state stays visible via the cloud-sync skill.
+      }
+    }
   }
 
   const finalWorkerState = workerStartResult as WorkerStartResult;
@@ -1842,20 +2396,26 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     : workerAlive
       ? 'keep that URL open in a browser'
       : `keep ${styleText('underline', configuredWorkerBaseUrl)} open in a browser`;
+  // Last screen of the funnel: it should read as an invitation to start, not a
+  // manual. Everything here has to earn its line.
+  //
+  // Cut deliberately: the WELCOME_HINT_ENABLED env var (opting out of a hint
+  // they have not seen yet), the uninstall warning (uninstall trivia on the
+  // install screen), and the A/B "two paths" framing that dressed up "just
+  // start working" as a decision the user has to make.
   const nextSteps = [
     nextStepsHeadline,
     ``,
-    `${styleText('bold', 'First success:')} ${firstSuccessOpener}, then open Claude Code in any project. Observations stream in as Claude reads, edits, and runs commands.`,
-    ``,
-    `${styleText('bold', 'Two paths from here:')}`,
-    `  ${styleText('cyan', 'A.')} Just start working. Memory builds passively from your first prompt. (Recommended.)`,
-    `  ${styleText('cyan', 'B.')} Front-load it: open Claude Code and run ${styleText('bold', '/learn-codebase')} to ingest the whole repo (~5 min, optional).`,
+    `${styleText('bold', 'Start working.')} Memory builds passively from your first prompt — observations stream in as Claude reads, edits, and runs commands.`,
+    `To watch them live, ${firstSuccessOpener}.`,
     ``,
     `Memory injection starts on your second session in a project.`,
-    `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine.`,
+    cloudSyncConfigured
+      ? 'Memory syncs across your signed-in CMEM Pro agents and devices.'
+      : `Everything stays in ${styleText('cyan', '~/.claude-mem')} on this machine.`,
+    ...(cloudSyncConfigured ? [] : [`${PRO_TRIAL_PITCH}: ${styleText('underline', proTrialUrl('installer'))}`]),
     ``,
-    `${styleText('dim', 'How it works: /how-it-works   ·   Disable first-session hint: CLAUDE_MEM_WELCOME_HINT_ENABLED=false')}`,
-    `${styleText('dim', 'Note: close all Claude Code sessions before uninstalling, or ~/.claude-mem will be recreated by active hooks.')}`,
+    `${styleText('dim', `Optional: ${'/learn-codebase'} ingests a whole repo up front (~5 min)   ·   How it works: /how-it-works`)}`,
   ];
 
   if (isInteractive) {
