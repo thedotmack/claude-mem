@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+<<<<<<< Updated upstream
 ## [13.3.0] - 2026-05-21
 
 ## What's New
@@ -200,6 +201,8 @@ Patch release for the reliability fixes merged in PR #2344.
 - Keep Codex file-context extraction from consuming boolean flags like `cat -n`.
 - Include `bun-runner.js` in hook distribution verification.
 
+=======
+>>>>>>> Stashed changes
 ## [12.6.4] - 2026-05-05
 
 ## Fixed
