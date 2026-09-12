@@ -63,11 +63,7 @@ export function parseSearchResponse(text: string, query: string): string {
   let data: unknown;
   try {
     data = JSON.parse(text);
-  } catch (error: unknown) {
-    console.warn(
-      "[claude-mem] Failed to parse search results:",
-      error instanceof Error ? error.message : String(error),
-    );
+  } catch {
     return "Failed to parse search results.";
   }
 
