@@ -1,0 +1,7 @@
+Wrote [BACKLOG-2026-09-12.md](/Users/alexnewman/.claude/context/claude-mem/BACKLOG-2026-09-12.md) (1,593 words).
+
+- Issues: 26 → 15; 13 masters plus two intentional exceptions.
+- Pull requests: 172 → 162; all open routed PRs are listed by master.
+- Closed today: 11 child issues and 11 superseded or already-landed PRs.
+- Each master names its user impact, folded reports, best next PR, and decision blocker.
+- Alex-only decisions are reproduced verbatim from the pass report.

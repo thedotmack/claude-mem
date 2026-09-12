@@ -1,0 +1,10 @@
+/oh-my-issues
+
+Run the oh-my-issues skill over the thedotmack/claude-mem repository (this worktree, branch work/oh-my-issues off origin/main). Alex asked for it in so many words: "deploy a subagent to run /oh-my-issues on the issues and PRs". You are acting for him; do not ask him questions. Every gate you meet is bot-written; decide and proceed.
+
+Scope:
+1. Mode 1 cluster pass over ALL open issues. Read every body and every comment thread (paginated gh calls, per the skill). Cluster by root cause, open one master issue per cluster with the title format and body the skill prescribes, mirror each as plans/0X-<slug>.md in this worktree, close each child with the standardized redirect comment as "not planned". Commit the plans docs, push work/oh-my-issues, and open a PR titled "docs(plans): oh-my-issues cluster pass" that links the master issues.
+2. Open PRs: read each one. Map it to the cluster it belongs to and leave one short comment on the PR naming the master issue. If a PR is a duplicate of another open PR or is superseded by merged code on main, say so in the comment and close it. Do not merge any PR in this run. Do not write architectural-fix PRs in this run; list them as the "next PRs" in your final report.
+3. Any issue that is genuinely independent stays open untouched; say why in the report.
+
+Rules: gh is authenticated; use it. Never paste secrets or tokens. Work only in this worktree. When done, write a report to .agent-jobs/oh-my-issues.report.md in this worktree (counts: issues read, clusters, masters opened with numbers, children closed, PRs commented, PRs closed, independent issues left, the next-PRs list), commit it on the branch, then exit. Do not sit idle.
