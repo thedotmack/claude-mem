@@ -4,7 +4,7 @@ SyncHub owns device identity, last-seen state, sync cursors, and the
 authoritative Turbopuffer projection checkpoint. Pro reads this payload-free
 control-plane state instead of querying content tables or `pro_sync_state`.
 
-Both routes require:
+All internal SyncHub routes require:
 
 ```http
 Authorization: Bearer <CMEM_INTERNAL_PROJECTOR_SECRET>
@@ -105,3 +105,114 @@ and must contain 1–128 characters. A registered device returns:
 ```
 
 An unknown device returns `404`; rename never creates a phantom device.
+
+## Read a bounded restore/replay page
+
+`POST /internal/v1/sync/operation-page`
+
+This is the only internal read that returns content. It exists for authenticated
+backup and restore/replay tooling; the metadata and operational-health routes
+remain payload-free.
+
+```json
+{
+  "protocol_version": 1,
+  "user_id": "canonical-user-id",
+  "epoch": "1784531270123",
+  "after_seq": "0",
+  "limit": 100
+}
+```
+
+`limit` must be an integer from 1 through 100. `epoch` and `after_seq` must be
+canonical uint64 decimal strings. `user_id` must be a canonical 1–256 character
+value with no surrounding whitespace. The exact response is capped at 4,000,000
+UTF-8 bytes and carries `Cache-Control: private, no-store` and
+`Referrer-Policy: no-referrer`:
+
+```json
+{
+  "protocol_version": 1,
+  "user_id": "canonical-user-id",
+  "epoch": "1784531270123",
+  "after_seq": "0",
+  "through_seq": "2",
+  "head_seq": "5",
+  "has_more": true,
+  "ops": [
+    {
+      "seq": "1",
+      "body": "{\"body_schema_version\":1,...}",
+      "operation_sha256": "base64url-sha256"
+    }
+  ]
+}
+```
+
+Operations are contiguous and strictly sequence-ordered. Each item reuses the
+projector wire item exactly: `{seq,body,operation_sha256}`. Advance the next
+request with `after_seq = through_seq`. An empty page is valid only at head and
+has `through_seq === after_seq`. `has_more` is true exactly when
+`through_seq < head_seq`. An epoch mismatch or a missing/compacted log segment
+returns `409`; malformed/overflowing decimals return `400`. A page read never
+updates a client cursor, device, projection lease/checkpoint, compaction state,
+alarm, or operational counter.
+
+## Read payload-free operational health
+
+`POST /internal/v1/sync/operational-health`
+
+```json
+{
+  "protocol_version": 1,
+  "user_id": "canonical-user-id",
+  "window_seconds": 3600
+}
+```
+
+`window_seconds` must be an integer from 60 through 86,400. `user_id` follows
+the same canonical identity rule as operation pages. The response is separate
+from the stable metadata response above and carries the same no-store headers:
+
+```json
+{
+  "protocol_version": 1,
+  "user_id": "canonical-user-id",
+  "generated_at": "2026-07-20T17:00:00.000Z",
+  "window_seconds": 3600,
+  "epoch": "1784531270123",
+  "head_seq": "42",
+  "projected_seq": "40",
+  "projection_lag_ops": "2",
+  "rejected_operations": {
+    "total": "2",
+    "last_at": "2026-07-20T16:59:00.000Z",
+    "by_code": [{ "code": "stale_revision", "count": "2" }]
+  },
+  "projection_failures": {
+    "total": "1",
+    "last_at": "2026-07-20T16:58:00.000Z",
+    "by_code": [{ "code": "upstream_timeout", "count": "1" }]
+  }
+}
+```
+
+Totals and per-code counts are canonical decimal strings. `by_code` is sorted
+and bounded by fixed allowlists. Rejected-operation codes are:
+
+`device_limit_exceeded`, `invalid_device_id`, `invalid_json`,
+`invalid_operation`, `invalid_ops_shape`, `origin_device_mismatch`,
+`request_too_large`, `revision_hash_conflict`, `stale_revision`,
+`too_many_ops`, and `unsupported_protocol`.
+
+Projection-failure codes are:
+
+`busy`, `internal_error`, `not_configured`, `page_empty`, `page_too_large`,
+`response_mismatch`, `response_not_json`, `upstream_conflict`,
+`upstream_http_error`, `upstream_timeout`, and `upstream_unreachable`.
+
+No raw error, HTTP response body, operation payload, token, secret, device id,
+or dynamic status code is stored in these counters. Event buckets are pruned
+outside the maximum window and hard-bounded. Counter failure is best-effort
+instrumentation only: it cannot change append durability or projection
+checkpoint behavior.

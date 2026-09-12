@@ -181,6 +181,43 @@ exits zero. Its runtime dependencies resolve from this package's
 `workers/sync-hub/node_modules`; both `miniflare` and `esbuild` are direct
 development dependencies.
 
+### 1.6 Restore pages and per-user operational health
+
+The same `CMEM_INTERNAL_PROJECTOR_SECRET` authenticates two additional Pro-only
+routes. Do not expose this credential to a client or browser. Exact schemas,
+limits, and allowlisted event codes live in `METADATA-CONTRACT.md`.
+
+Backup/replay workers read immutable log pages without touching a device cursor
+or the projector checkpoint:
+
+```sh
+curl -fsS https://<sync-hub>/internal/v1/sync/operation-page \
+  -H "Authorization: Bearer $CMEM_INTERNAL_PROJECTOR_SECRET" \
+  -H 'Content-Type: application/json' \
+  --data '{"protocol_version":1,"user_id":"<canonical-user-id>","epoch":"<hub-epoch>","after_seq":"0","limit":100}'
+```
+
+Persist the returned page before advancing `after_seq` to `through_seq`.
+Continue while `has_more` is true. Stop on `409`: the supplied epoch changed or
+the requested contiguous log range is unavailable. Never reinterpret that as
+an empty page. Every encoded response is at most 4,000,000 bytes.
+
+Pro's alert cron reads a separate payload-free rolling window:
+
+```sh
+curl -fsS https://<sync-hub>/internal/v1/sync/operational-health \
+  -H "Authorization: Bearer $CMEM_INTERNAL_PROJECTOR_SECRET" \
+  -H 'Content-Type: application/json' \
+  --data '{"protocol_version":1,"user_id":"<canonical-user-id>","window_seconds":3600}'
+```
+
+Alert on nonzero rejected-operation/projection-failure totals, sustained
+`projection_lag_ops`, or a backup manifest whose age exceeds the configured
+backup interval. The Hub stores only fixed event codes, counts, and timestamps;
+raw errors, dynamic HTTP bodies/statuses, operations, device ids, and secrets
+never enter the operational counter table. Recording is best-effort and cannot
+change append or checkpoint semantics.
+
 ---
 
 ## 2. Watchdog (Phase 5 task 1)

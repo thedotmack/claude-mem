@@ -24,6 +24,8 @@
  *                            nothing durable — it is a downstream hint lane.
  *   POST /internal/v1/sync/metadata    — payload-free Hub state for Pro.
  *   POST /internal/v1/sync/device-name — rename an existing Hub device.
+ *   POST /internal/v1/sync/operation-page — bounded read-only replay page.
+ *   POST /internal/v1/sync/operational-health — payload-free alert counters.
  */
 
 import type { PushOp } from "./do/SyncHub";
@@ -43,6 +45,15 @@ import {
 	serializeProjectionRequest,
 } from "./projection-protocol";
 import { runWatchdog } from "./watchdog";
+import {
+	OPERATION_PAGE_MAX_OPS,
+	OPERATIONAL_HEALTH_MAX_WINDOW_SECONDS,
+	OPERATIONAL_HEALTH_MIN_WINDOW_SECONDS,
+	serializeOperationPage,
+	type OperationalEventCode,
+	type OperationalEventKind,
+	type ProjectionFailureCode,
+} from "./operations-protocol";
 
 // The DO class must be exported from the Worker entrypoint.
 export { SyncHub };
@@ -74,7 +85,13 @@ const DEFAULT_CACHE_TTL_SECONDS = 60;
  */
 const MAX_OPS_PER_PUSH = 500; // mirrors the getChanges page cap
 const MAX_PUSH_BODY_BYTES = 8_000_000;
+const MAX_INTERNAL_CONTROL_BODY_BYTES = 16_384;
 const CANONICAL_DECIMAL = /^(?:0|[1-9][0-9]*)$/;
+const UINT64_MAX_DECIMAL = "18446744073709551615";
+const INTERNAL_NO_STORE_HEADERS = {
+	"Cache-Control": "private, no-store",
+	"Referrer-Policy": "no-referrer",
+} as const;
 
 /**
  * Pro declares a 60-second maximum duration. Abort the complete response-body
@@ -87,10 +104,17 @@ if (PROJECTION_FETCH_TIMEOUT_MS >= PROJECTION_LEASE_MS) {
 
 const encoder = new TextEncoder();
 
-function json(status: number, data: unknown): Response {
+function json(status: number, data: unknown, extraHeaders: Record<string, string> = {}): Response {
 	return new Response(JSON.stringify(data), {
 		status,
-		headers: { "Content-Type": "application/json" },
+		headers: { "Content-Type": "application/json", ...extraHeaders },
+	});
+}
+
+function serializedJson(status: number, data: string, extraHeaders: Record<string, string> = {}): Response {
+	return new Response(data, {
+		status,
+		headers: { "Content-Type": "application/json", ...extraHeaders },
 	});
 }
 
@@ -181,6 +205,12 @@ function parseBoundedPositiveInteger(raw: string, maximum: number): number | nul
 		if (value > maximum) return maximum;
 	}
 	return value;
+}
+
+function isCanonicalUint64(raw: string): boolean {
+	return CANONICAL_DECIMAL.test(raw)
+		&& (raw.length < UINT64_MAX_DECIMAL.length
+			|| (raw.length === UINT64_MAX_DECIMAL.length && raw <= UINT64_MAX_DECIMAL));
 }
 
 /**
@@ -305,11 +335,13 @@ async function handlePushOps(
 	deviceId: string,
 	deviceName: string | null,
 ): Promise<Response> {
+	const stub = env.SYNC_HUB.getByName(userId);
 	const raw = await request.text();
 	// Deliberate 413s (see the cap constants above): an oversize batch must
 	// fail loudly and permanently here, not as a retriable-looking 500 at the
 	// RPC boundary or inside the DO.
 	if (encoder.encode(raw).length > MAX_PUSH_BODY_BYTES) {
+		await recordOperationalEventBestEffort(stub, "rejected_operation", "request_too_large");
 		return errorResponse(
 			413,
 			`request body exceeds ${MAX_PUSH_BODY_BYTES} bytes — split the batch`,
@@ -319,30 +351,40 @@ async function handlePushOps(
 	try {
 		body = JSON.parse(raw);
 	} catch {
+		await recordOperationalEventBestEffort(stub, "rejected_operation", "invalid_json");
 		return errorResponse(400, "request body is not valid JSON");
 	}
 	if ((body as { protocol_version?: unknown } | null)?.protocol_version !== 2) {
+		await recordOperationalEventBestEffort(stub, "rejected_operation", "unsupported_protocol");
 		return errorResponse(400, "request body requires protocol_version: 2");
 	}
 	const ops = (body as { ops?: unknown } | null)?.ops;
 	if (!Array.isArray(ops)) {
+		await recordOperationalEventBestEffort(stub, "rejected_operation", "invalid_ops_shape");
 		return errorResponse(400, "request body must be {ops: [...]}");
 	}
 	if (ops.length > MAX_OPS_PER_PUSH) {
+		await recordOperationalEventBestEffort(stub, "rejected_operation", "too_many_ops");
 		return errorResponse(
 			413,
 			`too many ops in one request (${ops.length} > ${MAX_OPS_PER_PUSH}) — split the batch`,
 		);
 	}
 
-	const stub = env.SYNC_HUB.getByName(userId);
+	let appendCommitted = false;
 	try {
 		const result = await stub.pushOps(deviceId, ops as PushOp[], deviceName);
 		if ("refused" in result) {
 			return errorResponse(result.error === DEVICE_LIMIT_ERROR ? 409 : 400, result.error);
 		}
+		appendCommitted = true;
 		const projection = await drainProjection(env, userId, result.head_seq);
 		if (!projection.ok) {
+			await recordOperationalEventBestEffort(
+				stub,
+				"projection_failure",
+				projectionFailureCode(projection.error),
+			);
 			return json(projection.httpStatus, {
 				error: projection.error,
 				durable: true,
@@ -353,6 +395,9 @@ async function handlePushOps(
 		}
 		return json(200, { ...result, projected_seq: projection.projectedSeq });
 	} catch (e) {
+		if (appendCommitted) {
+			await recordOperationalEventBestEffort(stub, "projection_failure", "internal_error");
+		}
 		return mapHubError(e);
 	}
 }
@@ -420,6 +465,140 @@ async function readInternalBody(request: Request): Promise<Record<string, unknow
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 		? value as Record<string, unknown>
 		: null;
+}
+
+async function readBoundedInternalBody(request: Request): Promise<
+	| { ok: true; body: Record<string, unknown> }
+	| { ok: false; response: Response }
+> {
+	const raw = await request.text();
+	if (encoder.encode(raw).length > MAX_INTERNAL_CONTROL_BODY_BYTES) {
+		return { ok: false, response: errorResponse(413, "internal request body is too large") };
+	}
+	let value: unknown;
+	try { value = JSON.parse(raw); } catch {
+		return { ok: false, response: errorResponse(400, "request body is not valid JSON") };
+	}
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		return { ok: false, response: errorResponse(400, "request body must be an object") };
+	}
+	return { ok: true, body: value as Record<string, unknown> };
+}
+
+interface OperationalEventRecorder {
+	recordOperationalEvent(kind: OperationalEventKind, code: OperationalEventCode): Promise<void>;
+}
+
+async function recordOperationalEventBestEffort(
+	stub: OperationalEventRecorder,
+	kind: OperationalEventKind,
+	code: OperationalEventCode,
+): Promise<void> {
+	try {
+		await stub.recordOperationalEvent(kind, code);
+	} catch (error) {
+		console.warn("sync-hub operational counter RPC unavailable:", {
+			kind,
+			code,
+			errorName: error instanceof Error ? error.name : "unknown",
+		});
+	}
+}
+
+function projectionFailureCode(error: string): ProjectionFailureCode {
+	if (error === "projection_not_configured") return "not_configured";
+	if (error === "projection_busy") return "busy";
+	if (error === "projection_page_empty") return "page_empty";
+	if (error === "projection_page_too_large") return "page_too_large";
+	if (error === "projection_upstream_timeout") return "upstream_timeout";
+	if (error === "projection_upstream_unreachable") return "upstream_unreachable";
+	if (error === "projection_upstream_409") return "upstream_conflict";
+	if (error === "projection_response_not_json") return "response_not_json";
+	if (error === "projection_response_mismatch") return "response_mismatch";
+	if (/^projection_upstream_[1-5][0-9][0-9]$/.test(error)) return "upstream_http_error";
+	return "internal_error";
+}
+
+async function handleOperationPage(request: Request, env: Env): Promise<Response> {
+	if (!hasInternalCredential(request, env)) return errorResponse(401, "invalid internal credential");
+	const parsed = await readBoundedInternalBody(request);
+	if (!parsed.ok) return parsed.response;
+	const body = parsed.body;
+	if (
+		!exactKeys(body, ["after_seq", "epoch", "limit", "protocol_version", "user_id"])
+		|| body.protocol_version !== 1
+		|| typeof body.user_id !== "string"
+		|| typeof body.epoch !== "string"
+		|| typeof body.after_seq !== "string"
+		|| typeof body.limit !== "number"
+	) {
+		return errorResponse(400, "expected exactly {protocol_version:1,user_id,epoch,after_seq,limit}");
+	}
+	const userId = body.user_id.trim();
+	if (body.user_id !== userId || userId.length === 0 || userId.length > 256) {
+		return errorResponse(400, "user_id must be a canonical 1-256 character value");
+	}
+	if (!isCanonicalUint64(body.epoch)) return errorResponse(400, "epoch must be a canonical uint64 decimal string");
+	if (!isCanonicalUint64(body.after_seq)) return errorResponse(400, "after_seq must be a canonical uint64 decimal string");
+	if (!Number.isInteger(body.limit) || body.limit < 1 || body.limit > OPERATION_PAGE_MAX_OPS) {
+		return errorResponse(400, `limit must be an integer from 1 to ${OPERATION_PAGE_MAX_OPS}`);
+	}
+	try {
+		const page = await env.SYNC_HUB.getByName(userId).getOperationPage(
+			userId,
+			body.epoch,
+			body.after_seq,
+			body.limit,
+		);
+		if ("refused" in page) {
+			if (page.error.includes("epoch_mismatch") || page.error.includes("log_gap")) {
+				return errorResponse(409, page.error);
+			}
+			if (page.error.includes("response byte budget")) return errorResponse(413, page.error);
+			return errorResponse(400, page.error);
+		}
+		return serializedJson(200, serializeOperationPage(page), INTERNAL_NO_STORE_HEADERS);
+	} catch (error) {
+		return mapHubError(error);
+	}
+}
+
+async function handleOperationalHealth(request: Request, env: Env): Promise<Response> {
+	if (!hasInternalCredential(request, env)) return errorResponse(401, "invalid internal credential");
+	const parsed = await readBoundedInternalBody(request);
+	if (!parsed.ok) return parsed.response;
+	const body = parsed.body;
+	if (
+		!exactKeys(body, ["protocol_version", "user_id", "window_seconds"])
+		|| body.protocol_version !== 1
+		|| typeof body.user_id !== "string"
+		|| typeof body.window_seconds !== "number"
+	) {
+		return errorResponse(400, "expected exactly {protocol_version:1,user_id,window_seconds}");
+	}
+	const userId = body.user_id.trim();
+	if (body.user_id !== userId || userId.length === 0 || userId.length > 256) {
+		return errorResponse(400, "user_id must be a canonical 1-256 character value");
+	}
+	if (
+		!Number.isInteger(body.window_seconds)
+		|| body.window_seconds < OPERATIONAL_HEALTH_MIN_WINDOW_SECONDS
+		|| body.window_seconds > OPERATIONAL_HEALTH_MAX_WINDOW_SECONDS
+	) {
+		return errorResponse(
+			400,
+			`window_seconds must be an integer from ${OPERATIONAL_HEALTH_MIN_WINDOW_SECONDS} to ${OPERATIONAL_HEALTH_MAX_WINDOW_SECONDS}`,
+		);
+	}
+	try {
+		return json(
+			200,
+			await env.SYNC_HUB.getByName(userId).getOperationalHealth(userId, body.window_seconds),
+			INTERNAL_NO_STORE_HEADERS,
+		);
+	} catch (error) {
+		return mapHubError(error);
+	}
 }
 
 async function handleMetadataRead(request: Request, env: Env): Promise<Response> {
@@ -799,9 +978,27 @@ async function handleRepairDrain(request: Request, env: Env): Promise<Response> 
 	if (decimalAtLeast(target, state.head_seq) && target !== state.head_seq) {
 		return errorResponse(400, "through_seq exceeds Hub head_seq");
 	}
-	const drained = await drainProjection(env, record.user_id, target);
+	let drained: DrainResult;
+	try {
+		drained = await drainProjection(env, record.user_id, target);
+	} catch {
+		await recordOperationalEventBestEffort(stub, "projection_failure", "internal_error");
+		return json(503, {
+			error: "projection_internal_error",
+			durable: true,
+			retryable: true,
+			epoch: state.epoch,
+			head_seq: state.head_seq,
+			projected_through_seq: state.projected_seq,
+		});
+	}
 	const finalState = await stub.getProjectionState();
 	if (!drained.ok) {
+		await recordOperationalEventBestEffort(
+			stub,
+			"projection_failure",
+			projectionFailureCode(drained.error),
+		);
 		return json(drained.httpStatus, {
 			error: drained.error,
 			durable: true,
@@ -835,6 +1032,14 @@ export default {
 		if (pathname === "/internal/v1/sync/device-name") {
 			if (request.method !== "POST") return errorResponse(405, "use POST");
 			return handleDeviceRename(request, env);
+		}
+		if (pathname === "/internal/v1/sync/operation-page") {
+			if (request.method !== "POST") return errorResponse(405, "use POST");
+			return handleOperationPage(request, env);
+		}
+		if (pathname === "/internal/v1/sync/operational-health") {
+			if (request.method !== "POST") return errorResponse(405, "use POST");
+			return handleOperationalHealth(request, env);
 		}
 
 		if (
@@ -898,7 +1103,14 @@ export default {
 		const response = await (async (): Promise<Response> => {
 			if (pathname === "/v1/sync/ops") {
 				if (request.method !== "POST") return errorResponse(405, "use POST");
-				if (!auth.deviceId) return errorResponse(400, "missing X-Device-Id header");
+				if (!auth.deviceId) {
+					await recordOperationalEventBestEffort(
+						env.SYNC_HUB.getByName(auth.userId),
+						"rejected_operation",
+						"invalid_device_id",
+					);
+					return errorResponse(400, "missing X-Device-Id header");
+				}
 				return handlePushOps(request, env, auth.userId, auth.deviceId, auth.deviceName);
 			}
 

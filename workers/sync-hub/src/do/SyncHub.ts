@@ -20,11 +20,32 @@ import {
 	PROJECTION_PAGE_MAX_OPS,
 	projectionRequestBytes,
 } from "../projection-protocol";
+import {
+	OPERATION_PAGE_MAX_BYTES,
+	OPERATION_PAGE_MAX_OPS,
+	OPERATION_PAGE_PROTOCOL_VERSION,
+	OPERATIONAL_HEALTH_MAX_WINDOW_SECONDS,
+	OPERATIONAL_HEALTH_PROTOCOL_VERSION,
+	isOperationalEventCode,
+	operationPageBytes,
+	operationPageWireOp,
+	type OperationalEventAggregate,
+	type OperationalEventCode,
+	type OperationalEventKind,
+	type OperationalHealth,
+	type OperationPage,
+	type OperationPageOutcome,
+	type OperationPageRefusal,
+	type RejectedOperationCode,
+} from "../operations-protocol";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_PAGE = 500;
 const ADVANCE_MAX_OPS = 100;
 const ADVANCE_MAX_FRAME_BYTES = 262_144;
+const OPERATIONAL_EVENT_MAX_ROWS = 50_000;
+const OPERATIONAL_EVENT_RETENTION_MS = OPERATIONAL_HEALTH_MAX_WINDOW_SECONDS * 1_000;
+const MAX_DATE_MS = 8_640_000_000_000_000;
 export const MAX_DEVICES_PER_USER = 64;
 export const DEVICE_LIMIT_ERROR = "device_limit_exceeded";
 /** 45s Hub abort < 60s Pro platform ceiling < 90s fencing lease. */
@@ -130,6 +151,7 @@ export interface ProjectionState {
 
 export const INVALID_OPS_PREFIX = "invalid_ops:";
 export const PROJECTION_ERROR_PREFIX = "projection_error:";
+export const OPERATION_PAGE_ERROR_PREFIX = "operation_page_error:";
 
 function invalid(message: string): Error {
 	return new Error(`${INVALID_OPS_PREFIX} ${message}`);
@@ -139,12 +161,36 @@ function projectionError(message: string): Error {
 	return new Error(`${PROJECTION_ERROR_PREFIX} ${message}`);
 }
 
+function operationPageRefusal(message: string): OperationPageRefusal {
+	return { refused: true, error: `${OPERATION_PAGE_ERROR_PREFIX} ${message}` };
+}
+
 function deviceLimitError(): Error {
 	return new Error(DEVICE_LIMIT_ERROR);
 }
 
 function isDeviceLimitError(error: unknown): boolean {
 	return error instanceof Error && error.message === DEVICE_LIMIT_ERROR;
+}
+
+function rejectedOperationCode(error: unknown): RejectedOperationCode {
+	if (isDeviceLimitError(error)) return "device_limit_exceeded";
+	const message = error instanceof Error ? error.message : "";
+	if (message.includes("stale_revision:")) return "stale_revision";
+	if (message.includes("revision_hash_conflict:")) return "revision_hash_conflict";
+	if (message.includes("origin_device_id does not match")) return "origin_device_mismatch";
+	if (
+		message.includes("deviceId must")
+		|| message.includes("device_id must")
+		|| message.includes("origin_device_id must")
+	) return "invalid_device_id";
+	return "invalid_operation";
+}
+
+function assertOperationalTimestamp(now: number, label: string): void {
+	if (!Number.isSafeInteger(now) || now < 0 || now > MAX_DATE_MS) {
+		throw new Error(`${label} must be a non-negative timestamp in the ECMAScript Date range`);
+	}
 }
 
 interface ValidatedOp {
@@ -210,7 +256,16 @@ export class SyncHub extends DurableObject<Env> {
 					last_ack_seq        TEXT NOT NULL DEFAULT '0',
 					last_seen           INTEGER
 				);
-				CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);`,
+				CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
+				CREATE TABLE IF NOT EXISTS operational_event_buckets (
+					kind                TEXT NOT NULL CHECK (kind IN ('rejected_operation', 'projection_failure')),
+					code                TEXT NOT NULL,
+					occurred_at_ms      INTEGER NOT NULL,
+					count               INTEGER NOT NULL CHECK (count > 0),
+					PRIMARY KEY (kind, code, occurred_at_ms)
+				);
+				CREATE INDEX IF NOT EXISTS operational_event_buckets_time
+					ON operational_event_buckets(occurred_at_ms);`,
 			);
 			const defaults: Array<[string, string]> = [
 				["epoch", newEpoch()],
@@ -339,9 +394,13 @@ export class SyncHub extends DurableObject<Env> {
 			}));
 		} catch (error) {
 			if (error instanceof Error && error.message.startsWith(INVALID_OPS_PREFIX)) {
+				this.recordOperationalEventSafe("rejected_operation", rejectedOperationCode(error));
 				return { refused: true, error: error.message };
 			}
-			if (isDeviceLimitError(error)) return { refused: true, error: DEVICE_LIMIT_ERROR };
+			if (isDeviceLimitError(error)) {
+				this.recordOperationalEventSafe("rejected_operation", "device_limit_exceeded");
+				return { refused: true, error: DEVICE_LIMIT_ERROR };
+			}
 			throw error;
 		}
 
@@ -428,9 +487,13 @@ export class SyncHub extends DurableObject<Env> {
 			});
 		} catch (error) {
 			if (error instanceof Error && error.message.startsWith(INVALID_OPS_PREFIX)) {
+				this.recordOperationalEventSafe("rejected_operation", rejectedOperationCode(error));
 				return { refused: true, error: error.message };
 			}
-			if (isDeviceLimitError(error)) return { refused: true, error: DEVICE_LIMIT_ERROR };
+			if (isDeviceLimitError(error)) {
+				this.recordOperationalEventSafe("rejected_operation", "device_limit_exceeded");
+				return { refused: true, error: DEVICE_LIMIT_ERROR };
+			}
 			throw error;
 		}
 
@@ -578,6 +641,207 @@ export class SyncHub extends DurableObject<Env> {
 			normalizedName,
 			normalizedId,
 		).rowsWritten > 0;
+	}
+
+	// ---------------------------------------------------------------------
+	// Internal restore/replay and payload-free operational health.
+	// ---------------------------------------------------------------------
+
+	getOperationPage(
+		userId: string,
+		expectedEpoch: string,
+		afterSeq: string,
+		limit: number,
+	): OperationPageOutcome {
+		if (typeof userId !== "string" || userId.length === 0 || userId !== userId.trim()) {
+			return operationPageRefusal("user_id must be non-empty and canonical");
+		}
+		let epoch: string;
+		let after: string;
+		try {
+			epoch = assertCanonicalDecimal(expectedEpoch);
+			after = assertCanonicalDecimal(afterSeq);
+		} catch {
+			return operationPageRefusal("coordinates must be canonical uint64 decimals");
+		}
+		if (epoch !== this.meta("epoch")) return operationPageRefusal("epoch_mismatch");
+		if (!Number.isInteger(limit) || limit < 1 || limit > OPERATION_PAGE_MAX_OPS) {
+			return operationPageRefusal(`limit must be 1-${OPERATION_PAGE_MAX_OPS}`);
+		}
+		const head = this.headSeq();
+		if (compareCanonicalDecimals(after, head) > 0) {
+			return operationPageRefusal("after_seq exceeds head_seq");
+		}
+		const rows = this.ctx.storage.sql.exec<{
+			seq: string;
+			body: string;
+			operation_sha256: string;
+		}>(
+			`SELECT seq, body, operation_sha256
+			 FROM canonical_ops
+			 WHERE (LENGTH(seq) > LENGTH(?) OR (LENGTH(seq) = LENGTH(?) AND seq > ?))
+			   AND (LENGTH(seq) < LENGTH(?) OR (LENGTH(seq) = LENGTH(?) AND seq <= ?))
+			 ORDER BY LENGTH(seq), seq LIMIT ?`,
+			after,
+			after,
+			after,
+			head,
+			head,
+			head,
+			limit,
+		).toArray();
+
+		const ops: OperationPage["ops"] = [];
+		let through = after;
+		for (const row of rows) {
+			if (through === head) break;
+			const expected = incrementCanonicalDecimal(through);
+			if (String(row.seq) !== expected) return operationPageRefusal("log_gap");
+			const candidateThrough = String(row.seq);
+			const wireOp = operationPageWireOp(row);
+			const candidate: OperationPage = {
+				protocol_version: OPERATION_PAGE_PROTOCOL_VERSION,
+				user_id: userId,
+				epoch,
+				after_seq: after,
+				through_seq: candidateThrough,
+				head_seq: head,
+				has_more: compareCanonicalDecimals(candidateThrough, head) < 0,
+				ops: [...ops, wireOp],
+			};
+			if (operationPageBytes(candidate) > OPERATION_PAGE_MAX_BYTES) {
+				if (ops.length === 0) return operationPageRefusal("one operation exceeds response byte budget");
+				break;
+			}
+			ops.push(wireOp);
+			through = candidateThrough;
+		}
+		if (ops.length === 0 && compareCanonicalDecimals(after, head) < 0) {
+			return operationPageRefusal("log_gap");
+		}
+		return {
+			protocol_version: OPERATION_PAGE_PROTOCOL_VERSION,
+			user_id: userId,
+			epoch,
+			after_seq: after,
+			through_seq: through,
+			head_seq: head,
+			has_more: compareCanonicalDecimals(through, head) < 0,
+			ops,
+		};
+	}
+
+	recordOperationalEvent(
+		kind: OperationalEventKind,
+		code: OperationalEventCode,
+		now = Date.now(),
+	): void {
+		if ((kind !== "rejected_operation" && kind !== "projection_failure") || !isOperationalEventCode(kind, code)) {
+			throw new Error("operational event kind/code is not allowlisted");
+		}
+		assertOperationalTimestamp(now, "operational event clock");
+		this.ctx.storage.transactionSync(() => {
+			this.ctx.storage.sql.exec(
+				`INSERT INTO operational_event_buckets (kind, code, occurred_at_ms, count)
+				 VALUES (?, ?, ?, 1)
+				 ON CONFLICT(kind, code, occurred_at_ms) DO UPDATE SET count = count + 1`,
+				kind,
+				code,
+				now,
+			);
+			this.pruneOperationalEvents(now);
+		});
+	}
+
+	getOperationalHealth(userId: string, windowSeconds: number, now = Date.now()): OperationalHealth {
+		if (typeof userId !== "string" || userId.length === 0 || userId !== userId.trim()) {
+			throw new Error("user_id must be non-empty and canonical");
+		}
+		if (!Number.isInteger(windowSeconds) || windowSeconds < 60 || windowSeconds > OPERATIONAL_HEALTH_MAX_WINDOW_SECONDS) {
+			throw new Error(`window_seconds must be 60-${OPERATIONAL_HEALTH_MAX_WINDOW_SECONDS}`);
+		}
+		assertOperationalTimestamp(now, "operational health clock");
+		const head = this.headSeq();
+		const projected = this.projectedSeq();
+		return {
+			protocol_version: OPERATIONAL_HEALTH_PROTOCOL_VERSION,
+			user_id: userId,
+			generated_at: new Date(now).toISOString(),
+			window_seconds: windowSeconds,
+			epoch: this.meta("epoch"),
+			head_seq: head,
+			projected_seq: projected,
+			projection_lag_ops: decimalLag(head, projected),
+			rejected_operations: this.operationalAggregate("rejected_operation", windowSeconds, now),
+			projection_failures: this.operationalAggregate("projection_failure", windowSeconds, now),
+		};
+	}
+
+	private recordOperationalEventSafe(kind: OperationalEventKind, code: OperationalEventCode): void {
+		try {
+			this.recordOperationalEvent(kind, code);
+		} catch (error) {
+			console.warn("sync-hub operational counter unavailable:", {
+				kind,
+				code,
+				errorName: error instanceof Error ? error.name : "unknown",
+			});
+		}
+	}
+
+	private pruneOperationalEvents(now: number): void {
+		this.ctx.storage.sql.exec(
+			"DELETE FROM operational_event_buckets WHERE occurred_at_ms < ?",
+			now - OPERATIONAL_EVENT_RETENTION_MS,
+		);
+		const count = this.ctx.storage.sql.exec<{ n: number }>(
+			"SELECT COUNT(*) AS n FROM operational_event_buckets",
+		).one().n;
+		if (count <= OPERATIONAL_EVENT_MAX_ROWS) return;
+		this.ctx.storage.sql.exec(
+			`DELETE FROM operational_event_buckets
+			 WHERE rowid IN (
+				SELECT rowid FROM operational_event_buckets
+				ORDER BY occurred_at_ms, kind, code
+				LIMIT ?
+			 )`,
+			count - OPERATIONAL_EVENT_MAX_ROWS,
+		);
+	}
+
+	private operationalAggregate(
+		kind: OperationalEventKind,
+		windowSeconds: number,
+		now: number,
+	): OperationalEventAggregate {
+		const rows = this.ctx.storage.sql.exec<{
+			code: string;
+			count: string;
+			last_at_ms: number;
+		}>(
+			`SELECT code, CAST(SUM(count) AS TEXT) AS count, MAX(occurred_at_ms) AS last_at_ms
+			 FROM operational_event_buckets
+			 WHERE kind = ? AND occurred_at_ms >= ? AND occurred_at_ms <= ?
+			 GROUP BY code ORDER BY code`,
+			kind,
+			now - (windowSeconds * 1_000),
+			now,
+		).toArray();
+		let total = 0n;
+		let lastAt: number | null = null;
+		const byCode: Array<{ code: string; count: string }> = [];
+		for (const row of rows) {
+			if (!isOperationalEventCode(kind, row.code)) continue;
+			const count = BigInt(row.count);
+			total += count;
+			byCode.push({ code: row.code, count: count.toString(10) });
+			if (lastAt === null || row.last_at_ms > lastAt) lastAt = row.last_at_ms;
+		}
+		return {
+			total: total.toString(10),
+			last_at: lastAt === null ? null : new Date(lastAt).toISOString(),
+			by_code: byCode,
+		};
 	}
 
 	// ---------------------------------------------------------------------
