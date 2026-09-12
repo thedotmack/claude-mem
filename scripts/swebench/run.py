@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator
 
-CUSTOM_PROMPT_PREFIX = "use the /make-plan and /do skill to "
+CUSTOM_PROMPT_PREFIX = "/mem-search "
 DEFAULT_MODEL_NAME = "claude-mem"
 DEFAULT_SPLIT = "test"
 # Canonical HF id after the 2025 org rename (the harness default now points at
@@ -120,14 +120,42 @@ def run(cmd: list[str], *, cwd: Path | None = None, timeout: int | None = None,
 
 
 def prepare_repo(instance: Instance, workdir: Path) -> Path:
-    """Clone ``instance.repo`` at ``base_commit`` into ``workdir``."""
+    """Clone ``instance.repo`` at ``base_commit`` into ``workdir``.
+
+    Uses a shallow clone with direct commit fetch to avoid downloading
+    the entire repository history, which is critical for large repos
+    like astropy (>100k commits).
+    """
     repo_dir = workdir / "repo"
     if repo_dir.exists():
         shutil.rmtree(repo_dir)
     clone_url = f"https://github.com/{instance.repo}.git"
-    res = run(["git", "clone", "--quiet", clone_url, str(repo_dir)])
+    # Init bare repo and fetch only the target commit (much faster than full clone)
+    res = run(["git", "init", "--quiet", str(repo_dir)])
     if res.returncode != 0:
-        raise RuntimeError(f"git clone failed for {instance.repo}: {res.stderr}")
+        raise RuntimeError(f"git init failed for {instance.repo}: {res.stderr}")
+    res = run(
+        ["git", "remote", "add", "origin", clone_url],
+        cwd=repo_dir,
+    )
+    if res.returncode != 0:
+        raise RuntimeError(f"git remote add failed for {instance.repo}: {res.stderr}")
+    # Fetch only the specific commit we need (requires server-side allowReachableSHA1InWant,
+    # which GitHub supports). Fall back to full fetch if shallow fetch fails.
+    res = run(
+        ["git", "fetch", "--quiet", "--depth", "1", "origin", instance.base_commit],
+        cwd=repo_dir,
+        timeout=300,
+    )
+    if res.returncode != 0:
+        # Fallback: some commits may not be directly fetchable; do a full fetch
+        res = run(
+            ["git", "fetch", "--quiet", "origin"],
+            cwd=repo_dir,
+            timeout=600,
+        )
+        if res.returncode != 0:
+            raise RuntimeError(f"git fetch failed for {instance.repo}: {res.stderr}")
     res = run(
         ["git", "checkout", "--quiet", instance.base_commit],
         cwd=repo_dir,
