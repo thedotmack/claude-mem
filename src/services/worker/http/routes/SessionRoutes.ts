@@ -10,6 +10,7 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
 import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
+import { CodexProvider } from '../../CodexProvider.js';
 import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
@@ -39,6 +40,7 @@ import {
   recordQuotaExhausted,
   getQuotaCooldown,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  CODEX_SETUP_RECHECK_COOLDOWN_MS,
 } from '../../../../shared/quota-cooldown.js';
 import { isClassified, describeProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
@@ -90,6 +92,7 @@ export class SessionRoutes extends BaseRouteHandler {
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService,
     private completionHandler: SessionCompletionHandler,
+    private codexAgent?: CodexProvider,
   ) {
     super();
   }
@@ -259,7 +262,7 @@ export class SessionRoutes extends BaseRouteHandler {
   private async admitAndStartGenerator(
     session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>,
     sessionDbId: number,
-    selectedProvider: 'claude' | 'gemini' | 'openrouter',
+    selectedProvider: 'claude' | 'gemini' | 'openrouter' | 'codex',
     source: string,
     gatewayProbeClaimId: number | null,
   ): Promise<void> {
@@ -289,22 +292,41 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    await this.applyTierRouting(session);
-    // The claim travels with the run that took it: only that run may release
-    // it, or an earlier generator's exit would clear a later session's probe.
-    await this.startGeneratorWithProvider(
-      session, selectedProvider, source, admission.claimId, gatewayProbeClaimId,
-    );
+    const setupAdmission = selectedProvider === 'codex'
+      ? tryAdmitQuotaProbe('codex-setup', Date.now(), CODEX_SETUP_RECHECK_COOLDOWN_MS)
+      : { admitted: true, claimId: null };
+    if (!setupAdmission.admitted) {
+      releaseQuotaProbe(selectedProvider, admission.claimId);
+      releaseCmemGatewayProbe(gatewayProbeClaimId);
+      logger.warn('SESSION', 'Skipping Codex generator start while the CLI/login setup cooldown is active', {
+        sessionId: sessionDbId, source,
+      });
+      return;
+    }
+    try {
+      await this.applyTierRouting(session);
+      // The claim travels with the run that took it: only that run may release
+      // it, or an earlier generator's exit would clear a later session's probe.
+      await this.startGeneratorWithProvider(
+        session, selectedProvider, source, admission.claimId, gatewayProbeClaimId, setupAdmission.claimId,
+      );
+    } catch (error) {
+      releaseQuotaProbe('codex-setup', setupAdmission.claimId);
+      releaseQuotaProbe(selectedProvider, admission.claimId);
+      releaseCmemGatewayProbe(gatewayProbeClaimId);
+      throw error;
+    }
   }
 
   private async startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'gemini' | 'openrouter',
+    provider: 'claude' | 'gemini' | 'openrouter' | 'codex',
     source: string,
     /** The quota probe this run claimed, or null when it was admitted without one. */
     quotaProbeClaimId: number | null,
     /** The cmem-gateway re-probe this run claimed, or null when it took none. */
     gatewayProbeClaimId: number | null = null,
+    setupProbeClaimId: number | null = null,
   ): Promise<void> {
     if (!session) return;
 
@@ -315,8 +337,9 @@ export class SessionRoutes extends BaseRouteHandler {
       session.abortController = new AbortController();
     }
 
-    const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
-    const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
+    const agent = provider === 'codex' ? this.codexAgent : provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
+    const agentName = provider === 'codex' ? 'Codex' : provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
+    if (!agent) throw new Error('Codex provider is not configured');
 
     const actualQueueDepth = this.sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId);
 
@@ -327,6 +350,8 @@ export class SessionRoutes extends BaseRouteHandler {
     });
 
     session.currentProvider = provider;
+    session.quotaProbeClaimId = quotaProbeClaimId;
+    session.codexSetupProbeClaimId = setupProbeClaimId;
     session.lastGeneratorActivity = Date.now();
     // Providers refine this per-prompt ('init'|'ingest'|'summarize'); this is
     // the fallback when a generator dies before dispatching its first prompt.
@@ -345,6 +370,16 @@ export class SessionRoutes extends BaseRouteHandler {
         }
 
         const errorMsg = error instanceof Error ? error.message : String(error);
+        // Native subscription failures must not discard the batch or fall back.
+        if (provider === 'codex') {
+          if (isClassified(error) && (error.kind === 'unrecoverable' || error.kind === 'auth_invalid')) {
+            recordQuotaExhausted('codex-setup', error.message);
+          }
+          await this.sessionManager.resetProcessingToPending(session.sessionDbId);
+          skipGeneratorExitFinalization = true;
+          session.conversationHistory = [];
+          session.forceInit = true;
+        }
         if (provider === 'claude' && isClassified(error) && error.kind === 'setup_required') {
           skipGeneratorExitFinalization = true;
           recordClaudeCliSetupRequired(error.message);
@@ -451,6 +486,7 @@ export class SessionRoutes extends BaseRouteHandler {
           // This run is over even though it skips finalization, so it must not
           // keep holding the probe.
           releaseQuotaProbe(provider, quotaProbeClaimId);
+          releaseQuotaProbe('codex-setup', setupProbeClaimId);
           releaseCmemGatewayProbe(gatewayProbeClaimId);
           return;
         }
@@ -491,6 +527,7 @@ export class SessionRoutes extends BaseRouteHandler {
         // this covers aborts and crashes, so a claim can never outlive its
         // request and wedge the provider shut.
         releaseQuotaProbe(provider, quotaProbeClaimId);
+        releaseQuotaProbe('codex-setup', setupProbeClaimId);
         releaseCmemGatewayProbe(gatewayProbeClaimId);
 
         await handleGeneratorExit(session, reason, {
