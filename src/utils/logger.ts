@@ -81,6 +81,7 @@ class Logger {
   private useColor: boolean;
   private logFilePath: string | null = null;
   private logFileInitialized: boolean = false;
+  private logFileDate: string | null = null;
 
   constructor() {
     this.useColor = process.stdout.isTTY ?? false;
@@ -88,8 +89,14 @@ class Logger {
   }
 
   private ensureLogFileInitialized(): void {
-    if (this.logFileInitialized) return;
+    // The date is computed BEFORE the latch is consulted, so a long-lived process rolls onto a new
+    // log file at UTC midnight. Latching on the boolean alone freezes logFilePath at the day the
+    // process started, and the daemon then writes entries stamped with today's date into a file
+    // named for a previous day.
+    const date = new Date().toISOString().split('T')[0];
+    if (this.logFileInitialized && this.logFileDate === date) return;
     this.logFileInitialized = true;
+    this.logFileDate = date;
 
     try {
       const logsDir = paths.logsDir();
@@ -98,7 +105,6 @@ class Logger {
         mkdirSync(logsDir, { recursive: true });
       }
 
-      const date = new Date().toISOString().split('T')[0];
       this.logFilePath = join(logsDir, `claude-mem-${date}.log`);
     } catch (error: unknown) {
       console.error('[LOGGER] Failed to initialize log file:', error instanceof Error ? error.message : String(error));
