@@ -230,7 +230,18 @@ export class SessionRoutes extends BaseRouteHandler {
               source,
             });
           } catch (error) {
-            if (this.maybeSelfHealStaleClaudeSpawn(error, source, sessionDbId)) return;
+            if (this.maybeSelfHealStaleClaudeSpawn(error, source, sessionDbId)) {
+              // The self-heal restart can be delayed or fail to hand off, and a
+              // second session hitting the already-triggered flag returns here
+              // while the first restart is still pending — in any of those
+              // windows this worker keeps running. No generator is started to
+              // carry the claim, so release it now like every other early
+              // return in this block; otherwise the gateway probe stays
+              // in-flight and suppresses later gateway checks in a worker that
+              // survived its own restart trigger.
+              releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
+              return;
+            }
             const err = error instanceof Error ? error : new Error(String(error));
             const classified = classifyClaudeError(error);
             if (classified.kind === 'setup_required') {
