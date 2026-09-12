@@ -17,7 +17,7 @@ import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { proTrialLine, proTrialUrl, PLAN_USAGE_GAIN_PERCENT } from '../../shared/pro-promo.js';
+import { proTrialLine, proFallbackLine } from '../../shared/pro-promo.js';
 import {
   hasShownProFallbackNotice,
   isCmemGatewayUrl,
@@ -106,8 +106,9 @@ export const contextHandler: EventHandler = {
       && settings.CLAUDE_MEM_PROVIDER === 'openrouter'
       && isCmemGatewayUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
     if (fallbackActive && !hasShownProFallbackNotice()) {
-      const fallbackNotice = 'Your claude-mem free trial ended — memory now runs on your Anthropic plan.\n'
-        + `Keep it off-plan (up to ${PLAN_USAGE_GAIN_PERCENT}% more usage): ${proTrialUrl('fallback')}`;
+      // Trophy framing, not a paywall (see pro-promo.ts): the trial ran out
+      // because the product got used, fallback already kept memory running.
+      const fallbackNotice = proFallbackLine('session-start');
       additionalContext = additionalContext
         ? `${fallbackNotice}\n\n${additionalContext}`
         : fallbackNotice;

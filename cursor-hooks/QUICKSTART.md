@@ -83,7 +83,7 @@ Restart Cursor to load the hooks.
 - Browse sessions, observations, and summaries
 - Search your project history
 
-✨ **Get up to 100% more usage from your plan — memory runs off-plan, free for 7 days** → https://cmem.ai/pro?from=docs
+✨ **Get up to 100% more usage from your plan — memory runs off-plan, free for 30 days** → https://cmem.ai/pro?from=docs
 
 ### Via MCP Tools (if enabled)
 - claude-mem provides search tools via MCP

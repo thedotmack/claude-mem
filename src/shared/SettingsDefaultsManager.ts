@@ -26,8 +26,9 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORKER_HOST: string;
   CLAUDE_MEM_API_TIMEOUT_MS: string;
   CLAUDE_MEM_SKIP_TOOLS: string;
-  CLAUDE_MEM_PROVIDER: string;  
-  CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  
+  CLAUDE_MEM_PROVIDER: string;
+  CLAUDE_MEM_FALLBACK_PROVIDER: string;
+  CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;
   CLAUDE_MEM_GEMINI_API_KEY: string;
   CLAUDE_MEM_GEMINI_MODEL: string;  
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: string;
@@ -168,6 +169,7 @@ export class SettingsDefaultsManager {
     // installs land here — no delivered key exists headlessly, so the settings
     // default stays 'claude'.
     CLAUDE_MEM_PROVIDER: 'claude',
+    CLAUDE_MEM_FALLBACK_PROVIDER: 'claude',  // Provider dispatch uses while the trial-expiry fallback marker is active: 'claude' | 'gemini' | 'none' (see provider-dispatch.ts)
     CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',  // Default to logged-in Claude SDK auth (not API key)
     CLAUDE_MEM_GEMINI_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',  // Google-maintained alias → current GA Flash model (stays valid for new API keys)
