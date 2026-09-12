@@ -34,8 +34,11 @@ Grok Bot has no session-start, file-read, or tool-use hooks. Claude-mem wires up
 2. **Local worker** stores sessions and serves search (default port `37700 + uid % 100` on `127.0.0.1`).
 3. **Observer (CMEM Pro by default)** — observation extraction runs off-plan through `https://cmem.ai/api/inference/v1` with model `cmem-observer`. Opt in to a **host observer** with `--provider host` (this Grok login over a local OpenAI-compatible loopback, no API key).
 4. **MCP** exposes search to the bot (`search` → `timeline` → `get_observations`).
+5. **Awareness push (pilot)** — after an observation is stored, needle types are appended as one dated fact line into that bot's Grok memory log. The host already re-reads the file from disk.
 
 Do not install Claude CLI for this host. Do not pass an xAI API key. There is no `--provider grok` flag.
+
+Grok Bot does **not** use Claude Code hook stdin, so the `#2188` empty-stdin / `CAPTURE_BROKEN` path does not apply. Capture is the transcript watcher. Each watch now carries `agentId` into ingest so observations stay labeled with the bot they came from.
 
 ## Install
 
@@ -125,6 +128,7 @@ Writes from this host stamp `platformSource=grok-bot`. When reading, do not drop
 2. Memory viewer: open the worker URL printed at install.
 3. Do a small unit of work in Grok Bot, then search. New observations should show `platformSource=grok-bot`.
 4. Default observer: first real observation stores via model `cmem-observer`. Host observer: if the queue sits idle, the reply is probably prose instead of `skip_summary`.
+5. Awareness push pilot (LFG + Orifice): a needle observation (`decision`, `bugfix`, `security_alert`, `sensitive`) should append `- YYYY-MM-DD [awareness] …` to `agents/<agent_id>/memory/log/YYYY-MM.md`. Nothing is written to `profile.md`. Turn off with `CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED=false`.
 
 ## Troubleshooting
 

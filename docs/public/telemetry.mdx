@@ -106,7 +106,7 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `invalid_output_class` | `idle` | Coarse class of an unusable compression output: xml / idle / prose (`xml` = looked like the expected format but failed to parse) — never the output itself |
 | `consecutive_invalid_outputs` | `0` | Legacy unusable-output counter, retained as a scrubbed numeric field |
 | `respawn_triggered` | `false` | Legacy recovery flag for old invalid-output restarts |
-| `abort_reason` | `idle` | Why a compression session was aborted: idle / shutdown / overflow / restart_guard / quota / none — a closed enum |
+| `abort_reason` | `idle` | Why a compression session was aborted: idle / shutdown / overflow / restart_guard / quota / provider_switch / none — a closed enum |
 | `previous_shutdown` | `clean` | How the previous worker run ended, detected at startup: crash / clean / unknown |
 | `previous_uptime_seconds` | `86400` | How long the previous worker run was up, in whole seconds |
 | `uptime_seconds` | `3600` | How long the worker was up when it stopped, in whole seconds |
@@ -121,6 +121,9 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `error_mode` | `worker_unavailable` | Coarse hook failure mode: worker_unavailable / blocking_error — never an error message |
 | `consecutive_failures` | `3` | How many hook failures occurred in a row (the fail-loud counter) |
 | `threshold_tripped` | `true` | Whether the consecutive-failure count reached the fail-loud threshold |
+| `skill_id` | `mem-search` | Which bundled skill was invoked — a closed enum of `plugin/skills/` directory names, or `other`. Third-party skill names are never sent. |
+| `skill_source` | `first_party` | `first_party` (a shipped `plugin/skills/` skill) or `third_party` (collapsed to `skill_id: other`) |
+| `skill_trigger` | `tool` | How the skill was invoked: `tool` (host Skill tool) or `prompt` (typed `/skill` at session-init). Never the prompt body. |
 
 One value is derived server-side rather than sent by the client: PostHog resolves the request's sender IP to a **coarse location** (country / region / city) at ingestion, before the IP itself is discarded. The client never attaches an IP to any event, and the raw IP is never stored — see [What is NEVER collected](#what-is-never-collected).
 
@@ -140,6 +143,7 @@ One value is derived server-side rather than sent by the client: PostHog resolve
 | `observer_turn_rollup` | Emitted **once per session, at session end** — a per-session rollup that aggregates every compression in that session (stored observations, invalid-output drops, failures, aborts) instead of one event per turn | `rollup_reason` (session_end / worker_shutdown / safety_flush), `window_seq`, aggregated `outcomes_*` counts, `total_tokens_input`, `total_tokens_output`, `total_cost_usd`, `avg_duration_ms`, `avg_compression_ms`, `top_model`, `observed_model`, `observed_billing`, `observations_created` (sum of observations generated in the session — pairs with `total_cost_usd` to derive cost per observation), summed `obs_type_*` buckets, `window_start_ts`, plus the per-turn fields it summarizes (`provider`, `ide`) |
 | `context_injected_rollup` | A 5-minute time-window rollup of context injections (stored memory injected into new sessions) | aggregated `outcomes_ok` / `outcomes_error` counts, `count`, `total_tokens`, `avg_tokens`, `total_observations_injected` (sum of observations served from cache into prompts), `total_tokens_saved_vs_naive`, `window_start_ts` |
 | `search_performed` | A memory search runs (never the query text) | `endpoint`, `outcome`, `duration_ms`, `result_count`, `search_strategy`, `chroma_available`, `fallback_reason` |
+| `skill_invoked` | A bundled skill is invoked — the host Skill tool loads its instructions, or the user types a first-party `/skill` at session-init. **Not** work completion; no `duration_ms` / outcome. Worker path only. Unknown `/foo` emits nothing. | `skill_id` (closed enum + `other`), `skill_source` (`first_party` / `third_party`), `skill_trigger` (`tool` / `prompt`), `ide` |
 | `worker_stopped` | The background worker shuts down gracefully | `uptime_seconds`, `shutdown_reason` (stop / restart / signal) |
 | `usage_limit_hit` | The Claude subscription behind the observer reports a window as `rejected` — since the observer shares the observed session's account, this is when the user's own Claude Code session ran out of usage. Emitted once per exhausted window (deduped on the window's reset time; a worker restart while still capped re-emits once). Only fires when the observer runs on Claude with a subscription login — API-key, Gemini, and OpenRouter observers never see it | `limit_window` (five_hour / seven_day / seven_day_opus / seven_day_sonnet / overage / unknown), `overage_status` (allowed / allowed_warning / rejected / unknown), `is_using_overage`, `resets_in_minutes`, `ide`, `provider`, `observed_model`, `observed_billing` |
 | `hook_failed` | A claude-mem hook fails hard — the worker is unreachable past the fail-loud threshold, or a blocking error occurs | `hook_type`, `error_mode`, `consecutive_failures`, `threshold_tripped` |
@@ -207,6 +211,8 @@ A few things worth knowing:
 | Hardware or machine identifiers | Not even hashed MAC addresses or hostnames |
 | Environment variable values | Ever |
 | Emails, usernames, or any PII | Ever — emails, tokens, keys, and credentials are redacted out of error text too |
+| Skill arguments, skill markdown, or prompt bodies | `skill_invoked` sends only a closed `skill_id` / `skill_source` / `skill_trigger`. `tool_input.args` and the rest of a slash prompt never leave the machine |
+| Third-party skill names | Collapsed to `skill_id: other` + `skill_source: third_party`. Unknown `/foo` slash tokens emit no event at all |
 
 **One honest exception: error messages.** Since the addition of [error tracking](#error-tracking), redacted error **messages and stack traces** ARE collected (as `$exception` events) — that is a deliberate change from the previous coarse-category-only posture, and it is consent-gated with its own [kill-switch](#how-to-opt-out-four-ways). Raw paths, prompts, project names, source code, and model output are still **never** collected — they are stripped from the error text before it leaves your machine.
 

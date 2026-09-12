@@ -34,6 +34,9 @@ const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
 const CHROMA_EXIT_OBSERVE_TIMEOUT_MS = 1_000;
 const RECONNECT_BACKOFF_MS = 10_000;
 const CHROMA_WRITER_LOCK_FILENAME = '.claude-mem-chroma-writer.lock';
+// An unparseable lock (typically a 0-byte file left by a crash mid-write) has no
+// owner to probe; once it is this old no concurrent writer is still filling it in.
+const CHROMA_WRITER_LOCK_UNREADABLE_GRACE_MS = 10_000;
 const CHROMA_SUPERVISOR_ID = 'chroma-mcp';
 const CHROMA_OUTPUT_TAIL_MAX_CHARS = 2048;
 const DEFAULT_MAX_PENDING_MUTATIONS = 5_000;
@@ -109,6 +112,11 @@ interface ChromaWriterLockPayload {
   startToken?: string | null;
 }
 
+// Keep one writer identity for the lifetime of this process. Multiple manager
+// instances can be created during reconnects/tests, and they must be able to
+// re-acquire a lock that this process already owns.
+const CHROMA_WRITER_OWNER_ID = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+
 export class ChromaMcpManager {
   private static instance: ChromaMcpManager | null = null;
   private client: Client | null = null;
@@ -121,7 +129,7 @@ export class ChromaMcpManager {
   private activePrewarmTracked: TrackedChild | null = null;
   private connectionGeneration: number = 0;
   private intentionallyClosingTransports = new WeakSet<object>();
-  private readonly chromaWriterOwnerId = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  private readonly chromaWriterOwnerId = CHROMA_WRITER_OWNER_ID;
   private chromaWriterLock: { path: string; dataDir: string; ownerId: string } | null = null;
   private unexpectedCloseCleanup: Promise<void> | null = null;
   private mutationTail: Promise<void> = Promise.resolve();
@@ -173,7 +181,13 @@ export class ChromaMcpManager {
         throw error;
       }
       this.lastConnectionFailureTimestamp = Date.now();
-      if (error instanceof Error) {
+      if (error instanceof ChromaUnavailableError) {
+        // Chroma being unavailable is transient and already handled downstream
+        // (reconnect backoff + skip-the-write). Log at warn so it does not route
+        // through the error sink (captureException) and flood error tracking on
+        // every reconnect.
+        logger.warn('CHROMA_MCP', 'Connection attempt failed; Chroma unavailable', { error: error.message });
+      } else if (error instanceof Error) {
         logger.error('CHROMA_MCP', 'Connection attempt failed', {}, error);
       } else {
         logger.error('CHROMA_MCP', 'Connection attempt failed with non-Error value', { error: String(error) });
@@ -288,7 +302,16 @@ export class ChromaMcpManager {
       // Tree-kill (not just transport.close) so failed-connect descendants
       // can't survive on Linux (#2313).
       await this.disposeCurrentSubprocess();
-      throw connectionError;
+      // A failed MCP handshake means Chroma is unavailable, the same as a
+      // missing uvx, a failed prewarm, or a lost writer lock. The SDK sends
+      // `notifications/initialized` right after `initialize`; when the
+      // subprocess dies mid-handshake that send throws a bare
+      // `Error: Not connected`. Classify every connect failure as
+      // ChromaUnavailableError so callers take the reconnect-backoff and
+      // skip-the-write path instead of surfacing a raw error to error tracking.
+      const unavailableMessage = `chroma-mcp connection failed: ${connectionError instanceof Error ? connectionError.message : String(connectionError)}`;
+      recordChromaVectorSearchUnavailable(unavailableMessage);
+      throw new ChromaUnavailableError(unavailableMessage, connectionError instanceof Error ? connectionError : undefined);
     }
     clearTimeout(timeoutId!);
 
@@ -464,6 +487,20 @@ export class ChromaMcpManager {
 
         const existing = ChromaMcpManager.readChromaWriterLock(lockPath);
         if (!existing) {
+          // Without a readable owner the liveness reaper below can never run,
+          // so vector sync would stay dead until someone deletes the file (#3916).
+          // Treat an unreadable lock that is past the write grace period as stale.
+          if (ChromaMcpManager.isChromaWriterLockAbandoned(lockPath)) {
+            try {
+              fs.rmSync(lockPath, { force: true });
+              logger.info('CHROMA_MCP', 'Removed unreadable Chroma writer lock', { lockPath });
+              continue;
+            } catch (removeError) {
+              const message = `Unable to remove unreadable Chroma writer lock at ${lockPath}: ${removeError instanceof Error ? removeError.message : String(removeError)}`;
+              recordChromaVectorSearchUnavailable(message);
+              throw new ChromaUnavailableError(message, removeError instanceof Error ? removeError : undefined);
+            }
+          }
           const message = `Chroma writer lock at ${lockPath} is unreadable; refusing to start a second writer`;
           recordChromaVectorSearchUnavailable(message);
           throw new ChromaUnavailableError(message);
@@ -556,6 +593,15 @@ export class ChromaMcpManager {
       };
     } catch {
       return null;
+    }
+  }
+
+  private static isChromaWriterLockAbandoned(lockPath: string): boolean {
+    try {
+      return Date.now() - fs.statSync(lockPath).mtimeMs >= CHROMA_WRITER_LOCK_UNREADABLE_GRACE_MS;
+    } catch {
+      // Vanished between the failed create and the stat: nothing left to reap.
+      return true;
     }
   }
 
@@ -1462,6 +1508,13 @@ export class ChromaMcpManager {
     // Disable Chroma's anonymous telemetry — it issues background HTTP from
     // the embedding subprocess on every collection touch.
     if (!baseEnv.ANONYMIZED_TELEMETRY) baseEnv.ANONYMIZED_TELEMETRY = 'false';
+
+    // Force UTF-8 on the Python child's stdio. Without this, a non-UTF-8 ANSI
+    // code page (e.g. cp936) makes Python encode JSON-RPC stdout in the locale
+    // encoding, which Node then decodes as UTF-8 — the bad bytes become U+FFFD
+    // and JSON.parse throws. These vars govern both directions of the pipe.
+    baseEnv.PYTHONUTF8 = '1';
+    baseEnv.PYTHONIOENCODING = 'utf-8';
     return baseEnv;
   }
 

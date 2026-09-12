@@ -4,6 +4,7 @@ import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
 import * as realProcessManager from '../../src/services/infrastructure/ProcessManager.js';
 import * as realHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
 import * as realWorkerSpawnGate from '../../src/shared/worker-spawn-gate.js';
+import * as realPortReclaim from '../../src/shared/port-reclaim.js';
 
 /**
  * The whole suite runs in one bun process and `mock.module` mutates the shared
@@ -17,6 +18,7 @@ import * as realWorkerSpawnGate from '../../src/shared/worker-spawn-gate.js';
 const realProcessManagerSnapshot = { ...realProcessManager };
 const realHealthMonitorSnapshot = { ...realHealthMonitor };
 const realWorkerSpawnGateSnapshot = { ...realWorkerSpawnGate };
+const realPortReclaimSnapshot = { ...realPortReclaim };
 
 const processManager = {
   cleanStalePidFile: mock(() => 'dead' as 'alive' | 'dead'),
@@ -36,14 +38,29 @@ const spawnGate = {
   releaseSpawnLock: mock(() => {}),
 };
 
+// port-reclaim must be stubbed like the rest of the module graph: its
+// production implementation shells out to netstat/Get-CimInstance/taskkill,
+// which would run for real inside the "port in use" branch of every test
+// below. The ghost-recovery behavior itself has dedicated unit coverage in
+// tests/shared/port-reclaim.test.ts and a Windows integration gate.
+const portReclaim = {
+  reclaimGhostListeningPort: mock(async () => ({
+    reclaimed: false,
+    reason: 'not-supported',
+    killedPids: [] as number[],
+  })),
+};
+
 mock.module('../../src/services/infrastructure/ProcessManager.js', () => processManager);
 mock.module('../../src/services/infrastructure/HealthMonitor.js', () => healthMonitor);
 mock.module('../../src/shared/worker-spawn-gate.js', () => spawnGate);
+mock.module('../../src/shared/port-reclaim.js', () => portReclaim);
 
 afterAll(() => {
   mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManagerSnapshot);
   mock.module('../../src/services/infrastructure/HealthMonitor.js', () => realHealthMonitorSnapshot);
   mock.module('../../src/shared/worker-spawn-gate.js', () => realWorkerSpawnGateSnapshot);
+  mock.module('../../src/shared/port-reclaim.js', () => realPortReclaimSnapshot);
 });
 
 const { ensureWorkerStarted } = await import('../../src/services/worker-spawner.js');
@@ -189,6 +206,40 @@ describe('ensureWorkerStarted startup readiness', () => {
     expect(healthMonitor.waitForHealth).toHaveBeenNthCalledWith(1, 39006, 1000);
     expect(healthMonitor.waitForHealth).toHaveBeenNthCalledWith(2, 39006, HOOK_TIMEOUTS.PORT_IN_USE_WAIT);
     expect(healthMonitor.waitForReadiness).not.toHaveBeenCalled();
+    expect(processManager.spawnDaemon).not.toHaveBeenCalled();
+  });
+
+  it('starts a worker after reclaiming a ghost listener from a dead worker', async () => {
+    resetMocks();
+    healthMonitor.isPortInUse.mockResolvedValue(true);
+    healthMonitor.waitForReadiness.mockResolvedValue(true);
+    portReclaim.reclaimGhostListeningPort.mockResolvedValue({
+      reclaimed: true,
+      killedPids: [3001, 3002],
+    });
+
+    const result = await ensureWorkerStarted(39008, import.meta.filename);
+
+    // The ghost is gone, so the launcher must NOT give up: it proceeds to the
+    // spawn path like a free port would.
+    expect(result).toBe('ready');
+    expect(portReclaim.reclaimGhostListeningPort).toHaveBeenCalledWith(39008);
+    expect(processManager.spawnDaemon).toHaveBeenCalledTimes(1);
+    expect(healthMonitor.waitForReadiness).toHaveBeenCalledWith(39008, HOOK_TIMEOUTS.READINESS_WAIT);
+  });
+
+  it('stays dead when the ghost port cannot be reclaimed', async () => {
+    resetMocks();
+    healthMonitor.isPortInUse.mockResolvedValue(true);
+    portReclaim.reclaimGhostListeningPort.mockResolvedValue({
+      reclaimed: false,
+      reason: 'owner-alive',
+      killedPids: [],
+    });
+
+    const result = await ensureWorkerStarted(39009, import.meta.filename);
+
+    expect(result).toBe('dead');
     expect(processManager.spawnDaemon).not.toHaveBeenCalled();
   });
 

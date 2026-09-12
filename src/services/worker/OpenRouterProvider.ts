@@ -2,6 +2,7 @@
 import { getCredential } from '../../shared/EnvManager.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { openRouterAttributionHeaders, OPENROUTER_APP_TITLE } from '../../shared/openrouter-attribution.js';
+import { fetchWithOpenRouterTokenCompatibility } from '../../shared/openrouter-token-compatibility.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { clearProFallbackOnGatewaySuccess, isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
@@ -175,6 +176,7 @@ export function classifyOpenRouterError(input: {
 }
 
 const CHARS_PER_TOKEN_ESTIMATE = 4;
+const OPENROUTER_EMPTY_HISTORY_FALLBACK = '(context unavailable)';
 
 interface OpenAIMessage {
   role: 'user' | 'assistant' | 'system';
@@ -188,6 +190,7 @@ interface OpenRouterResponse {
     message?: {
       role?: string;
       content?: string;
+      reasoning_content?: string;
     };
     finish_reason?: string;
   }>;
@@ -210,7 +213,14 @@ interface OpenRouterResponse {
 
 export interface OpenRouterConfig {
   apiKey: string;
+  /** First entry of the configured list; the one named in logs and sessions. */
   model: string;
+  /**
+   * The rest of the configured list, in priority order, sent as OpenRouter's
+   * native `models` fallback array. Empty for the ordinary single-model
+   * configuration, which is every install that has not opted in.
+   */
+  fallbackModels: string[];
   apiUrl: string;
   siteUrl?: string;
   appName?: string;
@@ -220,12 +230,89 @@ function hasProcessEnvOverride(key: string): boolean {
   return Object.prototype.hasOwnProperty.call(process.env, key);
 }
 
-function normalizeOpenRouterModel(rawModel: unknown): string {
-  return typeof rawModel === 'string' && rawModel.trim()
-    ? rawModel
-    : Array.isArray(rawModel) && rawModel.length > 0
-      ? rawModel.map(String).join(',')
-      : SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
+/**
+ * Split CLAUDE_MEM_OPENROUTER_MODEL into a primary model and its fallbacks.
+ *
+ * The setting has always accepted an array, and the array has always been
+ * comma-joined into a single `model` string that OpenRouter rejects outright —
+ * #3829 item 3. No model id contains a comma, so the joined form is never
+ * anything a user wanted; a comma- or whitespace-separated STRING is the same
+ * mistake typed a different way, and is split here too.
+ *
+ * The first entry becomes `model`, which keeps every single-model install
+ * byte-identical, and the rest become OpenRouter's native `models` fallback
+ * array. Blanks and repeats are dropped: a repeat would spend a fallback slot
+ * re-trying the model that just failed.
+ */
+export function normalizeOpenRouterModel(rawModel: unknown): { model: string; fallbackModels: string[] } {
+  const parts = (Array.isArray(rawModel) ? rawModel : [rawModel])
+    // Strings only: a non-string scalar resolved to the default before this
+    // change, and no model id is a bare number.
+    .filter((entry): entry is string => typeof entry === 'string')
+    .flatMap(entry => entry.split(/[\s,]+/))
+    .map(entry => entry.trim())
+    .filter(entry => entry.length > 0);
+
+  const unique = [...new Set(parts)];
+  if (unique.length === 0) {
+    return {
+      model: SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL,
+      fallbackModels: [],
+    };
+  }
+  return { model: unique[0], fallbackModels: unique.slice(1) };
+}
+
+/**
+ * True only when the URL hostname is exactly `openrouter.ai`.
+ *
+ * Path text and lookalike hosts must not inherit OpenRouter-only body fields
+ * (`models`, `usage`) — strict OpenAI-compatible gateways 400 on those.
+ * Malformed URLs fail closed (treat as non-OpenRouter). Shared by the request
+ * body and `session.endpointClass` so the two sites cannot drift.
+ */
+export function isOpenRouterApiUrl(apiUrl: string): boolean {
+  try {
+    return new URL(apiUrl).hostname.toLowerCase() === 'openrouter.ai';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build the chat-completions request body.
+ *
+ * Exported so the body shape is testable without a network round trip, which
+ * matters here: in OpenRouter's documented fallback shape `models` REPLACES
+ * `model` rather than accompanying it, and that is not a thing to get wrong
+ * silently.
+ *
+ * `models` is only sent to openrouter.ai. A custom gateway reached through
+ * CLAUDE_MEM_OPENROUTER_BASE_URL speaks plain OpenAI, where an unknown body
+ * field is a 400 — the same reason `usage` is already gated. Such a gateway
+ * gets the first model, still strictly better than today's rejected
+ * comma-joined string.
+ */
+export function buildOpenRouterRequestBody(input: {
+  model: string;
+  fallbackModels: string[];
+  messages: OpenAIMessage[];
+  apiUrl: string;
+}): Record<string, unknown> {
+  const isOpenRouter = isOpenRouterApiUrl(input.apiUrl);
+  const useFallbacks = isOpenRouter && input.fallbackModels.length > 0;
+  return {
+    ...(useFallbacks
+      ? { models: [input.model, ...input.fallbackModels] }
+      : { model: input.model }),
+    messages: input.messages,
+    temperature: 0.3,  // Lower temperature for structured extraction
+    max_tokens: 4096,
+    // Ask openrouter.ai for usage accounting (token counts + cost).
+    // Only sent to openrouter.ai — strict custom gateways may reject
+    // unknown body fields.
+    ...(isOpenRouter ? { usage: { include: true } } : {}),
+  };
 }
 
 /**
@@ -289,13 +376,13 @@ export function resolveOpenRouterConfig(
     // operator supplied a model override as part of the new tuple.
     rawModel = SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
   }
-  const model = normalizeOpenRouterModel(rawModel);
+  const { model, fallbackModels } = normalizeOpenRouterModel(rawModel);
 
   const apiUrl = resolveOpenRouterChatCompletionsUrl(baseUrl);
   const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
   const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || OPENROUTER_APP_TITLE;
 
-  return { apiKey, model, apiUrl, siteUrl, appName };
+  return { apiKey, model, fallbackModels, apiUrl, siteUrl, appName };
 }
 
 export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfig> {
@@ -318,7 +405,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   protected prepareSessionExtras(session: ActiveSession, config: OpenRouterConfig): void {
     // openrouter.ai responses carry real usage/cost; custom OpenAI-compatible
     // gateways often fabricate or omit usage — let telemetry segment the two.
-    session.endpointClass = config.apiUrl.includes('openrouter.ai') ? 'openrouter' : 'custom';
+    session.endpointClass = isOpenRouterApiUrl(config.apiUrl) ? 'openrouter' : 'custom';
   }
 
   protected estimateTokens(text: string): number {
@@ -342,14 +429,46 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   }
 
   private conversationToOpenAIMessages(history: ConversationMessage[]): OpenAIMessage[] {
-    return history.map(msg => ({
-      role: msg.role === 'assistant' ? 'assistant' : 'user',
-      content: msg.content
-    }));
+    let newestNonEmptyContent: string | null = null;
+    for (const msg of history) {
+      const trimmed = msg.content.trim();
+      if (trimmed.length > 0) {
+        newestNonEmptyContent = trimmed;
+      }
+    }
+
+    const messages: OpenAIMessage[] = [];
+    for (const msg of history) {
+      const trimmed = msg.content.trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      const role = msg.role === 'assistant' ? 'assistant' : 'user';
+      if (messages.length === 0 && role === 'assistant') {
+        continue;
+      }
+
+      const previous = messages[messages.length - 1];
+      if (previous?.role === role) {
+        previous.content = `${previous.content}\n\n${msg.content}`;
+      } else {
+        messages.push({ role, content: msg.content });
+      }
+    }
+
+    if (messages.length === 0) {
+      return [{
+        role: 'user',
+        content: newestNonEmptyContent ?? OPENROUTER_EMPTY_HISTORY_FALLBACK,
+      }];
+    }
+
+    return messages;
   }
 
-  protected async query(history: ConversationMessage[], config: OpenRouterConfig): Promise<ProviderQueryResult> {
-    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName);
+  protected async query(history: ConversationMessage[], config: OpenRouterConfig, signal?: AbortSignal): Promise<ProviderQueryResult> {
+    return this.queryOpenRouterMultiTurn(history, config.apiKey, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName, signal);
   }
 
   /** POST the chat-completions request. Extracted so the retry try block stays narrow. */
@@ -357,13 +476,16 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     apiUrl: string,
     apiKey: string,
     model: string,
+    fallbackModels: string[],
     messages: OpenAIMessage[],
     siteUrl: string | undefined,
     appName: string | undefined,
     priorRequestId: string | null,
     attemptSignal: AbortSignal
   ): Promise<Response> {
-    return fetch(apiUrl, {
+    const body = buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl });
+    const maxOutputTokens = typeof body.max_tokens === 'number' ? body.max_tokens : 4096;
+    return fetchWithOpenRouterTokenCompatibility(fetch, apiUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -371,31 +493,23 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         'Content-Type': 'application/json',
         ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
       },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature: 0.3,  // Lower temperature for structured extraction
-        max_tokens: 4096,
-        // Ask openrouter.ai for usage accounting (token counts + cost).
-        // Only sent to openrouter.ai — strict custom gateways may reject
-        // unknown body fields.
-        ...(apiUrl.includes('openrouter.ai') ? { usage: { include: true } } : {}),
-      }),
       signal: attemptSignal,
-    });
+    }, body, maxOutputTokens);
   }
 
   private async queryOpenRouterMultiTurn(
     history: ConversationMessage[],
     apiKey: string,
     model: string,
+    fallbackModels: string[],
     apiUrl: string,
     siteUrl?: string,
-    appName?: string
+    appName?: string,
+    signal?: AbortSignal
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
-    const estimatedTokens = this.estimateTokens(history.map(m => m.content).join(''));
+    const estimatedTokens = this.estimateTokens(messages.map(m => m.content).join(''));
 
     logger.debug('SDK', `Querying OpenRouter multi-turn (${model})`, {
       turns: history.length,
@@ -408,7 +522,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await this.fetchChatCompletion(apiUrl, apiKey, model, messages, siteUrl, appName, priorRequestId, attemptSignal);
+        response = await this.fetchChatCompletion(apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, priorRequestId, attemptSignal);
       } catch (networkError: unknown) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         throw classifyOpenRouterError({ cause: err });
@@ -446,19 +560,27 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       }
 
       return responseData;
-    }, { label: `OpenRouter ${model}` });
+    }, { label: `OpenRouter ${model}`, abortSignal: signal, ...(signal ? { maxRetries: 0 } : {}) });
 
     // A successful cmem-gateway response proves the delivered key is funded
     // again (resubscribed) — clear the trial-expiry fallback marker so
     // dispatch returns to the gateway. No-op for every other endpoint.
     clearProFallbackOnGatewaySuccess(apiUrl);
 
-    if (!data.choices?.[0]?.message?.content) {
+    const choice = data.choices?.[0];
+    const message = choice?.message;
+    if (!message || typeof message.content !== 'string') {
       logger.error('SDK', 'Empty response from OpenRouter');
       return { content: '' };
     }
 
-    const content = data.choices[0].message.content;
+    const content = message.content;
+    if (content.length === 0) {
+      logger.debug('SDK', 'OpenRouter returned an empty message', {
+        finishReason: choice.finish_reason,
+        hasReasoningContent: Boolean(message.reasoning_content),
+      });
+    }
     const tokensUsed = data.usage?.total_tokens;
     const realInputTokens = data.usage?.prompt_tokens;
     const realOutputTokens = data.usage?.completion_tokens;

@@ -290,6 +290,32 @@ describe('ResponseProcessor', () => {
       expect(observations[1].type).toBe('bugfix');
     });
 
+    it('stores a closed observation block with freeform prose through the success path', async () => {
+      const session = createMockSession();
+      const responseText = `<observation>
+        <type>discovery</type>
+        Refactored transformer_markdown.py helpers and narrowed the shared formatting path.
+        The follow-up kept the line-range handling aligned with the new helpers.
+      </observation>`;
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+      const [, , observations] = mockStoreObservations.mock.calls[0];
+      expect(observations).toHaveLength(1);
+      expect(observations[0].title).toBe('Refactored transformer_markdown.py helpers and narrowed the shared formatting path.');
+      expect(observations[0].narrative).toContain('line-range handling aligned with the new helpers');
+    });
+
     it('stores observations against the dispatched prompt context when the live session has already advanced', async () => {
       const session = createMockSession({
         project: 'repo-b/worktree',
@@ -565,7 +591,133 @@ describe('ResponseProcessor', () => {
       expect(session.earliestPendingTimestamp).toBeNull();
       expect(mockStoreObservations).not.toHaveBeenCalled();
     });
+
+    // #3752: when the spawned CLI cannot reach the provider it returns its own
+    // error string rather than crashing, so the text lands in this same branch.
+    // Confirming it drops the claimed batch permanently — the reporter lost 882
+    // observations over six days that way.
+    it('requeues the claimed batch when the response is the child transport failure', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+
+      const session = createMockSession();
+      const responseText =
+        'API Error: Connection refused - a firewall or proxy may be blocking it (ConnectionRefused)';
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      // The whole point: the batch must NOT be confirmed away.
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+
+    it('pauses the generator with a preserving abort reason on transport failure', async () => {
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages: mock(() => Promise.resolve(0)),
+        resetProcessingToPending: mock(() => Promise.resolve(0)),
+      } as unknown as SessionManager;
+
+      const session = createMockSession();
+
+      await processAgentResponse(
+        'getaddrinfo ENOTFOUND api.anthropic.com',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      // handleGeneratorExit keys off the category before the colon; 'transport'
+      // is what keeps it from finalizing the session and undoing the requeue.
+      expect(session.abortReason).toBe('transport:observer_text');
+      expect(session.abortController.signal.aborted).toBe(true);
+      expect(logger.error).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/could not reach the provider/),
+        expect.objectContaining({ sessionId: 1, outputClass: 'transport' })
+      );
+    });
+
+    it('still confirms ordinary prose so low-signal batches do not loop', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+
+      const session = createMockSession();
+
+      await processAgentResponse(
+        'Traced the flake to a proxy that drops idle sockets; the retry now handles the connection reset.',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(resetProcessingToPending).not.toHaveBeenCalled();
+    });
+
+    // The same guarantee one punctuation mark over: a completed observation
+    // that opens with an envelope AND a colon must still be confirmed, or the
+    // session pauses and retries work that already finished.
+    it('still confirms a punctuated envelope narrative', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+
+      const session = createMockSession();
+
+      await processAgentResponse(
+        'Network error: recovery is already covered by the retry wrapper',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(resetProcessingToPending).not.toHaveBeenCalled();
+      expect(session.abortController.signal.aborted).toBe(false);
+    });
   });
+
 
   describe('context-window overflow recovery (#3800)', () => {
     function overflowSessionManager() {
@@ -1102,6 +1254,36 @@ describe('ResponseProcessor', () => {
     });
   });
 
+  describe('signed-out CLI prose preserves the batch (#3606)', () => {
+    // End to end over the branch the matcher gates: the CLI's signed-out
+    // wording must reach the auth branch (reset to pending + abort) instead of
+    // the prose fallback, which confirms the claim and loses the work.
+    it('resets the batch to pending instead of confirming it', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(1));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+      const session = createMockSession();
+
+      await processAgentResponse(
+        'Not logged in · Please run /login',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(session.abortReason).toBe('auth:observer_text');
+    });
+  });
   describe('lastSummaryStored tracking (#1633)', () => {
     it('should set lastSummaryStored=true when storage returns a summaryId', async () => {
       mockStoreObservations.mockImplementation(() => ({

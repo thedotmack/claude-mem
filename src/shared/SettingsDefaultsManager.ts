@@ -40,6 +40,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_LOG_LEVEL: string;
   CLAUDE_MEM_PYTHON_VERSION: string;
   CLAUDE_CODE_PATH: string;
+  /** #2753 — override the effective CLAUDE_CONFIG_DIR for the keychain lookup + SDK subprocess env only. Empty = fall through to process.env.CLAUDE_CONFIG_DIR / default. Never touches the worker's own MARKETPLACE_ROOT/paths. */
+  CLAUDE_MEM_CLAUDE_CONFIG_DIR: string;
   CLAUDE_MEM_MODE: string;
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: string;
   CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: string;
@@ -90,6 +92,16 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: string;
   CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: string;
   CLAUDE_MEM_CLOUD_SYNC_WS: string;    // advisory WebSocket speed layer (Phase 4) — 'false' = HTTP polling only
+  // Content flush knobs. 200-op pages + 30s timeout hit hub projection_busy
+  // (#3618). Defaults: 40 ops / 90s (hub projection lease).
+  CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: string;
+  CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: string;
+  // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
+  // mounted and the worker behaves exactly as before. Set (with a non-loopback
+  // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
+  // GET /api/observations to holders of this secret. Mint with:
+  //   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+  CLAUDE_MEM_TV_TOKEN: string;
   // claude-mem sign-in funnel state, written by the installer's browser-login
   // step (install.ts promptBrowserLogin/completeTrialPairing). Declared here so
   // loadFromFile round-trips them instead of dropping unknown keys.
@@ -111,6 +123,17 @@ export interface SettingsDefaults {
   CLAUDE_MEM_TELEGRAM_CHAT_ID: string;
   CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: string;
   CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS: string;
+  CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: string;
+  CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: string;
+  CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: string;
+  CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_CONCEPTS: string;
+  // CCS Align (Worker Watch seat, Phase 0 breathing slice). Seat-owned middle
+  // cache under ~/.claude-mem/ccs-align/<viewerId>/; pull-only, never a second
+  // writer on LFG/Orifice logs. See plans/2026-09-09-ccs-align.md.
+  CLAUDE_MEM_CCS_ALIGN_ENABLED: string;
+  CLAUDE_MEM_CCS_ALIGN_VIEWER_IDS: string;
+  CLAUDE_MEM_CCS_ALIGN_TRIGGER_TYPES: string;
+  CLAUDE_MEM_CCS_ALIGN_PATCH_SHADOWS: string;
   CLAUDE_MEM_QUEUE_ENGINE: string;
   CLAUDE_MEM_REDIS_URL: string;
   CLAUDE_MEM_REDIS_HOST: string;
@@ -156,6 +179,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',
     CLAUDE_CODE_PATH: '', // Empty means auto-detect via 'which claude'
+    CLAUDE_MEM_CLAUDE_CONFIG_DIR: '', // #2753 — override CLAUDE_CONFIG_DIR for the keychain lookup + SDK subprocess only; empty = fall through to process.env.CLAUDE_CONFIG_DIR/default
     CLAUDE_MEM_MODE: 'code', // Default mode profile
     CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'false',
     CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'false',
@@ -203,6 +227,14 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',      // Minted at first CloudSync start, then persisted back here
     CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: hostname(),  // Human-readable label for the cmem.ai Devices panel
     CLAUDE_MEM_CLOUD_SYNC_WS: 'true',  // Advisory WebSocket speed layer (plan Phase 4). 'false' = HTTP polling only — sync stays fully correct, just poll-latency (prime directive #2)
+    CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: '40',  // Drain page size; 200-op content pushes timed out under hub projection_busy
+    CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: '90000',  // Content-push AbortSignal; matches hub PROJECTION_LEASE_MS (90s)
+    // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
+    // mounted and the worker behaves exactly as before. Set (with a non-loopback
+    // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
+    // GET /api/observations to holders of this secret. Mint with:
+    //   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+    CLAUDE_MEM_TV_TOKEN: '',
     // claude-mem sign-in funnel state: all empty until the installer's
     // browser-login step writes them.
     CLAUDE_MEM_PRO_TRIAL_EMAIL: '',     // Email the sign-in link was sent to (don't-re-nag marker)
@@ -219,6 +251,17 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TELEGRAM_CHAT_ID: '',
     CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert,sensitive',
     CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS: '',
+    CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: 'true',
+    // Pilot agents: LFG + Orifice. Empty list = no writes.
+    CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: '521e962d-2ec3-4488-bfbc-54d5209ce118,95601360-61f7-4fd9-bb3a-2c976b2b85c0',
+    CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: 'decision,bugfix,security_alert,sensitive',
+    CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_CONCEPTS: '',
+    CLAUDE_MEM_CCS_ALIGN_ENABLED: 'true',
+    CLAUDE_MEM_CCS_ALIGN_VIEWER_IDS: 'ccs-align',
+    // Copy of the Grok needle list (D6). Same episodic needles, seat-owned cache.
+    CLAUDE_MEM_CCS_ALIGN_TRIGGER_TYPES: 'decision,bugfix,security_alert,sensitive',
+    // Phase 2 rules-shadow patch stays a Prioritizer flag, not a silent /do (D8).
+    CLAUDE_MEM_CCS_ALIGN_PATCH_SHADOWS: 'false',
     CLAUDE_MEM_QUEUE_ENGINE: 'sqlite',
     CLAUDE_MEM_REDIS_URL: '',
     CLAUDE_MEM_REDIS_HOST: '127.0.0.1',
@@ -243,7 +286,25 @@ export class SettingsDefaultsManager {
   }
 
   static get(key: keyof SettingsDefaults): string {
-    return process.env[key] ?? this.DEFAULTS[key];
+    const value = process.env[key] ?? this.DEFAULTS[key];
+    if (key === 'CLAUDE_MEM_WORKER_HOST') {
+      return this.normalizeWorkerHost(value);
+    }
+    return value;
+  }
+
+  // 'localhost' resolves IPv6-first on modern Windows resolvers while
+  // server.listen(port, 'localhost') binds ::1 only, so the hook client and
+  // the worker can land on different loopback families (#2992). Pin the
+  // documented IPv4 loopback so every consumer of the setting agrees.
+  private static normalizeWorkerHost(host: string): string {
+    return host === 'localhost' ? '127.0.0.1' : host;
+  }
+
+  private static finalizeSettings(settings: SettingsDefaults, applyEnvOverrides: boolean): SettingsDefaults {
+    const result = applyEnvOverrides ? this.applyEnvOverrides(settings) : settings;
+    result.CLAUDE_MEM_WORKER_HOST = this.normalizeWorkerHost(result.CLAUDE_MEM_WORKER_HOST);
+    return result;
   }
 
   static getInt(key: keyof SettingsDefaults): number {
@@ -274,7 +335,7 @@ export class SettingsDefaultsManager {
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error instanceof Error ? error.message : String(error));
         }
-        return applyEnvOverrides ? this.applyEnvOverrides(defaults) : defaults;
+        return this.finalizeSettings(defaults, applyEnvOverrides);
       }
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
@@ -327,11 +388,11 @@ export class SettingsDefaultsManager {
         }
       }
 
-      return applyEnvOverrides ? this.applyEnvOverrides(result) : result;
+      return this.finalizeSettings(result, applyEnvOverrides);
     } catch (error: unknown) {
       console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error instanceof Error ? error.message : String(error));
       const defaults = this.getAllDefaults();
-      return applyEnvOverrides ? this.applyEnvOverrides(defaults) : defaults;
+      return this.finalizeSettings(defaults, applyEnvOverrides);
     }
   }
 }

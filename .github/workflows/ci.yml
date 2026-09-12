@@ -29,6 +29,11 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
+      # Plugin installations execute the committed bundles directly. Check
+      # them before rebuilding, which would hide a stale published worker.
+      - name: Verify committed plugin versions
+        run: bun test tests/infrastructure/version-consistency.test.ts
+
       - name: Typecheck
         run: npm run typecheck
 

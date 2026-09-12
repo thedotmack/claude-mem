@@ -6,6 +6,7 @@ import {
   parseSearchResponse,
   type RealOpenCodeEventType,
 } from "./contract.js";
+import { normalizePlatformSource } from "../../shared/platform-source.js";
 
 /**
  * OpenCode plugin entry module.
@@ -72,9 +73,11 @@ interface BusEvent {
 }
 
 function resolveWorkerPort(): string {
-  // Canonical resolution: CLAUDE_MEM_WORKER_PORT env override, else the
-  // UID-derived default — identical to the rest of the codebase (#2406).
-  return SettingsDefaultsManager.get("CLAUDE_MEM_WORKER_PORT");
+  const settingsPath = join(
+    SettingsDefaultsManager.get("CLAUDE_MEM_DATA_DIR"),
+    "settings.json",
+  );
+  return SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_WORKER_PORT;
 }
 
 function resolveWorkerHost(): string {
@@ -98,7 +101,10 @@ function workerPostFireAndForget(
   fetch(`${WORKER_BASE_URL}${path}`, {
     method: "POST",
     headers: JSON_HEADERS,
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      ...body,
+      platformSource: normalizePlatformSource("opencode"),
+    }),
   }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     if (!message.includes("ECONNREFUSED")) {

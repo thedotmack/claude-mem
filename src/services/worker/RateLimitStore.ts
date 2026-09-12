@@ -219,6 +219,10 @@ export function shouldAbortForQuota(
 
     const util = entry.utilization;
     const threshold = UTILIZATION_THRESHOLDS[window];
+    // An explicit false means the provider is not charging the overage bucket,
+    // so its utilization does not represent active quota consumption.
+    const appliesUtilizationThreshold =
+      window !== 'overage' || entry.isUsingOverage !== false;
 
     // Provider-side rejection trumps utilization heuristics. A snapshot with
     // status='rejected' (or overageStatus='rejected' on the overage window)
@@ -236,7 +240,7 @@ export function shouldAbortForQuota(
       };
     }
 
-    if (typeof util === 'number' && util >= threshold) {
+    if (appliesUtilizationThreshold && typeof util === 'number' && util >= threshold) {
       return {
         abort: true,
         window,
