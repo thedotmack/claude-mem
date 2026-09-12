@@ -1,239 +1,209 @@
-# Anti-Pattern Cleanup Plan
+# Plan: Generic Message-Type Ingestion for claude-mem
 
-**Goal:** Fix 178 error handling anti-patterns to gain visibility into binary execution failures.
+## Goal
 
-**Current state:** 178 issues, 2 approved overrides across 42 files.
+Extract the "any data → tool use → observation" pattern from the LoCoMo eval into a reusable ingestion system that understands **message types** (assistant, thinking, user, tool use) — not just fake "Read" calls. Create a conversation mode so the AI observer processes dialog/message content instead of discarding it.
+
+## Phase 0: Documentation Discovery (DONE)
+
+### Findings
+
+**Worker API accepts any toolName** — `POST /api/sessions/observations` takes `{ tool_name, tool_input, tool_response, cwd }` with zero validation on `tool_name`. The `buildObservationPrompt()` in `src/sdk/prompts.ts:91-120` passes `tool_name` straight through as `<what_happened>`.
+
+**Mode system is the control surface** — The mode's `recording_focus`, `skip_guidance`, and `type_guidance` prompts tell the AI what to extract. `code.json` says "focus on deliverables" (why conversations were discarded). `email-investigation.json` shows a completely different domain works fine.
+
+**buildObservationPrompt is mode-agnostic** — It wraps ALL tool data in the same `<observed_from_primary_session>` XML regardless of mode. The mode only affects the init/continuation prompts that set the AI's instructions.
+
+**No worker code changes needed** — The entire solution is: 1 new mode JSON + 1 generic adapter module.
+
+### Allowed APIs (verified in source)
+
+| API | File | Signature |
+|-----|------|-----------|
+| `POST /api/sessions/init` | `SessionRoutes.ts:~400` | `{ contentSessionId, project, prompt }` |
+| `POST /api/sessions/observations` | `SessionRoutes.ts:498-587` | `{ contentSessionId, tool_name, tool_input, tool_response, cwd }` |
+| `POST /api/sessions/complete` | `SessionRoutes.ts:~590` | `{ contentSessionId }` |
+| `buildObservationPrompt(obs)` | `src/sdk/prompts.ts:91-120` | `{ tool_name, tool_input, tool_output, created_at_epoch, cwd? }` |
+| `ModeManager.loadMode(id)` | `src/services/domain/ModeManager.ts` | Supports inheritance: `parent--override` |
+
+### Anti-patterns to avoid
+
+- **Do NOT modify worker-service routes** — the API is already generic enough
+- **Do NOT modify buildObservationPrompt** — it already passes tool_name through
+- **Do NOT create a new PendingMessage type** — use existing `'observation'` type with semantic tool_name values
+- **Do NOT hardcode "Read" as toolName** — that was the eval's mistake
 
 ---
 
-## **Phase 1: Binary is the Way (Non-Optional)**
+## Phase 1: Create the `conversation` mode
 
-The compiled binary (`claude-mem`) is now the **sole execution path** for all users. We provide pre-built binaries for all supported platforms, and users no longer need to build from source.
+**What to implement:** A new mode JSON file `plugin/modes/conversation.json` that tells the AI observer how to process different message types from conversations.
 
-**Completed Actions:**
-- [x] Unified binary build (`src/cli/cli.ts` → `plugin/scripts/claude-mem`) is mandatory in `scripts/build-hooks.js`.
-- [x] `plugin/hooks/hooks.json` points exclusively to the binary.
-- [x] `plugin/scripts/setup.sh` requires the binary to exist; no JS fallbacks.
-- [x] **Pre-built Releases:** Added `scripts/build-all-binaries.js` to cross-compile for macOS (arm64/x64), Linux (arm64/x64), and Windows (x64).
-- [x] **CI/CD Pipeline:** Created `.github/workflows/release.yml` to automatically build and attach all platform binaries to GitHub Releases.
-- [x] **Lightweight Installer:** Refactored `installer/` to download pre-built release artifacts. Bun is no longer a mandatory dependency for end users.
-- [x] MCP server and Worker Daemon are subcommands of the single binary (`claude-mem mcp`, `claude-mem daemon`).
+**Copy from:** `plugin/modes/email-investigation.json` (it's the closest precedent for non-code content). Use the same structure, adjust `observation_types`, `observation_concepts`, and all `prompts` fields.
 
----
+**Key design decisions:**
 
-## Phase 2: Critical Path — worker-service.ts (5 CATCH_AND_CONTINUE + 1 NO_LOGGING + 1 ERROR_MESSAGE_GUESSING)
+The `recording_focus` prompt must include per-toolName guidance:
+```
+When <what_happened> is "AssistantMessage" → extract decisions, plans, explanations, commitments
+When <what_happened> is "ThinkingMessage" → extract reasoning chains, rejected alternatives, key insights
+When <what_happened> is "UserMessage" → extract requirements, preferences, constraints, intent
+When <what_happened> is "Read" / "Write" / "Bash" / etc. → extract what was done (standard tool behavior)
+```
 
-**Why first:** worker-service.ts is the core daemon. 5 catch-and-continue patterns mean errors on the critical path just silently continue. This is the most likely reason the binary setup fails without any visible error.
+The `skip_guidance` must NOT skip conversations (the code.json mistake).
 
-**File:** `src/services/worker-service.ts`
+**Observation types** (conversation-appropriate):
+- `insight` — Key understanding or realization
+- `decision` — Choice made with rationale
+- `preference` — User preference or constraint expressed
+- `fact` — Factual information shared in conversation
+- `plan` — Future intent or commitment
+- `topic` — Subject or theme discussed
 
-| Line | Pattern | Action |
-|------|---------|--------|
-| 39 | NO_LOGGING_IN_CATCH | Add `logger.debug` — Windows lock file stat failure |
-| 322 | CATCH_AND_CONTINUE + GENERIC_CATCH | Read context, add logging or rethrow |
-| 467 | CATCH_AND_CONTINUE | Read context, add logging or rethrow |
-| 574 | ERROR_MESSAGE_GUESSING | Replace string matching with proper error type checks |
-| 699 | CATCH_AND_CONTINUE | Read context, add logging or rethrow |
-| 711 | CATCH_AND_CONTINUE | Read context, add logging or rethrow |
-| 750 | LARGE_TRY_BLOCK (23 lines) | Scope down the try block |
-| 779 | CATCH_AND_CONTINUE + GENERIC_CATCH | Read context, add logging or rethrow |
-| 799 | LARGE_TRY_BLOCK (15 lines) | Scope down the try block |
-| 817 | CATCH_AND_CONTINUE + GENERIC_CATCH | Read context, add logging or rethrow |
+**Observation concepts** (conversation-appropriate):
+- `who` — People mentioned or involved
+- `what-happened` — Events, actions, outcomes
+- `opinion` — Subjective views expressed
+- `personal-detail` — Personal information shared
+- `relationship` — Connections between people/things
+- `timeline` — When things happened or will happen
 
-**Instructions:**
-1. Read the full file first to understand each catch block's context
-2. For each CATCH_AND_CONTINUE: decide if the error should (a) be logged + rethrown, (b) logged + returned with error, or (c) approved override with justification
-3. For ERROR_MESSAGE_GUESSING at line 574: replace `error.message.includes(...)` chains with `instanceof` checks or error code checks
-4. For LARGE_TRY_BLOCKs: narrow the try scope to only the operation that can fail
+**Files to create:**
+- `plugin/modes/conversation.json`
 
 **Verification:**
-```bash
-bun run scripts/anti-pattern-test/detect-error-handling-antipatterns.ts 2>&1 | grep "worker-service.ts"
-# Should show 0 unfixed issues
-```
+- [ ] JSON is valid and parseable
+- [ ] All 52 prompt fields from code.json are present (check with diff)
+- [ ] `ModeManager.loadMode('conversation')` succeeds (test in Bun REPL)
+- [ ] Mode loads correctly via the worker when `CLAUDE_MEM_MODE=conversation`
+
+**Anti-pattern guards:**
+- Do NOT invent new prompt fields not in ModeConfig interface (`src/services/domain/types.ts`)
+- Do NOT add any `skip_guidance` that would cause conversations to be skipped
 
 ---
 
-## Phase 3: Silent Failures — NO_LOGGING_IN_CATCH (23 issues across 15 files)
+## Phase 2: Extract generic ingestion adapter from eval code
 
-**Why second:** These are the visibility killers. Every one of these is a place where an error happens and nobody can see it.
+**What to implement:** A reusable adapter module that transforms different message types into `queueObservation()` calls with semantic `toolName` values. Extract from `evals/locomo/src/ingestion/` into `src/services/ingestion/` (or a standalone utility).
 
-**Decision framework for each catch block:**
+**Copy from:**
+- `evals/locomo/src/ingestion/worker-client.ts` → Copy the `WorkerClient` class as-is (it's 100% generic already)
+- `evals/locomo/src/ingestion/adapter.ts` → Replace LoCoMo-specific `formatSessionAsToolExecution()` with per-message-type formatters
 
-- **Add logging** if: the error is unexpected, or you'd want to see it when debugging
-- **Add override** if ALL of: (a) error is expected and frequent, (b) logging would flood, (c) there's explicit fallback logic, (d) reason is specific and technical
+**New adapter interface:**
 
-**Files and lines:**
+```typescript
+interface MessageIngestionInput {
+  messageType: 'assistant' | 'thinking' | 'user' | 'tool_use' | 'system';
+  content: string;
+  metadata?: {
+    role?: string;
+    turnNumber?: number;
+    model?: string;
+    toolName?: string;        // For tool_use messages
+    toolInput?: unknown;      // For tool_use messages
+    timestamp?: string;
+    speakerName?: string;     // For conversation replay
+  };
+}
 
-| File | Lines | Context (read before fixing) |
-|------|-------|-----|
-| `src/services/infrastructure/ProcessManager.ts` | 67, 750 | Binary lookup (`which`/`where`), process alive check |
-| `src/utils/project-filter.ts` | 66 | Invalid glob pattern |
-| `src/utils/worktree.ts` | 41, 55 | Git worktree detection |
-| `src/utils/logger.ts` | 90, 158 | Logger self-initialization |
-| `src/shared/AuthTokenManager.ts` | 34 | Atomic file create race |
-| `src/cli/stdin-reader.ts` | 32, 52, 170 | Bun stdin bugs, JSON parse |
-| `src/cli/claude-md-commands.ts` | 144, 190, 203, 340 | JSON parse on DB data |
-| `src/services/transcripts/watcher.ts` | 46, 155, 176 | File stat races |
-| `src/services/transcripts/processor.ts` | 278 | Optional JSON parse |
-| `src/services/transcripts/field-utils.ts` | 145 | User-provided regex |
-| `src/services/server/Server.ts` | 232 | Instruction loading |
-| `src/services/sqlite/SessionSearch.ts` | 351, 369 | JSON parse on DB data |
-| `src/services/integrations/CursorHooksInstaller.ts` | 575 | hooks.json diagnostic parse |
-| `src/services/sync/ChromaMcpManager.ts` | 266, 281, 352, 366 | MCP response, health check, certs |
+interface FormattedObservation {
+  toolName: string;           // e.g., "AssistantMessage", "ThinkingMessage", "Read"
+  toolInput: string;          // JSON metadata about the message
+  toolResponse: string;       // The actual message content
+  userPrompt: string;         // Context for session init
+}
 
-**Instructions:**
-1. Read each file at the specified line
-2. Apply the decision framework above
-3. For logging: use `logger.debug` for expected failures, `logger.warn` for unexpected ones
-4. For overrides: use exact format `// [ANTI-PATTERN IGNORED]: <specific reason>`
+function formatMessageAsObservation(input: MessageIngestionInput): FormattedObservation;
+```
+
+**Mapping:**
+
+| messageType | toolName | toolInput | toolResponse |
+|-------------|----------|-----------|--------------|
+| `assistant` | `AssistantMessage` | `{ role, turnNumber, model }` | message text |
+| `thinking` | `ThinkingMessage` | `{ role, turnNumber }` | thinking text |
+| `user` | `UserMessage` | `{ role, turnNumber }` | prompt text |
+| `tool_use` | actual tool name | actual tool input | actual tool response |
+| `system` | `SystemMessage` | `{ role }` | system text |
+
+**Files to create:**
+- `src/services/ingestion/message-adapter.ts` — the generic adapter
+- `src/services/ingestion/worker-client.ts` — copy from eval (or import if same repo)
+
+**Files to reference (do not modify):**
+- `evals/locomo/src/ingestion/worker-client.ts` — copy source
+- `evals/locomo/src/ingestion/adapter.ts` — pattern reference
+- `src/sdk/prompts.ts:91-120` — verify toolName flows through to `<what_happened>`
 
 **Verification:**
-```bash
-bun run scripts/anti-pattern-test/detect-error-handling-antipatterns.ts 2>&1 | grep "NO_LOGGING_IN_CATCH" | grep -v "APPROVED"
-# Should show 0 unfixed NO_LOGGING issues
-```
+- [ ] `formatMessageAsObservation({ messageType: 'assistant', content: 'hello' })` returns `{ toolName: 'AssistantMessage', ... }`
+- [ ] `formatMessageAsObservation({ messageType: 'tool_use', content: '...', metadata: { toolName: 'Read' } })` passes through actual tool name
+- [ ] WorkerClient can connect to running worker and init/queue/complete a session
+- [ ] Unit tests for all 5 message type mappings
+
+**Anti-pattern guards:**
+- Do NOT add LoCoMo-specific code to the generic adapter
+- Do NOT hardcode "Read" as the toolName for non-tool messages
+- Do NOT modify WorkerClient's API surface — it's already correct
 
 ---
 
-## Phase 4: ProcessManager.ts Deep Clean (19 issues)
+## Phase 3: Integration test — ingest a conversation using the new mode + adapter
 
-**Why third:** ProcessManager is the second-most-affected file and directly controls binary/worker spawning. 10 GENERIC_CATCH, 4 LARGE_TRY_BLOCK, 2 NO_LOGGING (covered in Phase 2).
+**What to implement:** A test script that:
+1. Sets `CLAUDE_MEM_MODE=conversation`
+2. Takes a sample conversation (can reuse one LoCoMo conversation)
+3. Ingests each message through the adapter → WorkerClient → worker API
+4. Verifies observations were created with appropriate types
+5. Searches for content and confirms retrieval works
 
-**File:** `src/services/infrastructure/ProcessManager.ts`
+**Copy from:**
+- `evals/locomo/scripts/ingest-one.ts` — orchestration pattern (health check → init → queue → wait → complete)
 
-| Lines | Pattern | Context |
-|-------|---------|---------|
-| 55 | LARGE_TRY_BLOCK (11 lines) | lookupBinaryInPath |
-| 148 | GENERIC_CATCH | readPidFile |
-| 162 | GENERIC_CATCH | removePidFile |
-| 206 | GENERIC_CATCH | getChildProcesses |
-| 233 | GENERIC_CATCH | forceKillProcess |
-| 250 | GENERIC_CATCH | waitForProcessesExit (has override for NO_LOGGING) |
-| 318 | LARGE_TRY_BLOCK (43 lines) | cleanupOrphanedProcesses |
-| 385 | GENERIC_CATCH | cleanupOrphanedProcesses catch |
-| 412, 421 | GENERIC_CATCH | cleanup kill loops |
-| 454 | LARGE_TRY_BLOCK (55 lines) | aggressiveStartupCleanup |
-| 535, 555, 563 | GENERIC_CATCH | aggressive cleanup catches |
-| 679 | GENERIC_CATCH | spawnDaemon |
-| 799 | GENERIC_CATCH | signal handler |
-
-**Instructions:**
-1. For GENERIC_CATCH: most already have logging via existing overrides. Add `instanceof` checks or `.code` property checks where the error type matters (e.g., EPERM, ESRCH, ENOENT)
-2. For LARGE_TRY_BLOCKs at 318 and 454: these are the big cleanup functions. Extract inner operations into helper functions to narrow try scope
-3. For cleanly-overridden catches (already have logging): add the error type narrowing
+**Files to create:**
+- `scripts/test-conversation-ingestion.ts` — integration test script
 
 **Verification:**
-```bash
-bun run scripts/anti-pattern-test/detect-error-handling-antipatterns.ts 2>&1 | grep "ProcessManager.ts"
-# Count should be significantly reduced
-```
+- [ ] Worker processes all 5 message types without errors
+- [ ] Observations created have meaningful titles/narratives (not "Code Development" noise)
+- [ ] Search via worker API returns relevant results for conversation content
+- [ ] Chroma vector search works (not just FTS)
+- [ ] No observations are skipped/discarded (the original bug)
+
+**Anti-pattern guards:**
+- Do NOT skip the worker health check
+- Do NOT use direct SQLite insertion (that's what we're replacing)
+- Do NOT test with `CLAUDE_MEM_MODE=code` — the whole point is the new mode
 
 ---
 
-## Phase 5: GENERIC_CATCH Sweep (remaining ~85 issues across 30+ files)
+## Phase 4: Clean up eval branch
 
-**Why fourth:** Highest volume. These all handle every error identically. Less urgent than silent failures but still reduce debugging capability.
+**What to implement:** Remove the workaround code that this work makes unnecessary:
+- `scripts/direct-ingest.ts` — no longer needed (worker path works now)
+- Keyword search fallback in `src/qa/searcher.ts:44-127` — no longer needed (Chroma works now)
 
-**Approach:** Group by fix type, not by file.
-
-### Group A: HTTP route handlers (add `instanceof` + specific status codes)
-Files: Server.ts, BaseRouteHandler.ts, SettingsRoutes.ts, SessionRoutes.ts, SearchManager.ts
-
-### Group B: Database operations (add error code checks)
-Files: SessionStore.ts, SessionSearch.ts, timeline/queries.ts
-
-### Group C: Process/system operations (add `.code` property checks)
-Files: ProcessManager.ts (covered in Phase 3), CursorHooksInstaller.ts, BranchManager.ts
-
-### Group D: JSON parse operations (add `instanceof SyntaxError`)
-Files: SettingsDefaultsManager.ts, EnvManager.ts, paths.ts, agents-md-utils.ts, timeline-formatting.ts
-
-### Group E: Agent/SDK operations
-Files: SDKAgent.ts, GeminiAgent.ts, OpenRouterAgent.ts, ChromaSync.ts, ChromaMcpManager.ts
-
-### Group F: UI hooks (viewer - lowest priority)
-Files: useStats.ts, useTheme.ts, useContextPreview.ts
-
-**Instructions:**
-- For each catch block: add the minimum type discrimination needed
-- Pattern: `if (error instanceof SyntaxError)` or `if ((error as NodeJS.ErrnoException).code === 'ENOENT')`
-- When discrimination isn't practical (truly any error), add an override with reason
+Update `ingest-all.ts` and `ingest-one.ts` to use the new generic adapter instead of the LoCoMo-specific adapter.
 
 **Verification:**
-```bash
-bun run scripts/anti-pattern-test/detect-error-handling-antipatterns.ts 2>&1 | grep "GENERIC_CATCH" | grep -v "APPROVED" | wc -l
-# Should be 0 or near-0
-```
+- [ ] `bun evals/locomo/scripts/ingest-one.ts` works with the new adapter
+- [ ] Existing tests still pass (119/119)
+- [ ] `direct-ingest.ts` deleted
+- [ ] Keyword fallback code removed from searcher.ts
+- [ ] `grep -r "direct-ingest" .` returns no results
 
 ---
 
-## Phase 6: LARGE_TRY_BLOCK Reduction (48 issues)
+## Summary
 
-**Why fifth:** These are structural improvements. Important for long-term maintainability but less urgent than visibility fixes.
+| Phase | Creates | Modifies | Deletes |
+|-------|---------|----------|---------|
+| 1 | `plugin/modes/conversation.json` | — | — |
+| 2 | `src/services/ingestion/message-adapter.ts`, `src/services/ingestion/worker-client.ts` | — | — |
+| 3 | `scripts/test-conversation-ingestion.ts` | — | — |
+| 4 | — | `evals/locomo/scripts/ingest-all.ts`, `evals/locomo/src/qa/searcher.ts` | `evals/locomo/scripts/direct-ingest.ts` |
 
-### Worst offenders (>50 lines — fix these first):
-| File | Line | Size |
-|------|------|------|
-| `SessionStore.ts` | 673 | 118 lines |
-| `GeminiAgent.ts` | 132 | 126 lines |
-| `OpenRouterAgent.ts` | 87 | 113 lines |
-| `ChromaSync.ts` | 536 | 106 lines |
-| `ProcessManager.ts` | 454 | 55 lines |
-| `claude-md-commands.ts` | 352 | 56 lines |
-| `ChromaSearchStrategy.ts` | 66 | 54 lines |
-
-### Medium offenders (20-50 lines):
-CursorHooksInstaller.ts (49, 28, 21 lines), ProcessManager.ts (43 lines), ChromaSync.ts (35 lines), worker-utils.ts, EnvManager.ts, claude-md-utils.ts, HybridSearchStrategy.ts, etc.
-
-### Small offenders (11-20 lines):
-Most remaining files — narrow scope or extract helpers.
-
-**Instructions:**
-- For massive blocks (>50 lines): extract the body into a helper function, wrap only the call
-- For medium blocks: identify which specific operation can fail, narrow the try to just that
-- For small blocks (11-15 lines): often fine as-is, but check if scope can be narrowed
-
-**Verification:**
-```bash
-bun run scripts/anti-pattern-test/detect-error-handling-antipatterns.ts 2>&1 | grep "LARGE_TRY_BLOCK" | wc -l
-# Should be 0 or near-0
-```
-
----
-
-## Phase 7: Remaining Patterns (3 issues)
-
-| File | Line | Pattern | Action |
-|------|------|---------|--------|
-| `worker-service.ts` | 574 | ERROR_MESSAGE_GUESSING | Covered in Phase 1 |
-| `ChromaSync.ts` | 759 | ERROR_STRING_MATCHING ("ECONNREFUSED") | Replace with `.code === 'ECONNREFUSED'` check |
-| `ChromaSync.ts` | 760 | ERROR_STRING_MATCHING ("ENOTFOUND") | Replace with `.code === 'ENOTFOUND'` check |
-
----
-
-## Phase 8: Final Verification
-
-```bash
-# Full scan
-bun run scripts/anti-pattern-test/detect-error-handling-antipatterns.ts
-
-# Expected result:
-# Found 0 anti-patterns that must be fixed
-# APPROVED OVERRIDES: N (justified overrides)
-
-# Build check
-npm run build
-
-# Verify worker starts
-claude-mem start
-claude-mem status
-```
-
----
-
-## Execution Notes
-
-- **The binary is the only path.** Tests and verification steps must use the compiled binary or the exact build scripts that produce it.
-- **Run the detector after each phase** to track progress.
-- **Don't batch-approve overrides** — evaluate each catch block individually.
+**Zero worker code changes.** The solution is purely: 1 mode + 1 adapter + cleanup.
