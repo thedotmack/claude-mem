@@ -210,6 +210,7 @@ export class SessionStore {
     this.normalizeConceptTags();
     this.ensureSDKSessionsObservedColumns();
     this.ensureToolUsesTable();
+    this.ensureTelegramWrapupsTable();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -1911,6 +1912,30 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(51, new Date().toISOString());
   }
 
+  // v52 — durable claim ledger for one Telegram session wrap-up per route.
+  // The DDL is intentionally idempotent so fresh installs and existing DBs
+  // converge even if a fixture has an incomplete schema_versions ledger.
+  private ensureTelegramWrapupsTable(): void {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS telegram_wrapups (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform_source TEXT NOT NULL,
+        content_session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        route_key TEXT NOT NULL,
+        summary_created_at_epoch INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('claimed', 'sent')),
+        claimed_at_epoch INTEGER NOT NULL,
+        sent_at_epoch INTEGER,
+        UNIQUE(platform_source, content_session_id, project, route_key)
+      )
+    `);
+    this.db.run(
+      'CREATE INDEX IF NOT EXISTS idx_telegram_wrapups_platform_content ON telegram_wrapups(platform_source, content_session_id)'
+    );
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(52, new Date().toISOString());
+  }
+
   private ensureMergedIntoProjectColumns(): void {
     const obsCols = this.db
       .query('PRAGMA table_info(observations)')
@@ -2649,6 +2674,105 @@ export class SessionStore {
     `);
 
     return (stmt.get(id) as SdkSessionDetailRow | null) || null;
+  }
+
+  findSessionDbIdByContentSessionId(contentSessionId: string, platformSource: string): number | null {
+    const row = this.db.prepare(`
+      SELECT id
+      FROM sdk_sessions
+      WHERE COALESCE(NULLIF(platform_source, ''), ?) = ?
+        AND content_session_id = ?
+      LIMIT 1
+    `).get(
+      DEFAULT_PLATFORM_SOURCE,
+      normalizePlatformSource(platformSource),
+      contentSessionId,
+    ) as { id: number } | null;
+
+    return row?.id ?? null;
+  }
+
+  claimTelegramWrapup({
+    platformSource,
+    contentSessionId,
+    project,
+    routeKey,
+    summaryCreatedAtEpoch,
+  }: {
+    platformSource: string;
+    contentSessionId: string;
+    project: string;
+    routeKey: string;
+    summaryCreatedAtEpoch: number;
+  }): boolean {
+    const result = this.db.prepare(`
+      INSERT OR IGNORE INTO telegram_wrapups
+      (platform_source, content_session_id, project, route_key, summary_created_at_epoch, status, claimed_at_epoch, sent_at_epoch)
+      VALUES (?, ?, ?, ?, ?, 'claimed', ?, NULL)
+    `).run(
+      normalizePlatformSource(platformSource),
+      contentSessionId,
+      project,
+      routeKey,
+      summaryCreatedAtEpoch,
+      Date.now(),
+    );
+
+    return result.changes === 1;
+  }
+
+  markTelegramWrapupSent({
+    platformSource,
+    contentSessionId,
+    project,
+    routeKey,
+  }: {
+    platformSource: string;
+    contentSessionId: string;
+    project: string;
+    routeKey: string;
+  }): void {
+    this.db.prepare(`
+      UPDATE telegram_wrapups
+      SET status = 'sent', sent_at_epoch = ?
+      WHERE platform_source = ?
+        AND content_session_id = ?
+        AND project = ?
+        AND route_key = ?
+        AND status = 'claimed'
+    `).run(
+      Date.now(),
+      normalizePlatformSource(platformSource),
+      contentSessionId,
+      project,
+      routeKey,
+    );
+  }
+
+  releaseTelegramWrapupClaim({
+    platformSource,
+    contentSessionId,
+    project,
+    routeKey,
+  }: {
+    platformSource: string;
+    contentSessionId: string;
+    project: string;
+    routeKey: string;
+  }): void {
+    this.db.prepare(`
+      DELETE FROM telegram_wrapups
+      WHERE platform_source = ?
+        AND content_session_id = ?
+        AND project = ?
+        AND route_key = ?
+        AND status = 'claimed'
+    `).run(
+      normalizePlatformSource(platformSource),
+      contentSessionId,
+      project,
+      routeKey,
+    );
   }
 
   /**
