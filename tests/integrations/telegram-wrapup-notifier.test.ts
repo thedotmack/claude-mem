@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../src/shared/SettingsDefaultsManager.js';
-import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { SessionStore, TELEGRAM_WRAPUP_CLAIM_STALE_AFTER_MS } from '../../src/services/sqlite/SessionStore.js';
 import {
   deliverSessionWrapup,
   loadTelegramWrapupConfig,
@@ -143,6 +143,37 @@ describe('Telegram wrap-up notifier', () => {
         fetchImpl: fetchMock,
       }),
     ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reclaims an expired interrupted claim and sends the deferred wrap-up', async () => {
+    const { sessionDbId, memorySessionId } = createSession('project-a', 'content-interrupted');
+    storeSummary(memorySessionId, 'project-a');
+    const fetchMock = successfulFetch();
+    const ledgerInput = {
+      platformSource: 'claude',
+      contentSessionId: 'content-interrupted',
+      project: 'project-a',
+      routeKey: 'route-a',
+    };
+
+    expect(store.claimTelegramWrapup({
+      ...ledgerInput,
+      summaryCreatedAtEpoch: 1_700_000_000_000,
+    })).toBe(true);
+    store.db.prepare(`
+      UPDATE telegram_wrapups
+      SET claimed_at_epoch = ?
+      WHERE content_session_id = ?
+    `).run(Date.now() - TELEGRAM_WRAPUP_CLAIM_STALE_AFTER_MS - 1, ledgerInput.contentSessionId);
+
+    await expect(deliverSessionWrapup({
+      sessionStore: store,
+      sessionDbId,
+      settings: settings(),
+      fetchImpl: fetchMock,
+    })).resolves.toBe('sent');
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

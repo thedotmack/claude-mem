@@ -36,6 +36,11 @@ import {
   type CanonicalMutation,
 } from '../sync/CanonicalContent.js';
 
+// A Telegram send normally completes in seconds. A five-minute lease absorbs
+// a slow request while allowing a later SessionEnd delivery to recover work
+// abandoned by a process crash between claiming and marking the row sent.
+export const TELEGRAM_WRAPUP_CLAIM_STALE_AFTER_MS = 5 * 60_000;
+
 let warnedMissingIterate = false;
 
 /**
@@ -2705,6 +2710,7 @@ export class SessionStore {
     routeKey: string;
     summaryCreatedAtEpoch: number;
   }): boolean {
+    const claimedAtEpoch = Date.now();
     const result = this.db.prepare(`
       INSERT OR IGNORE INTO telegram_wrapups
       (platform_source, content_session_id, project, route_key, summary_created_at_epoch, status, claimed_at_epoch, sent_at_epoch)
@@ -2715,10 +2721,36 @@ export class SessionStore {
       project,
       routeKey,
       summaryCreatedAtEpoch,
-      Date.now(),
+      claimedAtEpoch,
     );
 
-    return result.changes === 1;
+    if (result.changes === 1) return true;
+
+    // A process can die after recording its claim but before it attempts the
+    // Telegram POST (or before it marks the result sent). Treat a long-held
+    // claim as an abandoned lease, while sent rows remain permanent dedupe
+    // records. The compare-and-set predicate lets only one racing recovery
+    // caller reclaim the row.
+    const reclaim = this.db.prepare(`
+      UPDATE telegram_wrapups
+      SET summary_created_at_epoch = ?, claimed_at_epoch = ?, sent_at_epoch = NULL
+      WHERE platform_source = ?
+        AND content_session_id = ?
+        AND project = ?
+        AND route_key = ?
+        AND status = 'claimed'
+        AND claimed_at_epoch <= ?
+    `).run(
+      summaryCreatedAtEpoch,
+      claimedAtEpoch,
+      normalizePlatformSource(platformSource),
+      contentSessionId,
+      project,
+      routeKey,
+      claimedAtEpoch - TELEGRAM_WRAPUP_CLAIM_STALE_AFTER_MS,
+    );
+
+    return reclaim.changes === 1;
   }
 
   markTelegramWrapupSent({

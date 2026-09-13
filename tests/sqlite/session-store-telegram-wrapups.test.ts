@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
+import { SessionStore, TELEGRAM_WRAPUP_CLAIM_STALE_AFTER_MS } from '../../src/services/sqlite/SessionStore.js';
 
 describe('SessionStore Telegram wrap-ups', () => {
   let store: SessionStore;
@@ -51,6 +51,23 @@ describe('SessionStore Telegram wrap-ups', () => {
       ...input,
       summaryCreatedAtEpoch: 1_700_000_000_000,
     })).toBe(true);
+  });
+
+  it('reclaims an expired interrupted claim but never a sent wrap-up', () => {
+    const input = ledgerInput();
+    const summaryCreatedAtEpoch = 1_700_000_000_000;
+
+    expect(store.claimTelegramWrapup({ ...input, summaryCreatedAtEpoch })).toBe(true);
+    store.db.prepare(`
+      UPDATE telegram_wrapups
+      SET claimed_at_epoch = ?
+      WHERE content_session_id = ?
+    `).run(Date.now() - TELEGRAM_WRAPUP_CLAIM_STALE_AFTER_MS - 1, input.contentSessionId);
+
+    expect(store.claimTelegramWrapup({ ...input, summaryCreatedAtEpoch: summaryCreatedAtEpoch + 1 })).toBe(true);
+
+    store.markTelegramWrapupSent(input);
+    expect(store.claimTelegramWrapup({ ...input, summaryCreatedAtEpoch: summaryCreatedAtEpoch + 2 })).toBe(false);
   });
 
   it('finds a session by platform and content id without inserting an unknown session', () => {

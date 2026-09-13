@@ -10,6 +10,7 @@ import { getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
 import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir } from '../shared/paths.js';
+import { DeferredSessionEndQueue } from '../shared/deferred-session-end.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
@@ -210,6 +211,8 @@ export class WorkerService implements WorkerRef {
   private mcpReady: boolean = false;
   private initializationCompleteFlag: boolean = false;
   private isShuttingDown: boolean = false;
+  private deferredSessionEndReplayTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly deferredSessionEndQueue = new DeferredSessionEndQueue();
 
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -325,6 +328,40 @@ export class WorkerService implements WorkerRef {
     configureSupervisorSignalHandlers(async () => {
       await this.shutdown('signal');
     });
+  }
+
+  private async drainDeferredSessionEndQueue(): Promise<void> {
+    const store = this.dbManager.getSessionStore();
+    const result = await this.deferredSessionEndQueue.drain(async (entry) => {
+      const sessionDbId = store.findSessionDbIdByContentSessionId(
+        entry.contentSessionId,
+        entry.platformSource,
+      );
+      if (sessionDbId === null) {
+        // Keep the durable entry: SessionStart/session-init may have been
+        // delayed by the same worker outage that deferred SessionEnd.
+        return false;
+      }
+
+      await this.sessionManager.requestSessionWrapup(sessionDbId);
+      return true;
+    });
+
+    if (result.drained > 0) {
+      logger.info('SESSION', 'Replayed deferred SessionEnd requests', { count: result.drained });
+    }
+  }
+
+  private startDeferredSessionEndReplay(): void {
+    if (this.deferredSessionEndReplayTimer !== null) return;
+
+    this.deferredSessionEndReplayTimer = setInterval(() => {
+      void this.drainDeferredSessionEndQueue().catch((error: unknown) => {
+        logger.warn('SESSION', 'Deferred SessionEnd replay loop failed', {},
+          error instanceof Error ? error : new Error(String(error)));
+      });
+    }, 30_000);
+    this.deferredSessionEndReplayTimer.unref?.();
   }
 
   private registerRoutes(): void {
@@ -518,6 +555,13 @@ export class WorkerService implements WorkerRef {
 
       logger.info('WORKER', 'Initializing database manager...');
       await this.dbManager.initialize();
+
+      // A SessionEnd hook gets a tiny host budget and persists its identifier
+      // when the worker is unavailable. Drain that idempotent spool as soon as
+      // SQLite is ready, then keep polling lightly for an event that raced the
+      // tail of worker startup or a transient later IPC failure.
+      await this.drainDeferredSessionEndQueue();
+      this.startDeferredSessionEndReplay();
 
       runOneTimeV12_4_3Cleanup();
 
@@ -823,6 +867,11 @@ export class WorkerService implements WorkerRef {
       isShuttingDown: () => this.isShuttingDown,
       markShuttingDown: () => { this.isShuttingDown = true; },
       beforeGracefulShutdown: async () => {
+        if (this.deferredSessionEndReplayTimer !== null) {
+          clearInterval(this.deferredSessionEndReplayTimer);
+          this.deferredSessionEndReplayTimer = null;
+        }
+
         if (this.transcriptWatcher) {
           this.transcriptWatcher.stop();
           this.transcriptWatcher = null;

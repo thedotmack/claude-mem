@@ -2,20 +2,31 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } fr
 
 import * as realRuntimeSelector from '../../../src/services/hooks/runtime-selector.js';
 import * as realWorkerUtils from '../../../src/shared/worker-utils.js';
+import * as realDeferredSessionEnd from '../../../src/shared/deferred-session-end.js';
 
 const realRuntimeSelectorSnapshot = { ...realRuntimeSelector };
 const realWorkerUtilsSnapshot = { ...realWorkerUtils };
+const realDeferredSessionEndSnapshot = { ...realDeferredSessionEnd };
 
-const workerCallLog: Array<{ path: string; method: string; body: unknown }> = [];
+const workerCallLog: Array<{ path: string; method: string; body: unknown; options: unknown }> = [];
+const deferredSessionEndLog: Array<{ contentSessionId: string; platformSource: string }> = [];
 let useServerRuntime = false;
+let useWorkerFallback = false;
 
 mock.module('../../../src/shared/worker-utils.js', () => ({
   ...realWorkerUtilsSnapshot,
-  executeWithWorkerFallback: async (path: string, method: string, body: unknown) => {
-    workerCallLog.push({ path, method, body });
-    return { status: 'accepted' };
+  executeWithWorkerFallback: async (path: string, method: string, body: unknown, options: unknown) => {
+    workerCallLog.push({ path, method, body, options });
+    return useWorkerFallback ? { continue: true } : { status: 'accepted' };
   },
-  isWorkerFallback: () => false,
+  isWorkerFallback: () => useWorkerFallback,
+}));
+
+mock.module('../../../src/shared/deferred-session-end.js', () => ({
+  ...realDeferredSessionEndSnapshot,
+  enqueueDeferredSessionEnd: (input: { contentSessionId: string; platformSource: string }) => {
+    deferredSessionEndLog.push(input);
+  },
 }));
 
 mock.module('../../../src/services/hooks/runtime-selector.js', () => ({
@@ -32,7 +43,9 @@ let loggerSpies: ReturnType<typeof spyOn>[] = [];
 
 beforeEach(() => {
   workerCallLog.length = 0;
+  deferredSessionEndLog.length = 0;
   useServerRuntime = false;
+  useWorkerFallback = false;
   loggerSpies = [
     spyOn(logger, 'debug').mockImplementation(() => {}),
     spyOn(logger, 'warn').mockImplementation(() => {}),
@@ -48,6 +61,7 @@ afterEach(() => {
 afterAll(() => {
   mock.module('../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
   mock.module('../../../src/services/hooks/runtime-selector.js', () => realRuntimeSelectorSnapshot);
+  mock.module('../../../src/shared/deferred-session-end.js', () => realDeferredSessionEndSnapshot);
 });
 
 describe('sessionEndHandler', () => {
@@ -73,6 +87,26 @@ describe('sessionEndHandler', () => {
         reason: 'logout',
         cwd: '/tmp/session-end-project',
       },
+      options: { workerStartupTimeoutMs: 150, timeoutMs: 750 },
+    }]);
+  });
+
+  it('persists an idempotent replay entry when the worker is unavailable', async () => {
+    const { sessionEndHandler } = await import('../../../src/cli/handlers/session-end.js');
+    useWorkerFallback = true;
+
+    const result = await sessionEndHandler.execute({
+      sessionId: 'session-end-deferred',
+      cwd: '/tmp/session-end-project',
+      platform: 'claude-code',
+      reason: 'other',
+    });
+
+    expect(result.continue).toBe(true);
+    expect(result.suppressOutput).toBe(true);
+    expect(deferredSessionEndLog).toEqual([{
+      contentSessionId: 'session-end-deferred',
+      platformSource: 'claude',
     }]);
   });
 

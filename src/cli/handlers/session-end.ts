@@ -8,6 +8,13 @@ import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { resolveRuntimeContext } from '../../services/hooks/runtime-selector.js';
+import { enqueueDeferredSessionEnd } from '../../shared/deferred-session-end.js';
+
+// Claude Code gives plugin SessionEnd hooks a 1.5-second budget. Leave most
+// of it for the direct POST, then persist one idempotent replay entry instead
+// of waiting for a cold worker to finish starting.
+const SESSION_END_WORKER_STARTUP_TIMEOUT_MS = 150;
+const SESSION_END_REQUEST_TIMEOUT_MS = 750;
 
 export const sessionEndHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -36,8 +43,24 @@ export const sessionEndHandler: EventHandler = {
         reason: input.reason,
         cwd: input.cwd,
       },
+      {
+        workerStartupTimeoutMs: SESSION_END_WORKER_STARTUP_TIMEOUT_MS,
+        timeoutMs: SESSION_END_REQUEST_TIMEOUT_MS,
+      },
     );
     if (isWorkerFallback(result)) {
+      try {
+        enqueueDeferredSessionEnd({ contentSessionId: sessionId, platformSource });
+        logger.debug('HOOK', 'Session-end request persisted for worker recovery', {
+          sessionId,
+          platformSource,
+        });
+      } catch (error) {
+        logger.warn('HOOK', 'Could not persist SessionEnd request for worker recovery', {
+          sessionId,
+          platformSource,
+        }, error instanceof Error ? error : new Error(String(error)));
+      }
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 

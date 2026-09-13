@@ -116,7 +116,7 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'process_rss_mb',
   'heap_used_mb',
   // hook_failed distress signal — hook_type is one of OUR hook names
-  // (context | session-init | observation | summarize | file-context),
+  // (context | session-init | observation | summarize | session-end | file-context),
   // error_mode (worker_unavailable | blocking_error), plus a consecutive
   // failure counter and threshold flag. Never an error message.
   'hook_type',

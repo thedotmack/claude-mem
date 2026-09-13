@@ -135,6 +135,7 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
         'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
         'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
         'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
+        'SessionEnd.0.0': claudeHook(['hook', 'claude-code', 'session-end']),
       },
     },
     'plugin/hooks/codex-hooks.json': {
