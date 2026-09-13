@@ -1,0 +1,23 @@
+{
+  "skill_name": "mode-creator",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I run a small architecture studio and want claude-mem to remember client direction, code constraints, consultant conflicts, site findings, and approvals. Walk me through making that a mode, and alert me on Telegram for anything affecting cost or schedule.",
+      "expected_output": "Starts with the purpose-first interactive question, proposes a compact architecture taxonomy, obtains approval, installs a validated mode, securely configures selected Telegram concept triggers, restarts, and verifies the active mode in startup context.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Can you make a custom claude-mem mode for my ML platform coding work? I especially lose experiment outcomes, dataset contract changes, GPU cost discoveries, and production rollback reasoning.",
+      "expected_output": "Explains that code mode already works, suggests concrete ML-platform types and tags, asks whether standard code or a custom variant is preferred, and avoids creating a redundant mode without approval.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "I'm studying constitutional law. I need memories for holdings, issue-spotting patterns, professor frameworks, minority rules, and exam traps. No messaging notifications.",
+      "expected_output": "Finds the bundled law-study mode, offers reuse or a focused remix, leaves Telegram settings untouched, activates the approved choice, restarts, and verifies the startup-context mode line.",
+      "files": []
+    }
+  ]
+}

@@ -12,6 +12,10 @@ const codexPluginPath = path.join(rootDir, '.codex-plugin', 'plugin.json');
 const bundledCodexPluginPath = path.join(rootDir, 'plugin', '.codex-plugin', 'plugin.json');
 const claudePluginPath = path.join(rootDir, '.claude-plugin', 'plugin.json');
 const bundledClaudePluginPath = path.join(rootDir, 'plugin', '.claude-plugin', 'plugin.json');
+const cursorPluginPaths = [
+  path.join(rootDir, 'claude-mem-cursor', '.cursor-plugin', 'plugin.json'),
+  path.join(rootDir, 'claude-mem-grok-bot', '.cursor-plugin', 'plugin.json'),
+];
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -69,6 +73,21 @@ function normalizeAuthorName(author) {
   return '';
 }
 
+function syncCursorPlugin(plugin, pkg) {
+  return {
+    ...plugin,
+    version: pkg.version,
+    description: plugin.description ?? pkg.description,
+    homepage: plugin.homepage ?? pkg.homepage,
+    repository: normalizeRepositoryUrl(pkg.repository),
+    license: pkg.license,
+    author: {
+      ...(typeof plugin.author === 'object' && plugin.author ? plugin.author : {}),
+      name: normalizeAuthorName(pkg.author),
+    },
+  };
+}
+
 function normalizeRepositoryUrl(repository) {
   if (typeof repository === 'string') return repository.replace(/\.git$/, '');
   if (repository && typeof repository === 'object' && typeof repository.url === 'string')
@@ -77,7 +96,7 @@ function normalizeRepositoryUrl(repository) {
 }
 
 function main() {
-  for (const filePath of [packageJsonPath, codexPluginPath, bundledCodexPluginPath, claudePluginPath, bundledClaudePluginPath]) {
+  for (const filePath of [packageJsonPath, codexPluginPath, bundledCodexPluginPath, claudePluginPath, bundledClaudePluginPath, ...cursorPluginPaths]) {
     if (!fs.existsSync(filePath)) {
       console.error(`Missing required file: ${filePath}`);
       process.exit(1);
@@ -89,11 +108,13 @@ function main() {
   const bundledCodexPlugin = readJson(bundledCodexPluginPath);
   const claudePlugin = readJson(claudePluginPath);
   const bundledClaudePlugin = readJson(bundledClaudePluginPath);
+  const cursorPlugins = cursorPluginPaths.map(readJson);
 
   writeJson(codexPluginPath, syncCodexPlugin(codexPlugin, pkg));
   writeJson(bundledCodexPluginPath, syncCodexPlugin(bundledCodexPlugin, pkg));
   writeJson(claudePluginPath, syncClaudePlugin(claudePlugin, pkg));
   writeJson(bundledClaudePluginPath, syncClaudePlugin(bundledClaudePlugin, pkg));
+  cursorPluginPaths.forEach((filePath, index) => writeJson(filePath, syncCursorPlugin(cursorPlugins[index], pkg)));
 
   console.log('✓ Synced plugin manifests from package.json');
 }

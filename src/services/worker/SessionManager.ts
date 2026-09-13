@@ -5,6 +5,9 @@ import { SessionMessageBuffer } from './SessionMessageBuffer.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
+import { deliverSessionWrapup } from '../integrations/TelegramWrapupNotifier.js';
+
+export const SESSION_END_WRAPUP_GRACE_MS = 5_000;
 
 export class SessionManager {
   private dbManager: DatabaseManager;
@@ -57,6 +60,12 @@ export class SessionManager {
       if (dbSession.platform_source && dbSession.platform_source !== session.platformSource) {
         session.platformSource = dbSession.platform_source;
       }
+      if (dbSession.observed_model && dbSession.observed_model !== session.observedModel) {
+        session.observedModel = dbSession.observed_model;
+      }
+      if (dbSession.observed_billing && dbSession.observed_billing !== session.observedBilling) {
+        session.observedBilling = dbSession.observed_billing;
+      }
 
       if (currentUserPrompt) {
         logger.debug('SESSION', 'Updating userPrompt for continuation', {
@@ -93,12 +102,21 @@ export class SessionManager {
       });
     }
 
-    const userPrompt = currentUserPrompt || dbSession.user_prompt;
+    const latestPromptText = currentUserPrompt
+      ? null
+      : this.dbManager.getSessionStore().getLatestPromptTextFromUserPrompts(
+          dbSession.content_session_id,
+          sessionDbId,
+        );
+    const userPrompt = currentUserPrompt || latestPromptText || dbSession.user_prompt;
 
     if (!currentUserPrompt) {
-      logger.debug('SESSION', 'No currentUserPrompt provided for new session, using database', {
+      logger.debug('SESSION', latestPromptText
+        ? 'No currentUserPrompt provided for new session, using latest user_prompts'
+        : 'No currentUserPrompt provided for new session, using database', {
         sessionDbId,
         promptNumber,
+        latestPrompt: latestPromptText?.substring(0, 80) ?? '',
         dbPrompt: dbSession.user_prompt?.substring(0, 80) ?? ''
       });
     } else {
@@ -115,6 +133,8 @@ export class SessionManager {
       memorySessionId: null,  // Always start fresh - SDK will capture new ID
       project: suppliedProject || dbSession.project,
       platformSource: dbSession.platform_source,
+      observedModel: dbSession.observed_model ?? undefined,
+      observedBilling: dbSession.observed_billing ?? undefined,
       userPrompt,
       abortController: new AbortController(),
       generatorPromise: null,
@@ -128,6 +148,7 @@ export class SessionManager {
       currentProvider: null,  // Will be set when generator starts
       consecutiveRestarts: 0,
       consecutiveInvalidOutputs: 0,
+      consecutiveContextOverflows: 0,
       lastGeneratorActivity: Date.now(),  // Initialize for stale detection (Issue #1099)
       pendingAgentId: null,   // Subagent identity carried from the most recent claimed message
       pendingAgentType: null
@@ -156,6 +177,44 @@ export class SessionManager {
 
   getSession(sessionDbId: number): ActiveSession | undefined {
     return this.sessions.get(sessionDbId);
+  }
+
+  private deliverSessionWrapupInBackground(sessionDbId: number): void {
+    void deliverSessionWrapup({
+      sessionStore: this.dbManager.getSessionStore(),
+      sessionDbId,
+    }).catch((error: unknown) => {
+      logger.warn('TELEGRAM', 'Failed to deliver Telegram session wrap-up from SessionManager', {
+        sessionId: sessionDbId,
+      }, error instanceof Error ? error : new Error(String(error)));
+    });
+  }
+
+  private takeRequestedSessionWrapup(session: ActiveSession): boolean {
+    if (session.telegramWrapupTimer != null) {
+      clearTimeout(session.telegramWrapupTimer);
+      session.telegramWrapupTimer = null;
+    }
+
+    return session.telegramWrapupRequestedAt != null;
+  }
+
+  async requestSessionWrapup(sessionDbId: number): Promise<void> {
+    const session = this.getSession(sessionDbId);
+    if (!session) {
+      this.deliverSessionWrapupInBackground(sessionDbId);
+      return;
+    }
+
+    session.telegramWrapupRequestedAt = Date.now();
+    if (session.telegramWrapupTimer != null) {
+      clearTimeout(session.telegramWrapupTimer);
+    }
+    session.telegramWrapupTimer = setTimeout(() => {
+      session.telegramWrapupTimer = null;
+      this.deliverSessionWrapupInBackground(sessionDbId);
+    }, SESSION_END_WRAPUP_GRACE_MS);
+    session.telegramWrapupTimer.unref?.();
   }
 
   async queueObservation(sessionDbId: number, data: ObservationData): Promise<void> {
@@ -304,6 +363,9 @@ export class SessionManager {
       }
     }
 
+    if (this.takeRequestedSessionWrapup(session)) {
+      this.deliverSessionWrapupInBackground(sessionDbId);
+    }
     this.buffer.dispose(sessionDbId);
     this.sessions.delete(sessionDbId);
     logger.info('SESSION', 'Session deleted', {
@@ -325,6 +387,10 @@ export class SessionManager {
     if (session.respawnTimer) {
       clearTimeout(session.respawnTimer);
       session.respawnTimer = undefined;
+    }
+
+    if (this.takeRequestedSessionWrapup(session)) {
+      this.deliverSessionWrapupInBackground(sessionDbId);
     }
 
     this.buffer.dispose(sessionDbId);

@@ -95,11 +95,49 @@ interface StoredUserPrompt {
   platform_source: string;
 }
 
+function parseStringListField(
+  rawValue: string | null | undefined,
+  fieldName: 'facts' | 'concepts',
+  rowId: number,
+): string[] {
+  if (!rawValue) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue);
+    if (!Array.isArray(parsed)) {
+      logger.warn('CHROMA_SYNC', 'Expected JSON array in observation list field, using plain string fallback', {
+        fieldName,
+        rowId,
+        parsedType: typeof parsed,
+      });
+      if (typeof parsed === 'string') {
+        return parsed.trim() ? [parsed] : [];
+      }
+      return rawValue.trim() ? [rawValue] : [];
+    }
+    return parsed.filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  } catch (error) {
+    logger.warn('CHROMA_SYNC', 'Malformed observation list field, using plain string fallback', {
+      fieldName,
+      rowId,
+      errorName: error instanceof Error ? error.name : 'NonError',
+    });
+    return rawValue.trim() ? [rawValue] : [];
+  }
+}
+
 export class ChromaSync {
   private project: string;
   private collectionName: string;
   private collectionCreated = false;
+  private collectionCreation: Promise<void> | null = null;
   private readonly BATCH_SIZE = 100;
+  // How many rows in a row may fail to write before a backfill run gives up
+  // (#3928). Set per run in ensureBackfilled and read by runBackfillPipeline.
+  private readonly MAX_CONSECUTIVE_BATCH_FAILURES = 3;
+  private backfillAborted = false;
 
   constructor(project: string) {
     this.project = project;
@@ -120,6 +158,15 @@ export class ChromaSync {
       return;
     }
 
+    if (!this.collectionCreation) {
+      this.collectionCreation = this.createCollection().finally(() => {
+        this.collectionCreation = null;
+      });
+    }
+    await this.collectionCreation;
+  }
+
+  private async createCollection(): Promise<void> {
     const chromaMcp = ChromaMcpManager.getInstance();
     try {
       await chromaMcp.callTool('chroma_create_collection', {
@@ -143,8 +190,8 @@ export class ChromaSync {
   private formatObservationDocs(obs: StoredObservation): ChromaDocument[] {
     const documents: ChromaDocument[] = [];
 
-    const facts = obs.facts ? JSON.parse(obs.facts) : [];
-    const concepts = obs.concepts ? JSON.parse(obs.concepts) : [];
+    const facts = parseStringListField(obs.facts, 'facts', obs.id);
+    const concepts = parseStringListField(obs.concepts, 'concepts', obs.id);
     // parseFileList is SQLite-shaped (`bun:sqlite` in the import chain) —
     // resolve it through the deferred loader so this method stays out of
     // the SDK bundle's import graph. Plan §3.
@@ -461,9 +508,14 @@ export class ChromaSync {
     // #2282).
     const written = await this.addDocuments(documents);
     if (written === documents.length) {
+      ChromaSyncState.clearPending(project, 'observations', [observationId]);
       ChromaSyncState.bump(project, 'observations', observationId);
     } else {
-      logger.warn('CHROMA_SYNC', 'Observation watermark bump skipped — partial write', {
+      // Not bumping is not enough: the watermark is a high-water mark, so the
+      // next row that does write would skip past this one for good (#3917).
+      // Record it as pending so the backfill retries it, like backfillKind().
+      ChromaSyncState.markPending(project, 'observations', [observationId]);
+      logger.warn('CHROMA_SYNC', 'Observation watermark bump skipped — partial write, row marked pending', {
         observationId,
         project,
         requested: documents.length,
@@ -508,9 +560,11 @@ export class ChromaSync {
     // Only bump on a confirmed full write — see syncObservation() for rationale.
     const written = await this.addDocuments(documents);
     if (written === documents.length) {
+      ChromaSyncState.clearPending(project, 'summaries', [summaryId]);
       ChromaSyncState.bump(project, 'summaries', summaryId);
     } else {
-      logger.warn('CHROMA_SYNC', 'Summary watermark bump skipped — partial write', {
+      ChromaSyncState.markPending(project, 'summaries', [summaryId]);
+      logger.warn('CHROMA_SYNC', 'Summary watermark bump skipped — partial write, row marked pending', {
         summaryId,
         project,
         requested: documents.length,
@@ -565,9 +619,11 @@ export class ChromaSync {
     // Only bump on a confirmed full write — see syncObservation() for rationale.
     const written = await this.addDocuments([document]);
     if (written === 1) {
+      ChromaSyncState.clearPending(project, 'prompts', [promptId]);
       ChromaSyncState.bump(project, 'prompts', promptId);
     } else {
-      logger.warn('CHROMA_SYNC', 'Prompt watermark bump skipped — write failed', {
+      ChromaSyncState.markPending(project, 'prompts', [promptId]);
+      logger.warn('CHROMA_SYNC', 'Prompt watermark bump skipped — write failed, row marked pending', {
         promptId,
         project,
         written
@@ -709,6 +765,7 @@ export class ChromaSync {
 
     await this.ensureCollectionExists();
 
+    this.backfillAborted = false;
     const watermarks = ChromaSyncState.get(project);
 
     try {
@@ -725,8 +782,17 @@ export class ChromaSync {
     watermarks: ProjectWatermarks
   ): Promise<void> {
     const observationDocs = await this.backfillObservations(db, backfillProject, watermarks.observations);
+    if (this.backfillAborted) {
+      return;
+    }
     const summaryDocs = await this.backfillSummaries(db, backfillProject, watermarks.summaries);
+    if (this.backfillAborted) {
+      return;
+    }
     const promptDocs = await this.backfillPrompts(db, backfillProject, watermarks.prompts);
+    if (this.backfillAborted) {
+      return;
+    }
 
     logger.info('CHROMA_SYNC', 'Smart backfill complete', {
       project: backfillProject,
@@ -751,11 +817,30 @@ export class ChromaSync {
     kind: 'observations' | 'summaries' | 'prompts',
     backfillProject: string
   ): Promise<number> {
-    const rowsWithDocs = rows.map(row => ({ row, docs: formatDocs(row) }));
+    const rowsWithDocs: Array<{ row: T; docs: ChromaDocument[] }> = [];
+    for (const row of rows) {
+      try {
+        rowsWithDocs.push({ row, docs: formatDocs(row) });
+      } catch (error) {
+        // A single unformattable row (e.g. a malformed JSON column) must not
+        // abort the whole backfill. Skip and log it so the rest of the run
+        // proceeds. Mark the id pending so a later higher-id row that advances
+        // the watermark does not strand it: the pending path re-fetches it on
+        // the next run, which self-heals once its format issue is resolved.
+        ChromaSyncState.markPending(backfillProject, kind, [row.id]);
+        logger.warn('CHROMA_SYNC', 'Skipped unformattable row during backfill', {
+          project: backfillProject,
+          kind,
+          rowId: row.id
+        }, error instanceof Error ? error : new Error(String(error)));
+      }
+    }
     const totalDocs = rowsWithDocs.reduce((sum, { docs }) => sum + docs.length, 0);
     let processedDocs = 0;
+    let consecutiveFailures = 0;
 
-    for (const { row, docs } of rowsWithDocs) {
+    for (let rowIndex = 0; rowIndex < rowsWithDocs.length; rowIndex += 1) {
+      const { row, docs } = rowsWithDocs[rowIndex];
       if (docs.length === 0) {
         continue;
       }
@@ -782,6 +867,7 @@ export class ChromaSync {
           break;
         }
 
+        consecutiveFailures = 0;
         logger.debug('CHROMA_SYNC', 'Backfill progress', {
           project: backfillProject,
           progress: `${Math.min(processedDocs, totalDocs)}/${totalDocs}`
@@ -789,6 +875,24 @@ export class ChromaSync {
       }
 
       if (!rowComplete) {
+        consecutiveFailures += 1;
+        // A write that fails for several rows in a row is not a per-row
+        // problem, it is Chroma refusing writes. Walking every remaining row
+        // through the same failure logs one identical error per row (millions
+        // of lines on a large store, #3928) and never advances anything, so
+        // stop this run here. Nothing is lost: the rows keep their pending
+        // marks or stay above the watermark and the next backfill retries them.
+        if (consecutiveFailures >= this.MAX_CONSECUTIVE_BATCH_FAILURES) {
+          this.backfillAborted = true;
+          logger.error('CHROMA_SYNC', 'Backfill stopped after repeated batch failures', {
+            project: backfillProject,
+            kind,
+            consecutiveFailures,
+            lastRowId: row.id,
+            remainingRows: rowsWithDocs.length - rowIndex - 1
+          });
+          return totalDocs;
+        }
         continue;
       }
 

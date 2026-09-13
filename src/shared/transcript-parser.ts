@@ -2,11 +2,11 @@ import { readFileSync, existsSync } from 'fs';
 import { logger } from '../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../utils/tag-stripping.js';
 
-export function extractLastMessage(
-  transcriptPath: string,
-  role: 'user' | 'assistant',
-  stripSystemReminders: boolean = false
-): string {
+/**
+ * Read a transcript file once, trimmed. Returns '' (after a warn) when the
+ * path is missing, the file does not exist, or the file is empty.
+ */
+function readTranscriptOrWarn(transcriptPath: string): string {
   if (!transcriptPath || !existsSync(transcriptPath)) {
     logger.warn('PARSER', `Transcript path missing or file does not exist: ${transcriptPath}`);
     return '';
@@ -18,31 +18,15 @@ export function extractLastMessage(
     return '';
   }
 
-  return extractLastMessageFromJsonl(content, role, stripSystemReminders);
+  return content;
 }
 
 /**
- * Extract last message from a JSONL transcript.
- *
- * Supports two field conventions for the per-line role marker:
- * - Claude Code:  `{"type":"assistant",...}`
- * - Cursor:       `{"role":"assistant",...}`
- *
- * The most recent assistant turn is often a pure tool_use block with no text
- * content (especially in Cursor, where the agent's last action before the
- * user replies is a tool call). We therefore keep scanning backwards until
- * we find a turn with non-empty text content, instead of returning early on
- * the first matching role.
+ * Yield parsed JSONL entries from the last line to the first. Blank lines and
+ * lines that fail to parse are skipped so callers only ever see objects.
  */
-export function extractLastMessageFromJsonl(
-  content: string,
-  role: 'user' | 'assistant',
-  stripSystemReminders: boolean
-): string {
+function* parseJsonlLinesBackward(content: string): Generator<any> {
   const lines = content.split('\n');
-  let foundMatchingRole = false;
-  let lastEmptyText: string | null = null;
-
   for (let i = lines.length - 1; i >= 0; i--) {
     const rawLine = lines[i];
     if (!rawLine) continue;
@@ -58,32 +42,114 @@ export function extractLastMessageFromJsonl(
       // flood the log with noise for a documented, tolerated condition.
       continue;
     }
-    const lineRole = line.type ?? line.role;
+    yield line;
+  }
+}
+
+export function extractLastMessage(
+  transcriptPath: string,
+  role: 'user' | 'assistant',
+  stripSystemReminders: boolean = false
+): string {
+  const content = readTranscriptOrWarn(transcriptPath);
+  if (!content) return '';
+  return extractLastMessageFromJsonl(content, role, stripSystemReminders);
+}
+
+/**
+ * Read the transcript ONCE and extract both the last assistant text and the
+ * model that assistant turn was running. The Stop hook needs both, and a
+ * long transcript should not be read from disk twice for it.
+ */
+export function extractLastAssistantTurn(
+  transcriptPath: string,
+  stripSystemReminders: boolean = false
+): { text: string; model?: string } {
+  const content = readTranscriptOrWarn(transcriptPath);
+  if (!content) return { text: '' };
+  return {
+    text: extractLastMessageFromJsonl(content, 'assistant', stripSystemReminders),
+    model: extractLastAssistantModelFromJsonl(content),
+  };
+}
+
+/**
+ * Antigravity CLI (`agy`) transcript node types → chat roles. Its
+ * `brain/<session>/.system_generated/logs/transcript.jsonl` lines are shaped
+ * `{step_index, source, type, content}` with the text at the TOP LEVEL
+ * (`content`), not under `message.content` (issue #4057). Only PLANNER_RESPONSE
+ * carries the assistant's final text — RUN_COMMAND / VIEW_FILE / etc. also
+ * carry `source: 'MODEL'`, so we discriminate on `type`, never on `source`.
+ */
+const ANTIGRAVITY_TYPE_TO_ROLE: Record<string, 'user' | 'assistant'> = {
+  USER_INPUT: 'user',
+  PLANNER_RESPONSE: 'assistant',
+};
+
+/**
+ * Reduce a message content value to plain text. Returns `null` for an unknown
+ * shape so callers can skip the line (rather than treating it as empty text).
+ * Handles a top-level string, a Claude-style content array (`{type:'text',text}`),
+ * and a generic `{text}` array (Antigravity, when content isn't a bare string).
+ */
+function contentToText(msgContent: unknown): string | null {
+  if (typeof msgContent === 'string') return msgContent;
+  if (Array.isArray(msgContent)) {
+    return msgContent
+      .filter(
+        (c: any): c is { text: string } =>
+          !!c && typeof c === 'object' && typeof c.text === 'string' &&
+          (c.type === undefined || c.type === 'text')
+      )
+      .map((c) => c.text)
+      .join('\n');
+  }
+  return null;
+}
+
+/**
+ * Extract last message from a JSONL transcript.
+ *
+ * Supports three field conventions for the per-line role marker:
+ * - Claude Code:      `{"type":"assistant","message":{"content":...}}`
+ * - Cursor:           `{"role":"assistant","message":{"content":...}}`
+ * - Antigravity CLI:  `{"type":"PLANNER_RESPONSE","content":"..."}` (top-level)
+ *
+ * The most recent assistant turn is often a pure tool_use block with no text
+ * content (especially in Cursor, where the agent's last action before the
+ * user replies is a tool call). We therefore keep scanning backwards until
+ * we find a turn with non-empty text content, instead of returning early on
+ * the first matching role.
+ */
+export function extractLastMessageFromJsonl(
+  content: string,
+  role: 'user' | 'assistant',
+  stripSystemReminders: boolean
+): string {
+  let foundMatchingRole = false;
+  let lastEmptyText: string | null = null;
+
+  for (const line of parseJsonlLinesBackward(content)) {
+    const antigravityRole = typeof line.type === 'string'
+      ? ANTIGRAVITY_TYPE_TO_ROLE[line.type]
+      : undefined;
+    const lineRole = antigravityRole ?? line.type ?? line.role;
     if (lineRole !== role) continue;
     foundMatchingRole = true;
 
-    if (!line.message?.content) continue;
+    // Antigravity nodes carry text at the top level; Claude/Cursor nest it under
+    // `message.content`.
+    const msgContent = antigravityRole !== undefined ? line.content : line.message?.content;
+    if (msgContent === undefined || msgContent === null) continue;
 
-    let text = '';
-    const msgContent = line.message.content;
-    if (typeof msgContent === 'string') {
-      text = msgContent;
-    } else if (Array.isArray(msgContent)) {
-      text = msgContent
-        .filter(
-          (c: any): c is { type: 'text'; text: string } =>
-            !!c && typeof c === 'object' && c.type === 'text' && typeof c.text === 'string'
-        )
-        .map((c) => c.text)
-        .join('\n');
-    } else {
-      // Unknown content shape (null, number, plain object, etc.) — skip rather
-      // than throw. A single weird line should not crash the entire summary
-      // pipeline; we already tolerate malformed JSONL via the parse-catch
-      // above, and this is the same class of defensive forward compat
-      // (CodeRabbit / Greptile review on PR #2282).
-      continue;
-    }
+    // Unknown content shape (number, plain object, etc.) — skip rather than
+    // throw. A single weird line should not crash the entire summary pipeline;
+    // we already tolerate malformed JSONL in parseJsonlLinesBackward, and this
+    // is the same class of defensive forward compat (CodeRabbit / Greptile
+    // review on PR #2282).
+    const extracted = contentToText(msgContent);
+    if (extracted === null) continue;
+    let text = extracted;
 
     if (stripSystemReminders) {
       text = text.replace(SYSTEM_REMINDER_REGEX, '');
@@ -105,4 +171,30 @@ export function extractLastMessageFromJsonl(
     return '';
   }
   return lastEmptyText ?? '';
+}
+
+/**
+ * Extract the model id the OBSERVED session is running from its transcript.
+ *
+ * Every assistant entry in a Claude Code / Cursor transcript carries
+ * `message.model` (e.g. `"claude-fable-5-1"`). We scan backwards so the value
+ * reflects the most recent turn — this covers mid-session `/model` switches.
+ *
+ * This is the observed-session model (what the user's IDE is running), NOT the
+ * observer model claude-mem uses to write observations.
+ */
+export function extractLastAssistantModel(transcriptPath: string): string | undefined {
+  if (!transcriptPath || !existsSync(transcriptPath)) return undefined;
+  const content = readFileSync(transcriptPath, 'utf-8').trim();
+  if (!content) return undefined;
+  return extractLastAssistantModelFromJsonl(content);
+}
+
+export function extractLastAssistantModelFromJsonl(content: string): string | undefined {
+  for (const line of parseJsonlLinesBackward(content)) {
+    if ((line.type ?? line.role) !== 'assistant') continue;
+    const model = line.message?.model;
+    if (typeof model === 'string' && model) return model;
+  }
+  return undefined;
 }

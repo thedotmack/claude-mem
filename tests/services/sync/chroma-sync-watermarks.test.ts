@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -8,6 +8,7 @@ const realChromaMcpManagerSnapshot = { ...realChromaMcpManager };
 
 let existingObservationIds = new Set<number>();
 const addDocumentCalls: string[][] = [];
+const addDocumentPayloads: Array<{ ids: string[]; documents: string[]; metadatas: Array<Record<string, unknown>> }> = [];
 
 mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
   ChromaMcpManager: {
@@ -33,6 +34,11 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
 
         if (toolName === 'chroma_add_documents') {
           addDocumentCalls.push((args.ids as string[]) ?? []);
+          addDocumentPayloads.push({
+            ids: (args.ids as string[]) ?? [],
+            documents: (args.documents as string[]) ?? [],
+            metadatas: (args.metadatas as Array<Record<string, unknown>>) ?? [],
+          });
           return {};
         }
 
@@ -44,6 +50,7 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
 
 import { ChromaSync } from '../../../src/services/sync/ChromaSync.js';
 import { ChromaSyncState } from '../../../src/services/sync/ChromaSyncState.js';
+import { logger } from '../../../src/utils/logger.js';
 
 afterAll(() => {
   mock.module('../../../src/services/sync/ChromaMcpManager.js', () => realChromaMcpManagerSnapshot);
@@ -138,6 +145,7 @@ describe('ChromaSync watermark gap persistence', () => {
     process.env.CLAUDE_MEM_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-watermarks-'));
     existingObservationIds = new Set<number>();
     addDocumentCalls.length = 0;
+    addDocumentPayloads.length = 0;
     ChromaSyncState.replace(project, { observations: 0, summaries: 0, prompts: 0, pending: {} });
   });
 
@@ -149,6 +157,100 @@ describe('ChromaSync watermark gap persistence', () => {
 
     expect(ChromaSyncState.get(project).observations).toBe(4);
     expect(ChromaSyncState.getPending(project, 'observations')).toEqual([2]);
+  });
+
+  it('marks a failed live observation write pending so a later write cannot orphan it (#3917)', async () => {
+    ChromaSyncState.replace(project, {
+      observations: 4,
+      summaries: 0,
+      prompts: 0,
+      pending: {},
+    });
+    const sync = new ChromaSync(project) as ChromaSync & {
+      addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
+    };
+    const observation = {
+      type: 'discovery',
+      title: 'Observation',
+      subtitle: null,
+      facts: [],
+      narrative: 'Narrative',
+      concepts: [],
+      files_read: [],
+      files_modified: [],
+    };
+
+    // Chroma is down while observation 5 is written.
+    sync.addDocuments = async () => 0;
+    await sync.syncObservation(5, 'mem-5', project, observation, 5, 1_700_000_000_005, 'claude');
+    expect(ChromaSyncState.get(project).observations).toBe(4);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([5]);
+
+    // Chroma is back for observation 6: the watermark moves past 5, but 5 stays reachable.
+    sync.addDocuments = async (documents) => {
+      addDocumentCalls.push(documents.map(document => document.id));
+      return documents.length;
+    };
+    await sync.syncObservation(6, 'mem-6', project, observation, 6, 1_700_000_000_006, 'claude');
+    expect(ChromaSyncState.get(project).observations).toBe(6);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([5]);
+
+    // The next backfill picks the orphan up through the pending list.
+    await sync.ensureBackfilled(project, makeStore(project, [1, 2, 3, 4, 5, 6]));
+    expect(addDocumentCalls.flat()).toContain('obs_5_narrative');
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
+  });
+
+  it('marks a failed live prompt write pending and clears it once the prompt lands (#3917)', async () => {
+    ChromaSyncState.replace(project, {
+      observations: 0,
+      summaries: 0,
+      prompts: 2,
+      pending: {},
+    });
+    const sync = new ChromaSync(project) as ChromaSync & {
+      addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
+    };
+
+    sync.addDocuments = async () => 0;
+    await sync.syncUserPrompt(3, 'mem-3', project, 'prompt text', 3, 1_700_000_000_003, 'claude');
+    expect(ChromaSyncState.get(project).prompts).toBe(2);
+    expect(ChromaSyncState.getPending(project, 'prompts')).toEqual([3]);
+
+    sync.addDocuments = async (documents) => documents.length;
+    await sync.syncUserPrompt(3, 'mem-3', project, 'prompt text', 3, 1_700_000_000_003, 'claude');
+    expect(ChromaSyncState.get(project).prompts).toBe(3);
+    expect(ChromaSyncState.getPending(project, 'prompts')).toEqual([]);
+  });
+
+  it('marks a failed live summary write pending (#3917)', async () => {
+    ChromaSyncState.replace(project, {
+      observations: 0,
+      summaries: 7,
+      prompts: 0,
+      pending: {},
+    });
+    const sync = new ChromaSync(project) as ChromaSync & {
+      addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
+    };
+    const summary = {
+      request: 'request',
+      investigated: 'investigated',
+      learned: 'learned',
+      completed: 'completed',
+      next_steps: null,
+      notes: null,
+    };
+
+    sync.addDocuments = async () => 0;
+    await sync.syncSummary(8, 'mem-8', project, summary, 8, 1_700_000_000_008, 'claude');
+    expect(ChromaSyncState.get(project).summaries).toBe(7);
+    expect(ChromaSyncState.getPending(project, 'summaries')).toEqual([8]);
+
+    sync.addDocuments = async (documents) => documents.length;
+    await sync.syncSummary(9, 'mem-9', project, summary, 9, 1_700_000_000_009, 'claude');
+    expect(ChromaSyncState.get(project).summaries).toBe(9);
+    expect(ChromaSyncState.getPending(project, 'summaries')).toEqual([8]);
   });
 
   it('keeps pending observation ids when live sync advances past the gap', async () => {
@@ -202,6 +304,64 @@ describe('ChromaSync watermark gap persistence', () => {
     expect(ChromaSyncState.get(project).observations).toBe(5);
   });
 
+  it('stops a backfill run after repeated batch failures instead of walking every row (#3928)', async () => {
+    ChromaSyncState.replace(project, {
+      observations: 0,
+      summaries: 0,
+      prompts: 0,
+      pending: {},
+    });
+    const sync = new ChromaSync(project) as ChromaSync & {
+      addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
+    };
+    let attempts = 0;
+    sync.addDocuments = async () => {
+      attempts += 1;
+      return 0; // Chroma refuses every write
+    };
+
+    await sync.ensureBackfilled(project, makeStore(project, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
+
+    // Three failed rows, then the run stops; the other seven are never attempted.
+    expect(attempts).toBe(3);
+    expect(ChromaSyncState.get(project).observations).toBe(0);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([1, 2, 3]);
+
+    // Once Chroma writes again the same call finishes the whole backlog.
+    sync.addDocuments = async (documents) => {
+      addDocumentCalls.push(documents.map(document => document.id));
+      return documents.length;
+    };
+    await sync.ensureBackfilled(project, makeStore(project, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
+
+    expect(ChromaSyncState.get(project).observations).toBe(10);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
+    expect(addDocumentCalls.flat()).toContain('obs_10_narrative');
+  });
+
+  it('resets the failure streak when a later row succeeds', async () => {
+    ChromaSyncState.replace(project, {
+      observations: 0,
+      summaries: 0,
+      prompts: 0,
+      pending: {},
+    });
+    const sync = new ChromaSync(project) as ChromaSync & {
+      addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
+    };
+    let attempts = 0;
+    sync.addDocuments = async (documents) => {
+      attempts += 1;
+      // Rows 1-2 fail, row 3 succeeds, rows 4-5 fail, row 6 succeeds: never three in a row.
+      return attempts % 3 === 0 ? documents.length : 0;
+    };
+
+    await sync.ensureBackfilled(project, makeStore(project, [1, 2, 3, 4, 5, 6]));
+
+    expect(attempts).toBe(6);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([1, 2, 4, 5]);
+  });
+
   it('keeps a split observation row pending until every batch for that row lands', async () => {
     const splitRow = makeObservationRow(1, project, 101);
     ChromaSyncState.replace(project, {
@@ -235,5 +395,81 @@ describe('ChromaSync watermark gap persistence', () => {
     expect(ChromaSyncState.get(project).observations).toBe(1);
     expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
     expect(addDocumentCalls.some(batch => batch.includes('obs_1_fact_100'))).toBe(true);
+  });
+
+  it('backfills CJK plain-string facts and concepts without JSON parse failure', async () => {
+    const cjkFact = '用户身份定位——轻量数字化改造枢纽';
+    const cjkConcept = '数字化改造';
+    const cjkRow = {
+      ...makeObservationRow(1, project),
+      title: '观察: 用户身份定位',
+      facts: cjkFact,
+      concepts: cjkConcept,
+      narrative: '项目记录包含中文叙述',
+      text: '中文观察正文',
+    };
+    ChromaSyncState.replace(project, {
+      observations: 0,
+      summaries: 0,
+      prompts: 0,
+      pending: {},
+    });
+    const sync = new ChromaSync(project);
+
+    await sync.ensureBackfilled(project, makeStoreFromRows(project, [cjkRow]));
+
+    const writtenIds = addDocumentCalls.flat();
+    expect(writtenIds).toContain('obs_1_fact_0');
+    expect(addDocumentPayloads.flatMap(payload => payload.documents)).toContain(cjkFact);
+    expect(addDocumentPayloads.flatMap(payload => payload.metadatas).some(metadata => (
+      metadata.concepts === cjkConcept
+    ))).toBe(true);
+    expect(ChromaSyncState.get(project).observations).toBe(1);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
+  });
+
+  it('preserves JSON-looking plain-string list fields without logging raw memory content', async () => {
+    const secretFact = 'TREX_SECRET_OBSERVATION_TOKEN_9f3a7c_DO_NOT_LOG';
+    const jsonLookingFact = `{"note":"${secretFact}"}`;
+    const decodedJsonScalarConcept = '数字化改造';
+    const jsonScalarConcept = JSON.stringify(decodedJsonScalarConcept);
+    const malformedSecretFact = 'TREX_MALFORMED_SECRET_4b1e_DO_NOT_LOG';
+    const malformedJsonFact = `{"note":"${malformedSecretFact}"`;
+    const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+    const rowId = 1;
+    const malformedRowId = 2;
+    const cjkRow = {
+      ...makeObservationRow(rowId, project),
+      facts: jsonLookingFact,
+      concepts: jsonScalarConcept,
+      narrative: 'json-looking fallback row',
+    };
+    const malformedRow = {
+      ...makeObservationRow(malformedRowId, project),
+      facts: malformedJsonFact,
+      narrative: 'malformed fallback row',
+    };
+    ChromaSyncState.replace(project, {
+      observations: 0,
+      summaries: 0,
+      prompts: 0,
+      pending: {},
+    });
+    const sync = new ChromaSync(project);
+
+    try {
+      await sync.ensureBackfilled(project, makeStoreFromRows(project, [cjkRow, malformedRow]));
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    expect(addDocumentPayloads.flatMap(payload => payload.documents)).toContain(jsonLookingFact);
+    expect(addDocumentPayloads.flatMap(payload => payload.documents)).toContain(malformedJsonFact);
+    expect(addDocumentPayloads.flatMap(payload => payload.metadatas).some(metadata => (
+      metadata.concepts === decodedJsonScalarConcept
+    ))).toBe(true);
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(secretFact);
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(malformedSecretFact);
+    expect(ChromaSyncState.get(project).observations).toBe(malformedRowId);
   });
 });

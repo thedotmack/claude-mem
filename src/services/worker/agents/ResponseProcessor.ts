@@ -4,13 +4,20 @@ import { parseAgentXml, type ParsedObservation, type ParsedSummary } from '../..
 import {
   classifyObserverOutput,
   isAuthFailureObserverOutput,
+  isContextOverflowObserverOutput,
   isQuotaLimitedObserverOutput,
+  isTransportFailureObserverOutput,
   previewOutput,
 } from '../../../sdk/output-classifier.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
+import { deliverSessionWrapup } from '../../integrations/TelegramWrapupNotifier.js';
+import { notifyGrokBotAwareness } from '../../integrations/GrokBotAwarenessPusher.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
+import { recordObserverSuccess } from '../../../shared/observer-health.js';
+import { clearQuotaCooldown } from '../../../shared/quota-cooldown.js';
+import { recycleObserverConversation } from '../session/recycle-conversation.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import type { ActiveSession, PendingMessage } from '../../worker-types.js';
@@ -290,7 +297,18 @@ export async function processAgentResponse(
   session.lastGeneratorActivity = Date.now();
   const context = responseContext ?? snapshotResponseContext(session);
 
-  if (text) {
+  // Classify rejections BEFORE growing the window. "Prompt is too long", quota
+  // prose and auth prose are refusals, not conversational turns; appending them
+  // makes the next request strictly larger than the one that just failed, which
+  // is how an overflowed session could never recover on its own (#3800).
+  const isRejectionProse =
+    !!text &&
+    (isContextOverflowObserverOutput(text) ||
+      isQuotaLimitedObserverOutput(text) ||
+      isAuthFailureObserverOutput(text) ||
+      isTransportFailureObserverOutput(text));
+
+  if (text && !isRejectionProse) {
     session.conversationHistory.push({ role: 'assistant', content: text });
   }
 
@@ -304,6 +322,20 @@ export async function processAgentResponse(
     'claude';
 
   if (!parsed.valid) {
+    // The conversation filled up. Retire it and start a fresh generation
+    // seeded with this session's own observations, rather than re-queueing into
+    // a conversation that can only keep growing.
+    if (isContextOverflowObserverOutput(text)) {
+      await recycleObserverConversation(
+        session,
+        sessionManager,
+        worker,
+        'refused',
+        `${agentName} refused the prompt as too long: ${previewOutput(text)}`,
+      );
+      return;
+    }
+
     if (isQuotaLimitedObserverOutput(text)) {
       session.consecutiveInvalidOutputs = 0;
 
@@ -344,18 +376,52 @@ export async function processAgentResponse(
       return;
     }
 
+    // A response that is the child's OWN transport/API failure is not the
+    // observer declining to say anything — it is the observer never having
+    // run. Preserve the batch like the quota and auth cases above; confirming
+    // it here would turn a transient network fault into permanent data loss
+    // (#3752).
+    if (isTransportFailureObserverOutput(text)) {
+      session.consecutiveInvalidOutputs = 0;
+
+      await sessionManager.resetProcessingToPending(session.sessionDbId);
+      session.abortReason = 'transport:observer_text';
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+      worker?.broadcastProcessingStatus?.();
+      logger.error('PARSER', `${agentName} could not reach the provider; queued batch preserved for retry`, {
+        sessionId: session.sessionDbId,
+        outputClass: 'transport',
+        preview: previewOutput(text),
+      });
+      return;
+    }
+
     // Classify the non-XML output so a dropped batch is visible, not silent.
     // Ordinary idle/prose is a claimed no-op batch: confirm it and do not build
     // any respawn debt from repeated skip acknowledgements.
     const outputClass = classifyObserverOutput(text);
     const preview = previewOutput(text);
     session.consecutiveInvalidOutputs = 0;
+    // The overflow/quota/auth rejections returned above, so reaching here means
+    // the provider accepted this prompt and answered it. That is proof the
+    // conversation fits, whether or not the answer parsed — so the recycle
+    // counter resets here too. Resetting only on a valid parse let a generation
+    // that answered "idle" twice in a row trip the exhausted branch and wedge.
+    session.consecutiveContextOverflows = 0;
 
+    // consecutiveInvalidOutputs is deliberately always 0 here (see worker-types),
+    // so logging it read as "the breaker is fine" on every rejection and hid
+    // #3800 for a full day of failures. Report the counter that can actually be
+    // non-zero instead.
     logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response — ignoring queued batch`, {
       sessionId: session.sessionDbId,
       outputClass,
       preview,
-      consecutiveInvalidOutputs: session.consecutiveInvalidOutputs,
+      consecutiveContextOverflows: session.consecutiveContextOverflows,
     });
 
     // Plain-text skip responses are intentionally ignored. Re-queueing them
@@ -366,8 +432,10 @@ export async function processAgentResponse(
   }
 
   // Valid parse — clear the invalid-output counter so transient misses don't
-  // accumulate toward a respawn across a healthy session.
+  // accumulate toward a respawn across a healthy session, and clear the overflow
+  // counter so recycles only ever trip on *consecutive* failures.
   session.consecutiveInvalidOutputs = 0;
+  session.consecutiveContextOverflows = 0;
 
   if (!session.memorySessionId) {
     logger.warn('SDK', 'memorySessionId not yet captured; deferring storage until next round', {
@@ -381,17 +449,33 @@ export async function processAgentResponse(
   }
 
   const { observations, summary } = parsed;
-  const summaryForStore = normalizeSummaryForStorage(summary);
   const claimedMessages = sessionManager.getClaimedMessages(session.sessionDbId);
   const fileEvidence = extractObservationFileEvidence(claimedMessages);
   const sanitizedObservations = sanitizeObservationFiles(observations, fileEvidence);
+  // Include claimed-message file evidence even for summary-only responses
+  // (no parsed observations), otherwise files_read/files_edited persist as [].
+  const summaryForStore = attachObservationFilesToSummary(
+    normalizeSummaryForStorage(summary),
+    [
+      {
+        files_read: fileEvidence.files_read,
+        files_modified: fileEvidence.files_modified,
+      },
+      ...sanitizedObservations,
+    ]
+  );
 
   const sessionStore = dbManager.getSessionStore();
-  sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId, getWorkerPort());
+  // ensure registers only when the stored id is NULL. Persist against the
+  // registered identity so a later turn's fresh SDK session_id cannot FK-miss
+  // observations/summaries that already hang off the first id.
+  const registeredMemorySessionId =
+    sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId, getWorkerPort())
+    || session.memorySessionId;
 
-  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${sanitizedObservations.length} | hasSummary=${!!summaryForStore}`, {
+  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${registeredMemorySessionId} | obsCount=${sanitizedObservations.length} | hasSummary=${!!summaryForStore}`, {
     sessionId: session.sessionDbId,
-    memorySessionId: session.memorySessionId
+    memorySessionId: registeredMemorySessionId
   });
 
   const labeledObservations = sanitizedObservations.map(obs => ({
@@ -403,7 +487,7 @@ export async function processAgentResponse(
   let result: ReturnType<typeof sessionStore.storeObservations>;
   try {
     result = sessionStore.storeObservations(
-      session.memorySessionId,
+      registeredMemorySessionId,
       context.project,
       labeledObservations,
       summaryForStore,
@@ -417,12 +501,54 @@ export async function processAgentResponse(
     session.pendingAgentType = null;
   }
 
-  logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
+  logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${registeredMemorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
     sessionId: session.sessionDbId,
-    memorySessionId: session.memorySessionId
+    memorySessionId: registeredMemorySessionId
   });
 
   session.lastSummaryStored = result.summaryId !== null;
+
+  // Late link: point the durable tool_uses rows this batch was generated from
+  // at the observation that now summarizes them. It has to happen here and not
+  // at ingest — the observation did not exist yet, and neither did
+  // memorySessionId. The batch's FIRST observation id owns the link (see
+  // linkToolUsesToObservation), and RECEIPT-JOIN.md documents that
+  // observation_id is a pointer into the batch, not a 1:1 mapping; the reliable
+  // per-call join stays (content_session_id, tool_use_id).
+  //
+  // Never fatal: a failed link costs a back-reference, not an observation.
+  const claimedToolUseIds = Array.from(new Set(
+    claimedMessages
+      .map(message => message.toolUseId)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0)
+  ));
+  if (claimedToolUseIds.length > 0 && result.observationIds.length > 0) {
+    try {
+      const linked = sessionStore.linkToolUsesToObservation({
+        contentSessionId: session.contentSessionId,
+        toolUseIds: claimedToolUseIds,
+        observationId: result.observationIds[0],
+        memorySessionId: session.memorySessionId,
+      });
+      logger.debug('DB', `TOOL_USES_LINKED | sessionDbId=${session.sessionDbId} | rows=${linked} | observationId=${result.observationIds[0]}`, {
+        sessionId: session.sessionDbId
+      });
+    } catch (error) {
+      logger.warn('DB', 'tool_uses observation link failed', {
+        sessionId: session.sessionDbId,
+        observationId: result.observationIds[0],
+      }, error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  // A completed store proves the observer pipeline works end-to-end — clear
+  // the failure streak in the observer-health ledger, and release any quota
+  // breaker so a re-probe that succeeds restores full speed at once rather
+  // than waiting out the remaining cooldown (#3634).
+  recordObserverSuccess();
+  if (session.currentProvider) {
+    clearQuotaCooldown(session.currentProvider);
+  }
 
   // Telemetry: counts, enums, and REAL usage only (lastUsage is never an
   // estimate — providers leave it null when the API gave no usage split).
@@ -449,6 +575,11 @@ export async function processAgentResponse(
     // as "no model" in PostHog — stamp 'unknown' instead.
     model: typeof modelId === 'string' && modelId ? modelId : 'unknown',
     ide: session.platformSource,
+    // Observed-session identity (NOT the observer): the model the user's IDE
+    // session ran and its billing posture, stamped by the Stop hook. Omitted
+    // when unknown — the rollup fills 'unknown' at flush time.
+    observed_model: session.observedModel,
+    observed_billing: session.observedBilling,
     hook: session.lastGeneratorSource,
     endpoint_class: session.endpointClass,
     compression_ms: compressionMs,
@@ -497,6 +628,14 @@ export async function processAgentResponse(
     memorySessionId: session.memorySessionId,
   });
 
+  void notifyGrokBotAwareness({
+    observations: labeledObservations,
+    observationIds: result.observationIds,
+    project: context.project,
+    memorySessionId: session.memorySessionId,
+    agentId: context.pendingAgentId,
+  });
+
   await syncAndBroadcastObservations(
     labeledObservations,
     result,
@@ -518,6 +657,17 @@ export async function processAgentResponse(
     worker,
     agentName
   );
+
+  if (result.summaryId && session.telegramWrapupRequestedAt != null) {
+    void deliverSessionWrapup({
+      sessionStore: dbManager.getSessionStore(),
+      sessionDbId: session.sessionDbId,
+    }).catch((error: unknown) => {
+      logger.warn('TELEGRAM', 'Failed to deliver Telegram session wrap-up from ResponseProcessor', {
+        sessionId: session.sessionDbId,
+      }, error instanceof Error ? error : new Error(String(error)));
+    });
+  }
 }
 
 function normalizeSummaryForStorage(summary: ParsedSummary | null): {
@@ -527,6 +677,8 @@ function normalizeSummaryForStorage(summary: ParsedSummary | null): {
   completed: string;
   next_steps: string;
   notes: string | null;
+  files_read: string[];
+  files_edited: string[];
 } | null {
   if (!summary) return null;
   if (summary.skipped) return null;
@@ -537,7 +689,47 @@ function normalizeSummaryForStorage(summary: ParsedSummary | null): {
     learned: summary.learned || '',
     completed: summary.completed || '',
     next_steps: summary.next_steps || '',
-    notes: summary.notes
+    notes: summary.notes,
+    files_read: [],
+    files_edited: [],
+  };
+}
+
+export function attachObservationFilesToSummary(
+  summary: {
+    request: string;
+    investigated: string;
+    learned: string;
+    completed: string;
+    next_steps: string;
+    notes: string | null;
+    files_read?: string[];
+    files_edited?: string[];
+  } | null,
+  observations: Array<{ files_read?: string[] | null; files_modified?: string[] | null }>
+): {
+  request: string;
+  investigated: string;
+  learned: string;
+  completed: string;
+  next_steps: string;
+  notes: string | null;
+  files_read: string[];
+  files_edited: string[];
+} | null {
+  if (!summary) return null;
+  const filesRead = dedupeStable([
+    ...(summary.files_read ?? []),
+    ...observations.flatMap((obs) => obs.files_read ?? []),
+  ]);
+  const filesEdited = dedupeStable([
+    ...(summary.files_edited ?? []),
+    ...observations.flatMap((obs) => obs.files_modified ?? []),
+  ]);
+  return {
+    ...summary,
+    files_read: filesRead,
+    files_edited: filesEdited,
   };
 }
 

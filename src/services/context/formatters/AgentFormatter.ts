@@ -21,9 +21,16 @@ function formatHeaderDateTime(): string {
   return `${date} ${time} ${tz}`;
 }
 
+function formatActiveMode(): string {
+  const manager = ModeManager.getInstance();
+  const mode = manager.getActiveMode();
+  return `${mode.name} (${manager.getActiveModeId()})`;
+}
+
 export function renderAgentHeader(project: string): string[] {
   return [
     `# [${project}] recent context, ${formatHeaderDateTime()}`,
+    `Mode: ${formatActiveMode()}`,
     ''
   ];
 }
@@ -156,5 +163,5 @@ export function renderAgentFooter(totalDiscoveryTokens: number, totalReadTokens:
 }
 
 export function renderAgentEmptyState(project: string): string {
-  return `# [${project}] recent context, ${formatHeaderDateTime()}\n\nNo previous sessions found.`;
+  return `# [${project}] recent context, ${formatHeaderDateTime()}\nMode: ${formatActiveMode()}\n\nNo previous sessions found.`;
 }

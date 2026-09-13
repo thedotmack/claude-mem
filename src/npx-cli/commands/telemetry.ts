@@ -69,16 +69,19 @@ const COLLECTED_FIELDS = [
   'invalid_output_class   xml / idle / prose (never the output)',
   'consecutive_invalid_outputs   legacy unusable-output counter',
   'respawn_triggered      legacy recovery flag for old invalid-output restarts',
-  'abort_reason     idle / shutdown / overflow / restart_guard / quota / none',
+  'abort_reason     idle / shutdown / overflow / restart_guard / quota / provider_switch / none',
   'previous_shutdown      crash / clean / unknown (detected at worker start)',
   'previous_uptime_seconds / uptime_seconds',
   '                 worker uptime in whole seconds (previous run / at stop)',
   'shutdown_reason  stop / restart / signal',
   'process_rss_mb / heap_used_mb   worker memory, integer megabytes',
-  'hook_type        context / session-init / observation / summarize / file-context',
+  'hook_type        context / session-init / observation / summarize / session-end / file-context',
   'error_mode       worker_unavailable / blocking_error (never a message)',
   'consecutive_failures   hook failures in a row (the fail-loud counter)',
   'threshold_tripped      whether the fail-loud threshold was reached',
+  'skill_id         first-party plugin/skills name or other (never a third-party name)',
+  'skill_source     first_party / third_party',
+  'skill_trigger    tool (Skill tool) / prompt (typed /skill)',
 ];
 
 const EVENT_NAMES = [
@@ -90,6 +93,7 @@ const EVENT_NAMES = [
   'session_compressed',
   'context_injected',
   'search_performed',
+  'skill_invoked',
   'hook_failed',
   'error_occurred',
 ];

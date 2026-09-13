@@ -41,14 +41,19 @@ function getFrames(): string[] {
   return frames;
 }
 
-function styleFrame(
-  frame: string,
-  truecolor: boolean,
-  brightness: number = 1.0,
-): string {
-  const primary = primaryColor(truecolor, brightness);
-  const accent = accentColor(truecolor, brightness);
-  let out = primary;
+/** One character of a parsed frame plus whether it sits inside an accent span. */
+export interface FrameCell {
+  ch: string;
+  accent: boolean;
+}
+
+/**
+ * Parse a raw span-marked frame (`<x>…</x>` accent markers, `\n` row
+ * separators) into per-character cells carrying an accent flag. Span state
+ * carries across newlines, matching the original single-pass styling.
+ */
+export function parseFrameCells(frame: string): FrameCell[][] {
+  const rows: FrameCell[][] = [[]];
   let i = 0;
   let inSpan = false;
   while (i < frame.length) {
@@ -56,15 +61,92 @@ function styleFrame(
     if (ch === '<') {
       const isClosing = frame[i + 1] === '/';
       while (i < frame.length && frame[i] !== '>') i++;
-      i++; 
+      i++;
       inSpan = !isClosing;
-      out += inSpan ? accent : primary;
       continue;
     }
-    out += ch;
+    if (ch === '\n') {
+      rows.push([]);
+      i++;
+      continue;
+    }
+    rows[rows.length - 1].push({ ch, accent: inSpan });
     i++;
   }
+  if (rows.length > 1 && rows[rows.length - 1].length === 0) rows.pop();
+  return rows;
+}
+
+/**
+ * Nearest-neighbor downsample of a cell grid to at most targetCols × targetRows.
+ * Sampling is even: output index j maps to source index floor(j * src / target).
+ * Never upsamples — targets larger than the source return the source cells.
+ */
+export function downsampleFrameCells(
+  cells: FrameCell[][],
+  targetCols: number,
+  targetRows: number,
+): FrameCell[][] {
+  const srcRows = cells.length;
+  const srcCols = cells.reduce((max, row) => Math.max(max, row.length), 0);
+  const outRows = Math.min(Math.max(1, targetRows), srcRows);
+  const outCols = Math.min(Math.max(1, targetCols), srcCols);
+  if (outRows === srcRows && outCols === srcCols) return cells;
+  const out: FrameCell[][] = [];
+  for (let r = 0; r < outRows; r++) {
+    const srcRow = cells[outRows === srcRows ? r : Math.floor((r * srcRows) / outRows)];
+    const row: FrameCell[] = [];
+    for (let c = 0; c < outCols; c++) {
+      const sc = outCols === srcCols ? c : Math.floor((c * srcCols) / outCols);
+      row.push(srcRow[sc] ?? { ch: ' ', accent: false });
+    }
+    out.push(row);
+  }
+  return out;
+}
+
+export interface FrameRenderOptions {
+  /** false → monochrome: plain glyphs, zero SGR sequences (NO_COLOR). */
+  color: boolean;
+  truecolor: boolean;
+  brightness?: number;
+}
+
+/**
+ * Render parsed cells to a printable string. With color, accent-flagged cells
+ * switch to the accent color and the output ends with a reset; without color
+ * the output is the bare glyphs with no escape sequences at all.
+ */
+export function renderFrameCells(cells: FrameCell[][], opts: FrameRenderOptions): string {
+  if (!opts.color) {
+    return cells.map((row) => row.map((cell) => cell.ch).join('')).join('\n');
+  }
+  const brightness = opts.brightness ?? 1.0;
+  const primary = primaryColor(opts.truecolor, brightness);
+  const accent = accentColor(opts.truecolor, brightness);
+  let out = primary;
+  let inAccent = false;
+  for (let r = 0; r < cells.length; r++) {
+    if (r > 0) out += '\n';
+    for (const cell of cells[r]) {
+      if (cell.accent !== inAccent) {
+        inAccent = cell.accent;
+        out += inAccent ? accent : primary;
+      }
+      out += cell.ch;
+    }
+  }
   return out + RESET;
+}
+
+/** Pure core of adaptive banner scaling: parse → downsample → render. */
+export function scaleFrame(
+  frame: string,
+  targetCols: number,
+  targetRows: number,
+  opts: FrameRenderOptions,
+): string {
+  return renderFrameCells(downsampleFrameCells(parseFrameCells(frame), targetCols, targetRows), opts);
 }
 
 function detectTruecolor(): boolean {
@@ -82,29 +164,48 @@ const BUBBLE_HEIGHT = WORDMARK_BUBBLE.length;
 const BUBBLE_WIDTH = WORDMARK_BUBBLE[0].length;
 
 const TAGLINE_GAP = 1;
-const TOTAL_ROWS = BANNER.height + BUBBLE_HEIGHT + TAGLINE_GAP + 1;
+/** Terminal row count below which the art is downsampled vertically. */
+const ROW_SCALE_THRESHOLD = BANNER.height + 4;
+const MIN_ART_ROWS = 8;
 
-function writeBubbleRow(rowIdx: number, colsRevealed: number): string {
-  const src = WORDMARK_BUBBLE[rowIdx];
-  const W = BANNER.width;
-  const visible = src.slice(0, Math.min(BUBBLE_WIDTH, colsRevealed)).padEnd(BUBBLE_WIDTH, ' ');
-  const pad = Math.max(0, Math.floor((W - BUBBLE_WIDTH) / 2));
-  return ' '.repeat(pad) + `\x1b[1;97m${visible}\x1b[0m` + ' '.repeat(Math.max(0, W - pad - BUBBLE_WIDTH));
+/** Derive the render target from the current terminal size. */
+function targetArtSize(): { cols: number; rows: number } {
+  const cols = Math.min(process.stdout.columns ?? BANNER.width, BANNER.width);
+  const termRows = process.stdout.rows ?? ROW_SCALE_THRESHOLD;
+  let rows = BANNER.height;
+  if (termRows < ROW_SCALE_THRESHOLD) {
+    const reserved = BUBBLE_HEIGHT + TAGLINE_GAP + 2;
+    rows = Math.min(BANNER.height, Math.max(MIN_ART_ROWS, termRows - reserved));
+  }
+  return { cols: Math.max(1, cols), rows };
 }
 
-function writeTaglineRow(text: string): string {
-  const W = BANNER.width;
-  const pad = Math.max(0, Math.floor((W - text.length) / 2));
-  return ' '.repeat(pad) + `\x1b[2;37m${text}\x1b[0m` + ' '.repeat(Math.max(0, W - pad - text.length));
+function writeBubbleRow(rowIdx: number, colsRevealed: number, width: number, color: boolean): string {
+  const src = WORDMARK_BUBBLE[rowIdx];
+  // Center-crop the wordmark when the target width can't fit it.
+  const bubbleWidth = Math.min(BUBBLE_WIDTH, width);
+  const cropStart = Math.max(0, Math.floor((BUBBLE_WIDTH - bubbleWidth) / 2));
+  const cropped = src.slice(cropStart, cropStart + bubbleWidth);
+  const visible = cropped.slice(0, Math.min(bubbleWidth, colsRevealed)).padEnd(bubbleWidth, ' ');
+  const pad = Math.max(0, Math.floor((width - bubbleWidth) / 2));
+  const rightPad = ' '.repeat(Math.max(0, width - pad - bubbleWidth));
+  const styled = color ? `\x1b[1;97m${visible}\x1b[0m` : visible;
+  return ' '.repeat(pad) + styled + rightPad;
+}
+
+function writeTaglineRow(text: string, width: number, color: boolean): string {
+  const shown = text.length > width ? text.slice(0, width) : text;
+  const pad = Math.max(0, Math.floor((width - shown.length) / 2));
+  const rightPad = ' '.repeat(Math.max(0, width - pad - shown.length));
+  const styled = color ? `\x1b[2;37m${shown}\x1b[0m` : shown;
+  return ' '.repeat(pad) + styled + rightPad;
 }
 
 export function isBannerEnabled(): boolean {
   if (!process.stdout.isTTY) return false;
   if (process.env.CI) return false;
   if (process.env.CLAUDE_MEM_NO_BANNER) return false;
-  if (process.env.NO_COLOR) return false;
-  const cols = process.stdout.columns ?? 0;
-  return cols >= BANNER.width;
+  return true;
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -112,70 +213,79 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 export async function playBanner(): Promise<void> {
   if (!isBannerEnabled()) return;
   const truecolor = detectTruecolor();
+  const color = !process.env.NO_COLOR;
   const allFrames = getFrames();
   if (allFrames.length === 0) return;
+  const { cols, rows } = targetArtSize();
+  const frameCells = allFrames.map((f) => downsampleFrameCells(parseFrameCells(f), cols, rows));
+  const rendered = frameCells.map((c) => renderFrameCells(c, { color, truecolor }));
+  const finalCells = frameCells[frameCells.length - 1];
+  const artRows = finalCells.length;
+  const totalRows = artRows + BUBBLE_HEIGHT + TAGLINE_GAP + 1;
+  const bubbleWidth = Math.min(BUBBLE_WIDTH, cols);
+
   let aborted = false;
   const onResize = () => { aborted = true; };
   process.stdout.on('resize', onResize);
   process.stdout.write(CLEAR_SCREEN);
   process.stdout.write(HIDE_CURSOR);
 
-  process.stdout.write('\n'.repeat(TOTAL_ROWS));
-  process.stdout.write(`\x1b[${TOTAL_ROWS}A`);
+  process.stdout.write('\n'.repeat(totalRows));
+  process.stdout.write(`\x1b[${totalRows}A`);
   process.stdout.write('\x1b[s');
 
-  const blankRow = ' '.repeat(BANNER.width);
+  const blankRow = ' '.repeat(cols);
 
-  const writeFrame = (frameText: string, colsRevealed: number, tagline: string, brightness: number = 1.0) => {
+  const writeFrame = (art: string, colsRevealed: number, tagline: string) => {
     process.stdout.write('\x1b[u');
-    process.stdout.write(styleFrame(frameText, truecolor, brightness));
+    process.stdout.write(art);
     process.stdout.write('\n');
     for (let i = 0; i < BUBBLE_HEIGHT; i++) {
-      process.stdout.write(writeBubbleRow(i, colsRevealed));
+      process.stdout.write(writeBubbleRow(i, colsRevealed, cols, color));
       process.stdout.write('\n');
     }
     for (let g = 0; g < TAGLINE_GAP; g++) {
       process.stdout.write(blankRow);
       process.stdout.write('\n');
     }
-    process.stdout.write(writeTaglineRow(tagline));
+    process.stdout.write(writeTaglineRow(tagline, cols, color));
   };
 
   try {
-    for (let i = 0; i < allFrames.length; i++) {
+    for (let i = 0; i < rendered.length; i++) {
       if (aborted) return;
-      writeFrame(allFrames[i], 0, '');
+      writeFrame(rendered[i], 0, '');
       await sleep(BANNER.frameDelay);
     }
 
-    const finalFrame = allFrames[allFrames.length - 1];
+    const finalArt = rendered[rendered.length - 1];
     const TAGLINE = 'persistent memory across sessions';
 
     const REVEAL_STEPS = 14;
     for (let s = 1; s <= REVEAL_STEPS; s++) {
       if (aborted) return;
-      const cols = Math.ceil(BUBBLE_WIDTH * (s / REVEAL_STEPS));
-      writeFrame(finalFrame, cols, '');
+      const revealCols = Math.ceil(bubbleWidth * (s / REVEAL_STEPS));
+      writeFrame(finalArt, revealCols, '');
       await sleep(45);
     }
 
     for (let s = 1; s <= 6; s++) {
       if (aborted) return;
       const chars = Math.ceil(TAGLINE.length * (s / 6));
-      writeFrame(finalFrame, BUBBLE_WIDTH, TAGLINE.slice(0, chars));
+      writeFrame(finalArt, bubbleWidth, TAGLINE.slice(0, chars));
       await sleep(33);
     }
 
     for (const brightness of [0.85, 0.95, 1.0]) {
       if (aborted) return;
-      writeFrame(finalFrame, BUBBLE_WIDTH, TAGLINE, brightness);
+      writeFrame(renderFrameCells(finalCells, { color, truecolor, brightness }), bubbleWidth, TAGLINE);
       await sleep(100);
     }
 
     await sleep(150);
   } finally {
     process.stdout.off('resize', onResize);
-    process.stdout.write(RESET);
+    if (color) process.stdout.write(RESET);
     process.stdout.write(SHOW_CURSOR);
     process.stdout.write('\n');
   }
