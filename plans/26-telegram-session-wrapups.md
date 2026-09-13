@@ -330,7 +330,9 @@ Commit: `feat(telegram): deliver wrap-up after the session-end summary lands (pl
 
 ---
 
-## Phase 4 — Docs, build, anti-pattern sweep, full verification
+## Phase 4 — Docs, build, anti-pattern sweep, full verification (complete)
+
+Completed 2026-09-12 in `ab58249cca9d11530e6cdbe354f6d81f7b59636f`: docs and generated plugin output were reconciled; `npm run build` and `npx tsc --noEmit -p .` passed, and `npm test` reported 3,763 passed / 28 skipped / 1 authorized baseline failure (`tests/worker/field-deadline-wire.test.ts`). No paid manual smoke was run.
 
 Fresh Codex session.
 
