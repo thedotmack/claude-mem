@@ -203,6 +203,20 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     expect(decision.window).toBe('overage');
   });
 
+  it('keeps overage rejection active when only the primary reset has elapsed', () => {
+    store.set({
+      rateLimitType: 'overage',
+      utilization: 0,
+      isUsingOverage: false,
+      status: 'allowed_warning',
+      overageStatus: 'rejected',
+      resetsAt: FIXED_NOW - 1,
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('overage');
+  });
+
   it('aborts when inactive overage is rejected by status', () => {
     store.set({
       rateLimitType: 'overage',

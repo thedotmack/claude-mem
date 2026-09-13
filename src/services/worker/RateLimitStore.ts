@@ -339,7 +339,10 @@ function toEpochMs(value: number | undefined): number | undefined {
 
 function getResetAtMs(entry: RateLimitInfo, window: RateLimitWindow): number | undefined {
   if (window === 'overage') {
-    return toEpochMs(entry.overageResetsAt ?? entry.resetsAt);
+    // The primary window's reset does not clear an overage rejection. Without
+    // an explicit overage reset, keep the rejection active until a fresh
+    // provider snapshot replaces it.
+    return toEpochMs(entry.overageResetsAt);
   }
   return toEpochMs(entry.resetsAt);
 }
