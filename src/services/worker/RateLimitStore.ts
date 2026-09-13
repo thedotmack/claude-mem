@@ -84,16 +84,25 @@ export class RateLimitStore {
     if (!info || typeof info !== 'object') return [];
     const newRejections: RateLimitEntry[] = [];
     const key: RateLimitBucketKey = info.rateLimitType ?? 'default';
-    const primaryRejection = this.setBucket(key, info);
-    if (primaryRejection) newRejections.push(primaryRejection);
 
-    // A unified snapshot is a fresh view of every listed window. Process it
-    // after the primary bucket so a nested snapshot can clear stale fields
-    // even when it omits them (for example, an old `status: rejected`).
+    // Build the final authoritative snapshot per bucket first. A unified
+    // snapshot for the same window as the top-level bucket is a fresh view
+    // that must override the primary entry (it can clear stale fields even
+    // when it omits them, e.g. an old `status: rejected`). Writing each final
+    // bucket exactly once means a rejection transition is evaluated once
+    // against the pre-event cache, so a same-key primary+unified pair cannot
+    // produce a transient or duplicate rejection signal.
+    const buckets = new Map<RateLimitBucketKey, RateLimitInfo>([
+      [key, info],
+    ]);
     for (const [window, snapshot] of Object.entries(info.unifiedWindows ?? {})) {
       if (!isRateLimitWindow(window) || !snapshot || typeof snapshot !== 'object') continue;
-      const nestedRejection = this.setBucket(window, { ...snapshot, rateLimitType: window });
-      if (nestedRejection) newRejections.push(nestedRejection);
+      buckets.set(window, { ...snapshot, rateLimitType: window });
+    }
+
+    for (const [bucketKey, bucketInfo] of buckets) {
+      const rejection = this.setBucket(bucketKey, bucketInfo);
+      if (rejection) newRejections.push(rejection);
     }
 
     return newRejections;
