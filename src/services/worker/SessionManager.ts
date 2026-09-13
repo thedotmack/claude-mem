@@ -5,6 +5,9 @@ import { SessionMessageBuffer } from './SessionMessageBuffer.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../supervisor/process-registry.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
+import { deliverSessionWrapup } from '../integrations/TelegramWrapupNotifier.js';
+
+export const SESSION_END_WRAPUP_GRACE_MS = 5_000;
 
 export class SessionManager {
   private dbManager: DatabaseManager;
@@ -176,6 +179,44 @@ export class SessionManager {
     return this.sessions.get(sessionDbId);
   }
 
+  private deliverSessionWrapupInBackground(sessionDbId: number): void {
+    void deliverSessionWrapup({
+      sessionStore: this.dbManager.getSessionStore(),
+      sessionDbId,
+    }).catch((error: unknown) => {
+      logger.warn('TELEGRAM', 'Failed to deliver Telegram session wrap-up from SessionManager', {
+        sessionId: sessionDbId,
+      }, error instanceof Error ? error : new Error(String(error)));
+    });
+  }
+
+  private takeRequestedSessionWrapup(session: ActiveSession): boolean {
+    if (session.telegramWrapupTimer != null) {
+      clearTimeout(session.telegramWrapupTimer);
+      session.telegramWrapupTimer = null;
+    }
+
+    return session.telegramWrapupRequestedAt != null;
+  }
+
+  async requestSessionWrapup(sessionDbId: number): Promise<void> {
+    const session = this.getSession(sessionDbId);
+    if (!session) {
+      this.deliverSessionWrapupInBackground(sessionDbId);
+      return;
+    }
+
+    session.telegramWrapupRequestedAt = Date.now();
+    if (session.telegramWrapupTimer != null) {
+      clearTimeout(session.telegramWrapupTimer);
+    }
+    session.telegramWrapupTimer = setTimeout(() => {
+      session.telegramWrapupTimer = null;
+      this.deliverSessionWrapupInBackground(sessionDbId);
+    }, SESSION_END_WRAPUP_GRACE_MS);
+    session.telegramWrapupTimer.unref?.();
+  }
+
   async queueObservation(sessionDbId: number, data: ObservationData): Promise<void> {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
@@ -322,6 +363,9 @@ export class SessionManager {
       }
     }
 
+    if (this.takeRequestedSessionWrapup(session)) {
+      this.deliverSessionWrapupInBackground(sessionDbId);
+    }
     this.buffer.dispose(sessionDbId);
     this.sessions.delete(sessionDbId);
     logger.info('SESSION', 'Session deleted', {
@@ -343,6 +387,10 @@ export class SessionManager {
     if (session.respawnTimer) {
       clearTimeout(session.respawnTimer);
       session.respawnTimer = undefined;
+    }
+
+    if (this.takeRequestedSessionWrapup(session)) {
+      this.deliverSessionWrapupInBackground(sessionDbId);
     }
 
     this.buffer.dispose(sessionDbId);
