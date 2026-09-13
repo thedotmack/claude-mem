@@ -113,7 +113,7 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `shutdown_reason` | `restart` | Why the worker stopped: stop / restart / signal |
 | `process_rss_mb` | `187` | Worker process resident memory, integer megabytes |
 | `heap_used_mb` | `92` | Worker JS heap in use, integer megabytes |
-| `hook_type` | `observation` | Which hook kind failed: context / session-init / observation / summarize / file-context — our handler names |
+| `hook_type` | `observation` | Which hook kind failed: context / session-init / observation / summarize / session-end / file-context — our handler names |
 | `limit_window` | `five_hour` | Which subscription window was exhausted on `usage_limit_hit`: five_hour / seven_day / seven_day_opus / seven_day_sonnet / overage / unknown — a closed enum |
 | `overage_status` | `rejected` | Whether extra-usage credits could cover the request: allowed / allowed_warning / rejected / unknown — a closed enum |
 | `is_using_overage` | `false` | Whether the request was already being billed to extra usage |

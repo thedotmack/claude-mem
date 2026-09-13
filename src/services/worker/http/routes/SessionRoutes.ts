@@ -537,6 +537,11 @@ export class SessionRoutes extends BaseRouteHandler {
       validateBody(SessionRoutes.summarizeByClaudeIdSchema),
       this.handleSummarizeByClaudeId.bind(this)
     );
+    app.post(
+      '/api/sessions/session-end',
+      validateBody(SessionRoutes.sessionEndSchema),
+      this.handleSessionEnd.bind(this)
+    );
   }
 
   private static readonly sessionInitByClaudeIdSchema = z.object({
@@ -573,6 +578,13 @@ export class SessionRoutes extends BaseRouteHandler {
     platformSource: z.string().optional(),
     observedModel: z.string().min(1).max(200).optional(),
     observedBilling: z.string().min(1).max(40).optional(),
+  }).passthrough();
+
+  private static readonly sessionEndSchema = z.object({
+    contentSessionId: z.string().min(1),
+    platformSource: z.string().optional(),
+    reason: z.string().optional(),
+    cwd: z.string().optional(),
   }).passthrough();
 
   private handleObservationsByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
@@ -666,6 +678,21 @@ export class SessionRoutes extends BaseRouteHandler {
     this.eventBroadcaster.broadcastSummarizeQueued();
 
     res.json({ status: 'queued' });
+  });
+
+  private handleSessionEnd = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { contentSessionId } = req.body;
+    const platformSource = this.getPlatformSourceFromRequest(req);
+    const store = this.dbManager.getSessionStore();
+    const sessionDbId = store.findSessionDbIdByContentSessionId(contentSessionId, platformSource);
+
+    if (sessionDbId === null) {
+      res.json({ status: 'unknown_session' });
+      return;
+    }
+
+    await this.sessionManager.requestSessionWrapup(sessionDbId);
+    res.json({ status: 'accepted' });
   });
 
   private handleSessionInitByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {

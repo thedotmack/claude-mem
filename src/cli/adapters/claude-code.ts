@@ -5,6 +5,8 @@ import { resolveHookProjectPath } from '../../utils/project-name.js';
 const MAX_AGENT_FIELD_LEN = 128;
 const pickAgentField = (v: unknown): string | undefined =>
   typeof v === 'string' && v.length > 0 && v.length <= MAX_AGENT_FIELD_LEN ? v : undefined;
+const pickStringField = (v: unknown): string | undefined =>
+  typeof v === 'string' ? v : undefined;
 
 export const claudeCodeAdapter: PlatformAdapter = {
   normalizeInput(raw) {
@@ -26,6 +28,7 @@ export const claudeCodeAdapter: PlatformAdapter = {
       toolResponse: r.tool_response,
       toolUseId: typeof r.tool_use_id === 'string' ? r.tool_use_id : undefined,
       transcriptPath: r.transcript_path,
+      reason: pickStringField(r.reason),
       agentId: pickAgentField(r.agent_id),
       agentType: pickAgentField(r.agent_type),
     };

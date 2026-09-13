@@ -70,7 +70,7 @@ After the taxonomy is approved, ask:
 If yes:
 
 - Let the user select exact observation types and/or concept tags from the approved mode.
-- Explain that matching is OR: any selected type or any selected concept sends an alert.
+- Explain that matching is OR: after alerts are explicitly enabled, any selected type or any selected concept sends an alert. Selecting triggers alone does not enable delivery: per-observation alerts default to off. With the user's consent, set `CLAUDE_MEM_TELEGRAM_OBSERVATION_ALERTS_ENABLED` to `"true"` in the resolved data directory's `settings.json` after running the installer or credential helper.
 - Ask whether they already have a Telegram bot connected to claude-mem.
 - Read [references/telegram.md](references/telegram.md), then guide new users through BotFather and the secure setup helper.
 
