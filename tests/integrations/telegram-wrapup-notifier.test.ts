@@ -124,6 +124,29 @@ describe('Telegram wrap-up notifier', () => {
     expect(body.text).toContain('Build the Telegram wrap\\-up notifier');
   });
 
+  it('allows only one concurrent caller to post a session wrap-up', async () => {
+    const { sessionDbId, memorySessionId } = createSession('project-a', 'content-race');
+    storeSummary(memorySessionId, 'project-a');
+    const fetchMock = successfulFetch();
+
+    await Promise.all([
+      deliverSessionWrapup({
+        sessionStore: store,
+        sessionDbId,
+        settings: settings(),
+        fetchImpl: fetchMock,
+      }),
+      deliverSessionWrapup({
+        sessionStore: store,
+        sessionDbId,
+        settings: settings(),
+        fetchImpl: fetchMock,
+      }),
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('does not fall back to the global chat when no project route exists', async () => {
     const { sessionDbId, memorySessionId } = createSession('unrouted-project', 'content-no-route');
     storeSummary(memorySessionId, 'unrouted-project');
