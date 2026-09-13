@@ -15,6 +15,7 @@ import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
+import { MEDIA_PROMPT_PLACEHOLDER } from '../../../sqlite/prompt-storage.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
@@ -742,7 +743,12 @@ export class SessionRoutes extends BaseRouteHandler {
       });
     }
 
-    let prompt = rawPrompt || '[media prompt]';
+    // Some clients use the media placeholder when session initialization has
+    // no user prompt yet. Keep that sentinel out of both durable session
+    // metadata and prompt history so the first real prompt remains #1.
+    let prompt = rawPrompt && rawPrompt.trim() && rawPrompt.trim() !== MEDIA_PROMPT_PLACEHOLDER
+      ? rawPrompt
+      : '';
 
     const promptByteLength = Buffer.byteLength(prompt, 'utf8');
     if (promptByteLength > MAX_USER_PROMPT_BYTES) {
@@ -778,6 +784,17 @@ export class SessionRoutes extends BaseRouteHandler {
     });
 
     const currentCount = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId);
+
+    if (!prompt) {
+      res.json({
+        sessionDbId,
+        promptNumber: currentCount,
+        skipped: true,
+        reason: 'no_prompt'
+      });
+      return;
+    }
+
     const promptNumber = currentCount + 1;
 
     const memorySessionId = dbSession?.memory_session_id || null;
