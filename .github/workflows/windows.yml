@@ -41,11 +41,15 @@ jobs:
       # Covers the Windows-only bun resolver path that Linux CI skips, plus the
       # scripts that replaced rsync and tail: mirror pattern matching, --delete
       # protection and -a metadata reconciliation against real NTFS paths, and
-      # the bounded log tail under a constrained heap.
+      # the bounded log tail under a constrained heap. Also runs the Copilot
+      # CLI hooks/adapter suite here (not just on ubuntu in ci.yml): it writes
+      # ~/.copilot/hooks/claude-mem.json with an absolute exec path and cwd,
+      # both baked from homedir()/path.join(), so it needs to prove out on a
+      # real Windows path separator + JSON round-trip, not just POSIX.
       - shell: pwsh
         run: |
           $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
-          & $bun test tests/bun-runner.test.ts tests/scripts/mirror-dir.test.ts tests/scripts/worker-logs.test.ts
+          & $bun test tests/bun-runner.test.ts tests/scripts/mirror-dir.test.ts tests/scripts/worker-logs.test.ts tests/copilot-cli-compat.test.ts
 
       # The step that used to be impossible on Windows: sync-marketplace shelled
       # out to rsync. Runs the real script against a scratch USERPROFILE (Node's
