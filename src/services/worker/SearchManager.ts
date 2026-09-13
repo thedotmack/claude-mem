@@ -446,9 +446,9 @@ export class SearchManager {
           platformSource: options.platformSource
         });
       }
-    } else {
-      if (options.platformSource) {
-        logger.debug('SEARCH', 'Platform-scoped ChromaDB search found no matches; falling back to scoped FTS5 search', {});
+
+      if (obsIds.length === 0 && sessionIds.length === 0 && promptIds.length === 0) {
+        logger.debug('SEARCH', 'ChromaDB matches did not survive date filtering; falling back to FTS5 search', {});
         platformScopedChromaZeroFallback = true;
 
         if (searchObservations) {
@@ -460,8 +460,19 @@ export class SearchManager {
         if (searchPrompts) {
           prompts = this.sessionSearch.searchUserPrompts(query, options);
         }
-      } else {
-        logger.debug('SEARCH', 'ChromaDB found no matches (final result, no FTS5 fallback)', {});
+      }
+    } else {
+      logger.debug('SEARCH', 'ChromaDB search found no matches; falling back to FTS5 search', {});
+      platformScopedChromaZeroFallback = true;
+
+      if (searchObservations) {
+        observations = this.sessionSearch.searchObservations(query, { ...options, type: obs_type, concepts, files });
+      }
+      if (searchSessions) {
+        sessions = this.sessionSearch.searchSessions(query, options);
+      }
+      if (searchPrompts) {
+        prompts = this.sessionSearch.searchUserPrompts(query, options);
       }
     }
 
