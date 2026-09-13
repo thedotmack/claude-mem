@@ -72,6 +72,39 @@ describe('RateLimitStore', () => {
     expect(snap.seven_day_opus?.utilization).toBe(0.3);
     expect(snap.seven_day).toBeUndefined();
   });
+
+  it('replaces stale buckets from a unified window snapshot', () => {
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'rejected',
+      utilization: 1,
+      resetsAt: FIXED_NOW - 1,
+    });
+
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      utilization: 0.01,
+      unifiedWindows: {
+        five_hour: {
+          status: 'allowed',
+          utilization: 0.01,
+          resetsAt: FIXED_NOW + 60 * 60 * 1000,
+        },
+        // Deliberately omit status: a fresh snapshot must not retain the old
+        // seven_day rejection from the previous cache entry.
+        seven_day: {
+          utilization: 0.01,
+          resetsAt: FIXED_NOW + 6 * 24 * 60 * 60 * 1000,
+        },
+      },
+    });
+
+    expect(store.get('seven_day')?.status).toBeUndefined();
+    expect(store.get('seven_day')?.utilization).toBe(0.01);
+    expect(shouldAbortForQuota('cli', store, FIXED_NOW).abort).toBe(false);
+  });
 });
 
 describe('isApiKeyAuth', () => {
@@ -240,6 +273,18 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     store.set({ rateLimitType: 'five_hour', utilization: 0.5 });
     store.set({ rateLimitType: 'seven_day_opus', utilization: 0.4 });
     store.set({ rateLimitType: 'seven_day_sonnet', utilization: 0.3 });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(false);
+  });
+
+  it('ignores a rejected window after its reset time', () => {
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'rejected',
+      utilization: 1,
+      // Exercise the epoch-seconds form seen in some provider payloads.
+      resetsAt: Math.floor(FIXED_NOW / 1000) - 1,
+    });
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
     expect(decision.abort).toBe(false);
   });
