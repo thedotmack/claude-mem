@@ -1,0 +1,23 @@
+{
+  "name": "@claude-mem/swebench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SWE-bench evaluation harness for claude-mem: OpenRouter-driven agent primed with /learn-codebase and recall via mem-search.",
+  "bin": {
+    "cmem-swebench": "src/cli.ts"
+  },
+  "scripts": {
+    "swebench": "bun run src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}
