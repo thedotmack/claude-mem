@@ -680,12 +680,18 @@ export class ClaudeProvider {
   ): Promise<string> {
     const claudePath = findClaudeExecutable('SDK');
     const modelId = activeModelId ?? this.getSummaryModelId();
-    return await this.runStandaloneObserverPrompt(
+    const text = await this.runStandaloneObserverPrompt(
       buildTelegramWrapupPrompt(input.summaryText),
       input,
       modelId,
       claudePath,
-    ) ?? '';
+    );
+    if (!text?.trim()) {
+      const error = new Error('Claude returned no text for the Telegram wrap-up');
+      logger.error('TELEGRAM', error.message, { sessionId: input.sessionDbId, model: modelId }, error);
+      throw error;
+    }
+    return text;
   }
 
   private async *createMessageGenerator(

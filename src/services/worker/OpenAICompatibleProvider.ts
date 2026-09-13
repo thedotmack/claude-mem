@@ -50,7 +50,7 @@ export interface ProviderQueryResult {
  * resolution, request shape, token estimation, usage/cost reporting) are
  * supplied by abstract members.
  */
-export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string; model: string }> {
+export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string; model: string; plainText?: boolean }> {
   protected dbManager: DatabaseManager;
   protected sessionManager: SessionManager;
 
@@ -107,11 +107,16 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const model = resolveSummaryTierModel(activeModelId ?? config.model, settings);
-    const summaryConfig = model === config.model ? config : { ...config, model };
+    const summaryConfig = { ...config, model, plainText: true };
     const result = await this.query(
       [{ role: 'user', content: buildTelegramWrapupPrompt(input.summaryText) }],
       summaryConfig,
     );
+    if (!result.content?.trim()) {
+      const error = new Error(`${this.providerName} returned no text for the Telegram wrap-up`);
+      logger.error('TELEGRAM', error.message, { sessionId: input.sessionDbId, model }, error);
+      throw error;
+    }
     return result.content;
   }
 

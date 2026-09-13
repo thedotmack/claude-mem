@@ -152,6 +152,11 @@ function isBulletStart(line: string): boolean {
 /** Escape a model-produced list, retaining only complete bullets when it is too long. */
 export function formatWrapupMessage(modelOutput: string): string {
   const normalized = modelOutput.trim();
+  if (!normalized) {
+    const error = new Error('Telegram wrap-up formatter returned no text');
+    logger.error('TELEGRAM', error.message, {}, error);
+    throw error;
+  }
   if (fitsTelegramLimit(normalized)) {
     return escapeMarkdownV2(normalized);
   }
@@ -172,6 +177,11 @@ export function formatWrapupMessage(modelOutput: string): string {
     capped = candidate;
   }
 
+  if (!capped) {
+    const error = new Error('Telegram wrap-up has no complete bullet within 255 characters');
+    logger.error('TELEGRAM', error.message, { outputChars: normalized.length, bullets: bulletStarts.length }, error);
+    throw error;
+  }
   return escapeMarkdownV2(capped);
 }
 
@@ -244,9 +254,6 @@ export async function deliverSessionWrapup(
         platformSource: session.platform_source,
         summaryText: joinStoredSummaryForTelegram(summary),
       }));
-      if (!text) {
-        throw new Error('Telegram wrap-up formatter returned no text');
-      }
       await postTelegramMessage(route.botToken, route.chatId, text, input.fetchImpl);
     } catch (error) {
       input.sessionStore.releaseTelegramWrapupClaim(ledgerInput);

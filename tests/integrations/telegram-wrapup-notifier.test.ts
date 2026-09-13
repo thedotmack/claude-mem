@@ -1,6 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../src/shared/SettingsDefaultsManager.js';
 import { SessionStore, TELEGRAM_WRAPUP_CLAIM_STALE_AFTER_MS } from '../../src/services/sqlite/SessionStore.js';
+import { OpenRouterProvider } from '../../src/services/worker/OpenRouterProvider.js';
+import { logger } from '../../src/utils/logger.js';
 import {
   TELEGRAM_WRAPUP_PROMPT,
   buildTelegramWrapupPrompt,
@@ -14,6 +16,7 @@ import {
 
 describe('Telegram wrap-up notifier', () => {
   let store: SessionStore;
+  const originalFetch = globalThis.fetch;
   const formatSummary = mock(async (_input: TelegramWrapupFormatterInput) => '• Shipped the wrap-up');
 
   beforeEach(() => {
@@ -23,6 +26,7 @@ describe('Telegram wrap-up notifier', () => {
   });
 
   afterEach(() => {
+    globalThis.fetch = originalFetch;
     mock.restore();
     store.close();
   });
@@ -144,8 +148,17 @@ describe('Telegram wrap-up notifier', () => {
     expect(formatWrapupMessage(`${full}\n• extra`)).toBe(full);
   });
 
-  it('discards an oversized first bullet when no complete bullet fits', () => {
-    expect(formatWrapupMessage(`• ${'a'.repeat(300)}\n• Later bullet`)).toBe('');
+  it('logs and rejects an oversized first bullet rather than silently returning an empty message', () => {
+    const log = spyOn(logger, 'error').mockImplementation(() => {});
+    expect(() => formatWrapupMessage(`• ${'a'.repeat(300)}\n• Later bullet`))
+      .toThrow('no complete bullet within 255 characters');
+    expect(log).toHaveBeenCalledWith('TELEGRAM', expect.any(String), expect.objectContaining({ bullets: 2 }), expect.any(Error));
+  });
+
+  it('logs and rejects an empty model response even outside the delivery wrapper', () => {
+    const log = spyOn(logger, 'error').mockImplementation(() => {});
+    expect(() => formatWrapupMessage('  ')).toThrow('formatter returned no text');
+    expect(log).toHaveBeenCalledWith('TELEGRAM', 'Telegram wrap-up formatter returned no text', {}, expect.any(Error));
   });
 
   it('keeps Unicode and MarkdownV2 escapes intact within the 255-character cap', () => {
@@ -166,6 +179,59 @@ describe('Telegram wrap-up notifier', () => {
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body.text).toBe('• Shipped');
     expect(body.parse_mode).toBe('MarkdownV2');
+  });
+
+  it.each(['string', 'text blocks'])('delivers non-empty text from the real OpenRouter response envelope (%s)', async shape => {
+    const { sessionDbId, memorySessionId } = createSession('project-a', `content-provider-${shape}`);
+    storeSummary(memorySessionId, 'project-a');
+    const config = settings({
+      CLAUDE_MEM_OPENROUTER_API_KEY: 'mock-key',
+      CLAUDE_MEM_OPENROUTER_MODEL: 'cmem-observer',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://cmem.ai/api/inference/v1',
+      CLAUDE_MEM_TIER_SUMMARY_MODEL: '',
+    });
+    spyOn(SettingsDefaultsManager, 'loadFromFile').mockReturnValue(config);
+    // Same choices/message/reasoning/usage envelope as the summary-generator
+    // fixtures in tests/worker/openrouter-empty-content.test.ts. Only the
+    // assistant answer belongs in Telegram, never reasoning or tool data.
+    const answer = '• SessionEnd sends one short wrap-up\n• Stop keeps storing summaries';
+    const inferenceFetch = mock(async () => new Response(JSON.stringify({
+      model: 'deepseek/deepseek-v4-flash-0731',
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: shape === 'string' ? answer : answer.split('\n').map(text => ({ type: 'text', text })),
+          reasoning_content: 'Private reasoning is not a notification',
+        },
+        finish_reason: 'stop',
+      }],
+      usage: { prompt_tokens: 120, completion_tokens: 20, total_tokens: 140 },
+    }), { status: 200 }));
+    globalThis.fetch = inferenceFetch as unknown as typeof fetch;
+    const provider = new OpenRouterProvider({} as never, {} as never);
+    const telegramFetch = successfulFetch();
+
+    await expect(deliverSessionWrapup({
+      sessionStore: store, sessionDbId, settings: config, fetchImpl: telegramFetch,
+      formatSummary: input => provider.formatTelegramWrapup(input),
+    })).resolves.toBe('sent');
+
+    expect(inferenceFetch).toHaveBeenCalledTimes(1);
+    const [url, request] = inferenceFetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://cmem.ai/api/inference/v1/chat/completions');
+    const body = JSON.parse(String(request.body));
+    expect(body.model).toBe('cmem-observer');
+    expect(body.max_tokens).toBe(4096);
+    expect(body.response_format).toEqual({ type: 'text' });
+    expect(body.reasoning).toEqual({ enabled: false });
+    expect(body.messages).toEqual([{
+      role: 'user', content: buildTelegramWrapupPrompt(joinStoredSummaryForTelegram(store.getSummaryForSession(memorySessionId)!)),
+    }]);
+    expect(telegramFetch).toHaveBeenCalledTimes(1);
+    const final = JSON.parse(String(telegramFetch.mock.calls[0][1]?.body));
+    expect(final.text).toBe('• SessionEnd sends one short wrap\\-up\n• Stop keeps storing summaries');
+    expect(final.text.length).toBeGreaterThan(0);
+    expect(final.text.length).toBeLessThanOrEqual(255);
   });
 
   it('does not call the model or Telegram when wrap-ups are disabled', async () => {

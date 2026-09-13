@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
+import { logger } from '../../src/utils/logger.js';
 import type { TelegramWrapupFormatterInput } from '../../src/services/integrations/TelegramWrapupNotifier.js';
 
 // No SDK process, OAuth refresh, or paid request may run in this harness.
@@ -102,7 +103,7 @@ describe('Telegram wrap-up provider reuse', () => {
       expect(query).toHaveBeenCalledTimes(1);
       expect(query).toHaveBeenCalledWith(
         [{ role: 'user', content: `${prompt}\n\n${input.summaryText}` }],
-        { ...config, model: 'configured-summary-model' },
+        { ...config, model: 'configured-summary-model', plainText: true },
       );
       expect(config.model).toBe('default-model');
     });
@@ -114,7 +115,7 @@ describe('Telegram wrap-up provider reuse', () => {
       spyOn(provider as any, 'getConfig').mockReturnValue(config);
       const query = spyOn(provider as any, 'query').mockResolvedValue({ content: '• Finished' });
       await provider.formatTelegramWrapup(input, 'active-model');
-      expect(query).toHaveBeenCalledWith(expect.any(Array), { ...config, model: 'active-model' });
+      expect(query).toHaveBeenCalledWith(expect.any(Array), { ...config, model: 'active-model', plainText: true });
     });
 
     it(`${Provider.name} does not query without its existing credentials`, async () => {
@@ -124,5 +125,91 @@ describe('Telegram wrap-up provider reuse', () => {
       await expect(provider.formatTelegramWrapup(input)).rejects.toThrow();
       expect(query).not.toHaveBeenCalled();
     });
+
+    it(`${Provider.name} logs and rejects an empty formatter completion`, async () => {
+      const provider = new Provider({} as never, {} as never);
+      spyOn(provider as any, 'getConfig').mockReturnValue({ apiKey: 'mock-key', model: 'model' });
+      spyOn(provider as any, 'query').mockResolvedValue({ content: '' });
+      const log = spyOn(logger, 'error').mockImplementation(() => {});
+      await expect(provider.formatTelegramWrapup(input)).rejects.toThrow('returned no text');
+      expect(log).toHaveBeenCalledWith('TELEGRAM', expect.any(String), {
+        sessionId: 42, model: 'configured-summary-model',
+      }, expect.any(Error));
+    });
   }
+
+  it('logs and rejects a Claude formatter completion without an assistant text frame', async () => {
+    sdkQuery.mockImplementationOnce(() => (async function* () {})());
+    const log = spyOn(logger, 'error').mockImplementation(() => {});
+    const provider = new ClaudeProvider({} as never, {} as never);
+    await expect(provider.formatTelegramWrapup(input)).rejects.toThrow('Claude returned no text');
+    expect(log).toHaveBeenCalledWith('TELEGRAM', expect.any(String), {
+      sessionId: 42, model: 'configured-summary-model',
+    }, expect.any(Error));
+  });
+
+  it.each([
+    undefined,
+    { content: null, reasoning_content: 'private reasoning' },
+    { content: null, tool_calls: [{ type: 'function', function: { name: 'summary', arguments: '{"text":"not an answer"}' } }] },
+    { content: [] },
+  ])('rejects missing, reasoning-only, or tool-only OpenRouter completions without a retry (%j)', async message => {
+    const provider = new OpenRouterProvider({} as never, {} as never);
+    spyOn(provider as any, 'getConfig').mockReturnValue({
+      apiKey: 'mock-key', model: 'cmem-observer', fallbackModels: [],
+      apiUrl: 'https://cmem.ai/api/inference/v1/chat/completions',
+    });
+    const network = spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      model: 'deepseek/deepseek-v4-flash-0731',
+      choices: [{ message, finish_reason: 'length' }],
+      usage: { completion_tokens: 4096 },
+    }), { status: 200, headers: { 'x-request-id': 'fixture-request' } }));
+    const log = spyOn(logger, 'error').mockImplementation(() => {});
+
+    await expect(provider.formatTelegramWrapup(input)).rejects.toThrow('OpenRouter returned no assistant text');
+
+    expect(network).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith('TELEGRAM', expect.any(String), expect.objectContaining({
+      model: 'deepseek/deepseek-v4-flash-0731', requestId: 'fixture-request',
+      finishReason: 'length', completionTokens: 4096,
+    }), expect.any(Error));
+    expect(JSON.stringify(log.mock.calls)).not.toContain('private reasoning');
+    expect(JSON.stringify(log.mock.calls)).not.toContain('not an answer');
+  });
+
+  it('does not add OpenRouter-specific output controls to an unknown compatible gateway', async () => {
+    const provider = new OpenRouterProvider({} as never, {} as never);
+    spyOn(provider as any, 'getConfig').mockReturnValue({
+      apiKey: 'mock-key', model: 'local-model', fallbackModels: [],
+      apiUrl: 'https://gateway.test/v1/chat/completions',
+    });
+    const network = spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: '• Finished' } }],
+    }), { status: 200 }));
+
+    await expect(provider.formatTelegramWrapup(input)).resolves.toBe('• Finished');
+
+    const body = JSON.parse(String(network.mock.calls[0][1]?.body));
+    expect(body.response_format).toBeUndefined();
+    expect(body.reasoning).toBeUndefined();
+  });
+
+  it('leaves ordinary summary generation request options and empty-response bookkeeping unchanged', async () => {
+    const provider = new OpenRouterProvider({} as never, {} as never);
+    const network = spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: '', reasoning_content: 'private reasoning' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 },
+    }), { status: 200 }));
+
+    const result = await (provider as any).query([{ role: 'user', content: 'summary prompt' }], {
+      apiKey: 'mock-key', model: 'cmem-observer', fallbackModels: [],
+      apiUrl: 'https://cmem.ai/api/inference/v1/chat/completions',
+    });
+
+    expect(result).toMatchObject({ content: '', tokensUsed: 20, inputTokens: 12, outputTokens: 8 });
+    const body = JSON.parse(String(network.mock.calls[0][1]?.body));
+    expect(body.response_format).toBeUndefined();
+    expect(body.reasoning).toBeUndefined();
+    expect(body.max_tokens).toBe(4096);
+  });
 });
