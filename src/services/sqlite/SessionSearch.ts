@@ -253,15 +253,33 @@ export class SessionSearch {
     /[\u3040-\u30FF\u3100-\u318F\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]/;
 
   /**
-   * Build the substring predicate used when the index cannot represent the query. The
+   * Split the query into the runs the index cannot segment and the runs it can, so a
+   * mixed-script query is matched term by term instead of as one literal string. A
+   * substring search for the whole of `claude 队列` requires those characters to be
+   * adjacent, which is why mixed queries returned almost nothing (#4068 follow-up).
+   */
+  private static readonly UNSEGMENTED_RUN =
+    /[\u3040-\u30FF\u3100-\u318F\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]+|[^\s\u3040-\u30FF\u3100-\u318F\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]+/g;
+
+  /**
+   * Build the substring predicate used when the index cannot represent the query. Each
+   * term must appear in at least one column, and every term must appear somewhere. The
    * escaping matches {@link searchUserPrompts}, which has always searched by substring.
    */
   private static buildSubstringClause(query: string, columns: string[]): { clause: string; params: string[] } {
-    const pattern = `%${query.replace(/[\\%_]/g, '\\$&')}%`;
-    return {
-      clause: `(${columns.map(column => `${column} LIKE ? ESCAPE '\\'`).join(' OR ')})`,
-      params: columns.map(() => pattern),
-    };
+    const terms = query.match(SessionSearch.UNSEGMENTED_RUN) ?? [];
+    if (terms.length === 0) {
+      terms.push(query);
+    }
+    const params: string[] = [];
+    const groups = terms.map(term => {
+      const pattern = `%${term.replace(/[\\%_]/g, '\\$&')}%`;
+      for (let i = 0; i < columns.length; i += 1) {
+        params.push(pattern);
+      }
+      return `(${columns.map(column => `${column} LIKE ? ESCAPE '\\'`).join(' OR ')})`;
+    });
+    return { clause: `(${groups.join(' AND ')})`, params };
   }
 
   private buildOrderClause(orderBy: SearchOptions['orderBy'] = 'relevance', hasFTS: boolean = true, ftsTable: string = 'observations_fts'): string {

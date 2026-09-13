@@ -55,6 +55,7 @@ describe('search in scripts FTS5 cannot segment', () => {
     seedObservation('ko-1', 'cjk-project', '프로젝트 설정을 변경했습니다', '설정을 바꾼 기록');
     seedObservation('bpmf-1', 'cjk-project', 'ㄓㄨㄛ ㄖㄣ ㄊㄢ', 'ㄓㄨㄛ 的紀錄');
     seedObservation('en-1', 'cjk-project', 'Database Path resolution', 'the database path is resolved at startup');
+    seedObservation('mix-1', 'cjk-project', 'claude-mem 队列积压排查', 'worker 的 pending 队列在重启时被清空');
     seedObservation('other-1', 'other-project', '用户身份验证流程', '另一个项目里的同名观察');
     seedSummary('sum-cjk', 'cjk-project', '重构用户身份验证的会话');
     seedSummary('sum-en', 'cjk-project', 'refactor the database path');
@@ -112,6 +113,28 @@ describe('search in scripts FTS5 cannot segment', () => {
   it('treats LIKE wildcards in the query as literal characters', () => {
     expect(search.searchObservations('用户%验证', { project: 'cjk-project' })).toEqual([]);
     expect(search.searchObservations('用户_验证', { project: 'cjk-project' })).toEqual([]);
+  });
+
+  // A mixed-script query is routed here by the presence of one ideograph, and the whole
+  // string was then matched as one literal substring — so the Latin and the CJK halves
+  // had to sit adjacent in the text to match at all. Term by term is the fix.
+  it('finds a mixed-script query whose terms are not adjacent', () => {
+    const results = search.searchObservations('claude 队列', { project: 'cjk-project' });
+    expect(results.map(r => r.title)).toEqual(['claude-mem 队列积压排查']);
+  });
+
+  it('does not care which order the mixed terms are given in', () => {
+    const results = search.searchObservations('队列 claude', { project: 'cjk-project' });
+    expect(results.map(r => r.title)).toEqual(['claude-mem 队列积压排查']);
+  });
+
+  it('requires every term, not any of them', () => {
+    expect(search.searchObservations('claude 数据库', { project: 'cjk-project' })).toEqual([]);
+  });
+
+  it('matches terms that sit far apart in the same column', () => {
+    const results = search.searchObservations('pending 重启', { project: 'cjk-project' });
+    expect(results.map(r => r.title)).toEqual(['claude-mem 队列积压排查']);
   });
 
   it('does not widen an English query that FTS5 already answers', () => {
