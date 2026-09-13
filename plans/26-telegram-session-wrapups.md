@@ -247,7 +247,9 @@ Commit: `feat(telegram): wrap-up ledger, routes and notifier (plan-26 phase 1)`.
 
 ---
 
-## Phase 2 — SessionEnd hook, CLI handler, HTTP route, wrap-up request in SessionManager
+## Phase 2 — SessionEnd hook, CLI handler, HTTP route, wrap-up request in SessionManager (complete)
+
+Completed 2026-09-12 in `32c90b3c9b2d78a6f8ef203048715858e5285c7f`; focused tests passed 2/2 handler, 2/2 route, and 9/9 SessionManager; CLI+HTTP passed 176/176; build and tsc passed; the full npm test run had 3,758 passing and 28 skipped, with one known pre-existing field-deadline failure. The required Node cold probe was pre-dispatch-unverified due to the inherited `bun:sqlite` Node incompatibility.
 
 Fresh Codex session. Read Phase 0 and D1, D3 first.
 
