@@ -184,7 +184,9 @@ Each field is escaped with `escapeMarkdownV2` and truncated to 600 characters wi
 
 ---
 
-## Phase 1 — Ledger, settings, transport split, wrap-up notifier (no wiring)
+## Phase 1 — Ledger, settings, transport split, wrap-up notifier (no wiring) (complete)
+
+Phase 1 completed 2026-09-12 in source commit `cccc597719e31ae604e91c6661d8aed7bdbe5d37`: focused verification passed 3/3 ledger, 6/6 notifier, and 3/3 alert tests, with 222 SQLite/integration tests passing; `npm run build` and TypeScript passed. Full `npm test` recorded 3,745 passing, 28 skipped, and one persistent documented pre-existing failure in `tests/worker/field-deadline-wire.test.ts`.
 
 Fresh Codex session. Branch `work/telegram-wrapups`, commit here, never switch branches.
 
