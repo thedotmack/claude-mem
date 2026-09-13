@@ -332,7 +332,7 @@ async function buildHooks() {
       ],
       engines: {
         node: '>=20.12.0',
-        bun: '>=1.0.0'
+        bun: '>=1.1.31'
       }
     };
     fs.writeFileSync('plugin/package.json', JSON.stringify(pluginPackageJson, null, 2) + '\n');
