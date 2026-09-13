@@ -295,7 +295,9 @@ Commit: `feat(telegram): SessionEnd hook, session-end route and wrap-up request 
 
 ---
 
-## Phase 3 — Deliver-after-summary in the response processor
+## Phase 3 — Deliver-after-summary in the response processor (complete)
+
+Completed 2026-09-12 in `ac371c0633b1d00709084485056242408c6ac615`: 4/4 response-processor tests and 7/7 notifier tests passed; 45/45 agents, build, and TypeScript were green; full npm test reported 3,763 passing and 28 skipped, with the known `tests/worker/field-deadline-wire.test.ts` baseline failure.
 
 Fresh Codex session. Read Phase 0.1, 0.2 and D3.
 
