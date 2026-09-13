@@ -1,6 +1,10 @@
-import { describe, expect, it, mock } from 'bun:test';
+import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import type { Request, Response } from 'express';
 import { SessionRoutes } from '../../../src/services/worker/http/routes/SessionRoutes.js';
+import * as providerDispatch from '../../../src/services/worker/provider-dispatch.js';
+import type { TelegramWrapupFormatter, TelegramWrapupFormatterInput } from '../../../src/services/integrations/TelegramWrapupNotifier.js';
+
+afterEach(() => mock.restore());
 
 type Handler = (req: Request, res: Response) => void;
 
@@ -54,6 +58,56 @@ function makeRoutes(findSessionDbIdByContentSessionId: ReturnType<typeof mock>, 
 }
 
 describe('SessionEnd route', () => {
+  it.each(['claude', 'gemini', 'openrouter'] as const)('formats through the active %s summary provider and model', async provider => {
+    let formatter!: TelegramWrapupFormatter;
+    const input: TelegramWrapupFormatterInput = {
+      sessionDbId: 42, contentSessionId: 'session', project: 'project', platformSource: 'claude', summaryText: 'whole summary',
+    };
+    const agents = {
+      claude: { formatTelegramWrapup: mock(async () => '• Claude summary') },
+      gemini: { formatTelegramWrapup: mock(async () => '• Gemini summary') },
+      openrouter: { formatTelegramWrapup: mock(async () => '• OpenRouter summary') },
+    };
+    const selection = spyOn(providerDispatch, 'selectProviderForGenerator');
+    new SessionRoutes({
+      getSession: () => ({ currentProvider: provider, lastModelId: 'active-model' }),
+      setTelegramWrapupFormatter: (value: TelegramWrapupFormatter) => { formatter = value; },
+    } as any, {} as any, agents.claude as any, agents.gemini as any, agents.openrouter as any, {} as any, {} as any, {} as any);
+
+    await formatter(input);
+
+    expect(agents[provider].formatTelegramWrapup).toHaveBeenCalledWith(input, 'active-model');
+    expect(selection).not.toHaveBeenCalled();
+    for (const [name, agent] of Object.entries(agents)) {
+      if (name !== provider) expect(agent.formatTelegramWrapup).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([false, true])('uses normal provider dispatch for a replay and releases the probe (failure: %s)', async fail => {
+    let formatter!: TelegramWrapupFormatter;
+    const input: TelegramWrapupFormatterInput = {
+      sessionDbId: 42, contentSessionId: 'session', project: 'project', platformSource: 'claude', summaryText: 'whole summary',
+    };
+    const selection = spyOn(providerDispatch, 'selectProviderForGenerator')
+      .mockReturnValue({ provider: 'openrouter', gatewayProbeClaimId: 123 });
+    const release = spyOn(providerDispatch, 'releaseCmemGatewayProbe').mockImplementation(() => {});
+    const formatTelegramWrapup = mock(async () => {
+      if (fail) throw new Error('provider failed');
+      return '• Formatted replay';
+    });
+    new SessionRoutes({
+      getSession: () => undefined,
+      setTelegramWrapupFormatter: (value: TelegramWrapupFormatter) => { formatter = value; },
+    } as any, {} as any, {} as any, {} as any, { formatTelegramWrapup } as any, {} as any, {} as any, {} as any);
+
+    if (fail) await expect(formatter(input)).rejects.toThrow('provider failed');
+    else await expect(formatter(input)).resolves.toBe('• Formatted replay');
+
+    expect(selection).toHaveBeenCalledTimes(1);
+    expect(formatTelegramWrapup).toHaveBeenCalledWith(input, undefined);
+    expect(release).toHaveBeenCalledWith(123);
+  });
+
   it('returns unknown_session and does not request a wrap-up when no matching platform-scoped session exists', async () => {
     const findSessionDbIdByContentSessionId = mock(() => null);
     const requestSessionWrapup = mock(async () => {});

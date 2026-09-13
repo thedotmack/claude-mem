@@ -8,6 +8,7 @@ const realTelegramWrapupNotifierSnapshot = { ...realTelegramWrapupNotifier };
 const realProcessRegistrySnapshot = { ...realProcessRegistry };
 const realSupervisorSnapshot = { ...realSupervisor };
 const deliverSessionWrapup = mock(async () => 'sent');
+const formatSummary = mock(async () => '• Completed the session');
 const reapSession = mock(async () => 0);
 
 mock.module('../../src/services/integrations/TelegramWrapupNotifier.js', () => ({
@@ -49,6 +50,12 @@ function makeDbManager(): DatabaseManager {
     }),
     getSessionStore: () => store,
   } as unknown as DatabaseManager;
+}
+
+function makeManager(): SessionManager {
+  const manager = new SessionManager(makeDbManager());
+  manager.setTelegramWrapupFormatter(formatSummary);
+  return manager;
 }
 
 let scheduledCallback: (() => void) | undefined;
@@ -95,8 +102,37 @@ afterAll(() => {
 });
 
 describe('SessionManager SessionEnd wrap-up requests', () => {
+  it('does not send for Stop summaries or teardown without a SessionEnd request', async () => {
+    const manager = makeManager();
+    const session = manager.initializeSession(10);
+
+    await manager.queueSummarize(10, 'Stop summary');
+    manager.deliverRequestedSessionWrapup(10);
+    expect(session.telegramWrapupRequestedAt).toBeUndefined();
+    expect(setTimeoutSpy).not.toHaveBeenCalled();
+    manager.removeSessionImmediate(10);
+    manager.deliverRequestedSessionWrapup(10);
+
+    expect(deliverSessionWrapup).not.toHaveBeenCalled();
+  });
+
+  it('delivers a late summary only after SessionEnd marks the session', async () => {
+    const manager = makeManager();
+    manager.initializeSession(11);
+    manager.deliverRequestedSessionWrapup(11);
+    expect(deliverSessionWrapup).not.toHaveBeenCalled();
+
+    await manager.requestSessionWrapup(11);
+    manager.deliverRequestedSessionWrapup(11);
+
+    expect(deliverSessionWrapup).toHaveBeenCalledWith({
+      sessionStore: expect.any(Object), sessionDbId: 11, formatSummary,
+    });
+    expect(deliverSessionWrapup).toHaveBeenCalledTimes(1);
+  });
+
   it('marks a live session and arms the fixed grace timer', async () => {
-    const manager = new SessionManager(makeDbManager());
+    const manager = makeManager();
     const session = manager.initializeSession(1);
 
     await manager.requestSessionWrapup(1);
@@ -109,7 +145,7 @@ describe('SessionManager SessionEnd wrap-up requests', () => {
   });
 
   it('delivers once when the live-session grace timer fires', async () => {
-    const manager = new SessionManager(makeDbManager());
+    const manager = makeManager();
     manager.initializeSession(2);
 
     await manager.requestSessionWrapup(2);
@@ -121,11 +157,12 @@ describe('SessionManager SessionEnd wrap-up requests', () => {
     expect(deliverSessionWrapup).toHaveBeenCalledWith({
       sessionStore: expect.any(Object),
       sessionDbId: 2,
+      formatSummary,
     });
   });
 
   it('delivers immediately when the session is not live in this worker', async () => {
-    const manager = new SessionManager(makeDbManager());
+    const manager = makeManager();
 
     await manager.requestSessionWrapup(3);
 
@@ -133,12 +170,13 @@ describe('SessionManager SessionEnd wrap-up requests', () => {
     expect(deliverSessionWrapup).toHaveBeenCalledWith({
       sessionStore: expect.any(Object),
       sessionDbId: 3,
+      formatSummary,
     });
     expect(setTimeoutSpy).not.toHaveBeenCalled();
   });
 
   it('starts non-live delivery immediately without awaiting its I/O', async () => {
-    const manager = new SessionManager(makeDbManager());
+    const manager = makeManager();
     let resolveDelivery!: (result: 'sent') => void;
     deliverSessionWrapup.mockImplementationOnce(() => new Promise<'sent'>(resolve => {
       resolveDelivery = resolve;
@@ -158,7 +196,7 @@ describe('SessionManager SessionEnd wrap-up requests', () => {
   });
 
   it('handles a rejected non-live delivery without rejecting the request', async () => {
-    const manager = new SessionManager(makeDbManager());
+    const manager = makeManager();
     const error = new Error('non-live delivery failed');
     deliverSessionWrapup.mockImplementationOnce(async () => {
       throw error;
@@ -176,7 +214,7 @@ describe('SessionManager SessionEnd wrap-up requests', () => {
   });
 
   it('handles a rejected grace-timer delivery without an unhandled rejection', async () => {
-    const manager = new SessionManager(makeDbManager());
+    const manager = makeManager();
     manager.initializeSession(6);
     await manager.requestSessionWrapup(6);
     const error = new Error('timer delivery failed');
@@ -197,7 +235,7 @@ describe('SessionManager SessionEnd wrap-up requests', () => {
   });
 
   it('clears the grace timer and handles a rejected delivery during immediate teardown at timestamp zero', async () => {
-    const manager = new SessionManager(makeDbManager());
+    const manager = makeManager();
     const session = manager.initializeSession(7);
     await manager.requestSessionWrapup(7);
     session.telegramWrapupRequestedAt = 0;
@@ -215,6 +253,7 @@ describe('SessionManager SessionEnd wrap-up requests', () => {
     expect(deliverSessionWrapup).toHaveBeenCalledWith({
       sessionStore: expect.any(Object),
       sessionDbId: 7,
+      formatSummary,
     });
     expect(manager.getSession(7)).toBeUndefined();
     expect(warnSpy).toHaveBeenCalledWith(
@@ -226,7 +265,7 @@ describe('SessionManager SessionEnd wrap-up requests', () => {
   });
 
   it('clears the grace timer and handles a rejected delivery during awaited teardown at timestamp zero', async () => {
-    const manager = new SessionManager(makeDbManager());
+    const manager = makeManager();
     const session = manager.initializeSession(8);
     await manager.requestSessionWrapup(8);
     session.telegramWrapupRequestedAt = 0;
@@ -244,6 +283,7 @@ describe('SessionManager SessionEnd wrap-up requests', () => {
     expect(deliverSessionWrapup).toHaveBeenCalledWith({
       sessionStore: expect.any(Object),
       sessionDbId: 8,
+      formatSummary,
     });
     expect(manager.getSession(8)).toBeUndefined();
     expect(warnSpy).toHaveBeenCalledWith(
@@ -255,7 +295,7 @@ describe('SessionManager SessionEnd wrap-up requests', () => {
   });
 
   it('takes and clears a SessionEnd request that arrives while awaited teardown is in progress', async () => {
-    const manager = new SessionManager(makeDbManager());
+    const manager = makeManager();
     const session = manager.initializeSession(9);
     let resolveReap!: (result: number) => void;
     reapSession.mockImplementationOnce(() => new Promise<number>(resolve => {
@@ -276,6 +316,7 @@ describe('SessionManager SessionEnd wrap-up requests', () => {
     expect(deliverSessionWrapup).toHaveBeenCalledWith({
       sessionStore: expect.any(Object),
       sessionDbId: 9,
+      formatSummary,
     });
     expect(manager.getSession(9)).toBeUndefined();
   });

@@ -16,6 +16,7 @@ import {
 } from '../../shared/observer-recycle.js';
 import { recycleObserverConversation, loadSessionStartContext } from './session/recycle-conversation.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt } from './field-optimizer.js';
+import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
 
 import {
   processAgentResponse,
@@ -93,6 +94,25 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       signal,
     );
     return result.content || null;
+  }
+
+  /** Format a stored summary through this provider's normal summary-model query path. */
+  async formatTelegramWrapup(
+    input: TelegramWrapupFormatterInput,
+    activeModelId?: string,
+  ): Promise<string> {
+    const config = this.getConfig();
+    if (!config.apiKey) {
+      throw this.missingApiKeyError();
+    }
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const model = resolveSummaryTierModel(activeModelId ?? config.model, settings);
+    const summaryConfig = model === config.model ? config : { ...config, model };
+    const result = await this.query(
+      [{ role: 'user', content: buildTelegramWrapupPrompt(input.summaryText) }],
+      summaryConfig,
+    );
+    return result.content;
   }
 
   /** Estimate token count for a single message body. */

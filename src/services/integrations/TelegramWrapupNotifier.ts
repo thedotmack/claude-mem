@@ -4,10 +4,9 @@ import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { escapeMarkdownV2, postTelegramMessage } from './telegram-transport.js';
 
-const MAX_WRAPUP_FIELD_CHARS = 600;
-const MAX_PROJECT_CHARS = 300;
-const MAX_PLATFORM_CHARS = 100;
-const MAX_PROMPT_NUMBER_CHARS = 50;
+export const TELEGRAM_WRAPUP_PROMPT = 'format as a very short bulleted list that narratively explains this summary in < 255 char';
+
+const MAX_WRAPUP_CHARS = 255;
 
 export interface TelegramWrapupRoute {
   chat_id: string;
@@ -29,22 +28,20 @@ export interface ResolvedTelegramWrapupRoute {
   matchedProject: string;
 }
 
-export interface WrapupMessageInput {
+export interface TelegramWrapupFormatterInput {
+  sessionDbId: number;
+  contentSessionId: string;
   project: string;
   platformSource: string;
-  contentSessionId: string;
-  summary: {
-    request: string | null;
-    completed: string | null;
-    next_steps: string | null;
-    notes: string | null;
-    prompt_number: number | null;
-  };
+  summaryText: string;
 }
+
+export type TelegramWrapupFormatter = (input: TelegramWrapupFormatterInput) => Promise<string>;
 
 export interface WrapupDeliveryInput {
   sessionStore: SessionStore;
   sessionDbId: number;
+  formatSummary: TelegramWrapupFormatter;
   settings?: SettingsDefaults;
   fetchImpl?: typeof fetch;
 }
@@ -118,47 +115,64 @@ export function resolveWrapupRoute(
   return resolveRouteEntry(config, project.slice(0, separator));
 }
 
-function escapeAndTruncate(value: string | null | undefined, maxChars: number): string {
-  const chars = Array.from(value ?? '');
-  const candidate = chars.slice(0, maxChars).join('');
-  const escapedCandidate = escapeMarkdownV2(candidate);
-  if (chars.length <= maxChars && escapedCandidate.length <= maxChars) {
-    return escapedCandidate;
-  }
-
-  let escaped = '';
-  for (const char of chars.slice(0, Math.max(0, maxChars - 1))) {
-    const escapedChar = escapeMarkdownV2(char);
-    if (escaped.length + escapedChar.length > maxChars - 1) break;
-    escaped += escapedChar;
-  }
-  return escaped + '…';
+export function joinStoredSummaryForTelegram(summary: {
+  request: string | null;
+  investigated: string | null;
+  learned: string | null;
+  completed: string | null;
+  next_steps: string | null;
+  files_read: string | null;
+  files_edited: string | null;
+  notes: string | null;
+}): string {
+  return [
+    summary.request ?? '',
+    summary.investigated ?? '',
+    summary.learned ?? '',
+    summary.completed ?? '',
+    summary.next_steps ?? '',
+    summary.files_read ?? '',
+    summary.files_edited ?? '',
+    summary.notes ?? '',
+  ].join('\n');
 }
 
-export function formatWrapupMessage(input: WrapupMessageInput): string {
-  const request = escapeAndTruncate(input.summary.request, MAX_WRAPUP_FIELD_CHARS);
-  const completed = escapeAndTruncate(input.summary.completed, MAX_WRAPUP_FIELD_CHARS);
-  const nextSteps = escapeAndTruncate(input.summary.next_steps, MAX_WRAPUP_FIELD_CHARS);
-  const notes = input.summary.notes === null
-    ? null
-    : escapeAndTruncate(input.summary.notes, MAX_WRAPUP_FIELD_CHARS);
-  const project = escapeAndTruncate(input.project, MAX_PROJECT_CHARS);
-  const platformSource = escapeAndTruncate(input.platformSource, MAX_PLATFORM_CHARS);
-  const sessionId = escapeMarkdownV2(input.contentSessionId.slice(0, 8));
-  const promptNumber = escapeAndTruncate(
-    String(input.summary.prompt_number ?? 'unknown'),
-    MAX_PROMPT_NUMBER_CHARS,
-  );
+export function buildTelegramWrapupPrompt(summaryText: string): string {
+  return `${TELEGRAM_WRAPUP_PROMPT}\n\n${summaryText}`;
+}
 
-  const inlineCode = String.fromCharCode(96);
-  return [
-    '✅ *Session wrap\\-up* — ' + inlineCode + project + inlineCode,
-    '*Request:* ' + request,
-    '*Completed:* ' + completed,
-    '*Next steps:* ' + nextSteps,
-    ...(notes === null ? [] : ['*Notes:* ' + notes]),
-    '_' + platformSource + ' · session ' + sessionId + ' · turn ' + promptNumber + '_',
-  ].join('\n');
+function fitsTelegramLimit(value: string): boolean {
+  return escapeMarkdownV2(value).length <= MAX_WRAPUP_CHARS;
+}
+
+function isBulletStart(line: string): boolean {
+  return /^\s*(?:[-*•])(?:\s|$)/.test(line);
+}
+
+/** Escape a model-produced list, retaining only complete bullets when it is too long. */
+export function formatWrapupMessage(modelOutput: string): string {
+  const normalized = modelOutput.trim();
+  if (fitsTelegramLimit(normalized)) {
+    return escapeMarkdownV2(normalized);
+  }
+
+  const lines = normalized.split(/\r?\n/);
+  const bulletStarts = lines.reduce<number[]>((starts, line, index) => {
+    if (isBulletStart(line)) starts.push(index);
+    return starts;
+  }, []);
+
+  let capped = '';
+  for (let index = 0; index < bulletStarts.length; index++) {
+    const start = bulletStarts[index];
+    const end = bulletStarts[index + 1] ?? lines.length;
+    const bullet = lines.slice(start, end).join('\n').trim();
+    const candidate = capped ? `${capped}\n${bullet}` : bullet;
+    if (!fitsTelegramLimit(candidate)) break;
+    capped = candidate;
+  }
+
+  return escapeMarkdownV2(capped);
 }
 
 export async function deliverSessionWrapup(
@@ -223,12 +237,16 @@ export async function deliverSessionWrapup(
     }
 
     try {
-      const text = formatWrapupMessage({
+      const text = formatWrapupMessage(await input.formatSummary({
+        sessionDbId: input.sessionDbId,
+        contentSessionId: session.content_session_id,
         project: session.project,
         platformSource: session.platform_source,
-        contentSessionId: session.content_session_id,
-        summary,
-      });
+        summaryText: joinStoredSummaryForTelegram(summary),
+      }));
+      if (!text) {
+        throw new Error('Telegram wrap-up formatter returned no text');
+      }
       await postTelegramMessage(route.botToken, route.chatId, text, input.fetchImpl);
     } catch (error) {
       input.sessionStore.releaseTelegramWrapupClaim(ledgerInput);

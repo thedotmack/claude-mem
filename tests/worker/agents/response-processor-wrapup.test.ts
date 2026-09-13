@@ -15,6 +15,7 @@ const realWorkerUtilsSnapshot = { ...realWorkerUtilsModule };
 const realModeManagerSnapshot = { ...realModeManagerModule };
 const realSettingsDefaultsSnapshot = { ...realSettingsDefaultsModule };
 const realTelegramWrapupNotifierSnapshot = { ...realTelegramWrapupNotifierModule };
+const formatSummary = mock(async () => '• Completed the session');
 const deliverSessionWrapup = mock(async () => 'sent' as const);
 
 mock.module('../../../src/services/worker-service.js', () => ({
@@ -63,7 +64,7 @@ mock.module('../../../src/services/integrations/TelegramWrapupNotifier.js', () =
 
 import { processAgentResponse } from '../../../src/services/worker/agents/ResponseProcessor.js';
 import type { DatabaseManager } from '../../../src/services/worker/DatabaseManager.js';
-import type { SessionManager } from '../../../src/services/worker/SessionManager.js';
+import { SessionManager } from '../../../src/services/worker/SessionManager.js';
 import type { StorageResult } from '../../../src/services/worker/agents/types.js';
 import type { ActiveSession } from '../../../src/services/worker-types.js';
 
@@ -111,11 +112,13 @@ function createDbManager(result: StorageResult): DatabaseManager {
   } as unknown as DatabaseManager;
 }
 
-function createSessionManager(): SessionManager {
-  return {
-    getClaimedMessages: () => [],
-    confirmClaimedMessages: () => Promise.resolve(0),
-  } as unknown as SessionManager;
+function createSessionManager(session: ActiveSession, dbManager: DatabaseManager): SessionManager {
+  const manager = new SessionManager(dbManager);
+  manager.setTelegramWrapupFormatter(formatSummary);
+  spyOn(manager, 'getSession').mockReturnValue(session);
+  spyOn(manager, 'getClaimedMessages').mockReturnValue([]);
+  spyOn(manager, 'confirmClaimedMessages').mockResolvedValue(0);
+  return manager;
 }
 
 const observationResponse = `
@@ -165,12 +168,13 @@ describe('ResponseProcessor Telegram wrap-up delivery', () => {
 
   it('does not deliver an observation-only response when wrap-up is requested', async () => {
     const session = createSession({ telegramWrapupRequestedAt: Date.now() });
+    const dbManager = createDbManager({ observationIds: [1], summaryId: null, createdAtEpoch: 1_700_000_000_000 });
 
     await processAgentResponse(
       observationResponse,
       session,
-      createDbManager({ observationIds: [1], summaryId: null, createdAtEpoch: 1_700_000_000_000 }),
-      createSessionManager(),
+      dbManager,
+      createSessionManager(session, dbManager),
       undefined,
       100,
       null,
@@ -180,14 +184,15 @@ describe('ResponseProcessor Telegram wrap-up delivery', () => {
     expect(deliverSessionWrapup).not.toHaveBeenCalled();
   });
 
-  it('does not deliver a summary when wrap-up was not requested', async () => {
+  it('stores a Stop summary without delivering before SessionEnd', async () => {
     const session = createSession();
+    const dbManager = createDbManager({ observationIds: [], summaryId: 99, createdAtEpoch: 1_700_000_000_000 });
 
     await processAgentResponse(
       summaryResponse,
       session,
-      createDbManager({ observationIds: [], summaryId: 99, createdAtEpoch: 1_700_000_000_000 }),
-      createSessionManager(),
+      dbManager,
+      createSessionManager(session, dbManager),
       undefined,
       100,
       null,
@@ -205,7 +210,7 @@ describe('ResponseProcessor Telegram wrap-up delivery', () => {
       summaryResponse,
       session,
       dbManager,
-      createSessionManager(),
+      createSessionManager(session, dbManager),
       undefined,
       100,
       null,
@@ -216,11 +221,13 @@ describe('ResponseProcessor Telegram wrap-up delivery', () => {
     expect(deliverSessionWrapup).toHaveBeenCalledWith({
       sessionStore: dbManager.getSessionStore(),
       sessionDbId: session.sessionDbId,
+      formatSummary,
     });
   });
 
   it('handles a rejected background delivery without rejecting response processing', async () => {
     const session = createSession({ telegramWrapupRequestedAt: Date.now() });
+    const dbManager = createDbManager({ observationIds: [], summaryId: 99, createdAtEpoch: 1_700_000_000_000 });
     const error = new Error('wrap-up delivery failed');
     deliverSessionWrapup.mockImplementationOnce(async () => {
       throw error;
@@ -229,8 +236,8 @@ describe('ResponseProcessor Telegram wrap-up delivery', () => {
     await expect(processAgentResponse(
       summaryResponse,
       session,
-      createDbManager({ observationIds: [], summaryId: 99, createdAtEpoch: 1_700_000_000_000 }),
-      createSessionManager(),
+      dbManager,
+      createSessionManager(session, dbManager),
       undefined,
       100,
       null,
@@ -240,7 +247,7 @@ describe('ResponseProcessor Telegram wrap-up delivery', () => {
 
     expect(warnSpy).toHaveBeenCalledWith(
       'TELEGRAM',
-      'Failed to deliver Telegram session wrap-up from ResponseProcessor',
+      'Failed to deliver Telegram session wrap-up from SessionManager',
       { sessionId: session.sessionDbId },
       error,
     );

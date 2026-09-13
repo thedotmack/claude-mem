@@ -2,16 +2,24 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../src/shared/SettingsDefaultsManager.js';
 import { SessionStore, TELEGRAM_WRAPUP_CLAIM_STALE_AFTER_MS } from '../../src/services/sqlite/SessionStore.js';
 import {
+  TELEGRAM_WRAPUP_PROMPT,
+  buildTelegramWrapupPrompt,
   deliverSessionWrapup,
+  formatWrapupMessage,
+  joinStoredSummaryForTelegram,
+  type TelegramWrapupFormatterInput,
   loadTelegramWrapupConfig,
   resolveWrapupRoute,
 } from '../../src/services/integrations/TelegramWrapupNotifier.js';
 
 describe('Telegram wrap-up notifier', () => {
   let store: SessionStore;
+  const formatSummary = mock(async (_input: TelegramWrapupFormatterInput) => '• Shipped the wrap-up');
 
   beforeEach(() => {
     store = new SessionStore(':memory:');
+    formatSummary.mockReset();
+    formatSummary.mockImplementation(async () => '• Shipped the wrap-up');
   });
 
   afterEach(() => {
@@ -61,6 +69,134 @@ describe('Telegram wrap-up notifier', () => {
     )) as unknown as typeof fetch;
   }
 
+  it('uses only the exact formatting instruction and the unabridged summary', () => {
+    const summaryText = 'Full summary\n'.repeat(1_000);
+    const instruction = 'format as a very short bulleted list that narratively explains this summary in < 255 char';
+    expect(TELEGRAM_WRAPUP_PROMPT).toBe(instruction);
+    expect(buildTelegramWrapupPrompt(summaryText)).toBe(`${instruction}\n\n${summaryText}`);
+  });
+
+  it('joins stored fields plainly without trimming or adding field labels', () => {
+    expect(joinStoredSummaryForTelegram({
+      request: '  request\ncontinued  ',
+      investigated: 'investigated',
+      learned: 'learned',
+      completed: 'completed',
+      next_steps: 'next steps',
+      files_read: '["read.ts"]',
+      files_edited: '["edited.ts"]',
+      notes: 'notes',
+    })).toBe('  request\ncontinued  \ninvestigated\nlearned\ncompleted\nnext steps\n["read.ts"]\n["edited.ts"]\nnotes');
+  });
+
+  it('passes every field of the latest stored summary whole to the formatter', async () => {
+    const { sessionDbId, memorySessionId } = createSession('project-a', 'content-whole-summary');
+    storeSummary(memorySessionId, 'project-a', 'outdated summary');
+    const summary = {
+      request: 'request '.repeat(1_000),
+      investigated: '  investigated\nwith details  ',
+      learned: 'learned',
+      completed: 'completed',
+      next_steps: 'next steps',
+      files_read: ['read.ts'],
+      files_edited: ['edited.ts'],
+      notes: 'notes '.repeat(1_000),
+    };
+    store.storeSummary(memorySessionId, 'project-a', summary, 4, 0, Date.now() + 1);
+    const fetchMock = successfulFetch();
+
+    await deliverSessionWrapup({ sessionStore: store, sessionDbId, formatSummary, settings: settings(), fetchImpl: fetchMock });
+
+    expect(formatSummary).toHaveBeenCalledWith({
+      sessionDbId,
+      contentSessionId: 'content-whole-summary',
+      project: 'project-a',
+      platformSource: 'claude',
+      summaryText: [summary.request, summary.investigated, summary.learned, summary.completed,
+        summary.next_steps, '["read.ts"]', '["edited.ts"]', summary.notes].join('\n'),
+    });
+  });
+
+  it('escapes model bullets without adding headings or hand-written sections', () => {
+    expect(formatWrapupMessage('- Fixed a_bug.\n* Shipped [tests]!'))
+      .toBe('\\- Fixed a\\_bug\\.\n\\* Shipped \\[tests\\]\\!');
+  });
+
+  it.each(['-', '*', '•'])('caps %s lists at the last complete bullet under 255 characters', marker => {
+    const first = `${marker} ${'a'.repeat(100)}`;
+    const second = `${marker} ${'b'.repeat(100)}`;
+    const third = `${marker} ${'c'.repeat(100)}`;
+    const formatted = formatWrapupMessage(`${first}\n${second}\n${third}`);
+    expect(formatted).toBe(formatWrapupMessage(`${first}\n${second}`));
+    expect(formatted.length).toBeLessThanOrEqual(255);
+    expect(formatted).not.toContain('ccc');
+  });
+
+  it('keeps multiline bullets intact when capping and accounts for MarkdownV2 escaping', () => {
+    const first = `• ${'a'.repeat(100)}\n  continued`;
+    const second = `• ${'_'.repeat(100)}`;
+    expect(formatWrapupMessage(`${first}\n${second}`)).toBe(first);
+  });
+
+  it('allows exactly 255 characters and discards the next complete bullet', () => {
+    const full = `• ${'a'.repeat(253)}`;
+    expect(formatWrapupMessage(full)).toBe(full);
+    expect(formatWrapupMessage(`${full}\n• extra`)).toBe(full);
+  });
+
+  it('discards an oversized first bullet when no complete bullet fits', () => {
+    expect(formatWrapupMessage(`• ${'a'.repeat(300)}\n• Later bullet`)).toBe('');
+  });
+
+  it('keeps Unicode and MarkdownV2 escapes intact within the 255-character cap', () => {
+    const first = `• ${'😀_'.repeat(60)}`;
+    const formatted = formatWrapupMessage(`${first}\n• ${'more'.repeat(100)}`);
+    expect(formatted).toBe(`• ${'😀\\_'.repeat(60)}`);
+    expect(formatted.length).toBeLessThanOrEqual(255);
+  });
+
+  it('caps the actual Telegram payload at a complete bullet boundary', async () => {
+    const { sessionDbId, memorySessionId } = createSession('project-a', 'content-capped');
+    storeSummary(memorySessionId, 'project-a');
+    formatSummary.mockResolvedValueOnce(`• Shipped\n• ${'more details '.repeat(100)}`);
+    const fetchMock = successfulFetch();
+
+    await deliverSessionWrapup({ sessionStore: store, sessionDbId, formatSummary, settings: settings(), fetchImpl: fetchMock });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.text).toBe('• Shipped');
+    expect(body.parse_mode).toBe('MarkdownV2');
+  });
+
+  it('does not call the model or Telegram when wrap-ups are disabled', async () => {
+    const { sessionDbId, memorySessionId } = createSession('project-a', 'content-disabled');
+    storeSummary(memorySessionId, 'project-a');
+    const fetchMock = successfulFetch();
+
+    await expect(deliverSessionWrapup({
+      sessionStore: store, sessionDbId, formatSummary, fetchImpl: fetchMock,
+      settings: settings({ CLAUDE_MEM_TELEGRAM_WRAPUPS_ENABLED: 'false' }),
+    })).resolves.toBe('disabled');
+
+    expect(formatSummary).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['error', 'empty'])('releases the claim after a formatter %s so delivery can retry', async failure => {
+    const { sessionDbId, memorySessionId } = createSession('project-a', `content-formatter-${failure}`);
+    storeSummary(memorySessionId, 'project-a');
+    const fetchMock = successfulFetch();
+    if (failure === 'error') formatSummary.mockRejectedValueOnce(new Error('formatter failed'));
+    else formatSummary.mockResolvedValueOnce('  ');
+    const input = { sessionStore: store, sessionDbId, formatSummary, settings: settings(), fetchImpl: fetchMock };
+
+    await expect(deliverSessionWrapup(input)).rejects.toThrow();
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(deliverSessionWrapup(input)).resolves.toBe('sent');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(formatSummary).toHaveBeenCalledTimes(2);
+  });
+
   it('resolves exact routes, parent-project routes, and rejects unknown projects', () => {
     const config = loadTelegramWrapupConfig(settings({
       CLAUDE_MEM_TELEGRAM_WRAPUP_ROUTES: JSON.stringify({
@@ -91,11 +227,13 @@ describe('Telegram wrap-up notifier', () => {
     await expect(deliverSessionWrapup({
       sessionStore: store,
       sessionDbId,
+      formatSummary,
       settings: settings(),
       fetchImpl: fetchMock,
     })).resolves.toBe('no_summary');
 
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(formatSummary).not.toHaveBeenCalled();
   });
 
   it('posts once to the configured route and records the sent ledger claim', async () => {
@@ -106,12 +244,14 @@ describe('Telegram wrap-up notifier', () => {
     await expect(deliverSessionWrapup({
       sessionStore: store,
       sessionDbId,
+      formatSummary,
       settings: settings(),
       fetchImpl: fetchMock,
     })).resolves.toBe('sent');
     await expect(deliverSessionWrapup({
       sessionStore: store,
       sessionDbId,
+      formatSummary,
       settings: settings(),
       fetchImpl: fetchMock,
     })).resolves.toBe('already_sent');
@@ -121,7 +261,8 @@ describe('Telegram wrap-up notifier', () => {
     expect(url).toBe('https://api.telegram.org/botroute-token/sendMessage');
     const body = JSON.parse(String(init.body)) as { chat_id: string; text: string };
     expect(body.chat_id).toBe('route-chat');
-    expect(body.text).toContain('Build the Telegram wrap\\-up notifier');
+    expect(body.text).toBe('• Shipped the wrap\\-up');
+    expect(formatSummary).toHaveBeenCalledTimes(1);
   });
 
   it('allows only one concurrent caller to post a session wrap-up', async () => {
@@ -133,12 +274,14 @@ describe('Telegram wrap-up notifier', () => {
       deliverSessionWrapup({
         sessionStore: store,
         sessionDbId,
+        formatSummary,
         settings: settings(),
         fetchImpl: fetchMock,
       }),
       deliverSessionWrapup({
         sessionStore: store,
         sessionDbId,
+        formatSummary,
         settings: settings(),
         fetchImpl: fetchMock,
       }),
@@ -171,6 +314,7 @@ describe('Telegram wrap-up notifier', () => {
     await expect(deliverSessionWrapup({
       sessionStore: store,
       sessionDbId,
+      formatSummary,
       settings: settings(),
       fetchImpl: fetchMock,
     })).resolves.toBe('sent');
@@ -186,6 +330,7 @@ describe('Telegram wrap-up notifier', () => {
     await expect(deliverSessionWrapup({
       sessionStore: store,
       sessionDbId,
+      formatSummary,
       settings: settings(),
       fetchImpl: fetchMock,
     })).resolves.toBe('no_route');
@@ -207,6 +352,7 @@ describe('Telegram wrap-up notifier', () => {
     await expect(deliverSessionWrapup({
       sessionStore: store,
       sessionDbId,
+      formatSummary,
       settings: settings(),
       fetchImpl: fetchMock,
     })).rejects.toThrow('Telegram API responded 500 Server Error');
@@ -215,6 +361,7 @@ describe('Telegram wrap-up notifier', () => {
     await expect(deliverSessionWrapup({
       sessionStore: store,
       sessionDbId,
+      formatSummary,
       settings: settings(),
       fetchImpl: fetchMock,
     })).resolves.toBe('sent');
@@ -234,6 +381,7 @@ describe('Telegram wrap-up notifier', () => {
     await expect(deliverSessionWrapup({
       sessionStore: store,
       sessionDbId,
+      formatSummary,
       settings: settings(),
       fetchImpl: fetchMock,
     })).rejects.toThrow('simulated ledger write failure');
@@ -247,6 +395,7 @@ describe('Telegram wrap-up notifier', () => {
     await expect(deliverSessionWrapup({
       sessionStore: store,
       sessionDbId,
+      formatSummary,
       settings: settings(),
       fetchImpl: fetchMock,
     })).resolves.toBe('already_sent');

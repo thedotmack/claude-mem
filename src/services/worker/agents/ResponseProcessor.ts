@@ -11,7 +11,6 @@ import {
 } from '../../../sdk/output-classifier.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
-import { deliverSessionWrapup } from '../../integrations/TelegramWrapupNotifier.js';
 import { notifyGrokBotAwareness } from '../../integrations/GrokBotAwarenessPusher.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
@@ -658,15 +657,8 @@ export async function processAgentResponse(
     agentName
   );
 
-  if (result.summaryId && session.telegramWrapupRequestedAt != null) {
-    void deliverSessionWrapup({
-      sessionStore: dbManager.getSessionStore(),
-      sessionDbId: session.sessionDbId,
-    }).catch((error: unknown) => {
-      logger.warn('TELEGRAM', 'Failed to deliver Telegram session wrap-up from ResponseProcessor', {
-        sessionId: session.sessionDbId,
-      }, error instanceof Error ? error : new Error(String(error)));
-    });
+  if (result.summaryId) {
+    sessionManager.deliverRequestedSessionWrapup?.(session.sessionDbId);
   }
 }
 
