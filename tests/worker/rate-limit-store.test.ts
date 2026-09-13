@@ -339,6 +339,25 @@ describe('RateLimitStore.set → new-rejection signal', () => {
     expect(store.set({ rateLimitType: 'five_hour', status: 'rejected', resetsAt: FIXED_NOW + 60_000 })).toBe(true);
   });
 
+  it('returns the exact rejected bucket from a unified snapshot', () => {
+    const store = freshStore();
+    const rejections = store.setWithNewRejections({
+      rateLimitType: 'five_hour',
+      status: 'allowed_warning',
+      resetsAt: FIXED_NOW + 60_000,
+      unifiedWindows: {
+        seven_day: {
+          status: 'rejected',
+          resetsAt: FIXED_NOW + 7 * 24 * 60 * 60 * 1000,
+        },
+      },
+    });
+
+    expect(rejections).toHaveLength(1);
+    expect(rejections[0]?.rateLimitType).toBe('seven_day');
+    expect(rejections[0]?.status).toBe('rejected');
+  });
+
   it('does not re-report the same rejection on later requests', () => {
     const store = freshStore();
     const rejected: RateLimitInfo = { rateLimitType: 'five_hour', status: 'rejected', resetsAt: FIXED_NOW + 60_000 };
@@ -420,6 +439,26 @@ describe('buildUsageLimitHitProps', () => {
       overage_status: 'unknown',
       is_using_overage: false,
       resets_in_minutes: undefined,
+    });
+  });
+
+  it('uses overageResetsAt for overage telemetry', () => {
+    expect(
+      buildUsageLimitHitProps(
+        {
+          rateLimitType: 'overage',
+          status: 'allowed_warning',
+          overageStatus: 'rejected',
+          resetsAt: FIXED_NOW + 10 * 60_000,
+          overageResetsAt: FIXED_NOW + 90 * 60_000,
+        },
+        FIXED_NOW,
+      ),
+    ).toEqual({
+      limit_window: 'overage',
+      overage_status: 'rejected',
+      is_using_overage: false,
+      resets_in_minutes: 90,
     });
   });
 });

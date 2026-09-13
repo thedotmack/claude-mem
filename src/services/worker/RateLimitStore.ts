@@ -73,24 +73,33 @@ export class RateLimitStore {
    * callers should pass the inner info.
    */
   set(info: RateLimitInfo | undefined | null): boolean {
-    if (!info || typeof info !== 'object') return false;
-    let reportedNewRejection = false;
+    return this.setWithNewRejections(info).length > 0;
+  }
+
+  /**
+   * Record a snapshot and return the exact buckets that became rejected.
+   * Callers that emit per-window telemetry should use this instead of `set()`.
+   */
+  setWithNewRejections(info: RateLimitInfo | undefined | null): RateLimitEntry[] {
+    if (!info || typeof info !== 'object') return [];
+    const newRejections: RateLimitEntry[] = [];
     const key: RateLimitBucketKey = info.rateLimitType ?? 'default';
-    reportedNewRejection = this.setBucket(key, info) || reportedNewRejection;
+    const primaryRejection = this.setBucket(key, info);
+    if (primaryRejection) newRejections.push(primaryRejection);
 
     // A unified snapshot is a fresh view of every listed window. Process it
     // after the primary bucket so a nested snapshot can clear stale fields
     // even when it omits them (for example, an old `status: rejected`).
     for (const [window, snapshot] of Object.entries(info.unifiedWindows ?? {})) {
       if (!isRateLimitWindow(window) || !snapshot || typeof snapshot !== 'object') continue;
-      reportedNewRejection =
-        this.setBucket(window, { ...snapshot, rateLimitType: window }) || reportedNewRejection;
+      const nestedRejection = this.setBucket(window, { ...snapshot, rateLimitType: window });
+      if (nestedRejection) newRejections.push(nestedRejection);
     }
 
-    return reportedNewRejection;
+    return newRejections;
   }
 
-  private setBucket(key: RateLimitBucketKey, info: RateLimitInfo): boolean {
+  private setBucket(key: RateLimitBucketKey, info: RateLimitInfo): RateLimitEntry | undefined {
     const previous = this.entries.get(key);
     const next = {
       ...info,
@@ -98,7 +107,7 @@ export class RateLimitStore {
       observedAt: Date.now(),
     };
     this.entries.set(key, next);
-    return isNewRejection(previous, next);
+    return isNewRejection(previous, next) ? next : undefined;
   }
 
   /** Snapshot a single bucket, or undefined if not yet seen. */
@@ -190,11 +199,12 @@ export function buildUsageLimitHitProps(
   info: RateLimitInfo,
   now: number = Date.now(),
 ): Record<string, unknown> {
+  const resetsAt = info.rateLimitType === 'overage' ? info.overageResetsAt : info.resetsAt;
   return {
     limit_window: info.rateLimitType ?? 'unknown',
     overage_status: info.overageStatus ?? 'unknown',
     is_using_overage: info.isUsingOverage === true,
-    resets_in_minutes: minutesUntilReset(info.resetsAt, now),
+    resets_in_minutes: minutesUntilReset(resetsAt, now),
   };
 }
 
