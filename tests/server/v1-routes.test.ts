@@ -127,6 +127,56 @@ describe('server REST API v1 routes', () => {
     expect((await endResponse.json()).session.status).toBe('completed');
   });
 
+  it('returns recent observations when /v1/context is given no query', async () => {
+    // A session-start block asks "what happened recently". Until this, /v1/context
+    // ran the same relevance search as /v1/search and REQUIRED a query, so it could
+    // not answer that at all -- it returned whatever matched, from any date.
+    const projectResponse = await post('/v1/projects', { name: 'Recent Context Project' });
+    expect(projectResponse.status).toBe(201);
+    const { project } = await projectResponse.json();
+
+    const older = await post('/v1/memories', {
+      projectId: project.id,
+      kind: 'manual',
+      type: 'note',
+      title: 'Older note',
+      narrative: 'Written first.',
+    });
+    expect(older.status).toBe(201);
+    const olderId = (await older.json()).memory.id;
+
+    // created_at_epoch is server-assigned in milliseconds and the create schema
+    // omits it, so two writes in the same millisecond are genuinely tied and the
+    // ordering below would be arbitrary. Separate them in time rather than weaken
+    // the assertion — "newest first" is the behaviour under test.
+    await new Promise(resolve => setTimeout(resolve, 5));
+
+    const newer = await post('/v1/memories', {
+      projectId: project.id,
+      kind: 'manual',
+      type: 'note',
+      title: 'Newer note',
+      narrative: 'Written second.',
+    });
+    expect(newer.status).toBe(201);
+    const newerId = (await newer.json()).memory.id;
+
+    const response = await post('/v1/context', { projectId: project.id, limit: 10 });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+
+    const ids = body.memories.map((o: any) => o.id);
+    expect(ids).toContain(olderId);
+    expect(ids).toContain(newerId);
+    // Newest first — that is the whole point of the query-less mode.
+    expect(ids.indexOf(newerId)).toBeLessThan(ids.indexOf(olderId));
+
+    // A query still selects by relevance, unchanged.
+    const queried = await post('/v1/context', { projectId: project.id, query: 'second' });
+    expect(queried.status).toBe(200);
+    expect((await queried.json()).context).toContain('Written second.');
+  });
+
   it('persists a full-field memory create with narrative populated and indexed (#2684)', async () => {
     const projectResponse = await post('/v1/projects', { name: 'Write Path Project' });
     expect(projectResponse.status).toBe(201);
