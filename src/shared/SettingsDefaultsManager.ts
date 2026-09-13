@@ -123,6 +123,9 @@ export interface SettingsDefaults {
   CLAUDE_MEM_TELEGRAM_ENABLED: string;
   CLAUDE_MEM_TELEGRAM_BOT_TOKEN: string;
   CLAUDE_MEM_TELEGRAM_CHAT_ID: string;
+  CLAUDE_MEM_TELEGRAM_WRAPUPS_ENABLED: string;
+  CLAUDE_MEM_TELEGRAM_OBSERVATION_ALERTS_ENABLED: string;
+  CLAUDE_MEM_TELEGRAM_WRAPUP_ROUTES: string;
   CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: string;
   CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS: string;
   CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: string;
@@ -253,6 +256,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TELEGRAM_ENABLED: 'true',
     CLAUDE_MEM_TELEGRAM_BOT_TOKEN: '',
     CLAUDE_MEM_TELEGRAM_CHAT_ID: '',
+    CLAUDE_MEM_TELEGRAM_WRAPUPS_ENABLED: 'true', // Session-end wrap-ups require an explicit project route before sending.
+    CLAUDE_MEM_TELEGRAM_OBSERVATION_ALERTS_ENABLED: 'false', // Existing per-observation Telegram alerts are opt-in.
+    CLAUDE_MEM_TELEGRAM_WRAPUP_ROUTES: '{}', // JSON project-to-Telegram-route map; entries may carry bot-token overrides.
     CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: 'security_alert,sensitive',
     CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS: '',
     CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: 'true',

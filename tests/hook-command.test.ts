@@ -5,6 +5,7 @@ import {
   isNonBlockingHookInputError,
   isWorkerUnavailableError,
 } from '../src/cli/hook-command.js';
+import { getActiveHookType, setActiveHookType } from '../src/shared/worker-utils.js';
 import { SAFETY_TIMEOUT_MS } from '../src/cli/stdin-reader.js';
 import { installFakeStdin, installOpenFakeStdin, restoreStdin } from './fake-stdin.js';
 
@@ -13,6 +14,15 @@ const realConsoleLog = console.log;
 afterEach(() => {
   restoreStdin();
   console.log = realConsoleLog;
+  setActiveHookType('');
+});
+
+describe('hook_failed telemetry type', () => {
+  it('classifies SessionEnd as a closed hook_type value', () => {
+    setActiveHookType('session-end');
+
+    expect(getActiveHookType()).toBe('session-end');
+  });
 });
 
 describe('buildNoOpResult', () => {

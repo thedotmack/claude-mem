@@ -656,6 +656,10 @@ export async function processAgentResponse(
     worker,
     agentName
   );
+
+  if (result.summaryId) {
+    sessionManager.deliverRequestedSessionWrapup?.(session.sessionDbId);
+  }
 }
 
 function normalizeSummaryForStorage(summary: ParsedSummary | null): {
