@@ -56,22 +56,48 @@ describe('session-init reopens a continued session (#4080)', () => {
     );
   }
 
-  it('a prompt on a completed row puts it back to active', async () => {
-    const id = store.createSDKSession('resumed', 'proj', 'hello');
-    store.saveUserPrompt('resumed', 1, 'hello', id);
+  it('a new prompt on a completed row puts it back to active', async () => {
+    // platform_source 'cursor' so the handler stops after saving the prompt
+    // instead of starting a generator — the reopen has already happened by
+    // then, and a live SDK agent is not what this cell is about.
+    const id = store.createSDKSession('resumed', 'proj', 'first', undefined, 'cursor');
+    store.saveUserPrompt('resumed', 1, 'first', id);
     store.markSessionCompleted(id);
     expect(readRow(store, id).status).toBe('completed');
 
     const routes = buildRoutes();
     const { res, done } = fakeRes();
     (routes as any).handleSessionInitByClaudeId(fakeReq({
-      contentSessionId: 'resumed', project: 'proj', prompt: 'hello',
+      contentSessionId: 'resumed', project: 'proj', prompt: 'second', platform_source: 'cursor',
+    }), res);
+    await done;
+
+    const row = readRow(store, id);
+    expect(row.status).toBe('active');
+    expect(row.completed_at_epoch).toBeNull();
+  });
+
+  it('a DUPLICATE prompt leaves the completed row alone', async () => {
+    // Greptile's finding on this PR: the reopen used to run before the
+    // duplicate gate, so a retry of an already-saved prompt cleared the
+    // completion and then returned early — saving no prompt and starting no
+    // work that would ever finalize the session again. The row stayed
+    // 'active' for good, which is #2373's bug in the other direction.
+    const id = store.createSDKSession('resumed', 'proj', 'hello', undefined, 'cursor');
+    store.saveUserPrompt('resumed', 1, 'hello', id);
+    store.markSessionCompleted(id);
+    const firstEnd = readRow(store, id).completed_at_epoch;
+
+    const routes = buildRoutes();
+    const { res, done } = fakeRes();
+    (routes as any).handleSessionInitByClaudeId(fakeReq({
+      contentSessionId: 'resumed', project: 'proj', prompt: 'hello', platform_source: 'cursor',
     }), res);
     const payload = await done;
 
     expect(payload.reason).toBe('duplicate');
     const row = readRow(store, id);
-    expect(row.status).toBe('active');
-    expect(row.completed_at_epoch).toBeNull();
+    expect(row.status).toBe('completed');
+    expect(row.completed_at_epoch).toBe(firstEnd);
   });
 });
