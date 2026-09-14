@@ -1,5 +1,6 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { basename } from 'path';
 import { homedir } from 'os';
 import { getProjectName, getProjectContext, resolveHookProjectPath } from '../../src/utils/project-name.js';
 
@@ -27,19 +28,17 @@ afterAll(() => {
 describe('getProjectName', () => {
   describe('tilde expansion', () => {
     it('resolves bare ~ to home directory basename', () => {
-      const home = homedir();
-      const expected = home.split('/').pop() || home.split('\\').pop() || '';
-      expect(getProjectName('~')).toBe(expected);
+      expect(getProjectName('~')).toBe(basename(homedir()));
     });
 
     it('resolves ~/subpath to subpath', () => {
-      expect(getProjectName('~/projects/my-app')).toBe('my-app');
+      // Do not use ~/projects/... : on Windows that case-folds onto a real
+      // Projects directory and the #3194 marker walk will pick it up.
+      expect(getProjectName('~/cm-3194-nosuch/my-app')).toBe('my-app');
     });
 
     it('resolves ~/ to home directory basename', () => {
-      const home = homedir();
-      const expected = home.split('/').pop() || home.split('\\').pop() || '';
-      expect(getProjectName('~/')).toBe(expected);
+      expect(getProjectName('~/')).toBe(basename(homedir()));
     });
 
     it('resolves a leading ~\\ on Windows', () => {
