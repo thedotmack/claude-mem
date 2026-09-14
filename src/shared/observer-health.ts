@@ -367,6 +367,45 @@ export function isQuotaFailure(state: ObserverHealthState): boolean {
 }
 
 /**
+ * How old a quota failure has to be before the banner stops asserting it as a
+ * present fact.
+ *
+ * The number is `QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS` from `quota-cooldown.ts`,
+ * copied rather than imported because that module imports this one. The test
+ * suite asserts the two agree, so the copy cannot drift.
+ *
+ * Reusing that window rather than inventing a "provider reset interval" is the
+ * point: it is already this codebase's answer to "long enough that a reset (or
+ * a plan upgrade) is picked up". Once the breaker itself would let a probe
+ * through, a recorded failure has stopped being evidence of a present outage —
+ * it is the last thing we know, not the current state.
+ */
+export const OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS = 30 * 60_000;
+
+/**
+ * True when a quota outage is old enough that it may well be over.
+ *
+ * `observer-health.json` only heals as a side effect of the next SUCCESSFUL
+ * generation, and that cannot happen until traffic arrives — which is after
+ * SessionStart has already read the file. So the first session following any
+ * recovered outage is guaranteed to read a stale ledger, however long ago the
+ * allowance reset (#4083: a 63-hour-old error rendered as a live outage while
+ * the worker stored observations four minutes later in the same session).
+ *
+ * Only the quota shape ages out. Every other failure — a bad key, a missing
+ * base URL — stays true until someone fixes it, so its banner should keep
+ * saying so.
+ */
+export function isQuotaFailureStale(
+  state: ObserverHealthState,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!isQuotaFailure(state)) return false;
+  const lastErrorAt = state.lastErrorAt;
+  return lastErrorAt !== null && nowMs - lastErrorAt > OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS;
+}
+
+/**
  * True while the persisted cooldown window is still in the future. `until`
  * wins over the stored `active` flag so an expired ledger cannot latch the
  * banner (the #3902 failure mode, inverted).
@@ -426,6 +465,30 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
   const provider = state.lastErrorProvider ?? 'unknown provider';
   const count = state.consecutiveFailures;
   const action = state.lastErrorAction ? scrubErrorMessage(state.lastErrorAction) : null;
+
+  if (isQuotaFailureStale(state, nowMs)) {
+    // Same facts, stated as what they are: the last thing we know, not the
+    // current state. No "nothing will be remembered", because that would be a
+    // claim about right now that nothing has checked; and no instruction to
+    // lead the reply with an outage report, because the likeliest case by far
+    // is that the allowance reset hours ago and capture is working.
+    const age = state.lastErrorAt ? describeDuration(nowMs - state.lastErrorAt) : 'an unknown time';
+    return [
+      'ℹ️ claude-mem: the memory observer last failed with a spent allowance on',
+      `${provider}, ${age} ago. Nothing has re-tested it since — the health ledger only`,
+      'updates on the next successful save, which happens after this message is written.',
+      '',
+      `Last error: ${state.lastErrorMessage ? scrubErrorMessage(state.lastErrorMessage) : 'unknown'}`,
+      ...(action ? [`If it is still spent: ${action}`] : []),
+      ...(state.lastErrorUrl ? [`Link: ${state.lastErrorUrl}`] : []),
+      '',
+      'Allowances reset on their own, so memory capture may already be working. If it is',
+      'not, the next failed save brings the full warning back.',
+      '',
+      '(Assistant: do not open your reply with this. Mention it only if the user asks why',
+      'something was not remembered, or if a later message reports a save failing.)',
+    ].join('\n');
+  }
 
   // A spent allowance is the one outage a restart cannot clear. Worse, the
   // restart link is the code path that clears the quota breaker (the process

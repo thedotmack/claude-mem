@@ -13,6 +13,8 @@ import {
   workerRestartUrl,
   renderObserverHealthWarning,
   renderObserverQuotaCooldownNotice,
+  isQuotaFailureStale,
+  OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS,
   describeDuration,
   scrubErrorMessage,
   OBSERVER_UNHEALTHY_FAILURE_THRESHOLD,
@@ -315,6 +317,90 @@ describe('isObserverQuotaCooldownActive', () => {
   it('is false when the field is missing or null', () => {
     expect(isObserverQuotaCooldownActive(null, nowMs)).toBe(false);
     expect(isObserverQuotaCooldownActive(unhealthyState({ quotaCooldown: null }), nowMs)).toBe(false);
+  });
+});
+
+describe('a quota banner that has gone stale (#4083)', () => {
+  // `observer-health.json` only heals on the next SUCCESSFUL generation, and
+  // that cannot happen until traffic arrives — after SessionStart has already
+  // read the file. So the first session after any recovered outage reads a
+  // stale ledger. The reported case rendered a 63-hour-old error as a live
+  // outage while the worker stored observations four minutes later.
+  const ERROR_AT = 1_754_700_100_000;
+
+  function quotaState(overrides: Partial<ObserverHealthState> = {}): ObserverHealthState {
+    return unhealthyState({
+      lastErrorKind: 'quota_exhausted',
+      lastErrorProvider: 'claude',
+      lastErrorMessage: 'Provider reported the inference allowance exhausted',
+      lastErrorAt: ERROR_AT,
+      ...overrides,
+    });
+  }
+
+  it('a FRESH quota failure still gets the full banner', () => {
+    // The control the rest of this block leans on: without it, "always stale"
+    // would pass every assertion below.
+    const warning = renderObserverHealthWarning(quotaState(), ERROR_AT + 60_000);
+
+    expect(warning).toContain("can't save memories right now");
+    expect(warning).toContain('will be remembered');
+    expect(warning).toContain('at the very start of your first reply');
+  });
+
+  it('a stale quota failure reports a last-known state instead', () => {
+    const nowMs = ERROR_AT + 63 * 60 * 60_000;
+    const warning = renderObserverHealthWarning(quotaState(), nowMs);
+
+    expect(warning).toContain('last failed with a spent allowance');
+    expect(warning).toContain('may already be working');
+    // The two sentences that made the stale banner actively misleading: a
+    // claim about right now that nothing checked, and an instruction to open
+    // the reply with it.
+    expect(warning).not.toContain('will be remembered');
+    expect(warning).not.toContain('at the very start of your first reply');
+    // The age is the whole reason the reader should discount it, so it is said.
+    // 63 hours is the age from the report; describeDuration rounds it to days.
+    expect(warning).toContain('about 3 days ago');
+  });
+
+  it('the stale note still carries the error and its remedy', () => {
+    const warning = renderObserverHealthWarning(
+      quotaState({ lastErrorAction: 'Upgrade the plan', lastErrorUrl: 'https://example.test/billing' }),
+      ERROR_AT + 10 * 60 * 60_000,
+    );
+
+    expect(warning).toContain('allowance exhausted');
+    expect(warning).toContain('Upgrade the plan');
+    expect(warning).toContain('https://example.test/billing');
+  });
+
+  it('the boundary is the recheck window, not a round number', () => {
+    expect(isQuotaFailureStale(quotaState(), ERROR_AT + OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS)).toBe(false);
+    expect(isQuotaFailureStale(quotaState(), ERROR_AT + OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS + 1)).toBe(true);
+  });
+
+  it('only the quota shape ages out', () => {
+    // A bad key or a missing base URL stays true until someone fixes it, so its
+    // banner must keep saying so however old it is.
+    const warning = renderObserverHealthWarning(
+      quotaState({ lastErrorKind: 'auth', lastErrorMessage: 'Invalid API key' }),
+      ERROR_AT + 63 * 60 * 60_000,
+    );
+
+    expect(warning).toContain("can't save memories right now");
+    expect(warning).toContain('will be remembered');
+  });
+
+  it('a ledger with no lastErrorAt is not treated as stale', () => {
+    expect(isQuotaFailureStale(quotaState({ lastErrorAt: null }), ERROR_AT + 1_000_000)).toBe(false);
+  });
+
+  it('the staleness window is the recheck cooldown, and stays that way', () => {
+    // The constant is copied rather than imported (quota-cooldown imports
+    // observer-health, so the other direction would be a cycle). This is what
+    // stops the copy drifting.
+    expect(OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS).toBe(QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS);
   });
 });
 
