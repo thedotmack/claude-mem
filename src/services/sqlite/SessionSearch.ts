@@ -266,6 +266,19 @@ export class SessionSearch {
    * term must appear in at least one column, and every term must appear somewhere. The
    * escaping matches {@link searchUserPrompts}, which has always searched by substring.
    */
+  /**
+   * Build the FTS5 MATCH expression for a query.
+   *
+   * The tokenizer treats CJK characters as word characters, so a Latin word that sits
+   * directly against an ideograph is absorbed into one token: `payload优先使用LLM` is a
+   * single term, and an exact phrase search for `payload` can never match it. Searching
+   * by prefix instead lets the leading word be found again, which covers every case where
+   * the Latin run starts the token (#3801 / #4068 follow-up).
+   */
+  private static buildFtsMatch(query: string): string {
+    return '"' + query.replace(/"/g, '""') + '"*';
+  }
+
   private static buildSubstringClause(query: string, columns: string[]): { clause: string; params: string[] } {
     const terms = query.match(SessionSearch.UNSEGMENTED_RUN) ?? [];
     if (terms.length === 0) {
@@ -354,8 +367,7 @@ export class SessionSearch {
         LIMIT ? OFFSET ?
       `;
 
-      const escapedQuery = '"' + query.replace(/"/g, '""') + '"';
-      params.unshift(escapedQuery);
+      params.unshift(SessionSearch.buildFtsMatch(query));
       params.push(limit, offset);
 
       try {
@@ -444,8 +456,7 @@ export class SessionSearch {
         LIMIT ? OFFSET ?
       `;
 
-      const escapedQuery = '"' + query.replace(/"/g, '""') + '"';
-      params.unshift(escapedQuery);
+      params.unshift(SessionSearch.buildFtsMatch(query));
       params.push(limit, offset);
 
       try {

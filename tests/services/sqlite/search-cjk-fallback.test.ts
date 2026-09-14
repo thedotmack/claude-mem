@@ -56,6 +56,8 @@ describe('search in scripts FTS5 cannot segment', () => {
     seedObservation('bpmf-1', 'cjk-project', 'ㄓㄨㄛ ㄖㄣ ㄊㄢ', 'ㄓㄨㄛ 的紀錄');
     seedObservation('en-1', 'cjk-project', 'Database Path resolution', 'the database path is resolved at startup');
     seedObservation('mix-1', 'cjk-project', 'claude-mem 队列积压排查', 'worker 的 pending 队列在重启时被清空');
+    seedObservation('glue-1', 'cjk-project', 'payload解析失败', 'manifest文件在启动时读取');
+    seedSummary('glue-2-mem', 'cjk-project', 'cache缓存重建流程');
     seedObservation('other-1', 'other-project', '用户身份验证流程', '另一个项目里的同名观察');
     seedSummary('sum-cjk', 'cjk-project', '重构用户身份验证的会话');
     seedSummary('sum-en', 'cjk-project', 'refactor the database path');
@@ -135,6 +137,24 @@ describe('search in scripts FTS5 cannot segment', () => {
   it('matches terms that sit far apart in the same column', () => {
     const results = search.searchObservations('pending 重启', { project: 'cjk-project' });
     expect(results.map(r => r.title)).toEqual(['claude-mem 队列积压排查']);
+  });
+
+  // The tokenizer glues a Latin run to the ideographs touching it, so `payload优先使用LLM`
+  // is one token. An exact phrase match for the leading word cannot reach it; a prefix
+  // match can, and that is the only part of the query the user actually typed.
+  it('finds a Latin word glued to the ideographs that follow it', () => {
+    const results = search.searchObservations('payload', { project: 'cjk-project' });
+    expect(results.map(r => r.title)).toEqual(['payload解析失败']);
+  });
+
+  it('finds a glued Latin word in the narrative, not just the title', () => {
+    const results = search.searchObservations('manifest', { project: 'cjk-project' });
+    expect(results.map(r => r.title)).toEqual(['payload解析失败']);
+  });
+
+  it('applies the same prefix match to session summaries', () => {
+    const results = search.searchSessions('cache', { project: 'cjk-project' });
+    expect(results.map(r => r.request)).toEqual(['cache缓存重建流程']);
   });
 
   it('does not widen an English query that FTS5 already answers', () => {
