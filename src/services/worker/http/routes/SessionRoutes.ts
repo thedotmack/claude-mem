@@ -771,6 +771,13 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, platformSource);
 
+    // A new prompt arriving on a row a previous end already completed means
+    // the session carried on, so put it back to active and let the next end
+    // stamp the real completion time (#4080). Only this path reopens: the
+    // observation and summarize routes can carry trailing traffic from the
+    // turn that just ended, where 'completed' is the truth.
+    store.reopenCompletedSession(sessionDbId);
+
     const dbSession = store.getSessionById(sessionDbId);
     const isNewSession = !dbSession?.memory_session_id;
     logger.info('SESSION', `CREATED | contentSessionId=${contentSessionId} → sessionDbId=${sessionDbId} | isNew=${isNewSession} | project=${project}`, {
