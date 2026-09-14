@@ -160,13 +160,42 @@ export function installHookStdoutGuard(): HookStdoutGuard {
   pinnedStdoutWrite = realStdoutWrite;
   stdoutGuardInstalled = true;
 
-  const divert = (chunk: string | Uint8Array): boolean => {
-    process.stderr.write(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+  const divert = (chunk: string | Uint8Array, encoding?: BufferEncoding): boolean => {
+    // An explicit encoding describes the BYTES a string chunk stands for
+    // (`write(base64Text, 'base64')` writes the decoded bytes), so it has to
+    // be honoured before the text is handed to stderr. It says nothing about a
+    // Uint8Array chunk, which is already bytes.
+    const text =
+      typeof chunk === 'string'
+        ? encoding && encoding !== 'utf8' && encoding !== 'utf-8'
+          ? Buffer.from(chunk, encoding).toString('utf-8')
+          : chunk
+        : Buffer.from(chunk).toString('utf-8');
+    process.stderr.write(text);
     return true;
   };
 
-  process.stdout.write = ((chunk: string | Uint8Array): boolean =>
-    divert(chunk)) as typeof process.stdout.write;
+  // Both overloads, callback included. `write(chunk, cb)` and
+  // `write(chunk, encoding, cb)` promise the caller that cb fires when the
+  // write completes; a replacement that swallowed it would leave anything
+  // waiting on write completion waiting for good. On nextTick rather than
+  // inline, because the stream contract is that the callback runs after
+  // write() has returned.
+  process.stdout.write = ((
+    chunk: string | Uint8Array,
+    encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+    maybeCallback?: (error?: Error | null) => void,
+  ): boolean => {
+    const callback =
+      typeof encodingOrCallback === 'function' ? encodingOrCallback : maybeCallback;
+    const encoding =
+      typeof encodingOrCallback === 'string' ? encodingOrCallback : undefined;
+    const wrote = divert(chunk, encoding);
+    if (callback) {
+      process.nextTick(callback);
+    }
+    return wrote;
+  }) as typeof process.stdout.write;
 
   // The sink is a real stream.Writable because Bun's node:console rejects a
   // bare { write } object. It completes every write synchronously, so nothing

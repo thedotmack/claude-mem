@@ -202,6 +202,43 @@ describe('hook stdout guard (#4081)', () => {
     expect(stderr).toBe('');
   });
 
+  test('a write callback still fires, on both overloads', async () => {
+    // Greptile's P2: the replacement used to take `chunk` only, so
+    // `write(chunk, cb)` and `write(chunk, encoding, cb)` dropped their
+    // completion callbacks and anything waiting on the write waited for good.
+    const calls: string[] = [];
+    capture(() => {
+      const guard = installHookStdoutGuard();
+      try {
+        process.stdout.write('two-arg\n', () => calls.push('two-arg'));
+        process.stdout.write('three-arg\n', 'utf8', () => calls.push('three-arg'));
+      } finally {
+        guard.restore();
+      }
+    });
+
+    // The stream contract is that the callback runs AFTER write() returns.
+    expect(calls).toEqual([]);
+    await Bun.sleep(1);
+    expect(calls.sort()).toEqual(['three-arg', 'two-arg']);
+  });
+
+  test('an explicit encoding is decoded before the text reaches stderr', () => {
+    const { stderr } = capture(() => {
+      const guard = installHookStdoutGuard();
+      try {
+        // `write(text, 'base64')` writes the DECODED bytes, so the diverted
+        // copy has to be the decoded text too, not the base64 source.
+        process.stdout.write(Buffer.from('decoded noise').toString('base64'), 'base64');
+      } finally {
+        guard.restore();
+      }
+    });
+
+    expect(stderr).toContain('decoded noise');
+    expect(stderr).not.toContain('ZGVjb2RlZCBub2lzZQ==');
+  });
+
   test('the payload keeps its trailing newline', () => {
     const { stdout } = capture(() => {
       const guard = installHookStdoutGuard();
