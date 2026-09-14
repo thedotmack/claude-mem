@@ -19,6 +19,8 @@
  * shared->cli runtime dependency. Only the HookResult / PlatformAdapter TYPES
  * are imported from src/cli, and `import type` is erased at runtime.
  */
+import { Console } from 'node:console';
+import { Writable } from 'node:stream';
 import type { PlatformAdapter, HookResult } from '../cli/types.js';
 
 export interface HookStderrBuffer {
@@ -96,6 +98,109 @@ export function installHookStderrBuffer(): HookStderrBuffer {
   };
 }
 
+export interface HookStdoutGuard {
+  /** Un-replace process.stdout.write and the stdout-bound console methods (idempotent). */
+  restore(): void;
+}
+
+type StdoutWriter = (chunk: string | Uint8Array) => boolean;
+
+let pinnedStdoutWrite: StdoutWriter | null = null;
+let stdoutGuardInstalled = false;
+
+/**
+ * The console members that print to stdout. warn/error/trace/assert already
+ * go to stderr, so they are left alone. The state-carrying members are swapped
+ * as a set with the members that print that state, so a `groupEnd` always
+ * finds the `group` that opened it and a `timeEnd` the `time` that started it.
+ */
+const STDOUT_CONSOLE_METHODS = [
+  'log', 'info', 'debug', 'dir', 'dirxml', 'table',
+  'group', 'groupCollapsed', 'groupEnd',
+  'count', 'countReset',
+  'time', 'timeEnd', 'timeLog',
+] as const;
+
+type ConsoleLike = Record<string, (...args: unknown[]) => unknown>;
+
+/**
+ * Reserve stdout for the ONE model-bound JSON payload.
+ *
+ * The stderr buffer above exists because third-party libraries write
+ * unsolicited noise to stderr. They do it to stdout too, and there it is not
+ * noise but corruption: Claude Code reads a hook's stdout as a single JSON
+ * object, so one extra line ahead of the payload makes the whole buffer
+ * unparseable and the hook fails with "Hook output looks like a JSON object
+ * but is not valid JSON" (#4081 -- an NDJSON environment banner from
+ * somewhere inside the bundled worker, which the reporter could not locate by
+ * grepping the bundle and could not reproduce outside the real hook path).
+ *
+ * So this does not try to find the emitter. It makes the emitter irrelevant:
+ * anything written to stdout during the hook window is DIVERTED to stderr,
+ * and `emitModelContext` writes its payload through the pinned real writer.
+ *
+ * Two writers have to be covered, not one. Replacing process.stdout.write is
+ * enough on Node, where console.log is a thin wrapper over it, but hooks run
+ * under Bun and Bun's console writes to fd 1 natively -- a replaced
+ * process.stdout.write never sees console.log (measured on Bun 1.4.2, pinned
+ * by a test). So the stdout-bound console members are re-bound to a
+ * node:console Console whose stdout is the diverting sink; that keeps %s/%d
+ * formatting, util.inspect output and group indentation byte-identical
+ * instead of reimplementing them here.
+ *
+ * Diverted, not dropped, and diverted through the LIVE process.stderr.write
+ * rather than the bypass channel: when installHookStderrBuffer is also
+ * installed the noise lands in that buffer and gets the policy third-party
+ * stderr noise already has -- dropped on graceful success, flushed when
+ * claude-mem surfaces. Corrupting the payload is the bug; where the noise
+ * goes afterwards stays one decision, made in one place.
+ */
+export function installHookStdoutGuard(): HookStdoutGuard {
+  const realStdoutWrite = process.stdout.write.bind(process.stdout) as StdoutWriter;
+  pinnedStdoutWrite = realStdoutWrite;
+  stdoutGuardInstalled = true;
+
+  const divert = (chunk: string | Uint8Array): boolean => {
+    process.stderr.write(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+    return true;
+  };
+
+  process.stdout.write = ((chunk: string | Uint8Array): boolean =>
+    divert(chunk)) as typeof process.stdout.write;
+
+  // The sink is a real stream.Writable because Bun's node:console rejects a
+  // bare { write } object. It completes every write synchronously, so nothing
+  // is left queued when the hook exits.
+  const sink = new Writable({
+    write(chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+      divert(chunk);
+      callback();
+    },
+  });
+  const divertedConsole = new Console({ stdout: sink, stderr: sink }) as unknown as ConsoleLike;
+  const liveConsole = console as unknown as ConsoleLike;
+  const originalConsoleMethods = new Map<string, (...args: unknown[]) => unknown>();
+  for (const name of STDOUT_CONSOLE_METHODS) {
+    const replacement = divertedConsole[name];
+    const original = liveConsole[name];
+    if (typeof replacement !== 'function' || typeof original !== 'function') continue;
+    originalConsoleMethods.set(name, original);
+    liveConsole[name] = replacement.bind(divertedConsole);
+  }
+
+  return {
+    restore(): void {
+      if (!stdoutGuardInstalled) return;
+      process.stdout.write = realStdoutWrite as typeof process.stdout.write;
+      for (const [name, original] of originalConsoleMethods) {
+        liveConsole[name] = original;
+      }
+      stdoutGuardInstalled = false;
+      pinnedStdoutWrite = null;
+    },
+  };
+}
+
 /**
  * Operator-visible diagnostic. Always reaches real stderr (bypasses the
  * buffer). Use for logger fallback, fail-loud counter, and any "we want this
@@ -111,8 +216,14 @@ export function emitDiagnostic(line: string): void {
  * JSON.stringify exactly once. Throws if called twice in the same emitter
  * lifetime (guards against double-emit corrupting the stdout JSON stream).
  *
- * Uses console.log (not process.stdout.write) on purpose: the trailing newline
- * is what Claude Code's / Codex's hook parser expects.
+ * The trailing newline is what Claude Code's / Codex's hook parser expects,
+ * which is why this used to be console.log. It now writes the same bytes
+ * through the writer `installHookStdoutGuard` pinned, so the payload is the
+ * one thing the guard does NOT divert -- with a guard installed console.log
+ * is a re-bound method that writes to the diverting sink, so the payload
+ * would land on stderr with the noise. Falls back to console.log when no
+ * guard is installed (non-hook callers, and every existing test that calls
+ * this directly).
  */
 export function emitModelContext(adapter: PlatformAdapter, result: HookResult): void {
   if (moduleHasEmitted) {
@@ -120,7 +231,12 @@ export function emitModelContext(adapter: PlatformAdapter, result: HookResult): 
   }
   moduleHasEmitted = true;
   const output = adapter.formatOutput(result);
-  console.log(JSON.stringify(output));
+  const line = JSON.stringify(output);
+  if (pinnedStdoutWrite) {
+    pinnedStdoutWrite(`${line}\n`);
+    return;
+  }
+  console.log(line);
 }
 
 let moduleHasEmitted = false;
