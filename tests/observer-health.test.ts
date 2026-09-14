@@ -375,9 +375,18 @@ describe('a quota banner that has gone stale (#4083)', () => {
     expect(warning).toContain('https://example.test/billing');
   });
 
-  it('the boundary is the recheck window, not a round number', () => {
-    expect(isQuotaFailureStale(quotaState(), ERROR_AT + OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS)).toBe(false);
-    expect(isQuotaFailureStale(quotaState(), ERROR_AT + OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS + 1)).toBe(true);
+  it('the boundary is the recheck window, and it is the cooldown\'s own boundary', () => {
+    // The instant the cooldown stops being active is the instant the failure
+    // stops being evidence about now — the two must not disagree by a tick.
+    const boundary = ERROR_AT + OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS;
+    expect(isQuotaFailureStale(quotaState(), boundary - 1)).toBe(false);
+    expect(isQuotaFailureStale(quotaState(), boundary)).toBe(true);
+    expect(
+      isObserverQuotaCooldownActive(
+        { ...quotaState(), quotaCooldown: { active: true, armedAt: ERROR_AT, until: boundary } },
+        boundary,
+      ),
+    ).toBe(false);
   });
 
   it('only the quota shape ages out', () => {

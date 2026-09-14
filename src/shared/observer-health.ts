@@ -402,7 +402,11 @@ export function isQuotaFailureStale(
 ): boolean {
   if (!isQuotaFailure(state)) return false;
   const lastErrorAt = state.lastErrorAt;
-  return lastErrorAt !== null && nowMs - lastErrorAt > OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS;
+  // `>=`, not `>`: `isObserverQuotaCooldownActive` calls the cooldown expired
+  // at `until > nowMs`, so at exactly the recheck interval the breaker has
+  // already released. A strict `>` left one instant where the breaker was
+  // open and the banner still called the outage current.
+  return lastErrorAt !== null && nowMs - lastErrorAt >= OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS;
 }
 
 /**
