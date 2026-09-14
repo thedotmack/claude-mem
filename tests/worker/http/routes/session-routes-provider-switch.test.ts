@@ -188,6 +188,46 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
     }
   });
 
+  for (const mode of ['live', 'replay', 'default-model', 'unavailable'] as const) {
+    it(`keeps ${mode} Codex Telegram wrap-ups on the selected provider`, async () => {
+      const session = makeFakeSession(900010);
+      session.currentProvider = mode === 'replay' ? null : 'codex';
+      session.lastModelId = mode === 'default-model' ? 'codex-default' : 'active-codex-model';
+      providerSelectionBox.current = 'codex';
+      const sdkAgent = {
+        startSession: mock(() => Promise.resolve()),
+        formatTelegramWrapup: mock(() => Promise.resolve('wrong provider')),
+      };
+      const codexAgent = {
+        startSession: mock(() => Promise.resolve()),
+        formatTelegramWrapup: mock(() => Promise.resolve('Codex wrap-up')),
+      };
+      const { routes } = makeRoutes(session, {
+        sdkAgent,
+        geminiAgent: { startSession: mock(() => Promise.resolve()) },
+        openRouterAgent: { startSession: mock(() => Promise.resolve()) },
+        codexAgent: mode === 'unavailable' ? undefined : codexAgent,
+      });
+      const input = {
+        sessionDbId: session.sessionDbId,
+        contentSessionId: session.contentSessionId,
+        project: session.project,
+        platformSource: 'codex',
+        summaryText: 'Stored summary',
+      };
+      const result = (routes as any).formatTelegramWrapup(input);
+      if (mode === 'unavailable') {
+        await expect(result).rejects.toThrow('Codex provider is not available');
+      } else {
+        await expect(result).resolves.toBe('Codex wrap-up');
+        expect(codexAgent.formatTelegramWrapup).toHaveBeenCalledWith(
+          input, mode === 'live' ? 'active-codex-model' : undefined,
+        );
+      }
+      expect(sdkAgent.formatTelegramWrapup).not.toHaveBeenCalled();
+    });
+  }
+
   it('aborts a PARKED generator and switches immediately when the provider changes', async () => {
     const sessionDbId = 900001;
     const session = makeFakeSession(sessionDbId);
