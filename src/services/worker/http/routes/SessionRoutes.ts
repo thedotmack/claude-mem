@@ -108,6 +108,11 @@ export class SessionRoutes extends BaseRouteHandler {
 
     try {
       switch (selection.provider) {
+        case 'codex':
+          if (!this.codexAgent) throw new Error('Codex provider is not available');
+          return await this.codexAgent.formatTelegramWrapup(
+            input, activeModelId === 'codex-default' ? undefined : activeModelId,
+          );
         case 'gemini':
           return await this.geminiAgent.formatTelegramWrapup(input, activeModelId);
         case 'openrouter':
