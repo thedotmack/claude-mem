@@ -56,6 +56,68 @@ describe('classifyGeminiError', () => {
     expect(err.retryAfterMs).toBe(5000);
   });
 
+  // Gemini answers a momentary throttle and a spent allowance with the same
+  // status and the same `RESOURCE_EXHAUSTED` marker, so the two tests above
+  // pass only because their bodies are shapes this endpoint never returns.
+  // The window named in the QuotaFailure is the part that differs, and the two
+  // bodies below are captures from the live endpoint.
+  const quotaFailure = (...quotaIds: string[]) => JSON.stringify({
+    error: {
+      code: 429,
+      status: 'RESOURCE_EXHAUSTED',
+      message: 'You exceeded your current quota, please check your plan and billing details.',
+      details: [
+        {
+          '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+          violations: quotaIds.map((quotaId) => ({ quotaId })),
+        },
+        {
+          '@type': 'type.googleapis.com/google.rpc.RetryInfo',
+          retryDelay: '6s',
+        },
+      ],
+    },
+  });
+
+  it('classifies a 429 naming only a per-minute window as rate_limit', () => {
+    const err = classifyGeminiError({
+      status: 429,
+      bodyText: quotaFailure('GenerateRequestsPerMinutePerProjectPerModel-FreeTier'),
+      cause: new Error('rate limited'),
+    });
+    expect(err.kind).toBe('rate_limit');
+    // The retry hint lives in the body: Google sends no Retry-After here.
+    expect(err.retryAfterMs).toBe(6000);
+  });
+
+  it('classifies a 429 naming a per-day window as quota_exhausted', () => {
+    // A spent day quota lists its per-minute window too; the period window is
+    // what makes it a spent allowance rather than a throttle.
+    const err = classifyGeminiError({
+      status: 429,
+      bodyText: quotaFailure(
+        'GenerateRequestsPerMinutePerProjectPerModel-FreeTier',
+        'GenerateRequestsPerDayPerProjectPerModel-FreeTier',
+      ),
+      cause: new Error('quota spent'),
+    });
+    expect(err.kind).toBe('quota_exhausted');
+  });
+
+  it('treats a 429 it cannot place as a throttle, not a spent allowance', () => {
+    // Defaulting the unplaceable case to `rate_limit` is deliberate, and the
+    // asymmetry is the whole point: a throttle misread as a spent allowance
+    // costs a half-hour outage that repeats on every expiry, while a spent
+    // allowance misread as a throttle costs a few probes the breaker's next
+    // refusal corrects.
+    const err = classifyGeminiError({
+      status: 429,
+      bodyText: 'RESOURCE_EXHAUSTED',
+      cause: new Error('resource exhausted'),
+    });
+    expect(err.kind).toBe('rate_limit');
+  });
+
   it('classifies 500 with body containing "quota exceeded" as quota_exhausted', () => {
     const err = classifyGeminiError({
       status: 500,

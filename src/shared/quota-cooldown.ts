@@ -122,6 +122,38 @@ function persistToDisk(filePath: string = defaultCooldownFilePath()): void {
 export const QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS = 30 * 60_000;
 
 /**
+ * How long to withhold requests when the provider named a window that clears on
+ * its own. A rate limit is a throttle, not a spent allowance, and the two reach
+ * this breaker through the same `quota:` abort reason (#3634). Holding a
+ * throttle for the quota cooldown turns a six-second refusal into a half-hour
+ * outage, and with a backlog already queued every expiry buys the same refusal
+ * again — a window that cannot be waited out.
+ */
+export const RATE_LIMIT_RECHECK_COOLDOWN_MS = 90_000;
+
+/**
+ * Windows that come back without the billing period turning over. An unlisted
+ * or absent window keeps the full quota cooldown, so an unfamiliar provider is
+ * never treated as transient by accident.
+ */
+const TRANSIENT_QUOTA_WINDOWS = new Set(['rate_limit']);
+
+/**
+ * The cooldown an armed window is entitled to. Read from the window rather than
+ * stored, so a window armed by an older build is resolved by the current rule.
+ *
+ * Deliberately takes no duration parameter: the whole point is that the window
+ * is the only thing that decides, so a caller cannot reintroduce the mismatch
+ * this replaced. Callers that need to pin a duration for a test pass it to
+ * `isQuotaCooldownActive`/`tryAdmitQuotaProbe`, where it overrides this.
+ */
+export function resolveQuotaCooldownMs(window: string | undefined): number {
+  return window !== undefined && TRANSIENT_QUOTA_WINDOWS.has(window)
+    ? RATE_LIMIT_RECHECK_COOLDOWN_MS
+    : QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS;
+}
+
+/**
  * How long a claimed probe may stay unresolved before another caller may take
  * it. A generator that dies without reaching any completion path would
  * otherwise hold the claim forever and wedge the provider permanently — the
@@ -228,12 +260,12 @@ export function getQuotaCooldown(provider: QuotaProvider): QuotaCooldownState | 
 export function isQuotaCooldownActive(
   provider: QuotaProvider,
   nowMs: number = Date.now(),
-  cooldownMs: number = QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  cooldownMs?: number,
 ): boolean {
   hydrateFromDisk();
   const state = cooldowns.get(provider);
   if (!state) return false;
-  return nowMs - state.armedAtMs < cooldownMs;
+  return nowMs - state.armedAtMs < (cooldownMs ?? resolveQuotaCooldownMs(state.window));
 }
 
 /**
@@ -253,7 +285,7 @@ export function isQuotaCooldownActive(
 export function tryAdmitQuotaProbe(
   provider: QuotaProvider,
   nowMs: number = Date.now(),
-  cooldownMs: number = QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  cooldownMs?: number,
 ): QuotaProbeAdmission {
   // A breaker armed before a restart is still armed. Without this the first
   // call in a fresh process finds an empty Map, admits, and takes no claim —
@@ -262,7 +294,7 @@ export function tryAdmitQuotaProbe(
   const state = cooldowns.get(provider);
   if (!state) return { admitted: true, claimId: null };
 
-  if (nowMs - state.armedAtMs < cooldownMs) {
+  if (nowMs - state.armedAtMs < (cooldownMs ?? resolveQuotaCooldownMs(state.window))) {
     return { admitted: false, claimId: null };
   }
 
@@ -342,7 +374,7 @@ function syncObserverHealthQuotaCooldown(): void {
       active: true,
       provider: latest.provider,
       armedAt: latest.armedAtMs,
-      until: latest.armedAtMs + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+      until: latest.armedAtMs + resolveQuotaCooldownMs(latest.window),
       ...(latest.window ? { window: latest.window } : {}),
       message: latest.message,
     });

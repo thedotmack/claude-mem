@@ -17,6 +17,35 @@ import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAIComp
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 /**
+ * A `QuotaFailure` violation naming a window longer than a day. Gemini answers
+ * a spent allowance and a momentary throttle identically — 429 with
+ * `RESOURCE_EXHAUSTED` — and lists both a per-minute and a per-day violation
+ * whenever the period quota is the one that ran out. The named window is what
+ * separates "retry shortly" from "stop until the period turns over", so match
+ * it on the `quotaId` rather than anywhere in the body.
+ */
+const PERIOD_QUOTA_WINDOW = /"quotaid"\s*:\s*"[^"]*per(day|week|month)/;
+
+function namesPeriodQuotaWindow(lowerBody: string): boolean {
+  return PERIOD_QUOTA_WINDOW.test(lowerBody);
+}
+
+/**
+ * The retry hint Gemini actually sends. Google omits `Retry-After` on these
+ * responses and puts the same information in the body as
+ * `google.rpc.RetryInfo.retryDelay` (e.g. "6s"), so the header alone is
+ * undefined on every real 429 from this provider.
+ */
+const BODY_RETRY_DELAY = /"retryDelay"\s*:\s*"([0-9.]+)s"/;
+
+function parseGeminiRetryDelayMs(body: string): number | undefined {
+  const match = BODY_RETRY_DELAY.exec(body);
+  if (!match) return undefined;
+  const seconds = Number(match[1]);
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.round(seconds * 1000) : undefined;
+}
+
+/**
  * Classify a Gemini fetch failure into ClassifiedProviderError. Called at
  * the boundary right after `fetch()` returns or throws. Provider-specific
  * because Gemini surfaces auth/quota/rate-limit signals via specific status
@@ -33,23 +62,39 @@ export function classifyGeminiError(input: {
   const body = input.bodyText ?? '';
   const lower = body.toLowerCase();
   const headers = input.headers;
-  const retryAfterMs = headers ? parseRetryAfterMs(headers.get('retry-after')) : undefined;
+  const retryAfterMs = (headers ? parseRetryAfterMs(headers.get('retry-after')) : undefined)
+    ?? parseGeminiRetryDelayMs(body);
   const cause = status === undefined
     ? input.cause
     : new Error(`Gemini HTTP error (status ${status}${input.requestId ? `, request ${input.requestId}` : ''})`);
+
+  // A 429 is decided BEFORE the body markers below, because every Gemini 429
+  // body carries `RESOURCE_EXHAUSTED` no matter what it is actually refusing.
+  // Testing the marker first made this branch unreachable, so this provider
+  // never produced `kind: 'rate_limit'` and never populated `retryAfterMs` —
+  // the two things `withRetry` and the quota breaker key on.
+  if (status === 429) {
+    if (namesPeriodQuotaWindow(lower)) {
+      // A whole day/week/month is spent: the breaker's long cooldown is the
+      // right answer. Carry the hint anyway — it is the reset time.
+      return new ClassifiedProviderError(
+        `Gemini quota exhausted (status ${status})`,
+        { kind: 'quota_exhausted', cause, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
+      );
+    }
+    // A window that clears on its own. Holding this for the quota cooldown
+    // turns a six-second throttle into a half-hour outage.
+    return new ClassifiedProviderError(
+      'Gemini rate limit (429)',
+      { kind: 'rate_limit', cause, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
+    );
+  }
 
   // Quota exceeded — by body marker — even on 500 (Gemini quirk).
   if (lower.includes('quota exceeded') || lower.includes('resource_exhausted')) {
     return new ClassifiedProviderError(
       `Gemini quota exhausted${status !== undefined ? ` (status ${status})` : ''}`,
       { kind: 'quota_exhausted', cause },
-    );
-  }
-
-  if (status === 429) {
-    return new ClassifiedProviderError(
-      'Gemini rate limit (429)',
-      { kind: 'rate_limit', cause, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) },
     );
   }
 
