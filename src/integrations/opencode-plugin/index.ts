@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
 import { normalizePlatformSource } from "../../shared/platform-source.js";
 
@@ -345,4 +346,45 @@ export function parseSearchResponse(text: string, query: string): string {
   return rendered;
 }
 
-export default ClaudeMemPlugin;
+let workerEnsureStarted = false;
+
+async function workerAlive(): Promise<boolean> {
+  try {
+    await fetch(WORKER_BASE_URL, { signal: AbortSignal.timeout(1000) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * OpenCode loads this plugin automatically at startup, but the claude-mem
+ * worker is a separate long-running process. If it is not up yet, every worker
+ * request above fails with ECONNREFUSED and is silently dropped, so the plugin
+ * captures nothing. Start the worker on first plugin load (once per process)
+ * so capture works without a manual `npx claude-mem start`.
+ */
+async function ensureWorkerRunning(): Promise<void> {
+  if (workerEnsureStarted) return;
+  workerEnsureStarted = true;
+  if (await workerAlive()) return;
+  console.log("[claude-mem] worker not running — starting");
+  try {
+    const child = spawn("npx", ["claude-mem", "start"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.on("error", (err: Error) =>
+      console.warn("[claude-mem] failed to start worker:", err.message),
+    );
+    child.unref();
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn("[claude-mem] failed to start worker:", message);
+  }
+}
+
+export default async (ctx: OpenCodePluginContext) => {
+  void ensureWorkerRunning();
+  return ClaudeMemPlugin(ctx);
+};
