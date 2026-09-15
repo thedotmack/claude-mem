@@ -241,9 +241,7 @@ export function emitDiagnostic(line: string): void {
 }
 
 /**
- * Emit the model-bound JSON payload to stdout. Calls adapter.formatOutput and
- * JSON.stringify exactly once. Throws if called twice in the same emitter
- * lifetime (guards against double-emit corrupting the stdout JSON stream).
+ * MODEL_CONTEXT: write one already-serialized JSON line to stdout.
  *
  * The trailing newline is what Claude Code's / Codex's hook parser expects,
  * which is why this used to be console.log. It now writes the same bytes
@@ -252,20 +250,32 @@ export function emitDiagnostic(line: string): void {
  * is a re-bound method that writes to the diverting sink, so the payload
  * would land on stderr with the noise. Falls back to console.log when no
  * guard is installed (non-hook callers, and every existing test that calls
- * this directly).
+ * the emitters directly).
+ *
+ * Separate from emitModelContext because not every payload written inside a
+ * hook window comes from a PlatformAdapter: the SessionStart `start` hook
+ * emits the worker's own status envelope, on a path that never reaches
+ * hookCommand (#4081).
+ */
+export function emitStdoutPayload(line: string): void {
+  if (pinnedStdoutWrite) {
+    pinnedStdoutWrite(`${line}\n`);
+    return;
+  }
+  console.log(line);
+}
+
+/**
+ * Emit the model-bound JSON payload to stdout. Calls adapter.formatOutput and
+ * JSON.stringify exactly once. Throws if called twice in the same emitter
+ * lifetime (guards against double-emit corrupting the stdout JSON stream).
  */
 export function emitModelContext(adapter: PlatformAdapter, result: HookResult): void {
   if (moduleHasEmitted) {
     throw new Error('emitModelContext called twice');
   }
   moduleHasEmitted = true;
-  const output = adapter.formatOutput(result);
-  const line = JSON.stringify(output);
-  if (pinnedStdoutWrite) {
-    pinnedStdoutWrite(`${line}\n`);
-    return;
-  }
-  console.log(line);
+  emitStdoutPayload(JSON.stringify(adapter.formatOutput(result)));
 }
 
 let moduleHasEmitted = false;
