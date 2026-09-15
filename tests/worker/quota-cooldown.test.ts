@@ -227,14 +227,18 @@ describe('quota cooldown breaker (#3634)', () => {
   });
 
   it('scopes the probe claim per provider', () => {
-    const armedAt = Date.now();
-    recordQuotaExhausted('claude', 'Weekly limit reached');
-    recordQuotaExhausted('openrouter', 'Spend cap reached');
-    const afterExpiry = armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
+    // Each provider is stamped when its own write lands, so one deadline taken
+    // from a Date.now() captured before both calls is already expired for
+    // whichever provider persisted second. Ask each breaker for its own stamp.
+    const claude = recordQuotaExhausted('claude', 'Weekly limit reached');
+    const openrouter = recordQuotaExhausted('openrouter', 'Spend cap reached');
 
-    expect(tryAdmitQuotaProbe('claude', afterExpiry).admitted).toBe(true);
+    const claudeReady = claude.armedAtMs + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
+    const openrouterReady = openrouter.armedAtMs + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
+
+    expect(tryAdmitQuotaProbe('claude', claudeReady).admitted).toBe(true);
     // Claiming claude's probe must not consume openrouter's.
-    expect(tryAdmitQuotaProbe('openrouter', afterExpiry).admitted).toBe(true);
+    expect(tryAdmitQuotaProbe('openrouter', openrouterReady).admitted).toBe(true);
   });
 
   it('bounds capped traffic to one probe per window instead of one per observation', () => {
