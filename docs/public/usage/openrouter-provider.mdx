@@ -324,3 +324,10 @@ Content-Type: application/json
 - [Gemini Provider](/usage/gemini-provider) - Alternative free provider
 - [Getting Started](/usage/getting-started) - Basic usage guide
 - [Troubleshooting](/troubleshooting) - Common issues
+
+## Multiple keys
+
+`CLAUDE_MEM_OPENROUTER_API_KEYS` accepts additional keys (newline- or comma-separated) alongside
+`CLAUDE_MEM_OPENROUTER_API_KEY`. When a key hits a rate limit, spends its quota, or is rejected as
+invalid, OpenRouter requests rotate to the next key instead of failing for the
+rest of the window. See [Multi-Key Rotation](/usage/multi-key-rotation).
