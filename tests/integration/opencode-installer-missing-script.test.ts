@@ -108,20 +108,25 @@ describe('OpenCode installer missing-MCP-script warning', () => {
     expect(String(message)).toContain('MCP server script not found');
   });
 
-  it('does not warn when a retained claude-mem entry is still usable despite failed resolution', async () => {
+  it('warns conservatively when resolution fails even if a retained entry names an existing file', async () => {
     const { registerOpenCodePluginInConfig } = await import(
       '../../src/services/integrations/OpenCodeInstaller.js'
     );
 
-    // A retained entry whose command points at an existing script is usable, so
-    // a failed resolution is not a registration failure and must stay quiet.
+    // Reproduces the follow-up P1: the retained command points at an existing
+    // but unrelated JavaScript file. The installer cannot verify it is
+    // claude-mem's MCP server, so it must warn rather than accept the entry as
+    // proof of a working registration.
+    const unrelatedScript = join(tempDir, 'unrelated.js');
+    writeFileSync(unrelatedScript, 'console.log("not claude-mem");\n', 'utf-8');
+
     writeFileSync(join(tempDir, 'opencode.json'), JSON.stringify({
       $schema: 'https://opencode.ai/config.json',
       plugin: ['./plugins/claude-mem.js'],
       mcp: {
         'claude-mem': {
           type: 'local',
-          command: [process.execPath, process.execPath],
+          command: [process.execPath, unrelatedScript],
         },
       },
     }), 'utf-8');
@@ -129,6 +134,9 @@ describe('OpenCode installer missing-MCP-script warning', () => {
     const result = registerOpenCodePluginInConfig();
 
     expect(result).toBe(0);
-    expect(warnSpy).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const [component, message] = warnSpy.mock.calls[0] as unknown[];
+    expect(component).toBe('OPENCODE');
+    expect(String(message)).toContain('MCP server script not found');
   });
 });

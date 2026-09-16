@@ -75,23 +75,6 @@ function getOpenCodeMcpEntry(config: OpenCodeConfig): Record<string, unknown> {
 }
 
 /**
- * A claude-mem entry only counts as registered when its `command` argv points
- * at a script that exists on disk. Verifying the entry rather than trusting the
- * key's presence is what keeps a pre-existing stale entry (one whose resolved
- * script was since removed) from being reported as a successful registration.
- */
-function isOpenCodeMcpEntryUsable(config: OpenCodeConfig): boolean {
-  const entry = getOpenCodeMcpEntry(config)[OPENCODE_MCP_SERVER_KEY];
-  if (!entry || typeof entry !== 'object') return false;
-
-  const command = (entry as { command?: unknown }).command;
-  if (!Array.isArray(command) || command.length < 2) return false;
-
-  const scriptPath = command[1];
-  return typeof scriptPath === 'string' && scriptPath.length > 0 && existsSync(scriptPath);
-}
-
-/**
  * Register claude-mem's MCP server in opencode.json as a local MCP server that
  * launches `node <absolute-path-to-mcp-server.cjs>` — OpenCode does NOT do
  * `${CLAUDE_PLUGIN_ROOT}` substitution, so the path must be baked absolute
@@ -100,8 +83,21 @@ function isOpenCodeMcpEntryUsable(config: OpenCodeConfig): boolean {
  * resolved, so a broken build never corrupts the user's opencode.json.
  */
 export function addOpenCodeMcpReference(config: OpenCodeConfig): OpenCodeConfig {
+  return addOpenCodeMcpReferenceWithStatus(config).config;
+}
+
+/**
+ * `addOpenCodeMcpReference` plus whether this run actually resolved its own
+ * `mcp-server.cjs`. The caller must not infer that from the resulting config:
+ * a pre-existing `mcp["claude-mem"]` entry — stale, or pointing at an unrelated
+ * existing file — would masquerade as a successful registration. Surfacing the
+ * resolution outcome is what lets the install report partial failure honestly.
+ */
+function addOpenCodeMcpReferenceWithStatus(
+  config: OpenCodeConfig,
+): { config: OpenCodeConfig; mcpServerResolved: boolean } {
   const mcpServerPath = getMcpServerAbsolutePath();
-  if (!mcpServerPath) return config;
+  if (!mcpServerPath) return { config, mcpServerResolved: false };
 
   const command = [getNodeAbsolutePath(), mcpServerPath];
   const existingMcp = getOpenCodeMcpEntry(config);
@@ -113,15 +109,18 @@ export function addOpenCodeMcpReference(config: OpenCodeConfig): OpenCodeConfig 
     && Array.isArray((current as { command?: unknown }).command)
     && JSON.stringify((current as { command: unknown[] }).command) === JSON.stringify(command)
   ) {
-    return config;
+    return { config, mcpServerResolved: true };
   }
 
   return {
-    ...config,
-    mcp: {
-      ...existingMcp,
-      [OPENCODE_MCP_SERVER_KEY]: { type: 'local', command },
+    config: {
+      ...config,
+      mcp: {
+        ...existingMcp,
+        [OPENCODE_MCP_SERVER_KEY]: { type: 'local', command },
+      },
     },
+    mcpServerResolved: true,
   };
 }
 
@@ -154,15 +153,15 @@ export function registerOpenCodePluginInConfig(): number {
       ? JSON.parse(readFileSync(configPath, 'utf-8')) as OpenCodeConfig
       : defaultConfig;
     const withPlugin = addOpenCodePluginReference(config);
-    const updatedConfig = addOpenCodeMcpReference(withPlugin);
+    const { config: updatedConfig, mcpServerResolved } = addOpenCodeMcpReferenceWithStatus(withPlugin);
 
-    // Warn whenever the final config lacks a *usable* claude-mem MCP entry —
-    // addOpenCodeMcpReference can only fail to produce one when the server
-    // script cannot be resolved. Verifying the retained entry's command (rather
-    // than keying off the claude-mem key's presence) also catches a stale entry
-    // whose script was already removed, which the installer cannot refresh.
-    if (!isOpenCodeMcpEntryUsable(updatedConfig)) {
-      logger.warn('OPENCODE', 'MCP server script not found — registered plugin without MCP entry', { path: configPath });
+    // Warn conservatively whenever this run could not resolve its own MCP
+    // server script. The final config is deliberately NOT consulted: a retained
+    // entry cannot be trusted as claude-mem's server just because its command
+    // names an existing file, and a stale entry must not be silently reported
+    // as a successful registration.
+    if (!mcpServerResolved) {
+      logger.warn('OPENCODE', 'MCP server script not found — claude-mem MCP server could not be registered', { path: configPath });
     }
 
     writeFileSync(configPath, `${JSON.stringify(updatedConfig, null, 2)}\n`, 'utf-8');
