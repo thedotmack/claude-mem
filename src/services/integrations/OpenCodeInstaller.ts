@@ -75,6 +75,23 @@ function getOpenCodeMcpEntry(config: OpenCodeConfig): Record<string, unknown> {
 }
 
 /**
+ * A claude-mem entry only counts as registered when its `command` argv points
+ * at a script that exists on disk. Verifying the entry rather than trusting the
+ * key's presence is what keeps a pre-existing stale entry (one whose resolved
+ * script was since removed) from being reported as a successful registration.
+ */
+function isOpenCodeMcpEntryUsable(config: OpenCodeConfig): boolean {
+  const entry = getOpenCodeMcpEntry(config)[OPENCODE_MCP_SERVER_KEY];
+  if (!entry || typeof entry !== 'object') return false;
+
+  const command = (entry as { command?: unknown }).command;
+  if (!Array.isArray(command) || command.length < 2) return false;
+
+  const scriptPath = command[1];
+  return typeof scriptPath === 'string' && scriptPath.length > 0 && existsSync(scriptPath);
+}
+
+/**
  * Register claude-mem's MCP server in opencode.json as a local MCP server that
  * launches `node <absolute-path-to-mcp-server.cjs>` — OpenCode does NOT do
  * `${CLAUDE_PLUGIN_ROOT}` substitution, so the path must be baked absolute
@@ -139,13 +156,12 @@ export function registerOpenCodePluginInConfig(): number {
     const withPlugin = addOpenCodePluginReference(config);
     const updatedConfig = addOpenCodeMcpReference(withPlugin);
 
-    // Warn whenever the claude-mem MCP entry is absent from the final config —
-    // addOpenCodeMcpReference only fails to emit it when the server script
-    // cannot be resolved. Keying off the entry's presence (rather than whether
-    // the whole `mcp` block is undefined) keeps the warning firing even when
-    // an unrelated MCP server already exists.
-    const mcpEntry = getOpenCodeMcpEntry(updatedConfig);
-    if (!(OPENCODE_MCP_SERVER_KEY in mcpEntry)) {
+    // Warn whenever the final config lacks a *usable* claude-mem MCP entry —
+    // addOpenCodeMcpReference can only fail to produce one when the server
+    // script cannot be resolved. Verifying the retained entry's command (rather
+    // than keying off the claude-mem key's presence) also catches a stale entry
+    // whose script was already removed, which the installer cannot refresh.
+    if (!isOpenCodeMcpEntryUsable(updatedConfig)) {
       logger.warn('OPENCODE', 'MCP server script not found — registered plugin without MCP entry', { path: configPath });
     }
 

@@ -70,4 +70,65 @@ describe('OpenCode installer missing-MCP-script warning', () => {
     expect(component).toBe('OPENCODE');
     expect(String(message)).toContain('MCP server script not found');
   });
+
+  it('warns when a stale claude-mem entry is retained because its script no longer exists', async () => {
+    const { registerOpenCodePluginInConfig } = await import(
+      '../../src/services/integrations/OpenCodeInstaller.js'
+    );
+
+    // Reproduces the P1: the config already carries a claude-mem entry whose
+    // command points at a build that has since been removed. Resolution now
+    // fails, so the installer cannot refresh it — but it must not stay silent.
+    writeFileSync(join(tempDir, 'opencode.json'), JSON.stringify({
+      $schema: 'https://opencode.ai/config.json',
+      plugin: ['./plugins/claude-mem.js'],
+      mcp: {
+        'claude-mem': {
+          type: 'local',
+          command: [process.execPath, join(tempDir, 'removed-build', 'mcp-server.cjs')],
+        },
+      },
+    }), 'utf-8');
+
+    const result = registerOpenCodePluginInConfig();
+
+    expect(result).toBe(0);
+
+    // The stale entry is left untouched (never corrupt user config), but the
+    // missing-script warning must fire because no usable entry remains.
+    const config = JSON.parse(readFileSync(join(tempDir, 'opencode.json'), 'utf-8'));
+    expect(config.mcp['claude-mem']).toEqual({
+      type: 'local',
+      command: [process.execPath, join(tempDir, 'removed-build', 'mcp-server.cjs')],
+    });
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const [component, message] = warnSpy.mock.calls[0] as unknown[];
+    expect(component).toBe('OPENCODE');
+    expect(String(message)).toContain('MCP server script not found');
+  });
+
+  it('does not warn when a retained claude-mem entry is still usable despite failed resolution', async () => {
+    const { registerOpenCodePluginInConfig } = await import(
+      '../../src/services/integrations/OpenCodeInstaller.js'
+    );
+
+    // A retained entry whose command points at an existing script is usable, so
+    // a failed resolution is not a registration failure and must stay quiet.
+    writeFileSync(join(tempDir, 'opencode.json'), JSON.stringify({
+      $schema: 'https://opencode.ai/config.json',
+      plugin: ['./plugins/claude-mem.js'],
+      mcp: {
+        'claude-mem': {
+          type: 'local',
+          command: [process.execPath, process.execPath],
+        },
+      },
+    }), 'utf-8');
+
+    const result = registerOpenCodePluginInConfig();
+
+    expect(result).toBe(0);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
 });
