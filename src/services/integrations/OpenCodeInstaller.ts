@@ -11,6 +11,15 @@ import { getMcpServerAbsolutePath, getNodeAbsolutePath } from './install-paths.j
 const OPENCODE_PLUGIN_CONFIG_PATH = './plugins/claude-mem.js';
 const OPENCODE_MCP_SERVER_KEY = 'claude-mem';
 
+/**
+ * Partial-install exit code: the plugin was registered but its MCP entry could
+ * not be, because the server script did not resolve. Distinct from a hard
+ * failure (1) so the caller can still finish context injection and let the CLI
+ * report a partial install — with the warning in its captured output — instead
+ * of printing a blanket success.
+ */
+export const OPENCODE_MCP_REGISTRATION_INCOMPLETE = 2;
+
 type OpenCodeConfig = {
   $schema?: string;
   plugin?: unknown;
@@ -155,16 +164,23 @@ export function registerOpenCodePluginInConfig(): number {
     const withPlugin = addOpenCodePluginReference(config);
     const { config: updatedConfig, mcpServerResolved } = addOpenCodeMcpReferenceWithStatus(withPlugin);
 
+    writeFileSync(configPath, `${JSON.stringify(updatedConfig, null, 2)}\n`, 'utf-8');
+
     // Warn conservatively whenever this run could not resolve its own MCP
     // server script. The final config is deliberately NOT consulted: a retained
     // entry cannot be trusted as claude-mem's server just because its command
     // names an existing file, and a stale entry must not be silently reported
-    // as a successful registration.
+    // as a successful registration. The warning goes to stderr (captured by the
+    // installer's console buffer) as well as the log file, and the partial
+    // result is returned to the caller — a log-file-only warning plus a success
+    // exit would let the user believe the integration is complete.
     if (!mcpServerResolved) {
-      logger.warn('OPENCODE', 'MCP server script not found — claude-mem MCP server could not be registered', { path: configPath });
+      const message = 'MCP server script not found — claude-mem MCP server could not be registered';
+      logger.warn('OPENCODE', message, { path: configPath });
+      console.warn(`  ${message}: ${configPath}`);
+      return OPENCODE_MCP_REGISTRATION_INCOMPLETE;
     }
 
-    writeFileSync(configPath, `${JSON.stringify(updatedConfig, null, 2)}\n`, 'utf-8');
     console.log(`  Plugin registered in: ${configPath}`);
     logger.info('OPENCODE', 'Plugin registered in config', { path: configPath });
 
@@ -401,7 +417,8 @@ export async function installOpenCodeIntegration(): Promise<number> {
   console.log('\nInstalling Claude-Mem for OpenCode...\n');
 
   const pluginResult = installOpenCodePlugin();
-  if (pluginResult !== 0) {
+  const mcpIncomplete = pluginResult === OPENCODE_MCP_REGISTRATION_INCOMPLETE;
+  if (pluginResult !== 0 && !mcpIncomplete) {
     return pluginResult;
   }
 
@@ -436,6 +453,21 @@ Use claude-mem search tools for manual memory queries.`;
     } else {
       console.log('  Placeholder context created (worker not running)');
     }
+  }
+
+  if (mcpIncomplete) {
+    console.warn(`
+OpenCode integration installed partially!
+
+Plugin installed to: ${getInstalledPluginPath()}
+Context file: ${getOpenCodeAgentsMdPath()}
+MCP server: NOT registered (mcp-server.cjs not found)
+
+Next steps:
+  1. Restore the plugin build, then re-run the OpenCode install to register the MCP server
+  2. Restart OpenCode to load the plugin
+`);
+    return OPENCODE_MCP_REGISTRATION_INCOMPLETE;
   }
 
   console.log(`
