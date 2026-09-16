@@ -1,25 +1,21 @@
 <h1 align="center">
   <br>
-  <a href="https://grok-mem.ai">
+  <a href="https://github.com/thedotmack/claude-mem">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="docs/public/claude-mem-logo-for-dark-mode.webp">
       <source media="(prefers-color-scheme: light)" srcset="docs/public/claude-mem-logo-for-light-mode.webp">
-      <img src="docs/public/claude-mem-logo-for-light-mode.webp" alt="Grok Mem" width="400">
+      <img src="docs/public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
     </picture>
-  </a>
-  <br>
-  <a href="https://vercel.com/open-source-program">
-    <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" />
-  </a>
-  <a href="https://www.greptile.com">
-    <img alt="Greptile, code review partner" src="docs/public/greptile-wordmark-green.svg" height="40" />
-  </a>
-  <a href="https://serpapi.com">
-    <img alt="SerpApi" src="docs/public/serpapi-logo-with-wordmark-gradient.svg" height="40" />
   </a>
 </h1>
 
-<p align="center">Claude-Mem is now Grok Mem. The package is still <code>claude-mem</code>.</p>
+<p align="center">
+  <img alt="Vercel OSS Program" src="https://vercel.com/oss/program-badge-2026.svg" height="24" />
+  &nbsp;&nbsp;&nbsp;
+  <img alt="Greptile" src="docs/public/greptile-wordmark-green.svg" height="24" />
+  &nbsp;&nbsp;&nbsp;
+  <img alt="SerpApi" src="docs/public/serpapi-logo-with-wordmark-gradient.svg" height="24" />
+</p>
 
 <p align="center">
   <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
@@ -56,13 +52,7 @@
   <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
 </p>
 
-<h4 align="center"><a href="https://grok-mem.ai">Grok Mem</a> is how Grok Bots remember. Sits next to Grok's own memory. Does not replace it.</h4>
-
-<p align="center">
-  <a href="https://grok-mem.ai">
-    <img src="https://img.shields.io/badge/Grok%20mem-1A1A1A?style=for-the-badge" alt="Grok mem">
-  </a>
-</p>
+<h4 align="center">Persistent memory compression system built for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>
 
 <p align="center">
   <a href="LICENSE">
@@ -137,14 +127,14 @@
 </p>
 
 <p align="center">
-  <a href="https://grok-mem.ai">Grok Mem</a> is how Grok Bots remember the work. Grok already remembers you. Grok Mem remembers what the bot did, what we decided, what to do next. Those notes come back in the next chat.
+  Claude-Mem seamlessly preserves context across sessions by automatically capturing tool usage observations, generating semantic summaries, and making them available to future sessions. This enables Claude to maintain continuity of knowledge about projects even after sessions end or reconnect.
 </p>
 
 ---
 
 ## Quick Start
 
-Install [Grok Mem](https://grok-mem.ai) for Grok Bot. The package name is still [`claude-mem`](https://www.npmjs.com/package/claude-mem).
+Install claude-mem for Grok Bot:
 
 ```bash
 npx claude-mem install --ide grok-bot
