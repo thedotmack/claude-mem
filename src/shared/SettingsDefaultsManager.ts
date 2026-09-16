@@ -132,6 +132,15 @@ export interface SettingsDefaults {
   CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: string;
   CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: string;
   CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_CONCEPTS: string;
+  CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: string;
+  CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS: string;
+  CLAUDE_MEM_GROK_BOT_INJECT_TIER: string;
+  CLAUDE_MEM_GROK_BOT_INJECT_WINDOW: string;
+  CLAUDE_MEM_GROK_BOT_INJECT_FALLBACK: string;
+  CLAUDE_MEM_GROK_BOT_INJECT_PLATFORM_SOURCE: string;
+  CLAUDE_MEM_GROK_BOT_INJECT_PROJECTS_BY_AGENT: string;
+  CLAUDE_MEM_GROK_BOT_INJECT_MAX_LINE_CHARS: string;
+  CLAUDE_MEM_GROK_BOT_INJECT_DEBOUNCE_MS: string;
   // CCS Align (Worker Watch seat, Phase 0 breathing slice). Seat-owned middle
   // cache under ~/.claude-mem/ccs-align/<viewerId>/; pull-only, never a second
   // writer on LFG/Orifice logs. See plans/2026-09-09-ccs-align.md.
@@ -266,6 +275,17 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: '521e962d-2ec3-4488-bfbc-54d5209ce118,95601360-61f7-4fd9-bb3a-2c976b2b85c0',
     CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: 'decision,bugfix,security_alert,sensitive',
     CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_CONCEPTS: '',
+    // Live Grok Bot Memory INDEX. Worker writes zz-claude-mem-inject.md as
+    // observations land. Default on; no-op when no Grok Bot seats exist.
+    CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: 'true',
+    CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS: '*',
+    CLAUDE_MEM_GROK_BOT_INJECT_TIER: 'episode',
+    CLAUDE_MEM_GROK_BOT_INJECT_WINDOW: '80',
+    CLAUDE_MEM_GROK_BOT_INJECT_FALLBACK: 'house',
+    CLAUDE_MEM_GROK_BOT_INJECT_PLATFORM_SOURCE: '',
+    CLAUDE_MEM_GROK_BOT_INJECT_PROJECTS_BY_AGENT: '',
+    CLAUDE_MEM_GROK_BOT_INJECT_MAX_LINE_CHARS: '160',
+    CLAUDE_MEM_GROK_BOT_INJECT_DEBOUNCE_MS: '1500',
     CLAUDE_MEM_CCS_ALIGN_ENABLED: 'true',
     CLAUDE_MEM_CCS_ALIGN_VIEWER_IDS: 'ccs-align',
     // Copy of the Grok needle list (D6). Same episodic needles, seat-owned cache.
