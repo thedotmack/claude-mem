@@ -83,7 +83,12 @@ export function classifyHttpProviderError(input: ClassifyHttpInput): ServerClass
     lower.includes('quota exceeded') ||
     lower.includes('insufficient credits') ||
     lower.includes('insufficient_quota') ||
-    lower.includes('resource_exhausted') ||
+    // `RESOURCE_EXHAUSTED` is Gemini's status string for *every* 429, whatever
+    // it is actually refusing, so it cannot decide on the 429 path — the same
+    // reason the generic `limit exceeded` marker below is guarded. A 429 that
+    // really is a spent allowance is decided by the Gemini wrapper, which reads
+    // the window the `QuotaFailure` names, before it reaches here.
+    (lower.includes('resource_exhausted') && status !== 429) ||
     lower.includes('key limit exceeded') ||
     // "Rate limit exceeded" on a 429 is a rate limit, not quota — the generic
     // marker only applies off the 429 path (the key-limit marker always wins).

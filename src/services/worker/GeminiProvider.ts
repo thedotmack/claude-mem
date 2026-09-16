@@ -194,12 +194,39 @@ async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled:
   lastRequestTime = Date.now();
 }
 
+/** A response part. Gemini 3 marks a reasoning part with `thought: true`. */
+interface GeminiPart {
+  text?: string;
+  thought?: boolean;
+}
+
+/**
+ * The answer's text — not the reasoning that came before it.
+ *
+ * A response arrives as an ordered list of parts, and when thinking output is
+ * included the chain of thought is `parts[0]`, so reading the first part
+ * returns the model's private deliberation instead of its answer. Confirmed
+ * against the live endpoint: with `thinkingConfig.includeThoughts` a two-part
+ * response came back, reasoning first and answer second. An answer can also be
+ * split across parts, so the answer parts are joined rather than picked.
+ *
+ * A response whose every part is reasoning has no answer at all; returning ''
+ * lets the caller treat it as the empty response it is, instead of storing
+ * deliberation as an observation.
+ */
+function readAnswerText(parts: GeminiPart[] | undefined): string {
+  if (!parts?.length) return '';
+  return parts
+    .filter((part): part is GeminiPart & { text: string } =>
+      part.thought !== true && typeof part.text === 'string')
+    .map(part => part.text)
+    .join('');
+}
+
 interface GeminiResponse {
   candidates?: Array<{
     content?: {
-      parts?: Array<{
-        text?: string;
-      }>;
+      parts?: GeminiPart[];
     };
   }>;
   usageMetadata?: {
@@ -374,12 +401,12 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
       return await response.json() as GeminiResponse;
     }, { label: `Gemini ${model}`, abortSignal: signal, ...(signal ? { maxRetries: 0 } : {}) });
 
-    if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
+    const content = readAnswerText(data.candidates?.[0]?.content?.parts);
+    if (!content) {
       logger.error('SDK', 'Empty response from Gemini');
       return { content: '' };
     }
 
-    const content = data.candidates[0].content.parts[0].text;
     const tokensUsed = data.usageMetadata?.totalTokenCount;
 
     return {

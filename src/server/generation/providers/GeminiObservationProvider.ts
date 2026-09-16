@@ -29,10 +29,40 @@ export interface GeminiObservationProviderOptions {
 
 interface GeminiResponse {
   candidates?: Array<{
-    content?: { parts?: Array<{ text?: string }> };
+    content?: { parts?: GeminiPart[] };
   }>;
   usageMetadata?: { totalTokenCount?: number };
   error?: { code?: number; status?: string; message?: string };
+}
+
+/** A response part. Gemini 3 marks a reasoning part with `thought: true`. */
+interface GeminiPart {
+  text?: string;
+  thought?: boolean;
+}
+
+/**
+ * The answer's text — not the reasoning that came before it.
+ *
+ * A response arrives as an ordered list of parts, and when thinking output is
+ * included the chain of thought is `parts[0]`, so reading the first part
+ * returns the model's private deliberation instead of its answer. Confirmed
+ * against the live endpoint: with `thinkingConfig.includeThoughts` a two-part
+ * response came back, reasoning first and answer second. An answer can also be
+ * split across parts, so the answer parts are joined rather than picked.
+ *
+ * A response whose every part is reasoning has no answer at all; returning ''
+ * lets the caller report the empty response it is, instead of storing
+ * deliberation as an observation.
+ */
+function readAnswerText(parts: GeminiPart[] | undefined): string {
+  if (!parts?.length) return '';
+  return parts
+    .filter((part): part is GeminiPart & { text: string } =>
+      part.thought !== true && typeof part.text === 'string')
+    .map(part => part.text)
+    .join('')
+    .trim();
 }
 
 export type GeminiBadRequestCategory =
@@ -97,6 +127,35 @@ interface ClassifyGeminiServerErrorInput {
   cause: unknown;
 }
 
+/**
+ * A `QuotaFailure` violation naming a window longer than a day. Gemini answers
+ * a spent allowance and a momentary throttle identically — 429 with
+ * `RESOURCE_EXHAUSTED` — and lists both a per-minute and a per-day violation
+ * whenever the period quota is the one that ran out. The named window is what
+ * separates "retry shortly" from "stop until the period turns over", so match
+ * it on the `quotaId` rather than anywhere in the body.
+ */
+const PERIOD_QUOTA_WINDOW = /"quotaid"\s*:\s*"[^"]*per(day|week|month)/;
+
+function namesPeriodQuotaWindow(lowerBody: string): boolean {
+  return PERIOD_QUOTA_WINDOW.test(lowerBody);
+}
+
+/**
+ * The retry hint Gemini actually sends. Google omits `Retry-After` on these
+ * responses and puts the same information in the body as
+ * `google.rpc.RetryInfo.retryDelay` (e.g. "11s"), so the header alone is
+ * undefined on every real 429 from this provider.
+ */
+const BODY_RETRY_DELAY = /"retryDelay"\s*:\s*"([0-9.]+)s"/;
+
+function parseGeminiRetryDelayMs(bodyText: string): number | undefined {
+  const match = BODY_RETRY_DELAY.exec(bodyText);
+  if (!match) return undefined;
+  const seconds = Number(match[1]);
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.round(seconds * 1000) : undefined;
+}
+
 function isQuotaBody(bodyText: string): boolean {
   const lower = bodyText.toLowerCase();
   return (
@@ -117,6 +176,25 @@ export function classifyGeminiServerError(input: ClassifyGeminiServerErrorInput)
       kind: 'unrecoverable',
       cause: new Error('Gemini HTTP error (status 400)'),
     });
+  }
+
+  // A 429 is decided BEFORE the shared body markers, because every Gemini 429
+  // carries `RESOURCE_EXHAUSTED` whatever it is actually refusing. Letting the
+  // marker decide made a per-minute throttle indistinguishable from a spent
+  // allowance here, and dropped the retry hint on the floor with it.
+  if (status === 429) {
+    const retryAfterMs =
+      (input.headers ? parseRetryAfterMs(input.headers.get('retry-after')) : undefined)
+      ?? parseGeminiRetryDelayMs(bodyText);
+    const exhausted = namesPeriodQuotaWindow(bodyText.toLowerCase());
+    return new ServerClassifiedProviderError(
+      exhausted ? 'Gemini quota exhausted (status 429)' : 'Gemini rate limit (429)',
+      {
+        kind: exhausted ? 'quota_exhausted' : 'rate_limit',
+        cause: new Error('Gemini HTTP error (status 429)'),
+        ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+      },
+    );
   }
 
   return classifyHttpProviderError({
@@ -200,7 +278,7 @@ export class GeminiObservationProvider implements ServerGenerationProvider {
       });
     }
 
-    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '';
+    const rawText = readAnswerText(data.candidates?.[0]?.content?.parts);
     if (!rawText) {
       logger.warn('SDK', 'Gemini returned empty content', { provider: 'gemini', model: this.model });
     }

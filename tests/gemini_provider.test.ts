@@ -341,6 +341,71 @@ describe('GeminiProvider', () => {
     expect(session.cumulativeInputTokens).toBeGreaterThan(0);
   });
 
+  it('stores the answer, not the reasoning, when Gemini returns a thought part first', async () => {
+    const session = makeSession({ project: 'repo-a', userPrompt: 'prompt', lastPromptNumber: 1 });
+    const observationXml = `
+      <observation>
+        <type>discovery</type>
+        <title>Answer survived the reasoning part</title>
+        <narrative>Read from the part after the chain of thought.</narrative>
+        <facts></facts>
+        <concepts></concepts>
+        <files_read></files_read>
+        <files_modified></files_modified>
+      </observation>
+    `;
+
+    queuedMessages = [toolObservationMessage];
+    global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+      candidates: [{
+        content: {
+          parts: [
+            // Captured shape with `thinkingConfig.includeThoughts`: the chain of
+            // thought is parts[0] and is the only part marked `thought`.
+            { text: 'The user wants an observation, so I should emit XML with a title.', thought: true },
+            { text: observationXml },
+          ],
+        },
+      }],
+      usageMetadata: { totalTokenCount: 50 }
+    }))));
+
+    await agent.startSession(session);
+
+    expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+    // Reading parts[0] here would hand the parser the reasoning instead, and
+    // no observation would be stored at all.
+    const observations = mockStoreObservations.mock.calls[0][2];
+    expect(observations).toHaveLength(1);
+    expect(observations[0].title).toBe('Answer survived the reasoning part');
+  });
+
+  it('joins an answer that Gemini split across several parts', async () => {
+    const session = makeSession({ project: 'repo-a', userPrompt: 'prompt', lastPromptNumber: 1 });
+
+    queuedMessages = [toolObservationMessage];
+    global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+      candidates: [{
+        content: {
+          parts: [
+            { text: '<observation>\n<type>discovery</type>\n<title>Split across parts</title>' },
+            { text: '\n<narrative>The second half of the same block.</narrative>\n<facts></facts>'
+              + '\n<concepts></concepts>\n<files_read></files_read>\n<files_modified></files_modified>\n</observation>' },
+          ],
+        },
+      }],
+      usageMetadata: { totalTokenCount: 50 }
+    }))));
+
+    await agent.startSession(session);
+
+    expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+    // Taking only the first part would store a truncated block, or none.
+    const observations = mockStoreObservations.mock.calls[0][2];
+    expect(observations).toHaveLength(1);
+    expect(observations[0].title).toBe('Split across parts');
+  });
+
   it('stores a deferred observation response under the original prompt project after the live session advances', async () => {
     const session = makeSession({
       project: 'repo-a',
