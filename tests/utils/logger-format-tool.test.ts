@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'bun:test';
+import { logger } from '../../src/utils/logger.js';
 
 function formatTool(toolName: string, toolInput?: any): string {
   if (!toolInput) return toolName;
@@ -379,5 +380,71 @@ describe('logger.formatTool()', () => {
       const result = formatTool('Task', '"a plain string"');
       expect(result).toBe('Task');
     });
+  });
+});
+
+// safeStringify is the depth-guarded serializer the DEBUG log path uses instead
+// of a plain JSON.stringify, which overflows the stack on deeply nested or
+// self-referential payloads ("RangeError: Maximum call stack size exceeded").
+const safeStringify = (data: unknown, indent?: number): string =>
+  (logger as any).safeStringify(data, indent);
+
+describe('logger.safeStringify()', () => {
+  it('serializes ordinary objects like JSON.stringify', () => {
+    expect(safeStringify({ a: 1, b: 'x' })).toBe(JSON.stringify({ a: 1, b: 'x' }));
+    expect(safeStringify({ a: 1 }, 2)).toBe(JSON.stringify({ a: 1 }, null, 2));
+  });
+
+  it('truncates a nested object past the depth cap instead of recursing into it', () => {
+    // Depth far beyond the serializer's cap: prune stops early, so it never
+    // walks the whole chain (which is how a plain JSON.stringify overflows).
+    let deep: any = {};
+    let cursor = deep;
+    for (let i = 0; i < 50; i++) {
+      cursor.next = {};
+      cursor = cursor.next;
+    }
+    let out = '';
+    expect(() => { out = safeStringify(deep, 2); }).not.toThrow();
+    expect(out).toContain('[Object]'); // truncated past the depth cap
+  });
+
+  it('truncates a nested array past the depth cap', () => {
+    let arr: any = [];
+    let cursor = arr;
+    for (let i = 0; i < 50; i++) {
+      const child: any[] = [];
+      cursor.push(child);
+      cursor = child;
+    }
+    let out = '';
+    expect(() => { out = safeStringify(arr, 2); }).not.toThrow();
+    expect(out).toContain('[Array]');
+  });
+
+  it('handles self-referential (circular) structures', () => {
+    const cyclic: any = { name: 'root' };
+    cyclic.self = cyclic;
+    let out = '';
+    expect(() => { out = safeStringify(cyclic, 2); }).not.toThrow();
+    expect(out).toContain('[Circular]');
+    expect(out).toContain('root');
+  });
+
+  it('handles BigInt without throwing', () => {
+    let out = '';
+    expect(() => { out = safeStringify({ big: 10n }); }).not.toThrow();
+    expect(out).toContain('10n');
+  });
+
+  it('survives a throwing getter', () => {
+    const obj = {
+      get boom(): string { throw new Error('nope'); },
+      ok: 1,
+    };
+    let out = '';
+    expect(() => { out = safeStringify(obj); }).not.toThrow();
+    expect(out).toContain('[unreadable]');
+    expect(out).toContain('"ok":1');
   });
 });
