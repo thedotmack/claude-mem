@@ -560,4 +560,20 @@ describe('parseAgentXml — tag casing (#4098)', () => {
     expect(result.summary?.skipped).toBe(true);
     expect(result.summary?.skip_reason).toBe('x');
   });
+
+  it('does not leak a capitalized field\'s text into prose salvage (line 261)', () => {
+    // Only <Type> is capitalized; title/narrative/facts/concepts are all
+    // genuinely empty, so parsing should fall into the prose-salvage path.
+    // Before the fix, the salvage regex's case-sensitive alternation left
+    // <Type>bugfix</Type>'s content behind for the generic tag stripper,
+    // producing a spurious observation titled "bugfix". The lowercase
+    // equivalent already drops this as an empty observation (see "keeps
+    // self-closing empty fields out of the prose salvage path" above); the
+    // capitalized form must match that behavior.
+    const xml = `<observation><Type>bugfix</Type><title></title><narrative></narrative></observation>`;
+
+    const result = parseAgentXml(xml);
+
+    expect(result.valid).toBe(false);
+  });
 });

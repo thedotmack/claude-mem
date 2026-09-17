@@ -258,7 +258,7 @@ function extractUnstructuredObservationText(content: string): string | null {
 
   const stripped = content
     .replace(
-      /<(type|title|subtitle|narrative|facts|concepts|files_read|files_modified)(?:\s*\/>|>[\s\S]*?<\/\1>)/g,
+      /<(type|title|subtitle|narrative|facts|concepts|files_read|files_modified)(?:\s*\/>|>[\s\S]*?<\/\1>)/gi,
       ' '
     )
     .replace(/<[^>]+>/g, ' ')
