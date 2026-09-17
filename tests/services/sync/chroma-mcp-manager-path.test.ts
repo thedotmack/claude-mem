@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import * as realOs from 'node:os';
 import path from 'node:path';
 import * as realClientSdk from '@modelcontextprotocol/sdk/client/index.js';
@@ -155,5 +155,108 @@ describe('ChromaMcpManager child PATH Homebrew coverage (#3271)', () => {
     const env = getUvxPreflightEnv();
     expect(env.PYTHONUTF8).toBe('1');
     expect(env.PYTHONIOENCODING).toBe('utf-8');
+  });
+});
+
+describe('ChromaMcpManager uv link mode on Windows (#4108)', () => {
+  const savedLinkMode = process.env.UV_LINK_MODE;
+
+  beforeEach(() => {
+    delete process.env.UV_LINK_MODE;
+  });
+
+  afterAll(() => {
+    if (savedLinkMode === undefined) delete process.env.UV_LINK_MODE;
+    else process.env.UV_LINK_MODE = savedLinkMode;
+  });
+
+  it('sets UV_LINK_MODE=copy on win32 so the NTFS hardlink ceiling cannot stall installs', () => {
+    setPlatform('win32');
+    setPath('C:\\Windows\\System32');
+
+    expect(getUvxPreflightEnv().UV_LINK_MODE).toBe('copy');
+  });
+
+  it('does not set UV_LINK_MODE on darwin', () => {
+    setPlatform('darwin');
+    setPath('/usr/bin:/bin');
+
+    expect(getUvxPreflightEnv().UV_LINK_MODE).toBeUndefined();
+  });
+
+  it('does not set UV_LINK_MODE on linux', () => {
+    setPlatform('linux');
+    setPath('/usr/bin:/bin');
+
+    expect(getUvxPreflightEnv().UV_LINK_MODE).toBeUndefined();
+  });
+
+  it('preserves an explicit UV_LINK_MODE on win32', () => {
+    setPlatform('win32');
+    setPath('C:\\Windows\\System32');
+    process.env.UV_LINK_MODE = 'symlink';
+
+    expect(getUvxPreflightEnv().UV_LINK_MODE).toBe('symlink');
+  });
+});
+
+describe('ChromaMcpManager uv build scratch sweep (#4108)', () => {
+  const nodeFs = require('node:fs');
+  const sweepUvBuildsScratch = (ChromaMcpManager as unknown as {
+    sweepUvBuildsScratch: (env: Record<string, string>) => void;
+  }).sweepUvBuildsScratch;
+  let cacheRoot = '';
+  let buildsDir = '';
+
+  function makeScratch(name: string, ageMs: number): void {
+    const dir = path.join(buildsDir, name);
+    nodeFs.mkdirSync(dir, { recursive: true });
+    nodeFs.writeFileSync(path.join(dir, 'wheel'), 'x');
+    const when = new Date(Date.now() - ageMs);
+    nodeFs.utimesSync(dir, when, when);
+  }
+
+  function remaining(): string[] {
+    return (nodeFs.readdirSync(buildsDir) as string[]).sort();
+  }
+
+  beforeEach(() => {
+    cacheRoot = nodeFs.mkdtempSync(path.join(realOs.tmpdir(), 'claude-mem-uv-cache-'));
+    buildsDir = path.join(cacheRoot, 'builds-v0');
+    nodeFs.mkdirSync(buildsDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    nodeFs.rmSync(cacheRoot, { recursive: true, force: true });
+  });
+
+  it('resolves builds-v0 under UV_CACHE_DIR when set', () => {
+    expect(ChromaMcpManager.resolveUvBuildsScratchDir({ UV_CACHE_DIR: cacheRoot }, 'linux', '/home/u'))
+      .toBe(buildsDir);
+  });
+
+  it('resolves builds-v0 under LOCALAPPDATA on win32', () => {
+    expect(
+      ChromaMcpManager.resolveUvBuildsScratchDir({ LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' }, 'win32', 'C:\\Users\\u')
+    ).toBe(path.join('C:\\Users\\u\\AppData\\Local', 'uv', 'cache', 'builds-v0'));
+  });
+
+  it('removes stale .tmp scratch dirs but keeps cached builds and fresh scratch', () => {
+    makeScratch('.tmpSTALE', 10 * 60_000);
+    makeScratch('.tmpFRESH', 1_000);
+    makeScratch('wheels-v1', 10 * 60_000); // real cached build, not scratch
+
+    sweepUvBuildsScratch({ UV_CACHE_DIR: cacheRoot });
+
+    const left = remaining();
+    expect(left).not.toContain('.tmpSTALE');
+    expect(left).toContain('.tmpFRESH');
+    expect(left).toContain('wheels-v1');
+  });
+
+  it('is a no-op when the builds dir does not exist', () => {
+    expect(() =>
+      sweepUvBuildsScratch({ UV_CACHE_DIR: path.join(cacheRoot, 'does-not-exist') })
+    ).not.toThrow();
   });
 });

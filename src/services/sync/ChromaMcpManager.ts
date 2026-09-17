@@ -27,6 +27,20 @@ const DEFAULT_CHROMA_PREWARM_TIMEOUT_MS = 120_000;
 const CHROMA_PREWARM_TIMEOUT_SETTING = 'CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS';
 const CHROMA_PREWARM_TIMEOUT_BOUNDS = { min: 1, max: 600_000 } as const;
 const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
+// Circuit breaker for a doomed prewarm (#4108). A broken host (missing uv, an
+// unresolvable dep, an NTFS hardlink ceiling) fails the same way every time, so
+// retrying forever just burns CPU and, on NTFS, leaks a half-built env per
+// attempt until the disk fills. After this many CONSECUTIVE failures we stop
+// spawning uvx and surface Chroma as unavailable; a single success resets the
+// count. This caps attempts per worker from unbounded to single digits — the
+// only limiter before was a flat backoff gate that never grew.
+const CHROMA_PREWARM_MAX_CONSECUTIVE_FAILURES = 5;
+// A failed prewarm can leave uv's half-built environment behind under
+// `<uv cache>/builds-v0/.tmp*`; `uv cache prune` never reclaims it, and on NTFS
+// each leftover pins hardlinks against the 1,023-per-file ceiling, so the debt
+// compounds (#4108). Sweep only scratch dirs older than this window, so a build
+// running elsewhere on the machine is never disturbed.
+const CHROMA_UV_BUILDS_SCRATCH_MAX_AGE_MS = 5 * 60_000;
 // Bounded wait for the child's 'exit' after close() resolves. close() can
 // return before Node processes the event, and treating that gap as "still
 // alive" escalates to a hard kill against a process that already exited —
@@ -127,6 +141,10 @@ export class ChromaMcpManager {
   private activePrewarmChild: ChildProcess | null = null;
   /** Identity of activePrewarmChild, captured at spawn while it was alive. */
   private activePrewarmTracked: TrackedChild | null = null;
+  /** Consecutive prewarm failures; trips the circuit breaker, reset on success. */
+  private consecutivePrewarmFailures: number = 0;
+  /** Monotonic prewarm-attempt counter, so the retry cap is observable in logs. */
+  private prewarmAttempts: number = 0;
   private connectionGeneration: number = 0;
   private intentionallyClosingTransports = new WeakSet<object>();
   private readonly chromaWriterOwnerId = CHROMA_WRITER_OWNER_ID;
@@ -684,6 +702,85 @@ export class ChromaMcpManager {
     return () => tail.trim();
   }
 
+  /**
+   * uv's build-scratch directory (`<uv cache>/builds-v0`), resolved from the
+   * spawn env with uv's own cache-dir precedence: `UV_CACHE_DIR`, else
+   * `%LOCALAPPDATA%\uv\cache` on Windows, else `$XDG_CACHE_HOME/uv` or
+   * `~/.cache/uv`. Windows env names are case-insensitive, so the lookup is too.
+   * `platform` and `homedir` are injectable so the resolution is testable.
+   */
+  static resolveUvBuildsScratchDir(
+    env: Record<string, string>,
+    platform: NodeJS.Platform = process.platform,
+    homedir: string = os.homedir(),
+  ): string {
+    const read = (name: string): string | undefined => {
+      if (platform === 'win32') {
+        const target = name.toLowerCase();
+        const key = Object.keys(env).find(k => k.toLowerCase() === target);
+        return key ? env[key]?.trim() || undefined : undefined;
+      }
+      return env[name]?.trim() || undefined;
+    };
+
+    const explicitCache = read('UV_CACHE_DIR');
+    const cacheDir = explicitCache
+      ? explicitCache
+      : platform === 'win32'
+        ? path.join(read('LOCALAPPDATA') || path.join(homedir, 'AppData', 'Local'), 'uv', 'cache')
+        : path.join(read('XDG_CACHE_HOME') || path.join(homedir, '.cache'), 'uv');
+    return path.join(cacheDir, 'builds-v0');
+  }
+
+  /**
+   * Delete abandoned uv build-scratch dirs left by a failed prewarm.
+   *
+   * uv builds chroma-mcp's environment in `builds-v0/.tmp*` and removes the dir
+   * on success, but a build that fails or is killed mid-way leaks it, and `uv
+   * cache prune` never reclaims it. On NTFS each leftover also pins hardlinks
+   * against the 1,023-per-file ceiling, so they compound until the disk fills
+   * (#4108). Only `.tmp*` entries are scratch — real cached builds have other
+   * names and are left untouched — and only ones older than the grace window are
+   * removed, so a build in progress elsewhere is never disturbed. Best-effort:
+   * every failure is logged at debug and swallowed.
+   */
+  private static sweepUvBuildsScratch(env: Record<string, string>): void {
+    const buildsDir = ChromaMcpManager.resolveUvBuildsScratchDir(env);
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(buildsDir, { withFileTypes: true });
+    } catch {
+      // No cache dir yet, or unreadable — nothing to sweep.
+      return;
+    }
+
+    const now = Date.now();
+    let removed = 0;
+    for (const entry of entries) {
+      if (!entry.name.startsWith('.tmp')) continue;
+      const scratchPath = path.join(buildsDir, entry.name);
+      try {
+        if (now - fs.statSync(scratchPath).mtimeMs < CHROMA_UV_BUILDS_SCRATCH_MAX_AGE_MS) {
+          continue;
+        }
+        fs.rmSync(scratchPath, { recursive: true, force: true });
+        removed += 1;
+      } catch (error) {
+        logger.debug('CHROMA_MCP', 'Failed to remove uv build scratch dir (best-effort)', {
+          scratchPath,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (removed > 0) {
+      logger.info('CHROMA_MCP', 'Swept abandoned uv build scratch dirs after failed prewarm', {
+        buildsDir,
+        removed,
+      });
+    }
+  }
+
   private async prewarmChromaMcp(
     command: string,
     commandArgs: string[],
@@ -692,13 +789,26 @@ export class ChromaMcpManager {
   ): Promise<void> {
     this.assertConnectionNotCancelled(connectionGeneration);
 
+    if (this.consecutivePrewarmFailures >= CHROMA_PREWARM_MAX_CONSECUTIVE_FAILURES) {
+      const message = `chroma-mcp prewarm disabled after ${this.consecutivePrewarmFailures} consecutive failures; not retrying`;
+      logger.warn('CHROMA_MCP', 'chroma-mcp prewarm circuit breaker open, skipping spawn', {
+        consecutiveFailures: this.consecutivePrewarmFailures,
+        prewarmAttempts: this.prewarmAttempts,
+      });
+      recordUvxVectorSearchUnavailable(message);
+      throw new ChromaUnavailableError(message);
+    }
+
     const args = ChromaMcpManager.buildPrewarmCommandArgs(commandArgs);
     const timeoutMs = ChromaMcpManager.getChromaPrewarmTimeoutMs();
+    this.prewarmAttempts += 1;
 
     logger.info('CHROMA_MCP', 'Prewarming chroma-mcp uvx environment', {
       command,
       args: args.join(' '),
-      timeoutMs
+      timeoutMs,
+      attempt: this.prewarmAttempts,
+      consecutiveFailures: this.consecutivePrewarmFailures,
     });
 
     const child = spawn(command, args, {
@@ -746,6 +856,7 @@ export class ChromaMcpManager {
     try {
       await Promise.race([exitPromise, timeoutPromise]);
       this.assertConnectionNotCancelled(connectionGeneration);
+      this.consecutivePrewarmFailures = 0;
       logger.debug('CHROMA_MCP', 'chroma-mcp uvx prewarm completed');
     } catch (error) {
       if (error instanceof ChromaMcpConnectionCancelledError) {
@@ -753,6 +864,7 @@ export class ChromaMcpManager {
         throw error;
       }
       this.assertConnectionNotCancelled(connectionGeneration);
+      this.consecutivePrewarmFailures += 1;
       const errorMessage = error instanceof Error ? error.message : String(error);
       const pid = child.pid;
       const stdout = stdoutTail();
@@ -761,6 +873,8 @@ export class ChromaMcpManager {
         command,
         args: args.join(' '),
         timeoutMs,
+        attempt: this.prewarmAttempts,
+        consecutiveFailures: this.consecutivePrewarmFailures,
         ...(pid ? { pid } : {}),
         error: errorMessage,
         ...(stdout ? { stdoutTail: stdout } : {}),
@@ -782,6 +896,11 @@ export class ChromaMcpManager {
       } else {
         try { child.kill('SIGKILL'); } catch { /* already dead */ }
       }
+
+      // Reclaim the half-built env this failed attempt may have leaked, so a
+      // retry loop cannot fill the disk on NTFS (#4108). Runs after the kill so
+      // our own scratch dir is no longer held open.
+      ChromaMcpManager.sweepUvBuildsScratch(env);
 
       const unavailableMessage = `chroma-mcp prewarm failed: ${errorMessage}`;
       recordUvxVectorSearchUnavailable(unavailableMessage);
@@ -1504,6 +1623,17 @@ export class ChromaMcpManager {
     // uvx child (#3552). This is THE spawn env for chroma-mcp, so this is the
     // call that actually fixes the numpy ABI clash.
     stripForeignPythonEnv(baseEnv);
+
+    // On NTFS, uv installs cached files into each build env with hardlinks, but
+    // a single file can back at most 1,023 hardlinks; chroma-mcp's large deps
+    // blow past that ceiling, and from then on every install fails and leaks a
+    // half-built env — over time this fills the disk (#4108). `copy` link mode
+    // trades a little extra space for installs that actually complete on
+    // Windows: offline install succeeds in ~15s under copy, fails in ~3s without
+    // it. Only defaulted, so an explicit UV_LINK_MODE still wins.
+    if (process.platform === 'win32' && !baseEnv.UV_LINK_MODE) {
+      baseEnv.UV_LINK_MODE = 'copy';
+    }
 
     // Disable Chroma's anonymous telemetry — it issues background HTTP from
     // the embedding subprocess on every collection touch.

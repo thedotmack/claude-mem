@@ -27,6 +27,7 @@ const realSdkClientIndexSnapshot = { ...realSdkClientIndex };
 const realChildProcess = require('node:child_process');
 const realProcessPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 const originalPrewarmTimeout = process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS;
+const originalUvCacheDir = process.env.UV_CACHE_DIR;
 const tempRoots: string[] = [];
 let mockedChromaDir = '';
 let mockedCombinedCertPath = '';
@@ -316,6 +317,11 @@ afterAll(() => {
   } else {
     process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS = originalPrewarmTimeout;
   }
+  if (originalUvCacheDir === undefined) {
+    delete process.env.UV_CACHE_DIR;
+  } else {
+    process.env.UV_CACHE_DIR = originalUvCacheDir;
+  }
   if (realProcessPlatform) {
     Object.defineProperty(process, 'platform', realProcessPlatform);
   }
@@ -358,6 +364,9 @@ function resetState(): void {
   callToolImpl = async () => ({ content: [{ type: 'text', text: '{}' }] });
   mockedSettings = {};
   resetMockedChromaPaths();
+  // Point uv's build-scratch sweep at a private, empty cache dir so a failed
+  // prewarm never sweeps the real machine's ~/.cache/uv during tests (#4108).
+  process.env.UV_CACHE_DIR = path.join(path.dirname(mockedChromaDir), 'uv-cache');
   ChromaMcpManager.setUvxAvailabilityProbeForTesting(() => true);
   resetDependencyStatusesForTesting();
   if (originalPrewarmTimeout === undefined) {
@@ -785,6 +794,57 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('connection in backoff');
     expect(prewarmSpawnCalls.length).toBe(1);
+  });
+
+  it('stops spawning uvx after a burst of consecutive prewarm failures (#4108)', async () => {
+    // A broken host fails the prewarm the same way every time; before the
+    // circuit breaker the only limiter was the reconnect backoff, so the loop
+    // ran roughly once a minute for the worker's whole lifetime. Clear the
+    // backoff each iteration so the breaker is the only thing that can stop it.
+    prewarmSpawnBehavior = 'failure';
+    const mgr = ChromaMcpManager.getInstance();
+    const clearBackoff = () => {
+      (mgr as unknown as { lastConnectionFailureTimestamp: number }).lastConnectionFailureTimestamp = 0;
+    };
+
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      clearBackoff();
+      await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
+        .rejects.toBeInstanceOf(ChromaUnavailableError);
+    }
+
+    // Five spawns fail, then the breaker opens and no further uvx is spawned.
+    expect(prewarmSpawnCalls.length).toBe(5);
+    expect(
+      logEntries.some(entry => entry.message === 'chroma-mcp prewarm circuit breaker open, skipping spawn')
+    ).toBe(true);
+    expect(getDependencyStatus('uvx')).toMatchObject({ kind: 'vector_search_unavailable' });
+  });
+
+  it('resets the prewarm failure count on a success so transient failures do not trip the breaker (#4108)', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    const failureCount = () =>
+      (mgr as unknown as { consecutivePrewarmFailures: number }).consecutivePrewarmFailures;
+    const clearBackoff = () => {
+      (mgr as unknown as { lastConnectionFailureTimestamp: number }).lastConnectionFailureTimestamp = 0;
+    };
+
+    prewarmSpawnBehavior = 'failure';
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      clearBackoff();
+      await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
+        .rejects.toBeInstanceOf(ChromaUnavailableError);
+    }
+    expect(failureCount()).toBe(3);
+    expect(prewarmSpawnCalls.length).toBe(3);
+
+    // A single success clears the count, so the next burst starts from zero.
+    prewarmSpawnBehavior = 'success';
+    clearBackoff();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(failureCount()).toBe(0);
+    expect(prewarmSpawnCalls.length).toBe(4);
   });
 
   it('classifies a mid-handshake transport death as ChromaUnavailableError without error-tracking noise', async () => {
