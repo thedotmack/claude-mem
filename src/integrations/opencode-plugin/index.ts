@@ -1,5 +1,11 @@
 import { z } from "zod";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
+import {
+  buildSpawnSyncInvocation,
+  lookupWindowsCommand,
+  type SpawnSyncInvocation,
+} from "../../shared/spawn.js";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
 import { normalizePlatformSource } from "../../shared/platform-source.js";
 
@@ -345,4 +351,130 @@ export function parseSearchResponse(text: string, query: string): string {
   return rendered;
 }
 
-export default ClaudeMemPlugin;
+const WORKER_READY_TIMEOUT_MS = 10_000;
+const WORKER_READY_POLL_INTERVAL_MS = 250;
+
+/** Reports an asynchronous spawn failure (the `error` event) to the ensure loop. */
+type MarkLaunchFailed = () => void;
+
+/** Spawns `npx claude-mem start`; the default starter reports spawn errors via `markLaunchFailed`. */
+type WorkerStarter = (markLaunchFailed: MarkLaunchFailed) => void;
+
+/**
+ * Build the Windows-aware `npx claude-mem start` invocation. On Windows `npx`
+ * is the npm `npx.cmd` PATH shim and a plain `spawn("npx", ...)` without a
+ * shell never consults PATHEXT, so resolve the shim first; `.cmd`/`.bat`
+ * shims are wrapped in `cmd.exe /d /s /c` with verbatim arguments (see
+ * src/shared/spawn.ts).
+ */
+export function resolveWorkerStartInvocation(
+  platform: NodeJS.Platform = process.platform,
+  windowsLookup: () => string | null = () => lookupWindowsCommand("npx"),
+): SpawnSyncInvocation {
+  const command =
+    platform === "win32" ? windowsLookup() ?? "npx.cmd" : "npx";
+  return buildSpawnSyncInvocation(
+    command,
+    ["claude-mem", "start"],
+    { encoding: "utf-8", stdio: "ignore" },
+    platform,
+  );
+}
+
+const spawnWorkerStartCommand: WorkerStarter = (markLaunchFailed) => {
+  const invocation = resolveWorkerStartInvocation();
+  const child = spawn(invocation.command, invocation.args, {
+    ...invocation.options,
+    detached: true,
+  });
+  child.on("error", (err: Error) => {
+    markLaunchFailed();
+    console.warn("[claude-mem] failed to start worker:", err.message);
+  });
+  child.unref();
+};
+
+async function workerAlive(): Promise<boolean> {
+  try {
+    await fetch(WORKER_BASE_URL, { signal: AbortSignal.timeout(1000) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForWorkerReady(
+  isLaunchFailed: () => boolean,
+  timeoutMs: number,
+  pollIntervalMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await workerAlive()) return true;
+    if (isLaunchFailed() || Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+}
+
+let workerEnsurePromise: Promise<boolean> | null = null;
+
+interface WorkerEnsureOptions {
+  startWorker?: WorkerStarter;
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+}
+
+/**
+ * Make the claude-mem worker available before capture hooks are exposed.
+ *
+ * OpenCode loads this plugin automatically at startup, but the claude-mem
+ * worker is a separate long-running process. If it is down, spawn
+ * `npx claude-mem start` and wait (bounded) until it responds, so the first
+ * capture events are not dropped on ECONNREFUSED. Returns true once the
+ * worker is verified healthy.
+ *
+ * The attempt is memoized per process so later plugin initializations never
+ * spawn duplicate workers; on launch failure the memo is reset so a later
+ * initialization can retry.
+ */
+export function ensureWorkerRunning(options: WorkerEnsureOptions = {}): Promise<boolean> {
+  if (!workerEnsurePromise) {
+    const startWorker = options.startWorker ?? spawnWorkerStartCommand;
+    const timeoutMs = options.timeoutMs ?? WORKER_READY_TIMEOUT_MS;
+    const pollIntervalMs = options.pollIntervalMs ?? WORKER_READY_POLL_INTERVAL_MS;
+    workerEnsurePromise = (async () => {
+      if (await workerAlive()) return true;
+      console.log("[claude-mem] worker not running — starting");
+      let launchFailed = false;
+      try {
+        startWorker(() => {
+          launchFailed = true;
+        });
+      } catch (error: unknown) {
+        launchFailed = true;
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn("[claude-mem] failed to start worker:", message);
+      }
+      const ready = await waitForWorkerReady(
+        () => launchFailed,
+        timeoutMs,
+        pollIntervalMs,
+      );
+      if (!ready) {
+        if (launchFailed) {
+          workerEnsurePromise = null;
+        }
+        console.warn(
+          "[claude-mem] worker not ready — capture resumes once it responds (npx claude-mem start)",
+        );
+      }
+      return ready;
+    })();
+  }
+  return workerEnsurePromise;
+}
+
+export default async (ctx: OpenCodePluginContext) => {
+  await ensureWorkerRunning();
+  return ClaudeMemPlugin(ctx);
+};
