@@ -156,7 +156,8 @@ export class SessionManager {
       consecutiveContextOverflows: 0,
       lastGeneratorActivity: Date.now(),  // Initialize for stale detection (Issue #1099)
       pendingAgentId: null,   // Subagent identity carried from the most recent claimed message
-      pendingAgentType: null
+      pendingAgentType: null,
+      pausedReason: null
     };
 
     logger.debug('SESSION', 'Creating new session object (memorySessionId cleared to prevent stale resume)', {
@@ -432,6 +433,16 @@ export class SessionManager {
 
   getActiveSessionCount(): number {
     return this.sessions.size;
+  }
+
+  /** Snapshot paused in-memory work without loading sessions or changing the buffer. */
+  getResumableSessionIds(includeOperatorOnly: boolean = false): number[] {
+    const automaticallyRetryable = new Set([null, undefined, 'quota', 'overflow', 'setup_required']);
+    return Array.from(this.sessions.values())
+      .filter(session => !session.generatorPromise
+        && this.buffer.getPendingCount(session.sessionDbId) > 0
+        && (includeOperatorOnly || automaticallyRetryable.has(session.pausedReason)))
+      .map(session => session.sessionDbId);
   }
 
   getTotalQueueDepth(): number {
