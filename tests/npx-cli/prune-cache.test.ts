@@ -1,9 +1,10 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   planCachePrune,
+  planPluginCachePrune,
   prunePluginCache,
   DEFAULT_CACHE_RETENTION,
 } from '../../src/npx-cli/utils/prune-cache.js';
@@ -22,7 +23,7 @@ describe('planCachePrune', () => {
     const { keep, prune } = planCachePrune(
       ['13.25.1', '13.25.0', '13.20.0'],
       2,
-      ['13.20.0'],
+      { protectedVersions: ['13.20.0'] },
     );
     expect(keep).toContain('13.20.0');
     expect(prune).not.toContain('13.20.0');
@@ -49,6 +50,18 @@ describe('planCachePrune', () => {
   it('prunes nothing when the version count is within the keep budget', () => {
     const { prune } = planCachePrune(['13.25.1', '13.25.0'], 2);
     expect(prune).toEqual([]);
+  });
+
+  it('does not let an orphaned newest directory consume a retention slot', () => {
+    // 13.26.0 is orphaned: the resolver ignores it, so it must not displace a
+    // usable rollback version. Keep the two newest usable ones and prune the orphan.
+    const { keep, prune } = planCachePrune(
+      ['13.26.0', '13.25.0', '13.24.0'],
+      2,
+      { orphanedVersions: ['13.26.0'] },
+    );
+    expect(keep).toEqual(['13.25.0', '13.24.0']);
+    expect(prune).toEqual(['13.26.0']);
   });
 });
 
@@ -79,5 +92,43 @@ describe('prunePluginCache', () => {
     const result = prunePluginCache({ cacheRoot: root, keepCount: 2 });
     expect(result.removed).toEqual([]);
     expect(result.kept).toEqual([]);
+  });
+
+  it('prunes an orphaned newest directory and keeps usable rollback versions', () => {
+    root = mkdtempSync(join(tmpdir(), 'claude-mem-prune-orphan-'));
+    for (const version of ['13.24.0', '13.25.0', '13.26.0']) {
+      mkdirSync(join(root, version));
+    }
+    // Claude Code stamps the superseded newest directory as orphaned.
+    writeFileSync(join(root, '13.26.0', '.orphaned_at'), '');
+
+    const result = prunePluginCache({ cacheRoot: root, keepCount: 2 });
+
+    expect(result.removed).toEqual(['13.26.0']);
+    expect(existsSync(join(root, '13.26.0'))).toBe(false);
+    expect(existsSync(join(root, '13.25.0'))).toBe(true);
+    expect(existsSync(join(root, '13.24.0'))).toBe(true);
+  });
+});
+
+describe('planPluginCachePrune', () => {
+  let root: string;
+
+  afterEach(() => {
+    if (root && existsSync(root)) rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reads .orphaned_at markers from disk and previews the same removals', () => {
+    root = mkdtempSync(join(tmpdir(), 'claude-mem-prune-plan-'));
+    for (const version of ['13.24.0', '13.25.0', '13.26.0']) {
+      mkdirSync(join(root, version));
+    }
+    writeFileSync(join(root, '13.26.0', '.orphaned_at'), '');
+
+    const { keep, prune } = planPluginCachePrune(root, 2);
+    expect(prune).toEqual(['13.26.0']);
+    expect(keep).toEqual(['13.25.0', '13.24.0']);
+    // Preview only — nothing deleted.
+    expect(existsSync(join(root, '13.26.0'))).toBe(true);
   });
 });

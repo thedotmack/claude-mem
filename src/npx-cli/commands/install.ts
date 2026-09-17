@@ -177,7 +177,7 @@ import {
   readPluginVersion,
   writeJsonFileAtomic,
 } from '../utils/paths.js';
-import { prunePluginCache } from '../utils/prune-cache.js';
+import { prunePluginCacheSafely } from '../utils/prune-cache.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { readFlatSettings } from '../utils/settings.js';
 import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
@@ -746,7 +746,7 @@ export function writeTrimmedMarketplacePackageJson(packageRoot: string, marketpl
   writeFileSync(join(marketplaceDir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
 }
 
-function copyPluginToCache(version: string): void {
+async function copyPluginToCache(version: string): Promise<void> {
   const sourcePluginDirectory = npmPackagePluginDirectory();
   const cachePath = pluginCacheDirectory(version);
 
@@ -756,11 +756,14 @@ function copyPluginToCache(version: string): void {
 
   // Prune superseded versions now that the new one has landed. Without this the
   // cache grew one directory per release forever, and every retained directory
-  // stayed a runnable old-version worker source (#4105). Keep the just-written
-  // version plus N-1; the caller has already stopped the worker, so nothing is
-  // running from a directory we might remove.
-  const pruned = prunePluginCache({ protectedVersions: [version] });
-  if (pruned.removed.length > 0) {
+  // stayed a runnable old-version worker source (#4105). The safe prune keeps
+  // the just-written version plus N-1 and protects any live worker's version —
+  // the repair path reaches here without stopping the worker, so a running
+  // older worker must never lose its source directory.
+  const pruned = await prunePluginCacheSafely({ additionalProtectedVersions: [version] });
+  if (pruned.retainedForLiveWorker) {
+    log.info('Skipped cache prune: a worker is running but its version could not be read; retaining all versions.');
+  } else if (pruned.removed.length > 0) {
     log.info(`Pruned ${pruned.removed.length} stale plugin cache version(s): ${pruned.removed.join(', ')}`);
   }
   for (const failure of pruned.failed) {
@@ -2093,7 +2096,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
         title: 'Caching plugin version',
         task: async (message) => {
           message(`Caching v${version}...`);
-          copyPluginToCache(version);
+          await copyPluginToCache(version);
           return `Plugin cached (v${version}) ${styleText('green', 'OK')}`;
         },
       },
@@ -2500,7 +2503,7 @@ async function runRepairCommandInner(summary: InstallSummary): Promise<void> {
         // fail immediately with no package.json to install against.
         if (!existsSync(join(cacheDir, 'package.json'))) {
           message('Cache missing — repopulating from npm package…');
-          copyPluginToCache(version);
+          await copyPluginToCache(version);
         }
         message('Reinstalling plugin dependencies…');
         const { bunPath } = bun;
