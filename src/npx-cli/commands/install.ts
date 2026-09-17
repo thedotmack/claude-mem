@@ -177,6 +177,7 @@ import {
   readPluginVersion,
   writeJsonFileAtomic,
 } from '../utils/paths.js';
+import { prunePluginCache } from '../utils/prune-cache.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { readFlatSettings } from '../utils/settings.js';
 import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
@@ -752,6 +753,19 @@ function copyPluginToCache(version: string): void {
   rmSync(cachePath, { recursive: true, force: true });
   ensureDirectoryExists(cachePath);
   cpSync(sourcePluginDirectory, cachePath, { recursive: true, force: true });
+
+  // Prune superseded versions now that the new one has landed. Without this the
+  // cache grew one directory per release forever, and every retained directory
+  // stayed a runnable old-version worker source (#4105). Keep the just-written
+  // version plus N-1; the caller has already stopped the worker, so nothing is
+  // running from a directory we might remove.
+  const pruned = prunePluginCache({ protectedVersions: [version] });
+  if (pruned.removed.length > 0) {
+    log.info(`Pruned ${pruned.removed.length} stale plugin cache version(s): ${pruned.removed.join(', ')}`);
+  }
+  for (const failure of pruned.failed) {
+    log.warn(`Could not prune cache version ${failure.version}: ${failure.reason}`);
+  }
 }
 
 function writeMarketplaceInstallMarkers(
