@@ -169,3 +169,10 @@ If observations seem lower quality with Gemini:
 - [Configuration](/configuration) - Full settings reference
 - [Getting Started](/usage/getting-started) - Basic usage guide
 - [Troubleshooting](/troubleshooting) - Common issues
+
+## Multiple keys
+
+`CLAUDE_MEM_GEMINI_API_KEYS` accepts additional keys (newline- or comma-separated) alongside
+`CLAUDE_MEM_GEMINI_API_KEY`. When a key hits a rate limit, spends its quota, or is rejected as
+invalid, Gemini requests rotate to the next key instead of failing for the
+rest of the window. See [Multi-Key Rotation](/usage/multi-key-rotation).
