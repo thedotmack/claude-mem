@@ -236,6 +236,21 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     expect(decision.abort).toBe(false);
   });
 
+  it('aborts on five_hour at 0.90 with resetsAt reported in epoch seconds, 10 min away (grace buffer)', () => {
+    // Claude Code has been observed writing resetsAt in epoch seconds
+    // (see the doc comment on minutesUntilReset). The grace-buffer check
+    // must normalize units the same way minutesUntilReset does.
+    store.set({
+      rateLimitType: 'five_hour',
+      utilization: 0.90,
+      resetsAt: Math.floor((FIXED_NOW + 10 * 60 * 1000) / 1000), // 10 min away, epoch seconds
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('five_hour');
+    expect(decision.reason).toContain('resets');
+  });
+
   it('does not abort when all windows are below threshold', () => {
     store.set({ rateLimitType: 'five_hour', utilization: 0.5 });
     store.set({ rateLimitType: 'seven_day_opus', utilization: 0.4 });

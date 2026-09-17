@@ -257,7 +257,8 @@ export function shouldAbortForQuota(
       typeof util === 'number' &&
       util >= RESET_GRACE_UTILIZATION_FLOOR
     ) {
-      const msUntilReset = entry.resetsAt - now;
+      const resetsAtMs = entry.resetsAt < 1e12 ? entry.resetsAt * 1000 : entry.resetsAt;
+      const msUntilReset = resetsAtMs - now;
       if (msUntilReset > 0 && msUntilReset <= RESET_GRACE_MS) {
         return {
           abort: true,
