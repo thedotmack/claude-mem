@@ -471,3 +471,93 @@ describe('parseAgentXml — observation type against the mode enum', () => {
     expect(result[0].type).toBe('refactor');
   });
 });
+
+// #4098: local models that emit capitalized XML wrapper tags (e.g. `<Concepts>`,
+// `<Files_read>`) silently lose facts/concepts/files because every tag regex in
+// the parser was built without the `i` flag. Each case below isolates exactly
+// one regex site by capitalizing only the tag(s) that regex matches, leaving
+// every other tag in the fixture at whatever casing already passes today — so
+// no case can pass by riding on a different, unrelated flag.
+describe('parseAgentXml — tag casing (#4098)', () => {
+  it('populates all four arrays from capitalized wrapper tags only (line 233)', () => {
+    // Only the array-wrapper tags are capitalized. Outer <observation> and every
+    // leaf (<fact>, <concept>, <file>) stay lowercase.
+    const xml = `<observation><type>discovery</type><title>t</title><Facts><fact>f1</fact></Facts><narrative>n</narrative><Concepts><concept>gotcha</concept></Concepts><Files_read><file>a.ts</file></Files_read><Files_modified><file>b.ts</file></Files_modified></observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].facts).toEqual(['f1']);
+    expect(result[0].concepts).toEqual(['gotcha']);
+    expect(result[0].files_read).toEqual(['a.ts']);
+    expect(result[0].files_modified).toEqual(['b.ts']);
+  });
+
+  it('parses a capitalized <Observation> root wrapper (line 94)', () => {
+    // Only the outer <Observation>/</Observation> tag is capitalized. Every
+    // wrapper and leaf tag inside stays lowercase (today's already-passing
+    // shape), isolating the block regex distinct from root detection (which
+    // already has `i` and is unchanged).
+    const xml = `<Observation><type>discovery</type><title>t</title><facts><fact>f1</fact></facts><narrative>n</narrative><concepts><concept>c1</concept></concepts><files_read><file>a.ts</file></files_read><files_modified><file>b.ts</file></files_modified></Observation>`;
+
+    const result = parseAgentXml(xml);
+
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.observations).toHaveLength(1);
+    expect(result.observations[0].facts).toEqual(['f1']);
+    expect(result.observations[0].concepts).toEqual(['c1']);
+    expect(result.observations[0].files_read).toEqual(['a.ts']);
+    expect(result.observations[0].files_modified).toEqual(['b.ts']);
+  });
+
+  it('populates arrays from capitalized leaf element tags only (line 242)', () => {
+    // Outer <observation> and the array-wrapper tags stay lowercase; only the
+    // leaf element tags (<Fact>, <Concept>, <File>) are capitalized.
+    const xml = `<observation><type>discovery</type><title>t</title><facts><Fact>f1</Fact></facts><narrative>n</narrative><concepts><Concept>c1</Concept></concepts><files_read><File>a.ts</File></files_read><files_modified><File>b.ts</File></files_modified></observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].facts).toEqual(['f1']);
+    expect(result[0].concepts).toEqual(['c1']);
+    expect(result[0].files_read).toEqual(['a.ts']);
+    expect(result[0].files_modified).toEqual(['b.ts']);
+  });
+
+  it('parses the reporter\'s raw model output tail (#4098)', () => {
+    const xml = `<observation><type>discovery</type><title>Reporter-shaped output</title><narrative>n</narrative><Concepts><concept>security_note</concept><concept>gotcha</concept></Concepts><Files_read><file>terraform/task_definition</file></Files_read><Files_modified><file>issues/418</file></Files_modified></observation>`;
+
+    const result = expectObservation(xml);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].concepts).toEqual(['security_note', 'gotcha']);
+    expect(result[0].files_read).toEqual(['terraform/task_definition']);
+    expect(result[0].files_modified).toEqual(['issues/418']);
+  });
+
+  it('parses a capitalized <Summary> with mixed-case children (lines 179, 222)', () => {
+    // Outer <Summary> capitalized isolates the summary-block regex; <Request>
+    // capitalized vs. <learned> lowercase isolates the shared extractField
+    // regex used by both observation and summary fields.
+    const xml = `<Summary><Request>r</Request><learned>l</learned></Summary>`;
+
+    const result = parseAgentXml(xml);
+
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.summary?.request).toBe('r');
+    expect(result.summary?.learned).toBe('l');
+  });
+
+  it('parses a capitalized <Skip_summary> as skipped (line 52)', () => {
+    const xml = `<Skip_summary reason="x"/>`;
+
+    const result = parseAgentXml(xml);
+
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.summary?.skipped).toBe(true);
+    expect(result.summary?.skip_reason).toBe('x');
+  });
+});
