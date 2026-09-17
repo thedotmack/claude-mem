@@ -31,16 +31,23 @@ const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
 // unresolvable dep, an NTFS hardlink ceiling) fails the same way every time, so
 // retrying forever just burns CPU and, on NTFS, leaks a half-built env per
 // attempt until the disk fills. After this many CONSECUTIVE failures we stop
-// spawning uvx and surface Chroma as unavailable; a single success resets the
-// count. This caps attempts per worker from unbounded to single digits — the
-// only limiter before was a flat backoff gate that never grew.
+// spawning uvx; the only limiter before was a flat backoff gate that never grew.
 const CHROMA_PREWARM_MAX_CONSECUTIVE_FAILURES = 5;
+// Once the breaker is open, allow a single half-open probe after this cooldown
+// so a host that becomes healthy (disk freed, uv installed, dep resolvable) can
+// recover without a worker restart. A failed probe re-opens for another
+// cooldown; a successful one resets the count and closes the breaker. This keeps
+// attempts sparse (roughly one per cooldown) instead of the old ~1/min loop,
+// while still letting Chroma reconnect on its own.
+const CHROMA_PREWARM_BREAKER_COOLDOWN_MS = 10 * 60_000;
 // A failed prewarm can leave uv's half-built environment behind under
 // `<uv cache>/builds-v0/.tmp*`; `uv cache prune` never reclaims it, and on NTFS
 // each leftover pins hardlinks against the 1,023-per-file ceiling, so the debt
-// compounds (#4108). Sweep only scratch dirs older than this window, so a build
-// running elsewhere on the machine is never disturbed.
-const CHROMA_UV_BUILDS_SCRATCH_MAX_AGE_MS = 5 * 60_000;
+// compounds (#4108). We only remove scratch dirs older than this window: no
+// legitimate uv build runs for a day, so age past it reliably means abandoned,
+// and a concurrent build elsewhere on the machine is never disturbed. Our own
+// fresh leftover is reclaimed by a later sweep once it ages past this bound.
+const CHROMA_UV_BUILDS_SCRATCH_ABANDONED_MS = 24 * 60 * 60_000;
 // Bounded wait for the child's 'exit' after close() resolves. close() can
 // return before Node processes the event, and treating that gap as "still
 // alive" escalates to a hard kill against a process that already exited —
@@ -143,6 +150,8 @@ export class ChromaMcpManager {
   private activePrewarmTracked: TrackedChild | null = null;
   /** Consecutive prewarm failures; trips the circuit breaker, reset on success. */
   private consecutivePrewarmFailures: number = 0;
+  /** When the breaker last opened; gates the half-open recovery probe. */
+  private prewarmBreakerOpenedAt: number = 0;
   /** Monotonic prewarm-attempt counter, so the retry cap is observable in logs. */
   private prewarmAttempts: number = 0;
   private connectionGeneration: number = 0;
@@ -740,9 +749,9 @@ export class ChromaMcpManager {
    * cache prune` never reclaims it. On NTFS each leftover also pins hardlinks
    * against the 1,023-per-file ceiling, so they compound until the disk fills
    * (#4108). Only `.tmp*` entries are scratch — real cached builds have other
-   * names and are left untouched — and only ones older than the grace window are
-   * removed, so a build in progress elsewhere is never disturbed. Best-effort:
-   * every failure is logged at debug and swallowed.
+   * names and are left untouched — and only ones past the abandoned age are
+   * removed, so a build in progress elsewhere (which can take minutes) is never
+   * disturbed. Best-effort: every failure is logged at debug and swallowed.
    */
   private static sweepUvBuildsScratch(env: Record<string, string>): void {
     const buildsDir = ChromaMcpManager.resolveUvBuildsScratchDir(env);
@@ -760,7 +769,7 @@ export class ChromaMcpManager {
       if (!entry.name.startsWith('.tmp')) continue;
       const scratchPath = path.join(buildsDir, entry.name);
       try {
-        if (now - fs.statSync(scratchPath).mtimeMs < CHROMA_UV_BUILDS_SCRATCH_MAX_AGE_MS) {
+        if (now - fs.statSync(scratchPath).mtimeMs < CHROMA_UV_BUILDS_SCRATCH_ABANDONED_MS) {
           continue;
         }
         fs.rmSync(scratchPath, { recursive: true, force: true });
@@ -790,13 +799,25 @@ export class ChromaMcpManager {
     this.assertConnectionNotCancelled(connectionGeneration);
 
     if (this.consecutivePrewarmFailures >= CHROMA_PREWARM_MAX_CONSECUTIVE_FAILURES) {
-      const message = `chroma-mcp prewarm disabled after ${this.consecutivePrewarmFailures} consecutive failures; not retrying`;
-      logger.warn('CHROMA_MCP', 'chroma-mcp prewarm circuit breaker open, skipping spawn', {
+      const msSinceOpen = Date.now() - this.prewarmBreakerOpenedAt;
+      if (msSinceOpen < CHROMA_PREWARM_BREAKER_COOLDOWN_MS) {
+        const retryInS = Math.ceil((CHROMA_PREWARM_BREAKER_COOLDOWN_MS - msSinceOpen) / 1000);
+        const message = `chroma-mcp prewarm paused after ${this.consecutivePrewarmFailures} consecutive failures; retrying in ${retryInS}s`;
+        logger.warn('CHROMA_MCP', 'chroma-mcp prewarm circuit breaker open, skipping spawn', {
+          consecutiveFailures: this.consecutivePrewarmFailures,
+          prewarmAttempts: this.prewarmAttempts,
+          retryInS,
+        });
+        recordUvxVectorSearchUnavailable(message);
+        throw new ChromaUnavailableError(message);
+      }
+      // Cooldown elapsed — let a single probe through (half-open). A failure
+      // re-opens the breaker for another cooldown; a success resets the count
+      // and closes it, so a recovered host reconnects without a restart.
+      logger.info('CHROMA_MCP', 'chroma-mcp prewarm circuit breaker half-open, allowing one probe', {
         consecutiveFailures: this.consecutivePrewarmFailures,
         prewarmAttempts: this.prewarmAttempts,
       });
-      recordUvxVectorSearchUnavailable(message);
-      throw new ChromaUnavailableError(message);
     }
 
     const args = ChromaMcpManager.buildPrewarmCommandArgs(commandArgs);
@@ -861,10 +882,19 @@ export class ChromaMcpManager {
     } catch (error) {
       if (error instanceof ChromaMcpConnectionCancelledError) {
         logger.debug('CHROMA_MCP', 'chroma-mcp uvx prewarm cancelled during shutdown');
+        // A cancelled build is killed but not cleaned up by uv, so its scratch
+        // dir leaks too. Sweep here as well so repeated shutdowns/reconnects
+        // cannot accumulate abandoned builds (#4108).
+        ChromaMcpManager.sweepUvBuildsScratch(env);
         throw error;
       }
       this.assertConnectionNotCancelled(connectionGeneration);
       this.consecutivePrewarmFailures += 1;
+      if (this.consecutivePrewarmFailures >= CHROMA_PREWARM_MAX_CONSECUTIVE_FAILURES) {
+        // Mark when the breaker opened (or re-opened after a failed probe) so
+        // the half-open cooldown is measured from the latest failure.
+        this.prewarmBreakerOpenedAt = Date.now();
+      }
       const errorMessage = error instanceof Error ? error.message : String(error);
       const pid = child.pid;
       const stdout = stdoutTail();
@@ -1630,8 +1660,11 @@ export class ChromaMcpManager {
     // half-built env — over time this fills the disk (#4108). `copy` link mode
     // trades a little extra space for installs that actually complete on
     // Windows: offline install succeeds in ~15s under copy, fails in ~3s without
-    // it. Only defaulted, so an explicit UV_LINK_MODE still wins.
-    if (process.platform === 'win32' && !baseEnv.UV_LINK_MODE) {
+    // it. Only a default: an explicit UV_LINK_MODE still wins. Windows env names
+    // are case-insensitive, so a lowercase `uv_link_mode` counts as set too —
+    // otherwise we would add a duplicate uppercase key the user did not choose.
+    if (process.platform === 'win32'
+        && !Object.keys(baseEnv).some(key => key.toLowerCase() === 'uv_link_mode')) {
       baseEnv.UV_LINK_MODE = 'copy';
     }
 

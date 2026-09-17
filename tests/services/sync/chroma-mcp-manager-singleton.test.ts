@@ -847,6 +847,43 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(prewarmSpawnCalls.length).toBe(4);
   });
 
+  it('recovers once the breaker cooldown elapses and a probe succeeds (#4108)', async () => {
+    prewarmSpawnBehavior = 'failure';
+    const mgr = ChromaMcpManager.getInstance();
+    const internals = mgr as unknown as {
+      lastConnectionFailureTimestamp: number;
+      prewarmBreakerOpenedAt: number;
+      consecutivePrewarmFailures: number;
+    };
+    const clearBackoff = () => { internals.lastConnectionFailureTimestamp = 0; };
+
+    // Open the breaker.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      clearBackoff();
+      await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
+        .rejects.toBeInstanceOf(ChromaUnavailableError);
+    }
+    expect(prewarmSpawnCalls.length).toBe(5);
+
+    // While still in cooldown, further calls are rejected without a spawn.
+    clearBackoff();
+    await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
+      .rejects.toThrow('retrying in');
+    expect(prewarmSpawnCalls.length).toBe(5);
+
+    // Simulate the cooldown having elapsed; the next call is a half-open probe.
+    internals.prewarmBreakerOpenedAt = Date.now() - 11 * 60_000;
+    prewarmSpawnBehavior = 'success';
+    clearBackoff();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    expect(prewarmSpawnCalls.length).toBe(6);
+    expect(internals.consecutivePrewarmFailures).toBe(0);
+    expect(
+      logEntries.some(entry => entry.message === 'chroma-mcp prewarm circuit breaker half-open, allowing one probe')
+    ).toBe(true);
+  });
+
   it('classifies a mid-handshake transport death as ChromaUnavailableError without error-tracking noise', async () => {
     const mgr = ChromaMcpManager.getInstance();
     // The MCP SDK throws a bare `Error: Not connected` when the subprocess dies

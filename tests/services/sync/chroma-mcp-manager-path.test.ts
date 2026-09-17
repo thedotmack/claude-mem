@@ -160,14 +160,18 @@ describe('ChromaMcpManager child PATH Homebrew coverage (#3271)', () => {
 
 describe('ChromaMcpManager uv link mode on Windows (#4108)', () => {
   const savedLinkMode = process.env.UV_LINK_MODE;
+  const savedLinkModeLower = process.env.uv_link_mode;
 
   beforeEach(() => {
     delete process.env.UV_LINK_MODE;
+    delete process.env.uv_link_mode;
   });
 
   afterAll(() => {
     if (savedLinkMode === undefined) delete process.env.UV_LINK_MODE;
     else process.env.UV_LINK_MODE = savedLinkMode;
+    if (savedLinkModeLower === undefined) delete process.env.uv_link_mode;
+    else process.env.uv_link_mode = savedLinkModeLower;
   });
 
   it('sets UV_LINK_MODE=copy on win32 so the NTFS hardlink ceiling cannot stall installs', () => {
@@ -197,6 +201,18 @@ describe('ChromaMcpManager uv link mode on Windows (#4108)', () => {
     process.env.UV_LINK_MODE = 'symlink';
 
     expect(getUvxPreflightEnv().UV_LINK_MODE).toBe('symlink');
+  });
+
+  it('preserves a lowercase uv_link_mode on win32 without adding a duplicate key', () => {
+    // Windows env names are case-insensitive, so a lowercase override must count
+    // as set; otherwise the child gets both keys and uvx ignores the user's.
+    setPlatform('win32');
+    setPath('C:\\Windows\\System32');
+    process.env.uv_link_mode = 'symlink';
+
+    const env = getUvxPreflightEnv();
+    expect(env.uv_link_mode).toBe('symlink');
+    expect(env.UV_LINK_MODE).toBeUndefined();
   });
 });
 
@@ -241,16 +257,16 @@ describe('ChromaMcpManager uv build scratch sweep (#4108)', () => {
     ).toBe(path.join('C:\\Users\\u\\AppData\\Local', 'uv', 'cache', 'builds-v0'));
   });
 
-  it('removes stale .tmp scratch dirs but keeps cached builds and fresh scratch', () => {
-    makeScratch('.tmpSTALE', 10 * 60_000);
-    makeScratch('.tmpFRESH', 1_000);
-    makeScratch('wheels-v1', 10 * 60_000); // real cached build, not scratch
+  it('removes abandoned .tmp scratch but keeps cached builds and any recent scratch', () => {
+    makeScratch('.tmpABANDONED', 25 * 60 * 60_000); // > 24h: no live build lasts a day
+    makeScratch('.tmpBUILDING', 10 * 60_000); // minutes old: could be a live build
+    makeScratch('wheels-v1', 25 * 60 * 60_000); // real cached build, not scratch
 
     sweepUvBuildsScratch({ UV_CACHE_DIR: cacheRoot });
 
     const left = remaining();
-    expect(left).not.toContain('.tmpSTALE');
-    expect(left).toContain('.tmpFRESH');
+    expect(left).not.toContain('.tmpABANDONED');
+    expect(left).toContain('.tmpBUILDING');
     expect(left).toContain('wheels-v1');
   });
 
