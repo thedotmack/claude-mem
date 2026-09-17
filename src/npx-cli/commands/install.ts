@@ -885,12 +885,12 @@ function mergeSettings(updates: Record<string, string>): boolean {
   }
 }
 
-type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'host';
+type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'opencode' | 'host';
 /**
  * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
  * it configures the generic OpenAI-compatible path (base URL + model + key) and
  * persists CLAUDE_MEM_PROVIDER='openrouter'. The worker only understands
- * 'claude' | 'gemini' | 'openrouter', so 'cmem' must never reach settings.json.
+ * 'claude' | 'gemini' | 'openrouter' | 'opencode', so 'cmem' must never reach settings.json.
  */
 type ProviderChoice = ProviderId | 'cmem';
 // Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
@@ -1192,9 +1192,15 @@ async function promptProvider(
     return 'openrouter';
   }
 
-  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
+  const providerLabel = selectedProvider === 'gemini'
+    ? 'Gemini'
+    : selectedProvider === 'opencode'
+      ? 'OpenCode'
+      : 'OpenRouter';
   const keyEnvName = selectedProvider === 'gemini'
     ? 'CLAUDE_MEM_GEMINI_API_KEY'
+    : selectedProvider === 'opencode'
+      ? 'CLAUDE_MEM_OPENCODE_API_KEY'
     : 'CLAUDE_MEM_OPENROUTER_API_KEY';
 
   const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
@@ -1844,8 +1850,8 @@ async function promptTelemetryOptIn(): Promise<void> {
 /**
  * Whether an install still has an account question to answer.
  *
- * `--provider claude` and `--provider host` are exempt: they either run on the
- * user's own Anthropic plan or the logged-in host agent and need no claude-mem
+ * `--provider claude`, `--provider opencode`, and `--provider host` are exempt:
+ * they use the user's own provider credentials and need no claude-mem
  * credentials. `gemini` and
  * `openrouter` are NOT exempt — openrouter is the transport for the cmem
  * gateway, so an explicit `openrouter` install may still be reaching cmem.ai.
@@ -1853,12 +1859,12 @@ async function promptTelemetryOptIn(): Promise<void> {
  * must happen first.
  */
 export function providerNeedsAccount(provider: InstallOptions['provider']): boolean {
-  return provider !== 'claude' && provider !== 'host';
+  return provider !== 'claude' && provider !== 'opencode' && provider !== 'host';
 }
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter' | 'host';
+  provider?: 'claude' | 'gemini' | 'openrouter' | 'opencode' | 'host';
   model?: string;
   noAutoStart?: boolean;
   disableAutoMemory?: boolean;
@@ -1927,9 +1933,11 @@ function validateNonInteractiveProvider(
   }
 
   if (options.provider === 'host') return;
-  if (options.provider !== 'gemini' && options.provider !== 'openrouter') return;
+  if (options.provider !== 'gemini' && options.provider !== 'openrouter' && options.provider !== 'opencode') return;
   const keyName = options.provider === 'gemini'
     ? 'CLAUDE_MEM_GEMINI_API_KEY'
+    : options.provider === 'opencode'
+      ? 'CLAUDE_MEM_OPENCODE_API_KEY'
     : 'CLAUDE_MEM_OPENROUTER_API_KEY';
   const key = String(getSetting(keyName as keyof SettingsDefaults) ?? '').trim();
   const configuredCmemKey = options.provider === 'openrouter'
@@ -2222,6 +2230,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   } else {
     const skipReason = options.provider === 'host'
       ? 'host observer uses the logged-in host agent over a local OpenAI-compatible shim.'
+      : options.provider === 'opencode'
+        ? 'OpenCode runs memory on your own OpenCode API key.'
       : '--provider claude runs memory on your own Anthropic plan.';
     log.info(`Skipping claude-mem login: ${skipReason}`);
   }
