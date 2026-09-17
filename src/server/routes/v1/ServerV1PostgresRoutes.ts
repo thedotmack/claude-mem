@@ -975,7 +975,9 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     app.post('/v1/context', readAuth, this.handleCreate(
       z.object({
         projectId: z.string().min(1),
-        query: z.string().min(1),
+        // Optional: a context request with no query asks for the most RECENT
+        // observations, which is what a session-start block actually wants.
+        query: z.string().min(1).optional(),
         limit: z.number().int().positive().max(50).optional(),
         platformSource: z.string().min(1).nullable().optional(),
       }),
@@ -987,13 +989,19 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         let results;
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
-          results = await repo.search({
-            projectId: body.projectId,
-            teamId,
-            query: body.query,
-            limit: body.limit ?? 10,
-            platformSource,
-          });
+          results = body.query
+            ? await repo.search({
+                projectId: body.projectId,
+                teamId,
+                query: body.query,
+                limit: body.limit ?? 10,
+                platformSource,
+              })
+            : await repo.listByProject({
+                projectId: body.projectId,
+                teamId,
+                limit: body.limit ?? 10,
+              });
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
           logger.warn('SYSTEM', 'observation.context failed', { requestId: req.requestId ?? null }, err);
@@ -1006,7 +1014,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           .join('\n\n');
         await this.auditWrite(req, 'observation.read', null, body.projectId, {
           mode: 'context',
-          query: body.query,
+          query: body.query ?? null,
           limit: body.limit ?? 10,
           platformSource,
           resultCount: results.length,
