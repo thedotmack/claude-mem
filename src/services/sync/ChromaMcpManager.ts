@@ -30,16 +30,22 @@ const CHROMA_PREWARM_REAP_TIMEOUT_MS = 1_000;
 // Circuit breaker for a doomed prewarm (#4108). A broken host (missing uv, an
 // unresolvable dep, an NTFS hardlink ceiling) fails the same way every time, so
 // retrying forever just burns CPU and, on NTFS, leaks a half-built env per
-// attempt until the disk fills. After this many CONSECUTIVE failures we stop
-// spawning uvx; the only limiter before was a flat backoff gate that never grew.
+// attempt until the disk fills. After this many CONSECUTIVE failures we open the
+// breaker and stop spawning uvx; the only limiter before was a flat backoff gate
+// that never grew. A single success resets the count and closes the breaker.
 const CHROMA_PREWARM_MAX_CONSECUTIVE_FAILURES = 5;
-// Once the breaker is open, allow a single half-open probe after this cooldown
-// so a host that becomes healthy (disk freed, uv installed, dep resolvable) can
-// recover without a worker restart. A failed probe re-opens for another
-// cooldown; a successful one resets the count and closes the breaker. This keeps
-// attempts sparse (roughly one per cooldown) instead of the old ~1/min loop,
-// while still letting Chroma reconnect on its own.
-const CHROMA_PREWARM_BREAKER_COOLDOWN_MS = 10 * 60_000;
+// While the breaker is open, allow one half-open probe after a cooldown so a
+// host that becomes healthy (disk freed, uv installed, dep resolvable) recovers
+// without a worker restart. The cooldown grows exponentially with each failed
+// probe, from this base up to the cap below, so a persistently broken host is
+// retried ever more rarely instead of once per fixed interval forever.
+const CHROMA_PREWARM_BREAKER_BASE_COOLDOWN_MS = 10 * 60_000;
+const CHROMA_PREWARM_BREAKER_MAX_COOLDOWN_MS = 6 * 60 * 60_000;
+// Hard stop: after this many consecutive failures the breaker latches and stops
+// spawning until the worker restarts. With the exponential cooldown this leaves
+// a recovery window of roughly two days before giving up, which caps the total
+// wasted builds (and the scratch they can leak) on a host that never recovers.
+const CHROMA_PREWARM_GIVE_UP_FAILURES = 20;
 // A failed prewarm can leave uv's half-built environment behind under
 // `<uv cache>/builds-v0/.tmp*`; `uv cache prune` never reclaims it, and on NTFS
 // each leftover pins hardlinks against the 1,023-per-file ceiling, so the debt
@@ -712,6 +718,18 @@ export class ChromaMcpManager {
   }
 
   /**
+   * Cooldown for the open circuit breaker: the base doubled once per failed
+   * probe (each failure past the open threshold), capped at the max. A host that
+   * keeps failing is therefore probed ever more rarely instead of at a fixed
+   * interval, which bounds the wasted builds while still allowing recovery.
+   */
+  private static prewarmBreakerCooldownMs(consecutiveFailures: number): number {
+    const overshoot = Math.max(0, consecutiveFailures - CHROMA_PREWARM_MAX_CONSECUTIVE_FAILURES);
+    const scaled = CHROMA_PREWARM_BREAKER_BASE_COOLDOWN_MS * 2 ** overshoot;
+    return Math.min(scaled, CHROMA_PREWARM_BREAKER_MAX_COOLDOWN_MS);
+  }
+
+  /**
    * uv's build-scratch directory (`<uv cache>/builds-v0`), resolved from the
    * spawn env with uv's own cache-dir precedence: `UV_CACHE_DIR`, else
    * `%LOCALAPPDATA%\uv\cache` on Windows, else `$XDG_CACHE_HOME/uv` or
@@ -798,10 +816,25 @@ export class ChromaMcpManager {
   ): Promise<void> {
     this.assertConnectionNotCancelled(connectionGeneration);
 
+    if (this.consecutivePrewarmFailures >= CHROMA_PREWARM_GIVE_UP_FAILURES) {
+      // Latched: a full recovery window of exponentially spaced probes has
+      // failed, so stop spawning entirely until the worker restarts. This caps
+      // the total wasted builds (and the scratch they can leak) on a host that
+      // never recovers.
+      const message = `chroma-mcp prewarm disabled after ${this.consecutivePrewarmFailures} consecutive failures; restart required`;
+      logger.warn('CHROMA_MCP', 'chroma-mcp prewarm circuit breaker latched, restart required', {
+        consecutiveFailures: this.consecutivePrewarmFailures,
+        prewarmAttempts: this.prewarmAttempts,
+      });
+      recordUvxVectorSearchUnavailable(message);
+      throw new ChromaUnavailableError(message);
+    }
+
     if (this.consecutivePrewarmFailures >= CHROMA_PREWARM_MAX_CONSECUTIVE_FAILURES) {
+      const cooldownMs = ChromaMcpManager.prewarmBreakerCooldownMs(this.consecutivePrewarmFailures);
       const msSinceOpen = Date.now() - this.prewarmBreakerOpenedAt;
-      if (msSinceOpen < CHROMA_PREWARM_BREAKER_COOLDOWN_MS) {
-        const retryInS = Math.ceil((CHROMA_PREWARM_BREAKER_COOLDOWN_MS - msSinceOpen) / 1000);
+      if (msSinceOpen < cooldownMs) {
+        const retryInS = Math.ceil((cooldownMs - msSinceOpen) / 1000);
         const message = `chroma-mcp prewarm paused after ${this.consecutivePrewarmFailures} consecutive failures; retrying in ${retryInS}s`;
         logger.warn('CHROMA_MCP', 'chroma-mcp prewarm circuit breaker open, skipping spawn', {
           consecutiveFailures: this.consecutivePrewarmFailures,
@@ -812,7 +845,7 @@ export class ChromaMcpManager {
         throw new ChromaUnavailableError(message);
       }
       // Cooldown elapsed — let a single probe through (half-open). A failure
-      // re-opens the breaker for another cooldown; a success resets the count
+      // re-opens the breaker for a longer cooldown; a success resets the count
       // and closes it, so a recovered host reconnects without a restart.
       logger.info('CHROMA_MCP', 'chroma-mcp prewarm circuit breaker half-open, allowing one probe', {
         consecutiveFailures: this.consecutivePrewarmFailures,

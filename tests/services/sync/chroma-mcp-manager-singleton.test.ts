@@ -884,6 +884,30 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     ).toBe(true);
   });
 
+  it('latches after a bounded number of consecutive failures instead of retrying forever (#4108)', async () => {
+    prewarmSpawnBehavior = 'failure';
+    const mgr = ChromaMcpManager.getInstance();
+    const internals = mgr as unknown as {
+      lastConnectionFailureTimestamp: number;
+      prewarmBreakerOpenedAt: number;
+    };
+
+    // Force every cooldown to appear elapsed so each call becomes a half-open
+    // probe; the only thing that can stop the loop is the give-up cap (20).
+    for (let attempt = 0; attempt < 23; attempt += 1) {
+      internals.lastConnectionFailureTimestamp = 0;
+      internals.prewarmBreakerOpenedAt = 0;
+      await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
+        .rejects.toBeInstanceOf(ChromaUnavailableError);
+    }
+
+    // Twenty spawns fail, then the breaker latches and no further uvx is spawned.
+    expect(prewarmSpawnCalls.length).toBe(20);
+    expect(
+      logEntries.some(entry => entry.message === 'chroma-mcp prewarm circuit breaker latched, restart required')
+    ).toBe(true);
+  }, 30_000);
+
   it('classifies a mid-handshake transport death as ChromaUnavailableError without error-tracking noise', async () => {
     const mgr = ChromaMcpManager.getInstance();
     // The MCP SDK throws a bare `Error: Not connected` when the subprocess dies
