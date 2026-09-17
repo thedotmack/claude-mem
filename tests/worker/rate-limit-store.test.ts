@@ -72,6 +72,39 @@ describe('RateLimitStore', () => {
     expect(snap.seven_day_opus?.utilization).toBe(0.3);
     expect(snap.seven_day).toBeUndefined();
   });
+
+  it('replaces stale buckets from a unified window snapshot', () => {
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'rejected',
+      utilization: 1,
+      resetsAt: FIXED_NOW - 1,
+    });
+
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      utilization: 0.01,
+      unifiedWindows: {
+        five_hour: {
+          status: 'allowed',
+          utilization: 0.01,
+          resetsAt: FIXED_NOW + 60 * 60 * 1000,
+        },
+        // Deliberately omit status: a fresh snapshot must not retain the old
+        // seven_day rejection from the previous cache entry.
+        seven_day: {
+          utilization: 0.01,
+          resetsAt: FIXED_NOW + 6 * 24 * 60 * 60 * 1000,
+        },
+      },
+    });
+
+    expect(store.get('seven_day')?.status).toBeUndefined();
+    expect(store.get('seven_day')?.utilization).toBe(0.01);
+    expect(shouldAbortForQuota('cli', store, FIXED_NOW).abort).toBe(false);
+  });
 });
 
 describe('isApiKeyAuth', () => {
@@ -170,6 +203,20 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     expect(decision.window).toBe('overage');
   });
 
+  it('keeps overage rejection active when only the primary reset has elapsed', () => {
+    store.set({
+      rateLimitType: 'overage',
+      utilization: 0,
+      isUsingOverage: false,
+      status: 'allowed_warning',
+      overageStatus: 'rejected',
+      resetsAt: FIXED_NOW - 1,
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('overage');
+  });
+
   it('aborts when inactive overage is rejected by status', () => {
     store.set({
       rateLimitType: 'overage',
@@ -244,6 +291,18 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     expect(decision.abort).toBe(false);
   });
 
+  it('ignores a rejected window after its reset time', () => {
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'rejected',
+      utilization: 1,
+      // Exercise the epoch-seconds form seen in some provider payloads.
+      resetsAt: Math.floor(FIXED_NOW / 1000) - 1,
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(false);
+  });
+
   it('skips reset-grace check when utilization is below the floor', () => {
     // resetsAt within grace window but util well below the 0.85 floor —
     // no point aborting on a window that just reset.
@@ -278,6 +337,72 @@ describe('RateLimitStore.set → new-rejection signal', () => {
     const store = freshStore();
     expect(store.set({ rateLimitType: 'five_hour', status: 'allowed', utilization: 0.4 })).toBe(false);
     expect(store.set({ rateLimitType: 'five_hour', status: 'rejected', resetsAt: FIXED_NOW + 60_000 })).toBe(true);
+  });
+
+  it('returns the exact rejected bucket from a unified snapshot', () => {
+    const store = freshStore();
+    const rejections = store.setWithNewRejections({
+      rateLimitType: 'five_hour',
+      status: 'allowed_warning',
+      resetsAt: FIXED_NOW + 60_000,
+      unifiedWindows: {
+        seven_day: {
+          status: 'rejected',
+          resetsAt: FIXED_NOW + 7 * 24 * 60 * 60 * 1000,
+        },
+      },
+    });
+
+    expect(rejections).toHaveLength(1);
+    expect(rejections[0]?.rateLimitType).toBe('seven_day');
+    expect(rejections[0]?.status).toBe('rejected');
+  });
+
+  it('suppresses a transient rejection when unified snapshot allows the primary window', () => {
+    const store = freshStore();
+    const rejections = store.setWithNewRejections({
+      rateLimitType: 'five_hour',
+      status: 'rejected',
+      resetsAt: FIXED_NOW + 60_000,
+      unifiedWindows: {
+        five_hour: {
+          status: 'allowed',
+          utilization: 0.01,
+          resetsAt: FIXED_NOW + 60 * 60 * 1000,
+        },
+      },
+    });
+
+    // The unified snapshot is authoritative for its window: the top-level
+    // rejection is superseded, so no usage_limit_hit telemetry is emitted
+    // and the final cache reflects the fresh allowed state.
+    expect(rejections).toHaveLength(0);
+    expect(store.get('five_hour')?.status).toBe('allowed');
+    expect(store.get('five_hour')?.utilization).toBe(0.01);
+  });
+
+  it('emits one rejection using the authoritative nested reset when primary and unified reject the same window', () => {
+    const store = freshStore();
+    const rejections = store.setWithNewRejections({
+      rateLimitType: 'five_hour',
+      status: 'rejected',
+      resetsAt: FIXED_NOW + 60_000,
+      unifiedWindows: {
+        five_hour: {
+          status: 'rejected',
+          resetsAt: FIXED_NOW + 90 * 60_000,
+        },
+      },
+    });
+
+    // One event per exhaustion: the primary and nested snapshots describe the
+    // same window in the same event, so only the authoritative nested reset is
+    // reported and retained.
+    expect(rejections).toHaveLength(1);
+    expect(rejections[0]?.rateLimitType).toBe('five_hour');
+    expect(rejections[0]?.resetsAt).toBe(FIXED_NOW + 90 * 60_000);
+    expect(store.get('five_hour')?.status).toBe('rejected');
+    expect(store.get('five_hour')?.resetsAt).toBe(FIXED_NOW + 90 * 60_000);
   });
 
   it('does not re-report the same rejection on later requests', () => {
@@ -361,6 +486,26 @@ describe('buildUsageLimitHitProps', () => {
       overage_status: 'unknown',
       is_using_overage: false,
       resets_in_minutes: undefined,
+    });
+  });
+
+  it('uses overageResetsAt for overage telemetry', () => {
+    expect(
+      buildUsageLimitHitProps(
+        {
+          rateLimitType: 'overage',
+          status: 'allowed_warning',
+          overageStatus: 'rejected',
+          resetsAt: FIXED_NOW + 10 * 60_000,
+          overageResetsAt: FIXED_NOW + 90 * 60_000,
+        },
+        FIXED_NOW,
+      ),
+    ).toEqual({
+      limit_window: 'overage',
+      overage_status: 'rejected',
+      is_using_overage: false,
+      resets_in_minutes: 90,
     });
   });
 });
