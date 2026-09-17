@@ -479,7 +479,7 @@ describe('parseAgentXml — observation type against the mode enum', () => {
 // every other tag in the fixture at whatever casing already passes today — so
 // no case can pass by riding on a different, unrelated flag.
 describe('parseAgentXml — tag casing (#4098)', () => {
-  it('populates all four arrays from capitalized wrapper tags only (line 233)', () => {
+  it('populates all four arrays from capitalized wrapper tags only', () => {
     // Only the array-wrapper tags are capitalized. Outer <observation> and every
     // leaf (<fact>, <concept>, <file>) stay lowercase.
     const xml = `<observation><type>discovery</type><title>t</title><Facts><fact>f1</fact></Facts><narrative>n</narrative><Concepts><concept>gotcha</concept></Concepts><Files_read><file>a.ts</file></Files_read><Files_modified><file>b.ts</file></Files_modified></observation>`;
@@ -493,7 +493,7 @@ describe('parseAgentXml — tag casing (#4098)', () => {
     expect(result[0].files_modified).toEqual(['b.ts']);
   });
 
-  it('parses a capitalized <Observation> root wrapper (line 94)', () => {
+  it('parses a capitalized <Observation> root wrapper', () => {
     // Only the outer <Observation>/</Observation> tag is capitalized. Every
     // wrapper and leaf tag inside stays lowercase (today's already-passing
     // shape), isolating the block regex distinct from root detection (which
@@ -511,7 +511,7 @@ describe('parseAgentXml — tag casing (#4098)', () => {
     expect(result.observations[0].files_modified).toEqual(['b.ts']);
   });
 
-  it('populates arrays from capitalized leaf element tags only (line 242)', () => {
+  it('populates arrays from capitalized leaf element tags only', () => {
     // Outer <observation> and the array-wrapper tags stay lowercase; only the
     // leaf element tags (<Fact>, <Concept>, <File>) are capitalized.
     const xml = `<observation><type>discovery</type><title>t</title><facts><Fact>f1</Fact></facts><narrative>n</narrative><concepts><Concept>c1</Concept></concepts><files_read><File>a.ts</File></files_read><files_modified><File>b.ts</File></files_modified></observation>`;
@@ -536,7 +536,7 @@ describe('parseAgentXml — tag casing (#4098)', () => {
     expect(result[0].files_modified).toEqual(['issues/418']);
   });
 
-  it('parses a capitalized <Summary> with mixed-case children (lines 179, 222)', () => {
+  it('parses a capitalized <Summary> with mixed-case children', () => {
     // Outer <Summary> capitalized isolates the summary-block regex; <Request>
     // capitalized vs. <learned> lowercase isolates the shared extractField
     // regex used by both observation and summary fields.
@@ -550,7 +550,7 @@ describe('parseAgentXml — tag casing (#4098)', () => {
     expect(result.summary?.learned).toBe('l');
   });
 
-  it('parses a capitalized <Skip_summary> as skipped (line 52)', () => {
+  it('parses a capitalized <Skip_summary> as skipped', () => {
     const xml = `<Skip_summary reason="x"/>`;
 
     const result = parseAgentXml(xml);
@@ -561,7 +561,7 @@ describe('parseAgentXml — tag casing (#4098)', () => {
     expect(result.summary?.skip_reason).toBe('x');
   });
 
-  it('does not leak a capitalized field\'s text into prose salvage (line 261)', () => {
+  it('does not leak a capitalized field\'s text into prose salvage', () => {
     // Only <Type> is capitalized; title/narrative/facts/concepts are all
     // genuinely empty, so parsing should fall into the prose-salvage path.
     // Before the fix, the salvage regex's case-sensitive alternation left
