@@ -77,14 +77,15 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
     return new ClassifiedProviderError(message, { kind: 'setup_required', cause: err });
   }
 
-  // Observer/KnowledgeAgent working directory missing — the SDK refuses to
+  // Observer/KnowledgeAgent working directory problems — the SDK refuses to
   // spawn when its cwd does not exist (an unexpanded ~ in CLAUDE_MEM_DATA_DIR,
-  // or a deleted data dir) and reports a bare `Path "<dir>" does not exist`.
-  // An actionable setup problem, not a transient crash to retry forever. The
-  // pre-spawn ensureObserverSessionsDir check throws a matching message so both
-  // paths classify identically.
+  // or a deleted data dir) and reports a bare `Path "<dir>" does not exist`,
+  // and ensureObserverSessionsDir raises "could not be prepared" when a data
+  // dir that is a file / unwritable makes mkdir throw ENOTDIR / EEXIST / EACCES.
+  // All are actionable setup problems, not transient crashes to retry forever.
   if (
     /working directory does not exist/i.test(message) ||
+    /working directory could not be prepared/i.test(message) ||
     /Path ".*" does not exist/i.test(message)
   ) {
     return new ClassifiedProviderError(message, { kind: 'setup_required', cause: err });

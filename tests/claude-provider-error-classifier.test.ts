@@ -210,6 +210,11 @@ describe('classifyClaudeError — missing observer working directory', () => {
     expect(classifyClaudeError(err).kind).toBe('setup_required');
   });
 
+  it('classifies a "could not be prepared" mkdir failure (ENOTDIR/EEXIST/EACCES) as setup_required', () => {
+    const err = new Error('Observer working directory could not be prepared: /home/u/data/observer-sessions (ENOTDIR): not a directory');
+    expect(classifyClaudeError(err).kind).toBe('setup_required');
+  });
+
   it('does not treat an unrelated "does not exist" message as setup_required', () => {
     const err = new Error('the requested record does not exist');
     expect(classifyClaudeError(err).kind).toBe('transient');

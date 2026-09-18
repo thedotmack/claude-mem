@@ -9,7 +9,7 @@ import {
 } from '../../src/shared/paths.js';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
-import { existsSync, mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 
 describe('paths namespace', () => {
   it('exposes at least the known core accessors', () => {
@@ -137,5 +137,15 @@ describe('observer sessions directory resolution', () => {
     const dir = ensureObserverSessionsDir();
     expect(dir).toBe(join(base, 'observer-sessions'));
     expect(existsSync(dir)).toBe(true);
+  });
+
+  it('ensureObserverSessionsDir throws a classifiable error when the data dir is a file', () => {
+    const base = mkdtempSync(join(tmpdir(), 'cmem-obs-'));
+    created.push(base);
+    const asFile = join(base, 'data-is-a-file');
+    writeFileSync(asFile, 'x');
+    // observer-sessions would sit under a file — mkdir throws ENOTDIR.
+    process.env.CLAUDE_MEM_DATA_DIR = asFile;
+    expect(() => ensureObserverSessionsDir()).toThrow(/could not be prepared/i);
   });
 });

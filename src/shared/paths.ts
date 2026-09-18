@@ -93,7 +93,19 @@ export function resolveObserverSessionsDir(): string {
  */
 export function ensureObserverSessionsDir(): string {
   const dir = resolveObserverSessionsDir();
-  ensureDir(dir);
+  try {
+    ensureDir(dir);
+  } catch (error) {
+    // A data dir that is a file, has a non-directory parent, or is unwritable
+    // makes mkdir throw ENOTDIR / EEXIST / EACCES — a permanent setup problem,
+    // not a transient one. Rethrow with a message classifyClaudeError maps to
+    // `setup_required` so it is recorded, not retried on every later ingest.
+    const code = (error as { code?: string }).code;
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Observer working directory could not be prepared: ${dir}${code ? ` (${code})` : ''}: ${detail}`,
+    );
+  }
   if (!existsSync(dir)) {
     throw new Error(`Observer working directory does not exist: ${dir}`);
   }
