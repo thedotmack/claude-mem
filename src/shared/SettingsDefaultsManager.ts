@@ -98,6 +98,7 @@ export interface SettingsDefaults {
   // (#3618). Defaults: 40 ops / 90s (hub projection lease).
   CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: string;
   CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: string;
+  CLAUDE_MEM_LLM_TIMEOUT_MS: string;
   // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
   // mounted and the worker behaves exactly as before. Set (with a non-loopback
   // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
@@ -245,6 +246,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CLOUD_SYNC_WS: 'true',  // Advisory WebSocket speed layer (plan Phase 4). 'false' = HTTP polling only — sync stays fully correct, just poll-latency (prime directive #2)
     CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: '40',  // Drain page size; 200-op content pushes timed out under hub projection_busy
     CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: '90000',  // Content-push AbortSignal; matches hub PROJECTION_LEASE_MS (90s)
+    CLAUDE_MEM_LLM_TIMEOUT_MS: '30000',                  // Per-attempt observer LLM deadline (retry.ts); raise for slow/local backends
     // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
     // mounted and the worker behaves exactly as before. Set (with a non-loopback
     // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
