@@ -4,7 +4,7 @@ import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir, paths } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH, ensureObserverSessionsDir, paths } from '../../shared/paths.js';
 import { buildIsolatedEnvWithFreshOAuth, getAuthMethodDescription } from '../../shared/EnvManager.js';
 import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
@@ -73,6 +73,19 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
     (message.includes('desktop app') && message.includes('headless mode')) ||
     message.includes('ENOENT') ||
     message.startsWith('spawn ')
+  ) {
+    return new ClassifiedProviderError(message, { kind: 'setup_required', cause: err });
+  }
+
+  // Observer/KnowledgeAgent working directory missing — the SDK refuses to
+  // spawn when its cwd does not exist (an unexpanded ~ in CLAUDE_MEM_DATA_DIR,
+  // or a deleted data dir) and reports a bare `Path "<dir>" does not exist`.
+  // An actionable setup problem, not a transient crash to retry forever. The
+  // pre-spawn ensureObserverSessionsDir check throws a matching message so both
+  // paths classify identically.
+  if (
+    /working directory does not exist/i.test(message) ||
+    /Path ".*" does not exist/i.test(message)
   ) {
     return new ClassifiedProviderError(message, { kind: 'setup_required', cause: err });
   }
@@ -294,7 +307,14 @@ export class ClaudeProvider {
         }
       }
 
-      ensureDir(OBSERVER_SESSIONS_DIR);
+      try {
+        ensureObserverSessionsDir();
+      } catch (error) {
+        // A missing working directory is a setup problem, not a transient
+        // crash. Throwing the classified error lets the generator-start catch
+        // skip retries and record it for the session-start warning.
+        throw classifyClaudeError(error);
+      }
       const queryResult = query({
         prompt: messageGenerator,
         options: buildHardenedSdkOptions({
@@ -620,6 +640,7 @@ export class ClaudeProvider {
     }
     try {
       if (controller.signal.aborted) return null;
+      ensureObserverSessionsDir();
       const result = query({
         prompt,
         options: {

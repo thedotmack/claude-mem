@@ -73,6 +73,33 @@ export function ensureDir(dirPath: string): void {
   mkdirSync(dirPath, { recursive: true });
 }
 
+/**
+ * Observer working directory resolved at CALL time. `OBSERVER_SESSIONS_DIR`
+ * freezes `DATA_DIR` at import, so a `CLAUDE_MEM_DATA_DIR` that changes after
+ * this module loaded — or arrives home-relative — is not reflected. Mirrors
+ * `resolveDbPath()`, which exists for the same staleness reason.
+ */
+export function resolveObserverSessionsDir(): string {
+  return join(resolveDataDir(), 'observer-sessions');
+}
+
+/**
+ * Resolve, create, and confirm the Observer/KnowledgeAgent working directory
+ * before an SDK spawn. The SDK refuses to spawn when its `cwd` is missing and
+ * reports a bare `Path "<dir>" does not exist`; creating and verifying the
+ * directory here turns a broken data-directory setting into an actionable
+ * setup error (classifyClaudeError maps the message to `setup_required`)
+ * instead of a silent crash that retries forever.
+ */
+export function ensureObserverSessionsDir(): string {
+  const dir = resolveObserverSessionsDir();
+  ensureDir(dir);
+  if (!existsSync(dir)) {
+    throw new Error(`Observer working directory does not exist: ${dir}`);
+  }
+  return dir;
+}
+
 export function getPackageRoot(): string {
   return join(_dirname, '..');
 }

@@ -1,7 +1,15 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { paths, DATA_DIR, resolveDataDir, expandHome } from '../../src/shared/paths.js';
-import { homedir } from 'os';
+import {
+  paths,
+  DATA_DIR,
+  resolveDataDir,
+  resolveObserverSessionsDir,
+  ensureObserverSessionsDir,
+  expandHome,
+} from '../../src/shared/paths.js';
+import { homedir, tmpdir } from 'os';
 import { join } from 'path';
+import { existsSync, mkdtempSync, rmSync } from 'fs';
 
 describe('paths namespace', () => {
   it('exposes at least the known core accessors', () => {
@@ -102,5 +110,32 @@ describe('resolveDataDir tilde expansion', () => {
   it('still returns a real env-var value when it is already absolute', () => {
     process.env.CLAUDE_MEM_DATA_DIR = sentinel;
     expect(resolveDataDir()).toBe(sentinel);
+  });
+});
+
+describe('observer sessions directory resolution', () => {
+  const origEnv = process.env.CLAUDE_MEM_DATA_DIR;
+  const created: string[] = [];
+
+  afterEach(() => {
+    if (origEnv === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+    else process.env.CLAUDE_MEM_DATA_DIR = origEnv;
+    for (const dir of created.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('resolveObserverSessionsDir expands a literal ~ to an absolute path', () => {
+    process.env.CLAUDE_MEM_DATA_DIR = '~/.claude-mem';
+    const dir = resolveObserverSessionsDir();
+    expect(dir).toBe(join(homedir(), '.claude-mem', 'observer-sessions'));
+    expect(dir.startsWith('~')).toBe(false);
+  });
+
+  it('ensureObserverSessionsDir creates the directory and returns it', () => {
+    const base = mkdtempSync(join(tmpdir(), 'cmem-obs-'));
+    created.push(base);
+    process.env.CLAUDE_MEM_DATA_DIR = base;
+    const dir = ensureObserverSessionsDir();
+    expect(dir).toBe(join(base, 'observer-sessions'));
+    expect(existsSync(dir)).toBe(true);
   });
 });
