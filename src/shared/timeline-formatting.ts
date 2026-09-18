@@ -15,33 +15,77 @@ export function parseJsonArray(json: string | null): string[] {
   }
 }
 
+// Some runtimes (Bun/JavaScriptCore on Windows with an unresolvable system time
+// zone) throw `failed to initialize DateTimeFormat` from toLocale* calls. These
+// helpers run inside the session-start context build, so a throw there loses the
+// whole memory injection. Fall back to a plain ISO string instead of failing.
+function isoOr(date: Date, slice: (iso: string) => string): string {
+  if (Number.isNaN(date.getTime())) return 'Invalid Date';
+  return slice(date.toISOString());
+}
+
+function safeFormat(format: () => string, fallback: () => string): string {
+  try {
+    return format();
+  } catch (err: unknown) {
+    logger.debug('PARSER', 'Locale date formatter unavailable, using ISO fallback', {},
+      err instanceof Error ? err : new Error(String(err)));
+    return fallback();
+  }
+}
+
 export function formatDateTime(dateInput: string | number): string {
   const date = new Date(dateInput);
-  return date.toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  });
+  return safeFormat(
+    () => date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    }),
+    () => isoOr(date, iso => iso.slice(0, 16).replace('T', ' '))
+  );
 }
 
 export function formatTime(dateInput: string | number): string {
   const date = new Date(dateInput);
-  return date.toLocaleString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  });
+  return safeFormat(
+    () => date.toLocaleString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    }),
+    () => isoOr(date, iso => iso.slice(11, 16))
+  );
 }
 
 export function formatDate(dateInput: string | number): string {
   const date = new Date(dateInput);
-  return date.toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric'
-  });
+  return safeFormat(
+    () => date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric'
+    }),
+    () => isoOr(date, iso => iso.slice(0, 10))
+  );
+}
+
+export function formatHeaderDateTime(now: Date = new Date()): string {
+  return safeFormat(
+    () => {
+      const date = now.toLocaleDateString('en-CA');
+      const time = now.toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true
+      }).toLowerCase().replace(' ', '');
+      const tz = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
+      return `${date} ${time} ${tz}`;
+    },
+    () => isoOr(now, iso => `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`)
+  );
 }
 
 export function toRelativePath(filePath: string, cwd: string): string {

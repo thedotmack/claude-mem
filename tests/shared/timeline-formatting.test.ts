@@ -18,7 +18,14 @@ mock.module('../../src/utils/logger.js', () => ({
   },
 }));
 
-import { extractFirstFile, groupByDate } from '../../src/shared/timeline-formatting.js';
+import {
+  extractFirstFile,
+  groupByDate,
+  formatDate,
+  formatTime,
+  formatDateTime,
+  formatHeaderDateTime,
+} from '../../src/shared/timeline-formatting.js';
 
 afterEach(() => {
   mock.restore();
@@ -201,5 +208,63 @@ describe('groupByDate', () => {
 
     const dayItems = Array.from(result.values())[0];
     expect(dayItems.map(i => i.id)).toEqual([3, 1, 2]);
+  });
+});
+
+describe('locale formatter fallbacks', () => {
+  // Reproduce the Bun/JavaScriptCore-on-Windows failure where the runtime cannot
+  // build a date formatter and every toLocale* call throws. Without the guard,
+  // this throw kills the whole session-start context injection.
+  const ts = '2025-01-04T21:34:56.000Z';
+  let original: {
+    string: typeof Date.prototype.toLocaleString;
+    date: typeof Date.prototype.toLocaleDateString;
+    time: typeof Date.prototype.toLocaleTimeString;
+  } | null = null;
+
+  function breakFormatters() {
+    original = {
+      string: Date.prototype.toLocaleString,
+      date: Date.prototype.toLocaleDateString,
+      time: Date.prototype.toLocaleTimeString,
+    };
+    const boom = () => { throw new TypeError('failed to initialize DateTimeFormat'); };
+    Date.prototype.toLocaleString = boom as typeof Date.prototype.toLocaleString;
+    Date.prototype.toLocaleDateString = boom as typeof Date.prototype.toLocaleDateString;
+    Date.prototype.toLocaleTimeString = boom as typeof Date.prototype.toLocaleTimeString;
+  }
+
+  afterEach(() => {
+    if (original) {
+      Date.prototype.toLocaleString = original.string;
+      Date.prototype.toLocaleDateString = original.date;
+      Date.prototype.toLocaleTimeString = original.time;
+      original = null;
+    }
+  });
+
+  it('formatDate falls back to an ISO date', () => {
+    breakFormatters();
+    expect(formatDate(ts)).toBe('2025-01-04');
+  });
+
+  it('formatTime falls back to an ISO time', () => {
+    breakFormatters();
+    expect(formatTime(ts)).toBe('21:34');
+  });
+
+  it('formatDateTime falls back to an ISO date-time', () => {
+    breakFormatters();
+    expect(formatDateTime(ts)).toBe('2025-01-04 21:34');
+  });
+
+  it('formatHeaderDateTime falls back to an ISO date-time with UTC', () => {
+    breakFormatters();
+    expect(formatHeaderDateTime(new Date(ts))).toBe('2025-01-04 21:34 UTC');
+  });
+
+  it('returns Invalid Date for unparseable input when the formatter throws', () => {
+    breakFormatters();
+    expect(formatDate('not a date')).toBe('Invalid Date');
   });
 });
