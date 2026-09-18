@@ -8,6 +8,7 @@ import {
   clearQuotaCooldown,
   getQuotaCooldown,
   resetQuotaCooldownsForTesting,
+  syncObserverHealthQuotaCooldown,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
   QUOTA_PROBE_STALE_MS,
 } from '../../src/shared/quota-cooldown.js';
@@ -276,5 +277,53 @@ describe('quota cooldown breaker (#3634)', () => {
     const cleared = readObserverHealth(healthPath);
     expect(cleared === null || cleared.quotaCooldown === null).toBe(true);
     expect(isObserverQuotaCooldownActive(cleared)).toBe(false);
+  });
+
+  it('stops mirroring a cooldown once its window has elapsed (#4114)', () => {
+    const healthPath = join(paths.dataDir(), OBSERVER_HEALTH_FILENAME);
+    const armedAt = Date.now();
+    recordQuotaExhausted('claude', 'Weekly limit reached', 'weekly');
+    expect(readObserverHealth(healthPath)!.quotaCooldown!.active).toBe(true);
+
+    // A mirror pass after the window elapsed must not report the pause active —
+    // admission already lets a probe through, so the banner would be stale.
+    syncObserverHealthQuotaCooldown(armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1);
+
+    const health = readObserverHealth(healthPath);
+    expect(health === null || health.quotaCooldown === null).toBe(true);
+    // The elapsed entry leaves the store too, so it cannot resurface later.
+    expect(getQuotaCooldown('claude')).toBeNull();
+  });
+
+  it('mirrors the live window, not an elapsed one from a provider no longer in use (#4114)', () => {
+    const healthPath = join(paths.dataDir(), OBSERVER_HEALTH_FILENAME);
+    const now = Date.now();
+    // gemini was capped two windows ago and the user has since switched off it;
+    // claude is capped now.
+    recordQuotaExhausted('gemini', 'Old weekly limit', 'weekly', now - QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS * 2);
+    recordQuotaExhausted('claude', 'Weekly limit reached', 'weekly', now);
+
+    syncObserverHealthQuotaCooldown(now);
+
+    const health = readObserverHealth(healthPath)!;
+    expect(health.quotaCooldown!.provider).toBe('claude');
+    expect(getQuotaCooldown('gemini')).toBeNull();
+    expect(getQuotaCooldown('claude')).not.toBeNull();
+  });
+
+  it('keeps an elapsed window in the store while its probe is still in flight (#4114)', () => {
+    const armedAt = Date.now();
+    recordQuotaExhausted('gemini', 'Weekly limit reached');
+    const afterExpiry = armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
+
+    // A caller claims the sole post-cooldown probe.
+    expect(tryAdmitQuotaProbe('gemini', afterExpiry).admitted).toBe(true);
+
+    // A mirror pass runs while that probe is unresolved. Evicting the entry
+    // would drop probeInFlightSinceMs and readmit a concurrent probe.
+    syncObserverHealthQuotaCooldown(afterExpiry);
+
+    expect(getQuotaCooldown('gemini')).not.toBeNull();
+    expect(tryAdmitQuotaProbe('gemini', afterExpiry).admitted).toBe(false);
   });
 });
