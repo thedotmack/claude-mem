@@ -35,6 +35,11 @@ export function quoteWindowsCmdArgument(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
+/** True when `command` is a natively-spawnable Windows binary (.exe/.com), not a .cmd/.bat shim. */
+export function isWindowsNativeExecutable(command: string): boolean {
+  return WINDOWS_NATIVE_EXTENSIONS.has(extname(command).toLowerCase());
+}
+
 /** Every PATH hit for `command`, in `where` order (PATH order). */
 export function lookupWindowsCommandCandidates(command: string): string[] {
   if (process.platform !== 'win32') return [];
@@ -70,15 +75,14 @@ export function selectWindowsCommandCandidate(
   candidates: string[],
   resolveShim?: (shimPath: string) => string | null,
 ): string | null {
-  const native = candidates.find(candidate =>
-    WINDOWS_NATIVE_EXTENSIONS.has(extname(candidate).toLowerCase()));
+  const native = candidates.find(isWindowsNativeExecutable);
   if (native) return native;
 
   const shim = candidates.find(candidate =>
     WINDOWS_CMD_EXTENSIONS.has(extname(candidate).toLowerCase()));
   if (shim && resolveShim) {
     const resolved = resolveShim(shim);
-    if (resolved && WINDOWS_NATIVE_EXTENSIONS.has(extname(resolved).toLowerCase())) {
+    if (resolved && isWindowsNativeExecutable(resolved)) {
       return resolved;
     }
   }
