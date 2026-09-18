@@ -128,6 +128,14 @@ function parseStringListField(
   }
 }
 
+/**
+ * Whether the worker has begun shutting down: local Chroma then refuses every
+ * mutation (see {@link ChromaMcpManager.acceptsMutations}).
+ */
+function shutdownBegan(): boolean {
+  return !ChromaMcpManager.getInstance().acceptsMutations();
+}
+
 export class ChromaSync {
   private project: string;
   private collectionName: string;
@@ -766,6 +774,10 @@ export class ChromaSync {
    * worker shutdown), in which case the next run resumes from the watermarks.
    */
   async ensureBackfilled(project: string, store: SessionStore): Promise<boolean> {
+    if (shutdownBegan()) {
+      logger.info('CHROMA_SYNC', 'Backfill skipped: worker shutdown began', { project });
+      return false;
+    }
     logger.info('CHROMA_SYNC', 'Starting smart backfill', { project });
 
     await this.ensureCollectionExists();
@@ -851,22 +863,18 @@ export class ChromaSync {
         continue;
       }
 
-      // Once the worker begins shutting down, local Chroma refuses every
-      // write (#4069). Stop here rather than walking the remaining rows
-      // through the same refusal; they stay above the watermark or pending
-      // and the next start resumes from them.
-      if (!ChromaMcpManager.getInstance().acceptsMutations()) {
-        this.backfillAborted = true;
-        logger.info('CHROMA_SYNC', 'Backfill stopped: worker shutdown began', {
-          project: backfillProject,
-          kind,
-          remainingRows: rowsWithDocs.length - rowIndex
-        });
-        return totalDocs;
-      }
-
       let rowComplete = true;
       for (let i = 0; i < docs.length; i += this.BATCH_SIZE) {
+        // Checked before every batch, not once per row: a row can span
+        // several batches, and shutdown can begin between any two of them.
+        if (shutdownBegan()) {
+          if (i > 0) {
+            // Part of this row landed; keep it pending like any partial write.
+            ChromaSyncState.markPending(backfillProject, kind, [row.id]);
+          }
+          rowComplete = false;
+          break;
+        }
         const batch = docs.slice(i, i + this.BATCH_SIZE);
         const writtenInBatch = await this.addDocuments(batch);
         processedDocs += batch.length;
@@ -895,6 +903,21 @@ export class ChromaSync {
       }
 
       if (!rowComplete) {
+        // Once the worker begins shutting down, local Chroma refuses every
+        // write (#4069), including one already in flight. Stop the run rather
+        // than walking the remaining rows through the same refusal; they stay
+        // above the watermark or pending and the next start resumes from them.
+        if (shutdownBegan()) {
+          this.backfillAborted = true;
+          logger.info('CHROMA_SYNC', 'Backfill stopped: worker shutdown began', {
+            project: backfillProject,
+            kind,
+            lastRowId: row.id,
+            remainingRows: rowsWithDocs.length - rowIndex - 1
+          });
+          return totalDocs;
+        }
+
         consecutiveFailures += 1;
         // A write that fails for several rows in a row is not a per-row
         // problem, it is Chroma refusing writes. Walking every remaining row
@@ -1234,7 +1257,7 @@ export class ChromaSync {
       const concurrency = ChromaSync.BACKFILL_CONCURRENCY_LIMIT;
       let allCompleted = true;
       for (let i = 0; i < projects.length; i += concurrency) {
-        if (!ChromaMcpManager.getInstance().acceptsMutations()) {
+        if (shutdownBegan()) {
           logger.info('CHROMA_SYNC', 'Backfill sweep stopped: worker shutdown began', {
             remainingProjects: projects.length - i
           });

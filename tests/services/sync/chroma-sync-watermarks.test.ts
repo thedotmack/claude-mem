@@ -8,6 +8,7 @@ const realChromaMcpManagerSnapshot = { ...realChromaMcpManager };
 
 let existingObservationIds = new Set<number>();
 let acceptingMutations = true;
+let createCollectionCalls = 0;
 const addDocumentCalls: string[][] = [];
 const addDocumentPayloads: Array<{ ids: string[]; documents: string[]; metadatas: Array<Record<string, unknown>> }> = [];
 
@@ -17,6 +18,7 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
       acceptsMutations: () => acceptingMutations,
       callTool: async (toolName: string, args: Record<string, unknown>) => {
         if (toolName === 'chroma_create_collection') {
+          createCollectionCalls += 1;
           return {};
         }
 
@@ -147,6 +149,7 @@ describe('ChromaSync watermark gap persistence', () => {
     process.env.CLAUDE_MEM_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-watermarks-'));
     existingObservationIds = new Set<number>();
     acceptingMutations = true;
+    createCollectionCalls = 0;
     addDocumentCalls.length = 0;
     addDocumentPayloads.length = 0;
     ChromaSyncState.replace(project, { observations: 0, summaries: 0, prompts: 0, pending: {} });
@@ -368,6 +371,55 @@ describe('ChromaSync watermark gap persistence', () => {
     } finally {
       infoSpy.mockRestore();
     }
+  });
+
+  it('does not send a row\'s remaining batches once shutdown begins mid-row (#4069)', async () => {
+    const sync = new ChromaSync(project) as ChromaSync & {
+      addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
+    };
+    let attempts = 0;
+    sync.addDocuments = async (documents) => {
+      attempts += 1;
+      acceptingMutations = false;
+      return documents.length;
+    };
+
+    // A narrative and 101 facts: 102 documents, so two batches of at most 100.
+    const completed = await sync.ensureBackfilled(
+      project,
+      makeStoreFromRows(project, [makeObservationRow(1, project, 101)])
+    );
+
+    expect(attempts).toBe(1);
+    expect(ChromaSyncState.get(project).observations).toBe(0);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([1]);
+    expect(completed).toBe(false);
+  });
+
+  it('does not report a run complete when shutdown refuses the last row\'s write (#4069)', async () => {
+    const sync = new ChromaSync(project) as ChromaSync & {
+      addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
+    };
+    sync.addDocuments = async () => {
+      // Shutdown begins while this write is in flight, so Chroma refuses it.
+      acceptingMutations = false;
+      return 0;
+    };
+
+    const completed = await sync.ensureBackfilled(project, makeStore(project, [1]));
+
+    expect(ChromaSyncState.get(project).observations).toBe(0);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([1]);
+    expect(completed).toBe(false);
+  });
+
+  it('does not create the collection once shutdown has begun (#4069)', async () => {
+    acceptingMutations = false;
+
+    const completed = await new ChromaSync(project).ensureBackfilled(project, makeStore(project, [1]));
+
+    expect(createCollectionCalls).toBe(0);
+    expect(completed).toBe(false);
   });
 
   it('reports a finished backfill as complete', async () => {
