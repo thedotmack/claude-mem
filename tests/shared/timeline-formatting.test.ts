@@ -248,19 +248,30 @@ describe('locale formatter fallbacks', () => {
     expect(formatDate(ts)).toBe('2025-01-04');
   });
 
-  it('formatTime falls back to an ISO time', () => {
+  it('formatTime falls back to an AM/PM time the timeline parser can read', () => {
     breakFormatters();
-    expect(formatTime(ts)).toBe('21:34');
+    expect(formatTime(ts)).toBe('9:34 PM');
   });
 
-  it('formatDateTime falls back to an ISO date-time', () => {
+  it('formatTime fallback keeps midnight and noon as 12', () => {
     breakFormatters();
-    expect(formatDateTime(ts)).toBe('2025-01-04 21:34');
+    expect(formatTime('2025-01-04T00:05:00.000Z')).toBe('12:05 AM');
+    expect(formatTime('2025-01-04T12:00:00.000Z')).toBe('12:00 PM');
   });
 
-  it('formatHeaderDateTime falls back to an ISO date-time with UTC', () => {
+  it('formatTime fallback stays matchable by the folder-timeline parser', () => {
     breakFormatters();
-    expect(formatHeaderDateTime(new Date(ts))).toBe('2025-01-04 21:34 UTC');
+    expect(formatTime(ts)).toMatch(/(\d+):(\d+)\s*(AM|PM)/i);
+  });
+
+  it('formatDateTime falls back to an ISO date with an AM/PM time', () => {
+    breakFormatters();
+    expect(formatDateTime(ts)).toBe('2025-01-04 9:34 PM');
+  });
+
+  it('formatHeaderDateTime falls back to a date-time with UTC', () => {
+    breakFormatters();
+    expect(formatHeaderDateTime(new Date(ts))).toBe('2025-01-04 9:34 PM UTC');
   });
 
   it('returns Invalid Date for unparseable input when the formatter throws', () => {

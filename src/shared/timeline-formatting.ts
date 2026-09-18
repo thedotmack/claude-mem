@@ -18,10 +18,25 @@ export function parseJsonArray(json: string | null): string[] {
 // Some runtimes (Bun/JavaScriptCore on Windows with an unresolvable system time
 // zone) throw `failed to initialize DateTimeFormat` from toLocale* calls. These
 // helpers run inside the session-start context build, so a throw there loses the
-// whole memory injection. Fall back to a plain ISO string instead of failing.
-function isoOr(date: Date, slice: (iso: string) => string): string {
+// whole memory injection. Fall back to a fixed date/time instead of failing.
+function guardInvalid(date: Date, build: (date: Date) => string): string {
   if (Number.isNaN(date.getTime())) return 'Invalid Date';
-  return slice(date.toISOString());
+  return build(date);
+}
+
+// The 12-hour clock the folder-timeline parser (claude-md-utils) reads back: it
+// matches only `H:MM AM/PM`, so a 24-hour fallback would drop the row's time and
+// leave it at the day header's midnight. Uses UTC because the local zone is the
+// thing that failed.
+function isoClock(date: Date): string {
+  const hours = date.getUTCHours();
+  const period = hours < 12 ? 'AM' : 'PM';
+  const minutes = date.getUTCMinutes().toString().padStart(2, '0');
+  return `${hours % 12 || 12}:${minutes} ${period}`;
+}
+
+function isoDay(date: Date): string {
+  return date.toISOString().slice(0, 10);
 }
 
 function safeFormat(format: () => string, fallback: () => string): string {
@@ -44,7 +59,7 @@ export function formatDateTime(dateInput: string | number): string {
       minute: '2-digit',
       hour12: true
     }),
-    () => isoOr(date, iso => iso.slice(0, 16).replace('T', ' '))
+    () => guardInvalid(date, d => `${isoDay(d)} ${isoClock(d)}`)
   );
 }
 
@@ -56,7 +71,7 @@ export function formatTime(dateInput: string | number): string {
       minute: '2-digit',
       hour12: true
     }),
-    () => isoOr(date, iso => iso.slice(11, 16))
+    () => guardInvalid(date, isoClock)
   );
 }
 
@@ -68,7 +83,7 @@ export function formatDate(dateInput: string | number): string {
       day: 'numeric',
       year: 'numeric'
     }),
-    () => isoOr(date, iso => iso.slice(0, 10))
+    () => guardInvalid(date, isoDay)
   );
 }
 
@@ -84,7 +99,7 @@ export function formatHeaderDateTime(now: Date = new Date()): string {
       const tz = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
       return `${date} ${time} ${tz}`;
     },
-    () => isoOr(now, iso => `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`)
+    () => guardInvalid(now, d => `${isoDay(d)} ${isoClock(d)} UTC`)
   );
 }
 
