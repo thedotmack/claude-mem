@@ -20,7 +20,7 @@ afterEach(() => {
   rmSync(settingsDir, { recursive: true, force: true });
 });
 
-function writeSettings(settings: Record<string, string>): void {
+function writeSettings(settings: Record<string, unknown>): void {
   writeFileSync(settingsPath, JSON.stringify(settings));
 }
 
@@ -48,6 +48,20 @@ describe('resolveLlmTimeoutMs', () => {
   it('validates a settings.json value like an env value', () => {
     writeSettings({ CLAUDE_MEM_LLM_TIMEOUT_MS: '90000ms' });
     expect(resolveLlmTimeoutMs({}, settingsPath)).toBe(30_000);
+  });
+
+  // loadFromFile returns JSON values as-is, so a bare number used to reach
+  // .trim() and throw before the retry loop started.
+  it('honors a numeric settings.json value like its string form', () => {
+    writeSettings({ CLAUDE_MEM_LLM_TIMEOUT_MS: 90000 });
+    expect(resolveLlmTimeoutMs({}, settingsPath)).toBe(90_000);
+  });
+
+  it('falls back without throwing on an out-of-range number or a non-string, non-number value', () => {
+    for (const value of [300001, 499, true]) {
+      writeSettings({ CLAUDE_MEM_LLM_TIMEOUT_MS: value });
+      expect(resolveLlmTimeoutMs({}, settingsPath)).toBe(30_000);
+    }
   });
 
   it('takes a value inside the shared 500..300000 bounds', () => {

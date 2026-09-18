@@ -73,8 +73,9 @@ export function resolveLlmTimeoutMs(
     ?? SettingsDefaultsManager.loadFromFile(settingsPath, false).CLAUDE_MEM_LLM_TIMEOUT_MS;
   if (!raw) return FALLBACK_PER_ATTEMPT_TIMEOUT_MS;
   // Complete integer only. parseInt('90000ms') would silently accept a typo
-  // as 90000 — Greptile reproduced that on #3808.
-  const trimmed = raw.trim();
+  // as 90000 — Greptile reproduced that on #3808. settings.json values come
+  // back as parsed JSON, so a bare number (90000) arrives as a number, not a string.
+  const trimmed = String(raw).trim();
   const parsed = /^\d+$/.test(trimmed) ? Number(trimmed) : Number.NaN;
   if (
     Number.isFinite(parsed)
