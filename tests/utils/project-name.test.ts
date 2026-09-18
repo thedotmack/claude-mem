@@ -1,5 +1,6 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { basename } from 'path';
 import { homedir } from 'os';
 import { getProjectName, getProjectContext, resolveHookProjectPath } from '../../src/utils/project-name.js';
 
@@ -27,19 +28,17 @@ afterAll(() => {
 describe('getProjectName', () => {
   describe('tilde expansion', () => {
     it('resolves bare ~ to home directory basename', () => {
-      const home = homedir();
-      const expected = home.split('/').pop() || home.split('\\').pop() || '';
-      expect(getProjectName('~')).toBe(expected);
+      expect(getProjectName('~')).toBe(basename(homedir()));
     });
 
     it('resolves ~/subpath to subpath', () => {
-      expect(getProjectName('~/projects/my-app')).toBe('my-app');
+      // Do not use ~/projects/... : on Windows that case-folds onto a real
+      // Projects directory and the #3194 marker walk will pick it up.
+      expect(getProjectName('~/cm-3194-nosuch/my-app')).toBe('my-app');
     });
 
     it('resolves ~/ to home directory basename', () => {
-      const home = homedir();
-      const expected = home.split('/').pop() || home.split('\\').pop() || '';
-      expect(getProjectName('~/')).toBe(expected);
+      expect(getProjectName('~/')).toBe(basename(homedir()));
     });
 
     it('resolves a leading ~\\ on Windows', () => {
@@ -131,6 +130,75 @@ describe('getProjectName', () => {
     });
   });
 
+  describe('#3194 — non-git subdir shares parent project key', () => {
+    let tmp: string;
+    let markedParent: string;
+    let markedSub: string;
+
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, writeFileSync, realpathSync } = await import('fs');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      // Isolate under a unique temp root so upward marker walks cannot hit
+      // CLAUDE.md / package.json in the real home directory.
+      tmp = realpathSync(mkdtempSync(join(tmpdir(), 'cm-3194-')));
+      markedParent = join(tmp, 'home-project');
+      markedSub = join(markedParent, 'automation');
+      mkdirSync(markedSub, { recursive: true });
+      writeFileSync(join(markedParent, 'CLAUDE.md'), '# home project\n');
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('subdir under a CLAUDE.md parent resolves to the parent basename', () => {
+      expect(getProjectName(markedSub)).toBe('home-project');
+      expect(getProjectName(markedParent)).toBe('home-project');
+    });
+
+    it('context primary matches for parent and marked subdir', () => {
+      expect(getProjectContext(markedSub).primary).toBe('home-project');
+      expect(getProjectContext(markedParent).primary).toBe('home-project');
+      expect(getProjectContext(markedSub).allProjects).toEqual(['home-project']);
+    });
+
+    it('marker-less subdir keeps basename primary but includes parent in allProjects', () => {
+      // Non-existent path: no markers on the walk, so primary stays basename(cwd)
+      // while read scope also includes the immediate parent (#3194).
+      expect(getProjectName('/no/such/lc/bin')).toBe('bin');
+      const ctx = getProjectContext('/no/such/lc/bin');
+      expect(ctx.primary).toBe('bin');
+      expect(ctx.allProjects).toEqual(['lc', 'bin']);
+      expect(ctx.parent).toBe('lc');
+    });
+
+    it('package.json marker wins over cwd basename', async () => {
+      const { mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const app = join(tmp, 'projects', 'my-app');
+      const nested = join(app, 'src');
+      mkdirSync(nested, { recursive: true });
+      writeFileSync(join(app, 'package.json'), '{"name":"my-app"}\n');
+      expect(getProjectName(nested)).toBe('my-app');
+      expect(getProjectContext(nested).allProjects).toEqual(['my-app']);
+    });
+
+    it('uses resolveHookProjectPath then marker walk for a non-git CLAUDE_PROJECT_DIR', () => {
+      process.env[CLAUDE_PROJECT_DIR_ENV] = markedParent;
+      try {
+        const hookPath = resolveHookProjectPath(SDK_TEMP_DIR_NAME);
+        expect(hookPath).toBe(markedParent);
+        expect(getProjectName(hookPath)).toBe('home-project');
+        expect(getProjectContext(hookPath).primary).toBe('home-project');
+      } finally {
+        delete process.env[CLAUDE_PROJECT_DIR_ENV];
+      }
+    });
+  });
+
   describe('#3437 — Claude project dir anchors SDK/subagent sessions', () => {
     let tmp: string;
     let repoRoot: string;
@@ -210,9 +278,11 @@ describe('getProjectContext', () => {
   it('returns primary project name for normal path', () => {
     const ctx = getProjectContext('/home/user/my-project');
     expect(ctx.primary).toBe('my-project');
-    expect(ctx.parent).toBeNull();
+    // #3194 — marker-less non-git paths keep basename as primary but include
+    // the immediate parent basename in read scope (allProjects / parent).
+    expect(ctx.parent).toBe('user');
     expect(ctx.isWorktree).toBe(false);
-    expect(ctx.allProjects).toEqual(['my-project']);
+    expect(ctx.allProjects).toEqual(['user', 'my-project']);
   });
 
   it('resolves ~ path correctly', () => {
