@@ -328,17 +328,20 @@ export function resetQuotaCooldownsForTesting(): void {
  * and external monitors can see an intentional pause. Best-effort: a health
  * write failure must not change admission or drain-on-clear.
  *
- * Only a live window is mirrored. An elapsed window withholds nothing —
- * `tryAdmitQuotaProbe` already admits past it — so reporting it `active: true`
- * would keep the session-start banner up on a cooldown that no longer holds,
- * the exact stale-report failure `observer-health.ts` warns about (`until` is
- * authoritative). Elapsed entries are also evicted here, because they leave the
- * map no other way (`clearQuotaCooldown` fires only on a SUCCESSFUL generation
- * for that provider) — so a provider the user stopped using would otherwise
- * keep its armed window forever and resurface in the mirror once the live
- * entries clear. An elapsed entry is kept only while a probe is in flight,
- * since `tryAdmitQuotaProbe` still reads `probeInFlightSinceMs` to suppress a
- * concurrent probe.
+ * Only a LIVE window is mirrored. An elapsed window withholds nothing right now
+ * — `tryAdmitQuotaProbe` already admits the single recovery probe past it — so
+ * reporting it `active: true` would keep the session-start banner up on a
+ * cooldown that no longer holds, the exact stale-report failure
+ * `observer-health.ts` warns about (`until` is authoritative). Skipping elapsed
+ * entries here also stops a breaker for a provider the user stopped using from
+ * resurfacing once the live entries clear.
+ *
+ * The elapsed entry is NOT removed from the map: it stays as admission state.
+ * It gates the single post-cooldown recovery probe (`tryAdmitQuotaProbe` admits
+ * one caller and withholds the rest) and a failed probe re-arms it in place;
+ * deleting it would let `tryAdmitQuotaProbe` find no state and admit every
+ * concurrent caller at once — the request burst the breaker exists to prevent.
+ * It leaves the map only on a successful generation (`clearQuotaCooldown`).
  *
  * Exported for tests: the elapsed-window paths need a controllable clock, which
  * the internal callers (always "now") cannot supply.
@@ -349,18 +352,10 @@ export function syncObserverHealthQuotaCooldown(
 ): void {
   try {
     let latest: QuotaCooldownState | null = null;
-    let evicted = false;
-    for (const [provider, state] of cooldowns) {
-      if (nowMs - state.armedAtMs >= cooldownMs) {
-        if (state.probeInFlightSinceMs === null) {
-          cooldowns.delete(provider);
-          evicted = true;
-        }
-        continue;
-      }
+    for (const state of cooldowns.values()) {
+      if (nowMs - state.armedAtMs >= cooldownMs) continue;
       if (!latest || state.armedAtMs > latest.armedAtMs) latest = state;
     }
-    if (evicted) persistToDisk();
 
     if (!latest) {
       clearObserverQuotaCooldown();

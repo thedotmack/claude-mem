@@ -279,7 +279,7 @@ describe('quota cooldown breaker (#3634)', () => {
     expect(isObserverQuotaCooldownActive(cleared)).toBe(false);
   });
 
-  it('stops mirroring a cooldown once its window has elapsed (#4114)', () => {
+  it('stops mirroring a cooldown once its window has elapsed, but keeps its admission state (#4114)', () => {
     const healthPath = join(paths.dataDir(), OBSERVER_HEALTH_FILENAME);
     const armedAt = Date.now();
     recordQuotaExhausted('claude', 'Weekly limit reached', 'weekly');
@@ -291,39 +291,41 @@ describe('quota cooldown breaker (#3634)', () => {
 
     const health = readObserverHealth(healthPath);
     expect(health === null || health.quotaCooldown === null).toBe(true);
-    // The elapsed entry leaves the store too, so it cannot resurface later.
-    expect(getQuotaCooldown('claude')).toBeNull();
-  });
-
-  it('mirrors the live window, not an elapsed one from a provider no longer in use (#4114)', () => {
-    const healthPath = join(paths.dataDir(), OBSERVER_HEALTH_FILENAME);
-    const now = Date.now();
-    // gemini was capped two windows ago and the user has since switched off it;
-    // claude is capped now.
-    recordQuotaExhausted('gemini', 'Old weekly limit', 'weekly', now - QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS * 2);
-    recordQuotaExhausted('claude', 'Weekly limit reached', 'weekly', now);
-
-    syncObserverHealthQuotaCooldown(now);
-
-    const health = readObserverHealth(healthPath)!;
-    expect(health.quotaCooldown!.provider).toBe('claude');
-    expect(getQuotaCooldown('gemini')).toBeNull();
+    // The breaker stays in the store: it still gates the single recovery probe.
     expect(getQuotaCooldown('claude')).not.toBeNull();
   });
 
-  it('keeps an elapsed window in the store while its probe is still in flight (#4114)', () => {
-    const armedAt = Date.now();
-    recordQuotaExhausted('gemini', 'Weekly limit reached');
-    const afterExpiry = armedAt + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
+  it('never mirrors an elapsed window, even after the live one clears (#4114)', () => {
+    const healthPath = join(paths.dataDir(), OBSERVER_HEALTH_FILENAME);
+    const now = Date.now();
+    // gemini was capped two windows ago; claude is capped now.
+    recordQuotaExhausted('gemini', 'Old weekly limit', 'weekly', now - QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS * 2);
+    recordQuotaExhausted('claude', 'Weekly limit reached', 'weekly', now);
 
-    // A caller claims the sole post-cooldown probe.
-    expect(tryAdmitQuotaProbe('gemini', afterExpiry).admitted).toBe(true);
+    // Live claude is mirrored; elapsed gemini is not.
+    syncObserverHealthQuotaCooldown(now);
+    expect(readObserverHealth(healthPath)!.quotaCooldown!.provider).toBe('claude');
 
-    // A mirror pass runs while that probe is unresolved. Evicting the entry
-    // would drop probeInFlightSinceMs and readmit a concurrent probe.
-    syncObserverHealthQuotaCooldown(afterExpiry);
-
+    // claude recovers. gemini's elapsed breaker must not resurface in the mirror.
+    clearQuotaCooldown('claude');
+    const health = readObserverHealth(healthPath);
+    expect(health === null || health.quotaCooldown === null).toBe(true);
+    // gemini's admission state is retained for its own future recovery probe.
     expect(getQuotaCooldown('gemini')).not.toBeNull();
-    expect(tryAdmitQuotaProbe('gemini', afterExpiry).admitted).toBe(false);
+  });
+
+  it('keeps an elapsed breaker when another provider is recorded, admitting one probe not all (#4116)', () => {
+    const now = Date.now();
+    // claude's window elapsed two windows ago and it has not recovered.
+    recordQuotaExhausted('claude', 'Weekly limit reached', undefined, now - QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS * 2);
+    // Recording a second provider runs the mirror pass; it must not drop claude.
+    recordQuotaExhausted('gemini', 'Spend cap reached');
+    expect(getQuotaCooldown('claude')).not.toBeNull();
+
+    // So concurrent recovery traffic still gets exactly one probe, not a burst.
+    const admitted = Array.from({ length: 10 }, () =>
+      tryAdmitQuotaProbe('claude', now)
+    ).filter(result => result.admitted);
+    expect(admitted).toHaveLength(1);
   });
 });
