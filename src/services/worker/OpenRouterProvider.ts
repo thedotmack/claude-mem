@@ -498,7 +498,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   ): Promise<Response> {
     const body = buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl, plainText });
     const maxOutputTokens = typeof body.max_tokens === 'number' ? body.max_tokens : 4096;
-    return fetchWithOpenRouterTokenCompatibility(fetch, apiUrl, {
+    return fetchWithOpenRouterTokenCompatibility(fetch.bind(globalThis), apiUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
