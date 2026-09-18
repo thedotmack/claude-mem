@@ -171,6 +171,13 @@ export class SettingsRoutes extends BaseRouteHandler {
       settings.CLAUDE_CODE_PATH = expandTilde(settings.CLAUDE_CODE_PATH);
     }
 
+    // Same reasoning for CLAUDE_MEM_DATA_DIR: it feeds the observer working
+    // directory (the SDK `cwd`) and the database path. A literal `~` reaches
+    // posix_spawn unexpanded and fails the observer spawn, so store it resolved.
+    if (typeof settings.CLAUDE_MEM_DATA_DIR === 'string' && settings.CLAUDE_MEM_DATA_DIR) {
+      settings.CLAUDE_MEM_DATA_DIR = expandTilde(settings.CLAUDE_MEM_DATA_DIR);
+    }
+
     writeJsonFileAtomic(settingsPath, settings);
 
     clearPortCache();
