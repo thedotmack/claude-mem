@@ -179,6 +179,71 @@ describe('Claude setup-required generator gate', () => {
     expect(removeSessionImmediateCalls).toBe(1);
   });
 
+  it('does not re-run when discovery still resolves the same unspawnable executable', async () => {
+    const session = makeSession();
+    let activeSession: ActiveSession | undefined = session;
+    let starts = 0;
+    let findAttempts = 0;
+
+    const sessionManager = {
+      getSession: () => activeSession,
+      getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => [] }),
+      removeSessionImmediate: () => {
+        activeSession = undefined;
+      },
+    };
+
+    // A .cmd shim that passes discovery/version probing but throws EINVAL when
+    // the SDK spawns it — carried on the classified error as executablePath.
+    const claudeProvider = {
+      startSession: async () => {
+        starts += 1;
+        throw new ClassifiedProviderError('spawn C:/tools/codex.cmd EINVAL', {
+          kind: 'setup_required',
+          cause: new Error('EINVAL'),
+          executablePath: '/mock/claude',
+        });
+      },
+    };
+
+    const routes = new SessionRoutes(
+      sessionManager as any,
+      {} as any,
+      claudeProvider as any,
+      { startSession: async () => {} } as any,
+      { startSession: async () => {} } as any,
+      {} as any,
+      {} as any,
+      { finalizeSession: async () => {} } as any,
+    );
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    await session.generatorPromise;
+
+    expect(starts).toBe(1);
+    expect(getDependencyStatus('claude_cli')).toMatchObject({
+      kind: 'setup_required',
+      executablePath: '/mock/claude',
+    });
+
+    // Cooldown elapses and discovery still resolves the same shim: the gate must
+    // NOT clear the status or re-run the doomed query.
+    findClaudeExecutableImpl = () => {
+      findAttempts += 1;
+      return '/mock/claude';
+    };
+    Date.now = () => realDateNow() + CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS + 1;
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+
+    expect(findAttempts).toBe(1);
+    expect(starts).toBe(1);
+    expect(getDependencyStatus('claude_cli')).toMatchObject({
+      kind: 'setup_required',
+      executablePath: '/mock/claude',
+    });
+  });
+
   it('records Claude CLI remediation when provider startup cannot find the executable', async () => {
     findClaudeExecutableImpl = () => {
       throw new Error('Claude executable not found');

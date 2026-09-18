@@ -420,6 +420,24 @@ describe('findClaudeExecutable on Windows', () => {
 
     expect(findClaudeExecutable('SDK')).toBe('C:\\new\\claude.exe');
   });
+
+  it('prefers the native .exe over a same-version .cmd shim (avoids the SDK EINVAL)', () => {
+    // The SDK spawns the resolved path directly on the standalone observer
+    // calls, and modern Node refuses to launch a .cmd shim without a shell.
+    // `where` lists the shim first here, so only the native-first tie-break
+    // keeps the SDK from receiving the shim.
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        'where claude': 'C:\\install\\claude.cmd\r\nC:\\install\\claude.exe\r\n',
+        'where claude.cmd': 'C:\\install\\claude.cmd\r\n',
+      },
+    });
+    fakeClis.set('C:\\install\\claude.cmd', { version: '2.1.176', supportsDontAsk: true });
+    fakeClis.set('C:\\install\\claude.exe', { version: '2.1.176', supportsDontAsk: true });
+
+    expect(findClaudeExecutable('SDK')).toBe('C:\\install\\claude.exe');
+  });
 });
 
 describe('capability probe contract', () => {

@@ -547,6 +547,19 @@ describe('classifyClaudeError', () => {
     expect(err.kind).toBe('setup_required');
   });
 
+  it('classifies a Windows .cmd shim EINVAL spawn error as setup_required', () => {
+    // Modern Node throws EINVAL when the SDK spawns a .cmd/.bat shim without a
+    // shell (e.g. a codex shim reached via CLAUDE_CODE_PATH).
+    const spawnErr = Object.assign(new Error('spawn C:\\Users\\x\\codex.cmd EINVAL'), { code: 'EINVAL' });
+    const err = classifyClaudeError(spawnErr);
+    expect(err.kind).toBe('setup_required');
+  });
+
+  it('classifies a bare EINVAL error (no "spawn " prefix) as setup_required', () => {
+    const err = classifyClaudeError(new Error('posix_spawn failed with EINVAL'));
+    expect(err.kind).toBe('setup_required');
+  });
+
   it('classifies "Claude executable not found" as setup_required', () => {
     const err = classifyClaudeError(new Error('Claude executable not found at $CLAUDE_CODE_PATH'));
     expect(err.kind).toBe('setup_required');
