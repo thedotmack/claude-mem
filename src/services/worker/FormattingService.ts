@@ -2,6 +2,7 @@
 import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { logger } from '../../utils/logger.js';
+import { formatTime } from '../../shared/timeline-formatting.js';
 
 const CHARS_PER_TOKEN_ESTIMATE = 4;
 
@@ -19,14 +20,6 @@ Tips:
 • Sort: orderBy="date_desc" or "date_asc"`;
   }
 
-  private formatTime(epoch: number): string {
-    return new Date(epoch).toLocaleString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true
-    });
-  }
-
   private estimateReadTokens(obs: ObservationSearchResult): number {
     const size = (obs.title?.length || 0) +
                  (obs.subtitle?.length || 0) +
@@ -37,7 +30,7 @@ Tips:
 
   formatObservationIndex(obs: ObservationSearchResult, _index: number): string {
     const id = `#${obs.id}`;
-    const time = this.formatTime(obs.created_at_epoch);
+    const time = formatTime(obs.created_at_epoch);
     const icon = ModeManager.getInstance().getTypeIcon(obs.type);
     const title = obs.title || 'Untitled';
     const readTokens = this.estimateReadTokens(obs);
@@ -50,7 +43,7 @@ Tips:
 
   formatSessionIndex(session: SessionSummarySearchResult, _index: number): string {
     const id = `#S${session.id}`;
-    const time = this.formatTime(session.created_at_epoch);
+    const time = formatTime(session.created_at_epoch);
     const icon = '🎯';
     const title = session.request || `Session ${session.memory_session_id?.substring(0, 8) || 'unknown'}`;
 
@@ -59,7 +52,7 @@ Tips:
 
   formatUserPromptIndex(prompt: UserPromptSearchResult, _index: number): string {
     const id = `#P${prompt.id}`;
-    const time = this.formatTime(prompt.created_at_epoch);
+    const time = formatTime(prompt.created_at_epoch);
     const icon = '💬';
     const title = prompt.prompt_text.length > 60
       ? prompt.prompt_text.substring(0, 57) + '...'
@@ -80,7 +73,7 @@ Tips:
 
   formatObservationSearchRow(obs: ObservationSearchResult, lastTime: string): { row: string; time: string } {
     const id = `#${obs.id}`;
-    const time = this.formatTime(obs.created_at_epoch);
+    const time = formatTime(obs.created_at_epoch);
     const icon = ModeManager.getInstance().getTypeIcon(obs.type);
     const title = obs.title || 'Untitled';
     const readTokens = this.estimateReadTokens(obs);
@@ -95,7 +88,7 @@ Tips:
 
   formatSessionSearchRow(session: SessionSummarySearchResult, lastTime: string): { row: string; time: string } {
     const id = `#S${session.id}`;
-    const time = this.formatTime(session.created_at_epoch);
+    const time = formatTime(session.created_at_epoch);
     const icon = '🎯';
     const title = session.request || `Session ${session.memory_session_id?.substring(0, 8) || 'unknown'}`;
 
@@ -109,7 +102,7 @@ Tips:
 
   formatUserPromptSearchRow(prompt: UserPromptSearchResult, lastTime: string): { row: string; time: string } {
     const id = `#P${prompt.id}`;
-    const time = this.formatTime(prompt.created_at_epoch);
+    const time = formatTime(prompt.created_at_epoch);
     const icon = '💬';
     const title = prompt.prompt_text.length > 60
       ? prompt.prompt_text.substring(0, 57) + '...'
