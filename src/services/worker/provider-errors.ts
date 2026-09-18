@@ -19,6 +19,12 @@ export interface ProviderErrorDetail {
   action?: string;
   url?: string;
   requestId?: string;
+  /**
+   * The resolved executable path a spawn failure could not launch. Carried so
+   * the setup-recheck gate can tell "the same unspawnable binary" apart from
+   * "configuration repaired" without re-running a doomed query.
+   */
+  executablePath?: string;
 }
 
 export class ClassifiedProviderError extends Error {
@@ -29,6 +35,7 @@ export class ClassifiedProviderError extends Error {
   readonly action?: string;
   readonly url?: string;
   readonly requestId?: string;
+  readonly executablePath?: string;
 
   constructor(message: string, opts: {
     kind: ProviderErrorClass;
@@ -53,6 +60,9 @@ export class ClassifiedProviderError extends Error {
     }
     if (opts.requestId !== undefined) {
       this.requestId = opts.requestId;
+    }
+    if (opts.executablePath !== undefined) {
+      this.executablePath = opts.executablePath;
     }
   }
 }

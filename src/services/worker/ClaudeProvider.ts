@@ -219,14 +219,18 @@ export class ClaudeProvider {
    * missing or unspawnable executable) is recorded and rethrown as the
    * classified error so SessionRoutes reports it once and skips future Claude
    * starts until it is repaired; every other error keeps its original shape so
-   * genuine bugs still reach exception capture.
+   * genuine bugs still reach exception capture. `executablePath` is the resolved
+   * path a spawn failure could not launch — carried on the error and status so
+   * the setup-recheck gate does not re-run a query against the same shim.
    */
-  private recordAndThrowClassified(error: unknown): never {
+  private recordAndThrowClassified(error: unknown, executablePath?: string): never {
     const err = error instanceof Error ? error : new Error(String(error));
     const classified = classifyClaudeError(err);
     if (classified.kind === 'setup_required') {
-      recordClaudeCliSetupRequired(classified.message);
-      throw classified;
+      recordClaudeCliSetupRequired(classified.message, executablePath);
+      throw executablePath
+        ? new ClassifiedProviderError(classified.message, { kind: 'setup_required', cause: err, executablePath })
+        : classified;
     }
     throw err;
   }
@@ -597,8 +601,9 @@ export class ClaudeProvider {
       // spawn error. Left unclassified it reaches SessionRoutes as a generic
       // failure and is retried on every later observation; classify it so the
       // setup problem is reported once, mirroring the findClaudeExecutable guard
-      // at the top of startSession.
-      this.recordAndThrowClassified(error);
+      // at the top of startSession. Pass the resolved path so the recheck gate
+      // will not re-run against the same shim it cannot spawn.
+      this.recordAndThrowClassified(error, claudePath);
     } finally {
       // Safety net for paths where the SDK never invoked the spawn factory;
       // a leaked reservation would occupy an agent slot until worker restart.
