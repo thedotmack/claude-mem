@@ -1,3 +1,4 @@
+import { createConnection } from 'node:net';
 
 export interface ShutdownResult {
   workerWasRunning: boolean;
@@ -22,6 +23,27 @@ function isTimeoutError(error: unknown): boolean {
 
 function isConnectionRefused(error: unknown): boolean {
   return hasErrorCode(error, 'ECONNREFUSED');
+}
+
+type PortProbeResult = 'open' | 'refused' | 'unknown';
+
+function probeLoopbackPort(port: number | string, timeoutMs = 1000): Promise<PortProbeResult> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ host: '127.0.0.1', port: Number(port) });
+    let settled = false;
+    const finish = (result: PortProbeResult) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(result);
+    };
+
+    socket.once('connect', () => finish('open'));
+    socket.once('error', (error: NodeJS.ErrnoException) => {
+      finish(error.code === 'ECONNREFUSED' ? 'refused' : 'unknown');
+    });
+    socket.setTimeout(timeoutMs, () => finish('unknown'));
+  });
 }
 
 async function healthProbeConfirmsStopped(baseUrl: string): Promise<boolean> {
@@ -52,10 +74,11 @@ export async function shutdownWorkerAndWait(
     workerWasRunning = true;
     if (!response.ok) return { workerWasRunning, stopped: false };
   } catch (error) {
-    // A timeout is not evidence that the worker is gone: fail closed so the
-    // installer never overwrites settings under a live, in-memory worker.
+    // A timeout is ambiguous at the HTTP layer. Confirm the TCP port is closed
+    // before treating it as a clean install with no worker to stop.
     if (isTimeoutError(error)) {
-      return { workerWasRunning: true, stopped: false };
+      const stopped = (await probeLoopbackPort(port)) === 'refused';
+      return { workerWasRunning: !stopped, stopped };
     }
     // A worker may reset the shutdown socket while exiting, and a generic
     // fetch error can mean many other things. Confirm the loopback port is

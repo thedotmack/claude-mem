@@ -1,10 +1,51 @@
 import { afterEach, describe, expect, it } from 'bun:test';
+import { createServer } from 'node:net';
 import { shutdownWorkerAndWait } from '../src/services/install/shutdown-helper';
 
 const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+});
+
+describe('installer worker shutdown — Bun timeout classification', () => {
+  it('treats a Bun timeout as stopped only when the TCP port is refused', async () => {
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server did not expose a port');
+    const port = address.port;
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+
+    globalThis.fetch = (async () => {
+      throw new DOMException('The operation timed out.', 'TimeoutError');
+    }) as typeof fetch;
+
+    await expect(shutdownWorkerAndWait(port, 0)).resolves.toEqual({
+      workerWasRunning: false,
+      stopped: true,
+    });
+  });
+
+  it('keeps failing closed when a Bun timeout reaches an occupied port', async () => {
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server did not expose a port');
+
+    globalThis.fetch = (async () => {
+      throw new DOMException('The operation timed out.', 'TimeoutError');
+    }) as typeof fetch;
+
+    try {
+      await expect(shutdownWorkerAndWait(address.port, 0)).resolves.toEqual({
+        workerWasRunning: true,
+        stopped: false,
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
 });
 
 describe('installer worker shutdown', () => {
