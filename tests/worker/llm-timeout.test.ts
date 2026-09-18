@@ -64,6 +64,14 @@ describe('resolveLlmTimeoutMs', () => {
     }
   });
 
+  // String([90000]) is "90000", so an array used to pass the integer check.
+  it('falls back on an array or an object value', () => {
+    for (const value of [[90000], { ms: 90000 }]) {
+      writeSettings({ CLAUDE_MEM_LLM_TIMEOUT_MS: value });
+      expect(resolveLlmTimeoutMs({}, settingsPath)).toBe(30_000);
+    }
+  });
+
   it('takes a value inside the shared 500..300000 bounds', () => {
     expect(resolveLlmTimeoutMs({ CLAUDE_MEM_LLM_TIMEOUT_MS: '90000' }, settingsPath)).toBe(90_000);
     expect(resolveLlmTimeoutMs({ CLAUDE_MEM_LLM_TIMEOUT_MS: '500' }, settingsPath)).toBe(500);

@@ -75,7 +75,8 @@ export function resolveLlmTimeoutMs(
   // Complete integer only. parseInt('90000ms') would silently accept a typo
   // as 90000 — Greptile reproduced that on #3808. settings.json values come
   // back as parsed JSON, so a bare number (90000) arrives as a number, not a string.
-  const trimmed = String(raw).trim();
+  // Only a string or a number is accepted: String([90000]) would read as "90000".
+  const trimmed = typeof raw === 'string' || typeof raw === 'number' ? String(raw).trim() : '';
   const parsed = /^\d+$/.test(trimmed) ? Number(trimmed) : Number.NaN;
   if (
     Number.isFinite(parsed)
