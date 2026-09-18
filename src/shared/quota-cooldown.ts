@@ -327,13 +327,36 @@ export function resetQuotaCooldownsForTesting(): void {
  * Mirror the in-memory breaker into observer-health.json so session-start
  * and external monitors can see an intentional pause. Best-effort: a health
  * write failure must not change admission or drain-on-clear.
+ *
+ * Only a LIVE window is mirrored. An elapsed window withholds nothing right now
+ * — `tryAdmitQuotaProbe` already admits the single recovery probe past it — so
+ * reporting it `active: true` would keep the session-start banner up on a
+ * cooldown that no longer holds, the exact stale-report failure
+ * `observer-health.ts` warns about (`until` is authoritative). Skipping elapsed
+ * entries here also stops a breaker for a provider the user stopped using from
+ * resurfacing once the live entries clear.
+ *
+ * The elapsed entry is NOT removed from the map: it stays as admission state.
+ * It gates the single post-cooldown recovery probe (`tryAdmitQuotaProbe` admits
+ * one caller and withholds the rest) and a failed probe re-arms it in place;
+ * deleting it would let `tryAdmitQuotaProbe` find no state and admit every
+ * concurrent caller at once — the request burst the breaker exists to prevent.
+ * It leaves the map only on a successful generation (`clearQuotaCooldown`).
+ *
+ * Exported for tests: the elapsed-window paths need a controllable clock, which
+ * the internal callers (always "now") cannot supply.
  */
-function syncObserverHealthQuotaCooldown(): void {
+export function syncObserverHealthQuotaCooldown(
+  nowMs: number = Date.now(),
+  cooldownMs: number = QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+): void {
   try {
     let latest: QuotaCooldownState | null = null;
     for (const state of cooldowns.values()) {
+      if (nowMs - state.armedAtMs >= cooldownMs) continue;
       if (!latest || state.armedAtMs > latest.armedAtMs) latest = state;
     }
+
     if (!latest) {
       clearObserverQuotaCooldown();
       return;
@@ -342,7 +365,7 @@ function syncObserverHealthQuotaCooldown(): void {
       active: true,
       provider: latest.provider,
       armedAt: latest.armedAtMs,
-      until: latest.armedAtMs + QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+      until: latest.armedAtMs + cooldownMs,
       ...(latest.window ? { window: latest.window } : {}),
       message: latest.message,
     });
