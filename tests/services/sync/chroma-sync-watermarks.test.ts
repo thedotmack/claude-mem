@@ -7,12 +7,14 @@ import * as realChromaMcpManager from '../../../src/services/sync/ChromaMcpManag
 const realChromaMcpManagerSnapshot = { ...realChromaMcpManager };
 
 let existingObservationIds = new Set<number>();
+let acceptingMutations = true;
 const addDocumentCalls: string[][] = [];
 const addDocumentPayloads: Array<{ ids: string[]; documents: string[]; metadatas: Array<Record<string, unknown>> }> = [];
 
 mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
   ChromaMcpManager: {
     getInstance: () => ({
+      acceptsMutations: () => acceptingMutations,
       callTool: async (toolName: string, args: Record<string, unknown>) => {
         if (toolName === 'chroma_create_collection') {
           return {};
@@ -144,6 +146,7 @@ describe('ChromaSync watermark gap persistence', () => {
   beforeEach(() => {
     process.env.CLAUDE_MEM_DATA_DIR = mkdtempSync(join(tmpdir(), 'claude-mem-watermarks-'));
     existingObservationIds = new Set<number>();
+    acceptingMutations = true;
     addDocumentCalls.length = 0;
     addDocumentPayloads.length = 0;
     ChromaSyncState.replace(project, { observations: 0, summaries: 0, prompts: 0, pending: {} });
@@ -337,6 +340,56 @@ describe('ChromaSync watermark gap persistence', () => {
     expect(ChromaSyncState.get(project).observations).toBe(10);
     expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
     expect(addDocumentCalls.flat()).toContain('obs_10_narrative');
+  });
+
+  it('stops a backfill run once shutdown begins and does not report it complete (#4069)', async () => {
+    const sync = new ChromaSync(project) as ChromaSync & {
+      addDocuments: (documents: Array<{ id: string }>) => Promise<number>;
+    };
+    const infoSpy = spyOn(logger, 'info');
+    let attempts = 0;
+    sync.addDocuments = async (documents) => {
+      attempts += 1;
+      // The first row lands, then the worker begins shutting down mid-sweep:
+      // from here on local Chroma refuses every mutation.
+      acceptingMutations = false;
+      return attempts === 1 ? documents.length : 0;
+    };
+
+    try {
+      const completed = await sync.ensureBackfilled(project, makeStore(project, [1, 2, 3, 4, 5]));
+
+      // No write is attempted once shutdown has begun.
+      expect(attempts).toBe(1);
+      expect(ChromaSyncState.get(project).observations).toBe(1);
+      expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
+      expect(infoSpy.mock.calls.some(([, message]) => message === 'Smart backfill complete')).toBe(false);
+      expect(completed).toBe(false);
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it('reports a finished backfill as complete', async () => {
+    const sync = new ChromaSync(project);
+
+    expect(await sync.ensureBackfilled(project, makeStore(project, [1, 2]))).toBe(true);
+    expect(ChromaSyncState.get(project).observations).toBe(2);
+  });
+
+  it('does not report the all-projects sweep complete once shutdown has begun (#4069)', async () => {
+    acceptingMutations = false;
+
+    const completed = await ChromaSync.backfillAllProjects(makeStore(project, [1, 2, 3]));
+
+    expect(addDocumentCalls).toEqual([]);
+    expect(ChromaSyncState.get(project).observations).toBe(0);
+    expect(completed).toBe(false);
+  });
+
+  it('reports the all-projects sweep complete when every project finished', async () => {
+    expect(await ChromaSync.backfillAllProjects(makeStore(project, [1, 2, 3]))).toBe(true);
+    expect(ChromaSyncState.get(project).observations).toBe(3);
   });
 
   it('resets the failure streak when a later row succeeds', async () => {

@@ -726,8 +726,12 @@ export class WorkerService implements WorkerRef {
       notifyGrokBotIndex();
 
       if (this.chromaMcpManager) {
-        ChromaSync.backfillAllProjects(this.dbManager.getSessionStore()).then(() => {
-          logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
+        ChromaSync.backfillAllProjects(this.dbManager.getSessionStore()).then(completed => {
+          if (completed) {
+            logger.info('CHROMA_SYNC', 'Backfill check complete for all projects');
+          } else {
+            logger.info('CHROMA_SYNC', 'Backfill check ended before every project finished; the next start resumes from the saved watermarks');
+          }
         }).catch(error => {
           logger.error('CHROMA_SYNC', 'Backfill failed (non-blocking)', {}, error as Error);
         });
