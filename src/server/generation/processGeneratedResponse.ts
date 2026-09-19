@@ -47,6 +47,12 @@ export type ProcessGeneratedResponseOutcome =
 
 export interface ProcessGeneratedResponseInput {
   pool: PostgresPool;
+  /**
+   * How many events the provider was actually handed. Recorded on the
+   * completion so an `observationCount: 0` always says WHY: nothing was
+   * loaded, or plenty was loaded and the model still declined.
+   */
+  inputEventCount?: number;
   job: PostgresObservationGenerationJob;
   rawText: string;
   modelId?: string;
@@ -209,6 +215,14 @@ export async function processSessionSummaryResponse(
     : fallbackObservations.map(o => renderObservationContent(o)).join('\n\n');
 
   const privateContentDetected = skipped || summaryContent.trim().length === 0;
+  // `privateContentDetected` cannot tell "the model declined" from "we rendered
+  // nothing", and the parser's own skip_reason was being thrown away, so every
+  // zero-observation completion looked identical. Keep the reason.
+  const skipReason = skipped
+    ? (summary?.skip_reason ?? 'model_skipped')
+    : summaryContent.trim().length === 0
+      ? 'rendered_empty'
+      : null;
 
   const rendered: RenderedObservation[] = privateContentDetected
     ? []
@@ -225,7 +239,7 @@ export async function processSessionSummaryResponse(
         },
       }];
 
-  return persistGeneratedObservations(input, rendered, privateContentDetected);
+  return persistGeneratedObservations(input, rendered, privateContentDetected, skipReason);
 }
 
 interface RenderedObservation {
@@ -244,6 +258,7 @@ async function persistGeneratedObservations(
   input: ProcessGeneratedResponseInput,
   rendered: RenderedObservation[],
   privateContentDetected: boolean,
+  skipReason: string | null = null,
 ): Promise<ProcessGeneratedResponseOutcome> {
   const { job } = input;
 
@@ -393,6 +408,8 @@ async function persistGeneratedObservations(
         model: input.modelId ?? null,
         observationCount: persisted.length,
         privateContentDetected,
+        inputEventCount: input.inputEventCount ?? null,
+        skipReason,
         workerId: input.workerId ?? null,
         sourceType: fresh.sourceType,
       },
