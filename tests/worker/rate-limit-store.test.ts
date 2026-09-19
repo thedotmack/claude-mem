@@ -288,6 +288,56 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     expect(decision.window).toBe('seven_day');
   });
 
+  it('still aborts on a rejected overage whose overage window is live', () => {
+    // The overage bucket has its own clock: the primary window can reset
+    // while the provider still refuses overage spend.
+    store.set({
+      rateLimitType: 'overage',
+      utilization: 0,
+      isUsingOverage: false,
+      status: 'allowed_warning',
+      overageStatus: 'rejected',
+      resetsAt: FIXED_NOW - 60_000,
+      overageResetsAt: FIXED_NOW + 60 * 60 * 1000,
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('overage');
+  });
+
+  it('ignores a rejected overage whose overage window already reset', () => {
+    store.set({
+      rateLimitType: 'overage',
+      overageStatus: 'rejected',
+      resetsAt: FIXED_NOW - 60_000,
+      overageResetsAt: FIXED_NOW - 1,
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(false);
+  });
+
+  it('still aborts on a primary rejection whose overage window reset', () => {
+    store.set({
+      rateLimitType: 'overage',
+      status: 'rejected',
+      resetsAt: FIXED_NOW + 60 * 60 * 1000,
+      overageResetsAt: FIXED_NOW - 1,
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('overage');
+  });
+
+  it('falls back to the primary reset when overageResetsAt is absent', () => {
+    store.set({
+      rateLimitType: 'overage',
+      overageStatus: 'rejected',
+      resetsAt: FIXED_NOW - 1,
+    });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(false);
+  });
+
   it('applies the reset-grace buffer when resetsAt arrives as epoch seconds', () => {
     // The SDK documents epoch ms but Claude Code emits seconds; comparing the
     // raw value against an ms `now` made the grace buffer unreachable.

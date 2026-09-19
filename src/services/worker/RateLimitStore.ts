@@ -150,6 +150,11 @@ export function resetsAtMs(resetsAt: number | undefined): number | undefined {
   return resetsAt < 1e12 ? resetsAt * 1000 : resetsAt;
 }
 
+/** True when a normalized reset timestamp names a window that has already ended. */
+function hasPassed(resetsAtInMs: number | undefined, now: number): boolean {
+  return resetsAtInMs !== undefined && resetsAtInMs <= now;
+}
+
 /** Whole minutes until the window resets, floored at 0. */
 export function minutesUntilReset(resetsAt: number | undefined, now: number = Date.now()): number | undefined {
   const resetsAtInMs = resetsAtMs(resetsAt);
@@ -229,23 +234,30 @@ export function shouldAbortForQuota(
     // and acting on it latches the guard shut: the SDK only re-sends a
     // window's event as that window approaches its limit again, so a stale
     // near-100% seven_day reading would abort every request forever.
-    const windowResetsAt = resetsAtMs(entry.resetsAt);
-    if (windowResetsAt !== undefined && windowResetsAt <= now) continue;
+    //
+    // The overage bucket runs on its own clock, so each piece of state is
+    // judged against the reset that governs it: a rejected overage stays
+    // enforced past the primary window's reset, and vice versa.
+    const isOverage = window === 'overage';
+    const primaryResetsAt = resetsAtMs(entry.resetsAt);
+    const primaryExpired = hasPassed(primaryResetsAt, now);
+    const overageExpired = hasPassed(resetsAtMs(entry.overageResetsAt) ?? primaryResetsAt, now);
 
     const util = entry.utilization;
     const threshold = UTILIZATION_THRESHOLDS[window];
     // An explicit false means the provider is not charging the overage bucket,
     // so its utilization does not represent active quota consumption.
     const appliesUtilizationThreshold =
-      window !== 'overage' || entry.isUsingOverage !== false;
+      !(isOverage ? overageExpired : primaryExpired) &&
+      (!isOverage || entry.isUsingOverage !== false);
 
     // Provider-side rejection trumps utilization heuristics. A snapshot with
     // status='rejected' (or overageStatus='rejected' on the overage window)
     // means the provider has already declared the bucket exhausted; we must
     // stop regardless of whether utilization is reported.
     const isRejected =
-      entry.status === 'rejected' ||
-      (window === 'overage' && entry.overageStatus === 'rejected');
+      (entry.status === 'rejected' && !primaryExpired) ||
+      (isOverage && entry.overageStatus === 'rejected' && !overageExpired);
 
     if (isRejected) {
       return {
@@ -268,11 +280,11 @@ export function shouldAbortForQuota(
     // bailing on a window that just reset to ~0%.
     if (
       window === 'five_hour' &&
-      windowResetsAt !== undefined &&
+      primaryResetsAt !== undefined &&
       typeof util === 'number' &&
       util >= RESET_GRACE_UTILIZATION_FLOOR
     ) {
-      const msUntilReset = windowResetsAt - now;
+      const msUntilReset = primaryResetsAt - now;
       if (msUntilReset > 0 && msUntilReset <= RESET_GRACE_MS) {
         return {
           abort: true,
