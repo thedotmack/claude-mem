@@ -36,6 +36,16 @@ export type RateLimitWindow =
   | 'seven_day_sonnet'
   | 'overage';
 
+/**
+ * One window's slice of `unifiedWindows`. `utilization` is 0..1 and
+ * `resetsAt` carries the same epoch-seconds-or-ms ambiguity as the
+ * top-level field.
+ */
+export interface UnifiedWindowSnapshot {
+  utilization?: number;
+  resetsAt?: number;
+}
+
 export interface RateLimitInfo {
   status?: 'allowed' | 'allowed_warning' | 'rejected';
   resetsAt?: number;
@@ -45,6 +55,13 @@ export interface RateLimitInfo {
   overageResetsAt?: number;
   isUsingOverage?: boolean;
   surpassedThreshold?: number;
+  /**
+   * Every event describes every window here, not just the one it is typed
+   * as. Absent from `SDKRateLimitInfo` in the agent SDK's current typings
+   * but present on the wire (Claude Code v2.1.267), so it is validated at
+   * runtime and ignored when missing.
+   */
+  unifiedWindows?: Partial<Record<RateLimitWindow, UnifiedWindowSnapshot>>;
 }
 
 export interface RateLimitEntry extends RateLimitInfo {
@@ -52,6 +69,19 @@ export interface RateLimitEntry extends RateLimitInfo {
 }
 
 export type RateLimitBucketKey = RateLimitWindow | 'default';
+
+/** Windows the guard evaluates, in the order it evaluates them. */
+const RATE_LIMIT_WINDOWS: RateLimitWindow[] = [
+  'five_hour',
+  'seven_day_opus',
+  'seven_day_sonnet',
+  'seven_day',
+  'overage',
+];
+
+function isRateLimitWindow(value: string): value is RateLimitWindow {
+  return (RATE_LIMIT_WINDOWS as string[]).includes(value);
+}
 
 export class RateLimitStore {
   private entries = new Map<RateLimitBucketKey, RateLimitEntry>();
@@ -65,8 +95,49 @@ export class RateLimitStore {
     if (!info || typeof info !== 'object') return false;
     const key: RateLimitBucketKey = info.rateLimitType ?? 'default';
     const previous = this.entries.get(key);
-    this.entries.set(key, { ...info, observedAt: Date.now() });
+    const observedAt = Date.now();
+    this.entries.set(key, { ...info, observedAt });
+    this.hydrateUnifiedWindows(info, key, observedAt);
     return isNewRejection(previous, info);
+  }
+
+  /**
+   * Fan `unifiedWindows` out into the per-window buckets.
+   *
+   * The provider types an event at a window only as that window nears its
+   * limit, so without this the other buckets keep whatever reading they were
+   * last typed at — a `seven_day` entry can sit at its pre-reset utilization
+   * for days while every arriving event already carries the current number.
+   */
+  private hydrateUnifiedWindows(
+    info: RateLimitInfo,
+    primaryKey: RateLimitBucketKey,
+    observedAt: number,
+  ): void {
+    const unified = info.unifiedWindows;
+    if (!unified || typeof unified !== 'object') return;
+
+    for (const [window, snapshot] of Object.entries(unified)) {
+      // The primary bucket was just written in full; a partial snapshot would
+      // only strip its status and overage fields.
+      if (window === primaryKey) continue;
+      if (!isRateLimitWindow(window)) continue;
+      if (!snapshot || typeof snapshot !== 'object') continue;
+
+      // Status and overage fields describe the window they were observed in.
+      // Carry them forward only while the reset still points at that window.
+      const previous = this.entries.get(window);
+      const sameWindow =
+        previous !== undefined &&
+        resetsAtMs(previous.resetsAt) === resetsAtMs(snapshot.resetsAt);
+
+      this.entries.set(window, {
+        ...(sameWindow ? previous : {}),
+        ...snapshot,
+        rateLimitType: window,
+        observedAt,
+      });
+    }
   }
 
   /** Snapshot a single bucket, or undefined if not yet seen. */
@@ -140,14 +211,26 @@ export function isNewRejection(
 }
 
 /**
- * Whole minutes until the window resets, floored at 0. Claude Code has been
- * seen writing `resetsAt` as epoch seconds in transcripts while the SDK
- * documents epoch ms, so anything too small to be ms is treated as seconds.
+ * Normalize a `resetsAt` to epoch ms, or undefined when it is not a number.
+ * Claude Code has been seen writing it as epoch seconds in transcripts while
+ * the SDK documents epoch ms, so anything too small to be ms is treated as
+ * seconds.
  */
-export function minutesUntilReset(resetsAt: number | undefined, now: number = Date.now()): number | undefined {
+export function resetsAtMs(resetsAt: number | undefined): number | undefined {
   if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return undefined;
-  const resetsAtMs = resetsAt < 1e12 ? resetsAt * 1000 : resetsAt;
-  return Math.max(0, Math.round((resetsAtMs - now) / 60_000));
+  return resetsAt < 1e12 ? resetsAt * 1000 : resetsAt;
+}
+
+/** True when a normalized reset timestamp names a window that has already ended. */
+function hasPassed(resetsAtInMs: number | undefined, now: number): boolean {
+  return resetsAtInMs !== undefined && resetsAtInMs <= now;
+}
+
+/** Whole minutes until the window resets, floored at 0. */
+export function minutesUntilReset(resetsAt: number | undefined, now: number = Date.now()): number | undefined {
+  const resetsAtInMs = resetsAtMs(resetsAt);
+  if (resetsAtInMs === undefined) return undefined;
+  return Math.max(0, Math.round((resetsAtInMs - now) / 60_000));
 }
 
 /**
@@ -205,32 +288,39 @@ export function shouldAbortForQuota(
     return { abort: false };
   }
 
-  const windows: RateLimitWindow[] = [
-    'five_hour',
-    'seven_day_opus',
-    'seven_day_sonnet',
-    'seven_day',
-    'overage',
-  ];
-
-  for (const window of windows) {
+  for (const window of RATE_LIMIT_WINDOWS) {
     const entry = store.get(window);
     if (!entry) continue;
+
+    // A snapshot only describes the window it was taken in. Once that window
+    // has reset, its utilization belongs to a bucket that no longer exists,
+    // and acting on it latches the guard shut: the SDK only re-sends a
+    // window's event as that window approaches its limit again, so a stale
+    // near-100% seven_day reading would abort every request forever.
+    //
+    // The overage bucket runs on its own clock, so each piece of state is
+    // judged against the reset that governs it: a rejected overage stays
+    // enforced past the primary window's reset, and vice versa.
+    const isOverage = window === 'overage';
+    const primaryResetsAt = resetsAtMs(entry.resetsAt);
+    const primaryExpired = hasPassed(primaryResetsAt, now);
+    const overageExpired = hasPassed(resetsAtMs(entry.overageResetsAt) ?? primaryResetsAt, now);
 
     const util = entry.utilization;
     const threshold = UTILIZATION_THRESHOLDS[window];
     // An explicit false means the provider is not charging the overage bucket,
     // so its utilization does not represent active quota consumption.
     const appliesUtilizationThreshold =
-      window !== 'overage' || entry.isUsingOverage !== false;
+      !(isOverage ? overageExpired : primaryExpired) &&
+      (!isOverage || entry.isUsingOverage !== false);
 
     // Provider-side rejection trumps utilization heuristics. A snapshot with
     // status='rejected' (or overageStatus='rejected' on the overage window)
     // means the provider has already declared the bucket exhausted; we must
     // stop regardless of whether utilization is reported.
     const isRejected =
-      entry.status === 'rejected' ||
-      (window === 'overage' && entry.overageStatus === 'rejected');
+      (entry.status === 'rejected' && !primaryExpired) ||
+      (isOverage && entry.overageStatus === 'rejected' && !overageExpired);
 
     if (isRejected) {
       return {
@@ -253,11 +343,11 @@ export function shouldAbortForQuota(
     // bailing on a window that just reset to ~0%.
     if (
       window === 'five_hour' &&
-      typeof entry.resetsAt === 'number' &&
+      primaryResetsAt !== undefined &&
       typeof util === 'number' &&
       util >= RESET_GRACE_UTILIZATION_FLOOR
     ) {
-      const msUntilReset = entry.resetsAt - now;
+      const msUntilReset = primaryResetsAt - now;
       if (msUntilReset > 0 && msUntilReset <= RESET_GRACE_MS) {
         return {
           abort: true,
