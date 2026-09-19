@@ -178,6 +178,12 @@ export function classifyOpenRouterError(input: {
 const CHARS_PER_TOKEN_ESTIMATE = 4;
 const OPENROUTER_EMPTY_HISTORY_FALLBACK = '(context unavailable)';
 
+/**
+ * Output-token cap sent on every chat-completions request (as `max_tokens`, or
+ * `max_completion_tokens` on the compatibility retry).
+ */
+const OPENROUTER_MAX_OUTPUT_TOKENS = 4096;
+
 interface OpenAIMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
@@ -312,7 +318,7 @@ export function buildOpenRouterRequestBody(input: {
       : { model: input.model }),
     messages: input.messages,
     temperature: 0.3,  // Lower temperature for structured extraction
-    max_tokens: 4096,
+    max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
     // Keep the same model, but ask for an answer instead of spending this
     // short rewrite's budget on reasoning. Only known OpenRouter endpoints
     // accept the vendor-specific reasoning control (cmem forwards it).
@@ -497,7 +503,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     plainText?: boolean,
   ): Promise<Response> {
     const body = buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl, plainText });
-    const maxOutputTokens = typeof body.max_tokens === 'number' ? body.max_tokens : 4096;
+    const maxOutputTokens = typeof body.max_tokens === 'number' ? body.max_tokens : OPENROUTER_MAX_OUTPUT_TOKENS;
     return fetchWithOpenRouterTokenCompatibility(fetch, apiUrl, {
       method: 'POST',
       headers: {
@@ -591,6 +597,20 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         ? message.content.filter(part => part?.type === 'text' && typeof part.text === 'string')
           .map(part => part.text).join('\n')
         : '';
+    // `length`: generation stopped at the output-token limit. A block cut off
+    // mid-tag never closes, so the parser drops it: silently when earlier blocks
+    // parsed, taking the whole batch when none did. Logged before the plain-text
+    // and empty-reply exits so a reply cut off before any text is named too.
+    if (choice?.finish_reason === 'length') {
+      logger.warn('SDK', 'OpenRouter reply was cut off at the output-token limit', {
+        model: data.model ?? model,
+        requestId: priorRequestId,
+        maxTokens: OPENROUTER_MAX_OUTPUT_TOKENS,
+        outputTokens: data.usage?.completion_tokens,
+        contentChars: content.length,
+        messagesInContext: history.length,
+      });
+    }
     if (plainText && !content.trim()) {
       const error = new Error('OpenRouter returned no assistant text for the Telegram wrap-up');
       logger.error('TELEGRAM', error.message, {
