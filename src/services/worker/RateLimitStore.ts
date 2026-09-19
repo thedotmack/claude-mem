@@ -140,14 +140,21 @@ export function isNewRejection(
 }
 
 /**
- * Whole minutes until the window resets, floored at 0. Claude Code has been
- * seen writing `resetsAt` as epoch seconds in transcripts while the SDK
- * documents epoch ms, so anything too small to be ms is treated as seconds.
+ * Normalize a `resetsAt` to epoch ms, or undefined when it is not a number.
+ * Claude Code has been seen writing it as epoch seconds in transcripts while
+ * the SDK documents epoch ms, so anything too small to be ms is treated as
+ * seconds.
  */
-export function minutesUntilReset(resetsAt: number | undefined, now: number = Date.now()): number | undefined {
+export function resetsAtMs(resetsAt: number | undefined): number | undefined {
   if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return undefined;
-  const resetsAtMs = resetsAt < 1e12 ? resetsAt * 1000 : resetsAt;
-  return Math.max(0, Math.round((resetsAtMs - now) / 60_000));
+  return resetsAt < 1e12 ? resetsAt * 1000 : resetsAt;
+}
+
+/** Whole minutes until the window resets, floored at 0. */
+export function minutesUntilReset(resetsAt: number | undefined, now: number = Date.now()): number | undefined {
+  const resetsAtInMs = resetsAtMs(resetsAt);
+  if (resetsAtInMs === undefined) return undefined;
+  return Math.max(0, Math.round((resetsAtInMs - now) / 60_000));
 }
 
 /**
@@ -217,6 +224,14 @@ export function shouldAbortForQuota(
     const entry = store.get(window);
     if (!entry) continue;
 
+    // A snapshot only describes the window it was taken in. Once that window
+    // has reset, its utilization belongs to a bucket that no longer exists,
+    // and acting on it latches the guard shut: the SDK only re-sends a
+    // window's event as that window approaches its limit again, so a stale
+    // near-100% seven_day reading would abort every request forever.
+    const windowResetsAt = resetsAtMs(entry.resetsAt);
+    if (windowResetsAt !== undefined && windowResetsAt <= now) continue;
+
     const util = entry.utilization;
     const threshold = UTILIZATION_THRESHOLDS[window];
     // An explicit false means the provider is not charging the overage bucket,
@@ -253,11 +268,11 @@ export function shouldAbortForQuota(
     // bailing on a window that just reset to ~0%.
     if (
       window === 'five_hour' &&
-      typeof entry.resetsAt === 'number' &&
+      windowResetsAt !== undefined &&
       typeof util === 'number' &&
       util >= RESET_GRACE_UTILIZATION_FLOOR
     ) {
-      const msUntilReset = entry.resetsAt - now;
+      const msUntilReset = windowResetsAt - now;
       if (msUntilReset > 0 && msUntilReset <= RESET_GRACE_MS) {
         return {
           abort: true,
