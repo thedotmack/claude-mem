@@ -175,7 +175,12 @@ export interface ServerSearchObservationsResponse {
 // matched observations AND a pre-joined `context` string.
 export interface ServerContextObservationsRequest {
   projectId: string;
-  query: string;
+  // OPTIONAL, and the whole session-start read depends on it being optional.
+  // With a query the route is FTS and answers by relevance; with the key ABSENT
+  // it answers by recency, which is what a session-start block is. An empty
+  // STRING is not the same thing -- the route's schema requires >=1 character
+  // and rejects `""` -- so the key must be omitted, never blanked.
+  query?: string;
   limit?: number;
   platformSource?: string | null;
 }
@@ -263,11 +268,16 @@ export class ServerClient {
   async contextObservations(
     input: ServerContextObservationsRequest,
   ): Promise<ServerContextObservationsResponse> {
-    return this.request<ServerContextObservationsResponse>(
-      'POST',
-      '/v1/context',
-      this.buildSearchPayload(input),
-    );
+    // Built here rather than through buildSearchPayload(): that helper is the
+    // /v1/search contract, where a query is genuinely required, and widening it
+    // would let a search ship without one.
+    const payload: Record<string, unknown> = { projectId: input.projectId };
+    if (input.query !== undefined) payload.query = input.query;
+    if (input.limit !== undefined) payload.limit = input.limit;
+    if (input.platformSource !== undefined) {
+      payload.platformSource = normalizePlatformSourceField(input.platformSource);
+    }
+    return this.request<ServerContextObservationsResponse>('POST', '/v1/context', payload);
   }
 
   // Phase 8 — MCP `observation_generation_status`. Server returns the same

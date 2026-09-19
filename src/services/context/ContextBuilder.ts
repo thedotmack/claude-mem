@@ -259,6 +259,115 @@ function appendObserverHealthWarning(warning: string, text: string): string {
  * precisely when context was being dropped. `sessionCount` is the same slice
  * `buildContextOutput` takes for `displaySummaries`.
  */
+
+// THE SHARED STORE AS A ROW SOURCE -- deliberately here, and not in the hook.
+//
+// In `server` runtime every WRITE goes to the shared store while this READ opened
+// the per-machine SQLite file. Both halves already shipped and were never joined:
+// the client has carried contextObservations() -> POST /v1/context all along and
+// nothing called it. MEASURED 2026-09-17: the local corpus took 1 observation in
+// 24h against the store's 18,184.
+//
+// The FIRST attempt at this fix injected the route's pre-joined `context` string
+// straight into the hook's output, and that was wrong in a way worth recording: it
+// bypassed fitContextToBudget, so the block came back at 52,337 characters against
+// the CONTEXT_OUTPUT_LIMIT of 10,000 that #3802 exists to enforce -- and it lost
+// the header, the legend, the ids and the savings stats, 13,084 tokens where the
+// local block spent 1,787. Replacing the ROW SOURCE instead leaves the renderer,
+// the budget fitter, the token counter and the stats exactly as they were: the
+// only thing that changes is WHERE the rows came from.
+const SERVER_CONTEXT_MAX_OBSERVATIONS = 50;
+
+/** Server rows in the local row shape, or null to fall back to SQLite. */
+export async function fetchServerObservations(
+  config: ContextConfig,
+  project: string,
+  platformSource: string | undefined
+): Promise<Observation[] | null> {
+  let runtime;
+  try {
+    const mod = await import('../hooks/runtime-selector.js');
+    runtime = mod.resolveRuntimeContext();
+  } catch (error) {
+    logger.warn('HOOK', '[server-fallback] runtime unresolved for context', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+  if (runtime.runtime !== 'server') return null;
+
+  const want = Number(config.totalObservationCount) || 20;
+  try {
+    const result = await runtime.client.contextObservations({
+      projectId: runtime.projectId,
+      // NO `query` KEY. With one the route ranks by FTS; with the key absent it
+      // returns the NEWEST, which is what a session-start block is. `query: ''`
+      // is not a third option -- the route's schema rejects it (min 1 char).
+      limit: Math.max(1, Math.min(SERVER_CONTEXT_MAX_OBSERVATIONS, want)),
+      ...(platformSource ? { platformSource } : {}),
+    });
+    const rows = Array.isArray(result?.observations) ? result.observations : [];
+    if (rows.length === 0) return null;
+    return rows.map((r, i) => toLocalObservationShape(r, i, project, platformSource));
+  } catch (error) {
+    logger.warn('HOOK', '[server-fallback] context fell back to the local corpus', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+// The row shape mirrors the local SELECT field for field. `facts`, `concepts`,
+// `files_read` and `files_modified` are JSON *strings* in the local schema (the
+// writer calls JSON.stringify on each), so they are stringified here too -- handing
+// the renderer raw arrays would change what the token counter measures and silently
+// skew the savings stats. `kind` on the server carries the real observation type
+// (discovery, bugfix, change, feature, decision, ...), which is what `type` must be
+// for the emoji and the type histogram -- NOT the literal "observation".
+export function toLocalObservationShape(
+  r: Record<string, unknown>,
+  index: number,
+  project: string,
+  platformSource: string | undefined
+): Observation {
+  const meta = (r.metadata ?? {}) as Record<string, unknown>;
+  const pick = (...k: string[]): unknown => {
+    for (const n of k) {
+      if (r[n] !== undefined && r[n] !== null) return r[n];
+      if (meta[n] !== undefined && meta[n] !== null) return meta[n];
+    }
+    return null;
+  };
+  const str = (v: unknown): string | null => (typeof v === 'string' ? v : v == null ? null : String(v));
+  const json = (v: unknown): string | null => {
+    if (v == null) return null;
+    if (typeof v === 'string') return v;
+    try { return JSON.stringify(v); } catch { return null; }
+  };
+  const epoch = Number(pick('createdAtEpoch', 'created_at_epoch')) || Date.now();
+  const content = str(r.content) ?? '';
+  const firstLine = content.split('\n', 1)[0] ?? '';
+  return {
+    id: index + 1,
+    memory_session_id: str(pick('serverSessionId', 'memory_session_id')) ?? '',
+    project,
+    merged_into_project: null,
+    platform_source: platformSource ?? '',
+    type: str(pick('kind', 'type')) ?? 'discovery',
+    title: str(pick('title')) ?? firstLine,
+    subtitle: str(pick('subtitle')),
+    text: content || null,
+    narrative: str(pick('narrative')) ?? (content || null),
+    facts: json(pick('facts')),
+    concepts: json(pick('concepts')),
+    files_read: json(pick('files_read', 'filesRead')),
+    files_modified: json(pick('files_modified', 'filesModified')),
+    prompt_number: Number(pick('prompt_number', 'promptNumber')) || 0,
+    created_at: new Date(epoch).toISOString(),
+    created_at_epoch: epoch,
+  };
+}
+
 export function fitContextForDelivery(
   observations: Observation[],
   summaries: SessionSummary[],
@@ -322,7 +431,11 @@ export async function generateContextWithStats(
       ? normalizePlatformSource(input.platformSource)
       : undefined;
     const queryProjects = projects.length > 1 ? projects : [project];
-    const observations = queryObservationsMulti(db, queryProjects, config, platformSource);
+    // The shared store is asked FIRST in server runtime; null means "no answer"
+    // (wrong runtime, unreachable, empty) and the local rows are used instead. A
+    // stale corpus is worse than a fresh one and far better than no memory at all.
+    const serverObservations = await fetchServerObservations(config, project, platformSource);
+    const observations = serverObservations ?? queryObservationsMulti(db, queryProjects, config, platformSource);
     const summaries = querySummariesMulti(db, queryProjects, config, platformSource);
 
     if (observations.length === 0 && summaries.length === 0) {
