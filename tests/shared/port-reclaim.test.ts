@@ -161,6 +161,9 @@ function ghostDeps(overrides: {
     killed,
     deps: {
       isWin32: () => true,
+      // No wedged worker in the ghost-listener scenarios: keep the reclaim on
+      // the dead-owner path and never touch the real PID file / port probe.
+      readOwnedWorker: () => null,
       listOwners: async () => {
         probeCount += 1;
         return probeCount === 1 ? firstOwners : verifyOwners;
@@ -179,6 +182,7 @@ describe('reclaimGhostListeningPort decision branches', () => {
   it('resolves to not-supported off Windows (never touches a process)', async () => {
     const result = await reclaimGhostListeningPort(37777, {
       isWin32: () => false,
+      readOwnedWorker: () => null,
       listOwners: async () => {
         throw new Error('must not be called');
       },
@@ -205,7 +209,9 @@ describe('reclaimGhostListeningPort decision branches', () => {
     expect((result as { reason: string }).reason).toBe('table-unreadable');
   });
 
-  it('never kills when a live owner holds the port (wedged worker / foreign process)', async () => {
+  it('never kills when a live FOREIGN owner holds the port (not our PID file)', async () => {
+    // readOwnedWorker returns null (ghostDeps default), so a live owner our PID
+    // file does not claim keeps the owner-alive refusal.
     const { deps: testDeps, killed } = ghostDeps({ owners: [LIVE_OWNER] });
     const result = await reclaimGhostListeningPort(37777, testDeps);
     expect(result).toEqual({ reclaimed: false, reason: 'owner-alive', killedPids: [] });
@@ -335,5 +341,91 @@ describe('reclaimGhostListeningPort decision branches', () => {
     const result = await reclaimGhostListeningPort(37777, testDeps);
     expect(result.reclaimed).toBe(true);
     expect(killed.map(entry => entry.pid).sort((a, b) => a - b)).toEqual([3001, 3101]);
+  });
+});
+
+/**
+ * Wedged-worker reclaim: our PID file names a LIVE worker that holds the port
+ * but no longer answers /health (#4127). Unlike the ghost-listener path this is
+ * not Windows-specific and the owner is alive, so it runs before the netstat /
+ * sidecar logic and on every platform.
+ */
+function wedgedDeps(overrides: {
+  isWin32?: boolean;
+  owned?: { pid: number; port: number } | null;
+  killFails?: boolean;
+  portFreeAfter?: boolean;
+}): {
+  deps: GhostPortReclaimDeps;
+  killed: Array<{ pid: number; signalMode: string }>;
+} {
+  const killed: Array<{ pid: number; signalMode: string }> = [];
+  return {
+    killed,
+    deps: {
+      isWin32: () => overrides.isWin32 ?? false,
+      readOwnedWorker: () => (overrides.owned === undefined ? { pid: 51000, port: 37777 } : overrides.owned),
+      isPortFree: async () => overrides.portFreeAfter ?? true,
+      // The ghost path must never be reached in the applies-here cases; make it
+      // throw so any accidental fall-through fails loudly.
+      listOwners: async () => {
+        throw new Error('ghost path must not run when the wedged path applies');
+      },
+      killTree: async (pid, options) => {
+        if (overrides.killFails) throw new Error('kill failed');
+        killed.push({ pid, signalMode: options.signalMode });
+      },
+    },
+  };
+}
+
+describe('reclaimWedgedOwnedWorker (via reclaimGhostListeningPort)', () => {
+  it('reclaims a wedged worker we own, on POSIX, with a graceful tree-kill', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ isWin32: false });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result).toEqual({ reclaimed: true, killedPids: [51000] });
+    expect(killed).toEqual([{ pid: 51000, signalMode: 'graceful' }]);
+  });
+
+  it('reclaims a wedged worker we own on Windows too', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ isWin32: true });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result.reclaimed).toBe(true);
+    expect(killed.map(k => k.pid)).toEqual([51000]);
+  });
+
+  it('reports kill-failed when the wedged worker cannot be killed', async () => {
+    const { deps: testDeps } = wedgedDeps({ killFails: true });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result).toEqual({ reclaimed: false, reason: 'kill-failed', killedPids: [] });
+  });
+
+  it('reports still-bound when the port survives the kill', async () => {
+    const { deps: testDeps } = wedgedDeps({ portFreeAfter: false });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result).toEqual({ reclaimed: false, reason: 'still-bound', killedPids: [51000] });
+  });
+
+  it('does not apply when our PID file claims a DIFFERENT port (falls through)', async () => {
+    // owned.port !== target: the wedged path declines, so POSIX resolves to
+    // not-supported instead of killing a worker bound to another port.
+    const { deps: testDeps, killed } = wedgedDeps({
+      isWin32: false,
+      owned: { pid: 51000, port: 40000 },
+      // Allow the ghost path to run here (it should reach the not-supported gate).
+    });
+    testDeps.listOwners = async () => [];
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result.reclaimed).toBe(false);
+    expect((result as { reason: string }).reason).toBe('not-supported');
+    expect(killed).toEqual([]);
+  });
+
+  it('does not apply when no worker PID file is ours (falls through)', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ isWin32: false, owned: null });
+    testDeps.listOwners = async () => [];
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect((result as { reason: string }).reason).toBe('not-supported');
+    expect(killed).toEqual([]);
   });
 });

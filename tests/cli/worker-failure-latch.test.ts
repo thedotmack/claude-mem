@@ -44,6 +44,24 @@ function recordFailure(dataDir: string, threshold: number): ReturnType<typeof Bu
   });
 }
 
+function recordFailureAsHook(dataDir: string, threshold: number, hookEvent: string): ReturnType<typeof Bun.spawnSync> {
+  const source = `
+    const { recordWorkerUnreachable, setActiveHookType } = await import(${JSON.stringify(WORKER_UTILS_URL)});
+    setActiveHookType(${JSON.stringify(hookEvent)});
+    await recordWorkerUnreachable();
+  `;
+  return Bun.spawnSync([process.execPath, '-e', source], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      CLAUDE_MEM_DATA_DIR: dataDir,
+      CLAUDE_CONFIG_DIR: dataDir,
+      CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: String(threshold),
+      CLAUDE_MEM_TELEMETRY: '0',
+    },
+  });
+}
+
 function resetFailureState(dataDir: string): ReturnType<typeof Bun.spawnSync> {
   const source = `
     const { __resetWorkerFailureCounterForTesting } = await import(${JSON.stringify(WORKER_UTILS_URL)});
@@ -97,6 +115,41 @@ describe('worker-unreachable fail-loud latch', () => {
       lastFailureAt: 0,
       thresholdTripped: false,
     });
+  });
+
+  it('fails open on UserPromptSubmit (session-init) instead of blocking the prompt', () => {
+    // #4127: exit 2 on UserPromptSubmit is rendered as a blocked prompt, so the
+    // escalation must fail open here while still latching the counter.
+    const dataDir = createStateDir({ consecutiveFailures: 2, lastFailureAt: 1 });
+
+    const result = recordFailureAsHook(dataDir, 3, 'session-init');
+    expect(result.exitCode).toBe(0);
+    expect(new TextDecoder().decode(result.stderr)).not.toContain('claude-mem worker unreachable for');
+    expect(readState(dataDir)).toMatchObject({
+      consecutiveFailures: 3,
+      thresholdTripped: true,
+    });
+  });
+
+  it('fails open on SessionStart (context) so it can carry the trouble notice', () => {
+    const dataDir = createStateDir({ consecutiveFailures: 2, lastFailureAt: 1 });
+
+    const result = recordFailureAsHook(dataDir, 3, 'context');
+    expect(result.exitCode).toBe(0);
+    expect(readState(dataDir)).toMatchObject({
+      consecutiveFailures: 3,
+      thresholdTripped: true,
+    });
+  });
+
+  it('still blocks a non-prompt hook (observation / PostToolUse)', () => {
+    const dataDir = createStateDir({ consecutiveFailures: 2, lastFailureAt: 1 });
+
+    const result = recordFailureAsHook(dataDir, 3, 'observation');
+    expect(result.exitCode).toBe(2);
+    expect(new TextDecoder().decode(result.stderr)).toContain(
+      'claude-mem worker unreachable for 3 consecutive hooks.'
+    );
   });
 
   it('allows only one concurrent process to claim the latch', async () => {
