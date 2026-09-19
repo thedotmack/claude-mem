@@ -242,6 +242,12 @@ export class WorkerService implements WorkerRef {
     error?: string;
   } | null = null;
 
+  // Last processing status actually broadcast, for deduping unchanged repeats
+  // (#4127). broadcastProcessingStatus fires per pending mutation, so a
+  // worker-unreachable retry storm otherwise turns every retry into an SSE
+  // broadcast and an info log line.
+  private lastBroadcastState: { isProcessing: boolean; queueDepth: number } | null = null;
+
   constructor() {
     this.initializationComplete = new Promise((resolve) => {
       this.resolveInitialization = resolve;
@@ -931,6 +937,20 @@ export class WorkerService implements WorkerRef {
     void (async () => {
       const queueDepth = await this.sessionManager.getTotalActiveWork();
       const isProcessing = queueDepth > 0;
+
+      // Dedupe on unchanged state: skip the broadcast and the log line when
+      // neither field moved since the last one. New SSE clients still get the
+      // current status on connect (ViewerRoutes) and via GET
+      // /api/processing-status, so a suppressed repeat costs them nothing.
+      if (
+        this.lastBroadcastState !== null
+        && this.lastBroadcastState.isProcessing === isProcessing
+        && this.lastBroadcastState.queueDepth === queueDepth
+      ) {
+        return;
+      }
+      this.lastBroadcastState = { isProcessing, queueDepth };
+
       const activeSessions = this.sessionManager.getActiveSessionCount();
 
       logger.info('WORKER', 'Broadcasting processing status', {
@@ -1518,13 +1538,13 @@ async function main() {
           logger.info('SYSTEM', 'Worker already running (health verified), refusing to start duplicate', { port });
           process.exit(0);
         }
-        // Bound but silent: likely a ghost listener — a dead worker whose
-        // surviving chroma sidecar chain holds the inherited socket
-        // (plan-15 #3603). Reclaim when the owner is provably dead; a live
-        // owner (wedged worker, foreign process) keeps the duplicate refusal.
+        // Bound but silent: a wedged worker we own that stopped answering
+        // /health (#4127), or a ghost listener — a dead worker whose chroma
+        // sidecar chain holds the inherited socket (plan-15 #3603). Reclaim
+        // both; a live FOREIGN owner keeps the duplicate refusal.
         const reclaim = await reclaimGhostListeningPort(port);
         if (reclaim.reclaimed) {
-          logger.info('SYSTEM', 'Reclaimed ghost listener left by a dead worker — starting anyway', {
+          logger.info('SYSTEM', 'Reclaimed the worker port (wedged or dead-owner ghost listener) — starting anyway', {
             port,
             killedPids: reclaim.killedPids,
           });

@@ -9,6 +9,7 @@ import {
   executeWithWorkerFallback,
   isWorkerFallback,
   getWorkerPort,
+  readWorkerTroubleNotice,
 } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { HOOK_EXIT_CODES, HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
@@ -61,6 +62,21 @@ export const contextHandler: EventHandler = {
     const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}`;
     const colorApiPath = input.platform === 'claude-code' ? `${apiPath}&colors=true` : apiPath;
 
+    // Build a SessionStart result, prepending the worker-trouble notice when
+    // the worker has been unreachable past the fail-loud threshold (#4127).
+    // The prompt hooks now fail open instead of exiting 2, so this injected
+    // context is the channel that tells the user memory capture is paused.
+    const withTroubleNotice = (base: string): HookResult => {
+      const notice = readWorkerTroubleNotice();
+      const additionalContext = notice
+        ? (base ? `${notice}\n\n${base}` : notice)
+        : base;
+      return {
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext },
+        exitCode: HOOK_EXIT_CODES.SUCCESS,
+      };
+    };
+
     const emptyResult: HookResult = {
       hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
       exitCode: HOOK_EXIT_CODES.SUCCESS,
@@ -73,7 +89,8 @@ export const contextHandler: EventHandler = {
       : undefined;
     const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
     if (isWorkerFallback(contextResult)) {
-      return emptyResult;
+      // Worker unreachable: fail open, but still surface the trouble notice.
+      return withTroubleNotice('');
     }
 
     let additionalContext: string;
@@ -84,6 +101,16 @@ export const contextHandler: EventHandler = {
     } else {
       logger.warn('HOOK', 'Context response was not a string', { type: typeof contextResult });
       return emptyResult;
+    }
+
+    // The worker answered here, so the fail-loud counter is already reset and
+    // this is normally null. It only appears when the counter is still latched
+    // from an outage that has not cleared yet.
+    const workerTrouble = readWorkerTroubleNotice();
+    if (workerTrouble) {
+      additionalContext = additionalContext
+        ? `${workerTrouble}\n\n${additionalContext}`
+        : workerTrouble;
     }
 
     // Issue #2215: surface stale OAuth token marker as a session-start hint.

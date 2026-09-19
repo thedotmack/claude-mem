@@ -1,4 +1,19 @@
 /**
+ * Port reclaim for the two spawn launchers.
+ *
+ * TWO distinct failure modes reclaim the worker port here:
+ *
+ *   1. A WEDGED worker we own (all platforms) — reclaimWedgedOwnedWorker. Our
+ *      PID file names a LIVE process that holds the port, but it has stopped
+ *      answering /health (e.g. a worker spinning at 100% CPU during a provider
+ *      quota cooldown, #4127). It ignores SIGTERM and never yields the port, so
+ *      every launcher gives up and the machine hard-blocks. This case is not
+ *      Windows-specific and the owner is alive, so the ghost-listener logic
+ *      below never sees it — it is handled first, before the Windows gate.
+ *
+ *   2. A GHOST listener (Windows only) — the rest of this module. Detailed
+ *      below.
+ *
  * Ghost-listener reclaim on Windows.
  *
  * WHY THIS EXISTS — the 2026-09-07 reproduction (and #3482 / #3300 / plan-15
@@ -47,6 +62,8 @@ import { promisify } from 'node:util';
 import { logger } from '../utils/logger.js';
 import { killProcessTree } from './kill-process-tree.js';
 import { isPidAlive } from '../supervisor/process-registry.js';
+import { readOwnedWorkerPidInfo } from '../supervisor/index.js';
+import { isPortInUse } from '../services/infrastructure/HealthMonitor.js';
 import { DATA_DIR } from './paths.js';
 
 const execFileAsync = promisify(execFile);
@@ -210,7 +227,7 @@ export type GhostPortReclaimResult =
 
 interface KillTreeOptions {
   expectedStartToken?: string | null;
-  signalMode: 'immediate';
+  signalMode: 'immediate' | 'graceful';
 }
 
 /**
@@ -225,21 +242,83 @@ export interface GhostPortReclaimDeps {
   readTable?: () => Promise<WindowsProcessRow[] | null>;
   killTree?: (pid: number, options: KillTreeOptions) => Promise<void>;
   dataDir?: () => string | null;
+  /** The live worker our PID file claims, or null. Used by the wedged-worker reclaim. */
+  readOwnedWorker?: () => { pid: number; port: number } | null;
+  /** True once `port` is no longer bound. Verifies a reclaim actually freed it. */
+  isPortFree?: (port: number) => Promise<boolean>;
 }
 
 /**
- * Reclaim a port held by a ghost listener — one whose owning PID is dead but
- * whose socket stays bound because the dead owner's surviving descendants
- * inherited the handle (Windows). Returns reclaimed:true only when the port
- * is verified free again after the kill.
+ * Reclaim a worker of OURS that has wedged: the PID file names a live process
+ * meant to own `port`, but /health has been unreachable for the caller's whole
+ * wait (both launchers reach reclaim only after waitForHealth timed out). A
+ * worker spinning at 100% CPU — e.g. stuck in a provider quota cooldown
+ * (#4127) — stops answering /health while it still holds the port and its PID
+ * file, and ignores SIGTERM. The owner is ALIVE and the mechanism is not
+ * Windows-specific, so the netstat / sidecar path never reaches it.
+ *
+ * Returns null when this mechanism does not apply — no live worker we own, or
+ * it records a different port — so the caller falls through to the
+ * ghost-listener logic. A live FOREIGN owner (a process our PID file does not
+ * claim) is never matched here, so it stays protected.
+ */
+async function reclaimWedgedOwnedWorker(
+  port: number,
+  killTree: (pid: number, options: KillTreeOptions) => Promise<void>,
+  readOwnedWorker: () => { pid: number; port: number } | null,
+  isPortFree: (port: number) => Promise<boolean>,
+): Promise<GhostPortReclaimResult | null> {
+  const owned = readOwnedWorker();
+  if (owned === null || owned.port !== port) return null;
+
+  logger.warn(
+    'PROCESS',
+    'Reclaiming wedged worker: our PID file names a live process holding the port but health is unreachable',
+    { port, pid: owned.pid }
+  );
+
+  try {
+    // Graceful: SIGTERM, a settle, then SIGKILL. A worker that ignores SIGTERM
+    // (the 100% CPU wedge) still dies on the uncatchable SIGKILL, and the
+    // tree-kill reaps its chroma sidecar chain so the inherited socket frees.
+    await killTree(owned.pid, { signalMode: 'graceful' });
+  } catch (error) {
+    logger.error(
+      'PROCESS',
+      'Wedged-worker reclaim tree-kill failed',
+      { port, pid: owned.pid },
+      error instanceof Error ? error : new Error(String(error))
+    );
+    return { reclaimed: false, reason: 'kill-failed', killedPids: [] };
+  }
+
+  if (await isPortFree(port)) {
+    logger.info('PROCESS', 'Wedged worker reclaimed — port is free again', { port, killedPids: [owned.pid] });
+    return { reclaimed: true, killedPids: [owned.pid] };
+  }
+  logger.warn('PROCESS', 'Wedged-worker reclaim killed the worker but the port is still bound', {
+    port,
+    pid: owned.pid,
+  });
+  return { reclaimed: false, reason: 'still-bound', killedPids: [owned.pid] };
+}
+
+/**
+ * Reclaim the worker port. First handles a WEDGED worker we own on every
+ * platform (reclaimWedgedOwnedWorker), then a ghost listener — one whose
+ * owning PID is dead but whose socket stays bound because the dead owner's
+ * surviving descendants inherited the handle (Windows). Returns reclaimed:true
+ * only when the port is verified free again after the kill.
  *
  * Safety rules (all must hold before anything is signalled):
- *   - Windows only; POSIX sockets die with their owner, so there is nothing
- *     to reclaim (the function is still exported for POSIX callers to invoke
- *     unconditionally — it resolves to not-supported).
- *   - A LIVE owner means "leave it alone": a wedged worker or a foreign
- *     process is not ours to kill from a spawn path.
- *   - Every kill target is (a) a chroma sidecar reachable down the dead
+ *   - The wedged-worker path fires only for a live PID our OWN PID file claims
+ *     for this exact port; a live FOREIGN owner is never matched there.
+ *   - The ghost-listener path is Windows only; POSIX sockets die with their
+ *     owner, so once the wedged path declines there is nothing left to reclaim
+ *     and it resolves to not-supported.
+ *   - A LIVE FOREIGN owner means "leave it alone": a process our PID file does
+ *     not claim is not ours to kill from a spawn path.
+ *   - Every ghost kill target is (a) a chroma sidecar reachable down the dead
  *     owner's parent chain, or (b) a chroma sidecar whose command line names
  *     THIS install's data dir — PID reuse cannot pull in strangers, and a
  *     chain that broke between the dead owner and the survivor is still
@@ -256,6 +335,17 @@ export async function reclaimGhostListeningPort(
   const readTable = deps.readTable ?? readWindowsProcessTableWithNames;
   const killTree = deps.killTree ?? ((pid, options) => killProcessTree(pid, options));
   const dataDir = deps.dataDir ?? (() => DATA_DIR);
+  const readOwnedWorker = deps.readOwnedWorker ?? (() => {
+    const info = readOwnedWorkerPidInfo();
+    return info ? { pid: info.pid, port: info.port } : null;
+  });
+  const isPortFree = deps.isPortFree ?? (async (p: number) => !(await isPortInUse(p)));
+
+  // Wedged-worker reclaim runs on every platform, before the Windows-only
+  // ghost-listener path: a live worker we own that has stopped answering
+  // /health (#4127) is invisible to the dead-owner netstat/sidecar logic.
+  const wedged = await reclaimWedgedOwnedWorker(port, killTree, readOwnedWorker, isPortFree);
+  if (wedged !== null) return wedged;
 
   if (!isWin32()) {
     return { reclaimed: false, reason: 'not-supported', killedPids: [] };
