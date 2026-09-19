@@ -36,6 +36,16 @@ export type RateLimitWindow =
   | 'seven_day_sonnet'
   | 'overage';
 
+/**
+ * One window's slice of `unifiedWindows`. `utilization` is 0..1 and
+ * `resetsAt` carries the same epoch-seconds-or-ms ambiguity as the
+ * top-level field.
+ */
+export interface UnifiedWindowSnapshot {
+  utilization?: number;
+  resetsAt?: number;
+}
+
 export interface RateLimitInfo {
   status?: 'allowed' | 'allowed_warning' | 'rejected';
   resetsAt?: number;
@@ -45,6 +55,13 @@ export interface RateLimitInfo {
   overageResetsAt?: number;
   isUsingOverage?: boolean;
   surpassedThreshold?: number;
+  /**
+   * Every event describes every window here, not just the one it is typed
+   * as. Absent from `SDKRateLimitInfo` in the agent SDK's current typings
+   * but present on the wire (Claude Code v2.1.267), so it is validated at
+   * runtime and ignored when missing.
+   */
+  unifiedWindows?: Partial<Record<RateLimitWindow, UnifiedWindowSnapshot>>;
 }
 
 export interface RateLimitEntry extends RateLimitInfo {
@@ -52,6 +69,19 @@ export interface RateLimitEntry extends RateLimitInfo {
 }
 
 export type RateLimitBucketKey = RateLimitWindow | 'default';
+
+/** Windows the guard evaluates, in the order it evaluates them. */
+const RATE_LIMIT_WINDOWS: RateLimitWindow[] = [
+  'five_hour',
+  'seven_day_opus',
+  'seven_day_sonnet',
+  'seven_day',
+  'overage',
+];
+
+function isRateLimitWindow(value: string): value is RateLimitWindow {
+  return (RATE_LIMIT_WINDOWS as string[]).includes(value);
+}
 
 export class RateLimitStore {
   private entries = new Map<RateLimitBucketKey, RateLimitEntry>();
@@ -65,8 +95,49 @@ export class RateLimitStore {
     if (!info || typeof info !== 'object') return false;
     const key: RateLimitBucketKey = info.rateLimitType ?? 'default';
     const previous = this.entries.get(key);
-    this.entries.set(key, { ...info, observedAt: Date.now() });
+    const observedAt = Date.now();
+    this.entries.set(key, { ...info, observedAt });
+    this.hydrateUnifiedWindows(info, key, observedAt);
     return isNewRejection(previous, info);
+  }
+
+  /**
+   * Fan `unifiedWindows` out into the per-window buckets.
+   *
+   * The provider types an event at a window only as that window nears its
+   * limit, so without this the other buckets keep whatever reading they were
+   * last typed at — a `seven_day` entry can sit at its pre-reset utilization
+   * for days while every arriving event already carries the current number.
+   */
+  private hydrateUnifiedWindows(
+    info: RateLimitInfo,
+    primaryKey: RateLimitBucketKey,
+    observedAt: number,
+  ): void {
+    const unified = info.unifiedWindows;
+    if (!unified || typeof unified !== 'object') return;
+
+    for (const [window, snapshot] of Object.entries(unified)) {
+      // The primary bucket was just written in full; a partial snapshot would
+      // only strip its status and overage fields.
+      if (window === primaryKey) continue;
+      if (!isRateLimitWindow(window)) continue;
+      if (!snapshot || typeof snapshot !== 'object') continue;
+
+      // Status and overage fields describe the window they were observed in.
+      // Carry them forward only while the reset still points at that window.
+      const previous = this.entries.get(window);
+      const sameWindow =
+        previous !== undefined &&
+        resetsAtMs(previous.resetsAt) === resetsAtMs(snapshot.resetsAt);
+
+      this.entries.set(window, {
+        ...(sameWindow ? previous : {}),
+        ...snapshot,
+        rateLimitType: window,
+        observedAt,
+      });
+    }
   }
 
   /** Snapshot a single bucket, or undefined if not yet seen. */
@@ -217,15 +288,7 @@ export function shouldAbortForQuota(
     return { abort: false };
   }
 
-  const windows: RateLimitWindow[] = [
-    'five_hour',
-    'seven_day_opus',
-    'seven_day_sonnet',
-    'seven_day',
-    'overage',
-  ];
-
-  for (const window of windows) {
+  for (const window of RATE_LIMIT_WINDOWS) {
     const entry = store.get(window);
     if (!entry) continue;
 

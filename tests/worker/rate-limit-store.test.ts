@@ -87,6 +87,115 @@ describe('isApiKeyAuth', () => {
   });
 });
 
+describe('RateLimitStore — unifiedWindows hydration', () => {
+  const FIVE_HOUR_RESET = FIXED_NOW + 2 * 60 * 60 * 1000;
+  const SEVEN_DAY_RESET = FIXED_NOW + 5 * 24 * 60 * 60 * 1000;
+
+  it('hydrates non-primary windows from a five_hour-typed event', () => {
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      utilization: 0.04,
+      resetsAt: FIVE_HOUR_RESET,
+      unifiedWindows: {
+        five_hour: { utilization: 0.04, resetsAt: FIVE_HOUR_RESET },
+        seven_day: { utilization: 0.61, resetsAt: SEVEN_DAY_RESET },
+      },
+    });
+    expect(store.get('seven_day')?.utilization).toBe(0.61);
+    expect(store.get('seven_day')?.resetsAt).toBe(SEVEN_DAY_RESET);
+    expect(store.get('seven_day')?.rateLimitType).toBe('seven_day');
+  });
+
+  it('leaves the primary bucket at full fidelity', () => {
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'rejected',
+      utilization: 0.99,
+      resetsAt: FIVE_HOUR_RESET,
+      overageStatus: 'allowed',
+      unifiedWindows: { five_hour: { utilization: 0.04, resetsAt: FIVE_HOUR_RESET } },
+    });
+    const primary = store.get('five_hour');
+    expect(primary?.status).toBe('rejected');
+    expect(primary?.utilization).toBe(0.99);
+    expect(primary?.overageStatus).toBe('allowed');
+  });
+
+  it('carries a rejection forward while the window is unchanged', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'seven_day', status: 'rejected', resetsAt: SEVEN_DAY_RESET });
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      resetsAt: FIVE_HOUR_RESET,
+      unifiedWindows: { seven_day: { utilization: 0.98, resetsAt: SEVEN_DAY_RESET } },
+    });
+    expect(store.get('seven_day')?.status).toBe('rejected');
+    expect(store.get('seven_day')?.utilization).toBe(0.98);
+  });
+
+  it('drops state from a window that has already ended', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'seven_day', status: 'rejected', utilization: 0.99, resetsAt: FIXED_NOW - 1 });
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      resetsAt: FIVE_HOUR_RESET,
+      unifiedWindows: { seven_day: { utilization: 0, resetsAt: SEVEN_DAY_RESET } },
+    });
+    expect(store.get('seven_day')?.status).toBeUndefined();
+    expect(store.get('seven_day')?.utilization).toBe(0);
+  });
+
+  it('matches windows across the epoch-seconds/ms split', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'seven_day', status: 'rejected', resetsAt: SEVEN_DAY_RESET });
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      unifiedWindows: { seven_day: { utilization: 0.5, resetsAt: SEVEN_DAY_RESET / 1000 } },
+    });
+    expect(store.get('seven_day')?.status).toBe('rejected');
+  });
+
+  it('ignores unknown window keys and malformed snapshots', () => {
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      unifiedWindows: {
+        seven_day: null,
+        not_a_window: { utilization: 0.9 },
+      } as never,
+    });
+    expect(store.get('seven_day')).toBeUndefined();
+    expect(store.size).toBe(1);
+  });
+
+  it('leaves the store untouched when unifiedWindows is absent', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'five_hour', status: 'allowed', utilization: 0.2 });
+    expect(store.size).toBe(1);
+  });
+
+  it('lets the guard act on a hydrated seven_day reading', () => {
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      utilization: 0.1,
+      resetsAt: FIVE_HOUR_RESET,
+      unifiedWindows: { seven_day: { utilization: 0.95, resetsAt: SEVEN_DAY_RESET } },
+    });
+    const decision = shouldAbortForQuota('cli', store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.window).toBe('seven_day');
+  });
+});
+
 describe('shouldAbortForQuota — api_key auth', () => {
   let store: RateLimitStore;
   beforeEach(() => {
