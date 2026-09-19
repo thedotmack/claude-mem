@@ -12,6 +12,7 @@ import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdow
 import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir } from '../shared/paths.js';
 import { DeferredSessionEndQueue } from '../shared/deferred-session-end.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
+import { emitStdoutPayload, installHookStdoutGuard } from '../shared/hook-io.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { getAuthMethodDescription } from '../shared/EnvManager.js';
@@ -141,6 +142,23 @@ export function buildStatusOutput(
     output.suppressOutput = true;
   }
   return output;
+}
+
+/**
+ * MODEL_CONTEXT: the `start` hook's status envelope, written through the
+ * stdout guard's pinned writer rather than console.log. Under an installed
+ * guard console.log is a re-bound method that writes to the diverting sink, so
+ * an envelope sent through it would land on stderr with the noise it is being
+ * separated from.
+ *
+ * Exported next to buildStatusOutput, and for the same reason: it is the half
+ * of the `start` path that can be exercised without booting a worker.
+ */
+export function emitStatusOutput(status: 'ready' | 'error', message?: string): void {
+  const output = buildStatusOutput(status, message, {
+    includeSuppressOutput: process.env.CLAUDE_MEM_CODEX_HOOK !== '1',
+  });
+  emitStdoutPayload(JSON.stringify(output));
 }
 
 // Closed enum for worker_stopped telemetry — definition (and its
@@ -1158,27 +1176,41 @@ async function main() {
   const port = getWorkerPort();
 
   function exitWithStatus(status: 'ready' | 'error', message?: string): never {
-    const output = buildStatusOutput(status, message, {
-      includeSuppressOutput: process.env.CLAUDE_MEM_CODEX_HOOK !== '1',
-    });
-    console.log(JSON.stringify(output));
+    emitStatusOutput(status, message);
     process.exit(0);
   }
 
   switch (command) {
     case 'start': {
-      const result = await ensureWorkerStarted(port);
-      if (result === 'dead') {
-        // Carry the boot probe's own words into the hook's status line — this
-        // is the one place a user reliably sees, and "Failed to start worker"
-        // on its own sends them to the log to find out nothing more.
-        const bootFailure = getLastWorkerBootFailure();
-        exitWithStatus(
-          'error',
-          bootFailure ? `Failed to start worker: ${bootFailure}` : 'Failed to start worker'
-        );
-      } else {
-        exitWithStatus('ready', result === 'warming' ? 'Worker started; still warming up' : undefined);
+      // `start` IS a SessionStart hook: plugin/hooks/hooks.json runs it
+      // alongside `hook claude-code context`, and Claude Code parses the whole
+      // stdout of each as one JSON object. This path never reaches hookCommand,
+      // so it needs its own copy of hookCommand's stdout guard — without it an
+      // unsolicited line ahead of the envelope fails the hook exactly as #4081
+      // reports, and the two guarded/unguarded hooks are why that report shows
+      // the error twice per session rather than once.
+      //
+      // The envelope goes out through the writer the guard pinned, so it is the
+      // one thing not diverted. restore() only ever runs on the throw path:
+      // every branch below leaves through exitWithStatus, and process.exit does
+      // not run finally blocks.
+      const stdoutGuard = installHookStdoutGuard();
+      try {
+        const result = await ensureWorkerStarted(port);
+        if (result === 'dead') {
+          // Carry the boot probe's own words into the hook's status line — this
+          // is the one place a user reliably sees, and "Failed to start worker"
+          // on its own sends them to the log to find out nothing more.
+          const bootFailure = getLastWorkerBootFailure();
+          exitWithStatus(
+            'error',
+            bootFailure ? `Failed to start worker: ${bootFailure}` : 'Failed to start worker'
+          );
+        } else {
+          exitWithStatus('ready', result === 'warming' ? 'Worker started; still warming up' : undefined);
+        }
+      } finally {
+        stdoutGuard.restore();
       }
       break;
     }

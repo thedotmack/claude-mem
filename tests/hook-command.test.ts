@@ -10,10 +10,33 @@ import { SAFETY_TIMEOUT_MS } from '../src/cli/stdin-reader.js';
 import { installFakeStdin, installOpenFakeStdin, restoreStdin } from './fake-stdin.js';
 
 const realConsoleLog = console.log;
+const realStdoutWrite = process.stdout.write.bind(process.stdout);
+
+/**
+ * Collect the hook's model-bound envelope. Both stdout channels are captured
+ * because hookCommand installs the #4081 stdout guard, which moves the payload
+ * off console.log and onto the process.stdout.write pinned at install time —
+ * installing this before hookCommand runs is what makes the guard pin the spy.
+ */
+function captureEmittedLines(): string[] {
+  const lines: string[] = [];
+  console.log = (...args: unknown[]) => {
+    lines.push(args.join(' '));
+  };
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8');
+    for (const line of text.split('\n')) {
+      if (line !== '') lines.push(line);
+    }
+    return true;
+  }) as typeof process.stdout.write;
+  return lines;
+}
 
 afterEach(() => {
   restoreStdin();
   console.log = realConsoleLog;
+  process.stdout.write = realStdoutWrite as typeof process.stdout.write;
   setActiveHookType('');
 });
 
@@ -71,8 +94,7 @@ describe('isNonBlockingHookInputError', () => {
 
   it('fails open through hookCommand for truncated stdin and emits one no-op envelope', async () => {
     installFakeStdin('{"session_id":');
-    const output: string[] = [];
-    console.log = (...args: unknown[]) => output.push(args.join(' '));
+    const output = captureEmittedLines();
 
     const exitCode = await hookCommand('claude-code', 'context', { skipExit: true });
 
@@ -86,8 +108,7 @@ describe('isNonBlockingHookInputError', () => {
 
   it('fails open through hookCommand for the UserPromptSubmit session-init hook and emits one empty envelope', async () => {
     installFakeStdin('{"session_id":');
-    const output: string[] = [];
-    console.log = (...args: unknown[]) => output.push(args.join(' '));
+    const output = captureEmittedLines();
 
     const exitCode = await hookCommand('claude-code', 'session-init', { skipExit: true });
 
@@ -97,8 +118,7 @@ describe('isNonBlockingHookInputError', () => {
 
   it('fails open through hookCommand when stdin reaches the incomplete timeout path', async () => {
     installOpenFakeStdin('{"session_id":');
-    const output: string[] = [];
-    console.log = (...args: unknown[]) => output.push(args.join(' '));
+    const output = captureEmittedLines();
 
     const exitCode = await hookCommand('claude-code', 'session-init', {
       skipExit: true,

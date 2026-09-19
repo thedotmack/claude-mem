@@ -6,6 +6,7 @@ import type { HookResult } from './types.js';
 import { HOOK_EXIT_CODES } from '../shared/hook-constants.js';
 import {
   installHookStderrBuffer,
+  installHookStdoutGuard,
   emitModelContext,
   emitBlockingError,
   exitGraceful,
@@ -124,6 +125,10 @@ export async function hookCommand(platform: string, event: string, options: Hook
   // emitBlockingError from src/shared/hook-io.ts. Direct process.stderr.write
   // calls are buffered.
   const stderrBuffer = installHookStderrBuffer();
+  // And the same for stdout, where an unsolicited line is not noise but
+  // corruption: Claude Code parses a hook's whole stdout as one JSON object,
+  // so one banner ahead of the payload fails the hook outright (#4081).
+  const stdoutGuard = installHookStdoutGuard();
 
   const adapter = getPlatformAdapter(platform);
   const handler = getEventHandler(event);
@@ -177,6 +182,9 @@ export async function hookCommand(platform: string, event: string, options: Hook
     );
     return HOOK_EXIT_CODES.BLOCKING_ERROR;
   } finally {
+    // stdout first: the guard diverts into whatever process.stderr.write is
+    // live, so it must not outlive the buffer it diverts into.
+    stdoutGuard.restore();
     stderrBuffer.restore();
   }
 }
