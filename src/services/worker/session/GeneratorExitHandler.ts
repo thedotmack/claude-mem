@@ -59,6 +59,7 @@ export async function handleGeneratorExit(
   // preservation — the second half of #3752.
   const PRESERVES_CLAIMED_WORK = ['quota', 'auth', 'overflow', 'provider_switch', 'transport'];
   if (PRESERVES_CLAIMED_WORK.includes(abortCategory)) {
+    session.pausedReason = abortCategory;
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
