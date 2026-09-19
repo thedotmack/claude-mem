@@ -952,13 +952,26 @@ export class SearchManager {
       };
     }
 
-    const header = `Found ${results.length} observation(s) matching "${query}"\n\n${this.formatter.formatTableHeader()}`;
-    const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
+    const resultsByDate = groupByDate(results, obs => obs.created_at);
+
+    const lines: string[] = [];
+    lines.push(`Found ${results.length} observation(s) matching "${query}"`);
+    lines.push('');
+
+    for (const [day, dayResults] of resultsByDate) {
+      lines.push(`### ${day}`);
+      lines.push('');
+      lines.push(this.formatter.formatTableHeader());
+      for (const obs of dayResults) {
+        lines.push(this.formatter.formatObservationIndex(obs, 0));
+      }
+      lines.push('');
+    }
 
     return {
       content: [{
         type: 'text' as const,
-        text: header + '\n' + formattedResults.join('\n')
+        text: lines.join('\n')
       }]
     };
   }
