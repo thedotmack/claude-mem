@@ -17,6 +17,17 @@ const PID_FILE = paths.workerPid();
 interface ValidateWorkerPidOptions {
   logAlive?: boolean;
   pidFilePath?: string;
+  /**
+   * I-4 (bwrap --unshare-pid): a caller inside a PID namespace gets ESRCH
+   * from process.kill(hostPid, 0) even when the host worker is healthy, so
+   * this validator alone cannot distinguish "dead" from "invisible". A
+   * caller that has already proven liveness some other way (HTTP health
+   * probe) can pass removeStale:false to inspect the file without deleting
+   * it out from under a perfectly healthy host worker. Defaults to true so
+   * every other caller (including the supervisor boot path) keeps deleting
+   * a genuinely stale file exactly as before.
+   */
+  removeStale?: boolean;
 }
 
 export type ValidateWorkerPidStatus = 'missing' | 'alive' | 'stale' | 'invalid';
@@ -214,6 +225,10 @@ export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): V
       });
     }
     return 'alive';
+  }
+
+  if (options.removeStale === false) {
+    return 'stale';
   }
 
   logger.info('SYSTEM', 'Removing stale PID file (worker process is dead or PID has been reused)', {

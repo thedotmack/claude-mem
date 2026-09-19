@@ -548,9 +548,17 @@ async function isWorkerPortAlive(): Promise<boolean> {
   }
   if (!healthy) return false;
 
-  const pidStatus = validateWorkerPidFile({ logAlive: false });
+  // I-4 (bwrap --unshare-pid): health was already proven above, so a
+  // 'stale' verdict here means the pid is invisible from this namespace,
+  // not that the worker is dead. removeStale:false keeps this call from
+  // deleting the host worker's pid file out from under it.
+  const pidStatus = validateWorkerPidFile({ logAlive: false, removeStale: false });
   if (pidStatus === 'missing') return true;
   if (pidStatus === 'alive') return true;
+  if (pidStatus === 'stale') {
+    logger.debug('SYSTEM', 'pid not visible (likely pid namespace); keeping pid file');
+    return true;
+  }
   return false;
 }
 
