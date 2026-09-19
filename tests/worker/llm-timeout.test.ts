@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { resolveLlmTimeoutMs, withRetry } from '../../src/services/worker/retry.js';
+import { resolveLlmTimeoutMs, resolveFieldOptimizeTimeoutMs, withRetry } from '../../src/services/worker/retry.js';
 import { isClassified } from '../../src/services/worker/provider-errors.js';
 
 // Every resolve reads a settings file; point it at a scratch one so the tests
@@ -85,6 +85,47 @@ describe('resolveLlmTimeoutMs', () => {
     for (const value of ['0', '-1', '499', '300001', 'abc', '', '90000ms']) {
       expect(resolveLlmTimeoutMs({ CLAUDE_MEM_LLM_TIMEOUT_MS: value }, settingsPath)).toBe(30_000);
     }
+  });
+});
+
+// #4134: the oversized-field condensation pass (field-optimizer.ts) raced a
+// bounded model call against a hardcoded 30s that no setting could change, so a
+// slow or proxied backend lost field detail with no supported override. This
+// resolver gives the field pass the same env-first, then settings.json rules as
+// the sibling per-attempt deadline.
+describe('resolveFieldOptimizeTimeoutMs', () => {
+  it('defaults to 30s when nothing is configured', () => {
+    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(30_000);
+  });
+
+  it('reads settings.json when the env var is unset', () => {
+    writeSettings({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '120000' });
+    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(120_000);
+  });
+
+  it('lets the env var override settings.json', () => {
+    writeSettings({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '120000' });
+    expect(resolveFieldOptimizeTimeoutMs({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '45000' }, settingsPath)).toBe(45_000);
+  });
+
+  it('honors a numeric settings.json value and rejects a typo', () => {
+    writeSettings({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: 90000 });
+    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(90_000);
+    writeSettings({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: '90000ms' });
+    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(30_000);
+  });
+
+  it('falls back to the default rather than trusting a value out of range', () => {
+    for (const value of ['0', '-1', '499', '300001', 'abc', '', '90000ms']) {
+      expect(resolveFieldOptimizeTimeoutMs({ CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS: value }, settingsPath)).toBe(30_000);
+    }
+  });
+
+  // The two deadlines are independent knobs: setting one must not move the other.
+  it('resolves independently of CLAUDE_MEM_LLM_TIMEOUT_MS', () => {
+    writeSettings({ CLAUDE_MEM_LLM_TIMEOUT_MS: '120000' });
+    expect(resolveFieldOptimizeTimeoutMs({}, settingsPath)).toBe(30_000);
+    expect(resolveLlmTimeoutMs({}, settingsPath)).toBe(120_000);
   });
 });
 
