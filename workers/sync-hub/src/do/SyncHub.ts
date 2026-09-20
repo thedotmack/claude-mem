@@ -24,6 +24,21 @@ import {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_PAGE = 500;
 const ADVANCE_MAX_OPS = 100;
+// seq is a canonical decimal with no leading zeroes, so it does not sort
+// lexicographically ("9" > "10") and the PRIMARY KEY cannot order it.
+// SEQ_ORDER zero-pads to uint64 width and canonical_ops_seq_order indexes that
+// expression -- SQLite uses an expression index only when the expression
+// appears VERBATIM in the query, hence the one shared constant.
+//
+// CAUTION: IF NOT EXISTS matches on NAME, not definition. Changing the width
+// or the expression MUST also rename the index, or deployed objects keep the
+// stale one while queries use the new text and every range scan silently
+// becomes a full scan -- invisible to tests, which only build fresh objects.
+//
+// Storage-internal: the wire format stays the unpadded canonical decimal.
+const SEQ_KEY_WIDTH = 20;
+const SEQ_KEY_PAD = "0".repeat(SEQ_KEY_WIDTH);
+export const SEQ_ORDER = `substr('${SEQ_KEY_PAD}' || seq, -${SEQ_KEY_WIDTH}, ${SEQ_KEY_WIDTH})`;
 const ADVANCE_MAX_FRAME_BYTES = 262_144;
 export const MAX_DEVICES_PER_USER = 64;
 export const DEVICE_LIMIT_ERROR = "device_limit_exceeded";
@@ -137,6 +152,11 @@ export interface ResetResult {
 export const INVALID_OPS_PREFIX = "invalid_ops:";
 export const PROJECTION_ERROR_PREFIX = "projection_error:";
 
+/** Bind-parameter form of SEQ_ORDER: compare a cursor against the index. */
+export function seqKey(seq: string): string {
+	return seq.padStart(SEQ_KEY_WIDTH, "0");
+}
+
 function invalid(message: string): Error {
 	return new Error(`${INVALID_OPS_PREFIX} ${message}`);
 }
@@ -210,6 +230,11 @@ export class SyncHub extends DurableObject<Env> {
 			);
 			CREATE UNIQUE INDEX IF NOT EXISTS canonical_ops_entity_rev
 				ON canonical_ops(entity_id, entity_rev);
+			-- A no-op once built; the one-time build on an already-populated
+			-- object is the only cost, and it runs before any query can, so no
+			-- request ever sees the table unindexed.
+			CREATE INDEX IF NOT EXISTS canonical_ops_seq_order
+				ON canonical_ops(${SEQ_ORDER});
 			CREATE TABLE IF NOT EXISTS entity_heads (
 				entity_id           TEXT PRIMARY KEY,
 				kind                TEXT NOT NULL,
@@ -228,6 +253,7 @@ export class SyncHub extends DurableObject<Env> {
 			);
 			CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);`,
 		);
+		this.seedOpCount();
 		const defaults: Array<[string, string]> = [
 			["epoch", newEpoch()],
 			["head_seq", "0"],
@@ -310,6 +336,24 @@ export class SyncHub extends DurableObject<Env> {
 	webSocketClose(_ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): void {}
 	webSocketError(_ws: WebSocket, _error: unknown): void {}
 
+	// op_count replaces a COUNT(*) over the whole log on every status probe.
+	// Seeded once from the existing rows -- the last full scan this object
+	// performs -- and maintained by pushOps thereafter. An object that has
+	// never been counted is the only one that pays for it.
+	//
+	// INVARIANT: the counter has an increment path (pushOps) and a seed path,
+	// but no decrement. That is sound only while nothing deletes from
+	// canonical_ops -- the daily alarm deliberately deletes zero rows (see
+	// alarm()). Re-enabling physical compaction MUST decrement op_count at the
+	// deletion site, or getStatus() over-reports permanently with no recovery.
+	private seedOpCount(): void {
+		if (this.metaOptional("op_count") !== null) return;
+		const existing = this.ctx.storage.sql
+			.exec<{ n: number }>("SELECT COUNT(*) AS n FROM canonical_ops")
+			.one().n;
+		this.setMeta("op_count", String(existing));
+	}
+
 	private fanOutCommitted(originDeviceId: string, headBefore: string): void {
 		try {
 			const sockets = this.ctx.getWebSockets();
@@ -319,11 +363,8 @@ export class SyncHub extends DurableObject<Env> {
 				`SELECT COUNT(*) AS n,
 				        COALESCE(SUM(LENGTH(CAST(body AS BLOB))), 0) AS body_len
 				 FROM canonical_ops
-				 WHERE LENGTH(seq) > LENGTH(?)
-				    OR (LENGTH(seq) = LENGTH(?) AND seq > ?)`,
-				headBefore,
-				headBefore,
-				headBefore,
+				 WHERE ${SEQ_ORDER} > ?`,
+				seqKey(headBefore),
 			).one();
 			if (stats.n === 0) return;
 			const epoch = this.meta("epoch");
@@ -340,12 +381,9 @@ export class SyncHub extends DurableObject<Env> {
 				}>(
 					`SELECT seq, body, operation_sha256, server_ts
 					 FROM canonical_ops
-					 WHERE LENGTH(seq) > LENGTH(?)
-					    OR (LENGTH(seq) = LENGTH(?) AND seq > ?)
-					 ORDER BY LENGTH(seq), seq`,
-					headBefore,
-					headBefore,
-					headBefore,
+					 WHERE ${SEQ_ORDER} > ?
+					 ORDER BY ${SEQ_ORDER}`,
+					seqKey(headBefore),
 				).toArray();
 				frame = JSON.stringify({ type: "op", epoch, ops: rows.map(toChange) });
 				if (encoder.encode(frame).length > ADVANCE_MAX_FRAME_BYTES) {
@@ -399,6 +437,7 @@ export class SyncHub extends DurableObject<Env> {
 		const nowDecimal = String(now);
 		const headBefore = this.headSeq();
 		const acked: AckedOp[] = [];
+		let inserted = 0;
 		try {
 			this.ctx.storage.transactionSync(() => {
 				this.touchDevice(deviceId, normalizeDeviceName(deviceName), now);
@@ -445,6 +484,7 @@ export class SyncHub extends DurableObject<Env> {
 						body.deleted ? 1 : 0,
 						nowDecimal,
 					);
+					inserted += 1;
 					sql.exec(
 						`INSERT INTO entity_heads
 						 (entity_id, kind, origin_device_id, origin_local_id, entity_rev,
@@ -473,6 +513,9 @@ export class SyncHub extends DurableObject<Env> {
 						operation_sha256: row.operationSha256,
 						seq,
 					});
+				}
+				if (inserted > 0) {
+					this.setMeta("op_count", String(Number(this.meta("op_count")) + inserted));
 				}
 			});
 		} catch (error) {
@@ -527,25 +570,18 @@ export class SyncHub extends DurableObject<Env> {
 		}>(
 			`SELECT seq, body, operation_sha256, server_ts
 			 FROM canonical_ops
-			 WHERE LENGTH(seq) > LENGTH(?)
-			    OR (LENGTH(seq) = LENGTH(?) AND seq > ?)
-			 ORDER BY LENGTH(seq), seq LIMIT ?`,
-			since,
-			since,
-			since,
+			 WHERE ${SEQ_ORDER} > ?
+			 ORDER BY ${SEQ_ORDER} LIMIT ?`,
+			seqKey(since),
 			lim,
 		).toArray();
 		const ops = rows.map(toChange);
 		const last = ops.length > 0 ? ops[ops.length - 1].seq : since;
 		const more = sql.exec<{ n: number }>(
 			`SELECT EXISTS(
-				SELECT 1 FROM canonical_ops
-				WHERE LENGTH(seq) > LENGTH(?)
-				   OR (LENGTH(seq) = LENGTH(?) AND seq > ?)
+				SELECT 1 FROM canonical_ops WHERE ${SEQ_ORDER} > ?
 			) AS n`,
-			last,
-			last,
-			last,
+			seqKey(last),
 		).one().n === 1;
 		return {
 			protocol_version: 2,
@@ -567,7 +603,7 @@ export class SyncHub extends DurableObject<Env> {
 			epoch: this.meta("epoch"),
 			head_seq: this.headSeq(),
 			projected_seq: this.projectedSeq(),
-			op_count: sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM canonical_ops").one().n,
+			op_count: Number(this.meta("op_count")),
 			device_count: sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM devices").one().n,
 		};
 	}
@@ -689,15 +725,10 @@ export class SyncHub extends DurableObject<Env> {
 		}>(
 			`SELECT seq, body, operation_sha256, server_ts
 			 FROM canonical_ops
-			 WHERE (LENGTH(seq) > LENGTH(?) OR (LENGTH(seq) = LENGTH(?) AND seq > ?))
-			   AND (LENGTH(seq) < LENGTH(?) OR (LENGTH(seq) = LENGTH(?) AND seq <= ?))
-			 ORDER BY LENGTH(seq), seq LIMIT ?`,
-			projected,
-			projected,
-			projected,
-			target,
-			target,
-			target,
+			 WHERE ${SEQ_ORDER} > ? AND ${SEQ_ORDER} <= ?
+			 ORDER BY ${SEQ_ORDER} LIMIT ?`,
+			seqKey(projected),
+			seqKey(target),
 			limit,
 		).toArray();
 		const ops: ChangeOp[] = [];
