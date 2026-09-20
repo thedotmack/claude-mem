@@ -29,7 +29,7 @@ What *has* been clocked, mostly in 2025–2026 and mostly in the **coding-agent 
 
 > The default agent-memory stack still dumps ranked facts. Agent-controlled, cost-visible, ID-gated cascading retrieval is *not* how Mem0/Zep/SuperMemory/Letta archival search work. A handful of coding-agent plugins (memsearch, OKF) and Anthropic’s *skills* system have independently landed on the same information-architecture idea. The industry has started to name it; it has not made it the default memory API.
 
-claude-mem’s remaining white space is not “we invented progressive disclosure.” It is: **observation-granular session memory** (every tool use compressed, typed, dated, priced) **plus** a forced 3-layer (now 4-layer) search contract **plus** Smart Explore for *live code* (search / outline / unfold) with published A/B multiples. That combination is still rare.
+claude-mem’s remaining white space is not “we invented progressive disclosure.” It is: **observation-granular session memory** (eligible tool uses compressed, typed, dated, priced) **plus** a forced 3-layer (now 4-layer) search contract **plus** Smart Explore for *live code* (search / outline / unfold) with published A/B multiples. That combination is still rare.
 
 ---
 
